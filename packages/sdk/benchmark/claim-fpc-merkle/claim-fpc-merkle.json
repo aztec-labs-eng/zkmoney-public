@@ -1,0 +1,182 @@
+[
+  {
+    "flowName": "claim-fpc",
+    "functionName": "subscribe_with_name_claim[noop]",
+    "profileSteps": [
+      {
+        "method": "ClaimFPC:subscribe_with_name_claim",
+        "gateCount": 220348
+      },
+      {
+        "method": "TestToken:noop",
+        "gateCount": 6371
+      },
+      {
+        "method": "private_kernel_init_2",
+        "gateCount": 74663
+      },
+      {
+        "method": "private_kernel_reset_tail",
+        "gateCount": 83882
+      },
+      {
+        "method": "hiding_kernel",
+        "gateCount": 43247
+      }
+    ],
+    "totalGates": 428511,
+    "txInspection": {
+      "txHash": "0x0e67c573ec6fc6b22296c6c0ce4cd86fa97cfd3cfd556d83fe75cd176e5cca0e",
+      "transactionFee": "4933740000000",
+      "l2Gas": 483700,
+      "daGas": 800,
+      "nullifierCount": 2,
+      "noteHashCount": 1,
+      "l2ToL1MsgCount": 0,
+      "publicDataWriteCount": 1,
+      "privateLogCount": 1,
+      "publicLogCount": 0,
+      "contractClassLogCount": 0
+    }
+  },
+  {
+    "flowName": "claim-fpc",
+    "functionName": "sponsor[noop]",
+    "profileSteps": [
+      {
+        "method": "ClaimFPC:sponsor",
+        "gateCount": 20171
+      },
+      {
+        "method": "TestToken:noop",
+        "gateCount": 6371
+      },
+      {
+        "method": "private_kernel_init_2",
+        "gateCount": 74663
+      },
+      {
+        "method": "private_kernel_reset_tail",
+        "gateCount": 83882
+      },
+      {
+        "method": "hiding_kernel",
+        "gateCount": 43247
+      }
+    ],
+    "totalGates": 228334,
+    "txInspection": {
+      "txHash": "0x0d4a761c68675bdabd502c8c853c2dcb97e27ff75656b7b8018c70955e757d76",
+      "transactionFee": "4933740000000",
+      "l2Gas": 483700,
+      "daGas": 800,
+      "nullifierCount": 2,
+      "noteHashCount": 1,
+      "l2ToL1MsgCount": 0,
+      "publicDataWriteCount": 1,
+      "privateLogCount": 1,
+      "publicLogCount": 0,
+      "contractClassLogCount": 0
+    }
+  },
+  {
+    "flowName": "claim-fpc",
+    "functionName": "sponsor[noop,noop]",
+    "profileSteps": [
+      {
+        "method": "ClaimFPC:sponsor",
+        "gateCount": 20171
+      },
+      {
+        "method": "TestToken:noop",
+        "gateCount": 6371
+      },
+      {
+        "method": "TestToken:noop",
+        "gateCount": 6371
+      },
+      {
+        "method": "private_kernel_init_3",
+        "gateCount": 116601
+      },
+      {
+        "method": "private_kernel_reset_tail",
+        "gateCount": 83882
+      },
+      {
+        "method": "hiding_kernel",
+        "gateCount": 43247
+      }
+    ],
+    "totalGates": 276643,
+    "txInspection": {
+      "txHash": "0x1dc24683e6aa3e4e7b57109f472f29ac043b9252208fe8d4df0728d62ff79f99",
+      "transactionFee": "4933740000000",
+      "l2Gas": 483700,
+      "daGas": 800,
+      "nullifierCount": 2,
+      "noteHashCount": 1,
+      "l2ToL1MsgCount": 0,
+      "publicDataWriteCount": 1,
+      "privateLogCount": 1,
+      "publicLogCount": 0,
+      "contractClassLogCount": 0
+    }
+  },
+  {
+    "flowName": "claim-fpc",
+    "functionName": "sponsor[noop,noop,noop,noop]",
+    "profileSteps": [
+      {
+        "method": "ClaimFPC:sponsor",
+        "gateCount": 20171
+      },
+      {
+        "method": "TestToken:noop",
+        "gateCount": 6371
+      },
+      {
+        "method": "TestToken:noop",
+        "gateCount": 6371
+      },
+      {
+        "method": "private_kernel_init_3",
+        "gateCount": 116601
+      },
+      {
+        "method": "TestToken:noop",
+        "gateCount": 6371
+      },
+      {
+        "method": "TestToken:noop",
+        "gateCount": 6371
+      },
+      {
+        "method": "private_kernel_inner_2",
+        "gateCount": 115562
+      },
+      {
+        "method": "private_kernel_reset_tail",
+        "gateCount": 83882
+      },
+      {
+        "method": "hiding_kernel",
+        "gateCount": 43247
+      }
+    ],
+    "totalGates": 404947,
+    "txInspection": {
+      "txHash": "0x2d1f1020ed4d90c8266e5051e70315025bd3872aa8502f9412d0adb40e8e9602",
+      "transactionFee": "4933740000000",
+      "l2Gas": 483700,
+      "daGas": 800,
+      "nullifierCount": 2,
+      "noteHashCount": 1,
+      "l2ToL1MsgCount": 0,
+      "publicDataWriteCount": 1,
+      "privateLogCount": 1,
+      "publicLogCount": 0,
+      "contractClassLogCount": 0
+    }
+  }
+]

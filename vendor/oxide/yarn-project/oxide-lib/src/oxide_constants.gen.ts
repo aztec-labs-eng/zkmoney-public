@@ -1,0 +1,54 @@
+/* eslint-disable */
+// GENERATED from noir-projects/oxide_lib/src/constants.nr by yarn-project/oxide-lib/scripts/gen_constants.mjs.
+// Do not edit by hand. Field-valued constants are emitted as bigint; wrap with `new Fr(...)` at use sites.
+
+export const DOM_SEP__UNPROCESSED_DEPOSIT_AUTH = 0xf40c5d55;
+export const DOM_SEP__FROZEN_NOTES_AUTH = 0xf0e1ac72;
+export const DOM_SEP__FROZEN_DEPOSIT_AUTH = 0xf302e55a;
+export const DOM_SEP__PASSKEY_IMMUTABLES = 0x414c5048415f4b4559n;
+export const WEBAUTHN_AUTHENTICATOR_DATA_LEN = 37;
+export const WEBAUTHN_MAX_CLIENT_DATA_JSON_LEN = 319;
+export const WEBAUTHN_CHALLENGE_OFFSET = 36;
+export const WEBAUTHN_CHALLENGE_LEN = 43;
+export const WEBAUTHN_FLAGS_OFFSET = 32;
+export const WEBAUTHN_FLAG_USER_PRESENT = 0x1;
+export const WEBAUTHN_FLAG_USER_VERIFIED = 0x4;
+export const DOM_SEP__DEPOSIT_MESSAGE_NULLIFIER = 0xd3b0511f;
+export const TEE_SIG_DOMAIN_NOTE = 0;
+export const TEE_SIG_DOMAIN_WITHDRAWAL = 1;
+export const TEE_SIG_DOMAIN_WITHDRAWAL_FINALIZED = 2;
+export const TEE_SIG_DOMAIN_FROZEN_NOTES_REFUND = 3;
+export const TEE_SIG_DOMAIN_FROZEN_DEPOSIT_REFUND = 4;
+export const TEE_SIG_DOMAIN_UNPROCESSED_DEPOSIT_REFUND = 5;
+export const ACCOUNTING_EFFECT_IDENTIFIER = 0x1f99bc99e63725adad4bed66c33abfa8d9c6dfe967a5f9cfce5c2ede38bba9n;
+export const NULLIFICATION_EFFECT_TYPE = 1;
+export const INSERTION_EFFECT_TYPE = 2;
+export const WITHDRAWAL_EFFECT_TYPE = 3;
+export const DEPOSIT_EFFECT_TYPE = 4;
+export const BALANCES_STORAGE_SLOT = 3;
+export const APPROVED_SIGNERS_STORAGE_SLOT = 4;
+export const PORTAL_CONSTANT_SECRET = 0;
+export const PORTAL_CONSTANT_SECRET_HASH = 0x1f8eff65d91ed781c2e7a28a2ff99b7f7506b7293121b5ffcf3cd339c84d2250n;
+export const TX_AMOUNT_CAP = 0x8c06536eadf1fc0000n;
+export const MAX_FROZEN_NOTES_PER_REFUND = 10;
+export const FROZEN_NOTES_REFUND_PUBLIC_INPUT_COUNT = 18;
+export const FROZEN_DEPOSIT_REFUND_PUBLIC_INPUT_COUNT = 8;
+export const UNPROCESSED_DEPOSIT_REFUND_PUBLIC_INPUT_COUNT = 10;
+export const TEE_NOTES_DA_TAG = 0x2da4ca97167f5608c57375964bf40672ce4a4a58c62e4e8461f793a0d5dac8n;
+export const TEE_REQUIRED_NULLIFIERS_DA_TAG = 0x667403ca7edbfc2d64ef42f479e5261538d9d0a395d546fd1f6d7f7d1ed6b7n;
+export const TEE_METADATA_DA_TAG = 0x453ff5b333f498780c42037544b6a0a4561886207890e10106952b2b868ac9n;
+export const TEE_WITHDRAWAL_MESSAGE_HASHES_DA_TAG = 0xcb3d7f234efeab2a65548e05b7f10c29a4f8896cc19f8699382c673308a059n;
+export const WITHDRAWAL_PUBLISHING_TAG = 0x85e74767b01d55b2716ec36164e11a5bda3d9085c63c7058bd61057040517fn;
+export const DOM_SEP__STEALTH_K = 0x8b6a41145c2309231109ae29649177a76f92d7df34703281d44018b565e9f3n;
+export const MAX_NONCE = 1000000;
+export const K1_N_HI = 0xfffffffffffffffffffffffffffffffen;
+export const K1_N_LO = 0xbaaedce6af48a03bbfd25e8cd0364141n;
+export const K1_P_HI = 0xffffffffffffffffffffffffffffffffn;
+export const K1_P_LO = 0xfffffffffffffffffffffffefffffc2fn;
+export const L1_OPERATION_METADATA_FIELDS = 6;
+export const L1_OPERATION_CALLDATA_FIELDS_2K = 67;
+export const L1_OPERATION_CALLDATA_FIELDS_4K = 133;
+export const L1_OPERATION_CALLDATA_FIELDS_16K = 529;
+export const L1_OPERATION_CALLDATA_FIELDS_32K = 1058;
+export const L1_OPERATION_CALLDATA_FIELDS_64K = 2115;
+export const L1_OPERATION_CALLDATA_FIELDS_128K = 4229;

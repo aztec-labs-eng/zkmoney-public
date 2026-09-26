@@ -1,0 +1,345 @@
+{
+  "scenario": "onboarding",
+  "steps": [
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&flowFixture=success&registrationFixture=awaiting"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "awaiting.png",
+      "state": "awaiting"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-reg-sheet__card",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "awaiting-bottom.png",
+      "state": "awaiting bottom"
+    },
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&flowFixture=success&registrationFixture=free"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "free.png",
+      "state": "free"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-reg-sheet__card",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "free-bottom.png",
+      "state": "free bottom"
+    },
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&flowFixture=success&registrationFixture=expired"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "expired.png",
+      "state": "expired"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-reg-sheet__card",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "expired-bottom.png",
+      "state": "expired bottom"
+    },
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&flowFixture=success&registrationFixture=wrong-network"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "wrong-network.png",
+      "state": "wrong network"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-reg-sheet__card",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "wrong-network-bottom.png",
+      "state": "wrong network bottom"
+    },
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&flowFixture=success&registrationFixture=retry"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "retry.png",
+      "state": "retry"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-reg-sheet__card",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "retry-bottom.png",
+      "state": "retry bottom"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Check again",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 500
+    },
+    {
+      "action": "screenshot",
+      "file": "checking.png",
+      "state": "checking"
+    },
+    {
+      "action": "wait",
+      "ms": 4800
+    },
+    {
+      "action": "screenshot",
+      "file": "checked.png",
+      "state": "checked"
+    },
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&flowFixture=success&registrationFixture=short"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "short.png",
+      "state": "short"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-reg-sheet__card",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "short-bottom.png",
+      "state": "short bottom"
+    },
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&flowFixture=success&registrationFixture=passkey-mismatch"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "passkey-mismatch.png",
+      "state": "passkey mismatch"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-reg-sheet__card",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "passkey-mismatch-bottom.png",
+      "state": "passkey mismatch bottom"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Retry",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1800
+    },
+    {
+      "action": "screenshot",
+      "file": "passkey-mismatch-notice.png",
+      "state": "passkey mismatch notice"
+    },
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&flowFixture=success&registrationFixture=passkey-unavailable"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "passkey-unavailable.png",
+      "state": "passkey unavailable"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-reg-sheet__card",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "passkey-unavailable-bottom.png",
+      "state": "passkey unavailable bottom"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Retry",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1800
+    },
+    {
+      "action": "screenshot",
+      "file": "passkey-unavailable-notice.png",
+      "state": "passkey unavailable notice"
+    },
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&mock=creating&handle=demo"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 400
+    },
+    {
+      "action": "screenshot",
+      "file": "onboarding-creating.png",
+      "state": "onboarding creating"
+    },
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&mock=claiming&handle=demo"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 400
+    },
+    {
+      "action": "screenshot",
+      "file": "onboarding-claiming.png",
+      "state": "onboarding claiming"
+    },
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&mock=funded&handle=demo"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 400
+    },
+    {
+      "action": "screenshot",
+      "file": "onboarding-funded.png",
+      "state": "onboarding funded"
+    },
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&mock=carousel&handle=demo"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 400
+    },
+    {
+      "action": "screenshot",
+      "file": "onboarding-carousel.png",
+      "state": "onboarding carousel"
+    }
+  ],
+  "finalScreenshot": false,
+  "recordHoldMs": 0
+}

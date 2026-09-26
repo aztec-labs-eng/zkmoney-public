@@ -1,0 +1,130 @@
+{
+  "comment": "Golden vector for the exit-bundle IPC envelope (protocolVersion 1). Read by the front-core codec test AND the exit-runner boundary \u2014 a wire change must fail both. ALL key-material-shaped values are OBVIOUSLY DUMMY repeating-digit patterns; never seed this fixture from real keys.",
+  "hostMessages": {
+    "exitRequest": {
+      "protocolVersion": 4,
+      "type": "exit-request",
+      "secretKey": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "signingKey": "2222222222222222222222222222222222222222222222222222222222222222",
+      "accountAddress": "0x3333333333333333333333333333333333333333333333333333333333333333",
+      "teeSecretKey": "0x4444444444444444444444444444444444444444444444444444444444444444",
+      "nodeUrl": "http://localhost:8080",
+      "l1RpcUrl": "http://localhost:8545",
+      "l1ChainId": 31337,
+      "rollupVersion": "1",
+      "portalAddress": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "l2TokenAddress": "0x5555555555555555555555555555555555555555555555555555555555555555",
+      "l1Recipient": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "processorTip": "0"
+    },
+    "proceed": {
+      "protocolVersion": 4,
+      "type": "proceed"
+    }
+  },
+  "bundleMessages": {
+    "status": {
+      "protocolVersion": 4,
+      "type": "status",
+      "stage": "syncing",
+      "detail": "block 42"
+    },
+    "notesEnumerated": {
+      "protocolVersion": 4,
+      "type": "notes-enumerated",
+      "noteCount": 3,
+      "totalAmount": "123000000"
+    },
+    "exitResult": {
+      "protocolVersion": 4,
+      "type": "exit-result",
+      "amount": "123000000",
+      "proof": "0xdeadbeefdeadbeef",
+      "nullifiers": [
+        "0x6666666666666666666666666666666666666666666666666666666666666666",
+        "0x7777777777777777777777777777777777777777777777777777777777777777"
+      ],
+      "teeSignature": "0x888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888881b",
+      "provingMs": 45000
+    },
+    "error": {
+      "protocolVersion": 4,
+      "type": "error",
+      "stage": "proving",
+      "message": "witness generation failed"
+    }
+  },
+  "invalid": [
+    {
+      "name": "wrong protocolVersion",
+      "message": {
+        "protocolVersion": 5,
+        "type": "proceed"
+      }
+    },
+    {
+      "name": "unknown type",
+      "message": {
+        "protocolVersion": 4,
+        "type": "self-destruct"
+      }
+    },
+    {
+      "name": "unknown key",
+      "message": {
+        "protocolVersion": 4,
+        "type": "proceed",
+        "extra": true
+      }
+    },
+    {
+      "name": "missing required field",
+      "message": {
+        "protocolVersion": 4,
+        "type": "notes-enumerated",
+        "noteCount": 1
+      }
+    },
+    {
+      "name": "non-decimal amount",
+      "message": {
+        "protocolVersion": 4,
+        "type": "notes-enumerated",
+        "noteCount": 1,
+        "totalAmount": "0x10"
+      }
+    },
+    {
+      "name": "short nullifier",
+      "message": {
+        "protocolVersion": 4,
+        "type": "exit-result",
+        "amount": "1",
+        "proof": "0xdead",
+        "nullifiers": ["0x66"],
+        "teeSignature": "0x88",
+        "provingMs": 1
+      }
+    },
+    {
+      "name": "empty nullifiers",
+      "message": {
+        "protocolVersion": 4,
+        "type": "exit-result",
+        "amount": "1",
+        "proof": "0xdead",
+        "nullifiers": [],
+        "teeSignature": "0x88",
+        "provingMs": 1
+      }
+    },
+    {
+      "name": "unknown stage",
+      "message": {
+        "protocolVersion": 4,
+        "type": "status",
+        "stage": "hacking"
+      }
+    }
+  ]
+}

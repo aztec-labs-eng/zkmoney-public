@@ -1,0 +1,84 @@
+[profile.default]
+src = 'src'
+test = 'test'
+out = 'out'
+solc = "0.8.30"
+evm_version = 'osaka'
+optimizer = true
+optimizer_runs = 1
+libs = ['empty-lib']
+# The nitro-validator submodule ships its own same-named CertManager.sol / NitroValidator.sol;
+# skipping it from compilation leaves the forked versions under src/core/lib as the only ones built.
+# Its primitives (Sha2Ext, Asn1Decode, CborDecode, ECDSA384Curve, LibBytes, ICertManager) are still
+# pulled in as dependencies of the forks via the @nitro-validator remapping.
+skip = ['lib/nitro-validator/**']
+auto_detect_remappings = false
+# @aztec/* sources (and their transitive OZ + forge-std deps) come from the @aztec/l1-artifacts npm
+# package, and OZ 5.6.1 from @openzeppelin/contracts — both installed into ./node_modules via yarn.
+# Run `yarn install` in this directory before `aztec-forge build`.
+allow_paths = [
+  'node_modules/@aztec/l1-artifacts/l1-contracts',
+  'node_modules/@openzeppelin/contracts',
+  'node_modules/@account-abstraction/contracts',
+  'node_modules/@uniswap',
+]
+remappings = [
+  # Aztec's own vendored OZ (v5.1), reached by @aztec/* sources and oxide code that interops with them.
+  "@oz/=node_modules/@aztec/l1-artifacts/l1-contracts/lib/openzeppelin-contracts/contracts/",
+  # OZ 5.6.1 (released, audited)
+  "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/",
+  # Canonical ERC-4337 EntryPoint v0.8 + BasePaymaster.
+  "@account-abstraction/contracts/=node_modules/@account-abstraction/contracts/",
+  # UniversalRouter command bytes + interface, and the v4 action/sentinel constants and pool types the
+  # FPCFunder route encoding uses (v4-periphery sources import @uniswap/v4-core internally).
+  "@uniswap/universal-router/=node_modules/@uniswap/universal-router/",
+  "@uniswap/v4-periphery/=node_modules/@uniswap/v4-periphery/",
+  "@uniswap/v4-core/=node_modules/@uniswap/v4-core/",
+  # Aztec uses OZ 5.1. Avoid it using our OZ 5.6.1.
+  "node_modules/@aztec/l1-artifacts/l1-contracts/:@openzeppelin/contracts/=node_modules/@aztec/l1-artifacts/l1-contracts/lib/openzeppelin-contracts/contracts/",
+  "@core/=src/core/",
+  "@periphery/=src/periphery/",
+  "@generated/=src/generated/",
+  "@aztec/=node_modules/@aztec/l1-artifacts/l1-contracts/src/",
+  # Reached transitively from @aztec/ sources (e.g. FeeLib, ProposeLib import BlobLib;
+  # rollup contracts import @zkpassport types) — required even though we never import
+  # these prefixes directly from oxide src/test.
+  "@aztec-blob-lib/=node_modules/@aztec/l1-artifacts/l1-contracts/src/mock/libraries/",
+  "@zkpassport/=node_modules/@aztec/l1-artifacts/l1-contracts/lib/circuits/src/solidity/src/",
+  "@test/=test/",
+  # nitro-validator primitives (Sha2Ext, CborDecode, ECDSA384Curve, LibBytes, ICertManager, Asn1Decode)
+  # and solarity's ECDSA384 come from the nitro-validator submodule under lib/. The portal sources import
+  # those primitives plus the ICertManager interface; the concrete CertManager / NitroValidator are the
+  # forks under src/core/lib.
+  "@nitro-validator/=lib/nitro-validator/src/",
+  "@solarity/=lib/nitro-validator/lib/solidity-lib/contracts/",
+  "forge-std/=node_modules/@aztec/l1-artifacts/l1-contracts/lib/forge-std/src/",
+]
+fs_permissions = [
+  { access = "read", path = "./test/fixtures" },
+  # DeployOxide.s.sol writes its address manifest here for the orchestrator to read back.
+  { access = "write", path = "./out" },
+]
+
+# Named L1 endpoint so deploy scripts pass `--rpc-url l1` and the URL (which
+# embeds a provider API key) comes from the L1_RPC_URL env var rather than argv.
+# Must resolve to a single-node provider — load-balanced endpoints serve stale
+# post-staging reads that revert register-enclave's attestation verify.
+[rpc_endpoints]
+l1 = "${L1_RPC_URL}"
+
+# Block-explorer source verification. Etherscan V2 authorizes every chain with one key; the deploy
+# scripts export ETHERSCAN_API_KEY from Secrets Manager so the key never lands on the command line.
+[etherscan]
+sepolia = { key = "${ETHERSCAN_API_KEY}", chain = 11155111 }
+mainnet = { key = "${ETHERSCAN_API_KEY}", chain = 1 }
+
+[fmt]
+line_length = 120
+tab_width = 2
+wrap_comments = true
+number_underscore = "thousands"
+override_spacing = false
+# Skip auto-generated sources (pinned/ holds a bb-emitted verifier too — see
+# noir-projects/resolver_circuit/repin.sh).
+ignore = ["**/generated/**/*.sol", "**/pinned/**/*.sol"]

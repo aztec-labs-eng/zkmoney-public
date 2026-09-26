@@ -1,0 +1,32 @@
+{
+  "name": "@obsidion/passkey-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -b",
+    "clean": "rm -rf ./dist .tsbuildinfo",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "typecheck:test": "tsc -p tsconfig.test.json"
+  },
+  "dependencies": {
+    "@noble/curves": "^1.7.0",
+    "@obsidion/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@noble/hashes": "^1.7.0",
+    "@types/node": "^22.19.6",
+    "jsdom": "^25.0.1",
+    "typescript": "5.7.3",
+    "vitest": "^3.0.0"
+  },
+  "license": "MIT"
+}

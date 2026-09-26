@@ -1,0 +1,124 @@
+{
+  "scenario": "onboarding",
+  "steps": [
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Withdraw to Ethereum",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "visitor-choice.png",
+      "state": "visitor choice"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Withdraw to Ethereum",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "recipient.png",
+      "state": "recipient"
+    },
+    {
+      "action": "fill",
+      "placeholder": "Enter or paste address",
+      "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Continue",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review.png",
+      "state": "review"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm withdrawal",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "working.png",
+      "state": "working"
+    },
+    {
+      "action": "wait",
+      "ms": 5000
+    },
+    {
+      "action": "screenshot",
+      "file": "visitor-withdrawal.png",
+      "state": "visitor withdrawal"
+    },
+    {
+      "action": "goto",
+      "path": "/link?demo=onboarding&flowFixture=claimed&flowEntry=visitor"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "claimed.png",
+      "state": "claimed"
+    },
+    {
+      "action": "goto",
+      "path": "/link?demo=onboarding&flowFixture=no-voucher&flowEntry=visitor"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "registration-choice.png",
+      "state": "registration choice"
+    },
+    {
+      "action": "goto",
+      "path": "/link?demo=onboarding&flowFixture=success&flowEntry=visitor-email"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-onboard-card"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "email-visitor.png",
+      "state": "email link (unsupported)"
+    }
+  ],
+  "finalScreenshot": false,
+  "bootstrap": "/link?demo=onboarding&flowFixture=success&flowEntry=visitor",
+  "ready": {
+    "selector": ".ww-invite"
+  },
+  "recordHoldMs": 0
+}

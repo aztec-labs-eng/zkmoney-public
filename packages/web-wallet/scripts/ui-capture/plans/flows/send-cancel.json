@@ -1,0 +1,59 @@
+{
+  "scenario": "activity",
+  "steps": [
+    {
+      "action": "fill",
+      "label": "Amount",
+      "value": "24"
+    },
+    {
+      "action": "fill",
+      "label": "Add note (optional)",
+      "value": "Dinner and groceries for the weekend, including the train tickets home."
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Send funds",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review.png",
+      "state": "review"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm & send",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 300
+    },
+    {
+      "action": "screenshot",
+      "file": "preparing.png",
+      "state": "Preparing before proving begins"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Cancel",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1200
+    },
+    {
+      "action": "screenshot",
+      "file": "cancelled-confirmation.png",
+      "state": "cancelled confirmation"
+    }
+  ],
+  "finalScreenshot": false,
+  "path": "/contacts/ada/send?flowFixture=success",
+  "recordHoldMs": 0
+}

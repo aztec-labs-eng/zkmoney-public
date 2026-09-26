@@ -1,0 +1,9 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "**/*.test.ts",
+    "src/broadcaster.ts",
+    "src/sipa_events.ts",
+    "src/index.ts"
+  ]
+}

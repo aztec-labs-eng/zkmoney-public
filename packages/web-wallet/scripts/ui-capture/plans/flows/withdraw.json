@@ -1,0 +1,98 @@
+{
+  "scenario": "activity",
+  "steps": [
+    {
+      "action": "fill",
+      "placeholder": "Enter or paste address",
+      "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "fill",
+      "label": "Wallet name (optional)",
+      "value": "Weekend savings wallet"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Continue",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input"
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "24"
+    },
+    {
+      "action": "screenshot",
+      "file": "amount.png",
+      "state": "amount"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Withdraw funds",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review.png",
+      "state": "review"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm withdrawal",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1300
+    },
+    {
+      "action": "screenshot",
+      "file": "signing.png",
+      "state": "signing"
+    },
+    {
+      "action": "wait",
+      "ms": 2000
+    },
+    {
+      "action": "screenshot",
+      "file": "handed-off.png",
+      "state": "Handed off to the bell after simulated signing"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Notifications, keep this tab open",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "panel-running.png",
+      "state": "The running transaction under the bell"
+    },
+    {
+      "action": "press",
+      "selector": "[role=\"dialog\"][aria-label=\"Notifications\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "wait",
+      "ms": 3500
+    },
+    {
+      "action": "screenshot",
+      "file": "notifications-result.png",
+      "state": "notifications result"
+    }
+  ],
+  "finalScreenshot": false,
+  "path": "/withdraw?flowFixture=success",
+  "recordHoldMs": 0
+}

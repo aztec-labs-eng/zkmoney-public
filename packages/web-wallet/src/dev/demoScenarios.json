@@ -1,0 +1,11 @@
+{
+  "recovery": "deposits in every recovery state; the Recover / Sweep manually / Finalize flows run end to end against the fake wallet",
+  "activity": "the full mixed feed: transfers, payment links, requests, deposits, withdrawals",
+  "fresh": "an onboarded wallet with an empty feed",
+  "empty": "a zero-balance wallet with an empty feed",
+  "contacts": "long L1 and L2 contacts with recorded activity",
+  "contact-search": "local, registry and retryable add-contact states",
+  "share-retry": "a recoverable connect-link mint failure",
+  "share-long": "a real connect packet with a long tag and origin",
+  "onboarding": "identity-free onboarding; combine with /claim?mock=create|claiming|deposit|deposit-wrong-chain|deposit-expired|funded, plus &min=&fee=&cut= for the chain schedule and the portal cut, &token=DAI|USDC|USDT and &received= for a deposit already at the address"
+}

@@ -1,0 +1,21 @@
+{
+  "scenario": "fresh",
+  "path": "/contacts",
+  "ready": {
+    "selector": ".ww-panel"
+  },
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "contacts-empty.png",
+      "state": "Empty Contacts with one page search"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Back",
+      "exact": true
+    }
+  ],
+  "finalScreenshot": false
+}

@@ -1,0 +1,80 @@
+{
+  "scenario": "activity",
+  "path": "/contacts/ada/send?flowFixture=post-signing-failure",
+  "ready": {
+    "label": "Amount"
+  },
+  "steps": [
+    {
+      "action": "fill",
+      "label": "Amount",
+      "value": "24"
+    },
+    {
+      "action": "fill",
+      "label": "Add note (optional)",
+      "value": "Dinner and groceries for the weekend, including the train tickets home."
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Send funds",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review.png",
+      "state": "Send confirmation"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm & send",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1300
+    },
+    {
+      "action": "screenshot",
+      "file": "signing.png",
+      "state": "Simulated signing"
+    },
+    {
+      "action": "wait",
+      "ms": 2000
+    },
+    {
+      "action": "screenshot",
+      "file": "handed-off.png",
+      "state": "Handed off to the bell after simulated signing"
+    },
+    {
+      "action": "wait",
+      "ms": 3500
+    },
+    {
+      "action": "screenshot",
+      "file": "notifications-result.png",
+      "state": "Simulated service result"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Notifications",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-notifications__item:has-text(\"could not be submitted\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "failed-notification.png",
+      "state": "failed notification"
+    }
+  ],
+  "finalScreenshot": false,
+  "recordHoldMs": 0
+}

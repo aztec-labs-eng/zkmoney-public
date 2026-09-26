@@ -1,0 +1,21 @@
+packages:
+  - packages/core
+  - packages/metrics-policy
+  - packages/config-client
+  - packages/passkey-web
+  - packages/contracts
+  - packages/proving-progress
+  - packages/oxide-build
+  - packages/sdk
+  - packages/front-core
+  - packages/design-system
+  - packages/web-wallet
+  # packages/web-wallet-desktop is not a member: it has its own npm lockfile, so the Electron
+  # toolchain stays out of the pnpm graph.
+  - vendor/oxide/yarn-project/oxide-lib
+  - vendor/oxide/yarn-project/tee-enclave
+  - vendor/oxide/yarn-project/l1-contracts
+  - vendor/oxide/yarn-project/refund-proof
+  - vendor/oxide/yarn-project/noir-contracts.js
+  - vendor/oxide/yarn-project/oxide-client
+  - vendor/oxide/yarn-project/resolver-lib

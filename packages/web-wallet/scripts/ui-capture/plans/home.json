@@ -1,0 +1,8 @@
+{
+  "scenario": "activity",
+  "path": "/",
+  "ready": {
+    "testId": "wallet-balance"
+  },
+  "state": "Home with activity fixtures"
+}

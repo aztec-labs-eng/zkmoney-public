@@ -1,0 +1,3 @@
+[submodule "vendor/oxide/l1-contracts/lib/nitro-validator"]
+	path = vendor/oxide/l1-contracts/lib/nitro-validator
+	url = https://github.com/base/nitro-validator

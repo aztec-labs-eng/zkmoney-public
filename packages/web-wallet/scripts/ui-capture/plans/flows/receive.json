@@ -1,0 +1,72 @@
+{
+  "scenario": "activity",
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "entry.png",
+      "state": "entry"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Request via paylink",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "label": "Amount",
+      "value": "24"
+    },
+    {
+      "action": "fill",
+      "label": "Add note (optional)",
+      "value": "Dinner and groceries for the weekend, including the train tickets home."
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Request funds",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review.png",
+      "state": "review"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Create paylink",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Share",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "created-details.png",
+      "state": "created details"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Share",
+      "exact": true
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-modal",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "created-details-bottom.png",
+      "state": "created details bottom"
+    }
+  ],
+  "finalScreenshot": false,
+  "path": "/receive?flowFixture=success"
+}

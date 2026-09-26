@@ -1,0 +1,12 @@
+{
+  "generatedAt": "2026-08-10T08:20:24.553Z",
+  "commit": "ebfd25db27eba83837c2a8b487bb7c866c99e489",
+  "nodeVersion": "5.1.0",
+  "rollupVersion": 3031439860,
+  "minFeePerDaGas": "0",
+  "minFeePerL2Gas": "10200000",
+  "pinnedOverheadGas": {
+    "daGas": 800,
+    "l2Gas": 483700
+  }
+}

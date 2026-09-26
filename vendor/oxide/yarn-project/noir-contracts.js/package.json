@@ -1,0 +1,24 @@
+{
+  "name": "@oxide/noir-contracts.js",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./dest/index.js",
+    "./artifacts/*": "./artifacts/*.json",
+    "./*": "./dest/*.js"
+  },
+  "scripts": {
+    "generate": "./scripts/generate-types.sh",
+    "build": "rm -rf dest artifacts src codegenCache.json && yarn generate && tsc -p tsconfig.json",
+    "lint": "../node_modules/.bin/eslint --cache ./src",
+    "lint:fix": "../node_modules/.bin/eslint --cache --fix ./src"
+  },
+  "dependencies": {
+    "@aztec/aztec.js": "5.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.17",
+    "typescript": "^5.3.3"
+  }
+}

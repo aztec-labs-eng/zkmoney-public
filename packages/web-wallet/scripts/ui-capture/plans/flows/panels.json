@@ -1,0 +1,144 @@
+{
+  "scenario": "activity",
+  "path": "/send",
+  "ready": {
+    "selector": ".ww-panel--send"
+  },
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "send.png",
+      "state": "Send recipients"
+    },
+    {
+      "action": "goto",
+      "path": "/contacts/ada/send"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-pay__form"
+    },
+    {
+      "action": "screenshot",
+      "file": "send-amount.png",
+      "state": "Send amount"
+    },
+    {
+      "action": "fill",
+      "label": "Amount",
+      "value": "24"
+    },
+    {
+      "action": "fill",
+      "label": "Add note (optional)",
+      "value": "Dinner and groceries for the weekend"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Send funds",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "send-confirm.png",
+      "state": "Send confirmation"
+    },
+    {
+      "action": "goto",
+      "path": "/receive"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-receive-card"
+    },
+    {
+      "action": "screenshot",
+      "file": "receive.png",
+      "state": "Receive entry"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Request via paylink"
+    },
+    {
+      "action": "screenshot",
+      "file": "request-link.png",
+      "state": "Request link form"
+    },
+    {
+      "action": "goto",
+      "path": "/withdraw"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-withdraw"
+    },
+    {
+      "action": "screenshot",
+      "file": "withdraw.png",
+      "state": "Withdrawal recipient"
+    },
+    {
+      "action": "goto",
+      "path": "/contacts/ada"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-chat__body"
+    },
+    {
+      "action": "screenshot",
+      "file": "conversation.png",
+      "state": "Contact conversation"
+    },
+    {
+      "action": "goto",
+      "path": "/settings"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-settings__user"
+    },
+    {
+      "action": "screenshot",
+      "file": "settings.png",
+      "state": "Settings page"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Report a bug"
+    },
+    {
+      "action": "screenshot",
+      "file": "bug-report.png",
+      "state": "Bug report form"
+    },
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&mock=deposit&handle=demo"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "registration.png",
+      "state": "Registration deposit top"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-reg-sheet__card",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "registration-bottom.png",
+      "state": "Registration deposit controls"
+    }
+  ],
+  "finalScreenshot": false
+}

@@ -1,0 +1,178 @@
+[
+  {
+    "flowName": "transfer",
+    "functionName": "subscribe[authorize_intents,oxide_token.transfer,oxide_token.publish_da]",
+    "profileSteps": [
+      {
+        "method": "ClaimFPC:subscribe",
+        "gateCount": 26969
+      },
+      {
+        "method": "ClaimFPC:_gate_name_claim",
+        "gateCount": 210741
+      },
+      {
+        "method": "ObsidionAccountAlphaTest:authorize_intents",
+        "gateCount": 52317
+      },
+      {
+        "method": "private_kernel_init_3",
+        "gateCount": 116601
+      },
+      {
+        "method": "OxideToken:transfer",
+        "gateCount": 77929
+      },
+      {
+        "method": "ObsidionAccountAlphaTest:verify_private_authwit",
+        "gateCount": 5738
+      },
+      {
+        "method": "OxideToken:publish_da",
+        "gateCount": 11664
+      },
+      {
+        "method": "private_kernel_inner_3",
+        "gateCount": 157585
+      },
+      {
+        "method": "private_kernel_reset_tail",
+        "gateCount": 138803
+      },
+      {
+        "method": "hiding_kernel",
+        "gateCount": 43247
+      }
+    ],
+    "totalGates": 841594,
+    "txInspection": {
+      "txHash": "0x11d25cceff293274827f48caa6311e4147dc6ad1c86e4f58d1a8916ca565e81a",
+      "transactionFee": "6072060000000",
+      "l2Gas": 595300,
+      "daGas": 4192,
+      "nullifierCount": 6,
+      "noteHashCount": 4,
+      "l2ToL1MsgCount": 0,
+      "publicDataWriteCount": 1,
+      "privateLogCount": 9,
+      "publicLogCount": 0,
+      "contractClassLogCount": 0
+    }
+  },
+  {
+    "flowName": "transfer",
+    "functionName": "sponsor[authorize_intents,oxide_token.transfer,oxide_token.publish_da]",
+    "profileSteps": [
+      {
+        "method": "ClaimFPC:sponsor",
+        "gateCount": 29899
+      },
+      {
+        "method": "ObsidionAccountAlphaTest:authorize_intents",
+        "gateCount": 52317
+      },
+      {
+        "method": "OxideToken:transfer",
+        "gateCount": 77929
+      },
+      {
+        "method": "private_kernel_init_3",
+        "gateCount": 116601
+      },
+      {
+        "method": "ObsidionAccountAlphaTest:verify_private_authwit",
+        "gateCount": 5738
+      },
+      {
+        "method": "OxideToken:publish_da",
+        "gateCount": 11664
+      },
+      {
+        "method": "private_kernel_inner_2",
+        "gateCount": 115562
+      },
+      {
+        "method": "private_kernel_reset_tail",
+        "gateCount": 138803
+      },
+      {
+        "method": "hiding_kernel",
+        "gateCount": 43247
+      }
+    ],
+    "totalGates": 591760,
+    "txInspection": {
+      "txHash": "0x14fa98aadebc3e857e7cdc672eebff7db51195268757dfde2cd39f87b321edf3",
+      "transactionFee": "6072060000000",
+      "l2Gas": 595300,
+      "daGas": 4192,
+      "nullifierCount": 6,
+      "noteHashCount": 4,
+      "l2ToL1MsgCount": 0,
+      "publicDataWriteCount": 1,
+      "privateLogCount": 9,
+      "publicLogCount": 0,
+      "contractClassLogCount": 0
+    }
+  },
+  {
+    "flowName": "transfer",
+    "functionName": "sponsor[authorize_intents,test_token.transfer]",
+    "profileSteps": [
+      {
+        "method": "ClaimFPC:sponsor",
+        "gateCount": 29899
+      },
+      {
+        "method": "ObsidionAccountAlphaTest:authorize_intents",
+        "gateCount": 52317
+      },
+      {
+        "method": "TestToken:transfer",
+        "gateCount": 62465
+      },
+      {
+        "method": "private_kernel_init_3",
+        "gateCount": 116601
+      },
+      {
+        "method": "ObsidionAccountAlphaTest:verify_private_authwit",
+        "gateCount": 5738
+      },
+      {
+        "method": "HandshakeRegistry:non_interactive_handshake",
+        "gateCount": 20082
+      },
+      {
+        "method": "HandshakeRegistry:non_interactive_handshake",
+        "gateCount": 20082
+      },
+      {
+        "method": "private_kernel_inner_3",
+        "gateCount": 157585
+      },
+      {
+        "method": "private_kernel_reset_tail",
+        "gateCount": 138803
+      },
+      {
+        "method": "hiding_kernel",
+        "gateCount": 43247
+      }
+    ],
+    "totalGates": 646819,
+    "txInspection": {
+      "txHash": "0x1b9f587e313ef5c76485a0b93b8ca790ddb0c8404b46b998cf4a0ec342a4a489",
+      "transactionFee": "6912540000000",
+      "l2Gas": 677700,
+      "daGas": 5568,
+      "nullifierCount": 10,
+      "noteHashCount": 6,
+      "l2ToL1MsgCount": 0,
+      "publicDataWriteCount": 1,
+      "privateLogCount": 9,
+      "publicLogCount": 0,
+      "contractClassLogCount": 0
+    }
+  }
+]

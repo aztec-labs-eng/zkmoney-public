@@ -1,0 +1,62 @@
+{
+  "scenario": "activity",
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Ada",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "label": "Amount",
+      "value": "24"
+    },
+    {
+      "action": "fill",
+      "label": "Add note (optional)",
+      "value": "Dinner and groceries for the weekend."
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Request funds",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review.png",
+      "state": "review"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm request",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 500
+    },
+    {
+      "action": "screenshot",
+      "file": "submitting.png",
+      "state": "submitting"
+    },
+    {
+      "action": "wait",
+      "ms": 5500
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-chat__body"
+    },
+    {
+      "action": "screenshot",
+      "file": "conversation.png",
+      "state": "conversation"
+    }
+  ],
+  "finalScreenshot": false,
+  "path": "/receive?flowFixture=success"
+}

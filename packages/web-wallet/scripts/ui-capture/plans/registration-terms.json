@@ -1,0 +1,27 @@
+{
+  "scenario": "onboarding",
+  "bootstrap": "/claim?demo=onboarding&mock=create&handle=demo",
+  "rejectingExtension": true,
+  "ready": {
+    "selector": ".ww-reg-sheet__card"
+  },
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "registration-terms.png",
+      "state": "Registration terms before passkey creation"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Deposit 15 DAI",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "terms-controls.png",
+      "state": "Registration terms: deposit control after scrolling"
+    }
+  ],
+  "finalScreenshot": false
+}

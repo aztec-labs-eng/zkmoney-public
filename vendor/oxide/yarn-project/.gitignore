@@ -1,0 +1,5 @@
+/l1-contracts/src/abis/
+
+/scripts/.env
+/.accounts/
+/scripts/tee-loadtest-files/

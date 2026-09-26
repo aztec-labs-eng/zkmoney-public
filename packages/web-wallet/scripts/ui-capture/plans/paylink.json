@@ -1,0 +1,11 @@
+{
+  "scenario": "activity",
+  "path": "/links/new",
+  "ready": { "label": "Amount" },
+  "steps": [
+    { "action": "fill", "label": "Amount", "value": "12" },
+    { "action": "screenshot", "file": "paylink-amount.png", "state": "Create paylink: amount entered" },
+    { "action": "reachable", "role": "button", "name": "Next", "exact": true }
+  ],
+  "finalScreenshot": false
+}

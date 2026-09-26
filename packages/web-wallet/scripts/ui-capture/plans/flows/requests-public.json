@@ -1,0 +1,263 @@
+{
+  "scenario": "onboarding",
+  "steps": [
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Pay with an external wallet",
+      "exact": false
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "public-choice.png",
+      "state": "public choice"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Pay with an external wallet",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "external-wallet.png",
+      "state": "external wallet"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Show",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "qr.png",
+      "state": "qr"
+    },
+    {
+      "action": "press",
+      "key": "Escape",
+      "role": "dialog",
+      "name": "Payment address",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "external-return.png",
+      "state": "external return"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=onboarding&flowFixture=retry&flowEntry=request"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Try again",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "request-retry.png",
+      "state": "request retry"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Try again",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "retry-resolved.png",
+      "state": "retry resolved"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=onboarding&flowFixture=warning&flowEntry=request"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite-modal-error[role=\"alert\"]"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Log in",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "request-warning.png",
+      "state": "request warning"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=onboarding&flowFixture=terminal&flowEntry=request"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "waitFor",
+      "text": "@ada is no longer registered",
+      "exact": true
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Log in",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "request-terminal.png",
+      "state": "request terminal"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=onboarding&flowFixture=success&flowEntry=request-expired"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "request-expired-success.png",
+      "state": "request expired success"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=onboarding&flowFixture=success&flowEntry=request-network"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "request-network-success.png",
+      "state": "request network success"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=onboarding&flowFixture=success&flowEntry=request-token"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "request-token-success.png",
+      "state": "request token success"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=onboarding&flowFixture=success&flowEntry=request-any"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "request-any-success.png",
+      "state": "request any success"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=onboarding&flowFixture=success&flowEntry=request-legacy"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "request-legacy.png",
+      "state": "request legacy"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=onboarding&flowFixture=success&flowEntry=request-invalid"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-flow"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "request-invalid.png",
+      "state": "request invalid"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=onboarding&flowFixture=loading&flowEntry=request"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "public-loading.png",
+      "state": "public loading"
+    }
+  ],
+  "finalScreenshot": false,
+  "bootstrap": "/request?demo=onboarding&flowFixture=success&flowEntry=request",
+  "ready": {
+    "selector": ".ww-invite"
+  }
+}

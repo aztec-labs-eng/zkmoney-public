@@ -1,0 +1,48 @@
+{
+  "scenario": "activity",
+  "path": "/",
+  "ready": {
+    "testId": "wallet-balance"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Open menu",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-sidebar--open"
+    },
+    {
+      "action": "screenshot",
+      "file": "drawer.png",
+      "state": "Primary menu open"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Settings",
+      "exact": true
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Logout",
+      "exact": true
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Close menu",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-sidebar--open",
+      "state": "detached"
+    }
+  ],
+  "finalScreenshot": false
+}

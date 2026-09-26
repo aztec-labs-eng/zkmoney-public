@@ -1,0 +1,11 @@
+{
+  "name": "@obsidion/oxide-build",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Build-only adapter for the supported Obsidion subset of the vendored Oxide workspace",
+  "type": "module",
+  "scripts": {
+    "build": "node ../../scripts/build-oxide-tee.mjs"
+  },
+  "license": "MIT"
+}

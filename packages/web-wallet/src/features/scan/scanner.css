@@ -1,0 +1,215 @@
+/* Only the scanner's direct shared-Modal child opts into a full phone viewport. */
+.ww-modal-overlay:has(> .ww-scan) {
+  padding: 0;
+  align-items: stretch;
+  justify-content: stretch;
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  overflow: hidden;
+}
+
+.ww-modal-overlay:has(> .ww-scan) > .ww-modal.ww-modal.ww-scan {
+  color-scheme: dark;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: calc(16px + var(--ww-safe-area-top)) calc(24px + var(--ww-safe-area-right)) calc(24px + var(--ww-safe-area-bottom)) calc(24px + var(--ww-safe-area-left));
+  border: 0;
+  border-radius: 0;
+  background: var(--surface-dark);
+  color: var(--text-primary);
+  font-family: var(--font-body, sans-serif);
+  box-shadow: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scroll-padding-top: calc(60px + var(--ww-safe-area-top));
+  scroll-padding-bottom: calc(24px + var(--ww-safe-area-bottom));
+}
+
+.ww-scan button, .ww-scan input, .ww-scan select {
+  font: inherit;
+}
+.ww-scan button {
+  cursor: pointer;
+  color: inherit;
+}
+.ww-scan button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+.ww-scan button:focus-visible, .ww-scan input:focus-visible, .ww-scan select:focus-visible {
+  outline: 2px solid var(--blue-400);
+  outline-offset: 3px;
+}
+.ww-scan__toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface-dark);
+  display: flex;
+  justify-content: space-between;
+  flex: none;
+  min-height: 44px;
+}
+/* Cover scrolled content above the sticky exit controls, including the top inset. */
+.ww-scan__toolbar::before {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: calc(-24px - var(--ww-safe-area-left));
+  right: calc(-24px - var(--ww-safe-area-right));
+  height: calc(16px + var(--ww-safe-area-top));
+  background: var(--surface-dark);
+}
+.ww-scan__icon-button {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--surface-sheet);
+}
+.ww-scan__icon-button[aria-pressed="true"] {
+  background: var(--purple-500);
+}
+.ww-scan__preview {
+  position: relative;
+  display: grid;
+  place-items: center;
+  flex: 1 0 auto;
+  min-height: 220px;
+  overflow: hidden;
+  border-radius: var(--radius-16);
+}
+.ww-scan__video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.ww-scan__frame {
+  position: absolute;
+  aspect-ratio: 1;
+  max-width: calc(100% - 8px);
+  height: min(280px, calc(100% - 8px));
+  border-radius: var(--radius-12);
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.65);
+  pointer-events: none;
+}
+.ww-scan__frame i {
+  position: absolute;
+  width: 27px;
+  height: 27px;
+  border: 4px solid transparent;
+  /* The scanner reference uses cyan-to-purple corners rather than the brand button direction. */
+  background: linear-gradient(var(--surface-dark), var(--surface-dark)) padding-box, linear-gradient(120deg, #05b8f8, #b500ff) border-box;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+.ww-scan__frame i:nth-child(1) { top: 0; left: 0; border-right: 0; border-bottom: 0; border-radius: 12px 0 0 0; }
+.ww-scan__frame i:nth-child(2) { top: 0; right: 0; border-left: 0; border-bottom: 0; border-radius: 0 12px 0 0; }
+.ww-scan__frame i:nth-child(3) { bottom: 0; right: 0; border-left: 0; border-top: 0; border-radius: 0 0 12px 0; }
+.ww-scan__frame i:nth-child(4) { bottom: 0; left: 0; border-right: 0; border-top: 0; border-radius: 0 0 0 12px; }
+.ww-scan__state {
+  position: relative;
+  width: min(260px, calc(100% - 32px));
+  padding: 20px 16px;
+  box-sizing: border-box;
+  border-radius: var(--radius-16);
+  background: color-mix(in srgb, var(--surface-dark) 92%, transparent);
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.ww-scan__state p { margin: 0; }
+.ww-scan__retry {
+  min-height: 44px;
+  margin-top: 12px;
+  padding: 8px 16px;
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 55%, transparent);
+  border-radius: var(--radius-full);
+  background: var(--surface-sheet);
+}
+.ww-scan__hint {
+  flex: none;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: center;
+}
+.ww-scan__camera {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  font-size: 14px;
+}
+.ww-scan__camera select {
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 55%, transparent);
+  border-radius: 8px;
+  background: var(--surface-sheet);
+}
+.ww-scan__actions { display: flex; flex: none; flex-direction: column; gap: 20px; }
+.ww-scan__share { display: flex; flex-direction: column; gap: var(--space-12); align-items: center; }
+.ww-scan__share > span { color: var(--text-secondary); font-size: 14px; }
+.ww-scan .ww-scan__share-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-8);
+  width: min(100%, 320px);
+  min-height: 48px;
+  padding: 8px 16px;
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-32);
+  background: var(--surface-sheet);
+  font-weight: 600;
+}
+.ww-scan__paste { display: flex; flex-direction: column; gap: var(--space-8); font-size: 14px; }
+.ww-scan__paste-row { display: flex; gap: var(--space-8); }
+.ww-scan__paste input {
+  flex: 1;
+  width: 0;
+  min-width: 0;
+  min-height: 48px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--text-secondary) 55%, transparent);
+  border-radius: var(--radius-12);
+  background: var(--surface-sheet);
+  color: var(--text-primary);
+  font-size: 16px;
+}
+.ww-scan__paste input::placeholder { color: var(--text-secondary); opacity: 1; }
+.ww-scan .ww-scan__continue {
+  min-height: 48px;
+  padding: 10px 16px;
+  border: 0;
+  border-radius: var(--radius-full);
+  /* Darken the brand gradient to keep small white action text readable. */
+  background: linear-gradient(rgb(0 0 0 / 24%), rgb(0 0 0 / 24%)), var(--gradient-brand);
+  font-weight: 600;
+}
+@media (max-height: 700px) {
+  .ww-modal-overlay:has(> .ww-scan) > .ww-modal.ww-modal.ww-scan { gap: var(--space-12); }
+  .ww-scan__actions { gap: var(--space-16); }
+  .ww-scan__share { gap: var(--space-8); }
+  .ww-scan__preview { min-height: 180px; }
+}

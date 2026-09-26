@@ -1,0 +1,41 @@
+{
+  "scenario": "activity",
+  "steps": [
+    {
+      "action": "waitFor",
+      "selector": ".ww-pay__form"
+    },
+    {
+      "action": "screenshot",
+      "file": "request-review.png",
+      "state": "request review"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm & send",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1300
+    },
+    {
+      "action": "screenshot",
+      "file": "signing.png",
+      "state": "signing"
+    },
+    {
+      "action": "wait",
+      "ms": 5500
+    },
+    {
+      "action": "screenshot",
+      "file": "result.png",
+      "state": "result"
+    }
+  ],
+  "finalScreenshot": false,
+  "bootstrap": "/?demo=activity&flowFixture=success&flowEntry=request",
+  "recordHoldMs": 0
+}

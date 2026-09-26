@@ -1,0 +1,51 @@
+{
+  "scenario": "contacts",
+  "path": "/contacts",
+  "ready": {
+    "selector": ".ww-panel"
+  },
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "contacts.png",
+      "state": "Recent and all contacts"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "@friend18 zk.money",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "contacts-scrolled.png",
+      "state": "Last contact reachable through page scrolling"
+    },
+    {
+      "action": "scroll",
+      "selector": "html",
+      "top": 0
+    },
+    {
+      "action": "fill",
+      "label": "Search @tag",
+      "value": "alexandria"
+    },
+    {
+      "action": "screenshot",
+      "file": "long-search.png",
+      "state": "Long local contact tag"
+    },
+    {
+      "action": "fill",
+      "label": "Search @tag",
+      "value": "Savings"
+    },
+    {
+      "action": "screenshot",
+      "file": "l1-search.png",
+      "state": "Long saved Ethereum wallet name"
+    }
+  ],
+  "finalScreenshot": false
+}

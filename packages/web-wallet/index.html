@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <!-- Chromium browsers tint their chrome with this. Safari 26 ignores it and samples a fixed
+         element at the viewport edge instead, which #tint below exists to be. Both carry the
+         colour the top of the app shows. -->
+    <meta name="theme-color" content="#49087e" />
+    <meta name="color-scheme" content="dark" />
+    <title>zk.money</title>
+    <!-- Chat apps render these as a card, so a shared link reads as a message rather than a bare URL.
+         The fragment never reaches a crawler, so the card cannot name the amount. __OG_IMAGE_URL__ is
+         filled at build time (vite.config.ts): crawlers need an absolute image URL. -->
+    <meta property="og:site_name" content="zk.money" />
+    <meta property="og:title" content="You have a zk.money payment link" />
+    <meta property="og:description" content="Private payments on Ethereum. Open it to continue." />
+    <meta property="og:type" content="website" />
+    <meta property="og:image" content="__OG_IMAGE_URL__" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="You have a zk.money payment link" />
+    <meta name="twitter:image" content="__OG_IMAGE_URL__" />
+    <link rel="preload" as="font" type="font/ttf" href="/fonts/Sen-VariableFont.ttf" crossorigin />
+    <style>
+      /* The brand font is declared here, not only in the design system's fonts.css: that arrives
+         with the JS bundle, so the boot screen painted before it in a fallback face. Served from
+         public/ because a path outside this package resolves at build but not in dev. */
+      @font-face {
+        font-family: "Sen";
+        src: url("/fonts/Sen-VariableFont.ttf") format("truetype-variations");
+        font-weight: 400 800;
+        font-style: normal;
+        font-display: swap;
+      }
+      /* Page chrome outside the app column; the design system owns everything inside. */
+      html,
+      body {
+        margin: 0;
+        color-scheme: dark;
+        -webkit-text-size-adjust: 100%;
+        touch-action: manipulation;
+        background: #070707;
+        font-family: "Sen", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      }
+      /* Safari 26 tints its toolbars from the background-color of fixed elements at the viewport
+         edge and ignores the theme-color meta. This strip is here to be that element and nothing
+         else: it carries the colour the top of the app shows, and the app's own opaque surface
+         paints over it, so it is never seen. */
+      #tint {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: #49087e;
+        pointer-events: none;
+        z-index: -1;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="tint" aria-hidden="true"></div>
+    <div id="root"></div>
+    <script type="module" src="/src/boot.tsx"></script>
+  </body>
+</html>

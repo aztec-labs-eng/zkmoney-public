@@ -1,0 +1,105 @@
+{
+  "scenario": "activity",
+  "steps": [
+    {
+      "action": "goto",
+      "path": "/request?demo=activity&flowFixture=loading&flowEntry=request"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-flow"
+    },
+    {
+      "action": "screenshot",
+      "file": "wallet-loading.png",
+      "state": "wallet loading"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=activity&flowFixture=success&flowEntry=request-expired"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-flow"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "request-expired.png",
+      "state": "request expired"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=activity&flowFixture=success&flowEntry=request-network"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-flow"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "request-network.png",
+      "state": "request network"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=activity&flowFixture=success&flowEntry=request-token"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-flow"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "request-token.png",
+      "state": "request token"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=activity&flowFixture=success&flowEntry=request-invalid"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-flow"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "request-invalid.png",
+      "state": "request invalid"
+    },
+    {
+      "action": "goto",
+      "path": "/request?demo=activity&flowFixture=success&flowEntry=request&networkFixture=unavailable"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-flow"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "wallet-network-error.png",
+      "state": "wallet network error"
+    }
+  ],
+  "finalScreenshot": false,
+  "recordHoldMs": 0
+}

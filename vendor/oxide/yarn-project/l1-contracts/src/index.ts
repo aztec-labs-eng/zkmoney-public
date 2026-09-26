@@ -1,0 +1,275 @@
+export {
+  CertManagerAbi,
+  CertManagerBytecode,
+  FrozenNotesRefundVerifierAbi,
+  FrozenNotesRefundVerifierBytecode,
+  FrozenDepositRefundVerifierAbi,
+  FrozenDepositRefundVerifierBytecode,
+  UnprocessedDepositRefundVerifierAbi,
+  UnprocessedDepositRefundVerifierBytecode,
+  MockCertManagerAbi,
+  MockCertManagerBytecode,
+  MockNitroValidatorAbi,
+  MockNitroValidatorBytecode,
+  TestERC20Abi,
+  TestERC20Bytecode,
+  NitroValidatorAbi,
+  NitroValidatorBytecode,
+  FirstProverProofSubmitterAbi,
+  FirstProverProofSubmitterBytecode,
+  DepositSubsidyAbi,
+  DepositSubsidyBytecode,
+  IFPCFunderAbi,
+  ErrorsAbi,
+  WithdrawalSubsidyAbi,
+  WithdrawalSubsidyBytecode,
+  ProverSubsidyAbi,
+  ProverSubsidyBytecode,
+  PlainWithdrawalExecutorAbi,
+  PlainWithdrawalExecutorBytecode,
+  OxidePortalAbi,
+  OxidePortalBytecode,
+  TestCertManagerAbi,
+  TestCertManagerBytecode,
+} from './artifacts.js';
+export {
+  type PortalRefundVerifiers,
+  type DeployOxidePortalArgs,
+  deployFrozenNotesRefundVerifier,
+  deployFrozenDepositRefundVerifier,
+  deployUnprocessedDepositRefundVerifier,
+  deployNitroValidator,
+  deployFirstProverProofSubmitter,
+  deployDepositSubsidy,
+  deployWithdrawalSubsidy,
+  deployProverSubsidy,
+  deployPlainWithdrawalExecutor,
+  deployOxidePortal,
+} from './deploy/index.js';
+export { OxidePortalEventsAbi } from './events.js';
+export {
+  type DepositEvent,
+  type TEEAddedEvent,
+  type TEEBinding,
+  type TEEKeys,
+  type ProverClaim,
+  type ProverClaimArgs,
+  type ExecutorCall,
+  encodeExecutorCall,
+  OxidePortalContract,
+  encodeWithdrawalBroadcast,
+} from './oxide_portal.js';
+
+// Periphery: name registry + stealth-deposit resolver.
+export {
+  EntryPointAbi,
+  EntryPointBytecode,
+  OxidePaymasterAbi,
+  OxidePaymasterBytecode,
+  MockPortalAbi,
+  MockPortalBytecode,
+  MockVerifierAbi,
+  MockVerifierBytecode,
+  MockV3AggregatorAbi,
+  MockV3AggregatorBytecode,
+  OxideAccountAbi,
+  OxideAccountFactoryAbi,
+  OxideAccountFactoryBytecode,
+  NameRegistryAbi,
+  NameRegistryBytecode,
+  AccountMetadataRegistryAbi,
+  AccountMetadataRegistryBytecode,
+  RegistrationControllerAbi,
+  RegistrationControllerBytecode,
+  NamePortalAbi,
+  NamePortalBytecode,
+  ResolverVerifierAbi,
+  ResolverVerifierBytecode,
+  ResolverVerifierLinkReferences,
+  DepositSIPAAbi,
+  DepositSIPABytecode,
+  RegistrationSIPAAbi,
+  RegistrationSIPABytecode,
+  SIPAAbi,
+  SIPABytecode,
+  SIPAFactoryAbi,
+  SIPAFactoryBytecode,
+  SIPAResolverAbi,
+  SIPAResolverBytecode,
+  OperationExecutorAbi,
+  OperationExecutorBytecode,
+  MockOperationAbi,
+  MockOperationBytecode,
+  FPCFunderTestnetAbi,
+  FPCFunderTestnetBytecode,
+  MockSwapRouterAbi,
+  MockSwapRouterBytecode,
+  ZKTranscriptLibAbi,
+  ZKTranscriptLibBytecode,
+} from './artifacts.js';
+export {
+  deployContract,
+  deployEntryPoint,
+  deployOxidePaymaster,
+  deployMockPortal,
+  deployMockLegacyDepositPool,
+  deployOxideAccountFactory,
+  deployNameRegistry,
+  deployAccountMetadataRegistry,
+  deployNameRegistryStack,
+  deployRegistrationController,
+  deployDepositSIPA,
+  deployRegistrationSIPA,
+  DEPOSIT_SWEEP_FEE,
+  REGISTRATION_SWEEP_FEE,
+  deploySIPAImplementations,
+  blessSIPAImplementation,
+  deployNamePortal,
+  deploySIPAFactory,
+  deploySIPAResolver,
+  deployResolverVerifierAndZkTranscriptLib,
+  deployZKTranscriptLib,
+  deployOperationExecutor,
+  linkBytecode,
+} from './deploy/index.js';
+export type { LinkLibraries, LinkReferences, SIPAImplementations } from './deploy/index.js';
+export {
+  addBeneficiary,
+  readIsBeneficiary,
+  readRegistrationFee,
+  readRegistrationMin,
+} from './registration_controller.js';
+export {
+  buildNameClaimTypedData,
+  changeName,
+  claimName,
+  encodeChangeName,
+  readAccountMetadataRegistry,
+  readDomainOwner,
+  readResolver,
+  readNameOf,
+  readRegistrationController,
+  readUserAddress,
+  updateAccountMetadataRegistry,
+  updateDomainOwner,
+  updateRegistrationController,
+  updateResolver,
+} from './name_registry.js';
+export type { DomainAuthArg, NameClaimTypedData, NameClaimTypedDataArgs } from './name_registry.js';
+export {
+  encodeSetUserRecord,
+  encodeUpdateL2Address,
+  encodeUpdatePublicKey,
+  encodeUpdateUserResolverOperator,
+  getUserRecord,
+  hasUserRecord,
+  readResolverOperator,
+  setUserRecord,
+  setResolverOperator,
+} from './account_metadata_registry.js';
+export type { K1PointArg, UserRecordArg, ResolverOperatorArg } from './account_metadata_registry.js';
+export { callResolve, encodeResolve, resolveName, resolveWithProof } from './sipa_resolver.js';
+export {
+  SipaIntent,
+  encodeDeploySIPA,
+  predictSIPA,
+  readBlessedIntent,
+  readSIPAImplementation,
+} from './sipa_factory.js';
+export type { SipaDeployArgs } from './sipa_factory.js';
+// ERC-4337 account: a user's stable identity, deployed by a CREATE2 factory.
+export {
+  type AuthKeyEntry,
+  type Call,
+  type R1PublicKeyArg,
+  type WebAuthnAuthArg,
+  predictAccountAddress,
+  predictAccountAddressLocally,
+  DUMMY_K1_SIGNATURE,
+  deployAccount,
+  accountPersonalSignHash,
+  dummyR1Signature,
+  encodeAccountInitCode,
+  encodeAddAuthKey,
+  encodeExecuteBatch,
+  encodeR1UserOpSignature,
+  encodeSetData,
+  getAccountData,
+  getAuthKeys,
+  getBootstrapOwner,
+  signK1UserOpHash,
+} from './account.js';
+export { addressSchema, bytes32Schema, hexSchema, uintSchema } from './zod.js';
+// ERC-4337 EntryPoint: UserOp construction + submission.
+export {
+  type PackedUserOperation,
+  type UserOpGas,
+  type UserOpJson,
+  CANONICAL_ENTRY_POINT_V08,
+  buildUserOp,
+  getAccountNonce,
+  getUserOpHash,
+  handleOps,
+  packU128LimbsToBytes32,
+  packedUserOperationSchema,
+  userOpToJson,
+} from './entrypoint.js';
+export {
+  type ContractWriteResult,
+  type ReceiptClient,
+  type WriteOptions,
+  maybeWaitForReceipt,
+} from './write_receipt.js';
+// Paymaster: signature-gated sponsorship.
+export {
+  encodeOxidePaymasterData,
+  fundPaymaster,
+  getPaymasterDeposit,
+  getPaymasterHash,
+  packPaymasterAndData,
+} from './paymaster.js';
+export { encodeSweep, encodeSweepForSubsidy, getSipaSweeps, readSipaPlumbing } from './sipa.js';
+export type { SweepArgs, SweepEvent } from './sipa.js';
+export {
+  MULTICALL3_ADDRESS,
+  buildSipaDeployAndSweepOperation,
+  buildSipaSweepOperation,
+  encodeAggregate3,
+  isContractDeployed,
+} from './sipa_sweep_operation.js';
+export type {
+  Aggregate3Call,
+  BuildSipaDeployAndSweepOperationParams,
+  BuildSipaSweepOperationParams,
+} from './sipa_sweep_operation.js';
+export * from './swap_on_withdraw.js';
+export * from './metadata_update.js';
+export { UpdateMetadataSIPAAbi, UpdateMetadataSIPABytecode, AccountMetadataControllerAbi } from './artifacts.js';
+export {
+  EMPTY_SIGNED_TERMS,
+  encodeDepositIntentData,
+  encodeRegistrationRecord,
+  decodeRegistrationRecord,
+  encodeRegistrationIntentData,
+  decodeRegistrationIntentData,
+  encodeRegistrationProofs,
+  encodeLegacyRegistrationProofs,
+  decodeRegistrationProofs,
+} from './intent.js';
+export type { R1InstallArg, RegistrationIntent, RegistrationProofs, SignedTermsArg } from './intent.js';
+export {
+  R1_INSTALL_CALL_GAS_BASE,
+  R1_INSTALL_CALL_GAS_PER_WORD,
+  R1_INSTALL_VERIFICATION_GAS,
+  buildR1InstallUserOp,
+  r1InstallCallGas,
+} from './r1_install.js';
+export {
+  MAINNET_DAI,
+  MAINNET_CHAIN_ID,
+  MAINNET_DEPOSIT_TOKENS,
+  MAINNET_USDC,
+  MAINNET_USDT,
+  depositPayoutTokenFor,
+  depositTokensFor,
+} from './deposit_tokens.js';

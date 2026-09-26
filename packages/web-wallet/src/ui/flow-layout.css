@@ -1,0 +1,200 @@
+/* Flow sheets keep their variant caps and content. Native dialog owns background interaction. */
+dialog.ww-modal-overlay {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: inherit;
+}
+dialog.ww-modal-overlay:not([open]) {
+  display: none;
+}
+dialog.ww-modal-overlay::backdrop {
+  background: transparent;
+}
+.ww-modal.ww-modal {
+  overscroll-behavior: contain;
+}
+
+html:has(dialog.ww-modal-overlay[open]),
+body:has(dialog.ww-modal-overlay[open]) {
+  overflow: hidden;
+}
+body:has(dialog.ww-modal-overlay[open]) .ww-main {
+  overflow: hidden;
+}
+.ww-main {
+  overscroll-behavior-y: contain;
+}
+
+@media (max-width: 640px) {
+  .ww-modal.ww-txd .ww-send-option {
+    box-sizing: border-box;
+  }
+
+  /* Inferred sheets are full width. Share @tag has an explicit inset mobile design. */
+  .ww-modal.ww-modal:not(.ww-share-tag-modal) {
+    width: 100%;
+    padding-left: calc(var(--flow-pad-x, 24px) + var(--ww-safe-area-left));
+    padding-right: calc(var(--flow-pad-x, 24px) + var(--ww-safe-area-right));
+  }
+  .ww-modal.ww-modal:not(.ww-share-tag-modal) {
+    max-height: min(92dvh, calc(100dvh - var(--ww-safe-area-top)));
+  }
+  .ww-modal.ww-modal > * {
+    flex-shrink: 0;
+    min-width: 0;
+  }
+  .ww-modal.ww-modal.ww-reg-sheet {
+    padding-left: 0;
+    padding-right: 0;
+  }
+  .ww-modal.ww-reg-sheet > .ww-reg-sheet__card {
+    flex-shrink: 1;
+    padding-left: calc(var(--modal-pad-x, 24px) + var(--ww-safe-area-left));
+    padding-right: calc(var(--modal-pad-x, 24px) + var(--ww-safe-area-right));
+  }
+  .ww-modal.ww-deposit-warning,
+  .ww-modal.ww-feedback {
+    gap: 24px;
+    padding-top: 32px;
+  }
+  .ww-modal .ww-pay__head,
+  .ww-modal .ww-create-modal__head,
+  .ww-modal .ww-share-modal__head {
+    padding-left: 28px;
+    padding-right: 28px;
+    box-sizing: border-box;
+  }
+  .ww-modal .ww-pay__handle,
+  .ww-modal .ww-request-contact__handle,
+  .ww-modal .ww-fund__addr,
+  .ww-modal .ww-review-card,
+  .ww-modal .ww-invite-modal-error {
+    overflow-wrap: anywhere;
+  }
+  .ww-modal .ww-deposit__stealth {
+    flex: none;
+    overflow: visible;
+    padding: 16px;
+  }
+  .ww-modal .ww-deposit__fact {
+    height: auto;
+    min-height: 24px;
+    gap: 12px;
+  }
+  .ww-modal .ww-deposit__fact b {
+    min-width: 0;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (max-width: 640px) {
+  /* AppShell sizes its header intrinsically. Pages use the remaining flex space and document scroll. */
+  .ww-panel.ww-panel {
+    max-height: none;
+    overflow: visible;
+  }
+  .ww-panel .ww-panel__scroll,
+  .ww-panel .ww-chat__body {
+    overflow-y: visible;
+  }
+  .ww-panel .ww-panel__head {
+    padding: 24px 16px 0;
+  }
+  .ww-panel .ww-panel__scroll {
+    padding: 24px 16px;
+  }
+  .ww-panel .ww-chat__head,
+  .ww-panel .ww-chat__body,
+  .ww-panel .ww-chat__foot {
+    padding: 20px 16px;
+  }
+  .ww-chat__head .ww-chat__who {
+    overflow-wrap: anywhere;
+  }
+  .ww-panel .ww-bubble {
+    min-width: 0;
+    max-width: min(240px, calc(100% - 36px));
+    box-sizing: border-box;
+    overflow-wrap: anywhere;
+  }
+  .ww-panel.ww-deposit {
+    padding: 24px 16px;
+  }
+  .ww-panel .ww-deposit__stealth {
+    flex: none;
+    overflow: visible;
+    padding: 24px 16px;
+  }
+  .ww-panel .ww-deposit__fact {
+    height: auto;
+    min-height: 24px;
+    gap: 12px;
+  }
+  .ww-panel .ww-deposit__fact b {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
+  .ww-invite .ww-invite__topbar {
+    padding: calc(20px + var(--ww-safe-area-top)) calc(16px + var(--ww-safe-area-right)) 20px calc(16px + var(--ww-safe-area-left));
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  .ww-invite .ww-invite__center {
+    padding: 24px calc(16px + var(--ww-safe-area-right)) calc(24px + var(--ww-safe-area-bottom)) calc(16px + var(--ww-safe-area-left));
+  }
+  .ww-invite .ww-invite__content--landing {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
+.ww-error-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+@media (max-width: 640px) {
+  .ww-shell dialog.ww-modal-overlay > .ww-modal.ww-notifications {
+    --flow-pad-x: 0px;
+    --sheet-pad-bottom: 8px;
+    position: static;
+    width: 100%;
+    max-height: min(92dvh, calc(100dvh - var(--ww-safe-area-top)));
+    border-radius: var(--radius-32) var(--radius-32) 0 0;
+    padding-top: 0;
+  }
+  .ww-shell .ww-modal.ww-notifications .ww-notifications__head {
+    padding: 16px 20px;
+    gap: 12px;
+  }
+  .ww-shell .ww-modal.ww-notifications > .ww-notifications__list {
+    min-height: 0;
+    flex-shrink: 1;
+    overscroll-behavior: contain;
+  }
+  .ww-shell .ww-modal.ww-notifications .ww-notifications__row {
+    flex-wrap: wrap;
+  }
+  .ww-shell .ww-modal.ww-notifications .ww-notifications__body {
+    flex-basis: 150px;
+  }
+  .ww-shell .ww-modal.ww-notifications .ww-notifications__title,
+  .ww-shell .ww-modal.ww-notifications .ww-notifications__desc {
+    white-space: normal;
+    overflow: visible;
+    overflow-wrap: anywhere;
+  }
+  .ww-shell .ww-modal.ww-notifications .ww-notifications__dismiss {
+    width: 32px;
+    height: 44px;
+    opacity: 1;
+  }
+}

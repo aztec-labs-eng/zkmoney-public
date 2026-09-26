@@ -1,0 +1,14 @@
+{
+  "timestampMillis": "1779706043197",
+  "moduleId": "see attestation.cose",
+  "pcr0": "0xc4362dab070414db4daad01c6c7db8e0e11f4fee1993b28b6071175eed07ae7feb3d5b5e952693337c26ef2424a61925",
+  "teePubKeyX": "0x7dbb0d6f5e34f5810f307eb8aefa476a4c60284e33843d9002327d9876c6cc65",
+  "teePubKeyY": "0x0c2c16a410897b8f1d4d7d27bd8e96672e941da4ddc03be49e722a807a4b972f",
+  "teeEthAddress": "0x0ff3a0f411d21148bb5fbb8d930f561c626a6083",
+  "encPubKeyX": "0xaf9315473db31892ee277eb1bf4513d52e8869ae12b7b8653423dffa84d664ba",
+  "encPubKeyY": "0x244c6b95dcbf1db6ea35e02a9f3dd6e19d65de0d2dc892dbef44c83d55282a58",
+  "userData": "0xc20e2b7d1b9dfeb81c5f5c85132d3aa334f38f50aa43b9057f5f4e47d30a6a41",
+  "rootCertNotAfter": 2095066043,
+  "rootCertHash": "0x2f896930ec3f1f226d7956490d133e0fc07e9803dc97547f6406157201aefa0c",
+  "cabundleCount": 1
+}

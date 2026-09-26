@@ -1,0 +1,448 @@
+/* ============================================================
+   zk.money / Obsidion — Web design system
+   Cards, sheets, backgrounds, effects (companion to styles.css).
+   ============================================================ */
+
+/* ============================================================
+   Amount source / transfer amount cards
+   ============================================================ */
+
+.zkm-amount-source {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 0 22.4px rgba(0, 0, 0, 0.05);
+}
+.zkm-amount-source__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.zkm-amount-source__label {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.132px;
+  color: var(--text-secondary);
+}
+.zkm-amount-source__balance {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.132px;
+  color: var(--text-secondary);
+}
+.zkm-amount-source__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+}
+.zkm-amount-source__id {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.zkm-amount-source__name {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zkm-amount-source__handle {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.132px;
+  color: var(--text-secondary);
+}
+.zkm-amount-source__amount {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.zkm-amount-source__trailing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.zkm-amount-source__caption {
+  font-family: var(--font-body);
+  font-size: 11px;
+  letter-spacing: -0.121px;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   Onchain privacy banner
+   ============================================================ */
+
+.zkm-privacy-banner {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 24px;
+  border-radius: var(--radius-12);
+  background: linear-gradient(90deg, rgba(160, 0, 255, 0.82), rgba(0, 153, 255, 0.82));
+  box-shadow: inset 0 0 0 1px #a000ff;
+}
+.zkm-privacy-banner > svg {
+  flex: none;
+}
+.zkm-privacy-banner__text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.zkm-privacy-banner__title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.22px;
+  color: var(--text-primary);
+}
+.zkm-privacy-banner__body {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   Sheets
+   ============================================================ */
+
+.zkm-sheet-handle {
+  width: 64px;
+  height: 4px;
+  border-radius: 9999px;
+  background: #fff;
+  flex: none;
+}
+
+.zkm-sheet-surface {
+  position: relative;
+  overflow: hidden;
+  background: var(--surface-sheet);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.25);
+}
+.zkm-sheet-surface__handle {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.zkm-confirm-sheet {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 0 24px 48px;
+}
+.zkm-confirm-sheet__handle {
+  align-self: center;
+  margin-top: 16px;
+}
+.zkm-confirm-sheet__content {
+  padding-top: 8px;
+}
+
+.zkm-confirm-sheet-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+}
+.zkm-confirm-sheet-header__title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: #fff;
+}
+.zkm-confirm-sheet-header__back {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+}
+
+.zkm-confirm-sheet-section-label {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.132px;
+  color: var(--text-secondary);
+}
+
+.zkm-confirm-party-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+.zkm-confirm-party-card__id {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.zkm-confirm-party-card__name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.zkm-confirm-party-card__badge {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  color: #72c3ff;
+  flex: none;
+}
+.zkm-confirm-party-card__handle {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.zkm-confirm-party-card__trailing {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  flex: none;
+}
+.zkm-confirm-party-card__amount {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.zkm-confirm-party-card__amount-sub {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  text-align: right;
+}
+
+.zkm-confirm-detail-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 0;
+}
+.zkm-confirm-detail-row__label {
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--text-secondary);
+  flex: none;
+}
+.zkm-confirm-detail-row__value {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 500;
+  color: #fff;
+  margin-left: auto;
+  min-width: 0;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* ============================================================
+   Backgrounds — full-bleed layers inside a position:relative +
+   overflow:hidden parent
+   ============================================================ */
+
+.zkm-bg {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #070707;
+}
+.zkm-bg__content {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.zkm-bg--aurora {
+  background:
+    radial-gradient(480px at 55% 5%, rgba(153, 7, 255, 0.5), transparent 70%),
+    radial-gradient(480px at 50% 30%, rgba(83, 73, 255, 0.4), transparent 70%),
+    radial-gradient(480px at 45% 55%, rgba(3, 150, 255, 0.25), transparent 70%),
+    #070707;
+}
+
+.zkm-bg--modal {
+  background:
+    radial-gradient(
+      620px at 19% 0%,
+      rgba(99, 58, 255, 0.7),
+      rgba(99, 58, 255, 0.5) 25%,
+      rgba(99, 58, 255, 0.2) 50%,
+      transparent 100%
+    ),
+    #0b0b0b;
+}
+
+/* Circle glow, radius 80% of the container height, centered past the anchored edge. */
+.zkm-bg-radial-glow {
+  position: absolute;
+  left: 50%;
+  height: 160%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(
+    closest-side,
+    #a000ff 0%,
+    #a000ff 40%,
+    #0099ff 65%,
+    rgba(7, 7, 7, 0.5) 85%,
+    #070707 100%
+  );
+}
+.zkm-bg-radial-glow--top {
+  top: -20%;
+}
+.zkm-bg-radial-glow--bottom {
+  top: 120%;
+}
+
+/* Blurred rotated capsule blob; sized/positioned in container-width units
+   (margin-top % resolves against width) to track the 402pt design frame. */
+.zkm-bg-purpleblue__blob {
+  position: absolute;
+  left: -59%;
+  top: 0;
+  margin-top: -86.7%;
+  width: 178%;
+  aspect-ratio: 715.30133 / 857.58875;
+  border-radius: 9999px;
+  background: radial-gradient(
+    closest-side at 50% 50%,
+    #9908ff 27%,
+    #8717ff 40%,
+    #7529ff 53%,
+    #2e6eff 78%,
+    #171717 100%
+  );
+  filter: blur(65px);
+  transform: rotate(-75deg);
+}
+
+.zkm-bg-profile__blob {
+  position: absolute;
+  width: 440px;
+  height: 540px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  filter: blur(104px);
+}
+.zkm-bg-profile__blob--cyan {
+  left: 5%;
+  top: 58%;
+  background: rgba(3, 150, 255, 0.25);
+}
+.zkm-bg-profile__blob--indigo {
+  left: 0%;
+  top: 28%;
+  background: rgba(83, 73, 255, 0.4);
+}
+.zkm-bg-profile__blob--purple {
+  left: -5%;
+  top: 5%;
+  background: rgba(153, 7, 255, 0.5);
+}
+
+/* ============================================================
+   Effects
+   ============================================================ */
+
+.zkm-shimmer {
+  position: relative;
+}
+.zkm-shimmer--active > .zkm-shimmer__content {
+  opacity: 0.35;
+}
+.zkm-shimmer__band {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.4) 50%, transparent 100%);
+  background-size: 55% 100%;
+  background-repeat: no-repeat;
+  animation: zkm-shimmer-sweep 1.4s linear infinite;
+}
+/* band is 55% wide → position % maps to the remaining 45%: -123% parks it
+   fully off-left, 223% fully off-right */
+@keyframes zkm-shimmer-sweep {
+  from {
+    background-position: -123% 0;
+  }
+  to {
+    background-position: 223% 0;
+  }
+}
+
+.zkm-spinner-icon {
+  display: block;
+  flex: none;
+  animation: zkm-spinner-rotate 1.4s linear infinite;
+}
+@keyframes zkm-spinner-rotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.zkm-glass-row-card {
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-card);
+}
+
+.zkm-titled-glass-row-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.zkm-titled-glass-row-card__title {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  padding-left: 4px;
+}
+
+.zkm-copyable-link-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.zkm-copyable-link-row__url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}

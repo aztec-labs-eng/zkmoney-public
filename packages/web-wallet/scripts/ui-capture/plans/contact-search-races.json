@@ -1,0 +1,77 @@
+{
+  "scenario": "contact-search",
+  "path": "/contacts",
+  "ready": {
+    "selector": ".ww-contacts"
+  },
+  "steps": [
+    {
+      "action": "fill",
+      "label": "Search @tag",
+      "value": "slowfriend"
+    },
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Add contact @slowfriend",
+      "exact": true
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Add contact @slowfriend",
+      "exact": true
+    },
+    {
+      "action": "fill",
+      "label": "Search @tag",
+      "value": "ada"
+    },
+    {
+      "action": "wait",
+      "ms": 2400
+    },
+    {
+      "action": "screenshot",
+      "file": "save-race-edited.png",
+      "state": "Query edit cancels pending verification; local result remains"
+    },
+    {
+      "action": "fill",
+      "label": "Search @tag",
+      "value": "mismatchfriend"
+    },
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Add contact @mismatchfriend",
+      "exact": true
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Add contact @mismatchfriend",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "role": "alert"
+    },
+    {
+      "action": "screenshot",
+      "file": "mismatch.png",
+      "state": "Fresh address mismatch does not persist cached result"
+    },
+    {
+      "action": "press",
+      "label": "Search @tag",
+      "key": "Escape"
+    },
+    {
+      "action": "screenshot",
+      "file": "dismissed.png",
+      "state": "Escape closes search results"
+    }
+  ],
+  "finalScreenshot": false
+}

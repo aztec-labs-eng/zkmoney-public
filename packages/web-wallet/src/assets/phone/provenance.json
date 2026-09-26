@@ -1,0 +1,165 @@
+[
+  {
+    "name": "home",
+    "nodeId": "I10212:63059;10163:29970",
+    "fileKey": "redacted",
+    "sha256": "0524472fb28c1ce2c83c88d44e150bd68b8985ed9e803bdce7fc474c3cb8c637"
+  },
+  {
+    "name": "person",
+    "nodeId": "I10212:63060;10163:29958",
+    "fileKey": "redacted",
+    "sha256": "d1bb492ff019dc885eb1bc440d281cc06c23162147535d55c82c6510dae24db4"
+  },
+  {
+    "name": "coins",
+    "nodeId": "I10053:29022;7299:3401",
+    "fileKey": "redacted",
+    "sha256": "22451664fdee6a8a0d02345b0cd7b8c7aead130904413172c717d39b78a47025"
+  },
+  {
+    "name": "arrow-down",
+    "nodeId": "I10053:29022;6974:10103",
+    "fileKey": "redacted",
+    "sha256": "2f6d76add163ee110aec3c19d3eb9c8bf45bac5a962d9964cf6f60ef72b322f5"
+  },
+  {
+    "name": "send",
+    "nodeId": "I10053:29022;6974:10007",
+    "fileKey": "redacted",
+    "sha256": "769092bd5f3fdeb9c3217edfa18c5dcd8c3667e73e2a3e367e85692398dd573a"
+  },
+  {
+    "name": "tray-withdraw",
+    "nodeId": "I10053:29022;7116:19374",
+    "fileKey": "redacted",
+    "sha256": "3c04ec41b86854f9084d7d5c3f1439ed0920616fdadb7abceb12333e03a66b8a"
+  },
+  {
+    "name": "history-clock",
+    "nodeId": "I10212:63065;10163:29958",
+    "fileKey": "redacted",
+    "sha256": "9f0a20f3f13f9de2d75a9b76f2fd57ec9075c8abbd415e455783e2906ed8144b"
+  },
+  {
+    "name": "settings",
+    "nodeId": "I10212:63067;10163:29958",
+    "fileKey": "redacted",
+    "sha256": "5219602b455581995af56b416d0ba31900e9c1a0ef850c754a088390b4d41a9d"
+  },
+  {
+    "name": "logout",
+    "nodeId": "I10212:63068;10163:29958",
+    "fileKey": "redacted",
+    "sha256": "507a7cc45cf833ee6bbc16655876cd33dcaa85cbb856c290890ea12ac6cdf742"
+  },
+  {
+    "name": "qr-code",
+    "nodeId": "10212:63133",
+    "fileKey": "redacted",
+    "sha256": "49d0f45973132a9976d31a91413b9c0c255dd6c26033b3c1b7de0360aba5e515"
+  },
+  {
+    "name": "x",
+    "nodeId": "10212:63129",
+    "fileKey": "redacted",
+    "sha256": "efffe63210eeae7cce518720e40a1c9aa329f212ffb3ff9ac7fa3a64d937120e"
+  },
+  {
+    "name": "search",
+    "nodeId": "10053:29018",
+    "fileKey": "redacted",
+    "sha256": "973d9b94af259802ad54c5820572882994e44739e899843896e131199a30edc2"
+  },
+  {
+    "name": "menu",
+    "nodeId": "10053:29020",
+    "fileKey": "redacted",
+    "sha256": "55adc4b6ef24b36051598a349a79ed239a920f0162875479aee3020cbf1a0908"
+  },
+  {
+    "name": "arrow-left",
+    "nodeId": "10231:67682",
+    "fileKey": "redacted",
+    "sha256": "d772f91eff0644804d2ef682bf39bd79c140e032cd5e82c3195de1f337c40684"
+  },
+  {
+    "name": "search-field",
+    "nodeId": "10231:67666",
+    "fileKey": "redacted",
+    "sha256": "f1119dbdc930db1cd2d42aee4e301ee2ac9d31a4cd1c7aadb2e6a20e77318e5d"
+  },
+  {
+    "name": "scan",
+    "nodeId": "10231:67687",
+    "fileKey": "redacted",
+    "sha256": "8d6bdd0764dcfdb7b540b74b0e11b192edd8ba50a00761f703d7bfe054a2e5e9"
+  },
+  {
+    "name": "chevron-right",
+    "nodeId": "10231:67431",
+    "fileKey": "redacted",
+    "sha256": "f122ad7ad7aa9f132d007c9bb8fdb660dc62b810c3010f39dcb91f5025a0ea7a"
+  },
+  {
+    "name": "copy",
+    "nodeId": "10212:62893",
+    "fileKey": "redacted",
+    "sha256": "5c36f8cfeb97d1200b57f3c8fd31985b51eb2aeafcf164562789a5f244060792"
+  },
+  {
+    "name": "share-forward",
+    "nodeId": "I10212:62898;110:10826",
+    "fileKey": "redacted",
+    "sha256": "94fe0c0cbe631f692445a18bd05c98a75755691153cb072447a36d3a84cea148"
+  },
+  {
+    "name": "bell",
+    "nodeId": "10212:62726",
+    "fileKey": "redacted",
+    "sha256": "3d25342918ca81ddbf1906740252e246f0e288bdb0f13bd9c922c638b526b260"
+  },
+  {
+    "name": "eye",
+    "nodeId": "I10053:29022;3399:16254",
+    "fileKey": "redacted",
+    "sha256": "10dba7188be2cfbbf540d1d479f7390e0710a561daa22e77810b37d05dbfab37"
+  },
+  {
+    "name": "deposit-coins",
+    "nodeId": "10881:33996",
+    "fileKey": "redacted",
+    "sha256": "2e5f1c23a6a59ae68cd290064341ee4719f5589f26960109eb173e37d64a5f17",
+    "sourceSha256": "a307aeb05aa5a1696f8bc8781fd51b3a2d0c92a75bedb0165ba322e09ce29de6",
+    "file": "deposit-coins.webp",
+    "sourceDimensions": [
+      1402,
+      1122
+    ],
+    "conversion": {
+      "encoder": "libwebp1.3.2 public WebPEncode API",
+      "input": "ffmpeg6.1.1 decode to RGBA; original1402x1122 dimensions",
+      "parameters": {
+        "lossless": 1,
+        "quality": 100,
+        "method": 6,
+        "exact": 1,
+        "use_argb": 1
+      },
+      "decodedRgbaSha256": "19726cf837abe685bd8d6492dd0085c2dcfaf99de6dfea2adc977e48ebf20d57",
+      "decodedPixelParity": "All RGBA bytes match the original PNG, including RGB under zero alpha"
+    }
+  },
+  {
+    "name": "deposit-token",
+    "nodeId": "10881:34003",
+    "fileKey": "redacted",
+    "sha256": "3191ea2e5081b02ab98b464a4c818854486c18d78edec261268e245183c4bd1a"
+  },
+  {
+    "name": "flashlight",
+    "nodeId": "10212:63571",
+    "fileKey": "redacted",
+    "sha256": "3365df59ec560fa8a13b663b8c0eb368b155da945bb9eb13e1085b437c8e54b3"
+  }
+]

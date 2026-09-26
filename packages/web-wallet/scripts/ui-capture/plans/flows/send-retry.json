@@ -1,0 +1,73 @@
+{
+  "scenario": "activity",
+  "steps": [
+    {
+      "action": "fill",
+      "label": "Amount",
+      "value": "24"
+    },
+    {
+      "action": "fill",
+      "label": "Add note (optional)",
+      "value": "Dinner and groceries for the weekend, including the train tickets home."
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Send funds",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review.png",
+      "state": "review"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm & send",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "role": "alertdialog"
+    },
+    {
+      "action": "screenshot",
+      "file": "failure.png",
+      "state": "failure"
+    },
+    {
+      "action": "press",
+      "selector": "[role=\"alertdialog\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm & send",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1300
+    },
+    {
+      "action": "screenshot",
+      "file": "retry-signing.png",
+      "state": "retry signing"
+    },
+    {
+      "action": "wait",
+      "ms": 5500
+    },
+    {
+      "action": "screenshot",
+      "file": "retry-result.png",
+      "state": "retry result"
+    }
+  ],
+  "finalScreenshot": false,
+  "path": "/contacts/ada/send?flowFixture=retry",
+  "recordHoldMs": 0
+}

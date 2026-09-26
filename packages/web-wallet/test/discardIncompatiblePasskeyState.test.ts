@@ -1,0 +1,96 @@
+import { beforeEach, describe, expect, it } from "vitest"
+import { discardIncompatiblePasskeyState } from "../src/platform/auth/discardIncompatiblePasskeyState"
+import { WebPasskeyIdentityMap, hasMskRootBreadcrumb } from "../src/platform/auth/WebPasskeyIdentityMap"
+import { WebStorageAdapter } from "../src/platform/storage/WebStorageAdapter"
+import {
+  getActiveCredentialId,
+  getActiveStorageId,
+  readCachedMsk,
+  setActiveCredentialId,
+  setActiveStorageId,
+  writeCachedMsk,
+} from "../src/platform/storage/activeStorage"
+import { readHandoffMaterial, writeHandoffMaterial } from "../src/platform/storage/handoffMaterial"
+
+const entry = {
+  credentialId: "credential",
+  pubkey: "ab".repeat(64),
+  l2Address: `0x${"cd".repeat(32)}`,
+  isMskRoot: true,
+}
+const cache = { v: 1 as const, storageId: "storage", credentialId: entry.credentialId, msk: `0x${"ef".repeat(32)}` }
+const map = (rpId: string) => new WebPasskeyIdentityMap(new WebStorageAdapter(), rpId)
+
+beforeEach(() => localStorage.clear())
+
+describe("discarding state before account restoration", () => {
+  it.each([true, false])("clears old-RP records and active pointers with cache=%s", async (hasCache) => {
+    await map("wallet.zk.money").upsert(entry)
+    setActiveStorageId(cache.storageId)
+    setActiveCredentialId(entry.credentialId)
+    if (hasCache) writeCachedMsk(cache)
+    localStorage.setItem("webwallet.identity", JSON.stringify({ address: entry.l2Address }))
+    await writeHandoffMaterial({
+      v: 1,
+      rpId: "wallet.zk.money",
+      credentialId: entry.credentialId,
+      pubkeyHex: `0x${entry.pubkey}`,
+      candidates: { first: cache.msk },
+      derivedAt: Date.now(),
+    })
+    await discardIncompatiblePasskeyState("auth.zk.money")
+    expect(getActiveStorageId()).toBeNull()
+    expect(getActiveCredentialId()).toBeNull()
+    expect(readCachedMsk()).toBeNull()
+    expect(readHandoffMaterial()).toBeNull()
+    expect(localStorage.getItem("webwallet.identity")).toBeNull()
+    expect(await map("wallet.zk.money").get(entry.credentialId)).toBeUndefined()
+    expect(hasMskRootBreadcrumb("auth.zk.money")).toBe(false)
+    await map("auth.zk.money").upsert(entry)
+    expect(hasMskRootBreadcrumb("auth.zk.money")).toBe(true)
+  })
+
+  it.each(["auth.zk.money", "staging.zk.money", "localhost"])(
+    "preserves current records and keys under %s",
+    async (rpId) => {
+      await map(rpId).upsert(entry)
+      setActiveStorageId(cache.storageId)
+      setActiveCredentialId(entry.credentialId)
+      writeCachedMsk(cache)
+      await writeHandoffMaterial({
+        v: 1,
+        rpId,
+        credentialId: entry.credentialId,
+        pubkeyHex: `0x${entry.pubkey}`,
+        candidates: { first: cache.msk },
+        derivedAt: Date.now(),
+      })
+      await discardIncompatiblePasskeyState(rpId)
+      expect(getActiveStorageId()).toBe(cache.storageId)
+      expect(readCachedMsk()).toEqual(cache)
+      expect(readHandoffMaterial()?.rpId).toBe(rpId)
+    },
+  )
+
+  it.each([null, [], { bad: null }])("allows onboarding with malformed identity entries %s", async (entries) => {
+    localStorage.setItem("obsidion.obsidion_web_passkey_identity_map", JSON.stringify({ version: 1, entries }))
+    await expect(discardIncompatiblePasskeyState("auth.zk.money")).resolves.toBeUndefined()
+    expect(getActiveStorageId()).toBeNull()
+  })
+
+  it("drops an orphaned key without an active session", async () => {
+    writeCachedMsk(cache)
+    await discardIncompatiblePasskeyState("auth.zk.money")
+    expect(readCachedMsk()).toBeNull()
+  })
+
+  it("drops a different session's key while preserving the valid active session", async () => {
+    await map("auth.zk.money").upsert(entry)
+    setActiveStorageId(cache.storageId)
+    setActiveCredentialId(entry.credentialId)
+    writeCachedMsk({ ...cache, credentialId: "stale" })
+    await discardIncompatiblePasskeyState("auth.zk.money")
+    expect(getActiveCredentialId()).toBe(entry.credentialId)
+    expect(readCachedMsk()).toBeNull()
+  })
+})

@@ -1,0 +1,93 @@
+{
+  "scenario": "activity",
+  "steps": [
+    {
+      "action": "fill",
+      "placeholder": "Enter or paste address",
+      "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "fill",
+      "label": "Wallet name (optional)",
+      "value": "Weekend savings wallet"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Continue",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input"
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "24"
+    },
+    {
+      "action": "screenshot",
+      "file": "amount.png",
+      "state": "amount"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Withdraw funds",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review.png",
+      "state": "review"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm withdrawal",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "role": "alertdialog"
+    },
+    {
+      "action": "screenshot",
+      "file": "failure.png",
+      "state": "failure"
+    },
+    {
+      "action": "press",
+      "selector": "[role=\"alertdialog\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm withdrawal",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1300
+    },
+    {
+      "action": "screenshot",
+      "file": "retry-signing.png",
+      "state": "retry signing"
+    },
+    {
+      "action": "wait",
+      "ms": 5500
+    },
+    {
+      "action": "screenshot",
+      "file": "retry-result.png",
+      "state": "retry result"
+    }
+  ],
+  "finalScreenshot": false,
+  "path": "/withdraw?flowFixture=retry",
+  "recordHoldMs": 0
+}

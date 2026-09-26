@@ -1,0 +1,27 @@
+/* RainbowKit disables the wallet row it is fetching a WalletConnect URI for and leaves the modal
+   on the list until the QR is ready — seconds on a cold relay, with no sign anything happened. */
+[data-rk] button[data-testid^="rk-wallet-option-"]:disabled::after {
+  content: "";
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  margin-top: -8px;
+  border: 2px solid var(--border-hairline);
+  border-top-color: var(--purple-500);
+  border-radius: 50%;
+  animation: rk-wallet-option-busy 0.7s linear infinite;
+}
+
+@keyframes rk-wallet-option-busy {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-rk] button[data-testid^="rk-wallet-option-"]:disabled::after {
+    animation: none;
+  }
+}

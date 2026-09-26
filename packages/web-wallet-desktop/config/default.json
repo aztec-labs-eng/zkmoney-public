@@ -1,0 +1,16 @@
+{
+  "hostname": "localhost",
+  "passkeyRpId": "localhost",
+  "localPort": 5173,
+  "startPath": "/",
+  "windowMode": "app",
+  "includeTestTypeFlag": true,
+  "profileDirectoryName": "Chrome Profile",
+  "certificateDays": 3650,
+  "spaFallback": true,
+  "contentSecurityPolicy": null,
+  "proxies": {
+    "/svc/account": "http://localhost:5060",
+    "/svc/enclave": "http://localhost:5071"
+  }
+}

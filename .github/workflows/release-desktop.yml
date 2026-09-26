@@ -1,0 +1,280 @@
+name: Release desktop wallet
+
+# Builds the zk.money Desktop installers for mainnet and attaches them to a draft GitHub release.
+#
+# Trigger: push a tag `desktop-vX.Y.Z`. The part after `desktop-v` is the installer version. A tag with
+# a hyphen (`desktop-v1.2.3-rc1`) drafts a pre-release. workflow_dispatch builds the installers as run
+# artifacts and creates no release. A human publishes the draft.
+#
+# Mainnet build values come from packages/web-wallet-desktop/config/mainnet.env.example. The
+# `production` environment supplies the endpoints as secrets:
+#   WEB_WALLET_NODE_URL, WEB_WALLET_L1_RPC_URL (required), WEB_WALLET_NODE_API_KEY (optional).
+# The build bakes them into the bundle, so every installer carries them in plain text.
+#
+# Signing is optional and all-or-nothing per platform:
+#   macOS: DESKTOP_MAC_CSC_LINK + DESKTOP_MAC_CSC_KEY_PASSWORD sign; DESKTOP_APPLE_ID +
+#          DESKTOP_APPLE_APP_SPECIFIC_PASSWORD + DESKTOP_APPLE_TEAM_ID also notarize.
+#   Windows: the six DESKTOP_WIN_AZURE_* secrets sign through Azure Trusted Signing.
+#   Linux: no signing; the release carries SHA256SUMS.
+
+on:
+  push:
+    tags: ["desktop-v*"]
+  workflow_dispatch:
+
+env:
+  AZTEC_VERSION: 5.2.0
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bundle:
+    environment: production
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Check endpoint secrets
+        env:
+          NODE_URL_SET: ${{ secrets.WEB_WALLET_NODE_URL != '' }}
+          L1_RPC_SET: ${{ secrets.WEB_WALLET_L1_RPC_URL != '' }}
+        run: |
+          [ "$NODE_URL_SET" = true ] || { echo "::error::secret WEB_WALLET_NODE_URL is unset"; exit 1; }
+          [ "$L1_RPC_SET" = true ] || { echo "::error::secret WEB_WALLET_L1_RPC_URL is unset"; exit 1; }
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - run: corepack enable
+
+      - uses: pnpm/action-setup@v4
+
+      - name: Get pnpm store directory
+        run: echo "STORE_PATH=$(pnpm store path --silent)" >> "$GITHUB_ENV"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: pnpm-store-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Cache Aztec installation
+        id: cache-aztec
+        uses: actions/cache@v4
+        with:
+          path: ~/.aztec
+          key: aztec-installation-${{ env.AZTEC_VERSION }}
+
+      - name: Install Aztec
+        if: steps.cache-aztec.outputs.cache-hit != 'true'
+        run: VERSION=${{ env.AZTEC_VERSION }} bash -i <(curl -sL https://install.aztec.network/${{ env.AZTEC_VERSION }})
+
+      - name: Add Aztec binaries to PATH
+        run: |
+          {
+            echo "$HOME/.aztec/bin"
+            echo "$HOME/.aztec/current/bin"
+            echo "$HOME/.aztec/current/node_modules/.bin"
+            echo "$HOME/.aztec/current/internal-bin"
+          } >> "$GITHUB_PATH"
+
+      - run: pnpm build-contracts
+
+      - run: pnpm build:web-deps
+
+      - name: Build wallet bundle
+        env:
+          ENV_FILE: ${{ github.workspace }}/packages/web-wallet-desktop/config/mainnet.env.example
+          SKIP_MONOREPO_BUILD: "1"
+          VITE_NODE_URL: ${{ secrets.WEB_WALLET_NODE_URL }}
+          VITE_NODE_API_KEY: ${{ secrets.WEB_WALLET_NODE_API_KEY }}
+          VITE_L1_RPC_URL: ${{ secrets.WEB_WALLET_L1_RPC_URL }}
+        run: |
+          ./packages/web-wallet-desktop/scripts/build-web.sh
+          node scripts/passkeys/assert-target.mjs packages/web-wallet-desktop/web production --live
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-web-bundle
+          path: |
+            packages/web-wallet-desktop/web
+            packages/web-wallet-desktop/build-meta.json
+          retention-days: 7
+          if-no-files-found: error
+
+  installers:
+    needs: bundle
+    environment: production
+    # Explicit architectures keep the asset names stable across runner images.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            eb_args: --mac dmg zip --arm64 --x64
+          - os: windows-latest
+            eb_args: --win nsis --x64
+          - os: ubuntu-latest
+            eb_args: --linux AppImage --x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+        working-directory: packages/web-wallet-desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # --workspaces=false: the root package.json declares npm workspaces over packages/*.
+      - run: npm ci --workspaces=false
+
+      - run: npm run check && npm test
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-web-bundle
+          path: packages/web-wallet-desktop
+
+      - run: node scripts/compose-config.js
+
+      - name: Build installers
+        env:
+          CSC_LINK: ${{ secrets.DESKTOP_MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.DESKTOP_MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.DESKTOP_APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.DESKTOP_APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.DESKTOP_APPLE_TEAM_ID }}
+          DESKTOP_WIN_AZURE_TENANT_ID: ${{ secrets.DESKTOP_WIN_AZURE_TENANT_ID }}
+          DESKTOP_WIN_AZURE_CLIENT_ID: ${{ secrets.DESKTOP_WIN_AZURE_CLIENT_ID }}
+          DESKTOP_WIN_AZURE_CLIENT_SECRET: ${{ secrets.DESKTOP_WIN_AZURE_CLIENT_SECRET }}
+          DESKTOP_WIN_AZURE_ENDPOINT: ${{ secrets.DESKTOP_WIN_AZURE_ENDPOINT }}
+          DESKTOP_WIN_AZURE_CODE_SIGNING_ACCOUNT: ${{ secrets.DESKTOP_WIN_AZURE_CODE_SIGNING_ACCOUNT }}
+          DESKTOP_WIN_AZURE_CERT_PROFILE: ${{ secrets.DESKTOP_WIN_AZURE_CERT_PROFILE }}
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#desktop-v}"
+          else
+            VERSION="$(node -p "require('./package.json').version")-$(git rev-parse --short HEAD)"
+          fi
+          echo "installer version: $VERSION"
+          EB_ARGS=(${{ matrix.eb_args }} --publish never -c.extraMetadata.version="$VERSION")
+
+          # Echoes "none", "all", or the names still unset. A partial set fails the build, so a
+          # missing value never turns into a silent unsigned release.
+          credential_state() {
+            local unset_names=() populated=0 name
+            for name in "$@"; do
+              if [[ -n "${!name}" ]]; then populated=$((populated + 1)); else unset_names+=("$name"); fi
+            done
+            if (( populated == 0 )); then echo none
+            elif (( ${#unset_names[@]} == 0 )); then echo all
+            else echo "${unset_names[*]}"
+            fi
+          }
+
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            CERT_STATE="$(credential_state CSC_LINK CSC_KEY_PASSWORD)"
+            NOTARY_STATE="$(credential_state APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID)"
+            for state in "$CERT_STATE" "$NOTARY_STATE"; do
+              if [[ "$state" != none && "$state" != all ]]; then
+                echo "::error::partial macOS signing config — unset: $state"
+                exit 1
+              fi
+            done
+            if [[ "$CERT_STATE" == none && "$NOTARY_STATE" == all ]]; then
+              echo "::error::notarization needs a signed build — set DESKTOP_MAC_CSC_LINK and DESKTOP_MAC_CSC_KEY_PASSWORD"
+              exit 1
+            fi
+            if [[ "$CERT_STATE" == none ]]; then
+              export CSC_IDENTITY_AUTO_DISCOVERY=false
+              echo "macOS: unsigned"
+            elif [[ "$NOTARY_STATE" == all ]]; then
+              EB_ARGS+=(-c.mac.notarize=true)
+              echo "macOS: signed and notarized"
+            else
+              echo "macOS: signed, not notarized"
+            fi
+          fi
+
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            AZURE_STATE="$(credential_state DESKTOP_WIN_AZURE_TENANT_ID DESKTOP_WIN_AZURE_CLIENT_ID \
+              DESKTOP_WIN_AZURE_CLIENT_SECRET DESKTOP_WIN_AZURE_ENDPOINT \
+              DESKTOP_WIN_AZURE_CODE_SIGNING_ACCOUNT DESKTOP_WIN_AZURE_CERT_PROFILE)"
+            if [[ "$AZURE_STATE" == all ]]; then
+              export AZURE_TENANT_ID="$DESKTOP_WIN_AZURE_TENANT_ID"
+              export AZURE_CLIENT_ID="$DESKTOP_WIN_AZURE_CLIENT_ID"
+              export AZURE_CLIENT_SECRET="$DESKTOP_WIN_AZURE_CLIENT_SECRET"
+              EB_ARGS+=(
+                -c.win.azureSignOptions.endpoint="$DESKTOP_WIN_AZURE_ENDPOINT"
+                -c.win.azureSignOptions.codeSigningAccountName="$DESKTOP_WIN_AZURE_CODE_SIGNING_ACCOUNT"
+                -c.win.azureSignOptions.certificateProfileName="$DESKTOP_WIN_AZURE_CERT_PROFILE"
+              )
+              echo "Windows: signed"
+            elif [[ "$AZURE_STATE" == none ]]; then
+              echo "Windows: unsigned"
+            else
+              echo "::error::partial Azure Trusted Signing config — unset: $AZURE_STATE"
+              exit 1
+            fi
+          fi
+
+          npx electron-builder "${EB_ARGS[@]}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          path: |
+            packages/web-wallet-desktop/dist/*.dmg
+            packages/web-wallet-desktop/dist/*.zip
+            packages/web-wallet-desktop/dist/*.exe
+            packages/web-wallet-desktop/dist/*.AppImage
+            packages/web-wallet-desktop/dist/*.blockmap
+            packages/web-wallet-desktop/dist/latest*.yml
+          if-no-files-found: error
+
+  release:
+    needs: installers
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: installers-*
+          merge-multiple: true
+          path: release-assets
+
+      - name: Generate checksums
+        run: (cd release-assets && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+
+      # The installer names carry no version, so `releases/latest/download/<asset>` resolves to the
+      # newest published full release. Pre-releases stay out of `latest`.
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          PRERELEASE_FLAG=()
+          [[ "${TAG#desktop-v}" != *-* ]] || PRERELEASE_FLAG=(--prerelease)
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" "${PRERELEASE_FLAG[@]}" \
+              --notes "zk.money Desktop installers for macOS (dmg, zip), Windows (nsis) and Linux (AppImage), with SHA256SUMS. An unsigned macOS build opens with right-click → Open on first launch."
+          gh release upload "$TAG" release-assets/* --clobber

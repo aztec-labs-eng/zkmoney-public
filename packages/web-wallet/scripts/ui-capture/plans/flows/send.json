@@ -1,0 +1,81 @@
+{
+  "scenario": "activity",
+  "path": "/contacts/ada/send?flowFixture=success",
+  "ready": {
+    "label": "Amount"
+  },
+  "steps": [
+    {
+      "action": "fill",
+      "label": "Amount",
+      "value": "24"
+    },
+    {
+      "action": "fill",
+      "label": "Add note (optional)",
+      "value": "Dinner and groceries for the weekend, including the train tickets home."
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Send funds",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review.png",
+      "state": "Send confirmation"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm & send",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1300
+    },
+    {
+      "action": "screenshot",
+      "file": "signing.png",
+      "state": "Simulated signing"
+    },
+    {
+      "action": "wait",
+      "ms": 2000
+    },
+    {
+      "action": "screenshot",
+      "file": "handed-off.png",
+      "state": "Handed off to the bell after simulated signing"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Notifications, keep this tab open",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "panel-running.png",
+      "state": "The running transaction under the bell"
+    },
+    {
+      "action": "press",
+      "selector": "[role=\"dialog\"][aria-label=\"Notifications\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "wait",
+      "ms": 3500
+    },
+    {
+      "action": "screenshot",
+      "file": "notifications-result.png",
+      "state": "Simulated service result"
+    }
+  ],
+  "finalScreenshot": false,
+  "recordHoldMs": 0
+}

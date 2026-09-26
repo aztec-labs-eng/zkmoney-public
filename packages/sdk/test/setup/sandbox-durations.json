@@ -1,0 +1,22 @@
+{
+  "test/paylink/email/failures.sandbox.test.ts": 328,
+  "test/paylink/email/l1-claim.sandbox.test.ts": 239,
+  "test/token/token.sandbox.test.ts": 182,
+  "test/paylink/email/happy-path-zk.sandbox.test.ts": 168,
+  "test/paylink/direct/l1-claim.sandbox.test.ts": 166,
+  "test/paylink/direct/happy-path.sandbox.test.ts": 150,
+  "test/alpha_account/alpha_account.sandbox.test.ts": 114,
+  "test/paylink/recovery.sandbox.test.ts": 108,
+  "test/paylink/direct/derivation.sandbox.test.ts": 86,
+  "test/alpha_account/alpha_paylink_deposit.sandbox.test.ts": 84,
+  "test/token/tokenEvent.sandbox.test.ts": 76,
+  "test/paylink/golden-ticket.sandbox.test.ts": 69,
+  "test/token/tokenBridge.sandbox.test.ts": 67,
+  "test/handshake/pureSyncDiscovery.sandbox.test.ts": 66,
+  "test/paylink/direct/cold-claim.sandbox.test.ts": 64,
+  "test/paylink/direct/escrow-tag-secret.sandbox.test.ts": 58,
+  "test/oidcKeyRegistry/oidcKeyRegistry.sandbox.test.ts": 42,
+  "test/alpha_account/productionKeyBinding.sandbox.test.ts": 23,
+  "test/alpha_account/entrypoint-chain-binding.sandbox.test.ts": 7,
+  "test/alpha_account/alphaKeyCommitment.sandbox.test.ts": 2
+}

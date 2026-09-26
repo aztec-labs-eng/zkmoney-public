@@ -1,0 +1,23 @@
+{
+  "scenario": "activity",
+  "bootstrap": "/link?demo=activity&flowFixture=success&flowEntry=visitor",
+  "ready": { "role": "dialog", "name": "Claim your payment", "exact": true },
+  "steps": [
+    { "action": "screenshot", "file": "claim-prompt.png", "state": "wallet claim prompt after real signed-in visitor redirect" },
+    { "action": "click", "role": "button", "name": "Accept", "exact": true },
+    { "action": "waitFor", "role": "dialog", "name": "Claiming payment", "exact": true },
+    { "action": "screenshot", "file": "claim-started.png", "state": "busy claim sheet with simulated service preparation" },
+    { "action": "waitFor", "role": "dialog", "name": "Claiming payment", "exact": true, "state": "hidden" },
+    { "action": "screenshot", "file": "claim-background.png", "state": "claim handed off to the bell after simulated successful signing" },
+    { "action": "click", "role": "button", "name": "Notifications", "exact": true },
+    { "action": "waitFor", "selector": ".ww-notifications__item:has(.ww-notifications__title:text-is(\"Received\"))" },
+    { "action": "reachable", "selector": ".ww-notifications__item:has(.ww-notifications__title:text-is(\"Received\")) .ww-notifications__row" },
+    { "action": "screenshot", "file": "claim-result.png", "state": "Received notification from a simulated claim result" },
+    { "action": "click", "selector": ".ww-notifications__item:has(.ww-notifications__title:text-is(\"Received\")) .ww-notifications__row" },
+    { "action": "waitFor", "selector": ".ww-txd .ww-txd__hash" },
+    { "action": "reachable", "selector": ".ww-txd .ww-txd__hash" },
+    { "action": "screenshot", "file": "claim-detail.png", "state": "real notification navigation to the simulated claim transaction detail" }
+  ],
+  "finalScreenshot": false,
+  "recordHoldMs": 0
+}

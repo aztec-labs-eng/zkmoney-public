@@ -1,0 +1,37 @@
+{
+  "scenario": "onboarding",
+  "bootstrap": "/request?demo=onboarding&flowFixture=success&flowEntry=request-small",
+  "ready": {
+    "selector": ".ww-invite"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Pay with an external wallet",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "external-wallet.png",
+      "state": "External wallet request for0.5DAI"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Show",
+      "exact": true
+    },
+    {
+      "action": "reachable",
+      "text": "The fee exceeds what was requested.",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "fee-warning.png",
+      "state": "Fee exceeds the requested0.5DAI"
+    }
+  ],
+  "finalScreenshot": false
+}

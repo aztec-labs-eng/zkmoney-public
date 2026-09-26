@@ -1,0 +1,266 @@
+// @vitest-environment node
+import { Network } from "@obsidion/sdk"
+import { DEFAULT_FPC_REFUEL_THRESHOLD, MAINNET_CLAIM_FPC_FLOAT } from "@obsidion/core/constants"
+import { describe, expect, it } from "vitest"
+import { assertCampaignEnv, campaignOriginFrom } from "../src/config/campaignOrigin"
+import { getConfig, loadConfig } from "../src/config/env"
+
+describe("getConfig", () => {
+  it("throws before a profile boot has seeded it", () => {
+    // Nothing in this file runs resolveBootConfig, so the module-level cache is unseeded here.
+    expect(() => getConfig()).toThrow(/before resolveBootConfig/)
+  })
+})
+
+const sandboxEnv = {}
+const testnetEnv = { VITE_NETWORK: "testnet" }
+
+// Production deployment with a mainnet chain.
+const mainnetEnv = {
+  VITE_NETWORK: "mainnet",
+  VITE_NODE_URL: "https://node.example",
+  VITE_L1_RPC_URL: "https://l1.example",
+  VITE_PASSKEY_ENVIRONMENT: "production",
+}
+
+describe("loadConfig", () => {
+  it("defaults to sandbox with the local stack", () => {
+    const config = loadConfig(sandboxEnv)
+    expect(config.network).toBe(Network.SANDBOX)
+    expect(config.nodeUrl).toBe("http://localhost:8080")
+    expect(config.l1ChainId).toBe(31337)
+    expect(config.l1Chain.id).toBe(31337)
+  })
+
+  it("rejects an unknown network", () => {
+    expect(() => loadConfig({ VITE_NETWORK: "stagenet" })).toThrow(/Unknown VITE_NETWORK/)
+  })
+
+  describe("enclaveUrl", () => {
+    it("dials the manifest's enclaveUrl off sandbox, and proxies on sandbox", () => {
+      // Empty = "use the manifest's own enclaveUrl" — the URL attestation binds to portal/pcr0.
+      expect(loadConfig(testnetEnv).enclaveUrl).toBe("")
+      // Sandbox's mock TEE serves no CORS, so it has to stay same-origin.
+      expect(loadConfig(sandboxEnv).enclaveUrl).toBe("/svc/enclave")
+    })
+
+    it("honors an explicit proxy override for a CORS-free tier", () => {
+      expect(loadConfig({ ...testnetEnv, VITE_ENCLAVE_URL: "/svc/enclave" }).enclaveUrl).toBe(
+        "/svc/enclave",
+      )
+    })
+
+    it("takes an injected endpoint ahead of the baked value", () => {
+      // The desktop launcher retargets a packaged build this way when it proxies no enclave.
+      expect(
+        loadConfig(
+          { ...testnetEnv, VITE_ENCLAVE_URL: "/svc/enclave" },
+          {
+            enclaveUrl: "https://enclave.example/rpc",
+          },
+        ).enclaveUrl,
+      ).toBe("https://enclave.example/rpc")
+    })
+  })
+
+  describe("the campaign and its admission gate", () => {
+    it("no campaign: gate off", () => {
+      const config = loadConfig(testnetEnv)
+      expect(config.campaignUrl).toBe("")
+      expect(config.admissionGate).toBe(false)
+    })
+
+    it("a campaign URL arms nothing by itself", () => {
+      const config = loadConfig({
+        ...testnetEnv,
+        VITE_CAMPAIGN_URL: "https://launch.staging.zk.money/some/path/",
+      })
+      expect(config.campaignUrl).toBe("https://launch.staging.zk.money/some/path/")
+      expect(config.admissionGate).toBe(false)
+    })
+
+    it("the flag arms nothing: entry asks no waitlist even with a campaign", () => {
+      expect(
+        loadConfig({
+          ...testnetEnv,
+          VITE_CAMPAIGN_URL: "https://launch.staging.zk.money",
+          VITE_ADMISSION_GATE: "true",
+        }).admissionGate,
+      ).toBe(false)
+      expect(
+        loadConfig({ VITE_CAMPAIGN_URL: "http://localhost:3000", VITE_ADMISSION_GATE: "true" })
+          .admissionGate,
+      ).toBe(false)
+    })
+
+    it("a plain-http campaign refuses to load", () => {
+      expect(() =>
+        loadConfig({ ...testnetEnv, VITE_CAMPAIGN_URL: "http://launch.staging.zk.money" }),
+      ).toThrow(/https/)
+    })
+
+    it("only an https campaign, or a local one, is an origin the bridge may trust", () => {
+      expect(campaignOriginFrom(undefined)).toBe("")
+      expect(campaignOriginFrom("https://launch.staging.zk.money/path/")).toBe(
+        "https://launch.staging.zk.money",
+      )
+      expect(campaignOriginFrom("http://localhost:3000/")).toBe("http://localhost:3000")
+      for (const bad of [
+        "http://launch.staging.zk.money",
+        "http://127.0.0.1:3000",
+        "data:text/html,hi",
+        "file:///tmp/x.html",
+        "about:blank",
+      ]) {
+        expect(() => campaignOriginFrom(bad), bad).toThrow(/https/)
+      }
+      expect(() => campaignOriginFrom("launch.staging.zk.money")).toThrow(/not a URL/)
+      expect(() => assertCampaignEnv({ VITE_CAMPAIGN_URL: "http://evil.example" })).toThrow(/https/)
+    })
+  })
+
+  describe("fpcRefuelThreshold", () => {
+    const screenedMainnet = {
+      ...mainnetEnv,
+      VITE_PREDICATE_VERIFICATION_HASH: "x-managed-policy-abc",
+      VITE_PREDICATE_CHAIN: "ethereum-mainnet",
+    }
+
+    it("refuels below the mainnet float on mainnet, and the default elsewhere", () => {
+      expect(loadConfig(screenedMainnet).fpcRefuelThreshold).toBe(MAINNET_CLAIM_FPC_FLOAT)
+      expect(loadConfig(testnetEnv).fpcRefuelThreshold).toBe(DEFAULT_FPC_REFUEL_THRESHOLD)
+    })
+
+    it("honors an explicit threshold in whole FJ", () => {
+      expect(loadConfig({ ...screenedMainnet, VITE_FPC_REFUEL_THRESHOLD: "5" }).fpcRefuelThreshold).toBe(
+        5n * 10n ** 18n,
+      )
+    })
+  })
+
+  describe("accountServiceTestMode fails closed", () => {
+    it("defaults ON only for sandbox", () => {
+      expect(loadConfig(sandboxEnv).accountServiceTestMode).toBe(true)
+      expect(loadConfig(testnetEnv).accountServiceTestMode).toBe(false)
+    })
+
+    it("honors an explicit flag on sandbox/testnet", () => {
+      expect(
+        loadConfig({ ...sandboxEnv, VITE_ACCOUNT_SERVICE_TEST_MODE: "false" })
+          .accountServiceTestMode,
+      ).toBe(false)
+      expect(
+        loadConfig({ ...testnetEnv, VITE_ACCOUNT_SERVICE_TEST_MODE: "true" })
+          .accountServiceTestMode,
+      ).toBe(true)
+    })
+
+    it("refuses the bypass on mainnet", () => {
+      expect(() => loadConfig({ ...mainnetEnv, VITE_ACCOUNT_SERVICE_TEST_MODE: "true" })).toThrow(
+        /not valid on mainnet/,
+      )
+    })
+  })
+
+  describe("mainnet fails closed on missing pointers", () => {
+    const screened = {
+      VITE_PREDICATE_VERIFICATION_HASH: "x-managed-policy-abc",
+      VITE_PREDICATE_CHAIN: "ethereum-mainnet",
+    }
+
+    it("selects the RP by deployment even when the chain changes", () => {
+      expect(loadConfig({ ...mainnetEnv, ...screened }).rpId).toBe("auth.zk.money")
+      expect(loadConfig({ ...mainnetEnv, ...screened, VITE_NETWORK: "testnet" }).rpId).toBe("auth.zk.money")
+      expect(loadConfig({ VITE_NETWORK: "mainnet", ...screened }).rpId).toBe("localhost")
+    })
+
+    it("defaults xmtpEnv to production on mainnet, dev elsewhere", () => {
+      expect(loadConfig({ ...mainnetEnv, ...screened }).xmtpEnv).toBe("production")
+      expect(loadConfig(testnetEnv).xmtpEnv).toBe("dev")
+    })
+  })
+
+  describe("predicate screening config", () => {
+    const complete = {
+      VITE_PREDICATE_API_KEY: "key",
+      VITE_PREDICATE_VERIFICATION_HASH: "x-managed-policy-abc",
+      VITE_PREDICATE_CHAIN: "ethereum-sepolia",
+    }
+
+    it("is off when unset", () => {
+      expect(loadConfig(sandboxEnv).predicate).toBeUndefined()
+      expect(loadConfig(testnetEnv).predicate).toBeUndefined()
+    })
+
+    it("parses the complete triple, defaulting baseUrl to the same-origin proxy", () => {
+      // Predicate serves no CORS — the default must be the /svc/predicate proxy, never direct.
+      expect(loadConfig({ ...testnetEnv, ...complete }).predicate).toEqual({
+        apiKey: "key",
+        verificationHash: "x-managed-policy-abc",
+        chain: "ethereum-sepolia",
+        baseUrl: "/svc/predicate",
+      })
+    })
+
+    it("honors the staging base URL", () => {
+      const config = loadConfig({
+        ...testnetEnv,
+        ...complete,
+        VITE_PREDICATE_BASE_URL: "https://staging.api.predicate.io",
+      })
+      expect(config.predicate?.baseUrl).toBe("https://staging.api.predicate.io")
+    })
+
+    it("VITE_PREDICATE_DISABLED=true turns screening off despite a complete config", () => {
+      expect(
+        loadConfig({ ...testnetEnv, ...complete, VITE_PREDICATE_DISABLED: "true" }).predicate,
+      ).toBeUndefined()
+    })
+
+    it("refuses the disable switch on mainnet", () => {
+      expect(() =>
+        loadConfig({ ...mainnetEnv, ...complete, VITE_PREDICATE_DISABLED: "true" }),
+      ).toThrow(/not valid on mainnet/)
+    })
+
+    it("rejects a partial credential pair", () => {
+      expect(() => loadConfig({ ...sandboxEnv, VITE_PREDICATE_API_KEY: "key" })).toThrow(
+        /Partial Predicate/,
+      )
+      expect(() =>
+        loadConfig({ ...sandboxEnv, ...complete, VITE_PREDICATE_CHAIN: undefined }),
+      ).toThrow(/Partial Predicate/)
+    })
+
+    it("chain/baseUrl alone (committed env file, credentials elsewhere) stay inert", () => {
+      const config = loadConfig({
+        ...testnetEnv,
+        VITE_PREDICATE_CHAIN: "ethereum-sepolia",
+        VITE_PREDICATE_BASE_URL: "https://staging.api.predicate.io",
+      })
+      expect(config.predicate).toBeUndefined()
+    })
+
+    it("arms key-less on hash+chain — the CDN's /svc proxy owns the key", () => {
+      const config = loadConfig({
+        ...testnetEnv,
+        VITE_PREDICATE_VERIFICATION_HASH: "x-managed-policy-abc",
+        VITE_PREDICATE_CHAIN: "ethereum-sepolia",
+      })
+      expect(config.predicate).toEqual({
+        apiKey: undefined,
+        verificationHash: "x-managed-policy-abc",
+        chain: "ethereum-sepolia",
+        baseUrl: "/svc/predicate",
+      })
+    })
+
+    it("mainnet refuses to build unscreened, with or without a client-side key", () => {
+      const mainnetEnv = { VITE_NETWORK: "mainnet", VITE_PASSKEY_ENVIRONMENT: "production" }
+      expect(() => loadConfig(mainnetEnv)).toThrow(/requires L1 address screening/)
+      expect(loadConfig({ ...mainnetEnv, ...complete }).predicate).toBeDefined()
+      const { VITE_PREDICATE_API_KEY: _key, ...keyless } = complete
+      expect(loadConfig({ ...mainnetEnv, ...keyless }).predicate).toBeDefined()
+    })
+  })
+})

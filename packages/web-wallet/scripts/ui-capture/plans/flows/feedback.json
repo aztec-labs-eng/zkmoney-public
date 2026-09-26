@@ -1,0 +1,74 @@
+{
+  "scenario": "activity",
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Report a bug",
+      "exact": true
+    },
+    {
+      "action": "fill",
+      "label": "Describe the bug",
+      "value": "The balance did not update after reopening the wallet. The pending transfer is still visible."
+    },
+    {
+      "action": "screenshot",
+      "file": "form.png",
+      "state": "form"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Submit",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 300
+    },
+    {
+      "action": "screenshot",
+      "file": "sending.png",
+      "state": "sending"
+    },
+    {
+      "action": "wait",
+      "ms": 1600
+    },
+    {
+      "action": "screenshot",
+      "file": "failed.png",
+      "state": "failed"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Submit",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1700
+    },
+    {
+      "action": "screenshot",
+      "file": "sent.png",
+      "state": "sent"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Done",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "settings-return.png",
+      "state": "settings return"
+    }
+  ],
+  "finalScreenshot": false,
+  "path": "/settings?flowFixture=retry",
+  "recordHoldMs": 0
+}

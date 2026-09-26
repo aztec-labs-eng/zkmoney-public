@@ -1,0 +1,26 @@
+{
+  "scenario": "empty",
+  "path": "/",
+  "ready": {
+    "testId": "wallet-balance"
+  },
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "empty.png",
+      "state": "Zero-balance Home with empty feed"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Deposit funds",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "deposit-prompt.png",
+      "state": "Empty-wallet deposit prompt reached by scrolling"
+    }
+  ],
+  "finalScreenshot": false
+}

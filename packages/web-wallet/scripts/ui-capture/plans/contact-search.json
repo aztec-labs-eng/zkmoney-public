@@ -1,0 +1,102 @@
+{
+  "scenario": "contact-search",
+  "path": "/contacts",
+  "ready": {
+    "selector": ".ww-panel"
+  },
+  "steps": [
+    {
+      "action": "fill",
+      "label": "Search @tag",
+      "value": "ada"
+    },
+    {
+      "action": "screenshot",
+      "file": "local.png",
+      "state": "Local contact result"
+    },
+    {
+      "action": "fill",
+      "label": "Search @tag",
+      "value": "slowfriend"
+    },
+    {
+      "action": "screenshot",
+      "file": "lookup.png",
+      "state": "Registry lookup pending"
+    },
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Add contact @slowfriend",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "resolved.png",
+      "state": "Resolved tag awaiting explicit Add"
+    },
+    {
+      "action": "fill",
+      "label": "Search @tag",
+      "value": "missing"
+    },
+    {
+      "action": "waitFor",
+      "text": "User not found",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "not-found.png",
+      "state": "No registered user found"
+    },
+    {
+      "action": "fill",
+      "label": "Search @tag",
+      "value": "retryfriend"
+    },
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Add contact @retryfriend",
+      "exact": true
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Add contact @retryfriend",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "verifying.png",
+      "state": "Fresh verification busy before persistence"
+    },
+    {
+      "action": "waitFor",
+      "role": "alert"
+    },
+    {
+      "action": "screenshot",
+      "file": "verification-error.png",
+      "state": "Fresh verification error with retryable Add"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Add contact @retryfriend",
+      "exact": true
+    },
+    {
+      "action": "waitForUrl",
+      "url": "**/contacts/retryfriend"
+    },
+    {
+      "action": "screenshot",
+      "file": "added.png",
+      "state": "Verified contact saved and opened"
+    }
+  ],
+  "finalScreenshot": false
+}

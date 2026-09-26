@@ -1,0 +1,9 @@
+# Scanner captures
+
+Run `pnpm ui:capture --plan scripts/ui-capture/plans/scan/reciprocal.json --preset all --port 5785 --browser-cache /path/to/browser-cache` from `packages/web-wallet`. The plan uses the existing local demo wallet and a controlled canvas camera. It opens Scan from the menu, switches to the real Share sheet, returns to Scan, then closes with no active camera tracks.
+
+The explicit `node --test scripts/ui-capture/test/scanner-app.test.mjs` suite checks both origins, native cancel, focus, unchanged history during toggles, the one-shot Contacts search seed, manual recovery, late permissions, phone breakpoints and launcher gating. It also sends real encoded connect, paylink and request packets through the actual dev worker into existing confirmation routes. The scanner fixture module only constructs packets and reads contacts. It does not confirm payments or add contacts. Set `PLAYWRIGHT_BROWSERS_PATH` to the installed Chromium cache. This suite also runs in `pnpm test:ui-capture`; the capture files run serially because they share Vite’s local optimizer cache. It uses `UI_CAPTURE_TEST_PORT` or port 5785 and writes to a fresh `/tmp/ult-785-scanner-app-*` directory.
+
+After `pnpm build`, run `node scripts/ui-capture/verify-scanner-production.mjs` with the same browser cache. It loads the exact emitted production App worker bytes and checks QR decoding under cross-origin isolation. The report records the worker hash. This proves worker emission and loading; the production wallet authentication flow is outside this helper.
+
+Related [flow plans](../flows/README.md) retain their service fixtures and confirmation checks. Browser fixtures cannot approve physical iOS/Android cameras, keyboard or toolbar behavior, scan latency or thermal behavior, deployed response headers, design review, or report publication.

@@ -1,0 +1,97 @@
+{
+  "scenario": "activity",
+  "steps": [
+    {
+      "action": "fill",
+      "placeholder": "Enter or paste address",
+      "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "fill",
+      "label": "Wallet name (optional)",
+      "value": "Weekend savings wallet"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Continue",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input"
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "24"
+    },
+    {
+      "action": "screenshot",
+      "file": "amount.png",
+      "state": "amount"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Withdraw funds",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review.png",
+      "state": "review"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm withdrawal",
+      "exact": true
+    },
+    {
+      "action": "wait",
+      "ms": 1300
+    },
+    {
+      "action": "screenshot",
+      "file": "signing.png",
+      "state": "signing"
+    },
+    {
+      "action": "wait",
+      "ms": 2000
+    },
+    {
+      "action": "screenshot",
+      "file": "handed-off.png",
+      "state": "Handed off to the bell after simulated signing"
+    },
+    {
+      "action": "wait",
+      "ms": 3500
+    },
+    {
+      "action": "screenshot",
+      "file": "notifications-result.png",
+      "state": "notifications result"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Notifications",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-notifications__item:has-text(\"could not be submitted\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "failed-notification.png",
+      "state": "failed notification"
+    }
+  ],
+  "finalScreenshot": false,
+  "path": "/withdraw?flowFixture=post-signing-failure",
+  "recordHoldMs": 0
+}

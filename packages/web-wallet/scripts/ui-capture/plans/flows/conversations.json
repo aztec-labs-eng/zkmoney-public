@@ -1,0 +1,145 @@
+{
+  "scenario": "activity",
+  "path": "/contacts/ada",
+  "ready": {
+    "selector": ".ww-chat__body"
+  },
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "conversation.png",
+      "state": "L2 conversation history"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Request details",
+      "exact": true,
+      "nth": 0
+    },
+    {
+      "action": "waitFor",
+      "role": "dialog",
+      "name": "Request",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "request-0.png",
+      "state": "seeded request detail 0"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-modal",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "request-0-bottom.png",
+      "state": "seeded request detail 0 final controls"
+    },
+    {
+      "action": "press",
+      "role": "dialog",
+      "name": "Request",
+      "exact": true,
+      "key": "Escape"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Request details",
+      "exact": true,
+      "nth": 1
+    },
+    {
+      "action": "waitFor",
+      "role": "dialog",
+      "name": "Request",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "request-1.png",
+      "state": "seeded request detail 1"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-modal",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "request-1-bottom.png",
+      "state": "seeded request detail 1 final controls"
+    },
+    {
+      "action": "press",
+      "role": "dialog",
+      "name": "Request",
+      "exact": true,
+      "key": "Escape"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Cancel",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "cancel-confirm.png",
+      "state": "cancel outgoing request confirmation"
+    },
+    {
+      "action": "press",
+      "role": "dialog",
+      "name": "Cancel request?",
+      "exact": true,
+      "key": "Escape"
+    },
+    {
+      "action": "reachable",
+      "selector": ".ww-chat__foot button",
+      "nth": 0
+    },
+    {
+      "action": "screenshot",
+      "file": "conversation-actions.png",
+      "state": "L2 send and request actions"
+    },
+    {
+      "action": "goto",
+      "path": "/contacts/0xf0de1000000000000000000000000000000fd0e1"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-chat__head"
+    },
+    {
+      "action": "reachable",
+      "selector": ".ww-chat__foot button",
+      "nth": 0
+    },
+    {
+      "action": "screenshot",
+      "file": "l1-actions.png",
+      "state": "L1 deposit and withdrawal actions"
+    },
+    {
+      "action": "click",
+      "selector": ".ww-chat__foot button",
+      "nth": 1
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-withdraw"
+    },
+    {
+      "action": "screenshot",
+      "file": "l1-withdraw-prefill.png",
+      "state": "L1 contact withdrawal prefill"
+    }
+  ],
+  "finalScreenshot": false
+}

@@ -1,0 +1,10 @@
+node_modules
+no-commit
+trash
+.env
+coverage
+tsconfig.tsbuildinfo
+codegenCache.json
+pxe-*
+.bak
+test-results/

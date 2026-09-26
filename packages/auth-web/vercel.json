@@ -1,0 +1,8 @@
+{
+  "headers": [
+    {
+      "source": "/.well-known/webauthn",
+      "headers": [{ "key": "Content-Type", "value": "application/json" }]
+    }
+  ]
+}

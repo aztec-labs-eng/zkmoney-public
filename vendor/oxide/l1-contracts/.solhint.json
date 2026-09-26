@@ -1,0 +1,8 @@
+{
+  "plugins": ["oxide"],
+  "rules": {
+    "oxide/no-comments": "error",
+    "oxide/no-set-env": "error",
+    "oxide/env-reads-in-oxide-script": "error"
+  }
+}

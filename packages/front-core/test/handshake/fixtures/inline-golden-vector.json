@@ -1,0 +1,14 @@
+{
+  "_comment": "Wire-format drift guard for the serverless QR handshake inline CBOR codec. Read by BOTH the front-core golden test and the xmtp-bot mirror test. If a code change alters the encoding, regenerate intentionally (it is a wire-format change that breaks app<->bot interop) — do not silently bless a diff.",
+  "packet": {
+    "version": "1.0:testnet",
+    "kind": "handshake",
+    "xmtpHandle": "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed",
+    "uuid": "01234567-89ab-4def-8123-456789abcdef",
+    "stealthAddress": "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359",
+    "l2Address": "0x0c1d2e3f405162738495a6b7c8d9eafb0c1d2e3f405162738495a6b7c8d9eafb",
+    "time": 1750000000000,
+    "tag": "alice"
+  },
+  "encoded": "2QEDqQEBAgEDAATYQFRarrYFPz6UybmgnzNmlDXn7xvq7QXYQFABI0VniatN74EjRWeJq83vBthAVPtpFglcod9gu3nOks4-p0w3xdNZB9hAWCAMHS4_QFFic4SVprfI2er7DB0uP0BRYnOElaa3yNnq-wj7Qnl3Qg3AAAAJZWFsaWNl"
+}

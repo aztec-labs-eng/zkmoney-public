@@ -1,0 +1,44 @@
+{
+  "name": "zkmoney-public",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "codegen": "scripts/codegen.sh",
+    "build-contracts": "scripts/build_contracts.sh",
+    "build:core": "pnpm --filter '@obsidion/core...' --filter '!@oxide/*' -r --if-present run build",
+    "build:contracts": "pnpm --filter '@obsidion/contracts...' --filter '!@oxide/*' -r --if-present run build",
+    "build:config-client": "pnpm --filter '@obsidion/config-client...' --filter '!@oxide/*' -r --if-present run build",
+    "build:passkey-web": "pnpm --filter '@obsidion/passkey-web...' --filter '!@oxide/*' -r --if-present run build",
+    "build:sdk": "pnpm --filter '@obsidion/sdk...' --filter '!@oxide/*' -r --if-present run build",
+    "build:front-core": "pnpm --filter '@obsidion/front-core...' --filter '!@oxide/*' -r --if-present run build",
+    "build:web-deps": "pnpm --filter '@obsidion/config-client...' --filter '@obsidion/front-core...' --filter '@obsidion/passkey-web...' --filter '@obsidion/web-ds...' --filter '!@oxide/*' -r --if-present run build",
+    "build:web-wallet": "pnpm --filter '@obsidion/web-wallet...' --filter '!@oxide/*' -r --if-present run build"
+  },
+  "engines": {
+    "node": ">=20.10.0"
+  },
+  "packageManager": "pnpm@9.14.4+sha512.c8180b3fbe4e4bca02c94234717896b5529740a6cbadf19fa78254270403ea2f27d4e1d46a08a0f56c89b63dc8ebfd3ee53326da720273794e6200fcf0d184ab",
+  "pnpm": {
+    "neverBuiltDependencies": [
+      "bcrypto"
+    ],
+    "peerDependencyRules": {
+      "allowedVersions": {
+        "viem": "npm:@aztec/viem@2.9.16"
+      }
+    },
+    "overrides": {
+      "react": "19.2.0",
+      "react-dom": "19.2.0",
+      "zod": "^4.4.3",
+      "qr": "0.5.5"
+    }
+  },
+  "devDependencies": {
+    "typescript": "5.7.3"
+  },
+  "license": "MIT"
+}

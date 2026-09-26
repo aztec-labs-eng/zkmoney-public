@@ -1,0 +1,216 @@
+/**
+ * The web side of front-core's `OperationStore`: every user-started transaction runs through
+ * {@link runOperation}, and everything that says whether the tab may close reads the store.
+ */
+import { useSyncExternalStore } from "react"
+import { OperationStore, TxInFlightError, type OperationRecord } from "@obsidion/front-core"
+import { isPasskeyCancelled } from "@obsidion/passkey-web"
+import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { getActiveStorageId, onActiveStorageIdChange } from "../../platform/storage/activeStorage"
+import { createExternalState } from "../../lib/externalState"
+import { runUserFlow } from "../provingGate"
+import { flowCopy } from "./operationCopy"
+
+/** Named as the analytics `flow` prop, so events about an operation forward as they are. */
+export type OperationFlow =
+  | "send"
+  | "withdraw"
+  | "paylink-create"
+  | "paylink-claim"
+  | "paylink-claim-l1"
+  | "paylink-reclaim"
+  | "deposit"
+  | "request-link"
+  | "migration"
+  | "migration-arrival"
+
+/** The user stopped the flow before anything was sent: a closed passkey prompt, or a cancel. */
+export function isFlowCancelled(err: unknown): boolean {
+  return isPasskeyCancelled(err) || (err instanceof Error && err.message === "Cancelled")
+}
+
+export function getOperationStore(): OperationStore {
+  return OperationStore.get(webStorage)
+}
+
+export interface OperationInput {
+  operationId: string
+  flow: OperationFlow
+  summary: string
+  /** The operation this one runs inside. */
+  parent?: string
+}
+
+export interface OperationHandle {
+  operationId: string
+  /** Renames the operation once the flow has read what the summary names, e.g. a link's amount. */
+  describe(summary: string): void
+  /**
+   * The flow returns with its transaction sent but not yet included: the chain settles the record
+   * instead of the flow. Only `runBurn` returns this way; other flows throw `TxInFlightError`.
+   */
+  leaveToChain(txHash: string | undefined): void
+}
+
+/**
+ * Run `run` as one user operation, behind the single-flight gate: it is `local` until the flow's
+ * record holds the hash, and settles when `run` resolves. A failure before proving began, or a
+ * cancel, sent nothing, so the record goes. A `TxInFlightError` leaves it `sent` for the chain; any
+ * other failure is definite, and fails it even once sent.
+ */
+export function runOperation<T>(
+  input: OperationInput,
+  run: (op: OperationHandle) => Promise<T>,
+  txHashOf?: (result: T) => string | undefined,
+): Promise<T> {
+  return runUserFlow(async () => {
+    const store = getOperationStore()
+    const { operationId } = input
+    await store.begin({ ...input, scope: getActiveStorageId() })
+    // On chain but unsettled. A hash the flow's record failed to save still takes it to `sent`.
+    const toChain = async (txHash: string | undefined) => {
+      if (txHash && store.get(operationId)?.state === "local")
+        await store.markSent(operationId, txHash).catch(console.warn)
+    }
+    let inFlight: { txHash: string | undefined } | undefined
+    try {
+      const result = await run({
+        operationId,
+        describe: (summary) => void store.describe(operationId, summary).catch(console.warn),
+        leaveToChain: (txHash) => void (inFlight = { txHash }),
+      })
+      if (inFlight) await toChain(inFlight.txHash)
+      else await store.settle(operationId, txHashOf?.(result)).catch(console.warn)
+      return result
+    } catch (err) {
+      const record = store.get(operationId)
+      const message = err instanceof Error ? err.message : String(err)
+      if (err instanceof TxInFlightError) {
+        await toChain(err.txHash)
+      } else if (record?.state === "sent") {
+        // The flow saw the chain turn it down: its message is the specific one.
+        await store.fail(operationId, message).catch(console.warn)
+      } else if (record?.state === "local") {
+        // Nothing was lost before the proof began (a closed passkey prompt, a failed read): the
+        // flow's screen reports it, and the record goes.
+        if (isFlowCancelled(err) || record.provingStartedAt === undefined) {
+          await store.remove(operationId).catch(console.warn)
+        } else {
+          await store.fail(operationId, message).catch(console.warn)
+        }
+      }
+      throw err
+    } finally {
+      store.release(operationId)
+    }
+  })
+}
+
+/** This scope's operations that have not ended, newest first. */
+const inProgress = createExternalState<OperationRecord[]>([])
+/** This scope's ended operations the notifications panel still lists, newest first. */
+const endedShown = createExternalState<OperationRecord[]>([])
+/** The store has been read, so an empty list means none. */
+const operationsLoaded = createExternalState(false)
+/** The operations flows in this page run, in any scope. */
+const tabBound = createExternalState<OperationRecord | undefined>(undefined)
+let watching = false
+/** Which records a flow in this page owns, as of the last snapshot. */
+let liveKey = ""
+
+/** Keeps every snapshot current with the store, the live set and the active scope. */
+function watchOperations(): void {
+  if (watching) return
+  watching = true
+  const store = getOperationStore()
+  const refresh = () => {
+    const scope = getActiveStorageId()
+    const scoped = store.list().filter((r) => r.scope === scope)
+    const next = scoped.filter((r) => r.state === "local" || r.state === "sent")
+    const ended = scoped.filter((r) => r.endedAt !== undefined && r.dismissedAt === undefined)
+    if (JSON.stringify(ended) !== JSON.stringify(endedShown.get())) endedShown.set(ended)
+    const current = inProgress.get()
+    const live = next.map((r) => store.isLive(r.operationId)).join()
+    const same =
+      live === liveKey &&
+      next.length === current.length &&
+      next.every((r, i) => r === current[i] || JSON.stringify(r) === JSON.stringify(current[i]))
+    liveKey = live
+    if (!same) inProgress.set(next)
+    const bound = tabBoundOperation(store.list())
+    if (bound?.operationId !== tabBound.get()?.operationId) tabBound.set(bound)
+  }
+  store.onListChanged(refresh)
+  store.onLiveChanged(refresh)
+  onActiveStorageIdChange(refresh)
+  void store.load().then(() => {
+    refresh()
+    operationsLoaded.set(true)
+  })
+  refresh()
+}
+
+export function getOperationsInProgress(): OperationRecord[] {
+  watchOperations()
+  return inProgress.get()
+}
+
+export function useOperationsInProgress(): OperationRecord[] {
+  watchOperations()
+  return useSyncExternalStore(inProgress.subscribe, inProgress.get)
+}
+
+/** This scope's ended operations, not cleared from the notifications panel. */
+export function useEndedOperations(): { ended: OperationRecord[]; loaded: boolean } {
+  watchOperations()
+  const ended = useSyncExternalStore(endedShown.subscribe, endedShown.get)
+  const loaded = useSyncExternalStore(operationsLoaded.subscribe, operationsLoaded.get)
+  return { ended, loaded }
+}
+
+/**
+ * A `local` operation this page is running: closing, reloading or logging out would lose it. A
+ * `local` record no flow owns belongs to an earlier page and fails at boot.
+ */
+export function tabBoundOperation(records: OperationRecord[]): OperationRecord | undefined {
+  const store = getOperationStore()
+  return records.find((r) => r.state === "local" && store.isLive(r.operationId))
+}
+
+/** Whatever its scope: the page that runs it is this one. */
+export function getTabBoundOperation(): OperationRecord | undefined {
+  watchOperations()
+  return tabBound.get()
+}
+
+export function leavingLosesTransaction(): boolean {
+  return !!getTabBoundOperation()
+}
+
+export function useTabBoundOperation(): OperationRecord | undefined {
+  watchOperations()
+  return useSyncExternalStore(tabBound.subscribe, tabBound.get)
+}
+
+export function useLeavingLosesTransaction(): boolean {
+  return !!useTabBoundOperation()
+}
+
+/**
+ * The outermost operation a flow in this page runs: a live record with no parent, or whose parent
+ * no longer runs. A child such as a claim's deposit address shows under it.
+ */
+export function currentOperation(records: OperationRecord[]): OperationRecord | undefined {
+  const store = getOperationStore()
+  return records.find((r) => store.isLive(r.operationId) && (!r.parent || !store.isLive(r.parent)))
+}
+
+export function useCurrentOperation(): OperationRecord | undefined {
+  return currentOperation(useOperationsInProgress())
+}
+
+/** A transaction button's label while another transaction proves, named after it. */
+export function useBusyLabel(): string {
+  const current = useCurrentOperation()
+  return current ? flowCopy(current.flow).busy : "Another transaction in progress…"
+}

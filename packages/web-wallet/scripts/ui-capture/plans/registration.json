@@ -1,0 +1,12 @@
+{
+  "scenario": "onboarding",
+  "bootstrap": "/claim?demo=onboarding&mock=deposit&handle=demo",
+  "rejectingExtension": true,
+  "ready": { "selector": ".ww-reg-sheet__card" },
+  "steps": [
+    { "action": "screenshot", "file": "registration.png", "state": "Registration awaiting deposit: top of card" },
+    { "action": "scroll", "selector": ".ww-reg-sheet__card", "top": "end" },
+    { "action": "screenshot", "file": "registration-bottom.png", "state": "Registration awaiting deposit: scrolled to final controls" }
+  ],
+  "finalScreenshot": false
+}

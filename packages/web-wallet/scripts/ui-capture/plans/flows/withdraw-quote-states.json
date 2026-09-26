@@ -1,0 +1,154 @@
+{
+  "scenario": "activity",
+  "path": "/withdraw?flowFixture=success&quoteFixture=loading",
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Receive as",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "unavailable-asset-options.png",
+      "state": "asset options"
+    },
+    {
+      "action": "click",
+      "role": "option",
+      "name": "USDC",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "placeholder": "Enter or paste address",
+      "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "fill",
+      "label": "Wallet name (optional)",
+      "value": "Weekend savings wallet"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Continue",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input"
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "24"
+    },
+    {
+      "action": "screenshot",
+      "file": "unavailable-amount.png",
+      "state": "amount"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "quote-loading.png",
+      "state": "quote loading"
+    },
+    {
+      "action": "goto",
+      "path": "/withdraw?flowFixture=success&quoteFixture=unavailable"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-withdraw"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Receive as",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "15-unavailable-asset-options.png",
+      "state": "asset options"
+    },
+    {
+      "action": "click",
+      "role": "option",
+      "name": "USDC",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "placeholder": "Enter or paste address",
+      "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "fill",
+      "label": "Wallet name (optional)",
+      "value": "Weekend savings wallet"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Continue",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input"
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "24"
+    },
+    {
+      "action": "screenshot",
+      "file": "22-unavailable-amount.png",
+      "state": "amount"
+    },
+    {
+      "action": "wait",
+      "ms": 1500
+    },
+    {
+      "action": "screenshot",
+      "file": "quote-unavailable.png",
+      "state": "quote unavailable"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Withdraw funds",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review-without-estimate.png",
+      "state": "review without estimate"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Confirm withdrawal",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review-final-controls.png",
+      "state": "review final controls"
+    }
+  ],
+  "finalScreenshot": false,
+  "recordHoldMs": 0
+}

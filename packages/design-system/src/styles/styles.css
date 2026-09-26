@@ -1,0 +1,1179 @@
+/* ============================================================
+   zk.money / Obsidion — Web design system
+   Dark-only. Sen = all text (display and body tokens).
+   ============================================================ */
+
+:root {
+  /* ---- Brand ---- */
+  --purple-500: #a000ff; /* cardGradientStart / purpleAccent */
+  --purple-400: #ad33ff; /* Figma brand-primary-40 */
+  --blue-500: #0099ff; /* cardGradientEnd / cyanAccent */
+  --blue-400: #47b3ff; /* Figma brand-secondary-40 */
+
+  /* ---- Surfaces ---- */
+  --surface-canvas: #181818; /* AppTheme.background */
+  --surface-dark: #070707; /* AppTheme.surfaceDark — card/modal base, radial stop */
+  --surface-sheet: #212121; /* AppTheme.sheetSurface — bottom sheets */
+  --surface-card: rgba(255, 255, 255, 0.05); /* AppTheme.cardSurface — cards, row groups */
+  --surface-faint: rgba(255, 255, 255, 0.03); /* searchBar / sendFunds button bg */
+  --surface-strong: rgba(255, 255, 255, 0.2); /* tabBarActive / addFunds button bg */
+  --surface-pink: rgba(230, 101, 126, 0.1); /* AppTheme.pinkSurface — destructive fills */
+  --surface-track: #0f100f; /* progressTrackBackground / cardImagePlaceholder */
+
+  /* ---- Text ---- */
+  --text-primary: #fdfdfd; /* AppTheme.primaryText */
+  --text-secondary: #bfc2d7; /* AppTheme.secondaryText */
+  --text-tab-inactive: #c7cdea; /* AppTheme.inactiveTabText */
+
+  /* ---- Semantic accents ---- */
+  --accent-gold: #eed04e; /* warning / awaiting */
+  --accent-green: #56e79d; /* success / credit */
+  --accent-pink: #fe708b; /* destructive / error */
+  --accent-amber: #f5a524; /* tx-race: mined despite cancel */
+  --accent-bluegrey: #7aa8c7; /* tx-race: informational */
+
+  /* ---- Borders ---- */
+  --border-hairline: rgba(255, 255, 255, 0.08); /* AppTheme.divider */
+
+  /* ---- Gradients ---- */
+  --gradient-brand: linear-gradient(90deg, #a000ff 0%, #0099ff 100%); /* purpleCyanGradient */
+  --gradient-title: linear-gradient(52deg, #ffffff 30.5%, #f0f0f0 69.5%); /* titleTextGradient */
+  --gradient-icon: linear-gradient(to top, #ffffff 0%, #cacaca 71.2%); /* iconGradient */
+  --gradient-bg: linear-gradient(
+    to top,
+    #070707 0%,
+    #070707 35%,
+    #0d0b17 55%,
+    #1a1046 75%,
+    #2e1865 90%,
+    #3b1d84 100%
+  ); /* backgroundGradient */
+  --gradient-bg-launch: linear-gradient(
+    to bottom,
+    #070707 0%,
+    #070707 35%,
+    #0d0b17 55%,
+    #1a1046 75%,
+    #2e1865 90%,
+    #3b1d84 100%
+  );
+
+  /* ---- Radii ---- */
+  --radius-4: 4px;
+  --radius-12: 12px; /* default card radius (.cardContainer) */
+  --radius-16: 16px;
+  --radius-32: 32px;
+  --radius-full: 9999px;
+
+  /* ---- Spacing scale ---- */
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --space-32: 32px;
+
+  /* ---- Type ---- */
+  --font-display: "Sen", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-body: "Sen", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* ============================================================
+   Typography vocabulary — mirrors Font.appXxx tokens
+   ============================================================ */
+
+.zkm-type-hero {
+  font-family: var(--font-display);
+  font-size: 50px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+.zkm-type-display {
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 600;
+  line-height: 1.15;
+}
+.zkm-type-title-md {
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.zkm-type-title-sm {
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.zkm-type-section {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.zkm-type-section-med {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+.zkm-type-card-title {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.25;
+}
+.zkm-type-card-title-med {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+.zkm-type-body {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.45;
+}
+.zkm-type-body-med {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+.zkm-type-body-semi {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+.zkm-type-body-sm {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+.zkm-type-caption {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+.zkm-type-caption-med {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+.zkm-type-micro {
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.35;
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+
+.zkm-root {
+  background: var(--surface-canvas);
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ============================================================
+   Primitives
+   ============================================================ */
+
+.zkm-btn-reset {
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  text-align: inherit;
+}
+
+/* Press feedback: slight shrink + dim. Subtle so a press on a wide row cannot pull edge
+   content out from under the pointer before release. */
+.zkm-pressable {
+  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.2s ease;
+}
+.zkm-pressable:active {
+  transform: scale(0.97);
+  opacity: 0.7;
+}
+
+/* Liquid-glass chrome: translucent fill + backdrop blur + soft ambient shadow. */
+.zkm-glass-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 0 8px rgba(0, 0, 0, 0.1);
+  flex: none;
+}
+.zkm-glass-circle--faint {
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: 0 0 5.5px rgba(0, 0, 0, 0.1);
+}
+.zkm-glass-circle--bright {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.zkm-glass-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 9999px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  font-family: var(--font-body);
+  font-weight: 500;
+  white-space: nowrap;
+  line-height: 1.5;
+}
+
+/* Gradient-masked text */
+.zkm-gradient-text {
+  display: inline-block;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  font-family: var(--font-display);
+}
+.zkm-gradient-text--brand {
+  background-image: var(--gradient-brand);
+}
+.zkm-gradient-text--title {
+  background-image: var(--gradient-title);
+}
+
+/* Avatars */
+.zkm-avatar {
+  position: relative;
+  border-radius: 9999px;
+  flex: none;
+}
+.zkm-avatar__disc {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  color: #fff;
+  font-family: var(--font-body);
+  font-weight: 600;
+  user-select: none;
+}
+.zkm-story-avatar {
+  position: relative;
+  flex: none;
+  transition: box-shadow 0.25s ease-in-out;
+}
+.zkm-story-avatar__dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  border-radius: 9999px;
+  box-shadow: 0 0 0 1.5px var(--surface-dark);
+}
+
+/* ============================================================
+   Buttons
+   ============================================================ */
+
+.zkm-primary-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 56px;
+  /* A CTA inside a height-capped flex column (the modal sheets) must keep its 56px: with
+     overflow hidden its flex min-height is 0, so without this it collapses when the sheet scrolls. */
+  flex-shrink: 0;
+  border-radius: 9999px;
+  color: #fff;
+  overflow: hidden;
+}
+.zkm-primary-btn--gradient {
+  background: var(--gradient-brand);
+}
+.zkm-primary-btn--disabled {
+  cursor: default;
+}
+.zkm-primary-btn--gradient.zkm-primary-btn--disabled {
+  /* opaque dimmed gradient: brand gradient at 30% composited over #1A1A1A */
+  background: linear-gradient(90deg, rgba(160, 0, 255, 0.3) 0%, rgba(0, 153, 255, 0.3) 100%),
+    #1a1a1a;
+  color: rgba(255, 255, 255, 0.5);
+}
+.zkm-primary-btn--danger {
+  background: color-mix(in srgb, var(--accent-pink) 5%, transparent);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  color: var(--accent-pink);
+}
+.zkm-primary-btn--danger.zkm-primary-btn--disabled {
+  opacity: 0.4;
+}
+.zkm-primary-btn__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.zkm-spinner {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  animation: zkm-spin 0.8s linear infinite;
+}
+@keyframes zkm-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.zkm-destructive-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 16px;
+  border-radius: var(--radius-12);
+  background: var(--surface-pink);
+  color: var(--accent-pink);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.zkm-toggle {
+  position: relative;
+  display: inline-block;
+  width: 64px;
+  height: 28px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.1);
+  flex: none;
+}
+/* Gradients can't transition via `background`; fade the brand track on an overlay instead. */
+.zkm-toggle::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: var(--gradient-brand);
+  opacity: 0;
+  transition: opacity 0.18s ease-in-out;
+}
+.zkm-toggle--on::before {
+  opacity: 1;
+}
+.zkm-toggle__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 24px;
+  height: 24px;
+  border-radius: 9999px;
+  background: var(--text-secondary);
+  transition: transform 0.18s ease-in-out, background 0.18s ease-in-out;
+}
+.zkm-toggle--on .zkm-toggle__knob {
+  transform: translateX(36px);
+  background: #fff;
+}
+
+.zkm-quick-actions {
+  display: flex;
+  gap: 24px;
+  width: 100%;
+}
+.zkm-quick-action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 0;
+}
+.zkm-quick-action__tile {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 70.5px;
+  border-radius: 15.69px;
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06), 0 0 22px rgba(0, 0, 0, 0.05);
+}
+.zkm-quick-action__caption {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.zkm-quick-action--disabled {
+  cursor: default;
+}
+.zkm-quick-action--disabled .zkm-quick-action__caption {
+  color: #565656;
+}
+
+.zkm-amount-chips {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.zkm-amount-chip {
+  flex: 1 1 0;
+  padding: 12px 0;
+  border-radius: 9999px;
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  text-align: center;
+}
+.zkm-amount-chip--glass {
+  background: var(--surface-card);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  box-shadow: 0 0 4px rgba(0, 0, 0, 0.1);
+}
+.zkm-amount-chip--flat {
+  background: rgba(255, 255, 255, 0.06);
+}
+.zkm-amount-chip--selected {
+  background: var(--gradient-brand);
+  color: #fff;
+}
+
+/* ============================================================
+   Cards, pills, chips
+   ============================================================ */
+
+.zkm-card {
+  background: var(--surface-card);
+}
+
+.zkm-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: var(--radius-4);
+  background: rgba(255, 255, 255, 0.1);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.zkm-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  box-shadow: 0 0 5px rgba(0, 0, 0, 0.1);
+}
+
+.zkm-coming-soon {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 9999px;
+  background: var(--gradient-brand);
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+/* ============================================================
+   Rows
+   ============================================================ */
+
+.zkm-row-spacer {
+  flex: 1 1 0;
+  min-width: 8px;
+}
+
+.zkm-activity-row {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px;
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+.zkm-activity-row__top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.zkm-activity-row__glyph {
+  width: 44px;
+  height: 44px;
+  background: var(--gradient-brand);
+  flex: none;
+}
+.zkm-activity-row__who {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 0;
+}
+.zkm-activity-row__name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+.zkm-activity-row__name {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Floor for long titles (set by the component): the name is the line's only shrinkable item, and
+   an ellipsized address must keep readable characters ("0xF0d…", never "0.."). Short names take
+   no floor, so the badge beside them keeps its room. */
+.zkm-activity-row__name--long {
+  min-width: 56px;
+}
+.zkm-activity-row__name-badge {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--accent-gold);
+  flex: none;
+}
+.zkm-activity-row__time {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.zkm-activity-row__right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex: none;
+}
+.zkm-activity-row__amount {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.zkm-activity-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.zkm-activity-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 1 1 0;
+  /* nowrap + wrapping container: a pair that fits shares the line as before; a long label
+     ("Finalize manually") moves the button to its own full-width line instead of breaking
+     mid-label. */
+  white-space: nowrap;
+  height: 38px;
+  border-radius: 9999px;
+  color: #fff;
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 600;
+}
+.zkm-activity-action--neutral {
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+.zkm-activity-action--gradient {
+  background: var(--gradient-brand);
+}
+
+.zkm-settings-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 44px;
+}
+.zkm-settings-row__label {
+  font-family: var(--font-body);
+  font-weight: 500;
+}
+
+.zkm-contact-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 4px 0;
+}
+.zkm-contact-row__text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.zkm-contact-row__subtitle {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.zkm-search-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+  padding: 14px;
+  border-radius: var(--radius-16);
+  background: rgba(0, 0, 0, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.zkm-search-row__avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.1);
+  flex: none;
+}
+.zkm-search-row__dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background: rgba(160, 0, 255, 0.6);
+}
+.zkm-search-row__text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+}
+.zkm-search-row__title {
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+}
+.zkm-search-row__subtitle {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.zkm-list-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+.zkm-list-row__text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.zkm-list-row__subtitle {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.zkm-list-row__floating-trailing {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+/* ============================================================
+   Two-party amount card + tx race banner
+   ============================================================ */
+
+.zkm-two-party-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 0 22.4px rgba(0, 0, 0, 0.05);
+}
+.zkm-two-party-card__chip-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.zkm-two-party-card__balance {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: -0.132px;
+  color: var(--text-secondary);
+}
+.zkm-two-party-card__person {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+}
+.zkm-two-party-card__id {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.zkm-two-party-card__name {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--text-primary);
+}
+.zkm-two-party-card__handle {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.zkm-two-party-card__amount {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ============================================================
+   Nav bars + tab bar + numpad
+   ============================================================ */
+
+.zkm-top-nav {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 20px 16px 13px;
+}
+.zkm-top-nav__center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-top: 7px;
+  pointer-events: none;
+}
+.zkm-top-nav__center > * {
+  pointer-events: auto;
+}
+.zkm-top-nav__slots {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+.zkm-top-nav__title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: #fff;
+}
+.zkm-top-nav__stacked {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 220px;
+}
+.zkm-top-nav__handle {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.zkm-screen-nav {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 13px 0;
+}
+.zkm-screen-nav--leading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.zkm-screen-nav__center {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+.zkm-screen-nav__titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.zkm-screen-nav > .zkm-top-nav__slots {
+  width: 100%;
+}
+
+/* Bar + indicator are live glass (@samasante/liquid-glass supplies frost/refraction); the tints here sit under it. */
+.zkm-tab-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  /* border-box so the 63px capsule = 4px padding + 55px indicator/tabs + 4px.
+     Side padding is 4px + the lens overhang (TabBar.tsx LENS_OVERHANG) so an
+     edge-tab lens still clears the bar's rounded end by 4px. */
+  box-sizing: border-box;
+  height: 63px;
+  padding: 4px 7px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.07);
+}
+.zkm-tab-bar__indicator {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  height: 55px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.2);
+  transition: transform 0.35s cubic-bezier(0.3, 1.1, 0.4, 1);
+}
+.zkm-tab-bar__tab {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex: 1 1 0;
+  height: 55px;
+  color: var(--text-tab-inactive);
+  z-index: 1;
+}
+.zkm-tab-bar__tab--active {
+  color: #fff;
+}
+.zkm-tab-bar__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
+.zkm-tab-bar__label {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.zkm-tab-shell {
+  position: relative;
+  padding: 0 12px 24px;
+}
+.zkm-tab-shell__halo {
+  position: absolute;
+  inset: -16px 12px 8px;
+  border-radius: 31.5px;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(0, 0, 0, 0.45) 84%,
+    rgba(0, 0, 0, 0.45) 100%
+  );
+  filter: blur(12px);
+  pointer-events: none;
+}
+.zkm-tab-shell > .zkm-tab-bar {
+  position: relative;
+}
+
+/* ============================================================
+   Toast, promo banner, method grid
+   ============================================================ */
+
+.zkm-toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: var(--radius-12);
+  background: #1a1a1a;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+.zkm-toast__message {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  color: #fff;
+  white-space: nowrap;
+}
+.zkm-toast__action {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-left: 4px;
+}
+.zkm-toast__dismiss {
+  display: flex;
+  color: rgba(255, 255, 255, 0.6);
+  margin-left: 4px;
+}
+
+.zkm-promo {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-12);
+  background: linear-gradient(100deg, #7529ff 0%, #2e6dfe 100%);
+  overflow: hidden;
+}
+.zkm-promo__body {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+}
+.zkm-promo__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.2);
+  flex: none;
+}
+.zkm-promo__title {
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 500;
+  color: #fff;
+  flex: 1 1 0;
+}
+.zkm-promo__dismiss {
+  display: flex;
+  color: rgba(255, 255, 255, 0.7);
+  align-self: flex-start;
+}
+.zkm-promo__cta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.25);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.zkm-method-grid {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+.zkm-method-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 68px;
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+.zkm-method-tile--disabled {
+  color: #565656;
+  cursor: default;
+}
+.zkm-method-tile__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+}
+.zkm-method-tile__label {
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.zkm-method-tile--disabled .zkm-method-tile__label {
+  color: #565656;
+}
+
+/* ============================================================
+   Form fields (TextField)
+   ============================================================ */
+
+.zkm-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.zkm-field__label {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.zkm-field__box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 16px;
+  border-radius: var(--radius-12);
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px var(--border-hairline);
+  transition: box-shadow 0.15s ease;
+}
+.zkm-field__box:focus-within {
+  box-shadow: inset 0 0 0 1px var(--purple-400);
+}
+.zkm-field--error .zkm-field__box,
+.zkm-field--error .zkm-field__box:focus-within {
+  box-shadow: inset 0 0 0 1px var(--accent-pink);
+}
+.zkm-field__input {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: none;
+  outline: none;
+  background: none;
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 15px;
+}
+.zkm-field__input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+.zkm-field__input:disabled {
+  color: var(--text-secondary);
+}
+.zkm-field__error {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--accent-pink);
+}
+
+/* ============================================================
+   Gradient hero card (campaign onboarding)
+   ============================================================ */
+
+.zkm-hero-card {
+  border-radius: var(--radius-32);
+  overflow: hidden;
+}
+.zkm-hero-card__body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 32px 24px;
+  text-align: center;
+  background: linear-gradient(135deg, var(--purple-500) 0%, var(--blue-500) 100%);
+}
+.zkm-hero-card__title {
+  font-family: var(--font-display);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.2;
+  color: #fff;
+}
+.zkm-hero-card__subtitle {
+  font-family: var(--font-body);
+  font-size: 14px;
+  line-height: 1.4;
+  color: rgba(255, 255, 255, 0.82);
+  max-width: 320px;
+}
+.zkm-hero-card__footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 10px 16px;
+  background: rgba(0, 0, 0, 0.55);
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   Numbered / icon step row (How it works)
+   ============================================================ */
+
+.zkm-step-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.zkm-step-row__bullet {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background: var(--surface-card);
+  color: var(--purple-400);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+}
+.zkm-step-row__text {
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  padding-top: 6px;
+}

@@ -1,0 +1,112 @@
+{
+  "scenario": "activity",
+  "path": "/deposit?flowFixture=success",
+  "steps": [
+    {
+      "action": "waitFor",
+      "selector": ".ww-deposit-disclaimer"
+    },
+    {
+      "action": "screenshot",
+      "file": "privacy.png",
+      "state": "privacy"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "address.png",
+      "state": "address"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Show",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "one-time-warning.png",
+      "state": "one time warning"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "qr.png",
+      "state": "qr"
+    },
+    {
+      "action": "press",
+      "selector": "dialog:modal",
+      "key": "Escape"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Connect your wallet",
+      "exact": false
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Wallet connected",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "24"
+    },
+    {
+      "action": "screenshot",
+      "file": "amount.png",
+      "state": "amount"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Deposit funds",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "review.png",
+      "state": "review"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm deposit",
+      "exact": false
+    },
+    {
+      "action": "wait",
+      "ms": 1300
+    },
+    {
+      "action": "screenshot",
+      "file": "working.png",
+      "state": "working"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-sheet--detail"
+    },
+    {
+      "action": "screenshot",
+      "file": "submitted-detail.png",
+      "state": "submitted detail"
+    }
+  ],
+  "finalScreenshot": false,
+  "recordHoldMs": 0
+}

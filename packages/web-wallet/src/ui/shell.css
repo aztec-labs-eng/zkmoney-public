@@ -1,0 +1,4923 @@
+@import "./flow-layout.css";
+
+/* Phone convention: viewport width <=640px. Use ordinary @media (max-width: 640px) queries.
+   The 960px onboarding and 1180px wider-layout cutovers retain their existing roles.
+   Phone sheets use dvh and own their insets once; nested scrolling content keeps its base padding.
+   Header/menu ownership and capture presets are documented in scripts/ui-capture/README.md. */
+
+:root {
+  --ww-safe-area-top: env(safe-area-inset-top, 0px);
+  --ww-safe-area-right: env(safe-area-inset-right, 0px);
+  --ww-safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --ww-safe-area-left: env(safe-area-inset-left, 0px);
+}
+
+.ww-shell {
+  position: relative;
+  display: flex;
+  min-height: 100vh;
+  /* svh, not dvh: dvh re-resolves as Safari collapses its toolbars, and a page whose own height
+     changes mid-scroll reflows on every frame of that animation. Overlays that must track the
+     visible area keep dvh below. */
+  min-height: 100svh;
+  background: var(--surface-dark);
+  font-family: var(--font-body);
+  isolation: isolate;
+}
+/*
+ * Fixed, and staying that way: iOS 26 shifts fixed elements as Safari minimises its address bar
+ * (WebKit 297779, a system component bug fixed in 26.1), but taking the glow out of the viewport's
+ * frame moves the desktop sidebar's own layout enough to break the laptop sign-out walk.
+ */
+/* Rasterized from glow.svg, which stays as the source. The vector's four feGaussianBlurs over a
+   2374x1323 filter region cost ~100ms of rasterization per paint, again on every repaint over it —
+   opening the drawer, or landing on Home, where the old object-fit:none tripled the area. Nothing
+   in it is sharper than a 66px blur, so a quarter-size file upscales with no visible loss. Both
+   sizes below are CSS pixels, which is what frees the file to be small. */
+.ww-shell__glow {
+  position: fixed;
+  top: 0;
+  left: 50%;
+  width: 1280px;
+  height: 749px;
+  transform: translateX(-50%) scaleY(-1);
+  opacity: 0.5;
+  pointer-events: none;
+  z-index: -1;
+  will-change: transform;
+  background-image: url("../assets/home/glow.webp");
+  background-repeat: no-repeat;
+  background-size: 100% 100%;
+}
+
+.ww-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: inherit;
+  text-decoration: none;
+}
+.ww-brand__tile {
+  position: relative;
+  width: 44px;
+  height: 44px;
+  flex: none;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #181818;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.25);
+  font-family: var(--font-display);
+  font-size: 10.5px;
+  line-height: 0.77;
+  letter-spacing: -0.25px;
+  color: var(--text-primary);
+}
+.ww-brand__tile img {
+  position: absolute;
+  left: -16px;
+  top: 26px;
+  width: 73px;
+  height: 34px;
+  max-width: none;
+}
+.ww-brand__tile span {
+  position: absolute;
+  left: 6px;
+}
+.ww-brand__tile span:nth-of-type(1) {
+  top: 13px;
+}
+.ww-brand__tile span:nth-of-type(2) {
+  top: 21px;
+}
+.ww-brand__name {
+  font-size: 24px;
+  letter-spacing: -0.6px;
+  color: var(--text-primary);
+}
+
+.ww-sidebar {
+  width: 308px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 40px;
+  background: rgba(255, 255, 255, 0.05);
+  border-right: 1px solid rgba(255, 255, 255, 0.1);
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  height: 100dvh;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+.ww-sidebar__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ww-sidebar__head-actions {
+  display: none;
+  gap: 20px;
+}
+.ww-sidebar__menu {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.ww-divider {
+  width: 100%;
+  height: 1px;
+  margin: 0;
+  border: 0;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.ww-shell .ww-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 16px;
+  box-sizing: border-box;
+  border-radius: var(--radius-12);
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.ww-shell .ww-nav-item:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+.ww-shell .ww-nav-item--active {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+}
+
+.ww-shell .ww-iconbtn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 9999px;
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.ww-shell .ww-iconbtn:disabled {
+  cursor: default;
+}
+.ww-shell .ww-iconbtn--lg {
+  width: 50px;
+  height: 50px;
+}
+.ww-shell .ww-iconbtn--brand {
+  background: var(--gradient-brand);
+}
+
+/* Search sits below the compact phone row; desktop keeps its single top bar. */
+.ww-shell-header {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  flex: none;
+}
+.ww-menu-dialog {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+.ww-menu-dialog::backdrop {
+  background: rgba(7, 7, 7, 0.65);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+.ww-main {
+  flex: 1;
+  min-width: 0;
+  height: 100vh;
+  height: 100dvh;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.ww-content {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 40px 80px 80px;
+  box-sizing: border-box;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 40px;
+}
+
+/* Top bar: search pill beside notification / QR / account capsules. */
+.ww-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 32px;
+}
+.ww-shell .ww-search {
+  position: relative;
+  flex: 1 1 434px;
+  max-width: 434px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 24px;
+  box-sizing: border-box;
+  border-radius: 9999px;
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+}
+.ww-shell .ww-search:focus-within {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.3), 0 0 8px 2px rgba(255, 255, 255, 0.15);
+}
+.ww-shell .ww-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  outline: none;
+  color: var(--text-primary);
+  font: inherit;
+}
+.ww-shell .ww-search input::placeholder {
+  color: var(--text-secondary);
+}
+.ww-shell .ww-search input::-webkit-search-cancel-button {
+  display: none;
+}
+.ww-shell .ww-search__results {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 60dvh;
+  overflow-y: auto;
+  padding: 24px;
+  border-radius: 20px;
+  background: var(--surface-sheet);
+  box-shadow: 0 0 12px 6px rgba(0, 0, 0, 0.25);
+}
+.ww-shell .ww-search__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+}
+.ww-shell .ww-search__row:not(.ww-search__row--static):hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.ww-shell .ww-search__status {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-shell .ww-search__trailing {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.ww-topbar__actions {
+  flex: 0 1 346px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.ww-shell .ww-account {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 50px;
+  padding: 0 12px 0 5px;
+  box-sizing: border-box;
+  border-radius: 9999px;
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  cursor: pointer;
+  text-align: left;
+}
+/* One line, "@handle" leading and ".zk.money" trailing; a long handle ellipsizes, never wraps. */
+.ww-account__meta {
+  display: flex;
+  align-items: baseline;
+  min-width: 0;
+  white-space: nowrap;
+}
+.ww-account__meta span:first-child {
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.45px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ww-account__meta span:last-child {
+  flex: none;
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* Home: 434px wallet card beside a 346px banner rail; the rail hides ≤1180px. */
+.ww-home {
+  display: flex;
+  align-items: flex-start;
+  gap: 32px;
+}
+.ww-home > * {
+  min-width: 0;
+}
+.ww-home__wallet {
+  flex: 1 1 434px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+  padding: 40px;
+  box-sizing: border-box;
+  border-radius: var(--radius-16);
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+.ww-home__rail {
+  flex: 0 1 346px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.ww-home__balance {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ww-home__balance-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 16px;
+  font-weight: 500;
+}
+.ww-home__balance-value {
+  color: var(--text-primary);
+  font-size: 50px;
+  font-weight: 600;
+  line-height: normal;
+}
+.ww-home__cta {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 24px 32px;
+  box-sizing: border-box;
+  border-radius: var(--radius-16);
+  background: var(--surface-card);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+.ww-home__cta img {
+  width: 210px;
+  height: 171px;
+  object-fit: contain;
+}
+.ww-home-txns {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+  box-sizing: border-box;
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+}
+.ww-home-txns__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ww-home-txns__tabs {
+  display: flex;
+  gap: 24px;
+}
+.ww-home-txns__tabs button {
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+.ww-home-txns__tabs button[data-active] {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-home-txns__viewall {
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.1);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.ww-home-txns__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Incoming request awaiting a reply: purple-outlined card above the transactions widget. */
+.ww-home__request {
+  width: 100%;
+  border-radius: var(--radius-12);
+  box-shadow: 0 0 0 1px #9c04ff;
+}
+.ww-home-txns__empty {
+  padding: 16px 0;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.ww-shell .ww-banner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  width: 100%;
+  padding: 16px;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-radius: var(--radius-16);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  background: linear-gradient(106deg, rgba(255, 255, 255, 0.05) 15%, rgba(255, 255, 255, 0) 100%);
+  color: #fff;
+  text-align: left;
+  cursor: pointer;
+}
+.ww-shell .ww-banner--paylink {
+  background: linear-gradient(180deg, #9a05ff, #0496ff);
+  padding-right: 124px;
+  min-height: 66px;
+}
+.ww-shell .ww-banner--paylink .ww-banner__title {
+  white-space: nowrap;
+}
+.ww-shell .ww-banner--paylink img {
+  position: absolute;
+  right: -32px;
+  top: -19px;
+  width: 172px;
+  transform: rotate(-9deg);
+}
+.ww-shell .ww-banner--row {
+  padding: 24px 16px;
+}
+/* The one registration sheet (Figma 10788:26927 / 10788:27111). The sheet sizes to its content up
+   to the viewport, then clips while the card inside it scrolls, which keeps the close button in
+   its corner. The mock's 611px is a max over content that carries no actions block; honouring it
+   as a hard cap buried the CTA below the fold. */
+.ww-modal.ww-reg-sheet {
+  /* The inner card owns base padding; the outer sheet adds only the phone inset. */
+  --sheet-pad-bottom: 0px;
+  display: flex;
+  flex-direction: column;
+  max-height: min(calc(100dvh - 48px), calc(100dvh - var(--ww-safe-area-top)));
+  padding: 0;
+  overflow: hidden;
+}
+/* The close sits in the card's corner wherever the sheet opens; `.ww-modal--create` used to be the
+   only thing placing it, so the in-wallet frame left it in the flow at the top of the column.
+   The phone block below deliberately gives it a row of its own instead. */
+.ww-modal.ww-reg-sheet {
+  position: relative;
+}
+.ww-modal.ww-reg-sheet > .ww-modal__close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  z-index: 1;
+  margin: 0;
+}
+/* Doubled class: plain `.ww-modal` declares the generic 440px later in this file and would
+   otherwise win on source order. */
+.ww-modal.ww-reg-sheet--wallet {
+  --modal-pad-y: 24px;
+  --modal-pad-x: 24px;
+  --sheet-pad-bottom: var(--modal-pad-y);
+  width: min(500px, calc(100vw - 32px));
+  border: 1px solid #303030;
+  border-radius: 24px;
+}
+.ww-reg-sheet__card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  min-height: 0;
+  padding: var(--modal-pad-y) var(--modal-pad-x);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* Centering the column would otherwise shrink-wrap the actions, and the CTA inside them. */
+.ww-reg-sheet__card > * {
+  align-self: stretch;
+}
+.ww-reg-sheet__head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.ww-reg-sheet__note {
+  margin: 0;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+}
+.ww-reg-sheet__summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  width: 100%;
+  margin: 0;
+  padding: 12px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.ww-reg-sheet__summary svg {
+  flex: none;
+  margin-top: 1px;
+}
+.ww-reg-sheet__details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+}
+.ww-reg-sheet__amounts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+}
+/* The total is what a sender acts on; the split below it is the explanation. */
+.ww-reg-sheet__amounts .ww-deposit-terms > :first-child {
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.ww-reg-sheet__amounts .ww-deposit-terms {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ww-reg-sheet__warn {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+}
+.ww-reg-sheet__warn svg {
+  flex: none;
+  margin-top: 1px;
+}
+/* Where to send: the one row a mistake is unrecoverable in, so the design rings it. */
+.ww-send-to {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 16px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  border: 2px solid #9c04ff;
+  background: rgba(255, 255, 255, 0.05);
+}
+.ww-send-to__copy {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  height: 24px;
+}
+.ww-send-to__label {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.ww-send-to__value {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  text-align: right;
+  color: var(--text-primary);
+}
+.ww-send-to__icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+.ww-send-to__status {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+.ww-send-to__note {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: -4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+/* The check and the retry sit together under the address: same job, one pushed harder. */
+.ww-send-to__link {
+  font: inherit;
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ww-send-to__link:hover,
+.ww-send-to__link:focus-visible {
+  color: var(--accent-green);
+  outline: none;
+}
+.ww-send-to__link:disabled {
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+/* Deposit sheet header: brand badge, @tag pill, reservation in mono green. */
+.ww-shell .ww-invite-modal-badge--brand {
+  width: 64px;
+  height: 64px;
+  background: var(--gradient-brand);
+  box-shadow: 0 0 17px 5px rgba(0, 0, 0, 0.1);
+}
+.ww-tag-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  gap: 1px;
+  padding: 8px 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset -1px 0 21px 0 rgba(255, 255, 255, 0.25);
+  font-size: 16px;
+}
+.ww-tag-pill strong {
+  font-weight: 600;
+  color: #fff;
+}
+.ww-tag-pill span {
+  color: var(--text-secondary);
+}
+.ww-reserved-until {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  color: var(--accent-green);
+}
+/* Activation hero: the brand gradient at full content width, art bled off the right edge. */
+.ww-shell .ww-banner--activate {
+  background: linear-gradient(180deg, #9a05ff, #0496ff);
+  min-height: 92px;
+  padding-right: 268px;
+}
+.ww-shell .ww-banner--activate .ww-banner__title {
+  font-size: 20px;
+}
+.ww-shell .ww-banner--activate .ww-banner__body {
+  font-size: 14px;
+}
+.ww-shell .ww-banner--activate img {
+  position: absolute;
+  right: 44px;
+  top: -46px;
+  width: 250px;
+  transform: rotate(-9deg);
+  pointer-events: none;
+}
+/* The padding reserves a lane for the art that bleeds off the right; the chevron belongs to the
+   card's edge, not to that lane, so it is pinned rather than left at the padding edge. */
+.ww-shell .ww-banner--activate .ww-banner__chevron {
+  position: absolute;
+  right: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+}
+/* The art is decoration: below 640 the copy needs the whole width. */
+@media (max-width: 640px) {
+  .ww-shell .ww-banner--activate {
+    padding-right: 16px;
+  }
+  .ww-shell .ww-banner--activate img {
+    display: none;
+  }
+  .ww-shell .ww-banner--registration-pending {
+    padding-right: 48px;
+  }
+}
+.ww-shell .ww-banner--row img {
+  width: 64px;
+  height: 64px;
+  flex: none;
+}
+.ww-banner__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ww-banner__title {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.ww-shell .ww-banner--paylink .ww-banner__title {
+  font-size: 18px;
+}
+.ww-banner__body {
+  font-size: 11px;
+  line-height: 1.2;
+  opacity: 0.75;
+}
+.ww-banner__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  flex: none;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.3);
+}
+.ww-shell .ww-banner--ios {
+  padding-left: 120px;
+  cursor: default;
+}
+.ww-shell .ww-banner--ios img {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 104px;
+  height: 104px;
+}
+
+.ww-invite-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px;
+  box-sizing: border-box;
+  border-radius: var(--radius-16);
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+.ww-invite-card__title {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: var(--text-primary);
+}
+.ww-invite-card__art {
+  width: 80px;
+  height: 80px;
+}
+.ww-shell .ww-invite-card__close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+}
+.ww-invite-card__field {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  height: 48px;
+  padding: 12px;
+  box-sizing: border-box;
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.ww-invite-card__field code {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+  font: inherit;
+  color: var(--text-primary);
+}
+.ww-invite-card__buttons {
+  width: 100%;
+  display: flex;
+  gap: 8px;
+}
+.ww-shell .ww-invite-card__buttons button {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 12px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 24px;
+  cursor: pointer;
+}
+
+@media (max-width: 1180px) {
+  .ww-home__rail {
+    display: none;
+  }
+  .ww-home__wallet {
+    flex: 1;
+    width: 100%;
+  }
+  .ww-content {
+    padding: 32px 32px 64px;
+  }
+}
+
+/* Routed flows (send, withdraw, receive…) render as a narrow column inside the content area. */
+.ww-flow {
+  width: 100%;
+  max-width: 480px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.ww-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);
+  margin-bottom: 24px;
+}
+
+/* iOS zooms the page whenever a focused control is under 16px. The viewport no longer forbids
+   zoom (pinch-to-zoom is an accessibility right), so the floor lives here instead. */
+@media (max-width: 640px) {
+  input,
+  textarea,
+  select,
+  .ww-invite-field__input,
+  .ww-invite-field__input input,
+  .ww-withdraw__box input,
+  .ww-fund__amount input,
+  .ww-deposit__input,
+  .ww-manual-sweep__destination,
+  .ww-feedback__textarea {
+    font-size: 16px;
+  }
+}
+
+.ww-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(7, 7, 7, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: ww-fade-in 0.18s ease;
+}
+
+/* Native <dialog> consent prompt — same dim/blur as .ww-modal-overlay. */
+.ww-consent-dialog {
+  border: none;
+  background: transparent;
+  padding: 16px;
+  max-width: 392px;
+  margin: auto;
+}
+.ww-consent-dialog::backdrop {
+  background: rgba(7, 7, 7, 0.65);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.ww-modal {
+  width: min(440px, calc(100vw - 32px));
+  max-height: 86dvh;
+  overflow-y: auto;
+  box-sizing: border-box;
+  background: var(--surface-sheet);
+  border-radius: var(--radius-32);
+  padding: var(--space-24);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  animation: ww-modal-in 0.22s ease;
+}
+
+.ww-modal:focus {
+  outline: none;
+}
+
+@keyframes ww-modal-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes ww-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ww-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateY(32px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Mid-width layouts retain desktop navigation without compressing the content below phone width. */
+@media (min-width: 641px) and (max-width: 960px) {
+  .ww-sidebar {
+    width: 200px;
+    padding: 24px 12px;
+  }
+  .ww-content {
+    padding: 24px 20px 48px;
+    gap: 24px;
+  }
+  .ww-topbar {
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .ww-topbar__actions {
+    flex-basis: 100%;
+  }
+  .ww-shell .ww-search {
+    max-width: none;
+  }
+  .ww-home__wallet {
+    padding: 24px 16px;
+  }
+  .ww-home__wallet .zkm-quick-actions {
+    gap: 12px;
+  }
+  .ww-home-txns {
+    padding: 12px;
+  }
+  .ww-home-txns__bar {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+}
+
+/* Phone content grows with its header and scrolls as one page. Fixed overlays own their insets. */
+@media (max-width: 640px) {
+  .ww-shell {
+    flex-direction: column;
+  }
+  .ww-menu-dialog .ww-sidebar {
+    position: static;
+    width: min(402px, 100%);
+    height: 100%;
+    padding: calc(40px + var(--ww-safe-area-top)) calc(40px + var(--ww-safe-area-right))
+      calc(24px + var(--ww-safe-area-bottom)) calc(40px + var(--ww-safe-area-left));
+    border-right: 0;
+    background: #131313;
+    overscroll-behavior: contain;
+    gap: 24px;
+  }
+  .ww-sidebar__head {
+    flex-wrap: wrap;
+    row-gap: 16px;
+  }
+  .ww-sidebar__head-actions {
+    display: flex;
+    margin-left: auto;
+    gap: 20px;
+  }
+  .ww-sidebar__head-actions:has(> :nth-child(3)) {
+    gap: 8px;
+  }
+  .ww-menu-dialog .ww-sidebar > * {
+    flex-shrink: 0;
+  }
+  .ww-menu-dialog .ww-divider {
+    overflow: visible;
+    position: relative;
+    height: 0;
+  }
+  .ww-menu-dialog .ww-divider::after {
+    content: "";
+    position: absolute;
+    inset: -1px 0 auto;
+    height: 1px;
+    background: rgba(255, 255, 255, 0.1);
+  }
+  .ww-sidebar__menu {
+    flex: none;
+  }
+  .ww-main {
+    height: auto;
+    min-height: 100svh;
+    overflow: visible;
+  }
+  .ww-content {
+    min-height: 100svh;
+    padding: calc(16px + var(--ww-safe-area-top)) calc(16px + var(--ww-safe-area-right))
+      calc(24px + var(--ww-safe-area-bottom)) calc(16px + var(--ww-safe-area-left));
+    gap: 24px;
+  }
+  .ww-topbar {
+    position: relative;
+  }
+  .ww-topbar .ww-brand {
+    margin-right: auto;
+  }
+  .ww-shell .ww-topbar .ww-notifications__anchor {
+    position: static;
+  }
+  .ww-topbar .ww-notifications__anchor > button {
+    position: relative;
+  }
+  .ww-shell .ww-topbar .ww-notifications,
+  .ww-shell .ww-topbar .ww-notifications__toast {
+    top: calc(100% + 12px);
+    left: 0;
+    right: 0;
+    width: auto;
+    max-width: none;
+  }
+  .ww-topbar .ww-notifications__toast .zkm-toast__message {
+    flex: 1;
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .ww-topbar .ww-notifications__toast > svg,
+  .ww-topbar .ww-notifications__toast > button {
+    flex-shrink: 0;
+  }
+  .ww-topbar__actions {
+    flex: 1;
+    min-width: 0;
+    gap: 8px;
+  }
+  .ww-topbar .ww-account {
+    margin-right: auto;
+    gap: 12px;
+    height: 50px;
+    padding: 0 12px 0 5px;
+    background: var(--surface-faint);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  }
+  .ww-topbar .ww-account .zkm-avatar {
+    box-shadow: inset 0 0 0 1px #9c04ff;
+  }
+  .ww-topbar .ww-account__meta {
+    flex-direction: column;
+    align-items: flex-start;
+    font-size: 14px;
+    gap: 2px;
+  }
+  .ww-topbar .ww-account__meta span:last-child {
+    font-size: 12px;
+    letter-spacing: 1px;
+  }
+  .ww-topbar .ww-account__meta span {
+    max-width: 100%;
+  }
+  .ww-topbar .ww-iconbtn--lg {
+    width: 40px;
+    height: 40px;
+  }
+  .ww-shell--home > .ww-shell__glow {
+    background-size: 2373.95px 1322.55px;
+    background-position: calc(50% + 41.12px) 71.36px;
+  }
+  .ww-shell--home .ww-content {
+    padding: calc(15px + var(--ww-safe-area-top)) calc(24px + var(--ww-safe-area-right))
+      calc(40px + var(--ww-safe-area-bottom)) calc(24px + var(--ww-safe-area-left));
+    gap: 39px;
+  }
+  .ww-home {
+    flex-direction: column;
+    gap: 24px;
+  }
+  .ww-home__wallet {
+    padding: 0;
+    gap: 24px;
+    background: none;
+    box-shadow: none;
+  }
+  .ww-home__wallet .ww-home__phone-actions {
+    gap: clamp(12px, calc((100vw - 330px) / 3), 24px);
+  }
+  .ww-home__phone-actions .zkm-quick-action {
+    min-width: 0;
+  }
+  .ww-home__phone-actions .zkm-quick-action__tile {
+    width: 100%;
+    height: 70.5px;
+    color: var(--text-secondary);
+  }
+  .ww-home__balance-label {
+    line-height: normal;
+  }
+  .ww-home__balance-value {
+    font-size: 50px;
+    overflow-wrap: anywhere;
+  }
+  .ww-home__balance-value--long {
+    font-size: clamp(24px, 8.5vw, 40px);
+  }
+  .ww-home__cta {
+    min-height: 300px;
+    padding: 24px 32px;
+    justify-content: center;
+    background: var(--surface-faint);
+  }
+  .ww-home__deposit-art {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 100%;
+  }
+  .ww-home__deposit-coins {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 1253 / 582;
+    margin-bottom: -40px;
+    overflow: hidden;
+  }
+  .ww-home__cta .ww-home__deposit-coins img {
+    position: absolute;
+    top: -49.48%;
+    left: -6.23%;
+    width: 111.89%;
+    max-width: none;
+    height: 192.78%;
+  }
+  .ww-home__deposit-token {
+    position: relative;
+    flex: none;
+    margin: 3.462px 0;
+    transform: rotate(-2.11deg);
+    display: flex;
+    align-items: center;
+    gap: 5.593px;
+    box-sizing: border-box;
+    width: 188.966px;
+    height: 50.603px;
+    padding: 11.187px;
+    border: 0.744px solid rgba(189, 189, 189, 0.05);
+    border-radius: 11.187px;
+    background: rgba(132, 132, 132, 0.2);
+    /* Web Figma 10881:33998: zero-refraction glass with a 51.386px blur radius. */
+    backdrop-filter: blur(51.386px);
+    box-shadow: inset -0.744px 0 11.907px rgba(255, 255, 255, 0.25);
+  }
+  .ww-home__deposit-token-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+    width: 30.85px;
+    height: 30.85px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.2);
+  }
+  .ww-home__cta .ww-home__deposit-token-icon img {
+    width: 16px;
+    height: 16px;
+  }
+  .ww-home__deposit-token-label {
+    display: flex;
+    flex-direction: column;
+    line-height: 1.2;
+    color: var(--text-secondary);
+    font-size: 9.772px;
+  }
+  .ww-home__deposit-token-label strong {
+    font-size: 12.437px;
+    font-weight: 600;
+    color: #fff;
+  }
+  .ww-home__deposit-token-label small {
+    display: inline-flex;
+    align-items: center;
+    height: 14.213px;
+    padding: 0 3.553px;
+    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.1);
+    font-size: 6.31px;
+    color: #fff;
+  }
+  .ww-home-txns {
+    padding: 16px;
+  }
+  .ww-home-txns__bar {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .ww-home-txns__tabs {
+    gap: 20px;
+  }
+  .ww-modal-overlay {
+    align-items: flex-end;
+  }
+  .ww-modal {
+    width: 100%;
+    max-height: 92dvh;
+    border-radius: var(--radius-32) var(--radius-32) 0 0;
+    animation: ww-sheet-in 0.26s ease;
+  }
+  /* Doubled class: sheets that set their own padding (.ww-pay, .ww-txd, .ww-modal--create) are
+     declared later in the file and would silently drop the home-indicator inset. They opt into
+     their own base via --sheet-pad-bottom. */
+  .ww-modal.ww-modal {
+    padding-bottom: calc(var(--sheet-pad-bottom, var(--space-24)) + var(--ww-safe-area-bottom));
+  }
+}
+
+/* Onboarding / public landing: brand panel beside a centered sheet card. */
+.ww-onboard {
+  display: flex;
+  min-height: 100dvh;
+}
+
+.ww-onboard__brand {
+  position: relative;
+  flex: 1 1 50%;
+  overflow: hidden;
+  border-right: 1px solid var(--border-hairline);
+}
+.ww-onboard__brand-inner {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--space-32);
+  padding: 64px;
+  box-sizing: border-box;
+  max-width: 560px;
+}
+.ww-onboard__brand-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  position: absolute;
+  top: 32px;
+  left: 64px;
+}
+
+.ww-onboard__pane {
+  position: relative;
+  flex: 1 1 50%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 24px;
+  box-sizing: border-box;
+}
+.ww-onboard-card {
+  position: relative;
+  z-index: 1;
+  width: min(460px, 100%);
+  min-height: 580px;
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  background: var(--surface-sheet);
+  border-radius: var(--radius-32);
+  padding: var(--space-24) var(--space-24) var(--space-16);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+@media (max-width: 960px) {
+  .ww-onboard__brand {
+    display: none;
+  }
+  /* Request-link variant: the left panel is the payment surface, not decoration —
+     stack it above the card instead of hiding it. */
+  .ww-onboard--request {
+    flex-direction: column;
+  }
+  .ww-onboard--request .ww-onboard__brand {
+    display: block;
+    border-right: none;
+    border-bottom: 1px solid var(--border-hairline);
+  }
+  .ww-onboard--request .ww-onboard__brand-inner {
+    padding: 24px;
+  }
+  .ww-onboard--request .ww-onboard-card {
+    min-height: 0;
+  }
+  .ww-onboard__pane {
+    overflow: visible;
+    padding: calc(16px + var(--ww-safe-area-top)) calc(12px + var(--ww-safe-area-right))
+      calc(16px + var(--ww-safe-area-bottom)) calc(12px + var(--ww-safe-area-left));
+  }
+  .ww-onboard-card {
+    max-height: none;
+    min-height: calc(100dvh - 32px);
+  }
+}
+
+/* ── Invitation page + signup modals (ULT-667) ─────────────────────────────── */
+
+.ww-invite {
+  position: relative;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #070707;
+  font-family: var(--font-body);
+}
+
+/* The designed canvas: one blurred vector field over #070707, sized and offset to reproduce the
+   frame. The asset is authored upside-down relative to it, hence the flip. */
+.ww-invite__gradient {
+  position: absolute;
+  left: -40%;
+  top: -91%;
+  width: 188%;
+  height: 187%;
+  transform: scaleY(-1);
+  pointer-events: none;
+}
+
+.ww-invite__topbar {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 24px 32px;
+}
+
+.ww-invite__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  color: var(--text-secondary);
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.ww-invite__pill-open {
+  color: var(--accent-green);
+}
+
+.ww-invite__center {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+}
+
+.ww-invite__content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(440px, 100%);
+  text-align: center;
+}
+
+.ww-invite__title {
+  margin: 0 0 8px;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 44px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.ww-invite__subtitle {
+  margin: 0 0 28px;
+  color: var(--text-secondary);
+  font-size: 15px;
+}
+
+/* Joined handle input + unlock button in one capsule. */
+.ww-invite__inputrow {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 6px 6px 6px 20px;
+  box-sizing: border-box;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+.ww-invite__inputrow:focus-within {
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.28);
+}
+.ww-invite__input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 15px;
+  outline: none;
+}
+.ww-invite__input::placeholder {
+  color: var(--text-secondary);
+}
+.ww-invite__check {
+  display: inline-flex;
+  margin: 0 10px;
+}
+.ww-invite__unlock {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 148px;
+  padding: 12px 20px;
+  border: none;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #a000ff, #6a5cff);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.ww-invite__unlock:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.ww-invite__error {
+  margin: 12px 0 0;
+  color: var(--accent-pink);
+  font-size: 13px;
+}
+.ww-invite__ok {
+  margin: 12px 0 0;
+  color: var(--accent-green);
+  font-size: 13px;
+}
+.ww-invite__checking {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.ww-invite__footer {
+  margin: 28px 0 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.ww-invite__link {
+  color: var(--text-primary);
+  font-size: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.ww-invite-cancel {
+  margin-top: 12px;
+  padding: 10px 8px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* Educational header bleeding to the modal edges above a spinner. */
+.ww-invite-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 74px;
+  margin: calc(-1 * var(--modal-pad-y, 24px)) calc(-1 * var(--modal-pad-x, 24px)) 24px;
+  padding: 10px 66px;
+  box-sizing: border-box;
+  background: #29312d;
+  color: var(--accent-green);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+.ww-invite-banner svg {
+  flex: none;
+}
+@media (max-width: 640px) {
+  .ww-invite-banner {
+    padding: 10px 24px;
+  }
+}
+
+.ww-invite-spinner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: 16px 8px 0;
+}
+.ww-invite-spinner__label {
+  max-width: 180px;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 500;
+  line-height: 22px;
+  text-align: center;
+}
+.zkm-btn-reset.ww-invite-pill {
+  padding: 12px 36px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.ww-modal__close {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+/* Flow-modal header (src/ui/Modal.tsx): centered title between fixed control slots. */
+.ww-modal__head {
+  display: grid;
+  grid-template-columns: 36px 1fr 36px;
+  align-items: center;
+  margin-bottom: 24px;
+}
+.ww-modal__head-slot {
+  display: flex;
+}
+.ww-modal__head-slot:last-of-type {
+  justify-content: flex-end;
+}
+.ww-modal__head-title {
+  text-align: center;
+}
+.ww-modal--create {
+  position: relative;
+}
+.ww-modal--create .ww-modal__close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+  margin: 0;
+}
+.ww-modal--narrow {
+  width: min(320px, calc(100vw - 32px));
+}
+.ww-modal--create {
+  --modal-pad-y: 40px;
+  --modal-pad-x: 64px;
+  --sheet-pad-bottom: var(--modal-pad-y);
+  width: min(500px, calc(100vw - 32px));
+  padding: var(--modal-pad-y) var(--modal-pad-x);
+  overflow-x: hidden;
+  overflow-y: auto;
+  border: 1px solid #303030;
+  border-radius: 24px;
+  box-shadow: 0 0 40px 33px rgba(0, 0, 0, 0.15);
+}
+@media (max-width: 640px) {
+  .ww-modal--create {
+    --modal-pad-y: 32px;
+    --modal-pad-x: 24px;
+  }
+  /* Reserve a separate close row so registration text cannot scroll beneath the button. */
+  .ww-modal.ww-reg-sheet > .ww-modal__close {
+    position: static;
+    flex: none;
+    padding: 20px 20px 0;
+  }
+  .ww-reg-sheet > .ww-modal__close + .ww-reg-sheet__card {
+    padding-top: 12px;
+  }
+}
+.ww-invite-modal-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: linear-gradient(90deg, #9c04ff, #0693ff);
+  box-shadow: 0 0 17px 5px rgba(0, 0, 0, 0.1);
+}
+.ww-invite-modal-title--lg {
+  font-size: 24px;
+  line-height: 1.3;
+  letter-spacing: 0.3px;
+  background: var(--gradient-title);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.ww-invite-facts {
+  list-style: none;
+  margin: 24px 0;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.ww-invite-facts li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 4px 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+}
+.ww-invite-facts li svg {
+  flex: none;
+}
+.ww-invite-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 24px 0;
+}
+.ww-invite-field__label {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.ww-invite-field__input {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 48px;
+  padding: 12px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+}
+.ww-invite-field__input input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  outline: none;
+}
+.ww-invite-field__input input::placeholder {
+  color: var(--text-secondary);
+}
+.ww-invite-modal-foot {
+  margin: 16px 0 0;
+  padding: 4px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+}
+.ww-invite-modal-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.ww-invite-modal-title {
+  margin: 0;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 20px;
+  font-weight: 700;
+}
+.ww-invite-modal-body {
+  margin: 0 0 20px;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.ww-invite-modal-error {
+  margin: 0 0 16px;
+  color: var(--accent-pink);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+}
+/* The sign-in screen's remembered accounts: five rows tall, the rest scroll inside the box. */
+.ww-account-list {
+  --ww-account-row: 48px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: calc(5 * var(--ww-account-row));
+  overflow-y: auto;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.06);
+}
+/* The separator is drawn inside the row, so five rows are exactly five row heights. */
+.ww-account-list li + li .ww-account-row {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.zkm-btn-reset.ww-account-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: var(--ww-account-row);
+  padding: 0 12px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  text-align: left;
+}
+.zkm-btn-reset.ww-account-row:not(:disabled):hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.zkm-btn-reset.ww-account-row:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ww-account-row__tag {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ww-account-row__domain {
+  color: var(--text-secondary);
+}
+.ww-account-row__go {
+  color: var(--text-secondary);
+  font-size: 20px;
+  line-height: 1;
+}
+
+/* Registration deposit reveal (Campaign: Reserve / Instant access / Free names) — inside the
+   onboarding "pending" step, above its existing status/retry controls. */
+.ww-deposit-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+.ww-deposit-panel--funded {
+  flex-direction: row;
+  justify-content: center;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+.ww-deposit-panel__lead {
+  margin: 0;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.ww-deposit-panel__lead strong {
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 700;
+}
+.ww-send-to__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+/* Same press-scale escape as the wide copy rows below. */
+.ww-send-to__check:active {
+  transform: none;
+}
+/* The arc runs only while a check is in flight; idle it holds still until the next auto-check. */
+.ww-send-to__check--idle .zkm-spinner-icon {
+  animation-play-state: paused;
+}
+.ww-copy-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+}
+/* zkm-pressable's 0.9 press-scale pulls a wide row in ~14px per side, so a real press released
+   over an edge icon lands outside the button and the click dies; wide copy rows keep the opacity
+   feedback but not the scale. */
+.zkm-pressable.ww-copy-value:active,
+.zkm-pressable.ww-send-to__copy:active {
+  transform: none;
+}
+.ww-deposit-terms {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ww-deposit-feedback {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+.ww-deposit-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.ww-deposit-actions > * {
+  width: 100%;
+}
+.ww-deposit-actions .ww-invite-pill,
+.ww-deposit-actions__link {
+  width: fit-content;
+}
+
+.ww-manual-sweep__destination {
+  width: 100%;
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-subtle, rgba(255, 255, 255, 0.15));
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+.ww-deposit-actions__link {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* ── Paylink visitor landing (/link with no account) ───────────────────────── */
+
+/* Landing layout of the invitation step: the paylink summary stacked over the tag
+   field, in place of the capsule input row. */
+.ww-invite__content--landing {
+  gap: 24px;
+  width: min(402px, 100%);
+  padding: 24px;
+  box-sizing: border-box;
+}
+.ww-invite__content--landing > * {
+  width: 100%;
+}
+.ww-invite__content--landing .ww-invite-modal-badge {
+  width: 64px;
+  align-self: center;
+}
+.ww-invite__content--landing .ww-invite-field {
+  margin: 0;
+  text-align: left;
+}
+
+.ww-paylink-summary {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 32px 24px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.ww-paylink-summary__label {
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 500;
+  line-height: 1.5;
+}
+.ww-paylink-summary__amount {
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 40px;
+  font-weight: 700;
+  line-height: 1.3;
+  letter-spacing: -0.44px;
+}
+.ww-paylink-summary__note {
+  color: var(--text-secondary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.ww-paylink-summary__caption {
+  width: 283px;
+  max-width: 100%;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 15px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+/* ── Onboarding carousel ───────────────────────────────────────────────────── */
+
+.ww-carousel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(467px, 100%);
+  text-align: center;
+}
+.ww-carousel__art {
+  width: 268px;
+  height: 262px;
+  margin-bottom: 12px;
+  object-fit: contain;
+}
+.ww-carousel__copy {
+  display: grid;
+  width: 100%;
+}
+.ww-carousel__slide {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.ww-carousel__slide--hidden {
+  visibility: hidden;
+}
+.ww-carousel__title {
+  margin: 0 0 12px;
+  font-family: var(--font-display);
+  /* Slide 1 carries "You're <tag>.zk.money": step down at phone widths so a 12-char tag isn't
+     full-bleed, and break inside an extreme tag rather than overflowing. */
+  font-size: clamp(22px, 6.7vw, 32px);
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: 0.3px;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  background: var(--gradient-title);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.ww-carousel__body {
+  margin: 0 0 24px;
+  padding: 4px 12px;
+  color: #c2bfbf;
+  font-size: 18px;
+  line-height: normal;
+}
+.ww-carousel__dots {
+  display: flex;
+  gap: 16px;
+  width: 168px;
+  margin-bottom: 24px;
+}
+/* The bar stays 8px; the padding grows the tap target around it without moving the row. */
+.zkm-btn-reset.ww-carousel__dot {
+  position: relative;
+  flex: 1;
+  height: 8px;
+  box-sizing: content-box;
+  padding-block: 8px;
+  margin-block: -8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(253, 253, 253, 0.25);
+  background-clip: content-box;
+  cursor: pointer;
+}
+.ww-carousel__dot::after {
+  content: "";
+  position: absolute;
+  inset: 8px auto 8px 0;
+  width: 100%;
+  border-radius: 999px;
+  background: #fdfdfd;
+  transform: scaleX(0);
+  transform-origin: left;
+}
+/* Position, not elapsed time: the slide you are on and the ones behind it are filled. */
+.ww-carousel__dot--active::after,
+.ww-carousel__dot--complete::after {
+  transform: scaleX(1);
+}
+
+@media (max-width: 640px) {
+  .ww-invite__topbar {
+    padding: 20px 16px;
+  }
+  .ww-invite__title {
+    font-size: 34px;
+  }
+  .ww-invite__inputrow {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 8px;
+    border-radius: var(--radius-24, 24px);
+  }
+  .ww-invite__input {
+    width: 100%;
+    flex: 1 1 100%;
+    padding: 8px 12px;
+  }
+  .ww-invite__unlock {
+    flex: 1 1 auto;
+  }
+}
+
+/* ============================================================
+   Activity modal
+   ============================================================ */
+
+.ww-activity-modal {
+  width: min(480px, calc(100vw - 32px));
+  height: min(640px, 86dvh);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden; /* the list scrolls, the header + tab switcher stay fixed */
+}
+.ww-activity-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.ww-activity-tabs {
+  display: flex;
+  gap: 8px;
+  padding: 4px;
+  border-radius: var(--radius-full);
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  margin-bottom: 16px;
+}
+.ww-activity-tab {
+  flex: 1 1 0;
+  padding: 8px 16px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-tab-inactive);
+}
+.ww-activity-tab--active {
+  background: var(--gradient-brand);
+  color: #fff;
+}
+.ww-activity-list {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  padding-bottom: var(--space-8);
+}
+.ww-activity-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+.ww-activity-group__label {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 4px 2px 0;
+}
+.ww-activity-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  padding: 48px 24px;
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+}
+.ww-activity-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius-12);
+  background: var(--surface-pink);
+  color: var(--text-primary);
+}
+.ww-activity-error__retry {
+  color: var(--accent-pink);
+  font-weight: 600;
+}
+
+/* Contacts: the single glass panel (list, chat). It sits at the left edge of the content column, not centred. */
+.ww-panel {
+  width: 560px;
+  max-width: 100%;
+  flex: 1;
+  min-height: 0;
+  /* Content padding + top bar + gap: the panel fills the viewport and scrolls inside. */
+  max-height: calc(100dvh - 210px);
+  /* .ww-content is a column flex, so this is the horizontal axis: left-align, not centre. */
+  align-self: flex-start;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  border-radius: var(--radius-16);
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+/* Send / Receive entry screens breathe wider than the contacts list. */
+.ww-panel--entry .ww-panel__scroll {
+  gap: 24px;
+}
+.ww-panel__head {
+  padding: 40px 40px 0;
+  text-align: center;
+}
+.ww-contacts__head {
+  position: relative;
+}
+.ww-shell .ww-contacts__add {
+  position: absolute;
+  top: 36px;
+  right: 40px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.1);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+.ww-panel__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.ww-contacts__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ww-contacts__label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.ww-contacts__group {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+/* Send and Receive are sibling tabs whose contact lists differ — Receive shows only @tag contacts.
+   The empty state holds a one-row group's height (12px padding, a 48px row, 12px padding) so what
+   follows it does not move when you switch. */
+.ww-contacts__empty {
+  display: flex;
+  align-items: center;
+  min-height: 72px;
+}
+/* Create-sheet modal content: icon badge over a centered title, then the step's fields. */
+.ww-create-modal__body {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.ww-create-modal__head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  text-align: center;
+}
+.ww-create-modal__badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 999px;
+  background: var(--gradient-brand);
+}
+.ww-review-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius-16);
+  background: var(--surface-card);
+  border: 1px solid var(--border-hairline);
+}
+.ww-review-card__divider {
+  border-top: 1px solid var(--border-hairline);
+}
+
+/* Share-paylink modal: link badge over the requested amount, with the copyable URL and the
+   created date beneath it, then paired CTAs, info card, red cancel pill. */
+.ww-share-modal__title {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.ww-share-modal__head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.ww-share-modal__badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 50px;
+  height: 50px;
+  border-radius: 999px;
+  background: var(--gradient-brand);
+}
+.ww-share-modal__hero,
+.ww-share-modal__meta {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.ww-share-modal__meta {
+  gap: 8px;
+}
+.ww-share-modal__date {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.ww-share-modal__title {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ww-share-modal__caption {
+  margin-top: 4px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.ww-request-contact__handle {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+/* Request detail modal: colored status + hash rows, red cancel pill, cancel-confirm art card. */
+.ww-request-detail__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.ww-request-detail__hash {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: inherit;
+  text-decoration: none;
+}
+.ww-shell .ww-danger-btn {
+  width: 100%;
+  padding: 16px;
+  border-radius: 9999px;
+  border: 1px solid var(--border-hairline);
+  background: rgba(254, 112, 139, 0.05);
+  color: var(--accent-pink);
+  font-size: 18px;
+  font-weight: 600;
+  text-align: center;
+}
+.ww-shell .ww-danger-btn:disabled {
+  opacity: 0.6;
+}
+.ww-cancel-confirm {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  text-align: center;
+}
+.ww-cancel-confirm__title {
+  font-size: 20px;
+  font-weight: 700;
+}
+.ww-cancel-confirm__sub {
+  max-width: 260px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+/* Share @tag sheet: centered title block over the QR card, no hero badge. */
+.ww-share-tag {
+  text-align: center;
+}
+.ww-share-tag__head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ww-share-tag__subtitle,
+.ww-share-tag__pending {
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+
+.ww-share-modal__buttons {
+  display: flex;
+  gap: 8px;
+}
+.ww-share-modal__buttons > * {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Claim-link modal: status pill over the amount, flavor-dependent CTA block. */
+.ww-claim-modal__head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.ww-claim-modal__amount {
+  font-size: 50px;
+  font-weight: 600;
+}
+.ww-claim-modal__copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: center;
+}
+.ww-claim-modal__title {
+  font-size: 24px;
+  font-weight: 700;
+}
+.ww-claim-modal__sub {
+  font-size: 15px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.ww-claim-modal__actions {
+  display: flex;
+  gap: 8px;
+}
+.ww-claim-modal__actions > * {
+  flex: 1;
+  min-width: 0;
+}
+.ww-shell .ww-claim-modal__alt {
+  align-self: center;
+  font-size: 14px;
+  color: var(--text-secondary);
+  text-decoration: underline;
+}
+.ww-claim-modal__brand-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ww-shell .ww-brand-claim-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 16px;
+  border-radius: 9999px;
+  background: var(--gradient-brand);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 600;
+}
+/* Claim sheet: the beats before the notification row takes over. */
+.ww-claim-proving {
+  align-items: center;
+  gap: 40px;
+}
+.ww-claim-proving__status {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.ww-claim-proving__label {
+  font-size: 16px;
+  color: var(--text-secondary);
+}
+.ww-claim-proving__warning {
+  font-size: 12px;
+  font-weight: 500;
+  color: #eed04e;
+  text-align: center;
+  line-height: 1.45;
+}
+
+.ww-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px 40px;
+  text-align: center;
+}
+.ww-empty img {
+  margin-bottom: 12px;
+}
+.ww-empty > span {
+  max-width: 222px;
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+}
+
+/* Contact chat panel: header / scrolling bubbles / action footer. */
+.ww-chat__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 24px 40px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.ww-chat__who {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+.ww-chat__who > span:last-child {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.ww-chat__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ww-chat__unsaved {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 40px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.ww-shell .ww-chat__unsaved-add {
+  flex-shrink: 0;
+  height: 32px;
+  padding: 0 14px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.1);
+  font-family: var(--font-display);
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+.ww-shell .ww-chat__unsaved-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ww-chat__unsaved-error {
+  margin: 8px 40px 0;
+  color: var(--accent-pink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.ww-chat__catchup {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding-top: 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.ww-chat__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 24px 40px;
+}
+.ww-chat__body > :first-child {
+  margin-top: auto;
+}
+.ww-chat__date {
+  font-size: 12px;
+  font-weight: 500;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.ww-chat__row {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+}
+.ww-chat__row[data-side="right"] {
+  flex-direction: row-reverse;
+}
+.ww-bubble {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 150px;
+  max-width: 240px;
+  padding: 12px;
+  border-radius: 12px 12px 12px 0;
+  background: rgba(253, 253, 253, 0.1);
+  box-shadow: 0 0 22px rgba(0, 0, 0, 0.05);
+}
+.ww-bubble[data-side="right"] {
+  align-items: flex-end;
+  border-radius: 12px 12px 0 12px;
+  background: rgba(253, 253, 253, 0.05);
+}
+.ww-bubble[data-error] {
+  background: rgba(254, 112, 139, 0.1);
+}
+.ww-bubble__body {
+  display: flex;
+  flex-direction: column;
+  align-items: inherit;
+  gap: 8px;
+  width: 100%;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.ww-bubble__body:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.6);
+  outline-offset: 4px;
+}
+.ww-bubble__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 10px;
+  font-weight: 500;
+  color: #fff;
+  background: rgba(253, 253, 253, 0.03);
+  box-shadow: 0 0 11px 3px rgba(0, 0, 0, 0.1);
+}
+.ww-bubble[data-error] .ww-bubble__pill {
+  color: #fe708b;
+  background: rgba(254, 112, 139, 0.1);
+}
+.ww-bubble__pill[data-gold] {
+  color: #eed04e;
+  background: rgba(238, 208, 78, 0.03);
+}
+.ww-bubble__pill[data-settled] {
+  color: #2ecc71;
+  background: rgba(46, 204, 113, 0.08);
+}
+.ww-bubble__amount {
+  font-size: 24px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+.ww-bubble__time {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.ww-bubble:has(.ww-bubble__actions) {
+  width: 240px;
+}
+.ww-bubble__actions {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  margin-top: 4px;
+}
+.ww-shell .ww-bubble__btn {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 9999px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: rgba(253, 253, 253, 0.05);
+  box-shadow: 0 0 22px 6px rgba(0, 0, 0, 0.05);
+}
+.ww-shell .ww-bubble__btn[data-primary] {
+  background: var(--gradient-brand);
+}
+.ww-chat__foot {
+  display: flex;
+  gap: 12px;
+  padding: 24px 40px;
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
+}
+.ww-chat__foot:empty {
+  display: none;
+}
+.ww-shell .ww-chat__glassbtn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 56px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.1);
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+}
+.ww-shell .ww-chat__glassbtn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Deposit: stealth-address card over the shared panel. */
+.ww-deposit {
+  gap: 16px;
+  padding: 40px;
+}
+.ww-deposit__stealth {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  /* "safe": content taller than the card top-aligns and scrolls instead of spilling out both
+     ways — over the header above and the connect row below. Plain center is the fallback. */
+  justify-content: center;
+  justify-content: safe center;
+  overflow-y: auto;
+  gap: 24px;
+  padding: 24px;
+  border-radius: 12px;
+}
+.ww-deposit__fields {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ww-deposit__input,
+.ww-deposit__facts {
+  box-sizing: border-box;
+  width: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-deposit__input {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 48px;
+  padding: 0 16px;
+  border-radius: 12px;
+  font-weight: 500;
+}
+/* Beats `.zkm-btn-reset { font/background/padding }` the same way `.ww-invite-pill` does. */
+.zkm-btn-reset.ww-deposit__generate {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  gap: 4px;
+  height: 25px;
+  min-width: 73px;
+  padding: 6px 12px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: linear-gradient(90deg, #9c04ff 0%, #0693ff 100%);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.zkm-btn-reset.ww-deposit__generate:disabled {
+  cursor: default;
+}
+.ww-deposit__addr {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #fdfdfd;
+  font-size: 14px;
+  font-weight: 500;
+}
+.ww-deposit__facts {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+}
+.ww-deposit__fact {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 24px;
+}
+.ww-deposit__picker {
+  position: absolute;
+  top: 32px;
+  right: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 198px;
+  box-sizing: border-box;
+  padding: 16px;
+  border-radius: 20px;
+  background: #212121;
+  box-shadow: 0 0 12px 6px rgba(0, 0, 0, 0.25);
+}
+.zkm-btn-reset.ww-deposit__picker-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-radius: 8px;
+}
+.ww-deposit__picker-row:hover,
+.ww-deposit__picker-row[aria-selected="true"] {
+  background: rgba(255, 255, 255, 0.05);
+}
+.ww-deposit__picker-row span {
+  display: flex;
+  flex-direction: column;
+}
+.ww-deposit__picker-row b {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fdfdfd;
+}
+.ww-deposit__picker-row small {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.ww-deposit__fact b {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.ww-deposit__fact img {
+  border-radius: 50%;
+}
+.ww-deposit__fact b a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: inherit;
+  text-decoration: none;
+}
+.zkm-btn-reset.ww-deposit__pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.ww-deposit__actions {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.zkm-btn-reset.ww-deposit__btn {
+  box-sizing: border-box;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 48px;
+  padding: 12px 16px;
+  overflow: hidden;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.ww-deposit__btn svg {
+  flex: none;
+}
+.zkm-btn-reset.ww-deposit__btn:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+.ww-deposit__note {
+  width: 242px;
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.ww-deposit__link {
+  color: var(--accent-green, #6c9);
+  font-size: inherit;
+}
+.ww-deposit__or {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.zkm-btn-reset.ww-deposit__connect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 16px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  text-align: left;
+}
+.ww-deposit__connect:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ww-deposit__connect-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--gradient-brand);
+  box-shadow: 0 0 17px 5px rgba(0, 0, 0, 0.1);
+}
+.ww-deposit__connect-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ww-deposit__connect-text b {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.ww-deposit__connect-text span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.zkm-btn-reset.ww-deposit__disconnect {
+  align-self: center;
+  margin-top: -8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.ww-qr-card {
+  flex: none;
+  width: min(300px, 100%);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 10px;
+  background: linear-gradient(90deg, #9c04ff 0%, #0693ff 100%);
+}
+.ww-qr-card__code {
+  box-sizing: border-box;
+  width: 100%;
+  aspect-ratio: 1;
+  padding: 24px;
+  background: rgba(253, 253, 253, 0.2);
+}
+.ww-qr-card__code svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.zkm-btn-reset.ww-qr-card__label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 14px;
+  color: #fdfdfd;
+  font-size: 14px;
+  font-weight: 500;
+  letter-spacing: -0.15px;
+}
+/* The connect link is long; the head fits on one line and the copy icon keeps its width. */
+.ww-qr-card__label > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ww-qr-card__label > svg {
+  flex: none;
+}
+
+/* Centered sheet: hero icon + title over a facts card (deposit warning, tx detail). */
+.ww-deposit-warning {
+  position: relative;
+  width: min(500px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 40px;
+  padding: 40px 64px;
+  text-align: center;
+  background: #212121;
+  box-shadow: inset 0 0 0 1px #303030, 0 0 40px 33px rgba(0, 0, 0, 0.15);
+}
+.ww-deposit-warning__close {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+}
+.ww-deposit-warning__icon {
+  width: 64px;
+  height: 64px;
+  margin-bottom: -16px;
+}
+.ww-deposit-warning__points {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 24px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  text-align: left;
+}
+.ww-deposit-warning__point {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.ww-deposit-warning__point-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 0 17px 5px rgba(0, 0, 0, 0.1);
+}
+.ww-deposit-warning__point b {
+  font-size: 14px;
+}
+.ww-deposit-warning__actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+}
+.ww-deposit-warning__again {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.3;
+  cursor: pointer;
+}
+.ww-deposit-warning__again input {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex-shrink: 0;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  cursor: pointer;
+}
+.ww-deposit-warning__again input:checked {
+  background: var(--gradient-brand);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.5);
+}
+.ww-deposit-warning__again input:checked::after {
+  content: "";
+  display: block;
+  width: 8px;
+  height: 5px;
+  margin: 3px auto 0;
+  border-left: 1.5px solid #fff;
+  border-bottom: 1.5px solid #fff;
+  transform: rotate(-45deg);
+}
+.ww-deposit-warning__again input:focus-visible {
+  outline: 2px solid var(--text-secondary);
+  outline-offset: 2px;
+}
+/* ── Accountless payment request (/request with no account) ───────────────── */
+
+/* Pay-method rows, on the deposit connect row. Both selectors carry .ww-deposit__connect so the
+   fill and the border beat it wherever this block ends up in the sheet. */
+.ww-paymethods {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ww-deposit__connect.ww-paymethod {
+  position: relative;
+  overflow: hidden;
+  padding: 8px 12px;
+}
+.ww-deposit__connect.ww-paymethod:disabled {
+  cursor: default;
+}
+.ww-deposit__connect.ww-paymethod:disabled .ww-deposit__connect-icon {
+  opacity: 0.5;
+}
+/* Gradient hairline over the row's own translucent fill: the gradient is masked down to the
+   1px ring so the aurora keeps showing through the middle. */
+.ww-paymethod--best::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  background: var(--gradient-brand);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+/* Corner flag: a wedge cut off the top-right, its label lying along the cut. The label sits on
+   the wedge rather than inside it, so the clip never eats a glyph. */
+.ww-paymethod__flag {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 62px;
+  height: 25px;
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 10px;
+  font-weight: 600;
+}
+.ww-paymethod__flag::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  clip-path: polygon(0 0, 100% 0, 100% 100%);
+  background: #0693ff;
+}
+.ww-paymethod__flag span {
+  position: absolute;
+  top: 6px;
+  right: 5px;
+  line-height: 1;
+  transform: rotate(18deg);
+  transform-origin: 100% 50%;
+}
+
+/* Pay sheet: the deposit sheet's stack, tightened. The sheet scrolls, so nothing in it may be
+   shrunk to fit, and the cards the deposit screen stretches have to be widened here. */
+.ww-deposit-warning.ww-reqpay {
+  gap: 24px;
+}
+.ww-reqpay > * {
+  flex: none;
+}
+.ww-reqpay .ww-deposit__stealth,
+.ww-reqpay .ww-paylink-summary,
+.ww-reqpay .ww-deposit__or {
+  width: 100%;
+  box-sizing: border-box;
+}
+.ww-reqpay__heading {
+  width: 100%;
+  margin: 0;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 16px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.ww-deposit-disclaimer .ww-invite-modal-badge {
+  color: #fff;
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 700;
+}
+.ww-deposit-disclaimer__body {
+  max-width: 306px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+}
+.ww-deposit-disclaimer .ww-deposit-warning__again {
+  align-self: center;
+  color: #fff;
+}
+.ww-deposit-disclaimer .ww-deposit__btn {
+  align-self: center;
+  flex: 0 0 auto;
+  padding: 12px 58px;
+  font-size: 16px;
+}
+.ww-sheet {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+.ww-sheet--detail {
+  gap: 24px;
+}
+.ww-sheet__icon {
+  width: 64px;
+  height: 64px;
+}
+.ww-sheet__title {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.ww-sheet__title small {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
+  color: var(--text-secondary);
+}
+.ww-sheet__title small a {
+  color: inherit;
+  text-decoration: none;
+}
+.ww-sheet__facts {
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 14px;
+  color: var(--text-secondary);
+  text-align: left;
+}
+.ww-sheet__fact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  /* min-, not fixed: a long status value ("Waiting for Aztec confirmation") wraps at phone
+     widths and must grow the row, not paint over the label. */
+  min-height: 24px;
+}
+.ww-sheet__fact > span {
+  flex-shrink: 0;
+}
+.ww-sheet__fact b,
+.ww-sheet__fact a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: #fdfdfd;
+  text-decoration: none;
+  text-align: right;
+}
+.ww-sheet__fact b[data-tone="pending"] {
+  color: #eed04e;
+}
+.ww-sheet__fact b[data-tone="done"] {
+  color: #56e79d;
+}
+.ww-sheet__fact b[data-tone="failed"] {
+  color: #fe708b;
+}
+.ww-sheet__note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.ww-fund {
+  gap: 24px;
+  padding: 32px 40px;
+  width: min(420px, calc(100vw - 32px));
+}
+.ww-fund__addr {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-fund__fields {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+}
+.ww-fund__label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-fund__amount {
+  height: 56px;
+  gap: 12px;
+}
+.ww-fund__amount > span:first-child {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ww-fund__amount input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0;
+  background: none;
+  border: 0;
+  outline: 0;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text-primary, #fff);
+}
+.ww-fund__amount small {
+  font-size: 11px;
+}
+.ww-fund__amount .ww-deposit__pill {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 4px;
+}
+
+/* Withdraw — deposit chrome plus label-above inputs and saved-wallet rows. */
+.ww-withdraw__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.ww-withdraw__box {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.ww-withdraw__box input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  /* The Paste pill shares the row; a placeholder that outgrows the input must ellipsize, not clip. */
+  text-overflow: ellipsis;
+}
+.ww-withdraw__box input::placeholder {
+  color: var(--text-primary);
+  opacity: 0.5;
+}
+.zkm-btn-reset.ww-withdraw__paste {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.zkm-btn-reset.ww-withdraw__clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.3);
+  color: rgba(255, 255, 255, 0.8);
+}
+/* The balance sits alone on this row; the field below it is the amount. */
+.ww-withdraw__amount-label {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+.ww-withdraw__amount-label b {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.ww-withdraw__amount-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.ww-withdraw__warning {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 176, 32, 0.35);
+  background: rgba(255, 176, 32, 0.08);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.ww-withdraw__estimate {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.ww-withdraw__estimate > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ww-withdraw__estimate b {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+}
+.ww-withdraw__estimate small {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.ww-withdraw__fee-note {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: right;
+}
+.ww-withdraw__saved {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.ww-withdraw__saved-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.zkm-btn-reset.ww-withdraw__saved-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 13px;
+  text-align: left;
+}
+.ww-withdraw__saved-row b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.ww-withdraw__saved-row span {
+  color: var(--text-secondary);
+}
+/* Send and Receive pin their heading to the top of the card. The withdraw form is tall enough that
+   centring floats its heading down the panel, so it top-aligns too — against `.ww-deposit`'s own
+   40px, which is what `ww-panel__head` uses. */
+.ww-withdraw .ww-deposit__stealth {
+  justify-content: flex-start;
+  padding-top: 0;
+}
+/* Phone widths: the content is taller than the panel, so the document scrolls; the panel itself must
+   not become a second scroll container. */
+@media (max-width: 640px) {
+  .ww-withdraw .ww-deposit__stealth {
+    flex: none;
+  }
+  .ww-withdraw .ww-deposit__or,
+  .ww-withdraw .ww-deposit__connect,
+  .ww-withdraw .ww-deposit__disconnect {
+    flex-shrink: 0;
+  }
+}
+.ww-logout {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  padding: var(--modal-pad-y) var(--modal-pad-x);
+}
+.ww-logout__icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(90deg, #9c04ff, #0693ff);
+  box-shadow: 0 0 17px 5px rgba(0, 0, 0, 0.1);
+}
+.ww-logout__body {
+  margin: 0;
+  text-align: center;
+  font-size: 14px;
+  line-height: 1.4;
+  opacity: 0.75;
+}
+.ww-logout__actions {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+}
+.ww-logout__actions > * {
+  flex: 1;
+}
+/* The way past the block, kept small under OK so it reads as the exception. */
+.ww-logout__anyway {
+  margin-top: -8px;
+  font-size: 14px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+/* Passkey policy: the phone steps before a laptop ceremony, and a refusal in place of a spinner. */
+.ww-phone-steps {
+  gap: 12px;
+  text-align: left;
+}
+.ww-phone-steps .zkm-step-row {
+  width: 100%;
+}
+.ww-phone-steps__hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.ww-phone-steps__hero > svg {
+  width: 77px;
+  height: 88px;
+  color: var(--text-primary);
+}
+.ww-phone-steps__hero-title svg {
+  width: 19px;
+  height: 19px;
+  vertical-align: -3px;
+  margin-right: 7px;
+}
+
+/* The second route: quieter than the phone, so the common answer stays the obvious one. */
+.zkm-btn-reset.ww-phone-steps__alt {
+  width: 100%;
+  padding: 13px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.ww-phone-steps__hero-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.3;
+  text-align: center;
+  text-wrap: balance;
+  color: var(--text-primary);
+}
+.ww-phone-steps__caption {
+  margin: 0;
+  max-width: 340px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+/* Sign-in has no modal behind it, so its passkey states take their own sheet instead of sitting
+   as loose text on the gradient. */
+.ww-passkey-sheet {
+  box-sizing: border-box;
+  width: min(400px, calc(100vw - 32px));
+  padding: var(--space-24);
+  border-radius: var(--radius-32);
+  background: var(--surface-sheet);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+.ww-passkey-sheet .ww-invite-spinner {
+  padding: 0;
+  gap: 14px;
+}
+
+.ww-passkey-refusal__title {
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.25;
+  margin: 0;
+  text-align: center;
+}
+
+/* The likely reasons a prompt offered nothing, grouped so they read as one set of possibilities. */
+.ww-passkey-causes {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  width: 100%;
+  padding: var(--space-16);
+  border-radius: var(--radius-16);
+  background: rgba(255, 255, 255, 0.04);
+  text-align: left;
+}
+.ww-passkey-causes__heading {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.ww-passkey-causes__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ww-passkey-causes__list li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ww-passkey-causes__title {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.ww-passkey-causes__detail {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+/* Activity panel: filter chips over day-grouped rows. */
+.ww-chip-row .ww-activity__chip {
+  padding: 10px 32px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-display);
+  font-size: 16px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+  background: rgba(255, 255, 255, 0.03);
+  box-shadow: 0 0 10.9px 3px rgba(0, 0, 0, 0.1);
+}
+.ww-chip-row .ww-activity__chip[data-active] {
+  font-weight: 700;
+  color: var(--text-primary);
+  background: var(--gradient-brand);
+}
+.ww-activity__list {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+/* Phone widths: the 40px panel padding plus the list's own 16px leaves feed rows ~88px of title
+   room, which ellipsizes addresses to "0..". Reclaim the horizontal padding for the rows. */
+@media (max-width: 640px) {
+  .ww-panel__scroll {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .ww-activity__list {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+}
+.ww-activity__group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Send panel: paylink option row + "or select a contact" divider. */
+.ww-send-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  text-align: left;
+}
+.ww-send-option__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+.ww-send-option__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #9c04ff, #0693ff);
+  box-shadow: 0 0 17px 5px rgba(0, 0, 0, 0.1);
+}
+.ww-send-option__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+.ww-send-option__text > span:first-child {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.ww-send-option__text > span + span {
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 14px;
+  color: var(--text-secondary);
+}
+.ww-send-or {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ww-send-all {
+  padding: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+  text-align: center;
+}
+
+/* Contact pay modal: amount / confirm / working over the Send page. */
+.ww-pay {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 32px;
+  --sheet-pad-bottom: 32px;
+}
+.ww-pay__close {
+  position: absolute;
+  top: 20px;
+  right: 20px;
+}
+.ww-pay__head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding-top: 8px;
+}
+.ww-pay__head > :first-child {
+  margin-bottom: 16px;
+}
+.ww-pay__title {
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ww-pay__handle,
+.ww-pay__available {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+}
+.ww-pay__form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.ww-pay__field {
+  position: relative;
+}
+.ww-pay__available {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+.ww-pay__available b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.ww-pay__max {
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: var(--surface-strong);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text-primary);
+}
+.ww-pay__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 12px;
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px var(--border-hairline);
+}
+.ww-pay__back {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+}
+.ww-select {
+  position: relative;
+}
+.ww-select select {
+  flex: 1;
+  height: 100%;
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 14px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.ww-select select:focus {
+  outline: none;
+}
+.ww-pay__protect {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+.ww-pay__error {
+  font-size: 13px;
+  color: var(--accent-pink);
+}
+.ww-pay__working {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 0;
+  text-align: center;
+}
+.ww-pay__stage {
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.ww-pay__cancel {
+  width: 100%;
+  height: 48px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-pay__warn {
+  font-size: 11px;
+  line-height: 1.4;
+  color: #f5d547;
+}
+
+/* Transaction detail modal. */
+.ww-txd {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 32px;
+  --sheet-pad-bottom: 32px;
+}
+.ww-txd__notice {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px var(--border-hairline);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.ww-txd__notice--live {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: #f5d547;
+  box-shadow: inset 0 0 0 1px rgba(245, 213, 71, 0.35);
+}
+.ww-txd__card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 12px;
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px var(--border-hairline);
+}
+.ww-txd--request .ww-pay__title {
+  font-size: 40px;
+}
+.ww-txd__owe {
+  display: block;
+  margin-bottom: 8px;
+  font-family: var(--font-display);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.ww-txd__hash {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+.ww-txd__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.ww-txd__actions > :only-child {
+  grid-column: 1 / -1;
+}
+.ww-txd__all {
+  align-self: center;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-primary);
+}
+/* Settings: same 560 panel as contacts; head carries a hairline under the title. */
+.ww-panel--settings .ww-panel__head {
+  padding: 24px 40px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.ww-panel--settings .ww-panel__scroll {
+  gap: 32px;
+  padding: 24px 40px 12px;
+  align-items: center;
+}
+.ww-panel--settings .ww-contacts__section {
+  width: 100%;
+}
+.ww-settings__user {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+.ww-settings__user > :last-child {
+  margin-top: -8px;
+}
+.ww-settings__domain,
+.ww-settings__trailing,
+.ww-settings__version {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.ww-settings__domain {
+  font-size: 16px;
+  font-weight: 500;
+}
+/* .ww-shell scope outranks .zkm-btn-reset's background: none. */
+.ww-shell .ww-settings__banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  background: linear-gradient(90deg, #9c04ff, #0693ff);
+  text-align: left;
+}
+/* The two banners are one block: the panel's 32px section gap between them would read as two
+   unrelated things. */
+.ww-settings__banners {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.ww-settings__banner-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 500;
+}
+/* Only a banner that has a subtitle gets one: alone, a line is the banner's title. */
+.ww-settings__banner-text > :last-child:not(:first-child) {
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+/* Notifications: bell unread dot + dropdown panel anchored under the bell. */
+.ww-shell .ww-notifications__anchor {
+  position: relative;
+}
+/* The bell while a transaction is in progress: gold while the tab must stay open, green after. */
+.ww-shell .ww-notifications__bell-ring {
+  position: absolute;
+  inset: 4px;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  pointer-events: none;
+  animation: ww-bell-ring-spin 1.2s linear infinite;
+}
+.ww-shell .ww-notifications__bell-ring.is-tab-bound {
+  border-top-color: var(--accent-gold);
+  border-right-color: var(--accent-gold);
+}
+.ww-shell .ww-notifications__bell-ring.is-safe {
+  border-top-color: var(--accent-green);
+  border-right-color: var(--accent-green);
+}
+@keyframes ww-bell-ring-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ww-shell .ww-notifications__bell-ring {
+    animation: none;
+  }
+}
+.ww-shell .ww-notifications__bell-dot {
+  position: absolute;
+  top: 12px;
+  right: 13px;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: #ff5c8a;
+  box-shadow: 0 0 0 2px var(--surface-canvas);
+}
+.ww-shell .ww-notifications {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: 0;
+  z-index: 20;
+  width: 344px;
+  max-height: 420px;
+  display: flex;
+  flex-direction: column;
+  border-radius: 20px;
+  background: var(--surface-sheet);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07), 0 16px 40px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+.ww-shell .ww-notifications__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+.ww-shell .ww-notifications__new {
+  padding: 3px 10px;
+  border-radius: 9999px;
+  background: var(--gradient-brand);
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+}
+.ww-shell .ww-notifications__list {
+  overflow-y: auto;
+  padding: 8px;
+}
+.ww-shell .ww-notifications__empty {
+  margin: 0;
+  padding: 24px;
+  text-align: center;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+.ww-shell .ww-notifications__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.ww-shell .ww-notifications__row:hover {
+  background: var(--surface-card);
+}
+.ww-shell .ww-notifications__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ww-shell .ww-notifications__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-shell .ww-notifications__desc,
+.ww-shell .ww-notifications__time {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+/* A failure reason has to be readable in the panel: wrap to three lines rather than clip to one. */
+.ww-shell .ww-notifications__desc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+.ww-shell .ww-notifications__time {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ww-shell .ww-notifications__time {
+  flex: none;
+  display: flex;
+  align-items: center;
+}
+.ww-shell .ww-notifications__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 9999px;
+  background: var(--accent-green, #4ade80);
+}
+.ww-shell .ww-notifications__toast {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: 0;
+  z-index: 20;
+  max-width: min(420px, calc(100vw - 32px));
+  animation: ww-fade-in 160ms ease-out;
+}
+/* The toast carries failure reasons too: wrap them at every width instead of clipping to one line. */
+.ww-topbar .ww-notifications__toast .zkm-toast__message {
+  flex: 1;
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.ww-topbar .ww-notifications__toast > svg,
+.ww-topbar .ww-notifications__toast > button {
+  flex-shrink: 0;
+}
+.ww-shell .ww-notifications__item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ww-shell .ww-notifications__item .ww-notifications__row {
+  flex: 1;
+  min-width: 0;
+}
+.ww-shell .ww-notifications__dismiss {
+  flex: none;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 9999px;
+  color: var(--text-secondary);
+  opacity: 0;
+}
+.ww-shell .ww-notifications__item:hover .ww-notifications__dismiss,
+.ww-shell .ww-notifications__item:focus-within .ww-notifications__dismiss {
+  opacity: 1;
+}
+.ww-shell .ww-notifications__dismiss:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+}
+.ww-shell .ww-notifications__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ww-shell .ww-notifications__clear {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.ww-shell .ww-notifications__clear:hover {
+  color: var(--text-primary);
+}
+
+/* Feedback / bug report sheets. */
+.ww-feedback {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 40px;
+}
+@media (max-width: 640px) {
+  /* Reserve the Close button width on both sides of the centered title. */
+  .ww-feedback__title {
+    flex: none;
+    max-width: calc(100% - 80px);
+  }
+}
+.ww-feedback__body {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+}
+.ww-feedback__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.ww-feedback__textarea {
+  width: 100%;
+  min-height: 147px;
+  padding: 16px;
+  box-sizing: border-box;
+  resize: vertical;
+  border: none;
+  outline: none;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  font: 500 14px/1.5 var(--font-body);
+}
+.ww-feedback__textarea::placeholder {
+  color: var(--text-secondary);
+}
+.ww-feedback__rate {
+  display: flex;
+  gap: 12px;
+}
+.ww-shell .ww-feedback__rate-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 12px 24px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 700;
+}
+.ww-shell .ww-feedback__rate-btn[data-active] {
+  background: linear-gradient(90deg, #9c04ff, #0693ff);
+}
+.ww-feedback__file {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 57px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  cursor: pointer;
+}
+/* Kept in the tab order (not `hidden`) so keyboard users can open the picker. */
+.ww-feedback__file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.ww-feedback__field:has(.ww-feedback__file-input:focus-visible) .ww-feedback__file {
+  outline: 2px solid var(--purple-400);
+}
+.ww-feedback__thanks {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 0 16px;
+  text-align: center;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 500;
+}
+.ww-feedback__error {
+  margin: 0;
+  text-align: center;
+  color: var(--accent-pink);
+  font-size: 13px;
+}
+
+/* Support ID sheet. */
+.ww-supportid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+}
+.ww-supportid__note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.ww-supportid__id {
+  padding: 16px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  font-size: 14px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.ww-addresses {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  width: 100%;
+  max-height: 60dvh;
+  overflow-y: auto;
+}
+.ww-addresses__group {
+  gap: 4px;
+  padding: 4px;
+}
+.ww-shell .ww-addresses__row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  text-align: left;
+  color: var(--text-primary);
+}
+.ww-shell button.ww-addresses__row:hover,
+.ww-shell button.ww-addresses__row:focus-visible {
+  background: rgba(255, 255, 255, 0.06);
+}
+.ww-shell .ww-addresses__row--unresolved {
+  color: var(--text-secondary);
+}
+.ww-addresses__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.ww-addresses__chain,
+.ww-addresses__copied {
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.ww-addresses__copied {
+  color: var(--accent-green);
+}
+.ww-addresses__value {
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.ww-search__error {
+  margin: 0;
+  color: var(--accent-pink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.ww-share-tag__scan {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  color: var(--text-secondary);
+  font-size: 14px;
+}
+.ww-share-tag__scan strong {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+
+@media (max-width: 640px) {
+  .ww-mobile-search .ww-search,
+  .ww-contacts__search .ww-search {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr);
+    flex: none;
+    width: 100%;
+    max-width: none;
+    padding: 12px 16px;
+    border-radius: 24px;
+  }
+  .ww-shell .ww-search > .ww-search__suffix {
+    display: none;
+  }
+  .ww-shell .ww-search input {
+    width: 100%;
+    min-height: 24px;
+    font-size: 16px;
+  }
+  .ww-shell .ww-search__results {
+    position: relative;
+    top: auto;
+    grid-column: 1 / -1;
+    padding: 8px;
+    margin-top: 8px;
+    max-height: 60dvh;
+    overscroll-behavior: contain;
+    box-sizing: border-box;
+  }
+  .ww-shell .ww-search__row {
+    padding: 8px 4px;
+    box-sizing: border-box;
+    text-align: left;
+  }
+  .ww-search__row .zkm-list-row {
+    width: 100%;
+    min-width: 0;
+  }
+  .ww-search__row .zkm-contact-row__text,
+  .ww-search__row .zkm-list-row__text {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .ww-shell .ww-search__trailing {
+    white-space: normal;
+    max-width: 72px;
+    flex-shrink: 0;
+  }
+  .ww-modal-overlay:has(> .ww-share-tag-modal) {
+    align-items: center;
+    padding: calc(24px + var(--ww-safe-area-top)) calc(24px + var(--ww-safe-area-right))
+      calc(24px + var(--ww-safe-area-bottom)) calc(24px + var(--ww-safe-area-left));
+    box-sizing: border-box;
+  }
+  .ww-modal.ww-modal.ww-share-tag-modal {
+    position: relative;
+    width: 100%;
+    max-width: 354px;
+    max-height: calc(100dvh - 48px - var(--ww-safe-area-top) - var(--ww-safe-area-bottom));
+    padding: 24px;
+    border: 0;
+    border-radius: 24px;
+    animation: ww-modal-in 0.22s ease;
+    overscroll-behavior: contain;
+  }
+  .ww-share-tag-modal .ww-share-tag__close {
+    position: absolute;
+    top: 5px;
+    right: 5px;
+    display: grid;
+    place-items: center;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    color: rgba(255, 255, 255, 0.6);
+  }
+  .ww-share-tag__close::before {
+    content: "";
+    position: absolute;
+    inset: 7px;
+    border-radius: 50%;
+    background: rgba(255, 255, 255, 0.12);
+  }
+  .ww-share-tag-modal .ww-share-tag__head {
+    padding-inline: 20px;
+    line-height: 1.3;
+  }
+  .ww-share-tag-modal .ww-share-tag__subtitle { font-size: 16px; }
+  .ww-share-tag-modal .ww-share-tag__action {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    min-height: 48px;
+    padding: 10px 8px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 9999px;
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+    font-size: 18px;
+    font-weight: 600;
+    line-height: 24px;
+  }
+  .ww-share-tag__action > svg { flex: none; }
+  .ww-share-tag-modal .ww-share-tag__scan { line-height: 24px; }
+  .ww-share-tag-modal .ww-qr-card {
+    width: 100%;
+    flex-shrink: 0;
+  }
+  .ww-share-tag-modal .ww-qr-card__code {
+    /* Keep the narrow long-packet module grid readable after browser rasterization. */
+    padding: 17px;
+  }
+  .ww-share-tag-modal .ww-share-modal__buttons {
+    width: 100%;
+    flex-shrink: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  /* White QR modules need the unlightened gradient for reliable decoding. */
+  .ww-share-tag-modal .ww-qr-card__code {
+    background: transparent;
+  }
+}
+
+.ww-connect__identity { overflow-wrap: anywhere; max-width: 100%; }
+.ww-connect__sub {
+  margin-top: 4px;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.ww-connect__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ww-connect__status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 0;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 640px) {
+  .ww-panel.ww-contacts {
+    width: 100%;
+    max-height: none;
+    background: transparent;
+    box-shadow: none;
+    border-radius: 0;
+    gap: 24px;
+  }
+  /* WalletGate and UnlockGate render fragments, keeping Contacts a direct content child. */
+  .ww-content:has(> .ww-contacts) {
+    padding: var(--ww-safe-area-top) calc(24px + var(--ww-safe-area-right))
+      calc(24px + var(--ww-safe-area-bottom)) calc(24px + var(--ww-safe-area-left));
+  }
+  /* Web Figma 10231:67228: draw the glow at its full 2374×1323 inside the 1280×749 frame. */
+  .ww-shell:has(.ww-contacts) .ww-shell__glow {
+    top: 0;
+    background-size: 2373.95px 1322.55px;
+    background-position: calc(50% + 41.12px) 71.36px;
+  }
+  .ww-panel.ww-contacts .ww-contacts__head {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    align-items: center;
+    min-height: 80px;
+    padding: 0;
+    text-align: center;
+  }
+  .ww-contacts__head > .zkm-gradient-text { line-height: 1.3; }
+  .ww-contacts .ww-contacts__back {
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 50%;
+  }
+  .ww-contacts__back-disc { width: 40px; height: 40px; }
+  .ww-contacts__search {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+    min-width: 0;
+  }
+  .ww-contacts__search:has(> .ww-contacts__search-action) {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+  .ww-contacts .ww-contacts__search-action {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    box-sizing: border-box;
+    padding: 0;
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 50%;
+    background: var(--surface-faint);
+    color: var(--text-primary);
+  }
+  .ww-contacts__search .ww-search {
+    padding: 12px 24px;
+  }
+  .ww-contacts__search .ww-search input {
+    min-height: 20px;
+    height: 20px;
+    line-height: 20px;
+    padding: 0;
+  }
+  .ww-contacts__search .ww-search input::placeholder { font-size: 14px; }
+  .ww-contacts__label { line-height: 18px; }
+  .ww-contacts__group .zkm-contact-row__subtitle { line-height: 1.35; }
+  .ww-contacts > .ww-panel__scroll {
+    flex: none;
+    overflow: visible;
+    padding: 0;
+    gap: 8px;
+  }
+  .ww-contacts .ww-empty { padding: 24px 0; }
+  .ww-contacts .zkm-contact-row__text { min-width: 0; overflow-wrap: anywhere; }
+}
+
+/* ── Paylink external-wallet claim (visitor + signed-in) ────────────────────── */
+
+.ww-invite__content--landing .ww-paylink-summary__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  align-self: center;
+  margin-top: -12px;
+  padding: 4px 8px;
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+.ww-paylink-summary__pill::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-green, #56e79d);
+}
+.ww-paylink-summary__pill b {
+  color: #fff;
+  font-weight: 500;
+}
+.ww-claim-l1__caption {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.3;
+  text-align: center;
+}
+.zkm-btn-reset.ww-claim-l1__alt {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+}
+.ww-claim-progress__head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.ww-claim-progress__sub {
+  margin: 0;
+  max-width: 314px;
+  color: var(--text-secondary);
+  font-size: 16px;
+  line-height: 1.3;
+}
+
+/* Paylink-funded signup: the three-step modal (Figma 11118:53472 / 53767 / 54014). */
+.ww-signup-step form {
+  display: contents;
+}
+.ww-signup-stepper {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  margin: 0 0 24px;
+  padding: 0;
+  list-style: none;
+}
+.ww-signup-stepper__step {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 96px;
+  padding: 0 4px;
+  box-sizing: border-box;
+}
+.ww-signup-stepper__step + .ww-signup-stepper__step::before {
+  content: "";
+  position: absolute;
+  top: 16px;
+  right: calc(50% + 20px);
+  width: 48px;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.2);
+}
+.ww-signup-stepper__dot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: 1px dashed transparent;
+  background: rgba(255, 255, 255, 0.1);
+}
+.ww-signup-stepper__step--active .ww-signup-stepper__dot {
+  border-color: var(--accent-green);
+  background: rgba(86, 231, 157, 0.1);
+}
+.ww-signup-stepper__step--done .ww-signup-stepper__dot {
+  background: rgba(86, 231, 157, 0.1);
+}
+.ww-signup-stepper__label {
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-align: center;
+}
+.ww-signup-stepper__step--active .ww-signup-stepper__label {
+  color: var(--text-primary);
+}
+.ww-signup-step .ww-invite-modal-head {
+  margin-bottom: 24px;
+}
+.ww-signup-step .ww-invite-facts {
+  margin-top: 0;
+}
+.ww-claim-review {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 24px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.ww-claim-review__payment {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  text-align: center;
+}
+.ww-claim-review .ww-deposit-terms {
+  padding: 0;
+  background: none;
+}
+.ww-claim-review__status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  margin: 16px auto;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+.ww-claim-review__actions {
+  display: flex;
+  gap: 8px;
+}
+.ww-claim-review__actions > * {
+  flex: 1;
+}
+.ww-claim-review__actions .ww-claim-review__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 56px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 600;
+}

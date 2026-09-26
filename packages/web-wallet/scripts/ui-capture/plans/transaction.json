@@ -1,0 +1,15 @@
+{
+  "scenario": "activity",
+  "path": "/activity",
+  "ready": { "role": "button", "name": "Open transaction details", "first": true },
+  "steps": [
+    { "action": "click", "role": "button", "name": "Open transaction details", "first": true },
+    { "action": "waitFor", "selector": ".ww-txd" },
+    { "action": "screenshot", "file": "transaction.png", "state": "Transaction detail: top" },
+    { "action": "scroll", "selector": ".ww-txd", "top": "end" },
+    { "action": "screenshot", "file": "transaction-bottom.png", "state": "Transaction detail: final controls" },
+    { "action": "press", "selector": ".ww-txd", "key": "Escape" },
+    { "action": "waitFor", "selector": ".ww-txd", "state": "detached" }
+  ],
+  "finalScreenshot": false
+}

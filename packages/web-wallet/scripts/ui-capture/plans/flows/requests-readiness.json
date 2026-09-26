@@ -1,0 +1,68 @@
+{
+  "scenario": "activity",
+  "path": "/requests/new?requestReadiness=connecting&flowFixture=success",
+  "ready": {
+    "selector": ".ww-flow"
+  },
+  "steps": [
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Connecting\u2026",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "connecting.png",
+      "state": "Request dependencies connecting"
+    },
+    {
+      "action": "wait",
+      "ms": 15500
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Retry connection",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "retry.png",
+      "state": "Request connection retry"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Retry connection",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Connecting\u2026",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "reloaded.png",
+      "state": "Request dependencies reconnecting after reload"
+    },
+    {
+      "action": "goto",
+      "path": "/requests/new?demo=activity&flowFixture=success&requestReadiness=registering"
+    },
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Tag still registering\u2026",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "registering.png",
+      "state": "Request registration gate"
+    }
+  ],
+  "finalScreenshot": false
+}

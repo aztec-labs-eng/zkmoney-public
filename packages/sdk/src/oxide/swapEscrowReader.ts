@@ -1,0 +1,147 @@
+/**
+ * L1 reads over a swap-on-withdraw escrow, for the client that has to notice when nobody runs the
+ * swap. Oxide's relayer drops an operation whose `deployAndExecute` keeps reverting and exposes no
+ * status, so the wallet watches the escrow itself: its DAI balance says whether it is still funded,
+ * its code says whether a `deployAndExecute` (or deploy-only `deploy`) ever ran, and a
+ * `deployAndExecute` simulation says whether the route can deliver at all.
+ */
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  erc20Abi,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem"
+import { SwapEscrowAbi, SwapEscrowFactoryAbi, type SwapEscrowArgs } from "@oxide/l1-contracts"
+
+export interface SwapEscrowReader {
+  /** DAI held at the escrow. Zero once the swap ran or the DAI was recovered. */
+  daiBalance(escrow: Address): Promise<bigint>
+  /** Whether the escrow has code. A clone only appears through `deployAndExecute` or `deploy`. */
+  isDeployed(escrow: Address): Promise<boolean>
+  /**
+   * Whether `factory.deployAndExecute(args)` would succeed now. False only on a contract revert (a min-out
+   * miss, an ETH recipient that rejects ETH); an RPC failure throws so the caller retries.
+   */
+  deploySimulates(factory: Address, args: SwapEscrowArgs): Promise<boolean>
+  /**
+   * Tx of the `SwapEscrowExecuted(escrow)` log. Undefined when none is in the lookback window; an
+   * RPC failure throws so the caller retries rather than reading it as "no swap".
+   */
+  executedTxHash(factory: Address, escrow: Address): Promise<Hex | undefined>
+  /**
+   * The escrow's `SwapEscrowRecovered` log: which tx moved the DAI out, and where. Undefined when none
+   * is in the lookback window; an RPC failure throws.
+   */
+  recoveredTxHash(escrow: Address): Promise<SwapEscrowRecovery | undefined>
+}
+
+export interface SwapEscrowRecovery {
+  txHash: Hex
+  target: Address
+}
+
+export interface SwapEscrowReaderConfig {
+  /** The withdrawn token (`tuple.token`). */
+  dai: Address
+  /** Cap on the backward log scan. Default 50_000. */
+  maxLookbackBlocks?: bigint
+  /** Per-`getLogs` chunk size, keeping ranges bounded (PAYG RPC). Default 10_000. */
+  logRangeBlocks?: bigint
+}
+
+const DEFAULT_MAX_LOOKBACK_BLOCKS = 50_000n
+const DEFAULT_LOG_RANGE_BLOCKS = 10_000n
+
+export class L1SwapEscrowReader implements SwapEscrowReader {
+  private readonly dai: Address
+  private readonly maxLookbackBlocks: bigint
+  private readonly logRangeBlocks: bigint
+
+  constructor(private readonly client: PublicClient, config: SwapEscrowReaderConfig) {
+    this.dai = config.dai
+    this.maxLookbackBlocks = config.maxLookbackBlocks ?? DEFAULT_MAX_LOOKBACK_BLOCKS
+    this.logRangeBlocks = config.logRangeBlocks ?? DEFAULT_LOG_RANGE_BLOCKS
+  }
+
+  daiBalance(escrow: Address): Promise<bigint> {
+    return this.client.readContract({
+      address: this.dai,
+      abi: erc20Abi,
+      functionName: "balanceOf",
+      args: [escrow],
+    })
+  }
+
+  async isDeployed(escrow: Address): Promise<boolean> {
+    const code = await this.client.getCode({ address: escrow })
+    return code !== undefined && code !== "0x"
+  }
+
+  async deploySimulates(factory: Address, args: SwapEscrowArgs): Promise<boolean> {
+    try {
+      await this.client.simulateContract({
+        address: factory,
+        abi: SwapEscrowFactoryAbi,
+        functionName: "deployAndExecute",
+        args: [args] as never,
+        // `deployAndExecute` pays its caller the tip, and an ERC20 refuses the zero address, so the simulation
+        // needs a real payee. The recipient is one the escrow already commits to.
+        account: args.recipient,
+      })
+      return true
+    } catch (err) {
+      if (err instanceof BaseError && err.walk((e) => e instanceof ContractFunctionRevertedError)) {
+        return false
+      }
+      // A revert without decodable data still surfaces as an execution error carrying "reverted".
+      if (err instanceof BaseError && /revert/i.test(err.shortMessage)) return false
+      throw err
+    }
+  }
+
+  async executedTxHash(factory: Address, escrow: Address): Promise<Hex | undefined> {
+    const hit = await this.findLog((fromBlock, toBlock) =>
+      this.client.getContractEvents({
+        address: factory,
+        abi: SwapEscrowFactoryAbi,
+        eventName: "SwapEscrowExecuted",
+        args: { escrow },
+        fromBlock,
+        toBlock,
+        strict: true,
+      }),
+    )
+    return hit?.transactionHash
+  }
+
+  async recoveredTxHash(escrow: Address): Promise<SwapEscrowRecovery | undefined> {
+    const hit = await this.findLog((fromBlock, toBlock) =>
+      this.client.getContractEvents({
+        address: escrow,
+        abi: SwapEscrowAbi,
+        eventName: "SwapEscrowRecovered",
+        fromBlock,
+        toBlock,
+        strict: true,
+      }),
+    )
+    return hit ? { txHash: hit.transactionHash, target: hit.args.target } : undefined
+  }
+
+  /** The first mined log `fetch` yields, scanning the lookback window in bounded chunks. */
+  private async findLog<T extends { transactionHash: Hex | null }>(
+    fetch: (fromBlock: bigint, toBlock: bigint) => Promise<T[]>,
+  ): Promise<(T & { transactionHash: Hex }) | undefined> {
+    const toBlock = await this.client.getBlockNumber()
+    const fromBlock = toBlock > this.maxLookbackBlocks ? toBlock - this.maxLookbackBlocks : 0n
+    for (let start = fromBlock; start <= toBlock; start += this.logRangeBlocks) {
+      const end =
+        start + this.logRangeBlocks - 1n < toBlock ? start + this.logRangeBlocks - 1n : toBlock
+      const hit = (await fetch(start, end)).find((log) => log.transactionHash)
+      if (hit) return hit as T & { transactionHash: Hex }
+    }
+    return undefined
+  }
+}

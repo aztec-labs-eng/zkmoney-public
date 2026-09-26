@@ -1,0 +1,16 @@
+{
+  "expect": "nonce",
+  "rpId": "localhost",
+  "message": {
+    "v": 1,
+    "type": "handoff-material",
+    "nonce": "",
+    "derivedAt": 1757000000000,
+    "rpId": "localhost",
+    "credentialId": "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-_AbCde",
+    "pubkeyHex": "abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab",
+    "candidates": {
+      "first": "0x1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  }
+}

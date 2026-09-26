@@ -1,0 +1,9 @@
+{
+  "name": "solhint-plugin-oxide",
+  "version": "0.0.0",
+  "private": true,
+  "main": "index.js",
+  "dependencies": {
+    "@solidity-parser/parser": "^0.20.2"
+  }
+}

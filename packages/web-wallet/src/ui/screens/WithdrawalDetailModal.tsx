@@ -1,0 +1,286 @@
+/**
+ * Withdrawal detail — the L2→L1 counterpart of the deposit detail sheet: hero amount over a facts
+ * card whose Status row names the leg the tracker is on and flips to Paid when the L1 release
+ * lands. The sheet stays open on the live store row, so the status updates as phases advance.
+ *
+ * The re-check, the manual finalize and the swap exit it offers are the row's own, handed back so
+ * one owner drives the chain watcher and the exit handoff.
+ */
+import {
+  swapWithdrawalAmounts,
+  WITHDRAWAL_PHASE_COPY,
+  withdrawalAmounts,
+  type WithdrawalRecord,
+} from "@obsidion/front-core"
+import { GradientText, Icon, PrimaryGradientButton, type StatusBadgeStyle } from "@obsidion/web-ds"
+import ethIcon from "../../assets/deposit/ethereum.webp"
+import { getConfig } from "../../config/env"
+import { migrationAmounts } from "../../features/migration/migrationFee"
+import { waitingNote } from "../../features/withdraw/waitingNote"
+import { withdrawalReceiveAsset } from "../../features/withdraw/withdrawAssets"
+import { l2TxUrl } from "../../lib/explorer"
+import { l1AddressUrl, l1TxUrl, whenLabel } from "../detailRows"
+import { shortAddr, tokenAmount, usdFigure } from "../format"
+import { Modal } from "../Modal"
+import { DepositFact } from "./DepositFact"
+import { DepositHashFact } from "./DepositHashFact"
+import { DepositStatusValue } from "./DepositStatusValue"
+
+const PHASE_BADGE: Record<WithdrawalRecord["phase"], StatusBadgeStyle> = {
+  submitting: "pending",
+  l2_mined: "pending",
+  awaiting_proven: "pending",
+  finalizing_l1: "pending",
+  swapping: "pending",
+  recoverable: "failed",
+  recovered: "cancelled",
+  done: "awaitingClaim",
+  failed: "failed",
+}
+
+export function withdrawalStatus(
+  record: Pick<
+    WithdrawalRecord,
+    "phase" | "finalizeTxHash" | "swapExecuteTxHash" | "recoveryTxHash"
+  >,
+): {
+  label: string
+  badge: StatusBadgeStyle
+} {
+  const status = {
+    label: WITHDRAWAL_PHASE_COPY[record.phase].status,
+    badge: PHASE_BADGE[record.phase],
+  }
+  if (record.phase === "finalizing_l1" && record.finalizeTxHash) {
+    return { ...status, label: "Waiting for your finalization" }
+  }
+  if (record.phase === "swapping" && record.swapExecuteTxHash) {
+    return { ...status, label: "Waiting for your swap" }
+  }
+  if (record.phase === "recoverable" && record.recoveryTxHash) {
+    return { ...status, label: "Waiting for your recovery", badge: "pending" }
+  }
+  return status
+}
+
+/**
+ * Detail-sheet hero. A swap withdrawal leads with the dollar figure — its Token row names the
+ * output asset. A migration moves the wallet's dollars between versions, so it reads in dollars
+ * like its rows.
+ */
+export function withdrawalHeroAmount(
+  record: Pick<WithdrawalRecord, "amount" | "tokenSymbol" | "swapOutput" | "intent">,
+): string {
+  return record.swapOutput || record.intent === "migration"
+    ? `-${usdFigure(record.amount)}`
+    : `-${record.amount} ${record.tokenSymbol}`
+}
+
+export function WithdrawalDetailModal({
+  record,
+  amount,
+  onCheckAgain,
+  onFinalize,
+  swapExit,
+  notice,
+  onClose,
+}: {
+  /** Full text of the notification that opened this detail. */
+  notice?: string
+  record: WithdrawalRecord
+  /** Headline figure, as the feed row shows it. */
+  amount: string
+  /** The re-check the row offers, if any. */
+  onCheckAgain?: () => void
+  /** The manual-finalize exit the row offers, if any. */
+  onFinalize?: () => void
+  /** The swap exit the row offers, if any: run the swap yourself, or recover the DAI. */
+  swapExit?: { title: string; onStart: () => void }
+  onClose: () => void
+}) {
+  const config = getConfig()
+  const note = waitingNote(record)
+  const amounts = withdrawalAmounts(record)
+  const swap = swapWithdrawalAmounts(record)
+  const swapOption = record.swapOutput ? withdrawalReceiveAsset(record.swapOutput) : undefined
+  // A failed exit released nothing, and a recovered one swapped nothing, so neither names a fee or
+  // an output figure.
+  const unpaid = record.phase === "failed" || record.phase === "recovered"
+  // A migration's recipient is the new balance, which also pays the arrival's fee.
+  const migration = record.intent === "migration" ? migrationAmounts(record) : undefined
+  const showBreakdown =
+    !swap && record.intent !== "migration" && amounts.feeKnown && amounts.netAtomic > 0n && !unpaid
+  const showMigration = migration && migration.netAtomic > 0n && !unpaid
+  const showSwapFee = swap && swap.feeKnown && swap.swapInputAtomic > 0n && !unpaid
+  const estimate = !unpaid ? swap?.estimate : undefined
+  const recipientUrl = l1AddressUrl(record.recipient)
+
+  return (
+    <Modal
+      variant="create"
+      label={record.source === "paylink" ? "Paylink withdrawal details" : "Withdrawal details"}
+      className="ww-sheet ww-sheet--detail"
+      onClose={onClose}
+    >
+      <span className="ww-deposit__connect-icon ww-sheet__icon">
+        <Icon name="tray-withdraw" size={32} color="#fff" />
+      </span>
+      <div className="ww-sheet__title">
+        <GradientText size={32} weight={700}>
+          {amount}
+        </GradientText>
+        <small>{whenLabel(record.endTime ?? record.startTime)}</small>
+      </div>
+
+      {notice && <p className="ww-txd__notice">{notice}</p>}
+
+      <div className="ww-sheet__facts">
+        <DepositFact label="Status">
+          <DepositStatusValue {...withdrawalStatus(record)} />
+        </DepositFact>
+        <DepositFact label="To">
+          {/* A migration pays this wallet's own arrival address, which means nothing to a user. */}
+          {record.intent === "migration" ? (
+            <b>{record.recipientAlias}</b>
+          ) : (
+            <b>
+              {record.recipientAlias && `${record.recipientAlias} · `}
+              {recipientUrl ? (
+                <a href={recipientUrl} target="_blank" rel="noreferrer">
+                  {shortAddr(record.recipient)}
+                </a>
+              ) : (
+                shortAddr(record.recipient)
+              )}
+            </b>
+          )}
+        </DepositFact>
+        {record.l2TxHash ? (
+          <DepositHashFact
+            label="Tx hash"
+            hash={record.l2TxHash}
+            url={l2TxUrl(config.network, config.nodeUrl, record.l2TxHash)}
+          />
+        ) : (
+          <DepositFact label="Tx hash">
+            <b>--</b>
+          </DepositFact>
+        )}
+        {record.source === "paylink" && (
+          <DepositFact label="From">
+            <b>Payment link</b>
+          </DepositFact>
+        )}
+        <DepositFact label="Token">
+          <b>
+            {swapOption && <img src={swapOption.icon} alt="" width={16} height={16} />}
+            {swapOption ? swapOption.symbol : record.tokenSymbol}
+          </b>
+        </DepositFact>
+        <DepositFact label="Network">
+          <b>
+            <img src={ethIcon} alt="" width={16} height={16} />
+            Ethereum (ERC20)
+          </b>
+        </DepositFact>
+        <DepositFact label="Sent">
+          <b>{estimate ? tokenAmount(estimate.outDisplay) : usdFigure(amounts.grossDisplay)}</b>
+        </DepositFact>
+        {estimate && (
+          <DepositFact label="Exchange rate">
+            <b>$1 = {tokenAmount(String(estimate.rate))}</b>
+          </DepositFact>
+        )}
+        {showBreakdown && (
+          <DepositFact label="Fee">
+            <b>-{usdFigure(amounts.feeDisplay)}</b>
+          </DepositFact>
+        )}
+        {showMigration && (
+          <>
+            <DepositFact label="Old version fee">
+              <b>-{usdFigure(migration.exitFeeDisplay)}</b>
+            </DepositFact>
+            <DepositFact label="New version fee">
+              <b>-{usdFigure(migration.arrivalFeeDisplay)}</b>
+            </DepositFact>
+          </>
+        )}
+        {showSwapFee && (
+          <DepositFact label="Fee">
+            <b>-{usdFigure(swap.feeDisplay)}</b>
+          </DepositFact>
+        )}
+        {record.l1TxHash && (
+          <DepositHashFact label="L1 tx" hash={record.l1TxHash} url={l1TxUrl(record.l1TxHash)} />
+        )}
+        {record.finalizeTxHash && (
+          <DepositHashFact
+            label="Finalization tx"
+            hash={record.finalizeTxHash}
+            url={l1TxUrl(record.finalizeTxHash)}
+          />
+        )}
+        {record.swapExecuteTxHash && (
+          <DepositHashFact
+            label="Swap tx"
+            hash={record.swapExecuteTxHash}
+            url={l1TxUrl(record.swapExecuteTxHash)}
+          />
+        )}
+        {record.recoveryTarget && (
+          <DepositFact label="Recovered to">
+            <b>{shortAddr(record.recoveryTarget)}</b>
+          </DepositFact>
+        )}
+        {record.recoveryTxHash && (
+          <DepositHashFact
+            label="Recovery tx"
+            hash={record.recoveryTxHash}
+            url={l1TxUrl(record.recoveryTxHash)}
+          />
+        )}
+        {showBreakdown && (
+          <>
+            <hr className="ww-divider" />
+            <DepositFact label="Recipient receives">
+              <b>{usdFigure(amounts.netDisplay)}</b>
+            </DepositFact>
+          </>
+        )}
+        {showMigration && (
+          <>
+            <hr className="ww-divider" />
+            <DepositFact label="You'll receive">
+              <b>~{usdFigure(migration.netDisplay)}</b>
+            </DepositFact>
+          </>
+        )}
+        {estimate && swapOption && (
+          <>
+            <hr className="ww-divider" />
+            {/* The whole burn at the quote rate — the fee gap to the row above is the fee in output units. */}
+            <DepositFact label="Sent">
+              <b>
+                {usdFigure(swap!.grossDisplay)} ={" "}
+                {tokenAmount(String(Number(swap!.grossDisplay) * estimate.rate))}{" "}
+                {swapOption.symbol}
+              </b>
+            </DepositFact>
+          </>
+        )}
+      </div>
+
+      {note && <p className="ww-sheet__note">{note}</p>}
+      {onCheckAgain && (
+        <PrimaryGradientButton
+          title="Check again"
+          buttonStyle={onFinalize ? "dark" : undefined}
+          onClick={onCheckAgain}
+        />
+      )}
+      {onFinalize && <PrimaryGradientButton title="Finalize manually" onClick={onFinalize} />}
+      {swapExit && <PrimaryGradientButton title={swapExit.title} onClick={swapExit.onStart} />}
+    </Modal>
+  )
+}

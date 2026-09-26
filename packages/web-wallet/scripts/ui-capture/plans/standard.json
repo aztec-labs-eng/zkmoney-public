@@ -1,0 +1,12 @@
+{
+  "scenario": "onboarding",
+  "bootstrap": "/claim?demo=onboarding&mock=claim&handle=demo",
+  "rejectingExtension": true,
+  "ready": { "text": "You're almost in", "exact": true },
+  "steps": [
+    { "action": "screenshot", "file": "standard.png", "state": "Standard claim retry sheet" },
+    { "action": "reachable", "role": "button", "name": "Claim @tag", "exact": true },
+    { "action": "reachable", "role": "button", "name": "Close", "exact": true }
+  ],
+  "finalScreenshot": false
+}
