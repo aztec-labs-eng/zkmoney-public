@@ -234,6 +234,11 @@ jobs:
             fi
           fi
 
+          # An unset secret arrives as an empty variable, and electron-builder reads an empty CSC_LINK as a path.
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            [[ -n "${!name}" ]] || unset "$name"
+          done
+
           npx electron-builder "${EB_ARGS[@]}"
 
       - uses: actions/upload-artifact@v4
