@@ -142,8 +142,7 @@ jobs:
         with:
           node-version: "22"
 
-      # --workspaces=false: the root package.json declares npm workspaces over packages/*.
-      - run: npm ci --workspaces=false
+      - run: npm ci
 
       - run: npm run check && npm test
 

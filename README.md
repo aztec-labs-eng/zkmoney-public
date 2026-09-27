@@ -55,7 +55,7 @@ The build fetches the `prod-v5` config profile and bakes it into the bundle. The
 cd packages/web-wallet-desktop
 cp config/mainnet.env.example config/mainnet.env
 # Fill VITE_NODE_URL, VITE_NODE_API_KEY and VITE_L1_RPC_URL.
-npm ci --workspaces=false
+npm ci
 ENV_FILE=config/mainnet.env SKIP_MONOREPO_BUILD=1 pnpm build:web
 pnpm start                  # run from source
 pnpm dist:mac               # or dist:linux, dist:win
