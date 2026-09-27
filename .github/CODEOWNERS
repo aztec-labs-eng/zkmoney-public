@@ -1,4 +1,4 @@
 # The release owners review changes to CI, build scripts and the desktop app.
-/.github/                     @just-mitch @randyquaye
-/scripts/                     @just-mitch @randyquaye
-/packages/web-wallet-desktop/ @just-mitch @randyquaye
+/.github/                     @just-mitch @randyquaye @madztheo
+/scripts/                     @just-mitch @randyquaye @madztheo
+/packages/web-wallet-desktop/ @just-mitch @randyquaye @madztheo
