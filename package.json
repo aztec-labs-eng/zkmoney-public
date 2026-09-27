@@ -2,9 +2,6 @@
   "name": "zkmoney-public",
   "version": "0.0.1",
   "private": true,
-  "workspaces": [
-    "packages/*"
-  ],
   "scripts": {
     "codegen": "scripts/codegen.sh",
     "build-contracts": "scripts/build_contracts.sh",

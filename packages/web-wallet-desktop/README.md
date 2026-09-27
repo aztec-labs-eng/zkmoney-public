@@ -34,12 +34,10 @@ launched profile.
 ## Build & run
 
 Not a pnpm workspace member (own npm lockfile — keeps the Electron download out of root `pnpm i`).
-The repo root declares npm workspaces over `packages/*`, so plain `npm install` here would climb to
-the root and choke on `workspace:*` deps — use the flag (or `npm run setup`):
 
 ```shell
 cd packages/web-wallet-desktop
-npm install --workspaces=false
+npm install
 
 # Bundle the wallet (full monorepo chain: contracts → front-core → vite build).
 # The committed config targets the LOCAL SANDBOX (web-wallet's own env.ts defaults),
