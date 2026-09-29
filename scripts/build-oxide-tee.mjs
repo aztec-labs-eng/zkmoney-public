@@ -22,11 +22,17 @@
 //      runtime values are unused.
 //   6. tsc-build each yarn-project/ package in topological order.
 //
+// With `--relayer`, it then builds the Oxide relayer on top of that subset:
+//   7. Generate the @oxide/noir-contracts.js bindings from the Broadcaster and
+//      OxideToken artifacts that `pnpm build-contracts` compiles.
+//   8. tsc-build noir-contracts.js, telemetry, watcher-lib and oxide-relayer.
+//
 // Steps 1-5 are gated by sentinel files so subsequent runs short-circuit;
 // the script is idempotent and a full from-cold run is ~60-120s.
 
 import { execFileSync } from "node:child_process"
 import {
+  copyFileSync,
   existsSync,
   statSync,
   readdirSync,
@@ -37,6 +43,7 @@ import {
 } from "node:fs"
 import { dirname, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
+import { isDeepStrictEqual } from "node:util"
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = resolve(HERE, "..")
@@ -99,6 +106,10 @@ const PACKAGES = [
   "oxide-client",
 ]
 
+const BUILD_RELAYER = process.argv.includes("--relayer")
+// Topological order, on top of PACKAGES: the relayer imports all three.
+const RELAYER_PACKAGES = ["noir-contracts.js", "telemetry", "watcher-lib", "oxide-relayer"]
+
 function newestMtime(dir) {
   let newest = 0
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -150,7 +161,7 @@ if (
   // survives as an orphan importing symbols the regenerated modules no longer export — and the
   // mtime check below sees a dest/ newer than src/ and skips the package entirely. Neither the
   // failure nor the skip is visible here: it surfaces later as a SyntaxError from a consumer.
-  for (const pkg of PACKAGES) {
+  for (const pkg of [...PACKAGES, ...RELAYER_PACKAGES]) {
     rmSync(resolve(YARN_PROJECT, pkg, "dest"), { recursive: true, force: true })
   }
 }
@@ -236,28 +247,28 @@ const EXTRA_EXCLUDES = {
   "tee-enclave": ["src/testing/**"],
 }
 
+// A vendored tsconfig.build.json with the same settings is left as Oxide wrote it.
 function writeBuildConfig(pkgDir, pkg) {
   const overridePath = resolve(pkgDir, "tsconfig.build.json")
-  writeFileSync(
-    overridePath,
-    JSON.stringify(
-      {
-        extends: "./tsconfig.json",
-        exclude: ["**/*.test.ts", ...(EXTRA_EXCLUDES[pkg] ?? [])],
-      },
-      null,
-      2,
-    ) + "\n",
-  )
+  const config = {
+    extends: "./tsconfig.json",
+    exclude: ["**/*.test.ts", ...(EXTRA_EXCLUDES[pkg] ?? [])],
+  }
+  if (
+    !existsSync(overridePath) ||
+    !isDeepStrictEqual(JSON.parse(readFileSync(overridePath, "utf8")), config)
+  ) {
+    writeFileSync(overridePath, JSON.stringify(config, null, 2) + "\n")
+  }
   return overridePath
 }
 
-for (const pkg of PACKAGES) {
+function buildPackage(pkg) {
   const dir = resolve(YARN_PROJECT, pkg)
   const dest = resolve(dir, "dest")
   const src = resolve(dir, "src")
   if (existsSync(dest) && newestMtime(src) <= newestMtime(dest)) {
-    continue
+    return
   }
   console.error(`Building @oxide/${pkg} dest/ ...`)
   const buildConfig = writeBuildConfig(dir, pkg)
@@ -270,4 +281,75 @@ for (const pkg of PACKAGES) {
     rmSync(dest, { recursive: true, force: true })
     throw err
   }
+}
+
+for (const pkg of PACKAGES) buildPackage(pkg)
+
+// --- Relayer (--relayer) ------------------------------------------------------
+
+// The contracts @oxide/noir-contracts.js binds: [noir package, contract name]. The compiled
+// artifact is `<package>-<contract>.json` in the `pnpm build-contracts` output. Oxide's
+// generate-types.sh also binds a passkey test account, which is not vendored and which the
+// relayer does not import.
+const BOUND_CONTRACTS = [
+  ["broadcaster_contract", "Broadcaster"],
+  ["oxide_token_contract", "OxideToken"],
+]
+const COMPILED_CONTRACTS = resolve(REPO_ROOT, "packages/contracts/src/artifacts/target")
+const NOIR_CONTRACTS_JS = resolve(YARN_PROJECT, "noir-contracts.js")
+
+// Types each artifact JSON as a NoirCompiledContract, as generate-types.sh does, so tsc does not
+// infer the multi-MB literal.
+const ARTIFACT_DECLARATION = `import { type NoirCompiledContract } from '@aztec/aztec.js/abi';
+const circuit: NoirCompiledContract;
+export = circuit;
+`
+
+// Does what Oxide's generate-types.sh does for BOUND_CONTRACTS, with the `aztec codegen` of the
+// Aztec toolchain: generate-types.sh expects @aztec/builder in a yarn node_modules tree.
+function generateNoirBindings() {
+  const contracts = BOUND_CONTRACTS.map(([pkg, name]) => {
+    const file = `${pkg}-${name}.json`
+    return { name, file, compiled: resolve(COMPILED_CONTRACTS, pkg, file) }
+  })
+  const missing = contracts.filter((c) => !existsSync(c.compiled))
+  if (missing.length > 0) {
+    console.error(`ERROR: ${missing.map((c) => c.compiled).join(", ")} not found.`)
+    console.error("Run `pnpm build-contracts` first.")
+    process.exit(1)
+  }
+
+  const srcDir = resolve(NOIR_CONTRACTS_JS, "src")
+  const artifactsDir = resolve(NOIR_CONTRACTS_JS, "artifacts")
+  const current = contracts.every((c) => {
+    const binding = resolve(srcDir, `${c.name}.ts`)
+    return existsSync(binding) && statSync(c.compiled).mtimeMs <= statSync(binding).mtimeMs
+  })
+  if (current) return
+
+  console.error("Generating @oxide/noir-contracts.js bindings ...")
+  for (const dir of [srcDir, artifactsDir]) {
+    rmSync(dir, { recursive: true, force: true })
+    mkdirSync(dir, { recursive: true })
+  }
+  for (const c of contracts) {
+    copyFileSync(c.compiled, resolve(artifactsDir, c.file))
+    writeFileSync(
+      resolve(artifactsDir, c.file.replace(/\.json$/, ".d.json.ts")),
+      ARTIFACT_DECLARATION,
+    )
+  }
+  run("aztec", ["codegen", "--force", "-o", "src", "artifacts"], NOIR_CONTRACTS_JS)
+  const names = contracts.map((c) => `  '${c.name}',`).join("\n")
+  writeFileSync(
+    resolve(srcDir, "index.ts"),
+    `/* Autogenerated file, do not edit! */\n\n` +
+      `/** Names of the contracts whose bindings this package exports. */\n` +
+      `export const ContractNames = [\n${names}\n];\n`,
+  )
+}
+
+if (BUILD_RELAYER) {
+  generateNoirBindings()
+  for (const pkg of RELAYER_PACKAGES) buildPackage(pkg)
 }

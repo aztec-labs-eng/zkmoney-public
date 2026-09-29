@@ -11,7 +11,7 @@ Source of the zk.money web wallet and the zk.money Desktop app. This tree builds
 | `packages/core`, `contracts`, `sdk`, `front-core` | The wallet stack: shared types, Noir contracts, contract calls, and app logic. |
 | `packages/config-client`, `passkey-web`, `design-system`, `proving-progress`, `metrics-policy` | Libraries that the wallet imports. |
 | `packages/oxide-build` | Builds the vendored Oxide packages. |
-| `vendor/oxide` | The subset of Oxide that the wallet needs, and the files for an enclave host, at commit `edf0c71d5`. |
+| `vendor/oxide` | The subset of Oxide that the wallet needs, the files for an enclave host, and the relayer source, at commit `edf0c71d5`. |
 
 ## Prerequisites
 
@@ -100,6 +100,20 @@ On a Nitro-capable EC2 instance with `nitro-cli`, `socat` and Node.js 24:
 7. Make sure that `curl http://127.0.0.1:8080/health` returns `200`.
 
 To make the desktop app use this host, set `OBSIDION_ENCLAVE_TARGET` or the enclave URL on the settings page.
+
+## Relayer
+
+`vendor/oxide/yarn-project/oxide-relayer` is the Oxide relayer. It completes L1 operations for users, so that users do not need ETH for gas. `vendor/oxide/yarn-project/telemetry` and `vendor/oxide/yarn-project/watcher-lib` are its Oxide dependencies. These packages are copies from Oxide commit `edf0c71d5`, without the relayer `Dockerfile`.
+
+To build the relayer, clone the repository and run `pnpm install --frozen-lockfile` as in [Build](#build). Then run:
+
+```shell
+pnpm build-contracts        # compiles the Broadcaster contract, among others
+pnpm build:relayer          # generates @oxide/noir-contracts.js, then compiles the relayer
+node vendor/oxide/yarn-project/oxide-relayer/dest/bin/oxide-relayer.js run --help
+```
+
+For the relayer configuration, see [vendor/oxide/yarn-project/oxide-relayer/README.md](vendor/oxide/yarn-project/oxide-relayer/README.md).
 
 ## Tests
 
