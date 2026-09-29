@@ -19,3 +19,6 @@ packages:
   - vendor/oxide/yarn-project/noir-contracts.js
   - vendor/oxide/yarn-project/oxide-client
   - vendor/oxide/yarn-project/resolver-lib
+  - vendor/oxide/yarn-project/telemetry
+  - vendor/oxide/yarn-project/watcher-lib
+  - vendor/oxide/yarn-project/oxide-relayer

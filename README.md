@@ -105,7 +105,15 @@ To make the desktop app use this host, set `OBSIDION_ENCLAVE_TARGET` or the encl
 
 `vendor/oxide/yarn-project/oxide-relayer` is the Oxide relayer. It completes L1 operations for users, so that users do not need ETH for gas. `vendor/oxide/yarn-project/telemetry` and `vendor/oxide/yarn-project/watcher-lib` are its Oxide dependencies. These packages are copies from Oxide commit `edf0c71d5`, without the relayer `Dockerfile`.
 
-The wallet build does not build the relayer. The pnpm workspace does not include these packages, and the relayer needs the generated `@oxide/noir-contracts.js` bindings. Build and run the relayer in the Oxide repository at commit `edf0c71d5`. For its configuration, see [vendor/oxide/yarn-project/oxide-relayer/README.md](vendor/oxide/yarn-project/oxide-relayer/README.md).
+To build the relayer, clone the repository and run `pnpm install --frozen-lockfile` as in [Build](#build). Then run:
+
+```shell
+pnpm build-contracts        # compiles the Broadcaster contract, among others
+pnpm build:relayer          # generates @oxide/noir-contracts.js, then compiles the relayer
+node vendor/oxide/yarn-project/oxide-relayer/dest/bin/oxide-relayer.js run --help
+```
+
+For the relayer configuration, see [vendor/oxide/yarn-project/oxide-relayer/README.md](vendor/oxide/yarn-project/oxide-relayer/README.md).
 
 ## Tests
 
