@@ -1,0 +1,14 @@
+[Unit]
+Description=Oxide TEE HTTP→VSOCK proxy
+After=network-online.target oxide-tee-vsock-bridge.service
+Wants=network-online.target oxide-tee-vsock-bridge.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/oxide-tee-proxy
+ExecStart=/usr/bin/node /opt/oxide-tee-proxy/dest/proxy.js
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
