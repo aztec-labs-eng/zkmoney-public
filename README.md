@@ -87,7 +87,7 @@ The wallet sends signature requests to the Oxide enclave at the `enclaveUrl` in 
 | `vendor/oxide/enclave/systemd/oxide-tee-enclave.service` | Starts the EIF with `nitro-cli`. |
 | `vendor/oxide/enclave/systemd/oxide-tee-proxy.service` | Starts the HTTP front end on port 8080. |
 
-This repository does not build the EIF. The EIF build is in the Oxide repository at commit `edf0c71d5`. The portal accepts an enclave only if the portal owner approved its PCR0.
+This repository does not build the EIF. The EIF build is in the Oxide repository at commit `edf0c71d5`. The portal accepts an enclave only if the portal owner approved its PCR0. Each new enclave must also be registered: `OxidePortal.registerTee` on L1, then the L2 consume into the token's `approved_signers`. The Oxide repository does this in `yarn-project/deploy-lib/src/register_instance.ts`.
 
 On a Nitro-capable EC2 instance with `nitro-cli`, `socat` and Node.js 24:
 
