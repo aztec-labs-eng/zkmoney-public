@@ -1,0 +1,21 @@
+[Unit]
+# Node lacks native AF_VSOCK support, so we run a socat bridge on the host that exposes
+# the enclave's VSOCK endpoint as a TCP loopback port. The Node proxy then talks plain
+# TCP to 127.0.0.1:OXIDE_BRIDGE_TCP_PORT, and socat forwards each connection over VSOCK
+# to CID OXIDE_BRIDGE_VSOCK_CID, port OXIDE_BRIDGE_VSOCK_PORT inside the enclave.
+Description=Oxide TEE VSOCK ↔ TCP loopback bridge (socat)
+After=nitro-enclaves-allocator.service oxide-tee-enclave.service
+Wants=oxide-tee-enclave.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/oxide-tee-vsock-bridge
+Environment=OXIDE_BRIDGE_TCP_PORT=5001
+Environment=OXIDE_BRIDGE_VSOCK_CID=16
+Environment=OXIDE_BRIDGE_VSOCK_PORT=5000
+ExecStart=/usr/bin/socat TCP-LISTEN:${OXIDE_BRIDGE_TCP_PORT},reuseaddr,fork,bind=127.0.0.1 VSOCK-CONNECT:${OXIDE_BRIDGE_VSOCK_CID}:${OXIDE_BRIDGE_VSOCK_PORT}
+Restart=on-failure
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target

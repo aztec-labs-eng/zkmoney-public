@@ -1,0 +1,17 @@
+{
+  "name": "@oxide/tee-proxy",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dest/proxy.js",
+  "scripts": {
+    "build": "rm -rf dest && tsc -p tsconfig.json",
+    "lint": "../node_modules/.bin/eslint --cache ./src",
+    "lint:fix": "../node_modules/.bin/eslint --cache --fix ./src",
+    "start": "yarn build && node dest/proxy.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.17",
+    "typescript": "^5.3.3"
+  }
+}
