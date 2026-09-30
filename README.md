@@ -11,7 +11,7 @@ Source of the zk.money web wallet and the zk.money Desktop app. This tree builds
 | `packages/core`, `contracts`, `sdk`, `front-core` | The wallet stack: shared types, Noir contracts, contract calls, and app logic. |
 | `packages/config-client`, `passkey-web`, `design-system`, `proving-progress`, `metrics-policy` | Libraries that the wallet imports. |
 | `packages/oxide-build` | Builds the vendored Oxide packages. |
-| `vendor/oxide` | The subset of Oxide that the wallet needs, the files for an enclave host, the relayer source, and the refund circuits, at commit `edf0c71d5`. |
+| `vendor/oxide` | The subset of Oxide that the wallet needs, the files for an enclave host, the relayer source, and the refund and resolver circuits, at commit `edf0c71d5`. |
 
 ## Prerequisites
 
@@ -115,25 +115,26 @@ node vendor/oxide/yarn-project/oxide-relayer/dest/bin/oxide-relayer.js run --hel
 
 For the relayer configuration, see [vendor/oxide/yarn-project/oxide-relayer/README.md](vendor/oxide/yarn-project/oxide-relayer/README.md).
 
-## Refund circuits
+## Circuits
 
-`vendor/oxide/noir-projects` holds the Noir source of the three Oxide refund circuits and their library `refund_lib`:
+`vendor/oxide/noir-projects` holds the Noir source of the Oxide circuits whose proofs L1 contracts verify. `refund_lib` is the library of the refund circuits.
 
-| Circuit | L1 verifier |
-| --- | --- |
-| `frozen_notes_refund` | `FrozenNotesRefundVerifier` |
-| `frozen_deposit_refund` | `FrozenDepositRefundVerifier` |
-| `unprocessed_deposit_refund` | `UnprocessedDepositRefundVerifier` |
+| Circuit | L1 verifier | Contract that uses the verifier |
+| --- | --- | --- |
+| `frozen_notes_refund` | `src/generated/FrozenNotesRefundVerifier.sol` | `OxidePortal` |
+| `frozen_deposit_refund` | `src/generated/FrozenDepositRefundVerifier.sol` | `OxidePortal` |
+| `unprocessed_deposit_refund` | `src/generated/UnprocessedDepositRefundVerifier.sol` | `OxidePortal` |
+| `resolver_circuit` | `src/pinned/PinnedResolverVerifier.sol` | The Resolver module |
 
-`OxidePortal` uses these verifiers to verify refund proofs. The verifiers are in `vendor/oxide/l1-contracts/src/generated`.
+The verifier paths are in `vendor/oxide/l1-contracts`.
 
 To compile the circuits and check them against the verifiers, run [Build](#build) to `pnpm build-contracts`, then run:
 
 ```shell
-pnpm build:refund-circuits
+pnpm build:oxide-circuits
 ```
 
-For each circuit, the script writes `target/<circuit>.json` and the vk in `target/keys/vk`. It then generates a Solidity verifier from the vk. The script fails if this verifier is not the same as the verifier in `vendor/oxide/l1-contracts/src/generated`. `@oxide/refund-proof` reads the compiled circuits from `target/`.
+For each circuit, the script writes `target/<circuit>.json` and the vk in `target/keys/vk`. It then generates a Solidity verifier from the vk. The script fails if this verifier is not the same as the verifier in the table. `@oxide/refund-proof` reads the compiled refund circuits from `target/`.
 
 ## Tests
 
