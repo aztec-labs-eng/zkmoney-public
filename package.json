@@ -13,7 +13,8 @@
     "build:front-core": "pnpm --filter '@obsidion/front-core...' --filter '!@oxide/*' -r --if-present run build",
     "build:web-deps": "pnpm --filter '@obsidion/config-client...' --filter '@obsidion/front-core...' --filter '@obsidion/passkey-web...' --filter '@obsidion/web-ds...' --filter '!@oxide/*' -r --if-present run build",
     "build:web-wallet": "pnpm --filter '@obsidion/web-wallet...' --filter '!@oxide/*' -r --if-present run build",
-    "build:relayer": "node scripts/build-oxide-tee.mjs --relayer"
+    "build:relayer": "node scripts/build-oxide-tee.mjs --relayer",
+    "build:refund-circuits": "scripts/build-refund-circuits.sh"
   },
   "engines": {
     "node": ">=20.10.0"
