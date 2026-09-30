@@ -17,9 +17,9 @@
 //      (emits src/abis/*.ts from the Foundry JSON).
 //   5. Stub the three refund-circuit artifacts under
 //      `vendor/oxide/noir-projects/{frozen_notes_refund,frozen_deposit_refund,unprocessed_deposit_refund}/target/`
-//      — needed only because oxide-client's index re-exports modules that
-//      JSON-import these. The frozen-archive refund path isn't exercised here;
-//      runtime values are unused.
+//      if `pnpm build:refund-circuits` did not compile them — needed only because
+//      oxide-client's index re-exports modules that JSON-import these. The wallet
+//      does not use the frozen-archive refund path, so it does not read them.
 //   6. tsc-build each yarn-project/ package in topological order.
 //
 // With `--relayer`, it then builds the Oxide relayer on top of that subset:
@@ -194,8 +194,8 @@ if (vendorSha) writeFileSync(VENDOR_SHA_STAMP, `${vendorSha}\n`)
 
 // Stub the three refund-circuit artifacts that @oxide/refund-proof
 // JSON-imports (frozen_notes_refund, frozen_deposit_refund,
-// unprocessed_deposit_refund). Runtime values are unused here — the
-// frozen-archive refund path isn't exercised by the wallet.
+// unprocessed_deposit_refund), unless `pnpm build:refund-circuits` compiled
+// them. The wallet does not use the frozen-archive refund path.
 for (const stub of [
   SENTINELS.frozenNotesRefundArtifact,
   SENTINELS.frozenDepositRefundArtifact,
