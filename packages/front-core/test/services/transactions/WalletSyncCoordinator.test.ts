@@ -3,6 +3,7 @@ import type { IStorageAdapter } from "../../../src/core/storages/adapter"
 import type { WithdrawalRecord } from "../../../src/core/services/bridge/types"
 import { globalEventEmitter } from "../../../src/core/services/GlobalEventEmitter"
 import { WalletSyncCoordinator } from "../../../src/core/services/transactions/WalletSyncCoordinator"
+import { TRANSFER_SCAN_CATCH_UP_TIMEOUT_MS } from "../../../src/core/services/transactions/TransferEventScanner"
 import { BalanceStorage } from "../../../src/core/storages/BalanceStorage"
 import type { ScannedTransferEvent } from "@obsidion/sdk"
 import { fakeIncomingTokenTx, makeScheduler } from "../../utils/xmtpReceiveFixtures"
@@ -33,6 +34,7 @@ function harness(opts: { head?: () => number; balance?: () => bigint } = {}) {
   const readBalance = vi.fn(async () => opts.balance?.() ?? 0n)
   const source = {
     headBlock: vi.fn(async () => opts.head?.() ?? 100),
+    blockTimestampMs: async (b: number) => b * 1000,
     anchorBlock: vi.fn(async () => 100),
     listIncoming,
     readSnapshot: vi.fn(async () => ({
@@ -40,6 +42,7 @@ function harness(opts: { head?: () => number; balance?: () => bigint } = {}) {
       balance: await readBalance(),
       anchorBlock: 100,
     })),
+    readBalanceSnapshot: vi.fn(async () => ({ balance: await readBalance(), anchorBlock: 101 })),
   }
   const transactions = { getTransactions: vi.fn(async () => txs as never) }
   const tags = { resolveL2: vi.fn(async (): Promise<null> => null) }
@@ -50,6 +53,7 @@ function harness(opts: { head?: () => number; balance?: () => bigint } = {}) {
     ),
   }
   const scheduler = makeScheduler()
+  const boot = { notesSynced: vi.fn() }
   const coordinator = new WalletSyncCoordinator({
     source,
     storage: memStorage(),
@@ -77,9 +81,11 @@ function harness(opts: { head?: () => number; balance?: () => bigint } = {}) {
       },
     },
     scheduler,
+    boot,
   })
   const ctx = { accountAddress: ME, accountTag: "me", networkId: "net" }
   return {
+    boot,
     coordinator,
     ctx,
     writes,
@@ -208,7 +214,8 @@ describe("WalletSyncCoordinator", () => {
     )
     const started = h.coordinator.start(h.ctx)
     await entered.promise
-    await vi.advanceTimersByTimeAsync(30_001)
+    // A cursorless first pass is a catch-up, so its read gets the longer bound.
+    await vi.advanceTimersByTimeAsync(TRANSFER_SCAN_CATCH_UP_TIMEOUT_MS + 1)
     await started
     await h.coordinator.tickNow()
     expect(await storage.getBalance("net:me", "0xtok")).toBe(20n)
@@ -290,6 +297,51 @@ describe("WalletSyncCoordinator", () => {
     await Promise.all([started, first, second])
     expect(h.source.readSnapshot).toHaveBeenCalledTimes(2)
     expect(h.writes).toHaveLength(2)
+    h.coordinator.stop()
+  })
+
+  it("settles the boot notes stage on its first published balance only", async () => {
+    const h = harness({ balance: () => 5n })
+    h.source.headBlock.mockRejectedValueOnce(new Error("node down"))
+    await h.coordinator.start(h.ctx)
+    expect(h.writes).toEqual([])
+    expect(h.boot.notesSynced).not.toHaveBeenCalled()
+    await h.coordinator.tickNow()
+    expect(h.writes).toHaveLength(1)
+    expect(h.boot.notesSynced).toHaveBeenCalled()
+    h.coordinator.stop()
+  })
+
+  it("refreshBalance reads the balance alone and writes it with its anchor", async () => {
+    let balance = 5n
+    const h = harness({ balance: () => balance })
+    await h.coordinator.start(h.ctx)
+    balance = 9n
+    await WalletSyncCoordinator.refreshBalance()
+    expect(h.source.readSnapshot).toHaveBeenCalledTimes(1)
+    expect(h.writes.at(-1)).toEqual({ scope: "net:me", token: "0xtok", balance: 9n, anchor: 101 })
+    h.coordinator.stop()
+  })
+
+  it("refreshBalance coalesces a burst into one read in flight plus one trailing", async () => {
+    const h = harness({ balance: () => 4n })
+    await h.coordinator.start(h.ctx)
+    await Promise.all([1, 2, 3, 4].map(() => WalletSyncCoordinator.refreshBalance()))
+    expect(h.source.readBalanceSnapshot).toHaveBeenCalledTimes(2)
+    h.coordinator.stop()
+  })
+
+  it("refreshBalance retries a failed read before falling back to a full pass", async () => {
+    const h = harness({ balance: () => 3n })
+    await h.coordinator.start(h.ctx)
+    h.source.readBalanceSnapshot.mockRejectedValueOnce(new Error("PXE anchor changed"))
+    await WalletSyncCoordinator.refreshBalance()
+    expect(h.source.readBalanceSnapshot).toHaveBeenCalledTimes(2)
+    expect(h.source.readSnapshot).toHaveBeenCalledTimes(1)
+
+    h.source.readBalanceSnapshot.mockRejectedValue(new Error("PXE anchor changed"))
+    await WalletSyncCoordinator.refreshBalance()
+    expect(h.source.readSnapshot).toHaveBeenCalledTimes(2)
     h.coordinator.stop()
   })
 })

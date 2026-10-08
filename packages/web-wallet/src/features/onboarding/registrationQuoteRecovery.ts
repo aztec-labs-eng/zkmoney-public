@@ -10,14 +10,20 @@ import {
 import { DEFAULT_DECIMALS, WALLET_TOKEN_SYMBOL, registrationFloor } from "@obsidion/core/constants"
 import {
   SIPADepositStore,
+  feeScale,
+  readSipaBalance,
+  readSipaHolding,
   type PendingRegistrationRecord,
   type SIPADepositRecord,
+  type SipaFundingToken,
 } from "@obsidion/front-core"
 import { getConfig, type WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { currentFpcFundingCut } from "../fees/fpcFundingCut"
 import { admissionFloor, forgetDepositAdmission, refundedEntry } from "../identity/admission"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { walletStorage } from "../../platform/storage/walletStorage"
+import { sipaFundingTokens } from "../deposit/loadDepositFacts"
 import { healRegistrationDeposits } from "./registrationDepositSeed"
 import type { RegistrationTerms } from "./registrationTerms"
 import { getPendingStore, registrationRecordForSipa } from "./webRegistration"
@@ -127,12 +133,34 @@ function depositMatches(record: PendingRegistrationRecord, deposit: SIPADepositR
   )
 }
 
-/** What the transaction moved out of the address in the registration token. */
+/** Every token the address accepts, the registration token first. */
+function fundingTokens(
+  record: PendingRegistrationRecord,
+  network = getConfig().network,
+): [SipaFundingToken, ...SipaFundingToken[]] {
+  return sipaFundingTokens(network, {
+    address: record.depositToken as Address,
+    symbol: WALLET_TOKEN_SYMBOL,
+    decimals: DEFAULT_DECIMALS,
+  })
+}
+
+function acceptedToken(
+  record: PendingRegistrationRecord,
+  token: string | undefined,
+): SipaFundingToken | undefined {
+  if (token === undefined) return undefined
+  return fundingTokens(record).find((t) => t.address.toLowerCase() === token.toLowerCase())
+}
+
+/** What the transaction moved out of the address, in registration-token units. */
 function refundedAmount(receipt: TransactionReceipt, record: PendingRegistrationRecord): bigint {
   let refunded = 0n
   if (receipt.status !== "success") return refunded
+  const tokens = fundingTokens(record)
   for (const log of receipt.logs) {
-    if (log.address.toLowerCase() !== record.depositToken.toLowerCase()) continue
+    const sent = tokens.find((t) => t.address.toLowerCase() === log.address.toLowerCase())
+    if (!sent) continue
     try {
       const event = decodeEventLog({
         abi: erc20Abi,
@@ -141,7 +169,7 @@ function refundedAmount(receipt: TransactionReceipt, record: PendingRegistration
         topics: log.topics,
       })
       if (event.args.from.toLowerCase() === record.sipaAddress.toLowerCase())
-        refunded += event.args.value
+        refunded += event.args.value * feeScale(tokens[0], sent)
     } catch {
       /* Not a Transfer. */
     }
@@ -154,22 +182,22 @@ interface RefundEvidence {
   l1ChainId: number
   /** Oldest first. */
   txHashes: Hash[]
-  /** Remembered before their receipts were read: what they moved, and with it the registration
-   *  record's settlement, is still owed. */
-  unsized?: Hash[]
+  /** What each sized refund moved, registration-token units. A refund without one is still owed
+   *  its receipt read, and with it the registration record's settlement. */
+  amounts?: Record<string, string>
 }
 
 const REFUNDS_KEY = "webwallet.registration.refunds"
 const refundListeners = new Set<() => void>()
 
 /**
- * Every refund confirmed off an address in the registration token, apart from the rail's record:
- * the rail rewrites that record's token, phase and recovery hash for whatever token reaches the
- * address next, and the refunds must outlive that.
+ * Every refund confirmed off an address in a token it accepts, sized in registration-token units,
+ * apart from the rail's record: the rail rewrites that record's token, phase and recovery hash for
+ * whatever token reaches the address next, and the refunds must outlive that.
  */
 function loadRefunds(): Record<string, RefundEvidence> {
   try {
-    return JSON.parse(localStorage.getItem(REFUNDS_KEY) ?? "{}") as Record<string, RefundEvidence>
+    return JSON.parse(walletStorage.getItem(REFUNDS_KEY) ?? "{}") as Record<string, RefundEvidence>
   } catch {
     return {}
   }
@@ -189,42 +217,49 @@ function refundEvidence(record: PendingRegistrationRecord): Hash[] {
 }
 
 function unsizedRefunds(record: PendingRegistrationRecord): Hash[] {
-  return evidenceFor(record)?.unsized ?? []
+  const known = evidenceFor(record)
+  return known?.txHashes.filter((hash) => !(hash in (known.amounts ?? {}))) ?? []
 }
 
-/** A sized refund has settled the registration record off its receipt; an unsized one still owes that. */
+function sizedRefunds(record: PendingRegistrationRecord): Record<string, bigint> {
+  return Object.fromEntries(
+    Object.entries(evidenceFor(record)?.amounts ?? {}).map(([hash, amount]) => [
+      hash,
+      BigInt(amount),
+    ]),
+  )
+}
+
+/** A refund sized by `amount` has settled the registration record off its receipt; one without still owes that. */
 function rememberRefund(
   record: PendingRegistrationRecord,
   txHash: Hash,
-  sized: boolean,
+  amount?: bigint,
   notify = true,
 ): void {
   const known = evidenceFor(record)
   const txHashes = known?.txHashes ?? []
-  const unsized = known?.unsized ?? []
   const isNew = !txHashes.includes(txHash)
-  const nextUnsized = sized
-    ? unsized.filter((hash) => hash !== txHash)
-    : isNew
-    ? [...unsized, txHash]
-    : unsized
-  if (!isNew && nextUnsized.length === unsized.length) return
+  const sizes = amount !== undefined && !(txHash in (known?.amounts ?? {}))
+  if (!isNew && !sizes) return
+  const amounts = { ...known?.amounts, ...(sizes ? { [txHash]: amount.toString() } : {}) }
   const refunds = loadRefunds()
   refunds[record.sipaAddress.toLowerCase()] = {
     token: record.depositToken,
     l1ChainId: record.l1ChainId,
     txHashes: isNew ? [...txHashes, txHash] : txHashes,
-    ...(nextUnsized.length > 0 ? { unsized: nextUnsized } : {}),
+    ...(Object.keys(amounts).length > 0 ? { amounts } : {}),
   }
-  localStorage.setItem(REFUNDS_KEY, JSON.stringify(refunds))
+  walletStorage.setItem(REFUNDS_KEY, JSON.stringify(refunds))
   if (notify) refundListeners.forEach((fn) => fn())
 }
 
 /**
  * The live record of a refunded address is funded no longer, and holds the entry a refund of the
- * earned total bought as `refundedEntry`, so the wallet stays open before any restart. The funded
- * stamp is that entry until a marker replaces it: a refund that buys none leaves it alone while
- * another, still unsized, may.
+ * earned total bought as `refundedEntry`, so the wallet stays open before any restart. A deposit
+ * held in more than one token comes back one recovery per token: while the funded stamp stands the
+ * sized refunds pool toward the entry the deposit as a whole earned, and a refund that buys none
+ * leaves the stamp alone for the rest.
  *
  * False when the refund is still owed an answer, which keeps it unsized for the next reconcile.
  */
@@ -246,9 +281,14 @@ async function settleRefundedRegistration(
   // left open; the record is left alone instead and the next reconcile decides.
   const fpcCut = await currentFpcFundingCut().catch(() => undefined)
   if (fpcCut === undefined) return false
-  const entry = refundedEntry(live, { amount, txHash }, fpcCut)
-  if (!funded && !entry) return true
-  if (funded && !entry && unsizedRefunds(record).some((hash) => hash !== txHash)) return true
+  const pooled = funded
+    ? Object.entries(sizedRefunds(record)).reduce(
+        (sum, [hash, prior]) => (hash === txHash ? sum : sum + prior),
+        amount,
+      )
+    : amount
+  const entry = refundedEntry(live, { amount: pooled, txHash }, fpcCut)
+  if (!entry) return true
   await getPendingStore()
     .upsert(record.account, {
       ...(funded
@@ -273,12 +313,12 @@ function assertDeposit(
   }
 }
 
-/** The rail's record, while it speaks for the registration token. */
+/** The rail's record, while it speaks for a token the registration accepts. */
 function railRecord(record: PendingRegistrationRecord): SIPADepositRecord | null {
   const deposit = SIPADepositStore.get(webStorage).get(record.sipaAddress as Address)
   return deposit !== null &&
     depositMatches(record, deposit) &&
-    deposit.tokenAddress?.toLowerCase() === record.depositToken.toLowerCase()
+    acceptedToken(record, deposit.tokenAddress) !== undefined
     ? deposit
     : null
 }
@@ -292,7 +332,7 @@ export function registrationRefunded(record: PendingRegistrationRecord): boolean
   const deposit = railRecord(record)
   if (deposit?.phase === "recoverable" || deposit?.phase === "sweeping") return false
   if (deposit?.phase === "recovered" && deposit.recoveryTxHash) {
-    rememberRefund(record, deposit.recoveryTxHash, false, false)
+    rememberRefund(record, deposit.recoveryTxHash, undefined, false)
     return true
   }
   return refundEvidence(record).length > 0
@@ -313,18 +353,13 @@ export async function registrationRefundConfirmed(
   readReceipt: (hash: Hash) => Promise<TransactionReceipt>,
 ): Promise<void> {
   const record = registrationRecordForSipa(sipa)
-  if (
-    !record ||
-    record.l1ChainId !== l1ChainId ||
-    record.depositToken.toLowerCase() !== token.toLowerCase()
-  )
-    return
-  rememberRefund(record, txHash, false)
+  if (!record || record.l1ChainId !== l1ChainId || !acceptedToken(record, token)) return
+  rememberRefund(record, txHash)
   const receipt = await readReceipt(txHash).catch(() => undefined)
   if (!receipt) return
   const amount = refundedAmount(receipt, record)
   if (amount > 0n && !(await settleRefundedRegistration(record, txHash, amount))) return
-  rememberRefund(record, txHash, true)
+  rememberRefund(record, txHash, amount)
 }
 
 const reconciling = new Map<string, Promise<void>>()
@@ -333,11 +368,10 @@ const reconciling = new Map<string, Promise<void>>()
  * Settle a refund whose receipt wait did not finish: the hash is stamped at submission, the
  * `recovered` phase only on confirmation, and only while the address holds nothing, since funds
  * can reach it again after the refund. A receipt is read once per hash; a reverted one is
- * unstamped so the address can be recovered again. The balance read is the registration token's,
- * so it settles the rail's record only while that record names the token. Under another token's
- * name the record keeps its phase: its hash is read only to learn whether it moved the
- * registration token. Refunds remembered unsized are sized here too, and settle the
- * registration's record.
+ * unstamped so the address can be recovered again. The balance read spans every token the
+ * registration accepts, so the rail's record settles while it names one of them. Under any other
+ * token's name the record keeps its phase: its hash is read only for what it moved in an accepted
+ * token. Refunds remembered unsized are sized here too, and settle the registration's record.
  */
 export function reconcileRegistrationRefund(
   record: PendingRegistrationRecord,
@@ -350,9 +384,9 @@ export function reconcileRegistrationRefund(
   const hash = deposit.recoveryTxHash
   const unsized = unsizedRefunds(record)
   const settled = deposit.phase === "recovered"
-  const named = deposit.tokenAddress?.toLowerCase() === record.depositToken.toLowerCase()
+  const named = acceptedToken(record, deposit.tokenAddress) !== undefined
   const remembered = hash !== undefined && refundEvidence(record).includes(hash)
-  // A settled record in the registration token vouches for its hash without a receipt.
+  // A settled record in an accepted token vouches for its hash without a receipt.
   const unread = hash !== undefined && !remembered && !(settled && named)
   const unsettled = hash !== undefined && !settled && named && recovering(deposit)
   if (!unread && !unsettled && unsized.length === 0) return Promise.resolve()
@@ -366,7 +400,7 @@ export function reconcileRegistrationRefund(
         if (!receipt) continue
         const amount = refundedAmount(receipt, record)
         if (amount > 0n && !(await settleRefundedRegistration(record, owed, amount))) continue
-        rememberRefund(record, owed, true)
+        rememberRefund(record, owed, amount)
       }
       if (unread && hash !== undefined) {
         const receipt = await client.getTransactionReceipt({ hash })
@@ -380,16 +414,15 @@ export function reconcileRegistrationRefund(
         }
         const amount = refundedAmount(receipt, record)
         if (amount > 0n && (await settleRefundedRegistration(record, hash, amount))) {
-          rememberRefund(record, hash, true)
+          rememberRefund(record, hash, amount)
         }
       }
       if (!unsettled || hash === undefined) return
-      const balance = await client.readContract({
-        address: record.depositToken,
-        abi: erc20Abi,
-        functionName: "balanceOf",
-        args: [record.sipaAddress as Address],
-      })
+      const balance = await readSipaBalance(
+        client,
+        record.sipaAddress as Address,
+        fundingTokens(record, config.network),
+      )
       const latest = store.get(deposit.sipaAddress)
       if (balance === 0n && latest && recovering(latest) && latest.recoveryTxHash === hash)
         await store.upsert(deposit.sipaAddress, { phase: "recovered", recoveryTxHash: hash })
@@ -459,12 +492,11 @@ export async function assertRegistrationUnfunded(
   assertCurrent(record, config)
   const reached = "A deposit reached this address. Recover it before requesting a new address."
   if (record.phase !== "awaiting_deposit" || record.fundedAt !== undefined) throw new Error(reached)
-  const balance = await l1PublicClient(config).readContract({
-    address: record.depositToken,
-    abi: erc20Abi,
-    functionName: "balanceOf",
-    args: [record.sipaAddress as Address],
-  })
+  const balance = await readSipaBalance(
+    l1PublicClient(config),
+    record.sipaAddress as Address,
+    fundingTokens(record, config.network),
+  )
   if (balance !== 0n) throw new Error(reached)
   assertCurrent(record, config)
 }
@@ -480,23 +512,22 @@ export async function prepareRegistrationRefund(
   await store.load()
   const deposit = store.get(record.sipaAddress as Address)
   assertDeposit(record, deposit)
-  const balance = await l1PublicClient(config).readContract({
-    address: record.depositToken,
-    abi: erc20Abi,
-    functionName: "balanceOf",
-    args: [record.sipaAddress as Address],
-  })
-  if (balance === 0n)
+  const { token, status } = await readSipaHolding(
+    l1PublicClient(config),
+    record.sipaAddress as Address,
+    fundingTokens(record, config.network),
+  )
+  if (status.balance === 0n)
     throw new Error("No funds remain at this address. Check its recovery or registration status.")
   assertCurrent(record, config)
-  // The rail's record names whatever token reached the address last; the refund moves the
-  // registration token.
+  // The rail's record names whatever token reached the address last; the refund moves the token
+  // that holds the funds.
   return {
     ...deposit,
-    amount: formatUnits(balance, DEFAULT_DECIMALS),
-    tokenAddress: record.depositToken as Address,
-    tokenSymbol: WALLET_TOKEN_SYMBOL,
-    tokenDecimals: DEFAULT_DECIMALS,
+    amount: formatUnits(status.balance, token.decimals),
+    tokenAddress: token.address,
+    tokenSymbol: token.symbol,
+    tokenDecimals: token.decimals,
   }
 }
 
@@ -523,24 +554,33 @@ export async function assertRegistrationRefunded(
   // others still do.
   const [receipts, balance] = await Promise.all([
     Promise.allSettled(hashes.map((hash) => client.getTransactionReceipt({ hash }))),
-    client.readContract({
-      address: record.depositToken,
-      abi: erc20Abi,
-      functionName: "balanceOf",
-      args: [record.sipaAddress as Address],
-    }),
+    readSipaBalance(client, record.sipaAddress as Address, fundingTokens(record, config.network)),
   ])
+  const sizes = receipts.map((receipt) =>
+    receipt.status === "fulfilled" ? refundedAmount(receipt.value, record) : undefined,
+  )
   let largest: RegistrationRefund | undefined
   let unread = false
-  receipts.forEach((receipt, i) => {
-    if (receipt.status !== "fulfilled") {
+  sizes.forEach((amount, i) => {
+    if (amount === undefined) {
       unread = true
       return
     }
-    const amount = refundedAmount(receipt.value, record)
     if (amount > 0n && (largest === undefined || amount >= largest.amount))
       largest = { amount, txHash: hashes[i] }
   })
+  // Refunds pooled on the record while it was funded outrank any one receipt, on the evidence read
+  // here alone: every refund the pool counted must still read as a successful transfer, and the
+  // pool credits no more than those receipts return now.
+  const pooled = getPendingStore().get(record.account)?.refundedEntry
+  const sizeOf = (hash: string) => sizes[hashes.indexOf(hash as Hash)] ?? 0n
+  const counted = Object.keys(sizedRefunds(record))
+  if (pooled && sizeOf(pooled.recoveryTxHash) > 0n && counted.every((hash) => sizeOf(hash) > 0n)) {
+    const returned = counted.reduce((sum, hash) => sum + sizeOf(hash), 0n)
+    const amount = returned < BigInt(pooled.amount) ? returned : BigInt(pooled.amount)
+    if (amount > (largest?.amount ?? 0n))
+      largest = { amount, txHash: pooled.recoveryTxHash as Hash }
+  }
   if (balance !== 0n || (largest === undefined && !unread))
     throw new Error(
       "The original refund is not complete. Check it before requesting a new address.",

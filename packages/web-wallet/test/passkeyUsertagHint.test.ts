@@ -24,6 +24,7 @@ import {
   setActiveCredentialId,
   setActiveStorageId,
 } from "../src/platform/storage/activeStorage"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import { clearWalletIdentity, saveWalletIdentity } from "../src/features/identity/walletIdentity"
 
 const CREDENTIAL = "cred-1"
@@ -80,6 +81,7 @@ describe("usertag hint", () => {
   it("is not written for a session with no passkey", async () => {
     await seedBreadcrumb()
     clearActiveStorage()
+    await walletStorage.flush()
     await saveWalletIdentity({ handle: "alice", address: "0x1", claimedAt: 1 })
     expect(usertagFor(RP, CREDENTIAL)).toBeUndefined()
   })

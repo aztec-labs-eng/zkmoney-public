@@ -49,7 +49,7 @@ describe("withdrawal copy", () => {
       ...PHASES.flatMap((p) => Object.values(WITHDRAWAL_PHASE_COPY[p])),
       ...withdrawalSteps(true).map((s) => s.label),
     ].filter((word): word is string => typeof word === "string")
-    const localProof = WITHDRAWAL_PHASE_COPY.submitting.live
+    const localProof = WITHDRAWAL_PHASE_COPY.submitting.proving
     for (const word of shown.filter((w) => w !== localProof)) {
       expect(word).not.toMatch(/prov|finali/i)
     }

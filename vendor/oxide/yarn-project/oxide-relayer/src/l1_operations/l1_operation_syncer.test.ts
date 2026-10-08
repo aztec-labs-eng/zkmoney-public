@@ -6,8 +6,16 @@ import type { Tx } from '@aztec/stdlib/tx';
 import { TxHash } from '@aztec/stdlib/tx';
 
 import {
+  SipaIntent,
+  buildSipaDeployAndSweepOperation,
+  buildSipaSweepOperation,
+  decodeSipaSweepOperation,
+  decodeSubsidizedDeployAndSweep,
+} from '@oxide/l1-contracts';
+import {
   L1OperationCondition,
   L1OperationConditionKind,
+  computeL1OperationId,
   encodeL1OperationCalldata,
   l1OperationEventSelector,
 } from '@oxide/oxide-lib/l1_operation_calldata.js';
@@ -16,7 +24,7 @@ import { describe, expect, it, jest } from '@jest/globals';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import type { PublicClient } from 'viem';
+import { type Address, type Hex, type PublicClient, keccak256 } from 'viem';
 
 import { openSqliteStateStore } from '../state/sqlite_store.js';
 import { TEST_RELAYER_DEPLOYMENT } from '../state/test_fixtures.js';
@@ -38,21 +46,31 @@ const L1_TIP = 4_321n;
 
 const BALANCE_CONDITION: L1OperationCondition = L1OperationCondition.balance(WATCHED_TOKEN, SIPA);
 
-async function fakeTx(condition: L1OperationCondition, payoutToken: EthAddress): Promise<Tx> {
+/** An operation that `fakeNode` broadcasts. Its target defaults to `TARGET`. */
+interface FakeOperation {
+  target?: EthAddress;
+  condition: L1OperationCondition;
+  calldata: Buffer;
+}
+
+async function fakeTx(operations: FakeOperation[], payoutToken: EthAddress): Promise<Tx> {
   const selector = await l1OperationEventSelector();
-  const { bytesLen, fields } = encodeL1OperationCalldata(CALLDATA);
-  const { kind, token, recipient } = condition;
-  const values = [
-    selector.toField(),
-    TARGET.toField(),
-    payoutToken.toField(),
-    new Fr(bytesLen),
-    new Fr(kind),
-    token.toField(),
-    recipient.toField(),
-    ...fields,
-  ];
-  return { publicFunctionCalldata: [{ values }] } as unknown as Tx;
+  const requests = operations.map(({ target = TARGET, condition, calldata }) => {
+    const { bytesLen, fields } = encodeL1OperationCalldata(calldata);
+    const { kind, token, recipient } = condition;
+    const values = [
+      selector.toField(),
+      target.toField(),
+      payoutToken.toField(),
+      new Fr(bytesLen),
+      new Fr(kind),
+      token.toField(),
+      recipient.toField(),
+      ...fields,
+    ];
+    return { request: { contractAddress: BROADCASTER }, calldata: values };
+  });
+  return { getPublicCallRequestsWithCalldata: () => requests } as unknown as Tx;
 }
 
 function fakeNode(
@@ -62,6 +80,8 @@ function fakeNode(
     txAvailable?: boolean;
     condition?: L1OperationCondition;
     payoutToken?: EthAddress;
+    /** The operations in the broadcast tx. Defaults to one operation with `condition` and `CALLDATA`. */
+    operations?: FakeOperation[];
     broadcastBlock?: number;
     txHashes?: TxHash[];
   } = {},
@@ -84,7 +104,10 @@ function fakeNode(
     getTxByHash: jest.fn(() =>
       opts.txAvailable === false
         ? Promise.resolve(undefined)
-        : fakeTx(opts.condition ?? L1OperationCondition.immediate(), opts.payoutToken ?? PAYOUT_TOKEN),
+        : fakeTx(
+            opts.operations ?? [{ condition: opts.condition ?? L1OperationCondition.immediate(), calldata: CALLDATA }],
+            opts.payoutToken ?? PAYOUT_TOKEN,
+          ),
     ),
     getTxReceipt: jest.fn(() => Promise.resolve({ blockNumber: block, blockHash: BlockHash.random() })),
   } as unknown as AztecNode;
@@ -109,6 +132,7 @@ function buildSyncer(
   node: AztecNode,
   opts: {
     balance?: bigint;
+    watchedTokens?: EthAddress[];
     outboxStatus?: OutboxStatus;
     telemetry?: L1OperationSyncerDeps['telemetry'];
     logger?: L1OperationSyncerDeps['logger'];
@@ -118,15 +142,16 @@ function buildSyncer(
     node,
     store,
     broadcaster: BROADCASTER,
-    payoutToken: PAYOUT_TOKEN,
-    supportedTokens: [WATCHED_TOKEN],
+    payoutTokens: [PAYOUT_TOKEN],
+    watchedTokens: opts.watchedTokens ?? [WATCHED_TOKEN],
     telemetry: opts.telemetry,
     logger: opts.logger,
     balanceWatcher: new BalanceWatcher({
       publicClient: fakePublicClient(opts.balance ?? 0n),
       store,
-      tokens: [WATCHED_TOKEN],
+      tokens: opts.watchedTokens ?? [WATCHED_TOKEN],
       logWindow: 1_000n,
+      maxAgeMs: 48 * 60 * 60_000,
     }),
     outboxWatcher: new OutboxWatcher({ completion: fakeCompletion(opts.outboxStatus ?? 'waiting'), store }),
   });
@@ -197,14 +222,41 @@ describe('L1OperationSyncer', () => {
     });
   });
 
-  it('never stores an operation that pays out in a token this relayer does not accept', async () => {
-    await withStore(async store => {
-      const node = fakeNode(10, 4, { payoutToken: EthAddress.random() });
-      await expect(buildSyncer(store, node).runOnce()).resolves.toMatchObject({ discovered: 0 });
+  it.each([
+    ['Immediate', L1OperationCondition.immediate()],
+    ['Balance', BALANCE_CONDITION],
+    ['MessageInOutbox', L1OperationCondition.messageInOutbox()],
+  ])(
+    'never stores a %s operation that pays out in a token this relayer does not accept',
+    async (_kind, condition: L1OperationCondition) => {
+      // The lookup finds the same operation when it pays out in the accepted token, at whatever status it gets.
+      await withStore(async store => {
+        await buildSyncer(store, fakeNode(10, 4, { condition })).runOnce();
+        await expect(storedOperation(store, condition, PAYOUT_TOKEN)).resolves.toBeDefined();
+      });
 
-      await expect(store.listPendingL1Operations()).resolves.toHaveLength(0);
-      // The broadcast is still consumed: the cursor moves past it.
-      await expect(store.getL2Cursor(CURSOR_KEY)).resolves.toMatchObject({ blockNumber: 4n });
+      await withStore(async store => {
+        const payoutToken = EthAddress.random();
+        const node = fakeNode(10, 4, { condition, payoutToken });
+        await expect(buildSyncer(store, node).runOnce()).resolves.toMatchObject({ discovered: 0 });
+
+        await expect(storedOperation(store, condition, payoutToken)).resolves.toBeUndefined();
+        // The broadcast is still consumed: the cursor moves past it.
+        await expect(store.getL2Cursor(CURSOR_KEY)).resolves.toMatchObject({ blockNumber: 4n });
+      });
+    },
+  );
+
+  it('stores an operation that pays out in any accepted token', async () => {
+    await withStore(async store => {
+      const syncer = new L1OperationSyncer({
+        node: fakeNode(10, 4),
+        store,
+        broadcaster: BROADCASTER,
+        payoutTokens: [EthAddress.random(), PAYOUT_TOKEN],
+        watchedTokens: [WATCHED_TOKEN],
+      });
+      await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 1 });
     });
   });
 
@@ -215,8 +267,8 @@ describe('L1OperationSyncer', () => {
         node,
         store,
         broadcaster: BROADCASTER,
-        payoutToken: PAYOUT_TOKEN,
-        supportedTokens: [WATCHED_TOKEN],
+        payoutTokens: [PAYOUT_TOKEN],
+        watchedTokens: [WATCHED_TOKEN],
       });
       await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 1, markedPending: 0 });
 
@@ -304,6 +356,7 @@ describe('L1OperationSyncer', () => {
         condition: L1OperationCondition.messageInOutbox(),
         status: 'waiting',
         attempts: 0,
+        createdAt: new Date(),
       });
       const node = fakeNode(10, 4, { condition: L1OperationCondition.messageInOutbox() });
       await expect(buildSyncer(store, node, { outboxStatus: 'ready' }).runOnce()).resolves.toMatchObject({
@@ -370,7 +423,98 @@ describe('L1OperationSyncer', () => {
       await expect(store.getL2Cursor(CURSOR_KEY)).resolves.toMatchObject({ blockNumber: 6n });
     });
   });
+
+  // TODO: Drop this ugly thing with
+  // https://linear.app/aztec-labs/issue/OX-1877/for-v6-handle-multi-token-balance-condition-l1-operations-properly
+  describe('Balance SIPA sweep', () => {
+    const TOKENS = [EthAddress.random(), EthAddress.random(), EthAddress.random()];
+    const DEPOSIT_SUBSIDY = EthAddress.random().toString() as Address;
+    const sweep = (token: EthAddress) => ({
+      sipa: SIPA.toString() as Address,
+      sweepArgs: {
+        token: token.toString() as Address,
+        relayer: TARGET.toString() as Address,
+        intentData: '0x1234' as Hex,
+        proofs: '0x' as Hex,
+      },
+      payoutToken: PAYOUT_TOKEN.toString() as Address,
+      condition: L1OperationCondition.balance(token, SIPA),
+    });
+    const deploy = (token: EthAddress) => ({
+      ...sweep(token),
+      sipaFactory: EthAddress.random().toString() as Address,
+      intent: SipaIntent.Deposit,
+      deployArgs: {
+        implementation: EthAddress.random().toString() as Address,
+        intentHash: keccak256('0x1234'),
+        recoveryCommitment: `0x${'77'.repeat(32)}` as Hex,
+        rollupVersion: 1n,
+        resweepable: true,
+      },
+    });
+
+    /** Checks that the waiting operations are one sweep for each of `TOKENS`, which sweeps the token it waits on. */
+    async function expectOneSweepForEachToken(store: StateStore) {
+      const copies = await store.listWaitingL1Operations(L1OperationConditionKind.Balance);
+      const tokens = copies.map(copy => copy.condition.token.toString());
+      expect(tokens.sort()).toEqual(TOKENS.map(token => token.toString()).sort());
+      for (const copy of copies) {
+        const swept = decodeSipaSweepOperation(copy) ?? decodeSubsidizedDeployAndSweep(copy);
+        expect(swept?.token.toLowerCase()).toBe(copy.condition.token.toString());
+      }
+    }
+
+    it.each([
+      ['sweep', buildSipaSweepOperation(sweep(TOKENS[1]))],
+      ['sweepForSubsidy', buildSipaSweepOperation({ ...sweep(TOKENS[1]), depositSubsidy: DEPOSIT_SUBSIDY })],
+      [
+        'deployAndSweepForSubsidy',
+        buildSipaDeployAndSweepOperation({ ...deploy(TOKENS[1]), depositSubsidy: DEPOSIT_SUBSIDY }),
+      ],
+      ['deploy-and-sweep batch', buildSipaDeployAndSweepOperation(deploy(TOKENS[1]))],
+    ])('stores a %s and a copy of it for each other watched token', async (_shape, operation) => {
+      await withStore(async store => {
+        const node = fakeNode(10, 4, { operations: [operation] });
+        const syncer = buildSyncer(store, node, { watchedTokens: TOKENS });
+        await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 3 });
+
+        await expectOneSweepForEachToken(store);
+        // The broadcast operation keeps its ID, so a client can follow its status.
+        const broadcast = await store.getPendingL1Operation(computeL1OperationId(operation));
+        expect(broadcast?.calldata.equals(operation.calldata)).toBe(true);
+      });
+    });
+
+    it('stores each copy once when a tx has one sweep for each watched token', async () => {
+      await withStore(async store => {
+        const operations = TOKENS.map(token => buildSipaSweepOperation(sweep(token)));
+        const node = fakeNode(10, 4, { operations });
+        const syncer = buildSyncer(store, node, { watchedTokens: TOKENS });
+        await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 3 });
+
+        await expectOneSweepForEachToken(store);
+      });
+    });
+
+    it('stores a Balance operation that is not a SIPA sweep only for its own token', async () => {
+      await withStore(async store => {
+        const condition = L1OperationCondition.balance(TOKENS[1], SIPA);
+        const node = fakeNode(10, 4, { condition });
+        const syncer = buildSyncer(store, node, { watchedTokens: TOKENS });
+        await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 1 });
+
+        const [waiting] = await store.listWaitingL1Operations(L1OperationConditionKind.Balance);
+        expect(waiting.condition).toEqual(condition);
+      });
+    });
+  });
 });
+
+/** The stored row, at any status, for the operation that `fakeNode` broadcasts with `condition` and `payoutToken`. */
+function storedOperation(store: StateStore, condition: L1OperationCondition, payoutToken: EthAddress) {
+  const operationId = computeL1OperationId({ target: TARGET, payoutToken, calldata: CALLDATA, condition }, TX_HASH);
+  return store.getPendingL1Operation(operationId);
+}
 
 async function withStore(fn: (store: StateStore) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'oxide-relayer-l1-op-sync-'));

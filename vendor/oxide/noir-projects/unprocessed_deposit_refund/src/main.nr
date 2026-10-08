@@ -115,3 +115,117 @@ fn main(
     let inner_nullifier = compute_deposit_message_nullifier(message_hash, nhk_app);
     compute_siloed_nullifier(l2_token, inner_nullifier)
 }
+
+mod tests {
+    use super::main;
+    use aztec::protocol::{
+        abis::state_reference::StateReference,
+        address::{AztecAddress, EthAddress},
+        public_keys::{IvpkM, PublicKeys},
+        traits::{Empty, FromField},
+    };
+    use oxide_token_lib::deposit_message_hashing::compute_deposit_message_hash;
+    use refund_lib::test_fixtures::{
+        frozen_tip_with, FrozenTip, older_block_with, unread_authorization, unread_instance,
+    };
+    use std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar};
+
+    global CHAIN_ID: Field = 1;
+    global ROLLUP_VERSION: Field = 1;
+    global AMOUNT: u128 = 10;
+    global SHARED_SECRET_SALT: Field = 42;
+    global MESSAGE_LEAF_INDEX: Field = 5;
+
+    fn l1_portal() -> EthAddress {
+        EthAddress::from_field(0xa)
+    }
+
+    fn l2_token() -> AztecAddress {
+        AztecAddress::from_field(1)
+    }
+
+    fn l2_recipient() -> AztecAddress {
+        AztecAddress::from_field(2)
+    }
+
+    // The recipient's keys, instance and authorization are zero, so the circuit refuses the authorization of every
+    // claim that gets that far.
+    fn unread_public_keys() -> PublicKeys {
+        PublicKeys {
+            npk_m_hash: 0,
+            ivpk_m: IvpkM { inner: EmbeddedCurvePoint::generator() },
+            ovpk_m_hash: 0,
+            tpk_m_hash: 0,
+            mspk_m_hash: 0,
+            fbpk_m_hash: 0,
+        }
+    }
+
+    /// A state whose L1-to-L2 tree holds the leaves at indices below `next_available_leaf_index`.
+    fn state_absorbing_up_to(next_available_leaf_index: Field) -> StateReference {
+        let mut state = StateReference::empty();
+        state.l1_to_l2_message_tree.next_available_leaf_index = next_available_leaf_index;
+        state
+    }
+
+    // The message is the first one the frozen tip did not absorb, so only the unread authorization refuses it.
+    #[test(should_fail_with = "refund authorization does not match owner address")]
+    fn accepts_the_first_message_the_frozen_tip_did_not_absorb() {
+        refund_at(frozen_tip_with(state_absorbing_up_to(MESSAGE_LEAF_INDEX)));
+    }
+
+    #[test(should_fail_with = "attempting to spend a processed message via the unprocessed deposit refund")]
+    fn rejects_a_message_the_frozen_tip_already_absorbed() {
+        refund_at(
+            frozen_tip_with(state_absorbing_up_to(MESSAGE_LEAF_INDEX + 1)),
+        );
+    }
+
+    #[test(should_fail_with = "frozen tip is not in the archive")]
+    fn rejects_a_frozen_tip_outside_the_frozen_archive() {
+        // The header claims that no message is absorbed, but the frozen archive ends at a block that absorbed it.
+        let mut forged = frozen_tip_with(StateReference::empty());
+        forged.archive_root = frozen_tip_with(state_absorbing_up_to(MESSAGE_LEAF_INDEX + 1)).archive_root;
+        refund_at(forged);
+    }
+
+    #[test(should_fail_with = "frozen tip is not the latest block in the frozen archive")]
+    fn rejects_a_block_from_before_the_message_was_absorbed_as_the_frozen_tip() {
+        // A later block of the frozen archive absorbed the message.
+        let absorbing_block = 0xb10c;
+        refund_at(older_block_with(StateReference::empty(), absorbing_block));
+    }
+
+    fn refund_at(frozen: FrozenTip) {
+        let message_hash = compute_deposit_message_hash(
+            l1_portal(),
+            CHAIN_ID,
+            l2_token(),
+            ROLLUP_VERSION,
+            SHARED_SECRET_SALT,
+            l2_recipient(),
+            AMOUNT,
+            MESSAGE_LEAF_INDEX,
+        );
+        let _ = main(
+            CHAIN_ID,
+            ROLLUP_VERSION,
+            l1_portal(),
+            frozen.archive_root,
+            AMOUNT,
+            EthAddress::from_field(0xbeef),
+            1,
+            message_hash,
+            MESSAGE_LEAF_INDEX,
+            l2_token(),
+            frozen.header,
+            frozen.archive_path,
+            SHARED_SECRET_SALT,
+            l2_recipient(),
+            unread_public_keys(),
+            unread_instance(),
+            EmbeddedCurveScalar::new(0, 0),
+            unread_authorization(),
+        );
+    }
+}

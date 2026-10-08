@@ -5,6 +5,7 @@ import {
   createClaimSweepReporter,
   createSyncFailureReporter,
   newlyClaimedRecords,
+  settlesBootBalance,
 } from "../src/features/deposit/useSipaDeposits"
 
 function record(over: Partial<SIPADepositRecord>): SIPADepositRecord {
@@ -88,6 +89,25 @@ describe("deposit failure codes", () => {
     expect(
       failureCode(new Error("no account for this session — enter with your passkey first")),
     ).toBe("wallet_locked")
+  })
+})
+
+describe("settlesBootBalance", () => {
+  const result = (failed: number) => ({
+    discovered: 2,
+    active: 0,
+    skipped: 0,
+    claimed: 1,
+    pendingSettlement: 0,
+    recoverable: 0,
+    reconciled: 0,
+    failed,
+  })
+
+  it("settles on a clean pass only", () => {
+    expect(settlesBootBalance(result(0))).toBe(true)
+    expect(settlesBootBalance(result(1))).toBe(false)
+    expect(settlesBootBalance(null)).toBe(false)
   })
 })
 

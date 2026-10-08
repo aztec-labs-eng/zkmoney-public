@@ -13,12 +13,12 @@ export async function loadOxideGenerations(
   contractService: ContractService,
   config: WebWalletConfig,
 ): Promise<OxideIdentityDeps> {
-  const [tuple, info, bindings] = await Promise.all([
+  const [tuple, identity, bindings] = await Promise.all([
     getOxideTuple(config),
-    wallet.node.getNodeInfo(),
+    wallet.getNodeIdentity(),
     readClaimFpcIdentityCatalog(wallet, contractService),
   ])
-  const rollupVersion = String(info.rollupVersion)
+  const rollupVersion = String(identity.rollupVersion)
   return {
     reader: createOxideL1Reader(l1PublicClient(config)),
     registry: requireTupleField(tuple, "registry") as Address,
@@ -26,7 +26,6 @@ export async function loadOxideGenerations(
     catalog: bindings.map((binding) => ({
       fpcAddress: binding.fpcAddress,
       accountFactory: binding.accountFactory as Address,
-      implementation: binding.implementation as Address,
       namePortal: binding.namePortal as Address,
       rollupVersion,
     })),

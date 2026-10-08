@@ -22,6 +22,10 @@ export interface TicketSignupStash {
   /** The note's amount, base units, once the witness read it. */
   amount?: string
   memo?: string
+  /** The prover tip the split committed to before the terms exist, base units. */
+  proverTip?: string
+  /** The speed the split committed to with it. */
+  speed?: "standard" | "faster"
 }
 
 /** sessionStorage-shaped seam. */

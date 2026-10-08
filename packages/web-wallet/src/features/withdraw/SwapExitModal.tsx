@@ -11,6 +11,7 @@
 import { useState } from "react"
 import { isAddress, type Address, type Hex } from "viem"
 import { truncateMiddle, type WithdrawalRecord } from "@obsidion/front-core"
+import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import {
   ConfirmationSheetDetailRow,
   DoubleCheckIcon,
@@ -28,8 +29,16 @@ import { HashRow, l1TxUrl, whenLabel } from "../../ui/detailRows"
 import { useCopy } from "../../ui/hooks"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
 import { waitedLabel } from "../deposit/DepositExitModal"
-import { useL1Wallet } from "../deposit/l1Wallet"
+import { isWalletRejection, useL1Wallet } from "../deposit/l1Wallet"
 import type { L1ExitStage } from "../deposit/sipaRecovery"
+import {
+  useWalletPrompt,
+  useWalletPromptStall,
+  WalletPromptNote,
+  WalletPromptOpenError,
+  type WalletPromptToken,
+} from "../deposit/walletPrompt"
+import { ExitWalletRow } from "./ExitWalletRow"
 import { executeSwapWithdrawal, recoverSwapWithdrawal, type SwapExitReason } from "./swapRecovery"
 import { unswappableCopy } from "./unswappableCopy"
 
@@ -40,12 +49,12 @@ const STAGE_LABEL: Record<ExitAction, Record<L1ExitStage, string>> = {
   execute: {
     "signing": "Approve the swap in your wallet",
     "awaiting-browser": "Approve the swap in your browser",
-    "confirming": "Waiting for L1 confirmation",
+    "confirming": "Waiting for Ethereum confirmation",
   },
   recover: {
     "signing": "Approve the recovery in your wallet",
     "awaiting-browser": "Approve the recovery in your browser",
-    "confirming": "Waiting for L1 confirmation",
+    "confirming": "Waiting for Ethereum confirmation",
   },
 }
 
@@ -59,17 +68,21 @@ const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`
 export function SwapExitModal({
   record,
   reason,
+  linkFragment,
   onClose,
 }: {
   record: WithdrawalRecord
   reason: SwapExitReason
+  /** A paylink visitor's cash-out: the recipient's wallet signs the recovery. */
+  linkFragment?: string
   onClose: () => void
 }) {
   const config = getConfig()
   const bridgeMode = isDesktopL1SubmitActive()
   const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
   const { copied, copy } = useCopy()
-  const canExecute = reason === "stuck"
+  // The tracker may park the escrow `recoverable` while the sheet is open; a swap sent then reverts.
+  const canExecute = reason === "stuck" && record.phase === "swapping"
 
   const [destination, setDestination] = useState<string>(record.recipient)
   const [phase, setPhase] = useState<"form" | "working" | "done">("form")
@@ -77,6 +90,15 @@ export function SwapExitModal({
   const [stage, setStage] = useState<L1ExitStage>()
   const [submitUrl, setSubmitUrl] = useState<string>()
   const [txHash, setTxHash] = useState<Hex>()
+  const [refused, setRefused] = useState<string>()
+  const prompt = useWalletPrompt()
+  const stalled = useWalletPromptStall(phase === "working" && stage === "signing")
+  // Back to the form; the transaction the wallet still holds is handled when it answers.
+  const cancelPrompt = () => {
+    prompt.cancel()
+    setStage(undefined)
+    setPhase("form")
+  }
 
   const typedValid = isAddress(destination)
   const target = typedValid ? (destination as Address) : null
@@ -89,18 +111,30 @@ export function SwapExitModal({
   const enteredAt = record.phaseEnteredAt ?? record.startTime
 
   const submit = async (next: ExitAction) => {
+    if (prompt.openElsewhere) {
+      setRefused(prompt.openElsewhere)
+      return
+    }
     setAction(next)
+    setRefused(undefined)
     setPhase("working")
     setStage(undefined)
     setSubmitUrl(undefined)
     const elapsed = lapTimer()
+    let request: WalletPromptToken | undefined
     const opts = {
       destination: target ?? undefined,
       from: l1.account ?? undefined,
+      linkFragment,
       onHelperOpened: setSubmitUrl,
-      onStage: setStage,
+      // Confirming means the wallet answered; the slot frees before the receipt lands.
+      onStage: (next: L1ExitStage) => {
+        setStage(next)
+        if (next === "confirming") prompt.settle(request)
+      },
     }
     try {
+      request = prompt.begin()
       const hash =
         next === "recover"
           ? await recoverSwapWithdrawal(record, opts)
@@ -114,11 +148,18 @@ export function SwapExitModal({
       })
     } catch (e) {
       setPhase("form")
+      if (e instanceof WalletPromptOpenError) {
+        setRefused(e.message)
+        return
+      }
+      if (prompt.cancelled(request) || isPasskeyCancelled(e) || isWalletRejection(e)) return
       const scope = next === "execute" ? "withdrawal:swap-execute" : "withdrawal:swap-recover"
       fireEvent("action_failed", { action: scope, code: failureCode(e) })
       showReportableError(e, next === "execute" ? "withdrawal:swap" : "withdrawal:recovery", {
         title: next === "execute" ? "Swap failed" : "Recovery failed",
       })
+    } finally {
+      prompt.settle(request)
     }
   }
 
@@ -154,20 +195,12 @@ export function SwapExitModal({
               {canExecute ? EXECUTE_COPY : unswappableCopy(record)}
             </p>
 
-            {!bridgeMode && !l1.account ? (
-              <PrimaryGradientButton
-                title={l1.connecting ? "Connecting…" : "Connect wallet"}
-                isLoading={l1.connecting}
-                onClick={l1.connect}
-              />
-            ) : !bridgeMode && l1.wrongChain ? (
-              <PrimaryGradientButton
-                title={l1.connecting ? "Switching…" : `Switch to ${config.l1Chain.name}`}
-                buttonStyle="dark"
-                isLoading={l1.connecting}
-                onClick={l1.switchNetwork}
-              />
-            ) : null}
+            {!bridgeMode && <ExitWalletRow l1={l1} chainName={config.l1Chain.name} />}
+            {refused && (
+              <p role="alert" className="ww-sheet__note" data-testid="swap-exit-refused">
+                {refused}
+              </p>
+            )}
 
             <div>
               <ConfirmationSheetDetailRow label="Amount" value={amount} />
@@ -222,7 +255,7 @@ export function SwapExitModal({
                 verdict={verdict}
                 checkingCopy="Checking address…"
                 blockedFallback="This address can't be used here. Use a different one."
-                errorCopy="Couldn't verify this address."
+                errorCopy="Couldn't verify this address. Check your internet connection or try another address."
                 onRetry={rescreen}
               />
             )}
@@ -243,6 +276,7 @@ export function SwapExitModal({
                 {stage ? STAGE_LABEL[action][stage] : "Preparing…"}
               </span>
             </div>
+            {stalled && <WalletPromptNote walletName={l1.walletName} onCancel={cancelPrompt} />}
             {stage === "awaiting-browser" && submitUrl && (
               <p
                 style={{

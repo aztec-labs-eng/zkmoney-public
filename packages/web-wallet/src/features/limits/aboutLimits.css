@@ -1,0 +1,168 @@
+/* About limits sheet. */
+.ww-about-limits {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  text-align: left;
+}
+.ww-about-limits__section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.ww-about-limits__section + .ww-about-limits__section {
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.ww-about-limits__title {
+  margin: 0;
+}
+/* Beats `.zkm-btn-reset { font/padding }`; the height keeps a touch target. */
+.zkm-btn-reset.ww-about-limits__toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 600;
+  text-align: left;
+}
+.ww-about-limits__body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ww-about-limits__body[hidden] {
+  display: none;
+}
+.ww-about-limits__status {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.4;
+}
+.ww-about-limits__toggle:focus-visible,
+.ww-about-limits__status:focus-visible,
+.ww-about-limits__retry:focus-visible,
+.ww-info-button:focus-visible {
+  outline: 2px solid var(--accent-green, #6c9);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+.ww-about-limits__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+.ww-about-limits__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 13px;
+}
+.ww-about-limits__row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+}
+.ww-about-limits__row dt {
+  color: var(--text-secondary);
+}
+.ww-about-limits__row dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-weight: 500;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.ww-about-limits__note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.zkm-btn-reset.ww-about-limits__retry {
+  align-self: flex-start;
+  min-height: 44px;
+  padding: 0 4px;
+  color: var(--accent-green, #6c9);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Info icon after a limit or reason. It inherits the text's metrics: one line tall, glyph one em. */
+.zkm-btn-reset.ww-info-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 1lh;
+  height: 1lh;
+  vertical-align: top;
+  border-radius: 50%;
+  color: var(--text-secondary);
+}
+.ww-info-button svg {
+  width: 1em;
+  height: 1em;
+}
+.zkm-btn-reset.ww-info-button:hover {
+  color: var(--text-primary);
+}
+
+/* One compact limit row, such as "Max sent: $2,500 incl. fees". */
+.ww-limit-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+}
+
+/* The one reason an amount or action is blocked, with its correction. */
+.ww-limit-reason {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px 12px;
+  margin: 0;
+  color: var(--accent-pink);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: left;
+}
+.ww-limit-reason__text {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* A reason that wraps would otherwise squeeze the icon. */
+.ww-limit-reason__text svg {
+  flex-shrink: 0;
+}
+.zkm-btn-reset.ww-limit-reason__action {
+  min-height: 32px;
+  color: var(--accent-green, #6c9);
+  font-size: 12px;
+  font-weight: 600;
+}

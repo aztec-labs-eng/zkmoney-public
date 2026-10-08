@@ -1,12 +1,13 @@
 // @vitest-environment node
 /**
  * A fresh-browser sign-in over the real auth service and real P-256 signatures, with only an anchor
- * that looks at the master key (as the campaign's signup record does). The key the L1 account
- * installed is the credential's own, so the sign-in takes one assertion and adopts that key; with
- * no installed key the second assertion recovers the same one.
+ * that looks at the master key (as the campaign's signup record does). The key a registry-named L1
+ * account installed is the credential's own, so the sign-in takes one assertion and adopts that
+ * key; a nameless account is not read, and the second assertion recovers the same one.
  */
 import { Fr } from "@aztec/aztec.js/fields"
 import type { AnchorTier, CandidateProbe } from "@obsidion/front-core"
+import { getContractAddress } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { WebAlphaAuthService } from "../src/platform/auth/WebAlphaAuthService"
 import { getActiveStorageId, readCachedMsk } from "../src/platform/storage/activeStorage"
@@ -15,16 +16,20 @@ import { FakePasskeyCeremony, MemoryStorage } from "./support/fakePasskeyCeremon
 const h = vi.hoisted(() => ({
   service: undefined as unknown,
   addWebauthnAccount: vi.fn(),
+  /** The installed-key read's name read; the resolver's control below stays nameless. */
+  readNameOf: vi.fn(),
   getCode: vi.fn(),
   readAuthKeys: vi.fn(),
   /** The hand-off's anchor tiers; the entry tests pass theirs explicitly. */
   tiers: [] as AnchorTier[],
+  /** The published generations a test wants read instead of the unnamed default. */
+  generations: undefined as unknown,
 }))
 
 vi.mock("../src/platform/auth/useAuthenticator", () => ({ getAuthService: () => h.service }))
 vi.mock("../src/platform/storage/handoffMaterial", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/platform/storage/handoffMaterial")>()),
-  awaitHandoffMaterial: async () => null,
+  takeHandoffMaterial: () => null,
 }))
 vi.mock("../src/features/onboarding/recoveryProbes", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/onboarding/recoveryProbes")>()),
@@ -40,38 +45,38 @@ vi.mock("../src/config/oxideTuple", () => ({
   requireTupleField: (tuple: Record<string, string>, key: string) => tuple[key],
   l1PublicClient: () => ({}),
 }))
+const FACTORY = `0x${"11".repeat(20)}` as const
+const NAME = `0x${"ab".repeat(32)}`
+const NAMELESS = `0x${"0".repeat(64)}`
 /** One published generation that admits, holding no name: the legitimate new-user control. */
 const unnamedGenerations = {
   reader: {
-    predictAccountAddress: async () => `0x${"33".repeat(20)}`,
-    readNameOf: async () => `0x${"0".repeat(64)}`,
+    readNameOf: async () => NAMELESS,
     readAccountMetadataRegistry: async () => `0x${"23".repeat(20)}`,
     readUserRecord: async () => null,
     readNamePortalRegistry: async () => `0x${"22".repeat(20)}`,
-    readFactoryImplementation: async () => `0x${"11".repeat(19)}dd`,
+    readFactoryImplementation: async () => getContractAddress({ from: FACTORY, nonce: 1n }),
   },
   registry: `0x${"22".repeat(20)}`,
   rollupVersion: "1",
   catalog: [
     {
       fpcAddress: `0x${"0b".repeat(32)}`,
-      accountFactory: `0x${"11".repeat(20)}`,
-      implementation: `0x${"11".repeat(19)}dd`,
+      accountFactory: FACTORY,
       namePortal: `0x${"11".repeat(19)}ee`,
       rollupVersion: "1",
     },
   ],
 }
 vi.mock("../src/features/onboarding/oxideGenerations", () => ({
-  loadOxideGenerations: async () => unnamedGenerations,
-  generationFactories: () => [`0x${"11".repeat(20)}`],
+  loadOxideGenerations: async () => h.generations ?? unnamedGenerations,
+  generationFactories: () => [FACTORY],
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   AccountStorage: { get: () => ({ addWebauthnAccount: h.addWebauthnAccount }) },
   createOxideL1Reader: () => ({
-    predictAccountAddress: async () => `0x${"33".repeat(20)}`,
-    readNameOf: async () => `0x${"0".repeat(64)}`,
+    readNameOf: h.readNameOf,
     getCode: h.getCode,
     readAuthKeys: h.readAuthKeys,
   }),
@@ -145,11 +150,13 @@ beforeEach(() => {
   vi.clearAllMocks()
   store.clear()
   h.tiers = []
+  h.generations = undefined
   vi.stubGlobal("localStorage", {
     getItem: (k: string) => store.get(k) ?? null,
     setItem: (k: string, v: string) => void store.set(k, v),
     removeItem: (k: string) => void store.delete(k),
   })
+  h.readNameOf.mockResolvedValue(NAMELESS)
   h.getCode.mockResolvedValue(undefined)
   h.readAuthKeys.mockResolvedValue([])
 })
@@ -161,9 +168,8 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     return [{ name: "campaign", probes: [probe] }]
   }
 
-  it("the installed key settles the sign-in in one assertion", async () => {
-    const { ceremony, created, wallet, createObsidionAccount, deriveAccountAddress } =
-      await freshBrowserWithPasskey()
+  /** The credential's own key, as registration installs it on the L1 account. */
+  const installed = (created: { pubkey: string; credentialId: string }) => {
     h.getCode.mockResolvedValue("0x6080")
     h.readAuthKeys.mockResolvedValue([
       {
@@ -171,6 +177,13 @@ describe("a sign-in anchored only by the master key adopts the credential's real
         metadata: credentialIdToMetadata(created.credentialId),
       },
     ])
+  }
+
+  it("a named account's installed key settles the sign-in in one assertion", async () => {
+    const { ceremony, created, wallet, createObsidionAccount, deriveAccountAddress } =
+      await freshBrowserWithPasskey()
+    h.readNameOf.mockResolvedValue(NAME)
+    installed(created)
     const { gate } = gateFor()
     const result = await enterWithPasskey(wallet as never, config, undefined, {
       contractService: {} as never,
@@ -191,6 +204,77 @@ describe("a sign-in anchored only by the master key adopts the credential's real
       `${ADDR}:complete`,
       expect.objectContaining({ credentialId: created.credentialId, pubkey: created.pubkey }),
     )
+  })
+
+  it("a nameless account's installed key is not read: the second assertion recovers the same key", async () => {
+    const { ceremony, created, wallet, createObsidionAccount, deriveAccountAddress } =
+      await freshBrowserWithPasskey()
+    installed(created)
+    const { gate } = gateFor()
+    const result = await enterWithPasskey(wallet as never, config, undefined, {
+      contractService: {} as never,
+      gate,
+      tiers: masterKeyOnly(created.secretKey),
+      chooser: true,
+    })
+    expect(result).toMatchObject({ entered: false, reason: "unclaimed" })
+    expect(h.getCode).not.toHaveBeenCalled()
+    expect(h.readAuthKeys).not.toHaveBeenCalled()
+    expect(ceremony.asserts).toHaveLength(2)
+    expect(gate).toHaveBeenCalledTimes(2)
+    expect(new Set(deriveAccountAddress.mock.calls.map(([, key]) => key))).toEqual(
+      new Set([created.pubkey]),
+    )
+    expect(createObsidionAccount).toHaveBeenCalledWith(created.secretKey, expect.anything())
+    expect(h.addWebauthnAccount).toHaveBeenCalledWith(
+      "Account 1",
+      `${ADDR}:complete`,
+      expect.objectContaining({ credentialId: created.credentialId, pubkey: created.pubkey }),
+    )
+  })
+
+  it("a record-present discoverable sign-in still carries the passkey's name on the unclaimed result", async () => {
+    const { created, wallet } = await freshBrowserWithPasskey()
+    // A device record for the credential (as adoptHandoff/storeAccount writes on the campaign
+    // hand-off), so the returning discoverable sign-in takes beginRecovery's record branch instead
+    // of the unsettled one. The name the passkey carries must survive that branch.
+    await (h.service as WebAlphaAuthService).recordRecoveryMetadata({
+      credentialId: created.credentialId,
+      l2Address: ADDR,
+      pubkey: created.pubkey,
+      isMskRoot: true,
+    })
+    const { gate } = gateFor()
+    const result = await enterWithPasskey(wallet as never, config, undefined, {
+      contractService: {} as never,
+      gate,
+      tiers: masterKeyOnly(created.secretKey),
+      chooser: true,
+    })
+    expect(result).toMatchObject({ entered: false, reason: "unclaimed" })
+    expect((result as { userHandle?: string }).userHandle).toBe("@alice")
+  })
+
+  it("the name the passkey carries names a registered claim, with nothing typed", async () => {
+    const { composeWireNameHash } = await import("@obsidion/front-core")
+    const { created, wallet } = await freshBrowserWithPasskey()
+    // The account holds "alice" on the Registry and its record names this account.
+    h.generations = {
+      ...unnamedGenerations,
+      reader: {
+        ...unnamedGenerations.reader,
+        readNameOf: async () => composeWireNameHash("alice", "zkmoney.eth"),
+        readUserRecord: async () => ({ l2Address: ADDR, rollupVersion: 1n }),
+      },
+    }
+    const { gate } = gateFor()
+    const result = await enterWithPasskey(wallet as never, config, undefined, {
+      contractService: {} as never,
+      gate,
+      tiers: masterKeyOnly(created.secretKey),
+      chooser: true,
+    })
+    expect(result).toMatchObject({ entered: true, handle: "alice", address: ADDR })
   })
 
   it("with no installed key the second assertion recovers the same key", async () => {

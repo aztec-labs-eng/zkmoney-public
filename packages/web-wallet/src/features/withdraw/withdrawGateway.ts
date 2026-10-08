@@ -16,7 +16,7 @@ import { Fr } from "@aztec/aztec.js/fields"
 import { TxHash } from "@aztec/stdlib/tx"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { Address, Hex } from "viem"
-import { createPublicClient, parseUnits } from "viem"
+import { createPublicClient, formatUnits, parseUnits } from "viem"
 import { DEFAULT_DECIMALS, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import {
   ContractService,
@@ -30,6 +30,7 @@ import {
   readPortalWithdrawalState,
   type ObsidionAccount,
   type ObsidionWallet,
+  type SponsoredExitAuthorization,
   type SwapOnWithdrawOutput,
   type SwapOnWithdrawPlan,
   type SwapSimulation,
@@ -62,6 +63,7 @@ import { loadWalletIdentity } from "../identity/walletIdentity"
 import { claimSponsorContext, noteSubscribed } from "../onboarding/claimSponsorship"
 import { RAIL_REGISTERED } from "../onboarding/rails"
 import { slowWhenHidden } from "../../platform/visibilityScheduler"
+import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
 import type { WithdrawalReceiveAsset } from "./withdrawAssets"
 
 /** Progress stages the modal's proving view renders. */
@@ -207,9 +209,9 @@ export interface WithdrawDeps {
 }
 
 /**
- * Run a sponsored withdrawal end to end: screen the recipient, then {@link runBurn} through the
- * ClaimFPC batch. The record is the source of truth from there: oxide's relayer finalizes on L1 and
- * the tracker walks the phases to `done`.
+ * Run a sponsored withdrawal end to end: refuse an amount over the per-withdrawal limit, screen the
+ * recipient, then {@link runBurn} through the ClaimFPC batch. The record is the source of truth
+ * from there: oxide's relayer finalizes on L1 and the tracker walks the phases to `done`.
  */
 export function submitSponsoredWithdrawal(
   deps: WithdrawDeps,
@@ -219,6 +221,7 @@ export function submitSponsoredWithdrawal(
   recipientAlias?: string,
   receiveAsset: WithdrawalReceiveAsset = "DAI",
   swap?: SwapCommit,
+  proverTip = 0n,
 ): Promise<WithdrawalRecord> {
   const summary = `$${amountDisplay} to ${recipientAlias?.trim() || "Ethereum"}`
   return runOperation(
@@ -233,6 +236,7 @@ export function submitSponsoredWithdrawal(
         recipientAlias,
         receiveAsset,
         swap,
+        proverTip,
       ),
   )
 }
@@ -246,7 +250,7 @@ export interface BurnResult {
 export interface BurnInput<R extends BurnResult> {
   op: OperationHandle
   wallet: ObsidionWallet
-  /** The record seeded before the burn signs, so a reload mid-prove finds it. */
+  /** The record seeded before the burn is sent, so a reload mid-prove finds it. */
   record: Omit<WithdrawalRecord, "localId" | "operationId">
   /** Signs, proves and sends the burn off the persisted record; resolves on the L2 receipt. */
   burn: (record: WithdrawalRecord) => Promise<R>
@@ -342,7 +346,8 @@ export interface SwapRecoverer {
  * Plan the swap leg of a burn. A non-DAI output burns to oxide's counterfactual SwapEscrow instead
  * of the recipient; the sdk pairs the escrow's swap with the release in the Broadcaster call riding
  * the burn tx, so a mined burn implies a mined broadcast. Call it before the record exists, so a
- * bad manifest aborts with nothing persisted and the escrow args land on the record pre-sign.
+ * bad manifest aborts with nothing persisted and the escrow args land on the record before the
+ * burn is sent.
  * Undefined for DAI.
  */
 export async function planSwapLeg(
@@ -353,6 +358,8 @@ export async function planSwapLeg(
   commit?: SwapCommit,
   recoverer?: SwapRecoverer,
   source?: OxideEnvTuple,
+  /** Must match the burn's, which the escrow's funding is net of. */
+  proverTip = 0n,
 ): Promise<SwapLeg | undefined> {
   if (receiveAsset === "DAI") return undefined
   if (!commit) throw new Error("Swap fee unavailable. Withdraw DAI instead.")
@@ -368,7 +375,7 @@ export async function planSwapLeg(
     l1Recipient: recipient,
     amount,
     withdrawalRelayerTip: WITHDRAW_RELAYER_TIP,
-    proverTip: 0n,
+    proverTip,
     fpcFundingCut: cut,
     relayerTip: commit.relayerTip,
     recovery: { account, salt: deriveSwapEscrowRecoverySalt(secret, nonce) },
@@ -399,7 +406,7 @@ export async function withdrawalOptions(
   return { tuple, portal, ...(swap ? { swap: swap.plan } : {}) }
 }
 
-/** What a swap leg writes on the record pre-sign, plus the confirm-time quote for the detail sheet. */
+/** What a swap leg writes on the record before its burn is sent, plus the confirm-time quote for the detail sheet. */
 export function swapRecordFields(
   swap: SwapLeg | undefined,
   quote?: SwapCommit,
@@ -432,9 +439,29 @@ async function submitSponsoredWithdrawalFlow(
    * the relayer.
    */
   swapCommit?: SwapCommit,
+  /** Paid to the first prover of the burn's checkpoint, out of the burn. */
+  proverTip = 0n,
 ): Promise<WithdrawalRecord> {
   onStage("building")
+  const amount = parseUnits(amountDisplay, DEFAULT_DECIMALS)
+  assertWithinWithdrawalLimit(amount)
+  const ctx = await burnContext(deps, recipient)
+  const swap = await planSwapLeg(
+    deps.wallet,
+    receiveAsset,
+    recipient,
+    amount,
+    swapCommit,
+    undefined,
+    ctx.tuple,
+    proverTip,
+  )
+  const burn = { recipient, recipientAlias, amount, swap, swapCommit, proverTip }
+  return (await runSponsoredBurn(op, deps, ctx, burn, onStage)).record
+}
 
+/** What a sponsored burn to `recipient` settles against, read before any record exists. */
+export async function burnContext(deps: WithdrawDeps, recipient: Address) {
   // Re-screen at the commit point, before any record or burn exists: oxide's relayer enforces
   // the same policy at batching time, where a blocked recipient means a burned-but-never-
   // finalized withdrawal. A screener throw (verdict unknown) also aborts — fail closed. For a
@@ -449,17 +476,59 @@ async function submitSponsoredWithdrawalFlow(
   const sponsor = await claimSponsorContext(deps, RAIL_REGISTERED)
 
   const tuple = await getOxideTuple(getConfig())
-  const swap = await planSwapLeg(
-    deps.wallet,
-    receiveAsset,
-    recipient,
-    parseUnits(amountDisplay, DEFAULT_DECIMALS),
-    swapCommit,
-    undefined,
-    tuple,
-  )
+  return { tokenSymbol: token.symbol, sponsor, tuple, deployment: await currentDeployment(tuple) }
+}
+
+export type BurnContext = Awaited<ReturnType<typeof burnContext>>
+
+export interface SponsoredBurnInput {
+  recipient: Address
+  recipientAlias?: string
+  /** Atomic units of the wallet asset the burn removes. */
+  amount: bigint
+  /** The planned swap leg and the quote it was confirmed on; both absent for DAI. */
+  swap?: SwapLeg
+  swapCommit?: SwapCommit
+  /** Laid over the record and the sdk options every sponsored burn shares. */
+  record?: Partial<WithdrawalRecord>
+  options?: Partial<WithdrawalOptions>
+  /** This burn's share of a signature taken over several; absent, the burn signs for itself. */
+  authorization?: SponsoredExitAuthorization
+  /** The exit that signature covered; absent, the burn reads its own. */
+  exit?: Awaited<ReturnType<typeof sponsoredExit>>
+  /** Paid to the first prover of the burn's checkpoint, out of the burn. */
+  proverTip?: bigint
+}
+
+/**
+ * What a sponsored burn hands the sdk, off the fields its record is seeded with. Read before the
+ * record exists, so a signature taken over an exit covers the very one the burn runs.
+ */
+export async function sponsoredExit(tuple: OxideEnvTuple, input: SponsoredBurnInput) {
+  const { recipient, amount, swap } = input
+  const seed = { recipient, ...swapRecordFields(swap), ...input.record }
+  return {
+    l1Recipient: EthAddress.fromString(withdrawalRecipients(seed).release),
+    amount: seed.rawAmount ?? amount.toString(),
+    withdrawal: { ...(await withdrawalOptions(tuple, swap)), ...input.options },
+    proverTip: input.proverTip,
+  }
+}
+
+/**
+ * One sponsored burn through {@link runBurn}, then the sponsor bookkeeping once mined. `mined` is
+ * false for a burn left to the chain.
+ */
+export async function runSponsoredBurn(
+  op: OperationHandle,
+  deps: WithdrawDeps,
+  { tokenSymbol, sponsor, tuple, deployment }: BurnContext,
+  input: SponsoredBurnInput,
+  onStage: (stage: WithdrawStage) => void,
+): Promise<{ record: WithdrawalRecord; mined: boolean }> {
+  const { recipient, recipientAlias, amount, swap, swapCommit } = input
   const fpcFundingCut = await currentFpcFundingCut()
-  const withdrawal = await withdrawalOptions(tuple, swap)
+  const exit = input.exit ?? (await sponsoredExit(tuple, input))
 
   const { record, result } = await runBurn({
     op,
@@ -468,32 +537,35 @@ async function submitSponsoredWithdrawalFlow(
       recipient,
       recipientProvenance: "saved-recipient",
       recipientAlias: recipientAlias?.trim() || undefined,
-      amount: amountDisplay,
-      rawAmount: parseUnits(amountDisplay, DEFAULT_DECIMALS).toString(),
+      amount: formatUnits(amount, DEFAULT_DECIMALS),
+      rawAmount: amount.toString(),
       relayerTip: WITHDRAW_RELAYER_TIP.toString(),
+      ...(exit.proverTip ? { proverTip: exit.proverTip.toString() } : {}),
       fpcFundingCut: fpcFundingCut.toString(),
-      tokenSymbol: token.symbol,
+      tokenSymbol,
       phase: "submitting",
       startTime: Date.now(),
-      deployment: await currentDeployment(tuple),
+      deployment,
       ...swapRecordFields(swap, swapCommit),
+      ...input.record,
     },
-    burn: (seeded) => {
+    burn: () => {
       onStage("proving")
-      // Off the persisted record, so what the burn pays can never drift from what was written.
-      return deps.tokenService.exitToL1PrivateSponsored(
-        EthAddress.fromString(withdrawalRecipients(seeded).release),
-        amountDisplay,
-        sponsor,
-        { operationId: op.operationId, userAccount: deps.account, withdrawal },
-      )
+      return deps.tokenService.exitToL1PrivateSponsored(exit.l1Recipient, exit.amount, sponsor, {
+        operationId: op.operationId,
+        userAccount: deps.account,
+        useRawAmount: true,
+        withdrawal: exit.withdrawal,
+        authorization: input.authorization,
+        proverTip: exit.proverTip,
+      })
     },
     minedFigures: async (burned) => ({
       amount: burned.amount.toString(),
       relayerTip: WITHDRAW_RELAYER_TIP.toString(),
     }),
   })
-  if (!result) return record
+  if (!result) return { record, mined: false }
   onStage("submitting")
   try {
     if (sponsor.subscribe) noteSubscribed(deps.account, sponsor.fpcAddress, sponsor.railId)
@@ -501,7 +573,7 @@ async function submitSponsoredWithdrawalFlow(
   } catch (err) {
     console.warn("[withdrawGateway] withdrawal mined; sponsor bookkeeping failed:", err)
   }
-  return record
+  return { record, mined: true }
 }
 
 /** This wallet's Oxide account and its secret; needs the unlocked passkey secret. */

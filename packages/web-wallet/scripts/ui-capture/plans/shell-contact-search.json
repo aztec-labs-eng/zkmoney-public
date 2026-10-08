@@ -6,12 +6,6 @@
   },
   "steps": [
     {
-      "action": "click",
-      "role": "button",
-      "name": "Open search",
-      "exact": true
-    },
-    {
       "action": "fill",
       "label": "Search @tag",
       "value": "ada"

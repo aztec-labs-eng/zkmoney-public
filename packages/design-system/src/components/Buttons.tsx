@@ -206,6 +206,8 @@ export interface AmountChipRowProps {
   glass?: boolean
   /** Highlighted chip (controlled; brand-gradient fill). */
   selectedValue?: number
+  /** Chips shown but not selectable, e.g. amounts under a live minimum. */
+  disabledValues?: number[]
   onSelect?: (value: number) => void
   className?: string
 }
@@ -215,28 +217,34 @@ export function AmountChipRow({
   values,
   glass = true,
   selectedValue,
+  disabledValues = [],
   onSelect,
   className,
 }: AmountChipRowProps) {
   return (
     <div className={["zkm-amount-chips", className].filter(Boolean).join(" ")}>
-      {values.map((v) => (
-        <button
-          key={v}
-          type="button"
-          className={[
-            "zkm-btn-reset zkm-pressable zkm-amount-chip",
-            glass ? "zkm-amount-chip--glass" : "zkm-amount-chip--flat",
-            v === selectedValue ? "zkm-amount-chip--selected" : "",
-          ]
-            .filter(Boolean)
-            .join(" ")}
-          aria-pressed={v === selectedValue || undefined}
-          onClick={() => onSelect?.(v)}
-        >
-          ${v}
-        </button>
-      ))}
+      {values.map((v) => {
+        const disabled = disabledValues.includes(v)
+        return (
+          <button
+            key={v}
+            type="button"
+            className={[
+              "zkm-btn-reset zkm-amount-chip",
+              disabled ? "zkm-amount-chip--disabled" : "zkm-pressable",
+              glass ? "zkm-amount-chip--glass" : "zkm-amount-chip--flat",
+              v === selectedValue ? "zkm-amount-chip--selected" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            aria-pressed={v === selectedValue || undefined}
+            aria-disabled={disabled || undefined}
+            onClick={disabled ? undefined : () => onSelect?.(v)}
+          >
+            ${v}
+          </button>
+        )
+      })}
     </div>
   )
 }

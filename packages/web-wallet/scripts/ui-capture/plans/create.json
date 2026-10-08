@@ -2,7 +2,7 @@
   "scenario": "onboarding",
   "bootstrap": "/claim?demo=onboarding&mock=claiming&handle=demo",
   "rejectingExtension": true,
-  "ready": { "text": "Claiming your tag...", "exact": true },
+  "ready": { "text": "Claiming your tag…", "exact": true },
   "steps": [
     { "action": "screenshot", "file": "create.png", "state": "Create variant with educational banner" },
     { "action": "reachable", "role": "button", "name": "Cancel sign-in", "exact": true }

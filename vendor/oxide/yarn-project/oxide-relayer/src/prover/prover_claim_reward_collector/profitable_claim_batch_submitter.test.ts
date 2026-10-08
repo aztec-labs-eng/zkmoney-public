@@ -96,7 +96,7 @@ describe('ProfitableClaimBatchSubmitter', () => {
       backlog,
       // Identity oracle, so profit reduces to tips minus gas cost.
       priceOracle: { weiToUSD: (wei: bigint) => Promise.resolve(wei) } as any,
-      getEffectiveGasPriceWei: () => Promise.resolve(gasPriceWei),
+      getFeeValues: () => Promise.resolve({ maxFeePerGas: gasPriceWei, maxPriorityFeePerGas: 0n }),
       publisher: { publish: (...args: any[]) => publish(...args) } as any,
       senderAddress: SENDER,
       minBatchProfit: 0n,
@@ -140,6 +140,21 @@ describe('ProfitableClaimBatchSubmitter', () => {
     await submitter.pollPortal(PORTAL_ID);
     expect(publish).toHaveBeenCalledTimes(1);
     expect(backlog.getPortalClaims(PORTAL_ID)).toHaveLength(0);
+  });
+
+  it('keeps the claims backlogged while the max fee per gas is above the cap, and publishes once it falls', async () => {
+    seed([discovered(0, 10_000n)]);
+    gasPriceWei = 2n;
+    const submitter = build({ maxFeePerGasCap: 1n });
+
+    await submitter.pollPortal(PORTAL_ID);
+    expect(buildProverClaimData).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(backlog.getPortalClaims(PORTAL_ID)).toHaveLength(1);
+
+    gasPriceWei = 1n;
+    await submitter.pollPortal(PORTAL_ID);
+    expect(publish).toHaveBeenCalledTimes(1);
   });
 
   it('leaves out a claim whose own tip does not cover its own marginal gas', async () => {
@@ -222,6 +237,15 @@ describe('ProfitableClaimBatchSubmitter', () => {
     expect(backlogged).toHaveLength(1);
     // Back to pending, so the next poll re-prices it rather than the tip being lost to a reverted tx.
     expect(backlogged[0].status).toBe('pending');
+  });
+
+  it('sends the batch with the fee values it was priced at', async () => {
+    seed([discovered(0, 500n)]);
+
+    await build().pollPortal(PORTAL_ID);
+
+    // The tx must not carry a higher fee cap than the one the profit check charged.
+    expect(publish.mock.calls[0][2]).toEqual({ maxFeePerGas: gasPriceWei, maxPriorityFeePerGas: 0n });
   });
 
   it('quotes as the prover, since claimProverTips credits msg.sender', async () => {

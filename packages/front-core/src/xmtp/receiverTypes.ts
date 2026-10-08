@@ -4,6 +4,7 @@
  * stringified bigints, numbers).
  */
 
+import type { PaylinkActionEnum } from "@obsidion/core/constants"
 import type { TokenTransaction } from "../types/transactions"
 import type { TokenInTxService } from "../types/tokens"
 
@@ -30,9 +31,25 @@ export type ContactsByL2 = {
 export type TransactionStoreWrites = {
   /** Whether ANY stored row already carries this hash, whatever its action. */
   hasTxHash(txHash: string): Promise<boolean>
+  /** Fills a stored row's missing memo from its event. */
+  backfillMemo?(txHash: string, memo: string): Promise<unknown>
   addIncomingTokenTransaction(
     input: NewIncomingTokenTx,
   ): Promise<{ tx: TokenTransaction; inserted: boolean }>
+  /** A verified paylink payout: a claim or refund row instead of a plain receive. */
+  addRecoveredPaylinkPayout?(input: NewPaylinkPayoutTx): Promise<boolean>
+}
+
+/** Payload for `addRecoveredPaylinkPayout`. */
+export type NewPaylinkPayoutTx = {
+  action: PaylinkActionEnum.CLAIM | PaylinkActionEnum.CLAIM_BACK
+  txHash: string
+  flavor: "direct" | "email"
+  token: TokenInTxService
+  timestamp: number
+  blockNumber: number
+  memo?: string
+  networkId: string
 }
 
 /**

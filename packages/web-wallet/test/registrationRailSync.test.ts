@@ -20,6 +20,7 @@ const { noteRegistrationDepositSeen, syncRegistrationRail, sweptPhase } = await 
 )
 const { saveRegistrationTerms } = await import("../src/features/onboarding/registrationTerms")
 const { webStorage } = await import("../src/platform/storage/WebStorageAdapter")
+const { walletStorage } = await import("../src/platform/storage/walletStorage")
 
 const ACCOUNT = "0x00000000000000000000000000000000000000aa"
 const SIPA = "0x00000000000000000000000000000000000000c3"
@@ -64,7 +65,7 @@ async function seedRail(over: Record<string, unknown> = {}) {
 }
 
 function resetRail() {
-  localStorage.clear()
+  for (const key of walletStorage.keys()) walletStorage.removeItem(key)
   ;(SIPADepositStore as unknown as { instance: unknown }).instance = null
 }
 
@@ -76,7 +77,7 @@ describe("funds seen at the address", () => {
     expect(sipaDepositInflightLabel(deposit())).toBeUndefined()
     await noteRegistrationDepositSeen(SIPA, 15n * DAI)
     expect(deposit()).toMatchObject({ phase: "broadcast", amount: "15" })
-    expect(sipaDepositInflightLabel(deposit())).toBe("Deposit detected")
+    expect(sipaDepositInflightLabel(deposit())).toBe("Receiving")
   })
 
   it("keep an amount the rail already holds, and write nothing for an empty read", async () => {
@@ -119,7 +120,7 @@ describe("the tick's stamps reach the rail", () => {
     const swept = record({ fundedAt: 1, sweptAt: 2, sweepTxHash: HASH, phase: "funded" })
     await syncRegistrationRail([swept])
     expect(deposit()).toMatchObject({ phase: "sweeping", sweepTxHash: HASH })
-    expect(sipaDepositInflightLabel(deposit())).toBe("Moving into the pool")
+    expect(sipaDepositInflightLabel(deposit())).toBe("Receiving")
     const listener = vi.fn()
     rail().onListChanged(listener)
     await syncRegistrationRail([swept])

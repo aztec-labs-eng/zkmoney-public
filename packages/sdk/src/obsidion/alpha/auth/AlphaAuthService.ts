@@ -43,6 +43,12 @@ export type RecoverPasskeyResult = {
    * hand-off); absent after a ceremony, which reports none.
    */
   transports?: readonly string[]
+  /**
+   * The name the passkey's user handle carries, when it was created carrying one and the source
+   * was an assertion. Only a hash on chain names an account, so a caller trusts this name where it
+   * hashes to the claim or reservation it found.
+   */
+  userHandle?: string
 }
 
 /** Recovery breadcrumb persisted at create. `isMskRoot:false` marks a credential whose PRF never derived the account MSK. */

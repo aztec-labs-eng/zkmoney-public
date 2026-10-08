@@ -5,7 +5,8 @@ import { readFile } from 'node:fs/promises';
 
 /**
  * Reader for the published `<deployment-env>.v4.json` deployment env manifest
- * (shape: scripts/src/generated/deployment-env-manifest.schema.json). The relayer pins one entry by portal.
+ * (shape: scripts/src/generated/deployment-env-manifest.schema.json). The relayer pins one entry by portal and
+ * watches the other L1-operation entries on the same rollup version.
  */
 
 /** The deployment-env-manifest fields the relayer uses for one deployment. */
@@ -14,6 +15,7 @@ export interface DeploymentEnvManifestPublicConfig {
    *  blessed under. */
   portal: EthAddress;
   l2Token: AztecAddress;
+  token: EthAddress;
   rollupVersion: bigint;
   enclaveUrl: string;
   broadcaster: AztecAddress;
@@ -33,6 +35,8 @@ export interface ResolvedManifestDeployment {
 export interface ResolvedDeploymentEnvManifest {
   current: ResolvedManifestDeployment;
   historical: ResolvedManifestDeployment[];
+  /** Why this relayer cannot read each historical entry that it would watch. */
+  unreadable: string[];
 }
 
 /** Inputs for deployment-env-manifest resolution. Tests inject `fetch` to avoid network access. */
@@ -48,6 +52,7 @@ interface RawDeployment {
   label?: unknown;
   rollupVersion?: unknown;
   l2Token?: unknown;
+  token?: unknown;
   enclaveUrl?: unknown;
   l2Broadcaster?: unknown;
   withdrawalSubsidy?: unknown;
@@ -62,28 +67,42 @@ interface DeploymentEnvManifestDocument {
   deployments?: unknown;
 }
 
-/** Fetch `<deployment-env>.v4.json` and pin one entry by portal. */
+/**
+ * Fetch `<deployment-env>.v4.json`, pin one entry by portal and select the historical entries to watch.
+ * Only these entries are parsed. An older entry can lack a field that this relayer reads, and it stays a supported
+ * deployment for other consumers.
+ */
 export async function resolveDeploymentEnvManifest(
   opts: ResolveDeploymentEnvManifestOptions,
 ): Promise<ResolvedDeploymentEnvManifest> {
   const url = opts.deploymentEnvManifestUrl;
   const entries = await readDocument(url, opts.fetch ?? fetch);
-  // Every entry is parsed, not just the pinned one: a manifest the relayer cannot fully read is a bad publish.
-  const deployments = entries.map(raw => parseDeployment(url, raw));
-  const current = deployments.find(d => d.publicConfig.portal.equals(opts.portal));
-  if (!current) {
-    const available = deployments.map(d => `${d.label}:${d.publicConfig.portal}`).join(', ') || '(none)';
+  const portal = opts.portal.toString().toLowerCase();
+  const pinned = entries.find(entry => typeof entry.portal === 'string' && entry.portal.toLowerCase() === portal);
+  if (!pinned) {
+    const available = entries.map(nameOf).join(', ') || '(none)';
     throw new Error(
       `deployment env manifest ${url} has no deployment with portal ${opts.portal} (available: ${available}).`,
     );
   }
-  const historical = deployments.filter(
-    (d, index) =>
-      entries[index].withdrawalProtocol === 'l1-operation' &&
-      !d.publicConfig.portal.equals(opts.portal) &&
-      d.publicConfig.rollupVersion === current.publicConfig.rollupVersion,
-  );
-  return { current, historical };
+  const current = parseDeployment(url, pinned);
+  const historical: ResolvedManifestDeployment[] = [];
+  const unreadable: string[] = [];
+  for (const entry of entries) {
+    if (
+      entry === pinned ||
+      entry.withdrawalProtocol !== 'l1-operation' ||
+      entry.rollupVersion !== pinned.rollupVersion
+    ) {
+      continue;
+    }
+    try {
+      historical.push(parseDeployment(url, entry));
+    } catch (err: unknown) {
+      unreadable.push(message(err));
+    }
+  }
+  return { current, historical, unreadable };
 }
 
 function nameOf(entry: RawDeployment): string {
@@ -100,6 +119,7 @@ function parseDeployment(url: string, raw: unknown): ResolvedManifestDeployment 
       publicConfig: {
         portal: field(entry, 'portal', v => EthAddress.fromString(v)),
         l2Token: field(entry, 'l2Token', v => AztecAddress.fromStringUnsafe(v)),
+        token: field(entry, 'token', v => EthAddress.fromString(v)),
         rollupVersion: field(entry, 'rollupVersion', rollupVersionOf),
         enclaveUrl: field(entry, 'enclaveUrl', v => v),
         broadcaster: field(entry, 'l2Broadcaster', v => AztecAddress.fromStringUnsafe(v)),

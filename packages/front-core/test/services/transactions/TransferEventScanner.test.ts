@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import { buildChatMessages } from "../../../src/core/paymentsChat"
 import type { IStorageAdapter } from "../../../src/core/storages/adapter"
 import type { TokenTransaction } from "../../../src/types/transactions"
-import type { NewIncomingTokenTx } from "../../../src/xmtp/receiverTypes"
+import type { NewIncomingTokenTx, NewPaylinkPayoutTx } from "../../../src/xmtp/receiverTypes"
 import {
   TransferEventScanner,
   TRANSFER_SCAN_CATCH_UP_BLOCKS,
@@ -58,9 +58,12 @@ function harness(opts: {
   /** Throw from the store write, to exercise a poison event. */
   addThrows?: () => boolean
   onSynced?: (anchor: number) => Promise<void>
+  /** Block time read; defaults to `block * 1000`. Undefined means the node could not serve it. */
+  blockTime?: (block: number) => number | undefined
 }) {
   const rows = new Map<string, TokenTransaction>()
   const adds: NewIncomingTokenTx[] = []
+  const payouts: NewPaylinkPayoutTx[] = []
   const registered: { tag: string; l2Address: string }[] = []
   const listIncoming = vi.fn(async (a: number, b: number) =>
     opts.list ? opts.list(a, b) : opts.events ?? [],
@@ -68,7 +71,7 @@ function harness(opts: {
   const source: TransferEventSource = {
     headBlock: async () => (typeof opts.head === "function" ? opts.head() : opts.head ?? 100),
     listIncoming,
-    blockTimestampMs: async (b) => b * 1000,
+    blockTimestampMs: async (b) => (opts.blockTime ? opts.blockTime(b) : b * 1000),
     ...(opts.anchor ? { anchorBlock: async () => opts.anchor!() } : {}),
   }
   const scheduler = makeScheduler()
@@ -89,6 +92,14 @@ function harness(opts: {
         rows.set(input.txHash.toLowerCase(), tx)
         return { tx, inserted: true }
       },
+      addRecoveredPaylinkPayout: async (input) => {
+        payouts.push(input)
+        rows.set(
+          input.txHash.toLowerCase(),
+          fakeIncomingTokenTx({ ...input, from: "", senderL2Address: "", to: ME }),
+        )
+        return true
+      },
     },
     tags: {
       resolveL2: opts.resolve ?? (async (tag) => (tag === "alice" ? { l2Address: ALICE } : null)),
@@ -103,10 +114,59 @@ function harness(opts: {
     now: () => 777,
   })
   const ctx = { accountAddress: ME, accountTag: "me", networkId: "net" }
-  return { scanner, ctx, adds, rows, registered, listIncoming, scheduler, cursor }
+  return { scanner, ctx, adds, payouts, rows, registered, listIncoming, scheduler, cursor, storage }
 }
 
 describe("TransferEventScanner", () => {
+  it("files a receive with a verified payout lane as a paylink claim, not a receive", async () => {
+    const lane = { flavor: "direct" as const, secret: {} as never, fallbackKeyHash: {} as never }
+    const h = harness({
+      events: [
+        event({ paylinkPayout: lane, senderTag: "notme", memo: "lunch" }),
+        event({ txHash: "0x" + "02".repeat(32) }),
+      ],
+    })
+    await h.scanner.start(h.ctx)
+    expect(h.payouts).toEqual([
+      expect.objectContaining({
+        action: "Claim With Email",
+        txHash: "0x" + "01".repeat(32),
+        flavor: "direct",
+        memo: "lunch",
+        blockNumber: 10,
+        timestamp: 10_000,
+        networkId: "net",
+      }),
+    ])
+    expect(h.adds.map((a) => a.txHash)).toEqual(["0x" + "02".repeat(32)])
+    await h.scanner.tickNow()
+    expect(h.payouts).toHaveLength(2) // re-offered each pass; the store upgrades only a plain receive
+    h.scanner.stop()
+  })
+
+  it("upgrades a payout filed as a plain receive before its lane was read", async () => {
+    const lane = { flavor: "direct" as const, secret: {} as never, fallbackKeyHash: {} as never }
+    const h = harness({ events: [event({ paylinkPayout: lane })] })
+    h.rows.set(event().txHash, fakeIncomingTokenTx(event() as never))
+    await h.scanner.start(h.ctx)
+    expect(h.adds).toEqual([])
+    expect(h.payouts.map((p) => p.txHash)).toEqual([event().txHash])
+    h.scanner.stop()
+  })
+
+  it("records head and the clock as the join point on the cursorless first pass only", async () => {
+    let head = 100
+    const h = harness({ events: [event()], head: () => head })
+    const joined = async () =>
+      JSON.parse((await h.storage.getItem(`@obsidion/transfer-scan/joined/v1/net/${ME}`))!)
+    await h.scanner.start(h.ctx)
+    expect(await joined()).toEqual({ block: 100, ms: 777 })
+    head = 200
+    await h.scanner.tickNow()
+    expect(await joined()).toEqual({ block: 100, ms: 777 })
+    h.scanner.stop()
+  })
+
   it("flags catch-up for the cursorless first pass, and clears it when that pass ends", async () => {
     const seen: boolean[] = []
     const listener = (v: boolean) => void seen.push(v)
@@ -325,6 +385,19 @@ describe("TransferEventScanner", () => {
     // The chunk completed, so the cursor moved on.
     await h.scanner.tickNow()
     expect(h.listIncoming).toHaveBeenLastCalledWith(100 - TRANSFER_SCAN_REORG_MARGIN, 101)
+    h.scanner.stop()
+  })
+
+  it("defers an event whose block time cannot be read, and dates it by chain once it can", async () => {
+    let blockTime: number | undefined
+    const h = harness({ events: [event()], blockTime: () => blockTime })
+    await h.scanner.start(h.ctx)
+    await h.scanner.tickNow()
+    expect(h.adds).toHaveLength(0)
+    expect(h.listIncoming).toHaveBeenLastCalledWith(1, 101) // cursor held, never stamped 777
+    blockTime = 10_000
+    await h.scanner.tickNow()
+    expect(h.adds.map((a) => a.timestamp)).toEqual([10_000])
     h.scanner.stop()
   })
 
@@ -574,6 +647,22 @@ describe("TransferEventScanner", () => {
     h.scanner.stop()
   })
 
+  it("syncs a snapshot pass on its first chunk only", async () => {
+    const h = harness({ head: 25_000, events: [] })
+    const readSnapshot = vi.fn(async () => ({ events: [], balance: 1n, anchorBlock: 25_000 }))
+    const src = h.scanner as unknown as { opts: { source: Record<string, unknown> } }
+    src.opts.source.readSnapshot = readSnapshot
+    await h.scanner.start(h.ctx)
+    expect(readSnapshot.mock.calls).toEqual([
+      [1, 10_001, undefined],
+      [10_001, 20_001, { assumeSynced: true }],
+      [20_001, 25_001, { assumeSynced: true }],
+    ])
+    await h.scanner.tickNow()
+    expect(readSnapshot.mock.calls[3][2]).toBeUndefined()
+    h.scanner.stop()
+  })
+
   it("keeps completed-chunk progress when a later chunk fails", async () => {
     const h = harness({
       head: 15_000,
@@ -643,5 +732,56 @@ describe("TransferEventScanner", () => {
     expect(h.scheduler.pendingCount()).toBe(1)
     h.scanner.stop()
     expect(h.scheduler.pendingCount()).toBe(0)
+  })
+})
+
+describe("TransferEventScanner cursor scope", () => {
+  const UNSCOPED_KEY = `@obsidion/transfer-scan/cursor/v1/net/${ME}`
+  const SCOPED_KEY = `@obsidion/transfer-scan/cursor/v1/net/A/${ME}`
+  const cursorKeys = (calls: unknown[][]) =>
+    calls.map(([k]) => k as string).filter((k) => k.startsWith("@obsidion/transfer-scan/cursor/"))
+
+  it("keeps the cursor under the scoped key and never touches the unscoped one", async () => {
+    const h = harness({ events: [] })
+    const getItem = vi.spyOn(h.storage, "getItem")
+    const setItem = vi.spyOn(h.storage, "setItem")
+    await h.scanner.start({ ...h.ctx, endpointScope: "A" })
+    await h.scanner.tickNow()
+    h.scanner.stop()
+    const keys = cursorKeys([...getItem.mock.calls, ...setItem.mock.calls])
+    expect(keys.length).toBeGreaterThan(0)
+    expect(keys.filter((k) => k !== SCOPED_KEY)).toEqual([])
+    expect(await h.storage.getItem(SCOPED_KEY)).toBe("100")
+    expect(await h.storage.getItem(UNSCOPED_KEY)).toBeNull()
+  })
+
+  it("uses the unscoped key without a scope", async () => {
+    const h = harness({ events: [] })
+    const setItem = vi.spyOn(h.storage, "setItem")
+    await h.scanner.start(h.ctx)
+    h.scanner.stop()
+    expect(cursorKeys(setItem.mock.calls)).toEqual([UNSCOPED_KEY])
+    expect(await h.storage.getItem(UNSCOPED_KEY)).toBe("100")
+  })
+
+  it("a scoped scan advances its own cursor; the unscoped scan resumes from its older one", async () => {
+    let head = 1_000
+    const h = harness({ events: [], head: () => head })
+    await h.scanner.start(h.ctx)
+    expect(h.listIncoming).toHaveBeenLastCalledWith(1, 1_001)
+    h.scanner.stop()
+
+    head = 5_000
+    await h.scanner.start({ ...h.ctx, endpointScope: "A" })
+    expect(h.listIncoming).toHaveBeenLastCalledWith(1, 5_001) // cursorless under A
+    expect(await h.storage.getItem(SCOPED_KEY)).toBe("5000")
+    expect(await h.storage.getItem(UNSCOPED_KEY)).toBe("1000")
+    h.scanner.stop()
+
+    await h.scanner.start(h.ctx)
+    expect(h.listIncoming).toHaveBeenLastCalledWith(1_000 - TRANSFER_SCAN_REORG_MARGIN, 5_001)
+    expect(await h.storage.getItem(UNSCOPED_KEY)).toBe("5000")
+    expect(await h.storage.getItem(SCOPED_KEY)).toBe("5000")
+    h.scanner.stop()
   })
 })

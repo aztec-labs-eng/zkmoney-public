@@ -38,6 +38,8 @@ export {
 export type { PaylinkClaimedNotificationProducerOptions } from "./PaylinkClaimedNotificationProducer"
 export { ReorgNotificationProducer, reorgNotificationInput } from "./ReorgNotificationProducer"
 export type { ReorgNotificationProducerOptions } from "./ReorgNotificationProducer"
+export { RegistrationNotificationProducer } from "./RegistrationNotificationProducer"
+export type { RegistrationNotificationProducerOptions } from "./RegistrationNotificationProducer"
 export {
   CONTACT_ADDED_PRODUCER_ID,
   contactAddedNotificationInput,

@@ -80,7 +80,7 @@ describe("WithdrawalDetailModal amount breakdown", () => {
 
   const show = async (r: WithdrawalRecord) => {
     await act(async () => {
-      root.render(<WithdrawalDetailModal record={r} amount="-120 DAI" onClose={vi.fn()} />)
+      root.render(<WithdrawalDetailModal record={r} amount="-$120" onClose={vi.fn()} />)
     })
   }
 
@@ -103,7 +103,7 @@ describe("WithdrawalDetailModal amount breakdown", () => {
       expect.arrayContaining([
         ["Sent", "$120"],
         ["Fee", "-$0.35"],
-        ["Recipient receives", "$119.65"],
+        ["Recipient receives", "119.65 DAI"],
       ]),
     )
     expect(labels().indexOf("Fee")).toBeLessThan(labels().indexOf("Recipient receives"))
@@ -140,7 +140,7 @@ describe("WithdrawalDetailModal amount breakdown", () => {
   it("states the burn amount once, in the hero the feed row shows", async () => {
     await show(record())
 
-    expect(container.textContent).toContain("-120 DAI")
+    expect(container.textContent).toContain("-$120")
     expect(labels()).not.toContain("Withdrawn")
   })
 
@@ -150,7 +150,7 @@ describe("WithdrawalDetailModal amount breakdown", () => {
     expect(rows()).toEqual(
       expect.arrayContaining([
         ["Fee", "-$0.35"],
-        ["Recipient receives", "$119.65"],
+        ["Recipient receives", "119.65 DAI"],
       ]),
     )
   })
@@ -219,9 +219,9 @@ describe("WithdrawalDetailModal amount breakdown", () => {
     expect(labels().lastIndexOf("Sent")).toBe(labels().indexOf("Sent"))
   })
 
-  it("leads the swap and migration heroes with dollars, the direct hero with the token", () => {
+  it("leads swap, migration, and direct withdrawal heroes with dollars", () => {
     expect(withdrawalHeroAmount(record(swapPatch))).toBe("-$100.35")
     expect(withdrawalHeroAmount(record({ intent: "migration" }))).toBe("-$120")
-    expect(withdrawalHeroAmount(record())).toBe("-120 DAI")
+    expect(withdrawalHeroAmount(record())).toBe("-$120")
   })
 })

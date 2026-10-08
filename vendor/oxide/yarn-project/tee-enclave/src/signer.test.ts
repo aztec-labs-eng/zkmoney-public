@@ -1,18 +1,16 @@
 import { Fr, GrumpkinScalar } from '@aztec/aztec.js/fields';
-import { ARCHIVE_HEIGHT, DomainSeparator, L1_TO_L2_MSG_TREE_HEIGHT } from '@aztec/constants';
+import { DomainSeparator, L1_TO_L2_MSG_TREE_HEIGHT } from '@aztec/constants';
 import { Buffer32 } from '@aztec/foundation/buffer';
 import { Grumpkin } from '@aztec/foundation/crypto/grumpkin';
-import { poseidon2Hash, poseidon2HashWithSeparator } from '@aztec/foundation/crypto/poseidon';
+import { poseidon2Hash } from '@aztec/foundation/crypto/poseidon';
 import { sha256 } from '@aztec/foundation/crypto/sha256';
 import { EthAddress } from '@aztec/foundation/eth-address';
-import type { Tuple } from '@aztec/foundation/serialize';
-import { MembershipWitness } from '@aztec/foundation/trees';
 import { AztecAddress } from '@aztec/stdlib/aztec-address';
 import { CompleteAddress } from '@aztec/stdlib/contract';
 import { computeL2ToL1MessageHash } from '@aztec/stdlib/hash';
 import { type PublicKeys, computeAddress, deriveKeys, derivePublicKeyFromSecretKey } from '@aztec/stdlib/keys';
-import { AppendOnlyTreeSnapshot } from '@aztec/stdlib/trees';
-import { BlockHeader, StateReference, TxEffect } from '@aztec/stdlib/tx';
+import { AppendOnlyTreeSnapshot, NullifierLeaf, NullifierLeafPreimage } from '@aztec/stdlib/trees';
+import { BlockHeader, PartialStateReference, StateReference, TxEffect } from '@aztec/stdlib/tx';
 
 import {
   type AccountInstancePreimage,
@@ -36,8 +34,14 @@ import {
   WEBAUTHN_FLAG_USER_PRESENT,
   WEBAUTHN_FLAG_USER_VERIFIED,
 } from '@oxide/oxide-lib/oxide_constants.gen.js';
-import { computeUnprocessedDepositRefundAuthMessage } from '@oxide/oxide-lib/refund_auth_message.js';
+import {
+  computeFrozenDepositRefundAuthMessage,
+  computeUnprocessedDepositRefundAuthMessage,
+} from '@oxide/oxide-lib/refund_auth_message.js';
 import type { RefundAuthorization } from '@oxide/oxide-lib/refund_authorization.js';
+import { frozenTipFixture } from '@oxide/oxide-lib/testing/frozen_tip.js';
+import { nullifierTreeFixture } from '@oxide/oxide-lib/testing/nullifier_tree.js';
+import { SparseTree } from '@oxide/oxide-lib/testing/sparse_tree.js';
 import type {
   FrozenDepositRefundFinalizationInput,
   FrozenNotesRefundFinalizationInput,
@@ -559,6 +563,60 @@ describe('LocalTeeSigner unprocessed-deposit refund', () => {
     ).rejects.toThrow(/Master nullifier hiding key does not hash/);
   });
 
+  /** A frozen tip whose L1-to-L2 tree holds the leaves at indices below `nextAvailableLeafIndex`. */
+  const frozenTipAbsorbingUpTo = (nextAvailableLeafIndex: number) =>
+    frozenTipFixture({
+      state: new StateReference(
+        new AppendOnlyTreeSnapshot(Fr.random(), nextAvailableLeafIndex),
+        PartialStateReference.empty(),
+      ),
+    });
+
+  it('rejects a message the frozen tip already absorbed', async () => {
+    const account = await makePasskeyAccount();
+    const { input } = await refundInput(account);
+
+    await expect(
+      signer.signUnprocessedDepositRefundFinalization({
+        ...input,
+        ...(await frozenTipAbsorbingUpTo(Number(messageLeafIndex.toBigInt()) + 1)),
+      }),
+    ).rejects.toThrow(/attempting to spend a processed message/);
+  });
+
+  it('signs a refund of the first message the frozen tip did not absorb', async () => {
+    const account = await makePasskeyAccount();
+    const { input, messageHash } = await refundInput(account);
+
+    const output = await signer.signUnprocessedDepositRefundFinalization({
+      ...input,
+      ...(await frozenTipAbsorbingUpTo(Number(messageLeafIndex.toBigInt()))),
+    });
+
+    expect(output.messageHash).toEqual(messageHash);
+  });
+
+  it('rejects a frozen tip that is not in the frozen archive', async () => {
+    const account = await makePasskeyAccount();
+    const { input } = await refundInput(account);
+    const { frozenArchiveRoot } = await frozenTipAbsorbingUpTo(Number(messageLeafIndex.toBigInt()) + 1);
+
+    // The header claims that no message is absorbed, but the frozen archive ends at a block that absorbed it.
+    await expect(signer.signUnprocessedDepositRefundFinalization({ ...input, frozenArchiveRoot })).rejects.toThrow(
+      `Membership witness verification failed for block hash ${await input.frozenTip.hash()}`,
+    );
+  });
+
+  it('rejects a frozen tip that is not the latest block of the frozen archive', async () => {
+    const account = await makePasskeyAccount();
+    const { input } = await refundInput(account);
+
+    // A later block of the frozen archive absorbed the message.
+    await expect(
+      signer.signUnprocessedDepositRefundFinalization({ ...input, ...(await frozenTipFixture({ laterBlocks: 1 })) }),
+    ).rejects.toThrow(`Membership witness verification failed for block hash ${Fr.ZERO}`);
+  });
+
   // A fallback-key owner - an address that commits to no passkey, such as a shared-secret escrow - authorizes with
   // its master fallback key instead.
   it('signs a refund the recipient master fallback key authorized', async () => {
@@ -586,6 +644,155 @@ describe('LocalTeeSigner unprocessed-deposit refund', () => {
         auth: await fallbackKeyAuthorization(account.masterFallbackSecretKey, authMessage),
       }),
     ).rejects.toThrow(/authorization does not verify/);
+  });
+});
+
+describe('LocalTeeSigner frozen-deposit refund', () => {
+  const signer = LocalTeeSigner.random(portalContext);
+  const executor = EthAddress.fromField(new Fr(0xbeef));
+  const amount = 10n;
+  const userPayloadHash = new Fr(1);
+  const sharedSecretSalt = new Fr(42);
+  const messageLeafIndex = 3;
+
+  /**
+   * A frozen-deposit refund of a deposit at `messageLeafIndex`, frozen in a tip whose L1-to-L2 tree holds `inTree`.
+   * When the deposit is spent, the tip's nullifier tree also holds the deposit nullifier after its low leaf. A stale
+   * low leaf is the witness from before that insert.
+   */
+  async function refundInput(
+    account: RefundAccountFixture,
+    opts: { inTree: 'message' | 'another message'; nullifier: 'unspent' | 'spent' | 'spent, stale low leaf' },
+  ): Promise<FrozenDepositRefundFinalizationInput> {
+    const messageHash = await computeDepositMessageHash(portalContext, {
+      sharedSecretSalt,
+      recipient: account.address,
+      amount,
+      messageLeafIndex: new Fr(messageLeafIndex),
+    });
+    const leaves = Array.from({ length: messageLeafIndex + 1 }, () => Fr.random());
+    leaves[messageLeafIndex] = opts.inTree === 'message' ? messageHash : Fr.random();
+    const messageTree = await SparseTree.build(L1_TO_L2_MSG_TREE_HEIGHT, leaves, DomainSeparator.MERKLE_HASH);
+
+    const siloedNullifier = await computeSiloedDepositMessageNullifier(
+      portalContext.l2Portal,
+      messageHash,
+      account.masterNullifierHidingKey,
+    );
+    // Before the insert, the low leaf `n - 1` skips over the deposit nullifier `n` to the leaf `n + 1`, so it is the
+    // low leaf of `n` and of no other key. The insert appends `n` and points the low leaf at it.
+    const low = siloedNullifier.sub(new Fr(1));
+    const next = siloedNullifier.add(new Fr(1));
+    const beforeInsert = [
+      new NullifierLeafPreimage(new NullifierLeaf(low), next, 1n),
+      new NullifierLeafPreimage(new NullifierLeaf(next), Fr.ZERO, 0n),
+    ];
+    const afterInsert = [
+      new NullifierLeafPreimage(new NullifierLeaf(low), siloedNullifier, 2n),
+      new NullifierLeafPreimage(new NullifierLeaf(next), Fr.ZERO, 0n),
+      new NullifierLeafPreimage(new NullifierLeaf(siloedNullifier), next, 1n),
+    ];
+    const nullifierLeaves = opts.nullifier === 'unspent' ? beforeInsert : afterInsert;
+    const witnessLeaves = opts.nullifier === 'spent' ? afterInsert : beforeInsert;
+    const nullifierTree = await nullifierTreeFixture(nullifierLeaves);
+    const witnessTree = await nullifierTreeFixture(witnessLeaves);
+
+    const empty = PartialStateReference.empty();
+    const frozen = await frozenTipFixture({
+      state: new StateReference(
+        new AppendOnlyTreeSnapshot(messageTree.root, leaves.length),
+        new PartialStateReference(
+          empty.noteHashTree,
+          new AppendOnlyTreeSnapshot(nullifierTree.root, nullifierLeaves.length),
+          empty.publicDataTree,
+        ),
+      ),
+    });
+    const authMessage = await computeFrozenDepositRefundAuthMessage(messageHash, executor, userPayloadHash);
+    return {
+      ...frozen,
+      amount,
+      executor,
+      userPayloadHash,
+      sharedSecretSalt,
+      l2Recipient: account.address,
+      l2RecipientPublicKeys: account.publicKeys,
+      l2RecipientInstance: account.instance,
+      l2RecipientNhkM: account.masterNullifierHidingKey,
+      messageMembershipWitness: messageTree.membershipWitness<typeof L1_TO_L2_MSG_TREE_HEIGHT>(messageLeafIndex),
+      lowNullifierMembershipWitness: witnessTree.witness(0),
+      auth: await account.authorize(authMessage),
+    };
+  }
+
+  it('signs a refund of a deposit that is in the frozen tree and unspent', async () => {
+    const account = await makePasskeyAccount();
+
+    const output = await signer.signFrozenDepositRefundFinalization(
+      await refundInput(account, { inTree: 'message', nullifier: 'unspent' }),
+    );
+
+    const messageHash = await computeDepositMessageHash(portalContext, {
+      sharedSecretSalt,
+      recipient: account.address,
+      amount,
+      messageLeafIndex: new Fr(messageLeafIndex),
+    });
+    expect(output.siloedNullifier).toEqual(
+      await computeSiloedDepositMessageNullifier(portalContext.l2Portal, messageHash, account.masterNullifierHidingKey),
+    );
+  });
+
+  it('rejects a deposit message the frozen L1-to-L2 tree does not hold', async () => {
+    const account = await makePasskeyAccount();
+
+    await expect(
+      signer.signFrozenDepositRefundFinalization(
+        await refundInput(account, { inTree: 'another message', nullifier: 'unspent' }),
+      ),
+    ).rejects.toThrow(/Membership witness verification failed for L1->L2 message/);
+  });
+
+  it('rejects a deposit whose nullifier the frozen tip already holds', async () => {
+    const account = await makePasskeyAccount();
+
+    await expect(
+      signer.signFrozenDepositRefundFinalization(await refundInput(account, { inTree: 'message', nullifier: 'spent' })),
+    ).rejects.toThrow(/does not skip over it/);
+  });
+
+  // The low leaf from before the insert passes every range check, so only the frozen nullifier root refuses it.
+  it('rejects a spent deposit behind a stale low leaf', async () => {
+    const account = await makePasskeyAccount();
+
+    await expect(
+      signer.signFrozenDepositRefundFinalization(
+        await refundInput(account, { inTree: 'message', nullifier: 'spent, stale low leaf' }),
+      ),
+    ).rejects.toThrow(/Membership witness verification failed for low-nullifier/);
+  });
+
+  it('rejects a frozen tip that is not in the frozen archive', async () => {
+    const account = await makePasskeyAccount();
+    const input = await refundInput(account, { inTree: 'message', nullifier: 'unspent' });
+    const { frozenArchiveRoot } = await refundInput(account, { inTree: 'message', nullifier: 'spent' });
+
+    // The header claims a state without the deposit nullifier, but the frozen archive ends at a block that holds it.
+    await expect(signer.signFrozenDepositRefundFinalization({ ...input, frozenArchiveRoot })).rejects.toThrow(
+      `Membership witness verification failed for block hash ${await input.frozenTip.hash()}`,
+    );
+  });
+
+  it('rejects a block from before the spend as the frozen tip', async () => {
+    const account = await makePasskeyAccount();
+    const input = await refundInput(account, { inTree: 'message', nullifier: 'unspent' });
+
+    // The deposit was spent in a later block of the frozen archive, so this block does not hold its nullifier yet.
+    const beforeSpend = await frozenTipFixture({ state: input.frozenTip.state, laterBlocks: 1 });
+
+    await expect(signer.signFrozenDepositRefundFinalization({ ...input, ...beforeSpend })).rejects.toThrow(
+      `Membership witness verification failed for block hash ${Fr.ZERO}`,
+    );
   });
 });
 
@@ -743,51 +950,6 @@ interface DepositFixture {
   nullifiers: Fr[];
 }
 
-class SparseTree {
-  private constructor(
-    private readonly height: number,
-    private readonly levels: Fr[][],
-    private readonly zeroHashes: Fr[],
-  ) {}
-
-  static async build(height: number, leaves: Fr[], separator: number): Promise<SparseTree> {
-    const hash = (l: Fr, r: Fr) => poseidon2HashWithSeparator([l, r], separator);
-    const zeroHashes: Fr[] = [Fr.ZERO];
-    for (let i = 0; i < height; i++) {
-      zeroHashes.push(await hash(zeroHashes[i]!, zeroHashes[i]!));
-    }
-
-    const levels: Fr[][] = [leaves.slice()];
-    for (let lvl = 0; lvl < height; lvl++) {
-      const cur = levels[lvl]!;
-      const next: Fr[] = [];
-      for (let i = 0; i * 2 < cur.length; i++) {
-        next.push(await hash(cur[i * 2]!, cur[i * 2 + 1] ?? zeroHashes[lvl]!));
-      }
-      levels.push(next);
-    }
-    return new SparseTree(height, levels, zeroHashes);
-  }
-
-  get root(): Fr {
-    return this.levels[this.height]?.[0] ?? this.zeroHashes[this.height]!;
-  }
-
-  siblingPath<N extends number>(leafIndex: number): Tuple<Fr, N> {
-    if (leafIndex < 0 || leafIndex >= this.levels[0]!.length) {
-      throw new Error(`leaf index ${leafIndex} out of range [0, ${this.levels[0]!.length})`);
-    }
-
-    const path: Fr[] = [];
-    let idx = leafIndex;
-    for (let lvl = 0; lvl < this.height; lvl++) {
-      path.push(this.levels[lvl]![idx ^ 1] ?? this.zeroHashes[lvl]!);
-      idx >>= 1;
-    }
-    return path as Tuple<Fr, N>;
-  }
-}
-
 async function depositFixture(amounts: bigint[]): Promise<DepositFixture> {
   const recipients = await Promise.all(amounts.map(() => makeSyntheticOwner()));
   const salts = amounts.map((_, i) => new Fr(i + 1));
@@ -820,23 +982,6 @@ async function depositFixture(amounts: bigint[]): Promise<DepositFixture> {
   );
 
   return { anchorBlockHeader, deposits, nullifiers };
-}
-
-// A one-block archive whose tip is block 0, so the same all-zero sibling path proves both archive checks.
-async function frozenTipFixture() {
-  const emptyArchive = await SparseTree.build(ARCHIVE_HEIGHT, [Fr.ZERO], DomainSeparator.MERKLE_HASH);
-  const frozenTip = BlockHeader.empty({ lastArchive: new AppendOnlyTreeSnapshot(emptyArchive.root, 0) });
-  const blockHash = new Fr((await frozenTip.hash()).toBuffer());
-  const archive = await SparseTree.build(ARCHIVE_HEIGHT, [blockHash], DomainSeparator.MERKLE_HASH);
-  return {
-    frozenArchiveRoot: archive.root,
-    frozenTip,
-    frozenTipMembershipWitness: new MembershipWitness(
-      ARCHIVE_HEIGHT,
-      0n,
-      archive.siblingPath<typeof ARCHIVE_HEIGHT>(0),
-    ),
-  };
 }
 
 async function makeSyntheticOwner(): Promise<SyntheticOwner> {

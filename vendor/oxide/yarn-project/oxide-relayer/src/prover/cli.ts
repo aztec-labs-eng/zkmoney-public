@@ -5,6 +5,7 @@ import type { EarlySubmitPolicy } from './profitable_partial_epoch_policy/types.
 /** Environment variables of the epoch-proofs mode. */
 export const PROVER_ENV_VARS = [
   'OXIDE_RELAYER_PROVER_NODE_URL',
+  'OXIDE_RELAYER_PROVER_NODE_API_KEY',
   'OXIDE_RELAYER_EARLY_PROOF_MIN_PROFIT',
   'OXIDE_RELAYER_EARLY_PROOF_MIN_PROFIT_MARGIN_BPS',
   'OXIDE_RELAYER_EARLY_PROOF_PROVING_COST_PER_CHECKPOINT',
@@ -16,6 +17,7 @@ interface ProverOptionSpec {
   description: string;
   env: (typeof PROVER_ENV_VARS)[number];
   parseVal?: (value: string | boolean) => unknown;
+  url?: boolean;
 }
 
 /** The `run` options of the epoch-proofs mode. */
@@ -24,22 +26,23 @@ export const PROVER_RUN_OPTIONS: readonly ProverOptionSpec[] = [
     flags: '--prover-node-url <url>',
     description: 'ProverNode RPC URL used to request early epoch proofs; required by the epoch-proofs mode',
     env: 'OXIDE_RELAYER_PROVER_NODE_URL',
+    url: true,
   },
   {
     flags: '--early-proof-min-profit <amount>',
-    description: "minimum partial-epoch proof profit in the price oracle's common quote currency",
+    description: 'minimum partial-epoch proof profit in USD scaled by 10^18 (default 0)',
     env: 'OXIDE_RELAYER_EARLY_PROOF_MIN_PROFIT',
     parseVal: value => parseNonNegativeIntString(value, 'early proof min profit'),
   },
   {
     flags: '--early-proof-min-profit-margin-bps <bps>',
-    description: 'minimum partial-epoch proof profit margin in basis points of the reward value',
+    description: 'minimum partial-epoch proof profit margin in basis points of the reward value (default 0)',
     env: 'OXIDE_RELAYER_EARLY_PROOF_MIN_PROFIT_MARGIN_BPS',
     parseVal: value => parseNonNegativeIntString(value, 'early proof min profit margin'),
   },
   {
     flags: '--early-proof-proving-cost-per-checkpoint <amount>',
-    description: "off-chain proving cost per checkpoint in the price oracle's common quote currency",
+    description: 'off-chain proving cost per checkpoint in USD scaled by 10^18 (default 0)',
     env: 'OXIDE_RELAYER_EARLY_PROOF_PROVING_COST_PER_CHECKPOINT',
     parseVal: value => parseNonNegativeIntString(value, 'early proof proving cost per checkpoint'),
   },
@@ -56,12 +59,17 @@ export interface ProverCommanderOptions {
 /** Normalized config of the epoch-proofs mode. */
 export interface ProverRunConfig {
   proverNodeUrl?: string;
+  /** API key of the prover node's admin API, sent as `x-api-key`. */
+  proverNodeApiKey?: string;
   /** Early-proof profitability policy (min profit, profit margin, per-checkpoint proving cost). Unset fields
    *  use the defaults in `profitable_partial_epoch_policy/config.ts`. */
   earlyProofPolicy?: Partial<EarlySubmitPolicy>;
 }
 
-/** Validate the epoch-proofs options against the enabled modes, and normalize them. */
+/**
+ * Validate the epoch-proofs options against the enabled modes, and normalize them. The prover node API key comes
+ * from the environment only: a command-line option would put the key in argv, readable by any process.
+ */
 export function toProverRunConfig(opts: ProverCommanderOptions, modes: readonly string[]): ProverRunConfig {
   if (modes.includes('epoch-proofs') && !opts.proverNodeUrl) {
     throw new Error(
@@ -72,6 +80,7 @@ export function toProverRunConfig(opts: ProverCommanderOptions, modes: readonly 
   const { earlyProofMinProfit, earlyProofMinProfitMarginBps, earlyProofProvingCostPerCheckpoint } = opts;
   return {
     proverNodeUrl: opts.proverNodeUrl,
+    proverNodeApiKey: process.env.OXIDE_RELAYER_PROVER_NODE_API_KEY?.trim() || undefined,
     earlyProofPolicy: {
       minEpochProfit: earlyProofMinProfit === undefined ? undefined : BigInt(earlyProofMinProfit),
       minEpochProfitMarginBps:

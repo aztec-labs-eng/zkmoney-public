@@ -51,9 +51,10 @@ export function demoProfile(): Record<string, unknown> {
  */
 export function demoBootInput(
   base: Record<string, string | undefined> = import.meta.env,
-): Pick<ResolveBootConfigInput, "env" | "fetchImpl"> {
-  if (base.MODE === "ui-capture") return { env: base }
+): Pick<ResolveBootConfigInput, "env" | "fetchImpl" | "demoStorage"> {
+  if (base.MODE === "ui-capture") return { env: base, demoStorage: true }
   return {
+    demoStorage: true,
     env: {
       ...base,
       VITE_NETWORK: "sandbox",

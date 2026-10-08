@@ -8,14 +8,23 @@
  * It starts from the stored row (front-core's paylinkStatusFor); opening rechecks the chain through
  * the shared claim reconciler, whose flip updates the feed row and this sheet together.
  *
- * A creator paylink row whose escrow is still spendable also carries its recovery: "Cancel paylink"
+ * A creator paylink row whose escrow is still spendable also carries its recovery: "Cancel link"
  * during the grace window, "Reclaim funds" once the claim window has closed (`creatorLinkActions.ts`).
  * The gate reads the refreshed status, so a link the refresh shows claimed offers neither, and stays
- * inert while that refresh is in flight.
+ * inert while that refresh is in flight. What the sheet offers is front-core's `paylinkRowView`, as
+ * on the feed row: an unsettled create or a refund in flight offers no recovery.
  */
-import { useEffect, useState } from "react"
+import { useEffect, useState, useSyncExternalStore } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
-import { globalEventEmitter, truncateMiddle, type PaylinkStatusKind } from "@obsidion/front-core"
+import {
+  globalEventEmitter,
+  isRefundInFlight,
+  onRefundInFlightChanged,
+  paylinkRowView,
+  refundInFlightVersion,
+  truncateMiddle,
+  type PaylinkRowStatusLabel,
+} from "@obsidion/front-core"
 import {
   ConfirmationSheetDetailRow,
   GradientInitialAvatar,
@@ -40,17 +49,24 @@ import { LinkRecoverModal } from "../../features/paylink/LinkRecoverModal"
 import { usePolledChainSeconds } from "../../features/paylink/chainTime"
 import { recheckPaylinkClaim } from "../../features/notifications/PaylinkClaimMount"
 import { usePaylinkDeps } from "../../features/paylink/usePaylinkDeps"
+import { useTabLine } from "../../features/operations/operations"
 import { HashRow } from "../detailRows"
 import { useCopy } from "../hooks"
-import { activityStatusLabel, linkFragmentOf, type ActivityRowView } from "./activityView"
+import { linkFragmentOf, type ActivityRowView } from "./activityView"
 
 // Styles match the feed row's STATUS_STYLE for the same labels, so one state never wears two colors.
-const PAYLINK_BADGE_STYLE: Record<PaylinkStatusKind, StatusBadgeStyle> = {
-  awaitingClaim: "awaitingClaim",
-  claimed: "pending",
-  refunded: "cancelled",
-  migrated: "pending",
-  expired: "failed",
+const PAYLINK_BADGE_STYLE: Record<PaylinkRowStatusLabel, StatusBadgeStyle> = {
+  Pending: "pending",
+  Failed: "failed",
+  Cancelling: "pending",
+  Reclaiming: "pending",
+  Cancelled: "cancelled",
+  Reclaimed: "cancelled",
+  Unclaimed: "awaitingClaim",
+  Claimed: "paid",
+  Refunded: "cancelled",
+  Migrated: "pending",
+  Expired: "failed",
 }
 
 const canShare = typeof navigator !== "undefined" && typeof navigator.share === "function"
@@ -79,6 +95,7 @@ export function TxDetailModal({
   const navigate = useNavigate()
   const pathname = useLocation().pathname
   const deps = usePaylinkDeps()
+  const linkTabLine = useTabLine(row.paylinkRow?.operationId)
 
   const fragment = row.paylink ? linkFragmentOf(row.paylink) : null
   const [linkStatus, setLinkStatus] = useState(row.paylinkStatus)
@@ -86,6 +103,8 @@ export function TxDetailModal({
   // Paylink windows are chain timestamps: the recovery on offer must flip as the tip crosses
   // them while the sheet is open, and stays withheld until the tip has been read.
   const chainNow = usePolledChainSeconds(deps?.wallet.node)
+  // Re-renders as this page starts or ends a refund, before the row learns its hash.
+  useSyncExternalStore(onRefundInFlightChanged, refundInFlightVersion)
   // Captured at the tap: the sheet follows its row, and a refund scrubs that row's link as it
   // lands, so the recovery modal must not depend on what the row carries afterwards.
   const [recovering, setRecovering] = useState<{
@@ -119,27 +138,29 @@ export function TxDetailModal({
   const refundUrl = row.refundTxHash
     ? l2TxUrl(config.network, config.nodeUrl, row.refundTxHash)
     : null
-  // The status is the feed row's badge, derived through the same function off the same words — the
-  // refresh only sharpens which link status goes in, so the two can never read differently. An
-  // expired link is awaiting its reclaim, and says so here as it does in the feed.
-  const statusLabel = activityStatusLabel(row.status, linkStatus) ?? "Completed"
-  const paylinkBadgeStyle: StatusBadgeStyle =
-    statusLabel === "Failed"
-      ? "failed"
-      : statusLabel === "Pending"
-      ? "pending"
-      : linkStatus
-      ? PAYLINK_BADGE_STYLE[linkStatus]
-      : "awaitingClaim"
-
-  const recovery =
-    row.paylinkRow && linkStatus && chainNow != null
-      ? creatorLinkAction(row.paylinkRow, {
-          nowSec: chainNow,
-          liveStatus: linkStatus,
-          account: deps?.account.getAddress().toString(),
-        })
-      : null
+  // The feed row's view, re-derived off the refreshed link status and the polled chain tip, so the
+  // two can never read differently.
+  const linkView = row.paylinkRow
+    ? paylinkRowView(row.paylinkRow, {
+        linkStatus,
+        offer:
+          linkStatus && chainNow != null
+            ? creatorLinkAction(row.paylinkRow, {
+                nowSec: chainNow,
+                liveStatus: linkStatus,
+                account: deps?.account.getAddress().toString(),
+              })
+            : null,
+        refundStatus: row.refundStatus,
+        refundStarting: isRefundInFlight(row.paylinkRow.payToEmailSecret ?? ""),
+        nowSec: chainNow ?? Math.floor(Date.now() / 1000),
+      })
+    : undefined
+  const statusLabel = linkView?.statusLabel ?? "Completed"
+  const paylinkBadgeStyle: StatusBadgeStyle = linkView?.statusLabel
+    ? PAYLINK_BADGE_STYLE[linkView.statusLabel]
+    : "awaitingClaim"
+  const recovery = linkView?.recovery ?? null
 
   if (recovering) {
     return (
@@ -184,6 +205,8 @@ export function TxDetailModal({
     : row.counterparty
 
   const isLink = !!(row.paylink && fragment && linkStatus)
+  // An unsettled create is not a send yet.
+  const linkTitle = row.status === "success" ? "Send via paylink" : "Paylink"
   const nowSec = chainNow ?? Math.floor(Date.now() / 1000)
   const amountFace = row.amount.replace(/^[+-]/, "")
   const note = noteProp ?? row.note
@@ -200,9 +223,9 @@ export function TxDetailModal({
   const status = linkStatus ? (
     <StatusBadge label={statusLabel} badgeStyle={paylinkBadgeStyle} />
   ) : pending ? (
-    <StatusBadge label={outgoing ? "Sending" : "Receiving"} badgeStyle="pending" />
+    <StatusBadge label="Pending" badgeStyle="pending" />
   ) : row.status === "failed" ? (
-    <StatusBadge label="Failed" badgeStyle="failed" />
+    <StatusBadge label={row.statusLabel ?? "Failed"} badgeStyle="failed" />
   ) : (
     <StatusBadge label="Completed" badgeStyle="paid" />
   )
@@ -211,11 +234,11 @@ export function TxDetailModal({
     <Modal
       variant="bare"
       className="ww-txd"
-      label={`${isLink ? "Send via paylink" : title} ${amountFace}`}
+      label={`${isLink ? linkTitle : title} ${amountFace}`}
       onClose={onClose}
     >
       <PayModalChrome
-        title={isLink ? "Send via paylink" : title}
+        title={isLink ? linkTitle : title}
         subtitle={
           isLink ? null : openContact ? (
             <button type="button" className="zkm-btn-reset ww-txd__link" onClick={openContact}>
@@ -245,15 +268,20 @@ export function TxDetailModal({
       />
 
       {notice && <p className="ww-txd__notice">{notice}</p>}
-      {/* A link exists before its deposit lands; the proof runs in this tab, so leaving kills it. */}
-      {isLink && pending && (
+      {/* Leaving loses the link's deposit while it proves here; once sent it is the chain's. */}
+      {isLink && linkTabLine === "keep" && (
         <div className="ww-txd__notice ww-txd__notice--live" role="status">
           <Spinner size={14} />
           <span>
-            Your link is ready to share. The deposit behind it is still being proved in this tab.
-            Keep the tab open until the status reads sent, or the link will have nothing to pay out.
+            Your link is ready to share. Keep this tab open until it's finished creation. You can
+            close this modal now, we'll notify you.
           </span>
         </div>
+      )}
+      {isLink && linkTabLine === "safe" && (
+        <p className="ww-txd__notice ww-txd__notice--safe" role="status">
+          Sent. You can close this tab. The link can be claimed once the network confirms it.
+        </p>
       )}
 
       {isLink ? (
@@ -271,10 +299,12 @@ export function TxDetailModal({
           <ConfirmationSheetDetailRow label="Amount" value={amountFace} />
           <ConfirmationSheetDetailRow label="Status" value={status} />
           {row.error && <ConfirmationSheetDetailRow label="Reason" value={row.error} />}
-          <ConfirmationSheetDetailRow
-            label="Link expiry"
-            value={expiryLabel(row.paylinkRow?.untilClaimable, nowSec)}
-          />
+          {row.status !== "failed" && (
+            <ConfirmationSheetDetailRow
+              label="Link expiry"
+              value={expiryLabel(row.paylinkRow?.untilClaimable, nowSec)}
+            />
+          )}
         </div>
       ) : (
         <div className="ww-txd__card">
@@ -293,28 +323,30 @@ export function TxDetailModal({
 
       {isLink ? (
         <>
-          <div className="ww-txd__actions">
-            {canShare && phone && (
+          {linkView?.canShare && (
+            <div className="ww-txd__actions">
+              {canShare && phone && (
+                <PrimaryGradientButton
+                  title="Share"
+                  buttonStyle="dark"
+                  leadingIcon="share"
+                  onClick={() => {
+                    void navigator
+                      .share({ text: `I sent you ${amountFace} on zk.money`, url: row.paylink! })
+                      .catch(() => {})
+                  }}
+                />
+              )}
               <PrimaryGradientButton
-                title="Share"
-                buttonStyle="dark"
-                leadingIcon="share"
-                onClick={() => {
-                  void navigator
-                    .share({ text: `I sent you ${amountFace} on zk.money`, url: row.paylink! })
-                    .catch(() => {})
-                }}
+                title={copied ? "Copied!" : "Copy paylink"}
+                leadingIcon={copied ? "check" : "file-copy"}
+                onClick={() => void copy(row.paylink!)}
               />
-            )}
-            <PrimaryGradientButton
-              title={copied ? "Copied!" : "Copy paylink"}
-              leadingIcon={copied ? "check" : "file-copy"}
-              onClick={() => void copy(row.paylink!)}
-            />
-          </div>
+            </div>
+          )}
           {recovery && fragment && row.paylinkRow && (
             <PrimaryGradientButton
-              title={recovery === "reclaim" ? "Reclaim funds" : "Cancel paylink"}
+              title={recovery === "reclaim" ? "Reclaim funds" : "Cancel link"}
               buttonStyle="danger"
               isDisabled={checking}
               onClick={() => {

@@ -44,4 +44,18 @@ library ThreePoolLib {
     THREE_POOL.exchange(idxIn, POOL3_DAI_IDX, sent, minDy);
     return address(DAI);
   }
+
+  function swapDaiTo(
+    ICurve3Pool _pool,
+    address _dai,
+    int128 _idxOut,
+    address _tokenOut,
+    uint256 _amountIn,
+    uint256 _maxSlippageBps
+  ) internal returns (uint256 tokenOutBalance) {
+    uint256 minDy = (_amountIn * (BPS_DENOMINATOR - _maxSlippageBps)) / BPS_DENOMINATOR / STABLE_TO_DAI_DECIMAL_SCALE;
+    IERC20(_dai).forceApprove(address(_pool), _amountIn);
+    _pool.exchange(POOL3_DAI_IDX, _idxOut, _amountIn, minDy);
+    return IERC20(_tokenOut).balanceOf(address(this));
+  }
 }

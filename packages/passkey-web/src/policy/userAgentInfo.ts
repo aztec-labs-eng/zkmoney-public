@@ -137,6 +137,13 @@ export async function currentUserAgentInfo(): Promise<UserAgentInfo> {
   })
 }
 
+/** The live browser's claims from its user-agent string alone, for callers that cannot wait. */
+export function currentUserAgentInfoSync(): UserAgentInfo {
+  return parseUserAgent({
+    userAgent: typeof navigator === "undefined" ? "" : navigator.userAgent ?? "",
+  })
+}
+
 /** Compares dotted version strings numerically, missing components counting as zero. */
 export function versionBelow(reported: string, floor: string): boolean {
   if (reported === UNKNOWN) return false
@@ -154,7 +161,7 @@ export function versionBelow(reported: string, floor: string): boolean {
 /** iOS before this release had a cross-device passkey bug the phone flow trips on. */
 export const IOS_PASSKEY_FLOOR = "18.4"
 
-/** Whether the browser claims an iOS below the floor; a frozen or missing version claims nothing. */
+/** Whether the browser claims an iOS below the floor; a missing version claims nothing. */
 export function iosBelowFloor(
   info: Pick<UserAgentInfo, "osFamily" | "osVersionReported">,
 ): boolean {

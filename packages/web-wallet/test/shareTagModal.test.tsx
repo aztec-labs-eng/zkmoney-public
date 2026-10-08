@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   clipboard: vi.fn(),
   share: vi.fn(),
   record: vi.fn(),
+  pending: false,
 }))
 vi.mock("../src/ui/usePhoneLayout", () => ({ usePhoneLayout: () => mocks.phone }))
 vi.mock("../src/features/contacts/myCode", () => ({ mintMyConnectLink: mocks.mint }))
@@ -18,6 +19,9 @@ vi.mock("../src/platform/auth/useAuthenticator", () => ({
 vi.mock("../src/features/identity/walletIdentity", () => ({
   loadWalletIdentity: () => ({ handle: "alice" }),
 }))
+vi.mock("../src/features/onboarding/webRegistration", () => ({
+  useTagPresentationPending: () => mocks.pending,
+}))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
 vi.mock("../src/lib/analytics", () => ({ fireEvent: vi.fn() }))
 vi.mock("@obsidion/front-core", async (original) => ({
@@ -27,52 +31,71 @@ vi.mock("@obsidion/front-core", async (original) => ({
 import { ShareTagModal } from "../src/features/contacts/ShareTagModal"
 const link = "https://wallet.staging.zk.money/connect#full-handshake-packet-with-all-fields"
 
+let root: Root, container: HTMLDivElement
+const close = vi.fn()
+beforeEach(() => {
+  vi.clearAllMocks()
+  mocks.phone = false
+  mocks.pending = false
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  )
+  mocks.mint.mockResolvedValue(link)
+  mocks.clipboard.mockResolvedValue(undefined)
+  Object.defineProperty(navigator, "clipboard", {
+    configurable: true,
+    value: { writeText: mocks.clipboard },
+  })
+  Object.defineProperty(navigator, "share", { configurable: true, value: undefined })
+  container = document.createElement("div")
+  document.body.append(container)
+  root = createRoot(container)
+})
+afterEach(() => {
+  act(() => root.unmount())
+  container.remove()
+  vi.unstubAllGlobals()
+})
+const click = async (label: string) => {
+  const button = [...container.querySelectorAll<HTMLElement>('button, [role="button"]')].find(
+    (b) => b.textContent?.includes(label) || b.getAttribute("aria-label") === label,
+  )
+  expect(button).toBeTruthy()
+  await act(async () => button!.click())
+}
+const render = async (onScan?: () => void) => {
+  await act(async () =>
+    root.render(
+      <StrictMode>
+        <ShareTagModal onClose={close} onScan={onScan} />
+      </StrictMode>,
+    ),
+  )
+}
+
+it.each([true, false])(
+  "says a tag that is not active yet cannot receive payments (pending=%s)",
+  async (pending) => {
+    mocks.pending = pending
+    await render()
+    const note = container.querySelector('[data-testid="share-tag-inactive"]')
+    expect(note?.textContent ?? null).toBe(
+      pending
+        ? "@alice isn't active yet, so it can't receive payments. People can still connect with you."
+        : null,
+    )
+  },
+)
+
 describe.each([false, true])("ShareTagModal lifecycle and payload (phone=%s)", (phone) => {
-  let root: Root, container: HTMLDivElement
-  const close = vi.fn()
   beforeEach(() => {
-    vi.clearAllMocks()
     mocks.phone = phone
-    vi.stubGlobal(
-      "ResizeObserver",
-      class {
-        observe() {}
-        unobserve() {}
-        disconnect() {}
-      },
-    )
-    mocks.mint.mockResolvedValue(link)
-    mocks.clipboard.mockResolvedValue(undefined)
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: { writeText: mocks.clipboard },
-    })
-    Object.defineProperty(navigator, "share", { configurable: true, value: undefined })
-    container = document.createElement("div")
-    document.body.append(container)
-    root = createRoot(container)
   })
-  afterEach(() => {
-    act(() => root.unmount())
-    container.remove()
-    vi.unstubAllGlobals()
-  })
-  const click = async (label: string) => {
-    const button = [...container.querySelectorAll<HTMLElement>('button, [role="button"]')].find(
-      (b) => b.textContent?.includes(label) || b.getAttribute("aria-label") === label,
-    )
-    expect(button).toBeTruthy()
-    await act(async () => button!.click())
-  }
-  const render = async (onScan?: () => void) => {
-    await act(async () =>
-      root.render(
-        <StrictMode>
-          <ShareTagModal onClose={close} onScan={onScan} />
-        </StrictMode>,
-      ),
-    )
-  }
 
   it("mints once under StrictMode and carries the full link in QR and every clipboard control", async () => {
     await render()
@@ -165,9 +188,11 @@ describe.each([false, true])("ShareTagModal lifecycle and payload (phone=%s)", (
     expect(mocks.mint).toHaveBeenCalledTimes(1)
     await click("Copy link")
     expect(mocks.clipboard).toHaveBeenLastCalledWith(link)
-    act(() => document.activeElement!.dispatchEvent(
-      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-    ))
+    act(() =>
+      document.activeElement!.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+      ),
+    )
     expect(close).toHaveBeenCalledTimes(1)
   })
 
@@ -180,9 +205,11 @@ describe.each([false, true])("ShareTagModal lifecycle and payload (phone=%s)", (
       const dialog = container.querySelector<HTMLElement>('[role="dialog"]')!
       const buttons = [...dialog.querySelectorAll<HTMLButtonElement>("button")]
       buttons[buttons.length - 1].focus()
-      act(() => document.activeElement!.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Tab", bubbles: true }),
-      ))
+      act(() =>
+        document.activeElement!.dispatchEvent(
+          new KeyboardEvent("keydown", { key: "Tab", bubbles: true }),
+        ),
+      )
       expect(document.activeElement).toBe(buttons[0])
       expect(buttons[0].getAttribute("aria-label")).toBe("Close")
       await act(async () => root.render(null))

@@ -9,6 +9,7 @@ import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import type { SignInStart } from "../src/features/onboarding/steps/ConfirmTagModal"
 
 vi.setConfig({ testTimeout: 30_000 })
@@ -18,12 +19,20 @@ const h = vi.hoisted(() => ({
   enterWithPasskey: vi.fn(),
   confirmTag: vi.fn(),
   lookup: vi.fn(),
+  probe: vi.fn(),
   getOxideTuple: vi.fn(async () => ({})),
   recoverFromCache: vi.fn(async () => undefined),
   showReportableError: vi.fn(),
   fireEvent: vi.fn(),
   getConfig: vi.fn(),
   reservedNameHashes: vi.fn(),
+  nameGrantToken: vi.fn(),
+  boundNameGrantOwner: vi.fn(),
+  claimTag: vi.fn(),
+  collectOnboardingKeys: vi.fn(async () => ({})),
+  saveTerms: vi.fn(),
+  openActivationPrompt: vi.fn(),
+  bridge: null as unknown,
 }))
 
 vi.mock("react-router-dom", async (importOriginal) => ({
@@ -49,9 +58,19 @@ vi.mock("../src/features/onboarding/oxideOnboarding", async () => {
   const { matchWireNameHash } = await import("@obsidion/front-core")
   return {
     enterWithPasskey: h.enterWithPasskey,
+    nameGrantToken: h.nameGrantToken,
     confirmTag: h.confirmTag,
+    claimTag: h.claimTag,
+    collectOnboardingKeys: h.collectOnboardingKeys,
+    checkpointRegistrationTerms: (account: string, tag: string, claim: { deadline: string }) => ({
+      account,
+      tag,
+      deadline: Number(claim.deadline),
+    }),
     isCommittedFailure: (err: unknown) =>
-      typeof err === "object" && err !== null && (err as { committed?: boolean }).committed === true,
+      typeof err === "object" &&
+      err !== null &&
+      (err as { committed?: boolean }).committed === true,
     // The real matching, without the module that drags the Aztec stack in.
     reservedTagMatch: (hashes: `0x${string}`[], ensDomain: string, handle: string) =>
       hashes.map((hash) => matchWireNameHash(handle, ensDomain, hash)).find(Boolean) ?? null,
@@ -66,6 +85,13 @@ vi.mock("../src/features/onboarding/oxideOnboarding", async () => {
 })
 vi.mock("../src/features/onboarding/recoveryProbes", () => ({
   reservedNameHashes: h.reservedNameHashes,
+  boundNameGrantOwner: h.boundNameGrantOwner,
+}))
+vi.mock("../src/features/onboarding/registrationTerms", () => ({
+  saveRegistrationTerms: h.saveTerms,
+}))
+vi.mock("../src/features/onboarding/activationPrompt", () => ({
+  openActivationPrompt: h.openActivationPrompt,
 }))
 // The lookup is the only stand-in: the diagnosis and the code table are the real ones.
 vi.mock("../src/features/onboarding/findPasskeyByTag", async (importOriginal) => ({
@@ -90,8 +116,20 @@ vi.mock("../src/lib/analytics", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/analytics")>()),
   fireEvent: h.fireEvent,
 }))
+vi.mock("../src/features/onboarding/nameAvailability", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/onboarding/nameAvailability")>()),
+  probeNameAvailability: h.probe,
+}))
 vi.mock("../src/features/onboarding/InvitationChrome", () => ({
   InvitationChrome: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+}))
+vi.mock("../src/platform/desktopBridge", () => ({ getDesktopL1Bridge: () => h.bridge }))
+vi.mock("../src/ui/EndpointsModal", () => ({
+  EndpointsModal: ({ onClose }: { onClose: () => void }) => (
+    <div data-testid="endpoints-modal">
+      <button data-testid="endpoints-close" onClick={onClose} />
+    </div>
+  ),
 }))
 vi.mock("../src/features/onboarding/OnboardingCard", () => ({
   OnboardingSpinnerBody: ({
@@ -167,7 +205,11 @@ vi.mock("../src/features/onboarding/steps/ConfirmTagModal", () => ({
         />
         {start.notice && <p data-testid={`by-tag-${start.notice.kind}`}>{start.notice.tag}</p>}
         {start.prepared === "failed" && (
-          <button type="button" data-testid="sign-in-prepare-again" onClick={start.onPrepareAgain} />
+          <button
+            type="button"
+            data-testid="sign-in-prepare-again"
+            onClick={start.onPrepareAgain}
+          />
         )}
         <button
           type="button"
@@ -182,6 +224,9 @@ vi.mock("../src/features/onboarding/steps/ConfirmTagModal", () => ({
           onClick={onShowPasskeys}
         />
         <button type="button" data-testid="sign-in-close" onClick={onClose} />
+        {start.onEndpoints && (
+          <button type="button" data-testid="sign-in-endpoints" onClick={start.onEndpoints} />
+        )}
       </form>
     )
   },
@@ -311,9 +356,12 @@ const nameless = () => ({
 })
 
 const MAP_KEY = "obsidion.obsidion_web_passkey_identity_map"
+/** The campaign claim notices owed on this browser (front-core CampaignClaimNotices). */
+const owedClaimNotices = () =>
+  JSON.parse(walletStorage.getItem("obsidion.obsidion_campaign_claim_notices") ?? "{}")
 /** This browser's root record for an account, with the tag it claimed. */
 function remember(credentialId: string, usertag: string, createdAt = 1) {
-  const raw = localStorage.getItem(MAP_KEY)
+  const raw = walletStorage.getItem(MAP_KEY)
   const map = raw ? JSON.parse(raw) : { version: 1, entries: {} }
   map.entries[credentialId] = {
     credentialId,
@@ -324,7 +372,7 @@ function remember(credentialId: string, usertag: string, createdAt = 1) {
     createdAt,
     usertag,
   }
-  localStorage.setItem(MAP_KEY, JSON.stringify(map))
+  walletStorage.setItem(MAP_KEY, JSON.stringify(map))
 }
 
 const IOS =
@@ -357,11 +405,23 @@ beforeEach(() => {
   h.enterWithPasskey.mockReset()
   h.confirmTag.mockReset()
   h.lookup.mockReset().mockResolvedValue({ kind: "notFound" })
+  h.probe.mockReset().mockResolvedValue({ status: "unknown", grantValid: false, grantBound: false })
   h.getOxideTuple.mockReset().mockResolvedValue({})
   h.recoverFromCache.mockReset().mockResolvedValue(undefined)
   h.showReportableError.mockClear()
   h.fireEvent.mockClear()
   h.reservedNameHashes.mockReset().mockResolvedValue([])
+  h.nameGrantToken.mockReset().mockReturnValue(undefined)
+  h.boundNameGrantOwner.mockReset().mockResolvedValue(false)
+  h.claimTag.mockReset().mockResolvedValue({
+    kind: "pending",
+    oxideAccount: "0xacc0000000000000000000000000000000000001",
+    claim: { deadline: "4102444800" },
+    startBroadcast: vi.fn(async () => true),
+  })
+  h.saveTerms.mockClear()
+  h.openActivationPrompt.mockClear()
+  h.bridge = null
   h.getConfig.mockReturnValue({
     rpId: "localhost",
     campaignUrl: "https://launch.test.invalid",
@@ -409,12 +469,24 @@ describe("the arrival", () => {
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
   })
 
+  it("an entry with a name owes the campaign its claim notice", async () => {
+    h.enterWithPasskey.mockResolvedValueOnce(named())
+    await render()
+    await flush()
+    expect(owedClaimNotices()).toEqual({
+      [L2]: { l2Address: L2, tag: "alice", owedAt: expect.any(Number), attempts: 0 },
+    })
+  })
+
   it("the arrival handle seeds the field and resolves it once; Login is then one click", async () => {
     resolvedLookup()
     await arrive("/enter?handle=Alice")
     expect(input().value).toBe("alice")
     expect(h.lookup).toHaveBeenCalledTimes(1)
-    expect(h.lookup).toHaveBeenCalledWith("alice", expect.objectContaining({ resolveTag: expect.any(Function) }))
+    expect(h.lookup).toHaveBeenCalledWith(
+      "alice",
+      expect.objectContaining({ resolveTag: expect.any(Function) }),
+    )
     expect(login().disabled).toBe(false)
     h.enterWithPasskey.mockResolvedValueOnce(named())
     await click("sign-in-login")
@@ -422,7 +494,11 @@ describe("the arrival", () => {
       expect.anything(),
       expect.anything(),
       "alice",
-      expect.objectContaining({ hints: CANDIDATE, restoreCache: false, signal: expect.any(AbortSignal) }),
+      expect.objectContaining({
+        hints: CANDIDATE,
+        restoreCache: false,
+        signal: expect.any(AbortSignal),
+      }),
     )
     expect(resolvedEvents()).toEqual([["passkey_by_tag_lookup_resolved", { more_keys: false }]])
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
@@ -450,7 +526,9 @@ describe("the arrival", () => {
   })
 
   it("a write that failed after the probe committed shows its own card: Retry re-probes, Cancel, no signup", async () => {
-    h.enterWithPasskey.mockRejectedValueOnce(Object.assign(new Error("disk full"), { committed: true }))
+    h.enterWithPasskey.mockRejectedValueOnce(
+      Object.assign(new Error("disk full"), { committed: true }),
+    )
     await render()
     expect(screen()).toBeNull()
     expect(refused()?.dataset.reason).toBe("error")
@@ -616,20 +694,23 @@ describe("the field", () => {
     ["staleRollup", "bytag_stale_rollup"],
     ["noKeyInstalled", "bytag_no_key_installed"],
     ["unreadable", "bytag_key_unreadable"],
-  ] as const)("%s stays inline with the field editable and Show passkeys live", async (kind, code) => {
-    await arrive()
-    h.lookup.mockResolvedValueOnce({ kind, account: `0x${"11".repeat(20)}`, complete: true })
-    await type("alice")
-    await blur()
-    expect(byTestId(`by-tag-${kind}`)?.textContent).toBe("alice")
-    expect(login().disabled).toBe(true)
-    expect(byTestId("sign-in-show-passkeys")).toHaveProperty("disabled", false)
-    expect(refused()).toBeNull()
-    expect(failures().at(-1)).toEqual(["enter:by-tag", code])
-    // Editing clears the notice; the next read is the new tag's.
-    await type("bob")
-    expect(byTestId(`by-tag-${kind}`)).toBeNull()
-  })
+  ] as const)(
+    "%s stays inline with the field editable and Show passkeys live",
+    async (kind, code) => {
+      await arrive()
+      h.lookup.mockResolvedValueOnce({ kind, account: `0x${"11".repeat(20)}`, complete: true })
+      await type("alice")
+      await blur()
+      expect(byTestId(`by-tag-${kind}`)?.textContent).toBe("alice")
+      expect(login().disabled).toBe(true)
+      expect(byTestId("sign-in-show-passkeys")).toHaveProperty("disabled", false)
+      expect(refused()).toBeNull()
+      expect(failures().at(-1)).toEqual(["enter:by-tag", code])
+      // Editing clears the notice; the next read is the new tag's.
+      await type("bob")
+      expect(byTestId(`by-tag-${kind}`)).toBeNull()
+    },
+  )
 
   it("a pause in typing reads the tag without leaving the field", async () => {
     const { RESOLVE_DEBOUNCE_MS } = await import("../src/features/onboarding/EnterAppScreen")
@@ -658,6 +739,24 @@ describe("the field", () => {
     expect(byTestId("by-tag-lookupFailed")).toBeNull()
     expect(login().disabled).toBe(false)
   })
+
+  it.each([
+    ["reserved", "reserved", "true"],
+    ["blocked-reserved", "reserved", "true"],
+    ["available", "notFound", "false"],
+    ["unknown", "notFound", "false"],
+  ])(
+    "a tag the network has no account for, with the name %s, reads as %s",
+    async (status, kind, chooserFirst) => {
+      h.probe.mockResolvedValue({ status, grantValid: false, grantBound: false })
+      await arrive()
+      await type("alice")
+      await blur()
+      expect(byTestId(`by-tag-${kind}`)?.textContent).toBe("alice")
+      expect(screen()!.dataset.chooserFirst).toBe(chooserFirst)
+      expect(screen()!.dataset.resolving).toBe("false")
+    },
+  )
 
   it("only the current read lands: an older answer neither repopulates the field nor overwrites a newer notice", async () => {
     await arrive()
@@ -740,8 +839,10 @@ describe("the remembered accounts", () => {
     remember("cred-c", "carol", 3)
     await render("/enter?choose=1&avoid=cred-b")
     expect(
-      Array.from(container.querySelectorAll('[data-testid="sign-in-account"]'), (row) =>
-        (row as HTMLElement).dataset.tag),
+      Array.from(
+        container.querySelectorAll('[data-testid="sign-in-account"]'),
+        (row) => (row as HTMLElement).dataset.tag,
+      ),
     ).toEqual(["carol", "alice"])
   })
 
@@ -783,7 +884,9 @@ describe("the remembered accounts", () => {
 describe("Show passkeys and the cancels", () => {
   it("a write that failed after the chooser's answer committed shows the re-probe card, no Back", async () => {
     await arrive()
-    h.enterWithPasskey.mockRejectedValueOnce(Object.assign(new Error("disk full"), { committed: true }))
+    h.enterWithPasskey.mockRejectedValueOnce(
+      Object.assign(new Error("disk full"), { committed: true }),
+    )
     await click("sign-in-show-passkeys")
     expect(refused()?.dataset.reason).toBe("error")
     expect(byTestId("enter-retry")).not.toBeNull()
@@ -830,10 +933,66 @@ describe("Show passkeys and the cancels", () => {
   })
 })
 
+describe("the endpoint editor", () => {
+  it("opens beside the screen; closing it keeps the screen, with no sign-in and no cancel", async () => {
+    await arrive()
+    await click("sign-in-endpoints")
+    expect(byTestId("endpoints-modal")).not.toBeNull()
+    expect(screen()).not.toBeNull()
+    expect(screen()!.contains(byTestId("endpoints-modal"))).toBe(false)
+    await click("endpoints-close")
+    expect(byTestId("endpoints-modal")).toBeNull()
+    expect(screen()).not.toBeNull()
+    expect(h.enterWithPasskey).toHaveBeenCalledTimes(1)
+    expect(h.navigate).not.toHaveBeenCalled()
+    expect(leftForCampaign()).toBe(false)
+  })
+
+  it("is offered under the desktop bridge too", async () => {
+    h.bridge = { l1SubmitPath: "/desktop/l1-submit" }
+    await arrive()
+    await click("sign-in-endpoints")
+    expect(byTestId("endpoints-modal")).not.toBeNull()
+  })
+
+  it("a running sign-in holds the endpoints pill; the screen and a refusal card do not", async () => {
+    await reachFound()
+    const { endpointsHeld } = await import("../src/ui/endpointsHold")
+    expect(endpointsHeld()).toBe(false)
+    let refuse!: (err: unknown) => void
+    h.enterWithPasskey.mockImplementationOnce(
+      () => new Promise((_resolve, reject) => (refuse = reject)),
+    )
+    await click("sign-in-login")
+    expect(byTestId("spinner")).not.toBeNull()
+    expect(endpointsHeld()).toBe(true)
+    await act(async () => refuse(closed()))
+    await flush()
+    expect(refused()).not.toBeNull()
+    expect(endpointsHeld()).toBe(false)
+  })
+
+  it("the second prompt's approve step holds the endpoints pill too", async () => {
+    await reachFound()
+    const { endpointsHeld } = await import("../src/ui/endpointsHold")
+    h.enterWithPasskey.mockImplementationOnce(async (_w, _c, _h, options: EnterOptions) => {
+      const { signal } = await options.gate()
+      const again = options.gate as (o: { again: AbortSignal }) => Promise<unknown>
+      await again({ again: signal })
+      await new Promise(() => {})
+    })
+    await click("sign-in-login")
+    expect(byTestId("approve-again")).not.toBeNull()
+    expect(endpointsHeld()).toBe(true)
+  })
+})
+
 describe("the pinned sign-in", () => {
   it("a write that failed after the pinned answer committed shows the re-probe card, no Back", async () => {
     await reachFound()
-    h.enterWithPasskey.mockRejectedValueOnce(Object.assign(new Error("disk full"), { committed: true }))
+    h.enterWithPasskey.mockRejectedValueOnce(
+      Object.assign(new Error("disk full"), { committed: true }),
+    )
     await click("sign-in-login")
     expect(refused()?.dataset.reason).toBe("error")
     expect(byTestId("enter-retry")).not.toBeNull()
@@ -856,7 +1015,7 @@ describe("the pinned sign-in", () => {
     )
     expect(lastOptions().signal?.aborted).toBe(false)
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
-    expect(JSON.parse(localStorage.getItem("webwallet.identity")!)).toMatchObject({
+    expect(JSON.parse(walletStorage.getItem("webwallet.identity")!)).toMatchObject({
       handle: "alice",
       address: L2,
     })
@@ -872,8 +1031,9 @@ describe("the pinned sign-in", () => {
     expect(h.enterWithPasskey.mock.calls.at(-1)![2]).toBe("bob")
   })
 
-  it("a reservation names the claim by the tag the pinned entry used, never the URL's", async () => {
+  it("a reservation the pinned entry's tag names is picked back up at once, never under the URL's", async () => {
     const { namehash } = await import("viem/ens")
+    const { loadWalletIdentity } = await import("../src/features/identity/walletIdentity")
     await arrive("/enter?handle=alice")
     resolvedLookup("bob")
     await type("bob")
@@ -885,10 +1045,197 @@ describe("the pinned sign-in", () => {
       namehash("bob.zk.money"),
     ])
     await click("sign-in-login")
+    // The claim server replays the claim; the record, its terms and the pending identity are
+    // written here, and the wallet opens on the activation sheet.
+    expect(h.claimTag).toHaveBeenCalledTimes(1)
+    expect(h.claimTag.mock.calls[0]![0]).toBe("bob")
+    expect(h.saveTerms).toHaveBeenCalledWith(expect.objectContaining({ tag: "bob" }))
+    expect(h.openActivationPrompt).toHaveBeenCalled()
+    expect(loadWalletIdentity()).toMatchObject({ handle: "bob", address: L2, pending: true })
+    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+    expect(refused()).toBeNull()
+    expect(navigatedTo("/claim/alice?resume=1")).toBe(false)
+  })
+
+  it("a reservation the passkey's own name matches is picked back up with nothing typed", async () => {
+    const { namehash } = await import("viem/ens")
+    await arrive()
+    h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), userHandle: "carol" })
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) })
+    h.reservedNameHashes.mockResolvedValueOnce([namehash("carol.zk.money")])
+    await click("sign-in-show-passkeys")
+    expect(byTestId("confirm-tag")).toBeNull()
+    expect(h.claimTag.mock.calls[0]![0]).toBe("carol")
+    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+  })
+
+  it("a passkey name no reservation hashes to still asks for the tag", async () => {
+    const { namehash } = await import("viem/ens")
+    await arrive()
+    h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), userHandle: "carol" })
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) })
+    h.reservedNameHashes.mockResolvedValueOnce([namehash("dave.zk.money")])
+    await click("sign-in-show-passkeys")
+    expect(h.claimTag).not.toHaveBeenCalled()
+    expect(byTestId("confirm-tag")).not.toBeNull()
+  })
+
+  it("the passkey's own name names the reservation when the arrival tag names none", async () => {
+    // The arrival tag rode a sign-in link (?handle), which names the tag the waitlist knew, not
+    // necessarily the one the user reserved. It hashes to no held reservation; the passkey's own
+    // name, which does, still names it, the way the registered path already falls through to it.
+    const { namehash } = await import("viem/ens")
+    await arrive("/enter?handle=alice")
+    h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), userHandle: "carol" })
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) })
+    h.reservedNameHashes.mockResolvedValueOnce([namehash("carol.zk.money")])
+    await click("sign-in-show-passkeys")
+    expect(byTestId("confirm-tag")).toBeNull()
+    expect(h.claimTag.mock.calls[0]?.[0]).toBe("carol")
+    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+  })
+
+  it("a granted key resumes the reservation its passkey names rather than the granted card", async () => {
+    // A grant (the gate off answers granted too) is not a reason to send a passkey that already
+    // holds a reservation back to the signup: the name it carries reopens the wallet in place.
+    const { namehash } = await import("viem/ens")
+    await arrive()
+    h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), userHandle: "carol" })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ status: "granted" }),
+    })
+    h.reservedNameHashes.mockResolvedValueOnce([namehash("carol.zk.money")])
+    await click("sign-in-show-passkeys")
+    expect(byTestId("enter-refused")).toBeNull()
+    expect(byTestId("confirm-tag")).toBeNull()
+    expect(h.claimTag.mock.calls[0]?.[0]).toBe("carol")
+    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+  })
+
+  it("a granted key with no reservation its passkey names still shows the granted card", async () => {
+    await arrive()
+    h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), userHandle: "carol" })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ status: "granted" }),
+    })
+    h.reservedNameHashes.mockResolvedValueOnce([])
+    await click("sign-in-show-passkeys")
+    expect(h.claimTag).not.toHaveBeenCalled()
+    expect(byTestId("enter-refused")).not.toBeNull()
+  })
+
+  it("a granted key whose reservation lookup fails yields to the granted card, not a network error", async () => {
+    await arrive()
+    h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), userHandle: "carol" })
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ status: "granted" }),
+    })
+    h.reservedNameHashes.mockRejectedValueOnce(new Error("account-service down"))
+    await click("sign-in-show-passkeys")
+    expect(h.claimTag).not.toHaveBeenCalled()
+    expect(byTestId("enter-refused")).not.toBeNull()
+    // The granted card, not the committed network error (whose way on is the enter-continue pill).
+    expect(byTestId("enter-continue")).toBeNull()
+  })
+
+  it("a reserved recovery that commits reloads carrying the passkey's name", async () => {
+    // The unclaimed recovery adopts and switches the session, so the screen reloads to shed the
+    // stale record stores; the passkey's own name must ride that reload, or the re-entry (recovered
+    // from the cache, which carries no name) lands on the confirm-tag modal instead of the wallet.
+    const { setActiveStorageId } = await import("../src/platform/storage/activeStorage")
+    const { walletStorage } = await import("../src/platform/storage/walletStorage")
+    setActiveStorageId("storage-a")
+    await walletStorage.flush()
+    await arrive()
+    h.enterWithPasskey.mockImplementationOnce(async () => {
+      setActiveStorageId("storage-b")
+      await walletStorage.flush()
+      return { ...nameless(), userHandle: "carol" }
+    })
+    await click("sign-in-show-passkeys")
+    expect(leaveAssign).toHaveBeenCalled()
+    expect(leaveAssign.mock.calls.at(-1)?.[0]).toContain("handle=carol")
+  })
+
+  it("a reservation whose claim cannot be replayed keeps the card whose way on is the signup", async () => {
+    const { namehash } = await import("viem/ens")
+    await arrive("/enter?handle=alice")
+    resolvedLookup("bob")
+    await type("bob")
+    await blur()
+    h.enterWithPasskey.mockResolvedValueOnce(nameless())
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) })
+    h.reservedNameHashes.mockResolvedValueOnce([namehash("bob.zk.money")])
+    h.claimTag.mockRejectedValueOnce(new Error("claim ledger unavailable"))
+    await click("sign-in-login")
     expect(byTestId("enter-refused")?.textContent).toContain("@bob")
     await click("enter-continue")
     expect(h.navigate).toHaveBeenCalledWith("/claim/bob?resume=1", { replace: true })
+  })
+
+  it("returns the bound grant's passkey to its unfinished claim", async () => {
+    h.nameGrantToken.mockReturnValue("bound-token")
+    await reachFound("/enter?handle=alice&bound=1")
+    h.boundNameGrantOwner.mockResolvedValue(true)
+    h.enterWithPasskey.mockResolvedValueOnce(nameless())
+
+    await click("sign-in-login")
+
+    expect(lastOptions()).toMatchObject({ grantToken: "bound-token" })
+    expect(h.boundNameGrantOwner).toHaveBeenCalledWith(
+      expect.any(String),
+      "bound-token",
+      expect.objectContaining({ address: nameless().bootstrap.address }),
+      expect.any(Object),
+    )
+    expect(h.navigate).toHaveBeenCalledWith("/claim/alice?resume=1", {
+      replace: true,
+      state: { boundGrantOwner: "alice" },
+    })
+    expect(h.reservedNameHashes).not.toHaveBeenCalled()
+  })
+
+  it("keeps a different passkey out of the bound grant's signup", async () => {
+    h.nameGrantToken.mockReturnValue("bound-token")
+    await reachFound("/enter?handle=alice&bound=1")
+    h.enterWithPasskey.mockResolvedValueOnce(nameless())
+
+    await click("sign-in-login")
+
+    expect(refused()?.dataset.reason).toBe("DifferentPasskeyError")
+    expect(container.textContent).toContain("cannot continue @alice's grant")
     expect(navigatedTo("/claim/alice?resume=1")).toBe(false)
+    expect(h.reservedNameHashes).not.toHaveBeenCalled()
+  })
+
+  it("retries a bound grant owner-check outage without another passkey prompt", async () => {
+    h.nameGrantToken.mockReturnValue("bound-token")
+    await reachFound("/enter?handle=alice&bound=1")
+    h.enterWithPasskey.mockResolvedValueOnce(nameless())
+    h.boundNameGrantOwner.mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(true)
+
+    await click("sign-in-login")
+
+    expect(refused()?.dataset.reason).toBe("error")
+    expect(byTestId("enter-retry")).not.toBeNull()
+    expect(byTestId("enter-passkey")).toBeNull()
+    expect(h.showReportableError).not.toHaveBeenCalled()
+    expect(navigatedTo("/claim/alice?resume=1")).toBe(false)
+
+    const attempts = h.enterWithPasskey.mock.calls.length
+    await click("enter-retry")
+    expect(h.enterWithPasskey).toHaveBeenCalledTimes(attempts)
+    expect(h.boundNameGrantOwner).toHaveBeenCalledTimes(2)
+    expect(h.navigate).toHaveBeenCalledWith("/claim/alice?resume=1", {
+      replace: true,
+      state: { boundGrantOwner: "alice" },
+    })
   })
 
   it("a pinned entry whose reservation lookup timed out is the network card, with Back", async () => {
@@ -958,31 +1305,38 @@ describe("the pinned sign-in", () => {
     expect(failures().at(-1)).toEqual(["enter:by-tag", "passkey_key_mismatch"])
   })
 
-  it("a pinned prompt that closed names the device with no retry; Back returns to a blank screen", async () => {
-    onPhone()
-    await reachFound()
-    h.enterWithPasskey.mockRejectedValueOnce(closed())
-    await click("sign-in-login")
-    expect(refused()?.dataset.reason).toBe("PasskeyNotOnDeviceError")
-    expect(container.textContent).toContain("asked for @alice's passkey")
-    expect(container.textContent).toContain("open zk.money in your phone's default browser")
-    // The card's whole text, causes included, points at what the card offers: Back, then the screen.
-    expect(container.textContent).not.toMatch(/in the prompt/i)
-    expect(container.textContent).toContain("Wait, then go back and try again")
-    expect(container.textContent).toContain("Go back and check the tag")
-    expect(byTestId("enter-retry")).toBeNull()
-    expect(byTestId("enter-back")).not.toBeNull()
-    expect(byTestId("enter-cancel")).not.toBeNull()
-    expect(failures().at(-1)).toEqual(["enter:by-tag", "passkey_not_on_device"])
+  it.each([
+    ["that closed", closed],
+    ["with no credential", () => new Error("Passkey assertion returned no credential")],
+  ])(
+    "a pinned prompt %s names the device with no retry; Back returns to a blank screen",
+    async (_name, missing) => {
+      onPhone()
+      await reachFound()
+      h.enterWithPasskey.mockRejectedValueOnce(missing())
+      await click("sign-in-login")
+      expect(refused()?.dataset.reason).toBe("PasskeyNotOnDeviceError")
+      expect(container.textContent).toContain("asked for @alice's passkey")
+      expect(container.textContent).toContain("open zk.money in your phone's default browser")
+      // The card's whole text, causes included, points at what the card offers: Back, then the screen.
+      expect(container.textContent).not.toMatch(/in the prompt/i)
+      expect(container.textContent).toContain("Wait, then go back and try again")
+      expect(container.textContent).toContain("Go back and check the tag")
+      expect(byTestId("enter-retry")).toBeNull()
+      expect(byTestId("enter-back")).not.toBeNull()
+      expect(byTestId("enter-cancel")).not.toBeNull()
+      expect(failures().at(-1)).toEqual(["enter:by-tag", "passkey_not_on_device"])
+      expect(h.showReportableError).not.toHaveBeenCalled()
 
-    await click("enter-back")
-    expect(refused()).toBeNull()
-    expect(screen()).not.toBeNull()
-    expect(input().value).toBe("")
-    // No reseed and no read: the arrival handle was consumed on the first showing.
-    expect(h.lookup).toHaveBeenCalledTimes(1)
-    expect(h.navigate).not.toHaveBeenCalled()
-  })
+      await click("enter-back")
+      expect(refused()).toBeNull()
+      expect(screen()).not.toBeNull()
+      expect(input().value).toBe("")
+      // No reseed and no read: the arrival handle was consumed on the first showing.
+      expect(h.lookup).toHaveBeenCalledTimes(1)
+      expect(h.navigate).not.toHaveBeenCalled()
+    },
+  )
 
   it("an unconfirmed record keeps a retry that pins again with no second read", async () => {
     await reachFound()
@@ -1102,6 +1456,7 @@ describe("the pinned sign-in", () => {
     h.confirmTag.mockReturnValueOnce({ handle: "alice", address: L2 })
     await click("confirm-tag-submit")
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+    expect(owedClaimNotices()[L2]).toMatchObject({ tag: "alice" })
   })
 
   it("closing the confirm modal after a pinned entry cancels through the shared cancel", async () => {
@@ -1168,7 +1523,7 @@ describe("the completion writes", () => {
     )
     setActiveStorageId("storage-a")
     setActiveCredentialId(CREDENTIAL)
-    localStorage.setItem(
+    walletStorage.setItem(
       MAP_KEY,
       JSON.stringify({
         version: 1,
@@ -1199,7 +1554,7 @@ describe("the completion writes", () => {
     await flush()
     // The account it names is committed; the identity record, the passkey hint and the move into
     // the wallet were still the attempt's, and stop at its cancel.
-    expect(localStorage.getItem("webwallet.identity")).toBeNull()
+    expect(walletStorage.getItem("webwallet.identity")).toBeNull()
     expect(usertagFor("localhost", CREDENTIAL)).toBeUndefined()
     expect(navigatedTo("/")).toBe(false)
   })
@@ -1217,10 +1572,11 @@ describe("the completion writes", () => {
       release({ ok: true, status: 200, json: async () => ({ status: "granted" }) }),
     )
     await flush()
-    expect(localStorage.getItem("webwallet.admission")).toBeNull()
+    expect(walletStorage.getItem("webwallet.admission")).toBeNull()
     expect(h.fireEvent).not.toHaveBeenCalledWith("admission_checked", expect.anything())
     expect(refused()).toBeNull()
     expect(navigatedTo("/")).toBe(false)
+    expect(owedClaimNotices()).toEqual({})
   })
 
   it("a late verify failure after a cancel opens no error modal", async () => {
@@ -1243,14 +1599,14 @@ describe("the reload guard", () => {
   const assign = vi.fn()
   const switchesTo = (id: string, result: unknown) =>
     h.enterWithPasskey.mockImplementationOnce(async () => {
-      localStorage.setItem("webwallet.storageId", id)
+      await walletStorage.commitItem("webwallet.storageId", id)
       return result
     })
 
-  beforeEach(() => {
+  beforeEach(async () => {
     assign.mockClear()
     vi.stubGlobal("location", { assign, origin: "https://wallet.test" })
-    localStorage.setItem("webwallet.storageId", "storage-a")
+    await walletStorage.commitItem("webwallet.storageId", "storage-a")
   })
 
   it("a pinned entry that switched accounts reloads with the selected tag and strict=1, keeping next", async () => {
@@ -1265,7 +1621,7 @@ describe("the reload guard", () => {
   })
 
   it("the strict remount probes for a strict entry under a signal, and a wrong remembered tag confirms", async () => {
-    localStorage.setItem("webwallet.storageId", "storage-b")
+    await walletStorage.commitItem("webwallet.storageId", "storage-b")
     h.enterWithPasskey.mockResolvedValueOnce({
       entered: false,
       reason: "confirm",
@@ -1290,7 +1646,7 @@ describe("the reload guard", () => {
     act(() => root.unmount())
     root = createRoot(container)
     assign.mockClear()
-    localStorage.setItem("webwallet.storageId", "storage-a")
+    await walletStorage.commitItem("webwallet.storageId", "storage-a")
     await render("/enter?choose=1&avoid=cred-x")
     switchesTo("storage-b", named())
     await click("sign-in-show-passkeys")
@@ -1298,7 +1654,7 @@ describe("the reload guard", () => {
   })
 
   it("a cancel during the remounted probe aborts it, and an uncommitted answer after it shows nothing", async () => {
-    localStorage.setItem("webwallet.storageId", "storage-b")
+    await walletStorage.commitItem("webwallet.storageId", "storage-b")
     let release!: (value: unknown) => void
     h.enterWithPasskey.mockReturnValueOnce(new Promise((r) => (release = r)))
     await render("/enter?handle=bob&strict=1")
@@ -1316,7 +1672,7 @@ describe("the reload guard", () => {
   it("a switch that landed before a cancel still replaces the document", async () => {
     let release!: (value: unknown) => void
     h.enterWithPasskey.mockImplementationOnce(async () => {
-      localStorage.setItem("webwallet.storageId", "storage-b")
+      await walletStorage.commitItem("webwallet.storageId", "storage-b")
       return new Promise((r) => (release = r))
     })
     await render("/enter?handle=bob")
@@ -1328,7 +1684,7 @@ describe("the reload guard", () => {
   })
 
   it("under StrictMode only the replayed arrival enters", async () => {
-    localStorage.setItem("webwallet.storageId", "storage-b")
+    await walletStorage.commitItem("webwallet.storageId", "storage-b")
     const { GateCancelledError } = await import("../src/features/identity/ceremonyGate")
     // Screen wiring only: the stand-in ends the first arrival the way the real gate does when the
     // replay starts its own attempt (the gate's own suite pins that).
@@ -1343,7 +1699,9 @@ describe("the reload guard", () => {
     expect(first.aborted).toBe(true)
     expect(second.aborted).toBe(false)
     expect(h.navigate.mock.calls.filter((c) => c[0] === "/")).toHaveLength(1)
-    expect(JSON.parse(localStorage.getItem("webwallet.identity")!)).toMatchObject({ handle: "bob" })
+    expect(JSON.parse(walletStorage.getItem("webwallet.identity")!)).toMatchObject({
+      handle: "bob",
+    })
   })
 })
 

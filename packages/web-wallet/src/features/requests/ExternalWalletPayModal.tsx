@@ -8,19 +8,60 @@ import { Modal } from "../../ui/Modal"
  * offered: the quoted fee and the URI's amount are both in its units, so any other token would need
  * its own fee read and URI.
  */
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { formatUnits } from "viem"
-import type { RequestInlinePacket } from "@obsidion/front-core"
+import {
+  addressShareDecision,
+  depositTokenValuation,
+  fixedAmountLimits,
+  maximumCreditAtomic,
+  maximumSendAtomic,
+  maximumSendForCapacity,
+  type AddressRoute,
+  type RequestInlinePacket,
+  type RequiredCredit,
+} from "@obsidion/front-core"
 import { GradientText, Icon, TopNavIconButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
 import { shortAddr, usdBalance, usdFigure } from "../../ui/format"
 import { useCopy } from "../../ui/hooks"
 import { DepositQrSheet } from "../deposit/DepositQrSheet"
 import { depositTokensFor } from "../deposit/loadDepositFacts"
-import { OneTimeAddressPoints, oneTimeAddressPoints } from "../deposit/OneTimeAddressWarning"
+import {
+  OneTimeAddressPoints,
+  oneTimeAddressPoints,
+  OneTimeAddressWarning,
+} from "../deposit/OneTimeAddressWarning"
+import { AddressLimits, AddressLimitsDetail, tokenAmountLabel } from "../deposit/AddressLimits"
+import {
+  ADDRESS_RECHECK_NOTE,
+  AddressCapacityPanel,
+  capacityShareWarning,
+} from "../deposit/AddressCapacity"
+import { WalletAboutLimitsSheet } from "../limits/AboutLimitsSheet"
+import { sourceFromTarget } from "../limits/capacitySources"
+import type { LimitsTopic } from "../limits/aboutLimitsView"
+import {
+  capacityHold,
+  targetEligibility,
+  useTargetCapacity,
+  type CapacityTarget,
+} from "../deposit/targetCapacity"
+import { fundingCapacityView } from "../deposit/fundingCapacity"
+import { formatPublicLimit } from "../limits/publicLimit"
 import type { AccountlessResolveResult } from "./accountlessRequest"
 import { requestAmountDisplay } from "./requestLink"
 import ethIcon from "../../assets/deposit/ethereum.webp"
+
+/** Why a fixed request cannot be paid. It never suggests more transfers to the same address. */
+const OVER_LIMIT_COPY = {
+  public: `Over the ${formatPublicLimit()} limit. Ask the requester for a new request with a smaller amount.`,
+  protocol:
+    "Over the network's maximum per deposit. Ask the requester for a new request with a smaller amount.",
+  // The capacity line says why; this says what it holds.
+  capacity: "Copy and scan are paused until this payment fits current capacity.",
+  ceiling: "Ask the requester for a new request with a smaller amount.",
+}
 
 export function ExternalWalletPayModal({
   packet,
@@ -34,15 +75,109 @@ export function ExternalWalletPayModal({
   const config = getConfig()
   const { copied, copy } = useCopy()
   const [qr, setQr] = useState(false)
+  const [aboutLimits, setAboutLimits] = useState<LimitsTopic>()
+  // Copy or Show QR waiting on the capacity warning.
+  const [warning, setWarning] = useState<"copy" | "qr">()
 
   const token = depositTokensFor(config.network)[0]
-  const decimals = packet.tokenDecimals ?? 6
+  // The token's own decimals; the resolve refuses a link that declares others.
+  const decimals = result.decimals
   const amountDisplay = requestAmountDisplay(packet)
   const fee = formatUnits(result.feeAtomic, decimals)
   // Fixed-amount requests are paid gross: what the requester asked for plus the deposit fee.
   const total = packet.amountAtomic > 0n ? formatUnits(result.grossAtomic, decimals) : undefined
   // The link pins the payee's address, so the "changes every time" point is a deposit-screen fact.
   const points = oneTimeAddressPoints(token.symbol).filter((p) => p.id !== "rotates")
+  const route: AddressRoute =
+    packet.amountAtomic > 0n
+      ? {
+          kind: "fixed-request",
+          decimals,
+          requestedAtomic: packet.amountAtomic,
+          feeAtomic: result.feeAtomic,
+        }
+      : { kind: "open-request", decimals, feeAtomic: result.feeAtomic }
+  const valuation = depositTokenValuation({
+    chainId: config.l1ChainId,
+    portalToken: result.token,
+    token: result.token,
+  })
+  const fixed = packet.amountAtomic > 0n
+  const maxSend = maximumSendAtomic(route, valuation)
+  // A link carries the payee's address but nothing that proves its portal, so its capacity is not
+  // known. An address resolved from the active deployment just now uses the active bucket.
+  const target: CapacityTarget = packet.sipaAddress ? { kind: "unproven" } : { kind: "active" }
+  const capacity = useTargetCapacity(target)
+  const required: RequiredCredit =
+    fixed && capacity.store
+      ? {
+          status: "known",
+          atomic: packet.amountAtomic,
+          token: capacity.store.key.token,
+          decimals,
+        }
+      : { status: "unknown" }
+  const eligibility = targetEligibility(capacity, required)
+  const capacityView = fundingCapacityView({
+    eligibility,
+    mode: fixed ? "fixed" : "address",
+    symbol: token.symbol,
+    sentSymbol: token.symbol,
+    exactCredit: true,
+  })
+  const share = addressShareDecision(eligibility, fixed)
+  const capacityWarning = capacityShareWarning(share)
+  const fitsNow =
+    !fixed && eligibility.kind === "amount-unknown" && !eligibility.zero
+      ? maximumSendForCapacity(route, eligibility.snapshot.availableAtomic, valuation)
+      : undefined
+  const fitsLabel =
+    fitsNow !== undefined && maxSend !== undefined && fitsNow < maxSend
+      ? tokenAmountLabel(fitsNow, decimals, token.symbol)
+      : undefined
+  const capacityDetail = fitsLabel && `To fit current capacity, send at most ${fitsLabel}.`
+  // The address stays on screen, but nothing offers to pay an amount the limits or known capacity
+  // refuse. The amount is never changed to fit.
+  const over = fixedAmountLimits(route, valuation)?.over ?? capacityHold(eligibility)
+  const limits = (
+    <>
+      <AddressLimits onInfo={() => setAboutLimits("limit")} />
+      <AddressCapacityPanel
+        view={capacityView}
+        onRetry={capacity.retry}
+        detail={capacityDetail}
+        onAboutLimits={() => setAboutLimits("capacity")}
+      />
+    </>
+  )
+  const limitsDetails = {
+    limit: (
+      <AddressLimitsDetail
+        symbol={token.symbol}
+        decimals={decimals}
+        maxSendAtomic={maxSend}
+        maxCreditAtomic={maximumCreditAtomic(route, valuation)}
+      />
+    ),
+    capacity: <p className="ww-about-limits__note">{ADDRESS_RECHECK_NOTE}</p>,
+  }
+  // Every share is checked when it happens: a reading can change while a sheet or warning is open.
+  const copyAddress = () => {
+    if (over) return
+    if (capacityWarning) setWarning("copy")
+    else void copy(result.sipaAddress)
+  }
+  const showQr = () => {
+    if (over) return
+    if (capacityWarning) setWarning("qr")
+    else setQr(true)
+  }
+  // A payment that becomes known not to fit is no longer offered: its QR and warning close.
+  useEffect(() => {
+    if (!over) return
+    setQr(false)
+    setWarning(undefined)
+  }, [over])
 
   return (
     <>
@@ -99,44 +234,55 @@ export function ExternalWalletPayModal({
               <button
                 type="button"
                 className="zkm-btn-reset ww-deposit__addr"
-                onClick={() => void copy(result.sipaAddress)}
+                disabled={!!over}
+                onClick={copyAddress}
                 title={result.sipaAddress}
               >
                 {shortAddr(result.sipaAddress)}
                 <Icon name={copied ? "check" : "copy"} size={16} />
               </button>
             </div>
+            {limits}
           </div>
 
           <div className="ww-deposit__actions">
             <button
               type="button"
-              className="zkm-btn-reset zkm-pressable ww-deposit__btn"
-              onClick={() => setQr(true)}
+              className={`zkm-btn-reset ww-deposit__btn${over ? "" : " zkm-pressable"}`}
+              disabled={!!over}
+              onClick={showQr}
             >
               Show <Icon name="qr-code" size={24} />
             </button>
             <button
               type="button"
-              className="zkm-btn-reset zkm-pressable ww-deposit__btn"
-              onClick={() => void copy(result.sipaAddress)}
+              className={`zkm-btn-reset ww-deposit__btn${over ? "" : " zkm-pressable"}`}
+              disabled={!!over}
+              onClick={copyAddress}
             >
               {copied ? "Copied" : "Copy"}
             </button>
           </div>
 
-          <p className="ww-deposit__note">
-            {total ? (
-              <>
-                Send {usdFigure(total)} — the requested amount plus the deposit fee.
-                {result.feeAtomic >= packet.amountAtomic && " The fee exceeds what was requested."}
-              </>
-            ) : (
-              `Send more than ${usdFigure(
-                fee,
-              )} — that much is kept as the deposit fee, and anything at or below it is lost.`
-            )}
-          </p>
+          {over ? (
+            <p className="ww-limit-reason" role="alert" data-testid="request-over-limit">
+              {OVER_LIMIT_COPY[over]}
+            </p>
+          ) : (
+            <p className="ww-deposit__note">
+              {total ? (
+                <>
+                  Send {usdFigure(total)} — the requested amount plus the deposit fee.
+                  {result.feeAtomic >= packet.amountAtomic &&
+                    " The fee exceeds what was requested."}
+                </>
+              ) : (
+                `Send more than ${usdFigure(
+                  fee,
+                )} — that much is kept as the deposit fee, and anything at or below it is lost.`
+              )}
+            </p>
+          )}
         </div>
 
         {/* No connect-your-wallet card: connecting could not submit the payment (that needs the deposit
@@ -152,8 +298,34 @@ export function ExternalWalletPayModal({
           address={result.sipaAddress}
           paymentUri={result.paymentUri}
           copied={copied}
-          onCopy={() => void copy(result.sipaAddress)}
+          limits={limits}
+          onCopy={copyAddress}
           onClose={() => setQr(false)}
+        />
+      )}
+
+      {warning && (
+        <OneTimeAddressWarning
+          symbol={token.symbol}
+          capacityWarning={capacityWarning}
+          privacy={false}
+          onClose={() => setWarning(undefined)}
+          onGotIt={() => {
+            setWarning(undefined)
+            if (over) return
+            if (warning === "qr") setQr(true)
+            else void copy(result.sipaAddress)
+          }}
+        />
+      )}
+      {aboutLimits && (
+        <WalletAboutLimitsSheet
+          topic={aboutLimits}
+          details={limitsDetails}
+          capacity={sourceFromTarget(capacity)}
+          // The request page sits outside the account context; a visitor may have no account.
+          account={false}
+          onClose={() => setAboutLimits(undefined)}
         />
       )}
     </>

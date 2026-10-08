@@ -3,7 +3,7 @@
  * stores were removed with the ens-gateway/bridge decommission).
  */
 
-import { beforeEach, describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { Address } from "viem"
 import { InMemoryStorageAdapter } from "../../__test-helpers__/InMemoryStorageAdapter"
 import { resetSingleton } from "../../__test-helpers__/resetSingleton"
@@ -11,7 +11,12 @@ import {
   SIPADepositStore,
   type SIPADepositRecord,
 } from "../../../src/core/services/deposits/SIPADepositStore"
-import { ActivityFeed } from "../../../src/core/services/bridge/BridgeActivityFeed"
+import {
+  ActivityFeed,
+  type SipaProcessingSource,
+} from "../../../src/core/services/bridge/BridgeActivityFeed"
+import type { SipaProcessingState } from "../../../src/core/services/deposits/sipaProcessing"
+import { STUCK_SWEEP_MS } from "../../../src/core/services/deposits/sipaStuck"
 
 const RECIPIENT = "0x2589c51355cabd0722def6dabd818a309c4a8fc2d4cbc3ce2bf2eaaf59318456"
 
@@ -68,5 +73,92 @@ describe("ActivityFeed (SIPA-only union)", () => {
   it("requires the SIPA store on first construction", () => {
     resetAll()
     expect(() => ActivityFeed.get()).toThrow(/requires the SIPADepositStore/)
+  })
+
+  describe("with a processing source", () => {
+    const WAITING = "0xdddddddddddddddddddddddddddddddddddddddd" as Address
+    const DONE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as Address
+
+    function source(initial: Record<string, SipaProcessingState>) {
+      const states = new Map(Object.entries(initial))
+      const listeners = new Set<() => void>()
+      const src: SipaProcessingSource = {
+        stateFor: (sipa) => states.get(sipa.toLowerCase()),
+        subscribe(listener) {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+      }
+      return {
+        src,
+        listeners,
+        set(sipa: string, state: SipaProcessingState) {
+          states.set(sipa.toLowerCase(), state)
+          for (const listener of listeners) listener()
+        },
+      }
+    }
+
+    it("annotates the deposits it explains and re-emits when a reason changes", async () => {
+      const sipaDeposits = makeStore()
+      await sipaDeposits.upsert(WAITING, { phase: "sweeping" }, sipaFallback(400))
+      await sipaDeposits.upsert(DONE, { phase: "claimed" }, sipaFallback(300))
+      const feed = ActivityFeed.get(sipaDeposits)
+      const snapshots: unknown[][] = []
+      feed.onChanged((items) => snapshots.push(items))
+
+      const waiting: SipaProcessingState = { reason: { kind: "checking" } }
+      const s = source({ [WAITING]: waiting })
+      feed.setProcessingSource(s.src)
+      expect(s.listeners.size).toBe(1)
+      expect(feed.list()).toEqual([
+        { kind: "bridge.sipaDeposit", record: sipaDeposits.get(WAITING), processing: waiting },
+        { kind: "bridge.sipaDeposit", record: sipaDeposits.get(DONE) },
+      ])
+
+      const count = snapshots.length
+      const processing: SipaProcessingState = {
+        reason: { kind: "processing", availableAtomic: 5n, decimals: 18, observedAt: 1 },
+      }
+      s.set(WAITING, processing)
+      expect(snapshots.length).toBe(count + 1)
+      expect(snapshots.at(-1)?.[0]).toMatchObject({ processing })
+      // The source explains; it never changes the record.
+      expect(sipaDeposits.get(WAITING)?.phase).toBe("sweeping")
+    })
+
+    it("re-emits when a shown deposit reaches the stuck clock", async () => {
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(10_000_000)
+        const sipaDeposits = makeStore()
+        await sipaDeposits.upsert(WAITING, { phase: "sweeping" }, sipaFallback(Date.now() - 60_000))
+        const feed = ActivityFeed.get(sipaDeposits)
+        const snapshots: unknown[][] = []
+        feed.onChanged((items) => snapshots.push(items))
+        feed.setProcessingSource(source({ [WAITING]: { reason: { kind: "checking" } } }).src)
+        const count = snapshots.length
+        await vi.advanceTimersByTimeAsync(STUCK_SWEEP_MS - 60_000 - 1)
+        expect(snapshots.length).toBe(count)
+        await vi.advanceTimersByTimeAsync(1)
+        expect(snapshots.length).toBe(count + 1)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("detaches a replaced source", async () => {
+      const sipaDeposits = makeStore()
+      await sipaDeposits.upsert(WAITING, { phase: "sweeping" }, sipaFallback(400))
+      const feed = ActivityFeed.get(sipaDeposits)
+      feed.onChanged(() => {})
+      const s = source({ [WAITING]: { reason: { kind: "checking" } } })
+      feed.setProcessingSource(s.src)
+      feed.setProcessingSource(null)
+      expect(s.listeners.size).toBe(0)
+      expect(feed.list()).toEqual([
+        { kind: "bridge.sipaDeposit", record: sipaDeposits.get(WAITING) },
+      ])
+    })
   })
 })

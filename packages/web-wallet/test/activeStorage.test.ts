@@ -10,6 +10,7 @@ import {
   storageIdFromSecret,
   writeCachedMsk,
 } from "../src/platform/storage/activeStorage"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 
 const MSK = `0x${"1f".repeat(32)}`
 
@@ -19,7 +20,7 @@ describe("cached master key", () => {
   it("round-trips the session it was committed under", () => {
     writeCachedMsk({ v: 1, storageId: "s", credentialId: "c", msk: MSK })
     expect(readCachedMsk()).toEqual({ v: 1, storageId: "s", credentialId: "c", msk: MSK })
-    expect(JSON.parse(localStorage.getItem("webwallet.msk")!)).toEqual({
+    expect(JSON.parse(walletStorage.getItem("webwallet.msk")!)).toEqual({
       v: 1,
       storageId: "s",
       credentialId: "c",
@@ -39,9 +40,9 @@ describe("cached master key", () => {
   ])(
     "reads a blob this wallet did not write (%s) as no cache, and leaves it for the next commit",
     (_name, raw) => {
-      localStorage.setItem("webwallet.msk", raw)
+      walletStorage.setItem("webwallet.msk", raw)
       expect(readCachedMsk()).toBeNull()
-      expect(localStorage.getItem("webwallet.msk")).toBe(raw)
+      expect(walletStorage.getItem("webwallet.msk")).toBe(raw)
       writeCachedMsk({ v: 1, storageId: "s", credentialId: "c", msk: MSK })
       expect(readCachedMsk()).not.toBeNull()
     },
@@ -53,7 +54,7 @@ describe("cached master key", () => {
     writeCachedMsk({ v: 1, storageId: "s", credentialId: "c", msk: MSK })
     clearActiveStorage()
     expect(readCachedMsk()).toBeNull()
-    expect(localStorage.getItem("webwallet.storageId")).toBeNull()
+    expect(walletStorage.getItem("webwallet.storageId")).toBeNull()
     clearCachedMsk()
   })
 })

@@ -124,6 +124,15 @@ describe("DepositDetailModal", () => {
     expect(subtitle()).not.toBe("--")
   })
 
+  it("names the token the funder sent over the one the sweep credited", async () => {
+    await show(
+      record({ fundingTokenSymbol: "USDC", fundingFromAddress: FUNDER, fundingTxHash: FUNDING_TX }),
+    )
+
+    expect(valueOf("Token")).toBe("USDC")
+    expect(container.textContent).not.toContain("DAI")
+  })
+
   it("shows dollar amounts and Completed once the deposit has credited", async () => {
     await show(record({ fundingFromAddress: FUNDER, fundingTxHash: FUNDING_TX }))
 
@@ -192,9 +201,9 @@ describe("DepositDetailModal", () => {
     expect(headline()).toBe("$115")
   })
 
-  it("calls an unexpected error Canceled", async () => {
+  it("calls an unexpected error Deposit failed", async () => {
     await show(record({ phase: "failed", endTime: 1_700_000_000_000 }))
 
-    expect(valueOf("Status")).toContain("Cancelled")
+    expect(valueOf("Status")).toContain("Deposit failed")
   })
 })

@@ -7,6 +7,7 @@ import {
 } from "@obsidion/front-core"
 import type { WebWalletConfig } from "../src/config/env"
 import { webStorage } from "../src/platform/storage/WebStorageAdapter"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import { getPendingStore } from "../src/features/onboarding/webRegistration"
 import { hasDepositAdmission, recordDepositAdmission } from "../src/features/identity/admission"
 import { saveRegistrationTerms } from "../src/features/onboarding/registrationTerms"
@@ -20,7 +21,17 @@ import {
   registrationRefunded,
 } from "../src/features/onboarding/registrationQuoteRecovery"
 
-const h = vi.hoisted(() => ({ balance: vi.fn(), receipt: vi.fn(), heal: vi.fn(), cut: vi.fn() }))
+const h = vi.hoisted(() => ({
+  balance: vi.fn(),
+  receipt: vi.fn(),
+  heal: vi.fn(),
+  cut: vi.fn(),
+  config: { l1ChainId: 11155111 } as { l1ChainId: number; network?: string },
+}))
+vi.mock("../src/config/env", async (original) => ({
+  ...(await original<object>()),
+  getConfig: () => h.config,
+}))
 vi.mock("../src/config/oxideTuple", async (original) => ({
   ...(await original<object>()),
   l1PublicClient: () => ({ readContract: h.balance, getTransactionReceipt: h.receipt }),
@@ -91,6 +102,7 @@ async function markRefunded() {
 beforeEach(async () => {
   vi.clearAllMocks()
   localStorage.clear()
+  h.config = { l1ChainId: 11155111 }
   ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
   ;(SIPADepositStore as unknown as { instance: unknown }).instance = null
   await getPendingStore().load()
@@ -358,12 +370,17 @@ describe("earned registration refund", () => {
     expect(getPendingStore().get(account)).toMatchObject({ phase: "funded", fundedAt: 5 })
     h.receipt.mockImplementation(moved(15n * dai))
     await reconcileRegistrationRefund(record, config)
+    // The small refund read first pools with the qualifying one: the deposit came back in parts.
     expect(getPendingStore().get(account)).toMatchObject({
       phase: "awaiting_deposit",
-      refundedEntry: { sipaAddress: sipa, recoveryTxHash: hash, amount: String(15n * dai) },
+      refundedEntry: {
+        sipaAddress: sipa,
+        recoveryTxHash: hash,
+        amount: String((152n * dai) / 10n),
+      },
     })
     // Both unsized at once: the readable smaller one settles nothing either.
-    localStorage.clear()
+    for (const key of walletStorage.keys()) walletStorage.removeItem(key)
     await getPendingStore().upsert(account, {
       phase: "funded",
       fundedAt: 5,
@@ -379,9 +396,14 @@ describe("earned registration refund", () => {
     expect(getPendingStore().get(account)).toMatchObject({ phase: "funded", fundedAt: 5 })
     h.receipt.mockImplementation(moved(15n * dai))
     await reconcileRegistrationRefund(record, config)
+    // The small refund read first pools with the qualifying one: the deposit came back in parts.
     expect(getPendingStore().get(account)).toMatchObject({
       phase: "awaiting_deposit",
-      refundedEntry: { sipaAddress: sipa, recoveryTxHash: hash, amount: String(15n * dai) },
+      refundedEntry: {
+        sipaAddress: sipa,
+        recoveryTxHash: hash,
+        amount: String((152n * dai) / 10n),
+      },
     })
   })
   it("leaves a funded record and its wallet access alone while the portal's cut cannot be read", async () => {
@@ -749,5 +771,138 @@ describe("replacing an address nothing reached", () => {
     await expect(assertRegistrationUnfunded({ ...record, fundedAt: 1 }, config)).rejects.toThrow(
       "A deposit reached",
     )
+  })
+})
+
+describe("a mainnet address funded in a swapped stable", () => {
+  const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Address
+  const mainnet = { ...config, network: "mainnet" } as WebWalletConfig
+  const usdcTransfer = {
+    ...transfer,
+    address: USDC,
+    data: encodeAbiParameters([{ type: "uint256" }], [5_000_000n]),
+  }
+  it("pools a deposit refunded one token at a time toward the entry it earned", async () => {
+    h.config = mainnet
+    const second = `0x${"99".repeat(32)}` as Hex
+    const daiPart = { ...transfer, data: encodeAbiParameters([{ type: "uint256" }], [3n * dai]) }
+    const usdcPart = {
+      ...usdcTransfer,
+      data: encodeAbiParameters([{ type: "uint256" }], [3_000_000n]),
+    }
+    await getPendingStore().upsert(account, { phase: "funded", fundedAt: 5 })
+    await registrationRefundConfirmed(
+      sipa,
+      token,
+      11155111,
+      hash,
+      async () => ({ status: "success", logs: [daiPart] } as never),
+    )
+    // 3 DAI alone buys no entry; the stamp stays for the stable still at the address.
+    expect(getPendingStore().get(account)).toMatchObject({ phase: "funded", fundedAt: 5 })
+    await registrationRefundConfirmed(
+      sipa,
+      USDC,
+      11155111,
+      second,
+      async () => ({ status: "success", logs: [usdcPart] } as never),
+    )
+    expect(getPendingStore().get(account)).toMatchObject({
+      phase: "awaiting_deposit",
+      refundedEntry: { sipaAddress: sipa, recoveryTxHash: second, amount: String(6n * dai) },
+    })
+    h.balance.mockResolvedValue(0n)
+    h.receipt.mockImplementation(async ({ hash: wanted }: { hash: Hex }) => ({
+      status: "success",
+      logs: [wanted === second ? usdcPart : daiPart],
+    }))
+    await expect(assertRegistrationRefunded(record, mainnet)).resolves.toEqual({
+      amount: 6n * dai,
+      txHash: second,
+    })
+    // The pool stands only on receipts read now: one reorganized into a smaller transfer shrinks
+    // it, one reorganized into a failure drops it to the largest single refund, and one that
+    // cannot be read holds the restart.
+    h.receipt.mockImplementation(async ({ hash: wanted }: { hash: Hex }) => ({
+      status: "success",
+      logs: [
+        wanted === second
+          ? usdcPart
+          : { ...transfer, data: encodeAbiParameters([{ type: "uint256" }], [dai]) },
+      ],
+    }))
+    await expect(assertRegistrationRefunded(record, mainnet)).resolves.toEqual({
+      amount: 4n * dai,
+      txHash: second,
+    })
+    h.receipt.mockImplementation(async ({ hash: wanted }: { hash: Hex }) =>
+      wanted === second
+        ? { status: "success", logs: [usdcPart] }
+        : { status: "reverted", logs: [] },
+    )
+    await expect(assertRegistrationRefunded(record, mainnet)).resolves.toEqual({
+      amount: 3n * dai,
+      txHash: second,
+    })
+    h.receipt.mockImplementation(async ({ hash: wanted }: { hash: Hex }) => {
+      if (wanted === second) return { status: "success", logs: [usdcPart] }
+      throw new Error("not served")
+    })
+    await expect(assertRegistrationRefunded(record, mainnet)).rejects.toThrow("could not be read")
+  })
+  it("sizes a refund remembered without an amount, so it pools with the next", async () => {
+    h.config = mainnet
+    const second = `0x${"99".repeat(32)}` as Hex
+    const daiPart = { ...transfer, data: encodeAbiParameters([{ type: "uint256" }], [3n * dai]) }
+    const usdcPart = {
+      ...usdcTransfer,
+      data: encodeAbiParameters([{ type: "uint256" }], [3_000_000n]),
+    }
+    await getPendingStore().upsert(account, { phase: "funded", fundedAt: 5 })
+    walletStorage.setItem(
+      "webwallet.registration.refunds",
+      JSON.stringify({ [sipa]: { token, l1ChainId: 11155111, txHashes: [hash] } }),
+    )
+    await rail().upsert(sipa, { phase: "recoverable", recoveryTxHash: hash })
+    h.receipt.mockImplementation(async () => ({ status: "success", logs: [daiPart] }))
+    await reconcileRegistrationRefund(record, mainnet)
+    expect(getPendingStore().get(account)).toMatchObject({ phase: "funded", fundedAt: 5 })
+    await registrationRefundConfirmed(
+      sipa,
+      USDC,
+      11155111,
+      second,
+      async () => ({ status: "success", logs: [usdcPart] } as never),
+    )
+    expect(getPendingStore().get(account)).toMatchObject({
+      phase: "awaiting_deposit",
+      refundedEntry: { sipaAddress: sipa, recoveryTxHash: second, amount: String(6n * dai) },
+    })
+  })
+  it("refunds the stable that holds the funds and counts it in registration-token units", async () => {
+    h.config = mainnet
+    h.balance.mockImplementation(async ({ address }: { address: string }) =>
+      address.toLowerCase() === USDC.toLowerCase() ? 5_000_000n : 0n,
+    )
+    expect(await prepareRegistrationRefund(record, mainnet)).toMatchObject({
+      tokenAddress: USDC,
+      tokenSymbol: "USDC",
+      tokenDecimals: 6,
+      amount: "5",
+    })
+    await registrationRefundConfirmed(
+      sipa,
+      USDC,
+      11155111,
+      hash,
+      async () => ({ status: "success", logs: [usdcTransfer] } as never),
+    )
+    expect(registrationRefunded(record)).toBe(true)
+    h.balance.mockResolvedValue(0n)
+    h.receipt.mockResolvedValue({ status: "success", logs: [usdcTransfer] })
+    await expect(assertRegistrationRefunded(record, mainnet)).resolves.toEqual({
+      amount: 5n * dai,
+      txHash: hash,
+    })
   })
 })

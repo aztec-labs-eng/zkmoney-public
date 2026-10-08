@@ -179,6 +179,44 @@ describe("ObsidionWallet — send pipeline", () => {
     void result
   })
 
+  it("hands onTxHash the proven tx's hash and sends only once it resolves", async () => {
+    const { wallet, stubNode, proveTxDeferreds } = buildStubWallet()
+    const saved = deferred<void>()
+    const hashes: string[] = []
+    const sendPromise = wallet.sendTx(new ExecutionPayload([], [], [], []), {
+      from: await AztecAddress.random(),
+      wait: NO_WAIT,
+      onTxHash: (txHash: string) => {
+        hashes.push(txHash)
+        return saved.promise
+      },
+    } as any)
+    await settleUntil(() => proveTxDeferreds.length === 1)
+    proveTxDeferreds[0]!.resolve(undefined)
+    await settleUntil(() => hashes.length === 1, 100)
+    expect(hashes).toHaveLength(1)
+    expect(stubNode.sendTx).not.toHaveBeenCalled()
+    saved.resolve()
+    await sendPromise
+    expect(stubNode.sendTx).toHaveBeenCalledTimes(1)
+    expect((stubNode.sendTx.mock.calls[0]![0] as any).getTxHash().toString()).toBe(hashes[0])
+  })
+
+  it("sends nothing when onTxHash rejects", async () => {
+    const { wallet, stubNode, proveTxDeferreds } = buildStubWallet()
+    const sendPromise = wallet.sendTx(new ExecutionPayload([], [], [], []), {
+      from: await AztecAddress.random(),
+      wait: NO_WAIT,
+      onTxHash: async () => {
+        throw new Error("storage full")
+      },
+    } as any)
+    await settleUntil(() => proveTxDeferreds.length === 1)
+    proveTxDeferreds[0]!.resolve(undefined)
+    await expect(sendPromise).rejects.toThrow("storage full")
+    expect(stubNode.sendTx).not.toHaveBeenCalled()
+  })
+
   it("second send while the first proves throws LocalProvingInFlight", async () => {
     const { wallet, proveTxDeferreds } = buildStubWallet()
     const from = await AztecAddress.random()

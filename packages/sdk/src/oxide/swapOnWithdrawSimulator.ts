@@ -1,23 +1,19 @@
 /**
- * Prices a swap-on-withdraw the way oxide's relayer prices it, by simulating the exact L1 transaction the
- * relayer will send — `OperationExecutor.execute(factory, deployAndExecute(args), DAI, minPayout)` — against
- * current L1 state, with the counterfactual escrow funded by a state override. The relayer executes only
- * when the escrow's tip covers its own break-even (gas limit x max fee, converted through the Chainlink
- * ETH/USD feed), so the tip offered is that break-even plus a margin. An operation whose tip is short is
- * re-quoted every relayer poll: a low tip delays the swap, it never fails it.
+ * Prices a swap-on-withdraw: the relayer tip its escrow commits to, quoted on the exact L1 operation the relayer
+ * will send, `OperationExecutor.execute(factory, deployAndExecute(args), DAI, minPayout)`, with the counterfactual
+ * escrow funded by a state override.
  *
  * The same simulation runs the swap, so the payout estimate is the executed route (3pool for the stables,
  * 3pool + Universal Router for ETH) on the live pools, exact to the wei at simulation time.
  */
-import { defaultL1TxUtilsConfig } from "@aztec/ethereum/l1-tx-utils/config"
 import {
-  OperationExecutorAbi,
   SwapEscrowAbi,
   SwapEscrowFactoryAbi,
   encodeSwapEscrowDeploy,
   predictSwapEscrowAddressLocally,
   type SwapEscrowArgs,
 } from "@oxide/l1-contracts"
+import { quoteL1Operation } from "@oxide/oxide-client/l1_operation_quote.js"
 import {
   decodeAbiParameters,
   decodeFunctionResult,
@@ -27,44 +23,16 @@ import {
   keccak256,
   multicall3Abi,
   numberToHex,
+  slice,
   type Address,
   type Hex,
   type PublicClient,
   type StateOverride,
 } from "viem"
-import { SWAP_ON_WITHDRAW_TIP_MARGIN_BPS } from "@obsidion/core/constants"
+import { L1_OPERATION_TIP_MARGIN_BPS } from "@obsidion/core/constants"
 import type { SwapOnWithdrawOutput } from "@obsidion/core/types"
 import { MULTICALL3_ADDRESS } from "../services/sipaClaim.js"
 import { swapRouteForOutput, type SwapDeductions } from "./swapOnWithdraw.js"
-
-/**
- * Gas the relayer adds on top of its buffered estimate: it estimates with `minPayout = 0` and sends with the
- * real break-even, whose non-zero calldata bytes cost this much more. Mirrors oxide-relayer's
- * `EXECUTOR_MIN_PAYOUT_CALLDATA_GAS` (pinned by `swapOnWithdrawSimulator.test.ts`).
- */
-export const EXECUTOR_MIN_PAYOUT_CALLDATA_GAS = 384n
-
-/** Every Chainlink ETH/USD feed the relayer prices with answers in 8 decimals; it never reads the scale. */
-export const ETH_USD_FEED_DECIMALS = 8n
-
-/** Oldest feed answer the relayer prices with. Older, and it refuses to quote, so no tip would move it. */
-export const MAX_ETH_USD_AGE_SECONDS = 60n * 60n
-
-const AGGREGATOR_V3_ABI = [
-  {
-    type: "function",
-    name: "latestRoundData",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [
-      { name: "roundId", type: "uint80" },
-      { name: "answer", type: "int256" },
-      { name: "startedAt", type: "uint256" },
-      { name: "updatedAt", type: "uint256" },
-      { name: "answeredInRound", type: "uint80" },
-    ],
-  },
-] as const
 
 const MULTICALL3_ETH_BALANCE_ABI = [
   {
@@ -92,32 +60,36 @@ const SIMULATION_NONCE = keccak256(new TextEncoder().encode("obsidion.swap-on-wi
 const SIMULATION_RECOVERY_COMMITMENT = keccak256(
   new TextEncoder().encode("obsidion.swap-on-withdraw.simulation-recovery"),
 )
+/**
+ * The tip the quote simulates with. Gas depends on whether each tip transfer writes a nonzero balance, not on the
+ * amount, so 1 wei prices any committed tip.
+ */
+const SIMULATION_TIP = 1n
+/**
+ * Sends the simulated `execute`, as the relayer sends from its own EOA. The recipient as sender would be warm and
+ * funded, pricing its gas low.
+ */
+const SIMULATION_SENDER = slice(
+  keccak256(new TextEncoder().encode("obsidion.swap-on-withdraw.simulation-sender")),
+  12,
+) as Address
 
-export interface RelayerTipInputs {
-  /** Raw `eth_estimateGas` of the relayer's `OperationExecutor.execute`. */
-  gasEstimate: bigint
-  /** Base fee of the latest block, wei. */
-  baseFee: bigint
-  /** `eth_maxPriorityFeePerGas`, wei. */
-  priorityFee: bigint
-  /** The ETH/USD feed's latest round: the answer in `ETH_USD_FEED_DECIMALS` and when it was updated. */
-  ethUsd: { answer: bigint; updatedAt: bigint }
-  /** Timestamp of the latest block, the clock the feed's age is measured on. */
-  blockTimestamp: bigint
-}
-
-/** The relayer's own quote for the transaction, and the tip that clears it. All DAI figures are 18-dec. */
+/** The relayer's quote for the swap, and the tip that clears it. DAI figures are 18-dec. */
 export interface RelayerTipEstimate {
   /** DAI the escrow will commit to paying whoever runs the swap. */
   relayerTip: bigint
-  /** DAI the relayer's `minPayout` will demand for this exact transaction. */
-  breakEven: bigint
-  /** The gas limit the relayer will send with. */
-  gasLimit: bigint
-  /** The max fee per gas the relayer will send with, wei. */
+  /** DAI the relayer's `minPayout` demands for this exact transaction now. */
+  minPayout: bigint
+  /** Gas the transaction used in the simulation, after refunds. */
+  gasUsed: bigint
+  /** The max fee per gas the relayer would send with, wei. */
   maxFeePerGas: bigint
-  /** The ETH/USD answer the break-even was converted at, in `ETH_USD_FEED_DECIMALS`. */
-  ethUsd: bigint
+  /** The ETH/USD feed answer, 8 decimals. */
+  usdPerEth: bigint
+  /** The base fee the quote was simulated at, wei. */
+  baseFee: bigint
+  /** The priority fee the relayer would sign, wei. */
+  priorityFee: bigint
 }
 
 export interface SwapSimulation extends RelayerTipEstimate {
@@ -135,75 +107,6 @@ export class SwapTipExceedsInputError extends RangeError {
         "would receive",
     )
   }
-}
-
-const requireDefault = (value: number | undefined, key: string): number => {
-  if (value === undefined) throw new Error(`@aztec/ethereum defaultL1TxUtilsConfig lacks ${key}`)
-  return value
-}
-
-/** `value` raised by `percentage`, floored the way `L1TxUtils` does it. */
-const bumped = (value: bigint, percentage: number): bigint =>
-  value + (value * BigInt(Math.round(percentage * 100))) / 100_00n
-
-const ceilDiv = (numerator: bigint, denominator: bigint): bigint =>
-  (numerator + denominator - 1n) / denominator
-
-/** The relayer's gas limit for a raw estimate: `L1TxUtils`' buffer, then the `minPayout` calldata gas. */
-export function relayerGasLimit(gasEstimate: bigint): bigint {
-  const buffer = requireDefault(
-    defaultL1TxUtilsConfig.gasLimitBufferPercentage,
-    "gasLimitBufferPercentage",
-  )
-  return bumped(gasEstimate, buffer) + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS
-}
-
-/**
- * The max fee per gas the relayer's first send carries: the base fee bumped 12.5% per block it tolerates
- * stalling for, plus the priority fee bumped by `L1TxUtils`' percentage, capped at its max gwei.
- */
-export function relayerMaxFeePerGas(baseFee: bigint, priorityFee: bigint): bigint {
-  const config = defaultL1TxUtilsConfig
-  const stallTimeMs = requireDefault(config.stallTimeMs, "stallTimeMs")
-  const slotMs = requireDefault(config.ethereumSlotDuration, "ethereumSlotDuration") * 1000
-  const priorityBump = requireDefault(config.priorityFeeBumpPercentage, "priorityFeeBumpPercentage")
-  const maxGwei = requireDefault(config.maxGwei, "maxGwei")
-
-  let maxFee = baseFee
-  for (let block = 0; block < Math.ceil(stallTimeMs / slotMs); block++) {
-    maxFee = ceilDiv(maxFee * 1_125n, 1_000n)
-  }
-  maxFee += bumped(priorityFee, priorityBump)
-  const cap = BigInt(Math.trunc(maxGwei * 1e9))
-  return cap > 0n && maxFee > cap ? cap : maxFee
-}
-
-/** The feed answer the relayer would price with, or a throw where it would refuse to. */
-export function requireFreshEthUsd(
-  ethUsd: RelayerTipInputs["ethUsd"],
-  blockTimestamp: bigint,
-): bigint {
-  if (ethUsd.answer <= 0n) {
-    throw new Error(`ETH/USD feed answered ${ethUsd.answer}; the relayer refuses to price with it`)
-  }
-  const age = blockTimestamp - ethUsd.updatedAt
-  if (age > MAX_ETH_USD_AGE_SECONDS) {
-    throw new Error(
-      `ETH/USD feed is stale: answer is ${age}s old, the relayer prices with at most ${MAX_ETH_USD_AGE_SECONDS}s`,
-    )
-  }
-  return ethUsd.answer
-}
-
-/** The relayer's break-even for a simulated `execute`, and the tip that clears it by the margin. */
-export function relayerTipFromGas(inputs: RelayerTipInputs): RelayerTipEstimate {
-  const ethUsd = requireFreshEthUsd(inputs.ethUsd, inputs.blockTimestamp)
-  const gasLimit = relayerGasLimit(inputs.gasEstimate)
-  const maxFeePerGas = relayerMaxFeePerGas(inputs.baseFee, inputs.priorityFee)
-  // wei x (USD per ETH in feed decimals) / feed scale = 18-dec USD, which is DAI at par.
-  const breakEven = ceilDiv(gasLimit * maxFeePerGas * ethUsd, 10n ** ETH_USD_FEED_DECIMALS)
-  const relayerTip = ceilDiv(breakEven * SWAP_ON_WITHDRAW_TIP_MARGIN_BPS, 10_000n)
-  return { relayerTip, breakEven, gasLimit, maxFeePerGas, ethUsd }
 }
 
 /** `keccak256(abi.encode(key, slot))`: where a Solidity `mapping(address => uint256)` at `slot` keeps `key`. */
@@ -247,10 +150,8 @@ export interface SwapSimulationArgs {
   amount: bigint
   /** What the portal takes out of the burn before the escrow sees it. */
   deductions: Omit<SwapDeductions, "relayerTip">
-  /** Final L1 recipient of the swap output. Also the simulated sender, so the payout is measured on it. */
+  /** Final L1 recipient of the swap output. The payout is measured on it. */
   recipient: Address
-  /** The last simulated tip. Gas is estimated with it committed, so the estimate converges on the real send. */
-  previousTip?: bigint
 }
 
 export class SwapOnWithdrawSimulator {
@@ -280,36 +181,32 @@ export class SwapOnWithdrawSimulator {
       throw new RangeError("swap-on-withdraw: the amount does not cover the withdrawal fees")
     }
 
-    const [deployment, balanceOfSlot, block, priorityFee] = await Promise.all([
+    const [deployment, balanceOfSlot] = await Promise.all([
       this.readDeployment(),
       this.readBalanceOfSlot(),
-      this.client.getBlock({ blockTag: "latest" }),
-      this.client.estimateMaxPriorityFeePerGas(),
     ])
-    const [, answer, , updatedAt] = await this.client.readContract({
-      address: deployment.ethUsdFeed,
-      abi: AGGREGATOR_V3_ABI,
-      functionName: "latestRoundData",
+    const simulatedArgs = this.escrowArgs(args, SIMULATION_TIP)
+    const quote = await quoteL1Operation(this.client, {
+      executor: this.tuple.operationExecutor,
+      sender: SIMULATION_SENDER,
+      ethUsdFeed: deployment.ethUsdFeed,
+      payout: SIMULATION_TIP,
+      operation: {
+        target: this.tuple.swapEscrowFactory,
+        calldata: encodeSwapEscrowDeploy(simulatedArgs),
+        payoutToken: this.tuple.token,
+      },
+      stateOverrides: this.fundingOverride(simulatedArgs, escrowFunding, balanceOfSlot),
     })
-
-    // The factory only executes an escrow funded above its tip, so a carried-over tip the amount cannot
-    // cover would estimate the no-op instead of the swap.
-    const seedTip =
-      args.previousTip !== undefined && args.previousTip < escrowFunding ? args.previousTip : 0n
-    const seedArgs = this.escrowArgs(args, seedTip)
-    const gasEstimate = await this.client.estimateGas({
-      account: args.recipient,
-      to: this.tuple.operationExecutor,
-      data: this.executeCalldata(seedArgs),
-      stateOverride: this.fundingOverride(seedArgs, escrowFunding, balanceOfSlot),
-    })
-    const tip = relayerTipFromGas({
-      gasEstimate,
-      baseFee: block.baseFeePerGas ?? 0n,
-      priorityFee,
-      ethUsd: { answer, updatedAt },
-      blockTimestamp: block.timestamp,
-    })
+    const tip: RelayerTipEstimate = {
+      relayerTip: (quote.minPayout * L1_OPERATION_TIP_MARGIN_BPS + 9_999n) / 10_000n,
+      minPayout: quote.minPayout,
+      gasUsed: quote.gasUsed,
+      maxFeePerGas: quote.maxFeePerGas,
+      usdPerEth: quote.usdPerEth,
+      baseFee: quote.baseFeePerGas,
+      priorityFee: quote.maxPriorityFeePerGas,
+    }
     if (escrowFunding <= tip.relayerTip) throw new SwapTipExceedsInputError(tip, escrowFunding)
 
     const finalArgs = this.escrowArgs(args, tip.relayerTip)
@@ -331,19 +228,6 @@ export class SwapOnWithdrawSimulator {
       relayerTip,
       nonce: SIMULATION_NONCE,
     }
-  }
-
-  private executeCalldata(escrowArgs: SwapEscrowArgs): Hex {
-    return encodeFunctionData({
-      abi: OperationExecutorAbi,
-      functionName: "execute",
-      args: [
-        this.tuple.swapEscrowFactory,
-        encodeSwapEscrowDeploy(escrowArgs),
-        this.tuple.token,
-        0n,
-      ],
-    })
   }
 
   /** The escrow holding what the portal will release to it, before anything is deployed. */

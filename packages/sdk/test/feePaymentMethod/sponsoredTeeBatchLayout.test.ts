@@ -4,10 +4,14 @@
  * publish_da] — the TEE-unsigned riders (oxide `submit`'s seam of the same name, carrying the
  * withdrawal's L1-operation broadcast) sit between the ops and `publish_da` and count against the
  * 5-call budget. Only the sim shape is exercised; the finalized shape reuses the same assembler.
+ * The last suite builds the real payload: which batches may carry intents without a signature.
  */
 import { describe, expect, it, vi } from "vitest"
+import { Fr } from "@aztec/aztec.js/fields"
 import { EthAddress } from "@aztec/foundation/eth-address"
+import { FunctionCall, FunctionSelector, FunctionType } from "@aztec/stdlib/abi"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { DEFAULT_CONTRACTS, getHardcodedArtifact } from "@obsidion/contracts"
 import { encodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal.js"
 
 const { sponsorSpy, feeSpy } = vi.hoisted(() => ({
@@ -21,6 +25,12 @@ vi.mock("../../src/feePaymentMethod/index.js", async (importOriginal) => ({
 }))
 
 import { buildSponsoredTeeOperation } from "../../src/services/sponsoredTeeOperation.js"
+import {
+  KIND_BY_ANY,
+  buildClaimFpcPolicy,
+  buildClaimSponsorPayload,
+} from "../../src/feePaymentMethod/claimSponsoredCall.js"
+import { buildIntentCapsule } from "../../src/feePaymentMethod/sponsoredCall.js"
 
 const interaction = (name: string) => ({ request: async () => ({ calls: [{ name }] }) } as never)
 
@@ -141,5 +151,51 @@ describe("buildSponsoredTeeOperation plain withdrawals", () => {
     await expect(
       buildSponsoredTeeOperation(ctx, args({ operations: [other] })),
     ).resolves.toBeDefined()
+  })
+})
+
+describe("sponsored payload intents", () => {
+  const callTo = (to: AztecAddress) =>
+    FunctionCall.from({
+      name: "call",
+      to,
+      selector: FunctionSelector.fromField(new Fr(1)),
+      type: FunctionType.PRIVATE,
+      isStatic: false,
+      hideMsgSender: false,
+      args: [],
+      returnTypes: [],
+    })
+  const intentHashes = [new Fr(7), new Fr(8)]
+  const opts = async (
+    innerCalls: FunctionCall[],
+    over: { intentsAccount?: AztecAddress } = {},
+  ) => ({
+    fpcAddress: addr(1),
+    fpcArtifact: await getHardcodedArtifact(DEFAULT_CONTRACTS.claimFpc),
+    railId: 0,
+    policy: await buildClaimFpcPolicy([
+      { kind: KIND_BY_ANY, target: Fr.ZERO, selector: Fr.ZERO, max_fee: 1n },
+    ]),
+    user: addr(2),
+    innerCalls,
+    intentHashes,
+    ...over,
+  })
+
+  it("carries intents an earlier batch authorized without calling the account", async () => {
+    const payload = await buildClaimSponsorPayload(await opts([callTo(addr(3))]))
+    expect(payload.capsules).toEqual([buildIntentCapsule(addr(2), intentHashes)])
+    expect(payload.authWitnesses).toEqual([])
+  })
+
+  it.each<[string, { intentsAccount?: AztecAddress }]>([
+    ["the user", {}],
+    ["the intents account", { intentsAccount: addr(4) }],
+  ])("refuses a batch that calls %s without the signature", async (_, over) => {
+    const account = over.intentsAccount ?? addr(2)
+    await expect(
+      buildClaimSponsorPayload(await opts([callTo(account), callTo(addr(3))], over)),
+    ).rejects.toThrow("intentHashes provided without the combined auth witness")
   })
 })

@@ -211,6 +211,39 @@ describe("transferMeta", () => {
   })
 })
 
+describe("paylink payout lane (claim payout Transfer.meta)", () => {
+  const secret = Fr.random()
+  const fallbackKeyHash = Fr.random()
+  const lane = (value: number[]): number[] => [0x11, value.length, ...value]
+  const bytes = (fr: Fr): number[] => [...fr.toBuffer()]
+  const good = [0x01, ...bytes(secret), ...bytes(fallbackKeyHash)]
+
+  it("round-trips beside a full tag and a full memo", () => {
+    const input = {
+      memo: "m".repeat(TRANSFER_MEMO_MAX_BYTES),
+      senderTag: "t".repeat(32),
+      paylinkPayout: { flavor: "email" as const, secret, fallbackKeyHash },
+    }
+    expect(decodeTransferMeta(buildTransferMetaForSend(input))).toEqual(input)
+    expect(decodeTransferMeta(buildTransferMeta(input).map((f) => f.toBigInt()))).toEqual(input)
+  })
+
+  it("drops a lane of the wrong length, an unknown flavor, or a zero secret", () => {
+    expect(decodeTransferMeta(stream(lane(good))).paylinkPayout).toEqual({
+      flavor: "email",
+      secret,
+      fallbackKeyHash,
+    })
+    expect(decodeTransferMeta(stream(lane([...good, 0x00]))).paylinkPayout).toBeUndefined()
+    expect(decodeTransferMeta(stream(lane(good.slice(0, -1)))).paylinkPayout).toBeUndefined()
+    expect(decodeTransferMeta(stream(lane([0x02, ...good.slice(1)]))).paylinkPayout).toBeUndefined()
+    expect(
+      decodeTransferMeta(stream(lane([0x01, ...bytes(Fr.ZERO), ...bytes(fallbackKeyHash)])))
+        .paylinkPayout,
+    ).toBeUndefined()
+  })
+})
+
 describe("paylink created lane (funding Transfer.meta)", () => {
   const secret = Fr.random()
   const fallbackKeyHash = Fr.random()
@@ -260,10 +293,23 @@ describe("paylink created lane (funding Transfer.meta)", () => {
   it("drops a lane with an unknown flavor, a zero or non-field secret, a short value, or bad email bytes", () => {
     const good = [0x00, ...dayBytes, ...bytes(secret), ...bytes(fallbackKeyHash)]
     expect(decodeTransferMeta(stream(lane(good))).paylinkCreated).toMatchObject({ day })
-    expect(decodeTransferMeta(stream(lane([0x02, ...good.slice(1)]))).paylinkCreated).toBeUndefined()
-    expect(decodeTransferMeta(stream(lane([0x00, ...dayBytes, ...bytes(Fr.ZERO), ...bytes(fallbackKeyHash)]))).paylinkCreated).toBeUndefined()
-    expect(decodeTransferMeta(stream(lane([0x00, ...dayBytes, ...bytes(secret), ...bytes(Fr.ZERO)]))).paylinkCreated).toBeUndefined()
-    expect(decodeTransferMeta(stream(lane([0x00, ...dayBytes, ...new Array(32).fill(0xff), ...bytes(fallbackKeyHash)]))).paylinkCreated).toBeUndefined()
+    expect(
+      decodeTransferMeta(stream(lane([0x02, ...good.slice(1)]))).paylinkCreated,
+    ).toBeUndefined()
+    expect(
+      decodeTransferMeta(
+        stream(lane([0x00, ...dayBytes, ...bytes(Fr.ZERO), ...bytes(fallbackKeyHash)])),
+      ).paylinkCreated,
+    ).toBeUndefined()
+    expect(
+      decodeTransferMeta(stream(lane([0x00, ...dayBytes, ...bytes(secret), ...bytes(Fr.ZERO)])))
+        .paylinkCreated,
+    ).toBeUndefined()
+    expect(
+      decodeTransferMeta(
+        stream(lane([0x00, ...dayBytes, ...new Array(32).fill(0xff), ...bytes(fallbackKeyHash)])),
+      ).paylinkCreated,
+    ).toBeUndefined()
     expect(decodeTransferMeta(stream(lane(good.slice(0, -1)))).paylinkCreated).toBeUndefined()
     expect(decodeTransferMeta(stream(lane([...good, 0xff]))).paylinkCreated).toBeUndefined()
   })

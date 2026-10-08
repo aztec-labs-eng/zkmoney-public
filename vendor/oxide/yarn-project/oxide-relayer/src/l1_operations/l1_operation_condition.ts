@@ -21,6 +21,9 @@ export interface BalanceWatcherDeps {
   /** Max blocks per `eth_getLogs` call. */
   logWindow: bigint;
   maxReorgDepth?: bigint;
+  /** Age from `created_at` after which a waiting operation is dropped. */
+  maxAgeMs: number;
+  telemetry?: RelayerTelemetry;
   logger?: Logger;
 }
 
@@ -34,6 +37,7 @@ export class BalanceWatcher {
 
   /** Returns how many waiting operations this poll woke. */
   async runOnce(): Promise<number> {
+    await this.#dropExpired();
     const waiting = await this.deps.store.listWaitingL1Operations(L1OperationConditionKind.Balance, 1);
     if (waiting.length === 0) {
       await this.deps.store.deleteL1Cursor(this.#cursorKey());
@@ -67,6 +71,23 @@ export class BalanceWatcher {
     await ingester.ingestUpTo(chainTip, chainTipHash);
 
     return markedByBalance + markedByTransfer;
+  }
+
+  async #dropExpired(): Promise<void> {
+    const createdBefore = new Date(Date.now() - this.deps.maxAgeMs);
+    const dropped = await this.deps.store.dropWaitingL1Operations(L1OperationConditionKind.Balance, createdBefore);
+    if (dropped === 0) {
+      return;
+    }
+    for (let i = 0; i < dropped; i++) {
+      this.deps.telemetry?.l1OperationOutcome('dropped');
+    }
+    this.log.warn('Waiting Balance operations dropped after exceeding the max age', {
+      event: 'l1_operation_dropped',
+      cause: 'waiting_max_age',
+      count: dropped,
+      createdBefore: createdBefore.toISOString(),
+    });
   }
 
   /** Matches a window's transfer recipients against the waiting Balance rows, one indexed lookup per token. */

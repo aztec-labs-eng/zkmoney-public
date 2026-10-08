@@ -24,6 +24,7 @@ import {
   type StateStore,
 } from '../state/types.js';
 import type { BalanceWatcher, OutboxWatcher } from './l1_operation_condition.js';
+import { copyForEachWatchedToken } from './multi_token_l1_operation_balance_condition_hack.js';
 
 /** Per-poll counts: operations first seen on L2, and waiting operations whose condition fired. */
 export interface L1OperationSyncSummary {
@@ -35,8 +36,8 @@ export interface L1OperationSyncerDeps {
   node: AztecNode;
   store: StateStore;
   broadcaster: AztecAddress;
-  payoutToken: EthAddress;
-  supportedTokens: EthAddress[];
+  payoutTokens: EthAddress[];
+  watchedTokens: EthAddress[];
   /** Marks waiting `Balance` operations pending. Undefined leaves them waiting forever. */
   balanceWatcher?: BalanceWatcher;
   /** Marks waiting `MessageInOutbox` operations pending. */
@@ -107,7 +108,7 @@ export class L1OperationSyncer {
     return byOutbox + byBalance;
   }
 
-  /** Fetch the broadcast tx and persist every operation it carries. */
+  /** Fetch the broadcast tx and persist every operation that this broadcaster enqueued in it. */
   private async processTx(txHash: TxHash, l2BlockNumber: bigint): Promise<number> {
     const l2TxHash = txHash.toString();
     const known = await this.deps.store.l2BlockForL2Tx(this.deps.broadcaster, l2TxHash);
@@ -136,7 +137,7 @@ export class L1OperationSyncer {
       return 0;
     }
 
-    const operations = extractL1Operations(tx, await this.eventSelector());
+    const operations = extractL1Operations(tx, await this.eventSelector(), this.deps.broadcaster);
     if (operations.length === 0) {
       this.log.warn('L1Operation log without decodable public call arguments', {
         event: 'l1_operation_undecodable',
@@ -146,11 +147,15 @@ export class L1OperationSyncer {
       return 0;
     }
 
+    // A tx with one sweep for each token gets the same copies once for each sweep, so key them by ID to drop duplicates.
+    const copies = new Map(
+      operations
+        .flatMap(operation => copyForEachWatchedToken(operation, this.deps.watchedTokens))
+        .map(operation => [computeL1OperationId(operation, txHash), operation] as const),
+    );
     const pending: PendingL1Operation[] = [];
-    for (const operation of operations) {
-      const operationId = computeL1OperationId(operation, txHash);
-      // The broadcaster chooses the payout token, and a token it controls can report any payout.
-      if (!operation.payoutToken.equals(this.deps.payoutToken)) {
+    for (const [operationId, operation] of copies) {
+      if (!this.deps.payoutTokens.some(token => token.equals(operation.payoutToken))) {
         this.log.debug('Skipping L1 operation that pays out in a token this relayer does not accept', {
           operationId,
           payoutToken: operation.payoutToken.toString().toLowerCase(),
@@ -182,6 +187,7 @@ export class L1OperationSyncer {
         condition: operation.condition,
         status,
         attempts: 0,
+        createdAt: new Date(),
       });
     }
     await this.deps.store.upsertPendingL1Operation(...pending);
@@ -207,7 +213,7 @@ export class L1OperationSyncer {
 
   private watchesToken(token: EthAddress): boolean {
     const key = addressKey(token);
-    return this.deps.supportedTokens.some(watched => addressKey(watched) === key);
+    return this.deps.watchedTokens.some(watched => addressKey(watched) === key);
   }
 
   private async eventSelector(): Promise<FunctionSelector> {

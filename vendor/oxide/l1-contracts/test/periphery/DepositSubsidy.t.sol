@@ -15,6 +15,7 @@ import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
 contract FakePortal {
   address public immutable PORTAL;
   IERC20 public immutable UNDERLYING;
+  uint256 public constant ROLLUP_VERSION = 1;
 
   constructor(IERC20 _underlying) {
     PORTAL = address(this);
@@ -54,6 +55,7 @@ contract DepositSubsidyTest is OxidePortalBase {
     assertEq(sm.PORTAL(), address(portal));
     assertEq(address(sm.TOKEN()), address(underlying));
     assertEq(address(sm.SIPA_FACTORY()), address(sipaFactory));
+    assertEq(sm.ROLLUP_VERSION(), portal.ROLLUP_VERSION());
   }
 
   function test_GivenConstructed_ThenPriceFeedStored() external {
@@ -81,25 +83,29 @@ contract DepositSubsidyTest is OxidePortalBase {
 
   function test_GivenOwner_WhenSetDepositConfig_ThenStoresAndAnnounces() external {
     vm.expectEmit(true, true, true, true, address(sm));
-    emit DepositSubsidy.DepositConfigSet(FEE, 5e18, FEE);
+    uint128 overheadGas = 30_000;
+    emit DepositSubsidy.DepositConfigSet(FEE, 5e18, FEE, 7e18, overheadGas);
     vm.prank(OWNER);
-    sm.setDepositConfig(FEE, 5e18, FEE);
+    sm.setDepositConfig(FEE, 5e18, FEE, 7e18, overheadGas);
 
-    (uint128 approximateMinProfit, uint128 max, uint128 minFee) = sm.$depositConfig();
+    (uint128 approximateMinProfit, uint128 max, uint128 minFee, uint128 minCreditedAmount, uint128 storedOverheadGas) =
+      sm.$depositConfig();
     assertEq(approximateMinProfit, FEE);
     assertEq(max, 5e18);
     assertEq(minFee, FEE);
+    assertEq(minCreditedAmount, 7e18);
+    assertEq(storedOverheadGas, overheadGas);
   }
 
   function test_GivenNonOwner_WhenSetDepositConfig_ThenReverts() external {
     vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, address(this)));
-    sm.setDepositConfig(FEE, 5e18, FEE);
+    sm.setDepositConfig(FEE, 5e18, FEE, 0, 0);
   }
 
   function test_GivenProfitAboveTheFeeFloor_WhenSetDepositConfig_ThenReverts() external {
     vm.prank(OWNER);
     vm.expectRevert(abi.encodeWithSelector(Errors.DepositSubsidy__ProfitAboveFeeFloor.selector, FEE + 1, FEE));
-    sm.setDepositConfig(FEE + 1, 5e18, FEE);
+    sm.setDepositConfig(FEE + 1, 5e18, FEE, 0, 0);
   }
 
   function test_GivenNoDepositConfig_WhenDepositSubsidyQueried_ThenZero() external {
@@ -179,7 +185,7 @@ contract DepositSubsidyTest is OxidePortalBase {
     _priceGas();
     sm = new DepositSubsidy(OWNER, address(portal6), AggregatorV3Interface(address(feed)), sipaFactory);
     vm.prank(OWNER);
-    sm.setDepositConfig(1e5, type(uint128).max, 1e5);
+    sm.setDepositConfig(1e5, type(uint128).max, 1e5, 0, 0);
     token6.mint(address(sm), PRICED_GAS + 10e6);
 
     assertEq(sm.quoteSubsidy(1e5, PRICED_GAS), PRICED_GAS);
@@ -249,7 +255,7 @@ contract DepositSubsidyTest is OxidePortalBase {
     _priceGas();
     _newSm(address(feed));
     vm.prank(OWNER);
-    sm.setDepositConfig(0, type(uint128).max, 0);
+    sm.setDepositConfig(0, type(uint128).max, 0, 0, 0);
     _fund(GAS_LEG + 10e18);
 
     assertEq(_query(0), GAS_LEG);
@@ -356,7 +362,7 @@ contract DepositSubsidyTest is OxidePortalBase {
 
   function _setDeposit(uint128 _approximateMinProfit, uint128 _max) internal {
     vm.prank(OWNER);
-    sm.setDepositConfig(_approximateMinProfit, _max, _approximateMinProfit);
+    sm.setDepositConfig(_approximateMinProfit, _max, _approximateMinProfit, 0, 0);
   }
 
   function _priceGas() internal {

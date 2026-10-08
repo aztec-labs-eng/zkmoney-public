@@ -1,17 +1,18 @@
 // @vitest-environment node
 /**
  * A fresh-browser sign-in settles the passkey's public key before the anchors name the master key:
- * from the key the L1 accounts installed at registration when they name one within the budget,
- * otherwise from the passkey again, behind the gate. The address is derived under the settled key,
- * so under this suite's address-checking anchor a wrong key derives no anchored address. A cancelled
- * attempt stops before the adoption; nothing is written before the key is settled and the anchor
- * named.
+ * from the key the registry-named L1 accounts installed at registration when they name one within
+ * the budget, otherwise from the passkey again, behind the gate. The address is derived under the
+ * settled key, so under this suite's address-checking anchor a wrong key derives no anchored
+ * address. A cancelled attempt stops before the adoption; nothing is written before the key is
+ * settled and the anchor named.
  */
 import { Fr } from "@aztec/aztec.js/fields"
 import type { RecoverPasskeyResult } from "@obsidion/sdk"
 import type { AnchorTier, CandidateProbe } from "@obsidion/front-core"
 import { PhoneUnreachableError } from "@obsidion/passkey-web"
-import { BaseError, RpcRequestError } from "viem"
+import { predictAccountAddressLocally } from "@oxide/l1-contracts"
+import { BaseError, RpcRequestError, getContractAddress } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const h = vi.hoisted(() => ({
@@ -22,7 +23,8 @@ const h = vi.hoisted(() => ({
   recordRecoveryMetadata: vi.fn(),
   addWebauthnAccount: vi.fn(),
   readNameOf: vi.fn(),
-  predictAccountAddress: vi.fn(),
+  /** The installed-key read's name read; the resolver's goes through `identityReader`. */
+  installedNameOf: vi.fn(),
   getCode: vi.fn(),
   readAuthKeys: vi.fn(),
   readInstalledPasskeyKey: vi.fn(),
@@ -52,30 +54,30 @@ vi.mock("../src/features/onboarding/recoveryProbes", async (importOriginal) => (
   ...(await importOriginal<typeof import("../src/features/onboarding/recoveryProbes")>()),
   enterTiers: h.enterTiers,
 }))
+const FACTORY = `0x${"11".repeat(20)}` as const
+const REGISTRY = `0x${"22".repeat(20)}` as const
 const identityReader = {
-  predictAccountAddress: async () => `0x${"33".repeat(20)}`,
   readNameOf: (...args: unknown[]) => h.readNameOf(...(args as [])),
   readAccountMetadataRegistry: async () => `0x${"23".repeat(20)}`,
   readUserRecord: async () => ({ l2Address: ADDR, rollupVersion: 1n }),
-  readNamePortalRegistry: async () => `0x${"22".repeat(20)}`,
-  readFactoryImplementation: async () => `0x${"11".repeat(19)}dd`,
+  readNamePortalRegistry: async () => REGISTRY,
+  readFactoryImplementation: async () => getContractAddress({ from: FACTORY, nonce: 1n }),
 }
 vi.mock("../src/features/onboarding/oxideGenerations", () => ({
   loadOxideGenerations: async () => ({
     reader: identityReader,
-    registry: `0x${"22".repeat(20)}`,
+    registry: REGISTRY,
     rollupVersion: "1",
     catalog: [
       {
         fpcAddress: `0x${"0b".repeat(32)}`,
-        accountFactory: `0x${"11".repeat(20)}`,
-        implementation: `0x${"11".repeat(19)}dd`,
+        accountFactory: FACTORY,
         namePortal: `0x${"11".repeat(19)}ee`,
         rollupVersion: "1",
       },
     ],
   }),
-  generationFactories: () => [`0x${"11".repeat(20)}`],
+  generationFactories: () => [FACTORY],
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@obsidion/front-core")>()
@@ -85,8 +87,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => {
     ...actual,
     AccountStorage: { get: () => ({ addWebauthnAccount: h.addWebauthnAccount }) },
     createOxideL1Reader: () => ({
-      predictAccountAddress: h.predictAccountAddress,
-      readNameOf: h.readNameOf,
+      readNameOf: h.installedNameOf,
       getCode: h.getCode,
       readAuthKeys: h.readAuthKeys,
     }),
@@ -107,7 +108,11 @@ const sibling = Fr.random()
 const ADDR = `0x${"aa".repeat(32)}`
 const REAL = "ab".repeat(64)
 const WRONG = "cd".repeat(64)
-const L1_ACCOUNT = `0x${"33".repeat(20)}`
+const NAME = `0x${"ab".repeat(32)}`
+const NAMELESS = `0x${"0".repeat(64)}`
+/** The L1 account the installed-key read predicts for a master key under the catalog's factory. */
+const accountOf = (candidate: Fr) =>
+  predictAccountAddressLocally(FACTORY, deriveBootstrapKey(candidate).address)
 const account = {
   getAddress: () => ({ toString: () => ADDR }),
   getCompleteAddress: () => ({ toString: () => `${ADDR}:complete` }),
@@ -130,8 +135,9 @@ const authKey = (pubkeyHex: string) => ({
   metadata: `0x${"07".repeat(16)}`,
 })
 
-/** Both master keys' predicted account is deployed and holds `pubkeyHex`. */
+/** Both master keys' predicted accounts are named, deployed and hold `pubkeyHex`. */
 function installs(pubkeyHex: string) {
+  h.installedNameOf.mockResolvedValue(NAME)
   h.getCode.mockResolvedValue("0x6080")
   h.readAuthKeys.mockResolvedValue([authKey(pubkeyHex)])
 }
@@ -257,8 +263,8 @@ let warn: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
   vi.clearAllMocks()
   h.recoverFromCache.mockResolvedValue(undefined)
-  h.readNameOf.mockReset().mockResolvedValue(`0x${"0".repeat(64)}`)
-  h.predictAccountAddress.mockReset().mockResolvedValue(L1_ACCOUNT)
+  h.readNameOf.mockReset().mockResolvedValue(NAMELESS)
+  h.installedNameOf.mockReset().mockResolvedValue(NAMELESS)
   h.getCode.mockReset().mockResolvedValue(undefined)
   h.readAuthKeys.mockReset().mockResolvedValue([])
   warn = vi.spyOn(console, "warn").mockImplementation(() => {})
@@ -309,6 +315,7 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     expect(h.enterTiers).toHaveBeenCalledWith(
       config,
       expect.objectContaining({ rollupVersion: "1" }),
+      undefined,
     )
   })
 
@@ -321,11 +328,8 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     expect(h.beginRecovery).toHaveBeenCalledWith({ discover: true, signal: expect.anything() })
     expect(gate).toHaveBeenCalledTimes(1)
     expect(begun.settle).toHaveBeenCalledWith(REAL)
-    expect(h.getCode).toHaveBeenCalledWith(L1_ACCOUNT)
-    expect(h.predictAccountAddress).toHaveBeenCalledWith(
-      `0x${"11".repeat(20)}`,
-      deriveBootstrapKey(sibling).address,
-    )
+    expect(h.installedNameOf).toHaveBeenCalledWith(REGISTRY, accountOf(sibling))
+    expect(h.getCode).toHaveBeenCalledWith(accountOf(msk))
   })
 
   it("every candidate is derived under the settled key, and only the real pair anchors", async () => {
@@ -340,9 +344,12 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     expect(derivedFor(sibling)).toHaveLength(1)
   })
 
-  it("no account on L1: the passkey is asked again behind the gate, then the anchors decide", async () => {
+  it("no named account on L1: the passkey is asked again behind the gate, then the anchors decide", async () => {
     const begun = unsettled()
     h.beginRecovery.mockResolvedValue(begun)
+    // Code and keys at the predicted address mean nothing while the registry names no one there.
+    h.getCode.mockResolvedValue("0x6080")
+    h.readAuthKeys.mockResolvedValue([authKey(REAL)])
     const { gate, controller } = gateFor()
     const order: string[] = []
     begun.settle.mockImplementation(async () => {
@@ -358,6 +365,7 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     expect(gate).toHaveBeenCalledTimes(2)
     expect(gate).toHaveBeenLastCalledWith({ again: controller.signal })
     expect(begun.settle).toHaveBeenCalledWith(undefined, controller.signal)
+    expect(h.getCode).not.toHaveBeenCalled()
     expect(h.readAuthKeys).not.toHaveBeenCalled()
     expect(order.slice(0, 2)).toEqual(["settle", "derive"])
     expect(h.commitSecret).toHaveBeenCalledTimes(1)
@@ -377,13 +385,11 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
   it("the two accounts naming different possible keys: asked again", async () => {
     const begun = unsettled()
     h.beginRecovery.mockResolvedValue(begun)
-    const A = `0x${"a1".repeat(20)}`
-    const B = `0x${"b2".repeat(20)}`
-    h.predictAccountAddress.mockImplementation(async (_factory: string, bootstrap: string) =>
-      bootstrap === deriveBootstrapKey(msk).address ? A : B,
-    )
+    h.installedNameOf.mockResolvedValue(NAME)
     h.getCode.mockResolvedValue("0x6080")
-    h.readAuthKeys.mockImplementation(async (at: string) => [authKey(at === A ? REAL : WRONG)])
+    h.readAuthKeys.mockImplementation(async (at: string) => [
+      authKey(at === accountOf(msk) ? REAL : WRONG),
+    ])
     const { gate } = gateFor()
     await enter(gate)
     expect(gate).toHaveBeenCalledTimes(2)
@@ -416,6 +422,7 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     for (const failure of [inMessage, inShortMessage]) {
       vi.clearAllMocks()
       h.beginRecovery.mockResolvedValue(unsettled())
+      h.installedNameOf.mockResolvedValue(NAME)
       h.getCode.mockRejectedValue(failure)
       const { gate } = gateFor()
       const result = await enter(gate)
@@ -434,6 +441,7 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     const begun = unsettled()
     h.beginRecovery.mockResolvedValue(begun)
     const code = deferred<string>()
+    h.installedNameOf.mockResolvedValue(NAME)
     h.getCode.mockReturnValue(code.promise)
     h.readAuthKeys.mockResolvedValue([authKey(REAL)])
     const { gate } = gateFor()
@@ -459,6 +467,7 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     expect(result).toMatchObject({ entered: false, reason: "unclaimed" })
     expect(gate).toHaveBeenCalledTimes(1)
     expect(keysDerivedUnder()).toEqual(new Set([REAL]))
+    expect(h.installedNameOf).not.toHaveBeenCalled()
     expect(h.getCode).not.toHaveBeenCalled()
     expect(h.readAuthKeys).not.toHaveBeenCalled()
   })
@@ -474,13 +483,12 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     expectNothingAdopted()
   })
 
-  it("a sibling still predicting when the other read fails starts nothing more", async () => {
+  it("a sibling still being named when the other read fails starts nothing more", async () => {
     const begun = unsettled()
     h.beginRecovery.mockResolvedValue(begun)
-    const A = `0x${"a1".repeat(20)}`
-    const siblingPrediction = deferred<string>()
-    h.predictAccountAddress.mockImplementation(async (_factory: string, bootstrap: string) =>
-      bootstrap === deriveBootstrapKey(msk).address ? A : siblingPrediction.promise,
+    const siblingName = deferred<string>()
+    h.installedNameOf.mockImplementation(async (_registry: string, at: string) =>
+      at === accountOf(msk) ? NAME : siblingName.promise,
     )
     h.getCode.mockRejectedValue(new Error("RPC down"))
     const { gate } = gateFor()
@@ -488,7 +496,7 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     expect(gate).toHaveBeenCalledTimes(2)
     expect(stopHandedToRead().aborted).toBe(true)
 
-    siblingPrediction.resolve(`0x${"b2".repeat(20)}`)
+    siblingName.resolve(NAME)
     await drain()
     expect(h.getCode).toHaveBeenCalledTimes(1)
     expect(h.readAuthKeys).not.toHaveBeenCalled()
@@ -505,13 +513,13 @@ describe("the bounded wait cleans up whatever ends it", () => {
     { name: "key found", arrange: () => installs(REAL), settles: true },
     {
       name: "read failure",
-      arrange: () => h.getCode.mockRejectedValue(new Error("RPC down")),
+      arrange: () => h.installedNameOf.mockRejectedValue(new Error("RPC down")),
       settles: true,
     },
     {
       name: "attempt cancel",
       arrange: (controller) =>
-        h.getCode.mockImplementation(() => {
+        h.installedNameOf.mockImplementation(() => {
           controller.abort()
           return new Promise(() => {})
         }),
@@ -520,7 +528,7 @@ describe("the bounded wait cleans up whatever ends it", () => {
     {
       name: "operation cancel",
       arrange: (_controller, op) =>
-        h.getCode.mockImplementation(() => {
+        h.installedNameOf.mockImplementation(() => {
           op.abort()
           return new Promise(() => {})
         }),
@@ -550,13 +558,13 @@ describe("the bounded wait cleans up whatever ends it", () => {
   it("timeout: no timer, no listener, stop signal aborted", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
     h.beginRecovery.mockResolvedValue(unsettled())
-    h.getCode.mockReturnValue(new Promise(() => {}))
+    h.installedNameOf.mockReturnValue(new Promise(() => {}))
     const { gate, controller } = gateFor()
     const op = new AbortController()
     const attemptListeners = listenerLedger(controller.signal)
     const opListeners = listenerLedger(op.signal)
     const entering = enter(gate, { signal: op.signal })
-    await vi.waitFor(() => expect(h.getCode).toHaveBeenCalled())
+    await vi.waitFor(() => expect(h.installedNameOf).toHaveBeenCalled())
     await vi.advanceTimersByTimeAsync(5_000)
     await expect(entering).resolves.toBeDefined()
     expect(vi.getTimerCount()).toBe(0)
@@ -577,9 +585,10 @@ describe("a key read still running when the wait ends", () => {
     process.off("unhandledRejection", onUnhandled)
   })
 
-  /** The deployed account's key read hangs until the test answers it. */
+  /** The named, deployed account's key read hangs until the test answers it. */
   function pendingKeyRead() {
     const keys = deferred<ReturnType<typeof authKey>[]>()
+    h.installedNameOf.mockResolvedValue(NAME)
     h.getCode.mockResolvedValue("0x6080")
     h.readAuthKeys.mockReturnValue(keys.promise)
     return keys
@@ -660,7 +669,7 @@ describe("a cancelled attempt stops before the adoption", () => {
     })
     await expect(enter(gate)).rejects.toSatisfy(isGateCancelled)
     expect(gate).toHaveBeenCalledTimes(1)
-    expect(h.predictAccountAddress).not.toHaveBeenCalled()
+    expect(h.installedNameOf).not.toHaveBeenCalled()
     expect(h.getCode).not.toHaveBeenCalled()
     expect(begun.settle).not.toHaveBeenCalled()
     expect(deriveAccountAddress).not.toHaveBeenCalled()
@@ -670,14 +679,14 @@ describe("a cancelled attempt stops before the adoption", () => {
   it("cancelled while the L1 read is pending: ends at once, no further read step, no second gate", async () => {
     const begun = unsettled()
     h.beginRecovery.mockResolvedValue(begun)
-    const prediction = deferred<string>()
-    h.predictAccountAddress.mockReturnValue(prediction.promise)
+    const name = deferred<string>()
+    h.installedNameOf.mockReturnValue(name.promise)
     const { gate, controller } = gateFor()
     const entering = enter(gate)
-    await vi.waitFor(() => expect(h.predictAccountAddress).toHaveBeenCalled())
+    await vi.waitFor(() => expect(h.installedNameOf).toHaveBeenCalled())
     controller.abort()
     await expect(entering).rejects.toSatisfy(isGateCancelled)
-    prediction.resolve(L1_ACCOUNT)
+    name.resolve(NAME)
     await drain()
     expect(h.getCode).not.toHaveBeenCalled()
     expect(gate).toHaveBeenCalledTimes(1)
@@ -688,11 +697,11 @@ describe("a cancelled attempt stops before the adoption", () => {
   it("only the screen's operation is cancelled while the read is pending: ends at once", async () => {
     const begun = unsettled()
     h.beginRecovery.mockResolvedValue(begun)
-    h.getCode.mockReturnValue(new Promise(() => {}))
+    h.installedNameOf.mockReturnValue(new Promise(() => {}))
     const { gate } = gateFor()
     const op = new AbortController()
     const entering = enter(gate, { signal: op.signal })
-    await vi.waitFor(() => expect(h.getCode).toHaveBeenCalled())
+    await vi.waitFor(() => expect(h.installedNameOf).toHaveBeenCalled())
     op.abort()
     await expect(entering).rejects.toSatisfy(isGateCancelled)
     expect(gate).toHaveBeenCalledTimes(1)
@@ -704,6 +713,7 @@ describe("a cancelled attempt stops before the adoption", () => {
     const begun = unsettled()
     h.beginRecovery.mockResolvedValue(begun)
     const { gate, controller } = gateFor()
+    h.installedNameOf.mockResolvedValue(NAME)
     h.getCode.mockImplementation(async () => {
       controller.abort()
       return "0x6080"
@@ -721,6 +731,7 @@ describe("a cancelled attempt stops before the adoption", () => {
     h.beginRecovery.mockResolvedValueOnce(stale).mockResolvedValueOnce(fresh)
     const staleCode = deferred<string>()
     let firstAttempt = true
+    h.installedNameOf.mockResolvedValue(NAME)
     h.getCode.mockImplementation(() =>
       firstAttempt ? staleCode.promise : Promise.resolve("0x6080"),
     )

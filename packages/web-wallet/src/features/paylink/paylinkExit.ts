@@ -5,7 +5,8 @@
  * Nothing here touches an account. The escrow's keys come from the link, the fee comes from the
  * voucher its creator gifted it, and the enclave co-signs the burn as it does every token
  * operation. What the link cannot supply is the destination, so the address is screened at the
- * commit point exactly as the wallet's own withdraw screens it.
+ * commit point exactly as the wallet's own withdraw screens it. The burn spends the whole escrow,
+ * so a link over the per-withdrawal limit cannot be cashed out.
  *
  * The burn lands in the shared withdrawal store, so oxide's relayer finalizes it and the tracker
  * walks it to `done` like any other. Its provenance says nobody here owns the destination.
@@ -22,6 +23,7 @@ import {
   type PaylinkL1Proof,
 } from "@obsidion/sdk"
 import {
+  DEFAULT_CONTRACTS,
   tokenDecimalsForNetwork,
   WALLET_TOKEN_SYMBOL,
   WITHDRAW_RELAYER_TIP,
@@ -33,18 +35,22 @@ import {
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
+import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { runOperation, type OperationHandle } from "../operations/operations"
 import { withTimeout } from "../../lib/withTimeout"
 import { claimSponsorRail } from "../onboarding/claimSponsorship"
 import { RAIL_VOUCHER } from "../onboarding/rails"
 import { fpcFundingCut } from "../fees/fpcFundingCut"
 import { l1PublicClient } from "../../config/oxideTuple"
+import { owePaylinkClaim, reportPaylinkClaims } from "./paylinkClaimReport"
 import { assertPaylinkSwapSource, readPaylinkSource } from "./paylinkSource"
 import { linkIdentity } from "./linkIdentity"
 import { historicTeeSigner } from "../migration/historicTokenContext"
+import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
 import type { WithdrawalReceiveAsset } from "../withdraw/withdrawAssets"
 import {
   currentDeployment,
+  getWithdrawalStore,
   planSwapLeg,
   publishedBurn,
   runBurn,
@@ -60,6 +66,8 @@ export interface PaylinkExitDeps {
   wallet: ObsidionWallet
   contractService: ContractService
   teeSigner: TeeSigner
+  /** Active network's rollup address, a `paylinkPh` input; without it the claim is not reported. */
+  rollupAddress?: string
 }
 
 /** The voucher rail's sponsor context plus the link's escrow, registered in this PXE. */
@@ -182,6 +190,8 @@ async function cashOutLinkFlow(
 
   const { params, note, tuple, ...voucher } = await voucherDeps(deps, fragment)
   const { amount } = note
+  const decimals = tokenDecimalsForNetwork(network)
+  assertWithinWithdrawalLimit(amount, "link", decimals)
   const cut = await fpcFundingCut(l1PublicClient(getConfig()), tuple.portal as Address)
   if (amount <= WITHDRAW_RELAYER_TIP + cut) {
     throw new Error("This link holds too little to cover the withdrawal fee")
@@ -195,9 +205,18 @@ async function cashOutLinkFlow(
   assertPaylinkSwapSource(swap, tuple)
   const withdrawal = await withdrawalOptions(tuple, swap)
 
-  const decimals = tokenDecimalsForNetwork(getConfig().network)
   const net = formatUnits(cashOutNet(amount, cut), decimals)
   op.describe(`$${net} to Ethereum`)
+  const paylinkId = paylinkIdentity(params)
+  if (deps.rollupAddress) {
+    await owePaylinkClaim(webStorage, paylinkId, {
+      rollupAddress: deps.rollupAddress,
+      secret: params.secret,
+      flavor: params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail ? "email" : "direct",
+      amount,
+      decimals,
+    })
+  }
   const { record, result } = await runBurn({
     op,
     wallet: deps.wallet,
@@ -206,7 +225,7 @@ async function cashOutLinkFlow(
       // Whoever held the link typed this address; no contact in this browser stands behind it.
       recipientProvenance: "saved-recipient",
       source: "paylink",
-      paylinkId: paylinkIdentity(params),
+      paylinkId,
       amount: net,
       rawAmount: amount.toString(),
       relayerTip: WITHDRAW_RELAYER_TIP.toString(),
@@ -242,5 +261,7 @@ async function cashOutLinkFlow(
     },
   })
   if (result) onStage?.("submitting")
+  // A burn left to the chain reports once the tracker marks its record mined.
+  void reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
   return record
 }

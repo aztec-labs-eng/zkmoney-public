@@ -5,25 +5,28 @@ import {
   type Hex,
   type PublicClient,
   type WalletClient,
-  concatHex,
   encodeAbiParameters,
   encodeFunctionData,
-  getContractAddress,
-  getCreate2Address,
-  keccak256,
-  pad,
-  parseAbiParameters,
-  size,
-  toHex,
+  parseAbi,
 } from 'viem';
 
-import { SwapEscrowAbi, SwapEscrowFactoryAbi, SwapEscrowFactoryBytecode } from './artifacts.js';
+import { SwapEscrowFactoryAbi, SwapEscrowFactoryBytecode } from './artifacts.js';
 import { deployContract } from './deploy/deploy_contract.js';
+import { assertRecoveryCommitment, predictEscrowAddressLocally } from './escrow.js';
 
 // Re-exported here (not from index.ts) so purging the feature stays a single-line index revert.
 export { SwapEscrowAbi, SwapEscrowBytecode, SwapEscrowFactoryAbi, SwapEscrowFactoryBytecode } from './artifacts.js';
 export { MockUniversalRouterAbi, MockUniversalRouterBytecode } from './artifacts.js';
 export { MockCurve3PoolAbi, MockCurve3PoolBytecode } from './artifacts.js';
+
+/**
+ * Events of the swap escrow factory and escrows deployed before `EscrowBase` renamed them to `EscrowExecuted` and
+ * `EscrowRecovered`. Read these for escrows from those factories, since the generated ABIs no longer decode them.
+ */
+export const LegacySwapEscrowEventsAbi = parseAbi([
+  'event SwapEscrowExecuted(address indexed escrow, address tipRecipient)',
+  'event SwapEscrowRecovered(address indexed token, address indexed target, uint256 amount)',
+]);
 
 /** The hardcoded `SwapEscrow` routes: what the withdrawn DAI converts into on L1. */
 export enum SwapRoute {
@@ -46,11 +49,8 @@ export interface SwapEscrowArgs {
   nonce: Hex;
 }
 
-/** A zero recovery commitment opens to no account, so funds the route cannot deliver would be stuck at the escrow. */
 export function assertSwapEscrowArgs(args: SwapEscrowArgs): void {
-  if (BigInt(args.recoveryCommitment) === 0n) {
-    throw new Error('SwapEscrowArgs: recoveryCommitment must be nonzero');
-  }
+  assertRecoveryCommitment(args.recoveryCommitment);
 }
 
 /** Must match `abi.encode(_args)` in `SwapEscrowFactory` exactly: it is the CREATE2 commitment. */
@@ -76,90 +76,12 @@ export async function predictSwapEscrowAddress(
 }
 
 export function predictSwapEscrowAddressLocally(factory: Address, args: SwapEscrowArgs): Address {
-  // the implementation is the factory's first self-deploy (nonce 1)
-  const implementation = getContractAddress({ from: factory, nonce: 1n });
-  const blob = encodeSwapEscrowArgs(args);
-  const initCode = concatHex([
-    '0x61',
-    pad(toHex(size(blob) + 0x2d), { size: 2 }),
-    '0x3d81600a3d39f3363d3d373d3d3d363d73',
-    implementation,
-    '0x5af43d82803e903d91602b57fd5bf3',
-    blob,
-  ]);
-  return getCreate2Address({ from: factory, salt: pad('0x', { size: 32 }), bytecode: initCode });
+  return predictEscrowAddressLocally(factory, encodeSwapEscrowArgs(args));
 }
 
 export function encodeSwapEscrowDeploy(args: SwapEscrowArgs): Hex {
   assertSwapEscrowArgs(args);
   return encodeFunctionData({ abi: SwapEscrowFactoryAbi, functionName: 'deployAndExecute', args: [args] });
-}
-
-export interface SwapEscrowRecoveryArgs {
-  recoverySalt: Hex;
-  account: Address;
-  /**
-   * ERC-1271 signature over `accountPersonalSignHash` of the recovery digest if the account has code, else the EOA's
-   * `personal_sign` of the digest.
-   */
-  signature: Hex;
-  target: Address;
-  nonce: Hex;
-  deadline: bigint;
-}
-
-export function swapEscrowERC20RecoveryDigest(
-  escrow: Address,
-  chainId: bigint,
-  target: Address,
-  token: Address,
-  nonce: Hex,
-  deadline: bigint,
-): Hex {
-  return keccak256(
-    encodeAbiParameters(parseAbiParameters('address, uint256, address, address, bytes32, uint256'), [
-      escrow,
-      chainId,
-      target,
-      token,
-      nonce,
-      deadline,
-    ]),
-  );
-}
-
-export function swapEscrowETHRecoveryDigest(
-  escrow: Address,
-  chainId: bigint,
-  target: Address,
-  nonce: Hex,
-  deadline: bigint,
-): Hex {
-  return keccak256(
-    encodeAbiParameters(parseAbiParameters('address, uint256, address, bytes32, uint256'), [
-      escrow,
-      chainId,
-      target,
-      nonce,
-      deadline,
-    ]),
-  );
-}
-
-export function encodeSwapEscrowRecoverERC20(args: SwapEscrowRecoveryArgs & { token: Address }): Hex {
-  return encodeFunctionData({
-    abi: SwapEscrowAbi,
-    functionName: 'recoverERC20',
-    args: [args.recoverySalt, args.account, args.signature, args.target, args.token, args.nonce, args.deadline],
-  });
-}
-
-export function encodeSwapEscrowRecoverETH(args: SwapEscrowRecoveryArgs): Hex {
-  return encodeFunctionData({
-    abi: SwapEscrowAbi,
-    functionName: 'recoverETH',
-    args: [args.recoverySalt, args.account, args.signature, args.target, args.nonce, args.deadline],
-  });
 }
 
 export async function deploySwapEscrowFactory(

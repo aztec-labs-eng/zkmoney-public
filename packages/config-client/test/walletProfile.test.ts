@@ -229,6 +229,50 @@ describe("a baked snapshot", () => {
     expect(e).toMatchObject({ code: "UNREACHABLE", message: expect.stringContaining("fetch failed") })
   })
 
+  describe("forced", () => {
+    const now = () => new Date("2026-09-01T00:00:00Z")
+
+    it("boots the snapshot without fetching", async () => {
+      const boot = await resolveWalletProfile(
+        input({ fetchImpl: refuseFetch, bakedProfile: bakedDoc(), forceBakedProfile: true }),
+      )
+      expect(boot.versionId).toBe("0.0.1")
+      expect(boot.bootedFromBakedProfile).toBe(true)
+      expect(boot.liveFailure).toBeUndefined()
+      expect(boot.bakedProfileExpired).toBe(false)
+    })
+
+    it("boots an expired snapshot and says so", async () => {
+      const stale = bakedDoc()
+      stale.expiresAt = "2026-08-12T00:00:00.000Z"
+      const boot = await resolveWalletProfile(
+        input({ fetchImpl: refuseFetch, now, bakedProfile: stale, forceBakedProfile: true }),
+      )
+      expect(boot.bootedFromBakedProfile).toBe(true)
+      expect(boot.bakedProfileExpired).toBe(true)
+    })
+
+    it("still refuses the wrong document", async () => {
+      expect(
+        await rejection(
+          resolveWalletProfile(
+            input({ expectedProfileId: "mainnet", bakedProfile: bakedDoc(), forceBakedProfile: true }),
+          ),
+        ),
+      ).toMatchObject({ code: "IDENTITY_MISMATCH" })
+      expect(
+        await rejection(
+          resolveWalletProfile(input({ network: "mainnet", bakedProfile: bakedDoc(), forceBakedProfile: true })),
+        ),
+      ).toBeInstanceOf(ProfileNetworkMismatchError)
+    })
+
+    it("fails when the build baked nothing", async () => {
+      const e = await rejection(resolveWalletProfile(input({ forceBakedProfile: true })))
+      expect(e).toMatchObject({ name: "WalletProfileError", code: "MISSING_CONFIG" })
+    })
+  })
+
   it("rejects an expired snapshot, naming the live failure too", async () => {
     const stale = bakedDoc()
     stale.expiresAt = "2026-08-12T00:00:00.000Z"

@@ -46,7 +46,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     },
     stealthKey: { scalar: 0x5eedn, publicKey: { x: 1n, y: 2n } },
     target: TARGET,
-    token: TOKEN,
+    tokens: [TOKEN],
     chainId: 11155111,
     deployment: {
       readDeployed: vi.fn(async () => true),
@@ -85,12 +85,14 @@ describe("runSipaRecovery", () => {
     expect(mocks.buildSipaRecoverCall).toHaveBeenCalledWith(
       expect.objectContaining({
         deployed: true,
-        recover: expect.objectContaining({
-          sipa: SIPA,
-          target: TARGET,
-          token: TOKEN,
-          nonce: `0x${"07".repeat(32)}`,
-        }),
+        recoveries: [
+          expect.objectContaining({
+            sipa: SIPA,
+            target: TARGET,
+            token: TOKEN,
+            nonce: `0x${"07".repeat(32)}`,
+          }),
+        ],
       }),
     )
     expect(send).toHaveBeenCalledWith(SIPA, "0xdeadbeef")
@@ -113,6 +115,7 @@ describe("runSipaRecovery", () => {
         tokenSymbol: "DAI",
         tokenDecimals: 18,
       },
+      tokens: [recordToken],
     })
     await runSipaRecovery(deps)
     expect(store.upsert).toHaveBeenLastCalledWith(SIPA, {
@@ -168,20 +171,40 @@ describe("runSipaRecovery", () => {
     )
   })
 
-  it("prefers the record's own token over the fallback", async () => {
-    const recordToken = "0x1111111111111111111111111111111111111111"
-    const { deps } = makeDeps({
-      record: {
-        sipaAddress: SIPA,
-        messageSecret: `0x${"11".repeat(32)}`,
-        recoveryAddress: RECOVERY,
-        tokenAddress: recordToken,
-      },
+  it("signs each token with its own nonce and recovers them in one transaction", async () => {
+    const other = "0x1111111111111111111111111111111111111111"
+    let n = 0
+    const { deps, store, send } = makeDeps({
+      tokens: [TOKEN, other],
+      makeNonce: () => new Uint8Array(32).fill(++n),
     })
     await runSipaRecovery(deps)
+    expect(mocks.signSipaRecovery).toHaveBeenCalledTimes(2)
     expect(mocks.buildSipaRecoverCall).toHaveBeenCalledWith(
-      expect.objectContaining({ recover: expect.objectContaining({ token: recordToken }) }),
+      expect.objectContaining({
+        recoveries: [
+          expect.objectContaining({ token: TOKEN, nonce: `0x${"01".repeat(32)}` }),
+          expect.objectContaining({ token: other, nonce: `0x${"02".repeat(32)}` }),
+        ],
+      }),
     )
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(store.upsert).toHaveBeenLastCalledWith(
+      SIPA,
+      expect.objectContaining({ tokenAddress: TOKEN }),
+    )
+  })
+
+  it("submits nothing when a later token's signature fails", async () => {
+    mocks.signSipaRecovery
+      .mockReturnValueOnce(`0x${"cd".repeat(65)}`)
+      .mockImplementationOnce(() => {
+        throw new Error("signature refused")
+      })
+    const { deps, store, send } = makeDeps({ tokens: [TOKEN, SIPA] })
+    await expect(runSipaRecovery(deps)).rejects.toThrow(/signature refused/)
+    expect(send).not.toHaveBeenCalled()
+    expect(store.upsert).not.toHaveBeenCalled()
   })
 
   it("fails closed on an undeployed SIPA no candidate predicts, without submitting", async () => {

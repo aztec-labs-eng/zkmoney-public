@@ -1,3 +1,4 @@
+import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -51,7 +52,7 @@ const pendingRow = {
   id: "req-1",
   contactTag: "cyphergirl",
   amount: 45,
-  asset: "zkUSD",
+  asset: WALLET_TOKEN_SYMBOL,
   direction: "outgoing",
   status: "pending",
   createdAt: 1_700_000_000_000,
@@ -94,7 +95,7 @@ describe("RequestDetailModal", () => {
     })
   }
 
-  it("shows the stored row with a Waiting status and a cancel entry point", async () => {
+  it("shows the stored row with an Unpaid status and a cancel entry point", async () => {
     await render()
     expect(container.textContent).toContain("cyphergirl.zk.money")
     expect(container.textContent).toContain("Receive")
@@ -102,14 +103,14 @@ describe("RequestDetailModal", () => {
     expect(container.textContent).toContain("Pizza dinner")
     expect(container.textContent).toContain("Today, 14:32")
     expect(container.textContent).toContain("--")
-    expect(container.textContent).toContain("Waiting")
+    expect(container.textContent).toContain("Unpaid")
     expect(button("Cancel request")).toBeDefined()
   })
 
   it("opens straight on the confirm sheet for the bubble's inline Cancel", async () => {
     await render("confirm")
     expect(container.textContent).toContain("Cancel request?")
-    expect(container.textContent).not.toContain("Waiting")
+    expect(container.textContent).not.toContain("Unpaid")
     expect(button("Cancel request")).toBeDefined()
   })
 

@@ -21,6 +21,8 @@ const FOUNDRY_OUT = join(L1_CONTRACTS, 'out');
 // Map `<sym>` to its source artifact JSON. `<sym>` becomes `<sym>Abi` / `<sym>Bytecode` exports
 // in a generated `<sym>.ts` file under `src/abis/`.
 const TARGETS = {
+  MetadataV2Registry: { root: FOUNDRY_OUT, rel: 'MetadataV2.sol/MetadataV2Registry.json' },
+  MetadataV2Controller: { root: FOUNDRY_OUT, rel: 'MetadataV2.sol/MetadataV2Controller.json' },
   OxidePortal: { root: FOUNDRY_OUT, rel: 'OxidePortal.sol/OxidePortal.json' },
   PlainWithdrawalExecutor: {
     root: FOUNDRY_OUT,
@@ -82,14 +84,17 @@ const TARGETS = {
   // Permissionless L1 -> L2 relay of a registered name; the controller notifies through it at registration.
   NamePortal: { root: FOUNDRY_OUT, rel: 'NamePortal.sol/NamePortal.json' },
   // The shared custody base every intent clones; its ABI carries `sweep`/`swept`/`Sweep` the relayer drives on a
-  // clone. Deposit/registration are separate `SIPABase` implementations selected by address at deploy time.
+  // clone. Each intent is a separate `SIPABase` implementation selected by address at deploy time.
   SIPA: { root: FOUNDRY_OUT, rel: 'SIPABase.sol/SIPABase.json' },
-  // The two intent implementations. One pair per rollup version, deployed against that version's Portal and then
+  // The intent implementations. One set per rollup version, deployed against that version's Portal and then
   // blessed on the permanent factory, so the deploy needs bytecode, not just ABI.
   DepositSIPA: { root: FOUNDRY_OUT, rel: 'DepositSIPA.sol/DepositSIPA.json' },
   RegistrationSIPA: { root: FOUNDRY_OUT, rel: 'RegistrationSIPA.sol/RegistrationSIPA.json' },
   UpdateMetadataSIPA: { root: FOUNDRY_OUT, rel: 'UpdateMetadataSIPA.sol/UpdateMetadataSIPA.json' },
-  AccountMetadataController: { root: FOUNDRY_OUT, rel: 'IAccountMetadataController.sol/IAccountMetadataController.json' },
+  AccountMetadataController: {
+    root: FOUNDRY_OUT,
+    rel: 'IAccountMetadataController.sol/IAccountMetadataController.json',
+  },
   SIPAFactory: { root: FOUNDRY_OUT, rel: 'SIPAFactory.sol/SIPAFactory.json' },
   SIPAResolver: { root: FOUNDRY_OUT, rel: 'Resolver.sol/Resolver.json' },
   OperationExecutor: { root: FOUNDRY_OUT, rel: 'OperationExecutor.sol/OperationExecutor.json' },
@@ -100,12 +105,29 @@ const TARGETS = {
   FPCFunderDAI: { root: FOUNDRY_OUT, rel: 'FPCFunderDAI.sol/FPCFunderDAI.json' },
   // Test-only UniversalRouter stand-in — e2e etches it at the funder's pinned router address.
   MockSwapRouter: { root: FOUNDRY_OUT, rel: 'MockSwapRouter.sol/MockSwapRouter.json' },
+  // Abstract: only the ABI is used.
+  EscrowBase: { root: FOUNDRY_OUT, rel: 'EscrowBase.sol/EscrowBase.json' },
   // Swap-on-withdraw feature (disposable — purge these with `src/swap_on_withdraw.ts`). MockUniversalRouter is the
   // feature's route-honoring test router; MockCurve3Pool stands in for the 3pool the DAI hops go through.
   SwapEscrow: { root: FOUNDRY_OUT, rel: 'SwapEscrow.sol/SwapEscrow.json' },
   SwapEscrowFactory: { root: FOUNDRY_OUT, rel: 'SwapEscrowFactory.sol/SwapEscrowFactory.json' },
   MockUniversalRouter: { root: FOUNDRY_OUT, rel: 'MockUniversalRouter.sol/MockUniversalRouter.json' },
   MockCurve3Pool: { root: FOUNDRY_OUT, rel: 'MockCurve3Pool.sol/MockCurve3Pool.json' },
+  // CCTP bridge-on-withdraw feature (disposable — purge these with `src/cctp_bridge_on_withdraw.ts`).
+  CCTPBridgeEscrow: { root: FOUNDRY_OUT, rel: 'CCTPBridgeEscrow.sol/CCTPBridgeEscrow.json' },
+  CCTPBridgeEscrowFactory: { root: FOUNDRY_OUT, rel: 'CCTPBridgeEscrowFactory.sol/CCTPBridgeEscrowFactory.json' },
+  MockTokenMessengerV2: { root: FOUNDRY_OUT, rel: 'MockTokenMessengerV2.sol/MockTokenMessengerV2.json' },
+  // Across bridge-on-withdraw feature (disposable — purge these with `src/across_bridge_on_withdraw.ts`).
+  AcrossBridgeEscrow: { root: FOUNDRY_OUT, rel: 'AcrossBridgeEscrow.sol/AcrossBridgeEscrow.json' },
+  AcrossBridgeEscrowFactory: { root: FOUNDRY_OUT, rel: 'AcrossBridgeEscrowFactory.sol/AcrossBridgeEscrowFactory.json' },
+  MockAcrossSpokePool: { root: FOUNDRY_OUT, rel: 'MockAcrossSpokePool.sol/MockAcrossSpokePool.json' },
+  // Sky savings experiment.
+  SkyWithdrawalExecutor: { root: FOUNDRY_OUT, rel: 'SkyWithdrawalExecutor.sol/SkyWithdrawalExecutor.json' },
+  SkyEscrow: { root: FOUNDRY_OUT, rel: 'SkyEscrow.sol/SkyEscrow.json' },
+  SkyEscrowFactory: { root: FOUNDRY_OUT, rel: 'SkyEscrowFactory.sol/SkyEscrowFactory.json' },
+  MockDaiUsds: { root: FOUNDRY_OUT, rel: 'MockDaiUsds.sol/MockDaiUsds.json' },
+  MockSUsds: { root: FOUNDRY_OUT, rel: 'MockSUsds.sol/MockSUsds.json' },
+  MultiPortalProofSubmitter: { root: FOUNDRY_OUT, rel: 'MultiPortalProofSubmitter.sol/MultiPortalProofSubmitter.json' },
   // ERC-4337 account that is a user's stable identity, plus the CREATE2 factory that deploys it.
   OxideAccount: { root: FOUNDRY_OUT, rel: 'OxideAccount.sol/OxideAccount.json' },
   OxideAccountFactory: { root: FOUNDRY_OUT, rel: 'OxideAccountFactory.sol/OxideAccountFactory.json' },

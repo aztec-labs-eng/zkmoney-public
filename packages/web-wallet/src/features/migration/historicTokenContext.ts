@@ -15,6 +15,7 @@ import {
 } from "@obsidion/sdk"
 import { createPublicClient, fallback, http, type Hex } from "viem"
 import { getConfig } from "../../config/env"
+import { l1PublicClient } from "../../config/oxideTuple"
 
 /** The retired deployment whose l2Token is `tokenAddress`, or null when none in the manifest has it. */
 export async function findHistoricTuple(tokenAddress: string): Promise<OxideEnvTuple | null> {
@@ -22,6 +23,7 @@ export async function findHistoricTuple(tokenAddress: string): Promise<OxideEnvT
   const { historic } = await IntraRollupMigrationService.detectHistoricDeployments({
     ...config.oxideProfile,
     network: config.network,
+    publicClient: l1PublicClient(config),
   })
   return historic.find((t) => t.l2Token.toLowerCase() === tokenAddress.toLowerCase()) ?? null
 }

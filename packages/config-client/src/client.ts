@@ -86,11 +86,12 @@ const isClientError = (status: number) => status >= 400 && status <= 499
 
 /**
  * The acceptance rulebook for a document however it arrived — fetched, or baked into a bundle at
- * build time: the wire-tolerant parse, then expiry against the caller's clock.
+ * build time: the wire-tolerant parse, then expiry against the caller's clock. `ignoreExpiry` is
+ * for a consumer that has chosen a baked snapshot over a profile nobody publishes anymore.
  */
 export function parseServedProfile(
   data: unknown,
-  options: { now?: () => Date } = {},
+  options: { now?: () => Date; ignoreExpiry?: boolean } = {},
 ): ConfigProfile {
   const now = options.now ?? (() => new Date())
   let profile: ConfigProfile
@@ -105,13 +106,17 @@ export function parseServedProfile(
     }
     throw e
   }
-  if (profile.expiresAt && Date.parse(profile.expiresAt) <= now().getTime()) {
+  if (!options.ignoreExpiry && isExpired(profile, now())) {
     throw new ConfigProfileError(
       "EXPIRED",
       `profile "${profile.profileId}" expired at ${profile.expiresAt}`,
     )
   }
   return profile
+}
+
+export function isExpired(profile: ConfigProfile, now: Date): boolean {
+  return !!profile.expiresAt && Date.parse(profile.expiresAt) <= now.getTime()
 }
 
 export async function fetchConfigProfile(

@@ -24,6 +24,7 @@
     "@aztec/ethereum": "v5.2.0",
     "@aztec/foundation": "v5.2.0",
     "@aztec/kv-store": "v5.2.0",
+    "@aztec/l1-artifacts": "v5.2.0",
     "@aztec/pxe": "v5.2.0",
     "@aztec/stdlib": "v5.2.0",
     "@aztec/simulator": "v5.2.0",

@@ -1,13 +1,12 @@
 /**
- * The hand-off bridge's wire contract (`v: 1`): what a web campaign posts into the wallet origin's
- * frame and what the wallet frame answers. Both web fronts consume this one contract.
+ * The hand-off material's contract (`v: 1`): what a web campaign seals for the wallet (`sealed.ts`).
+ * Both web fronts consume this one contract.
  */
 
 import type { PrfSlot } from "@obsidion/core/types"
 
 export const BRIDGE_VERSION = 1
 export const MATERIAL_TYPE = "handoff-material"
-export const ACK_TYPE = "handoff-ack"
 
 /** Every PRF candidate the campaign evaluated, as `0x` + 64 hex, each below the scalar field order. */
 export type BridgeCandidates = { first?: string; second?: string }
@@ -15,11 +14,11 @@ export type BridgeCandidates = { first?: string; second?: string }
 export type BridgeMessage = {
   v: typeof BRIDGE_VERSION
   type: typeof MATERIAL_TYPE
-  /** Short opaque token the ack echoes, so the campaign can match the answer to its post. */
+  /** Short opaque token naming this hand-off. */
   nonce: string
   /** The campaign's own ceremony time, epoch ms; the wallet bounds its age at the attempt. */
   derivedAt: number
-  /** The passkey's relying party; the frame refuses another wallet's. */
+  /** The passkey's relying party; the wallet refuses another wallet's. */
   rpId: string
   /** base64url credential id. */
   credentialId: string
@@ -33,14 +32,6 @@ export type BridgeMessage = {
    * record of how the authenticator is reached, never filtered here.
    */
   transports?: readonly string[]
-}
-
-export type BridgeAck = { v: typeof BRIDGE_VERSION; type: typeof ACK_TYPE; nonce: string }
-
-export function isBridgeAck(input: unknown): input is BridgeAck {
-  if (typeof input !== "object" || input === null) return false
-  const record = input as Record<string, unknown>
-  return record.v === BRIDGE_VERSION && record.type === ACK_TYPE && typeof record.nonce === "string"
 }
 
 /** BN254's scalar field order: the master key is an `Fr`, so a candidate at or above it is no key. */

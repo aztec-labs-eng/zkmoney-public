@@ -14,17 +14,22 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { Outlet, useLocation, useNavigate } from "react-router-dom"
 import { createPublicClient, formatUnits, type PublicClient } from "viem"
+import type { AztecNode } from "@aztec/aztec.js/node"
 import { decodeRequestInline, normalizeTag, type RequestInlinePacket } from "@obsidion/front-core"
 import { Card, Icon, PrimaryGradientButton, ScreenNavBar, Spinner } from "@obsidion/web-ds"
 import { getConfig, l1Transport } from "../../config/env"
-import type { AztecNode } from "@aztec/aztec.js/node"
 import { getOxideTuple } from "../../config/oxideTuple"
 import { fireEvent, requestAmountBucket } from "../../lib/analytics"
 import { usdBalance, usdFigure } from "../../ui/format"
+import { verifiedIdentity } from "../../ui/PxeBoot"
 import { loadOnboardedIdentity } from "../identity/walletIdentity"
 import { resolveTagForCommit } from "../contacts/registryResolution"
 import { InvitationChrome } from "../onboarding/InvitationChrome"
-import { resolveAccountlessRequest, type AccountlessResolveResult } from "./accountlessRequest"
+import {
+  RequestDecimalsMismatchError,
+  resolveAccountlessRequest,
+  type AccountlessResolveResult,
+} from "./accountlessRequest"
 import { ExternalWalletPayModal } from "./ExternalWalletPayModal"
 import { requestAmountDisplay, validateRequestPacket, type RequestLinkProblem } from "./requestLink"
 
@@ -36,9 +41,12 @@ const PROBLEM_COPY: Record<RequestLinkProblem, string> = {
     "This link is from an older app version and can't be paid from the web without an account — sign up, or open it in the zk.money app.",
 }
 
+/**
+ * This screen mounts outside AccountGate, before any identity is pinned, so it reads the identity
+ * the boot would: L1's, with the default node standing in when L1 gives no answer.
+ */
 async function fetchRollupAddress(node: AztecNode): Promise<string> {
-  const { rollupAddress } = await node.getL1ContractAddresses()
-  return rollupAddress.toString()
+  return (await verifiedIdentity(getConfig(), node)).rollupAddress
 }
 
 export function RequestLandingScreen({ node }: { node: AztecNode }) {
@@ -58,7 +66,7 @@ export function RequestLandingScreen({ node }: { node: AztecNode }) {
       return null
     }
   }, [fragment])
-  // Synchronous branch: localStorage identity + MSK breadcrumb, no gate needed.
+  // Synchronous branch: stored identity + MSK breadcrumb, no gate needed.
   const hasIdentity = !!loadOnboardedIdentity()
 
   if (!packet) {
@@ -180,7 +188,6 @@ function AccountlessRequest({
     result: Promise<PanelState>
   } | null>(null)
 
-  const decimals = packet.tokenDecimals ?? 6
   const amountDisplay = requestAmountDisplay(packet)
 
   // The signed-in path reports its open from the contact send screen; this covers the
@@ -220,6 +227,9 @@ function AccountlessRequest({
           })
           return { kind: "resolved", result: resolved }
         } catch (e) {
+          if (e instanceof RequestDecimalsMismatchError) {
+            return { kind: "problem", problem: "wrongToken" }
+          }
           const message = e instanceof Error ? e.message : String(e)
           // Registry identity failures are final; network/resolve failures retry.
           return { kind: "error", message, retryable: !message.includes("no longer") }
@@ -272,7 +282,11 @@ function AccountlessRequest({
               title="Log in"
               onClick={() => navigate("/enter", { state: { next: `/request${hash}` } })}
             />
-            <PrimaryGradientButton title="Create account" buttonStyle="dark" onClick={startSignup} />
+            <PrimaryGradientButton
+              title="Create account"
+              buttonStyle="dark"
+              onClick={startSignup}
+            />
           </div>
           <p className="ww-invite-modal-foot">
             <button
@@ -293,7 +307,7 @@ function AccountlessRequest({
     if (!result) return "Preparing a payment address…"
     return packet.amountAtomic > 0n
       ? `Pay ${usdFigure(
-          formatUnits(result.grossAtomic, decimals),
+          formatUnits(result.grossAtomic, result.decimals),
         )} with fee. Public onchain payment.`
       : "Public onchain payment."
   }
@@ -402,7 +416,7 @@ function AccountlessRequest({
             <button
               type="button"
               className="zkm-btn-reset ww-invite__link"
-              onClick={() => navigate("/enter")}
+              onClick={() => navigate("/enter", { state: { next: `/request${hash}` } })}
             >
               Log in
             </button>

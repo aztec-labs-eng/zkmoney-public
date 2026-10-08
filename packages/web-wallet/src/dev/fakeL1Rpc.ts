@@ -27,9 +27,17 @@ export const DEMO_FPC_FUNDING_CUT = 100_000_000_000_000_000n
 const DEMO_SIPA_IMPLEMENTATION = 0x5117a0000000000000000000000000000000119en
 
 /**
- * How long a submitted transaction stays pending, so a flow's "Waiting for L1 confirmation" stage
- * is actually seen. viem re-reads the receipt once per new block, so the wait shows as one block
- * time longer than this.
+ * The rollup identity `OxidePortal` states in the demo. The version is the figure
+ * `DEMO_OXIDE_TUPLE.rollupVersion` carries; the addresses are placeholders nothing dials.
+ */
+const DEMO_ROLLUP_VERSION = 1n
+const DEMO_ROLLUP_ADDRESS = "0x2011000000000000000000000000000000000a11" as Address
+const DEMO_INBOX_ADDRESS = "0x1b0000000000000000000000000000000000b0c5" as Address
+
+/**
+ * How long a submitted transaction stays pending, so a flow's "Waiting for Ethereum confirmation"
+ * stage is actually seen. viem re-reads the receipt once per new block, so the wait shows as one
+ * block time longer than this.
  */
 export const DEMO_RECEIPT_DELAY_MS = 3_000
 
@@ -48,6 +56,9 @@ const SELECTOR = {
   decimals: toFunctionSelector("decimals()"),
   symbol: toFunctionSelector("symbol()"),
   balanceOf: toFunctionSelector("balanceOf(address)"),
+  rollupVersion: toFunctionSelector("ROLLUP_VERSION()"),
+  rollup: toFunctionSelector("ROLLUP()"),
+  inbox: toFunctionSelector("INBOX()"),
 }
 
 /** The deposit token's ERC-20 metadata, as the deposit screens read it off L1. */
@@ -95,10 +106,10 @@ function randomHex(bytes: number): Hex {
 }
 
 /**
- * The reads the exits and the deposit screens make, dispatched on the selector and, for a picker
- * token, on the address it was sent to. An unrecognized one answers the SIPA balance, which is a
- * harmless default for a bare `uint256` and wrong for anything else, so every non-`uint256` return
- * has to be dispatched explicitly.
+ * The reads the exits, the deposit screens and the portal identity check make, dispatched on the
+ * selector and, for a picker token, on the address it was sent to. An unrecognized one answers the
+ * SIPA balance, which is a harmless default for a bare `uint256` and wrong for anything else, so
+ * every non-`uint256` return has to be dispatched explicitly.
  */
 function contractRead(data?: Hex, to?: string): Hex {
   const selector = data?.slice(0, 10)
@@ -121,6 +132,13 @@ function contractRead(data?: Hex, to?: string): Hex {
   // No relayer in the demo, so nothing is ever released ahead of the manual finalize. Load-bearing:
   // the balance default would decode as `true` and abort the flow as already released.
   if (selector === SELECTOR.isWithdrawalSpent) return word(0n)
+  if (selector === SELECTOR.rollupVersion) return word(DEMO_ROLLUP_VERSION)
+  if (selector === SELECTOR.rollup) {
+    return encodeAbiParameters([{ type: "address" }], [DEMO_ROLLUP_ADDRESS])
+  }
+  if (selector === SELECTOR.inbox) {
+    return encodeAbiParameters([{ type: "address" }], [DEMO_INBOX_ADDRESS])
+  }
   if (selector === SELECTOR.predictSIPA) {
     // `intentHash` is the second argument: skip the selector and the `implementation` word.
     const sipa = predictions.get(commitmentKey(data!.slice(74, 138)))

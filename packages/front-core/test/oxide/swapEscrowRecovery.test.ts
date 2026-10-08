@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { Fr } from "@aztec/aztec.js/fields"
 import { EthAddress } from "@aztec/foundation/eth-address"
-import { swapEscrowERC20RecoveryDigest } from "@oxide/l1-contracts/swap_on_withdraw.js"
+import { escrowERC20RecoveryDigest } from "@oxide/l1-contracts/escrow.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 
 const mocks = vi.hoisted(() => ({
@@ -34,7 +34,7 @@ const DAI = "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b"
 const NONCE = `0x${"77".repeat(32)}`
 const L2TX = `0x${"11".repeat(32)}`
 const HASH = `0x${"ab".repeat(32)}`
-const NOW_MS = 1_800_000_000_000
+const CHAIN_NOW = 1_800_000_000n
 const DEADLINE = 1_800_003_600n
 const RECOVERY_NONCE = `0x${"07".repeat(32)}` as const
 
@@ -72,7 +72,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     dai: DAI,
     chainId: 11155111,
     makeNonce: () => new Uint8Array(32).fill(7),
-    now: () => NOW_MS,
+    chainNow: async () => CHAIN_NOW,
     ...overrides,
   }
   return { deps: deps as never, store, reader, channel, signAccount }
@@ -135,7 +135,7 @@ describe("runSwapEscrowRecovery", () => {
 
     expect(signAccount).toHaveBeenCalledWith(
       RECOVERY.account,
-      swapEscrowERC20RecoveryDigest(ESCROW, 11155111n, TARGET, DAI, RECOVERY_NONCE, DEADLINE),
+      escrowERC20RecoveryDigest(ESCROW, 11155111n, TARGET, DAI, RECOVERY_NONCE, DEADLINE),
     )
     expect(reader.isDeployed).toHaveBeenCalledWith(ESCROW)
     expect(mocks.buildSwapEscrowRecoverCall).toHaveBeenCalledWith({

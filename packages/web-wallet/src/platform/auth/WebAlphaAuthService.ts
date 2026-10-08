@@ -25,6 +25,7 @@ import {
   candidatesFrom,
   currentDevicePosture,
   currentMisreportsCrossDevice,
+  currentTrustsAttachmentLabel,
   currentPhoneReach,
   impliedKeyTransports,
   isPhysicalOnly,
@@ -33,6 +34,7 @@ import {
   recoverPubkeyFromAssertions,
   runPasskeyAssertion,
   runPasskeyCreation,
+  decodeUserHandle,
 } from "@obsidion/passkey-web"
 import {
   clearActiveCredentialId,
@@ -41,12 +43,17 @@ import {
   getActiveCredentialId,
   getActiveStorageId,
   readCachedMsk,
+  readCommittedSession,
+  readSessionTuple,
   setActiveCredentialId,
   setActiveStorageId,
   storageIdFromSecret,
+  withSessionLock,
   writeCachedMsk,
+  writeSessionTuple,
   type CachedMsk,
 } from "../storage/activeStorage"
+import { walletStorage } from "../storage/walletStorage"
 import type { HandoffMaterial } from "../storage/handoffMaterial"
 import { holdsAccountRecords } from "../storage/WebStorageAdapter"
 import {
@@ -142,25 +149,6 @@ export type StoredAccountSnapshot =
   | { kind: "webauthn"; credentialId: string; pubkey: string; address: string }
   | { kind: "other" }
 
-/**
- * Puts a pointer pair back after a write that could not complete. Clearing is the fallback and the
- * answer for a tab that held no session: a removal frees space rather than needing it, and half a
- * session on disk is worse than none.
- */
-function restorePointers(held: { storageId: string | null; credentialId: string | null }): void {
-  try {
-    if (!held.storageId) return clearActiveStorage()
-    // Only what actually moved is written back: the key the store just refused is usually the one
-    // that never changed, and rewriting it would fail the restore for nothing.
-    if (getActiveStorageId() !== held.storageId) setActiveStorageId(held.storageId)
-    if (getActiveCredentialId() === held.credentialId) return
-    if (held.credentialId) setActiveCredentialId(held.credentialId)
-    else clearActiveCredentialId()
-  } catch {
-    clearActiveStorage()
-  }
-}
-
 const hexBytes = (hex: string) => new Uint8Array(Buffer.from(hex.replace(/^0x/i, ""), "hex"))
 const sameHex = (a: string, b: string) =>
   a.replace(/^0x/i, "").toLowerCase() === b.replace(/^0x/i, "").toLowerCase()
@@ -174,6 +162,9 @@ export type WebAlphaAuthServiceOptions = {
   /** Whether the browser labels a cross-device answer as its own; tests fix it, production reads
    * the user agent. */
   misreportsCrossDevice?: () => boolean
+  /** Whether the browser reports truthfully which device answered, so a refused sign-up may name
+   * it; tests fix it, production reads the user agent. */
+  trustsAttachmentLabel?: () => boolean
   /** `null` sends laptop ceremonies no steering hints (the e2e build's virtual authenticators). */
   laptopHints?: null
   /** Provider ids admitted beyond the measured set; only the e2e build passes any. */
@@ -206,6 +197,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
   private readonly rpName: string
   private readonly posture: () => DevicePosture
   private readonly misreportsCrossDevice: () => boolean
+  private readonly trustsAttachmentLabel: () => boolean
   private readonly laptopHints: null | undefined
   private readonly extraProviders: readonly string[] | undefined
   private readonly probeEnabled: boolean
@@ -220,6 +212,11 @@ export class WebAlphaAuthService implements AlphaAuthService {
   private restoreSuppressed = false
   /** Advances on every commit and clear, so a restore that awaited across one installs nothing. */
   private epoch = 0
+  /** Advances on every sign-out, so a commit that awaited across one installs nothing. */
+  private fence = 0
+  /** Session writes started, and those not yet settled: a restore that saw either move stands down. */
+  private sessionWrites = 0
+  private sessionWritesInFlight = 0
   /** Set once a commit moves the session under record stores loaded for another account. */
   private staleRecords = false
   private deriveAddress?: (msk: Fr, pubkeyHex: string) => Promise<string>
@@ -233,6 +230,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     this.rpName = options.rpName ?? PASSKEY_RP_NAME
     this.posture = options.posture ?? currentDevicePosture
     this.misreportsCrossDevice = options.misreportsCrossDevice ?? currentMisreportsCrossDevice
+    this.trustsAttachmentLabel = options.trustsAttachmentLabel ?? currentTrustsAttachmentLabel
     this.laptopHints = options.laptopHints
     this.extraProviders = options.extraProviders
     this.probeEnabled = options.laptopHints !== null
@@ -422,6 +420,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     pubkey: Uint8Array,
     record: RecoveryMetadata | undefined,
   ): WebRecoverResult {
+    const userHandle = decodeUserHandle(assertion.userHandle)
     return {
       authProvider: this.buildProvider(pubkey, assertion.credentialId),
       credentialId: assertion.credentialId,
@@ -432,6 +431,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
       candidateSource: "webauthn",
       expectedAddress: record?.l2Address,
       authenticatorType: record?.authenticatorType ?? "platform",
+      ...(userHandle ? { userHandle } : {}),
       // The device that answered, which the result otherwise drops; a screen reads it to diagnose a
       // miss. On a settled key it names the first assertion, never the salt-free second one.
       observed: this.observationOf(assertion),
@@ -487,17 +487,19 @@ export class WebAlphaAuthService implements AlphaAuthService {
   }
 
   private async runRestore(): Promise<void> {
-    const cache = readCachedMsk()
+    // Saved values only, and none while a session write is in flight: it may yet fail.
+    if (this.sessionWritesInFlight > 0) return
+    const { cache, storageId, credentialId } = readCommittedSession()
     if (!cache) return
     const epoch = this.epoch
-    const storageId = getActiveStorageId()
-    const credentialId = getActiveCredentialId()
+    const writes = this.sessionWrites
     const proof = await this.proveCache(cache, storageId, credentialId)
     // A commit or a sign-out landed while this restore awaited: it owns the session now.
     if (this.epoch !== epoch) return
+    if (this.sessionWritesInFlight > 0 || this.sessionWrites !== writes) return
     if (proof.kind === "unknown") return
     if (proof.kind === "invalid") {
-      this.dropInvalidCache(cache, storageId, credentialId)
+      await this.dropInvalidCache(cache, storageId, credentialId)
       return
     }
     this.msk = proof.msk
@@ -508,19 +510,20 @@ export class WebAlphaAuthService implements AlphaAuthService {
   /**
    * Drop a cache that failed its proof. When the failed tuple names the active session
    * the whole session goes (the account it points at is not this key's); otherwise only the blob
-   * goes. One tab per origin, so a plain removal is enough — no cross-tab compare-and-remove.
+   * goes. Only the active tab opens the wallet database, so a plain removal is enough — no
+   * cross-tab compare-and-remove.
    */
   private dropInvalidCache(
     cache: CachedMsk,
     storageId: string | null,
     credentialId: string | null,
-  ): void {
+  ): Promise<void> {
+    // Saved before the restore settles, so nothing after it reads the rejected session.
     if (storageId && cache.storageId === storageId && cache.credentialId === credentialId) {
-      clearActiveStorage()
-    } else {
-      // A blob for another session, or one with no session at all: the blob goes, nothing else.
-      clearCachedMsk()
+      return walletStorage.batch(() => clearActiveStorage())
     }
+    // A blob for another session, or one with no session at all: the blob goes, nothing else.
+    return walletStorage.batch(() => clearCachedMsk())
   }
 
   /**
@@ -614,6 +617,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
       laptopHints: this.laptopHintsForRoute(opts?.route),
       extraProviders: this.extraProviders,
       misreportsCrossDevice: this.misreportsCrossDevice(),
+      attachmentLabelTrusted: this.trustsAttachmentLabel(),
       challengeForChained: async () => {
         updateStatus?.("Reading key material…")
         return new Uint8Array(randomChallenge())
@@ -686,10 +690,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     return this.commit(input, stillOwns)
   }
 
-  /**
-   * Whether this session's key is on disk. False after a commit whose cache write was refused: the
-   * session is usable in this tab, and the next reload will ask for the passkey.
-   */
+  /** Whether this session's key is cached, so the next reload opens without a passkey prompt. */
   keyCached(): boolean {
     const id = getActiveStorageId()
     return id !== null && readCachedMsk()?.storageId === id
@@ -705,54 +706,62 @@ export class WebAlphaAuthService implements AlphaAuthService {
   }
 
   /** `stillOwns` lets a ceremony that outlived its session (a commit or clear landed while its
-   * prompt was open) write nothing. The writes are synchronous, so one tab needs no lock. */
+   * prompt was open) write nothing. The tuple is written under the session lock, so no other
+   * commit or sign-out on this page runs between reading the session it replaces and saving. */
   private async commit(input: CommitSecretInput, stillOwns?: () => boolean): Promise<boolean> {
+    // Read before the first await: a sign-out during the derivation or the lock wait fences it.
+    const fence = this.fence
     const storageId = await storageIdFromSecret(new Uint8Array(input.secretKey.toBuffer()))
     const credentialId = this.providerCredential.get(input.authProvider)
-    if (stillOwns && !stillOwns()) return false
-    // The pointers are a few dozen bytes and they belong together: a namespace beside another
-    // session's credential is exactly the drift this guards against. A store that refuses either
-    // one refuses everything, so nothing is installed, what was there is put back, and the caller
-    // hears about it.
-    const held = { storageId: getActiveStorageId(), credentialId: getActiveCredentialId() }
-    // Read before anything is written under the new account, which the sign-in does right after.
-    const leavesStale =
-      held.storageId !== storageId && (held.storageId !== null || holdsAccountRecords(storageId))
-    try {
-      setActiveStorageId(storageId)
-      if (credentialId) setActiveCredentialId(credentialId)
-      else clearActiveCredentialId()
-    } catch (err) {
-      restorePointers(held)
-      throw err
-    }
-
-    if (leavesStale) this.staleRecords = true
-    this.epoch++
-    this.restoreSuppressed = false
-    this.msk = input.secretKey
-    this.authProvider = input.authProvider
-    this.derivedKeys.clear()
-
-    try {
-      if (credentialId) {
-        writeCachedMsk({ v: 1, storageId, credentialId, msk: input.secretKey.toString() })
-      } else {
-        clearCachedMsk()
-      }
-    } catch (err) {
-      // The cache is the large write and the one a full store refuses. Losing it costs a passkey
-      // prompt on the next reload, not the session: the pointers stay, so this account's namespace
-      // and credential are still what the tab reads and writes. An older session's key must not be
-      // left sitting there, though — it belongs to nobody now.
+    return withSessionLock(async () => {
+      if (this.fence !== fence) return false
+      if (stillOwns && !stillOwns()) return false
+      const held = getActiveStorageId()
+      const replaced = readSessionTuple()
+      // Read before anything is written under the new account, which the sign-in does right after.
+      const leavesStale = held !== storageId && (held !== null || holdsAccountRecords(storageId))
+      // Pointers and cache as one transaction: a rejection leaves the stored session as it was.
+      // Restores stand down until this settles, cleanup included.
+      this.sessionWrites++
+      this.sessionWritesInFlight++
       try {
-        clearCachedMsk()
-      } catch {
-        // A store refusing removals as well leaves the stale blob; the next commit overwrites it.
+        await walletStorage.batch(() => {
+          setActiveStorageId(storageId)
+          if (credentialId) {
+            setActiveCredentialId(credentialId)
+            writeCachedMsk({ v: 1, storageId, credentialId, msk: input.secretKey.toString() })
+          } else {
+            clearActiveCredentialId()
+            clearCachedMsk()
+          }
+        })
+        // A sign-out queued its removals behind this write; they undo it.
+        if (this.fence !== fence) return false
+        if (stillOwns && !stillOwns()) {
+          // Cancelled while saving. Still inside the session lock, so no newer commit has saved
+          // since: put back the session this one replaced. If that fails, nothing restores the
+          // cancelled one.
+          try {
+            await walletStorage.batch(() => writeSessionTuple(replaced))
+          } catch (err) {
+            this.clear()
+            this.restoreSuppressed = true
+            throw err
+          }
+          return false
+        }
+
+        if (leavesStale) this.staleRecords = true
+        this.epoch++
+        this.restoreSuppressed = false
+        this.msk = input.secretKey
+        this.authProvider = input.authProvider
+        this.derivedKeys.clear()
+        return true
+      } finally {
+        this.sessionWritesInFlight--
       }
-      console.warn("key not cached; this browser will ask for the passkey on the next load", err)
-    }
-    return true
+    })
   }
 
   isUnlocked(): boolean {
@@ -990,7 +999,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
   }
 
   /**
-   * A recovery result from material the campaign bridge left, with no ceremony: the candidates
+   * A recovery result from material the campaign handed off, with no ceremony: the candidates
    * the campaign evaluated, a provider for its passkey, the creation transports the material
    * carried, and this browser's own record as the first anchor when it has one. A record for the
    * credential that names another key is the rotated-credential refusal, the same as after a
@@ -1069,6 +1078,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
    */
   lockOut(): void {
     this.clear()
+    this.fence++
     this.restoreSuppressed = true
   }
 }

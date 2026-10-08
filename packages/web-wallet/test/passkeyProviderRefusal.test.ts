@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { GPM_AAGUID, ZERO_AAGUID } from "@obsidion/core/constants"
-import { CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID } from "@obsidion/passkey-web"
+import { CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID, passkeyWritten } from "@obsidion/passkey-web"
 import { describe, expect, it } from "vitest"
 import { WebAlphaAuthService } from "../src/platform/auth/WebAlphaAuthService"
 import {
@@ -34,6 +34,9 @@ describe("creation admits only the measured providers", () => {
     })
     expect(ceremony.assertRequests).toHaveLength(0)
     expect(await service.rootCredentialId()).toBeUndefined()
+    // The refusal leaves the service as the driver threw it: marked as written.
+    const refused = await service.createPasskey("@alice").catch((e: unknown) => e)
+    expect(passkeyWritten(refused)).toBe(true)
   })
 
   it("refuses before the chained assertion even when creation returned no key material", async () => {

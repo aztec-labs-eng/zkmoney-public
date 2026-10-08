@@ -10,7 +10,7 @@ export const L1_LOG_RANGE_BLOCKS = 10_000n
  */
 export async function chunkedContractEvents(
   publicClient: PublicClient,
-  request: { address: Address; abi: unknown; eventName: string; args?: unknown },
+  request: { address: Address | Address[]; abi: unknown; eventName: string; args?: unknown },
   fromBlock: bigint,
   toBlock: bigint,
 ): Promise<unknown[]> {

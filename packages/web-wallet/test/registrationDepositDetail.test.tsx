@@ -2,13 +2,17 @@ import React, { act } from "react"
 import { MemoryRouter } from "react-router-dom"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { clearWalletPrompt, useWalletPrompt } from "../src/features/deposit/walletPrompt"
+
+// The wallet-request slot is page-wide; forget what a case left open.
+afterEach(clearWalletPrompt)
 import {
   passThroughScreener,
   ScreeningProvider,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
-import type { Hex } from "viem"
 import type { PasskeyRequestScope } from "@obsidion/passkey-web"
+import { pendingRecord, registrationTerms, SIPA } from "./support/registrationFixtures"
 import {
   type HeldRequest,
   pageHide,
@@ -24,6 +28,11 @@ const h = vi.hoisted(() => ({
   l1: { account: null as string | null, walletName: null as string | null, connect: vi.fn() },
   writeContract: vi.fn(async () => "0xtx"),
   getL1Clients: vi.fn(),
+  processing: { current: undefined as unknown },
+  termsReads: [] as string[],
+  termsFail: false,
+  /** The SIPA deposit store has not loaded its records yet. */
+  recordsLoading: false,
 }))
 h.getL1Clients.mockImplementation(async () => ({
   walletClient: { writeContract: h.writeContract },
@@ -40,6 +49,9 @@ vi.mock("../src/ui/screening", () => ({
   useScreenedAddress: () => ({ verdict: null, cleared: true, rescreen: vi.fn() }),
 }))
 
+vi.mock("../src/features/deposit/l1DepositTokenBalance", () => ({
+  readL1DepositTokenBalance: async () => ({ raw: 10n ** 30n }),
+}))
 vi.mock("../src/config/env", () => ({
   getConfig: () => ({ network: "testnet", l1Chain: { name: "Sepolia" }, l1ChainId: 11155111 }),
 }))
@@ -56,12 +68,35 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   readFundingTransfers: async () => [],
   readSweepEvents: async () => [],
+  readSipaPortalTerms: async (_client: unknown, implementation: string) => {
+    h.termsReads.push(implementation)
+    if (h.termsFail) throw new Error("terms read failed")
+    return (await import("./recordedRegistration")).originalTerms(TOKEN)
+  },
 }))
-vi.mock("@obsidion/front-core", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  // The modal reads the Aztec context at render (manual-sweep action).
-  useAztecContext: () => ({ obsidionWallet: {} }),
+// Plenty of capacity in every bucket; the test reads which buckets were asked for.
+const capacity = vi.hoisted(() => ({
+  availableAtomic: 40_000n * 10n ** 18n,
+  readFails: false,
+  globalLimitAtomic: undefined as bigint | undefined,
+  epoch: 0,
+  keys: [] as string[],
 }))
+vi.mock("../src/features/deposit/capacityStore", async () =>
+  (await import("./fakeCapacity")).fakeCapacityStore(capacity),
+)
+vi.mock("@obsidion/front-core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@obsidion/front-core")>()
+  return {
+    ...actual,
+    // The modal reads the Aztec context at render (manual-sweep action).
+    useAztecContext: () => ({ obsidionWallet: {} }),
+    useCachedRecords: ((source) =>
+      h.recordsLoading
+        ? { records: [], hydrated: false }
+        : actual.useCachedRecords(source)) as typeof actual.useCachedRecords,
+  }
+})
 vi.mock("../src/ui/hooks", () => ({
   useCopy: () => ({
     copied: false,
@@ -70,6 +105,24 @@ vi.mock("../src/ui/hooks", () => ({
 }))
 vi.mock("../src/features/onboarding/oxideOnboarding", () => ({
   reusePasskeyAccount: h.reusePasskeyAccount,
+}))
+// The registration's rail record is not seeded here, so the real rule states a blocker only.
+vi.mock("../src/features/deposit/sipaProcessing", async () => {
+  const { sipaReasonShown } = await vi.importActual<typeof import("@obsidion/front-core")>(
+    "@obsidion/front-core",
+  )
+  return {
+    useSipaProcessing: () => {
+      const state = h.processing.current as Parameters<typeof sipaReasonShown>[0]
+      const shown = sipaReasonShown(state, { phase: "funded", startTime: Date.now() })
+      return { state, shown: shown ? state : undefined }
+    },
+    sipaProcessingObserver: () => undefined,
+  }
+})
+// Registration surfaces sit inside AccountGate; this suite renders without the provider.
+vi.mock("../src/features/allowance/useSponsoredAllowance", () => ({
+  useSponsoredAllowance: () => ({ snapshot: { status: "signed-out" }, refresh: () => {} }),
 }))
 vi.mock("../src/features/onboarding/registrationSweep", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/onboarding/registrationSweep")>()),
@@ -84,8 +137,10 @@ vi.mock("../src/lib/analytics", async (importOriginal) => ({
 }))
 vi.mock("@obsidion/web-ds", () => ({
   Card: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
   Icon: ({ name }: { name: string }) => <span data-icon={name} />,
   NumberedStepRow: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  Spinner: () => null,
   PrimaryGradientButton: ({
     title,
     testId,
@@ -109,35 +164,40 @@ vi.mock("@obsidion/web-ds", () => ({
   ),
 }))
 
-const { RegistrationDepositDetailModal } = await import(
-  "../src/features/onboarding/RegistrationDepositDetailModal"
-)
+const { RegistrationDepositDetailModal, ManualSweepAction, registrationDepositStatus } =
+  await import("../src/features/onboarding/RegistrationDepositDetailModal")
 const { DepositAddressRow } = await import("../src/features/onboarding/steps/DepositAddress")
-const { registrationDepositGross } = await import("../src/features/onboarding/registrationTerms")
+const { seedRecordedRegistration, ORIGINAL_PORTAL } = await import("./recordedRegistration")
+const { FAKE_ACTIVE_KEY } = await import("./fakeCapacity")
+const { depositCapacityStore } = await import("../src/features/deposit/capacityStore")
+const { getBroadcastLedger, resetBroadcastsForTests } = await import(
+  "../src/features/broadcasts/broadcasts"
+)
 
-const SIPA = "0x00000000000000000000000000000000000000c3"
-const TOKEN = "0x00000000000000000000000000000000000000d4"
-
-const record = (over: Partial<PendingRegistrationRecord> = {}): PendingRegistrationRecord =>
-  ({
-    account: "0x00000000000000000000000000000000000000f1",
-    tag: "taga",
-    nameHash: `0x${"11".repeat(32)}` as Hex,
-    l2Address: `0x${"22".repeat(32)}` as Hex,
-    l1ChainId: 11155111,
-    sipaAddress: SIPA,
-    depositToken: TOKEN as Hex,
-    broadcast: true,
-    phase: "awaiting_deposit",
-    startTime: Date.now() - 60_000,
-    ...over,
-  } as PendingRegistrationRecord)
+const record = (over: Partial<PendingRegistrationRecord> = {}) =>
+  pendingRecord({ startTime: Date.now() - 60_000, ...over })
+const TOKEN = record().depositToken
 
 let container: HTMLDivElement
 let root: Root
 
-beforeEach(() => {
+beforeEach(async () => {
   localStorage.clear()
+  capacity.availableAtomic = 40_000n * 10n ** 18n
+  capacity.readFails = false
+  capacity.globalLimitAtomic = undefined
+  h.recordsLoading = false
+  capacity.epoch += 1
+  capacity.keys.length = 0
+  h.termsReads.length = 0
+  h.termsFail = false
+  // The pending registration's own SIPA, as recorded when its address was derived.
+  await seedRecordedRegistration({
+    sipaAddress: SIPA,
+    token: TOKEN,
+    registrationFee: 10n ** 18n,
+    l1ChainId: 11155111,
+  })
   h.copied.length = 0
   h.writeContract.mockClear()
   h.reusePasskeyAccount.mockReset()
@@ -150,13 +210,24 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   container.remove()
+  h.processing.current = undefined
+  h.l1.account = null
+  h.l1.walletName = null
 })
+
+/** The page-wide wallet slot, read as the sheets read it. */
+function SlotProbe() {
+  return <span data-testid="wallet-slot" data-open={String(useWalletPrompt().open)} />
+}
 
 const render = (node: React.ReactElement) =>
   act(() =>
     root.render(
       <MemoryRouter>
-        <ScreeningProvider screener={passThroughScreener}>{node}</ScreeningProvider>
+        <ScreeningProvider screener={passThroughScreener}>
+          {node}
+          <SlotProbe />
+        </ScreeningProvider>
       </MemoryRouter>,
     ),
   )
@@ -175,29 +246,16 @@ describe("DepositAddressRow", () => {
   })
 })
 
-describe("registrationDepositGross", () => {
-  const dai = (n: bigint) => n * 10n ** 18n
-
-  it("credits the summed funding of a topped-up deposit, not the first tranche", () => {
-    // Case B: 5 DAI then +6 top-up = 11 deposited. The address is swept (live 0) and the stamped
-    // terms are stuck at the shortfall-time first tranche; the summed on-chain funding wins.
-    expect(registrationDepositGross(0n, dai(11n), dai(5n))).toBe(dai(11n))
-  })
-
-  it("matches a single-tranche deposit (Case A)", () => {
-    expect(registrationDepositGross(0n, dai(11n), dai(11n))).toBe(dai(11n))
-  })
-
-  it("prefers the live balance while the address still holds it", () => {
-    expect(registrationDepositGross(dai(11n), 0n, 0n)).toBe(dai(11n))
-  })
-
-  it("falls back to the stamped terms before the funding read lands", () => {
-    expect(registrationDepositGross(0n, 0n, dai(5n))).toBe(dai(5n))
-  })
-
-  it("leaves a genuinely short deposit short", () => {
-    expect(registrationDepositGross(0n, dai(5n), dai(5n))).toBe(dai(5n))
+describe("registrationDepositStatus", () => {
+  it.each([
+    ["reserved", "Deposit received, waiting for the sweep"],
+    ["received", "Registering @taga"],
+    ["sweeping", "Registering @taga"],
+    ["claiming", "Confirming on-chain"],
+    ["crediting", "Confirming on-chain"],
+    ["registered", "Registered, funds on the way"],
+  ] as const)("labels %s as %s", (stage, label) => {
+    expect(registrationDepositStatus("taga", stage).label).toBe(label)
   })
 })
 
@@ -223,9 +281,17 @@ describe("RegistrationDepositDetailModal", () => {
     ...(earnedExpected ? { earnedExpected: true } : {}),
   })
 
+  it("owes the broadcast of the unpublished address it shows", async () => {
+    resetBroadcastsForTests()
+    render(<RegistrationDepositDetailModal record={record({ broadcast: false })} {...base} />)
+    await vi.waitFor(() =>
+      expect(getBroadcastLedger().get(SIPA)).toMatchObject({ kind: "registration" }),
+    )
+  })
+
   it("connects a wallet, then pays the exact amount from it, while the address still needs funds", async () => {
     const pay = {
-      token: TOKEN as never,
+      token: TOKEN,
       chainId: 11155111,
       total: 11n * 10n ** 18n,
       tokenSymbol: "DAI",
@@ -242,9 +308,16 @@ describe("RegistrationDepositDetailModal", () => {
     h.l1.account = "0x00000000000000000000000000000000000000aa"
     h.l1.walletName = "Rainbow"
     render(<RegistrationDepositDetailModal record={record()} {...base} pay={pay} />)
+    // The address's own bucket is read before a payment may start.
+    for (let i = 0; i < 6; i++) await act(async () => {})
     await act(async () =>
       buttons()
-        .find((b) => b.textContent?.includes("Pay from Rainbow"))!
+        .find((b) => b.textContent?.includes("from Rainbow"))!
+        .click(),
+    )
+    await act(async () =>
+      buttons()
+        .find((b) => b.textContent === "Confirm payment")!
         .click(),
     )
     expect(h.getL1Clients).toHaveBeenCalledWith(11155111, h.l1.account)
@@ -256,15 +329,332 @@ describe("RegistrationDepositDetailModal", () => {
       }),
     )
     expect(buttons().some((b) => b.textContent?.includes("Payment sent"))).toBe(true)
-    // Both the inline row and the detail row copy the full address.
-    const copies = buttons().filter((b) =>
-      b.getAttribute("aria-label")?.startsWith("Copy deposit address"),
-    )
-    expect(copies.length).toBe(2)
-    act(() => copies.forEach((b) => b.click()))
-    expect(h.copied).toEqual([SIPA, SIPA])
     h.l1.account = null
     h.l1.walletName = null
+  })
+
+  it("shows the per-deposit maximum under the address while it still needs funds", () => {
+    const pay = {
+      token: TOKEN,
+      chainId: 11155111,
+      total: 11n * 10n ** 18n,
+      tokenSymbol: "DAI",
+    }
+    render(<RegistrationDepositDetailModal record={record()} {...base} pay={pay} />)
+    const maximum = container.querySelector("[data-testid='deposit-terms-maximum']")
+    expect(maximum?.textContent).toBe("Deposit limit: $2,500 incl. fees")
+    expect(container.querySelector("[data-testid='registration-over-limit']")).toBeNull()
+    // Its details open on the limit, with the basis the limit is counted on.
+    act(() =>
+      maximum!.querySelector<HTMLButtonElement>("[data-testid='about-limits-link']")!.click(),
+    )
+    const sheet = document.querySelector("dialog[aria-label='About limits']")!
+    const operation = sheet.querySelector<HTMLElement>("[data-testid='about-limits-operation']")!
+    expect(sheet.querySelector("section")).toBe(operation)
+    expect(operation.textContent).toContain("$2,500 sent, incl. fees")
+  })
+
+  it("holds copy and a new payment for an ask over the maximum, and keeps the address", async () => {
+    // Its own address: the payment lock is session-wide, keyed by the address it pays.
+    const sipa = "0x00000000000000000000000000000000000000c4"
+    const pay = {
+      token: TOKEN,
+      chainId: 11155111,
+      total: 2500n * 10n ** 18n + 1n,
+      tokenSymbol: "DAI",
+    }
+    h.l1.account = "0x00000000000000000000000000000000000000aa"
+    h.l1.walletName = "Rainbow"
+    try {
+      render(
+        <RegistrationDepositDetailModal
+          record={record({ sipaAddress: sipa })}
+          {...base}
+          pay={pay}
+        />,
+      )
+      const inline = container.querySelector<HTMLButtonElement>(".ww-send-to__copy")!
+      expect(inline.disabled).toBe(true)
+      expect(inline.getAttribute("title")).toBe(sipa)
+      expect(
+        container.querySelector("[data-testid='registration-over-limit']")?.textContent,
+      ).toContain("over the $2,500 limit")
+      const payButton = buttons().find((b) => b.textContent?.includes("from Rainbow"))!
+      expect(payButton.disabled).toBe(true)
+      await act(async () => payButton.click())
+      expect(h.writeContract).not.toHaveBeenCalled()
+    } finally {
+      h.l1.account = null
+      h.l1.walletName = null
+    }
+  })
+
+  describe("shared capacity of a resumed registration", () => {
+    const pay = {
+      token: TOKEN,
+      chainId: 11155111,
+      total: 11n * 10n ** 18n,
+      tokenSymbol: "DAI",
+    }
+    const settle = async () => {
+      for (let i = 0; i < 6; i++) await act(async () => {})
+    }
+    const panel = () => container.querySelector("[data-testid='funding-capacity-panel']")
+    const payButton = () => buttons().find((b) => b.textContent?.includes("from Rainbow"))!
+    // Each test pays its own address: the payment lock and the terms read are session-wide.
+    let next = 0xd0
+    const openFor = async (
+      over: {
+        implementation?: `0x${string}`
+        withoutOrigin?: boolean
+        total?: bigint
+        recovered?: boolean
+        /** The record's committed fee; a refunded record without one counts as needing a refund. */
+        recordFee?: string
+      } = {},
+    ) => {
+      const sipaAddress = `0x${(next++).toString(16).padStart(40, "0")}`
+      const implementation =
+        over.implementation ?? (`0x${"77".repeat(18)}${sipaAddress.slice(-4)}` as `0x${string}`)
+      await seedRecordedRegistration({
+        sipaAddress,
+        token: TOKEN,
+        registrationFee: 10n ** 18n,
+        l1ChainId: 11155111,
+        implementation,
+        withoutOrigin: over.withoutOrigin,
+        recovered: over.recovered,
+      })
+      render(
+        <RegistrationDepositDetailModal
+          record={record({ sipaAddress, ...(over.recordFee ? { fee: over.recordFee } : {}) })}
+          {...base}
+          pay={{ ...pay, total: over.total ?? pay.total }}
+        />,
+      )
+      await settle()
+      return implementation
+    }
+
+    beforeEach(() => {
+      h.l1.account = "0x00000000000000000000000000000000000000aa"
+      h.l1.walletName = "Rainbow"
+    })
+    afterEach(() => {
+      h.l1.account = null
+      h.l1.walletName = null
+    })
+
+    describe("every copy control while the address takes funds", () => {
+      // Each control the sheet offers to copy the address, and whether it can act now.
+      const copyControls = () =>
+        buttons().filter((b) => b.getAttribute("aria-label")?.startsWith("Copy deposit address"))
+      const enabledCopies = () => copyControls().filter((b) => !b.disabled)
+      const clickAll = async () => {
+        for (const b of copyControls()) await act(async () => b.click())
+      }
+      const warning = () => document.querySelector("[data-testid='address-capacity-warning']")
+      const recordRow = () => container.querySelector("[data-testid='registration-detail-address']")
+
+      it("offers one copy, the gated one, when the ask fits", async () => {
+        await openFor()
+        expect(recordRow()?.textContent).not.toBe("")
+        expect(copyControls()).toHaveLength(1)
+        expect(enabledCopies()).toHaveLength(1)
+        await clickAll()
+        expect(h.copied).toHaveLength(1)
+        expect(warning()).toBeNull()
+      })
+
+      it("offers no copy for an ask known not to fit current capacity", async () => {
+        capacity.availableAtomic = 5n * 10n ** 18n
+        await openFor()
+        expect(recordRow()).not.toBeNull()
+        expect(enabledCopies()).toHaveLength(0)
+        await clickAll()
+        expect(h.copied).toEqual([])
+      })
+
+      it("offers only the gated copy for a recovered deposit the sheet asks for again", async () => {
+        // A refunded standard registration, back to awaiting its deposit, shows the pay block.
+        await openFor({
+          total: 2500n * 10n ** 18n + 1n,
+          recovered: true,
+          recordFee: String(10n ** 18n),
+        })
+        expect(container.querySelector(".ww-send-to__copy")).not.toBeNull()
+        expect(recordRow()).not.toBeNull()
+        expect(enabledCopies()).toHaveLength(0)
+        await clickAll()
+        expect(h.copied).toEqual([])
+      })
+
+      it("warns before every copy while capacity is unconfirmed", async () => {
+        capacity.readFails = true
+        await openFor()
+        expect(recordRow()).not.toBeNull()
+        expect(copyControls()).toHaveLength(1)
+        await clickAll()
+        expect(warning()).not.toBeNull()
+        expect(h.copied).toEqual([])
+      })
+    })
+
+    it("reads the bucket of the portal its recorded implementation names, never the active one", async () => {
+      const implementation = await openFor()
+      expect(h.termsReads).toEqual([implementation])
+      expect(capacity.keys.some((id) => id.includes(ORIGINAL_PORTAL.toLowerCase()))).toBe(true)
+      expect(capacity.keys.some((id) => id.includes(FAKE_ACTIVE_KEY.portal))).toBe(false)
+      expect(panel()?.className).toContain("ww-capacity--quiet")
+      expect(payButton().disabled).toBe(false)
+    })
+
+    it("holds copy and payment when the ask can't fit the original bucket, and keeps the ask", async () => {
+      // 11 DAI ask less the 1 DAI signed fee and the 0.1 DAI cut needs 9.9 DAI.
+      capacity.availableAtomic = 5n * 10n ** 18n
+      await openFor()
+      expect(panel()?.textContent).toContain("This payment needs 9.9 DAI; 5 DAI is available now.")
+      expect(container.querySelector<HTMLButtonElement>(".ww-send-to__copy")!.disabled).toBe(true)
+      expect(payButton().disabled).toBe(true)
+      await act(async () => payButton().click())
+      expect(h.writeContract).not.toHaveBeenCalled()
+    })
+
+    it("keeps capacity unknown for a record with no origin: no read, payment held, copy warns", async () => {
+      await openFor({ withoutOrigin: true })
+      expect(h.termsReads).toEqual([])
+      expect(capacity.keys).toEqual([])
+      expect(panel()?.textContent).toContain("Capacity can't be checked for this deposit.")
+      expect(payButton().disabled).toBe(true)
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>(".ww-send-to__copy")!.click(),
+      )
+      expect(
+        document.querySelector("[data-testid='address-capacity-warning']")?.textContent,
+      ).toContain("isn't confirmed")
+    })
+
+    it("closes an open copy warning once the ask is known not to fit, and copies nothing", async () => {
+      capacity.readFails = true
+      await openFor()
+      await act(async () =>
+        container.querySelector<HTMLButtonElement>(".ww-send-to__copy")!.click(),
+      )
+      expect(document.querySelector("[data-testid='address-capacity-warning']")).not.toBeNull()
+      capacity.readFails = false
+      capacity.availableAtomic = 5n * 10n ** 18n
+      await act(async () => {
+        await depositCapacityStore({
+          chainId: 11155111,
+          portal: ORIGINAL_PORTAL,
+          token: TOKEN,
+        }).retry()
+      })
+      await settle()
+      // Acknowledging whatever is still open must not copy the held address.
+      const open = document.querySelector("dialog[aria-label='Network capacity']")
+      if (open) {
+        await act(async () =>
+          [...open.querySelectorAll("button")].find((b) => b.textContent === "Got it!")!.click(),
+        )
+      }
+      expect(document.querySelector("dialog[aria-label='Network capacity']")).toBeNull()
+      expect(container.querySelector<HTMLButtonElement>(".ww-send-to__copy")!.disabled).toBe(true)
+      expect(h.copied).toEqual([])
+    })
+
+    it("says an ask above the original bucket's ceiling can never fit", async () => {
+      capacity.globalLimitAtomic = 5n * 10n ** 18n
+      capacity.availableAtomic = 5n * 10n ** 18n
+      await openFor()
+      const notice = container.querySelector("[data-testid='registration-over-limit']")?.textContent
+      expect(notice).toBe(
+        "This deposit can't fit the network's deposit capacity, even when it is full.",
+      )
+      expect(container.querySelector<HTMLButtonElement>(".ww-send-to__copy")!.disabled).toBe(true)
+    })
+
+    it("reads as checking, not unconfirmed, while the stored records load", async () => {
+      h.recordsLoading = true
+      await openFor()
+      expect(panel()?.textContent).toContain("Checking capacity")
+      expect(panel()?.textContent).not.toContain("can't be checked")
+      expect(h.termsReads).toEqual([])
+      expect(payButton().disabled).toBe(true)
+    })
+
+    describe("About limits", () => {
+      const openSheet = async () => {
+        await act(async () =>
+          container
+            .querySelector<HTMLButtonElement>(
+              "[data-testid='deposit-terms-maximum'] [data-testid='about-limits-link']",
+            )!
+            .click(),
+        )
+        await settle()
+        const sheet = document.querySelector("dialog[aria-label='About limits']")!
+        return {
+          sheet,
+          section: sheet.querySelector<HTMLElement>("[data-testid='about-limits-capacity']")!,
+          retry: () =>
+            sheet.querySelector<HTMLButtonElement>("[data-testid='about-limits-capacity-retry']"),
+        }
+      }
+      const readActive = () => capacity.keys.some((id) => id.includes(FAKE_ACTIVE_KEY.portal))
+      const readOriginal = () =>
+        capacity.keys.some((id) => id.includes(ORIGINAL_PORTAL.toLowerCase()))
+
+      it("opens on the registration's original bucket, never the active one", async () => {
+        await openFor()
+        const { section } = await openSheet()
+        expect(section.dataset.state).toBe("fresh")
+        // This suite's testnet settlement token is TEST; the figure is the original bucket's.
+        expect(section.textContent).toContain("40,000 TEST")
+        expect(readOriginal()).toBe(true)
+        expect(readActive()).toBe(false)
+      })
+
+      it("retries a failed original-terms read through the address's own reader", async () => {
+        h.termsFail = true
+        const implementation = await openFor()
+        const { section, retry } = await openSheet()
+        expect(section.dataset.state).toBe("unavailable")
+        expect(retry()).not.toBeNull()
+        h.termsFail = false
+        await act(async () => retry()!.click())
+        await settle()
+        expect(h.termsReads).toEqual([implementation, implementation])
+        expect(section.dataset.state).toBe("fresh")
+        expect(readOriginal()).toBe(true)
+        expect(readActive()).toBe(false)
+      })
+
+      it("shows a record with no origin as unavailable, with no Retry and no read", async () => {
+        await openFor({ withoutOrigin: true })
+        const { section, retry } = await openSheet()
+        expect(section.dataset.state).toBe("unavailable")
+        expect(retry()).toBeNull()
+        expect(capacity.keys).toEqual([])
+        expect(h.termsReads).toEqual([])
+      })
+    })
+
+    it("offers Check again after the original terms fail to read, and reads them again", async () => {
+      h.termsFail = true
+      const implementation = await openFor()
+      expect(panel()?.textContent).toContain("Capacity could not be checked.")
+      expect(capacity.keys).toEqual([])
+      h.termsFail = false
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>("[data-testid='funding-capacity-retry']")!
+          .click(),
+      )
+      await settle()
+      expect(h.termsReads).toEqual([implementation, implementation])
+      expect(panel()?.className).toContain("ww-capacity--quiet")
+    })
   })
 
   it("removes payment controls when the promised deposit admits the wallet", async () => {
@@ -273,7 +663,7 @@ describe("RegistrationDepositDetailModal", () => {
       sipaAddress: "0x00000000000000000000000000000000000000c5",
     })
     const pay = {
-      token: TOKEN as Hex,
+      token: TOKEN,
       chainId: 11155111,
       total: 15n * 10n ** 18n,
       tokenSymbol: "DAI",
@@ -359,6 +749,11 @@ describe("RegistrationDepositDetailModal", () => {
   })
 
   const byTestId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)
+  /** The manual sweep with a wallet already connected, as it must be before the passkey. */
+  const clickManualSweep = async () => {
+    h.l1.account = "0x00000000000000000000000000000000000000aa"
+    await act(async () => byTestId("manual-sweep")!.click())
+  }
   const rowById = (id: string) => byTestId(id)?.textContent ?? undefined
   /** A detail row's value, by its label: the row renders label and value as sibling spans. */
   const rowValue = (label: string) =>
@@ -374,6 +769,83 @@ describe("RegistrationDepositDetailModal", () => {
       },
     )
 
+  it("says why the deposit waits and holds the manual sweep while capacity is short", async () => {
+    h.processing.current = {
+      reason: {
+        kind: "capacity",
+        availableAtomic: 0n,
+        refill: { status: "none" },
+        decimals: 18,
+        observedAt: Date.now(),
+      },
+      blocker: { kind: "capacity", observedAt: Date.now(), zeroCapacity: true },
+    }
+    await render(<RegistrationDepositDetailModal record={record()} {...base} />)
+    const reason = byTestId("deposit-pending-reason")
+    expect(reason?.textContent).toContain("Waiting for network capacity")
+    expect(reason?.textContent).toContain("Your funds remain at your Ethereum deposit address.")
+    expect((byTestId("manual-sweep") as HTMLButtonElement).disabled).toBe(true)
+    // The amounts and refill are the reason's details, on the capacity topic.
+    await act(async () =>
+      reason!.querySelector<HTMLButtonElement>("[data-testid='about-limits-link']")!.click(),
+    )
+    const details = document.querySelector(
+      "dialog[aria-label='About limits'] [data-testid='about-limits-capacity']",
+    )
+    expect(details?.textContent).toContain("No network capacity is available now.")
+    expect(details?.textContent).toContain("No automatic refill is configured.")
+  })
+
+  it("labels no fresh deposit delayed, and leaves the manual sweep to its own rules, when capacity cannot be read", async () => {
+    h.processing.current = { reason: { kind: "unavailable", cause: "capacity-unread" } }
+    await render(<RegistrationDepositDetailModal record={record()} {...base} />)
+    expect(byTestId("deposit-pending-reason")).toBeNull()
+    expect((byTestId("manual-sweep") as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it("states the reason once in the sheet, not again beside the held action", async () => {
+    h.processing.current = {
+      reason: {
+        kind: "capacity",
+        availableAtomic: 0n,
+        refill: { status: "unknown" },
+        decimals: 18,
+        observedAt: Date.now(),
+      },
+      blocker: { kind: "capacity", observedAt: Date.now(), zeroCapacity: true },
+    }
+    await render(<RegistrationDepositDetailModal record={record()} {...base} />)
+    expect(container.querySelectorAll("[data-testid='deposit-pending-reason']")).toHaveLength(1)
+  })
+
+  it("gives the earned-registration action its own reason and retry where no sheet states one", async () => {
+    h.processing.current = {
+      reason: {
+        kind: "capacity",
+        requiredAtomic: 9n * 10n ** 18n,
+        availableAtomic: 2n * 10n ** 18n,
+        refill: { status: "unknown" },
+        decimals: 18,
+        observedAt: Date.now(),
+      },
+      blocker: { kind: "capacity", observedAt: Date.now() },
+    }
+    const attempt = { current: undefined }
+    await render(<ManualSweepAction record={record()} attempt={attempt} />)
+    const reason = byTestId("deposit-pending-reason")
+    expect(reason?.textContent).toContain("Waiting for network capacity")
+    expect(buttons().some((b) => b.textContent === "Check again")).toBe(true)
+    expect((byTestId("manual-sweep") as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it("asks for the wallet before the passkey when none is connected", async () => {
+    await render(<RegistrationDepositDetailModal record={record()} {...base} />)
+    await act(async () => byTestId("manual-sweep")!.click())
+    expect(byTestId("manual-sweep-connect-first")?.textContent).toBe("Connect wallet first.")
+    expect(h.l1.connect).toHaveBeenCalled()
+    expect(h.reusePasskeyAccount).not.toHaveBeenCalled()
+  })
+
   it("closing the modal past the prompt ends the sign-in, so nothing sweeps", async () => {
     let attempt: AbortSignal | undefined
     h.reusePasskeyAccount.mockImplementation(
@@ -383,7 +855,7 @@ describe("RegistrationDepositDetailModal", () => {
       },
     )
     await render(<RegistrationDepositDetailModal record={record()} {...base} />)
-    await act(async () => byTestId("manual-sweep")!.click())
+    await clickManualSweep()
     await flush()
     await act(async () => byTestId("sign-in-continue")!.click())
     await flush()
@@ -403,7 +875,7 @@ describe("RegistrationDepositDetailModal", () => {
       },
     )
     await render(<RegistrationDepositDetailModal record={record()} {...base} />)
-    await act(async () => byTestId("manual-sweep")!.click())
+    await clickManualSweep()
     await flush()
     expect(scope?.aborted).toBe(false)
     await act(async () => root.unmount())
@@ -415,7 +887,7 @@ describe("RegistrationDepositDetailModal", () => {
   it("the manual sweep holds at the phone steps until Continue", async () => {
     gatedRecovery(() => ({ secretKey: "0x1" }))
     await render(<RegistrationDepositDetailModal record={record()} {...base} />)
-    await act(async () => byTestId("manual-sweep")!.click())
+    await clickManualSweep()
     await flush()
     expect(byTestId("sign-in-sheet")).not.toBeNull()
     expect(h.manualRegistrationSweep).not.toHaveBeenCalled()
@@ -425,13 +897,37 @@ describe("RegistrationDepositDetailModal", () => {
     expect(byTestId("sign-in-sheet")).toBeNull()
   })
 
+  it("frees the wallet slot once the sweep is confirming, before the receipt lands", async () => {
+    gatedRecovery(() => ({ secretKey: "0x1" }))
+    let stage!: (stage: string) => void
+    h.manualRegistrationSweep.mockImplementation(
+      (_record: unknown, opts: { onStage: (stage: string) => void }) => {
+        stage = opts.onStage
+        opts.onStage("signing")
+        return new Promise<never>(() => {})
+      },
+    )
+    await render(<RegistrationDepositDetailModal record={record()} {...base} />)
+    await clickManualSweep()
+    await flush()
+    const slotOpen = () => byTestId("wallet-slot")!.dataset.open
+    expect(slotOpen()).toBe("true")
+    await act(async () => byTestId("sign-in-continue")!.click())
+    await flush()
+    expect(h.manualRegistrationSweep).toHaveBeenCalledOnce()
+    expect(slotOpen()).toBe("true")
+    await act(async () => stage("confirming"))
+    expect(slotOpen()).toBe("false")
+    expect(byTestId("manual-sweep")!.hasAttribute("disabled")).toBe(true)
+  })
+
   it("a policy refusal on the manual sweep renders in place with a retry", async () => {
     const { PhoneRequiredError } = await import("@obsidion/passkey-web")
     gatedRecovery(() => {
       throw new PhoneRequiredError()
     })
     await render(<RegistrationDepositDetailModal record={record()} {...base} />)
-    await act(async () => byTestId("manual-sweep")!.click())
+    await clickManualSweep()
     await flush()
     await act(async () => byTestId("sign-in-continue")!.click())
     await flush()
@@ -449,7 +945,7 @@ describe("RegistrationDepositDetailModal", () => {
       throw new RotatedCredentialError()
     })
     await render(<RegistrationDepositDetailModal record={record()} {...base} />)
-    await act(async () => byTestId("manual-sweep")!.click())
+    await clickManualSweep()
     await flush()
     await act(async () => byTestId("sign-in-continue")!.click())
     await flush()
@@ -487,7 +983,7 @@ describe("RegistrationDepositDetailModal", () => {
     const toRequest = async () => {
       const held = heldRecovery()
       await show()
-      await act(async () => byTestId("manual-sweep")!.click())
+      await clickManualSweep()
       await flush()
       await act(async () => byTestId("sign-in-continue")!.click())
       await flush()
@@ -553,7 +1049,7 @@ describe("RegistrationDepositDetailModal", () => {
     it("a cancel at the sweep's phone steps, then leaving at once, sends one in-app cancel", async () => {
       heldRecovery()
       await show()
-      await act(async () => byTestId("manual-sweep")!.click())
+      await clickManualSweep()
       await flush()
       act(() => {
         byTestId("sign-in-cancel")!.click()
@@ -573,6 +1069,21 @@ describe("RegistrationDepositDetailModal", () => {
       ])
       expect(events()[0]).not.toHaveProperty("attempt")
     })
+  })
+
+  it.each([
+    ["awaiting_deposit", true],
+    ["confirmed", false],
+    ["failed_terminal", false],
+  ] as const)("a %s record shows the reservation's end: %s", (phase, shown) => {
+    render(
+      <RegistrationDepositDetailModal
+        record={record({ phase })}
+        {...base}
+        terms={registrationTerms()}
+      />,
+    )
+    expect(rowValue("Reserved until") !== undefined).toBe(shown)
   })
 
   it("keeps the copyable address row but no QR once the deposit is in", () => {

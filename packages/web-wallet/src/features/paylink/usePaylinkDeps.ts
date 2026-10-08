@@ -49,15 +49,15 @@ export function usePaylinkDeps(): SponsoredPaylinkDeps | undefined {
  * no account, since the whole point is a holder who has none. Undefined until the enclave connects.
  */
 export function useLinkExitDeps(): PaylinkExitDeps | undefined {
-  const { obsidionWallet } = useAztecContext()
+  const { obsidionWallet, rollupAddress } = useAztecContext()
   const { teeSigner } = useAssetContext()
   const { contractService } = useContractServiceContext()
   return useMemo(
     () =>
       obsidionWallet && teeSigner && contractService
-        ? { wallet: obsidionWallet, contractService, teeSigner }
+        ? { wallet: obsidionWallet, contractService, teeSigner, rollupAddress }
         : undefined,
-    [obsidionWallet, teeSigner, contractService],
+    [obsidionWallet, teeSigner, contractService, rollupAddress],
   )
 }
 

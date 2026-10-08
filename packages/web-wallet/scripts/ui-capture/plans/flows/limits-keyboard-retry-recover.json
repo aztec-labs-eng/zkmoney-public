@@ -1,0 +1,73 @@
+{
+  "scenario": "activity",
+  "bootstrap": "/?demo=activity&flowFixture=success&capacityFixture=empty",
+  "path": "/activity?originFixture=failing&allowanceFixture=available",
+  "ready": {
+    "text": "+$17.65",
+    "exact": true
+  },
+  "steps": [
+    {
+      "action": "click",
+      "text": "+$17.65",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "testId": "deposit-pending-reason"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid=\"deposit-pending-reason-help\"] [data-testid=\"about-limits-link\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"unavailable\"]"
+    },
+    {
+      "action": "press",
+      "testId": "about-limits-capacity-retry",
+      "key": "Enter"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"fresh\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "retry-by-keyboard.png",
+      "state": "Enter on Check again: the original bucket resolves"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "press",
+      "selector": "dialog:modal",
+      "key": "Escape"
+    },
+    {
+      "action": "press",
+      "selector": "role=button[name=\"Recover\" s] >> nth=0",
+      "key": "Enter"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal >> text=\"Recover deposit\""
+    },
+    {
+      "action": "screenshot",
+      "file": "recover-by-keyboard.png",
+      "state": "Enter on Recover opens the recovery sheet for an over-limit deposit"
+    }
+  ],
+  "finalScreenshot": false,
+  "recordHoldMs": 0
+}

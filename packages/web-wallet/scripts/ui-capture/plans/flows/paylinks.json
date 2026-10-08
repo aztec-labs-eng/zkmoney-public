@@ -74,7 +74,7 @@
     {
       "action": "reachable",
       "role": "button",
-      "name": "Cancel paylink",
+      "name": "Cancel link",
       "exact": true
     },
     {
@@ -85,7 +85,7 @@
     {
       "action": "click",
       "role": "button",
-      "name": "Cancel paylink",
+      "name": "Cancel link",
       "exact": true
     },
     {

@@ -309,6 +309,20 @@ describe("failureCode", () => {
     err.name = "IncompleteCreationError"
     expect(failureCode(err)).toBe("passkey_incomplete_creation")
   })
+
+  it("has no code for a browser that can't run passkeys, whichever way it says so", () => {
+    // Android web views and iOS app browsers; their refusal card must not change these codes.
+    const unsupported = new DOMException(
+      "Error connecting to Web Authentication service",
+      "NotSupportedError",
+    )
+    const closed = new DOMException(
+      "The operation either timed out or was not allowed. See: https://www.w3.org/TR/webauthn-2/#sctn-privacy-considerations-client.",
+      "NotAllowedError",
+    )
+    expect(failureCode(unsupported)).toBe("unknown")
+    expect(failureCode(closed)).toBe("unknown")
+  })
 })
 
 describe("lapTimer", () => {

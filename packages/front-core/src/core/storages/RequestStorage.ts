@@ -53,9 +53,10 @@ interface StoredShape {
   requests: PaymentRequest[]
 }
 
-// Status transition ranks used by the monotonic guard. `fulfilled` is terminal
-// and always wins (a real on-chain payment is authoritative); `declined` /
-// `cancelled` are only reachable from `pending`.
+// Status transition ranks used by the monotonic guard. `fulfilled` always wins
+// (a real on-chain payment is authoritative) and only `reopen` undoes it, when
+// the network reverts that payment; `declined` / `cancelled` are only reachable
+// from `pending`.
 function canApply(current: RequestStatus, next: RequestStatus): boolean {
   if (current === next) return false
   if (next === "fulfilled") return current !== "fulfilled"
@@ -182,6 +183,25 @@ export class RequestStorage {
       if (idx < 0) return { applied: false }
       if (!canApply(all[idx].status, status)) return { applied: false }
       all[idx] = { ...all[idx], status, ...(txHash ? { fulfillmentTxHash: txHash } : {}) }
+      await this.write(all)
+      return { applied: true }
+    })
+  }
+
+  /**
+   * Back to pending: the network reverted the payment that fulfilled this request. Only that
+   * payment's hash reopens it, so an unrelated reverted receive never touches a paid request.
+   */
+  async reopen(id: string, txHash: string): Promise<{ applied: boolean }> {
+    return this.mutate(async () => {
+      const all = await this.read()
+      const idx = all.findIndex((r) => r.id === id)
+      if (idx < 0) return { applied: false }
+      const { fulfillmentTxHash, ...row } = all[idx]
+      if (row.status !== "fulfilled" || fulfillmentTxHash?.toLowerCase() !== txHash.toLowerCase()) {
+        return { applied: false }
+      }
+      all[idx] = { ...row, status: "pending" }
       await this.write(all)
       return { applied: true }
     })

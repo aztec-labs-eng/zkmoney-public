@@ -44,8 +44,13 @@ vi.mock("../src/features/paylink/paylinkExit", () => ({
   linkWithdrawalIdentity: () => ({ id: "paylink-id" }),
 }))
 vi.mock("../src/features/paylink/claimStash", () => ({ stashClaimLink: vi.fn() }))
+// An open claim window: the Ethereum claim is withheld until the chain clock says so.
+vi.mock("../src/features/paylink/chainTime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/paylink/chainTime")>()),
+  usePolledChainSeconds: () => 1_000,
+}))
 vi.mock("react-router-dom", () => ({ useNavigate: () => vi.fn() }))
-vi.mock("../src/lib/analytics", () => ({ fireEvent: m.fireEvent }))
+vi.mock("../src/lib/analytics", () => ({ fireEvent: m.fireEvent, failureCode: () => "unknown" }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: m.error }))
 vi.mock("../src/ui/screens/WithdrawalDetailModal", () => ({
   withdrawalStatus: () => ({ label: "Releasing on Ethereum" }),
@@ -54,6 +59,10 @@ vi.mock("../src/features/onboarding/InvitationChrome", () => ({
   InvitationChrome: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }))
 vi.mock("../src/features/onboarding/OnboardingScreen", () => ({ OnboardingScreen: () => null }))
+vi.mock("../src/features/notifications/NotificationsMount", () => ({
+  NotificationsMount: () => null,
+}))
+vi.mock("../src/ui/NotificationsBell", () => ({ NotificationsBell: () => null }))
 vi.mock("@obsidion/web-ds", () => ({
   Icon: () => null,
   Spinner: () => null,
@@ -85,6 +94,7 @@ vi.mock("../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => ({}) }))
 vi.mock("../src/features/withdraw/WithdrawScreen", () => ({ useSavedL1Wallets: () => [] }))
 // A priced direct route: the modal only offers Confirm once the fee is known.
 vi.mock("../src/features/withdraw/withdrawQuote", () => ({
+  SWAP_QUOTE_REFRESH_MS: 30_000,
   withdrawalFeeDisplay: () => "0.35",
   useSwapSimulation: () => ({
     status: "ready",
@@ -92,6 +102,7 @@ vi.mock("../src/features/withdraw/withdrawQuote", () => ({
       withdrawalRelayerTip: 100_000_000_000_000_000n,
       fpcFundingCut: 250_000_000_000_000_000n,
       swapRelayerTip: 0n,
+      proverTip: 0n,
       floorAtomic: 350_000_000_000_000_000n,
     },
   }),
@@ -125,10 +136,14 @@ const publish = (records: WithdrawalRecord[]) => {
   m.records = records
   for (const listener of m.listeners) listener(records)
 }
-const button = (label: string) =>
-  [...container.querySelectorAll("button")].find(
-    (b) => b.textContent?.startsWith(label) || b.getAttribute("aria-label") === label,
+// Exact first: "Claim" is also a prefix of the "Claim to an Ethereum wallet" option.
+const button = (label: string) => {
+  const buttons = [...container.querySelectorAll("button")]
+  return (
+    buttons.find((b) => b.textContent === label || b.getAttribute("aria-label") === label) ??
+    buttons.find((b) => b.textContent?.startsWith(label))
   )
+}
 const click = async (label: string) => {
   expect(button(label)).toBeDefined()
   await act(async () => button(label)!.click())
@@ -138,7 +153,7 @@ const outcomes = () =>
     ([name]) => name === "proving_cancelled" || name === "proving_abandoned",
   )
 async function startCashOut() {
-  await act(async () => root.render(<PaylinkVisitorScreen link={link} />))
+  await act(async () => root.render(<PaylinkVisitorScreen link={link} onRetryStatus={vi.fn()} />))
   await click("Claim to an Ethereum wallet")
   const input = container.querySelector('input[placeholder="Paste an address"]')!
   await act(async () => {
@@ -148,8 +163,8 @@ async function startCashOut() {
     )
     input.dispatchEvent(new Event("input", { bubbles: true }))
   })
-  await click("Claim 24.65")
-  await click("Confirm and claim 24.65")
+  await click("Claim")
+  await click("Confirm and claim")
   expect(m.cashOut).toHaveBeenCalledOnce()
 }
 
@@ -166,7 +181,14 @@ beforeEach(() => {
         rejectCashOut = reject
       }),
   )
-  link = { fragment: "fragment", url: "", amount: "25", status: "unclaimed", flavor: "direct" }
+  link = {
+    fragment: "fragment",
+    url: "",
+    amount: "25",
+    status: "unclaimed",
+    flavor: "direct",
+    claimableFrom: 0,
+  }
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -186,7 +208,7 @@ describe("visitor cash-out outcome tracking", () => {
     // The voucher and link status can also refresh before the cash-out promise settles.
     m.uses = 0
     link = { ...link, status: "claimed" }
-    await act(async () => root.render(<PaylinkVisitorScreen link={link} />))
+    await act(async () => root.render(<PaylinkVisitorScreen link={link} onRetryStatus={vi.fn()} />))
     expect(container.textContent).toContain("Preparing transaction")
     await act(async () => resolveCashOut(record))
     expect(container.textContent).not.toContain("Preparing transaction")
@@ -216,7 +238,11 @@ describe("visitor cash-out outcome tracking", () => {
       rejectCashOut(error)
     })
     expect(m.error).toHaveBeenCalledWith(error, "paylink:claim-l1")
-    expect(button("Confirm and claim 24.65")).toBeDefined()
+    expect(m.fireEvent).toHaveBeenCalledWith("action_failed", {
+      action: "paylink:claim-l1",
+      code: "unknown",
+    })
+    expect(button("Confirm and claim")).toBeDefined()
     await act(async () => root.render(null))
     expect(outcomes()).toEqual([])
   })

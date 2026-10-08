@@ -14,7 +14,7 @@ const SUBTREE_SIZE = 1n << BigInt(L1_TO_L2_MSG_SUBTREE_HEIGHT)
 // ponytail: ~2 weeks of L1 blocks; the genesis retry backstops an insufficient default.
 const DEFAULT_WIDEN_BLOCKS = 100_000n
 
-/** Minimal Inbox surface — `InboxContract` (from `node.getNodeInfo()` addresses) satisfies it; tests pass fakes. */
+/** Minimal Inbox surface — `InboxContract` at the portal's `INBOX()` satisfies it; tests pass fakes. */
 export interface InboxMessageSource {
   client: { getBlockNumber(): Promise<bigint | number> }
   getMessageSentEvents(fromBlock: bigint, toBlock: bigint): Promise<InboxMessageSentLog[]>

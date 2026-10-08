@@ -3,13 +3,16 @@ import { Logger, createLogger } from '@aztec/foundation/log';
 import { Checkpoint } from '@aztec/stdlib/checkpoint';
 
 import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
+import {
+  type SubmitEpochProofGasModel,
+  computePartialEpochProofProfit,
+  submitEpochProofGas,
+} from '@oxide/oxide-client/partial_epoch_proof_profit.js';
 
 import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
 import { ProverClaimDiscoverer } from '../prover_claim_lib/prover_claim_discoverer.js';
 import { portalId } from '../types.js';
 import { DiscoveredClaim, EarlySubmitPortalConfig, PartialProofDecision, ProverProfitEstimate } from './types.js';
-
-const BPS_DENOMINATOR = 10_000n;
 
 interface EpochCache {
   toCheckpoint: CheckpointNumber;
@@ -25,7 +28,7 @@ export interface EpochProfitTrackerOptions {
   priceOracle: ChainlinkPriceOracle;
   /** The per-gas price the proof submission tx is expected to pay. */
   getEffectiveGasPriceWei: () => Promise<bigint>;
-  rollupSubmitEpochProofGas: bigint;
+  submitEpochProofGasModel: SubmitEpochProofGasModel;
   minEpochProfit: bigint;
   minEpochProfitMarginBps: bigint;
   provingCostPerCheckpoint: bigint;
@@ -184,16 +187,18 @@ export class EpochProfitTracker {
       { rewardValue: 0n, claimCount: 0 },
     );
 
-    const gas = this.options.rollupSubmitEpochProofGas;
+    const gas = submitEpochProofGas(BigInt(checkpointCount), this.options.submitEpochProofGasModel);
     const effectiveGasPriceWei = await this.options.getEffectiveGasPriceWei();
     const gasCostValue = await this.options.priceOracle.weiToUSD(gas * effectiveGasPriceWei);
-    const provingCostValue = this.options.provingCostPerCheckpoint * BigInt(checkpointCount);
-    const profit = rewardValue - gasCostValue - provingCostValue;
-
-    const submit =
-      claimCount > 0 &&
-      profit >= this.options.minEpochProfit &&
-      profit * BPS_DENOMINATOR >= rewardValue * this.options.minEpochProfitMarginBps;
+    const { profit, provingCostValue, profitable } = computePartialEpochProofProfit({
+      rewardValue,
+      gasCostValue,
+      checkpointCount: BigInt(checkpointCount),
+      minEpochProfit: this.options.minEpochProfit,
+      minEpochProfitMarginBps: this.options.minEpochProfitMarginBps,
+      provingCostPerCheckpoint: this.options.provingCostPerCheckpoint,
+    });
+    const submit = claimCount > 0 && profitable;
 
     return { submit, estimate: { profit, rewardValue, gasCostValue, provingCostValue, gas, claimCount } };
   }

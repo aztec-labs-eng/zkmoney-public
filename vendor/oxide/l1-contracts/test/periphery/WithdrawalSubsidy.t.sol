@@ -9,6 +9,7 @@ import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface
 import {OxidePortalBase} from "@test/core/OxidePortalBase.t.sol";
 import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
 import {Errors} from "@periphery/Errors.sol";
+import {OxideConstants} from "@generated/OxideConstants.gen.sol";
 
 contract WithdrawalSubsidyTest is OxidePortalBase {
   WithdrawalSubsidy internal fm;
@@ -208,7 +209,7 @@ contract WithdrawalSubsidyTest is OxidePortalBase {
 
   function test_GivenTipUnderThePriorityCap_ThenPricedAtTxGasPrice() external {
     _setPricing(START_WEI);
-    uint256 tip = fm.MAX_PRIORITY_FEE_WEI() / 2;
+    uint256 tip = OxideConstants.MAX_PRIORITY_FEE_WEI / 2;
     vm.fee(START_WEI + 1 gwei);
     vm.txGasPrice(START_WEI + 1 gwei + tip);
     assertEq(fm.quoteSubsidy(WITHDRAWAL), _flowGas(WITHDRAWAL) * (1 gwei + tip) * TOKEN_WEI_PER_ETH / 1e18);
@@ -220,7 +221,7 @@ contract WithdrawalSubsidyTest is OxidePortalBase {
     vm.txGasPrice(START_WEI + 1 gwei + 5 gwei);
     assertEq(
       fm.quoteSubsidy(WITHDRAWAL),
-      _flowGas(WITHDRAWAL) * (1 gwei + fm.MAX_PRIORITY_FEE_WEI()) * TOKEN_WEI_PER_ETH / 1e18
+      _flowGas(WITHDRAWAL) * (1 gwei + OxideConstants.MAX_PRIORITY_FEE_WEI) * TOKEN_WEI_PER_ETH / 1e18
     );
   }
 

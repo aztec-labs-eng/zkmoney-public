@@ -4,7 +4,13 @@
  * own, handed back so the exit sheet keeps one owner. A registration deposit additionally names the
  * identity it claimed (`registrationTag`).
  */
-import { depositAmounts, type SIPADepositPhase, type SIPADepositRecord } from "@obsidion/front-core"
+import {
+  depositAmounts,
+  depositPhaseCopy,
+  isNativeEth,
+  type SIPADepositPhase,
+  type SIPADepositRecord,
+} from "@obsidion/front-core"
 import {
   GradientText,
   PrimaryGradientButton,
@@ -16,40 +22,41 @@ import { depositTokensFor } from "../../features/deposit/loadDepositFacts"
 import { getConfig } from "../../config/env"
 import { Modal } from "../Modal"
 import { unsweepableCopy } from "../../features/deposit/unsweepableCopy"
+import { DepositProcessingNotice } from "../../features/deposit/DepositProcessingNotice"
+import { useSipaProcessing } from "../../features/deposit/sipaProcessing"
+import { PendingLimitsLink } from "../../features/limits/AboutLimitsSheet"
 import { l2TxUrl } from "../../lib/explorer"
 import { l1AddressUrl, l1TxUrl, whenLabel } from "../detailRows"
 import { shortAddr, usdFigure } from "../format"
-import { depositAttribution, depositHeadline, neverCreditsL2 } from "./activityView"
+import {
+  depositAttribution,
+  depositGrossFigure,
+  depositHeadline,
+  neverCreditsL2,
+} from "./activityView"
 import { DepositFact } from "./DepositFact"
 import { DepositHashFact } from "./DepositHashFact"
 import { DepositStatusValue } from "./DepositStatusValue"
 
-/**
- * Per-phase sheet status: a pending label while in flight, then Completed / Cancelled / Recovered.
- * The phases where money is inbound but uncredited share the design's one word for that, Receiving;
- * an address nobody has sent to yet has not received anything, and the legs past L1 name their step.
- */
-const PHASE_STATUS: Record<SIPADepositPhase, { label: string; badge: StatusBadgeStyle }> = {
-  resolved: { label: "Awaiting funds", badge: "pending" },
-  funding: { label: "Receiving", badge: "pending" },
-  funded: { label: "Receiving", badge: "pending" },
-  broadcast: { label: "Receiving", badge: "pending" },
-  sweeping: { label: "Sweeping into Aztec", badge: "pending" },
-  pendingClaim: { label: "Claiming on Aztec", badge: "pending" },
-  claimed: { label: "Completed", badge: "awaitingClaim" },
-  recovered: { label: "Recovered", badge: "cancelled" },
-  recoverable: { label: "Needs recovery", badge: "failed" },
-  failed: { label: "Cancelled", badge: "failed" },
+/** The sheet's badge per phase; the word is front-core's `DEPOSIT_PHASE_COPY`. */
+const PHASE_BADGE: Record<SIPADepositPhase, StatusBadgeStyle> = {
+  resolved: "pending",
+  funding: "pending",
+  funded: "pending",
+  broadcast: "pending",
+  sweeping: "pending",
+  pendingClaim: "pending",
+  claimed: "awaitingClaim",
+  recovered: "cancelled",
+  recoverable: "failed",
+  failed: "failed",
 }
 
-export function depositStatus(record: Pick<SIPADepositRecord, "phase" | "sweepTxHash">): {
+export function depositStatus(record: SIPADepositRecord): {
   label: string
   badge: StatusBadgeStyle
 } {
-  const status = PHASE_STATUS[record.phase]
-  return record.phase === "sweeping" && !record.sweepTxHash
-    ? { ...status, label: "Waiting to be swept" }
-    : status
+  return { label: depositPhaseCopy(record).status, badge: PHASE_BADGE[record.phase] }
 }
 
 export function DepositDetailModal({
@@ -64,8 +71,8 @@ export function DepositDetailModal({
   record: SIPADepositRecord
   /** Set when this SIPA registered a name: the detail names the registration identity. */
   registrationTag?: string
-  /** The exit the row offers, if any. */
-  exit?: { title: string; onStart: () => void }
+  /** The exit the row offers, if any. A sweep is an escape hatch, so it is not the gradient button. */
+  exit?: { title: string; onStart: () => void; sweep?: boolean }
   onClose: () => void
 }) {
   const config = getConfig()
@@ -75,7 +82,7 @@ export function DepositDetailModal({
   const status = depositStatus(record)
   const { fundingTxHash } = depositAttribution(record)
   const { title, address } = depositHeadline(record)
-  const sentFigure = amounts.grossAtomic > 0n ? usdFigure(amounts.grossDisplay) : "--"
+  const sentFigure = amounts.grossAtomic > 0n ? depositGrossFigure(record) : "--"
   // The sheet leads with what lands on L2; the gross the wallet was charged is the Sent row. A
   // deposit that never credits L2 has no net anyone is owed, so it leads with that gross instead.
   const headline =
@@ -85,7 +92,11 @@ export function DepositDetailModal({
   const funderUrl = address ? l1AddressUrl(address) : undefined
   const sipaUrl = l1AddressUrl(record.sipaAddress)
   const depositTokens = depositTokensFor(config.network)
-  const tokenIcon = depositTokens.find((t) => t.symbol === record.tokenSymbol)?.icon
+  // What the funder sent; a swept record's `tokenSymbol` is the credited token.
+  const fundingSymbol = record.fundingTokenSymbol ?? record.tokenSymbol
+  const tokenIcon = depositTokens.find((t) => t.symbol === fundingSymbol)?.icon
+  const { shown: processing, capacityKey } = useSipaProcessing(record.sipaAddress)
+  const settlementSymbol = depositTokens[0]?.symbol ?? record.tokenSymbol
 
   return (
     <Modal
@@ -105,6 +116,21 @@ export function DepositDetailModal({
       </div>
 
       {notice && <p className="ww-txd__notice">{notice}</p>}
+      {processing && (
+        <DepositProcessingNotice
+          sipaAddress={record.sipaAddress}
+          state={processing}
+          symbol={settlementSymbol}
+          help={(detail) => (
+            <PendingLimitsLink
+              sipaAddress={record.sipaAddress}
+              capacityKey={capacityKey}
+              settlementSymbol={settlementSymbol}
+              detail={detail}
+            />
+          )}
+        />
+      )}
 
       <div className="ww-sheet__facts">
         <DepositFact label="Status">
@@ -139,13 +165,13 @@ export function DepositDetailModal({
         <DepositFact label="Token">
           <b>
             {tokenIcon && <img src={tokenIcon} alt="" width={16} height={16} />}
-            {record.tokenSymbol}
+            {fundingSymbol}
           </b>
         </DepositFact>
         <DepositFact label="Network">
           <b>
             <img src={ethIcon} alt="" width={16} height={16} />
-            Ethereum (ERC20)
+            {isNativeEth(record.tokenAddress) ? "Ethereum" : "Ethereum (ERC20)"}
           </b>
         </DepositFact>
         <DepositFact label="Sent">
@@ -189,9 +215,15 @@ export function DepositDetailModal({
       </div>
 
       {record.phase === "recoverable" && (
-        <p className="ww-sheet__note">{unsweepableCopy(record, depositTokens[0]?.symbol)}</p>
+        <p className="ww-sheet__note">{unsweepableCopy(record)}</p>
       )}
-      {exit && <PrimaryGradientButton title={exit.title} onClick={exit.onStart} />}
+      {exit && (
+        <PrimaryGradientButton
+          title={exit.title}
+          buttonStyle={exit.sweep ? "dark" : undefined}
+          onClick={exit.onStart}
+        />
+      )}
     </Modal>
   )
 }

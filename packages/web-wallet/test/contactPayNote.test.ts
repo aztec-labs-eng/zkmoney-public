@@ -95,8 +95,8 @@ const { runContactPay } = await import("../src/features/contacts/contactPay")
 const token = {
   fetchTokenInformation: async () => ({
     address: "0xtoken",
-    name: "zkUSD",
-    symbol: "zkUSD",
+    name: "DAI",
+    symbol: "DAI",
     decimals: 18,
   }),
   sendTokenSponsored: h.sendTokenSponsored,

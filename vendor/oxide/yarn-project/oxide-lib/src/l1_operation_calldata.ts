@@ -1,7 +1,11 @@
 import type { Fr } from '@aztec/aztec.js/fields';
+import { DomainSeparator } from '@aztec/constants';
 import { keccak256 } from '@aztec/foundation/crypto/keccak';
 import { EthAddress } from '@aztec/foundation/eth-address';
-import { FunctionSelector } from '@aztec/stdlib/abi';
+import { EventSelector, FunctionSelector } from '@aztec/stdlib/abi';
+import type { AztecAddress } from '@aztec/stdlib/aztec-address';
+import { computeLogTag } from '@aztec/stdlib/hash';
+import { Tag } from '@aztec/stdlib/logs';
 import type { Tx, TxHash } from '@aztec/stdlib/tx';
 
 import { BYTES_PER_FIELD, packBytesToFields, unpackFieldsToBytes } from './field_bytes.js';
@@ -123,12 +127,25 @@ export function l1OperationEventSelector(): Promise<FunctionSelector> {
   return FunctionSelector.fromSignature('l1_operation_event()');
 }
 
-/** Malformed candidates (e.g. a garbage byte length) are skipped. */
-export function extractL1Operations(tx: Tx, selector: FunctionSelector): BroadcastL1Operation[] {
+/** The public log tag of the `L1Operation` event, the same value `BroadcasterContract.events.L1Operation` derives. */
+export async function l1OperationLogTag(): Promise<Tag> {
+  const selector = await EventSelector.fromSignature('L1Operation()');
+  return new Tag(await computeLogTag(selector.toField(), DomainSeparator.EVENT_LOG_TAG));
+}
+
+/**
+ * The L1 operations that `broadcaster` enqueued in the tx. One tx can also carry the broadcasts of another deployment,
+ * and that deployment's relayer settles them. Malformed candidates (e.g. a garbage byte length) are skipped.
+ */
+export function extractL1Operations(
+  tx: Tx,
+  selector: FunctionSelector,
+  broadcaster: AztecAddress,
+): BroadcastL1Operation[] {
   const selectorField = selector.toField();
   const operations: BroadcastL1Operation[] = [];
-  for (const { values } of tx.publicFunctionCalldata) {
-    if (!L1_OPERATION_EVENT_CALLDATA_LENS.has(values.length)) {
+  for (const { request, calldata: values } of tx.getPublicCallRequestsWithCalldata()) {
+    if (!request.contractAddress.equals(broadcaster) || !L1_OPERATION_EVENT_CALLDATA_LENS.has(values.length)) {
       continue;
     }
     const [

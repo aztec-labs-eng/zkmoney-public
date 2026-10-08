@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
+import { DAI, pendingRecord } from "./support/registrationFixtures"
 
 const getConfig = vi.fn()
 vi.mock("../src/config/env", () => ({ getConfig }))
@@ -46,19 +48,15 @@ describe("admissionGateEnabled", () => {
     list.mockReturnValue([])
   })
 
-  it("is off with a campaign URL and no flag: entry needs no grant", async () => {
+  it("is off with a campaign URL and no flag: entry needs no grant", () => {
     getConfig.mockReturnValue(campaign(false))
-    const { admissionGateEnabled } = await import("../src/features/identity/admission")
-    expect(admissionGateEnabled()).toBe(false)
     saveWalletIdentity({ address: L2_A, claimedAt: 1 })
     expect(hasWalletEntry()).toBe(true)
     expect(registrationAdmits("awaiting_deposit", L2_A)).toBe(true)
   })
 
-  it("follows the config field when a caller arms it", async () => {
+  it("is on when the config arms it: no grant and no deposit means no entry", () => {
     getConfig.mockReturnValue(campaign(true))
-    const { admissionGateEnabled } = await import("../src/features/identity/admission")
-    expect(admissionGateEnabled()).toBe(true)
     saveWalletIdentity({ address: L2_A, claimedAt: 1 })
     expect(hasWalletEntry()).toBe(false)
   })
@@ -89,7 +87,7 @@ describe("admission cache identity pin", () => {
 
   it("ignores a cache entry that carries no identity pin", () => {
     saveWalletIdentity({ address: L2_A, claimedAt: 1 })
-    localStorage.setItem(
+    walletStorage.setItem(
       "webwallet.admission",
       JSON.stringify({ address: EOA.toLowerCase(), grantedAt: 1 }),
     )
@@ -97,24 +95,29 @@ describe("admission cache identity pin", () => {
     expect(hasCachedAdmission()).toBe(false)
   })
 
-  it("admits on a deposit L1 has seen, before a tick promotes the phase", () => {
+  // The L1 watcher stamps these; `phase` only catches up on the next detection tick. A paid attempt
+  // that then lost the name race keeps the entry it bought.
+  it.each([
+    ["a deposit L1 has seen", { fundedAt: 123 }],
+    ["a sweep seen before any funded stamp", { sweptAt: 123 }],
+    ["a paid attempt that lost the name", { fundedAt: 123, phase: "failed_taken" as const }],
+  ])("admits on %s", (_, stamp) => {
     saveWalletIdentity({ address: L2_A, claimedAt: 1 })
-    // fundedAt is stamped by the L1 watcher; `phase` only catches up on the next detection tick.
-    list.mockReturnValue([{ l2Address: L2_A, phase: "awaiting_deposit", fundedAt: 123 }])
+    list.mockReturnValue([pendingRecord({ l2Address: L2_A, ...stamp })])
     expect(hasWalletEntry()).toBe(true)
   })
 
   it("does not admit another identity's funded registration", () => {
     saveWalletIdentity({ address: L2_A, claimedAt: 1 })
-    list.mockReturnValue([{ l2Address: L2_B, phase: "funded", fundedAt: 123 }])
+    list.mockReturnValue([pendingRecord({ l2Address: L2_B, phase: "funded", fundedAt: 123 })])
     expect(hasWalletEntry()).toBe(false)
   })
 
   it("admits on an earlier funded attempt, not only the newest record", () => {
     saveWalletIdentity({ address: L2_A, claimedAt: 1 })
     list.mockReturnValue([
-      { l2Address: L2_A, phase: "awaiting_deposit", fundedAt: 99 },
-      { l2Address: L2_A, phase: "awaiting_deposit" },
+      pendingRecord({ l2Address: L2_A, fundedAt: 99 }),
+      pendingRecord({ l2Address: L2_A }),
     ])
     expect(hasWalletEntry()).toBe(true)
   })
@@ -258,20 +261,7 @@ describe("admission_checked instrumentation", () => {
 })
 
 describe("observed campaign deposit grants pending entry independently of sweep readiness", () => {
-  const record = {
-    account: "0x0000000000000000000000000000000000000001" as const,
-    nameHash: "0x01" as const,
-    sipaAddress: "0x0000000000000000000000000000000000000002" as const,
-    depositToken: "0x0000000000000000000000000000000000000003" as const,
-    l1ChainId: 11155111,
-    l2Address: L2_A,
-    phase: "awaiting_deposit" as const,
-    tag: "taga",
-    broadcast: true,
-    retries: 0,
-    startTime: 1,
-  }
-  const DAI = 10n ** 18n
+  const record = pendingRecord({ l2Address: L2_A })
   // Staging's earned schedule: a 4.9 floor under the 5 an earned tag is asked to deposit.
   const EARNED = { fee: String(DAI / 2n), minDeposit: String((44n * DAI) / 10n) }
   const EARNED_FLOOR = (49n * DAI) / 10n
@@ -294,37 +284,32 @@ describe("observed campaign deposit grants pending entry independently of sweep 
     expect(recordDepositAdmission(record, 5n * DAI)).toBe(true)
     expect(hasWalletEntry()).toBe(true)
     expect(registrationAdmits("awaiting_deposit", L2_A)).toBe(true)
-    expect(record.phase).toBe("awaiting_deposit")
   })
-  it("admits a deposit between the signed floor and the asked total", () => {
+
+  it("admits from the signed floor up, under the asked total, and not below it", () => {
+    expect(recordDepositAdmission(record, EARNED_FLOOR - 1n, CUT)).toBe(false)
+    expect(hasWalletEntry()).toBe(false)
     expect(recordDepositAdmission(record, EARNED_FLOOR, CUT)).toBe(true)
     expect(hasWalletEntry()).toBe(true)
   })
 
-  it("holds the asked total as the bar while the portal's cut is unread", () => {
-    expect(recordDepositAdmission(record, EARNED_FLOOR)).toBe(false)
-    expect(recordDepositAdmission(record, 5n * DAI)).toBe(true)
-  })
-  it("holds the asked total as the bar while no schedule is signed", () => {
-    localStorage.removeItem("webwallet.registration.terms")
-    saveWalletIdentity({ address: L2_A, handle: "taga", pending: true, claimedAt: 1 })
-    expect(recordDepositAdmission(record, EARNED_FLOOR)).toBe(false)
-    expect(recordDepositAdmission(record, 5n * DAI)).toBe(true)
-  })
-
-  it("holds the asked total as the bar for an unpriced signed schedule", () => {
-    // A claim server with no schedule configured signs 0/0. That prices no floor, so the campaign's
-    // promise is what the deposit is measured against.
-    saveRegistrationTerms({
-      account: record.account,
-      tag: record.tag,
-      deadline: 0,
-      feeWaived: true,
-      fee: "0",
-      minDeposit: "0",
-    })
-    expect(recordDepositAdmission(record, EARNED_FLOOR, CUT)).toBe(false)
-    expect(recordDepositAdmission(record, 5n * DAI, CUT)).toBe(true)
+  // A claim server with no schedule configured signs 0/0. That prices no floor, so the campaign's
+  // promise is what the deposit is measured against.
+  it.each([
+    ["the portal's cut is unread", undefined, undefined],
+    ["the signed schedule is unpriced", { fee: "0", minDeposit: "0" }, CUT],
+  ])("holds the asked total as the bar while %s", (_, schedule, cut) => {
+    if (schedule) {
+      saveRegistrationTerms({
+        account: record.account,
+        tag: record.tag,
+        deadline: 0,
+        feeWaived: true,
+        ...schedule,
+      })
+    }
+    expect(recordDepositAdmission(record, EARNED_FLOOR, cut)).toBe(false)
+    expect(recordDepositAdmission(record, 5n * DAI, cut)).toBe(true)
   })
 
   it("never lifts the bar over the asked total, whatever the signed schedule prices", () => {
@@ -342,10 +327,6 @@ describe("observed campaign deposit grants pending entry independently of sweep 
     expect(recordDepositAdmission(record, 5n * DAI - 1n, CUT)).toBe(false)
   })
 
-  it("admits an earned deposit of the ask on the standard signed floor it was quoted", () => {
-    expect(recordDepositAdmission(record, 5n * DAI, CUT)).toBe(true)
-    expect(hasWalletEntry()).toBe(true)
-  })
   const refund = { amount: 5n * 10n ** 18n, txHash: "0x07" as const }
   it("a replacement carrying the verified refund admits this wallet without paying the new address", () => {
     recordDepositAdmission(record, 5n * 10n ** 18n)
@@ -379,10 +360,6 @@ describe("observed campaign deposit grants pending entry independently of sweep 
   it("buys no entry with a refund short of the signed floor", () => {
     expect(refundedEntry(record, { ...refund, amount: EARNED_FLOOR - 1n }, CUT)).toBeUndefined()
     list.mockReturnValue([{ ...record, sipaAddress: "new-address" }])
-    expect(hasWalletEntry()).toBe(false)
-  })
-  it("does not admit a deposit under the signed floor", () => {
-    expect(recordDepositAdmission(record, EARNED_FLOOR - 1n, CUT)).toBe(false)
     expect(hasWalletEntry()).toBe(false)
   })
   it.each(["sipaAddress", "l2Address", "nameHash", "depositToken", "account", "l1ChainId"])(

@@ -210,8 +210,8 @@ describe("detail sheet hero badge", () => {
       const row = plainRow(status)
       await showTx(row)
 
-      // A plain pending send says what it is doing; settled rows keep the feed row's word.
-      expect(hero()).toBe(status === "pending" ? "Sending" : row.statusLabel ?? "Completed")
+      // A plain pending send reads Pending like its row; settled rows keep the feed row's word.
+      expect(hero()).toBe(status === "pending" ? "Pending" : row.statusLabel ?? "Completed")
     },
   )
 
@@ -245,6 +245,23 @@ describe("detail sheet hero badge", () => {
         failed: WITHDRAWAL_PHASE_LABEL.failed,
       }[phase],
     )
+  })
+
+  it("says the proof runs on the device until the burn has a hash", async () => {
+    await act(async () => {
+      root.render(
+        <WithdrawalDetailModal
+          record={{ ...withdrawal("submitting"), l2TxHash: undefined }}
+          amount="-120 DAI"
+          onClose={vi.fn()}
+        />,
+      )
+    })
+    const status = Array.from(container.querySelectorAll(".ww-sheet__fact"))
+      .find((row) => row.querySelector("span")?.textContent === "Status")
+      ?.querySelector("b")
+      ?.textContent?.trim()
+    expect(status).toBe("Proving privately")
   })
 
   it("names the user's own finalization once its tx is in flight", async () => {

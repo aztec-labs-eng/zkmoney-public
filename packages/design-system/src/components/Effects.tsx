@@ -16,7 +16,9 @@ export interface ShimmerProps {
 export function Shimmer({ active = true, children, className, style }: ShimmerProps) {
   return (
     <div
-      className={["zkm-shimmer", active ? "zkm-shimmer--active" : "", className].filter(Boolean).join(" ")}
+      className={["zkm-shimmer", active ? "zkm-shimmer--active" : "", className]
+        .filter(Boolean)
+        .join(" ")}
       style={style}
     >
       <div className="zkm-shimmer__content">{children}</div>
@@ -56,7 +58,11 @@ export interface SpinnerProps {
 }
 
 /** Open-arc pending spinner: 80% stroke arc with round caps, rotating continuously. */
-export function Spinner({ size = 10, color = "var(--text-secondary)", period = 1.4 }: SpinnerProps) {
+export function Spinner({
+  size = 10,
+  color = "var(--text-secondary)",
+  period = 1.4,
+}: SpinnerProps) {
   const strokeWidth = Math.max(1.5, size * 0.12)
   const r = (size - strokeWidth) / 2
   const circumference = 2 * Math.PI * r
@@ -78,6 +84,58 @@ export function Spinner({ size = 10, color = "var(--text-secondary)", period = 1
         strokeWidth={strokeWidth}
         strokeLinecap="round"
         strokeDasharray={`${circumference * 0.8} ${circumference * 0.2}`}
+      />
+    </svg>
+  )
+}
+
+export interface ProgressSpinnerProps {
+  /** Share done, 0–1. */
+  progress: number
+  size?: number
+  /** Default secondary text color. */
+  color?: string
+}
+
+/** `Spinner`'s stroke as a determinate ring: a faint track filled clockwise from the top. */
+export function ProgressSpinner({
+  progress,
+  size = 10,
+  color = "var(--text-secondary)",
+}: ProgressSpinnerProps) {
+  const strokeWidth = Math.max(1.5, size * 0.12)
+  const r = (size - strokeWidth) / 2
+  const circumference = 2 * Math.PI * r
+  const done = Math.min(1, Math.max(0, progress))
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      fill="none"
+      role="progressbar"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(done * 100)}
+    >
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={r}
+        stroke={color}
+        strokeOpacity={0.25}
+        strokeWidth={strokeWidth}
+      />
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={r}
+        stroke={color}
+        strokeWidth={strokeWidth}
+        strokeLinecap="round"
+        strokeDasharray={`${circumference * done} ${circumference}`}
+        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        style={{ transition: "stroke-dasharray 300ms ease-out" }}
       />
     </svg>
   )
@@ -153,7 +211,12 @@ export interface TitledGlassRowCardProps extends GlassRowCardProps {
 }
 
 /** GlassRowCard with a muted caption title above it. */
-export function TitledGlassRowCard({ title, children, className, ...rest }: TitledGlassRowCardProps) {
+export function TitledGlassRowCard({
+  title,
+  children,
+  className,
+  ...rest
+}: TitledGlassRowCardProps) {
   return (
     <div className={["zkm-titled-glass-row-card", className].filter(Boolean).join(" ")}>
       <span className="zkm-titled-glass-row-card__title">{title}</span>

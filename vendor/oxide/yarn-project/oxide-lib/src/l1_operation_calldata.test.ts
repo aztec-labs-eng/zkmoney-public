@@ -1,6 +1,9 @@
 import { Fr } from '@aztec/aztec.js/fields';
+import { DomainSeparator } from '@aztec/constants';
 import { EthAddress } from '@aztec/foundation/eth-address';
-import { FunctionSelector } from '@aztec/stdlib/abi';
+import { EventSelector, FunctionSelector } from '@aztec/stdlib/abi';
+import { AztecAddress } from '@aztec/stdlib/aztec-address';
+import { computeLogTag } from '@aztec/stdlib/hash';
 import { TxHash } from '@aztec/stdlib/tx';
 import type { Tx } from '@aztec/stdlib/tx';
 
@@ -17,6 +20,7 @@ import {
   encodeL1OperationCalldata,
   extractL1Operations,
   l1OperationEventSelector,
+  l1OperationLogTag,
 } from './l1_operation_calldata.js';
 
 const [TIER_2K, TIER_4K, TIER_16K, TIER_32K, , TIER_128K] = L1_OPERATION_BROADCAST_TIERS;
@@ -116,6 +120,7 @@ describe('l1 operation broadcast decoder', () => {
   const payoutToken = EthAddress.random();
   const calldata = Buffer.from('deadbeef00c0ffee', 'hex');
   const balance = L1OperationCondition.balance(EthAddress.random(), EthAddress.random());
+  const broadcaster = AztecAddress.fromNumberUnsafe(1);
 
   function callValues(
     selector: FunctionSelector,
@@ -136,13 +141,24 @@ describe('l1 operation broadcast decoder', () => {
   }
 
   function txWith(...calls: Fr[][]): Tx {
-    return { publicFunctionCalldata: calls.map(values => ({ values })) } as unknown as Tx;
+    return txFrom(calls.map(calldata => ({ contractAddress: broadcaster, calldata })));
+  }
+
+  function txFrom(calls: { contractAddress: AztecAddress; calldata: Fr[] }[]): Tx {
+    return {
+      getPublicCallRequestsWithCalldata: () =>
+        calls.map(({ contractAddress, calldata }) => ({ request: { contractAddress }, calldata })),
+    } as unknown as Tx;
   }
 
   it('recovers every operation the tx enqueued, whichever tier carried it', async () => {
     const selector = await l1OperationEventSelector();
     const large = { target, payoutToken, calldata: patterned(20_000), condition: balance };
-    const operations = extractL1Operations(txWith(callValues(selector), callValues(selector, large)), selector);
+    const operations = extractL1Operations(
+      txWith(callValues(selector), callValues(selector, large)),
+      selector,
+      broadcaster,
+    );
     expect(operations).toHaveLength(2);
     expect(operations[0].target.equals(target)).toBe(true);
     expect(operations[0].payoutToken.equals(payoutToken)).toBe(true);
@@ -152,20 +168,32 @@ describe('l1 operation broadcast decoder', () => {
     expect(operations[1].condition).toEqual(balance);
   });
 
+  it('recovers only the operations that the given broadcaster enqueued', async () => {
+    const selector = await l1OperationEventSelector();
+    const other = { target: payoutToken, payoutToken, calldata, condition: balance };
+    const tx = txFrom([
+      { contractAddress: AztecAddress.fromNumberUnsafe(2), calldata: callValues(selector, other) },
+      { contractAddress: broadcaster, calldata: callValues(selector) },
+    ]);
+    const operations = extractL1Operations(tx, selector, broadcaster);
+    expect(operations).toHaveLength(1);
+    expect(operations[0].target.equals(target)).toBe(true);
+  });
+
   it('skips calls of another selector, another length, or with a garbage byte length', async () => {
     const selector = await l1OperationEventSelector();
     const other = await FunctionSelector.fromSignature('sipa_broadcast_event()');
     const garbage = callValues(selector);
     garbage[3] = new Fr(MAX_L1_OPERATION_CALLDATA_BYTES);
     const tx = txWith(callValues(other), callValues(selector).slice(0, 10), garbage, callValues(selector));
-    expect(extractL1Operations(tx, selector)).toHaveLength(1);
+    expect(extractL1Operations(tx, selector, broadcaster)).toHaveLength(1);
   });
 
   it('skips a call whose condition kind is outside the table', async () => {
     const selector = await l1OperationEventSelector();
     const unknownKind = callValues(selector);
     unknownKind[4] = new Fr(7);
-    expect(extractL1Operations(txWith(unknownKind, callValues(selector)), selector)).toHaveLength(1);
+    expect(extractL1Operations(txWith(unknownKind, callValues(selector)), selector, broadcaster)).toHaveLength(1);
   });
 
   it('keys an operation by the packed content of its tuple, condition included', () => {
@@ -210,4 +238,15 @@ test('withdrawal identities require and retain the burn transaction while other 
   expect(computeL1OperationId(operation, second)).not.toBe(computeL1OperationId(operation, first));
   const immediate = { ...operation, condition: L1OperationCondition.immediate() };
   expect(computeL1OperationId(immediate, first)).toBe(computeL1OperationId(immediate, second));
+});
+
+describe('l1OperationLogTag', () => {
+  it('derives the tag from the L1Operation event selector the generated Broadcaster binding pins', async () => {
+    const selector = await EventSelector.fromSignature('L1Operation()');
+    expect(selector.toString()).toBe('0x103c3e90');
+
+    const tag = await l1OperationLogTag();
+
+    expect(tag.value).toEqual(await computeLogTag(selector.toField(), DomainSeparator.EVENT_LOG_TAG));
+  });
 });

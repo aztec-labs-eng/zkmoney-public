@@ -12,7 +12,7 @@
  *
  *   finalizing_l1 → swapping → done            (escrow emptied by the swap)
  *                 → swapping → recoverable       (funded, and `deployAndExecute` reverts: the route cannot deliver)
- *                            → recovered         (the user's recoverERC20 emptied it: the `SwapEscrowRecovered` log)
+ *                            → recovered         (the user's recoverERC20 emptied it: the escrow's recovery log)
  *
  * The hook (`useWithdrawFlow`) writes the pre-mine `submitting` row, submits the
  * burn, then `markMined` + `watch(record)` to arm this service. From there each
@@ -161,10 +161,10 @@ export function isWithdrawalDelayed(
 }
 
 /**
- * Whether `record` may be finalized by the user themselves. The portal's direct `withdraw`
- * entrypoint is permissionless for zero-tip burns, so anyone can push a released-but-unclaimed
- * withdrawal through — but only once the L2 side is done (`finalizing_l1`) and only once the wait
- * has been delayed for a while, since a relayer that lands first will make the call revert.
+ * Whether `record` may be finalized by the user themselves. The portal's `withdraw` is
+ * permissionless whatever the prover tip, so anyone can release a proven burn from its published
+ * log — but only once the L2 side is done (`finalizing_l1`) and only once the wait has been delayed
+ * for a while, since a relayer that lands first will make the call revert.
  */
 export function canSelfFinalizeWithdrawal(
   record: WithdrawalRecord,

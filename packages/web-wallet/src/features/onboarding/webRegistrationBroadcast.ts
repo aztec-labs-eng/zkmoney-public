@@ -17,6 +17,7 @@ import { NO_FROM } from "@aztec/aztec.js/account"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
 import { Fr } from "@aztec/aztec.js/fields"
 import {
+  assertSubsidySweepsSipa,
   buildClaimSponsorPayload,
   buildClaimSubscribePayload,
   buildSipaSweepBroadcasts,
@@ -24,6 +25,7 @@ import {
   encodeRegistrationProofs,
   encodeLegacyRegistrationProofs,
   BroadcasterContract,
+  OxideSipaIntent,
   ContractService,
   type ObsidionAccount,
   type ObsidionWallet,
@@ -38,7 +40,8 @@ import {
 
 import { claimSponsorContext } from "./claimSponsorship"
 import { RAIL_REGISTRATION_BROADCAST } from "./rails"
-import { getOxideTuple, requireTupleField } from "../../config/oxideTuple"
+import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import { readSipaDeployed } from "../deposit/sipaSweep"
 import type { WebWalletConfig } from "../../config/env"
 
 export interface WebRegistrationBroadcasterDeps {
@@ -51,17 +54,28 @@ export interface WebRegistrationBroadcasterDeps {
 }
 
 /**
- * A {@link RegistrationBroadcaster} bound to this session's wallet + account. Returns after the
- * broadcast tx is submitted; the session machine treats a throw as resumable (the deposit address
- * stays valid and a later tick re-broadcasts), so this never swallows failures.
+ * A {@link RegistrationBroadcaster} bound to this session's wallet + account. Resolves with the tx
+ * hash once the node took it; a throw is the ledger's to retry, so this never swallows failures.
  */
 export function createWebRegistrationBroadcaster(
   deps: WebRegistrationBroadcasterDeps,
 ): RegistrationBroadcaster {
   const { wallet, account, contractService, config, handle } = deps
-  return async (payload: RegistrationBroadcastPayload) => {
+  return async (payload: RegistrationBroadcastPayload, attempt = {}) => {
     const tuple = await getOxideTuple(config)
     const address = account.getAddress()
+    const deployed = await readSipaDeployed(l1PublicClient(config), payload.sipaAddress)
+    if (!deployed && !("recoveryAddress" in payload.sipaArgs)) {
+      await assertSubsidySweepsSipa(l1PublicClient(config), {
+        depositSubsidy: requireTupleField(tuple, "depositSubsidy") as Address,
+        portal: requireTupleField(tuple, "portal") as Address,
+        sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
+        intent: OxideSipaIntent.Registration,
+        deployArgs: payload.sipaArgs,
+        intentData: payload.registrationData,
+        sipa: payload.sipaAddress,
+      })
+    }
 
     // Cache the fresh claim so `claimSponsorContext`'s subscribe leg finds it: the name is not yet
     // registered, so it cannot be recovered from the Registry's NameClaimed log.
@@ -126,7 +140,9 @@ export function createWebRegistrationBroadcaster(
       resweepable: payload.sipaArgs.resweepable,
       intentHash: payload.sipaArgs.intentHash,
       sipa: payload.sipaAddress,
+      deployed,
       sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
+      intent: OxideSipaIntent.Registration,
       deployArgs: payload.sipaArgs,
       intentData: payload.registrationData,
       proofs: ("recoveryAddress" in payload.sipaArgs
@@ -141,6 +157,8 @@ export function createWebRegistrationBroadcaster(
       operationExecutor: requireTupleField(tuple, "operationExecutor") as Address,
       depositSubsidy: requireTupleField(tuple, "depositSubsidy") as Address,
       chainId: BigInt(config.l1ChainId),
+      // TODO(benesjan): the relayer copies this sweep for each other token it accepts.
+      // https://linear.app/aztec-labs/issue/OX-1877/for-v6-handle-multi-token-balance-condition-l1-operations-properly
       tokens: [requireTupleField(tuple, "token") as Address],
     })
     const broadcastCalls = (await Promise.all(interactions.map((call) => call.request()))).flatMap(
@@ -160,13 +178,18 @@ export function createWebRegistrationBroadcaster(
       ? await buildClaimSubscribePayload({ ...common, gate: subscribe.gate })
       : await buildClaimSponsorPayload(common)
 
-    // NO_FROM: eligibility is the entrypoint's subscription, not a user signature over the broadcast.
-    // The subscribe leg reads this account's notes, and the `SIPA` event is sent to it.
-    await wallet.sendTx(txPayload, {
+    const { operationId, onTxHash } = attempt
+    // NO_FROM: eligibility is the entrypoint's subscription, not a user signature over the
+    // broadcast. The subscribe leg reads this account's notes, and the `SIPA` event is sent to it.
+    // Resolves once mined, so the next scheduler step finds it included.
+    const { receipt } = await wallet.sendTx(txPayload, {
+      ...(operationId ? { operationId } : {}),
+      ...(onTxHash ? { onTxHash } : {}),
       from: NO_FROM,
       sendMessagesAs: address,
       additionalScopes: [address],
       fee: claimFpcSponsoredFee(policy, common.innerCalls),
     })
+    return receipt.txHash.toString()
   }
 }

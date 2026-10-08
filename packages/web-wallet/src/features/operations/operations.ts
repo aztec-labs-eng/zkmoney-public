@@ -2,7 +2,7 @@
  * The web side of front-core's `OperationStore`: every user-started transaction runs through
  * {@link runOperation}, and everything that says whether the tab may close reads the store.
  */
-import { useSyncExternalStore } from "react"
+import { useCallback, useSyncExternalStore } from "react"
 import { OperationStore, TxInFlightError, type OperationRecord } from "@obsidion/front-core"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
@@ -125,7 +125,8 @@ function watchOperations(): void {
   const store = getOperationStore()
   const refresh = () => {
     const scope = getActiveStorageId()
-    const scoped = store.list().filter((r) => r.scope === scope)
+    // Background operations are the wallet's own bookkeeping: no notification lists them.
+    const scoped = store.list().filter((r) => r.scope === scope && !r.background)
     const next = scoped.filter((r) => r.state === "local" || r.state === "sent")
     const ended = scoped.filter((r) => r.endedAt !== undefined && r.dismissedAt === undefined)
     if (JSON.stringify(ended) !== JSON.stringify(endedShown.get())) endedShown.set(ended)
@@ -170,11 +171,12 @@ export function useEndedOperations(): { ended: OperationRecord[]; loaded: boolea
 
 /**
  * A `local` operation this page is running: closing, reloading or logging out would lose it. A
- * `local` record no flow owns belongs to an earlier page and fails at boot.
+ * `local` record no flow owns belongs to a page that no longer runs the wallet, and fails at boot.
+ * A background operation resumes after a reload, so leaving loses nothing.
  */
 export function tabBoundOperation(records: OperationRecord[]): OperationRecord | undefined {
   const store = getOperationStore()
-  return records.find((r) => r.state === "local" && store.isLive(r.operationId))
+  return records.find((r) => r.state === "local" && !r.background && store.isLive(r.operationId))
 }
 
 /** Whatever its scope: the page that runs it is this one. */
@@ -196,13 +198,43 @@ export function useLeavingLosesTransaction(): boolean {
   return !!useTabBoundOperation()
 }
 
+/** Whether the tab may close for one operation: `keep` while this page proves it, `safe` once sent. */
+export type TabLine = "keep" | "safe"
+
+export function tabLineOf(record: OperationRecord | null, live: boolean): TabLine | undefined {
+  if (record?.state === "sent") return "safe"
+  return record?.state === "local" && live ? "keep" : undefined
+}
+
+/** In any scope: a visitor's operation has none. */
+export function useTabLine(operationId: string | undefined): TabLine | undefined {
+  watchOperations()
+  const store = getOperationStore()
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      const offList = store.onListChanged(onChange)
+      const offLive = store.onLiveChanged(onChange)
+      return () => {
+        offList()
+        offLive()
+      }
+    },
+    [store],
+  )
+  return useSyncExternalStore(subscribe, () =>
+    operationId ? tabLineOf(store.get(operationId), store.isLive(operationId)) : undefined,
+  )
+}
+
 /**
  * The outermost operation a flow in this page runs: a live record with no parent, or whose parent
  * no longer runs. A child such as a claim's deposit address shows under it.
  */
 export function currentOperation(records: OperationRecord[]): OperationRecord | undefined {
   const store = getOperationStore()
-  return records.find((r) => store.isLive(r.operationId) && (!r.parent || !store.isLive(r.parent)))
+  return records.find(
+    (r) => !r.background && store.isLive(r.operationId) && (!r.parent || !store.isLive(r.parent)),
+  )
 }
 
 export function useCurrentOperation(): OperationRecord | undefined {

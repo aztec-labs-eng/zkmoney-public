@@ -27,6 +27,7 @@ import {
 } from "../../src/services/registrationMessage.js"
 
 const CHAIN_ID = 31337
+const OTHER_CHAIN_ID = 11155111
 const ROLLUP_VERSION = 4138062237
 
 const FPC = AztecAddress.fromFieldUnsafe(new Fr(0xfbc0n))
@@ -47,10 +48,11 @@ async function inboxLeaf(over: {
   recipient?: AztecAddress
   content?: Fr
   version?: number
+  chainId?: number
   index: bigint
 }): Promise<InboxMessageSentLog & { l1BlockNumber: bigint }> {
   const message = new L1ToL2Message(
-    new L1Actor(over.sender ?? NAME_PORTAL, CHAIN_ID),
+    new L1Actor(over.sender ?? NAME_PORTAL, over.chainId ?? CHAIN_ID),
     new L2Actor(over.recipient ?? FPC, over.version ?? ROLLUP_VERSION),
     over.content ?? nameOwnershipMessageContent(OWNER, NAME_HASH),
     await computeSecretHash(REGISTRATION_MESSAGE_SECRET),
@@ -81,11 +83,14 @@ function fakeInbox(
 
 /**
  * A node that has imported every checkpoint up to `syncedCheckpoint`, and in which the given
- * siloed nullifiers already exist (a consumed message leaves one).
+ * siloed nullifiers already exist (a consumed message leaves one). It answers no chain id: the
+ * target carries it.
  */
 function fakeNode(syncedCheckpoint: number, consumed = false): RegistrationMessageNode {
   return {
-    getChainId: async () => CHAIN_ID,
+    getChainId: async () => {
+      throw new Error("the node was asked for the chain id")
+    },
     getL1ToL2MessageCheckpoint: async () => 1,
     getBlockData: async () => ({ checkpointNumber: syncedCheckpoint }),
     getL1ToL2MessageMembershipWitness: async () => (syncedCheckpoint >= 1 ? [42n, []] : undefined),
@@ -99,6 +104,7 @@ const target = {
   owner: OWNER,
   nameHash: NAME_HASH,
   rollupVersion: ROLLUP_VERSION,
+  l1ChainId: CHAIN_ID,
 }
 
 describe("name ownership message content", () => {
@@ -162,6 +168,17 @@ describe("finding the registration message in the inbox", () => {
   it("ignores a message bound to another rollup version", async () => {
     const inbox = fakeInbox([await inboxLeaf({ index: 42n, version: ROLLUP_VERSION + 1 })])
     expect(await findRegistrationMessage(inbox, fakeNode(1), target)).toBeUndefined()
+  })
+
+  it("binds the L1 sender to the target's chain id, never the node's", async () => {
+    const leaf = await inboxLeaf({ index: 42n, chainId: OTHER_CHAIN_ID })
+    const inbox = fakeInbox([leaf])
+    expect(await findRegistrationMessage(inbox, fakeNode(1), target)).toBeUndefined()
+    const found = await findRegistrationMessage(inbox, fakeNode(1), {
+      ...target,
+      l1ChainId: OTHER_CHAIN_ID,
+    })
+    expect(found?.messageHash.toString()).toBe((leaf.args.leaf as Fr).toString())
   })
 
   it("finds this account's message among unrelated inbox traffic", async () => {

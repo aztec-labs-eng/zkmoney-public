@@ -1,12 +1,13 @@
-// Wallet-side profile boot: obtain the document (live, or the build's baked snapshot when the
-// server is unreachable), verify identity, resolve the version `current` names, compare the
-// bundled zkJWT vkey hash.
+// Wallet-side profile boot: obtain the document (live; the build's baked snapshot when the server
+// is unreachable or the consumer forces it), verify identity, resolve the version `current` names,
+// compare the bundled zkJWT vkey hash.
 
 import type { ContractServiceConfig } from "@obsidion/core/types"
 import {
   ConfigProfileError,
   type ConfigProfileErrorCode,
   fetchConfigProfile,
+  isExpired,
   parseServedProfile,
   resolveVersion,
 } from "./client.js"
@@ -55,6 +56,12 @@ export interface ResolveWalletProfileInput {
    * every other failure stays fatal, and the snapshot runs the same checks a served document does.
    */
   bakedProfile?: unknown
+  /**
+   * Boot from `bakedProfile` without fetching, and past the snapshot's own expiry. Identity,
+   * network and version checks still run. For a consumer whose user has chosen the shipped
+   * configuration over a profile nobody publishes anymore.
+   */
+  forceBakedProfile?: boolean
   fetchImpl?: typeof fetch
   now?: () => Date
   timeoutMs?: number
@@ -67,10 +74,12 @@ export interface WalletProfileBoot {
   snapshot: ContractServiceConfig
   nodeUrl: string
   zkJwtVkeySkew: boolean
-  /** The live fetch was unreachable and `bakedProfile` booted the wallet. */
+  /** `bakedProfile` booted the wallet: the live fetch was unreachable, or `forceBakedProfile` asked. */
   bootedFromBakedProfile: boolean
-  /** The live failure a snapshot boot stood in for. */
+  /** The live failure a snapshot boot stood in for. Absent on a forced boot, which never fetches. */
   liveFailure?: { code: ConfigProfileErrorCode; message: string }
+  /** A forced boot's snapshot has passed its `expiresAt`. */
+  bakedProfileExpired?: boolean
 }
 
 /** What a consumer expects of the document it boots from. `source` names it in errors. */
@@ -82,7 +91,10 @@ export interface WalletProfileExpectations {
   expectedRollupVersion?: string
 }
 
-export type ResolvedWalletProfile = Omit<WalletProfileBoot, "bootedFromBakedProfile" | "liveFailure">
+export type ResolvedWalletProfile = Omit<
+  WalletProfileBoot,
+  "bootedFromBakedProfile" | "liveFailure" | "bakedProfileExpired"
+>
 
 /**
  * Everything after "obtain the document": identity, network, rollup, the live version, the vkey
@@ -152,6 +164,22 @@ export async function resolveWalletProfile(
     network: input.network,
     expectedZkJwtVkeyHash: input.expectedZkJwtVkeyHash,
     expectedRollupVersion: input.expectedRollupVersion,
+  }
+
+  const now = input.now ?? (() => new Date())
+  if (input.forceBakedProfile) {
+    if (input.bakedProfile === undefined) {
+      throw new WalletProfileError(
+        "MISSING_CONFIG",
+        "the shipped configuration was requested but this build baked no profile",
+      )
+    }
+    const baked = parseServedProfile(input.bakedProfile, { now, ignoreExpiry: true })
+    return {
+      ...resolveWalletProfileDocument(baked, { ...expectations, source: "the baked profile" }),
+      bootedFromBakedProfile: true,
+      bakedProfileExpired: isExpired(baked, now()),
+    }
   }
 
   let profile: ConfigProfile

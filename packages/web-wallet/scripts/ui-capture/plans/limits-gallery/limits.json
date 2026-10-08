@@ -1,0 +1,271 @@
+{
+  "scenario": "activity",
+  "path": "/settings?flowFixture=success&capacityFixture=fits&allowanceFixture=available",
+  "ready": {
+    "role": "button",
+    "name": "Limits",
+    "exact": true
+  },
+  "finalScreenshot": false,
+  "steps": [
+    {
+      "action": "waitFor",
+      "text": "42 left"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Limits",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "09-settings-rows.png",
+      "state": "Settings scrolled to the Sponsored transactions (42 left) and Limits rows"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Limits",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"fresh\"][data-expanded=\"true\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"available\"][data-expanded=\"true\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "01-fits-available-top.png",
+      "state": "Settings > Limits: every section expanded; capacity up to date, 42 sponsored transactions"
+    },
+    {
+      "action": "scroll",
+      "selector": "dialog[aria-label=\"About limits\"] .ww-modal",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "02-fits-available-sponsorship.png",
+      "state": "Scrolled to the end of the sheet: the sponsorship section with 42 sponsored transactions left"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&capacityFixture=low&allowanceFixture=renewal-unknown"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Limits",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"fresh\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"renewal-unknown\"]"
+    },
+    {
+      "action": "hover",
+      "testId": "about-limits-capacity-state"
+    },
+    {
+      "action": "screenshot",
+      "file": "03-low-capacity.png",
+      "state": "Low capacity, scrolled to the capacity section"
+    },
+    {
+      "action": "scroll",
+      "selector": "dialog[aria-label=\"About limits\"] .ww-modal",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "04-renewal-unknown-sponsorship.png",
+      "state": "Scrolled to the end of the sheet: sponsorship renewal status unknown, with the allowance, the renewal rule and the can't-confirm note"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&capacityFixture=unavailable&allowanceFixture=unavailable"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Limits",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"unavailable\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"unavailable\"]"
+    },
+    {
+      "action": "reachable",
+      "testId": "about-limits-capacity-retry"
+    },
+    {
+      "action": "reachable",
+      "testId": "about-limits-sponsorship-retry"
+    },
+    {
+      "action": "screenshot",
+      "file": "05-unavailable-sponsorship-retry.png",
+      "state": "Both reads failed; each section offers Check again"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&capacityFixture=fits&allowanceFixture=retry"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Limits",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"unavailable\"]"
+    },
+    {
+      "action": "click",
+      "testId": "about-limits-sponsorship-retry"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"available\"]"
+    },
+    {
+      "action": "hover",
+      "testId": "about-limits-sponsorship-state"
+    },
+    {
+      "action": "screenshot",
+      "file": "06-retry-settled.png",
+      "state": "After Check again the allowance settles as available"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "goto",
+      "path": "/deposit?flowFixture=success&capacityFixture=fits&allowanceFixture=available"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-deposit-disclaimer"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Connect your wallet",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "24"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"Deposit from wallet\"] [data-testid=\"funding-capacity-panel\"].ww-capacity--quiet",
+      "state": "attached"
+    },
+    {
+      "action": "click",
+      "selector": "dialog[aria-label=\"Deposit from wallet\"] [data-testid=\"operation-limits\"] [data-testid=\"about-limits-link\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-operation\"][data-expanded=\"true\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"fresh\"][data-expanded=\"false\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"available\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "07-funding-modal-about-limits.png",
+      "state": "Info from the funding amount: the limit section first; capacity collapsed with its status (active bucket, quiet on the form)"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"Deposit from wallet\"] [data-testid=\"operation-limits\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "08-funding-modal-after-close.png",
+      "state": "Back on the funding form after closing the info"
+    }
+  ]
+}

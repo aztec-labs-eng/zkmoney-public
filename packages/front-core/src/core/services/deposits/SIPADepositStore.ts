@@ -63,7 +63,7 @@ export interface SIPADepositRecord {
   tokenSymbol: string
   /** Current phase. */
   phase: SIPADepositPhase
-  /** ms epoch when the record was created. */
+  /** ms epoch of the L1 funding transfer's block; the record's creation until that is read. */
   startTime: number
   /**
    * Created from a discovered SIPA event with no local record: history replayed onto this device rather
@@ -123,6 +123,11 @@ export interface SIPADepositRecord {
    */
   fundingTxHash?: Hash
   fundingFromAddress?: Address
+  /**
+   * Ticker of the token the sweep takes: what the funder sent, or the balance the sweep picks
+   * when several accepted tokens were sent. `tokenSymbol` is the credited token once swept.
+   */
+  fundingTokenSymbol?: string
   /**
    * Sender-wallet display identity: the connected wallet on self-initiated
    * deposits, backfilled from `fundingFromAddress` on third-party ones once

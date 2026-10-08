@@ -1,7 +1,10 @@
-import { useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useContactsDirectory } from "@obsidion/front-core"
 import { ContactRow, GradientText, Icon, avatarColors } from "@obsidion/web-ds"
+import { PaylinkInfoModal, isPaylinkInfoHidden } from "../paylink/PaylinkInfoModal"
+import { voucherAvailable } from "../paylink/sponsoredPaylink"
+import { usePaylinkDeps } from "../paylink/usePaylinkDeps"
 import { recentPeople } from "./recentPeople"
 import { useContactActivity } from "./useContactActivity"
 
@@ -13,6 +16,21 @@ export function SendScreen() {
   const { contacts } = useContactsDirectory()
   const sources = useContactActivity(true)
   const recent = useMemo(() => recentPeople(contacts, sources, RECENT_COUNT), [contacts, sources])
+  // "first-use" fronts "Send via paylink" until the user hides it; "explain" is the "Open" button.
+  const [info, setInfo] = useState<"first-use" | "explain">()
+  const newLink = () => navigate("/links/new")
+  const deps = usePaylinkDeps()
+  // Undefined while the allowance read is in flight.
+  const [voucher, setVoucher] = useState<boolean>()
+  useEffect(() => {
+    setVoucher(undefined)
+    if (!deps) return
+    let stale = false
+    void voucherAvailable(deps).then((ok) => !stale && setVoucher(ok))
+    return () => {
+      stale = true
+    }
+  }, [deps])
 
   return (
     <div className="ww-panel ww-panel--entry">
@@ -22,21 +40,36 @@ export function SendScreen() {
         </GradientText>
       </div>
       <div className="ww-panel__scroll">
-        <button
-          type="button"
-          className="zkm-btn-reset ww-send-option"
-          onClick={() => navigate("/links/new")}
-        >
-          <span className="ww-send-option__body">
-            <span className="ww-send-option__icon">
-              <Icon name="link" size={24} color="#fff" />
+        <div className="ww-send-paylink">
+          <button
+            type="button"
+            className="zkm-btn-reset ww-send-option"
+            onClick={() => (isPaylinkInfoHidden() ? newLink() : setInfo("first-use"))}
+          >
+            <span className="ww-send-option__body">
+              <span className="ww-send-option__icon">
+                <Icon name="link" size={24} color="#fff" />
+              </span>
+              <span className="ww-send-option__text">
+                <span>Send via paylink</span>
+                <span>
+                  {voucher
+                    ? "Pay anyone, no account needed. They claim to zk.money or any ETH address."
+                    : "Pay anyone via paylink. They'll need a zk.money account to claim."}
+                </span>
+              </span>
             </span>
-            <span className="ww-send-option__text">
-              <span>Send via paylink</span>
-            </span>
-          </span>
-          <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
-        </button>
+            <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
+          </button>
+          <button
+            type="button"
+            className="zkm-btn-reset ww-send-howto"
+            onClick={() => setInfo("explain")}
+          >
+            What is a paylink?
+            <span className="ww-send-howto__cta">Open</span>
+          </button>
+        </div>
 
         <div className="ww-send-or">
           <hr className="ww-divider" />
@@ -77,6 +110,17 @@ export function SendScreen() {
           </button>
         </div>
       </div>
+      {info && (
+        <PaylinkInfoModal
+          offerHide={info === "first-use"}
+          voucher={voucher === true}
+          onClose={() => setInfo(undefined)}
+          onGotIt={() => {
+            setInfo(undefined)
+            if (info === "first-use") newLink()
+          }}
+        />
+      )}
     </div>
   )
 }

@@ -5,20 +5,25 @@
 
 import { useEffect } from "react"
 import {
-  ActivityFeed,
   AppNotificationStore,
   BridgeNotificationProducer,
   NotificationProducerRegistry,
   PaylinkClaimedNotificationProducer,
+  PendingRegistrationStore,
+  RegistrationNotificationProducer,
   ReorgNotificationProducer,
   SIPADepositStore,
   TransactionStorage,
   TransferReceiveNotificationProducer,
   createReorgMonitor,
+  getActiveNetworkId,
+  loadTransferScanJoined,
   useAztecContext,
 } from "@obsidion/front-core"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { loadWalletIdentity } from "../identity/walletIdentity"
 import { whenVisibilityChanges } from "../../platform/visibilityScheduler"
+import { bridgeActivityFeed, sipaProcessingObserver } from "../deposit/sipaProcessing"
 import { getWithdrawalStore } from "../withdraw/withdrawGateway"
 
 export function NotificationsMount(): null {
@@ -32,19 +37,35 @@ export function NotificationsMount(): null {
         .catch(() => null)
     const producers = NotificationProducerRegistry.get()
     producers.register(
-      BridgeNotificationProducer.get(
-        ActivityFeed.get(SIPADepositStore.get(webStorage), getWithdrawalStore()),
-        notificationStore,
-        { liveRows: true },
-      ),
+      BridgeNotificationProducer.get(bridgeActivityFeed(), notificationStore, { liveRows: true }),
     )
+    const joined = async () => {
+      const identity = loadWalletIdentity()
+      const networkId = getActiveNetworkId()
+      if (!identity || !networkId) return undefined
+      return loadTransferScanJoined(webStorage, { accountAddress: identity.address, networkId })
+    }
     producers.register(
-      TransferReceiveNotificationProducer.getOrCreate({ notificationStore, accountTransactions }),
+      TransferReceiveNotificationProducer.getOrCreate({
+        notificationStore,
+        accountTransactions,
+        joined,
+      }),
     )
     producers.register(
       PaylinkClaimedNotificationProducer.getOrCreate({ notificationStore, accountTransactions }),
     )
     producers.register(ReorgNotificationProducer.getOrCreate({ notificationStore }))
+    producers.register(
+      RegistrationNotificationProducer.getOrCreate({
+        notificationStore,
+        pendingStore: PendingRegistrationStore.get(webStorage),
+        sipaStore: SIPADepositStore.get(webStorage),
+        withdrawalStore: getWithdrawalStore(),
+        currentAccount: () => loadWalletIdentity()?.address ?? null,
+        processing: sipaProcessingObserver(),
+      }),
+    )
     producers.start()
     return () => producers.stop()
   }, [])

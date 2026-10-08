@@ -30,6 +30,7 @@ const OPERATION: PendingL1Operation = {
   condition: L1OperationCondition.immediate(),
   status: 'pending',
   attempts: 0,
+  createdAt: new Date(),
 };
 
 function topic(address: EthAddress): Hex {

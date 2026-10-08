@@ -1,7 +1,9 @@
+export type MetricsEnvironment = "dev" | "staging" | "production"
+
 export interface MetricsTarget {
   version: number
   app: "wallet" | "campaign"
-  environment: "staging" | "production"
+  environment: MetricsEnvironment
   analyticsUrl: string
 }
 export function metricsBuildTarget(
@@ -16,4 +18,4 @@ export function metricsBuildPlugin(app: "wallet" | "campaign"): {
     emitFile(asset: { type: "asset"; fileName: string; source: string }): unknown
   }): void
 }
-export function checkMetricsArtifact(file: string, slot: string): "staging" | "production"
+export function checkMetricsArtifact(file: string, slot: string): MetricsEnvironment

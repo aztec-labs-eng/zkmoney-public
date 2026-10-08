@@ -390,6 +390,119 @@ describe("WithdrawalStorage", () => {
     })
 
   })
+
+  describe("reviveDroppedBurn", () => {
+    it("returns a dropped-burn failure to l2_mined with the failure cleared", async () => {
+      const store = await newStore()
+      await store.create(
+        makeRecord({ phase: "awaiting_proven", l2TxHash: VALID_TX, phaseEnteredAt: 5 }),
+      )
+      await store.demote("local-1", { droppedBurn: true })
+      const before = Date.now()
+
+      const revived = await store.reviveDroppedBurn("local-1")
+
+      expect(revived).toBe(store.get("local-1"))
+      expect(revived?.phase).toBe("l2_mined")
+      expect(revived?.reorgEpoch).toBe(2)
+      expect(revived?.phaseEnteredAt).toBeGreaterThanOrEqual(before)
+      expect(revived?.endTime).toBeUndefined()
+      expect(revived?.error).toBeUndefined()
+      expect(revived?.droppedBurn).toBeUndefined()
+      expect(revived?.l2TxHash).toBe(VALID_TX)
+    })
+
+    it("refuses any record that is not a dropped-burn failure", async () => {
+      const store = await newStore()
+      await store.create(makeRecord({ localId: "fail", phase: "failed", error: "nope" }))
+      await store.create(
+        makeRecord({ localId: "live", phase: "l2_mined", l2TxHash: VALID_TX, droppedBurn: true }),
+      )
+      const failed = store.get("fail")
+      const live = store.get("live")
+
+      expect(await store.reviveDroppedBurn("fail")).toBeNull()
+      expect(await store.reviveDroppedBurn("live")).toBeNull()
+      expect(store.get("fail")).toBe(failed)
+      expect(store.get("live")).toBe(live)
+    })
+
+    it("fences a write that carries the failure's epoch", async () => {
+      const store = await newStore()
+      await store.create(makeRecord({ phase: "l2_mined", l2TxHash: VALID_TX }))
+      await store.demote("local-1", { droppedBurn: true }) // epoch 1
+      await store.reviveDroppedBurn("local-1") // epoch 2
+
+      const blocked = await store.patch("local-1", { phase: "finalizing_l1", reorgEpoch: 1 })
+      expect(blocked.phase).toBe("l2_mined")
+
+      const advanced = await store.patch("local-1", { phase: "awaiting_proven", reorgEpoch: 2 })
+      expect(advanced.phase).toBe("awaiting_proven")
+    })
+  })
+
+  describe("setBurnDroppedAt", () => {
+    it("records the time and nothing else, on a record behind the epoch fence", async () => {
+      const store = await newStore()
+      await store.create(makeRecord({ phase: "finalizing_l1", l2TxHash: VALID_TX }))
+      const demoted = await store.demote("local-1") // epoch 1
+
+      const recorded = await store.setBurnDroppedAt("local-1", 1234)
+
+      expect(recorded).toBe(store.get("local-1"))
+      expect(recorded).toEqual({ ...demoted, burnDroppedAt: 1234 })
+    })
+
+    it("keeps the first time recorded", async () => {
+      const store = await newStore()
+      await store.create(makeRecord({ phase: "l2_mined", l2TxHash: VALID_TX }))
+      await store.setBurnDroppedAt("local-1", 100)
+
+      expect((await store.setBurnDroppedAt("local-1", 200)).burnDroppedAt).toBe(100)
+    })
+
+    it("clears with undefined, in any phase", async () => {
+      const store = await newStore()
+      await store.create(makeRecord({ phase: "swapping", l2TxHash: VALID_TX, burnDroppedAt: 100 }))
+
+      const cleared = await store.setBurnDroppedAt("local-1", undefined)
+
+      expect(cleared.burnDroppedAt).toBeUndefined()
+      expect(cleared.phase).toBe("swapping")
+    })
+
+    it.each(["submitting", "swapping", "recoverable", "recovered", "done", "failed"] as const)(
+      "records nothing on a %s record",
+      async (phase) => {
+        const store = await newStore()
+        await store.create(makeRecord({ phase, l2TxHash: VALID_TX }))
+        const before = store.get("local-1")
+
+        expect(await store.setBurnDroppedAt("local-1", 1234)).toBe(before)
+      },
+    )
+
+    type Write = (store: WithdrawalStorage) => Promise<WithdrawalRecord | null>
+    const demote: Write = (store) => store.demote("local-1")
+    const fail: Write = (store) => store.demote("local-1", { droppedBurn: true })
+    const revive: Write = (store) => store.reviveDroppedBurn("local-1")
+
+    it.each([
+      ["a demote", "awaiting_proven", demote],
+      ["a failure", "awaiting_proven", fail],
+      ["a revival", "failed", revive],
+    ] as const)("%s clears it", async (_, phase, write) => {
+      const store = await newStore()
+      await store.create(
+        makeRecord({ phase, l2TxHash: VALID_TX, droppedBurn: true, burnDroppedAt: 100 }),
+      )
+
+      const written = await write(store)
+
+      expect(written?.phase).not.toBe(phase)
+      expect(written?.burnDroppedAt).toBeUndefined()
+    })
+  })
 })
 
 describe("failInterruptedSubmissions", () => {

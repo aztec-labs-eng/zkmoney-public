@@ -233,7 +233,7 @@ abstract contract UpdateMetadataSIPAGasFixture is UpdateMetadataSIPAFixture {
     );
     underlying.mint(address(manager), 1000 ether);
     vm.prank(OWNER);
-    manager.setDepositConfig(PRICED_MIN_PROFIT, type(uint128).max, PRICED_MIN_PROFIT);
+    manager.setDepositConfig(PRICED_MIN_PROFIT, type(uint128).max, PRICED_MIN_PROFIT, 0, 0);
     vm.fee(PRICED_BASEFEE);
     vm.txGasPrice(PRICED_BASEFEE);
   }

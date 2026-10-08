@@ -52,4 +52,11 @@ describe('plainWithdrawalUserPayload', () => {
 
     expect(() => plainWithdrawalUserPayload(withdrawal, executor, txHash)).toThrow(/does not match/);
   });
+
+  it('rejects a published relayer tip that does not match the payload hash', () => {
+    const executor = EthAddress.random();
+    const withdrawal = published(executor, { relayerTip: 8n });
+
+    expect(() => plainWithdrawalUserPayload(withdrawal, executor, txHash)).toThrow(/does not match/);
+  });
 });

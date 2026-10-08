@@ -1,7 +1,9 @@
 import { getConfig } from "../../config/env"
 import { getActiveCredentialId } from "../../platform/storage/activeStorage"
+import { walletStorage } from "../../platform/storage/walletStorage"
 import { hasMskRootBreadcrumb, rememberUsertag } from "../../platform/auth/WebPasskeyIdentityMap"
 import { clearAdmission } from "./admission"
+import { clearNameGrant } from "../onboarding/nameGrant"
 
 export type WalletIdentity = {
   /** Absent until a name is registered: the wallet runs nameless and tag surfaces prompt for one. */
@@ -20,9 +22,9 @@ const STORAGE_KEY = "webwallet.identity"
  * sends the visitor to /claim. Clearing it means re-onboarding (or, later,
  * returning-user entry via /enter).
  */
-export function loadWalletIdentity(): WalletIdentity | null {
+export function loadWalletIdentity({ saved = false } = {}): WalletIdentity | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = saved ? walletStorage.getCommitted(STORAGE_KEY) : walletStorage.getItem(STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as WalletIdentity
     if (typeof parsed.address !== "string") return null
@@ -34,7 +36,8 @@ export function loadWalletIdentity(): WalletIdentity | null {
 }
 
 /**
- * Resolves once the passkey hint is written too; a caller about to leave the page awaits it.
+ * Resolves once the identity is saved and the passkey hint is saved too, and rejects when the
+ * identity could not be saved; a caller about to enter the wallet or leave the page awaits it.
  * Settled tags only: a pending claim can still lose the name race, and a nameless save must not
  * disturb a hint from an earlier claim. The session's passkey carries the tag through logout
  * and account switching, which clear this record. `stillOwns` reaches the hint's write: a sign-in
@@ -44,14 +47,17 @@ export function saveWalletIdentity(
   identity: WalletIdentity,
   stillOwns?: () => boolean,
 ): Promise<void> {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(identity))
+  const saved = walletStorage.commitItem(STORAGE_KEY, JSON.stringify(identity))
   const credentialId = getActiveCredentialId()
-  if (identity.pending || !identity.handle || !credentialId) return Promise.resolve()
-  return rememberUsertag(getConfig().rpId, credentialId, identity.handle, stillOwns).catch(() => {})
+  const handle = identity.handle
+  if (identity.pending || !handle || !credentialId) return saved
+  return saved.then(() =>
+    rememberUsertag(getConfig().rpId, credentialId, handle, stillOwns).catch(() => {}),
+  )
 }
 
 export function clearWalletIdentity(): void {
-  localStorage.removeItem(STORAGE_KEY)
+  walletStorage.removeItem(STORAGE_KEY)
   // The cached grant was proved for this identity; a successor proves its own.
   clearAdmission()
 }
@@ -61,7 +67,8 @@ export function confirmWalletIdentity(): void {
   const identity = loadWalletIdentity()
   if (!identity?.pending) return
   const { pending: _pending, ...settled } = identity
-  void saveWalletIdentity(settled)
+  saveWalletIdentity(settled).catch((e) => console.error("[walletIdentity] confirm not saved:", e))
+  if (settled.handle) clearNameGrant(settled.handle)
 }
 
 /** The name race was lost: a pending identity must never be presented as owned. */
@@ -79,7 +86,8 @@ export function retractPendingWalletIdentity(): void {
  * undetectable — that case surfaces as an assertion failure and belongs to the
  * /enter recovery slice.
  */
-export function loadOnboardedIdentity(): WalletIdentity | null {
+/** `saved` reads only a record already persisted, for a caller about to enter on it. */
+export function loadOnboardedIdentity({ saved = false } = {}): WalletIdentity | null {
   if (!hasMskRootBreadcrumb(getConfig().rpId)) return null
-  return loadWalletIdentity()
+  return loadWalletIdentity({ saved })
 }

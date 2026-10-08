@@ -1,7 +1,11 @@
+import { WINDOWS_HELLO } from "./passkeyProviders.js"
+
 /**
  * Typed refusals from the passkey policy. Each carries a plain-language message the screens can
  * show as-is and a stable `name` the screens and tests can branch on.
  */
+
+import { IOS_FLOOR_COPY, MAC_BROWSER_FLOOR_COPY } from "./refusalCopy.js"
 
 /** Every refusal the passkey policy raises; a screen stays put and offers a retry on one. */
 export class PasskeyPolicyError extends Error {}
@@ -18,21 +22,55 @@ export class SecurityKeyRequiredError extends PasskeyPolicyError {
   }
 }
 
-/** A laptop ceremony answered from the laptop's own passkey instead of another device. */
+/**
+ * A laptop ceremony answered from the laptop's own passkey instead of another device. A sign-up
+ * whose answering provider is known names it, so the retry can get past that provider's offer; an
+ * unnamed sign-up is told where to create the passkey, since it has none yet.
+ */
 export class PhoneRequiredError extends PasskeyPolicyError {
-  constructor() {
-    super("Scan the QR code with the phone that holds your passkey, or plug in your security key.")
+  readonly providerName?: string
+
+  constructor(options: { providerName?: string; ceremony?: "create" | "sign-in" } = {}) {
+    super(phoneRequiredMessage(options.providerName, options.ceremony ?? "sign-in"))
+    this.providerName = options.providerName
     this.name = "PhoneRequiredError"
   }
+}
+
+function phoneRequiredMessage(
+  providerName: string | undefined,
+  ceremony: "create" | "sign-in",
+): string {
+  if (providerName === WINDOWS_HELLO) {
+    return (
+      "Windows Hello saved this passkey on this computer, but a sign-up here needs a phone over a " +
+      "QR code, or a security key. When you try again and Windows offers to save it with Windows " +
+      "Hello, choose another way to save it, then pick your phone or a security key."
+    )
+  }
+  // "This device", not "this computer": a phone in desktop mode also counts as a laptop.
+  if (providerName) {
+    return (
+      `${providerName} saved this passkey on this device, but a sign-up here needs a phone over a ` +
+      `QR code, or a security key. When you try again, skip ${providerName}'s offer on this ` +
+      "device. If a QR code appears, scan it with your phone. Or use your security key."
+    )
+  }
+  if (ceremony === "create") {
+    return (
+      "To sign up on this computer, create your passkey on your phone or a security key. When you " +
+      "try again, skip any offer from a password manager on this computer. If a QR code appears, " +
+      "scan it with your phone. Or use your security key."
+    )
+  }
+  return "Scan the QR code with the phone that holds your passkey, or plug in your security key."
 }
 
 /** A phone creation was handed to another phone over QR instead of answering on this device. */
 export class LocalPasskeyRequiredError extends PasskeyPolicyError {
   constructor() {
     super(
-      "Use this phone's own passkey, or a security key you can plug in or tap — not another " +
-        "phone. Whatever answered may have made a passkey: delete it on that phone, or remove " +
-        "it from a security key with YubiKey Manager or another FIDO2 tool.",
+      "Use this phone's own passkey, or a security key you can plug in or tap — not another phone.",
     )
     this.name = "LocalPasskeyRequiredError"
   }
@@ -60,8 +98,7 @@ export class SecurityKeyNoPrfError extends PasskeyPolicyError {
   constructor() {
     super(
       "Your security key answered, but this device couldn't get the key material a wallet needs. " +
-        "On iPhone this needs iOS 26.4 or later, and fingerprint keys aren't supported yet. The " +
-        "passkey it just made can be removed with YubiKey Manager or another FIDO2 tool.",
+        "On iPhone this needs iOS 26.4 or later, and fingerprint keys aren't supported yet.",
     )
     this.name = "SecurityKeyNoPrfError"
   }
@@ -76,8 +113,7 @@ export class IncompleteCreationError extends PasskeyPolicyError {
   constructor() {
     super(
       "This browser didn't return everything the wallet needs from your phone. Update Safari or " +
-        "use Chrome, then try again. The passkey it left in the passkey manager you chose on your " +
-        "phone can be deleted.",
+        "use Chrome, then try again.",
     )
     this.name = "IncompleteCreationError"
   }
@@ -107,12 +143,11 @@ export class UnsupportedProviderError extends PasskeyPolicyError {
   ) {
     super(
       kind === "security-key"
-        ? "Only YubiKey 5 series security keys can protect a wallet today. The passkey it just " +
-            "made can be removed with YubiKey Manager or another FIDO2 tool, then try again " +
-            "with iCloud Keychain, Google Password Manager, or 1Password."
-        : `${options.providerName ?? "This passkey manager"} can't protect a wallet yet. Delete ` +
-            "the passkey it just made, then try again with iCloud Keychain, Google Password " +
-            `Manager, or 1Password${options.keyOfferable ? ", or a YubiKey 5 security key" : ""}.`,
+        ? "Only YubiKey 5 series security keys can protect a wallet today. Try again with iCloud " +
+            "Keychain, Google Password Manager, or 1Password."
+        : `${options.providerName ?? "This passkey manager"} can't protect a wallet yet. Try ` +
+            "again with iCloud Keychain, Google Password Manager, or 1Password" +
+            `${options.keyOfferable ? ", or a YubiKey 5 security key" : ""}.`,
     )
     this.providerName = options.providerName
     this.name = "UnsupportedProviderError"
@@ -144,10 +179,7 @@ export class NoWalletForPasskeyError extends PasskeyPolicyError {
 /** This browser is below the floor for creating a wallet passkey on a phone. */
 export class PhoneUnreachableError extends PasskeyPolicyError {
   constructor() {
-    super(
-      "This browser can't create a wallet passkey with your phone. Update it, or open zk.money in " +
-        "a current version of Chrome or Safari.",
-    )
+    super(MAC_BROWSER_FLOOR_COPY)
     this.name = "PhoneUnreachableError"
   }
 }
@@ -171,10 +203,16 @@ export class AmbiguousPasskeyError extends PasskeyPolicyError {
   }
 }
 
+/** The browser refused a request for a passkey that belongs to another zk.money site. */
 export class RelatedOriginPasskeyError extends PasskeyPolicyError {
-  constructor(rpId: string) {
+  constructor(cause?: unknown, options: { iosBelowFloor?: boolean } = {}) {
     super(
-      `This browser could not authorize passkeys for ${rpId} on this site. Update your browser and try again. If it still fails, contact support.`,
+      options.iosBelowFloor
+        ? IOS_FLOOR_COPY
+        : "A browser extension, such as a password manager, may have blocked the passkey request on this site. " +
+            "Turn off the extension's passkey option for this site, or use another browser, then try again. " +
+            "If it still fails, contact support.",
+      { cause },
     )
     this.name = "RelatedOriginPasskeyError"
   }
@@ -184,8 +222,42 @@ export function isPasskeyPolicyError(err: unknown): err is PasskeyPolicyError {
   return err instanceof PasskeyPolicyError
 }
 
+const EXTENSION_SCRIPT_RE = /(?:chrome|moz|safari-web)-extension:\/\//
+
+/** A password manager's extension answered the request and failed with a plain `Error` of its own. */
+export function isExtensionPasskeyError(err: unknown): boolean {
+  try {
+    const { name, message, stack } = err as { name?: unknown; message?: unknown; stack?: unknown }
+    if (name !== "Error" || typeof stack !== "string") return false
+    return EXTENSION_SCRIPT_RE.test(
+      typeof message === "string" ? stack.replace(message, "") : stack,
+    )
+  } catch {
+    return false
+  }
+}
+
 /** The browser's passkey prompt was closed, or timed out, before it answered. Nothing was signed. */
 export function isPasskeyCancelled(err: unknown): boolean {
   const name = (err as { name?: unknown } | null)?.name
   return name === "NotAllowedError" || name === "AbortError"
+}
+
+/**
+ * Errors thrown after the browser returned a credential: whatever the prompt saved is still there.
+ * A side table rather than a property, since the browser's and an extension's errors are not ours.
+ */
+const written = new WeakSet<object>()
+
+export function markPasskeyWritten<T>(err: T): T {
+  if (typeof err === "object" && err !== null) written.add(err)
+  return err
+}
+
+/** Whether a passkey was written before this error, or before the error it carries as `cause`. */
+export function passkeyWritten(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false
+  if (written.has(err)) return true
+  const cause = (err as { cause?: unknown }).cause
+  return typeof cause === "object" && cause !== null && written.has(cause)
 }

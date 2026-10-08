@@ -1,10 +1,16 @@
-import { loadContractArtifact, type ContractArtifact } from "@aztec/stdlib/abi"
+import { jsonParseWithSchema } from "@aztec/foundation/json-rpc"
+import {
+  ContractArtifactSchema,
+  loadContractArtifact,
+  type ContractArtifact,
+} from "@aztec/stdlib/abi"
 import type { NoirCompiledContract } from "@aztec/stdlib/noir"
 import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
 
 export interface ClassArtifactPin {
   url: string
   sha256: string
+  encoding?: "aztec-contract-artifact"
 }
 
 export type ClassArtifactCatalog = Record<string, ClassArtifactPin>
@@ -45,9 +51,11 @@ export function createClassArtifactResolver(
         ).join("")
         if (digest !== pin.sha256)
           throw new Error(`Historical artifact checksum differs for ${classId}`)
-        const artifact = loadContractArtifact(
-          JSON.parse(new TextDecoder().decode(bytes)) as NoirCompiledContract,
-        )
+        const body = new TextDecoder().decode(bytes)
+        const artifact =
+          pin.encoding === "aztec-contract-artifact"
+            ? jsonParseWithSchema(body, ContractArtifactSchema)
+            : loadContractArtifact(JSON.parse(body) as NoirCompiledContract)
         if ((await getContractClassFromArtifact(artifact)).id.toString() !== classId)
           throw new Error(`Historical artifact class differs from ${classId}`)
         return artifact

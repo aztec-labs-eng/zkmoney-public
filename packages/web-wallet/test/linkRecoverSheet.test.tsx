@@ -17,7 +17,8 @@ const h = vi.hoisted(() => ({
 }))
 
 vi.mock("../src/features/paylink/sponsoredPaylink", () => ({
-  recoverSponsoredLink: (...args: unknown[]) => asOperation(h.recoverSponsoredLink, "paylink-reclaim")(...args),
+  recoverSponsoredLink: (...args: unknown[]) =>
+    asOperation(h.recoverSponsoredLink, "paylink-reclaim")(...args),
 }))
 vi.mock("../src/errors/errorModal", () => ({
   showErrorModal: h.showErrorModal,
@@ -45,7 +46,7 @@ vi.mock("@obsidion/web-ds", () => ({
       {title}
     </button>
   ),
-  Spinner: () => null,
+  GradientSpinner: () => null,
   TopNavIconButton: () => null,
   Icon: () => null,
 }))
@@ -115,6 +116,22 @@ describe("LinkRecoverModal", () => {
     expect(button("Cancel link")).toBeTruthy()
   })
 
+  it("waits out a new link's create without reading as this link", async () => {
+    let finish!: () => void
+    const creating = asOperation(
+      () => new Promise<void>((resolve) => (finish = resolve)),
+      "paylink-create",
+    )()
+    await render("cancel")
+    const waiting = button("Waiting for your new paylink to be created")
+    expect(waiting?.disabled).toBe(true)
+    await act(async () => {
+      finish()
+      await creating
+    })
+    expect(button("Cancel link")?.disabled).toBe(false)
+  })
+
   it("runs the refund leg for a reclaim and closes once it lands", async () => {
     await render("reclaim")
     await act(async () => button("Reclaim funds")!.click())
@@ -138,6 +155,7 @@ describe("LinkRecoverModal", () => {
       )
     })
     await act(async () => button("Reclaim funds")!.click())
+    expect(container.textContent).toContain("Keep this tab open")
     await endSigningAndHandOff()
     expect(onClose).toHaveBeenCalledOnce()
 

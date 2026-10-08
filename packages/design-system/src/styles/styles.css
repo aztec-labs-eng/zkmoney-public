@@ -310,6 +310,7 @@
 }
 .zkm-primary-btn--disabled {
   cursor: default;
+  color: rgba(255, 255, 255, 0.5);
 }
 .zkm-primary-btn--gradient.zkm-primary-btn--disabled {
   /* opaque dimmed gradient: brand gradient at 30% composited over #1A1A1A */
@@ -462,6 +463,10 @@
 .zkm-amount-chip--selected {
   background: var(--gradient-brand);
   color: #fff;
+}
+.zkm-amount-chip--disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 /* ============================================================

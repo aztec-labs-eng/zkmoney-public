@@ -3,7 +3,9 @@
  * delivers each transfer to both parties): reads the account-scoped private events of the oxide
  * token and decodes their `meta`. `ObsidionWallet.getPrivateEvents` syncs
  * PXE first, so each scan is also the note-discovery trigger. Consumed by front-core's
- * `TransferEventScanner`.
+ * `TransferEventScanner`. A payout lane is kept only when its keys derive the event's `from` under
+ * the given contract service, so a lane reaching a consumer is a verified paylink claim; without a
+ * contract service every payout lane is dropped.
  */
 
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
@@ -11,7 +13,13 @@ import { BlockNumber } from "@aztec/foundation/branded-types"
 import { OxideTokenContract, type Transfer as TransferEvent } from "@obsidion/contracts"
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
 import type { PrivateEvent } from "@aztec/aztec.js/wallet"
-import { decodeTransferMeta, type PaylinkCreatedMeta } from "./transferMeta.js"
+import {
+  decodeTransferMeta,
+  type PaylinkCreatedMeta,
+  type PaylinkPayoutMeta,
+} from "./transferMeta.js"
+import type { ContractService } from "@obsidion/contracts"
+import { paylinkEscrowInstance } from "./paylink/paylinkEscrow.js"
 
 /** One decoded `Transfer` event addressed to the scanned account. */
 export interface ScannedTransferEvent {
@@ -27,7 +35,11 @@ export interface ScannedTransferEvent {
   memo?: string
   /** On an escrow's funding transfer: the link it escrows (see `PaylinkService.recoverPaylinkFromTransfer`). */
   paylinkCreated?: PaylinkCreatedMeta
+  /** On a claim's payout, once the source verified it: the escrow `from` is. */
+  paylinkPayout?: PaylinkPayoutMeta
 }
+
+type EscrowVerifier = Pick<ContractService, "getArtifactForContract"> | undefined
 
 export interface WalletSyncSnapshot {
   events: ScannedTransferEvent[]
@@ -36,15 +48,22 @@ export interface WalletSyncSnapshot {
 }
 
 export interface WalletSyncSource extends TransferEventSource {
-  readSnapshot(fromBlock: number, toBlockExclusive: number): Promise<WalletSyncSnapshot>
+  /** `assumeSynced` reads at PXE's current anchor, for a later range of an already-synced pass. */
+  readSnapshot(
+    fromBlock: number,
+    toBlockExclusive: number,
+    opts?: { assumeSynced?: boolean },
+  ): Promise<WalletSyncSnapshot>
+  /** The balance alone, on one sync. */
+  readBalanceSnapshot(): Promise<{ balance: bigint; anchorBlock: number }>
 }
 
 export interface TransferEventSource {
   headBlock(): Promise<number>
   /** Events in `[fromBlock, toBlockExclusive)` scoped to the account. */
   listIncoming(fromBlock: number, toBlockExclusive: number): Promise<ScannedTransferEvent[]>
-  /** Block timestamp (ms); `undefined` falls back to the scan time. */
-  blockTimestampMs?(blockNumber: number): Promise<number | undefined>
+  /** Block timestamp (ms); `undefined` when the node cannot serve the block, and the scanner retries. */
+  blockTimestampMs(blockNumber: number): Promise<number | undefined>
   /**
    * PXE's synced block — the highest block whose events `listIncoming` can actually see. The
    * scanner never persists its cursor past this. 0 before the first sync; rejects on an
@@ -57,6 +76,8 @@ export function createTransferEventSource(deps: {
   wallet: ObsidionWallet
   tokenAddress: string
   accountAddress: string
+  /** Verifies payout lanes; absent, they are dropped. */
+  contractService?: EscrowVerifier
 }): TransferEventSource {
   const contractAddress = AztecAddress.fromStringUnsafe(deps.tokenAddress)
   const scope = AztecAddress.fromStringUnsafe(deps.accountAddress)
@@ -72,7 +93,7 @@ export function createTransferEventSource(deps: {
           scopes: [scope],
         },
       )
-      return events.map(decodeEvent)
+      return decodeEvents(events, deps.contractService)
     },
     async anchorBlock() {
       try {
@@ -102,11 +123,12 @@ export function createWalletSyncSource(deps: {
   wallet: ObsidionWallet
   tokenAddress: string
   accountAddress: string
+  contractService?: EscrowVerifier
   readBalance: () => Promise<bigint>
 }): WalletSyncSource {
   return {
     ...createTransferEventSource(deps),
-    async readSnapshot(fromBlock, toBlockExclusive) {
+    async readSnapshot(fromBlock, toBlockExclusive, opts) {
       const { events, projection, anchorBlock } = await deps.wallet.getPrivateEventsSnapshot<
         TransferEvent,
         bigint
@@ -119,13 +141,47 @@ export function createWalletSyncSource(deps: {
           scopes: [AztecAddress.fromStringUnsafe(deps.accountAddress)],
         },
         deps.readBalance,
+        opts,
       )
       return {
-        events: events.map(decodeEvent),
+        events: await decodeEvents(events, deps.contractService),
         balance: projection,
         anchorBlock,
       }
     },
+    async readBalanceSnapshot() {
+      const { value, anchorBlock } = await deps.wallet.getSnapshot(deps.readBalance)
+      return { balance: value, anchorBlock }
+    },
+  }
+}
+
+async function decodeEvents(
+  events: PrivateEvent<TransferEvent>[],
+  contractService: EscrowVerifier,
+): Promise<ScannedTransferEvent[]> {
+  return Promise.all(events.map(decodeEvent).map((e) => verifyPayout(e, contractService)))
+}
+
+/** Keeps the payout lane only when its keys derive the event's `from`. */
+async function verifyPayout(
+  event: ScannedTransferEvent,
+  contractService: EscrowVerifier,
+): Promise<ScannedTransferEvent> {
+  const lane = event.paylinkPayout
+  if (!lane) return event
+  const { paylinkPayout: _, ...plain } = event
+  if (!contractService) return plain
+  try {
+    const escrow = await paylinkEscrowInstance(
+      contractService,
+      lane.flavor,
+      lane.secret,
+      lane.fallbackKeyHash,
+    )
+    return escrow.address.equals(AztecAddress.fromStringUnsafe(event.from)) ? event : plain
+  } catch {
+    return plain
   }
 }
 

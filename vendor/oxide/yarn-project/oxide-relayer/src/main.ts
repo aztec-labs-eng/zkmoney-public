@@ -1,4 +1,3 @@
-import type { ViemPublicClient } from '@aztec/ethereum/types';
 import type { EthAddress } from '@aztec/foundation/eth-address';
 import { createLogger } from '@aztec/foundation/log';
 
@@ -10,25 +9,29 @@ import type { TeeSigner } from '@oxide/oxide-lib/types.js';
 import { initTelemetry } from '@oxide/telemetry';
 import { OFAC_SDN_LIST_URL, OfacSdnList } from '@oxide/watcher-lib/sanctions';
 
-import { erc20Abi, zeroAddress } from 'viem';
+import { type PublicClient, erc20Abi, zeroAddress } from 'viem';
 
-import type { RunConfig } from './cli/config.js';
-import { type ResolvedManifestDeployment, resolveDeploymentEnvManifest } from './config/deployment_env_manifest.js';
+import { type RunConfig, redactRunConfig } from './cli/config.js';
+import {
+  type DeploymentEnvManifestPublicConfig,
+  type ResolvedManifestDeployment,
+  resolveDeploymentEnvManifest,
+} from './config/deployment_env_manifest.js';
+import { DeploymentManifestRefresher } from './config/deployment_manifest_refresher.js';
 import { FpcFunderCaller } from './fpc_funding/fpc_funder_caller.js';
 import { HistoricalDeploymentSupervisor } from './historical_deployment_supervisor.js';
+import { getL1PublicClient } from './l1/client.js';
+import { assertNotFlashbots } from './l1/flashbots_protect.js';
+import { createL1TxQueue } from './l1/l1_tx_queue.js';
 import { L1OperationRelayer } from './l1_operations/l1_operation_relayer.js';
 import { WithdrawalCompletion } from './l1_operations/withdrawal_completion.js';
-import { assertNotFlashbots } from './l1_submission_rpc.js';
-import { getL1PublicClient } from './l1_utils.js';
 import { ChainlinkPriceOracle } from './price_oracle/chainlink_price_oracle.js';
 import { startEpochProofs } from './prover/index.js';
-import { RelayerL1SubmissionBatcher } from './relayer_l1_submission_batcher.js';
-import { type RelayerL1TxUtils, createRelayerL1TxUtils } from './relayer_l1_tx_utils.js';
-import { createRelayerSubmission } from './relayer_submission.js';
 import { RelayerTelemetry } from './relayer_telemetry.js';
-import { type LoadedSigner, loadSigner } from './signers/index.js';
+import { createEphemeralSigner, hasSignerKey, loadSigner } from './signers/index.js';
 import { statePathForPortal } from './state/path.js';
 import { type SqliteStateStore, openSqliteStateStore } from './state/sqlite_store.js';
+import { relayerVersion } from './version.js';
 
 /**
  * Bootstrap the long-running relayer process.
@@ -42,6 +45,10 @@ export interface RunRelayerOptions {
 const TELEMETRY_STOP_MS = 5_000;
 
 export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}): Promise<void> {
+  const log = createLogger('oxide-relayer');
+  log.info(`oxide-relayer version ${relayerVersion()}`);
+  log.info('Starting relayer', { config: redactRunConfig(config) });
+
   // Assert read URL is not mistakenly set to Flashbots
   assertNotFlashbots(config.readL1RpcUrl);
 
@@ -71,28 +78,19 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
     ...(config.modes.includes('l1-operations') ? { broadcaster: publicConfig.broadcaster.toString() } : {}),
   });
 
-  let signer: LoadedSigner | undefined;
-  let l1TxUtils: RelayerL1TxUtils | undefined;
-  let l1SubmissionBatcher: RelayerL1SubmissionBatcher | undefined;
-  // Unset on a chain with no Protect endpoint, where submission shares the read RPC and there is no split.
-  let submissionHost: string | undefined;
-  if (!config.disableSubmission) {
-    signer = await loadSigner(config.signer);
-    const submission = createRelayerSubmission({
-      chainId,
-      flashbotsBlockRange: config.flashbotsBlockRange,
-      l1MinPriorityFeeGwei: config.l1MinPriorityFeeGwei,
-      readL1RpcUrl: config.readL1RpcUrl,
-      account: signer.account,
-      chain: publicClient.chain,
-    });
-    submissionHost = submission.submissionHost;
-    l1TxUtils = createRelayerL1TxUtils(submission.client, submission.txUtilsConfig, submission.protectTxStatusUrl);
-    l1SubmissionBatcher = new RelayerL1SubmissionBatcher({
-      l1TxUtils,
-      blockWindow: config.flashbotsBlockRange,
-    });
-  }
+  const signer =
+    config.disableSubmission && !hasSignerKey(config.signer)
+      ? createEphemeralSigner()
+      : await loadSigner(config.signer);
+  const l1TxQueue = createL1TxQueue({
+    client: publicClient,
+    account: signer.account,
+    readL1RpcUrl: config.readL1RpcUrl,
+    flashbotsBlockRange: config.flashbotsBlockRange,
+    disableSubmission: config.disableSubmission,
+    maxFeePerGasCap:
+      config.l1MaxFeePerGasGwei === undefined ? undefined : BigInt(Math.trunc(config.l1MaxFeePerGasGwei * 1e9)),
+  });
 
   // Endpoint arrives through the standard OTel env vars set by the deploy; external operators set nothing
   // and every instrument is a no-op. The pinned entry's label is service.version.
@@ -105,14 +103,10 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
   let sdn: OfacSdnList | undefined;
   let state: SqliteStateStore | undefined;
   const historicalSupervisors: HistoricalDeploymentSupervisor[] = [];
+  let manifestRefresher: DeploymentManifestRefresher | undefined;
   const operationStores = new Set<SqliteStateStore>();
   const currentServices: Array<{ stop(): Promise<void> }> = [];
   try {
-    if (config.modes.includes('l1-operations') && !config.disableSubmission) {
-      const list = await OfacSdnList.start(config.sdnUrl);
-      sdn = list;
-      telemetry.observeSdnListAge(() => list.lastRefreshedAt);
-    }
     state = await openSqliteStateStore(currentStatePath, identity(manifest.current));
     const priceOracle = new ChainlinkPriceOracle(publicClient, { chainId });
     console.log(
@@ -121,33 +115,37 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
         `modes=${config.modes.join(',')}`,
         // Hostnames only: the read RPC URL embeds a provider API key.
         `l1ReadRpc=${rpcHost(config.readL1RpcUrl)}`,
-        `l1SubmissionRpc=${submissionHost ?? '(none)'}`,
         `portal=${currentPublicConfig.portal}`,
         `rollupVersion=${currentPublicConfig.rollupVersion}`,
         `aztecNodeUrl=${config.aztecNodeUrl}`,
         `aztecNodeApiKey=${config.aztecNodeApiKey ? '(configured)' : '(none)'}`,
         `enclaveUrl=${currentPublicConfig.enclaveUrl || '(none)'}`,
         `state=${currentStatePath}`,
-        signer ? `signer=${signer.backend}:${signer.address}` : 'signer=disabled',
+        `signer=${signer.backend}:${signer.address}`,
         `submission=${config.disableSubmission ? 'disabled' : 'enabled'}`,
+        `l1MaxFeePerGasGwei=${config.l1MaxFeePerGasGwei ?? '(none)'}`,
         `priceFeed=${priceOracle.feed.toString()}`,
-        `sdn=${sdn ? rpcHost(config.sdnUrl ?? OFAC_SDN_LIST_URL) : '(none)'}`,
-        `l1OperationScreening=${
-          config.modes.includes('l1-operations') && !config.disableSubmission ? 'enabled' : 'disabled'
-        }`,
+        `sdn=${config.modes.includes('l1-operations') ? rpcHost(config.sdnUrl ?? OFAC_SDN_LIST_URL) : '(none)'}`,
+        `l1OperationScreening=${config.modes.includes('l1-operations') ? 'enabled' : 'disabled'}`,
       ].join(' '),
     );
 
     if (config.disableSubmission) {
-      console.log('submission kill switch is active; relayer will not sign or broadcast L1 transactions.');
+      console.log('submission is disabled; relayer will skip L1 transaction sends and treat them as mined.');
     }
 
-    if (signer) {
-      // Capture the address in a const: `signer` is a `let` and would not narrow inside the observer closure.
-      const { address } = signer;
-      telemetry.observeSignerBalance(() => publicClient.getBalance({ address }));
+    // The ephemeral key holds no ETH, so its balance tells nothing.
+    if (signer.backend !== 'ephemeral') {
+      telemetry.observeSignerBalance(() => publicClient.getBalance({ address: signer.address }));
     }
     if (config.modes.includes('l1-operations')) {
+      const { l1OperationsSubmission } = config;
+      if (!l1OperationsSubmission) {
+        throw new Error('l1-operations mode requires the L1 operation submission policy');
+      }
+      const sanctionsList = await OfacSdnList.start(config.sdnUrl);
+      sdn = sanctionsList;
+      telemetry.observeSdnListAge(() => sanctionsList.lastRefreshedAt);
       const sum = async (counts: Iterable<Promise<number>>) => (await Promise.all(counts)).reduce((a, b) => a + b, 0);
       telemetry.observeL1OperationBacklog(() =>
         sum([...operationStores].map(async store => (await store.listPendingL1Operations()).length)),
@@ -163,13 +161,11 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
           }),
         ),
       );
-      if (config.l1OperationsSubmission && !config.disableSubmission) {
-        await assertSimulateV1Supported(publicClient, config.readL1RpcUrl);
-      }
+      await assertSimulateV1Supported(publicClient, config.readL1RpcUrl);
       const start = async (deployment: ResolvedManifestDeployment, store: SqliteStateStore) => {
         const { publicConfig, label } = deployment;
         const portal = new OxidePortalContract(publicClient, publicConfig.portal);
-        const deploymentPayoutToken = await readPayoutToken(publicClient, portal);
+        const payoutTokens = await selectPayoutTokens(publicClient, config.l1OperationsPayoutTokens, publicConfig);
         if (!opts.teeSigner && !publicConfig.enclaveUrl) {
           throw new Error(`no enclave is published for deployment ${label}:${publicConfig.portal}`);
         }
@@ -179,14 +175,13 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
           publicClient,
           store,
           broadcaster: publicConfig.broadcaster,
-          payoutToken: deploymentPayoutToken,
-          supportedTokens: depositTokensFor(chainId, deploymentPayoutToken),
-          l1OperationsSubmission: config.disableSubmission ? undefined : config.l1OperationsSubmission,
+          payoutTokens,
+          watchedTokens: depositTokensFor(chainId, publicConfig.token),
+          l1OperationsSubmission,
           allowUnprofitable: config.allowUnprofitable,
           executor: publicConfig.operationExecutor,
-          l1TxUtils,
-          l1SubmissionBatcher,
-          sanctionsList: sdn,
+          l1TxQueue,
+          sanctionsList,
           withdrawalCompletion: new WithdrawalCompletion(
             node,
             portal,
@@ -208,7 +203,7 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
         return worker;
       };
       currentServices.push(await start(manifest.current, state));
-      for (const { deployment, path } of historicalPaths) {
+      const discover = (deployment: ResolvedManifestDeployment, path: string) => {
         const supervisor = new HistoricalDeploymentSupervisor({
           label: deployment.label,
           portal: deployment.publicConfig.portal.toString(),
@@ -231,23 +226,37 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
         });
         historicalSupervisors.push(supervisor);
         supervisor.start();
+      };
+      for (const { deployment, path } of historicalPaths) {
+        discover(deployment, path);
       }
+      manifestRefresher = new DeploymentManifestRefresher({
+        deploymentEnvManifestUrl: config.deploymentEnvManifestUrl,
+        initial: manifest,
+        discover: deployment =>
+          discover(deployment, statePathForPortal(config.state.sqlitePath, deployment.publicConfig.portal, 2)),
+      });
     }
 
     if (config.modes.includes('epoch-proofs')) {
       // Prover tips and subsidies are paid in the pinned portal's underlying.
-      await readPayoutToken(publicClient, new OxidePortalContract(publicClient, currentPublicConfig.portal));
+      await readUnderlyingToken(publicClient, new OxidePortalContract(publicClient, currentPublicConfig.portal));
       currentServices.push(
-        await startEpochProofs(config, manifest.current, { l1TxUtils, l1SubmissionBatcher, priceOracle }),
+        await startEpochProofs(config, manifest.current, {
+          client: publicClient,
+          l1TxQueue,
+          priceOracle,
+          teeSigner: opts.teeSigner,
+        }),
       );
     }
 
-    if (config.modes.includes('fpc-funding') && !config.disableSubmission && l1TxUtils && l1SubmissionBatcher) {
+    if (config.modes.includes('fpc-funding')) {
       const fpcFunding = FpcFunderCaller.create({
         fpcFunder: currentPublicConfig.fpcFunder,
         executor: currentPublicConfig.operationExecutor,
-        l1TxUtils,
-        l1SubmissionBatcher,
+        client: publicClient,
+        l1TxQueue,
         priceOracle,
         allowUnprofitable: config.allowUnprofitable,
         pollIntervalMs: config.fpcFundingPollIntervalMs,
@@ -255,17 +264,14 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
       fpcFunding.start();
       currentServices.push(fpcFunding);
     }
-    if (config.modes.includes('fpc-funding') && config.disableSubmission) {
-      console.log('fpc-funding mode is enabled but submission is disabled; FPC funder caller will not start.');
-    }
 
+    manifestRefresher?.start();
     await waitForShutdown(opts.shutdownSignal);
   } finally {
+    await manifestRefresher?.stop();
     await Promise.allSettled(historicalSupervisors.map(supervisor => supervisor.stop()));
     await Promise.allSettled(currentServices.map(service => service.stop()));
-    if (l1SubmissionBatcher) {
-      await Promise.allSettled([l1SubmissionBatcher.stop()]);
-    }
+    await Promise.allSettled([l1TxQueue.stop()]);
     // stop() with a timeout so shutdown does not hang if the exporter stalls.
     await Promise.allSettled([
       Promise.race([
@@ -285,18 +291,39 @@ function rpcHost(url: string): string {
 }
 
 /**
- * Reads the portal underlying, the token that L1-operation and epoch-proof payouts are in. Each profit floor is
- * `weiToUSD`, an 18-decimal USD amount, so the relayer can price only an 18-decimal USD stablecoin.
+ * The tokens an L1-operations worker accepts as payout: the configured list, or else the token of the manifest entry.
  */
-export async function readPayoutToken(
-  client: Pick<ViemPublicClient, 'readContract'>,
+export async function selectPayoutTokens(
+  client: Pick<PublicClient, 'readContract'>,
+  configured: EthAddress[] | undefined,
+  deployment: Pick<DeploymentEnvManifestPublicConfig, 'token'>,
+): Promise<EthAddress[]> {
+  const tokens = configured ?? [deployment.token];
+  await Promise.all(tokens.map(token => assertPriceable(client, token, 'payout token')));
+  return tokens;
+}
+
+/** Reads the portal underlying, the token prover tips and the prover subsidy are paid in. */
+export async function readUnderlyingToken(
+  client: Pick<PublicClient, 'readContract'>,
   portal: Pick<OxidePortalContract, 'getUnderlying'>,
 ): Promise<EthAddress> {
-  const token = await portal.getUnderlying();
+  return assertPriceable(client, await portal.getUnderlying(), 'portal underlying');
+}
+
+/**
+ * Each profit floor is `weiToUSD`, an 18-decimal USD amount, so the relayer can price only an 18-decimal USD
+ * stablecoin.
+ */
+async function assertPriceable(
+  client: Pick<PublicClient, 'readContract'>,
+  token: EthAddress,
+  what: string,
+): Promise<EthAddress> {
   const decimals = await client.readContract({ address: token.toString(), abi: erc20Abi, functionName: 'decimals' });
   if (decimals !== 18) {
     throw new Error(
-      `portal underlying ${token.toString()} has ${decimals} decimals; the relayer prices payouts as 18-decimal USD`,
+      `${what} ${token.toString()} has ${decimals} decimals; the relayer prices payouts as 18-decimal USD`,
     );
   }
   return token;
@@ -309,7 +336,7 @@ export async function readPayoutToken(
  * bodies), so every error counts as unsupported.
  */
 export async function assertSimulateV1Supported(
-  client: Pick<ViemPublicClient, 'simulateBlocks'>,
+  client: Pick<PublicClient, 'simulateBlocks'>,
   readL1RpcUrl: string,
 ): Promise<void> {
   try {

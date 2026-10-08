@@ -75,7 +75,7 @@ contract DepositSIPASweepTest is OxidePortalBase {
     MockV3Aggregator aggregator = new MockV3Aggregator(8, 2500e8);
     DepositSubsidy sm = new DepositSubsidy(OWNER, address(portal), aggregator, sipaFactory);
     vm.prank(OWNER);
-    sm.setDepositConfig(uint128(fee), type(uint128).max, uint128(fee));
+    sm.setDepositConfig(uint128(fee), type(uint128).max, uint128(fee), 0, 0);
     underlying.mint(address(sm), 100 ether);
     uint256 portalBefore = underlying.balanceOf(address(portal));
 

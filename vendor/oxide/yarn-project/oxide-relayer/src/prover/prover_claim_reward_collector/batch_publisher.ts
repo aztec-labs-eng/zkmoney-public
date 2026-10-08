@@ -5,25 +5,19 @@ import { sleep } from '@aztec/foundation/sleep';
 import { OxidePortalAbi } from '@oxide/l1-contracts';
 import { OxidePortalContract, ProverClaim, toProverTipClaim } from '@oxide/l1-contracts/oxide_portal.js';
 
-import { type Hex, encodeFunctionData } from 'viem';
+import { type FeeValuesEIP1559, type Hex, type PublicClient, encodeFunctionData } from 'viem';
 
-import {
-  type L1SubmissionBatchSender,
-  type L1SubmissionBatcher,
-  L1SubmissionType,
-  enqueueL1Submission,
-} from '../../l1_submission_batcher.js';
-import type { RelayerL1TxUtils } from '../../relayer_l1_tx_utils.js';
+import type { L1TxQueue, SendL1Tx } from '../../l1/l1_tx_queue.js';
 import { ProverPortalConfig } from '../prover_claim_lib/index.js';
 
 const DEFAULT_CONFIRMATION_POLL_INTERVAL_MS = 2_000;
 
 export interface BatchPublisherOptions {
   portal: OxidePortalContract;
+  client: Pick<PublicClient, 'estimateGas' | 'getBlockNumber' | 'getTransactionReceipt'>;
   // Must sign with the prover's key: `claimProverTips` credits `msg.sender`, and `ProverClaimLib` requires it
   // to be the address captured in `$firstProver`.
-  l1TxUtils: RelayerL1TxUtils;
-  l1SubmissionBatcher?: L1SubmissionBatcher;
+  l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address'>;
   // Block depth a claim tx must reach before its `confirmed` promise resolves. 0n confirms at the first mined receipt
   // (dev/e2e).
   confirmations: bigint;
@@ -53,22 +47,29 @@ export class BatchPublisher {
   }
 
   // Resolves once the tx is MINED; submission stays serial so batch N+1 estimates against the state batch N left.
-  // The returned `confirmed` resolves once the tx is `confirmations` deep.
-  async publish(portal: ProverPortalConfig, claims: ProverClaim[]): Promise<{ confirmed: Promise<void> }> {
-    const receipt = await this.queue.put(() => this.submit(portal, claims));
+  // The returned `confirmed` resolves once the tx is `confirmations` deep. The tx carries `feeValues`, the fee values
+  // that the batch was priced at.
+  async publish(
+    portal: ProverPortalConfig,
+    claims: ProverClaim[],
+    feeValues: FeeValuesEIP1559,
+  ): Promise<{ confirmed: Promise<void> }> {
+    const receipt = await this.queue.put(() => this.submit(portal, claims, feeValues));
     const confirmed = this.awaitConfirmations(receipt);
     // Keep an unawaited `confirmed` from surfacing as an unhandled rejection; the returned promise still rejects.
     void confirmed.catch(() => {});
     return { confirmed };
   }
 
-  private async submit(portal: ProverPortalConfig, claims: ProverClaim[]): Promise<MinedReceipt> {
+  private async submit(
+    portal: ProverPortalConfig,
+    claims: ProverClaim[],
+    feeValues: FeeValuesEIP1559,
+  ): Promise<MinedReceipt> {
     const retry = this.retryNextBatch;
     this.retryNextBatch = false;
-    const sent = await enqueueL1Submission(this.options.l1SubmissionBatcher, this.options.l1TxUtils, {
-      kind: L1SubmissionType.ProverClaim,
+    const sent = await this.options.l1TxQueue.enqueue(send => this.prepareAndSubmit(portal, claims, feeValues, send), {
       retry,
-      submit: sender => this.prepareAndSubmit(portal, claims, sender),
     });
     const receipt = await sent.settled.catch(error => {
       this.retryNextBatch = true;
@@ -85,21 +86,25 @@ export class BatchPublisher {
     };
   }
 
-  private async prepareAndSubmit(portal: ProverPortalConfig, claims: ProverClaim[], sender: L1SubmissionBatchSender) {
+  private async prepareAndSubmit(
+    portal: ProverPortalConfig,
+    claims: ProverClaim[],
+    feeValues: FeeValuesEIP1559,
+    send: SendL1Tx,
+  ) {
     const args = [portal.context.proverSubsidy.toString(), claims.map(toProverTipClaim)] as const;
 
     const contract = this.options.portal.getContract();
-    const account = this.options.l1TxUtils.getSenderAddress().toString();
+    const account = this.options.l1TxQueue.address;
 
     // Simulate first so a batch that would revert fails before we spend gas.
     await contract.simulate.claimProverTips(args, { account });
     const data: Hex = encodeFunctionData({ abi: OxidePortalAbi, functionName: 'claimProverTips', args });
+    const to = this.options.portal.address.toString();
+    const gas = await this.options.client.estimateGas({ account, to, data });
 
     this.log.info(`Submitting ${claims.length} prover claim(s) for portal ${portal.context.l1Portal}`);
-    return await sender.sendTransaction({
-      to: this.options.portal.address.toString(),
-      data,
-    });
+    return await send({ to, data, gas, ...feeValues });
   }
 
   // Wait until the mined tx is `confirmations` blocks deep, re-checking the receipt each time depth is reached so a
@@ -109,7 +114,7 @@ export class BatchPublisher {
     if (this.options.confirmations === 0n) {
       return;
     }
-    const client = this.options.l1TxUtils.client;
+    const client = this.options.client;
     const pollIntervalMs = this.options.confirmationPollIntervalMs ?? DEFAULT_CONFIRMATION_POLL_INTERVAL_MS;
     while (true) {
       if (this.stopped) {

@@ -1,12 +1,14 @@
-import { RollupContract } from '@aztec/ethereum/contracts/rollup';
-import { ViemClient } from '@aztec/ethereum/types';
 import { Fr } from '@aztec/foundation/curves/bn254';
 import { EthAddress } from '@aztec/foundation/eth-address';
 
 import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
+import type { SubmitEpochProofGasModel } from '@oxide/oxide-client/partial_epoch_proof_profit.js';
+
+import type { PublicClient } from 'viem';
 
 import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
 import { ProverClaimDiscoverer } from '../prover_claim_lib/prover_claim_discoverer.js';
+import { createRollupContract } from '../rollup.js';
 import { Binding } from '../types.js';
 import * as config from './config.js';
 import { EpochProfitTracker } from './epoch_profit_tracker.js';
@@ -23,9 +25,9 @@ export interface ProfitablePartialEpochPolicyCreateOptions {
   portalAddress?: EthAddress;
   portals: EarlySubmitPortalConfig[];
   priceOracle: ChainlinkPriceOracle;
-  l1Client?: ViemClient;
+  l1Client?: PublicClient;
   earlySubmitPolicy?: Partial<EarlySubmitPolicy>;
-  rollupSubmitEpochProofGas?: bigint;
+  submitEpochProofGasModel?: SubmitEpochProofGasModel;
 }
 
 export interface ProfitablePartialEpochPolicyOptions extends Omit<
@@ -57,7 +59,7 @@ export class ProfitablePartialEpochPolicy implements PartialProofPolicy {
         options.earlySubmitPolicy?.minEpochProfitMarginBps ?? config.EARLY_SUBMIT_POLICY__MIN_EPOCH_PROFIT_MARGIN_BPS,
       provingCostPerCheckpoint:
         options.earlySubmitPolicy?.provingCostPerCheckpoint ?? config.EARLY_SUBMIT_POLICY__PROVING_COST_PER_CHECKPOINT,
-      rollupSubmitEpochProofGas: options.rollupSubmitEpochProofGas ?? config.ROLLUP__SUBMIT_EPOCH_PROOF_GAS,
+      submitEpochProofGasModel: options.submitEpochProofGasModel ?? config.ROLLUP__SUBMIT_EPOCH_PROOF_GAS_MODEL,
     });
   }
 
@@ -74,7 +76,7 @@ export class ProfitablePartialEpochPolicy implements PartialProofPolicy {
     }
 
     const l1Client = portal.client;
-    const rollup = new RollupContract(l1Client, await portal.getRollup());
+    const rollup = createRollupContract(l1Client, await portal.getRollup());
     const [rollupVersion, chainId, epochDuration] = await Promise.all([
       rollup.getVersion(),
       l1Client.getChainId(),

@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react"
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import {
   ActivityListRow,
@@ -7,6 +15,9 @@ import {
   type StatusLabel,
 } from "@obsidion/web-ds"
 import {
+  isAwaitingSweep,
+  isFundsLegUnsent,
+  WITHDRAWAL_FUNDS_UNSENT,
   ActivityFeed,
   SIPADepositStore,
   TransactionStorage,
@@ -17,21 +28,31 @@ import {
   globalEventEmitter,
   isSettledSipaPhase,
   isUnfundedSipaDeposit,
+  sipaSweepAllowed,
   isWithdrawalDelayed,
+  isWithdrawalGroupTerminal,
+  onRefundInFlightChanged,
   payerForPaidLink,
+  refundInFlightVersion,
   requestLinkedSipaAddresses,
   useAssetContext,
   useCachedRecords,
   useContactsDirectory,
+  withdrawalGroupAmount,
+  withdrawalGroupTime,
+  withdrawalGroupsOf,
   withoutPaidLinkReceives,
   withoutAnsweredRequests,
+  worstWithdrawalPhase,
   WITHDRAWAL_TERMINAL_PHASES,
   type ActivityItem,
   type BridgeActivityItem,
   type PaymentRequest,
   type RequestRowView,
   type SIPADepositRecord,
+  type SipaProcessingState,
   type Transaction,
+  type WithdrawalGroup,
   type WithdrawalRecord,
   useSyncCatchingUp,
   WITHDRAWAL_PHASE_COPY,
@@ -45,6 +66,7 @@ import {
   type RecoveryReason,
 } from "../../features/deposit/sipaRecovery"
 import { canSelfSweep } from "../../features/deposit/sipaSweep"
+import { bridgeActivityFeed } from "../../features/deposit/sipaProcessing"
 import { loadWalletIdentity } from "../../features/identity/walletIdentity"
 import { usePolledChainSeconds } from "../../features/paylink/chainTime"
 import {
@@ -52,6 +74,7 @@ import {
   registrationRecordForSipa,
 } from "../../features/onboarding/registrationSweep"
 import {
+  registrationTagForDeposit,
   registrationTagForSipa,
   useRegistrationDepositEntry,
 } from "../../features/onboarding/useRegistrationDepositEntry"
@@ -65,7 +88,8 @@ import { useWithdrawals } from "../../features/withdraw/useWithdrawals"
 import { SwapExitModal } from "../../features/withdraw/SwapExitModal"
 import { swapExitReasonFor, type SwapExitReason } from "../../features/withdraw/swapRecovery"
 import { WithdrawalExitModal } from "../../features/withdraw/WithdrawalExitModal"
-import { getWithdrawalStore } from "../../features/withdraw/withdrawGateway"
+import { remainingFundsRefusal } from "../../features/withdraw/freshAddressGateway"
+import { WithdrawFreshModal } from "../../features/withdraw/WithdrawFreshModal"
 import { migrationAmounts } from "../../features/migration/migrationFee"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { rowTimestamp, shortAddr, usdFigure } from "../format"
@@ -76,6 +100,8 @@ import {
   buildActivityRows,
   depositRowAmount,
   depositRowStatusLabel,
+  depositRowSubline,
+  STUCK_SUBLINE,
   isPendingActivityRow,
   linkFragmentOf,
   sipaDepositIntentRow,
@@ -84,6 +110,7 @@ import {
   type SipaDepositIntentRow,
 } from "./activityView"
 import { DepositDetailModal } from "./DepositDetailModal"
+import { FreshWithdrawalDetailModal } from "./FreshWithdrawalDetailModal"
 import { TxDetailModal } from "./TxDetailModal"
 import { WithdrawalDetailModal, withdrawalHeroAmount } from "./WithdrawalDetailModal"
 
@@ -94,48 +121,60 @@ export const WITHDRAWAL_PHASE_LABEL = Object.fromEntries(
 
 /** One feed instance per page load, unioning SIPA deposits + withdrawals. */
 function getActivityFeed(): ActivityFeed {
-  return ActivityFeed.get(SIPADepositStore.get(webStorage), getWithdrawalStore())
+  return bridgeActivityFeed()
 }
-
-/** What a row still waiting on a relayer says in the timestamp slot. */
-const STUCK_SUBLINE = "Taking longer than usual"
 
 /**
  * The exit a deposit row offers, or null where it offers none. A sweep may still land on a stuck
  * deposit, so it stays pending and only says so in the subline; one no sweep can move is a state of
- * its own. "Sweep manually" opens the two-exit sheet, "Recover" the recover-only one.
+ * its own. An unfunded address offers neither. "Sweep manually" opens the two-exit sheet, "Recover"
+ * the recover-only one.
+ *
+ * `canSweep` is whether the sheet offers the sweep. A confirmed capacity blocker withholds it
+ * until a later read clears it; the deposit still waits, and recovery never depends on capacity.
  */
-function depositExitOffer(record: SIPADepositRecord): {
+export function depositExitOffer(
+  record: SIPADepositRecord,
+  processing?: SipaProcessingState,
+): {
   reason: RecoveryReason | null
   canSweep: boolean
+  /** A sweep could land but for capacity: an open sheet offers it once a read clears that. */
+  sweepable: boolean
   waiting: boolean
   title: string
 } | null {
+  if (isUnfundedSipaDeposit(record)) return null
   const reason = recoveryReasonFor(record)
   // A registration-backed deposit follows the registration's own gate on the rail's stuck clock;
   // see registrationRecordForSipa for why the plain sweep can never move one.
   const registration = registrationRecordForSipa(record.sipaAddress)
-  const canSweep = registration
+  const sweepable = registration
     ? isStuckSweep(record) && canManualRegistrationSweep(registration)
     : canSelfSweep(record)
+  const canSweep = sweepable && sipaSweepAllowed(processing)
   if (!reason && !canSweep) return null
-  const waiting = reason === "stuck" || canSweep
-  return { reason, canSweep, waiting, title: waiting ? "Sweep manually" : "Recover" }
+  const waiting = reason === "stuck" || sweepable
+  return { reason, canSweep, sweepable, waiting, title: canSweep ? "Sweep manually" : "Recover" }
 }
 
 /**
- * The detail sheet's offer: the row's clocked offer when it exists, else a manual sweep for any
- * still-pending deposit that carries its derived pair — opening the detail IS the "I want to act
- * now" signal, so the sheet never makes the user wait out the row's stuck clock.
+ * The detail sheet's offer: the row's clocked offer when it exists, else a manual sweep for funds
+ * still at the address with no sweep seen — opening the detail IS the "I want to act now" signal,
+ * so the sheet never makes the user wait out the row's stuck clock.
  */
-function depositDetailOffer(record: SIPADepositRecord): ReturnType<typeof depositExitOffer> {
-  const clocked = depositExitOffer(record)
+export function depositDetailOffer(
+  record: SIPADepositRecord,
+  processing?: SipaProcessingState,
+): ReturnType<typeof depositExitOffer> {
+  const clocked = depositExitOffer(record, processing)
   if (clocked) return clocked
-  if (isSettledSipaPhase(record.phase) || record.phase === "recoverable") return null
+  if (!isAwaitingSweep(record)) return null
   if (!record.recipientHash || (!record.recoveryAddress && !record.origin)) return null
   const registration = registrationRecordForSipa(record.sipaAddress)
   if (registration && !canManualRegistrationSweep(registration)) return null
-  return { reason: null, canSweep: true, waiting: true, title: "Sweep manually" }
+  if (!sipaSweepAllowed(processing)) return null
+  return { reason: null, canSweep: true, sweepable: true, waiting: true, title: "Sweep manually" }
 }
 
 /**
@@ -156,14 +195,12 @@ function WithdrawalRow({
   record,
   onCheckAgain,
   onOpen,
-  onFinalize,
-  onSwapExit,
+  exit,
 }: {
   record: WithdrawalRecord
   onCheckAgain: (l2TxHash: string) => void
   onOpen: () => void
-  onFinalize: () => void
-  onSwapExit: () => void
+  exit?: { title: string; onStart: () => void }
 }) {
   const offer = withdrawalExitOffer(record)
   const delayed = isWithdrawalDelayed(record) || offer?.reason === "stuck"
@@ -192,39 +229,34 @@ function WithdrawalRow({
           : "Withdrawal"
       }
       timestamp={delayed ? STUCK_SUBLINE : rowTimestamp(record.endTime ?? record.startTime)}
-      amount={
-        migration ? `-${usdFigure(record.amount)}` : `-${record.amount} ${record.tokenSymbol}`
-      }
+      amount={`-${usdFigure(record.amount)}`}
       statusLabel={WITHDRAWAL_PHASE_LABEL[record.phase]}
       avatarIcon="wallet"
       onClick={onOpen}
       ariaLabel="Open withdrawal details"
       actions={[
         ...(checkAgain ? [{ title: "Check again", onClick: checkAgain }] : []),
-        ...(canSelfFinalizeWithdrawal(record)
-          ? [
-              {
-                title: "Finalize manually",
-                actionStyle: "gradient" as const,
-                onClick: onFinalize,
-              },
-            ]
-          : []),
-        ...(offer
-          ? [{ title: offer.title, actionStyle: "gradient" as const, onClick: onSwapExit }]
+        ...(exit
+          ? [{ title: exit.title, actionStyle: "gradient" as const, onClick: exit.onStart }]
           : []),
       ]}
     />
   )
 }
 
+/** Whether the funds leg is offered again under this group: the gateway's own rule at commit. */
+const canSendRemainingFunds = (group: WithdrawalGroup): boolean => !remainingFundsRefusal(group)
+
 function DepositRow({
   row,
+  processing,
   arriving,
   time,
   onOpen,
   onExit,
 }: {
+  /** Why the deposit still waits for its sweep, from the feed. */
+  processing?: SipaProcessingState
   /**
    * A migration's arrival before its funds land. `net` is what the exit brings, display units;
    * unset while a fee is unknown, so the row shows no figure rather than a wrong one.
@@ -239,7 +271,8 @@ function DepositRow({
   onExit: () => void
 }) {
   const { record } = row
-  const offer = depositExitOffer(record)
+  const offer = depositExitOffer(record, processing)
+  const subline = depositRowSubline(processing, record, !!offer?.waiting)
   const registration = row.intent === "registration" ? row : undefined
   const migration = row.intent === "migration"
   return (
@@ -254,7 +287,7 @@ function DepositRow({
             : "Arriving on new network"
           : undefined
       }
-      timestamp={offer?.waiting ? STUCK_SUBLINE : rowTimestamp(time ?? record.startTime)}
+      timestamp={subline ?? rowTimestamp(time ?? record.startTime)}
       amount={
         arriving
           ? arriving.net
@@ -282,8 +315,8 @@ function bridgeItemTime(item: BridgeActivityItem): number {
 
 /** What each recovery calls itself, in the words the detail sheet's button uses. */
 const LINK_RECOVERY_TITLE: Record<CreatorLinkAction, string> = {
-  reclaim: "Reclaim",
-  cancel: "Cancel",
+  reclaim: "Reclaim funds",
+  cancel: "Cancel link",
 }
 
 /** Share sheet where the browser has one; clipboard otherwise. */
@@ -312,6 +345,7 @@ type BridgeExit =
       record: SIPADepositRecord
       reason: RecoveryReason | null
       canSweep: boolean
+      sweepable: boolean
     }
   | { kind: "withdrawal"; record: WithdrawalRecord }
   | { kind: "swap"; record: WithdrawalRecord; reason: SwapExitReason }
@@ -355,7 +389,9 @@ export function RequestRow({
         ]
       : [
           ...(onRemove ? [{ title: "Remove", onClick: () => onRemove(row.id) }] : []),
-          ...(onOpen ? [{ title: "Share", actionStyle: "gradient" as const, onClick: onOpen }] : []),
+          ...(onOpen
+            ? [{ title: "Share", actionStyle: "gradient" as const, onClick: onOpen }]
+            : []),
         ]
   const content = (
     <ActivityListRow
@@ -363,7 +399,7 @@ export function RequestRow({
       counterpartyBadge={isLink ? undefined : "Requested"}
       timestamp={rowTimestamp(row.timestampMs)}
       amount={row.amount}
-      statusLabel={isLink && row.statusLabel === "Pending" ? "Unpaid" : row.statusLabel}
+      statusLabel={row.statusLabel}
       avatarIcon={row.kind === "outgoingLink" ? "link" : undefined}
       avatar={
         row.contactTag ? (
@@ -417,6 +453,20 @@ export interface ActivityEntriesState {
  * Paid by row comes from `payerForPaidLink`.
  */
 /**
+ * The notification text a detail opened with. `staleOn` marks a failure alert: the row status that
+ * outdates it, and a withdrawal outdates it in every phase but failed.
+ */
+export type DetailNotice = { text: string; staleOn?: "success" }
+
+export function detailNoticeFor(
+  notice: DetailNotice | undefined,
+  row: Pick<ActivityRowView, "status"> | Pick<WithdrawalRecord, "phase">,
+): string | undefined {
+  const stale = "phase" in row ? row.phase !== "failed" : row.status === notice?.staleOn
+  return notice?.staleOn && stale ? undefined : notice?.text
+}
+
+/**
  * Bridge row a notification tap asks to open. Producers lowercase the SIPA address; records keep it
  * checksummed. A reorg notice carries only the tx hash, which the reorg monitor takes from the
  * withdrawal's burn tx or the deposit's claim tx.
@@ -459,8 +509,8 @@ export function useActivityEntries(): ActivityEntriesState {
   const [requestsHydrated, setRequestsHydrated] = useState(false)
   const [remindedIds, setRemindedIds] = useState<ReadonlySet<string>>(new Set())
   const [detail, setDetail] = useState<ActivityRowView | null>(null)
-  // Held by id, not by value: the tracker advances the record while the sheet is
-  // open and the ladder has to follow it.
+  // A record's localId or a group's id (disjoint: `wdraw_...` against 0x hex). Held by id, not by
+  // value: the tracker advances the record while the sheet is open and the ladder has to follow it.
   const [withdrawalDetailId, setWithdrawalDetailId] = useState<string | null>(null)
   const [depositDetailId, setDepositDetailId] = useState<string | null>(null)
   const [requestLinkDetail, setRequestLinkDetail] = useState<PaymentRequest | null>(null)
@@ -470,8 +520,10 @@ export function useActivityEntries(): ActivityEntriesState {
   // Held by value, unlike the details above: a submitted exit advances its record straight out of
   // the filtered list, and a sheet mid-submit must not go with it.
   const [exit, setExit] = useState<BridgeExit | null>(null)
+  // The group whose funds leg is being sent again, held by value: the rerun adds a record to it.
+  const [resume, setResume] = useState<WithdrawalGroup | null>(null)
   const [linkRecovery, setLinkRecovery] = useState<LinkRecovery | null>(null)
-  // Rows offer Cancel during grace and Reclaim after expiry; a mounted list must flip as chain
+  // Rows offer Cancel link during grace and Reclaim funds after expiry; a mounted list must flip as chain
   // time crosses those boundaries, and offers neither until the tip has been read.
   const chainNow = usePolledChainSeconds(paylinkDeps?.wallet.node)
 
@@ -487,10 +539,13 @@ export function useActivityEntries(): ActivityEntriesState {
     openDepositAddress?: string
     /** Full text of the notification that opened the detail. */
     notice?: string
+    /** The row status that makes the notice stale. */
+    noticeStaleOn?: "success"
   } | null
   const routerNotice = routerState?.notice
+  const routerNoticeStaleOn = routerState?.noticeStaleOn
   // Set only when a notification opens a detail; every row tap clears it.
-  const [notice, setNotice] = useState<string>()
+  const [notice, setNotice] = useState<DetailNotice>()
   // Desktop has no useful native share sheet, so a sent link's row copies instead; the id keeps the
   // "Copied!" flash on the one row that was clicked.
   const phone = usePhoneLayout()
@@ -566,11 +621,12 @@ export function useActivityEntries(): ActivityEntriesState {
     [tokenService],
   )
 
+  const refunds = useSyncExternalStore(onRefundInFlightChanged, refundInFlightVersion)
   const rows = useMemo(() => {
     const visible = withoutPaidLinkReceives(transactions, requests)
     return buildActivityRows(visible, directory, chainNow)
     // directory is a fresh object each render; contacts is the state that actually feeds the rows.
-  }, [transactions, requests, directory.contacts, chainNow])
+  }, [transactions, requests, directory.contacts, chainNow, refunds])
   useEffect(() => {
     if (!openTxHash && !openPaylink) return
     const row = rows.find((r) =>
@@ -578,9 +634,9 @@ export function useActivityEntries(): ActivityEntriesState {
     )
     if (!row) return
     setDetail(row)
-    setNotice(routerNotice)
+    setNotice(routerNotice ? { text: routerNotice, staleOn: routerNoticeStaleOn } : undefined)
     navigate(".", { replace: true, state: null })
-  }, [openTxHash, openPaylink, routerNotice, rows, navigate])
+  }, [openTxHash, openPaylink, routerNotice, routerNoticeStaleOn, rows, navigate])
   // The open sheet follows its row, so a pending create settles or fails under it. A row's id
   // moves from queue id to tx hash when it lands, and a creator paylink row's URL gains the tx;
   // the link's secret is what stays put.
@@ -594,23 +650,35 @@ export function useActivityEntries(): ActivityEntriesState {
   useEffect(() => {
     const hit = findBridgeItem(items, { openWithdrawalId, openDepositAddress, openTxHash })
     if (!hit) return
-    if (hit.kind === "bridge.withdrawal") setWithdrawalDetailId(hit.record.localId)
+    // A leg of a fresh withdrawal opens as its group.
+    if (hit.kind === "bridge.withdrawal")
+      setWithdrawalDetailId(hit.record.groupId ?? hit.record.localId)
     else if (hit.kind === "bridge.sipaDeposit") setDepositDetailId(hit.record.sipaAddress)
-    setNotice(routerNotice)
+    setNotice(routerNotice ? { text: routerNotice, staleOn: routerNoticeStaleOn } : undefined)
     navigate(".", { replace: true, state: null })
-  }, [openWithdrawalId, openDepositAddress, openTxHash, routerNotice, items, navigate])
+  }, [
+    openWithdrawalId,
+    openDepositAddress,
+    openTxHash,
+    routerNotice,
+    routerNoticeStaleOn,
+    items,
+    navigate,
+  ])
   const sipaRecords = useMemo(
     () => items.flatMap((item) => (item.kind === "bridge.sipaDeposit" ? [item.record] : [])),
     [items],
   )
   const requestRows = useMemo(
     () =>
-      buildRequestRows(withoutAnsweredRequests(requests, transactions), Date.now(), sipaRecords).map(
-        (row) => {
-          const contact = row.contactTag ? directory.lookup(row.contactTag) : undefined
-          return contact ? { ...row, counterparty: contactDisplayName(contact) } : row
-        },
-      ),
+      buildRequestRows(
+        withoutAnsweredRequests(requests, transactions),
+        Date.now(),
+        sipaRecords,
+      ).map((row) => {
+        const contact = row.contactTag ? directory.lookup(row.contactTag) : undefined
+        return contact ? { ...row, counterparty: contactDisplayName(contact) } : row
+      }),
     // directory is a fresh object each render; contacts is the state that actually feeds lookup.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [requests, transactions, sipaRecords, directory.contacts],
@@ -631,11 +699,17 @@ export function useActivityEntries(): ActivityEntriesState {
     if (request) setRequestLinkDetail(request)
   }
 
-  const openDepositExit = (record: SIPADepositRecord) => {
-    const offer = depositDetailOffer(record)
+  const openDepositExit = (record: SIPADepositRecord, processing?: SipaProcessingState) => {
+    const offer = depositDetailOffer(record, processing)
     if (!offer) return
     setDepositDetailId(null)
-    setExit({ kind: "deposit", record, reason: offer.reason, canSweep: offer.canSweep })
+    setExit({
+      kind: "deposit",
+      record,
+      reason: offer.reason,
+      canSweep: offer.canSweep,
+      sweepable: offer.sweepable,
+    })
   }
 
   // Straight from the row to the confirm sheet, like the bridge exits: the row's own status is what
@@ -668,6 +742,23 @@ export function useActivityEntries(): ActivityEntriesState {
     setExit({ kind: "swap", record, reason: offer.reason })
   }
 
+  const withdrawalExit = (record: WithdrawalRecord) => {
+    if (canSelfFinalizeWithdrawal(record)) {
+      return { title: "Finalize manually", onStart: () => openWithdrawalExit(record) }
+    }
+    const offer = withdrawalExitOffer(record)
+    return offer ? { title: offer.title, onStart: () => openSwapExit(record) } : undefined
+  }
+
+  const openResume = (group: WithdrawalGroup) => {
+    setWithdrawalDetailId(null)
+    setResume(group)
+  }
+
+  // Records with a groupId show as their group, never as plain withdrawal rows.
+  const withdrawalGroups = useMemo(() => withdrawalGroupsOf(withdrawalRecords), [withdrawalRecords])
+  const groupDetail = withdrawalGroups.find((g) => g.groupId === withdrawalDetailId) ?? null
+
   // Request-link SIPAs render as the request row, not a generic deposit.
   const linkedSipas = requestLinkedSipaAddresses(requests)
   // A migration's arrival address, keyed to the burn that funds it: one whose burn failed never
@@ -677,14 +768,24 @@ export function useActivityEntries(): ActivityEntriesState {
       .filter((r) => r.intent === "migration")
       .map((r) => [r.recipient.toLowerCase(), r] as const),
   )
+  // Registration addresses a burn from this wallet paid (a payment link's signup): the burn row is
+  // the registration's, what left the balance; the feed keeps the deposit leg behind it.
+  const burnFundedRegistrations = new Set(
+    withdrawalRecords
+      .filter((r) => r.intent === "registration")
+      .map((r) => r.recipient.toLowerCase()),
+  )
 
-  const depositDetail =
-    items.find(
-      (item): item is Extract<ActivityItem, { kind: "bridge.sipaDeposit" }> =>
-        item.kind === "bridge.sipaDeposit" &&
-        item.record.sipaAddress.toLowerCase() === depositDetailId?.toLowerCase(),
-    )?.record ?? null
-  const depositDetailExit = depositDetail ? depositDetailOffer(depositDetail) : null
+  const depositDetailItem = items.find(
+    (item): item is Extract<ActivityItem, { kind: "bridge.sipaDeposit" }> =>
+      item.kind === "bridge.sipaDeposit" &&
+      item.record.sipaAddress.toLowerCase() === depositDetailId?.toLowerCase(),
+  )
+  const depositDetail = depositDetailItem?.record ?? null
+  const depositDetailProcessing = depositDetailItem?.processing
+  const depositDetailExit = depositDetail
+    ? depositDetailOffer(depositDetail, depositDetailProcessing)
+    : null
 
   const withdrawalDetail =
     items.find(
@@ -776,14 +877,17 @@ export function useActivityEntries(): ActivityEntriesState {
                   },
                 ]
               : []),
-            ...(row.paylink && row.paylinkStatus === "awaitingClaim"
+            ...(row.paylink && row.canShare
               ? [
                   phone
                     ? {
                         title: "Share",
                         actionStyle: "gradient" as const,
                         onClick: () =>
-                          shareLink(row.paylink!, `I sent you ${row.amount.replace(/^[+-]/, "")} on zk.money`),
+                          shareLink(
+                            row.paylink!,
+                            `I sent you ${row.amount.replace(/^[+-]/, "")} on zk.money`,
+                          ),
                       }
                     : {
                         title: copiedLinkId === row.id ? "Copied!" : "Copy link",
@@ -796,8 +900,60 @@ export function useActivityEntries(): ActivityEntriesState {
         />
       ),
     })),
+    // One row for the two burns of a fresh-address withdrawal: worst leg's status, total burned.
+    ...withdrawalGroups.map((group): ActivityEntry => {
+      const head = group.legs.gas ?? group.records[0]
+      const named = [group.legs.gas, group.legs.funds].flatMap((r) => r ?? [])
+      const legs = named.length ? named : group.records
+      const delayed = legs.find(
+        (r) => isWithdrawalDelayed(r) || withdrawalExitOffer(r)?.reason === "stuck",
+      )
+      const offers = [
+        ...(canSendRemainingFunds(group)
+          ? [{ title: "Send remaining funds", onStart: () => openResume(group) }]
+          : []),
+        ...legs.flatMap((r) => withdrawalExit(r) ?? []).slice(0, 1),
+      ]
+      return {
+        id: group.groupId,
+        ts: withdrawalGroupTime(group),
+        direction: "out",
+        pending: !isWithdrawalGroupTerminal(group),
+        node: (
+          <ActivityListRow
+            key={group.groupId}
+            counterparty={head.recipientAlias ?? shortAddr(head.recipient)}
+            counterpartyBadge="Fresh address"
+            timestamp={delayed ? STUCK_SUBLINE : rowTimestamp(withdrawalGroupTime(group))}
+            amount={`-${usdFigure(withdrawalGroupAmount(group))}`}
+            statusLabel={
+              isFundsLegUnsent(group)
+                ? WITHDRAWAL_FUNDS_UNSENT
+                : WITHDRAWAL_PHASE_LABEL[worstWithdrawalPhase(group)]
+            }
+            avatarIcon="wallet"
+            onClick={() => {
+              setNotice(undefined)
+              setWithdrawalDetailId(group.groupId)
+            }}
+            ariaLabel="Open withdrawal details"
+            actions={[
+              ...(delayed?.l2TxHash
+                ? [{ title: "Check again", onClick: () => void checkAgain(delayed.l2TxHash!) }]
+                : []),
+              ...offers.map(({ title, onStart }) => ({
+                title,
+                actionStyle: "gradient" as const,
+                onClick: onStart,
+              })),
+            ]}
+          />
+        ),
+      }
+    }),
     ...items.flatMap((item): ActivityEntry[] => {
       if (item.kind === "bridge.withdrawal") {
+        if (item.record.groupId) return []
         return [
           {
             id: item.record.localId,
@@ -813,8 +969,7 @@ export function useActivityEntries(): ActivityEntriesState {
                   setNotice(undefined)
                   setWithdrawalDetailId(item.record.localId)
                 }}
-                onFinalize={() => openWithdrawalExit(item.record)}
-                onSwapExit={() => openSwapExit(item.record)}
+                exit={withdrawalExit(item.record)}
               />
             ),
           },
@@ -846,16 +1001,17 @@ export function useActivityEntries(): ActivityEntriesState {
                 key={item.record.sipaAddress}
                 row={sipaDepositIntentRow(
                   item.record,
-                  registrationTagForSipa(item.record.sipaAddress),
+                  registrationTagForDeposit(item.record.sipaAddress),
                   !!burn,
                 )}
+                processing={item.processing}
                 arriving={pending ? { net: migrationAmounts(burn)?.netDisplay } : undefined}
                 time={burn ? ts : undefined}
                 onOpen={() => {
                   setNotice(undefined)
                   setDepositDetailId(item.record.sipaAddress)
                 }}
-                onExit={() => openDepositExit(item.record)}
+                onExit={() => openDepositExit(item.record, item.processing)}
               />
             ),
           },
@@ -863,7 +1019,10 @@ export function useActivityEntries(): ActivityEntriesState {
       }
       return []
     }),
-    ...(registrationDeposit
+    // The pending registration's own row, unless a burn from this wallet funds it: that burn's
+    // row is the registration's until the deposit rail credits the return.
+    ...(registrationDeposit &&
+    !burnFundedRegistrations.has(registrationDeposit.sipaAddress.toLowerCase())
       ? [
           {
             id: "registration-deposit",
@@ -891,7 +1050,7 @@ export function useActivityEntries(): ActivityEntriesState {
           <TxDetailModal
             row={liveDetail}
             note={txNoteFor(liveDetail, requests)}
-            notice={notice}
+            notice={detailNoticeFor(notice, liveDetail)}
             onClose={() => setDetail(null)}
           />
         )}
@@ -899,7 +1058,7 @@ export function useActivityEntries(): ActivityEntriesState {
           <WithdrawalDetailModal
             record={withdrawalDetail}
             amount={withdrawalHeroAmount(withdrawalDetail)}
-            notice={notice}
+            notice={detailNoticeFor(notice, withdrawalDetail)}
             onClose={() => setWithdrawalDetailId(null)}
             onCheckAgain={
               isWithdrawalDelayed(withdrawalDetail) && withdrawalDetail.l2TxHash
@@ -909,34 +1068,51 @@ export function useActivityEntries(): ActivityEntriesState {
                   }
                 : undefined
             }
-            onFinalize={
-              canSelfFinalizeWithdrawal(withdrawalDetail)
-                ? () => openWithdrawalExit(withdrawalDetail)
-                : undefined
+            exit={withdrawalExit(withdrawalDetail)}
+          />
+        )}
+        {groupDetail && (
+          <FreshWithdrawalDetailModal
+            group={groupDetail}
+            notice={detailNoticeFor(notice, { phase: worstWithdrawalPhase(groupDetail) })}
+            onViewLeg={(record) => {
+              setNotice(undefined)
+              setWithdrawalDetailId(record.localId)
+            }}
+            onSendRemaining={
+              canSendRemainingFunds(groupDetail) ? () => openResume(groupDetail) : undefined
             }
-            swapExit={
-              withdrawalExitOffer(withdrawalDetail)
-                ? {
-                    title: withdrawalExitOffer(withdrawalDetail)!.title,
-                    onStart: () => openSwapExit(withdrawalDetail),
-                  }
-                : undefined
-            }
+            onClose={() => setWithdrawalDetailId(null)}
+          />
+        )}
+        {resume && (
+          <WithdrawFreshModal
+            recipient={(resume.legs.gas ?? resume.records[0]).recipient}
+            walletName={resume.legs.gas?.recipientAlias}
+            // No amount prefill: a failed leg's `amount` holds the floor, which the sheet adds again.
+            resume={{
+              groupId: resume.groupId,
+              // A funds leg recorded without a swap is a DAI one.
+              fundsAsset: resume.legs.funds && (resume.legs.funds.swapOutput ?? "DAI"),
+            }}
+            onClose={() => setResume(null)}
+            onDone={() => setResume(null)}
           />
         )}
         {depositDetail && (
           <DepositDetailModal
             record={depositDetail}
-            registrationTag={registrationTagForSipa(depositDetail.sipaAddress)}
+            registrationTag={registrationTagForDeposit(depositDetail.sipaAddress)}
             exit={
               depositDetailExit
                 ? {
                     title: depositDetailExit.title,
-                    onStart: () => openDepositExit(depositDetail),
+                    sweep: depositDetailExit.canSweep,
+                    onStart: () => openDepositExit(depositDetail, depositDetailProcessing),
                   }
                 : undefined
             }
-            notice={notice}
+            notice={notice?.text}
             onClose={() => setDepositDetailId(null)}
           />
         )}
@@ -945,6 +1121,7 @@ export function useActivityEntries(): ActivityEntriesState {
             record={exit.record}
             reason={exit.reason}
             canSweep={exit.canSweep}
+            sweepable={exit.sweepable}
             onClose={() => setExit(null)}
           />
         )}
@@ -964,7 +1141,11 @@ export function useActivityEntries(): ActivityEntriesState {
           <WithdrawalExitModal record={exit.record} onClose={() => setExit(null)} />
         )}
         {exit?.kind === "swap" && (
-          <SwapExitModal record={exit.record} reason={exit.reason} onClose={() => setExit(null)} />
+          <SwapExitModal
+            record={withdrawalRecords.find((r) => r.localId === exit.record.localId) ?? exit.record}
+            reason={exit.reason}
+            onClose={() => setExit(null)}
+          />
         )}
         {incomingDetail && (
           <IncomingRequestDetailModal

@@ -320,10 +320,14 @@ describe("PaylinkClaimReconciler — refund submitted before a reload", () => {
   })
 
   it("makes the link refundable again when the refund failed", async () => {
-    const storage = makeStorage([row({ refundTxHash: "0xrefund" }), refundRow("failed")])
+    const storage = makeStorage([
+      row({ refundTxHash: "0xrefund", refundKind: "cancel" }),
+      refundRow("failed"),
+    ])
     await new PaylinkClaimReconciler({ checkSpent: spentCheck([]), storage }).reconcile()
     const creator = storage.rows[0] as PaylinkTransaction
     expect(creator.refundTxHash).toBeUndefined()
+    expect(creator.refundKind).toBeUndefined()
     expect(creator.isRefunded).toBeUndefined()
     expect(creator.paylink).toBe("https://x/#frag")
   })

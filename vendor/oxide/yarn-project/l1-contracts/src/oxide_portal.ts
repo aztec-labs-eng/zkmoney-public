@@ -1,4 +1,5 @@
-import { type ExtendedViemWalletClient, type ViemClient, isExtendedClient } from '@aztec/ethereum/types';
+// TODO(benesjan): Why do we have this package as a whole as opposed to just having auto-generated types? Is it to
+// not depend on auto-gen or is it just slop?
 import { CheckpointNumber, EpochNumber } from '@aztec/foundation/branded-types';
 import { Buffer32 } from '@aztec/foundation/buffer';
 import { Fr } from '@aztec/foundation/curves/bn254';
@@ -8,10 +9,16 @@ import { Signature } from '@aztec/foundation/eth-signature';
 import { AztecAddress } from '@aztec/stdlib/aztec-address';
 
 import {
+  type Account,
+  type Chain,
   type GetContractReturnType,
   type Hex,
   type Log,
+  type PublicActions,
+  type PublicClient,
   type TransactionReceipt,
+  type Transport,
+  type WalletClient,
   type WatchContractEventReturnType,
   decodeEventLog,
   encodeFunctionData,
@@ -141,12 +148,12 @@ export function encodeExecutorCall(executorCall: ExecutorCall) {
 
 export class OxidePortalContract {
   public readonly address: EthAddress;
-  private readonly portal: GetContractReturnType<typeof OxidePortalAbi, ViemClient>;
-  private certManager?: GetContractReturnType<typeof CertManagerAbi, ViemClient>;
-  private nitroValidator?: GetContractReturnType<typeof NitroValidatorAbi, ViemClient>;
+  private readonly portal: GetContractReturnType<typeof OxidePortalAbi, OxidePortalContract['client']>;
+  private certManager?: GetContractReturnType<typeof CertManagerAbi, OxidePortalContract['client']>;
+  private nitroValidator?: GetContractReturnType<typeof NitroValidatorAbi, OxidePortalContract['client']>;
 
   constructor(
-    public readonly client: ViemClient,
+    public readonly client: PublicClient | (WalletClient<Transport, Chain, Account> & PublicActions),
     address: Hex | EthAddress,
   ) {
     if (address instanceof EthAddress) {
@@ -156,11 +163,11 @@ export class OxidePortalContract {
     this.portal = getContract({ address, abi: OxidePortalAbi, client });
   }
 
-  getContract(): GetContractReturnType<typeof OxidePortalAbi, ViemClient> {
+  getContract(): GetContractReturnType<typeof OxidePortalAbi, OxidePortalContract['client']> {
     return this.portal;
   }
 
-  getWriteContract(): GetContractReturnType<typeof OxidePortalAbi, ExtendedViemWalletClient> {
+  getWriteContract(): GetContractReturnType<typeof OxidePortalAbi, WalletClient<Transport, Chain, Account>> {
     return getContract({ address: this.address.toString(), abi: OxidePortalAbi, client: this.writeClient() });
   }
 
@@ -480,7 +487,9 @@ export class OxidePortalContract {
     return BigInt(await nv.read.verifiedAttestationLeaf([attestationTbsKeccak.toString() as Hex])) !== 0n;
   }
 
-  private async certManagerContract(): Promise<GetContractReturnType<typeof CertManagerAbi, ViemClient>> {
+  private async certManagerContract(): Promise<
+    GetContractReturnType<typeof CertManagerAbi, OxidePortalContract['client']>
+  > {
     this.certManager ??= getContract({
       address: (await this.getCertManager()).toString(),
       abi: CertManagerAbi,
@@ -489,7 +498,9 @@ export class OxidePortalContract {
     return this.certManager;
   }
 
-  private async nitroValidatorContract(): Promise<GetContractReturnType<typeof NitroValidatorAbi, ViemClient>> {
+  private async nitroValidatorContract(): Promise<
+    GetContractReturnType<typeof NitroValidatorAbi, OxidePortalContract['client']>
+  > {
     this.nitroValidator ??= getContract({
       address: (await this.getNitroValidator()).toString(),
       abi: NitroValidatorAbi,
@@ -753,17 +764,15 @@ export class OxidePortalContract {
 
   // ─── wallet plumbing ───────────────────────────────────────────────────────────────────────
 
-  private writeClient(): ExtendedViemWalletClient {
-    if (!isExtendedClient(this.client)) {
-      throw new Error('OxidePortalContract: this method requires an ExtendedViemWalletClient');
+  private writeClient() {
+    if (!('writeContract' in this.client) || !this.client.account) {
+      throw new Error('OxidePortalContract: this method requires a wallet client with an account');
     }
     return this.client;
   }
 
   private async writeToPortal(
-    func: (
-      contractWrite: GetContractReturnType<typeof OxidePortalAbi, ExtendedViemWalletClient>['write'],
-    ) => Promise<Hex>,
+    func: (contractWrite: ReturnType<OxidePortalContract['getWriteContract']>['write']) => Promise<Hex>,
     options: WriteOptions = {},
   ): Promise<ContractWriteResult> {
     const txHash = await func(this.getWriteContract().write);

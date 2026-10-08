@@ -1,5 +1,3 @@
-import { RollupContract } from '@aztec/ethereum/contracts';
-import { ViemClient } from '@aztec/ethereum/types';
 import { BlockNumber, CheckpointNumber, EpochNumber } from '@aztec/foundation/branded-types';
 import { TimeoutError } from '@aztec/foundation/error';
 import { type Logger, createLogger } from '@aztec/foundation/log';
@@ -8,6 +6,9 @@ import { sleep } from '@aztec/foundation/sleep';
 import { Checkpoint } from '@aztec/stdlib/checkpoint';
 import { AztecNode, EpochProvingJobTerminalState, ProverNodeApi } from '@aztec/stdlib/interfaces/server';
 
+import type { PublicClient } from 'viem';
+
+import { createRollupContract } from '../rollup.js';
 import { CheckpointSource } from './checkpoint_source.js';
 import * as config from './config.js';
 import { PartialProofPolicy } from './types.js';
@@ -21,7 +22,7 @@ export interface PartialEpochProofStarterTimings {
 
 export interface PartialEpochProofStarterCreateOptions {
   node: AztecNode;
-  l1Client: ViemClient;
+  l1Client: PublicClient;
   partialProofPolicy: PartialProofPolicy;
   proverNode: ProverNodeApi;
   /** Block to begin syncing from. Defaults to the latest proven block. */
@@ -76,7 +77,7 @@ export class PartialEpochProofStarter {
 
   static async create(options: PartialEpochProofStarterCreateOptions): Promise<PartialEpochProofStarter> {
     const { l1ContractAddresses } = await options.node.getNodeInfo();
-    const rollup = new RollupContract(options.l1Client, l1ContractAddresses.rollupAddress.toString());
+    const rollup = createRollupContract(options.l1Client, l1ContractAddresses.rollupAddress.toString());
     const [epochDuration, fromBlock] = await Promise.all([
       rollup.getEpochDuration(),
       options.fromBlock ? Promise.resolve(options.fromBlock) : options.node.getBlockNumber('proven'),

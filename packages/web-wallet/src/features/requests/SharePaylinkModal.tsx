@@ -44,7 +44,7 @@ export function SharePaylinkModal({
     request.amount > 0 ? `Share it with whoever owes you ${amountLabel}.` : "Share it with whoever owes you."
 
   return (
-    <Modal variant="create" label="Request via paylink" onClose={onClose}>
+    <Modal variant="create" label="Request link" onClose={onClose}>
       <div className="ww-create-modal__body">
         <div className="ww-share-modal__head">
           <span className="ww-share-modal__badge">

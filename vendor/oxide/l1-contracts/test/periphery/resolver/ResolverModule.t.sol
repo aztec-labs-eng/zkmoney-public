@@ -44,7 +44,7 @@ contract ResolverPointerTest is RegistriesTestBase {
         urls,
         callData,
         Resolver.resolveWithProof.selector,
-        abi.encode(NAME_HASH)
+        abi.encode(NAME_HASH, false)
       )
     );
   }

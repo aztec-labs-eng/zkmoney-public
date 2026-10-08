@@ -1,4 +1,5 @@
-import { useState, type ReactNode } from "react"
+import { leavePage } from "../../platform/storage/walletStorage"
+import { useEffect, useState, type ReactNode } from "react"
 import {
   GradientInitialAvatar,
   GradientText,
@@ -15,6 +16,11 @@ import { loadWalletIdentity } from "../../features/identity/walletIdentity"
 import { appVersion } from "../../lib/analytics"
 import { BugReportModal, FeedbackModal } from "../FeedbackModals"
 import { ContractAddressesModal } from "../ContractAddressesModal"
+import { allowanceRowValue } from "../../features/allowance/allowanceView"
+import { useSponsoredAllowance } from "../../features/allowance/useSponsoredAllowance"
+import { WalletAboutLimitsSheet } from "../../features/limits/AboutLimitsSheet"
+import { EndpointsModal, customEndpointsLabel } from "../EndpointsModal"
+import { StrandedRecoveryModal } from "../../features/deposit/StrandedRecoveryModal"
 import { RESET_PATH } from "../ResetScreen"
 import { useHideBalances } from "../prefs"
 
@@ -22,8 +28,11 @@ import { useHideBalances } from "../prefs"
 const FAQ_URL = "https://docs.zk.money/docs/faq"
 const X_URL = "https://x.com/zk_money"
 
-function Trailing({ children }: { children: string }) {
-  return <span className="ww-settings__trailing">{children}</span>
+function Trailing({ children, wrap = false }: { children: string; wrap?: boolean }) {
+  const className = wrap
+    ? "ww-settings__trailing ww-settings__trailing--wrap"
+    : "ww-settings__trailing"
+  return <span className={className}>{children}</span>
 }
 
 function ExternalLink({ icon, label, href }: { icon: IconName; label: string; href: string }) {
@@ -52,7 +61,15 @@ export function SettingsScreen() {
   const identity = loadWalletIdentity()
   const [hideBal, setHideBal] = useHideBalances()
   const { value: consent, setValue: setConsent } = useConfigValue("analyticsConsent")
-  const [modal, setModal] = useState<"feedback" | "bug" | "contracts">()
+  const [modal, setModal] = useState<
+    "feedback" | "bug" | "contracts" | "allowance" | "limits" | "endpoints" | "recover"
+  >()
+  const allowance = useSponsoredAllowance()
+  useEffect(() => {
+    // Uses change with every sponsored batch, so each visit reads again.
+    allowance.refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per visit
+  }, [])
 
   return (
     <div className="ww-panel ww-panel--settings">
@@ -122,6 +139,23 @@ export function SettingsScreen() {
             label="Network"
             trailing={<Trailing>{config.network}</Trailing>}
           />
+          <SettingsRow
+            icon="gift"
+            label="Sponsored transactions"
+            onClick={() => setModal("allowance")}
+            trailing={
+              <>
+                <Trailing>{allowanceRowValue(allowance.snapshot)}</Trailing>
+                <RowChevron />
+              </>
+            }
+          />
+          <SettingsRow
+            icon="shield-check"
+            label="Limits"
+            onClick={() => setModal("limits")}
+            trailing={<RowChevron />}
+          />
         </Section>
 
         <Section label="Others">
@@ -140,9 +174,26 @@ export function SettingsScreen() {
             trailing={<RowChevron />}
           />
           <SettingsRow
+            icon="link"
+            label="Endpoints"
+            onClick={() => setModal("endpoints")}
+            trailing={
+              <>
+                <Trailing wrap>{customEndpointsLabel(config.endpoints) ?? "Default"}</Trailing>
+                <RowChevron />
+              </>
+            }
+          />
+          <SettingsRow
+            icon="tray-withdraw"
+            label="Recover a Deposit"
+            onClick={() => setModal("recover")}
+            trailing={<RowChevron />}
+          />
+          <SettingsRow
             icon="trash"
             label="Clear local data"
-            onClick={() => location.replace(RESET_PATH)}
+            onClick={() => void leavePage(RESET_PATH, true)}
             trailing={<RowChevron />}
           />
         </Section>
@@ -153,6 +204,12 @@ export function SettingsScreen() {
       {modal === "feedback" && <FeedbackModal onClose={() => setModal(undefined)} />}
       {modal === "bug" && <BugReportModal onClose={() => setModal(undefined)} />}
       {modal === "contracts" && <ContractAddressesModal onClose={() => setModal(undefined)} />}
+      {modal === "allowance" && (
+        <WalletAboutLimitsSheet topic="sponsorship" onClose={() => setModal(undefined)} />
+      )}
+      {modal === "limits" && <WalletAboutLimitsSheet onClose={() => setModal(undefined)} />}
+      {modal === "endpoints" && <EndpointsModal onClose={() => setModal(undefined)} />}
+      {modal === "recover" && <StrandedRecoveryModal onClose={() => setModal(undefined)} />}
     </div>
   )
 }

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest"
 import {
   artifactBlobUrl,
   artifactManifestUrl,
+  assertProfileUrlShape,
   createArtifactPinResolver,
   fetchArtifactManifest,
   parseArtifactManifest,
@@ -54,6 +55,27 @@ describe("artifactManifestUrl", () => {
     "http://cdn.zk.money/profiles/v5/current.json",
   ])("rejects an unexpected profile URL instead of guessing: %s", (profileUrl) => {
     expect(() => artifactManifestUrl(profileUrl, VERSION_ID)).toThrow()
+  })
+})
+
+describe("assertProfileUrlShape", () => {
+  it.each([
+    "https://cdn.example/profiles/v5/current.json",
+    "https://cdn.example/profiles/v5/1.2.3.json",
+  ])("accepts %s", (profileUrl) => {
+    expect(() => assertProfileUrlShape(profileUrl)).not.toThrow()
+  })
+
+  it.each([
+    ["http://cdn.example/profiles/v5/current.json", /plain HTTPS/],
+    ["https://cdn.example/profiles/v5/current.json?cache=1", /plain HTTPS/],
+    ["https://cdn.example/profiles/v5/current.json#top", /plain HTTPS/],
+    ["https://user:secret@cdn.example/profiles/v5/current.json", /plain HTTPS/],
+    ["https://cdn.example/profiles/sandbox.json", /profiles\/<generation>/],
+    ["https://cdn.example/other/v5/current.json", /profiles\/<generation>/],
+    ["not a url", /invalid profile URL/],
+  ])("refuses %s, naming the rule", (profileUrl, rule) => {
+    expect(() => assertProfileUrlShape(profileUrl)).toThrow(rule)
   })
 })
 
@@ -196,6 +218,28 @@ describe("createArtifactPinResolver", () => {
       url: `https://cdn.staging.zk.money/artifacts/v5/${ARTIFACT_SHA}.json`,
       sha256: ARTIFACT_SHA,
     })
+  })
+
+  it("passes the Aztec artifact encoding through its class pin", async () => {
+    const entry = Object.values(manifest().classes)[0]!
+    const body = bytes(
+      manifest({
+        classes: {
+          [CLASS_ID]: {
+            ...entry,
+            artifact: { sha256: ARTIFACT_SHA, encoding: "aztec-contract-artifact" },
+          },
+        },
+      }),
+    )
+    const resolve = createArtifactPinResolver({
+      profileUrl: "https://cdn.zk.money/profiles/v5/current.json",
+      profileId: PROFILE_ID,
+      versionId: VERSION_ID,
+      expectedSha256: sha256(body),
+      fetchImpl: async () => new Response(body),
+    })
+    expect(await resolve(CLASS_ID)).toMatchObject({ encoding: "aztec-contract-artifact" })
   })
 
   it("refuses a named URL that is not where the profile's store serves the blob", async () => {

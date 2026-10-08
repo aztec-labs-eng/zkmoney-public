@@ -6,10 +6,13 @@ const BINDINGS_FREE_MODULES = [
   'src/atlatl/process_withdrawal_request.ts',
   'src/broadcaster_calls.ts',
   'src/capsules.ts',
+  'src/eth_usd_price_feed.ts',
+  'src/l1_operation_quote.ts',
   'src/l2_operations.ts',
+  'src/partial_epoch_proof_profit.ts',
   'src/published_withdrawal.ts',
   'src/sipa_event_calls.ts',
-  'src/swap_on_withdraw.ts',
+  'src/withdraw_escrows/*',
 ];
 
 const BINDINGS_FREE_REASON =
@@ -21,22 +24,15 @@ export default [
   {
     files: BINDINGS_FREE_MODULES,
     rules: {
-      // Same as the base rule plus the bindings ban.
-      'no-restricted-imports': [
+      'import-x/no-restricted-paths': [
         'error',
         {
-          paths: ['./broadcaster.js', './sipa_events.js', './index.js'].map(name => ({
-            name,
-            message: `This module imports the generated bindings. Import a bindings-free module. ${BINDINGS_FREE_REASON}`,
-          })),
-          patterns: [
+          basePath: import.meta.dirname,
+          zones: [
             {
-              group: ['dest'],
-              message: 'You should not be importing from a build directory. Did you accidentally do a relative import?',
-            },
-            {
-              group: ['@oxide/noir-contracts.js', '@oxide/noir-contracts.js/*'],
-              message: `Do not import the generated bindings. Type the contract handle structurally. ${BINDINGS_FREE_REASON}`,
+              target: BINDINGS_FREE_MODULES,
+              from: ['../noir-contracts.js', 'src/broadcaster.ts', 'src/sipa_events.ts', 'src/index.ts'],
+              message: `Import a bindings-free module, and type each contract handle structurally. ${BINDINGS_FREE_REASON}`,
             },
           ],
         },

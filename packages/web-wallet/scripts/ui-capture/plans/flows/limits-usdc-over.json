@@ -1,0 +1,88 @@
+{
+  "scenario": "activity",
+  "path": "/deposit?flowFixture=success",
+  "steps": [
+    {
+      "action": "waitFor",
+      "selector": ".ww-deposit-disclaimer"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
+      "action": "click",
+      "selector": "button.ww-deposit__pill[aria-expanded]"
+    },
+    {
+      "action": "click",
+      "selector": ".ww-deposit__picker-row:nth-child(2)"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Connect your wallet",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input"
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "2499.66"
+    },
+    {
+      "action": "waitFor",
+      "testId": "limit-notice"
+    },
+    {
+      "action": "hover",
+      "selector": "dialog[open] button:disabled:has-text(\"Deposit funds\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "usdc-over-cta.png",
+      "state": "USDC one cent over the gross limit: the disabled action scrolled into view"
+    },
+    {
+      "action": "press",
+      "role": "button",
+      "name": "Use maximum ($2,499.65)",
+      "exact": true,
+      "key": "Enter"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input[value=\"2499.65\"]"
+    },
+    {
+      "action": "waitFor",
+      "testId": "limit-notice",
+      "state": "detached"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[open] button:enabled:has-text(\"Deposit funds\")"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal [data-testid=\"funding-capacity-panel\"].ww-capacity--quiet",
+      "state": "attached"
+    },
+    {
+      "action": "hover",
+      "selector": "dialog[open] button:enabled:has-text(\"Deposit funds\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "usdc-at-limit.png",
+      "state": "USDC at the limit: its conversion credit is unknown, so nothing is said about capacity and Deposit funds is available"
+    }
+  ],
+  "finalScreenshot": false,
+  "recordHoldMs": 0
+}

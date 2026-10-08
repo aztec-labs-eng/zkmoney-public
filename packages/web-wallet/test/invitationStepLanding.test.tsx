@@ -84,9 +84,7 @@ describe("InvitationStep landing layout", () => {
 
   it("offers a log in to a returning account", async () => {
     await render()
-    const logIn = [...container.querySelectorAll("button")].find(
-      (b) => b.textContent === "Log in",
-    )!
+    const logIn = [...container.querySelectorAll("button")].find((b) => b.textContent === "Log in")!
     await act(async () => logIn.click())
     expect(onLogIn).toHaveBeenCalled()
   })

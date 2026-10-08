@@ -1,3 +1,4 @@
+import { reloadPage } from "../../platform/storage/walletStorage"
 import { Fr } from "@aztec/aztec.js/fields"
 import {
   formatExpiryDuration,
@@ -33,11 +34,10 @@ import {
 } from "../deposit/sipaGateway"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { useTagPresentationPending } from "../onboarding/webRegistration"
-import { useAwaitingDepositRecord } from "../onboarding/RegistrationDepositPrompt"
+import { useRegistrationDepositOwed } from "../onboarding/openRegistration"
 import { openActivationPrompt } from "../onboarding/activationPrompt"
 import { createAndStoreRequestLink } from "./requestLinkCreation"
-import { runUserFlow, useUserFlowActive } from "../provingGate"
-import { runOperation } from "../operations/operations"
+import { useUserFlowActive } from "../provingGate"
 
 const MS_PER_DAY = 86_400_000
 
@@ -53,7 +53,7 @@ export function NewRequestLinkScreen() {
   const identity = loadWalletIdentity()
   const claiming = useTagPresentationPending()
   // The link names the tag as payee: a name still waiting for its deposit cannot be paid yet.
-  const awaitingActivation = useAwaitingDepositRecord() !== null
+  const awaitingActivation = useRegistrationDepositOwed()
   const { rollupAddress, obsidionWallet } = useAztecContext()
   const { contractService } = useContractServiceContext()
   const { tokenService } = useAssetContext()
@@ -112,25 +112,18 @@ export function NewRequestLinkScreen() {
     setError(undefined)
     try {
       const token = await deps.tokenService.fetchTokenInformation()
-      // The gate covers the derive too, so a refill proof cannot start under it.
-      const { address } = await runUserFlow(async () => {
+      const { address } = await (async () => {
         const next = await getSipaDepositGateway().depositAddress(
           deps.obsidionWallet,
           deps.contractService,
           deps.handle,
-          { fresh: true, onStage: setStage },
+          { onStage: setStage },
         )
-        // The link is written only once the address is live, so the broadcast's hash is not saved
-        // and the operation stays tab-bound until it lands.
+        // The link is written only once the address is live.
         const { publish } = next
-        if (publish) {
-          const operationId = `request-link_${crypto.randomUUID()}`
-          await runOperation({ operationId, flow: "request-link", summary: "Request link" }, () =>
-            publish({ operationId }),
-          )
-        }
+        if (publish) await publish()
         return next
-      })
+      })()
       const minted = await createAndStoreRequestLink(
         {
           requestId: Fr.random().toString(),
@@ -203,7 +196,7 @@ export function NewRequestLinkScreen() {
 
           <div style={{ marginTop: 20, display: "flex", flexDirection: "column", gap: 16 }}>
             <TextField
-              label="Amount (optional)"
+              label="Amount"
               placeholder="Any amount"
               inputMode="decimal"
               autoFocus
@@ -283,7 +276,7 @@ export function NewRequestLinkScreen() {
                 awaitingActivation
                   ? openActivationPrompt()
                   : showRetry
-                    ? location.reload()
+                    ? void reloadPage()
                     : void create()
               }
             />

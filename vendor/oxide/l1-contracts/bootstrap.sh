@@ -40,7 +40,12 @@ deps() {
 
   # @aztec/l1-artifacts (Solidity sources + transitive OZ/forge-std), @openzeppelin/contracts (the
   # audited WebAuthn the registry uses), and @aztec/bb.js (provides ./node_modules/.bin/bb) are declared
-  # in package.json. yarn short-circuits warm runs and re-resolves when package.json / yarn.lock drift.
+  # in package.json. yarn short-circuits warm runs and re-resolves when package.json / yarn.lock drift. CI sets
+  # NODE_MODULES_CACHE_HIT when it restored node_modules from a cache keyed on every manifest and lockfile.
+  if [ "${NODE_MODULES_CACHE_HIT:-false}" = "true" ]; then
+    echo "==> yarn install skipped (node_modules restored from an exact cache hit)"
+    return
+  fi
   echo "==> yarn install (populating node_modules for @aztec/l1-artifacts + bb + @oz5)"
   yarn install
 }

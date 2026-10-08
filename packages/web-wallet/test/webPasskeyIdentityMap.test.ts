@@ -8,6 +8,7 @@ import {
   usertagFor,
 } from "../src/platform/auth/WebPasskeyIdentityMap"
 import { WebStorageAdapter } from "../src/platform/storage/WebStorageAdapter"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 
 const RP = "localhost"
 const entry = (credentialId: string) => ({
@@ -18,7 +19,7 @@ const entry = (credentialId: string) => ({
 })
 /** The raw stored entry, timestamp included. */
 const stored = (credentialId: string) =>
-  JSON.parse(localStorage.getItem("obsidion.obsidion_web_passkey_identity_map")!).entries[
+  JSON.parse(walletStorage.getItem("obsidion.obsidion_web_passkey_identity_map")!).entries[
     credentialId
   ]
 
@@ -191,7 +192,7 @@ describe("WebPasskeyIdentityMap under concurrent writers", () => {
     const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
     await map.upsert(entry("a"))
     await Promise.all([map.upsert(entry("b")), map.clear()])
-    const raw = localStorage.getItem("obsidion.obsidion_web_passkey_identity_map")
+    const raw = walletStorage.getItem("obsidion.obsidion_web_passkey_identity_map")
     const entries = raw ? Object.keys(JSON.parse(raw).entries) : []
     expect([[], ["a", "b"]]).toContainEqual(entries.sort())
   })

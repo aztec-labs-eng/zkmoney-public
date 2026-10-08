@@ -79,6 +79,32 @@ describe("ChatBubble", () => {
     expect(onOpen).toHaveBeenCalledTimes(3)
   })
 
+  it("shows the memo on transfers and the note on requests, nothing when absent", async () => {
+    const render = (message: object) =>
+      act(async () => {
+        root.render(
+          <ChatBubble
+            message={message as never}
+            leftName="cyphergirl"
+            rightName="me"
+            onOpen={() => {}}
+          />,
+        )
+      })
+    await render({
+      id: "0x1",
+      role: "received-confirmed",
+      amount: "+$5.00",
+      timeLabel: "8:51",
+      memo: "for pizza",
+    })
+    expect(container.querySelector(".ww-bubble__memo")?.textContent).toBe("for pizza")
+    await render({ ...outgoingRequest, memo: "dinner" })
+    expect(container.querySelector(".ww-bubble__memo")?.textContent).toBe("dinner")
+    await render(outgoingRequest)
+    expect(container.querySelector(".ww-bubble__memo")).toBeNull()
+  })
+
   it("opens a settled transfer's sheet instead of linking out to the explorer", async () => {
     const onOpen = vi.fn()
     await act(async () => {

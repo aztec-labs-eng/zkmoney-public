@@ -16,12 +16,14 @@ import { Fr } from "@aztec/aztec.js/fields"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
 import {
   findRegistrationMessage,
+  readPortalChainIdentity,
   registrationInbox,
   REGISTRATION_MESSAGE_SECRET,
   type ClaimFpcGateWitness,
   type ObsidionWallet,
 } from "@obsidion/sdk"
 import type { VerifiedOxideIdentity } from "@obsidion/front-core"
+import type { Hex } from "viem"
 import type { WebWalletConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { buildOxideAccountBinding, type OnboardingKeys } from "./oxideOnboarding"
@@ -72,18 +74,28 @@ export async function registrationGateWitness(
 ): Promise<RegistrationGate> {
   if (!deps.identity) return { pending: "message" }
   const { account: oxideAccount, nameHash } = deps.identity
-  const info = await deps.wallet.node.getNodeInfo()
   const publicClient = l1PublicClient(deps.config)
+  // The message binds chain id and rollup version: the wallet's pinned identity. The Inbox to scan
+  // is the portal's word on L1, not the node's.
+  const [{ l1ChainId, rollupVersion }, { inboxAddress }] = await Promise.all([
+    deps.wallet.getNodeIdentity(),
+    readPortalChainIdentity(
+      publicClient,
+      deps.config.oxideProfile.portal as Hex,
+      deps.config.l1ChainId,
+    ),
+  ])
 
   const message = await findRegistrationMessage(
-    registrationInbox(publicClient, info.l1ContractAddresses.inboxAddress),
+    registrationInbox(publicClient, inboxAddress as Hex),
     deps.wallet.node,
     {
       fpc: AztecAddress.fromStringUnsafe(deps.generation.fpcAddress),
       namePortal: EthAddress.fromString(deps.generation.namePortal),
       owner: EthAddress.fromString(oxideAccount),
       nameHash: Buffer.from(nameHash.replace(/^0x/, ""), "hex"),
-      rollupVersion: info.rollupVersion,
+      rollupVersion,
+      l1ChainId,
     },
   )
   if (!message) return { pending: "message" }

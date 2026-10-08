@@ -1,8 +1,7 @@
 /**
- * The status a bridge record shows on its feed row and in its detail modal. The sheet names each
- * in-flight phase; the row collapses them to Pending so the design-system badge still draws. What
- * is pinned is that a row and its sheet never contradict on the phases the row names outright
- * (Needs recovery / Recovered / Canceled), plus the withdrawal legs that wait on the same thing.
+ * The status a bridge record shows on its feed row and in its detail modal. A deposit's row and
+ * sheet read one word per phase, and every word the row names draws a badge; the withdrawal legs
+ * that wait on the same thing read one state.
  */
 import { describe, expect, it } from "vitest"
 import type { Hex } from "viem"
@@ -57,14 +56,19 @@ describe("depositStatus", () => {
     expect(depositStatus(deposit("sweeping", SWEEP_TX)).badge).toBe("pending")
   })
 
-  it("does not imply a sweep transaction exists until its hash is known", () => {
-    expect(depositStatus(deposit("sweeping")).label).toBe("Waiting to be swept")
-    expect(depositStatus(deposit("sweeping", SWEEP_TX)).label).toBe("Sweeping into Aztec")
+  it("reads Awaiting funds, Receiving, Crediting, then Completed", () => {
+    expect(depositStatus(deposit("resolved")).label).toBe("Awaiting funds")
+    expect(depositStatus({ ...deposit("broadcast"), amount: "0" }).label).toBe("Awaiting funds")
+    for (const phase of ["funding", "funded", "broadcast", "sweeping"] as const) {
+      expect(depositStatus(deposit(phase)).label, phase).toBe("Receiving")
+    }
+    expect(depositStatus(deposit("sweeping", SWEEP_TX)).label).toBe("Receiving")
+    expect(depositStatus(deposit("pendingClaim")).label).toBe("Crediting")
+    expect(depositStatus(deposit("claimed")).label).toBe("Completed")
   })
 
-  it("uses Figma's Completed / Canceled on the terminal phases the sheet draws", () => {
-    expect(depositStatus(deposit("claimed")).label).toBe("Completed")
-    expect(depositStatus(deposit("failed")).label).toBe("Cancelled")
+  it("calls a failed deposit Deposit failed", () => {
+    expect(depositStatus(deposit("failed")).label).toBe("Deposit failed")
   })
 
   it("hands every phase a record can hold both a label and a badge", () => {
@@ -81,24 +85,27 @@ describe("depositRowStatusLabel", () => {
     expect(depositRowStatusLabel(deposit("recoverable"))).toBe("Needs recovery")
   })
 
-  it("calls everything still moving pending", () => {
-    for (const phase of ["broadcast", "sweeping", "pendingClaim"] as const) {
-      expect(depositRowStatusLabel(deposit(phase)), phase).toBe("Pending")
+  it("names where a deposit still moving is, with a badge the row draws", () => {
+    expect(depositRowStatusLabel(deposit("resolved"))).toBe("Awaiting funds")
+    expect(depositRowStatusLabel(deposit("broadcast"))).toBe("Receiving")
+    expect(depositRowStatusLabel(deposit("sweeping"))).toBe("Receiving")
+    expect(depositRowStatusLabel(deposit("pendingClaim"))).toBe("Crediting")
+    for (const phase of DEPOSIT_PHASES) {
+      const label = depositRowStatusLabel(deposit(phase))
+      if (label) expect(statusBadgeStyle(label), phase).toBeDefined()
     }
   })
 
   it("names each settled phase that never credited, and badges the one that did with nothing", () => {
     expect(depositRowStatusLabel(deposit("claimed"))).toBeUndefined()
     expect(depositRowStatusLabel(deposit("recovered"))).toBe("Recovered")
-    expect(depositRowStatusLabel(deposit("failed"))).toBe("Cancelled")
+    expect(depositRowStatusLabel(deposit("failed"))).toBe("Deposit failed")
   })
 
   it("never contradicts the sheet: a badged phase reads the same word in both", () => {
-    // The sheet refines the row on in-flight phases (a named step under Pending), so what has to
-    // match is every phase the row names outright.
     for (const phase of DEPOSIT_PHASES) {
       const row = depositRowStatusLabel(deposit(phase))
-      if (!row || row === "Pending") continue
+      if (!row) continue
       expect(depositStatus(deposit(phase)).label, phase).toBe(row)
     }
   })

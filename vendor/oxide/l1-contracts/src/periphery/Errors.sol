@@ -112,6 +112,7 @@ library Errors {
   error DepositSubsidy__SIPABoundToAnotherPortal(address sipa);
   error DepositSubsidy__FeedWithoutCode();
   error DepositSubsidy__ProfitAboveFeeFloor(uint128 approximateMinProfit, uint128 minFee);
+  error DepositSubsidy__NoImplementationForIntent(uint8 intent);
 
   error WithdrawalSubsidy__UnauthorizedExecutor();
   error WithdrawalSubsidy__ZeroTipRecipient();

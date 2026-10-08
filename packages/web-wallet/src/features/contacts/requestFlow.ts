@@ -14,6 +14,7 @@ export function newOutgoingRequest(
   contactTag: string,
   amountText: string,
   decimals: number,
+  note?: string,
 ): PaymentRequest | null {
   const amount = parseAmount(amountText)
   if (!Number.isFinite(amount) || amount <= 0) return null
@@ -36,6 +37,7 @@ export function newOutgoingRequest(
     kind: "contact",
     amountAtomic,
     tokenDecimals: decimals,
+    note: note?.trim() || undefined,
   }
 }
 

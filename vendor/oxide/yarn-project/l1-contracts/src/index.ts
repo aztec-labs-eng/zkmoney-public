@@ -150,6 +150,7 @@ export {
   readNameOf,
   readRegistrationController,
   readUserAddress,
+  signDomainAuth,
   updateAccountMetadataRegistry,
   updateDomainOwner,
   updateRegistrationController,
@@ -228,12 +229,20 @@ export {
   getPaymasterHash,
   packPaymasterAndData,
 } from './paymaster.js';
-export { encodeSweep, encodeSweepForSubsidy, getSipaSweeps, readSipaPlumbing } from './sipa.js';
-export type { SweepArgs, SweepEvent } from './sipa.js';
+export {
+  encodeDeployAndSweepForSubsidy,
+  encodeSweep,
+  encodeSweepForSubsidy,
+  getSipaSweeps,
+  readSipaPlumbing,
+} from './sipa.js';
+export type { SubsidizedDeployArgs, SweepArgs, SweepEvent } from './sipa.js';
 export {
   MULTICALL3_ADDRESS,
   buildSipaDeployAndSweepOperation,
   buildSipaSweepOperation,
+  decodeSipaSweepOperation,
+  decodeSubsidizedDeployAndSweep,
   encodeAggregate3,
   isContractDeployed,
 } from './sipa_sweep_operation.js';
@@ -241,8 +250,20 @@ export type {
   Aggregate3Call,
   BuildSipaDeployAndSweepOperationParams,
   BuildSipaSweepOperationParams,
+  SipaDeployCall,
+  SipaSweepTarget,
+  SubsidizedDeployAndSweep,
 } from './sipa_sweep_operation.js';
+export {
+  encodeEscrowRecoverERC20,
+  encodeEscrowRecoverETH,
+  escrowERC20RecoveryDigest,
+  escrowETHRecoveryDigest,
+  findEscrowExecutionTx,
+} from './escrow.js';
 export * from './swap_on_withdraw.js';
+export * from './cctp_bridge_on_withdraw.js';
+export * from './across_bridge_on_withdraw.js';
 export * from './metadata_update.js';
 export { UpdateMetadataSIPAAbi, UpdateMetadataSIPABytecode, AccountMetadataControllerAbi } from './artifacts.js';
 export {
@@ -273,3 +294,5 @@ export {
   depositPayoutTokenFor,
   depositTokensFor,
 } from './deposit_tokens.js';
+
+export { deployUpdateMetadataSIPA, METADATA_UPDATE_SWEEP_FEE } from './deploy/deploy_sipa_implementations.js';

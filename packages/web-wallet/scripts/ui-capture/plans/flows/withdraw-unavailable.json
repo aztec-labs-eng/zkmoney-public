@@ -1,0 +1,48 @@
+{
+  "scenario": "activity",
+  "path": "/withdraw?flowFixture=success&quoteFixture=unavailable",
+  "steps": [
+    {
+      "action": "waitFor",
+      "selector": ".ww-deposit-disclaimer"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Receive as",
+      "exact": false
+    },
+    {
+      "action": "click",
+      "role": "option",
+      "name": "USDC",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "placeholder": "Enter or paste address",
+      "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-withdraw .ww-withdraw__warning:has-text(\"Swap fee unavailable. Withdraw DAI instead.\")"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-withdraw button:disabled:has-text(\"Continue\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "screen-route-closed.png",
+      "state": "swap route closed before an amount"
+    }
+  ],
+  "finalScreenshot": false,
+  "recordHoldMs": 0
+}

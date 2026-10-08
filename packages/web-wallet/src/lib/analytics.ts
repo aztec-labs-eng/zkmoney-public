@@ -1,11 +1,18 @@
 import { sha256 } from "@noble/hashes/sha2"
 import { isDemoMode } from "../dev/demoFlag"
+import { deviceStorage } from "../platform/storage/rollupStorage"
 
 /** Every event the web wallet emits, grouped by funnel. */
 export type AnalyticsEvent =
   // ── PXE boot ──
   | "pxe_boot_completed"
   | "pxe_boot_failed"
+  // The default node booted on its own word because L1 gave no usable identity (`call`: which
+  // read failed). `profile_rollup_skew`: the profile's rollupVersion differs from the pinned one,
+  // which refuses boot.
+  // Neither carries a URL or a raw error.
+  | "node_identity_unverified"
+  | "profile_rollup_skew"
   // Per-tx phase timings (sync/sim/enclave/witgen/proving), from the sdk benchmark registry.
   | "tx_timing"
   // ── Onboarding funnel ──
@@ -20,6 +27,9 @@ export type AnalyticsEvent =
   | "onboarding_oxide_stage"
   // `named` separates tag-claiming completions from nameless wallets, which skip the tag events.
   | "onboarding_completed"
+  // A finished signup leaving for the wallet with analytics on. Consent is asked at that exit, so for
+  // a first signup this is the first event the device sends; nothing before it is sent after.
+  | "wallet_entered"
   // Screen-action failures, reported by useAsyncAction for any named action.
   | "action_failed"
   // A Predicate verdict blocked a flow (`flow` prop only — never the address).
@@ -69,8 +79,8 @@ export type AnalyticsEvent =
   | "withdrawal_swap_executed"
   | "withdrawal_swap_recovered"
   // ── SIPA deposit funnel (ULT-502) ── `deposit_address_shown` fires when an address becomes
-  // visible (`pooled` separates the instant pool hit from the Generate fallback); the resolve pair
-  // times the fallback's derivation and the publish pair the sponsored broadcast behind it. Stage
+  // visible (`pooled` separates a landed pool entry from an address still publishing); the resolve
+  // pair times the address's resolve and the publish pair the sponsored broadcast behind it. Stage
   // laps ride deposit_resolve_stage. No event ever carries the address.
   | "deposit_sheet_opened"
   | "deposit_address_shown"
@@ -80,14 +90,18 @@ export type AnalyticsEvent =
   | "address_resolve_failed"
   | "address_published"
   | "address_publish_failed"
+  // The address was shown before any rail could pay for its broadcast (`reason` is the
+  // registration's pending state); the sync loop sends it later.
+  | "address_publish_deferred"
   | "deposit_funded"
   | "deposit_swept"
   | "deposit_self_swept"
   | "deposit_recovered"
   // ── Campaign crossing + admission gate (ULT-777) ── One emit per admission verify resolution
   // (`outcome`), tagged with the surface that asked (`gate` is the WalletGate bounce, which runs
-  // no verify and reports `unknown`). onboarding_started's `entry` prop is the cohort crossing:
-  // campaign hand-offs carry a constant src=campaign — a label, never a per-user id.
+  // no verify and reports `unknown`). The `entry` prop on onboarding_started and wallet_entered is
+  // the cohort crossing (Wallet entries by source reads wallet_entered): campaign hand-offs carry a
+  // constant src=campaign — a label, never a per-user id.
   | "admission_checked"
   // ── Registration deposit (deposit-to-skip, ULT-777) ── The paid admission path between
   // onboarding_account_created and onboarding_tag_claimed. terms → shown → funded → swept, plus
@@ -120,9 +134,10 @@ export const appVersion = (import.meta.env.VITE_APP_VERSION as string | undefine
 
 /**
  * Opt-in consent gate. Fails closed: until App.tsx binds the config-backed getter AND the user has
- * granted consent (local config `analyticsConsent`), no event leaves the device. Two things do not
- * pass through it: a passkey result the signup flow opened, which carries no identifier (see
- * `fireSignupPasskeyEvent`), and a report the user submits by hand, which is its own consent.
+ * granted consent (local config `analyticsConsent`), no event leaves the device. Three things do not
+ * pass through it: a passkey result the signup flow opened and the campaign hand-off diagnostics,
+ * which carry no identifier (see `fireSignupEvent`), and a report the user submits by hand, which
+ * is its own consent.
  */
 let consentGranted: () => boolean = () => false
 
@@ -167,11 +182,11 @@ const baseIdMemory: { id?: string } = {}
  */
 function baseId(): string {
   try {
-    let id = localStorage.getItem(BASE_ID_KEY)
+    let id = deviceStorage.getItem(BASE_ID_KEY)
     if (!id) {
       id = baseIdMemory.id ?? crypto.randomUUID()
-      localStorage.setItem(BASE_ID_KEY, id)
-      for (const key of LEGACY_ID_KEYS) localStorage.removeItem(key)
+      deviceStorage.setItem(BASE_ID_KEY, id)
+      for (const key of LEGACY_ID_KEYS) deviceStorage.removeItem(key)
     }
     return (baseIdMemory.id = id)
   } catch {
@@ -281,15 +296,61 @@ const SIGNUP_PLATFORM = "web-signup"
 const SIGNUP_FLOWS: ReadonlySet<string> = new Set(["onboarding", "handoff"])
 
 /**
- * A passkey result the signup flow opened, on the footing the campaign's pings have always used:
- * no session id, no viewport, no cookie, and no consent answer consulted. The build version rides
- * along and the API keeps it off the export.
+ * The campaign hand-off diagnostics' closed vocabulary. zkmoney-api's HANDOFF_EVENT_PROPS mirrors
+ * it; the export contract test fails when the two drift.
  */
-function fireSignupPasskeyEvent(props: AnalyticsProps): void {
+export const SIGNUP_HANDOFF_VOCABULARY = {
+  handoff_received: {
+    receipt: ["accepted", "rejected", "plain"],
+    rejection: [
+      "not_from_campaign",
+      "malformed",
+      "no_key",
+      "no_shared_domain",
+      "unreadable",
+      "invalid",
+      "error",
+    ],
+  },
+  handoff_adopted: {
+    key_source: ["handoff", "cache", "ceremony"],
+    material: ["accepted", "none"],
+  },
+} as const
+
+type Vocabulary = typeof SIGNUP_HANDOFF_VOCABULARY
+
+/** Why the wallet refused a sealed hand-off. */
+export type HandoffRejection = Vocabulary["handoff_received"]["rejection"][number]
+
+/** What a page load did with a hand-off: took its sealed material, refused it, or had none. */
+export type HandoffReceipt =
+  | { receipt: "accepted" }
+  | { receipt: "rejected"; rejection: HandoffRejection }
+  | { receipt: "plain" }
+
+/** Where the key of an adopted campaign account came from, and whether sealed material arrived. */
+export type HandoffAdoption = {
+  key_source: Vocabulary["handoff_adopted"]["key_source"][number]
+  material: Vocabulary["handoff_adopted"]["material"][number]
+}
+
+/** Events sent on the signup platform, whatever the consent answer. */
+export type SignupEvent =
+  | { event: "passkey_ceremony"; props: AnalyticsProps }
+  | { event: "handoff_received"; props: HandoffReceipt }
+  | { event: "handoff_adopted"; props: HandoffAdoption }
+
+/**
+ * An event the signup flow sends before it can ask for consent, on the footing the campaign's
+ * pings have always used: no session id, no viewport, no cookie, and no consent answer consulted.
+ * The build version rides along and the API keeps it off the export.
+ */
+export function fireSignupEvent({ event, props }: SignupEvent): void {
   try {
     if (!analyticsUrl || isDemoMode()) return
     postWithoutCookies("/events", {
-      event: "passkey_ceremony",
+      event,
       platform: SIGNUP_PLATFORM,
       app_version: appVersion,
       props,
@@ -306,8 +367,12 @@ function fireSignupPasskeyEvent(props: AnalyticsProps): void {
 export function fireEvent(event: AnalyticsEvent, props?: AnalyticsProps) {
   try {
     // A passkey result the signup flow opened takes the identifier-free channel instead.
-    if (event === "passkey_ceremony" && typeof props?.flow === "string" && SIGNUP_FLOWS.has(props.flow)) {
-      return fireSignupPasskeyEvent(props)
+    if (
+      event === "passkey_ceremony" &&
+      typeof props?.flow === "string" &&
+      SIGNUP_FLOWS.has(props.flow)
+    ) {
+      return fireSignupEvent({ event, props })
     }
     if (!analyticsEnabled()) return
     postJson("/events", {
@@ -323,7 +388,7 @@ export function fireEvent(event: AnalyticsEvent, props?: AnalyticsProps) {
 }
 
 /** Ascending ladder; anything at or above the last threshold clamps to ">=1k". */
-const AMOUNT_BUCKETS: [bigint, string][] = [
+const AMOUNT_BUCKETS: [bigint, AmountRange][] = [
   [5n, "<5"],
   [10n, "<10"],
   [50n, "<50"],
@@ -332,8 +397,10 @@ const AMOUNT_BUCKETS: [bigint, string][] = [
   [1000n, "<1k"],
 ]
 
+export type AmountRange = "<5" | "<10" | "<50" | "<100" | "<500" | "<1k" | ">=1k"
+
 /** Compares in atomic units — an exact amount never becomes a float and never leaves the device. */
-export function amountBucket(amount: bigint, decimals: number): string {
+export function amountBucket(amount: bigint, decimals: number): AmountRange {
   const scale = 10n ** BigInt(decimals)
   for (const [threshold, label] of AMOUNT_BUCKETS) if (amount < threshold * scale) return label
   return ">=1k"
@@ -382,11 +449,22 @@ export async function paylinkPh(input: {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("")
 }
 
+/** A range, or `unknown` when this device could not read the amount — never a guessed range. */
+export type PaylinkAmountBucket = AmountRange | "unknown"
+
+export function paylinkAmountBucket(
+  amount: bigint | undefined,
+  decimals: number,
+): PaylinkAmountBucket {
+  return amount === undefined ? "unknown" : amountBucket(amount, decimals)
+}
+
 export interface PaylinkEvent {
-  // `link_opened` is the funnel top: any /link mount by a link holder, claimed or not.
+  // `link_opened` is the funnel top: any /link mount by a link holder, claimed or not. `claimed`
+  // is the escrow spent on L2, into an account or to Ethereum; the L1 payout is not part of it.
   stage: "created" | "link_opened" | "claimed" | "refunded"
   flavor: PaylinkFlavor
-  amount_bucket: string
+  amount_bucket: PaylinkAmountBucket
   paylink_ph: string
 }
 

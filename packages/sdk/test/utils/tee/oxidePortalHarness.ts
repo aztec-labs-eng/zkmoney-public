@@ -111,6 +111,13 @@ export type RegistrationDeployOpts = {
   fpcFundingCut?: bigint
 }
 
+/** The portal's shared deposit bucket (`Caps`): its refill rate per second and its ceiling, in
+ *  token base units. Both are immutable once the portal is deployed. */
+export type PortalCapsOpts = {
+  rate: bigint
+  globalLimit: bigint
+}
+
 export interface DeploymentResultWithNitro {
   tokenPortal: Address
   testToken: Address
@@ -161,6 +168,8 @@ export async function deploySandboxOxidePortalStack(
     // Deploy a real register()-capable registry (+ a fresh OxideAccountFactory) instead of the
     // placeholder-arg one; feeToken is the test token so a funded SIPA can pay the registration fee.
     registration?: RegistrationDeployOpts
+    // Deposit bucket for suites that exercise capacity; omitted, the bucket is effectively unlimited.
+    caps?: PortalCapsOpts
   },
 ): Promise<DeploymentResultWithNitro> {
   const account = walletClient.account!
@@ -276,8 +285,8 @@ export async function deploySandboxOxidePortalStack(
       frozenDeposit: frozenDepositVerifierEth,
       unprocessedDeposit: unprocessedDepositVerifierEth,
     },
-    rate: CAPS_RATE,
-    globalLimit: CAPS_GLOBAL_LIMIT,
+    rate: options.caps?.rate ?? CAPS_RATE,
+    globalLimit: options.caps?.globalLimit ?? CAPS_GLOBAL_LIMIT,
   })
 
   const { depositSIPAImplementation, registrationSIPAImplementation } =

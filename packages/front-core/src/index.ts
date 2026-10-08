@@ -1,5 +1,6 @@
 export * from "./assets"
 export * from "./core"
+export * from "./core/nodeIdentity"
 export * from "./contexts"
 export * from "./hooks"
 export * from "./tee/teeSignerSource"

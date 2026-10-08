@@ -141,6 +141,8 @@ export type PaylinkTransaction = BaseTransaction & {
    * own — the create row carries the whole round trip — so this is where its hash is readable.
    */
   refundTxHash?: string
+  /** Which recovery returned the escrow; unset on rows refunded before it was recorded. */
+  refundKind?: "cancel" | "reclaim"
   isClaimed?: boolean
   // Escrow exited by the v4->v5 migration and landed on L1. No chain signal ever reaches this row
   // post-cutover (the reconciler polls the canonical node), so this local flip is the only truth.

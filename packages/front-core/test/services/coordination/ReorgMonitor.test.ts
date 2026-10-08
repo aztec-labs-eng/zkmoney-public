@@ -4,6 +4,10 @@ import { AccountStorage } from "../../../src/core/storages/AccountStorage"
 import { NetworkStorage } from "../../../src/core/storages/NetworkStorage"
 import { TransactionStorage } from "../../../src/core/storages/TransactionStorage"
 import { WithdrawalStorage } from "../../../src/core/services/bridge/WithdrawalStorage"
+import {
+  WithdrawalTrackingService,
+  type WithdrawalTrackerNode,
+} from "../../../src/core/services/bridge/WithdrawalTrackingService"
 import { SIPADepositStore } from "../../../src/core/services/deposits/SIPADepositStore"
 import { TransactionTracker } from "../../../src/core/services/transactions/TransactionTracker"
 import {
@@ -26,6 +30,8 @@ vi.mock("@aztec/aztec.js/node", async (importOriginal) => {
 const TX = "0x" + "ab".repeat(32)
 const TX2 = "0x" + "cd".repeat(32)
 const TX3 = "0x" + "ef".repeat(32)
+/** The monitor's settle window for a withdrawal burn that reads dropped. */
+const BURN_SETTLE_MS = 5 * 60_000
 
 const sampleToken = (): TokenInTxService => ({
   name: "ETH",
@@ -146,6 +152,25 @@ describe("ReorgMonitor.runPass", () => {
     expect(row.reorgEpoch).toBe(1)
     expect(summary).toMatchObject({ checked: 1, failed: 1, demoted: 0, reConfirmed: 0 })
     expect(outcomes).toEqual([{ type: "failed", txHash: TX, reorgEpoch: 1 }])
+  })
+
+  it("a received payment that fails is flagged incoming", async () => {
+    const { chain, outcomes, deps } = setup()
+    await TransactionStorage.get().addIncomingTokenTransaction({
+      txHash: TX,
+      from: "@alice",
+      senderL2Address: "0xa11ce",
+      to: "0xme",
+      token: sampleToken(),
+      timestamp: 1111,
+      blockNumber: 42,
+    })
+    chain.script(TX, { status: "dropped" })
+
+    await runPass(deps)
+
+    expect((await rowByHash(TX)).status).toBe("failed")
+    expect(outcomes).toEqual([{ type: "failed", txHash: TX, reorgEpoch: 1, incoming: true }])
   })
 
   it("rows on a foreign network are untouched — no receipt fetch, no writes", async () => {
@@ -589,7 +614,7 @@ describe("ReorgMonitor.runPass", () => {
   })
 
   it("withdrawal and SIPA records reconcile through their own demote paths", async () => {
-    const { chain, deps } = setup()
+    const { chain, outcomes, deps } = setup()
     const adapter = new InMemoryStorageAdapter()
     const withdrawals = WithdrawalStorage.get(adapter)
     await withdrawals.create({
@@ -628,15 +653,386 @@ describe("ReorgMonitor.runPass", () => {
       executionResult: "reverted",
     })
 
-    const summary = await runPass({
+    let clock = 1_000_000
+    const monitor = new ReorgMonitor({
       ...deps,
       withdrawalStorage: withdrawals,
       sipaDepositStore: sipa,
+      now: () => clock,
     })
+    const first = await monitor.runPass()
+
+    expect(withdrawals.get("wdraw_1")?.phase).toBe("l2_mined") // first look only
+    expect(sipa.get(("0x" + "22".repeat(20)) as `0x${string}`)?.phase).toBe("pendingClaim")
+    expect(first).toMatchObject({ failed: 0, demoted: 1 }) // SIPA
+
+    clock += BURN_SETTLE_MS
+    const second = await monitor.runPass()
 
     expect(withdrawals.get("wdraw_1")?.phase).toBe("failed")
-    expect(sipa.get(("0x" + "22".repeat(20)) as `0x${string}`)?.phase).toBe("pendingClaim")
-    expect(summary.failed).toBe(1) // the burn
-    expect(summary.demoted).toBe(1) // SIPA
+    expect(second?.failed).toBe(1) // the burn
+    expect(outcomes).toContainEqual({
+      type: "failed",
+      txHash: TX,
+      reorgEpoch: 1,
+      source: "withdrawal",
+    })
+  })
+})
+
+describe("ReorgMonitor withdrawal burns", () => {
+  beforeEach(() => resetSingletons())
+  afterEach(() => {
+    WithdrawalTrackingService.reset()
+    vi.restoreAllMocks()
+  })
+
+  /** Below the field modulus, so the tracker can parse it. */
+  const BURN = `0x${"11".repeat(32)}` as const
+  const DROPPED_ERROR = "Withdrawal transaction dropped in a reorg"
+  const INCLUDED: ReorgTxReceiptLike = {
+    status: "proposed",
+    blockNumber: 50,
+    blockHash: "0xb50",
+    executionResult: "success",
+  }
+
+  /** One mined withdrawal and a monitor over it on a hand-driven clock. */
+  async function setupWithdrawal(opts: { networkId?: string } = {}) {
+    const base = setup()
+    const withdrawals = WithdrawalStorage.get(new InMemoryStorageAdapter())
+    await withdrawals.create({
+      localId: "wdraw_1",
+      recipient: "0x" + "11".repeat(20),
+      recipientProvenance: "saved-recipient",
+      amount: "1",
+      tokenSymbol: "DAI",
+      phase: "submitting",
+      startTime: 1,
+      networkId: opts.networkId,
+    } as Parameters<typeof withdrawals.create>[0])
+    await withdrawals.markMined("wdraw_1", BURN, 42, "1000")
+    const clock = { now: 1_000_000 }
+    const deps: ReorgMonitorDeps = {
+      ...base.deps,
+      withdrawalStorage: withdrawals,
+      now: () => clock.now,
+    }
+    const record = () => withdrawals.get("wdraw_1")!
+    return { ...base, deps, withdrawals, clock, record, monitor: new ReorgMonitor(deps) }
+  }
+
+  it("a first dropped answer leaves the withdrawal tracking", async () => {
+    const { chain, outcomes, monitor, record } = await setupWithdrawal()
+    chain.script(BURN, { status: "dropped" })
+
+    const summary = await monitor.runPass()
+
+    expect(record().phase).toBe("l2_mined")
+    expect(record().reorgEpoch).toBeUndefined()
+    expect(summary?.failed).toBe(0)
+    expect(outcomes).toEqual([])
+  })
+
+  it.each(["l2_mined", "awaiting_proven", "finalizing_l1"] as const)(
+    "a burn at %s still dropped a settle window later fails",
+    async (phase) => {
+      const { chain, outcomes, monitor, withdrawals, clock, record } = await setupWithdrawal()
+      await withdrawals.patch("wdraw_1", { phase })
+      chain.script(BURN, { status: "dropped" })
+
+      await monitor.runPass()
+      clock.now += BURN_SETTLE_MS - 1
+      await monitor.runPass()
+      expect(record().phase).toBe(phase)
+
+      clock.now += 1
+      const summary = await monitor.runPass()
+
+      expect(record()).toMatchObject({
+        phase: "failed",
+        droppedBurn: true,
+        reorgEpoch: 1,
+        error: DROPPED_ERROR,
+      })
+      expect(summary?.failed).toBe(1)
+      expect(outcomes).toEqual([
+        { type: "failed", txHash: BURN, reorgEpoch: 1, source: "withdrawal" },
+      ])
+    },
+  )
+
+  it("the settle window spans monitor instances", async () => {
+    const { chain, deps, clock, record } = await setupWithdrawal()
+    chain.script(BURN, { status: "dropped" })
+
+    await new ReorgMonitor(deps).runPass()
+    clock.now += BURN_SETTLE_MS - 1
+    await new ReorgMonitor(deps).runPass()
+    expect(record().phase).toBe("l2_mined")
+
+    clock.now += 1
+    await new ReorgMonitor(deps).runPass()
+
+    expect(record().phase).toBe("failed")
+  })
+
+  it("a receipt read that throws is not a look", async () => {
+    const { chain, outcomes, monitor, clock, record } = await setupWithdrawal()
+    await monitor.runPass() // nothing scripted: the read throws
+
+    chain.script(BURN, { status: "dropped" })
+    clock.now += BURN_SETTLE_MS
+    await monitor.runPass()
+
+    expect(record().phase).toBe("l2_mined")
+    expect(outcomes).toEqual([])
+  })
+
+  it("an included answer inside the window clears the pending failure", async () => {
+    const { chain, outcomes, monitor, clock, record } = await setupWithdrawal()
+    chain.script(BURN, { status: "dropped" })
+    await monitor.runPass()
+
+    chain.script(BURN, INCLUDED)
+    clock.now += 30_000
+    await monitor.runPass()
+
+    // Past the first window: this dropped answer opens a new one.
+    chain.script(BURN, { status: "dropped" })
+    clock.now += BURN_SETTLE_MS
+    await monitor.runPass()
+
+    expect(record().phase).toBe("l2_mined")
+    expect(outcomes).toEqual([])
+  })
+
+  it("a pending answer inside the window clears the pending failure", async () => {
+    const { chain, outcomes, monitor, clock, record } = await setupWithdrawal()
+    chain.script(BURN, { status: "dropped" })
+    await monitor.runPass()
+
+    chain.script(BURN, { status: "pending" })
+    clock.now += 30_000
+    await monitor.runPass()
+
+    chain.script(BURN, { status: "dropped" })
+    clock.now += BURN_SETTLE_MS
+    await monitor.runPass()
+
+    expect(record().phase).toBe("l2_mined")
+    expect(outcomes).toEqual([{ type: "demoted", txHash: BURN }])
+  })
+
+  it("a reverted inclusion fails at once", async () => {
+    const { chain, outcomes, monitor, record } = await setupWithdrawal()
+    chain.script(BURN, { ...INCLUDED, executionResult: "reverted" })
+
+    const summary = await monitor.runPass()
+
+    expect(record()).toMatchObject({ phase: "failed", droppedBurn: true, error: DROPPED_ERROR })
+    expect(summary?.failed).toBe(1)
+    expect(outcomes).toEqual([
+      { type: "failed", txHash: BURN, reorgEpoch: 1, source: "withdrawal" },
+    ])
+  })
+
+  it.each(["proposed", "checkpointed", "proven", "finalized"] as const)(
+    "a dropped-burn failure whose burn reads %s and succeeded returns to l2_mined",
+    async (status) => {
+      const { chain, outcomes, monitor, withdrawals, record } = await setupWithdrawal()
+      await withdrawals.demote("wdraw_1", { droppedBurn: true })
+      chain.script(BURN, { ...INCLUDED, status })
+      const before = Date.now()
+
+      const summary = await monitor.runPass()
+
+      expect(record().phase).toBe("l2_mined")
+      expect(record().reorgEpoch).toBe(2)
+      expect(record().phaseEnteredAt).toBeGreaterThanOrEqual(before)
+      expect(record().endTime).toBeUndefined()
+      expect(record().error).toBeUndefined()
+      expect(record().droppedBurn).toBeUndefined()
+      expect(summary?.reConfirmed).toBe(1)
+      // the corrective carries the failure's epoch, pairing it with the alert it answers
+      expect(outcomes).toEqual([
+        {
+          type: "re-confirmed",
+          txHash: BURN,
+          hadAlerted: true,
+          reorgEpoch: 1,
+          source: "withdrawal",
+        },
+      ])
+    },
+  )
+
+  it("a revived withdrawal gets two looks again", async () => {
+    const { chain, monitor, clock, record } = await setupWithdrawal()
+    chain.script(BURN, { status: "dropped" })
+    await monitor.runPass()
+    clock.now += BURN_SETTLE_MS
+    await monitor.runPass()
+    expect(record().phase).toBe("failed")
+
+    chain.script(BURN, INCLUDED)
+    await monitor.runPass()
+    expect(record().phase).toBe("l2_mined")
+
+    chain.script(BURN, { status: "dropped" })
+    clock.now += 30_000
+    await monitor.runPass()
+
+    expect(record().phase).toBe("l2_mined")
+  })
+
+  it("a dropped-burn failure that still reads dropped stays failed and quiet", async () => {
+    const { chain, outcomes, monitor, withdrawals, clock, record } = await setupWithdrawal()
+    await withdrawals.demote("wdraw_1", { droppedBurn: true })
+    chain.script(BURN, { status: "dropped" })
+
+    await monitor.runPass()
+    clock.now += BURN_SETTLE_MS
+    const summary = await monitor.runPass()
+
+    expect(record()).toMatchObject({ phase: "failed", droppedBurn: true, reorgEpoch: 1 })
+    expect(summary).toMatchObject({ failed: 0, reConfirmed: 0 })
+    expect(outcomes).toEqual([])
+  })
+
+  it.each([
+    ["reverted", { ...INCLUDED, executionResult: "reverted" }],
+    ["pending", { status: "pending", executionResult: "success" }],
+  ] as const)("a %s receipt does not revive a dropped-burn failure", async (_, receipt) => {
+    const { chain, outcomes, monitor, withdrawals, record } = await setupWithdrawal()
+    await withdrawals.demote("wdraw_1", { droppedBurn: true })
+    chain.script(BURN, receipt)
+
+    await monitor.runPass()
+
+    expect(record()).toMatchObject({ phase: "failed", droppedBurn: true, reorgEpoch: 1 })
+    expect(outcomes).toEqual([])
+  })
+
+  it("a revival the store refuses raises nothing", async () => {
+    const { chain, outcomes, deps, withdrawals } = await setupWithdrawal()
+    await withdrawals.demote("wdraw_1", { droppedBurn: true })
+    chain.script(BURN, INCLUDED)
+    const refusing: ReorgMonitorDeps["withdrawalStorage"] = {
+      load: () => withdrawals.load(),
+      list: () => withdrawals.list(),
+      demote: (key, opts) => withdrawals.demote(key, opts),
+      setBurnDroppedAt: (key, at) => withdrawals.setBurnDroppedAt(key, at),
+      reviveDroppedBurn: async () => null,
+    }
+
+    const summary = await new ReorgMonitor({ ...deps, withdrawalStorage: refusing }).runPass()
+
+    expect(summary?.reConfirmed).toBe(0)
+    expect(outcomes).toEqual([])
+  })
+
+  it.each([
+    ["dropped", { status: "dropped" }],
+    ["reverted", { ...INCLUDED, executionResult: "reverted" }],
+    ["pending", { status: "pending" }],
+  ] as const)("a released withdrawal whose burn reads %s raises nothing", async (_, receipt) => {
+    const { chain, outcomes, monitor, withdrawals, clock, record } = await setupWithdrawal()
+    await withdrawals.patch("wdraw_1", { phase: "swapping" })
+    const released = record()
+    chain.script(BURN, receipt)
+
+    await monitor.runPass()
+    clock.now += BURN_SETTLE_MS
+    const summary = await monitor.runPass()
+
+    expect(record()).toBe(released)
+    expect(summary).toMatchObject({ failed: 0, demoted: 0 })
+    expect(outcomes).toEqual([])
+  })
+
+  it("a failure that was not a dropped burn is never revived", async () => {
+    const { chain, outcomes, monitor, withdrawals, record } = await setupWithdrawal()
+    await withdrawals.patch("wdraw_1", { phase: "failed", error: "other" })
+    chain.script(BURN, INCLUDED)
+
+    await monitor.runPass()
+
+    expect(record()).toMatchObject({ phase: "failed", error: "other" })
+    expect(chain.calls).toEqual([])
+    expect(outcomes).toEqual([])
+  })
+
+  it("an included answer without executionResult does not revive", async () => {
+    const { chain, outcomes, monitor, withdrawals, record } = await setupWithdrawal()
+    await withdrawals.demote("wdraw_1", { droppedBurn: true })
+    chain.script(BURN, { status: "proposed", blockNumber: 50, blockHash: "0xb50" })
+
+    const summary = await monitor.runPass()
+
+    expect(record()).toMatchObject({ phase: "failed", droppedBurn: true, reorgEpoch: 1 })
+    expect(summary?.reConfirmed).toBe(0)
+    expect(outcomes).toEqual([])
+  })
+
+  it("a live withdrawal on another network is skipped", async () => {
+    const { chain, deps, clock, record } = await setupWithdrawal({ networkId: "net-B" })
+    chain.script(BURN, { status: "dropped" })
+    const monitor = new ReorgMonitor({ ...deps, networkId: "net-A" })
+
+    await monitor.runPass()
+    clock.now += BURN_SETTLE_MS
+    await monitor.runPass()
+
+    expect(chain.calls).toEqual([])
+    expect(record().phase).toBe("l2_mined")
+  })
+
+  it("a dropped-burn failure on another network is skipped", async () => {
+    const { chain, deps, withdrawals, record } = await setupWithdrawal({ networkId: "net-B" })
+    await withdrawals.demote("wdraw_1", { droppedBurn: true })
+    chain.script(BURN, INCLUDED)
+
+    await new ReorgMonitor({ ...deps, networkId: "net-A" }).runPass()
+
+    expect(chain.calls).toEqual([])
+    expect(record().phase).toBe("failed")
+  })
+
+  it("a revived withdrawal advances on the tracker's next tick", async () => {
+    const { chain, monitor, withdrawals, record } = await setupWithdrawal()
+    let tick: (() => void) | undefined
+    await withdrawals.patch("wdraw_1", {
+      phase: "l2_mined",
+      withdrawalId: `0x${"77".repeat(32)}`,
+    })
+    await withdrawals.demote("wdraw_1", { droppedBurn: true })
+    chain.script(BURN, INCLUDED)
+    const tracker = WithdrawalTrackingService.get({
+      store: withdrawals,
+      node: { getTxReceipt: async () => INCLUDED } as unknown as WithdrawalTrackerNode,
+      finalizationReader: { isSpent: async () => false, resolveL1TxHash: async () => undefined },
+      portalContext: {
+        l1Portal: `0x${"aa".repeat(20)}`,
+        l2Portal: `0x${"bb".repeat(32)}`,
+        rollupVersion: 1n,
+        l1ChainId: 1n,
+      },
+      scheduler: {
+        setInterval: (cb: () => void) => {
+          tick = cb
+          return 1
+        },
+        clearInterval: () => {},
+      },
+    })
+    await tracker.resumeAll() // boot, while the only record is failed
+
+    await monitor.runPass()
+    tick?.()
+
+    await vi.waitFor(() =>
+      expect(record()).toMatchObject({ phase: "awaiting_proven", reorgEpoch: 2 }),
+    )
   })
 })

@@ -24,7 +24,7 @@ export function NameRequiredScreen({ pending }: { pending?: boolean }) {
           </span>
           <span className="zkm-type-body-sm" style={{ color: "var(--text-secondary)" }}>
             {pending
-              ? "Sending, depositing and withdrawing unlock as soon as your registration reaches the network. This takes a few minutes."
+              ? "Sending, withdrawing and payment links unlock as soon as your registration reaches the network. This takes a few minutes."
               : "Sending, depositing and withdrawing are paid for by your registration. Register a name to unlock them."}
           </span>
           {!pending && (

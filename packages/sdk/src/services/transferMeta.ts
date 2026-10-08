@@ -8,14 +8,19 @@
  *               0x01 memo (UTF-8, ≤ TRANSFER_MEMO_MAX_BYTES), 0x02 reference (the payment-request
  *               id as its 32-byte Fr value), 0x03 sender tag, 0x04 recipient tag (ASCII, ≤ 32 bytes),
  *               0x10 paylink created: [flavor: u8][day: u16][secret: 32][fallbackKeyHash: 32][email: rest]
+ *               0x11 paylink payout: [flavor: u8][secret: 32][fallbackKeyHash: 32]
  *   then        0x00 terminator, zero fill
  *
- * The paylink lane rides the escrow's funding transfer, never a plain send. The token delivers
+ * The created lane rides the escrow's funding transfer, never a plain send. The token delivers
  * that transfer to both parties and a link holder can decrypt the escrow's copy, so the lane
  * carries only what the link already gives them: the escrow secret, the fallback key's hash, the
  * creation day and the lock email. The fallback secret never leaves the creator. Their own copy is
  * the resync record: the day and secret locate the `(day, n)` nonce under the master secret, which
  * re-derives the creator-only fallback secret.
+ *
+ * The payout lane rides a claim's payout from the escrow to the claimer, so a fresh device can
+ * rebuild the claim: its secret and key hash re-derive the escrow, which must be the payout's
+ * `from`. A refund carries no lane.
  *
  * Everything is sender-asserted (unconstrained delivery): the tags are display attribution the
  * reader verifies via the name registry — the recipient checks the sender tag against
@@ -42,6 +47,7 @@ const TYPE_REFERENCE = 0x02
 const TYPE_SENDER_TAG = 0x03
 const TYPE_RECIPIENT_TAG = 0x04
 const TYPE_PAYLINK_CREATED = 0x10
+const TYPE_PAYLINK_PAYOUT = 0x11
 
 const PAYLINK_FLAVOR_BYTES = { direct: 0x00, email: 0x01 } as const
 const SECRET_LEN = Fr.SIZE_IN_BYTES
@@ -78,12 +84,18 @@ const PAYLINK_CREATED_MAX_LEN = PAYLINK_CREATED_HEAD_LEN + PAYLINK_EMAIL_MAX_BYT
 export const PAYLINK_MEMO_MAX_BYTES =
   META_CAPACITY - 1 - (2 + MAX_TAG_BYTES) - (2 + PAYLINK_CREATED_MAX_LEN) - 2 - 1
 
+/** A claim payout's announcement of the escrow it left. */
+export type PaylinkPayoutMeta = Pick<PaylinkCreatedMeta, "flavor" | "secret" | "fallbackKeyHash">
+
+const PAYLINK_PAYOUT_LEN = 1 + 2 * SECRET_LEN
+
 export interface TransferMeta {
   requestId?: string
   senderTag?: string
   recipientTag?: string
   memo?: string
   paylinkCreated?: PaylinkCreatedMeta
+  paylinkPayout?: PaylinkPayoutMeta
 }
 
 export function buildTransferMeta(input: TransferMeta): Fr[] {
@@ -134,6 +146,17 @@ export function buildTransferMeta(input: TransferMeta): Fr[] {
       ]),
     )
   }
+  if (input.paylinkPayout) {
+    const { flavor, secret, fallbackKeyHash } = input.paylinkPayout
+    put(
+      TYPE_PAYLINK_PAYOUT,
+      Buffer.concat([
+        Buffer.from([PAYLINK_FLAVOR_BYTES[flavor]]),
+        secret.toBuffer(),
+        fallbackKeyHash.toBuffer(),
+      ]),
+    )
+  }
   return packMetaFields(buf, TRANSFER_META_LEN)
 }
 
@@ -156,6 +179,7 @@ export function buildTransferMetaForSend(input: TransferMeta): Fr[] {
   out.recipientTag = lenientTag(input.recipientTag)
   if (input.memo) out.memo = input.memo
   if (input.paylinkCreated) out.paylinkCreated = input.paylinkCreated
+  if (input.paylinkPayout) out.paylinkPayout = input.paylinkPayout
   return buildTransferMeta(out)
 }
 
@@ -218,34 +242,55 @@ export function decodeTransferMeta(meta: readonly FieldLike[] | undefined): Tran
     } else if (type === TYPE_PAYLINK_CREATED && out.paylinkCreated === undefined) {
       const created = decodePaylinkCreated(value)
       if (created) out.paylinkCreated = created
+    } else if (type === TYPE_PAYLINK_PAYOUT && out.paylinkPayout === undefined) {
+      const payout = decodePaylinkPayout(value)
+      if (payout) out.paylinkPayout = payout
     }
     pos = end
   }
   return out
 }
 
-/** The lane's value, or undefined for an unknown flavor, a zero or non-field secret, or an invalid email. */
-function decodePaylinkCreated(value: Buffer): PaylinkCreatedMeta | undefined {
-  if (value.length < PAYLINK_CREATED_HEAD_LEN) return undefined
-  const flavor = (Object.keys(PAYLINK_FLAVOR_BYTES) as PaylinkCreatedMeta["flavor"][]).find(
-    (name) => PAYLINK_FLAVOR_BYTES[name] === value[0],
+function flavorOf(byte: number | undefined): PaylinkCreatedMeta["flavor"] | undefined {
+  return (Object.keys(PAYLINK_FLAVOR_BYTES) as PaylinkCreatedMeta["flavor"][]).find(
+    (name) => PAYLINK_FLAVOR_BYTES[name] === byte,
   )
-  if (!flavor) return undefined
-  const day = value.readUInt16BE(1)
-  let secret: Fr
-  let fallbackKeyHash: Fr
+}
+
+/** Two non-zero fields at `at`, or undefined. */
+function secretsAt(
+  value: Buffer,
+  at: number,
+): Pick<PaylinkPayoutMeta, "secret" | "fallbackKeyHash"> | undefined {
   try {
-    const at = 1 + PAYLINK_DAY_LEN
-    secret = Fr.fromBuffer(value.subarray(at, at + SECRET_LEN))
-    fallbackKeyHash = Fr.fromBuffer(value.subarray(at + SECRET_LEN, at + 2 * SECRET_LEN))
+    const secret = Fr.fromBuffer(value.subarray(at, at + SECRET_LEN))
+    const fallbackKeyHash = Fr.fromBuffer(value.subarray(at + SECRET_LEN, at + 2 * SECRET_LEN))
+    return secret.isZero() || fallbackKeyHash.isZero() ? undefined : { secret, fallbackKeyHash }
   } catch {
     return undefined
   }
-  if (secret.isZero() || fallbackKeyHash.isZero()) return undefined
+}
+
+/** The lane's value, or undefined for an unknown flavor, a zero or non-field secret, or an invalid email. */
+function decodePaylinkCreated(value: Buffer): PaylinkCreatedMeta | undefined {
+  if (value.length < PAYLINK_CREATED_HEAD_LEN) return undefined
+  const flavor = flavorOf(value[0])
+  const secrets = secretsAt(value, 1 + PAYLINK_DAY_LEN)
+  if (!flavor || !secrets) return undefined
+  const day = value.readUInt16BE(1)
+  const { secret, fallbackKeyHash } = secrets
   const emailBytes = value.subarray(PAYLINK_CREATED_HEAD_LEN)
   if (emailBytes.length === 0) return { flavor, day, secret, fallbackKeyHash }
   const email = decodeText(emailBytes)
   return email === undefined ? undefined : { flavor, day, secret, fallbackKeyHash, email }
+}
+
+/** The lane's value, or undefined for a wrong length, an unknown flavor, or a zero or non-field secret. */
+function decodePaylinkPayout(value: Buffer): PaylinkPayoutMeta | undefined {
+  if (value.length !== PAYLINK_PAYOUT_LEN) return undefined
+  const flavor = flavorOf(value[0])
+  const secrets = secretsAt(value, 1)
+  return flavor && secrets ? { flavor, ...secrets } : undefined
 }
 
 const utf8Decoder = new TextDecoder("utf-8", { fatal: true })
@@ -258,4 +303,3 @@ function decodeText(bytes: Buffer): string | undefined {
     return undefined
   }
 }
-

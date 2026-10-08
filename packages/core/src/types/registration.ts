@@ -74,3 +74,45 @@ export interface RegistrationPricing extends RegistrationSchedule {
   kind: RegistrationKind
   ask: bigint
 }
+
+// ── Claim server wire shapes (account-service `/domain/*`) ───────────
+// Uint256s are decimal strings: JSON has no bigint.
+
+/**
+ * The operator-signed `SignedTerms` struct `RegistrationController.register()` verifies. It DEFINES
+ * the name's fee and minimum deposit; clients pass it through, never re-derive it.
+ */
+export interface SignedTermsResponse {
+  fee: string
+  minDeposit: string
+  nonce: string
+  deadline: string
+  signature: `0x${string}`
+  /** The reduced schedule: the tag price is waived and `fee` is at least the relayer's sweep fee. */
+  reduced: boolean
+  /** A golden ticket bought the reduced schedule (no opening minimum); otherwise an earned tag. */
+  ticket: boolean
+}
+
+/** The claim server's hold on a name: anyone may reserve it past `deadline` (unix seconds). */
+export interface NameHold {
+  deadline: string
+}
+
+/** `POST /domain/sign`: the NameClaim the Registry verifies, the name's hold, and its terms. */
+export interface NameClaimResponse {
+  signature: `0x${string}`
+  nonce: string
+  /** The NameClaim's validity, unix seconds. A re-sign refreshes it; it never extends the hold. */
+  deadline: string
+  /** Anchored at the holder's first reserve, so a re-sign inside a live hold reports the same end. */
+  hold: NameHold
+  /** Absent where no controller is configured: the contract's immutable schedule applies. */
+  terms?: SignedTermsResponse
+}
+
+/** `POST /domain/reservation`: the names a bootstrap key has claimed, and its live signed holds. */
+export interface NameReservationResponse {
+  nameHashes: `0x${string}`[]
+  issued: { nameHash: `0x${string}`; hold: NameHold }[]
+}

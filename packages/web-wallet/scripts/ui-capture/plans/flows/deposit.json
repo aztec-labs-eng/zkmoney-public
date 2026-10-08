@@ -56,12 +56,6 @@
       "exact": false
     },
     {
-      "action": "click",
-      "role": "button",
-      "name": "Wallet connected",
-      "exact": false
-    },
-    {
       "action": "fill",
       "selector": ".ww-fund__amount input",
       "value": "24"

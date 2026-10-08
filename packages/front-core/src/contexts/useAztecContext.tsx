@@ -9,6 +9,7 @@ import {
   type IPendingTxStore,
 } from "@obsidion/sdk"
 import { l1ChainIdForNetwork } from "@obsidion/core/constants"
+import type { ChainIdentity } from "@obsidion/core/types"
 import {
   NetworkStorage,
   type NetworkConfig,
@@ -55,6 +56,7 @@ interface AdoptWalletOptions extends CommonInitializePXEOptions {
   store?: never
   simulator?: never
   pendingTxStore?: never
+  chainIdentity?: never
 }
 
 /** Build the wallet here, over the node the caller owns. */
@@ -70,6 +72,11 @@ interface BuildWalletOptions extends CommonInitializePXEOptions {
    * its `InMemoryPendingTxStore` default.
    */
   pendingTxStore?: IPendingTxStore
+  /**
+   * The identity boot verified against L1. Pinned into the wallet's chain info and published as the
+   * active network id; unset, both come from the node's own answer.
+   */
+  chainIdentity?: ChainIdentity
 }
 
 interface AztecContextProps {
@@ -128,6 +135,7 @@ export const AztecProvider = ({
     const customStore = opts.store
     const customSimulator = opts.simulator
     const customPendingTxStore = opts.pendingTxStore
+    const chainIdentity = opts.chainIdentity
     // if (pxe) return // Already initialized
 
     if (obsidionWallet) return // Already initialized
@@ -204,14 +212,21 @@ export const AztecProvider = ({
             store: customStore,
             simulator: customSimulator,
           },
-          { pendingTxStore: customPendingTxStore },
+          {
+            pendingTxStore: customPendingTxStore,
+            chainInfo: chainIdentity && {
+              l1ChainId: chainIdentity.l1ChainId,
+              rollupVersion: Number(chainIdentity.rollupVersion),
+            },
+          },
         )
         newPxe = obsidionWallet.pxe
         setObsidionWallet(obsidionWallet)
         setActiveGenerationNode(obsidionWallet.node)
 
-        const nodeInfo = await obsidionWallet.node.getNodeInfo()
-        const rollup = nodeInfo.l1ContractAddresses.rollupAddress.toString()
+        const rollup =
+          chainIdentity?.rollupAddress ??
+          (await obsidionWallet.node.getNodeInfo()).l1ContractAddresses.rollupAddress.toString()
         setRollupAddress(rollup)
         setActiveNetworkId(rollup)
       }

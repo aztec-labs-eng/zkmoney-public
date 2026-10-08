@@ -12,7 +12,6 @@ writeFileSync(
   JSON.stringify(
     {
       builtAt: new Date().toISOString(),
-      bakedL1RpcUrl: process.env.VITE_L1_RPC_URL,
       bakedNodeUrl: process.env.VITE_NODE_URL,
       pageHostname,
       passkeyRpId,

@@ -56,6 +56,8 @@ import { Account, NO_FROM } from "@aztec/aztec.js/account"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
 import { SendInteractionOptions, SimulateInteractionOptions } from "@aztec/aztec.js/contracts"
 import { CompleteAddress } from "@aztec/aztec.js/addresses"
+import type { NodeInfo } from "@aztec/stdlib/contract"
+import type { ChainInfo } from "@aztec/entrypoints/interfaces"
 import { ContractArtifact, FunctionCall, type EventMetadataDefinition } from "@aztec/stdlib/abi"
 import { FEE_MULTIPLIER, getBlockBaseMaxFees } from "../utils/index.js"
 import { DEFAULT_WAIT_OPTS } from "../utils/constants.js"
@@ -116,9 +118,18 @@ export interface FeePaymentOptions {
   gasSettings?: GasSettings
 }
 
+/** The chain identity every signing and derivation site binds to. */
+export type WalletChainInfo = Pick<NodeInfo, "l1ChainId" | "rollupVersion">
+
 export interface ObsidionWalletOptions {
   /** Defaults to in-memory; a platform may inject the encrypted front-core `PendingTxStore`. */
   pendingTxStore?: IPendingTxStore
+  /**
+   * Identity the composition root verified against L1. Pinned, it replaces the node's answer at
+   * every tx context, authwit hash, account build and link stamp; absent, the node's answer is
+   * taken.
+   */
+  chainInfo?: WalletChainInfo
 }
 
 /**
@@ -165,9 +176,28 @@ export class ObsidionWallet extends BaseWallet {
   /** Public so tests can introspect; the store API is the only mutation path. */
   public readonly pendingTxStore: IPendingTxStore
 
+  private readonly pinnedChainInfo: WalletChainInfo | undefined
+
   constructor(public pxe: PXE, public node: AztecNode, opts?: ObsidionWalletOptions) {
     super(pxe, node)
     this.pendingTxStore = opts?.pendingTxStore ?? new InMemoryPendingTxStore()
+    this.pinnedChainInfo = opts?.chainInfo
+  }
+
+  /** The pin as `Fr`s, else the base class's node snapshot; feeds every tx context and authwit. */
+  override async getChainInfo(): Promise<ChainInfo> {
+    if (!this.pinnedChainInfo) return super.getChainInfo()
+    return {
+      chainId: new Fr(this.pinnedChainInfo.l1ChainId),
+      version: new Fr(this.pinnedChainInfo.rollupVersion),
+    }
+  }
+
+  /** The pinned identity as numbers, else the node's; for account builds and link stamps. */
+  async getNodeIdentity(): Promise<WalletChainInfo> {
+    if (this.pinnedChainInfo) return this.pinnedChainInfo
+    const { l1ChainId, rollupVersion } = await this.node.getNodeInfo()
+    return { l1ChainId, rollupVersion }
   }
 
   static async create(
@@ -247,7 +277,7 @@ export class ObsidionWallet extends BaseWallet {
       await accountContractManager.getCompleteAddress(),
       accountContractManager,
       authProvider,
-      await this.node.getNodeInfo(),
+      await this.getNodeIdentity(),
     )
 
     this.addAccount(accountContractManager.address, obsidionAccount)
@@ -307,7 +337,7 @@ export class ObsidionWallet extends BaseWallet {
         await manager.getCompleteAddress(),
         manager,
         authProvider,
-        await this.node.getNodeInfo(),
+        await this.getNodeIdentity(),
       )
       this.addAccount(manager.address, obsidionAccount)
       return obsidionAccount
@@ -545,23 +575,40 @@ export class ObsidionWallet extends BaseWallet {
 
   /**
    * Events plus a projection on one sync. Throws if the anchor moved in between (concurrent wallet
-   * ops can advance PXE); callers retry rather than publish mixed state.
+   * ops can advance PXE); callers retry rather than publish mixed state. `assumeSynced` skips the
+   * entry sync, for a caller reading several ranges at the anchor its first read adopted.
    */
   async getPrivateEventsSnapshot<T, P>(
     eventDef: EventMetadataDefinition,
     eventFilter: PrivateEventFilter,
     readProjection: () => Promise<P>,
+    opts: { assumeSynced?: boolean } = {},
   ): Promise<{ events: PrivateEvent<T>[]; projection: P; anchorBlock: number }> {
-    await this.syncPXEUnlessPinned()
+    const { value, anchorBlock } = await this.readAtOneAnchor(async () => {
+      const events = await super.getPrivateEvents<T>(eventDef, eventFilter)
+      return { events, projection: await readProjection() }
+    }, opts)
+    return { ...value, anchorBlock }
+  }
+
+  /** `read` on one sync, with the anchor it ran at. Throws like `getPrivateEventsSnapshot`. */
+  async getSnapshot<P>(read: () => Promise<P>): Promise<{ value: P; anchorBlock: number }> {
+    return this.readAtOneAnchor(read, {})
+  }
+
+  private async readAtOneAnchor<P>(
+    read: () => Promise<P>,
+    opts: { assumeSynced?: boolean },
+  ): Promise<{ value: P; anchorBlock: number }> {
+    if (!opts.assumeSynced) await this.syncPXEUnlessPinned()
     const before = await this.pxe.getSyncedBlockHeader()
     const beforeHash = (await before.hash()).toString()
-    const events = await super.getPrivateEvents<T>(eventDef, eventFilter)
-    const projection = await readProjection()
+    const value = await read()
     const after = await this.pxe.getSyncedBlockHeader()
     if ((await after.hash()).toString() !== beforeHash) {
       throw new Error("PXE anchor changed during wallet snapshot; retry the read")
     }
-    return { events, projection, anchorBlock: Number(before.globalVariables.blockNumber) }
+    return { value, anchorBlock: Number(before.globalVariables.blockNumber) }
   }
 
   override async getPrivateEvents<T>(
@@ -609,6 +656,8 @@ export class ObsidionWallet extends BaseWallet {
        * blocks on it. Reject with an AbortError to abort before signing.
        */
       confirmGate?: Promise<unknown>
+      /** Awaited with the proven tx's hash before the node takes it; a rejection sends nothing. */
+      onTxHash?: (txHash: string) => Promise<void>
     },
   ): Promise<SendReturn<W>> {
     // Read before the entry sync: the sync is the first timed phase.
@@ -914,6 +963,7 @@ export class ObsidionWallet extends BaseWallet {
           if (await this.aztecNode.getTxEffect(txHash)) {
             throw new Error(`A settled tx with equal hash ${txHash.toString()} exists.`)
           }
+          await opts.onTxHash?.(txHash.toString())
 
           // The op id and the client-side txHash let `TxLifecycleService` flip the row to MINING
           // and stamp the real hash before submit, without waiting for the caller's post-mining

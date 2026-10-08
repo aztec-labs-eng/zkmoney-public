@@ -363,6 +363,7 @@ function creatorLinkRows(now: number): PaylinkTransaction[] {
       refundableUntil: sec(now - 15 * DAY),
       isRefunded: true,
       refundTxHash: hash("6a"),
+      refundKind: "reclaim",
       paylink: undefined,
     },
   ]

@@ -1,0 +1,85 @@
+{
+  "scenario": "activity",
+  "path": "/deposit?flowFixture=success&desktopFixture=unresolved-funded",
+  "steps": [
+    {
+      "action": "waitFor",
+      "selector": ".ww-deposit-disclaimer"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"deposit-address\"][title=\"0x1111111111111111111111111111111111111111\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "desktop-address.png",
+      "state": "desktop: published address, nothing sent yet"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Deposit from your browser",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "24"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Deposit funds",
+      "exact": false
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Confirm deposit",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "testId": "deposit-send-unresolved"
+    },
+    {
+      "action": "waitFor",
+      "testId": "deposit-address",
+      "state": "detached"
+    },
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Deposit from your browser",
+      "exact": false,
+      "state": "detached"
+    },
+    {
+      "action": "screenshot",
+      "file": "unresolved-hold.png",
+      "state": "approved send without a hash: new funding paused"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-sheet--detail"
+    },
+    {
+      "action": "waitFor",
+      "testId": "deposit-send-unresolved",
+      "state": "detached"
+    },
+    {
+      "action": "screenshot",
+      "file": "late-transfer-detail.png",
+      "state": "the late transfer reached the address"
+    }
+  ],
+  "finalScreenshot": false,
+  "recordHoldMs": 0
+}

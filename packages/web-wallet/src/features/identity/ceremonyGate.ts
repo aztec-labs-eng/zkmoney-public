@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type { SignInRoute } from "@obsidion/core/types"
 import {
   type DevicePosture,
+  type PasskeyHint,
   type PhoneReach,
   PhoneUnreachableError,
   currentDevicePosture,
   mayStartLaptopCeremony,
+  stepsCopyFor,
 } from "@obsidion/passkey-web"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 
@@ -16,7 +18,9 @@ import { getAuthService } from "../../platform/auth/useAuthenticator"
  * the route the user picked (a phone or a key). A sign-in picks no device — the browser's own
  * account chooser lists whatever holds the passkey — so it just shows a "Sign in" sheet and
  * resolves with no route. A phone resolves at once: its own passkey is the only route the policy
- * accepts there.
+ * accepts there. The exception is an `anchor`ed sign-in (the hand-off), whose assertion runs off the
+ * intro rather than a button of its own: the phone holds its "Sign in" sheet too, so the sheet's tap
+ * carries the user activation the passkey prompt needs.
  *
  * A sign-in that needs a second prompt calls the gate again with that signal: every device holds
  * for one tap on a sheet that says why a second approval is needed.
@@ -51,7 +55,28 @@ export type GateOptions = {
   purpose?: CeremonyPurpose
   /** The attempt whose second passkey prompt this gate precedes. */
   again?: AbortSignal
+  /**
+   * Hold the sheet on a phone too, for a ceremony driven off no button of its own (the hand-off).
+   * The tap the sheet waits for is the user activation the passkey prompt
+   * needs; without it the phone browser refuses the assertion.
+   */
+  anchor?: boolean
+  /**
+   * The route the screen's own creation sheet picked with its tap: the gate still probes (a
+   * below-floor laptop is refused) but holds no sheet of its own. A security key is kept; a phone
+   * pick opens on the route the probed reach allows.
+   */
+  unheld?: SignInRoute
 }
+
+/** The route a creation opens on without a pick: the phone where one is reachable, else the key. */
+function routeFor(reach: PhoneReach): SignInRoute {
+  return stepsCopyFor(reach).routes.some((r) => r.hint === "hybrid") ? "phone" : "security-key"
+}
+
+/** The route a creation sheet's control opens on, from the hints it passes. */
+export const routeForHints = (hints: readonly PasskeyHint[]): SignInRoute =>
+  hints.includes("hybrid") ? "phone" : "security-key"
 
 export type CeremonyGate = (options?: GateOptions) => Promise<GateResult>
 
@@ -128,6 +153,8 @@ export function useCeremonyGate(
       prompt: GatePrompt
       purpose: CeremonyPurpose
       probeFirst: boolean
+      /** The screen's own sheet already took the tap: resolve straight after the probe, no sheet. */
+      unheld?: SignInRoute
     }): Promise<{ route?: SignInRoute; reach: PhoneReach }> => {
       // The waiter is registered before any async work, so a cancel during a probe that never settles
       // still ends the call at once.
@@ -143,6 +170,13 @@ export function useCeremonyGate(
           pending.current = undefined
           setState(IDLE)
           throw new PhoneUnreachableError()
+        }
+        if (params.unheld) {
+          pending.current = undefined
+          setState(IDLE)
+          if (!mounted.current) throw new GateCancelledError()
+          const route = params.unheld === "security-key" ? params.unheld : routeFor(reach)
+          return { route, reach }
         }
       }
       const route = await new Promise<SignInRoute | undefined>((resolve, reject) => {
@@ -179,16 +213,21 @@ export function useCeremonyGate(
       cancel()
       const controller = new AbortController()
       attempt.current = controller
-      if (posture() !== "laptop") return { signal: controller.signal, reach: "unknown" }
-      // A sign-in shows the bare "Sign in" sheet and probes nothing — the browser's own account
-      // chooser decides which device answers — unless the screen owns the tap. A creation probes
-      // for reach and holds at the phone steps, whose pick it hands back.
+      // A sign-in that owns its own screen's tap (EnterAppScreen, `holdsSignIn: false`) asks nothing
+      // here; a phone otherwise resolves at once, its own passkey the only route the policy accepts.
+      // The exception is an anchored ceremony: a hand-off's assertion runs off no button of its own,
+      // so it asks the gate to hold its "Sign in" sheet on the phone too — the sheet's tap is the
+      // fresh user activation the passkey prompt needs, without which the phone browser refuses it.
       const signIn = purpose === "sign-in"
       if (signIn && !holdsSignIn) return { signal: controller.signal, reach: "unknown" }
+      if (posture() !== "laptop" && !(signIn && options?.anchor)) {
+        return { signal: controller.signal, reach: "unknown" }
+      }
       const { route, reach } = await hold({
         prompt: signIn ? "sign-in" : "phone-steps",
         purpose,
         probeFirst: !signIn,
+        unheld: signIn ? undefined : options?.unheld,
       })
       return { signal: controller.signal, route, reach }
     },

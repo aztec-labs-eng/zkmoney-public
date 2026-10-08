@@ -1,7 +1,7 @@
 import { erc20Abi, formatUnits, type Address } from "viem"
 import { quotedDepositFee } from "@obsidion/core/constants"
 import { Network, readDepositFee } from "@obsidion/sdk"
-import { depositSipaImplementation } from "@obsidion/front-core"
+import { depositSipaImplementation, type SipaFundingToken } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { isDemoMode } from "../../dev/demoFlag"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
@@ -52,6 +52,27 @@ export function depositTokensFor(network: Network): DepositTokenOption[] {
     default:
       return [{ symbol: "TEST", decimals: 18, icon: testIcon }]
   }
+}
+
+/**
+ * Every token a SIPA on `network` may be funded with, `manifest` first. The picker's manifest entry
+ * names its symbol and decimals when only the address is known.
+ */
+export function sipaFundingTokens(
+  network: Network,
+  manifest: Address | SipaFundingToken,
+): [SipaFundingToken, ...SipaFundingToken[]] {
+  const [first, ...others] = depositTokensFor(network)
+  const head =
+    typeof manifest === "string"
+      ? { address: manifest, symbol: first.symbol, decimals: first.decimals }
+      : manifest
+  return [
+    head,
+    ...others.flatMap(({ address, symbol, decimals }) =>
+      address ? [{ address, symbol, decimals }] : [],
+    ),
+  ]
 }
 
 /** What the deposit screen quotes: the fee, its two halves, and the manifest token address. */

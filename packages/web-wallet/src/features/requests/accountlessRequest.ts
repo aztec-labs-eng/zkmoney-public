@@ -11,7 +11,7 @@
  * of X means sending X + fee. Amounts at or below it leave nothing to credit — the
  * screen must surface the floor for any-amount links.
  */
-import type { Address, PublicClient } from "viem"
+import { erc20Abi, type Address, type PublicClient } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   depositSipaImplementation,
@@ -26,12 +26,22 @@ import { buildErc20TransferUri, buildErc20TransferUriWithoutAmount } from "./eip
 
 export interface AccountlessResolveResult {
   sipaAddress: string
+  /** The manifest token the URI asks for, and its decimals as the token contract reports them. */
+  token: Address
+  decimals: number
   feeAtomic: bigint
   /** amountAtomic + fee for a fixed-amount request; 0n for an any-amount link. */
   grossAtomic: bigint
   paymentUri: string
   /** Tag pin failed or the @tag no longer matches — the SIPA is still the payee. */
   tagWarning?: string
+}
+
+/** The link declares decimals that the token it is paid in does not have. */
+export class RequestDecimalsMismatchError extends Error {
+  constructor(declared: number, actual: number) {
+    super(`Request link declares ${declared} decimals; the token has ${actual}`)
+  }
 }
 
 export async function resolveAccountlessRequest(
@@ -52,10 +62,16 @@ export async function resolveAccountlessRequest(
     requireTupleField(deps.tuple, "sipaFactory") as Address,
     requireTupleField(deps.tuple, "portal") as Address,
   )
-  const [relayerFee, cut] = await Promise.all([
+  const [relayerFee, cut, decimals] = await Promise.all([
     readDepositFee(deps.publicClient, implementation),
     fpcFundingCut(deps.publicClient, requireTupleField(deps.tuple, "portal") as Address),
+    deps.publicClient.readContract({ address: token, abi: erc20Abi, functionName: "decimals" }),
   ])
+  // The URI asks for the link's amount in this token's base units, so a link that scales it
+  // differently would ask for a different amount than it shows. A link without decimals is read
+  // as 6, as the codec defines.
+  const declared = packet.tokenDecimals ?? 6
+  if (declared !== decimals) throw new RequestDecimalsMismatchError(declared, decimals)
   const feeAtomic = quotedDepositFee(relayerFee, cut)
 
   const pin = await pinRequester(packet, deps)
@@ -79,6 +95,8 @@ export async function resolveAccountlessRequest(
 
   return {
     sipaAddress,
+    token,
+    decimals,
     feeAtomic,
     grossAtomic,
     paymentUri,

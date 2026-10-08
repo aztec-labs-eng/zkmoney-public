@@ -1,11 +1,9 @@
-import { GradientInitialAvatar, Icon, Toast, ZkMoneyRoot } from "@obsidion/web-ds"
+import { GradientInitialAvatar, Icon, ZkMoneyRoot } from "@obsidion/web-ds"
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Outlet, useLocation, useNavigate } from "react-router-dom"
 import { ShareTagModal } from "../features/contacts/ShareTagModal"
-import {
-  RegistrationDepositPrompt,
-  useAwaitingDepositRecord,
-} from "../features/onboarding/RegistrationDepositPrompt"
+import { RegistrationDepositPrompt } from "../features/onboarding/RegistrationDepositPrompt"
+import { useRegistrationDepositOwed } from "../features/onboarding/openRegistration"
 import { openActivationPrompt } from "../features/onboarding/activationPrompt"
 import { TagSearchBar } from "../features/contacts/TagSearchBar"
 import { loadOnboardedIdentity, loadWalletIdentity } from "../features/identity/walletIdentity"
@@ -24,21 +22,9 @@ import { LogoutModal } from "./LogoutModal"
 import { MobileMenu } from "./MobileMenu"
 import { PhoneIcon, type PhoneIconName } from "./PhoneIcon"
 import { usePhoneLayout } from "./usePhoneLayout"
-import {
-  NotificationsPanel,
-  freshToasts,
-  notificationRoute,
-  toastKey,
-  useNotificationList,
-  useNotificationsPanelOpen,
-} from "./NotificationsPanel"
-import { useOperationsInProgress, useTabBoundOperation } from "../features/operations/operations"
-import {
-  ContactStorage,
-  useAccountContext,
-  useAztecContext,
-  type AppNotificationEntry,
-} from "@obsidion/front-core"
+import { useNotificationsPanelOpen } from "./NotificationsPanel"
+import { NotificationsBell } from "./NotificationsBell"
+import { ContactStorage, useAccountContext, useAztecContext } from "@obsidion/front-core"
 import { isDemoMode } from "../dev/demoFlag"
 import { createContext, useContext, useMemo } from "react"
 import "./shell.css"
@@ -78,6 +64,10 @@ const NAV_PHONE: NavItem[] = [
   { label: "Activity", icon: "history-clock", path: "/activity" },
 ]
 const NAV_SETTINGS: NavItem = { label: "Settings", icon: "settings", path: "/settings" }
+/** Phone tab bar: Home and the four payment actions, in the menu's order. */
+const NAV_TABS: NavItem[] = NAV_PHONE.filter(
+  ({ path }) => path !== "/contacts" && path !== "/activity",
+)
 /** Routes that move money: with a name still waiting for its deposit they raise the activation sheet. */
 const ACTIVATION_GATED = new Set(["/deposit", "/send", "/receive", "/withdraw"])
 
@@ -124,12 +114,10 @@ export function SidebarLayout({
   const navigate = useNavigate()
   const location = useLocation()
   const identity = loadWalletIdentity()
-  const awaitingActivation = useAwaitingDepositRecord() !== null
+  const awaitingActivation = useRegistrationDepositOwed()
   const active = activePath(location.pathname)
   const [open, setOpen] = useState(false)
   const phone = usePhoneLayout()
-  const [searchOpen, setSearchOpen] = useState(false)
-  const searchButton = useRef<HTMLButtonElement>(null)
   const [notificationsOpen, setNotificationsOpen] = useNotificationsPanelOpen()
   const [logoutPrompt, setLogoutPrompt] = useState<null | "confirm" | "blocked">(null)
   const main = useRef<HTMLElement>(null)
@@ -174,20 +162,14 @@ export function SidebarLayout({
     return focused?.closest("#wallet-menu") ? menuOpener.current : focused
   }
 
-  const closeSearch = useCallback(() => {
-    setSearchOpen(false)
-    searchButton.current?.focus({ preventScroll: true })
-  }, [])
   const openMenu = useCallback<ShellAction>((event) => {
     menuOpener.current = event?.currentTarget ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null)
-    setSearchOpen(false)
     setNotificationsOpen(false)
     setOpen(true)
   }, [setNotificationsOpen])
   const openShareTag = useCallback<ShellAction>((event) => {
     const opener = captureOpener(event?.currentTarget)
     setOpen(false)
-    setSearchOpen(false)
     setNotificationsOpen(false)
     scanShare.open("share", opener)
   }, [setNotificationsOpen, scanShare.open])
@@ -195,25 +177,16 @@ export function SidebarLayout({
     if (!scannerAvailable) return
     const opener = captureOpener(event?.currentTarget)
     setOpen(false)
-    setSearchOpen(false)
     setNotificationsOpen(false)
     scanShare.open("scan", opener)
   }, [scannerAvailable, setNotificationsOpen, scanShare.open])
   const shellActions = useMemo(() => ({ openMenu, openShareTag, openScanner, scannerAvailable }), [openMenu, openShareTag, openScanner, scannerAvailable])
 
   useEffect(() => {
-    if (!unlocked) setSearchOpen(false)
-  }, [unlocked])
-
-  useEffect(() => {
     setOpen(false)
-    setSearchOpen(false)
   }, [location.key, phone])
   useEffect(() => {
-    if (notificationsOpen) {
-      setSearchOpen(false)
-      setOpen(false)
-    }
+    if (notificationsOpen) setOpen(false)
   }, [notificationsOpen])
 
   const go = (item: NavItem) => {
@@ -237,38 +210,78 @@ export function SidebarLayout({
     </button>
   )
 
+  const identityLabel = identity
+    ? identity.handle
+      ? `@${identity.handle}.zk.money`
+      : `${identity.address.slice(0, 8)}… no name yet`
+    : ""
+  const identityMeta = identity && (
+    <span className="ww-account__meta">
+      {identity.handle ? (
+        <>
+          <span>@{identity.handle}</span>
+          <span>.zk.money</span>
+        </>
+      ) : (
+        <>
+          <span>{`${identity.address.slice(0, 8)}…`}</span>
+          <span>no name yet</span>
+        </>
+      )}
+    </span>
+  )
+
+  // Phone menu head: the identity pill carries Share @tag and the one-tap way home.
+  const drawerAccount = phone && unlocked && identity && (
+    <div className="ww-sidebar__account">
+      <button
+        type="button"
+        className="zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--brand"
+        aria-label="Share @tag"
+        onClick={openShareTag}
+      >
+        <PhoneIcon name="qr-code" color="#fff" />
+      </button>
+      <button
+        type="button"
+        className="zkm-btn-reset ww-sidebar__identity"
+        aria-label={`Home, ${identityLabel}`}
+        onClick={() => go(NAV_PHONE[0])}
+      >
+        {identityMeta}
+      </button>
+    </div>
+  )
+
   const navigation = (
     <nav
       className={phone ? "ww-sidebar ww-sidebar--open" : "ww-sidebar"}
       aria-label="Primary navigation"
     >
       <div className="ww-sidebar__head">
-        <BrandLockup />
+        {drawerAccount || <BrandLockup />}
         <div className="ww-sidebar__head-actions">
-          {scannerAvailable && (
-            <button type="button" className="zkm-btn-reset ww-iconbtn" aria-label="Scan QR code" onClick={openScanner}>
-              <PhoneIcon name="scan" size={24} />
+          {!drawerAccount && (
+            <button
+              type="button"
+              className="zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--brand"
+              aria-label="Share @tag"
+              onClick={openShareTag}
+            >
+              {phone ? (
+                <PhoneIcon name="qr-code" color="#fff" />
+              ) : (
+                <Icon name="qr-code" size={24} color="#fff" />
+              )}
             </button>
           )}
           <button
             type="button"
-            className="zkm-btn-reset ww-iconbtn ww-iconbtn--brand"
-            aria-label="Share @tag"
-            onClick={openShareTag}
-          >
-            {phone ? (
-              <PhoneIcon name="qr-code" color="#fff" />
-            ) : (
-              <Icon name="qr-code" size={24} color="#fff" />
-            )}
-          </button>
-          <button
-            type="button"
-            className="zkm-btn-reset ww-iconbtn"
+            className={phone ? "zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--lg" : "zkm-btn-reset zkm-pressable ww-iconbtn"}
             aria-label="Close menu"
             onClick={() => setOpen(false)}
           >
-            {phone ? <PhoneIcon name="x" color="#fff" /> : <Icon name="x" size={24} />}
+            {phone ? <PhoneIcon name="x" size={32} color="#fff" /> : <Icon name="x" size={24} />}
           </button>
         </div>
       </div>
@@ -283,53 +296,61 @@ export function SidebarLayout({
         className="zkm-btn-reset ww-nav-item"
         onClick={() => {
           setOpen(false)
-          setSearchOpen(false)
           setNotificationsOpen(false)
           setLogoutPrompt(unlocked && isLogoutBlockedByRegistration() ? "blocked" : "confirm")
         }}
       >
         {phone ? <PhoneIcon name="logout" /> : <Icon name="logout" size={24} />}
-        <span>Logout</span>
+        <span>Log out</span>
       </button>
     </nav>
   )
 
-  const account = identity && (!phone || unlocked) && (
+  const account = identity && !phone && (
     <button
       type="button"
       className="zkm-btn-reset ww-account"
-      aria-label={
-        identity.handle
-          ? `Account settings, @${identity.handle}.zk.money`
-          : `Account settings, ${identity.address.slice(0, 8)}… no name yet`
-      }
+      aria-label={`Account settings, ${identityLabel}`}
       onClick={() => navigate("/settings")}
     >
-      <GradientInitialAvatar
-        name={identity.handle ?? identity.address}
-        size={40}
-        ringed={!phone}
-        style={phone ? { padding: 1 } : undefined}
-      />
-      <span className="ww-account__meta">
-        {identity.handle ? (
-          <>
-            <span>@{identity.handle}</span>
-            <span>.zk.money</span>
-          </>
-        ) : (
-          <>
-            <span>{`${identity.address.slice(0, 8)}…`}</span>
-            <span>no name yet</span>
-          </>
-        )}
-      </span>
+      <GradientInitialAvatar name={identity.handle ?? identity.address} size={40} ringed />
+      {identityMeta}
     </button>
+  )
+
+  const tabBar = phone && unlocked && !pageHeader && (
+    <nav className="ww-tabbar" aria-label="Quick navigation">
+      {NAV_TABS.map((item) => (
+        <button
+          key={item.label}
+          type="button"
+          className={[
+            "zkm-btn-reset ww-tabbar__item",
+            active === item.path ? "ww-tabbar__item--active" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          aria-current={active === item.path ? "page" : undefined}
+          onClick={() => go(item)}
+        >
+          <PhoneIcon name={item.icon} />
+          <span>{item.label}</span>
+        </button>
+      ))}
+    </nav>
   )
 
   return (
     <ShellActionsContext.Provider value={shellActions}>
-      <div className={phone && location.pathname === "/" ? "ww-shell ww-shell--home" : "ww-shell"}>
+      <div
+        className={[
+          "ww-shell",
+          phone && location.pathname === "/" ? "ww-shell--home" : "",
+          tabBar ? "ww-shell--tabbar" : "",
+        ]
+          .filter(Boolean)
+          .join(" ")}
+      >
         <div className="ww-shell__glow" aria-hidden />
         <RegistrationDepositPrompt />
         {phone
@@ -340,14 +361,13 @@ export function SidebarLayout({
             {!pageHeader && (
               <div className="ww-shell-header">
                 <div className="ww-topbar">
-                  {!phone && <TagSearchBar />}
+                  {(!phone || unlocked) && <TagSearchBar placeholder={phone ? "tag" : undefined} />}
                   <div className="ww-topbar__actions">
-                    {phone && account}
                     {unlocked && <NotificationsBell />}
                     {!phone && (
                       <button
                         type="button"
-                        className="zkm-btn-reset ww-iconbtn ww-iconbtn--lg"
+                        className="zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--lg"
                         aria-label="Share @tag"
                         onClick={openShareTag}
                       >
@@ -357,48 +377,26 @@ export function SidebarLayout({
                     {!phone && account}
                     {phone && !unlocked && <BrandLockup />}
                     {phone && (
-                      <>
-                        {unlocked && (
-                          <button
-                            ref={searchButton}
-                            type="button"
-                            className="zkm-btn-reset ww-iconbtn"
-                            aria-label={searchOpen ? "Close search" : "Open search"}
-                            aria-expanded={searchOpen}
-                            aria-controls={searchOpen ? "wallet-search" : undefined}
-                            onClick={() => {
-                              setNotificationsOpen(false)
-                              setSearchOpen(!searchOpen)
-                            }}
-                          >
-                            <PhoneIcon name={searchOpen ? "x" : "search"} size={30} color="#fff" />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="zkm-btn-reset ww-iconbtn"
-                          aria-label="Open menu"
-                          aria-haspopup="dialog"
-                          aria-expanded={open}
-                          aria-controls={open ? "wallet-menu" : undefined}
-                          onClick={openMenu}
-                        >
-                          <PhoneIcon name="menu" size={30} color="#fff" />
-                        </button>
-                      </>
+                      <button
+                        type="button"
+                        className="zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--lg ww-iconbtn--menu"
+                        aria-label="Open menu"
+                        aria-haspopup="dialog"
+                        aria-expanded={open}
+                        aria-controls={open ? "wallet-menu" : undefined}
+                        onClick={openMenu}
+                      >
+                        <PhoneIcon name="menu" size={30} color="#fff" />
+                      </button>
                     )}
                   </div>
                 </div>
-                {phone && unlocked && searchOpen && (
-                  <div id="wallet-search" className="ww-mobile-search">
-                    <TagSearchBar autoFocus onDismiss={closeSearch} />
-                  </div>
-                )}
               </div>
             )}
             <Outlet />
           </div>
         </main>
+        {tabBar}
         {logoutPrompt === "blocked" && (
           <LogoutBlockedModal onClose={() => setLogoutPrompt(null)} onConfirm={finishLogout} />
         )}
@@ -417,106 +415,5 @@ export function SidebarLayout({
         )}
       </div>
     </ShellActionsContext.Provider>
-  )
-}
-
-/** Bell + dropdown. Closing by any route marks everything read. */
-function NotificationsBell() {
-  const phone = usePhoneLayout()
-  const navigate = useNavigate()
-  const [open, setOpen] = useNotificationsPanelOpen()
-  const anchorRef = useRef<HTMLDivElement>(null)
-  const { entries, hydrated, unreadCount, opened, markAllRead } = useNotificationList()
-  // Every unfinished operation, including a sent one this page no longer runs.
-  const running = useOperationsInProgress().length > 0
-  const tabBound = !!useTabBoundOperation()
-  const wasOpen = useRef(open)
-  useEffect(() => {
-    if (wasOpen.current && !open) void markAllRead()
-    wasOpen.current = open
-  }, [open, markAllRead])
-  const close = useCallback(() => setOpen(false), [setOpen])
-
-  // Entries minted after hydration pop a toast, one at a time; the stored backlog stays behind the
-  // bell. An id leaves the queue once its toast has shown.
-  const seen = useRef<Set<string> | null>(null)
-  const [queue, setQueue] = useState<AppNotificationEntry[]>([])
-  const toast = queue[0] ?? null
-  useEffect(() => {
-    if (!hydrated) return
-    if (!seen.current) {
-      seen.current = new Set(entries.map(toastKey))
-      return
-    }
-    const fresh = freshToasts(entries, seen.current)
-    fresh.forEach((e) => seen.current!.add(toastKey(e)))
-    if (fresh.length) setQueue((q) => [...q, ...fresh])
-  }, [entries, hydrated])
-  const dropToast = useCallback(() => setQueue((q) => q.slice(1)), [])
-  useEffect(() => {
-    if (!toast) return
-    const t = setTimeout(dropToast, 8000)
-    return () => clearTimeout(t)
-  }, [toast, dropToast])
-  // Opening the panel shows the same entries; a toast for a dismissed entry has nothing to open.
-  useEffect(() => {
-    if (open) setQueue([])
-  }, [open])
-  useEffect(() => {
-    if (toast && !entries.some((e) => e.id === toast.id)) dropToast()
-  }, [entries, toast, dropToast])
-  const openToast = () => {
-    if (!toast) return
-    opened(toast)
-    dropToast()
-    const route = notificationRoute(toast)
-    if (route) navigate(route.to, route.state ? { state: route.state } : undefined)
-  }
-
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: MouseEvent) => {
-      if (!anchorRef.current?.contains(e.target as Node)) close()
-    }
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close()
-    document.addEventListener("mousedown", onDown)
-    document.addEventListener("keydown", onKey)
-    return () => {
-      document.removeEventListener("mousedown", onDown)
-      document.removeEventListener("keydown", onKey)
-    }
-  }, [open, close])
-
-  return (
-    <div className="ww-notifications__anchor" ref={anchorRef}>
-      <button
-        type="button"
-        className="zkm-btn-reset ww-iconbtn ww-iconbtn--lg"
-        aria-label={
-          running
-            ? `Notifications, ${tabBound ? "keep this tab open" : "a transaction is finishing"}`
-            : "Notifications"
-        }
-        aria-expanded={open}
-        onClick={() => (open ? close() : setOpen(true))}
-      >
-        {running && (
-          <span className={`ww-notifications__bell-ring ${tabBound ? "is-tab-bound" : "is-safe"}`} />
-        )}
-        {phone ? <PhoneIcon name="bell" color="#fff" /> : <Icon name="bell" size={24} />}
-        {unreadCount > 0 && <span className="ww-notifications__bell-dot" />}
-      </button>
-      {open && <NotificationsPanel onClose={close} />}
-      {toast && !open && (
-        <Toast
-          className="ww-notifications__toast"
-          kind={toast.severity === "error" ? "error" : "success"}
-          message={`${toast.title}: ${toast.description}`}
-          actionLabel={notificationRoute(toast) ? "Open" : undefined}
-          onAction={openToast}
-          onDismiss={dropToast}
-        />
-      )}
-    </div>
   )
 }

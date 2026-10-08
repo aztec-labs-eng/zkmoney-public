@@ -3,6 +3,8 @@ import { formatUnits, type Address } from "viem"
 import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import {
   SIPADepositStore,
+  depositOwed,
+  fundsIn,
   isUnfundedSipaDeposit,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
@@ -38,6 +40,7 @@ import {
 import { formatTokenAmount } from "./steps/DepositTermsRows"
 import { useDepositWatch } from "./useDepositWatch"
 import { getPendingStore } from "./webRegistration"
+import { useRegistrationStage } from "./openRegistration"
 
 /** The feed's placeholder, re-exported: the registration surfaces speak the same words as the rail. */
 export { DETECTING_AMOUNT }
@@ -56,10 +59,32 @@ export function registrationTagForSipa(sipaAddress: string): string | undefined 
   return record?.intent === "registration" ? loadWalletIdentity()?.handle : undefined
 }
 
+/** The tag a deposit row wears: none once the deposit went back and left the name unpaid. */
+export function registrationTagForDeposit(sipaAddress: string): string | undefined {
+  const pending = registrationRecordForSipa(sipaAddress)
+  return pending && refundedAwaitingPayment(pending)
+    ? undefined
+    : registrationTagForSipa(sipaAddress)
+}
+
+/**
+ * The deposit was recovered and the registration is waiting for payment again, so the feed shows
+ * the returned funds and the registration as two rows.
+ */
+function refundedAwaitingPayment(record: PendingRegistrationRecord): boolean {
+  const deposit = SIPADepositStore.get(webStorage).get(record.sipaAddress as Address)
+  return (
+    deposit?.phase === "recovered" &&
+    record.phase === "awaiting_deposit" &&
+    record.fundedAt === undefined
+  )
+}
+
 /**
  * The active wallet's registration the feed should still speak for: the open one, else the latest
  * confirmed one — unless the SIPA rail has taken the deposit over (its record holds the funds; from
  * there the rail's own deposit row and detail show, as for any deposit, instead of a duplicate).
+ * A registration whose deposit was recovered speaks again while it waits for payment.
  */
 export function registrationForFeed(): PendingRegistrationRecord | null {
   const identity = loadWalletIdentity()
@@ -73,11 +98,15 @@ export function registrationForFeed(): PendingRegistrationRecord | null {
     null
   if (!speaking) return null
   const deposit = SIPADepositStore.get(webStorage).get(speaking.sipaAddress as never)
-  return !deposit || isUnfundedSipaDeposit(deposit) ? speaking : null
+  return !deposit || isUnfundedSipaDeposit(deposit) || refundedAwaitingPayment(speaking)
+    ? speaking
+    : null
 }
 
 export interface RegistrationDepositEntry {
   ts: number
+  /** The registration's address, so the feed can tell a burn from this wallet funded it. */
+  sipaAddress: string
   node: ReactNode
   /** The detail the row opens; hosted with the feed's other modals. */
   modal: ReactNode
@@ -106,6 +135,7 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
     },
   )
   const record = key === null ? null : registrationForFeed()
+  const stage = useRegistrationStage(record)
   const depositAdmitted = useDepositAdmission(record)
   // Cross-session funnel laps observed from the durable record (the onboarding tab may be gone);
   // the reporters latch per address/account, so re-renders and reloads never double-count.
@@ -135,12 +165,13 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
   )
   // Before the sweep the address still holds the deposit; after it, the stamped terms or the
   // funding transfer do.
-  const live = useDepositWatch(
+  const watch = useDepositWatch(
     config,
-    record && record.phase === "awaiting_deposit"
+    record && stage !== null && depositOwed(stage)
       ? { token: record.depositToken as never, address: record.sipaAddress as never }
       : null,
   )
+  const live = watch.balance
   // Stamp the live gross, here and on the rail; the sweep empties the address.
   useEffect(() => {
     if (!record || live <= 0n) return
@@ -158,18 +189,15 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
     retryReads,
   )
   const [open, setOpen] = useState(false)
-  if (!record) return null
+  if (!record || stage === null) return null
   const gross = registrationDepositGross(
     live,
-    funding === undefined ? undefined : funding?.amount ?? 0n,
+    funding === undefined ? undefined : funding?.normalized ?? 0n,
     terms?.depositAmount ? BigInt(terms.depositAmount) : 0n,
   )
+  const returned = refundedAwaitingPayment(record)
   const seen =
-    depositAdmitted ||
-    record.phase === "confirmed" ||
-    (gross ?? 0n) > 0n ||
-    record.fundedAt !== undefined ||
-    record.sweptAt !== undefined
+    returned || depositAdmitted || stage === "registered" || fundsIn(stage) || (gross ?? 0n) > 0n
   if (!seen) return null
   const decimals = tokenDecimalsForNetwork(config.network)
   const committedFee = record.fee !== undefined ? BigInt(record.fee) : undefined
@@ -197,14 +225,15 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
   })
   // A short deposit credits nothing, so the row names what was deposited, unsigned, the way the
   // rail's own rows name a deposit no sweep will move. An unpriceable one names it the same way.
-  const amountLabel =
-    credit !== undefined
-      ? credit > 0n
-        ? `+${usdFigure(formatUnits(credit, decimals))}`
-        : ""
-      : (short || scheduleUnavailable) && gross !== undefined && gross > 0n
-      ? usdFigure(formatUnits(gross, decimals))
-      : undefined
+  const amountLabel = returned
+    ? ""
+    : credit !== undefined
+    ? credit > 0n
+      ? `+${usdFigure(formatUnits(credit, decimals))}`
+      : ""
+    : (short || scheduleUnavailable) && gross !== undefined && gross > 0n
+    ? usdFigure(formatUnits(gross, decimals))
+    : undefined
   const feeLabel =
     feeOwed === undefined
       ? undefined
@@ -218,8 +247,7 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
     quote !== undefined &&
     // A deployment that prices no registration a sweep could take has nothing to ask for.
     !(unsignedFallback && chainAmounts === null) &&
-    record.phase === "awaiting_deposit" &&
-    record.fundedAt === undefined &&
+    depositOwed(stage) &&
     !depositAdmitted
       ? {
           token: record.depositToken as Address,
@@ -227,10 +255,25 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
           total: quote.total,
           tokenSymbol: WALLET_TOKEN_SYMBOL,
           kind,
+          heldToken: live > 0n ? watch.token : undefined,
+          terms:
+            live > 0n || kind === undefined
+              ? undefined
+              : {
+                  total: quote.total,
+                  fee: feeOwed,
+                  sweepFee,
+                  fpcCut: deductions?.fpcCut,
+                  tokenSymbol: WALLET_TOKEN_SYMBOL,
+                  tokenDecimals: decimals,
+                  kind,
+                  scheduleUnavailable,
+                },
         }
       : undefined
   return {
     ts,
+    sipaAddress: record.sipaAddress,
     node: (
       <ActivityListRow
         key={`registration:${record.sipaAddress}`}
@@ -253,7 +296,9 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
         deductions={deductions}
         amount={amountLabel || "Deposit"}
         deposited={
-          gross !== undefined && gross > 0n
+          funding
+            ? formatTokenAmount(funding.amount, funding.token.decimals, funding.token.symbol)
+            : gross !== undefined && gross > 0n
             ? formatTokenAmount(gross, decimals, WALLET_TOKEN_SYMBOL)
             : undefined
         }

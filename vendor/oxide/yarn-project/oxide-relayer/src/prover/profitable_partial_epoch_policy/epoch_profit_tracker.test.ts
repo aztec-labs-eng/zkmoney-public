@@ -6,7 +6,6 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
 import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
 import { portalId } from '../types.js';
-import { ROLLUP__SUBMIT_EPOCH_PROOF_GAS } from './config.js';
 import { EpochProfitTracker, EpochProfitTrackerOptions } from './epoch_profit_tracker.js';
 import { DiscoveredClaim, EarlySubmitPortalConfig } from './types.js';
 
@@ -65,8 +64,10 @@ describe('EpochProfitTracker', () => {
 
   const getEffectiveGasPriceWei = () => Promise.resolve(GAS_PRICE_WEI);
 
-  // The gas an epoch pays for is the proof submission alone; the claim batch's gas is not part of the cost.
-  const EPOCH_GAS = ROLLUP__SUBMIT_EPOCH_PROOF_GAS;
+  // The gas an epoch pays for is the proof submission alone; the claim batch's gas is not part of the cost. A flat
+  // model, so the prefix length changes nothing but the proving cost in these tests.
+  const EPOCH_GAS_MODEL = { baseGas: 640_000n, gasPerCheckpoint: 0n };
+  const EPOCH_GAS = EPOCH_GAS_MODEL.baseGas;
 
   // The same gas, priced through the rates above: 640_000 gas at 1 gwei is 0.00064 ETH, or 1.28 USD at 2_000 USD
   // per ETH.
@@ -91,14 +92,14 @@ describe('EpochProfitTracker', () => {
     },
   } as any;
 
-  const makeTracker = (provingCostPerCheckpoint: bigint) =>
+  const makeTracker = (provingCostPerCheckpoint: bigint, submitEpochProofGasModel = EPOCH_GAS_MODEL) =>
     new EpochProfitTracker({
       discoverer: { discover } as any,
       portal: portalContract,
       portals: [portal],
       priceOracle,
       getEffectiveGasPriceWei,
-      rollupSubmitEpochProofGas: ROLLUP__SUBMIT_EPOCH_PROOF_GAS,
+      submitEpochProofGasModel,
       minEpochProfit: 0n,
       minEpochProfitMarginBps: 0n,
       provingCostPerCheckpoint,
@@ -123,6 +124,14 @@ describe('EpochProfitTracker', () => {
     const decision = await makeTracker(0n).evaluate(EpochNumber(1), checkpoints(1));
     expect(decision.details?.totalGas).toBe(EPOCH_GAS);
     expect(decision.details?.totalGasCostValue).toBe(EPOCH_GAS_COST);
+  });
+
+  it('prices the proof submission for the length of the prefix', async () => {
+    // 600_000 gas plus 40_000 per checkpoint: a 2-checkpoint prefix pays 680_000 gas, or 1.36 USD.
+    const tracker = makeTracker(0n, { baseGas: 600_000n, gasPerCheckpoint: 40_000n });
+    const decision = await tracker.evaluate(EpochNumber(1), checkpoints(2));
+    expect(decision.details?.totalGas).toBe(680_000n);
+    expect(decision.details?.totalGasCostValue).toBe(usd(1n, 36n));
   });
 
   it('rejects the same prefix once the proving cost outweighs the profit', async () => {
@@ -232,7 +241,7 @@ describe('EpochProfitTracker', () => {
       portals: [healthy, broken],
       priceOracle,
       getEffectiveGasPriceWei,
-      rollupSubmitEpochProofGas: ROLLUP__SUBMIT_EPOCH_PROOF_GAS,
+      submitEpochProofGasModel: EPOCH_GAS_MODEL,
       minEpochProfit: 0n,
       minEpochProfitMarginBps: 0n,
       provingCostPerCheckpoint: 0n,

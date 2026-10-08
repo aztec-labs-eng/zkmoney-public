@@ -6,6 +6,8 @@ import {
   RegistrationSIPAAbi,
   RegistrationSIPABytecode,
   SIPAFactoryAbi,
+  UpdateMetadataSIPAAbi,
+  UpdateMetadataSIPABytecode,
 } from '../artifacts.js';
 import { deployContract } from './deploy_contract.js';
 
@@ -20,11 +22,13 @@ import { deployContract } from './deploy_contract.js';
  */
 export const DEPOSIT_SWEEP_FEE = 250_000_000_000_000_000n;
 export const REGISTRATION_SWEEP_FEE = 500_000_000_000_000_000n;
+export const METADATA_UPDATE_SWEEP_FEE = 500_000_000_000_000_000n;
 
 /** One rollup version's intent implementations, as deployed and blessed. */
 export interface SIPAImplementations {
   depositSIPAImplementation: Address;
   registrationSIPAImplementation: Address;
+  updateMetadataSIPAImplementation: Address;
 }
 
 /** The deposit-intent implementation for one rollup version. `portal` is that version's Portal; the portal and the
@@ -81,12 +85,22 @@ export async function blessSIPAImplementation(
   }
 }
 
-/**
- * Deploy both intent implementations serving one rollup version and bless them on the permanent factory.
- *
- * Each pins that version's Portal and its own sweep fee, which is what makes the pair version-scoped while the
- * factory stays environment-level: the factory constructs neither, so it can predate both.
- */
+/** Deploy the account-update adapter for one destination portal. */
+export function deployUpdateMetadataSIPA(
+  walletClient: WalletClient,
+  publicClient: PublicClient,
+  portal: Address,
+  nameRegistry: Address,
+  fee: bigint = METADATA_UPDATE_SWEEP_FEE,
+): Promise<Address> {
+  return deployContract(walletClient, publicClient, UpdateMetadataSIPAAbi, UpdateMetadataSIPABytecode, [
+    portal,
+    nameRegistry,
+    fee,
+  ]);
+}
+
+/** Deploy and bless all three intent implementations on a factory that supports metadata updates. */
 export async function deploySIPAImplementations(
   walletClient: WalletClient,
   publicClient: PublicClient,
@@ -96,6 +110,7 @@ export async function deploySIPAImplementations(
     nameRegistry: Address;
     depositFee?: bigint;
     registrationFee?: bigint;
+    metadataUpdateFee?: bigint;
   },
 ): Promise<SIPAImplementations> {
   const depositSIPAImplementation = await deployDepositSIPA(
@@ -112,9 +127,20 @@ export async function deploySIPAImplementations(
     args.registrationFee ?? REGISTRATION_SWEEP_FEE,
   );
 
-  for (const implementation of [depositSIPAImplementation, registrationSIPAImplementation]) {
+  const updateMetadataSIPAImplementation = await deployUpdateMetadataSIPA(
+    walletClient,
+    publicClient,
+    args.portal,
+    args.nameRegistry,
+    args.metadataUpdateFee,
+  );
+  for (const implementation of [
+    depositSIPAImplementation,
+    registrationSIPAImplementation,
+    updateMetadataSIPAImplementation,
+  ]) {
     await blessSIPAImplementation(walletClient, publicClient, args.sipaFactory, implementation);
   }
 
-  return { depositSIPAImplementation, registrationSIPAImplementation };
+  return { depositSIPAImplementation, registrationSIPAImplementation, updateMetadataSIPAImplementation };
 }

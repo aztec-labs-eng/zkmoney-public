@@ -8,7 +8,7 @@
  * withdrawals with SIPA deposits at read time.
  */
 
-import type { WithdrawalPhase } from "@obsidion/core/types"
+import type { WithdrawalGroupLeg, WithdrawalPhase } from "@obsidion/core/types"
 import type { QueueStatus, SwapOnWithdrawOutput } from "@obsidion/sdk"
 import type { Address, Hash, Hex } from "viem"
 
@@ -22,7 +22,7 @@ import type { Address, Hash, Hex } from "viem"
 export type WithdrawalCancelReason = "before-signing"
 
 // Defined in the DTO leaf so sdk services share the vocabulary.
-export type { WithdrawalPhase }
+export type { WithdrawalGroupLeg, WithdrawalPhase }
 
 /**
  * Whether the destination is a wallet the user previously proved control of by
@@ -84,11 +84,16 @@ export interface WithdrawalRecord {
   reorgEpoch?: number
 
   /**
-   * The burn was broadcast but the pool definitively evicted it after a reorg — its effect is
-   * not on chain and cannot return, so a fresh re-burn is safe (worst case one of the two
-   * reverts on the shared nullifier). Gates the retry flow's re-burn path.
+   * The record failed because its burn read as dropped or reverted. The reorg monitor returns it
+   * to tracking if the burn is later seen included.
    */
   droppedBurn?: boolean
+
+  /**
+   * When the burn first read as dropped, while it has read dropped on every look since. Persisted
+   * so the settle window spans page loads.
+   */
+  burnDroppedAt?: number
 
   /**
    * Destination L1 address (checksummed). For a swap-on-withdraw this is where the SWAP OUTPUT
@@ -123,7 +128,7 @@ export interface WithdrawalRecord {
   /** DAI tip the escrow pays the relayer that runs the swap (bigint serialized as string). */
   swapRelayerTip?: string
 
-  /** L1 tx of the `SwapEscrowExecuted` that paid the recipient (set at `done` on a swap). */
+  /** L1 tx of the escrow execution that paid the recipient (set at `done` on a swap). */
   swapExecuteTxHash?: Hex
 
   /** L1 tx of the `recoverERC20` that moved the escrow's DAI to `recoveryTarget`. */
@@ -165,6 +170,15 @@ export interface WithdrawalRecord {
    * prices what the new balance receives.
    */
   arrivalFee?: string
+
+  /**
+   * 16 random bytes as 0x-hex, shared by the legs of one fresh-address withdrawal. Written before
+   * the burn signs and carried in the burn's meta, so a rescan regroups the legs.
+   */
+  groupId?: Hex
+
+  /** Which leg of its group this burn is. Set with `groupId`. */
+  groupLeg?: WithdrawalGroupLeg
 
   /**
    * Recreated from the burn's `Withdraw` event by a rescan (`rebuildWithdrawals`), not written at

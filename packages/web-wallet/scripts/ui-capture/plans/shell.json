@@ -53,12 +53,6 @@
       "state": "Pending activity"
     },
     {
-      "action": "click",
-      "role": "button",
-      "name": "Open search",
-      "exact": true
-    },
-    {
       "action": "fill",
       "label": "Search @tag",
       "value": "ada"
@@ -70,7 +64,7 @@
     {
       "action": "screenshot",
       "file": "search.png",
-      "state": "Expanded Home search"
+      "state": "Home search results"
     },
     {
       "action": "press",
@@ -102,7 +96,7 @@
     {
       "action": "reachable",
       "role": "button",
-      "name": "Logout",
+      "name": "Log out",
       "exact": true
     },
     {

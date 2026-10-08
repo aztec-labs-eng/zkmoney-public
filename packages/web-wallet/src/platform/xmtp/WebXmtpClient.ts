@@ -7,10 +7,10 @@
  * `deriveKeyFromSecret(msk, "xmtp-store")` key (never persisted). Warm start (`Client.build`) is
  * keyed by a per-account cached inboxId (`xmtp.v2.inboxId.<xmtpAddress>`); cold start
  * (`Client.create`) registers a fresh installation, first revoking the inbox's oldest one when the
- * inbox is at XMTP's per-inbox installation cap; a warm start that throws or whose local DB
- * holds no registered installation falls back to the cold path. Adapter methods normalize browser-sdk shapes to
- * the port DTOs: bigint `sentAtNs` passes straight through, numeric consent enums map to the
- * driver's `"allowed" | "unknown" | "denied"` strings.
+ * inbox is at XMTP's per-inbox installation cap; a warm start whose local DB holds no registered
+ * installation, or that keeps failing to build, falls back to the cold path. Adapter methods
+ * normalize browser-sdk shapes to the port DTOs: bigint `sentAtNs` passes straight through, numeric
+ * consent enums map to the driver's `"allowed" | "unknown" | "denied"` strings.
  */
 
 import {
@@ -110,8 +110,37 @@ export function bootstrapXmtpSigner(bootstrap: PrivateKeyAccount): {
 }
 
 /**
- * Build against the local DB; undefined when it throws or holds no registered installation
- * (wallet re-create, OPFS wipe, env switch) so the caller cold-starts via `Client.create`.
+ * Waits between warm-start attempts. A closed client lets go of the OPFS database a moment after
+ * `close()` returns, and WebKit releases a reloaded page's handles lazily, so a build that throws
+ * is usually a database still held for a moment, not a missing installation.
+ */
+export const XMTP_BUILD_RETRY_MS = [1_000, 1_000, 2_000]
+
+/**
+ * `Client.build`, except that a failed build is closed: `Client.build` drops the client, and its
+ * worker keeps holding whatever of the OPFS database it opened, so every later open on the page
+ * would fail too.
+ */
+async function buildClient(
+  identifier: Identifier,
+  clientOptions: ClientOptions,
+): Promise<NativeClient> {
+  const client = new Client({ ...clientOptions, disableAutoRegister: true }) as NativeClient
+  try {
+    await client.init(identifier)
+    return client
+  } catch (err) {
+    closeQuietly(client)
+    throw err
+  }
+}
+
+/**
+ * Build against the local DB; undefined when it holds no registered installation (wallet
+ * re-create, OPFS wipe, env switch) so the caller cold-starts via `Client.create`. A build that
+ * throws is retried first: a cold start on a database still held would fail too, and could revoke
+ * an installation on the way. One that throws every time also cold-starts: a local DB that lost
+ * its installation fails to build on a full inbox, and only the cold start's revoke frees a slot.
  * Closes the built client first — the OPFS VFS supports a single connection.
  */
 async function warmStart(
@@ -119,19 +148,21 @@ async function warmStart(
   clientOptions: ClientOptions,
   signal?: AbortSignal,
 ): Promise<NativeClient | undefined> {
-  let built: NativeClient | undefined
-  try {
-    built = (await Client.build(identifier, clientOptions)) as NativeClient
-    if (!signal?.aborted && (await built.isRegistered())) return built
-  } catch {
-    // Fall through to close + cold start.
+  for (let attempt = 0; ; attempt++) {
+    if (signal?.aborted) throw new Error(XMTP_ABANDONED)
+    let built: NativeClient | undefined
+    try {
+      built = await buildClient(identifier, clientOptions)
+      if (!signal?.aborted && (await built.isRegistered())) return built
+      closeQuietly(built)
+      return undefined
+    } catch {
+      if (built) closeQuietly(built)
+      if (signal?.aborted) throw new Error(XMTP_ABANDONED)
+      if (attempt === XMTP_BUILD_RETRY_MS.length) return undefined
+      await sleep(XMTP_BUILD_RETRY_MS[attempt], signal)
+    }
   }
-  try {
-    built?.close()
-  } catch {
-    // Build threw before a handle existed, or close itself failed.
-  }
-  return undefined
 }
 
 function closeQuietly(client: NativeClient): void {

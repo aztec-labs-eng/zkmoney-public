@@ -14,6 +14,8 @@ import {
   type ViewLinkDeps,
 } from "./sponsoredPaylink"
 import { watchLink } from "./linkStatus"
+import { usePolledChainSeconds } from "./chainTime"
+import { withExpiry } from "./claimWindow"
 import type { PaymentLink } from "./types"
 
 /**
@@ -62,9 +64,11 @@ export function LinkViewScreen() {
     [obsidionWallet, contractService],
   )
   const [status, setStatus] = useState<PaymentLink | null>(null)
+  const chainNow = usePolledChainSeconds(obsidionWallet?.node)
   // Settled either way: the visitor page's voucher read waits on it, and a failed check must not
   // hold that read forever.
   const [statusSettled, setStatusSettled] = useState(false)
+  const [statusAttempt, setStatusAttempt] = useState(0)
   useEffect(() => {
     if (handoff || !decoded || !statusDeps) return
     setStatusSettled(false)
@@ -82,7 +86,7 @@ export function LinkViewScreen() {
       },
       () => setStatusSettled(true),
     )
-  }, [handoff, decoded, statusDeps, fragment])
+  }, [handoff, decoded, statusDeps, fragment, statusAttempt])
 
   if (handoff) {
     return (
@@ -93,7 +97,14 @@ export function LinkViewScreen() {
   }
 
   const link = status?.fragment === fragment ? status : decoded
-  if (link) return <PaylinkVisitorScreen link={link} statusSettled={statusSettled} />
+  if (link)
+    return (
+      <PaylinkVisitorScreen
+        link={withExpiry(link, chainNow)}
+        statusSettled={statusSettled}
+        onRetryStatus={() => setStatusAttempt((n) => n + 1)}
+      />
+    )
 
   return (
     <OnboardingLayout>

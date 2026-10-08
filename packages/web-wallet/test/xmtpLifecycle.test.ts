@@ -5,53 +5,9 @@ import {
   messagingCapability,
   type XmtpClientHandle,
   type XmtpLifecycleDeps,
-  type XmtpLockManager,
   type XmtpUiState,
 } from "../src/platform/xmtp/xmtpLifecycle"
-
-/** In-process Web Locks fake: one exclusive lock, FIFO queue, pending requests abortable. */
-class FakeLocks implements XmtpLockManager {
-  private holding = false
-  private queue: Array<{ run: () => void; signal?: AbortSignal }> = []
-
-  request(
-    _name: string,
-    options: { signal?: AbortSignal },
-    cb: (lock: unknown) => Promise<void>,
-  ): Promise<void> {
-    return new Promise<void>((resolve, reject) => {
-      const entry = {
-        signal: options.signal,
-        run: () => {
-          this.holding = true
-          void Promise.resolve()
-            .then(() => cb({}))
-            .then(resolve, reject)
-            .finally(() => {
-              this.holding = false
-              this.pump()
-            })
-        },
-      }
-      if (entry.signal?.aborted) return reject(new DOMException("aborted", "AbortError"))
-      entry.signal?.addEventListener("abort", () => {
-        const i = this.queue.indexOf(entry)
-        if (i >= 0) {
-          this.queue.splice(i, 1)
-          reject(new DOMException("aborted", "AbortError"))
-        }
-      })
-      this.queue.push(entry)
-      this.pump()
-    })
-  }
-
-  private pump(): void {
-    if (this.holding) return
-    const next = this.queue.shift()
-    if (next) next.run()
-  }
-}
+import { FakeLocks } from "./support/fakeLocks"
 
 const DB_KEY = new Uint8Array(32).fill(7)
 

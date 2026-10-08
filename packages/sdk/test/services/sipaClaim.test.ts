@@ -32,17 +32,21 @@ import {
 } from "@oxide/l1-contracts"
 import {
   buildRegistrationSweepCall,
+  buildSipaRecoverCall,
   buildSipaSweepCall,
   EMPTY_SIGNED_TERMS,
-  encodeRecoverErc20Call,
+  encodeRecoverCall,
   fetchSipaEvents,
   isSipaDepositClaimed,
   MULTICALL3_ADDRESS,
   readDepositFee,
   readDepositMessageKey,
   readFundingTransfers,
+  readFundingTransfersMany,
+  readSipaBalancesMany,
   readSipaFundingStatus,
   readSweepEvents,
+  readSweepEventsMany,
   TX_AMOUNT_CAP,
 } from "../../src/services/sipaClaim.js"
 import { OxideTokenContract } from "@obsidion/contracts"
@@ -167,6 +171,113 @@ describe("readSweepEvents", () => {
   })
 })
 
+describe("readSweepEventsMany", () => {
+  const SIPA_2 = "0x2222222222222222222222222222222222222222" as Address
+  const sweep = (address: Address, blockNumber: bigint, index: bigint) => ({
+    address,
+    args: { index, amount: 1n },
+    blockNumber,
+    transactionHash: TX_HASH,
+  })
+
+  it("scans every SIPA in one address-list read over their union, keeping each to its window", async () => {
+    const getContractEvents = vi.fn(async (_request: object) => [
+      sweep(SIPA, 100n, 1n),
+      sweep(SIPA_2, 100n, 2n),
+      sweep(SIPA_2, 400n, 3n),
+    ])
+    const client = { getBlockNumber: vi.fn(), getContractEvents } as unknown as PublicClient
+
+    const sweeps = await readSweepEventsMany(
+      client,
+      [
+        { sipa: SIPA, fromBlock: 50n },
+        { sipa: SIPA_2, fromBlock: 300n },
+      ],
+      500n,
+    )
+
+    expect(getContractEvents).toHaveBeenCalledOnce()
+    expect(getContractEvents.mock.calls[0]![0]).toMatchObject({
+      address: [SIPA, SIPA_2],
+      eventName: "Sweep",
+      fromBlock: 50n,
+      toBlock: 500n,
+    })
+    expect(client.getBlockNumber).not.toHaveBeenCalled()
+    expect(sweeps.get(SIPA.toLowerCase())!.map((s) => s.index)).toEqual([1n])
+    expect(sweeps.get(SIPA_2.toLowerCase())!.map((s) => s.index)).toEqual([3n])
+  })
+
+  it("reaches back the look-back for a SIPA with no cursor, and reads nothing for no SIPAs", async () => {
+    const getContractEvents = vi.fn(async (_request: object) => [])
+    const client = { getContractEvents } as unknown as PublicClient
+
+    expect(await readSweepEventsMany(client, [], 60_000n)).toEqual(new Map())
+    expect(getContractEvents).not.toHaveBeenCalled()
+
+    await readSweepEventsMany(client, [{ sipa: SIPA }, { sipa: SIPA, fromBlock: 59_000n }], 60_000n)
+    expect(getContractEvents.mock.calls[0]![0]).toMatchObject({ fromBlock: 10_000n })
+  })
+})
+
+describe("readFundingTransfersMany", () => {
+  const TOKEN = "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b" as Address
+  const SIPA_2 = "0x2222222222222222222222222222222222222222" as Address
+
+  it("filters Transfer on to = any SIPA and groups by recipient", async () => {
+    const getContractEvents = vi.fn(async (_request: object) => [
+      { args: { from: PORTAL, to: SIPA_2, value: 5n }, blockNumber: 10n, transactionHash: TX_HASH },
+    ])
+    const client = { getContractEvents } as unknown as PublicClient
+
+    const transfers = await readFundingTransfersMany(
+      client,
+      TOKEN,
+      [
+        { sipa: SIPA, fromBlock: 0n },
+        { sipa: SIPA_2, fromBlock: 0n },
+      ],
+      20n,
+    )
+
+    expect(getContractEvents.mock.calls[0]![0]).toMatchObject({
+      address: TOKEN,
+      eventName: "Transfer",
+      args: { to: [SIPA, SIPA_2] },
+    })
+    expect(transfers.get(SIPA.toLowerCase())).toEqual([])
+    expect(transfers.get(SIPA_2.toLowerCase())).toEqual([
+      { from: PORTAL, amount: 5n, blockNumber: 10n, txHash: TX_HASH },
+    ])
+  })
+})
+
+describe("readSipaBalancesMany", () => {
+  const TOKEN = "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b" as Address
+
+  it("reads each token balance and the ETH balance in one Multicall3 call, dropping failures", async () => {
+    const multicall = vi.fn(async (_request: object) => [
+      { status: "success", result: 7n },
+      { status: "failure", error: new Error("reverted") },
+    ])
+    const client = { multicall } as unknown as PublicClient
+
+    const balances = await readSipaBalancesMany(client, [SIPA], [TOKEN])
+
+    expect(multicall).toHaveBeenCalledOnce()
+    expect(multicall.mock.calls[0]![0]).toMatchObject({
+      multicallAddress: MULTICALL3_ADDRESS,
+      allowFailure: true,
+      contracts: [
+        { address: TOKEN, functionName: "balanceOf", args: [SIPA] },
+        { address: MULTICALL3_ADDRESS, functionName: "getEthBalance", args: [SIPA] },
+      ],
+    })
+    expect(balances.get(SIPA.toLowerCase())).toEqual(new Map([[TOKEN.toLowerCase(), 7n]]))
+  })
+})
+
 describe("readDepositMessageKey", () => {
   // In-field values — real message keys are sha256ToField outputs (< BN254 r).
   const KEY_A = `0x${"0a".repeat(32)}` as Hex
@@ -256,6 +367,11 @@ describe("readSipaFundingStatus", () => {
   /** Same SIPA, on a deployment that skims a funding cut on top of the sweep fee. */
   const withCut = { ...params, fpcFundingCut: 40n }
 
+  it("classifies a balance the caller already read without reading it again", async () => {
+    const status = await readSipaFundingStatus(client(0n, 100n), { ...params, balance: 101n })
+    expect(status).toMatchObject({ balance: 101n, sweepable: true })
+  })
+
   it("balance must strictly exceed the fee to be sweepable", async () => {
     expect((await readSipaFundingStatus(client(100n, 100n), params)).sweepable).toBe(false)
     expect((await readSipaFundingStatus(client(101n, 100n), params)).sweepable).toBe(true)
@@ -308,14 +424,14 @@ describe("readSipaFundingStatus", () => {
   })
 })
 
-describe("encodeRecoverErc20Call", () => {
+describe("encodeRecoverCall", () => {
   it("targets the SIPA with recoverERC20(signature, target, token, nonce) calldata", async () => {
     const { decodeFunctionData: decode, parseAbi } = await import("viem")
     const SIPAAbi = parseAbi([
       "function recoverERC20(bytes signature, address target, address token, bytes32 nonce)",
     ])
     const signature = `0x${"cd".repeat(65)}` as Hex
-    const call = encodeRecoverErc20Call({
+    const call = encodeRecoverCall({
       protocol: "legacy-eoa",
       sipa: SIPA,
       signature,
@@ -331,6 +447,86 @@ describe("encodeRecoverErc20Call", () => {
     expect(decoded.functionName).toBe("recoverERC20")
     expect(decoded.args[0]).toBe(signature)
     expect(String(decoded.args[1]).toLowerCase()).toBe("0x2e45a4e5d9100a4e8cb94f81257b5a1eba05a29b")
+  })
+
+  it("encodes recoverETH for the zero-address token and refuses it on a legacy SIPA", async () => {
+    const { decodeFunctionData: decode, parseAbi, zeroAddress } = await import("viem")
+    const abi = parseAbi([
+      "function recoverETH(bytes32 sharedSecretSalt, address account, bytes signature, address target, bytes32 nonce)",
+    ])
+    const common = {
+      sipa: SIPA,
+      signature: `0x${"cd".repeat(65)}` as Hex,
+      target: "0x2e45a4e5d9100a4e8cb94f81257b5a1eba05a29b" as const,
+      token: zeroAddress,
+      nonce: `0x${"ab".repeat(32)}` as Hex,
+    }
+    const call = encodeRecoverCall({
+      ...common,
+      protocol: "account",
+      account: "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b",
+      sharedSecretSalt: `0x${"01".repeat(32)}`,
+    })
+    const decoded = decode({ abi, data: call.data })
+    expect(call.to).toBe(SIPA)
+    expect(decoded.functionName).toBe("recoverETH")
+    expect(String(decoded.args[3]).toLowerCase()).toBe(common.target)
+    expect(() => encodeRecoverCall({ ...common, protocol: "legacy-eoa" })).toThrow(
+      /account-protocol/,
+    )
+  })
+})
+
+describe("buildSipaRecoverCall", () => {
+  const recovery = (token: Address, nonce: Hex) => ({
+    protocol: "account" as const,
+    sipa: SIPA,
+    signature: `0x${"cd".repeat(65)}` as Hex,
+    target: "0x2e45a4e5d9100a4e8cb94f81257b5a1eba05a29b" as Address,
+    token,
+    nonce,
+    account: "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b" as Address,
+    sharedSecretSalt: `0x${"01".repeat(32)}` as Hex,
+  })
+  const eth = recovery("0x0000000000000000000000000000000000000000", `0x${"01".repeat(32)}`)
+  const usdc = recovery("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", `0x${"02".repeat(32)}`)
+
+  it("sends one recovery to the SIPA directly", () => {
+    expect(buildSipaRecoverCall({ deployed: true, recoveries: [usdc] })).toEqual(
+      encodeRecoverCall(usdc),
+    )
+  })
+
+  it("recovers several tokens after the deploy in one aggregate3", () => {
+    const sipaFactory = "0x0b903b955dbc0c97252f1ce9e43f8c26e8f5635f" as Address
+    const args: SipaDeployArgs = {
+      implementation: "0x39dd57b9f2b16e5c9e9e35e18b73c8a2a5d1f7c4",
+      intentHash: `0x${"22".repeat(32)}`,
+      recoveryCommitment: `0x${"44".repeat(32)}`,
+      rollupVersion: 1n,
+      resweepable: false,
+    }
+    const call = buildSipaRecoverCall({
+      deployed: false,
+      deployment: { protocol: "account", sipaFactory, args },
+      recoveries: [eth, usdc],
+    })
+    expect(call.to).toBe(MULTICALL3_ADDRESS)
+    const [calls] = decodeFunctionData({ abi: multicall3Abi, data: call.data }).args as [
+      { target: Address; allowFailure: boolean; callData: Hex }[],
+    ]
+    expect(calls.map((c) => [c.target.toLowerCase(), c.allowFailure, c.callData])).toEqual([
+      [sipaFactory, false, encodeDeploySIPA(args)],
+      [SIPA, false, encodeRecoverCall(eth).data],
+      [SIPA, false, encodeRecoverCall(usdc).data],
+    ])
+  })
+
+  it("refuses recoveries of two protocols in one transaction", () => {
+    const legacy = { ...usdc, protocol: "legacy-eoa" as const }
+    expect(() => buildSipaRecoverCall({ deployed: true, recoveries: [usdc, legacy] })).toThrow(
+      /one protocol/,
+    )
   })
 })
 

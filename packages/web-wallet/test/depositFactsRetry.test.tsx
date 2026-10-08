@@ -16,6 +16,11 @@ const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb"
 const loadDepositDisplayFacts = vi.hoisted(() => vi.fn())
 const showReportableError = vi.hoisted(() => vi.fn())
 
+// Plenty of shared capacity, read from a fake bucket instead of the network.
+const capacity = vi.hoisted(() => ({ availableAtomic: 40_000n * 10n ** 18n }))
+vi.mock("../src/features/deposit/capacityStore", async () =>
+  (await import("./fakeCapacity")).fakeCapacityStore(capacity),
+)
 vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => vi.fn(),
@@ -29,15 +34,9 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   useAztecContext: () => ({ obsidionWallet: {} }),
   useContractServiceContext: () => ({ contractService: {} }),
 }))
-type Resolved = { address: string; name: string } | undefined
 const gateway = {
-  depositAddress: vi.fn(async () => ({ address: "0xdeadbeef", name: "alice.oxide.eth" })),
-  pooledDepositAddress: vi.fn(
-    async (): Promise<Resolved> => ({
-      address: "0xp001ed",
-      name: "alice.oxide.eth",
-    }),
-  ),
+  wakeDeposit: vi.fn(async () => {}),
+  depositAddress: vi.fn(async () => ({ address: "0xp001ed", name: "alice.oxide.eth" })),
 }
 vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
 vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => ({
@@ -62,12 +61,25 @@ const l1 = vi.hoisted(() => ({
   disconnect: vi.fn(),
 }))
 vi.mock("../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => l1 }))
-vi.mock("uqr", () => ({ renderSVG: (value: string) => `<svg data-uri="${value}"></svg>` }))
+vi.mock("uqr", () => ({
+  renderSVG: (value: string) => `<svg data-uri="${value}"></svg>`,
+  encode: () => ({ size: 21, data: Array.from({ length: 21 }, () => Array(21).fill(false)) }),
+}))
 vi.mock("@obsidion/web-ds", () => ({
   GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
   Icon: () => null,
-  PrimaryGradientButton: ({ title, onClick }: { title: string; onClick?: () => void }) => (
-    <button type="button" onClick={onClick}>
+  PrimaryGradientButton: ({
+    title,
+    onClick,
+    isDisabled,
+    testId,
+  }: {
+    title: string
+    onClick?: () => void
+    isDisabled?: boolean
+    testId?: string
+  }) => (
+    <button type="button" disabled={isDisabled} data-testid={testId} onClick={onClick}>
       {title}
     </button>
   ),
@@ -98,8 +110,17 @@ describe("DepositScreen — deposit quote", () => {
   const retry = () =>
     container.querySelector<HTMLButtonElement>("[data-testid='deposit-facts-retry']")
   const feeValue = () => container.querySelector("[data-testid='deposit-fee']")?.textContent?.trim()
-  const buttonNamed = (text: string) =>
-    [...container.querySelectorAll("button")].find((b) => b.textContent === text)
+  const copyButton = () =>
+    container.querySelector<HTMLButtonElement>("[data-testid='deposit-copy']")
+  /** Opens the sheet for the one coin the sandbox lists, and its limits drawer, where the fee is. */
+  const openDrawer = async () => {
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>("[data-testid='deposit-coin-TEST']")!.click(),
+    )
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>(".ww-deposit-sheet__limits-head")!.click(),
+    )
+  }
 
   const render = () =>
     act(async () => {
@@ -114,10 +135,6 @@ describe("DepositScreen — deposit quote", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks()
-    gateway.pooledDepositAddress.mockResolvedValue({
-      address: "0xp001ed",
-      name: "alice.oxide.eth",
-    })
     l1.account = null
     localStorage.clear()
     saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
@@ -134,9 +151,10 @@ describe("DepositScreen — deposit quote", () => {
   it("offers another go when the quote fails, and quotes once it lands", async () => {
     loadDepositDisplayFacts.mockRejectedValueOnce(new Error("rpc down"))
     await render()
+    await openDrawer()
 
     expect(retry()).toBeTruthy()
-    expect(buttonNamed("Copy")?.disabled).toBe(true)
+    expect(copyButton()?.disabled).toBe(true)
     // Transient by nature; the retry control is the affordance, not an error report.
     expect(showReportableError).not.toHaveBeenCalled()
 
@@ -145,28 +163,29 @@ describe("DepositScreen — deposit quote", () => {
 
     expect(loadDepositDisplayFacts).toHaveBeenCalledTimes(2)
     expect(retry()).toBeNull()
-    expect(container.textContent).toContain(usdFigure(FACTS.fee))
-    expect(buttonNamed("Copy")?.disabled).toBe(false)
+    expect(feeValue()).toBe(usdFigure(FACTS.fee))
+    expect(copyButton()?.disabled).toBe(false)
   })
 
   it("holds the funding controls while the quote is unavailable, and frees them on a good retry", async () => {
     loadDepositDisplayFacts.mockRejectedValueOnce(new Error("rpc down"))
-    // An empty pool leaves Generate as the address control, which the failed quote also holds.
-    gateway.pooledDepositAddress.mockResolvedValue(undefined)
     l1.account = `0x${"a1".repeat(20)}`
     await render()
 
-    const connect = () => container.querySelector<HTMLButtonElement>(".ww-deposit__connect")!
+    const connect = () =>
+      container.querySelector<HTMLButtonElement>("[data-testid='deposit-connect-link']")!
     const note = () => container.querySelector("[data-testid='deposit-fee-unavailable']")
     expect(connect().disabled).toBe(true)
-    expect(buttonNamed("Generate")?.disabled).toBe(true)
+    await openDrawer()
+    expect(gateway.depositAddress).toHaveBeenCalledOnce()
+    expect(copyButton()?.disabled).toBe(true)
     expect(note()?.textContent).toBe(FEE_UNAVAILABLE_NOTE)
 
     loadDepositDisplayFacts.mockResolvedValue(FACTS)
     await act(async () => retry()!.click())
 
     expect(connect().disabled).toBe(false)
-    expect(buttonNamed("Generate")?.disabled).toBe(false)
+    expect(copyButton()?.disabled).toBe(false)
     expect(note()).toBeNull()
   })
 
@@ -175,12 +194,15 @@ describe("DepositScreen — deposit quote", () => {
     loadDepositDisplayFacts.mockReturnValue(new Promise(() => {}))
     l1.account = `0x${"a1".repeat(20)}`
     await render()
+    await openDrawer()
 
-    // No click is needed to earn the row: the read is out, so the row says so.
+    // No retry is needed to earn the row: the read is out, so the row says so.
     expect(feeValue()).toBe(QUOTE_PENDING)
     expect(retry()).toBeNull()
 
-    const connect = container.querySelector<HTMLButtonElement>(".ww-deposit__connect")!
+    const connect = container.querySelector<HTMLButtonElement>(
+      "[data-testid='deposit-connect-link']",
+    )!
     await act(async () => connect.click())
 
     expect(feeValue()).toBe(QUOTE_PENDING)
@@ -190,6 +212,7 @@ describe("DepositScreen — deposit quote", () => {
   it("keeps the row pending across a retry rather than blanking it", async () => {
     loadDepositDisplayFacts.mockRejectedValueOnce(new Error("rpc down"))
     await render()
+    await openDrawer()
     expect(retry()).toBeTruthy()
 
     loadDepositDisplayFacts.mockReturnValue(new Promise(() => {}))
@@ -212,27 +235,29 @@ describe("DepositScreen — deposit quote", () => {
   it("holds the funding controls while the quote is still out, with nothing to retry", async () => {
     let land: (facts: typeof FACTS) => void = () => {}
     loadDepositDisplayFacts.mockReturnValue(new Promise((resolve) => (land = resolve)))
-    gateway.pooledDepositAddress.mockResolvedValue(undefined)
     l1.account = `0x${"a1".repeat(20)}`
     await render()
 
-    const connect = () => container.querySelector<HTMLButtonElement>(".ww-deposit__connect")!
+    const connect = () =>
+      container.querySelector<HTMLButtonElement>("[data-testid='deposit-connect-link']")!
     expect(connect().disabled).toBe(true)
-    expect(buttonNamed("Generate")?.disabled).toBe(true)
+    await openDrawer()
+    expect(copyButton()?.disabled).toBe(true)
     // Nothing has failed, so the row says pending and carries no note.
     expect(container.querySelector("[data-testid='deposit-fee-unavailable']")).toBeNull()
 
     await act(async () => land(FACTS))
 
     expect(connect().disabled).toBe(false)
-    expect(buttonNamed("Generate")?.disabled).toBe(false)
+    expect(copyButton()?.disabled).toBe(false)
   })
 
-  it("holds the address pill's copy while the fee is unread", async () => {
+  it("holds Copy address while the fee is unread", async () => {
     loadDepositDisplayFacts.mockReturnValue(new Promise(() => {}))
     await render()
+    await openDrawer()
 
-    const pill = container.querySelector<HTMLButtonElement>("[data-testid='deposit-address']")
-    expect(pill?.disabled).toBe(true)
+    expect(container.querySelector("[data-testid='deposit-address']")).not.toBeNull()
+    expect(copyButton()?.disabled).toBe(true)
   })
 })

@@ -53,6 +53,37 @@ test("packaged metadata is checked outside the app archive", () => {
   }
 })
 
+test("OBSIDION_ENCLAVE_TARGET retargets only a build that proxies the enclave", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-enclave-"))
+  const previous = process.env.OBSIDION_ENCLAVE_TARGET
+  try {
+    fs.mkdirSync(path.join(root, "config"))
+    fs.writeFileSync(path.join(root, "config/default.json"), JSON.stringify(defaults))
+    process.env.OBSIDION_ENCLAVE_TARGET = " http://127.0.0.1:9999 "
+    const sandbox = loadConfig(root)
+    assert.equal(sandbox.proxies["/svc/enclave"], "http://127.0.0.1:9999")
+    assert.equal(sandbox.proxies["/svc/account"], defaults.proxies["/svc/account"])
+    for (const invalid of ["not a url", "ftp://127.0.0.1:9999"]) {
+      process.env.OBSIDION_ENCLAVE_TARGET = invalid
+      assert.throws(() => loadConfig(root), /OBSIDION_ENCLAVE_TARGET/)
+    }
+
+    const metadata = { pageHostname: "wallet.zk.money", passkeyRpId: "auth.zk.money" }
+    fs.writeFileSync(
+      path.join(root, "config/generated.json"),
+      JSON.stringify(composeLauncherConfig(defaults, metadata)),
+    )
+    process.env.OBSIDION_ENCLAVE_TARGET = "http://127.0.0.1:9999"
+    assert.equal(loadConfig(root).proxies["/svc/enclave"], undefined)
+    process.env.OBSIDION_ENCLAVE_TARGET = "not a url"
+    assert.throws(() => loadConfig(root), /OBSIDION_ENCLAVE_TARGET/)
+  } finally {
+    if (previous === undefined) delete process.env.OBSIDION_ENCLAVE_TARGET
+    else process.env.OBSIDION_ENCLAVE_TARGET = previous
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+})
+
 for (const [pageHostname, passkeyRpId] of [
   ["wallet.zk.money", "auth.zk.money"],
   ["wallet.staging.zk.money", "staging.zk.money"],
@@ -119,6 +150,7 @@ for (const [pageHostname, passkeyRpId] of [
               port,
               path: `${prefix}/rpc`,
               method: "POST",
+              headers: { Host: "localhost" },
               rejectUnauthorized: false,
             },
             (res) => {

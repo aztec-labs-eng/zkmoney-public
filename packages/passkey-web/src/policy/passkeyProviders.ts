@@ -35,6 +35,9 @@ export const PASSKEY_MANAGER_AAGUIDS: ReadonlySet<string> = new Set([
 /** The id Chromium's virtual authenticators report, which the wallet's browser-test build admits. */
 export const CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID = "01020304-0506-0708-0102-030405060708"
 
+/** The name a refusal gives Windows' own passkey store; its copy is about Windows' prompt. */
+export const WINDOWS_HELLO = "Windows Hello"
+
 /**
  * The providers a refusal might have to name, and the slug telemetry counts each under.
  * Best-effort: an id absent here yields generic copy rather than an invented name.
@@ -47,9 +50,9 @@ const PROVIDERS: Readonly<Record<string, { name: string; slug: PasskeyProvider }
     slug: "icloud_keychain",
   },
   [GPM_AAGUID]: { name: "Google Password Manager", slug: "google_password_manager" },
-  "08987058-cadc-4b81-b6e1-30de50dcbe96": { name: "Windows Hello", slug: "windows_hello" },
-  "9ddd1817-af5a-4672-a2b9-3e3dd95000a9": { name: "Windows Hello", slug: "windows_hello" },
-  "6028b017-b1d4-4c02-b4b3-afcdafc96bb2": { name: "Windows Hello", slug: "windows_hello" },
+  "08987058-cadc-4b81-b6e1-30de50dcbe96": { name: WINDOWS_HELLO, slug: "windows_hello" },
+  "9ddd1817-af5a-4672-a2b9-3e3dd95000a9": { name: WINDOWS_HELLO, slug: "windows_hello" },
+  "6028b017-b1d4-4c02-b4b3-afcdafc96bb2": { name: WINDOWS_HELLO, slug: "windows_hello" },
   [ONEPASSWORD_AAGUID]: { name: "1Password", slug: "1password" },
   "d548826e-79b4-db40-a3d8-11116f7e8349": { name: "Bitwarden", slug: "bitwarden" },
   "b84e4048-15dc-4dd0-8640-f4f60813c8af": { name: "NordPass", slug: "nordpass" },
@@ -93,8 +96,8 @@ export function providerSlugFor(aaguid: string | undefined): PasskeyProvider {
 /**
  * Which refusal a rejected id deserves. The class decides the gate, but the copy follows the id:
  * a browser that named a security key while withholding its transports is classed as a phone, and
- * telling that user to delete a passkey from a manager they never used sends them nowhere. The
- * orphan is on the key either way, so the key's wording is the one that helps.
+ * telling that user which managers work sends them nowhere. They are holding a key, so the key's
+ * wording is the one that helps.
  */
 export function refusalKindFor(
   aaguid: string | undefined,

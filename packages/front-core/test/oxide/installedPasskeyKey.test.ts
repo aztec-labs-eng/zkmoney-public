@@ -1,21 +1,27 @@
 import { describe, expect, it, vi } from "vitest"
 import { Fr } from "@aztec/aztec.js/fields"
 import type { Address, Hex } from "viem"
-import type { AuthKeyEntry } from "@oxide/l1-contracts"
+import { predictAccountAddressLocally, type AuthKeyEntry } from "@oxide/l1-contracts"
 
 import { deriveBootstrapKey } from "../../src/oxide/oxideAccountKeys"
 import { readInstalledPasskeyKey } from "../../src/oxide/installedPasskeyKey"
 import { MAX_PASSKEY_CANDIDATES } from "../../src/oxide/passkeyCredentialByTag"
 
 const FACTORY = "0x00000000000000000000000000000000000000f1" as Address
+const OTHER_FACTORY = "0x00000000000000000000000000000000000000f8" as Address
+const REGISTRY = "0x00000000000000000000000000000000000000f2" as Address
 const REAL = `${"ab".repeat(32)}${"cd".repeat(32)}`
 const OTHER = `${"1f".repeat(32)}${"3e".repeat(32)}`
 const UNRELATED = `${"99".repeat(32)}${"88".repeat(32)}`
 const CREDENTIAL_METADATA = `0x${"07".repeat(16)}` as Hex
+const ZERO_HASH = `0x${"00".repeat(32)}` as Hex
+const NAME_HASH = `0x${"ab".repeat(32)}` as Hex
 
 const first = Fr.random()
 const second = Fr.random()
-const accountOf = (msk: Fr) => `0x${deriveBootstrapKey(msk).address.slice(-40)}` as Address
+/** The account `msk` gets under `factory`, as the read predicts it. */
+const accountOf = (msk: Fr, factory: Address = FACTORY) =>
+  predictAccountAddressLocally(factory, deriveBootstrapKey(msk).address)
 
 function entry(pubkeyHex: string, metadata: Hex = CREDENTIAL_METADATA): AuthKeyEntry {
   return {
@@ -24,36 +30,32 @@ function entry(pubkeyHex: string, metadata: Hex = CREDENTIAL_METADATA): AuthKeyE
   }
 }
 
-type Chain = Record<Address, { code?: Hex; keys?: readonly AuthKeyEntry[] }>
+type Chain = Record<Address, { name?: Hex; code?: Hex; keys?: readonly AuthKeyEntry[] }>
 
-/** A reader over `chain`, keyed by each account's predicted address (here: its bootstrap address). */
+/** A reader over `chain`, keyed by each account's predicted address. */
 function readerOver(chain: Chain) {
-  const predictAccountAddress = vi.fn(
-    async (_factory: Address, bootstrap: Address) => `0x${bootstrap.slice(-40)}` as Address,
+  const readNameOf = vi.fn(
+    async (_registry: Address, account: Address) => chain[account]?.name ?? ZERO_HASH,
   )
   const getCode = vi.fn(async (account: Address) => chain[account]?.code)
   const readAuthKeys = vi.fn(async (account: Address, _max: number) => chain[account]?.keys ?? [])
-  return { predictAccountAddress, getCode, readAuthKeys }
+  return { readNameOf, getCode, readAuthKeys }
 }
 
-const deployed = (...keys: AuthKeyEntry[]) => ({ code: "0x6080" as Hex, keys })
+/** A registered account: named, deployed, holding `keys`. */
+const deployed = (...keys: AuthKeyEntry[]) => ({ name: NAME_HASH, code: "0x6080" as Hex, keys })
 
 describe("readInstalledPasskeyKey", () => {
   it("returns the possible key the first candidate's account installed", async () => {
     const reader = readerOver({ [accountOf(first)]: deployed(entry(REAL)) })
     const key = await readInstalledPasskeyKey([first, second], [REAL, OTHER], {
       reader,
+      registry: REGISTRY,
       accountFactories: [FACTORY],
     })
     expect(key).toBe(REAL)
-    expect(reader.predictAccountAddress).toHaveBeenCalledWith(
-      FACTORY,
-      deriveBootstrapKey(first).address,
-    )
-    expect(reader.predictAccountAddress).toHaveBeenCalledWith(
-      FACTORY,
-      deriveBootstrapKey(second).address,
-    )
+    expect(reader.readNameOf).toHaveBeenCalledWith(REGISTRY, accountOf(first))
+    expect(reader.readNameOf).toHaveBeenCalledWith(REGISTRY, accountOf(second))
     expect(reader.readAuthKeys).toHaveBeenCalledTimes(1)
     expect(reader.readAuthKeys).toHaveBeenCalledWith(accountOf(first), MAX_PASSKEY_CANDIDATES)
   })
@@ -64,6 +66,7 @@ describe("readInstalledPasskeyKey", () => {
     expect(shouted.slice(2)).not.toBe(OTHER)
     const key = await readInstalledPasskeyKey([first, second], [REAL, shouted], {
       reader,
+      registry: REGISTRY,
       accountFactories: [FACTORY],
     })
     expect(key).toBe(OTHER)
@@ -74,31 +77,49 @@ describe("readInstalledPasskeyKey", () => {
     expect(
       await readInstalledPasskeyKey([first], [REAL, OTHER], {
         reader,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
       }),
     ).toBe(REAL)
-    expect(reader.predictAccountAddress).toHaveBeenCalledTimes(1)
+    expect(reader.readNameOf).toHaveBeenCalledTimes(1)
   })
 
   it("spans every catalog factory and stays one answer when both hold the same key", async () => {
-    const OTHER_FACTORY = "0x00000000000000000000000000000000000000f8" as const
     const reader = readerOver({
       [accountOf(first)]: deployed(entry(REAL)),
+      [accountOf(first, OTHER_FACTORY)]: deployed(entry(REAL)),
     })
     expect(
       await readInstalledPasskeyKey([first], [REAL, OTHER], {
         reader,
+        registry: REGISTRY,
         accountFactories: [FACTORY, OTHER_FACTORY],
       }),
     ).toBe(REAL)
-    expect(reader.predictAccountAddress).toHaveBeenCalledTimes(2)
+    expect(reader.readNameOf).toHaveBeenCalledTimes(2)
+    expect(reader.readAuthKeys).toHaveBeenCalledTimes(2)
   })
 
-  it("no code on either account: nothing, and no key read", async () => {
-    const reader = readerOver({ [accountOf(first)]: { code: "0x" } })
+  it("an account the registry does not name contributes nothing, and is never read", async () => {
+    // Anyone can put code at a predicted address; only a name from the registry makes it the user's.
+    const reader = readerOver({ [accountOf(first)]: { code: "0x6080", keys: [entry(REAL)] } })
     expect(
       await readInstalledPasskeyKey([first, second], [REAL, OTHER], {
         reader,
+        registry: REGISTRY,
+        accountFactories: [FACTORY],
+      }),
+    ).toBeUndefined()
+    expect(reader.getCode).not.toHaveBeenCalled()
+    expect(reader.readAuthKeys).not.toHaveBeenCalled()
+  })
+
+  it("no code on a named account: nothing, and no key read", async () => {
+    const reader = readerOver({ [accountOf(first)]: { name: NAME_HASH, code: "0x" } })
+    expect(
+      await readInstalledPasskeyKey([first, second], [REAL, OTHER], {
+        reader,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
       }),
     ).toBeUndefined()
@@ -110,6 +131,7 @@ describe("readInstalledPasskeyKey", () => {
     expect(
       await readInstalledPasskeyKey([first, second], [REAL, OTHER], {
         reader: empty,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
       }),
     ).toBeUndefined()
@@ -117,6 +139,7 @@ describe("readInstalledPasskeyKey", () => {
     expect(
       await readInstalledPasskeyKey([first, second], [REAL, OTHER], {
         reader: unrelated,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
       }),
     ).toBeUndefined()
@@ -129,6 +152,7 @@ describe("readInstalledPasskeyKey", () => {
     expect(
       await readInstalledPasskeyKey([first, second], [REAL, OTHER], {
         reader,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
       }),
     ).toBe(REAL)
@@ -139,6 +163,7 @@ describe("readInstalledPasskeyKey", () => {
     expect(
       await readInstalledPasskeyKey([first, second], [REAL, OTHER], {
         reader: oneAccount,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
       }),
     ).toBeUndefined()
@@ -149,6 +174,7 @@ describe("readInstalledPasskeyKey", () => {
     expect(
       await readInstalledPasskeyKey([first, second], [REAL, OTHER], {
         reader: twoAccounts,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
       }),
     ).toBeUndefined()
@@ -162,6 +188,7 @@ describe("readInstalledPasskeyKey", () => {
     expect(
       await readInstalledPasskeyKey([first, second], [REAL, OTHER], {
         reader,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
       }),
     ).toBe(REAL)
@@ -173,6 +200,7 @@ describe("readInstalledPasskeyKey", () => {
       expect(
         await readInstalledPasskeyKey([first, second], [REAL, OTHER], {
           reader,
+          registry: REGISTRY,
           accountFactories: [FACTORY],
         }),
       ).toBe(REAL)
@@ -185,6 +213,7 @@ describe("readInstalledPasskeyKey", () => {
     expect(
       await readInstalledPasskeyKey([first, second], [REAL, OTHER], {
         reader,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
       }),
     ).toBeUndefined()
@@ -199,26 +228,28 @@ describe("readInstalledPasskeyKey", () => {
     await expect(
       readInstalledPasskeyKey([first], [REAL, OTHER], {
         reader: before,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
         stop: stoppedBefore.signal,
       }),
     ).rejects.toThrow()
-    expect(before.predictAccountAddress).not.toHaveBeenCalled()
+    expect(before.readNameOf).not.toHaveBeenCalled()
 
-    const afterPrediction = readerOver(chain)
-    const stopAtPrediction = new AbortController()
-    afterPrediction.predictAccountAddress.mockImplementation(async (_f, bootstrap) => {
-      stopAtPrediction.abort()
-      return `0x${bootstrap.slice(-40)}` as Address
+    const afterName = readerOver(chain)
+    const stopAtName = new AbortController()
+    afterName.readNameOf.mockImplementation(async () => {
+      stopAtName.abort()
+      return NAME_HASH
     })
     await expect(
       readInstalledPasskeyKey([first], [REAL, OTHER], {
-        reader: afterPrediction,
+        reader: afterName,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
-        stop: stopAtPrediction.signal,
+        stop: stopAtName.signal,
       }),
     ).rejects.toThrow()
-    expect(afterPrediction.getCode).not.toHaveBeenCalled()
+    expect(afterName.getCode).not.toHaveBeenCalled()
 
     const afterCode = readerOver(chain)
     const stopAtCode = new AbortController()
@@ -229,6 +260,7 @@ describe("readInstalledPasskeyKey", () => {
     await expect(
       readInstalledPasskeyKey([first], [REAL, OTHER], {
         reader: afterCode,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
         stop: stopAtCode.signal,
       }),
@@ -236,15 +268,15 @@ describe("readInstalledPasskeyKey", () => {
     expect(afterCode.readAuthKeys).not.toHaveBeenCalled()
   })
 
-  it("a sibling still predicting when the other fails starts nothing once stopped", async () => {
+  it("a sibling still being named when the other fails starts nothing once stopped", async () => {
     const reader = readerOver({ [accountOf(second)]: deployed(entry(REAL)) })
     const stop = new AbortController()
     let releaseSecond!: () => void
-    reader.predictAccountAddress.mockImplementation(async (_f, bootstrap) => {
-      if (bootstrap === deriveBootstrapKey(second).address) {
+    reader.readNameOf.mockImplementation(async (_registry, account) => {
+      if (account === accountOf(second)) {
         await new Promise<void>((resolve) => (releaseSecond = resolve))
       }
-      return `0x${bootstrap.slice(-40)}` as Address
+      return NAME_HASH
     })
     reader.getCode.mockImplementation(async (account) => {
       if (account === accountOf(first)) throw new Error("RPC down")
@@ -253,6 +285,7 @@ describe("readInstalledPasskeyKey", () => {
     await expect(
       readInstalledPasskeyKey([first, second], [REAL, OTHER], {
         reader,
+        registry: REGISTRY,
         accountFactories: [FACTORY],
         stop: stop.signal,
       }),
@@ -266,12 +299,13 @@ describe("readInstalledPasskeyKey", () => {
 
   it("any failed read rejects", async () => {
     const chain = { [accountOf(first)]: deployed(entry(REAL)) }
-    for (const failing of ["predictAccountAddress", "getCode", "readAuthKeys"] as const) {
+    for (const failing of ["readNameOf", "getCode", "readAuthKeys"] as const) {
       const reader = readerOver(chain)
       reader[failing].mockRejectedValue(new Error("RPC down"))
       await expect(
         readInstalledPasskeyKey([first, second], [REAL, OTHER], {
           reader,
+          registry: REGISTRY,
           accountFactories: [FACTORY],
         }),
       ).rejects.toThrow(/RPC down/)

@@ -290,8 +290,8 @@ export class ObsidionWalletBackend extends ObsidionWallet {
 
 /**
  * Recover the initializerless Schnorr account used by deployment tooling and backend operators.
- * Keeping this beside ObsidionWalletBackend gives every packaged backend consumer one public SDK
- * entrypoint instead of reaching into packages/backend/src.
+ * Keeping this beside ObsidionWalletBackend gives the deployer, the sandbox tooling and the backend
+ * services one public SDK entrypoint.
  */
 export async function getDeployAdminAccount(
   wallet: ObsidionWalletBackend,

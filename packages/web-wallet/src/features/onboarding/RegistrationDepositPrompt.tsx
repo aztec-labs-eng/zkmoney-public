@@ -1,21 +1,25 @@
-import { useCallback, useEffect, useReducer, useState, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useReducer, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import type { Address } from "viem"
-import type { PendingRegistrationRecord } from "@obsidion/front-core"
+import { fundsIn } from "@obsidion/front-core"
 import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
 import { useDepositAdmission } from "../identity/admission"
+import { OweRegistrationBroadcast } from "../broadcasts/useOweRegistrationBroadcast"
 import { RegistrationSheet } from "./RegistrationSheet"
-import { fundingAssetsLabel } from "./steps/DepositTermsRows"
-import { awaitingDepositKey, awaitingDepositRecord } from "./SecureNameNoticeCard"
+import { swapAssetsLabel } from "./steps/DepositTermsRows"
+import { useOpenRegistration } from "./openRegistration"
 import { registrationRecoveryNeeded, useRegistrationRefunded } from "./registrationQuoteRecovery"
 import {
+  committedProverTip,
   depositChainLabel,
   loadRegistrationTerms,
   quotedRegistrationKind,
   registrationKind,
+  quoteExpired,
   registrationQuote,
+  reservedUntil,
   scheduleForRecord,
   signedWithoutSchedule,
   termsUnpriced,
@@ -32,11 +36,7 @@ import { openClaimPrompt } from "../paylink/claimPrompt"
 import { paylinkSignupQuote } from "../paylink/paylinkSignupQuote"
 import { ticketActivation } from "../paylink/ticketContinuation"
 import { getWithdrawalStore } from "../withdraw/withdrawGateway"
-import {
-  getPendingStore,
-  registrationSwept,
-  useRegistrationPublishStalled,
-} from "./webRegistration"
+import { registrationAddressPublished, useRegistrationPublishStalled } from "./webRegistration"
 import {
   activationPromptDismissed,
   closeActivationPrompt,
@@ -46,24 +46,19 @@ import {
 
 const CLOCK_MS = 60_000
 
-/** The active wallet's registration still waiting for its deposit, live from the record store. */
-export function useAwaitingDepositRecord(): PendingRegistrationRecord | null {
-  const key = useSyncExternalStore(
-    (onChange) => getPendingStore().onListChanged(onChange),
-    awaitingDepositKey,
-  )
-  return key === null ? null : awaitingDepositRecord()
-}
-
 export function RegistrationDepositPrompt() {
   const navigate = useNavigate()
   const { pathname } = useLocation()
   const config = getConfig()
-  const record = useAwaitingDepositRecord()
+  // Only a registration still awaiting its deposit: once the record is promoted, the Home hero
+  // carries the claim.
+  const current = useOpenRegistration()
+  const registration = current?.record.phase === "awaiting_deposit" ? current : null
+  const record = registration?.record ?? null
   const open = useActivationPromptOpen()
-  // Asked once per tab and record: the moment the name is waiting, unless this tab already said
-  // later. A ticket-funded name whose bound link is on this tab is left to Home's claim review,
-  // which owns that claim; raising this sheet beside it would be a second prompt for one action.
+  // Asked once per tab and record: the moment the name is waiting, unless this tab already closed
+  // it. A ticket-funded name on Home is left to Home, which claims its link itself and reports
+  // the rest in the hero; raising this sheet beside it would be a second prompt for one action.
   useEffect(() => {
     if (!record || activationPromptDismissed(record)) return
     const ticket = ticketActivation(
@@ -71,7 +66,7 @@ export function RegistrationDepositPrompt() {
       loadRegistrationTerms(record.account, record.tag),
       getWithdrawalStore().list(),
     )
-    if (ticket?.state === "ready" && pathname === "/") return
+    if (ticket && pathname === "/") return
     openActivationPrompt()
   }, [record?.account])
   const onClose = () => closeActivationPrompt(record)
@@ -79,18 +74,21 @@ export function RegistrationDepositPrompt() {
   const unsignedFallback = signedWithoutSchedule(terms)
   const [readAttempt, setReadAttempt] = useState(0)
   const retryReads = useCallback(() => setReadAttempt((n) => n + 1), [])
+  // The pill's own read of the address is out.
+  const [reading, setReading] = useState(false)
   const sweepDeductions = useSweepDeductions(
     config,
     record?.depositToken,
     record !== null && open,
     readAttempt,
   )
-  const received = useDepositWatch(
+  const watch = useDepositWatch(
     config,
     record && open
       ? { token: record.depositToken as Address, address: record.sipaAddress as Address }
       : null,
   )
+  const { balance: received, token: receivedToken } = watch
   // Seen here first: the rail carries it from now on.
   useEffect(() => {
     if (record && received > 0n) void noteRegistrationDepositSeen(record.sipaAddress, received)
@@ -123,8 +121,9 @@ export function RegistrationDepositPrompt() {
     const timer = setInterval(tick, CLOCK_MS)
     return () => clearInterval(timer)
   }, [record, open])
-  if (!record || !open) return null
+  if (!registration || !record || !open) return null
   const nowMs = Date.now()
+  const { stage } = registration
 
   const feeWaived = !termsUnpriced(terms) && terms?.feeWaived === true
   const schedule = scheduleForRecord(
@@ -140,10 +139,10 @@ export function RegistrationDepositPrompt() {
   const scheduleUnavailable =
     schedule === undefined && !(unsignedFallback && chainAmounts === undefined)
   const paused = unsignedFallback && chainAmounts === null
-  const deadline = terms?.deadline && terms.deadline > 0 ? terms.deadline : undefined
-  // A swept deposit is past its deadline and its publication: the sweep is what registers the name.
-  const swept = registrationSwept(record)
-  const expired = !swept && deadline !== undefined && nowMs > deadline * 1000
+  // Funds in are past the quote's deadline and the address's publication.
+  const held = fundsIn(stage)
+  const expired = !held && quoteExpired(terms, nowMs)
+  const holdEnds = reservedUntil(terms, nowMs)
   const wrongChain = record.l1ChainId !== config.l1ChainId
   const recovery = registrationRecoveryNeeded(
     record,
@@ -153,7 +152,7 @@ export function RegistrationDepositPrompt() {
     fpcCut,
   )
   // An unpublished address is not asked for: the pending step's retry publishes it first.
-  const stalled = publishStalled && !swept && !wrongChain && !recovery && !expired
+  const stalled = publishStalled && !held && !wrongChain && !recovery && !expired
   const claimPage = () => navigate(`/claim/${record.tag}`)
   const recoveryPage = () => navigate(`/claim/${record.tag}?recovery=1`)
 
@@ -169,6 +168,8 @@ export function RegistrationDepositPrompt() {
             schedule: ticket.schedule,
             cuts: { withdrawalCut: fpcCut, depositCut: fpcCut },
             sweepFee: sweepFee || undefined,
+            // The review this hands off to quotes the tip again.
+            proverTip: committedProverTip(terms),
           })
         : undefined
     const claimNow = () => {
@@ -185,59 +186,54 @@ export function RegistrationDepositPrompt() {
         : ticket.state === "renew"
         ? `The reservation for @${record.tag} needs a fresh quote before the payment can fund it.`
         : ticket.state === "unpublished"
-        ? "Your deposit address was not published, so the payment cannot fund it yet. Check on the registration to try again."
+        ? publishStalled
+          ? "Your deposit address was not published, so the payment cannot fund it yet. Check on the registration to try again."
+          : "Publishing your deposit address. The payment funds it once that lands."
         : ticket.state === "missing_link"
         ? "The payment link that funds this name is not open here. Open the link you were sent again to claim it."
         : undefined
     return (
-      <RegistrationSheet
-        variant="wallet"
-        tag={record.tag}
-        title={
-          ticket.state === "submitted"
-            ? "Registration pending"
-            : ready
-            ? "Claim your payment"
-            : "Activate account"
-        }
-        deadline={expired ? undefined : deadline}
-        note={ticketNote}
-        onClose={onClose}
-        settlement={
-          ready
-            ? {
-                quote,
-                tokenSymbol: WALLET_TOKEN_SYMBOL,
-                tokenDecimals: tokenDecimalsForNetwork(config.network),
-              }
-            : undefined
-        }
-        actions={
-          <div className="ww-deposit-actions">
-            {ready && (
-              <PrimaryGradientButton
-                title="Claim your payment"
-                isDisabled={quote === undefined || quote.covers === false}
-                onClick={claimNow}
-              />
-            )}
-            {(ticket.state === "blocked" ||
-              ticket.state === "renew" ||
-              ticket.state === "unpublished" ||
-              ticket.state === "missing_link") && (
-              <PrimaryGradientButton title="Check registration" onClick={claimPage} />
-            )}
-            <button
-              type="button"
-              className="zkm-btn-reset ww-deposit-actions__link"
-              data-testid="deposit-prompt-later"
-              onClick={onClose}
-            >
-              Later
-            </button>
-          </div>
-        }
-      />
+      <>
+        {ticket.state === "unpublished" && <OweRegistrationBroadcast record={record} />}
+        <RegistrationSheet
+          variant="wallet"
+          tag={record.tag}
+          title={
+            ticket.state === "submitted"
+              ? "Registration pending"
+              : ready
+              ? "Claim your payment"
+              : "Activate account"
+          }
+          reservedUntil={expired ? undefined : holdEnds}
+          note={ticketNote}
+          onClose={onClose}
+          settlement={
+            ready
+              ? {
+                  quote,
+                  tokenSymbol: WALLET_TOKEN_SYMBOL,
+                  tokenDecimals: tokenDecimalsForNetwork(config.network),
+                }
+              : undefined
+          }
+          actions={
+            ticket.state === "submitted" ? undefined : (
+              <div className="ww-deposit-actions">
+                {ready ? (
+                  <PrimaryGradientButton
+                    title="Claim your payment"
+                    isDisabled={quote === undefined || quote.covers === false}
+                    onClick={claimNow}
+                  />
+                ) : (
+                  <PrimaryGradientButton title="Check registration" onClick={claimPage} />
+                )}
+              </div>
+            )
+          }
+        />
+      </>
     )
   }
 
@@ -255,66 +251,80 @@ export function RegistrationDepositPrompt() {
     ? REGISTRATIONS_PAUSED_NOTICE
     : undefined
 
+  const addressShown = !(wrongChain || recovery || expired || stalled || paused)
   return (
-    <RegistrationSheet
-      variant="wallet"
-      tag={record.tag}
-      title={
-        recovery && !wrongChain
-          ? "Registration needs recovery"
-          : paused
-          ? "Activation is paused"
-          : "Activate account"
-      }
-      deadline={expired ? undefined : deadline}
-      note={note}
-      onClose={onClose}
-      payment={
-        wrongChain || recovery || expired || stalled || paused
-          ? undefined
-          : {
-              address: record.sipaAddress as Address,
-              token: record.depositToken as Address,
-              chainId: record.l1ChainId,
-              chainLabel: depositChainLabel(config),
-              total: quote?.total,
-              fee: quote?.fee,
-              sweepFee,
-              floor: quote?.floor,
-              fpcCut,
-              scheduleUnavailable,
-              kind: kind ?? registrationKind(feeWaived),
-              tokenSymbol: WALLET_TOKEN_SYMBOL,
-              fundingAssets: fundingAssetsLabel(config.network),
-              tokenDecimals: tokenDecimalsForNetwork(config.network),
-              received,
-              // The machine holds the deposit, at the address or already swept: the address it
-              // was sent to is not offered again, whatever its balance reads now.
-              funded: record.fundedAt !== undefined || swept,
-            }
-      }
-      actions={
-        <div className="ww-deposit-actions">
-          {recovery && !wrongChain && (
-            <PrimaryGradientButton
-              title={refunded ? "Request a new address" : "Recover deposit"}
-              onClick={recoveryPage}
-            />
-          )}
-          {expired && !recovery && !wrongChain && (
-            <PrimaryGradientButton title={`Register @${record.tag} again`} onClick={claimPage} />
-          )}
-          {stalled && <PrimaryGradientButton title="Check registration" onClick={claimPage} />}
-          <button
-            type="button"
-            className="zkm-btn-reset ww-deposit-actions__link"
-            data-testid="deposit-prompt-later"
-            onClick={onClose}
-          >
-            Later
-          </button>
-        </div>
-      }
-    />
+    <>
+      {addressShown && <OweRegistrationBroadcast record={record} />}
+      <RegistrationSheet
+        variant="wallet"
+        tag={record.tag}
+        title={
+          recovery && !wrongChain
+            ? "Registration needs recovery"
+            : paused
+            ? "Activation is paused"
+            : "Activate account"
+        }
+        reservedUntil={expired ? undefined : holdEnds}
+        note={note}
+        onClose={onClose}
+        payment={
+          !addressShown
+            ? undefined
+            : {
+                address: record.sipaAddress as Address,
+                publishing: !registrationAddressPublished(record),
+                token: record.depositToken as Address,
+                chainId: record.l1ChainId,
+                chainLabel: depositChainLabel(config),
+                total: quote?.total,
+                fee: quote?.fee,
+                sweepFee,
+                floor: quote?.floor,
+                fpcCut,
+                scheduleUnavailable,
+                kind: kind ?? registrationKind(feeWaived),
+                tokenSymbol: WALLET_TOKEN_SYMBOL,
+                network: config.network,
+                swapAssets: swapAssetsLabel(config.network),
+                tokenDecimals: tokenDecimalsForNetwork(config.network),
+                received,
+                receivedToken,
+                // The machine holds the deposit, at the address or already swept: the address it
+                // was sent to is not offered again, whatever its balance reads now.
+                funded: held,
+                // The pill: the chain reads again, and the address ahead of its poll.
+                check: {
+                  lastCheckedAt: watch.readAt,
+                  busy: reading,
+                  onCheck: () => {
+                    retryReads()
+                    setReading(true)
+                    void watch.read().finally(() => setReading(false))
+                  },
+                },
+              }
+        }
+        actions={
+          wrongChain || !(recovery || expired || stalled) ? undefined : (
+            <div className="ww-deposit-actions">
+              {recovery ? (
+                <PrimaryGradientButton
+                  title={refunded ? "Request a new address" : "Recover deposit"}
+                  onClick={recoveryPage}
+                />
+              ) : expired ? (
+                <PrimaryGradientButton
+                  title={`Register @${record.tag} again`}
+                  onClick={claimPage}
+                />
+              ) : (
+                <PrimaryGradientButton title="Check registration" onClick={claimPage} />
+              )}
+            </div>
+          )
+        }
+      />
+    </>
   )
 }

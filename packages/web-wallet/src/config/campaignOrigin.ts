@@ -1,7 +1,7 @@
 /**
- * The launch campaign's origin, from the URL a build bakes. It is the one sender the bridge page
- * trusts, so only https qualifies (plus http://localhost for a local pair): a plain-http or opaque
- * URL, whose origin is the shared literal "null", is refused before anything is built.
+ * The launch campaign's origin, from the URL a build bakes. It is the one referrer the sealed
+ * hand-off trusts, so only https qualifies (plus http://localhost for a local pair): a plain-http
+ * or opaque URL, whose origin is the shared literal "null", is refused before anything is built.
  */
 
 type CampaignEnv = { VITE_CAMPAIGN_URL?: string }

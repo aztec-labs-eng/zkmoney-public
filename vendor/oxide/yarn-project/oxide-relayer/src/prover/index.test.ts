@@ -16,18 +16,10 @@ const deploymentWithProverSubsidy = (proverSubsidy: EthAddress): ResolvedManifes
 
 describe('startEpochProofs', () => {
   it('refuses to start when the pinned entry publishes the zero address for proverSubsidy', async () => {
-    const deps = { l1TxUtils: {}, l1SubmissionBatcher: {}, priceOracle: {} } as unknown as EpochProofsDeps;
+    const deps = { client: {}, l1TxQueue: {}, priceOracle: {} } as unknown as EpochProofsDeps;
 
     await expect(startEpochProofs(config, deploymentWithProverSubsidy(EthAddress.ZERO), deps)).rejects.toThrow(
       /zero address for proverSubsidy/,
     );
-  });
-
-  it('starts nothing while submission is disabled', async () => {
-    const deps = { priceOracle: {} } as unknown as EpochProofsDeps;
-
-    const service = await startEpochProofs(config, deploymentWithProverSubsidy(EthAddress.ZERO), deps);
-
-    await expect(service.stop()).resolves.toBeUndefined();
   });
 });

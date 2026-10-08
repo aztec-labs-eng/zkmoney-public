@@ -13,6 +13,7 @@ export * from "./requestRows"
 export * from "./recentContacts"
 export * from "./tokenIdentity"
 export * from "./escrowAmount"
+export * from "./tokenAmount"
 export * from "./logger"
 export * from "./makeLimiter"
 

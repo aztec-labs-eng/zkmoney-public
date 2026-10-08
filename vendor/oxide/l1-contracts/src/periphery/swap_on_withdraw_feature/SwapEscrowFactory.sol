@@ -1,19 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
 
-import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IUniversalRouter} from "@uniswap/universal-router/contracts/interfaces/IUniversalRouter.sol";
+import {EscrowFactoryBase} from "@periphery/EscrowFactoryBase.sol";
 import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
 import {ICurve3Pool} from "@periphery/interfaces/ICurve3Pool.sol";
 import {SwapEscrow} from "./SwapEscrow.sol";
 
-contract SwapEscrowFactory {
-  IERC20 public immutable DAI;
-  address public immutable IMPLEMENTATION;
-
-  event SwapEscrowExecuted(address indexed escrow, address tipRecipient);
-
+contract SwapEscrowFactory is EscrowFactoryBase {
   constructor(
     IERC20 _dai,
     address _usdc,
@@ -22,32 +17,17 @@ contract SwapEscrowFactory {
     IUniversalRouter _router,
     ICurve3Pool _threePool,
     AggregatorV3Interface _ethUsdFeed
-  ) {
-    DAI = _dai;
-    IMPLEMENTATION = address(new SwapEscrow(_dai, _usdc, _usdt, _weth, _router, _threePool, _ethUsdFeed));
-  }
+  ) EscrowFactoryBase(_dai, address(new SwapEscrow(_dai, _usdc, _usdt, _weth, _router, _threePool, _ethUsdFeed))) {}
 
   function deployAndExecute(SwapEscrow.Args calldata _args) external returns (address escrow) {
-    escrow = predictEscrowAddress(_args);
-
-    uint256 balance = DAI.balanceOf(escrow);
-    if (balance <= _args.relayerTip) {
-      return escrow;
-    }
-
-    deploy(_args);
-    SwapEscrow(escrow).execute(msg.sender);
-    emit SwapEscrowExecuted(escrow, msg.sender);
+    return _deployAndExecute(abi.encode(_args), _args.relayerTip);
   }
 
-  function deploy(SwapEscrow.Args calldata _args) public returns (address escrow) {
-    escrow = predictEscrowAddress(_args);
-    if (escrow.code.length == 0) {
-      Clones.cloneDeterministicWithImmutableArgs(IMPLEMENTATION, abi.encode(_args), bytes32(0));
-    }
+  function deploy(SwapEscrow.Args calldata _args) external returns (address escrow) {
+    return _deploy(abi.encode(_args));
   }
 
-  function predictEscrowAddress(SwapEscrow.Args calldata _args) public view returns (address) {
-    return Clones.predictDeterministicAddressWithImmutableArgs(IMPLEMENTATION, abi.encode(_args), bytes32(0));
+  function predictEscrowAddress(SwapEscrow.Args calldata _args) external view returns (address) {
+    return _predictEscrowAddress(abi.encode(_args));
   }
 }

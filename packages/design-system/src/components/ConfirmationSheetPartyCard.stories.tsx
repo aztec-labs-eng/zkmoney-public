@@ -35,7 +35,7 @@ export const IncomingGreen: Story = {
     handle: "zk.money",
     trailingText: "+$50.00",
     trailingColor: "#56E79D",
-    trailingSubtitle: "zkUSD",
+    trailingSubtitle: "USD",
     avatar: <GradientInitialAvatar name="honktheg00se" size={40} />,
   },
 }

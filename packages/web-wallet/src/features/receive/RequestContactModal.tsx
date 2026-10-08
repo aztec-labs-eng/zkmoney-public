@@ -1,4 +1,5 @@
 import { useAssetContext } from "@obsidion/front-core"
+import { TRANSFER_MEMO_MAX_BYTES, truncateUtf8 } from "@obsidion/sdk"
 import {
   ConfirmationSheetDetailRow,
   GradientInitialAvatar,
@@ -11,7 +12,7 @@ import { showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { MessagingBanner } from "../../platform/xmtp/MessagingBanner"
 import { loadWalletIdentity } from "../identity/walletIdentity"
-import { decimalInput, usdBalance } from "../../ui/format"
+import { amountError, decimalInput, usdBalance } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { requestFromContact } from "../contacts/contactPay"
 import { parseRequestAmount } from "./receiveView"
@@ -39,8 +40,9 @@ export function RequestContactModal({
   const [busy, setBusy] = useState(false)
 
   const parsedAmount = parseRequestAmount(amount)
-  const amountError =
-    amount.trim() && parsedAmount === null ? "Enter an amount above $0." : undefined
+  const amountFieldError =
+    amountError(amount.trim().replace(/^\$/, "")) ??
+    (amount.trim() && parsedAmount === null ? "Enter an amount above $0." : undefined)
 
   const submit = async () => {
     if (!tokenService || parsedAmount === null || busy) return
@@ -86,14 +88,14 @@ export function RequestContactModal({
               autoFocus
               value={amount}
               onChange={(v) => setAmount(decimalInput(v))}
-              error={amountError}
+              error={amountFieldError}
               onSubmit={() => parsedAmount !== null && setStep("review")}
             />
             <TextField
               label="Add note (optional)"
               placeholder="e.g. dinner"
               value={note}
-              onChange={setNote}
+              onChange={(v) => setNote(truncateUtf8(v, TRANSFER_MEMO_MAX_BYTES))}
             />
             <PrimaryGradientButton
               title="Request funds"

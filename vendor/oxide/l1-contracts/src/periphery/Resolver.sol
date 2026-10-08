@@ -15,7 +15,11 @@ import {Errors} from "@periphery/Errors.sol";
 contract Resolver is IExtendedResolver, SupportsInterface {
   error OffchainLookup(address sender, string[] urls, bytes callData, bytes4 callbackFunction, bytes extraData);
 
-  bytes4 private constant ADDR_SELECTOR = 0x3b3b57de;
+  // solhint-disable-next-line oxide/no-comments
+  // ENS resolver selectors: ENSIP-1 addr(node) = 0x3b3b57de, ENSIP-9 addr(node, coinType) = 0xf1cb7e06.
+  bytes4 private constant ADDR_SELECTOR = bytes4(keccak256("addr(bytes32)"));
+  bytes4 private constant MULTICHAIN_ADDR_SELECTOR = bytes4(keccak256("addr(bytes32,uint256)"));
+  uint256 private constant COIN_TYPE_ETH = 60;
   uint256 private constant SECONDS_PER_DAY = 86_400;
   uint256 private constant DAY_BOUNDARY_GRACE = 30 minutes;
   uint256 private constant PUBLIC_INPUTS_LENGTH = 12;
@@ -66,26 +70,40 @@ contract Resolver is IExtendedResolver, SupportsInterface {
   }
 
   function resolve(bytes calldata name, bytes calldata data) external view override returns (bytes memory) {
-    bytes32 nameHash = _extractNameHash(data);
+    (bytes32 nameHash, bool multichain, uint256 coinType) = _parseResolveData(data);
+    if (coinType != COIN_TYPE_ETH) return abi.encode(bytes(""));
     (,, AccountMetadataRegistry.ResolverOperator memory resolverOperator) = _loadResolutionRecords(nameHash);
 
     string[] memory urls = new string[](1);
     urls[0] = resolverOperator.url;
 
-    bytes memory callData = abi.encodeWithSelector(Resolver.resolve.selector, name, data);
-    revert OffchainLookup(address(this), urls, callData, this.resolveWithProof.selector, abi.encode(nameHash));
+    bytes memory callData =
+      abi.encodeWithSelector(Resolver.resolve.selector, name, abi.encodeWithSelector(ADDR_SELECTOR, nameHash));
+    revert OffchainLookup(
+      address(this), urls, callData, this.resolveWithProof.selector, abi.encode(nameHash, multichain)
+    );
   }
 
-  function _extractNameHash(bytes calldata data) internal pure returns (bytes32) {
-    if (data.length != 36) revert Errors.Resolver__MalformedResolveData();
+  function _parseResolveData(bytes calldata data)
+    internal
+    pure
+    returns (bytes32 nameHash, bool multichain, uint256 coinType)
+  {
+    if (data.length == 36) {
+      // forge-lint: disable-next-line(unsafe-typecast)
+      bytes4 selector = bytes4(data);
+      if (selector != ADDR_SELECTOR) revert Errors.Resolver__UnsupportedResolverFunction(selector);
+      return (bytes32(data[4:36]), false, COIN_TYPE_ETH);
+    }
     // forge-lint: disable-next-line(unsafe-typecast)
-    bytes4 selector = bytes4(data);
-    if (selector != ADDR_SELECTOR) revert Errors.Resolver__UnsupportedResolverFunction(selector);
-    return bytes32(data[4:36]);
+    if (data.length == 68 && bytes4(data) == MULTICHAIN_ADDR_SELECTOR) {
+      return (bytes32(data[4:36]), true, uint256(bytes32(data[36:68])));
+    }
+    revert Errors.Resolver__MalformedResolveData();
   }
 
   function resolveWithProof(bytes calldata response, bytes calldata extraData) external view returns (bytes memory) {
-    bytes32 nameHash = abi.decode(extraData, (bytes32));
+    (bytes32 nameHash, bool multichain) = abi.decode(extraData, (bytes32, bool));
     (
       address userAddress,
       AccountMetadataRegistry.UserRecord memory user,
@@ -116,6 +134,7 @@ contract Resolver is IExtendedResolver, SupportsInterface {
 
     if (sipa != expectedSIPA) revert Errors.Resolver__SIPAMismatch(expectedSIPA, sipa);
 
+    if (multichain) return abi.encode(abi.encodePacked(sipa));
     return abi.encode(sipa);
   }
 

@@ -1,11 +1,11 @@
 /**
  * Wallet-side pricing of a golden-ticket registration: what the link's note must burn so the
  * registration SIPA sweeps, what the recipient keeps at once, and what the sweep returns later.
- * The figures come from `goldenTicketQuote` in core; this layer adds the tips and the note.
+ * The figures come from `goldenTicketQuote` in core; this layer adds the tips and the note. The
+ * prover tip is the caller's: zero, or the one the review committed to.
  */
 import {
   GOLDEN_TICKET_BRIDGE_REMAINDER,
-  GOLDEN_TICKET_PROVER_TIP,
   goldenTicketQuote,
   WITHDRAW_RELAYER_TIP,
   type GoldenTicketQuote,
@@ -21,16 +21,17 @@ export interface GoldenTicketCuts {
   depositCut: bigint
 }
 
-/** The burn for one signed schedule at the live cuts, with the fixed tips and remainder. */
+/** The burn for one signed schedule at the live cuts, with the relayer tip and remainder. */
 export function goldenTicketBurn(
   schedule: RegistrationSchedule,
   cuts: GoldenTicketCuts,
+  proverTip: bigint,
 ): GoldenTicketQuote {
   return goldenTicketQuote(schedule, {
     withdrawalCut: cuts.withdrawalCut,
     depositCut: cuts.depositCut,
     relayerTip: WITHDRAW_RELAYER_TIP,
-    proverTip: GOLDEN_TICKET_PROVER_TIP,
+    proverTip,
     bridgeRemainder: GOLDEN_TICKET_BRIDGE_REMAINDER,
   })
 }
@@ -50,8 +51,9 @@ export function goldenTicketCoverage(
   noteAmount: bigint,
   schedule: RegistrationSchedule,
   cuts: GoldenTicketCuts,
+  proverTip: bigint,
 ): GoldenTicketCoverage {
-  const quote = goldenTicketBurn(schedule, cuts)
+  const quote = goldenTicketBurn(schedule, cuts, proverTip)
   const immediate = noteAmount - quote.burn
   return {
     ...quote,

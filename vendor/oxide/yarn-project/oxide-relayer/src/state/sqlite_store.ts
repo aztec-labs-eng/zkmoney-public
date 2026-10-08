@@ -178,9 +178,9 @@ export class SqliteStateStore implements StateStore {
   }
 
   /**
-   * A rebroadcast from a later L2 block reopens a settled row (`executed` or `dropped`) with a fresh retry budget and
-   * the rebroadcast condition; the same or an older broadcast changes nothing, and `pending`, `waiting` and `blocked`
-   * rows are left alone.
+   * A rebroadcast from a later L2 block reopens a settled row (`executed` or `dropped`) with zero `attempts` for the
+   * submitter's revert backoff, a fresh `created_at` for its max age, and the rebroadcast condition; the same or an
+   * older broadcast changes nothing, and `pending`, `waiting` and `blocked` rows are left alone.
    */
   async upsertPendingL1Operation(...operations: PendingL1Operation[]): Promise<void> {
     if (!operations.length) {
@@ -209,6 +209,7 @@ export class SqliteStateStore implements StateStore {
           next_check_at = NULL,
           last_balance_check_at = NULL,
           last_reason = NULL,
+          created_at = excluded.created_at,
           updated_at = excluded.updated_at
         WHERE pending_l1_operations.status IN ('executed', 'dropped')
           AND CAST(excluded.l2_block_number AS INTEGER) > CAST(pending_l1_operations.l2_block_number AS INTEGER)
@@ -231,7 +232,7 @@ export class SqliteStateStore implements StateStore {
         iso(operation.nextCheckAt),
         iso(operation.lastBalanceCheckAt),
         operation.lastReason ?? null,
-        iso(operation.createdAt ?? new Date()),
+        iso(operation.createdAt),
         iso(operation.updatedAt ?? new Date()),
       ]),
     );
@@ -344,6 +345,20 @@ export class SqliteStateStore implements StateStore {
       iso(new Date()),
       operationId.toLowerCase(),
     );
+  }
+
+  async dropWaitingL1Operations(kind: L1OperationConditionKind, createdBefore: Date): Promise<number> {
+    const result = await this.db.run(
+      `
+        UPDATE pending_l1_operations
+        SET status = 'dropped', updated_at = ?
+        WHERE status = 'waiting' AND condition_kind = ? AND created_at < ?
+      `,
+      iso(new Date()),
+      kind,
+      iso(createdBefore),
+    );
+    return result.changes ?? 0;
   }
 
   async markL1OperationPending(operationId: Hex): Promise<boolean> {

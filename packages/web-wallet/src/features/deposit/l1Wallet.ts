@@ -4,6 +4,8 @@
  */
 import {
   BaseError,
+  ChainMismatchError,
+  ProviderDisconnectedError,
   UserRejectedRequestError,
   createWalletClient,
   custom,
@@ -25,10 +27,59 @@ import { wagmiConfig } from "./wagmi"
 
 type Eip1193 = { request: (args: { method: string; params?: unknown[] }) => Promise<unknown> }
 
-/** True when the user dismissed the wallet's prompt (EIP-1193 code 4001), however deeply viem wrapped it. */
+// Some wallets behind WalletConnect reject with a generic code and only say so in the message.
+const REJECTION_MESSAGE =
+  /^(the )?user (has )?(rejected|denied|cancell?ed)\b|\b(rejected|denied|cancell?ed) by (the )?user\b/i
+
+/** True when the user dismissed the wallet's prompt, however deeply viem wrapped it. */
 export function isWalletRejection(err: unknown): boolean {
-  if (err instanceof BaseError) return err.walk((e) => e instanceof UserRejectedRequestError) !== null
-  return (err as { code?: unknown })?.code === UserRejectedRequestError.code
+  if (err instanceof BaseError) {
+    return (
+      err.walk(
+        (e) =>
+          e instanceof UserRejectedRequestError ||
+          (e instanceof BaseError && REJECTION_MESSAGE.test(e.details)),
+      ) !== null
+    )
+  }
+  const { code, message } = (err ?? {}) as { code?: unknown; message?: unknown }
+  return (
+    code === UserRejectedRequestError.code ||
+    (typeof message === "string" && REJECTION_MESSAGE.test(message))
+  )
+}
+
+const WALLETCONNECT_USER_DISCONNECTED = 6000
+const DISCONNECT_MESSAGE = /^user disconnected\.?$/i
+
+export function isWalletDisconnect(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false
+  const { code, details, message, cause } = err as Record<string, unknown>
+  const text = details ?? message
+  return (
+    code === ProviderDisconnectedError.code ||
+    code === WALLETCONNECT_USER_DISCONNECTED ||
+    (typeof text === "string" && DISCONNECT_MESSAGE.test(text)) ||
+    isWalletDisconnect(cause)
+  )
+}
+
+export function isWrongNetwork(err: unknown): boolean {
+  return err instanceof BaseError && err.walk((e) => e instanceof ChainMismatchError) !== null
+}
+
+/**
+ * viem retries a failed eth_sendTransaction as wallet_sendTransaction. WalletConnect forwards that to
+ * its public RPC, whose error then replaces the wallet's own, a rejection included. Refusing it here
+ * makes viem rethrow the original.
+ */
+function withoutWalletNamespace(provider: Eip1193): Eip1193 {
+  return {
+    request: (args) =>
+      args.method === "wallet_sendTransaction"
+        ? Promise.reject({ code: -32601, message: "Method not found" })
+        : provider.request(args),
+  }
 }
 
 /**
@@ -87,7 +138,10 @@ export async function getL1Clients(chainId: number, from?: Hex): Promise<L1Clien
   const provider = await connectorProvider()
   await ensureChain(provider, chainId)
   const chain = l1ChainFor(chainId)
-  const walletClient = createWalletClient({ chain, transport: custom(provider) })
+  const walletClient = createWalletClient({
+    chain,
+    transport: custom(withoutWalletNamespace(provider)),
+  })
   // A wagmi connector already holds permission; the bare injected fallback must still prompt.
   const addresses = liveConnector()
     ? await walletClient.getAddresses()

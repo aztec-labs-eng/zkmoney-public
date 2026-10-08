@@ -127,7 +127,7 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
     DepositSubsidy sm = new DepositSubsidy(OWNER, address(portal), AggregatorV3Interface(address(feed)), sipaFactory);
     underlying.mint(address(sm), 100_000 ether);
     vm.prank(OWNER);
-    sm.setDepositConfig(0.1e18, 12e18, fee);
+    sm.setDepositConfig(0.1e18, 12e18, fee, 0, 0);
     vm.fee(1 gwei);
     vm.txGasPrice(1 gwei);
 
@@ -162,7 +162,7 @@ contract SIPAPlumbingBindingTest is RegistrationTestBase {
     DepositSubsidy sm = new DepositSubsidy(OWNER, address(portal), AggregatorV3Interface(address(feed)), sipaFactory);
     underlying.mint(address(sm), 100_000 ether);
     vm.prank(OWNER);
-    sm.setDepositConfig(0.1e18, type(uint128).max, fee);
+    sm.setDepositConfig(0.1e18, type(uint128).max, fee, 0, 0);
     vm.fee(1 gwei);
     vm.txGasPrice(1 gwei);
 

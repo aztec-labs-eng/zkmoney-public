@@ -63,3 +63,12 @@ export function BalanceSkeleton() {
     </Shimmer>
   )
 }
+
+/** Placeholder for a one-line text value, e.g. a detail row's value. */
+export function TextSkeleton({ width = 120 }: { width?: number }) {
+  return (
+    <Shimmer style={{ width: "fit-content", borderRadius: 8, overflow: "hidden" }}>
+      <SkeletonBlock width={width} height={14} />
+    </Shimmer>
+  )
+}

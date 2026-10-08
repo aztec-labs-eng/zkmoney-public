@@ -1,5 +1,7 @@
 "use strict"
 
+const { isLiveSubmission } = require("./l1SubmitBridge")
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -59,8 +61,26 @@ const SHARED_STYLE = `
   }
 `
 
-/** Rendered when the id is unknown or the submission expired/superseded. */
-function renderL1SubmitGonePage() {
+/** The wallet page refused the send; its reason, as one sentence. */
+function refusalText(message) {
+  const reason = String(message ?? "").trim()
+  const end = /[.!?]$/.test(reason) ? "" : "."
+  const stopped = reason ? `stopped this transfer: ${reason}${end}` : "stopped this transfer."
+  return `zk.money Desktop ${stopped} Go back to zk.money Desktop to review it.`
+}
+
+/** Rendered when the id is unknown, the submission ended, or the wallet page refused it. */
+function renderL1SubmitGonePage(record) {
+  if (record?.state === "refused") {
+    return `<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>zk.money Desktop — transfer stopped</title><style>${SHARED_STYLE}</style></head>
+<body>
+<h1>This transfer was stopped</h1>
+<p class="hint">${escapeHtml(refusalText(record.message))}</p>
+</body></html>
+`
+  }
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>zk.money Desktop — request expired</title><style>${SHARED_STYLE}</style></head>
@@ -78,7 +98,7 @@ function renderL1SubmitGonePage() {
  * wallet's own confirmation UI is the actual review step.
  */
 function renderL1SubmitPage(id, record) {
-  if (!record || record.state !== "pending") return renderL1SubmitGonePage()
+  if (!isLiveSubmission(record)) return renderL1SubmitGonePage(record)
   const rows = record.display.lines
     .map(([label, value]) => `<tr><td>${escapeHtml(label)}</td><td>${escapeHtml(value)}</td></tr>`)
     .join("\n")
@@ -97,6 +117,12 @@ function renderL1SubmitPage(id, record) {
 Ethereum wallet installed here. When your wallet asks you to confirm, check before approving: the
 request should come from this page's address (<code id="page-origin">127.0.0.1</code>, as shown in
 your address bar), and what you're signing should match the details below.</p>
+${
+  record.recheck
+    ? `<p class="hint">Before your wallet opens, zk.money Desktop checks this transfer again. Keep
+zk.money Desktop open until you have approved it.</p>`
+    : ""
+}
 <table>
 ${rows}
 </table>
@@ -109,6 +135,11 @@ browser where your wallet extension is installed.</p>
 
 <script>
 const tx = ${JSON.stringify(record.tx).replaceAll("<", "\\u003c")}
+${refusalText.toString()}
+const recheck = ${record.recheck ? "true" : "false"}
+const CHECK_TIMEOUT_MS = 20000
+// Set once the request can no longer be sent from this page.
+let ended = false
 const statusEl = document.getElementById("status")
 const button = document.getElementById("send")
 // The exact origin string the wallet's confirmation shows (host:port).
@@ -117,17 +148,70 @@ if (!window.ethereum) {
   button.disabled = true
   document.getElementById("no-wallet").hidden = false
 }
-async function report(body) {
-  await fetch("/submit/${id}/status", {
+const post = (path, body) =>
+  fetch("/submit/${id}/" + path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   })
+// Asks zk.money Desktop to approve this send, waits for its answer, then claims the
+// approval so no other tab can open a second wallet prompt. Only an approval this
+// attempt asked for lets the page open the wallet; no answer means no send.
+async function approval(attempt) {
+  const gone = "This request has ended. Go back to zk.money Desktop and start again."
+  const response = await post("check", { attempt })
+  if (!response.ok) {
+    const { error: reason } = await response.json().catch(() => ({}))
+    if (reason === "A send is already open in a wallet") {
+      throw new Error("This transfer is already open in a wallet. Finish or cancel it there.")
+    }
+    ended = true
+    throw new Error(gone)
+  }
+  const { check } = await response.json()
+  const deadline = Date.now() + CHECK_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    const stateResponse = await fetch("/submit/${id}/state")
+    const state = stateResponse.ok ? await stateResponse.json() : undefined
+    if (!state || !["checking", "authorized", "sending", "refused"].includes(state.state)) {
+      ended = true
+      throw new Error(gone)
+    }
+    if (state.check !== check) throw new Error("Another check started for this request. Try again.")
+    if (state.state === "authorized") {
+      if ((await post("claim", { attempt, check })).ok) return
+      throw new Error("Another check started for this request. Try again.")
+    }
+    if (state.state === "refused") {
+      ended = true
+      throw new Error(refusalText(state.message))
+    }
+  }
+  throw new Error(
+    "zk.money Desktop didn't confirm this transfer. " +
+      "Make sure zk.money Desktop is open, then try again.",
+  )
 }
+async function report(body) {
+  await post("status", body)
+}
+// A declined send whose release never reached zk.money Desktop; sent once more before the next check.
+// Any answer counts as delivered: a refusal means that attempt already holds nothing.
+let unreleased
+async function release(attempt) {
+  const delivered = await post("release", { attempt }).then(() => true, () => false)
+  unreleased = delivered ? undefined : attempt
+}
+const randomAttempt = () =>
+  Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("")
 button.addEventListener("click", async () => {
   button.disabled = true
   statusEl.textContent = ""
   statusEl.className = ""
+  // One attempt per click; set once this page holds the submission's send.
+  const attempt = randomAttempt()
+  let claimed = false
   try {
     const chainHex = "0x" + tx.chainId.toString(16)
     const [from] = await window.ethereum.request({ method: "eth_requestAccounts" })
@@ -152,24 +236,45 @@ button.addEventListener("click", async () => {
           String((estimateError && estimateError.message) || estimateError),
       )
     }
+    if (recheck) {
+      statusEl.textContent = "Checking with zk.money Desktop…"
+      if (unreleased) await release(unreleased)
+      await approval(attempt)
+      claimed = true
+      statusEl.textContent = ""
+    }
     const txHash = await window.ethereum.request({
       method: "eth_sendTransaction",
       params: [{ ...call, gas }],
     })
-    await report({ state: "submitted", txHash })
+    await report({ state: "submitted", txHash, ...(recheck ? { attempt } : {}) })
     document.body.innerHTML =
-      '<h1>Sent ✓</h1><p class="hint">You can close this tab. Your funds will arrive in zk.money Desktop shortly.</p>'
+      '<h1>Sent ✓</h1><p class="hint">You can close this tab. ' +
+      "zk.money Desktop shows the progress of this transaction.</p>"
   } catch (error) {
-    // Every failure here is retryable from the page (declined prompt, locked
-    // wallet, refused chain switch) — display it and let the user try again;
-    // only a successful submission is ever reported back.
-    if (error && error.code === 4001) {
+    // Most failures here are retryable from the page (declined prompt, locked
+    // wallet, refused chain switch, no answer to the check) — display it and let
+    // the user try again. A refused or ended request stays disabled. Only a
+    // successful submission is ever reported back.
+    const declined = error && error.code === 4001
+    if (claimed && declined) {
+      // Declined in the wallet: nothing was sent, so the claim is released for a retry.
+      await release(attempt)
+    } else if (claimed) {
+      // Any other wallet error cannot prove nothing was sent; the claim stays held.
+      ended = true
+      error = new Error(
+        "Your wallet returned an error, so this transfer may or may not have been sent. " +
+          "Go back to zk.money Desktop.",
+      )
+    }
+    if (declined) {
       statusEl.textContent = "Cancelled in wallet"
     } else {
       statusEl.textContent = String((error && error.message) || error)
       statusEl.className = "err"
     }
-    button.disabled = false
+    button.disabled = ended
   }
 })
 </script>

@@ -10,8 +10,10 @@ import { useEffect } from "react"
 import {
   PaylinkClaimReconciler,
   TransactionStorage,
+  bootPriority,
   checkSpentViaPaylinkService,
   createTransferEventSource,
+  getActiveNetworkId,
   rebuildPaylinks,
   useAccountContext,
   useAssetContext,
@@ -19,6 +21,7 @@ import {
   useContractServiceContext,
 } from "@obsidion/front-core"
 import { PaylinkService, encodePaylinkInline } from "@obsidion/sdk"
+import { getConfig } from "../../config/env"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 
 const SWEEP_MS = 60_000
@@ -52,23 +55,29 @@ export function PaylinkClaimMount(): null {
     })
     active = reconciler
     const rescan = async () => {
+      await bootPriority.whenBalanceSettled()
       if (controller.signal.aborted) return
       // Cached once the account is unlocked; a locked wallet skips this pass.
       const masterSecret = await getSecretKey()
       if (!masterSecret || controller.signal.aborted) return
-      const [token, nodeInfo] = await Promise.all([
-        tokenService.fetchTokenInformation(),
-        obsidionWallet.node.getNodeInfo(),
-      ])
+      // Stamped from the pinned identity at boot; the rows this rebuild writes are scoped to it.
+      const networkId = getActiveNetworkId()
+      if (!networkId) {
+        console.warn("[PaylinkClaimMount] no active network id; paylink rebuild skipped")
+        return
+      }
+      const token = await tokenService.fetchTokenInformation()
       await rebuildPaylinks({
         source: createTransferEventSource({
           wallet: obsidionWallet,
           tokenAddress: token.address,
           accountAddress,
+          contractService,
         }),
         accountAddress,
         masterSecret,
-        networkId: nodeInfo.l1ContractAddresses.rollupAddress.toString(),
+        networkId,
+        endpointScope: getConfig().nodeEndpointDigest,
         signal: controller.signal,
         paylinkService,
         linkFor: (params) => `${location.origin}/link#${encodePaylinkInline(params)}`,

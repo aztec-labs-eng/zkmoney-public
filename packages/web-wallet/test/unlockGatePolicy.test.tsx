@@ -9,6 +9,7 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import {
   type HeldRequest,
   pageHide,
@@ -97,20 +98,19 @@ let root: Root
 
 const flush = () => act(async () => new Promise((r) => setTimeout(r, 0)))
 
-async function render() {
+async function render(entry: string | { pathname: string; state: unknown } = "/") {
   const { UnlockGate } = await import("../src/features/identity/UnlockGate")
+  const gate = (
+    <UnlockGate>
+      <span>wallet surface</span>
+    </UnlockGate>
+  )
   await act(async () => {
     root.render(
-      <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter initialEntries={[entry]}>
         <Routes>
-          <Route
-            path="/"
-            element={
-              <UnlockGate>
-                <span>wallet surface</span>
-              </UnlockGate>
-            }
-          />
+          <Route path="/" element={gate} />
+          <Route path="/contacts/:tag/send" element={gate} />
           <Route path="/enter" element={<div>enter route</div>} />
         </Routes>
       </MemoryRouter>,
@@ -126,7 +126,7 @@ async function seedRecord(credentialId = "cred") {
   )
   setActiveStorageId("aaa")
   setActiveCredentialId(credentialId)
-  localStorage.setItem(
+  walletStorage.setItem(
     "obsidion.obsidion_web_passkey_identity_map",
     JSON.stringify({
       version: 1,
@@ -305,7 +305,7 @@ describe("UnlockGate", () => {
   })
 
   it("no record for the active passkey goes straight to /enter", async () => {
-    localStorage.removeItem("obsidion.obsidion_web_passkey_identity_map")
+    walletStorage.removeItem("obsidion.obsidion_web_passkey_identity_map")
     h.wallet = new FakeWallet()
     await render()
     expect(container.textContent).toContain("enter route")
@@ -319,6 +319,18 @@ describe("UnlockGate", () => {
     await render()
     await tapUnlock()
     expect(container.textContent).not.toContain("enter route")
+    expect(byTestId("unlock-refused")).toBeNull()
+    expect(h.retryUnlock).not.toHaveBeenCalled()
+    expect(unlockButton()).toBeDefined()
+  })
+
+  it("a prompt that answered with no credential ends the click quietly", async () => {
+    const { showReportableError } = await import("../src/errors/errorModal")
+    h.wallet = new FakeWallet()
+    h.unlock.mockRejectedValueOnce(new Error("Passkey assertion returned no credential"))
+    await render()
+    await tapUnlock()
+    expect(showReportableError).not.toHaveBeenCalled()
     expect(byTestId("unlock-refused")).toBeNull()
     expect(h.retryUnlock).not.toHaveBeenCalled()
     expect(unlockButton()).toBeDefined()
@@ -373,6 +385,109 @@ describe("UnlockGate", () => {
     } finally {
       Object.defineProperty(navigator, "userAgent", ua)
     }
+  })
+})
+
+/** An unlock inside an app's built-in browser, where the passkey can't be used at all. */
+describe("UnlockGate in an app's built-in browser", () => {
+  const UA = {
+    android:
+      "Mozilla/5.0 (Linux; Android 16; Pixel 9 Build/BP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/154.0.0.0 Mobile Safari/537.36",
+    iosX: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Twitter for iPhone/10.80",
+    iosSafari:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.5 Mobile/15E148 Safari/604.1",
+    laptop:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+  }
+  const unsupported = () =>
+    new DOMException("Error connecting to Web Authentication service", "NotSupportedError")
+  const failures = () =>
+    h.fireEvent.mock.calls.filter(([event]) => event === "action_failed").map(([, props]) => props)
+  let ua: { mockRestore: () => void } | undefined
+
+  /** The signed-in page at `pathname` in a browser with this user agent. */
+  const at = (pathname: string, userAgent: string) => {
+    ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent)
+    const origin = "https://wallet.test"
+    Object.defineProperty(window, "location", {
+      value: {
+        assign: h.assign,
+        origin,
+        href: `${origin}${pathname}`,
+        pathname,
+        search: "",
+        hash: "",
+      },
+      writable: true,
+    })
+  }
+
+  beforeEach(async () => {
+    sessionStorage.clear()
+    h.wallet = new FakeWallet()
+    const { showReportableError } = await import("../src/errors/errorModal")
+    vi.mocked(showReportableError).mockClear()
+  })
+  afterEach(() => {
+    ua?.mockRestore()
+    ua = undefined
+  })
+
+  it("a not-supported unlock shows the card with Chrome opening the sign-in page, not the error modal", async () => {
+    const { showReportableError } = await import("../src/errors/errorModal")
+    at("/", UA.android)
+    h.unlock.mockRejectedValueOnce(unsupported())
+    await render()
+    await tapUnlock()
+    expect(byTestId("unlock-refused")?.dataset.reason).toBe("NotSupportedError")
+    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toBe(
+      "intent://wallet.test/enter#Intent;scheme=https;package=com.android.chrome;end",
+    )
+    expect(byTestId("unlock-retry")).not.toBeNull()
+    expect(byTestId("unlock-choose-passkey")).not.toBeNull()
+    expect(showReportableError).not.toHaveBeenCalled()
+    expect(failures()).toEqual([{ action: "identity:unlock", code: "err" }])
+  })
+
+  it("the same failure on a payment request's send says to open the link again, with no link", async () => {
+    at("/contacts/alice/send", UA.android)
+    h.unlock.mockRejectedValueOnce(unsupported())
+    await render({ pathname: "/contacts/alice/send", state: { request: { amount: "1" } } })
+    await tapUnlock()
+    expect(byTestId("unlock-refused")?.dataset.reason).toBe("NotSupportedError")
+    expect(byTestId("open-in-browser")?.dataset.escape).toBe("reopen")
+    expect(byTestId("open-in-browser-link")).toBeNull()
+  })
+
+  it.each([
+    ["an iPhone app browser", UA.iosX],
+    ["a laptop", UA.laptop],
+    ["iPhone Safari", UA.iosSafari],
+  ])("a closed prompt in %s leaves the pane as it was", async (_name, userAgent) => {
+    const { showReportableError } = await import("../src/errors/errorModal")
+    at("/", userAgent)
+    h.unlock.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
+    await render()
+    await tapUnlock()
+    expect(byTestId("unlock-refused")).toBeNull()
+    expect(unlockButton()).toBeDefined()
+    expect(showReportableError).not.toHaveBeenCalled()
+    expect(failures()).toEqual([])
+  })
+
+  it("an attempt a newer tap replaced shows nothing when it fails as not supported", async () => {
+    at("/", UA.android)
+    let fail!: (e: unknown) => void
+    h.unlock
+      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => (fail = reject)))
+      .mockImplementationOnce(() => new Promise<void>(() => {}))
+    await render()
+    await tapUnlock()
+    await tapUnlock()
+    await act(async () => fail(unsupported()))
+    await flush()
+    expect(byTestId("unlock-refused")).toBeNull()
+    expect(failures()).toEqual([])
   })
 })
 

@@ -1,16 +1,21 @@
+import type { TeeSigner } from '@oxide/oxide-lib/types.js';
+
+import type { PublicClient } from 'viem';
+
 import type { RunConfig } from '../cli/config.js';
 import type { ResolvedManifestDeployment } from '../config/deployment_env_manifest.js';
-import type { L1SubmissionBatcher } from '../l1_submission_batcher.js';
+import type { L1TxQueue } from '../l1/l1_tx_queue.js';
 import type { ChainlinkPriceOracle } from '../price_oracle/chainlink_price_oracle.js';
-import type { RelayerL1TxUtils } from '../relayer_l1_tx_utils.js';
 import { startEarlyProofStarter } from './start_early_proof_starter.js';
 import { startProverClaimCollector } from './start_prover_claim_collector.js';
 
-/** The relayer services that the epoch-proofs mode uses. The submission services are unset when submission is off. */
+/** The relayer services that the epoch-proofs mode uses. */
 export interface EpochProofsDeps {
-  l1TxUtils?: RelayerL1TxUtils;
-  l1SubmissionBatcher?: L1SubmissionBatcher;
+  client: PublicClient;
+  l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>;
   priceOracle: ChainlinkPriceOracle;
+  /** Finalizes prover claims in place of the enclave fleet the manifest publishes. */
+  teeSigner?: TeeSigner;
 }
 
 /**
@@ -24,13 +29,7 @@ export async function startEpochProofs(
   deployment: ResolvedManifestDeployment,
   deps: EpochProofsDeps,
 ): Promise<{ stop(): Promise<void> }> {
-  const { l1TxUtils, l1SubmissionBatcher, priceOracle } = deps;
-  if (!l1TxUtils || !l1SubmissionBatcher) {
-    console.log(
-      'epoch-proofs mode is enabled but submission is disabled; early proof starter and claim collector will not start.',
-    );
-    return { stop: () => Promise.resolve() };
-  }
+  const { client, l1TxQueue, priceOracle, teeSigner } = deps;
   assertProverSubsidyPublished(deployment);
 
   const services: { stop(): Promise<void> }[] = [];
@@ -39,10 +38,10 @@ export async function startEpochProofs(
   };
   try {
     if (config.proverNodeUrl) {
-      services.push(await startEarlyProofStarter(config, deployment.publicConfig, l1TxUtils, priceOracle));
+      services.push(await startEarlyProofStarter(config, deployment.publicConfig, client, priceOracle));
     }
     services.push(
-      await startProverClaimCollector(config, deployment.publicConfig, l1TxUtils, l1SubmissionBatcher, priceOracle),
+      await startProverClaimCollector(config, deployment.publicConfig, client, l1TxQueue, priceOracle, teeSigner),
     );
   } catch (error) {
     await stop();

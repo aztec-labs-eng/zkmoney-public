@@ -17,9 +17,9 @@ export function operationIdOf(entryId: string): string | undefined {
 }
 
 function failureText(record: OperationRecord, copy: ReturnType<typeof flowCopy>): string {
-  if (record.error !== undefined) return copy.describeError?.(record.error) ?? record.error
-  if (record.cause) return `${record.summary}. ${copy.causes[record.cause]}`
-  return record.summary
+  const named = record.error !== undefined ? copy.describeError?.(record.error) : undefined
+  if (named) return named
+  return `${record.summary}. ${(record.cause && copy.causes[record.cause]) || copy.thrown}`
 }
 
 /**

@@ -35,6 +35,7 @@ import { getActiveNetworkId } from "../activeNetworkId"
 import { AccountStorage } from "./AccountStorage"
 import { NetworkStorage } from "./NetworkStorage"
 import type { IStorageAdapter } from "./adapter"
+import type { NewPaylinkPayoutTx } from "../../xmtp/receiverTypes"
 import { TRANSACTIONS_STORAGE_KEY } from "./constants"
 import { logger } from "src/utils/logger"
 
@@ -112,8 +113,46 @@ function projectTransaction(tx: Transaction): Transaction {
 /** Longest a pre-submit row may sit without a hash before it counts as interrupted; proving takes minutes. */
 export const SEND_SUBMIT_TIMEOUT_MS = 10 * 60 * 1000
 
+/** Why a pre-submit row failed when its tab closed, per action: the row's Reason and the bell both say it. */
+export const INTERRUPTED_ERRORS = {
+  send: "The tab closed before it was sent. The amount is still in your balance.",
+  paylinkCreate: "The tab closed before the link was funded. The amount is still in your balance.",
+  paylinkClaim: "The tab closed before your claim was sent. The link can still be claimed.",
+  other: "The tab closed before it was sent.",
+} as const
+
+/** The one text rows failed by an older sweep carry, whatever their action. */
 export const INTERRUPTED_SEND_ERROR =
   "This payment was interrupted before it was sent. The amount is still in your balance."
+
+function interruptedErrorFor(tx: Transaction): string {
+  if (tx.action === "send") return INTERRUPTED_ERRORS.send
+  if (tx.action === PaylinkActionEnum.PAY) return INTERRUPTED_ERRORS.paylinkCreate
+  if (tx.action === PaylinkActionEnum.CLAIM) return INTERRUPTED_ERRORS.paylinkClaim
+  return INTERRUPTED_ERRORS.other
+}
+
+const INTERRUPTED_TEXTS = new Set<string>([
+  INTERRUPTED_SEND_ERROR,
+  ...Object.values(INTERRUPTED_ERRORS),
+])
+
+/** Why one of the user's own rows failed, when its stored error is a raw throw not fit to show. */
+const FAILED_ERRORS: Partial<Record<string, string>> = {
+  send: "It didn't go through. The amount is still in your balance.",
+  [PaylinkActionEnum.PAY]: "It didn't go through. The amount is still in your balance.",
+  [PaylinkActionEnum.CLAIM]: "It didn't go through.",
+}
+
+/**
+ * A failed row's reason in its action's words: the tab-close text, else a plain line for the user's
+ * own send, link or claim. Undefined for anything else, such as a receive the network took back.
+ */
+export function failureReason(tx: Transaction): string | undefined {
+  if (tx.status !== TRANSACTION_STATUS.FAILED) return
+  if (INTERRUPTED_TEXTS.has(tx.error ?? "")) return interruptedErrorFor(tx)
+  return FAILED_ERRORS[tx.action]
+}
 
 export class TransactionStorage {
   private static instance: TransactionStorage | null = null
@@ -371,7 +410,7 @@ export class TransactionStorage {
         (tx) => {
           tx.status = TRANSACTION_STATUS.FAILED as TransactionStatus
           tx.detailedStatus = QueueStatus.FAILED
-          tx.error = INTERRUPTED_SEND_ERROR
+          tx.error = interruptedErrorFor(tx)
         },
       )
       failed.push(row)
@@ -674,6 +713,17 @@ export class TransactionStorage {
     )
   }
 
+  /** Sets the memo on the row with this hash when it has none: a claim row predates its payout event. */
+  public async backfillMemo(txHash: string, memo: string): Promise<boolean> {
+    const target = normalizeTxHash(txHash)
+    return this.updateTransaction(
+      (tx) => normalizeTxHash(tx.txHash ?? "") === target && !(tx as { memo?: string }).memo,
+      (tx) => {
+        ;(tx as { memo?: string }).memo = memo
+      },
+    )
+  }
+
   /**
    * Look up a `receive` row by the payment-request id its `Transfer.meta` carried. Used by the
    * request-fulfillment reconciler's reverse join when the request row lands after the receive.
@@ -759,9 +809,9 @@ export class TransactionStorage {
       inserted: boolean
     }>(
       (transactions) => {
-        const existing = transactions.find(
-          (tx) => normalizeTxHash(tx.txHash ?? "") === txHash,
-        ) as TokenTransaction | undefined
+        const existing = transactions.find((tx) => normalizeTxHash(tx.txHash ?? "") === txHash) as
+          | TokenTransaction
+          | undefined
         if (existing) {
           return { tx: existing, inserted: false }
         }
@@ -800,8 +850,8 @@ export class TransactionStorage {
 
   /**
    * A creator PAY row rebuilt from the funding transfer's own Transfer copy (see `rebuildPaylinks`):
-   * mined, unclaimed, and carrying the refund material. Upgrades a scanner's plain send row;
-   * a link this device created (or already rebuilt) is left as it is.
+   * mined, carrying the refund material, and claimed or refunded when the escrow is spent. Upgrades
+   * a scanner's plain send row; a link this device created (or already rebuilt) is left as it is.
    */
   public async addRecoveredPaylinkTransaction(input: {
     txHash: string
@@ -815,11 +865,14 @@ export class TransactionStorage {
     tokenAddress: string
     paylink: string
     fallbackSecret: string
-    fromClaimable: number
-    untilClaimable: number
-    refundableUntil: number
+    fromClaimable?: number
+    untilClaimable?: number
+    refundableUntil?: number
     memo?: string
     networkId: string
+    isClaimed?: boolean
+    isRefunded?: boolean
+    refundTxHash?: string
   }): Promise<{ tx: PaylinkTransaction; inserted: boolean }> {
     const txHash = normalizeTxHash(input.txHash)
     return this.withSerializedTransactions<{ tx: PaylinkTransaction; inserted: boolean }>(
@@ -837,13 +890,41 @@ export class TransactionStorage {
           emailPaymentAction: PaylinkActionEnum.PAY,
           status: TRANSACTION_STATUS.SUCCESS as TransactionStatus,
           networkId,
-          isClaimed: false,
+          isClaimed: row.isClaimed ?? false,
+          // A settled refund scrubs the link, as the refund flow does.
+          ...(row.isRefunded ? { paylink: undefined } : {}),
         }
         if (existing) transactions[index] = transaction
         else transactions.push(transaction)
         return { tx: transaction, inserted: true }
       },
       (r) => r.inserted,
+    )
+  }
+
+  /**
+   * The escrow's payout of a rebuilt link (see `rebuildPaylinks`): a `CLAIM` when the creator
+   * claimed it, a `CLAIM_BACK` when they refunded it. Upgrades a scanner's plain receive row;
+   * any other row with the hash is left as it is.
+   */
+  public async addRecoveredPaylinkPayout(input: NewPaylinkPayoutTx): Promise<boolean> {
+    const txHash = normalizeTxHash(input.txHash)
+    return this.withSerializedTransactions<boolean>(
+      (transactions) => {
+        const index = transactions.findIndex((tx) => normalizeTxHash(tx.txHash ?? "") === txHash)
+        const existing = transactions[index]
+        if (existing && existing.action !== TokenActionEnum.RECEIVE) return false
+        const transaction: PaylinkTransaction = {
+          ...input,
+          txHash,
+          emailPaymentAction: input.action,
+          status: TRANSACTION_STATUS.SUCCESS as TransactionStatus,
+        }
+        if (existing) transactions[index] = transaction
+        else transactions.push(transaction)
+        return true
+      },
+      (written) => written,
     )
   }
 

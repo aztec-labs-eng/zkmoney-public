@@ -16,13 +16,6 @@ const balance = {
 }
 let assetsLoaded = true
 let pendingDeposits = false
-const l1Wallet = {
-  account: null as string | null,
-  walletName: null as string | null,
-  connecting: false,
-  connect: vi.fn(),
-  disconnect: vi.fn(),
-}
 
 vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
@@ -37,15 +30,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   useBalance: () => ({ ...balance, assetsLoaded }),
   ContactStorage: {
     get: () => ({
-      getEntries: async () => [
-        { tag: "alice", name: "Alice", address: `0x${"11".repeat(32)}` },
-        {
-          name: "Rainbow",
-          address: "0x1111111111111111111111111111111111111111",
-          addressKind: "ethereum-l1",
-          l1Wallet: { provider: "rainbow", lastUsedAt: 1 },
-        },
-      ],
+      getEntries: async () => [{ tag: "alice", name: "Alice", address: `0x${"11".repeat(32)}` }],
     }),
   },
 }))
@@ -65,31 +50,11 @@ vi.mock("../src/features/contacts/SendScreen", () => ({ SendScreen: () => null }
 vi.mock("../src/features/identity/walletIdentity", () => ({
   loadOnboardedIdentity: () => ({ handle: "me" }),
 }))
-vi.mock("../src/features/deposit/l1Wallet", () => ({
-  useL1Wallet: () => l1Wallet,
-}))
-// The picker gates the swap routes on the manifest, so the screen tests need a swap-capable tuple
-// to exercise all four outputs, and a swap route only opens once its relayer tip is simulated.
-const swapControl = vi.hoisted<import("./fixtures/fakeSwapSimulator").FakeSwapControl>(() => ({
-  relayerTip: 3n * 10n ** 18n,
-  calls: [],
-}))
-vi.mock("@obsidion/sdk", async (importOriginal) => {
-  const sdk = await importOriginal<typeof import("@obsidion/sdk")>()
-  const { fakeSwapSimulator } = await import("./fixtures/fakeSwapSimulator")
-  return { ...sdk, SwapOnWithdrawSimulator: fakeSwapSimulator(sdk, swapControl) }
-})
+// The direct route prices its fee off the portal's FPC cut.
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
-  getOxideTuple: async () => ({
-    portal: `0x${"70".repeat(20)}`,
-    token: `0x${"da".repeat(20)}`,
-    swapEscrowFactory: `0x${"fa".repeat(20)}`,
-    operationExecutor: `0x${"e0".repeat(20)}`,
-  }),
-  // The ETH route probes the recipient for code; a codeless answer keeps the warning silent. The
-  // simulation reads the portal's FPC cut off the same client.
-  l1PublicClient: () => ({ getCode: async () => "0x", readContract: async () => 0n }),
+  getOxideTuple: async () => ({ portal: `0x${"70".repeat(20)}` }),
+  l1PublicClient: () => ({ readContract: async () => 0n }),
 }))
 vi.mock("../src/config/env", () => ({
   getConfig: () => ({ l1ChainId: 11155111, l1RpcUrl: "http://localhost:8545", network: "sandbox" }),
@@ -102,6 +67,10 @@ vi.mock("../src/lib/analytics", () => ({
 }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
 // The DS drags in liquid-glass optics jsdom can't render; this test is about the CTA gate.
+vi.mock("../src/features/allowance/SponsoredActionNotice", () => ({
+  useSponsoredActionBlock: () => undefined,
+  SponsoredActionNotice: () => null,
+}))
 vi.mock("@obsidion/web-ds", () => ({
   AmountChipRow: () => null,
   GradientToggle: () => null,
@@ -151,7 +120,7 @@ vi.mock("@obsidion/web-ds", () => ({
 }))
 
 const { NewLinkScreen } = await import("../src/features/paylink/NewLinkScreen")
-const { WithdrawScreen } = await import("../src/features/withdraw/WithdrawScreen")
+const { WithdrawToWalletModal } = await import("../src/features/withdraw/WithdrawToWalletModal")
 const { ContactPayScreen } = await import("../src/features/contacts/ContactPayScreen")
 
 /** React's value tracker swallows a plain `input.value = x`; go through the native setter. */
@@ -180,41 +149,30 @@ describe.each([
     cta: (c: HTMLDivElement) =>
       Array.from(c.querySelectorAll("button")).find((b) => b.textContent === "Next")!,
     prep: async (_c: HTMLDivElement) => {},
+    upTo: "10",
   },
   {
-    name: "WithdrawScreen",
+    name: "WithdrawToWalletModal",
     render: () => (
-      <MemoryRouter>
-        <ScreeningProvider screener={passThroughScreener}>
-          <WithdrawScreen />
-        </ScreeningProvider>
-      </MemoryRouter>
+      <ScreeningProvider screener={passThroughScreener}>
+        <WithdrawToWalletModal
+          recipient="0x1111111111111111111111111111111111111111"
+          onClose={vi.fn()}
+          onDone={vi.fn()}
+        />
+      </ScreeningProvider>
     ),
-    // Wallet name, recipient, then the amount inside the modal Continue opens.
-    amountInput: (c: HTMLDivElement) => c.querySelectorAll("input")[2] as HTMLInputElement,
+    amountInput: (c: HTMLDivElement) => c.querySelector("input") as HTMLInputElement,
     cta: (c: HTMLDivElement) =>
-      Array.from(c.querySelectorAll("button")).find((b) => b.textContent === "Withdraw funds")!,
-    prep: async (c: HTMLDivElement) => {
-      await act(async () => {
-        typeInto(
-          c.querySelectorAll("input")[1] as HTMLInputElement,
-          "0x1111111111111111111111111111111111111111",
-        )
-      })
-      // Continue gates on recipient screening; let the debounced pass-through verdict land.
-      await act(async () => {
-        await new Promise((r) => setTimeout(r, 350))
-      })
-      await act(async () => {
-        Array.from(c.querySelectorAll("button"))
-          .find((b) => b.textContent === "Continue")!
-          .click()
-      })
-      // The modal screens the recipient again before its CTA can enable.
+      Array.from(c.querySelectorAll("button")).find((b) => b.textContent === "Review")!,
+    prep: async (_c: HTMLDivElement) => {
+      // The sheet screens the recipient before its CTA can enable.
       await act(async () => {
         await new Promise((r) => setTimeout(r, 350))
       })
     },
+    // The fee rides on top of the typed amount: the 0.1 relayer tip, with the portal's cut at 0.
+    upTo: "9.9",
   },
   {
     name: "ContactPayScreen (send)",
@@ -235,8 +193,9 @@ describe.each([
       })
       expect(c.querySelector("input")).toBeTruthy()
     },
+    upTo: "10",
   },
-])("$name — overspend gate", ({ render, amountInput, cta, prep }) => {
+])("$name — overspend gate", ({ render, amountInput, cta, prep, upTo }) => {
   let container: HTMLDivElement
   let root: Root
 
@@ -273,7 +232,7 @@ describe.each([
     balance.walletBalance = "10.00"
     await type("25")
     expect(cta(container).disabled).toBe(true)
-    await type("10")
+    await type(upTo)
     expect(cta(container).disabled).toBe(false)
     expect(container.textContent).not.toMatch(/Not enough funds|Balance not enough/)
   })
@@ -361,114 +320,5 @@ describe("NewLinkScreen — parked deposits", () => {
     })
     expect((container.querySelector("button") as HTMLButtonElement).disabled).toBe(false)
     expect(container.textContent).not.toMatch(/Not enough funds|Balance not enough/)
-  })
-})
-
-describe("WithdrawScreen — saved wallets", () => {
-  let container: HTMLDivElement
-  let root: Root
-
-  beforeEach(async () => {
-    ;({ container, root } = mountHarness(<div />))
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <ScreeningProvider screener={passThroughScreener}>
-            <WithdrawScreen />
-          </ScreeningProvider>
-        </MemoryRouter>,
-      )
-      await Promise.resolve()
-    })
-  })
-
-  afterEach(async () => {
-    await act(async () => root.unmount())
-    container.remove()
-    l1Wallet.account = null
-    l1Wallet.walletName = null
-    l1Wallet.disconnect.mockClear()
-  })
-
-  it("shows saved wallets directly beneath the address input", () => {
-    const fields = container.querySelector(".ww-deposit__fields")!
-    const addressField = Array.from(fields.querySelectorAll(".ww-withdraw__field")).find(
-      (field) =>
-        field.querySelector("input")?.getAttribute("placeholder") === "Enter or paste address",
-    )!
-    const savedWallets = container.querySelector(".ww-withdraw__saved")!
-    const connectWallet = container.querySelector(".ww-deposit__connect")!
-
-    expect(fields.contains(savedWallets)).toBe(true)
-    expect(
-      addressField.compareDocumentPosition(savedWallets) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-    expect(
-      savedWallets.compareDocumentPosition(connectWallet) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-  })
-
-  it("offers all receive assets with accessible state and carries the selection into the modal", async () => {
-    const trigger = container.querySelector<HTMLButtonElement>('button[aria-haspopup="listbox"]')!
-    expect(trigger.textContent).toContain("DAI")
-    expect(trigger.getAttribute("aria-expanded")).toBe("false")
-
-    await act(async () => trigger.click())
-    expect(trigger.getAttribute("aria-expanded")).toBe("true")
-    const options = Array.from(container.querySelectorAll<HTMLElement>('[role="option"]'))
-    expect(options.map((option) => option.querySelector("b")?.textContent)).toEqual([
-      "DAI",
-      "USDC",
-      "USDT",
-      "ETH",
-    ])
-    expect(options[0]?.getAttribute("aria-selected")).toBe("true")
-
-    await act(async () => options[1]?.click())
-    expect(trigger.getAttribute("aria-expanded")).toBe("false")
-    expect(trigger.textContent).toContain("USDC")
-
-    await act(async () => {
-      typeInto(
-        container.querySelectorAll("input")[1] as HTMLInputElement,
-        "0x1111111111111111111111111111111111111111",
-      )
-      await new Promise((resolve) => setTimeout(resolve, 350))
-    })
-    await act(async () => {
-      Array.from(container.querySelectorAll("button"))
-        .find((button) => button.textContent === "Continue")!
-        .click()
-    })
-
-    expect(container.querySelector(".ww-modal")?.textContent).toContain("Receive asUSDC")
-  })
-
-  it("offers disconnect below the connected-wallet button", async () => {
-    l1Wallet.account = "0x1111111111111111111111111111111111111111"
-    l1Wallet.walletName = "Rainbow"
-
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <ScreeningProvider screener={passThroughScreener}>
-            <WithdrawScreen />
-          </ScreeningProvider>
-        </MemoryRouter>,
-      )
-    })
-
-    const connectWallet = container.querySelector(".ww-deposit__connect")!
-    const disconnect = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Disconnect",
-    )!
-
-    expect(disconnect).toBeDefined()
-    expect(
-      connectWallet.compareDocumentPosition(disconnect) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy()
-
-    await act(async () => disconnect.click())
-    expect(l1Wallet.disconnect).toHaveBeenCalledOnce()
   })
 })

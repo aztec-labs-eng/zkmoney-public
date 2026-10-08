@@ -33,17 +33,24 @@ function validateHostname(hostname) {
   return hostname.toLowerCase()
 }
 
-// User-overridable endpoints, one entry per key: env var > endpoints.json in the
-// user-data dir > nothing (the bundle/config default applies). Kept deliberately
-// narrow — only endpoints that don't define trust anchors belong here: node and
-// L1 RPC are state views, the enclave target is transport (the TEE must still
-// pass attestation). The config-profile and oxide-manifest URLs stay
-// non-editable: the profile is the wallet's address authority, and an editable
-// pointer would swap that authority rather than retarget a state view.
-const ENDPOINT_KEYS = Object.freeze({
-  l1RpcUrl: "OBSIDION_L1_RPC_URL",
-  nodeUrl: "OBSIDION_NODE_URL",
-  enclaveUrl: "OBSIDION_ENCLAVE_TARGET",
+// User-overridable settings, one entry per key: env var > endpoints.json in the
+// user-data dir > nothing (the bundle/config default applies). Endpoints are not
+// among them: the wallet keeps its own.
+//
+// `configProfileUrl` is the dangerous one: the profile names every contract
+// address the wallet talks to, documents carry no signature, and the checks that
+// survive an override (profile id, network, schema, expiry, the wallet's own
+// mainnet policy) are format checks any author can satisfy. A hostile document
+// therefore routes funds to hostile contracts. It is exposed anyway so a user is
+// never stranded by a profile nobody serves, and the UI carries the warning.
+// `bootFromBakedProfile` is the safe way past the same outage: the copy the
+// release shipped with, supplied by nobody.
+//
+// The oxide manifest URL stays non-editable — it rides inside the profile
+// version, where the enclave URL, portal and measurement are bound together.
+const SETTING_KEYS = Object.freeze({
+  configProfileUrl: { envName: "OBSIDION_CONFIG_PROFILE_URL", kind: "url" },
+  bootFromBakedProfile: { envName: "OBSIDION_BOOT_FROM_BAKED_PROFILE", kind: "flag" },
 })
 
 // Returns the input verbatim (trimmed by callers) — URL.toString() would append a
@@ -58,46 +65,119 @@ function validateEndpointUrl(key, value) {
   if (url.protocol !== "http:" && url.protocol !== "https:") {
     throw new Error(`${key} must be http(s): ${String(value)}`)
   }
+  // `https:host/…` parses here, but a browser fetch resolves it against the page's own origin.
+  if (!/^https?:\/\//i.test(value)) {
+    throw new Error(`${key} must start with http:// or https://: ${String(value)}`)
+  }
   return value
 }
 
-// Returns { endpoints, sources } where sources[key] is "env" | "file" | null —
-// the settings page shows provenance so an incident responder can see which
-// config is actually in force.
-function loadEndpoints(endpointsFilePath) {
+// The shape artifact addresses derive from; the wallet refuses a profile URL without it at boot.
+const PROFILE_PATH =
+  /^\/profiles\/v[1-9]\d*\/(current|(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*))\.json$/
+
+function validateProfileUrlShape(key, value) {
+  const url = new URL(value)
+  if (
+    url.protocol !== "https:" ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash ||
+    !PROFILE_PATH.test(url.pathname)
+  ) {
+    throw new Error(
+      `${key} must be https://<host>/profiles/<generation>/<current or x.y.z>.json: ${String(
+        value,
+      )}`,
+    )
+  }
+  return value
+}
+
+const FLAG_ON = new Set(["true", "1", "on", "yes"])
+const FLAG_OFF = new Set(["false", "0", "off", "no"])
+
+// A flag is on, explicitly off, or unset. The JSON booleans come from the settings page; the
+// spellings come from the environment or a hand-edited file. Explicit off exists so the environment
+// can win over a saved on, the way it can replace any saved URL.
+function parseFlag(key, raw) {
+  if (raw === true || raw === false) return raw
+  if (typeof raw !== "string") return undefined
+  const value = raw.trim().toLowerCase()
+  if (value.length === 0) return undefined
+  if (FLAG_ON.has(value)) return true
+  if (FLAG_OFF.has(value)) return false
+  throw new Error(`${key} must be one of true/false, 1/0, on/off, yes/no: ${String(raw)}`)
+}
+
+// Returns the value a setting takes from `raw`: undefined when unset; for a flag, false when
+// explicitly off. `profileShape` holds the profile URL to the shape the wallet requires outside
+// sandbox builds.
+function normalizeSetting(key, raw, { profileShape = false } = {}) {
+  const { kind } = SETTING_KEYS[key]
+  if (kind === "flag") return parseFlag(key, raw)
+  if (typeof raw !== "string") return undefined
+  const value = raw.trim()
+  if (value.length === 0) return undefined
+  validateEndpointUrl(key, value)
+  return profileShape ? validateProfileUrlShape(key, value) : value
+}
+
+// Returns { endpoints, sources, problems }. sources[key] is "env" | "file" | null — the settings
+// page shows provenance so an incident responder can see which config is actually in force.
+// A value that fails validation is reported in `problems` ({ key, source, message }; key null for
+// an unreadable file) and skipped, so one typo never discards every other setting. Keys outside
+// SETTING_KEYS are ignored.
+function loadEndpoints(endpointsFilePath, rules = {}) {
+  const problems = []
   let fileValues = {}
   if (endpointsFilePath && fs.existsSync(endpointsFilePath)) {
     try {
       fileValues = readJson(endpointsFilePath)
     } catch (error) {
-      throw new Error(`Unreadable endpoints file ${endpointsFilePath}: ${error.message}`)
+      problems.push({
+        key: null,
+        source: "file",
+        message: `Unreadable settings file ${endpointsFilePath}: ${error.message}`,
+      })
+    }
+  }
+  const attempt = (key, source, raw) => {
+    try {
+      return normalizeSetting(key, raw, rules)
+    } catch (error) {
+      problems.push({ key, source, message: error.message })
+      return undefined
     }
   }
   const endpoints = {}
   const sources = {}
-  for (const [key, envName] of Object.entries(ENDPOINT_KEYS)) {
-    if (process.env[envName]) {
-      endpoints[key] = validateEndpointUrl(key, process.env[envName])
+  // The environment wins whenever it says anything, an explicit off included, which is what lets
+  // the settings page warn that a saved value is being overridden.
+  for (const [key, { envName }] of Object.entries(SETTING_KEYS)) {
+    const fromEnv = attempt(key, "env", process.env[envName])
+    const fromFile = fromEnv === undefined ? attempt(key, "file", fileValues[key]) : undefined
+    if (fromEnv !== undefined) {
+      if (fromEnv !== false) endpoints[key] = fromEnv
       sources[key] = "env"
-    } else if (typeof fileValues[key] === "string" && fileValues[key].length > 0) {
-      endpoints[key] = validateEndpointUrl(key, fileValues[key])
+    } else if (fromFile !== undefined && fromFile !== false) {
+      endpoints[key] = fromFile
       sources[key] = "file"
     } else {
       sources[key] = null
     }
   }
-  return { endpoints, sources }
+  return { endpoints, sources, problems }
 }
 
-// Validates and persists user overrides. Unknown keys are dropped; an empty or
-// missing value clears the override (the baked value applies again).
-function saveEndpoints(endpointsFilePath, values) {
+// Validates and persists user overrides. Unknown keys are dropped; an empty,
+// missing or off value clears the override (the baked value applies again).
+function saveEndpoints(endpointsFilePath, values, rules = {}) {
   const toWrite = {}
-  for (const key of Object.keys(ENDPOINT_KEYS)) {
-    const value = values?.[key]
-    if (typeof value === "string" && value.trim().length > 0) {
-      toWrite[key] = validateEndpointUrl(key, value.trim())
-    }
+  for (const key of Object.keys(SETTING_KEYS)) {
+    const value = normalizeSetting(key, values?.[key], rules)
+    if (value !== undefined && value !== false) toWrite[key] = value
   }
   const tempPath = `${endpointsFilePath}.tmp`
   fs.writeFileSync(tempPath, JSON.stringify(toWrite, null, 2) + "\n", {
@@ -106,6 +186,26 @@ function saveEndpoints(endpointsFilePath, values) {
   })
   fs.renameSync(tempPath, endpointsFilePath)
   return toWrite
+}
+
+// The wallet's __ZKMONEY_ENDPOINTS__. The switch wins over a URL: it boots without fetching.
+function injectedEndpoints(endpoints) {
+  if (endpoints.bootFromBakedProfile) return { bootFromBakedProfile: true }
+  if (endpoints.configProfileUrl) return { configProfileUrl: endpoints.configProfileUrl }
+  return {}
+}
+
+// The settings page's __ZKMONEY_DESKTOP_SETTINGS__.
+function settingsPageState({ token, endpointState, builtAt, profile, profileProbe }) {
+  return {
+    token,
+    values: endpointState.endpoints,
+    sources: endpointState.sources,
+    problems: endpointState.problems,
+    builtAt,
+    profile,
+    profileProbe,
+  }
 }
 
 function validateProxies(proxies) {
@@ -146,15 +246,24 @@ function loadConfig(resourceRoot, metadataPath = path.join(resourceRoot, "build-
   if (process.env.OBSIDION_LOCAL_TEST_TYPE === "0") {
     config.includeTestTypeFlag = false
   }
-  // OBSIDION_ENCLAVE_TARGET is handled by the endpoints system (loadEndpoints),
-  // which main.js applies onto the proxy table alongside user overrides.
+  // Developer-only: retargets a sandbox build's enclave proxy. A build without one has nothing to
+  // retarget; the wallet dials the enclave its profile names.
+  const enclaveTarget = process.env.OBSIDION_ENCLAVE_TARGET?.trim()
+  if (enclaveTarget) {
+    validateEndpointUrl("OBSIDION_ENCLAVE_TARGET", enclaveTarget)
+    if (config.proxies?.["/svc/enclave"]) {
+      config.proxies = { ...config.proxies, "/svc/enclave": enclaveTarget }
+    }
+  }
 
   config.hostname = validateHostname(config.hostname)
   config.passkeyRpId = validateHostname(config.passkeyRpId)
   if (fs.existsSync(metadataPath)) {
     const metadata = readJson(metadataPath)
     if (metadata.pageHostname !== config.hostname || metadata.passkeyRpId !== config.passkeyRpId) {
-      throw new Error("Launcher hostname or RP differs from the bundled wallet; rebuild for this environment")
+      throw new Error(
+        "Launcher hostname or RP differs from the bundled wallet; rebuild for this environment",
+      )
     }
   }
   config.startPath = normalizeStartPath(config.startPath)
@@ -188,11 +297,13 @@ function loadConfig(resourceRoot, metadataPath = path.join(resourceRoot, "build-
 }
 
 module.exports = {
-  ENDPOINT_KEYS,
+  SETTING_KEYS,
+  injectedEndpoints,
   loadConfig,
   loadEndpoints,
   normalizeStartPath,
   saveEndpoints,
+  settingsPageState,
   validateEndpointUrl,
   validateHostname,
   validateProxies,

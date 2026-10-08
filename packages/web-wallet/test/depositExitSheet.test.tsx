@@ -15,6 +15,7 @@ import {
   type SIPADepositRecord,
 } from "@obsidion/front-core"
 import type { Address, Hex } from "viem"
+import { clearWalletPrompt, useWalletPrompt } from "../src/features/deposit/walletPrompt"
 import type { PasskeyRequestScope } from "@obsidion/passkey-web"
 import {
   type HeldRequest,
@@ -34,6 +35,11 @@ const h = vi.hoisted(() => ({
   showReportableError: vi.fn(),
   // Swapped per describe: undefined for the plain-deposit tests, truthy for the registration ones.
   wallet: { current: undefined as unknown },
+  processing: { current: undefined as unknown },
+  retry: vi.fn(async (_sipa: string) => undefined),
+  capacityKey: { current: undefined as unknown },
+  /** One observer object, like the production singleton. */
+  observer: { retry: (sipa: string) => h.retry(sipa) },
 }))
 
 vi.mock("../src/config/env", async (importOriginal) => ({
@@ -54,8 +60,33 @@ vi.mock("../src/features/deposit/l1Wallet", async (importOriginal) => ({
     switchNetwork: vi.fn(),
   }),
 }))
-vi.mock("../src/features/deposit/sipaSweep", () => ({ selfSweep: h.selfSweep }))
+vi.mock("../src/features/deposit/sipaSweep", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/deposit/sipaSweep")>()),
+  selfSweep: h.selfSweep,
+}))
 vi.mock("../src/features/deposit/sipaRecovery", () => ({ recoverDeposit: vi.fn() }))
+vi.mock("../src/features/deposit/sipaProcessing", () => ({
+  // Every deposit here is past the stuck clock, so what gates the sweep is also what the sheet states.
+  useSipaProcessing: () => ({
+    state: h.processing.current,
+    shown: h.processing.current,
+    capacityKey: h.capacityKey.current,
+  }),
+  sipaProcessingObserver: () => h.observer,
+}))
+// About limits reads its bucket from the shared registry; these fake stores record which bucket was asked for.
+const capacity = vi.hoisted(() => ({
+  availableAtomic: 700n * 10n ** 18n,
+  epoch: 0,
+  keys: [] as string[],
+}))
+vi.mock("../src/features/deposit/capacityStore", async () =>
+  (await import("./fakeCapacity")).fakeCapacityStore(capacity),
+)
+// The exit sheet sits inside AccountGate; this suite renders without the provider.
+vi.mock("../src/features/allowance/useSponsoredAllowance", () => ({
+  useSponsoredAllowance: () => ({ snapshot: { status: "signed-out" }, refresh: () => {} }),
+}))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAztecContext: () => ({ obsidionWallet: h.wallet.current }),
@@ -88,6 +119,8 @@ vi.mock("@obsidion/web-ds", () => ({
     </div>
   ),
   DoubleCheckIcon: () => null,
+  GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
+  Icon: () => null,
   PrimaryGradientButton: ({
     title,
     testId,
@@ -110,6 +143,7 @@ vi.mock("@obsidion/web-ds", () => ({
 }))
 
 const { DepositExitModal, waitedLabel } = await import("../src/features/deposit/DepositExitModal")
+const { SweepRefusedError } = await import("../src/features/deposit/sipaSweep")
 const { getPendingStore } = await import("../src/features/onboarding/webRegistration")
 
 declare global {
@@ -216,6 +250,216 @@ describe("DepositExitModal — stuck deposit", () => {
     expect(container.textContent).toContain("Address blocked")
     expect(button("Sweep now")!.disabled).toBe(true)
     expect(button("Recover to an Ethereum address")!.disabled).toBe(true)
+  })
+})
+
+describe("DepositExitModal — network capacity", () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  const button = (title: string) =>
+    Array.from(container.querySelectorAll("button")).find((b) => b.textContent === title)
+
+  const blocked = {
+    reason: {
+      kind: "capacity",
+      requiredAtomic: 17n * 10n ** 18n,
+      availableAtomic: 5n * 10n ** 18n,
+      refill: { status: "unknown" },
+      decimals: 18,
+      observedAt: STARTED_AT,
+    },
+    blocker: { kind: "capacity", observedAt: STARTED_AT },
+  }
+
+  const render = async (props: { reason: "stuck" | "unsweepable" | null; canSweep: boolean }) => {
+    await act(async () => {
+      root.render(
+        <ScreeningProvider screener={passThroughScreener}>
+          <DepositExitModal record={stuck} {...props} onClose={vi.fn()} />
+        </ScreeningProvider>,
+      )
+    })
+    await act(() => new Promise((r) => setTimeout(r, 1)))
+  }
+
+  beforeEach(() => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    h.selfSweep.mockResolvedValue(SWEEP_HASH)
+    container = document.createElement("div")
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+    h.processing.current = undefined
+    vi.clearAllMocks()
+  })
+
+  it("describes the manual sweep as the same capacity-bound transaction, not a bypass", async () => {
+    await render({ reason: "stuck", canSweep: true })
+    expect(container.textContent).not.toContain("finish it yourself")
+    expect(container.textContent).toContain("same shared network capacity as any other deposit")
+    expect(container.textContent).toContain("network fee in ETH")
+  })
+
+  it("disables the sweep while capacity is confirmed short, and keeps recovery open", async () => {
+    h.processing.current = blocked
+    await render({ reason: "stuck", canSweep: true })
+    const reason = container.querySelector('[data-testid="deposit-pending-reason"]')
+    expect(reason?.textContent).toContain("Waiting for network capacity")
+    expect(reason?.textContent).toContain("Your funds remain at your Ethereum deposit address.")
+    // The amounts are in the reason's details, not repeated on the sheet.
+    expect(reason?.textContent).not.toContain("This deposit needs")
+    expect(button("Sweep now")!.disabled).toBe(true)
+    expect(button("Recover to an Ethereum address")!.disabled).toBe(false)
+    // The held action says why, and nothing beside it says it can be used.
+    expect(container.querySelector('[data-testid="sweep-held"]')?.textContent).toBe(
+      "Waiting for network capacity.",
+    )
+    expect(container.textContent).not.toContain("You can sweep it yourself")
+
+    await act(async () => button("Check again")!.click())
+    expect(h.retry).toHaveBeenCalledWith(stuck.sipaAddress)
+    expect(h.selfSweep).not.toHaveBeenCalled()
+
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          "[data-testid='deposit-pending-reason-help'] [data-testid='about-limits-link']",
+        )!
+        .click(),
+    )
+    const details = document.querySelector(
+      "dialog[aria-label='About limits'] [data-testid='about-limits-capacity']",
+    )
+    // The settlement token comes from the deployment; this test's config names none.
+    expect(details?.textContent).toMatch(
+      /This deposit needs 17 (\w+); 5 \1 of network capacity is available now\./,
+    )
+  })
+
+  it("says the ETH cost beside Sweep now and keeps the sweep's explanation one tap away", async () => {
+    await render({ reason: "stuck", canSweep: true })
+    expect(container.textContent).toContain("You can sweep it yourself.")
+    expect(container.textContent).toContain("publicly links your Ethereum wallet to this deposit")
+    expect(container.querySelector('[data-testid="sweep-held"]')).toBeNull()
+    const gas = container.querySelector('[data-testid="sweep-gas"]')!
+    expect(gas.textContent).toContain("You pay its Ethereum network fee in ETH")
+    const sweep = button("Sweep now")!
+    expect(sweep.compareDocumentPosition(gas) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const more = container.querySelector<HTMLDetailsElement>('[data-testid="sweep-details"]')!
+    expect(more.open).toBe(false)
+    expect(more.querySelector("summary")?.textContent).toBe('How "Sweep now" works')
+    expect(more.textContent).toContain("If a relayer sweeps first, your transaction fails")
+  })
+
+  describe("About limits beside the reason", () => {
+    const ORIGINAL = {
+      chainId: 11155111,
+      portal: "0x9999999999999999999999999999999999999999",
+      token: "0x2222222222222222222222222222222222222222",
+    } as const
+    const openSheet = async () => {
+      await act(async () =>
+        container
+          .querySelector<HTMLButtonElement>(
+            "[data-testid='deposit-pending-reason-help'] [data-testid='about-limits-link']",
+          )!
+          .click(),
+      )
+      for (let i = 0; i < 5; i++) await act(async () => {})
+      return () =>
+        document.querySelector<HTMLElement>(
+          "dialog[aria-label='About limits'] [data-testid='about-limits-capacity']",
+        )!
+    }
+    const readActive = () =>
+      capacity.keys.some((id) => id.includes("0x1111111111111111111111111111111111111111"))
+    const readOriginal = () => capacity.keys.some((id) => id.includes(ORIGINAL.portal))
+
+    beforeEach(() => {
+      capacity.epoch += 1
+      capacity.keys.length = 0
+      vi.spyOn(console, "warn").mockImplementation(() => {})
+    })
+    afterEach(() => {
+      h.capacityKey.current = undefined
+    })
+
+    it("opens on the deposit's original bucket from the observer, never the active one", async () => {
+      h.processing.current = blocked
+      h.capacityKey.current = { status: "known", key: ORIGINAL }
+      await render({ reason: "stuck", canSweep: true })
+      const section = await openSheet()
+      expect(section().dataset.state).toBe("fresh")
+      expect(section().textContent).toContain("700")
+      expect(readOriginal()).toBe(true)
+      expect(readActive()).toBe(false)
+    })
+
+    it("retries a failed portal lookup through the observer and then shows the original bucket", async () => {
+      h.processing.current = blocked
+      h.capacityKey.current = { status: "unknown", retryable: true }
+      await render({ reason: "stuck", canSweep: true })
+      const section = await openSheet()
+      expect(section().dataset.state).toBe("unavailable")
+      expect(capacity.keys).toEqual([])
+      await act(async () =>
+        document
+          .querySelector<HTMLButtonElement>("[data-testid='about-limits-capacity-retry']")!
+          .click(),
+      )
+      expect(h.retry).toHaveBeenCalledWith(stuck.sipaAddress)
+      expect(readActive()).toBe(false)
+      // The observer notifies once the lookup settles; the sheet then reads the original bucket.
+      h.capacityKey.current = { status: "known", key: ORIGINAL }
+      await render({ reason: "stuck", canSweep: true })
+      for (let i = 0; i < 5; i++) await act(async () => {})
+      expect(section().dataset.state).toBe("fresh")
+      expect(readOriginal()).toBe(true)
+      expect(readActive()).toBe(false)
+    })
+
+    it("offers no Retry when no lookup can name the bucket", async () => {
+      h.processing.current = blocked
+      h.capacityKey.current = { status: "unknown", retryable: false }
+      await render({ reason: "stuck", canSweep: true })
+      const section = await openSheet()
+      expect(section().dataset.state).toBe("unavailable")
+      expect(document.querySelector("[data-testid='about-limits-capacity-retry']")).toBeNull()
+      expect(capacity.keys).toEqual([])
+    })
+  })
+
+  it("keeps recovery open when capacity cannot be read", async () => {
+    h.processing.current = { reason: { kind: "unavailable", cause: "capacity-unread" } }
+    await render({ reason: "stuck", canSweep: true })
+    expect(container.textContent).toContain("Reason unavailable")
+    expect(button("Sweep now")!.disabled).toBe(false)
+    expect(button("Recover to an Ethereum address")!.disabled).toBe(false)
+  })
+
+  it("shows a refused sweep beside the action instead of reporting a fault", async () => {
+    h.selfSweep.mockRejectedValueOnce(
+      new SweepRefusedError("Network capacity is currently insufficient for this deposit."),
+    )
+    await render({ reason: "stuck", canSweep: true })
+    await act(async () => button("Sweep now")!.click())
+    expect(container.querySelector('[data-testid="deposit-sweep-refused"]')?.textContent).toBe(
+      "Network capacity is currently insufficient for this deposit.",
+    )
+    expect(h.showReportableError).not.toHaveBeenCalled()
+    expect(button("Recover to an Ethereum address")!.disabled).toBe(false)
+  })
+
+  it("offers recovery of an unsweepable deposit whatever capacity says", async () => {
+    h.processing.current = blocked
+    await render({ reason: "unsweepable", canSweep: false })
+    expect(button("Sweep now")).toBeUndefined()
+    expect(button("Recover to 0x0000…00aa")!.disabled).toBe(false)
   })
 })
 
@@ -472,5 +716,254 @@ describe("DepositExitModal — registration-backed deposit", () => {
     expect(h.manualRegistrationSweep).not.toHaveBeenCalled()
     expect(h.selfSweep).not.toHaveBeenCalled()
     expect(h.showReportableError).toHaveBeenCalledOnce()
+  })
+})
+describe("DepositExitModal — opened from Recover", () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  const button = (title: string) =>
+    Array.from(container.querySelectorAll("button")).find((b) => b.textContent === title)
+
+  beforeEach(() => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    container = document.createElement("div")
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+    h.processing.current = undefined
+    vi.clearAllMocks()
+  })
+
+  const render = async (sweepable?: boolean) => {
+    await act(async () => {
+      root.render(
+        <ScreeningProvider screener={passThroughScreener}>
+          <DepositExitModal
+            record={stuck}
+            reason="stuck"
+            canSweep={false}
+            sweepable={sweepable}
+            onClose={vi.fn()}
+          />
+        </ScreeningProvider>,
+      )
+    })
+    await act(() => new Promise((r) => setTimeout(r, 1)))
+  }
+
+  const held = {
+    reason: {
+      kind: "capacity" as const,
+      requiredAtomic: 17n * 10n ** 18n,
+      availableAtomic: 5n * 10n ** 18n,
+      refill: { status: "unknown" as const },
+      decimals: 18,
+      observedAt: STARTED_AT,
+    },
+    blocker: { kind: "capacity" as const, observedAt: STARTED_AT },
+  }
+  const cleared = {
+    reason: {
+      kind: "processing" as const,
+      availableAtomic: 50n * 10n ** 18n,
+      decimals: 18,
+      observedAt: STARTED_AT + 1,
+    },
+  }
+
+  it("offers the sweep once a read clears the blocker, and keeps recovery", async () => {
+    h.processing.current = held
+    await render(true)
+    expect(button("Sweep now")).toBeUndefined()
+    h.processing.current = cleared
+    await render(true)
+    expect(button("Sweep now")!.disabled).toBe(false)
+    expect(button("Recover to an Ethereum address")!.disabled).toBe(false)
+  })
+
+  it("never offers the sweep on a sheet opened as recovery only", async () => {
+    h.processing.current = cleared
+    await render()
+    expect(button("Sweep now")).toBeUndefined()
+  })
+
+  it("never offers the sweep without a live state, as for a settled deposit", async () => {
+    await render(true)
+    expect(button("Sweep now")).toBeUndefined()
+  })
+
+  it("keeps a recovery the user started from turning into a sweep", async () => {
+    const { recoverDeposit } = await import("../src/features/deposit/sipaRecovery")
+    vi.mocked(recoverDeposit).mockRejectedValueOnce(new Error("wallet unreachable"))
+    h.processing.current = held
+    await render(true)
+    await act(async () => button("Recover to 0x0000…00aa")!.click())
+    expect(recoverDeposit).toHaveBeenCalledOnce()
+    h.processing.current = cleared
+    await render(true)
+    expect(button("Sweep now")).toBeUndefined()
+    expect(button("Recover to 0x0000…00aa")).toBeDefined()
+  })
+
+  it("leads with recovery and states the capacity reason, with no sweep to wait on", async () => {
+    h.processing.current = {
+      reason: {
+        kind: "capacity",
+        requiredAtomic: 17n * 10n ** 18n,
+        availableAtomic: 5n * 10n ** 18n,
+        refill: { status: "unknown" },
+        decimals: 18,
+        observedAt: STARTED_AT,
+      },
+      blocker: { kind: "capacity", observedAt: STARTED_AT },
+    }
+    await render()
+    expect(container.textContent).toContain("Recover deposit")
+    expect(container.textContent).toContain("Waiting for network capacity")
+    expect(container.textContent).toContain("a relayer may yet land it")
+    expect(button("Sweep now")).toBeUndefined()
+    // No sweep is offered, so nothing about it is either.
+    for (const id of ["sweep-details", "sweep-held", "sweep-gas"]) {
+      expect(container.querySelector(`[data-testid="${id}"]`)).toBeNull()
+    }
+    expect(button("Recover to 0x0000…00aa")!.disabled).toBe(false)
+    const { recoverDeposit } = await import("../src/features/deposit/sipaRecovery")
+    await act(async () => button("Recover to 0x0000…00aa")!.click())
+    expect(recoverDeposit).toHaveBeenCalledWith(stuck, expect.anything())
+    expect(h.selfSweep).not.toHaveBeenCalled()
+  })
+
+  it("never says a sweep may yet land on a deposit no sweep can move", async () => {
+    h.processing.current = {
+      reason: { kind: "operation-cap", observedAt: STARTED_AT },
+      blocker: { kind: "operation-cap", observedAt: STARTED_AT },
+    }
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    await render()
+    expect(container.textContent).toContain("Only a recovery can move them.")
+    expect(container.textContent).toContain(
+      "Recovery sends the funds back out to an Ethereum address.",
+    )
+    expect(container.textContent).not.toContain("may yet land")
+    expect(button("Sweep now")).toBeUndefined()
+    expect(button("Recover to 0x0000…00aa")!.disabled).toBe(false)
+    // The recover-only sheet reaches the limits details, where the reason's full wording is.
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>(
+          "[data-testid='deposit-pending-reason-help'] [data-testid='about-limits-link']",
+        )!
+        .click(),
+    )
+    for (let i = 0; i < 5; i++) await act(async () => {})
+    const details = document.querySelector(
+      "dialog[aria-label='About limits'] [data-testid='about-limits-capacity']",
+    )
+    expect(details?.textContent).toContain("Waiting won't change this.")
+    warn.mockRestore()
+  })
+})
+
+/** The page-wide wallet slot, read as the sheets read it. */
+function SlotProbe() {
+  return <span data-testid="wallet-slot" data-open={String(useWalletPrompt().open)} />
+}
+
+describe("DepositExitModal waiting on the wallet", () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  const button = (title: string) =>
+    Array.from(container.querySelectorAll("button")).find((b) => b.textContent === title)
+  const note = () => container.querySelector<HTMLElement>('[data-testid="wallet-prompt-stall"]')
+  const stall = () => act(async () => vi.advanceTimersByTime(30_000))
+  const cancel = () => act(async () => note()!.querySelector("button")!.click())
+  const slotOpen = () =>
+    container.querySelector<HTMLElement>('[data-testid="wallet-slot"]')!.dataset.open
+  /** A sweep the wallet holds at its prompt until the test answers for it. */
+  const atPrompt = () => {
+    const held = {} as {
+      resolve: (hash: Hex) => void
+      reject: (e: unknown) => void
+      stage: (stage: string) => void
+    }
+    h.selfSweep.mockImplementationOnce(
+      (_record: unknown, opts: { onStage: (stage: string) => void }) => {
+        held.stage = opts.onStage
+        opts.onStage("signing")
+        return new Promise<Hex>((resolve, reject) => Object.assign(held, { resolve, reject }))
+      },
+    )
+    return held
+  }
+
+  beforeEach(async () => {
+    container = document.createElement("div")
+    document.body.appendChild(container)
+    root = createRoot(container)
+    await act(async () => {
+      root.render(
+        <ScreeningProvider screener={passThroughScreener}>
+          <DepositExitModal record={stuck} reason="stuck" canSweep onClose={vi.fn()} />
+          <SlotProbe />
+        </ScreeningProvider>,
+      )
+    })
+    await act(() => new Promise((r) => setTimeout(r, 1)))
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+  })
+
+  afterEach(async () => {
+    vi.useRealTimers()
+    await act(async () => root.unmount())
+    container.remove()
+    vi.clearAllMocks()
+    clearWalletPrompt()
+  })
+
+  it("offers a way back after 30 seconds at the prompt, and a late rejection reports nothing", async () => {
+    const held = atPrompt()
+    await act(async () => button("Sweep now")!.click())
+    expect(container.textContent).toContain("Approve the sweep in your wallet")
+    await act(async () => vi.advanceTimersByTime(29_999))
+    expect(note()).toBeNull()
+    await act(async () => vi.advanceTimersByTime(1))
+    expect(note()!.textContent).toContain("Still waiting for your wallet.")
+    await cancel()
+    expect(note()).toBeNull()
+    expect(button("Sweep now")!.disabled).toBe(false)
+    await act(async () => held.reject(new Error("wallet closed")))
+    expect(h.showReportableError).not.toHaveBeenCalled()
+    expect(h.fireEvent).not.toHaveBeenCalledWith("action_failed", expect.anything())
+    expect(button("Sweep now")!.disabled).toBe(false)
+  })
+
+  it("refuses a second sweep while the wallet holds the first, then lands its late hash", async () => {
+    const held = atPrompt()
+    await act(async () => button("Sweep now")!.click())
+    await stall()
+    await cancel()
+    await act(async () => button("Sweep now")!.click())
+    expect(h.selfSweep).toHaveBeenCalledTimes(1)
+    expect(container.querySelector('[data-testid="deposit-sweep-refused"]')?.textContent).toBe(
+      "Your wallet still has the previous request open. Approve or reject it there first.",
+    )
+    await act(async () => held.resolve(SWEEP_HASH))
+    expect(container.textContent).toContain("Deposit on its way")
+    expect(container.querySelector("a")?.getAttribute("href")).toBe(`${EXPLORER}/tx/${SWEEP_HASH}`)
+  })
+
+  it("frees the slot once the sweep is confirming, before the receipt lands", async () => {
+    const held = atPrompt()
+    await act(async () => button("Sweep now")!.click())
+    expect(slotOpen()).toBe("true")
+    await act(async () => held.stage("confirming"))
+    expect(slotOpen()).toBe("false")
+    expect(button("Sweep now")).toBeUndefined()
   })
 })

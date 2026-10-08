@@ -57,6 +57,12 @@ describe("newOutgoingRequest", () => {
     expect(row!.id).toMatch(/^0x[0-9a-f]{64}$/)
   })
 
+  it("keeps a trimmed note and drops a blank one", () => {
+    expect(newOutgoingRequest("alice", "1", 9, "  dinner ")!.note).toBe("dinner")
+    expect(newOutgoingRequest("alice", "1", 9, "   ")!.note).toBeUndefined()
+    expect(newOutgoingRequest("alice", "1", 9)!.note).toBeUndefined()
+  })
+
   it("rejects non-positive and unparseable amounts", () => {
     expect(newOutgoingRequest("alice", "0", 9)).toBeNull()
     expect(newOutgoingRequest("alice", "-3", 9)).toBeNull()

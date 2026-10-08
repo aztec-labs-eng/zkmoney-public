@@ -4,7 +4,18 @@
  * makes every simulation revert on the ERC20 transfer.
  */
 import { describe, expect, it, vi } from "vitest"
-import { BaseError, ContractFunctionRevertedError, HttpRequestError } from "viem"
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  HttpRequestError,
+  getAbiItem,
+  toEventSelector,
+} from "viem"
+import {
+  LegacySwapEscrowEventsAbi,
+  SwapEscrowAbi,
+  SwapEscrowFactoryAbi,
+} from "@oxide/l1-contracts"
 import { L1SwapEscrowReader } from "../../src/oxide/swapEscrowReader.js"
 
 const FACTORY = "0x00000000000000000000000000000000000fac70"
@@ -18,7 +29,14 @@ const ARGS = {
   nonce: `0x${"11".repeat(32)}`,
 } as const
 
-const client = (simulate: () => Promise<unknown>, getContractEvents?: () => Promise<unknown>) =>
+const client = (
+  simulate: () => Promise<unknown>,
+  getContractEvents?: (query: {
+    address: string
+    eventName: string
+    args?: { escrow?: string }
+  }) => Promise<unknown>,
+) =>
   ({
     simulateContract: vi.fn(simulate),
     readContract: vi.fn(async () => 7n),
@@ -63,8 +81,36 @@ describe("L1SwapEscrowReader.deploySimulates", () => {
   })
 })
 
+/** Logs a factory or escrow emitted, answered the way `getContractEvents` filters them. */
+const chain =
+  (logs: { address: string; eventName: string; escrow?: string; transactionHash: string }[]) =>
+  async (query: { address: string; eventName: string; args?: { escrow?: string } }) =>
+    logs
+      .filter(
+        (log) =>
+          log.address === query.address &&
+          log.eventName === query.eventName &&
+          (query.args?.escrow === undefined || log.escrow === query.args.escrow),
+      )
+      .map((log) => ({ transactionHash: log.transactionHash, args: { target: ARGS.recipient } }))
+
 describe("L1SwapEscrowReader.executedTxHash", () => {
-  it("is undefined when no SwapEscrowExecuted log is in the window", async () => {
+  it.each(["EscrowExecuted", "SwapEscrowExecuted"])(
+    "finds this escrow's %s log, past another escrow's",
+    async (eventName) => {
+      const c = client(
+        async () => ({}),
+        chain([
+          { address: FACTORY, eventName, escrow: `0x${"99".repeat(20)}`, transactionHash: "0x01" },
+          { address: FACTORY, eventName, escrow: ESCROW, transactionHash: "0x02" },
+        ]),
+      )
+      const reader = new L1SwapEscrowReader(c, { dai: DAI })
+      await expect(reader.executedTxHash(FACTORY, ESCROW)).resolves.toBe("0x02")
+    },
+  )
+
+  it("is undefined when no execution log is in the window", async () => {
     const reader = new L1SwapEscrowReader(
       client(async () => ({})),
       { dai: DAI },
@@ -94,7 +140,25 @@ describe("L1SwapEscrowReader.executedTxHash", () => {
 })
 
 describe("L1SwapEscrowReader.recoveredTxHash", () => {
-  it("is undefined when no SwapEscrowRecovered log is in the window", async () => {
+  it.each(["EscrowRecovered", "SwapEscrowRecovered"])(
+    "finds the escrow's own %s log",
+    async (eventName) => {
+      const c = client(
+        async () => ({}),
+        chain([
+          { address: `0x${"99".repeat(20)}`, eventName, transactionHash: "0x01" },
+          { address: ESCROW, eventName, transactionHash: "0x02" },
+        ]),
+      )
+      const reader = new L1SwapEscrowReader(c, { dai: DAI })
+      await expect(reader.recoveredTxHash(ESCROW)).resolves.toEqual({
+        txHash: "0x02",
+        target: ARGS.recipient,
+      })
+    },
+  )
+
+  it("is undefined when no recovery log is in the window", async () => {
     const reader = new L1SwapEscrowReader(
       client(async () => ({})),
       { dai: DAI },
@@ -112,9 +176,11 @@ describe("L1SwapEscrowReader.recoveredTxHash", () => {
       txHash: `0x${"ab".repeat(32)}`,
       target: ARGS.recipient,
     })
-    expect(c.getContractEvents).toHaveBeenCalledWith(
-      expect.objectContaining({ address: ESCROW, eventName: "SwapEscrowRecovered" }),
-    )
+    for (const eventName of ["EscrowRecovered", "SwapEscrowRecovered"]) {
+      expect(c.getContractEvents).toHaveBeenCalledWith(
+        expect.objectContaining({ address: ESCROW, eventName }),
+      )
+    }
   })
 
   it("lets an RPC failure through instead of reading it as no log", async () => {
@@ -137,5 +203,32 @@ describe("L1SwapEscrowReader reads", () => {
     await expect(reader.isDeployed(ESCROW)).resolves.toBe(true)
     ;(c as { getCode: ReturnType<typeof vi.fn> }).getCode.mockResolvedValueOnce(undefined)
     await expect(reader.isDeployed(ESCROW)).resolves.toBe(false)
+  })
+})
+
+// oxide exports the pre-`EscrowBase` names without a test of its own; the prod v6 factory and escrow
+// emit exactly these topics (their bytecode carries them).
+describe("the legacy swap-escrow events", () => {
+  it.each([
+    [
+      "SwapEscrowExecuted",
+      "EscrowExecuted",
+      SwapEscrowFactoryAbi,
+      "0xe2a7af9cee4346563aea77a4704d23c228387fb042a1890f6f97b13062ad030a",
+    ],
+    [
+      "SwapEscrowRecovered",
+      "EscrowRecovered",
+      SwapEscrowAbi,
+      "0xf5850287af0ca862510157c5cab36241cee76b2b995cdcdc15349df1053ae9b8",
+    ],
+  ] as const)("%s keeps its topic and the inputs of %s", (legacyName, currentName, abi, topic) => {
+    type Input = { name?: string; type: string; indexed?: boolean }
+    const shape = (inputs: readonly Input[]) =>
+      inputs.map(({ name, type, indexed }) => ({ name, type, indexed: indexed === true }))
+    const legacy = getAbiItem({ abi: LegacySwapEscrowEventsAbi, name: legacyName })
+    const current = getAbiItem({ abi: abi as never, name: currentName }) as { inputs: Input[] }
+    expect(toEventSelector(legacy)).toBe(topic)
+    expect(shape(legacy.inputs)).toEqual(shape(current.inputs))
   })
 })

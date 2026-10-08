@@ -5,6 +5,7 @@ const fs = require("node:fs")
 const https = require("node:https")
 const path = require("node:path")
 const { pipeline } = require("node:stream")
+const { isLiveSubmission } = require("./l1SubmitBridge")
 const { matchProxy, proxyRequest } = require("./proxy")
 
 const SETTINGS_PATH = "/desktop-settings"
@@ -79,18 +80,10 @@ function globalsScriptTag(globals) {
   return statements.length ? `<script>${statements.join(";")}</script>` : ""
 }
 
-// index.html is the one file served buffered instead of streamed: the runtime
-// endpoint overrides + desktop-bridge marker ride in as an inline script ahead
-// of the module scripts (which are deferred, so the globals are set before the
-// wallet's config loads).
-function sendIndexHtml(
-  request,
-  response,
-  filePath,
-  contentSecurityPolicy,
-  injectEndpoints,
-  injectBridge,
-) {
+// index.html is the one file served buffered instead of streamed: the launcher's
+// globals ride in as an inline script ahead of the module scripts (which are
+// deferred, so the globals are set before the wallet's config loads).
+function sendIndexHtml(request, response, filePath, contentSecurityPolicy, globals) {
   fs.readFile(filePath, (error, contents) => {
     if (error) {
       response.writeHead(error.code === "ENOENT" ? 404 : 500, {
@@ -101,10 +94,7 @@ function sendIndexHtml(
       return
     }
     let body = contents
-    const scriptTag = globalsScriptTag({
-      __ZKMONEY_ENDPOINTS__: injectEndpoints ? injectEndpoints() : null,
-      __ZKMONEY_DESKTOP_BRIDGE__: injectBridge ? injectBridge() : null,
-    })
+    const scriptTag = globalsScriptTag(globals)
     if (scriptTag) {
       const html = contents.toString("utf8")
       const headIndex = html.indexOf("<head>")
@@ -164,13 +154,39 @@ function tokenMatches(expected, provided) {
   )
 }
 
+// The launcher's certificate is trusted for any hostname inside the wallet's Chrome, so a page
+// whose DNS points at this port would otherwise be served as if it were the wallet.
+function hostMatches(request, hostname) {
+  const host = request.headers.host
+  if (typeof host !== "string") return false
+  const name = host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.split(":")[0]
+  return name.toLowerCase() === hostname
+}
+
+// A browser names the requesting site on every request. A page on another site cannot get an
+// answer it could read, but a POST still runs, so the mutating routes refuse one from anywhere
+// but the wallet itself. A client that sends no such header is not a browser.
+function crossSite(request) {
+  const site = request.headers["sec-fetch-site"]
+  return typeof site === "string" && site !== "same-origin" && site !== "none"
+}
+
+function refuseCrossSite(request, response) {
+  if (!crossSite(request)) return false
+  sendJson(response, 403, { error: "Only the wallet may call this" })
+  return true
+}
+
 // Wallet-origin side of the L1 submit bridge: the wallet page creates a prepared
 // transaction here (which also opens the helper page in the user's default
-// browser) and polls its status. Same-origin for the wallet — no CORS, no token:
-// only the wallet bundle runs on this origin, and the actual approval happens in
-// the user's own EVM wallet.
+// browser), polls its status and answers the helper's send checks. Same-origin
+// for the wallet — no CORS, no token: only the wallet bundle runs on this origin,
+// and the actual approval happens in the user's own EVM wallet. The check answer
+// is only served here, never on the helper listener, so the helper page cannot
+// approve its own send.
 function handleL1SubmitRoute(request, response, pathname, l1Submit) {
   if (pathname === L1_SUBMIT_PATH && request.method === "POST") {
+    if (refuseCrossSite(request, response)) return true
     void (async () => {
       try {
         const body = await readJsonBody(request, L1_SUBMIT_BODY_LIMIT)
@@ -180,6 +196,19 @@ function handleL1SubmitRoute(request, response, pathname, l1Submit) {
         const submitUrl = l1Submit.submitUrl ? l1Submit.submitUrl(id) : undefined
         await l1Submit.openSubmitPage(id)
         sendJson(response, 200, { id, submitUrl })
+      } catch (error) {
+        sendJson(response, error.code === "send-open" ? 409 : 400, { error: error.message })
+      }
+    })()
+    return true
+  }
+  const recheck = new RegExp(`^${L1_SUBMIT_PATH}/([a-f0-9]{32})/recheck$`).exec(pathname)
+  if (recheck && request.method === "POST" && l1Submit.resolveCheck) {
+    if (refuseCrossSite(request, response)) return true
+    void (async () => {
+      try {
+        const body = await readJsonBody(request)
+        sendJson(response, 200, l1Submit.resolveCheck(recheck[1], body))
       } catch (error) {
         sendJson(response, 400, { error: error.message })
       }
@@ -208,11 +237,13 @@ function handleL1SubmitRoute(request, response, pathname, l1Submit) {
  */
 function createL1SubmitHttpServer({ bridge, renderPage, renderGonePage }) {
   return require("node:http").createServer((request, response) => {
-    const match = /^\/submit\/([a-f0-9]{32})(\/status)?$/.exec(request.url?.split("?")[0] ?? "")
+    const match = /^\/submit\/([a-f0-9]{32})(?:\/(status|check|state|claim|release))?$/.exec(
+      request.url?.split("?")[0] ?? "",
+    )
     if (match && !match[2] && ["GET", "HEAD"].includes(request.method)) {
       const record = bridge.getPayload(match[1])
       const body = Buffer.from(
-        record && record.state === "pending" ? renderPage(match[1], record) : renderGonePage(),
+        isLiveSubmission(record) ? renderPage(match[1], record) : renderGonePage(record),
         "utf8",
       )
       response.writeHead(200, {
@@ -223,15 +254,27 @@ function createL1SubmitHttpServer({ bridge, renderPage, renderGonePage }) {
       response.end(request.method === "HEAD" ? undefined : body)
       return
     }
-    if (match && match[2] && request.method === "POST") {
+    const actions = {
+      status: (id, body) => bridge.report(id, body),
+      check: (id, body) => bridge.requestCheck(id, body),
+      claim: (id, body) => bridge.claimSend(id, body),
+      release: (id, body) => bridge.releaseSend(id, body),
+    }
+    if (match && actions[match[2]] && request.method === "POST") {
       void (async () => {
         try {
           const body = await readJsonBody(request)
-          sendJson(response, 200, bridge.report(match[1], body))
+          sendJson(response, 200, actions[match[2]](match[1], body))
         } catch (error) {
           sendJson(response, 400, { error: error.message })
         }
       })()
+      return
+    }
+    if (match && match[2] === "state" && request.method === "GET") {
+      const state = bridge.getState(match[1])
+      if (state) sendJson(response, 200, state)
+      else sendJson(response, 404, { error: "Unknown or expired submission" })
       return
     }
     response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" })
@@ -239,13 +282,10 @@ function createL1SubmitHttpServer({ bridge, renderPage, renderGonePage }) {
   })
 }
 
-function handleSettingsRoute(request, response, pathname, settings, contentSecurityPolicy) {
+// The page is the wallet's own index.html; its state rides in as one more global.
+function handleSettingsRoute(request, response, pathname, settings, sendIndex) {
   if (pathname === SETTINGS_PATH && ["GET", "HEAD"].includes(request.method || "GET")) {
-    const body = Buffer.from(settings.renderPage(), "utf8")
-    const headers = baseHeaders("settings.html", contentSecurityPolicy)
-    headers["Content-Length"] = body.length
-    response.writeHead(200, headers)
-    response.end(request.method === "HEAD" ? undefined : body)
+    sendIndex(request, response, { __ZKMONEY_DESKTOP_SETTINGS__: settings.state() })
     return true
   }
 
@@ -258,6 +298,7 @@ function handleSettingsRoute(request, response, pathname, settings, contentSecur
     response.end()
     return true
   }
+  if (refuseCrossSite(request, response)) return true
   void (async () => {
     let body
     try {
@@ -266,19 +307,29 @@ function handleSettingsRoute(request, response, pathname, settings, contentSecur
       sendJson(response, 400, { error: error.message })
       return
     }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      sendJson(response, 400, { error: "Body must be a JSON object" })
+      return
+    }
     if (!tokenMatches(settings.token, body.token)) {
       sendJson(response, 403, { error: "Invalid settings token — reopen the settings page" })
       return
     }
-    try {
-      if (action === "save") {
+    if (action === "save") {
+      try {
         await settings.save(body)
-      } else {
-        settings.relaunch()
+        sendJson(response, 200, { ok: true })
+      } catch (error) {
+        sendJson(response, 400, { error: error.message })
       }
-      sendJson(response, 200, { ok: true })
+      return
+    }
+    try {
+      // "accepted" or "already-relaunching"; throws when the close command was not written.
+      const status = await settings.relaunch()
+      sendJson(response, 200, { ok: true, status })
     } catch (error) {
-      sendJson(response, 400, { error: error.message })
+      sendJson(response, 500, { error: error.message })
     }
   })()
   return true
@@ -317,19 +368,26 @@ function createLocalHttpsServer({
   contentSecurityPolicy = null,
   spaFallback = true,
   proxies = {},
-  // () => object | null — endpoint overrides injected into index.html per request.
+  // () => object | null — the configuration override injected into index.html per request.
   injectEndpoints = null,
-  // () => object | null — the desktop-bridge marker injected alongside the endpoints.
+  // () => object | null — the desktop-bridge marker injected alongside it.
   injectBridge = null,
-  // { token, renderPage, save, relaunch } — enables the /desktop-settings routes.
+  // { token, state, save, relaunch } — enables the /desktop-settings routes.
   settings = null,
-  // { create, get, openSubmitPage } — enables the /desktop/l1-submit routes.
+  // { create, get, resolveCheck, openSubmitPage } — enables the /desktop/l1-submit routes.
   l1Submit = null,
-  // Launcher-shipped static files (favicon, the Sen font for the settings page):
-  // urlPath -> { filePath, contentType }. A same-path file in the web root wins.
+  // Launcher-shipped static files (the favicon): urlPath -> { filePath, contentType }. A same-path
+  // file in the web root wins.
   launcherAssets = {},
 }) {
   const root = path.resolve(webRoot)
+  const indexPath = path.join(root, "index.html")
+  const sendIndex = (request, response, extraGlobals = {}) =>
+    sendIndexHtml(request, response, indexPath, contentSecurityPolicy, {
+      __ZKMONEY_ENDPOINTS__: injectEndpoints ? injectEndpoints() : null,
+      __ZKMONEY_DESKTOP_BRIDGE__: injectBridge ? injectBridge() : null,
+      ...extraGlobals,
+    })
   const launcherAssetCache = new Map()
   const launcherAsset = (urlPath) => {
     if (!launcherAssetCache.has(urlPath)) {
@@ -348,6 +406,11 @@ function createLocalHttpsServer({
       response.end("Bad request")
       return
     }
+    if (!hostMatches(request, hostname)) {
+      response.writeHead(421, { "Content-Type": "text/plain; charset=utf-8" })
+      response.end("Misdirected request")
+      return
+    }
 
     let requestUrl
     try {
@@ -360,7 +423,7 @@ function createLocalHttpsServer({
 
     if (
       settings &&
-      handleSettingsRoute(request, response, requestUrl.pathname, settings, contentSecurityPolicy)
+      handleSettingsRoute(request, response, requestUrl.pathname, settings, sendIndex)
     ) {
       return
     }
@@ -390,18 +453,9 @@ function createLocalHttpsServer({
       return
     }
 
-    const indexPath = path.join(root, "index.html")
-
     if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
       if (filePath === indexPath) {
-        sendIndexHtml(
-          request,
-          response,
-          filePath,
-          contentSecurityPolicy,
-          injectEndpoints,
-          injectBridge,
-        )
+        sendIndex(request, response)
       } else {
         sendFile(request, response, filePath, contentSecurityPolicy)
       }
@@ -428,14 +482,7 @@ function createLocalHttpsServer({
 
     if (spaFallback && !looksLikeFile) {
       if (fs.existsSync(indexPath)) {
-        sendIndexHtml(
-          request,
-          response,
-          indexPath,
-          contentSecurityPolicy,
-          injectEndpoints,
-          injectBridge,
-        )
+        sendIndex(request, response)
         return
       }
     }
@@ -467,6 +514,8 @@ function listenOnLoopback(server, port = 0) {
 }
 
 module.exports = {
+  L1_SUBMIT_PATH,
+  SETTINGS_PATH,
   createL1SubmitHttpServer,
   createLocalHttpsServer,
   isWithinRoot,

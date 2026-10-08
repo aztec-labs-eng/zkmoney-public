@@ -1,0 +1,44 @@
+/* The app shell is an isolated stacking context, so any z-index here paints above its sheets and
+   drawers; the strip is dismissible for exactly that reason. */
+.ww-config-notice {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  padding: var(--space-12) var(--space-16);
+  padding-bottom: calc(var(--space-12) + env(safe-area-inset-bottom, 0px));
+  background: var(--surface-sheet);
+  border-top: 1px solid var(--border-hairline);
+  box-shadow: 0 -4px 16px rgba(0, 0, 0, 0.4);
+}
+.ww-config-notice__text {
+  flex: 1;
+  font-family: var(--font-body);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+.ww-config-notice--danger {
+  border-top-color: var(--accent-pink);
+}
+.ww-config-notice__action {
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.ww-config-notice__action:hover {
+  color: var(--text-primary);
+}
+.ww-config-notice__dismiss {
+  display: flex;
+  color: rgba(255, 255, 255, 0.6);
+}
+.ww-config-notice__dismiss:hover {
+  color: var(--text-primary);
+}

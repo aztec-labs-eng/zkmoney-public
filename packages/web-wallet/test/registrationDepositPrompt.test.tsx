@@ -18,6 +18,8 @@ const h = vi.hoisted(() => ({
   writeContract: vi.fn(),
   /** What the fake token answers for balanceOf(sipa). */
   balance: 0n,
+  /** Holds balanceOf(sipa) until the test lands it. */
+  balanceRead: undefined as Promise<bigint> | undefined,
   /** The portal's cut off every credited deposit. */
   fpcCut: 0n,
   /** The relayer's sweep fee the registration SIPA implementation answers. */
@@ -52,6 +54,9 @@ vi.mock("../src/features/deposit/l1Wallet", () => ({
     chain: { id: 11155111 },
   }),
 }))
+vi.mock("../src/features/deposit/l1DepositTokenBalance", () => ({
+  readL1DepositTokenBalance: async () => ({ raw: 10n ** 30n }),
+}))
 vi.mock("../src/config/env", () => ({
   getConfig: () => ({
     network: "testnet",
@@ -81,12 +86,25 @@ vi.mock("../src/config/oxideTuple", () => ({
         ? h.depositFee
         : functionName === "FPC_FUNDING_CUT"
         ? h.fpcCut
-        : h.balance,
+        : h.balanceRead ?? h.balance,
   }),
 }))
 // The DS drags in liquid-glass optics jsdom can't render; this suite is about surface + wiring.
+// The registration SIPA's recorded implementation names its portal; its bucket has room.
+vi.mock("@obsidion/sdk", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  readSipaPortalTerms: async () =>
+    (await import("./recordedRegistration")).originalTerms(
+      "0x00000000000000000000000000000000000000d4",
+    ),
+}))
+const capacity = vi.hoisted(() => ({ availableAtomic: 40_000n * 10n ** 18n }))
+vi.mock("../src/features/deposit/capacityStore", async () =>
+  (await import("./fakeCapacity")).fakeCapacityStore(capacity),
+)
 vi.mock("@obsidion/web-ds", () => ({
   Card: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
   Icon: () => null,
   Spinner: () => null,
   GradientSpinner: () => null,
@@ -123,6 +141,9 @@ const {
   closeActivationPrompt,
 } = await import("../src/features/onboarding/activationPrompt")
 const { saveRegistrationTerms } = await import("../src/features/onboarding/registrationTerms")
+const { getBroadcastLedger, resetBroadcastsForTests } = await import(
+  "../src/features/broadcasts/broadcasts"
+)
 const { getPendingStore } = await import("../src/features/onboarding/webRegistration")
 const { saveWalletIdentity } = await import("../src/features/identity/walletIdentity")
 const { recordDepositAdmission } = await import("../src/features/identity/admission")
@@ -140,6 +161,7 @@ const ask = (kind: "standard" | "earned_tag") => formatDepositDue(askedTotal(kin
 const ACCOUNT = "0x00000000000000000000000000000000000000f1"
 const L2_ADDRESS = `0x${"22".repeat(32)}` as Hex
 const SIPA = "0x00000000000000000000000000000000000000c3"
+const { seedRecordedRegistration } = await import("./recordedRegistration")
 const DAY = 86_400_000
 
 const record = (over: Partial<PendingRegistrationRecord> = {}) => ({
@@ -191,10 +213,17 @@ beforeEach(async () => {
   await getPendingStore().load()
   h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
   h.balance = 0n
+  h.balanceRead = undefined
   h.fpcCut = 0n
   h.depositFee = 0n
   h.l1Account = null
   h.writeContract.mockReset().mockResolvedValue(`0x${"11".repeat(32)}`)
+  await seedRecordedRegistration({
+    sipaAddress: SIPA,
+    token: "0x00000000000000000000000000000000000000d4",
+    registrationFee: 10n * 10n ** 18n,
+    l1ChainId: 11155111,
+  })
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -223,7 +252,7 @@ describe("activation prompt store", () => {
 })
 
 describe("RegistrationDepositPrompt", () => {
-  it("renders nothing without a pending identity waiting on its deposit, or once this tab said later", async () => {
+  it("renders nothing without a pending identity waiting on its deposit, or once this tab closed it", async () => {
     await render()
     expect(container.textContent).toBe("")
 
@@ -260,12 +289,17 @@ describe("RegistrationDepositPrompt", () => {
     expect(text).toContain("Activate account")
     expect(text).toContain("@taga")
     expect(text).toContain("Reserved until")
-    expect(text).toContain(`Send at least ${ask("standard")} to claim your tag and activate your account.`)
+    expect(text).toContain(
+      `Send at least ${ask("standard")} to claim your tag and activate your account.`,
+    )
     expect(text).toContain(`Tag price${usd(10n * 10n ** 18n)}`)
     expect(text).toContain(`Opening balance${usd(5n * 10n ** 18n)}`)
     expect(container.querySelector(`[aria-label="Copy deposit address ${SIPA}"]`)).not.toBeNull()
 
-    await act(async () => button("Later")!.click())
+    expect(button("Later")).toBeUndefined()
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Close"]')!.click(),
+    )
     expect(container.textContent).toBe("")
     expect(activationPromptDismissed(getPendingStore().current())).toBe(true)
     expect(h.navigate).not.toHaveBeenCalled()
@@ -304,7 +338,9 @@ describe("RegistrationDepositPrompt", () => {
     await settleReads()
     await settleReads()
     expect(container.textContent).toContain("Deposit received")
-    expect(container.textContent).not.toContain(`Send at least ${ask("standard")} to claim your tag and activate your account.`)
+    expect(container.textContent).not.toContain(
+      `Send at least ${ask("standard")} to claim your tag and activate your account.`,
+    )
   })
 
   it("an earned deposit against a quote the earned price cannot use is recovered, never topped up", async () => {
@@ -391,7 +427,9 @@ describe("RegistrationDepositPrompt", () => {
       })
       await render()
       await settleReads()
-      expect(container.textContent).toContain(`Send at least ${ask("standard")} to claim your tag and activate your account.`)
+      expect(container.textContent).toContain(
+        `Send at least ${ask("standard")} to claim your tag and activate your account.`,
+      )
       await act(async () => closeActivationPrompt(getPendingStore().current()))
       expect(container.textContent).toBe("")
 
@@ -399,7 +437,9 @@ describe("RegistrationDepositPrompt", () => {
       vi.setSystemTime(start + 3_600_000)
       await act(async () => openActivationPrompt())
       expect(container.textContent).toContain("Your reservation for @taga ended")
-      expect(container.textContent).not.toContain(`Send at least ${ask("standard")} to claim your tag and activate your account.`)
+      expect(container.textContent).not.toContain(
+        `Send at least ${ask("standard")} to claim your tag and activate your account.`,
+      )
       expect(container.querySelector('[aria-label^="Copy deposit address"]')).toBeNull()
       expect(button("Register @taga again")).toBeDefined()
     } finally {
@@ -447,22 +487,51 @@ describe("RegistrationDepositPrompt — unpublished registration", () => {
     expect(text).toContain("Activate account")
     expect(text).toContain("Reserved until")
     expect(text).toContain("Your deposit address was not published")
-    expect(text).not.toContain(`Send at least ${ask("standard")} to claim your tag and activate your account.`)
+    expect(text).not.toContain(
+      `Send at least ${ask("standard")} to claim your tag and activate your account.`,
+    )
     expect(container.querySelector('[aria-label^="Copy deposit address"]')).toBeNull()
     expect(button("Connect your wallet")).toBeUndefined()
     await act(async () => button("Check registration")!.click())
     expect(h.navigate).toHaveBeenCalledWith("/claim/taga")
   })
 
-  it("an unpublished registration still being re-sent in the background asks for its deposit", async () => {
+  it("shows an unpublished registration's address at once, owes its broadcast, and shows its status until it lands", async () => {
+    resetBroadcastsForTests()
     await pendingName({ broadcast: false, retries: 1 })
     paidTerms()
     await render()
     await settleReads()
-    expect(container.textContent).toContain(`Send at least ${ask("standard")} to claim your tag and activate your account.`)
+    await vi.waitFor(() =>
+      expect(getBroadcastLedger().get(SIPA)).toMatchObject({ kind: "registration" }),
+    )
+    expect(container.textContent).toContain(
+      `Send at least ${ask("standard")} to claim your tag and activate your account.`,
+    )
     expect(container.textContent).not.toContain("was not published")
+    // Safe to fund now: the ledger publishes it, and funds wait at the address meanwhile.
     expect(container.querySelector(`[aria-label="Copy deposit address ${SIPA}"]`)).not.toBeNull()
+    expect(
+      container.querySelector('[data-testid="registration-address-publishing"]'),
+    ).not.toBeNull()
     expect(button("Check registration")).toBeUndefined()
+
+    await act(async () => {
+      await getPendingStore().upsert(ACCOUNT, { broadcast: true })
+    })
+    await settleReads()
+    expect(container.querySelector(`[aria-label="Copy deposit address ${SIPA}"]`)).not.toBeNull()
+    expect(container.querySelector('[data-testid="registration-address-publishing"]')).toBeNull()
+  })
+
+  it("owes nothing for an address it does not show", async () => {
+    resetBroadcastsForTests()
+    await pendingName({ broadcast: false, retries: 3 })
+    paidTerms({ deadline: Math.floor((Date.now() - DAY) / 1000) })
+    await render()
+    await settleReads()
+    expect(container.textContent).toContain("Your reservation for @taga ended")
+    expect(getBroadcastLedger().get(SIPA)).toBeNull()
   })
 
   it("an unpublished registration whose reservation ended leads to registering again", async () => {
@@ -517,7 +586,9 @@ describe("RegistrationDepositPrompt — swept deposit", () => {
     await render()
     await settleReads()
     await settleReads()
-    expect(container.textContent).toContain(`Send at least ${ask("standard")} to claim your tag and activate your account.`)
+    expect(container.textContent).toContain(
+      `Send at least ${ask("standard")} to claim your tag and activate your account.`,
+    )
     expect(container.querySelector(`[aria-label="Copy deposit address ${SIPA}"]`)).not.toBeNull()
     await sweepObserved()
     expectReported()
@@ -546,13 +617,32 @@ describe("RegistrationDepositPrompt — swept deposit", () => {
     expectReported()
   })
 
+  it("closes once the record is promoted, and does not open again on entry", async () => {
+    await pendingName({ fundedAt: Date.now() })
+    paidTerms()
+    await render()
+    await settleReads()
+    expectReported()
+    await act(async () => {
+      await getPendingStore().upsert(ACCOUNT, { phase: "funded" })
+    })
+    expect(container.textContent).toBe("")
+    act(() => root.unmount())
+    root = createRoot(container)
+    await render()
+    await settleReads()
+    expect(container.textContent).toBe("")
+  })
+
   it("without sweep evidence an empty address is asked for, and a partial one is topped up", async () => {
     await pendingName()
     paidTerms()
     await render()
     await settleReads()
     await settleReads()
-    expect(container.textContent).toContain(`Send at least ${ask("standard")} to claim your tag and activate your account.`)
+    expect(container.textContent).toContain(
+      `Send at least ${ask("standard")} to claim your tag and activate your account.`,
+    )
     expect(container.querySelector(`[aria-label="Copy deposit address ${SIPA}"]`)).not.toBeNull()
     expect(container.querySelector(".ww-deposit__connect")).not.toBeNull()
     expect(container.textContent).not.toContain("Deposit received")
@@ -566,6 +656,55 @@ describe("RegistrationDepositPrompt — swept deposit", () => {
     const summary = container.querySelector(".ww-reg-sheet__summary")?.textContent
     expect(summary).toContain("$5.00 of $15.00 received. Send at least $10.00 more")
     expect(container.querySelector(`[aria-label="Copy deposit address ${SIPA}"]`)).not.toBeNull()
+  })
+})
+
+describe("RegistrationDepositPrompt: the waiting block", () => {
+  it("waits under the address with the balance there, and the pill reads the address again", async () => {
+    await pendingName()
+    paidTerms()
+    await render()
+    await settleReads()
+    await settleReads()
+    expect(container.querySelector(".ww-deposit-sheet__live")!.textContent).toContain(
+      "Waiting for deposit",
+    )
+    const line = () => container.querySelector('[data-testid="deposit-balance"]')!.textContent
+    expect(line()).toBe("Balance at this address: $0.00 · Last checked 0s ago")
+    h.balance = 5n * 10n ** 18n
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="deposit-check-again"]')!.click(),
+    )
+    await settleReads()
+    await settleReads()
+    expect(line()).toBe(
+      "$5.00 of $15.00 received · Send at least $10.00 more · Last checked 0s ago",
+    )
+  })
+
+  it("the pill stays busy until its read of the address lands", async () => {
+    await pendingName()
+    paidTerms()
+    await render()
+    await settleReads()
+    await settleReads()
+    const pill = () =>
+      container.querySelector<HTMLButtonElement>('[data-testid="deposit-check-again"]')!
+    let land!: (balance: bigint) => void
+    h.balanceRead = new Promise((resolve) => (land = resolve))
+    await act(async () => pill().click())
+    await act(async () => new Promise((r) => setTimeout(r, 800)))
+    expect(pill().disabled).toBe(true)
+    expect(pill().textContent).toContain("Check again")
+    h.balanceRead = undefined
+    await act(async () => land(5n * 10n ** 18n))
+    await settleReads()
+    await settleReads()
+    expect(pill().disabled).toBe(false)
+    expect(pill().textContent).toBe("Checked")
+    expect(container.querySelector('[data-testid="deposit-balance"]')!.textContent).toContain(
+      "$5.00 of $15.00 received",
+    )
   })
 })
 
@@ -592,9 +731,13 @@ describe("RegistrationDepositPrompt — required amounts", () => {
     await settleReads()
     await settleReads()
     const pay = container.querySelector<HTMLButtonElement>(".ww-deposit__connect")!
-    expect(pay.textContent).toContain("Pay from Rainbow")
+    expect(pay.textContent).toContain("from Rainbow")
     expect(pay.disabled).toBe(false)
     await act(async () => pay.click())
+    const confirm = [...container.querySelectorAll<HTMLButtonElement>("dialog button")].find(
+      (b) => b.textContent === "Confirm payment",
+    )!
+    await act(async () => confirm.click())
     await settleReads()
     expect(h.writeContract).toHaveBeenCalledTimes(1)
     expect(h.writeContract.mock.calls[0][0]).toMatchObject({
@@ -697,7 +840,8 @@ describe("RegistrationDepositPrompt — a ticket-funded name", () => {
 
   it("leaves a ready claim to Home's review on Home, and routes to it from anywhere else", async () => {
     await pendingName()
-    ticketTerms()
+    // The prover tip the signup's split committed.
+    ticketTerms({ proverTip: ONE.toString() })
     stash()
     await renderAt("/")
     expect(container.textContent).toBe("")
@@ -708,6 +852,7 @@ describe("RegistrationDepositPrompt — a ticket-funded name", () => {
     expect(text).toContain("Claim your payment")
     // The burn at a 0.1 cut on each leg: 0.5 + 0.1 + 0.01 to the SIPA, 0.1 + 0.1 + 1 on the way.
     expect(text).toContain(`You'll receive${formatUnits(119n * 10n ** 16n, 18)} DAI`)
+    expect(text).toContain(`Network fee${formatUnits(181n * 10n ** 16n, 18)} DAI`)
     expect(text).toContain("Tag priceWaived")
     expect(text).not.toContain(ask("earned_tag"))
     await act(async () => button("Claim your payment")!.click())
@@ -736,6 +881,8 @@ describe("RegistrationDepositPrompt — a ticket-funded name", () => {
     expect(text).toContain("Claim your payment")
     expect(text).not.toContain("Open the link you were sent again")
     expect(text).toContain("Tag priceWaived")
+    // No tip committed: the fee carries none.
+    expect(text).toContain(`Network fee${formatUnits(81n * 10n ** 16n, 18)} DAI`)
     await act(async () => button("Claim your payment")!.click())
     expect(takeClaimPromptRequest()).toBe("paylink-frag")
     expect(h.navigate).toHaveBeenCalledWith("/")
@@ -787,6 +934,18 @@ describe("RegistrationDepositPrompt — a ticket-funded name", () => {
     })
     ticketTerms({ paylinkBlocked: false })
     await render()
+    await settleReads()
+    // On Home the hero carries a ticket-funded name; the sheet waits to be asked.
+    expect(container.textContent).toBe("")
+    await act(async () => openActivationPrompt())
+    await settleReads()
+    expect(container.textContent).toContain("Publishing your deposit address")
+    expect(button("Check registration")).toBeTruthy()
+
+    // Once nothing re-sends the address, the sheet says so.
+    await act(async () => {
+      await getPendingStore().upsert(ACCOUNT, { retries: 3 })
+    })
     await settleReads()
     expect(container.textContent).toContain("was not published")
     expect(button("Check registration")).toBeTruthy()

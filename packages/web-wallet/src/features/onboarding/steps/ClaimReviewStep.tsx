@@ -1,7 +1,8 @@
 import type { ReactNode } from "react"
 import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import type { PaylinkSignupQuote } from "../../paylink/paylinkSignupQuote"
-import { OnboardingCard, OnboardingSpinnerBody } from "../OnboardingCard"
+import { OperationHandOff } from "../../operations/OperationHandOff"
+import { OnboardingCard } from "../OnboardingCard"
 import { formatTokenAmount } from "./DepositTermsRows"
 import { PaylinkSignupRows } from "./PaylinkSignupRows"
 import { SignupStepper } from "./SignupStepper"
@@ -18,20 +19,26 @@ export function ClaimReviewStep({
   tokenDecimals,
   memo,
   busy,
-  busyLabel,
+  status = "Unclaimed",
+  onHandOff,
   error,
   notices,
   claimable = true,
   onClaim,
   onClose,
+  speed,
 }: {
   /** Absent while the portal cut that prices the split is unread: no claim until it lands. */
   quote?: PaylinkSignupQuote
+  /** The speed choice the split commits. */
+  speed?: ReactNode
   tokenSymbol: string
   tokenDecimals: number
   memo?: string
+  /** The claim runs: its working beat, until it is sent. */
   busy: boolean
-  busyLabel?: string
+  status?: string
+  onHandOff?: () => void
   error?: string
   notices?: ReactNode
   /** False while the claim is refused for a reason `error` gives; Close is the only way out. */
@@ -54,15 +61,19 @@ export function ClaimReviewStep({
           </span>
           {memo && <span className="ww-paylink-summary__note">{memo}</span>}
         </div>
-        <PaylinkSignupRows quote={quote} tokenSymbol={tokenSymbol} tokenDecimals={tokenDecimals} />
-        <p className="ww-reg-sheet__warn">
-          <Icon name="info-circle" size={16} color="var(--text-secondary)" />
+        <p className="ww-reg-sheet__summary">
+          <Icon name="coins" size={20} color="#fff" />
           <span>
-            The network fee and the proving fee leave the payment to register your tag; what remains
-            opens your wallet once the claim confirms. Registration completes later, when the
-            network sweeps the deposit and returns a little more.
+            The fees come out of the payment to register your tag; the remainder stays in your
+            wallet. Registration can take up to 40 minutes.
           </span>
         </p>
+        <PaylinkSignupRows
+          quote={quote}
+          tokenSymbol={tokenSymbol}
+          tokenDecimals={tokenDecimals}
+          speed={speed}
+        />
         {quote?.covers === false && (
           <p className="ww-invite-modal-error" role="alert">
             This payment cannot cover the account deposit.
@@ -71,16 +82,16 @@ export function ClaimReviewStep({
       </div>
       <span className="ww-claim-review__status">
         <Icon name="clock" size={14} color="var(--accent-yellow, #f5c542)" />
-        Unclaimed
+        {status}
       </span>
       {error && (
         <p className="ww-invite-modal-error" role="alert">
           {error}
         </p>
       )}
-      {notices}
+      {notices && <div className="ww-claim-review__notices">{notices}</div>}
       {busy ? (
-        <OnboardingSpinnerBody label={busyLabel ?? "Claiming your payment..."} />
+        <OperationHandOff onLeave={onHandOff ?? (() => {})} until="sent" />
       ) : (
         <div className="ww-claim-review__actions">
           <button

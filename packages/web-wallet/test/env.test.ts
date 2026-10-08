@@ -1,9 +1,13 @@
 // @vitest-environment node
 import { Network } from "@obsidion/sdk"
 import { DEFAULT_FPC_REFUEL_THRESHOLD, MAINNET_CLAIM_FPC_FLOAT } from "@obsidion/core/constants"
-import { describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { assertCampaignEnv, campaignOriginFrom } from "../src/config/campaignOrigin"
 import { getConfig, loadConfig } from "../src/config/env"
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+})
 
 describe("getConfig", () => {
   it("throws before a profile boot has seeded it", () => {
@@ -36,6 +40,24 @@ describe("loadConfig", () => {
     expect(() => loadConfig({ VITE_NETWORK: "stagenet" })).toThrow(/Unknown VITE_NETWORK/)
   })
 
+  it("takes no endpoint from the page URL", () => {
+    // Settings storage and the build are the only sources; a link can name none.
+    const evil = "https://evil.example"
+    vi.stubGlobal("location", {
+      search: `?node=${evil}&nodeUrl=${evil}&l1=${evil}&l1RpcUrl=${evil}&enclave=${evil}&enclaveUrl=${evil}`,
+      hash: `#node=${evil}&l1=${evil}&enclave=${evil}`,
+    })
+
+    const config = loadConfig({
+      ...testnetEnv,
+      VITE_NODE_URL: "https://node.example",
+      VITE_L1_RPC_URL: "https://l1.example",
+    })
+    expect(config.nodeUrl).toBe("https://node.example")
+    expect(config.l1RpcUrl).toBe("https://l1.example")
+    expect(config.enclaveUrl).toBe("")
+  })
+
   describe("enclaveUrl", () => {
     it("dials the manifest's enclaveUrl off sandbox, and proxies on sandbox", () => {
       // Empty = "use the manifest's own enclaveUrl" — the URL attestation binds to portal/pcr0.
@@ -50,16 +72,26 @@ describe("loadConfig", () => {
       )
     })
 
-    it("takes an injected endpoint ahead of the baked value", () => {
-      // The desktop launcher retargets a packaged build this way when it proxies no enclave.
-      expect(
-        loadConfig(
-          { ...testnetEnv, VITE_ENCLAVE_URL: "/svc/enclave" },
-          {
-            enclaveUrl: "https://enclave.example/rpc",
-          },
-        ).enclaveUrl,
-      ).toBe("https://enclave.example/rpc")
+    it("takes nothing from the desktop launcher's global", () => {
+      vi.stubGlobal("__ZKMONEY_DESKTOP_BRIDGE__", { l1SubmitPath: "/desktop/l1-submit" })
+      vi.stubGlobal("__ZKMONEY_ENDPOINTS__", {
+        nodeUrl: "https://my-node.example",
+        l1RpcUrl: "https://my-l1.example",
+        enclaveUrl: "https://enclave.example/rpc",
+      })
+      const config = loadConfig({ ...testnetEnv, VITE_DESKTOP_BUILD: "true" })
+      expect(config.nodeUrl).toBe("http://localhost:8080")
+      expect(config.l1RpcUrl).toBe("http://localhost:8545")
+      expect(config.enclaveUrl).toBe("")
+    })
+  })
+
+  describe("nodeApiKey", () => {
+    const keyed = { ...testnetEnv, VITE_NODE_API_KEY: "baked-key" }
+
+    it("sends the baked key to the baked node", () => {
+      expect(loadConfig(keyed).nodeApiKey).toBe("baked-key")
+      expect(loadConfig(testnetEnv).nodeApiKey).toBeUndefined()
     })
   })
 
@@ -132,9 +164,9 @@ describe("loadConfig", () => {
     })
 
     it("honors an explicit threshold in whole FJ", () => {
-      expect(loadConfig({ ...screenedMainnet, VITE_FPC_REFUEL_THRESHOLD: "5" }).fpcRefuelThreshold).toBe(
-        5n * 10n ** 18n,
-      )
+      expect(
+        loadConfig({ ...screenedMainnet, VITE_FPC_REFUEL_THRESHOLD: "5" }).fpcRefuelThreshold,
+      ).toBe(5n * 10n ** 18n)
     })
   })
 
@@ -170,7 +202,9 @@ describe("loadConfig", () => {
 
     it("selects the RP by deployment even when the chain changes", () => {
       expect(loadConfig({ ...mainnetEnv, ...screened }).rpId).toBe("auth.zk.money")
-      expect(loadConfig({ ...mainnetEnv, ...screened, VITE_NETWORK: "testnet" }).rpId).toBe("auth.zk.money")
+      expect(loadConfig({ ...mainnetEnv, ...screened, VITE_NETWORK: "testnet" }).rpId).toBe(
+        "auth.zk.money",
+      )
       expect(loadConfig({ VITE_NETWORK: "mainnet", ...screened }).rpId).toBe("localhost")
     })
 

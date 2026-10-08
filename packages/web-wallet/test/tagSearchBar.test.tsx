@@ -62,7 +62,10 @@ describe.each([false, true])("TagSearchBar phone=%s", (phone) => {
   const fill = (value: string) =>
     act(() => {
       input().focus()
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input(), value)
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(
+        input(),
+        value,
+      )
       input().dispatchEvent(new Event("input", { bubbles: true }))
     })
 
@@ -145,7 +148,11 @@ describe.each([false, true])("TagSearchBar phone=%s", (phone) => {
       fill("edited")
       act(() => root.render(<TagSearchBar />))
       expect(input().value).toBe("edited")
-      state.location = { ...state.location, key: "second-seed", state: { searchTag: "secondfriend" } }
+      state.location = {
+        ...state.location,
+        key: "second-seed",
+        state: { searchTag: "secondfriend" },
+      }
       act(() => root.render(<TagSearchBar />))
       expect(input().value).toBe("secondfriend")
       expect(state.save).not.toHaveBeenCalled()
@@ -173,5 +180,4 @@ describe.each([false, true])("TagSearchBar phone=%s", (phone) => {
       expect(state.navigate).not.toHaveBeenCalled()
     })
   })
-
 })

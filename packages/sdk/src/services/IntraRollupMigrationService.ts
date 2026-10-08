@@ -6,7 +6,12 @@ import { waitForL1ToL2MessageReady } from "@aztec/aztec.js/messaging"
 import type { AztecNode } from "@aztec/aztec.js/node"
 import type { ViemClient } from "@aztec/ethereum/types"
 import { retryUntil } from "@aztec/foundation/retry"
-import { OxidePortalContract, type SipaDeployArgs, getSipaSweeps } from "@oxide/l1-contracts"
+import {
+  OxidePortalAbi,
+  OxidePortalContract,
+  type SipaDeployArgs,
+  getSipaSweeps,
+} from "@oxide/l1-contracts"
 import { computeDepositMessageHash } from "@oxide/oxide-lib/deposit_message_hashing.js"
 import type { SpendMetadataResolver } from "@oxide/oxide-client/token_operations_collector.js"
 import type { Network } from "@obsidion/core/constants"
@@ -52,6 +57,8 @@ export interface IntraRollupMigrationDeps {
     /** Also the key the factory serves this deployment's implementations under. */
     portal: Hex
     sipaFactory: Hex
+    /** The tuple's decimal rollup version; keys the SIPA's CREATE2 preimage. */
+    rollupVersion: string
     recoveryProtocol?: "legacy-eoa" | "account"
   }
   /** Read-only L1 client — the service never signs an L1 transaction. */
@@ -212,13 +219,14 @@ export class IntraRollupMigrationService {
 
   /**
    * Fetch the oxide env manifest and return the pinned deployment alongside the other deployments
-   * on its rollup. Every historic portal may still hold user funds — the historic tuples are the
-   * residual probe's inputs, and `historic.length === 0` is the steady state that costs nothing.
-   * No cache: unlike {@link detectMigration}, presence of other deployments is a manifest fact,
-   * not a diff.
+   * on its rollup whose portal escrows the same underlying. Every historic portal may still hold
+   * user funds — the historic tuples are the residual probe's inputs, and `historic.length === 0`
+   * is the steady state that costs nothing. An entry whose portal holds another asset (the Sky
+   * sUSDS portal) is a separate product, not an older generation. No cache: unlike
+   * {@link detectMigration}, presence of other deployments is a manifest fact, not a diff.
    */
   static async detectHistoricDeployments(
-    args: PinnedManifestArgs,
+    args: PinnedManifestArgs & { publicClient: PublicClient },
   ): Promise<{ current: OxideEnvTuple; historic: OxideEnvTuple[] }> {
     const fetchImpl = args.fetchImpl ?? fetch
     const res = await fetchImpl(args.manifestUrl)
@@ -229,7 +237,19 @@ export class IntraRollupMigrationService {
     }
     const manifest = await res.json()
     const current = extractPinnedOxideEnvTuple(manifest, args, pinnedEntryPolicy(args)).tuple
-    return { current, historic: migrationSources(manifest, current) }
+    const candidates = migrationSources(manifest, current)
+    if (candidates.length === 0) return { current, historic: [] }
+    const [pinned, ...others] = await Promise.all(
+      [current, ...candidates].map((tuple) =>
+        args.publicClient.readContract({
+          address: tuple.portal as Address,
+          abi: OxidePortalAbi,
+          functionName: "UNDERLYING",
+        }),
+      ),
+    )
+    const historic = candidates.filter((_, i) => others[i]!.toLowerCase() === pinned!.toLowerCase())
+    return { current, historic }
   }
 
   /**
@@ -303,12 +323,26 @@ export class IntraRollupMigrationService {
     const amount = args.amount ?? (await fromTokenService.getBalance(args.account))
     // The fee floor and the address must price off the same implementation, so resolve it once
     // here and hand it to both — the factory read is keyed by the destination portal.
-    const rollupVersion = BigInt((await node.getNodeInfo()).rollupVersion)
-    const implementation = await readDepositSIPAImplementation(
-      publicClient as unknown as PublicClient,
-      to.sipaFactory as Address,
-      to.portal as Address,
-    )
+    const [implementation, portalRollupVersion] = await Promise.all([
+      readDepositSIPAImplementation(
+        publicClient as unknown as PublicClient,
+        to.sipaFactory as Address,
+        to.portal as Address,
+      ),
+      (publicClient as unknown as PublicClient).readContract({
+        address: to.portal as Address,
+        abi: OxidePortalAbi,
+        functionName: "ROLLUP_VERSION",
+      }),
+    ])
+    // The SIPA commits to this version, and the burn after it is irreversible: a manifest that
+    // disagrees with the portal would send the funds where no sweep can land.
+    if (portalRollupVersion.toString() !== String(to.rollupVersion)) {
+      throw new Error(
+        `IntraRollupMigrationService: the manifest says rollupVersion ${to.rollupVersion}, ` +
+          `portal ${to.portal} says ${portalRollupVersion}`,
+      )
+    }
     const underlying = await this.assertMigratable(amount, implementation)
 
     // Self-resolve the deployment-B SIPA — the same helper as the receive flow's deposit
@@ -327,7 +361,7 @@ export class IntraRollupMigrationService {
       publicClient,
       sipaFactory: to.sipaFactory as Address,
       portal: to.portal as Address,
-      rollupVersion,
+      rollupVersion: BigInt(to.rollupVersion),
     })
 
     // Publish the address so the relayer will sweep it once funded.

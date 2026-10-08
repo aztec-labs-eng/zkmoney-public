@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { APPLE_ICLOUD_AAGUID, ZERO_AAGUID } from "@obsidion/core/constants"
-import { beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { hexToBytes } from "../src/ceremony/bytes.js"
 import {
   BrowserPasskeyCeremony,
@@ -13,10 +13,20 @@ import {
   isEvictedRequestError,
   isNoCredentialError,
   isUnsupportedAlgorithmError,
+  extensionAnswersPasskeys,
   isWedgedTabError,
+  onPasskeyRequest,
   passkeysSupported,
+  requestHeldMs,
 } from "../src/ceremony/passkeyCeremony.js"
+import { decodeUserHandle, encodeUserHandle } from "../src/ceremony/userHandle.js"
+import {
+  RelatedOriginPasskeyError,
+  isPasskeyCancelled,
+  passkeyWritten,
+} from "../src/policy/passkeyErrors.js"
 import { providerSlugFor } from "../src/policy/passkeyProviders.js"
+import { IOS_FLOOR_COPY } from "../src/policy/refusalCopy.js"
 import { FakePasskeyCeremony } from "./support/fakePasskeyCeremony.js"
 
 /** A hook that records every signal, and the signals it heard. */
@@ -71,6 +81,26 @@ describe("passkeysSupported", () => {
   })
 })
 
+describe("extensionAnswersPasskeys", () => {
+  const install = (get: unknown) =>
+    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true })
+
+  it("reads a native get as the browser's own prompt", () => {
+    install(Promise.resolve.bind(Promise))
+    expect(extensionAnswersPasskeys()).toBe(false)
+  })
+
+  it("reads a script get as an extension's", () => {
+    install(async () => null)
+    expect(extensionAnswersPasskeys()).toBe(true)
+  })
+
+  it("reads no WebAuthn as no extension", () => {
+    install(undefined)
+    expect(extensionAnswersPasskeys()).toBe(false)
+  })
+})
+
 describe("BrowserPasskeyCeremony tab slot", () => {
   const get = vi.fn()
 
@@ -103,6 +133,20 @@ describe("BrowserPasskeyCeremony tab slot", () => {
     expect(publicKey!.allowCredentials![0]).not.toHaveProperty("transports")
   })
 
+  it("hands back the user handle the credential carries, and nothing when it carries none", async () => {
+    const credential = fakeAssertionCredential()
+    get.mockResolvedValueOnce({
+      ...credential,
+      response: { ...credential.response, userHandle: encodeUserHandle("alice").buffer },
+    })
+    const named = await new BrowserPasskeyCeremony(timing).assert(request)
+    expect(decodeUserHandle(named.userHandle)).toBe("alice")
+
+    get.mockResolvedValueOnce(fakeAssertionCredential())
+    const nameless = await new BrowserPasskeyCeremony(timing).assert(request)
+    expect(nameless.userHandle).toBeUndefined()
+  })
+
   it("queues behind a live ceremony instead of aborting it", async () => {
     let settleFirst!: (credential: unknown) => void
     get.mockImplementationOnce(() => new Promise((resolve) => (settleFirst = resolve)))
@@ -119,6 +163,43 @@ describe("BrowserPasskeyCeremony tab slot", () => {
     settleFirst(fakeAssertionCredential("cred-1"))
     expect((await first).credentialId).toBe("cred-1")
     expect((await second).credentialId).toBe("cred-2")
+  })
+
+  it("announces the request as it goes out and as it settles, failed or not", async () => {
+    const heard: boolean[] = []
+    const off = onPasskeyRequest((active) => heard.push(active))
+    get.mockImplementationOnce(async () => {
+      heard.push(get.mock.calls.length > 0)
+      return fakeAssertionCredential()
+    })
+    get.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
+    const ceremony = new BrowserPasskeyCeremony(timing)
+    await ceremony.assert(request)
+    await expect(ceremony.assert(request)).rejects.toThrow("closed")
+    off()
+    // Announced before the browser saw the request.
+    expect(heard).toEqual([true, true, false, true, false])
+  })
+
+  it("a holder that outlives its eviction leaves its successor's request announced", async () => {
+    const heard: boolean[] = []
+    const off = onPasskeyRequest((active) => heard.push(active))
+    let settleStuck!: (credential: unknown) => void
+    let settleNext!: (credential: unknown) => void
+    // Ignores its abort, so it is still out when the successor takes the tab.
+    get.mockImplementationOnce(() => new Promise((resolve) => (settleStuck = resolve)))
+    get.mockImplementationOnce(() => new Promise((resolve) => (settleNext = resolve)))
+    const ceremony = new BrowserPasskeyCeremony(timing)
+    const stuck = ceremony.assert(request)
+    const next = ceremony.assert(request)
+    await vi.waitFor(() => expect(get).toHaveBeenCalledTimes(2))
+    settleStuck(fakeAssertionCredential())
+    await stuck
+    expect(heard).toEqual([true, true])
+    settleNext(fakeAssertionCredential())
+    await next
+    off()
+    expect(heard).toEqual([true, true, false])
   })
 
   it("evicts a wedged holder so the next ceremony can run", async () => {
@@ -563,14 +644,17 @@ describe("BrowserPasskeyCeremony create", () => {
       authData.set(bad, 56)
       return authData
     })()
-    await expect(
-      stubCreate({
-        attestationObject: attestationOf(notP256).buffer,
-        getPublicKeyAlgorithm: () => -257,
-        getPublicKey: () => null,
-        getAuthenticatorData: () => notP256.buffer,
-      }),
-    ).rejects.toThrow(/algorithm -257 by fbfc3007-154e-4ecc-8c0b-6e020557d7bd, not ES256/)
+    const error = await stubCreate({
+      attestationObject: attestationOf(notP256).buffer,
+      getPublicKeyAlgorithm: () => -257,
+      getPublicKey: () => null,
+      getAuthenticatorData: () => notP256.buffer,
+    }).catch((e: unknown) => e)
+    expect((error as Error).message).toMatch(
+      /algorithm -257 by fbfc3007-154e-4ecc-8c0b-6e020557d7bd, not ES256/,
+    )
+    // The authenticator saved the key before the wallet could refuse it.
+    expect(passkeyWritten(error)).toBe(true)
   })
 
   it("names an unreported algorithm and an unknown provider when nothing can be read", async () => {
@@ -701,6 +785,7 @@ describe("BrowserPasskeyCeremony create", () => {
         { onRequest: hook },
       )
       await expect(failing).rejects.toBe(accessorError)
+      expect(passkeyWritten(accessorError)).toBe(true)
       expect(phases()).toEqual(["issued", "answered"])
       expect(answeredEvidence(heard)).toMatchObject({
         backupEligible: true,
@@ -720,6 +805,7 @@ describe("BrowserPasskeyCeremony create", () => {
         { onRequest: hook },
       )
       await expect(failing).rejects.toBe(extensionError)
+      expect(passkeyWritten(extensionError)).toBe(true)
       expect(phases()).toEqual(["issued", "answered"])
       expect(providerSlugFor(answeredEvidence(heard).aaguid)).toBe("icloud_keychain")
     })
@@ -777,6 +863,7 @@ describe("BrowserPasskeyCeremony create", () => {
         .catch((e: unknown) => e)
       expect(phases()).toEqual(["issued"])
       expect(isNoCredentialError(error)).toBe(true)
+      expect(passkeyWritten(error)).toBe(false)
     })
   })
 })
@@ -838,9 +925,52 @@ describe("FakePasskeyCeremony request hook", () => {
   })
 })
 
+describe("requestHeldMs", () => {
+  beforeEach(() => {
+    vi.spyOn(document, "hasFocus").mockReturnValue(false)
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("times a rejection from the request's issue, not from the wait for focus before it", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] })
+    const dismissed = new DOMException("not allowed", "NotAllowedError")
+    const create = vi.fn(async () => {
+      vi.setSystemTime(Date.now() + 40)
+      throw dismissed
+    })
+    Object.defineProperty(navigator, "credentials", {
+      configurable: true,
+      value: { create, get: vi.fn() },
+    })
+    const result = new BrowserPasskeyCeremony({ ...timing, focusWaitMs: 5_000 })
+      .create({
+        rpId: "localhost",
+        rpName: "zk.money",
+        userName: "alice",
+        prfFirstSalt: new Uint8Array(32),
+      })
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      )
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(await result).toBe(dismissed)
+    expect(requestHeldMs(dismissed)).toBe(40)
+  })
+
+  it("knows nothing of an error no request threw", () => {
+    expect(requestHeldMs(new DOMException("not allowed", "NotAllowedError"))).toBeUndefined()
+    expect(requestHeldMs("NotAllowedError")).toBeUndefined()
+    expect(requestHeldMs(undefined)).toBeUndefined()
+  })
+})
+
 describe("related-origin failures", () => {
   it.each(["create", "assert"] as const)("explains %s rejection without changing RP", async (operation) => {
-    const browserRequest = vi.fn().mockRejectedValue(new DOMException("RP not authorized", "SecurityError"))
+    const browserError = new DOMException("RP not authorized", "SecurityError")
+    const browserRequest = vi.fn().mockRejectedValue(browserError)
     Object.defineProperty(navigator, "credentials", {
       configurable: true,
       value: { create: browserRequest, get: browserRequest },
@@ -856,12 +986,172 @@ describe("related-origin failures", () => {
             prfFirstSalt: new Uint8Array(32),
           })
         : ceremony.assert({ rpId: "auth.zk.money", challenge: new Uint8Array(32) })
-    await expect(result).rejects.toMatchObject({
-      name: "RelatedOriginPasskeyError",
-      message: expect.stringContaining("auth.zk.money"),
-    })
+    const error = (await result.then(() => undefined, (e: unknown) => e)) as Error
+    expect(error.name).toBe("RelatedOriginPasskeyError")
+    expect(error.message).toBe(
+      "A browser extension, such as a password manager, may have blocked the passkey request on this site. " +
+        "Turn off the extension's passkey option for this site, or use another browser, then try again. " +
+        "If it still fails, contact support.",
+    )
+    expect(error.cause).toBe(browserError)
     expect(browserRequest).toHaveBeenCalledTimes(1)
     const options = browserRequest.mock.calls[0]![0].publicKey
     expect(operation === "create" ? options.rp.id : options.rpId).toBe("auth.zk.money")
+  })
+})
+
+describe("extension refusals", () => {
+  const bitwardenRefusal = () => new Error("'rp.id' cannot be used with the current origin")
+
+  async function rejection(operation: "create" | "assert", rpId: string, browserError: Error) {
+    const browserRequest = vi.fn().mockRejectedValue(browserError)
+    Object.defineProperty(navigator, "credentials", {
+      configurable: true,
+      value: { create: browserRequest, get: browserRequest },
+    })
+    vi.spyOn(document, "hasFocus").mockReturnValue(true)
+    const ceremony = new BrowserPasskeyCeremony(timing)
+    const result =
+      operation === "create"
+        ? ceremony.create({
+            rpId,
+            rpName: "zk.money",
+            userName: "alice",
+            prfFirstSalt: new Uint8Array(32),
+          })
+        : ceremony.assert({ rpId, challenge: new Uint8Array(32) })
+    return result.then(
+      () => undefined,
+      (error: unknown) => error,
+    )
+  }
+
+  it.each(["create", "assert"] as const)(
+    "classifies Bitwarden's %s refusal on a related origin",
+    async (operation) => {
+      const error = await rejection(operation, "auth.zk.money", bitwardenRefusal())
+      expect(error).toBeInstanceOf(RelatedOriginPasskeyError)
+      expect((error as Error).name).toBe("RelatedOriginPasskeyError")
+    },
+  )
+
+  it.each(["create", "assert"] as const)(
+    "keeps Bitwarden's %s refusal on the same RP",
+    async (operation) => {
+      const browserError = bitwardenRefusal()
+      expect(await rejection(operation, "localhost", browserError)).toBe(browserError)
+    },
+  )
+
+  it.each(["create", "assert"] as const)(
+    "keeps an unrelated %s failure on a related origin",
+    async (operation) => {
+      const browserError = new Error("some other failure")
+      expect(await rejection(operation, "auth.zk.money", browserError)).toBe(browserError)
+    },
+  )
+
+  describe("on an iOS below the floor", () => {
+    const iphone = (version: string) =>
+      `Mozilla/5.0 (iPhone; CPU iPhone OS ${version} like Mac OS X) AppleWebKit/605.1.15 ` +
+      "(KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
+    const extensionCopy = new RelatedOriginPasskeyError().message
+    const nativeUserAgent = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent")!
+    const claim = (userAgent: string) =>
+      Object.defineProperty(navigator, "userAgent", { value: userAgent, configurable: true })
+
+    afterEach(() => {
+      Object.defineProperty(navigator, "userAgent", nativeUserAgent)
+    })
+
+    it.each(["create", "assert"] as const)(
+      "says %s needs a newer iOS and keeps the browser's error",
+      async (operation) => {
+        claim(iphone("16_7"))
+        const browserError = new DOMException("RP not authorized", "SecurityError")
+        const error = (await rejection(operation, "auth.zk.money", browserError)) as Error
+        expect(error).toBeInstanceOf(RelatedOriginPasskeyError)
+        expect(error.message).toBe(IOS_FLOOR_COPY)
+        expect(error.cause).toBe(browserError)
+      },
+    )
+
+    it.each([
+      ["iOS 18.3.1", iphone("18_3_1"), IOS_FLOOR_COPY],
+      ["iOS 18.4", iphone("18_4"), extensionCopy],
+      ["an iPhone with no version", "Mozilla/5.0 (iPhone) AppleWebKit/605.1.15", extensionCopy],
+      [
+        "an iPad on iOS 16",
+        "Mozilla/5.0 (iPad; CPU OS 16_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) " +
+          "Version/16.6 Mobile/15E148 Safari/604.1",
+        IOS_FLOOR_COPY,
+      ],
+      [
+        "an iPad asking for the desktop site",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) " +
+          "Version/16.6 Safari/605.1.15",
+        extensionCopy,
+      ],
+      [
+        "an in-app browser on iOS 16",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 16_7 like Mac OS X) AppleWebKit/605.1.15 " +
+          "(KHTML, like Gecko) Mobile/15E148 Instagram 300.0.0.0.0",
+        IOS_FLOOR_COPY,
+      ],
+    ])("picks the wording for %s", async (_, userAgent, copy) => {
+      claim(userAgent)
+      const browserError = new DOMException("RP not authorized", "SecurityError")
+      const error = (await rejection("assert", "auth.zk.money", browserError)) as Error
+      expect(error.message).toBe(copy)
+    })
+
+    it("gives Bitwarden's refusal on a related origin the iOS wording", async () => {
+      claim(iphone("16_7"))
+      const error = (await rejection("assert", "auth.zk.money", bitwardenRefusal())) as Error
+      expect(error).toBeInstanceOf(RelatedOriginPasskeyError)
+      expect(error.message).toBe(IOS_FLOOR_COPY)
+    })
+
+    it.each([
+      ["a SecurityError", () => new DOMException("RP not authorized", "SecurityError")],
+      ["Bitwarden's refusal", bitwardenRefusal],
+    ])("keeps %s on the same RP", async (_, browserError) => {
+      claim(iphone("16_7"))
+      const thrown = browserError()
+      expect(await rejection("assert", "localhost", thrown)).toBe(thrown)
+    })
+  })
+
+  const notAllowedMessage = "The operation either timed out or was not allowed."
+
+  it.each([
+    ["create", "localhost"],
+    ["assert", "localhost"],
+    ["create", "auth.zk.money"],
+    ["assert", "auth.zk.money"],
+  ] as const)(
+    "reports Bitwarden's %s rejection on %s as a closed prompt",
+    async (operation, rpId) => {
+      const error = await rejection(operation, rpId, new Error(notAllowedMessage))
+      expect((error as Error).name).toBe("NotAllowedError")
+      expect((error as Error).message).toBe(notAllowedMessage)
+      expect(isPasskeyCancelled(error)).toBe(true)
+    },
+  )
+
+  it.each([
+    ["a browser NotAllowedError", () => new DOMException(notAllowedMessage, "NotAllowedError")],
+    ["a TypeError with the same message", () => new TypeError(notAllowedMessage)],
+    ["a plain Error with a longer message", () => new Error(`${notAllowedMessage} Try again.`)],
+  ])("keeps %s", async (_, browserError) => {
+    const thrown = browserError()
+    expect(await rejection("assert", "localhost", thrown)).toBe(thrown)
+  })
+
+  it("a first prompt's own rejection is passed through unmarked: nothing was saved", async () => {
+    const thrown = new DOMException("Dismissed", "NotAllowedError")
+    const error = await rejection("create", "localhost", thrown)
+    expect(error).toBe(thrown)
+    expect(passkeyWritten(error)).toBe(false)
   })
 })

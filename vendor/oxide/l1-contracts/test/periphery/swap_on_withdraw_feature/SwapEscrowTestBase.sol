@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
-import {Test} from "forge-std/Test.sol";
 
 import {TestERC20} from "@aztec/mock/TestERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -8,22 +7,18 @@ import {IUniversalRouter} from "@uniswap/universal-router/contracts/interfaces/I
 
 import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
 import {ICurve3Pool} from "@periphery/interfaces/ICurve3Pool.sol";
-import {OxideAccount} from "@periphery/OxideAccount.sol";
-import {OxideAccountFactory} from "@periphery/OxideAccountFactory.sol";
 import {RecoveryCommitmentLib} from "@periphery/RecoveryCommitmentLib.sol";
 import {SwapEscrow} from "@periphery/swap_on_withdraw_feature/SwapEscrow.sol";
 import {SwapEscrowFactory} from "@periphery/swap_on_withdraw_feature/SwapEscrowFactory.sol";
-import {AccountSignatures} from "@test/helpers/AccountSignatures.sol";
+import {EscrowRecoveryTestBase} from "@test/periphery/EscrowRecoveryTestBase.sol";
 import {MockCurve3Pool} from "@test/mocks/MockCurve3Pool.sol";
 import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
 import {MockUniversalRouter} from "./MockUniversalRouter.sol";
 
-abstract contract SwapEscrowTestBase is Test {
+abstract contract SwapEscrowTestBase is EscrowRecoveryTestBase {
   uint256 internal constant AMOUNT = 2500e18;
   uint256 internal constant TIP = 25e18;
   bytes32 internal constant NONCE = keccak256("nonce");
-  bytes32 internal constant RECOVERY_SALT = keccak256("recovery-salt");
-  uint256 internal constant PASSKEY_INDEX = 0;
 
   uint256 internal constant USDC_RATE = 99e16;
   uint256 internal constant USDT_RATE = 98e16;
@@ -44,17 +39,9 @@ abstract contract SwapEscrowTestBase is Test {
 
   address internal relayer = makeAddr("relayer");
   address internal alice = makeAddr("alice");
-  OxideAccountFactory internal accountFactory;
-  OxideAccount internal account;
-  uint256 internal passkey;
 
-  function setUp() public virtual {
-    accountFactory = new OxideAccountFactory();
-    account = OxideAccount(payable(accountFactory.deploy(makeAddr("bootstrap"))));
-    passkey = _p256Key("passkey");
-    (uint256 qx, uint256 qy) = vm.publicKeyP256(passkey);
-    vm.prank(address(account.entryPoint()));
-    account.addAuthKey(OxideAccount.R1Key({qx: bytes32(qx), qy: bytes32(qy)}), "passkey:recovery");
+  function setUp() public virtual override {
+    super.setUp();
 
     dai = new TestERC20("DAI", "DAI", address(this));
     usdc = new TestERC20("USDC", "USDC", address(this));
@@ -97,31 +84,6 @@ abstract contract SwapEscrowTestBase is Test {
       relayerTip: TIP,
       nonce: NONCE
     });
-  }
-
-  function _signRecoverERC20(address _escrow, address _target, address _token, bytes32 _nonce, uint256 _deadline)
-    internal
-    view
-    returns (bytes memory)
-  {
-    return _sign(passkey, keccak256(abi.encode(_escrow, block.chainid, _target, _token, _nonce, _deadline)));
-  }
-
-  function _signRecoverETH(address _escrow, address _target, bytes32 _nonce, uint256 _deadline)
-    internal
-    view
-    returns (bytes memory)
-  {
-    return _sign(passkey, keccak256(abi.encode(_escrow, block.chainid, _target, _nonce, _deadline)));
-  }
-
-  function _sign(uint256 _passkey, bytes32 _digest) internal view returns (bytes memory) {
-    return
-      AccountSignatures.r1(PASSKEY_INDEX, _passkey, AccountSignatures.personalSignDigest(address(account), _digest));
-  }
-
-  function _p256Key(string memory _name) internal pure returns (uint256) {
-    return uint256(keccak256(bytes(_name))) % AccountSignatures.P256_N;
   }
 
   function _fundAndDeploy(SwapEscrow.Args memory _escrowArgs, uint256 _funding) internal returns (address escrow) {

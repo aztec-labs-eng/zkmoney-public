@@ -8,16 +8,18 @@
 // documented queue-skip, so a registered name admits by itself.
 
 import { CAMPAIGN_ADMISSION_PREIMAGE_PREFIX, registrationFloor } from "@obsidion/core/constants"
-import type { PendingRegistrationRecord } from "@obsidion/front-core"
+import { fundsIn, type PendingRegistrationRecord } from "@obsidion/front-core"
 import type { Hex } from "viem"
 import type { PrivateKeyAccount } from "viem/accounts"
 import { useSyncExternalStore } from "react"
 import { getConfig } from "../../config/env"
+import { walletStorage } from "../../platform/storage/walletStorage"
 import { fireEvent } from "../../lib/analytics"
 import { showReportableError } from "../../errors/errorModal"
 import { askedTotal, signedSchedule } from "../onboarding/registrationAsk"
 import { loadRegistrationTerms } from "../onboarding/registrationTerms"
 import { getPendingStore } from "../onboarding/webRegistration"
+import { readRegistrationStage } from "../onboarding/openRegistration"
 import { loadWalletIdentity } from "./walletIdentity"
 
 /** Replicates launch-campaign-web/src/api/admissionVerify.ts byte-for-byte. */
@@ -64,18 +66,14 @@ export function recordDepositAdmission(
   fpcFundingCut?: bigint,
 ): boolean {
   if (observed < admissionFloor(record, fpcFundingCut)) return false
-  localStorage.setItem(DEPOSIT_ENTRY_KEY, depositEntry(record))
+  walletStorage.setItem(DEPOSIT_ENTRY_KEY, depositEntry(record))
   window.dispatchEvent(new Event(DEPOSIT_ENTRY_CHANGED))
   return true
 }
 
 function subscribeDepositAdmission(onChange: () => void): () => void {
   window.addEventListener(DEPOSIT_ENTRY_CHANGED, onChange)
-  window.addEventListener("storage", onChange)
-  return () => {
-    window.removeEventListener(DEPOSIT_ENTRY_CHANGED, onChange)
-    window.removeEventListener("storage", onChange)
-  }
+  return () => window.removeEventListener(DEPOSIT_ENTRY_CHANGED, onChange)
 }
 
 export function useDepositAdmission(record: PendingRegistrationRecord | null): boolean {
@@ -88,7 +86,7 @@ export function useDepositAdmission(record: PendingRegistrationRecord | null): b
 export function hasDepositAdmission(record: PendingRegistrationRecord): boolean {
   try {
     const receipt = JSON.parse(
-      localStorage.getItem(DEPOSIT_ENTRY_KEY) ?? "null",
+      walletStorage.getItem(DEPOSIT_ENTRY_KEY) ?? "null",
     ) as DepositEntryRecord | null
     return (
       receipt !== null &&
@@ -136,7 +134,7 @@ export type AdmissionCheck =
 
 function loadCache(): AdmissionCache | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = walletStorage.getItem(STORAGE_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw) as AdmissionCache
     return typeof parsed.address === "string" && typeof parsed.l2Address === "string"
@@ -160,7 +158,7 @@ function cacheAdmits(l2Address: string): boolean {
 }
 
 export function cacheAdmission(address: string, l2Address: string): void {
-  localStorage.setItem(
+  walletStorage.setItem(
     STORAGE_KEY,
     JSON.stringify({
       address: address.toLowerCase(),
@@ -173,13 +171,13 @@ export function cacheAdmission(address: string, l2Address: string): void {
 /** The receipt vouches for funds at one address; a refund that emptied it takes the receipt with it. */
 export function forgetDepositAdmission(record: PendingRegistrationRecord): void {
   if (!hasDepositAdmission(record)) return
-  localStorage.removeItem(DEPOSIT_ENTRY_KEY)
+  walletStorage.removeItem(DEPOSIT_ENTRY_KEY)
   window.dispatchEvent(new Event(DEPOSIT_ENTRY_CHANGED))
 }
 
 export function clearAdmission(): void {
-  localStorage.removeItem(STORAGE_KEY)
-  localStorage.removeItem(DEPOSIT_ENTRY_KEY)
+  walletStorage.removeItem(STORAGE_KEY)
+  walletStorage.removeItem(DEPOSIT_ENTRY_KEY)
   window.dispatchEvent(new Event(DEPOSIT_ENTRY_CHANGED))
 }
 
@@ -189,24 +187,21 @@ export function admissionGateEnabled(): boolean {
 }
 
 /**
- * The deposit is the paid queue-skip, so it admits the moment L1 shows it at the SIPA. `fundedAt`
- * is stamped by the L1 watcher; the `funded` phase only follows once a detection tick promotes the
- * record, and waiting for that would hold a paying user outside their own wallet. Every one of the
- * identity's registrations counts, not just the newest: an earlier funded attempt still bought
- * entry, and so did a refunded one whose replacement carries it.
+ * The deposit is the paid queue-skip, so it admits the moment the registration's stage has funds
+ * in, and keeps admitting once paid: a funded attempt that lost the name race still bought entry.
+ * Every one of the identity's registrations counts, not just the newest, and so does a refunded
+ * one whose replacement carries it.
  */
 function depositAdmits(l2Address: string): boolean {
   return getPendingStore()
     .list()
-    .some(
-      (rec) =>
-        rec.l2Address === l2Address &&
-        (rec.fundedAt !== undefined ||
-          rec.phase === "funded" ||
-          rec.phase === "confirmed" ||
-          rec.refundedEntry !== undefined ||
-          hasDepositAdmission(rec)),
-    )
+    .some((rec) => {
+      if (rec.l2Address !== l2Address) return false
+      if (rec.fundedAt !== undefined || rec.refundedEntry !== undefined) return true
+      if (hasDepositAdmission(rec)) return true
+      const stage = readRegistrationStage(rec)
+      return stage === "registered" || fundsIn(stage)
+    })
 }
 
 /**

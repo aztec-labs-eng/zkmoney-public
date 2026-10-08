@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import type { WithdrawalRecord } from "@obsidion/front-core"
 import {
   reportWithdrawFunnel,
@@ -100,7 +101,7 @@ describe("reportWithdrawFunnel", () => {
     reportWithdrawFunnel([record({})], new WebStorageAdapter())
     await new Promise((r) => setTimeout(r, 0))
     expect(fired).toHaveBeenCalledTimes(1)
-    expect(localStorage.getItem("obsidion.analytics.withdrawFunnel")).toBe(
+    expect(walletStorage.getItem("obsidion.analytics.withdrawFunnel")).toBe(
       JSON.stringify({ wdraw_a: "finalizing_l1" }),
     )
 

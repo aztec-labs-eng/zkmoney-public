@@ -98,12 +98,14 @@ export {
   Shimmer,
   DoubleCheckIcon,
   Spinner,
+  ProgressSpinner,
   GradientSpinner,
   GlassRowCard,
   TitledGlassRowCard,
   CopyableLinkRow,
   type CopyableLinkRowProps,
   type GradientSpinnerProps,
+  type ProgressSpinnerProps,
 } from "./components/Effects"
 export { Toast, type ToastProps, type ToastKind } from "./components/Toast"
 export { PromoBanner, type PromoBannerProps } from "./components/PromoBanner"

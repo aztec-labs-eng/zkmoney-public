@@ -5,20 +5,22 @@
  * trustworthy at all, and whether two derivations can be mistaken for one another.
  */
 import { beforeEach, describe, expect, it } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
+import { testWalletDbs } from "./support/fakeWalletDb"
 import type { Address } from "viem"
 import {
   appendToSipaPool,
-  decideSipaCache,
   nextSelfSipaNonce,
-  publishKey,
   readCachedSipa,
   readSipaPool,
+  readUnpublishedSlots,
   takeFromSipaPool,
   writeCachedSipa,
 } from "../src/features/deposit/sipaGateway"
 
 const KEY = "webwallet.sipa.address.sandbox.0xpool.0xacct.alice"
 const ADDR = `0x${"ab".repeat(20)}` as Address
+const OTHER = `0x${"cd".repeat(20)}` as Address
 const DAY = 20662
 
 const entry = (over: Partial<Parameters<typeof writeCachedSipa>[1]> = {}) => ({
@@ -27,30 +29,6 @@ const entry = (over: Partial<Parameters<typeof writeCachedSipa>[1]> = {}) => ({
   nonce: 4242,
   published: false,
   ...over,
-})
-
-describe("decideSipaCache", () => {
-  it("derives when there is no entry", () => {
-    expect(decideSipaCache(null, false)).toBe("derive")
-  })
-
-  it("derives when the caller asked for a fresh address, published or not", () => {
-    expect(decideSipaCache(entry({ published: true }), true)).toBe("derive")
-    expect(decideSipaCache(entry(), true)).toBe("derive")
-  })
-
-  it("never hands out a published address twice", () => {
-    // Each address is single-use: reusing one links every sender who pays this wallet.
-    expect(decideSipaCache(entry({ published: true }), false)).toBe("derive")
-    expect(decideSipaCache(entry({ published: true, day: DAY - 9 }), false)).toBe("derive")
-  })
-
-  it("finishes publishing an unpublished entry, whatever day it came from", () => {
-    // Abandoning it would strand anything a sender already paid into it; `(day, nonce)`
-    // regenerate the derivation exactly, so age is irrelevant.
-    expect(decideSipaCache(entry(), false)).toBe("republish")
-    expect(decideSipaCache(entry({ day: DAY - 1 }), false)).toBe("republish")
-  })
 })
 
 describe("readCachedSipa", () => {
@@ -68,29 +46,29 @@ describe("readCachedSipa", () => {
   it("rejects an entry with no nonce", () => {
     // The nonce regenerates the message secret. Without it the publish step derives a DIFFERENT
     // address than the one already displayed, and marks the displayed one published anyway.
-    localStorage.setItem(KEY, JSON.stringify({ address: ADDR, day: DAY, published: false }))
+    walletStorage.setItem(KEY, JSON.stringify({ address: ADDR, day: DAY, published: false }))
     expect(readCachedSipa(KEY)).toBeNull()
   })
 
   it("rejects a non-integer nonce or day", () => {
-    localStorage.setItem(KEY, JSON.stringify(entry({ nonce: 1.5 })))
+    walletStorage.setItem(KEY, JSON.stringify(entry({ nonce: 1.5 })))
     expect(readCachedSipa(KEY)).toBeNull()
-    localStorage.setItem(KEY, JSON.stringify(entry({ day: "20662" as unknown as number })))
+    walletStorage.setItem(KEY, JSON.stringify(entry({ day: "20662" as unknown as number })))
     expect(readCachedSipa(KEY)).toBeNull()
   })
 
   it("rejects a non-boolean published flag", () => {
-    localStorage.setItem(KEY, JSON.stringify(entry({ published: 1 as unknown as boolean })))
+    walletStorage.setItem(KEY, JSON.stringify(entry({ published: 1 as unknown as boolean })))
     expect(readCachedSipa(KEY)).toBeNull()
   })
 
   it("rejects a missing address", () => {
-    localStorage.setItem(KEY, JSON.stringify({ day: DAY, nonce: 4242, published: true }))
+    walletStorage.setItem(KEY, JSON.stringify({ day: DAY, nonce: 4242, published: true }))
     expect(readCachedSipa(KEY)).toBeNull()
   })
 
   it("fails soft on corrupt JSON", () => {
-    localStorage.setItem(KEY, "{not json")
+    walletStorage.setItem(KEY, "{not json")
     expect(readCachedSipa(KEY)).toBeNull()
   })
 })
@@ -101,14 +79,14 @@ describe("sipa pool", () => {
   it("round-trips broadcast entries and reads empty when absent", () => {
     expect(readSipaPool(KEY)).toEqual([])
     appendToSipaPool(KEY, entry({ nonce: 1, published: true }))
-    appendToSipaPool(KEY, entry({ nonce: 2, published: true }))
+    appendToSipaPool(KEY, entry({ nonce: 2, address: OTHER, published: true }))
     expect(readSipaPool(KEY).map((e) => e.nonce)).toEqual([1, 2])
   })
 
   it("drops malformed and unbroadcast entries instead of failing the read", () => {
     // Pool membership means broadcast: an unpublished entry is not sweepable, and handing one out
     // as if it were invites a deposit nobody sweeps. A malformed one routes funds wrong.
-    localStorage.setItem(
+    walletStorage.setItem(
       `${KEY}.pool`,
       JSON.stringify([
         entry({ nonce: 1, published: true }),
@@ -117,61 +95,97 @@ describe("sipa pool", () => {
       ]),
     )
     expect(readSipaPool(KEY).map((e) => e.nonce)).toEqual([1])
-    localStorage.setItem(`${KEY}.pool`, "{not json")
+    walletStorage.setItem(`${KEY}.pool`, "{not json")
     expect(readSipaPool(KEY)).toEqual([])
   })
 
-  it("take pops oldest-first and removes what it hands out", () => {
+  it("take pops oldest-first into the slot and removes what it hands out", async () => {
     appendToSipaPool(KEY, entry({ nonce: 1, published: true }))
-    appendToSipaPool(KEY, entry({ nonce: 2, published: true }))
-    expect(takeFromSipaPool(KEY)?.nonce).toBe(1)
+    appendToSipaPool(KEY, entry({ nonce: 2, address: OTHER, published: true }))
+    expect((await takeFromSipaPool(KEY))?.nonce).toBe(1)
+    expect(readCachedSipa(KEY)?.nonce).toBe(1)
     // The popped one is gone — a second take must never hand the same address out twice.
-    expect(takeFromSipaPool(KEY)?.nonce).toBe(2)
-    expect(takeFromSipaPool(KEY)).toBeNull()
-  })
-})
-
-describe("publishKey", () => {
-  it("is stable for the same derivation", () => {
-    expect(publishKey(KEY, entry())).toBe(publishKey(KEY, entry()))
+    expect((await takeFromSipaPool(KEY))?.nonce).toBe(2)
+    expect(readCachedSipa(KEY)?.nonce).toBe(2)
+    expect(await takeFromSipaPool(KEY)).toBeNull()
   })
 
-  it("separates derivations that differ in nonce or day", () => {
-    // This is what stops a `fresh` address from adopting the in-flight publish of the address it
-    // replaced — the case where the screen shows one address while another is broadcast.
-    expect(publishKey(KEY, entry({ nonce: 1 }))).not.toBe(publishKey(KEY, entry({ nonce: 2 })))
-    expect(publishKey(KEY, entry({ day: DAY }))).not.toBe(publishKey(KEY, entry({ day: DAY + 1 })))
-  })
-
-  it("separates accounts and deployments through the cache key", () => {
-    expect(publishKey(KEY, entry())).not.toBe(publishKey(`${KEY}.other`, entry()))
+  it("hands out no address when its move from the pool to the slot is not saved", async () => {
+    appendToSipaPool(KEY, entry({ nonce: 1, published: true }))
+    await walletStorage.flush()
+    testWalletDbs().onApply = () => {
+      throw new Error("disk")
+    }
+    await expect(takeFromSipaPool(KEY)).rejects.toThrow("disk")
+    testWalletDbs().onApply = undefined
+    // Neither side moved: the pool keeps the entry and the slot stays empty.
+    expect(readSipaPool(KEY).map((e) => e.nonce)).toEqual([1])
+    expect(readCachedSipa(KEY)).toBeNull()
   })
 })
 
 describe("nextSelfSipaNonce", () => {
+  it("refuses a nonce whose reservation is not saved", async () => {
+    testWalletDbs().onApply = () => {
+      throw new Error("disk")
+    }
+    await expect(nextSelfSipaNonce("scope", DAY)).rejects.toThrow("disk")
+    testWalletDbs().onApply = undefined
+    expect(await nextSelfSipaNonce("scope", DAY)).toBe(999_999)
+  })
+
   beforeEach(() => localStorage.clear())
 
-  it("counts down from the top of the nonce space, one slot per call", () => {
-    expect(nextSelfSipaNonce("scope", DAY)).toBe(999_999)
-    expect(nextSelfSipaNonce("scope", DAY)).toBe(999_998)
-    expect(nextSelfSipaNonce("scope", DAY)).toBe(999_997)
+  it("counts down from the top of the nonce space, one slot per call", async () => {
+    expect(await nextSelfSipaNonce("scope", DAY)).toBe(999_999)
+    expect(await nextSelfSipaNonce("scope", DAY)).toBe(999_998)
+    expect(await nextSelfSipaNonce("scope", DAY)).toBe(999_997)
   })
 
-  it("restarts at slot 0 when the day rolls and keeps scopes apart", () => {
-    nextSelfSipaNonce("scope", DAY)
-    expect(nextSelfSipaNonce("scope", DAY + 1)).toBe(999_999)
-    expect(nextSelfSipaNonce("other", DAY + 1)).toBe(999_999)
+  it("restarts at slot 0 when the day rolls and keeps scopes apart", async () => {
+    await nextSelfSipaNonce("scope", DAY)
+    expect(await nextSelfSipaNonce("scope", DAY + 1)).toBe(999_999)
+    expect(await nextSelfSipaNonce("other", DAY + 1)).toBe(999_999)
   })
 
-  it("restarts at slot 0 on a corrupt entry", () => {
-    localStorage.setItem("scope.slot", "{nope")
-    expect(nextSelfSipaNonce("scope", DAY)).toBe(999_999)
+  it("restarts at slot 0 on a corrupt entry", async () => {
+    walletStorage.setItem("scope.slot", "{nope")
+    expect(await nextSelfSipaNonce("scope", DAY)).toBe(999_999)
   })
 
-  it("takes the chain floor when it is ahead of the local counter, and vice versa", () => {
-    expect(nextSelfSipaNonce("scope", DAY, 3)).toBe(999_996)
-    expect(nextSelfSipaNonce("scope", DAY, 1)).toBe(999_995)
-    localStorage.setItem("scope.slot", "{nope")
-    expect(nextSelfSipaNonce("scope", DAY, 2)).toBe(999_997)
+  it("takes the chain floor when it is ahead of the local counter, and vice versa", async () => {
+    expect(await nextSelfSipaNonce("scope", DAY, 3)).toBe(999_996)
+    expect(await nextSelfSipaNonce("scope", DAY, 1)).toBe(999_995)
+    walletStorage.setItem("scope.slot", "{nope")
+    expect(await nextSelfSipaNonce("scope", DAY, 2)).toBe(999_997)
+  })
+})
+
+describe("readUnpublishedSlots", () => {
+  const PREFIX = "webwallet.sipa.address.sandbox.0xpool.0xacct."
+  beforeEach(() => localStorage.clear())
+
+  it("finds every tag's unpublished slot under the prefix and nothing else", () => {
+    writeCachedSipa(`${PREFIX}alice`, entry())
+    writeCachedSipa(`${PREFIX}bob`, entry({ nonce: 7 }))
+    // A tag literally named "pool" is a slot; only the `.pool` suffix marks a pool.
+    writeCachedSipa(`${PREFIX}pool`, entry({ nonce: 3 }))
+    writeCachedSipa(`${PREFIX}carol`, entry({ published: true }))
+    appendToSipaPool(`${PREFIX}alice`, entry({ published: true, nonce: 9 }))
+    writeCachedSipa("webwallet.sipa.address.sandbox.0xpool.0xother.alice", entry())
+    localStorage.setItem(`${PREFIX}mallory`, "{not json")
+
+    const slots = readUnpublishedSlots(PREFIX).sort((a, b) => a.key.localeCompare(b.key))
+    expect(slots.map((s) => s.key)).toEqual([`${PREFIX}alice`, `${PREFIX}bob`, `${PREFIX}pool`])
+    expect(slots.map((s) => s.entry.nonce)).toEqual([4242, 7, 3])
+  })
+
+  it("keeps a slot whose broadcast was sent but never marked", () => {
+    writeCachedSipa(`${PREFIX}alice`, entry({ broadcastTxHash: "0xtx" }))
+    expect(readUnpublishedSlots(PREFIX)).toHaveLength(1)
+  })
+
+  it("reads empty with nothing stored", () => {
+    expect(readUnpublishedSlots(PREFIX)).toEqual([])
   })
 })

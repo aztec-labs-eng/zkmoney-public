@@ -21,9 +21,10 @@ import {
   encodeRegistrationRecord,
 } from './intent.js';
 import { R1_INSTALL_CALL_GAS_BASE, R1_INSTALL_CALL_GAS_PER_WORD, r1InstallCallGas } from './r1_install.js';
+import { SipaIntent } from './sipa_factory.js';
 import { buildSipaDeployAndSweepOperation } from './sipa_sweep_operation.js';
 
-const [TIER_2K, TIER_4K] = L1_OPERATION_BROADCAST_TIERS;
+const [TIER_2K] = L1_OPERATION_BROADCAST_TIERS;
 
 const RECIPIENT_COMMITMENT = `0x${'ab'.repeat(32)}` as Hex;
 const NAME_PORTAL_RECIPIENT = `0x${'ac'.repeat(32)}` as Hex;
@@ -73,6 +74,7 @@ function sweepBundle(intentData: Hex, proofs: Hex): Buffer {
   const operation = buildSipaDeployAndSweepOperation({
     sipa: OWNER,
     sipaFactory: BENEFICIARY,
+    intent: SipaIntent.Registration,
     deployArgs: {
       implementation: OWNER,
       intentHash: NAME_HASH,
@@ -127,27 +129,26 @@ describe('intent codec', () => {
   // only then, and it is what pushes the bundle closest to the cap. The broadcaster's calldata tiers are fixed-size,
   // so a bundle that outgrows the 2k tier rides the 4k one and a bundle that outgrows that the 16 KiB one, which
   // multiplies the broadcaster's proving work. The registration bundle carries the r1 install next to the record and
-  // its signatures, which puts it on the 4k tier; a bare deposit keeps the 2k one.
-  test('a registration bundle takes the 4k tier and a deposit bundle the 2k tier', () => {
+  // its signatures, all in one deposit subsidy call, which fits the 2k tier.
+  test('a registration bundle and a deposit bundle take the 2k tier', () => {
     const registration = sweepBundle(
       encodeRegistrationIntentData(INTENT),
       encodeRegistrationProofs(SIGNED_TERMS_PROOFS),
     );
-    expect(encodeL1OperationCalldata(registration).tier).toBe(TIER_4K);
+    expect(encodeL1OperationCalldata(registration).tier).toBe(TIER_2K);
     const deposit = sweepBundle(encodeDepositIntentData(RECIPIENT_COMMITMENT), '0x');
     expect(encodeL1OperationCalldata(deposit).tier).toBe(TIER_2K);
-    expect(TIER_4K.fields).toBeGreaterThan(TIER_2K.fields);
   });
 
   // Pinned so a codec change that inflates the bundle shows up here rather than as a costlier broadcast.
-  test('the largest registration bundle measures 2340 bytes, 76 of the 4k tier 133 fields', () => {
+  test('the largest registration bundle measures 1796 bytes, 58 of the 2k tier 67 fields', () => {
     const registration = sweepBundle(
       encodeRegistrationIntentData(INTENT),
       encodeRegistrationProofs(SIGNED_TERMS_PROOFS),
     );
-    expect(registration.length).toBe(2340);
-    expect(Math.ceil(registration.length / 31)).toBe(76);
-    expect(TIER_4K.fields).toBe(133);
+    expect(registration.length).toBe(1796);
+    expect(Math.ceil(registration.length / 31)).toBe(58);
+    expect(TIER_2K.fields).toBe(67);
   });
 
   test('the r1 install call gas counts metadata in whole words plus the length word', () => {

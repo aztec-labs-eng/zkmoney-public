@@ -1,0 +1,225 @@
+{
+  "scenario": "activity",
+  "path": "/settings?flowFixture=success&capacityFixture=fits&allowanceFixture=available",
+  "ready": {
+    "role": "button",
+    "name": "Sponsored transactions",
+    "exact": false
+  },
+  "finalScreenshot": false,
+  "steps": [
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "button:has-text(\"Sponsored transactions\"):has-text(\"42 left\")"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "06-settings-available.png",
+      "state": "Settings scrolled to the Sponsored transactions row: 42 left"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"available\"][data-expanded=\"true\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "01-available.png",
+      "state": "The shared sheet on sponsorship: allowance available"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&capacityFixture=fits&allowanceFixture=renewal-unknown"
+    },
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "button:has-text(\"Sponsored transactions\"):has-text(\"Unknown\")"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "07-settings-renewal-unknown.png",
+      "state": "Settings row: Unknown (renewal status unknown)"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"renewal-unknown\"][data-expanded=\"true\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "02-renewal-unknown.png",
+      "state": "The shared sheet on sponsorship: renewal status unknown"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&capacityFixture=fits&allowanceFixture=spent"
+    },
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "button:has-text(\"Sponsored transactions\"):has-text(\"0 left\")"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "08-settings-spent.png",
+      "state": "Settings row for a rail that never renews, with no uses left: 0 left"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"spent\"][data-expanded=\"true\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "03-spent.png",
+      "state": "The shared sheet on sponsorship: a rail that never renews, with no uses left"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "goto",
+      "path": "/settings?flowFixture=success&capacityFixture=fits&allowanceFixture=retry"
+    },
+    {
+      "action": "waitFor",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "button:has-text(\"Sponsored transactions\"):has-text(\"Unavailable\")"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "09-settings-unavailable.png",
+      "state": "Settings row while the allowance read fails: Unavailable"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Sponsored transactions",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"unavailable\"]"
+    },
+    {
+      "action": "waitFor",
+      "testId": "about-limits-sponsorship-retry"
+    },
+    {
+      "action": "screenshot",
+      "file": "04-retry.png",
+      "state": "Allowance read failed; Check again is offered"
+    },
+    {
+      "action": "click",
+      "testId": "about-limits-sponsorship-retry"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"available\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "05-retry-success.png",
+      "state": "Check again refreshes the allowance"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    }
+  ]
+}

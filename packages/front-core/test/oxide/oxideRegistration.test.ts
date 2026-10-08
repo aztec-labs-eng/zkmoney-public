@@ -22,11 +22,11 @@ import { deriveBootstrapKey } from "../../src/oxide/oxideAccountKeys"
 import { AccountServiceError } from "../../src/oxide/accountServiceClient"
 import {
   startOxideRegistrationSession,
-  type RegistrationBroadcastPayload,
+  rebuildRegistrationBroadcast,
+  recordRegistrationBroadcastSent,
   resumeOxideRegistration,
-  AWAITING_SWEEP_WINDOW_MS,
-  BROADCAST_IN_FLIGHT_MS,
   type OxideRegistrationEnv,
+  type OxideSignDeps,
   type PendingRegistrationStoreLike,
   type RegistrationDerivation,
   type RegistrationDepositReader,
@@ -218,7 +218,6 @@ const CLAIM = { signature: `0x${"cc".repeat(65)}` as Hex, nonce: "1", deadline: 
 
 function sessionDeps(over: Partial<Record<string, unknown>> = {}) {
   const store = new FakeStore()
-  const broadcast = vi.fn(async () => {})
   const signDomain = vi.fn(async () => CLAIM)
   const l1 = {
     predictAccountAddress: vi.fn(async () => OWNER),
@@ -242,12 +241,11 @@ function sessionDeps(over: Partial<Record<string, unknown>> = {}) {
     credentialId: CREDENTIAL_ID,
     l1,
     deriveRegistrationSipa: vi.fn(async () => DERIVATION),
-    broadcast,
     pendingStore: store,
     now: () => 1_000,
     ...over,
   }
-  return { deps: deps as never, store, broadcast, signDomain, l1 }
+  return { deps: deps as never, store, signDomain, l1 }
 }
 
 // ── Session ─────────────────────────────────────────────────────────────────
@@ -336,115 +334,30 @@ describe("startOxideRegistrationSession", () => {
     )
   })
 
-  it("does not broadcast when the replaced address spent the account's one-shot rail", async () => {
+  it("owes no broadcast when the replaced address spent the account's one-shot rail", async () => {
     const replaced = { sipaAddress: OTHER_SIPA, refunded: true, broadcastSpent: true }
-    const { deps, store, broadcast } = sessionDeps({ replaced, deferBroadcast: true })
+    const { deps, store } = sessionDeps({ replaced })
     const out = await startOxideRegistrationSession(deps)
     if (out.status !== "awaiting_deposit") throw new Error("unreachable")
-    expect(out.broadcastDone).toBeUndefined()
-    expect(broadcast).not.toHaveBeenCalled()
+    expect(out.broadcastOwed).toBe(false)
     expect(store.get(OWNER)).toMatchObject({ sipaAddress: SIPA, broadcast: false, replaced })
   })
 
-  it("derives the SIPA, claims, broadcasts, and returns the deposit address", async () => {
-    const { deps, store, broadcast, signDomain } = sessionDeps()
+  it("derives the SIPA, claims, and returns the broadcast it owes without sending it", async () => {
+    const { deps, store, signDomain } = sessionDeps()
     const out = await startOxideRegistrationSession(deps)
-    expect(out.status).toBe("awaiting_deposit")
     if (out.status !== "awaiting_deposit") throw new Error("unreachable")
-    expect(out.sipaAddress).toBe(SIPA)
-    expect(out.depositToken).toBe(FEE_TOKEN)
+    expect(out).toMatchObject({ sipaAddress: SIPA, depositToken: FEE_TOKEN, broadcastOwed: true })
     expect(out.payload.registrationData).toBe(DERIVATION.registrationData)
-    expect(out.payload.consentSig).toMatch(/^0x[0-9a-f]+$/)
-    expect(out.payload.r1Install.qx).toBe(R1KEY.qx)
-    expect(out.payload.r1Install.qy).toBe(R1KEY.qy)
-    expect(out.payload.r1Install.signature).toMatch(/^0x[0-9a-f]+$/)
+    expect(out.payload.r1Install).toMatchObject({ qx: R1KEY.qx, qy: R1KEY.qy })
     expect(signDomain).toHaveBeenCalledWith({ nameHash: expect.any(String), userAddress: OWNER })
-    expect(broadcast).toHaveBeenCalledOnce()
-    const rec = store.get(OWNER)!
-    expect(rec.phase).toBe("awaiting_deposit")
-    expect(rec.sipaAddress).toBe(SIPA)
-    expect(rec.fee).toBe("1")
-    expect(rec.beneficiary).toBe(BENEFICIARY)
-    expect(rec.broadcast).toBe(true)
-  })
-
-  it("deferred: returns the address before the broadcast lands, then stamps the record", async () => {
-    let release!: () => void
-    const gate = new Promise<void>((r) => (release = r))
-    const { deps, store } = sessionDeps({
-      deferBroadcast: true,
-      broadcast: vi.fn(() => gate),
-    })
-    const out = await startOxideRegistrationSession(deps)
-    expect(out.status).toBe("awaiting_deposit")
-    if (out.status !== "awaiting_deposit") throw new Error("unreachable")
-    void out.startBroadcast!()
-    // Returned while the broadcast is still in flight: the record says so.
-    expect(store.get(OWNER)!.broadcast).toBe(false)
-    release()
-    expect(await out.broadcastDone).toBe(true)
-    expect(store.get(OWNER)!.broadcast).toBe(true)
-  })
-
-  it("deferred: a broadcast landing after the account moved on marks the replacement spent, not broadcast", async () => {
-    let release!: () => void
-    const gate = new Promise<void>((r) => (release = r))
-    const { deps, store } = sessionDeps({
-      deferBroadcast: true,
-      broadcast: vi.fn(() => gate),
-    })
-    const out = await startOxideRegistrationSession(deps)
-    if (out.status !== "awaiting_deposit") throw new Error("unreachable")
-    void out.startBroadcast!()
-    // The earned quote replaced the address while the first broadcast was still proving.
-    await store.upsert(OWNER, {
-      sipaAddress: OTHER_SIPA,
-      broadcast: false,
-      replaced: { sipaAddress: SIPA, refunded: false, broadcastSpent: false },
-    })
-    release()
-    expect(await out.broadcastDone).toBe(true)
     expect(store.get(OWNER)).toMatchObject({
-      sipaAddress: OTHER_SIPA,
+      phase: "awaiting_deposit",
+      sipaAddress: SIPA,
+      fee: "1",
+      beneficiary: BENEFICIARY,
       broadcast: false,
-      replaced: { sipaAddress: SIPA, refunded: false, broadcastSpent: true },
     })
-  })
-
-  it("deferred: a failed broadcast resolves broadcastDone false and leaves the record resumable", async () => {
-    const { deps, store } = sessionDeps({
-      deferBroadcast: true,
-      broadcast: vi.fn(async () => {
-        throw new Error("proving died")
-      }),
-    })
-    const out = await startOxideRegistrationSession(deps)
-    if (out.status !== "awaiting_deposit") throw new Error("unreachable")
-    void out.startBroadcast!()
-    expect(await out.broadcastDone).toBe(false)
-    expect(store.get(OWNER)!.broadcast).toBe(false)
-    expect(store.get(OWNER)!.broadcastStartedAt).toBeUndefined()
-  })
-
-  it("deferred: proves nothing until startBroadcast, and stamps the record while it runs", async () => {
-    let release!: () => void
-    const gate = new Promise<void>((r) => (release = r))
-    const broadcast = vi.fn(() => gate)
-    const { deps, store } = sessionDeps({ deferBroadcast: true, broadcast })
-    const out = await startOxideRegistrationSession(deps)
-    if (out.status !== "awaiting_deposit") throw new Error("unreachable")
-    await new Promise((r) => setTimeout(r, 0))
-    expect(broadcast).not.toHaveBeenCalled()
-    expect(store.get(OWNER)!.broadcastStartedAt).toBeUndefined()
-    const first = out.startBroadcast!()
-    expect(out.startBroadcast!()).toBe(first)
-    await new Promise((r) => setTimeout(r, 0))
-    expect(broadcast).toHaveBeenCalledOnce()
-    expect(store.get(OWNER)!.broadcastStartedAt).toEqual(expect.any(Number))
-    release()
-    expect(await out.broadcastDone).toBe(true)
-    expect(store.get(OWNER)).toMatchObject({ broadcast: true })
-    expect(store.get(OWNER)!.broadcastStartedAt).toBeUndefined()
   })
 
   it("drops the record and reports taken when the claim server refuses a reserved name", async () => {
@@ -494,13 +407,13 @@ function resumeDeps(
     ...record,
   }
   store.records.set(OWNER.toLowerCase(), full)
-  const deposits: RegistrationDepositReader = {
-    readFunding: vi.fn(async () => []),
-    readBalance: vi.fn(async () => 0n),
-    readSweeps: vi.fn(async () => []),
-    floor: vi.fn(async () => 10n),
-    scheduleFee: vi.fn(async () => 1n),
-  }
+  const deposits = {
+    readFunding: vi.fn<RegistrationDepositReader["readFunding"]>(async () => []),
+    readBalance: vi.fn<RegistrationDepositReader["readBalance"]>(async () => 0n),
+    readSweeps: vi.fn<RegistrationDepositReader["readSweeps"]>(async () => []),
+    floor: vi.fn<RegistrationDepositReader["floor"]>(async () => 10n),
+    scheduleFee: vi.fn<RegistrationDepositReader["scheduleFee"]>(async () => 1n),
+  } satisfies RegistrationDepositReader
   const l1 = {
     predictAccountAddress: vi.fn(async () => OWNER),
     readUserAddress: vi.fn(async () => zeroAddress as Address),
@@ -515,11 +428,11 @@ function resumeDeps(
   return { deps: deps as never, store, deposits, l1 }
 }
 
-/** The lazily-loaded sign deps a re-broadcast cycle needs, over an injected broadcaster. */
-function signDepsWith(broadcast: ReturnType<typeof vi.fn>) {
-  return async () => ({
+/** The unlocked wallet's sign deps, over a claim server the test can steer. */
+function signDeps(signDomain = vi.fn(async (): Promise<unknown> => CLAIM)) {
+  return {
     masterSecret: MSK,
-    accountService: { signDomain: vi.fn(async () => CLAIM) },
+    accountService: { signDomain },
     r1Key: R1KEY,
     credentialId: CREDENTIAL_ID,
     l1: {
@@ -529,8 +442,7 @@ function signDepsWith(broadcast: ReturnType<typeof vi.fn>) {
       readAuthKeys: vi.fn(async () => []),
     },
     deriveRegistrationSipa: vi.fn(async () => DERIVATION),
-    broadcast,
-  })
+  } as never as OxideSignDeps & { accountService: { signDomain: typeof signDomain } }
 }
 
 describe("resumeOxideRegistration", () => {
@@ -599,10 +511,8 @@ describe("resumeOxideRegistration", () => {
 
   it("marks the record funded when a deposit at/above the floor lands", async () => {
     const { deps, store, deposits } = resumeDeps({})
-    ;(deposits.readBalance as ReturnType<typeof vi.fn>).mockResolvedValue(50n)
-    ;(deposits.readFunding as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { amount: 50n, txHash: `0x${"ee".repeat(32)}` },
-    ])
+    deposits.readBalance.mockResolvedValue(50n)
+    deposits.readFunding.mockResolvedValue([{ amount: 50n, txHash: `0x${"ee".repeat(32)}` }])
     const out = await resumeOxideRegistration(deps)
     expect(out).toBe("pending")
     const rec = store.get(OWNER)!
@@ -611,37 +521,54 @@ describe("resumeOxideRegistration", () => {
     expect(rec.fundingTxHash).toBe(`0x${"ee".repeat(32)}`)
   })
 
+  it.each([undefined, 1_000])(
+    "marks a record swept before any tick saw its funds as funded, keeping an earlier stamp (%s)",
+    async (fundedAt) => {
+      const SWEEP = `0x${"5e".repeat(32)}` as const
+      const { deps, store, deposits } = resumeDeps({ fundedAt })
+      deposits.readSweeps.mockResolvedValue([{ txHash: SWEEP }])
+      expect(await resumeOxideRegistration(deps)).toBe("pending")
+      expect(store.get(OWNER)).toMatchObject({
+        phase: "funded",
+        sweptAt: 5_000,
+        sweepTxHash: SWEEP,
+        fundedAt: fundedAt ?? 5_000,
+      })
+    },
+  )
+
   it("reads funding off the balance, not the sum of transfers a refund left behind", async () => {
     const { deps, store, deposits } = resumeDeps({})
     // 13 in, refunded, 2 in: the transfers still sum past the floor of 10.
-    ;(deposits.readFunding as ReturnType<typeof vi.fn>).mockResolvedValue([
+    deposits.readFunding.mockResolvedValue([
       { amount: 13n, txHash: `0x${"ee".repeat(32)}` },
       { amount: 2n, txHash: `0x${"ef".repeat(32)}` },
     ])
-    ;(deposits.readBalance as ReturnType<typeof vi.fn>).mockResolvedValue(2n)
+    deposits.readBalance.mockResolvedValue(2n)
     expect(await resumeOxideRegistration(deps)).toBe("pending")
     expect(store.get(OWNER)!.phase).toBe("awaiting_deposit")
     expect(store.get(OWNER)!.fundedAt).toBeUndefined()
   })
 
-  it("decides nothing about funding when the balance cannot be read", async () => {
-    const { deps, store, deposits } = resumeDeps({})
-    ;(deposits.readFunding as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { amount: 50n, txHash: `0x${"ee".repeat(32)}` },
-    ])
-    ;(deposits.readBalance as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("rpc"))
-    expect(await resumeOxideRegistration(deps)).toBe("pending")
-    expect(store.get(OWNER)!.fundedAt).toBeUndefined()
-  })
+  it.each(["readBalance", "floor"] as const)(
+    "decides nothing about funding when %s rejects, and backs off instead of polling fast",
+    async (read) => {
+      const { deps, store, deposits } = resumeDeps({})
+      deposits.readBalance.mockResolvedValue(50n)
+      deposits[read].mockRejectedValue(new Error("rpc"))
+      expect(await resumeOxideRegistration(deps)).toBe("pending")
+      expect(store.get(OWNER)!.fundedAt).toBeUndefined()
+      // The transient window off the 5_000 clock: the detect cadence would hammer a failing read.
+      expect(store.get(OWNER)!.nextAttemptAt).toBe(35_000)
+    },
+  )
 
   it("decides nothing about funding while the floor is unreadable, then decides on the next tick", async () => {
     let clock = 5_000
     const { deps, store, deposits } = resumeDeps({}, { now: () => clock })
-    ;(deposits.readBalance as ReturnType<typeof vi.fn>).mockResolvedValue(50n)
-    ;(deposits.readFunding as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { amount: 50n, txHash: `0x${"ee".repeat(32)}` },
-    ])
-    ;(deposits.floor as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined)
+    deposits.readBalance.mockResolvedValue(50n)
+    deposits.readFunding.mockResolvedValue([{ amount: 50n, txHash: `0x${"ee".repeat(32)}` }])
+    deposits.floor.mockResolvedValueOnce(undefined)
     expect(await resumeOxideRegistration(deps)).toBe("pending")
     expect(store.get(OWNER)!.phase).toBe("awaiting_deposit")
     expect(store.get(OWNER)!.fundedAt).toBeUndefined()
@@ -651,100 +578,54 @@ describe("resumeOxideRegistration", () => {
     expect(store.get(OWNER)!.phase).toBe("funded")
   })
 
-  it("survives a floor read that rejects, and backs off instead of polling fast", async () => {
-    const { deps, store, deposits } = resumeDeps({})
-    ;(deposits.readBalance as ReturnType<typeof vi.fn>).mockResolvedValue(50n)
-    ;(deposits.floor as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("rpc"))
+  it("never owes a broadcast on its own: the sheet that shows the address does", async () => {
+    const oweBroadcast = vi.fn(async () => {})
+    const { deps } = resumeDeps({ broadcast: false }, { oweBroadcast })
     expect(await resumeOxideRegistration(deps)).toBe("pending")
-    expect(store.get(OWNER)!.fundedAt).toBeUndefined()
-    // The transient window off the 5_000 clock: the detect cadence would hammer a failing read.
-    expect(store.get(OWNER)!.nextAttemptAt).toBe(35_000)
+    expect(oweBroadcast).not.toHaveBeenCalled()
   })
 
-  it("re-broadcasts an un-broadcast record when sign deps are available", async () => {
-    const broadcast = vi.fn(async () => {})
-    const { deps, store } = resumeDeps(
-      { broadcast: false },
-      { getSignDeps: signDepsWith(broadcast) },
-    )
-    await resumeOxideRegistration(deps)
-    expect(broadcast).toHaveBeenCalledOnce()
-    expect(store.get(OWNER)!.broadcast).toBe(true)
+  it("re-signs an unpublished record on a forced tick and owes the fresh payload at once", async () => {
+    const session = sessionDeps()
+    const out = await startOxideRegistrationSession(session.deps)
+    if (out.status !== "awaiting_deposit") throw new Error("unreachable")
+    const sign = signDeps()
+    const oweBroadcast = vi.fn(async () => {})
+    const { deps } = resumeDeps(session.store.get(OWNER)!, {
+      getSignDeps: vi.fn(async () => sign),
+      oweBroadcast,
+    })
+    expect(await resumeOxideRegistration(deps, { force: true })).toBe("pending")
+    expect(sign.accountService.signDomain).toHaveBeenCalledOnce()
+    expect(oweBroadcast).toHaveBeenCalledWith(expect.objectContaining({ account: OWNER }), {
+      payload: out.payload,
+      now: true,
+    })
   })
 
-  it("leaves an un-broadcast record to the session still proving its broadcast", async () => {
-    const broadcast = vi.fn(async () => {})
-    const { deps, store } = resumeDeps(
-      // The harness clock reads 5_000: a start a second ago is still proving.
-      { broadcast: false, broadcastStartedAt: 4_000 },
-      { getSignDeps: signDepsWith(broadcast) },
-    )
-    expect(await resumeOxideRegistration(deps)).toBe("pending")
-    expect(broadcast).not.toHaveBeenCalled()
-    expect(store.get(OWNER)!.broadcast).toBe(false)
-  })
-
-  it("re-broadcasts once a started broadcast's window has passed, stamping the new start", async () => {
-    const broadcast = vi.fn(async () => {})
-    const { deps, store } = resumeDeps(
-      { broadcast: false, broadcastStartedAt: 5_000 - BROADCAST_IN_FLIGHT_MS - 1 },
-      { getSignDeps: signDepsWith(broadcast) },
-    )
-    await resumeOxideRegistration(deps)
-    expect(broadcast).toHaveBeenCalledOnce()
-    expect(store.get(OWNER)).toMatchObject({ broadcast: true })
-    expect(store.get(OWNER)!.broadcastStartedAt).toBeUndefined()
-  })
-
-  it("does not re-broadcast a record whose predecessor spent the account's one-shot rail", async () => {
-    const broadcast = vi.fn(async () => {})
-    const { deps, store } = resumeDeps(
-      {
-        broadcast: false,
-        replaced: { sipaAddress: OTHER_SIPA, refunded: false, broadcastSpent: true },
-      },
-      { getSignDeps: signDepsWith(broadcast) },
-    )
-    expect(await resumeOxideRegistration(deps)).toBe("pending")
-    expect(broadcast).not.toHaveBeenCalled()
-    expect(store.get(OWNER)!.broadcast).toBe(false)
-  })
-
-  it("keeps a spent-rail record off the re-broadcast branch past the window, note or no note", async () => {
-    const broadcast = vi.fn(async () => {})
-    const getSignDeps = vi.fn(signDepsWith(broadcast))
-    const { deps, store } = resumeDeps(
-      {
-        broadcast: false,
-        phase: "funded",
-        fundedAt: 1,
-        replaced: { sipaAddress: OTHER_SIPA, refunded: true, broadcastSpent: true },
-      },
-      { getSignDeps, broadcastSeen: vi.fn(async () => false), now: () => 400_000 },
-    )
-    expect(await resumeOxideRegistration(deps)).toBe("pending")
-    expect(getSignDeps).not.toHaveBeenCalled()
-    expect(broadcast).not.toHaveBeenCalled()
-    expect(store.get(OWNER)).toMatchObject({ retries: 0, broadcast: false, phase: "funded" })
+  it("owes the broadcast at once on a forced tick that brings no signer", async () => {
+    const oweBroadcast = vi.fn(async () => {})
+    const { deps } = resumeDeps({ broadcast: false }, { oweBroadcast })
+    expect(await resumeOxideRegistration(deps, { force: true })).toBe("pending")
+    expect(oweBroadcast).toHaveBeenCalledWith(expect.objectContaining({ account: OWNER }), {
+      now: true,
+    })
   })
 
   it("renews a spent-rail record's claim on a forced tick, publishing nothing", async () => {
-    const broadcast = vi.fn(async () => {})
-    const signDeps = await signDepsWith(broadcast)()
+    const deps_ = signDeps()
+    const oweBroadcast = vi.fn(async () => {})
     const { deps, store } = resumeDeps(
       {
         broadcast: false,
         replaced: { sipaAddress: OTHER_SIPA, refunded: true, broadcastSpent: true },
       },
-      { getSignDeps: vi.fn(async () => signDeps) },
+      { getSignDeps: vi.fn(async () => deps_), oweBroadcast },
     )
     expect(await resumeOxideRegistration(deps, { force: true })).toBe("pending")
-    expect(signDeps.accountService.signDomain).toHaveBeenCalledOnce()
-    expect(broadcast).not.toHaveBeenCalled()
-    const rec = store.get(OWNER)!
-    expect(rec.broadcast).toBe(false)
-    expect(rec.lastBroadcastAt).toBeUndefined()
-    expect(rec.replaced?.broadcastSpent).toBe(true)
+    expect(deps_.accountService.signDomain).toHaveBeenCalledOnce()
+    expect(oweBroadcast).not.toHaveBeenCalled()
+    expect(store.get(OWNER)).toMatchObject({ broadcast: false })
   })
 
   it("leaves a spent-rail record's claim alone on a forced tick that brings no signer", async () => {
@@ -755,120 +636,122 @@ describe("resumeOxideRegistration", () => {
     expect(await resumeOxideRegistration(deps, { force: true })).toBe("pending")
     expect(store.get(OWNER)).toMatchObject({ retries: 0, broadcast: false })
   })
+})
 
-  // The nudge is paced off the last broadcast, not `fundedAt`: `fundedAt` never moves, so keying
-  // on it re-broadcasts on every poll once the window passes, a client proof each time, for as
-  // long as the sweep keeps failing.
-  it("does not re-nudge a funded record inside the window since its last broadcast", async () => {
-    const broadcast = vi.fn(async () => {})
-    // Funded long ago, nudged since: keyed on `fundedAt` this poll would re-broadcast.
-    const { deps, deposits } = resumeDeps(
-      { fundedAt: 0, lastBroadcastAt: 1_000 },
-      { getSignDeps: signDepsWith(broadcast), now: () => 1_000 + AWAITING_SWEEP_WINDOW_MS },
-    )
-    ;(deposits.readBalance as ReturnType<typeof vi.fn>).mockResolvedValue(50n)
-    expect(await resumeOxideRegistration(deps)).toBe("pending")
-    expect(broadcast).not.toHaveBeenCalled()
+describe("rebuildRegistrationBroadcast", () => {
+  it("rebuilds exactly the broadcast the session would have sent, counting the attempt", async () => {
+    const session = sessionDeps()
+    const out = await startOxideRegistrationSession(session.deps)
+    if (out.status !== "awaiting_deposit") throw new Error("unreachable")
+    const { deps, store } = resumeDeps(session.store.get(OWNER)!)
+    const result = await rebuildRegistrationBroadcast(deps, store.get(OWNER)!, signDeps())
+    expect(result).toEqual({ kind: "payload", payload: out.payload })
+    expect(store.get(OWNER)!.retries).toBe(1)
   })
 
-  it("re-nudges a funded record once the window has passed, re-stamping it", async () => {
-    const broadcast = vi.fn(async () => {})
-    const nudgedAt = 1_000 + AWAITING_SWEEP_WINDOW_MS + 1
-    const { deps, store, deposits } = resumeDeps(
-      { fundedAt: 0, lastBroadcastAt: 1_000 },
-      { getSignDeps: signDepsWith(broadcast), now: () => nudgedAt },
+  it.each([
+    [
+      "the claim budget ran out",
+      { reason: "claim_attempts_exhausted" },
+      429,
+      "failed",
+      "failed_terminal",
+    ],
+    ["the name was reserved", { reason: "name_reserved" }, 409, "taken", "failed_taken"],
+  ])("closes the record when %s", async (_, body, status, outcome, phase) => {
+    const { deps, store } = resumeDeps({ broadcast: false })
+    const sign = signDeps(
+      vi.fn(async () => Promise.reject(new AccountServiceError(status, "no", body))),
     )
-    ;(deposits.readBalance as ReturnType<typeof vi.fn>).mockResolvedValue(50n)
-    await resumeOxideRegistration(deps)
-    expect(broadcast).toHaveBeenCalledOnce()
-    expect(store.get(OWNER)!.lastBroadcastAt).toBe(nudgedAt)
+    expect(await rebuildRegistrationBroadcast(deps, store.get(OWNER)!, sign)).toEqual({
+      kind: "closed",
+      outcome,
+    })
+    expect(store.get(OWNER)!.phase).toBe(phase)
   })
 
-  // With no note read, an unknown floor still nudges on a visible deposit: the money is there,
-  // only its sufficiency is unknown.
-  it("re-nudges a record holding a deposit past the window while the floor is unknown", async () => {
-    const broadcast = vi.fn(async () => {})
-    const { deps, store, deposits } = resumeDeps(
-      { lastBroadcastAt: 1_000 },
-      {
-        getSignDeps: signDepsWith(broadcast),
-        now: () => 1_000 + AWAITING_SWEEP_WINDOW_MS + 1,
-      },
-    )
-    ;(deposits.readBalance as ReturnType<typeof vi.fn>).mockResolvedValue(50n)
-    ;(deposits.floor as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
-    await resumeOxideRegistration(deps)
-    expect(broadcast).toHaveBeenCalledOnce()
-    expect(store.get(OWNER)!.fundedAt).toBeUndefined()
-  })
-
-  it("nudges nothing past the window when neither the balance nor the floor reads", async () => {
-    const broadcast = vi.fn(async () => {})
-    const { deps, store, deposits } = resumeDeps(
-      { lastBroadcastAt: 1_000 },
-      {
-        getSignDeps: signDepsWith(broadcast),
-        now: () => 1_000 + AWAITING_SWEEP_WINDOW_MS + 1,
-      },
-    )
-    ;(deposits.readBalance as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("rpc"))
-    ;(deposits.floor as ReturnType<typeof vi.fn>).mockResolvedValue(undefined)
-    expect(await resumeOxideRegistration(deps)).toBe("pending")
-    expect(broadcast).not.toHaveBeenCalled()
-    expect(store.get(OWNER)!.fundedAt).toBeUndefined()
-  })
-
-  // The stamp is submission, not inclusion: past the window the mined note decides.
-  it("re-broadcasts a stamped record whose note never appeared, funded or not", async () => {
-    const broadcast = vi.fn(async () => {})
-    const { deps } = resumeDeps(
-      { lastBroadcastAt: 1_000 },
-      {
-        getSignDeps: signDepsWith(broadcast),
-        broadcastSeen: async () => false,
-        now: () => 1_000 + AWAITING_SWEEP_WINDOW_MS + 1,
-      },
-    )
-    await resumeOxideRegistration(deps)
-    expect(broadcast).toHaveBeenCalledOnce()
-  })
-
-  it("does not re-nudge a funded record whose broadcast mined (the rail is spent)", async () => {
-    const broadcast = vi.fn(async () => {})
-    const { deps, deposits } = resumeDeps(
-      { fundedAt: 0, lastBroadcastAt: 1_000 },
-      {
-        getSignDeps: signDepsWith(broadcast),
-        broadcastSeen: async () => true,
-        now: () => 1_000 + AWAITING_SWEEP_WINDOW_MS + 1,
-      },
-    )
-    ;(deposits.readBalance as ReturnType<typeof vi.fn>).mockResolvedValue(50n)
-    expect(await resumeOxideRegistration(deps)).toBe("pending")
-    expect(broadcast).not.toHaveBeenCalled()
-  })
-
-  it("spends nothing when the note read cannot tell", async () => {
-    const broadcast = vi.fn(async () => {})
-    const { deps, store } = resumeDeps(
-      { lastBroadcastAt: 1_000 },
-      {
-        getSignDeps: signDepsWith(broadcast),
-        broadcastSeen: async () => {
-          throw new Error("locked")
-        },
-        now: () => 1_000 + AWAITING_SWEEP_WINDOW_MS + 1,
-      },
-    )
-    await resumeOxideRegistration(deps)
-    expect(broadcast).not.toHaveBeenCalled()
+  it("waits, spending nothing, while another account is unlocked", async () => {
+    const { deps, store, l1 } = resumeDeps({ broadcast: false })
+    l1.predictAccountAddress.mockResolvedValue(FACTORY)
+    const sign = signDeps()
+    expect((await rebuildRegistrationBroadcast(deps, store.get(OWNER)!, sign)).kind).toBe("wait")
+    expect(sign.accountService.signDomain).not.toHaveBeenCalled()
     expect(store.get(OWNER)!.retries).toBe(0)
   })
 
-  it("stays pending (zero budget) on an un-broadcast record with no sign deps", async () => {
-    const { deps, store } = resumeDeps({ broadcast: false })
-    expect(await resumeOxideRegistration(deps)).toBe("pending")
-    expect(store.get(OWNER)!.broadcast).toBe(false)
+  it("waits when the re-issued quote prices another fee than the address committed", async () => {
+    const { deps, store, deposits } = resumeDeps({ broadcast: false })
+    deposits.scheduleFee.mockResolvedValue(2n)
+    expect((await rebuildRegistrationBroadcast(deps, store.get(OWNER)!, signDeps())).kind).toBe(
+      "wait",
+    )
+  })
+
+  it("renews the claim of a spent-rail record and publishes nothing", async () => {
+    const { deps, store } = resumeDeps({
+      replaced: { sipaAddress: OTHER_SIPA, refunded: true, broadcastSpent: true },
+    })
+    const sign = signDeps()
+    expect(await rebuildRegistrationBroadcast(deps, store.get(OWNER)!, sign)).toEqual({
+      kind: "spent",
+    })
+    expect(sign.accountService.signDomain).toHaveBeenCalledOnce()
+  })
+
+  // A clean record whose derivation moved is dropped only once the chain confirms the old address
+  // is empty: an unread balance holds it.
+  it("holds a record whose derivation moved while its old address cannot be read", async () => {
+    const moved = "0x00000000000000000000000000000000000000b9" as Address
+    const { deps, store, deposits } = resumeDeps({ broadcast: false, sipaAddress: moved })
+    deposits.readBalance.mockRejectedValue(new Error("rpc"))
+    expect((await rebuildRegistrationBroadcast(deps, store.get(OWNER)!, signDeps())).kind).toBe(
+      "wait",
+    )
+    expect(store.get(OWNER)).not.toBeNull()
+    deposits.readBalance.mockResolvedValue(0n)
+    expect(await rebuildRegistrationBroadcast(deps, store.get(OWNER)!, signDeps())).toEqual({
+      kind: "closed",
+      outcome: "failed",
+    })
+    expect(store.get(OWNER)).toBeNull()
+  })
+
+  it("has nothing to rebuild for a record that already ended", async () => {
+    const { deps, store } = resumeDeps({ phase: "confirmed" })
+    const sign = signDeps()
+    expect(await rebuildRegistrationBroadcast(deps, store.get(OWNER)!, sign)).toEqual({
+      kind: "closed",
+      outcome: "failed",
+    })
+    expect(sign.accountService.signDomain).not.toHaveBeenCalled()
+  })
+})
+
+describe("recordRegistrationBroadcastSent", () => {
+  it("stamps the record whose address it published", async () => {
+    const store = new FakeStore()
+    await store.upsert(OWNER, { sipaAddress: SIPA, broadcast: false }, {} as never)
+    await recordRegistrationBroadcastSent(store, OWNER, SIPA)
+    expect(store.get(OWNER)).toMatchObject({ broadcast: true })
+  })
+
+  it("marks the replacement spent, not broadcast, when the account moved on meanwhile", async () => {
+    const store = new FakeStore()
+    await store.upsert(
+      OWNER,
+      {
+        sipaAddress: OTHER_SIPA,
+        broadcast: false,
+        replaced: { sipaAddress: SIPA, refunded: false, broadcastSpent: false },
+      },
+      {} as never,
+    )
+    await recordRegistrationBroadcastSent(store, OWNER, SIPA)
+    expect(store.get(OWNER)).toMatchObject({
+      sipaAddress: OTHER_SIPA,
+      broadcast: false,
+      replaced: { sipaAddress: SIPA, refunded: false, broadcastSpent: true },
+    })
   })
 })
 
@@ -876,14 +759,13 @@ it("signs the original consent digest for an adopted legacy registration SIPA", 
   const { recoveryCommitment: _commitment, ...common } =
     DERIVATION.sipaArgs as import("@oxide/l1-contracts").SipaDeployArgs
   const legacy = { ...DERIVATION, sipaArgs: { ...common, recoveryAddress: OWNER } }
-  const { deps, broadcast } = sessionDeps({ deriveRegistrationSipa: async () => legacy })
+  const { deps } = sessionDeps({ deriveRegistrationSipa: async () => legacy })
   const result = await startOxideRegistrationSession(deps)
-  expect(result.status).toBe("awaiting_deposit")
-  const payload = (broadcast.mock.calls[0] as unknown as [RegistrationBroadcastPayload])[0]
+  if (result.status !== "awaiting_deposit") throw new Error("unreachable")
   expect(
     await recoverAddress({
       hash: consentDigest(RECORD_DATA, ENV.l1ChainId, AMR, SIPA),
-      signature: payload.consentSig,
+      signature: result.payload.consentSig,
     }),
   ).toBe(deriveBootstrapKey(MSK).address)
 })

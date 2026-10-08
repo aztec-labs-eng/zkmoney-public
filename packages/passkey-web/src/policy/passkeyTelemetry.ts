@@ -1,7 +1,8 @@
 /**
  * Plain inputs to `passkey_ceremony` values: environment, route, backup flag, error classification,
  * counters and report env. Every function returns only vocabulary members, and never copies an
- * error message, an id or a version string.
+ * error message, an id or a version string. The one exception is the report env, which names an
+ * `other` provider by its AAGUID.
  */
 
 import {
@@ -13,6 +14,8 @@ import {
   isWedgedTabError,
 } from "../ceremony/passkeyCeremony.js"
 import type { DevicePosture } from "./devicePosture.js"
+import type { PhoneReach } from "./passkeyCapabilities.js"
+import { providerSlugFor } from "./passkeyProviders.js"
 import {
   PASSKEY_BROWSER_FAMILIES,
   PASSKEY_CANCEL_REASONS,
@@ -22,7 +25,6 @@ import {
   PASSKEY_OS_FAMILIES,
   PASSKEY_PROVIDERS,
   PASSKEY_REFUSAL_REASONS,
-  type PASSKEY_REPORT_EXPORT_KEYS,
   type PasskeyAttempt,
   type PasskeyBackupEligible,
   type PasskeyBrowser,
@@ -31,6 +33,7 @@ import {
   type PasskeyElapsed,
   type PasskeyFailureReason,
   type PasskeyOs,
+  type PasskeyPhoneReach,
   type PasskeyPrompts,
   type PasskeyProvider,
   type PasskeyRefusalReason,
@@ -254,6 +257,17 @@ export function elapsedBucketFor(ms: number): PasskeyElapsed {
   return "over_60s"
 }
 
+const PHONE_REACH_VALUES: Readonly<Record<PhoneReach, PasskeyPhoneReach | undefined>> = {
+  "ok": "ok",
+  "no-hybrid": "no_hybrid",
+  "unknown": "unknown",
+  "below-floor": undefined,
+}
+
+/** The check's answer as sent; a below-floor browser is refused, and its reason already says so. */
+export const phoneReachFor = (reach: PhoneReach): PasskeyPhoneReach | undefined =>
+  Object.hasOwn(PHONE_REACH_VALUES, reach) ? PHONE_REACH_VALUES[reach] : undefined
+
 export const promptsBucketFor = (count: number): PasskeyPrompts =>
   count >= 2 ? "2+" : count >= 1 ? "1" : "0"
 
@@ -265,25 +279,22 @@ export type PasskeyTelemetrySnapshot = {
   posture: DevicePosture
   userAgent: UserAgentInfo
   provider: PasskeyProvider
+  aaguid?: string
 }
 
 /** The `env` object an error report carries. */
-export type PasskeyReportEnv = PasskeyEnvironmentProps & { provider: PasskeyProvider }
+export type PasskeyReportEnv = PasskeyEnvironmentProps & {
+  provider: PasskeyProvider
+  aaguid?: string
+}
 
-/** The part of a report's `env` that is exported; majors are left out. */
-export type PasskeyReportExport = Pick<
-  PasskeyReportEnv,
-  (typeof PASSKEY_REPORT_EXPORT_KEYS)[number]
->
-
-export const passkeyReportEnvFor = (snapshot: PasskeyTelemetrySnapshot): PasskeyReportEnv => ({
-  ...passkeyEnvironmentPropsFor(snapshot),
-  provider: listed(PASSKEY_PROVIDERS, snapshot.provider, "unknown"),
-})
-
-export const passkeyReportExportFor = (env: PasskeyReportEnv): PasskeyReportExport => ({
-  device_class: env.device_class,
-  os: env.os,
-  browser: env.browser,
-  provider: env.provider,
-})
+/** Names an `other` provider by its AAGUID, the only way triage can tell which one it was. */
+export function passkeyReportEnvFor(snapshot: PasskeyTelemetrySnapshot): PasskeyReportEnv {
+  const provider = listed(PASSKEY_PROVIDERS, snapshot.provider, "unknown")
+  const aaguid = snapshot.aaguid?.toLowerCase()
+  return {
+    ...passkeyEnvironmentPropsFor(snapshot),
+    provider,
+    ...(provider === "other" && providerSlugFor(aaguid) === "other" ? { aaguid } : {}),
+  }
+}

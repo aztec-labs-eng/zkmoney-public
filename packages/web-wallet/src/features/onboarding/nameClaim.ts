@@ -11,9 +11,9 @@ import {
   NameClaimStore,
   withClaimRetry,
   type NameClaimRecord,
-  type NameClaimResponse,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
+import type { NameClaimResponse } from "@obsidion/core/types"
 import { getConfig } from "../../config/env"
 import { accountServiceFor, type OnboardingKeys } from "./oxideOnboarding"
 import { rememberReissuedClaim } from "./registrationTerms"
@@ -70,7 +70,7 @@ export async function requireNameClaim(
 
   let fresh: NameClaimResponse
   try {
-    const accountService = accountServiceFor(getConfig(), keys)
+    const accountService = accountServiceFor(getConfig(), keys, record.tag)
     fresh = await withClaimRetry(
       () =>
         accountService.signDomain({

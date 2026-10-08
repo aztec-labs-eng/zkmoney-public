@@ -1,0 +1,41 @@
+{
+  "scenario": "onboarding",
+  "steps": [
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&flowFixture=success&processingFixture=earned-sweep&capacityFixture=empty"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "waitFor",
+      "testId": "deposit-pending-reason"
+    },
+    {
+      "action": "hover",
+      "testId": "manual-sweep"
+    },
+    {
+      "action": "screenshot",
+      "file": "earned-blocked.png",
+      "state": "Earned registration: the manual sweep is held, with its capacity reason and Check again beside it"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-reg-sheet__card",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "earned-blocked-bottom.png",
+      "state": "Earned registration, end of the card"
+    }
+  ],
+  "finalScreenshot": false
+}

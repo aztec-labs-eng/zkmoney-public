@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, type KeyboardEvent, type MouseEvent, type ReactNode, type SyntheticEvent } from "react"
 import { GradientText, TopNavIconButton } from "@obsidion/web-ds"
+import { extensionAnswersPasskeys, onPasskeyRequest } from "@obsidion/passkey-web"
 
 type ModalLifecycle = { suspend: () => void; resume: () => void }
 const SuspensionContext = createContext<{
@@ -26,6 +27,33 @@ export function ModalSuspension({ suspended, children }: { suspended: boolean; c
   }, [suspended])
   const value = useMemo(() => ({ suspended, register }), [suspended, register])
   return <SuspensionContext.Provider value={value}>{children}</SuspensionContext.Provider>
+}
+
+/**
+ * An extension that answers WebAuthn inside the page (1Password) mounts its prompt in the topmost
+ * modal dialog. When that sheet unmounts at hand-off the prompt goes with it before it can report
+ * closing, and the extension never draws another: every later request hangs. While such a request
+ * is out, open sheets drop to non-modal so the prompt mounts on the body.
+ */
+type DialogLayer = { reopen: () => void }
+const layers = new Set<DialogLayer>()
+let nonModal = false
+
+if (typeof window !== "undefined") {
+  onPasskeyRequest((active) => {
+    const next = active && extensionAnswersPasskeys()
+    if (next === nonModal) return
+    nonModal = next
+    // In show order, so reopened modals stack as they did.
+    for (const layer of [...layers]) layer.reopen()
+  })
+}
+
+/** Opens a sheet in the current mode; `aria-modal` follows, since a non-modal sheet leaves the page reachable. */
+function present(dialog: HTMLDialogElement) {
+  dialog.setAttribute("aria-modal", String(!nonModal))
+  if (nonModal) dialog.show()
+  else dialog.showModal()
 }
 
 const FOCUSABLE =
@@ -92,14 +120,30 @@ function useDialogFocus() {
       resume() {
         paused.current = false
         if (!dialog.isConnected || closing.current || dialog.open) return
-        dialog.showModal()
+        present(dialog)
         if (returnFocus?.isConnected && dialog.contains(returnFocus)) returnFocus.focus({ preventScroll: true })
         if (!returnFocus || !dialog.contains(document.activeElement)) focusDialog(dialog)
         returnFocus = null
       },
     }
-    if (register) return register(lifecycle)
-    lifecycle.resume()
+    // Reopens an open sheet in the current mode; the close it queues is not a dismissal.
+    const layer: DialogLayer = {
+      reopen() {
+        if (!dialog.open) return
+        const focused = document.activeElement
+        cleanupCloseEvents.current += 1
+        dialog.close()
+        present(dialog)
+        if (focused instanceof HTMLElement && dialog.contains(focused)) focused.focus({ preventScroll: true })
+      },
+    }
+    layers.add(layer)
+    const unregister = register?.(lifecycle)
+    if (!register) lifecycle.resume()
+    return () => {
+      layers.delete(layer)
+      unregister?.()
+    }
   }, [register])
   return { overlay, closing, opened, paused, cleanupCloseEvents, suspended: suspension?.suspended ?? false }
 }
@@ -119,7 +163,7 @@ export function ModalFrame({ label, role = "dialog", onClose, children }: {
     const dialog = overlay.current
     // Native dismissal may change the step while keeping this frame mounted.
     if (!suspended && !paused.current && opened.current && dialog?.isConnected && !dialog.open && !closing.current) {
-      dialog.showModal()
+      present(dialog)
       focusDialog(dialog)
     }
     // A replaced sequence card can remove the focused control without replacing the dialog.
@@ -178,7 +222,7 @@ export function ModalFrame({ label, role = "dialog", onClose, children }: {
         if (suspended || closing.current || !dialog.isConnected || dialog.open) return
         if (onClose) onClose()
         else {
-          dialog.showModal()
+          present(dialog)
           focusDialog(dialog)
         }
       }}

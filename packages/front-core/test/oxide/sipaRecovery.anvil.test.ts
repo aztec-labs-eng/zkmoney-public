@@ -15,6 +15,8 @@ import {
   keccak256,
   toBytes,
   erc20Abi,
+  parseEther,
+  zeroAddress,
   type Address,
   type Hex,
   type PublicClient,
@@ -40,7 +42,11 @@ import {
 import { predictLegacySIPA } from "@oxide/l1-contracts/legacy_sipa.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { buildDepositIntent, deriveRecoveryAddress } from "@obsidion/sdk"
-import { runSipaRecovery, sipaDeployArgCandidates } from "../../src/oxide/sipaRecovery"
+import {
+  runSipaRecovery,
+  sipaDeployArgCandidates,
+  type SipaRecoveryDeps,
+} from "../../src/oxide/sipaRecovery"
 import { signAccountDigest } from "../../src/oxide/accountSignature"
 
 const deployer = privateKeyToAccount(
@@ -163,7 +169,7 @@ it("recovers a saved account deposit with both contracts initially undeployed, t
       record,
       stealthKey: stealth,
       target,
-      token,
+      tokens: [token],
       chainId: foundry.id,
       accountInitCode:
         attempt === 0 ? encodeAccountInitCode(accountFactory, bootstrap.address) : undefined,
@@ -205,6 +211,101 @@ it("recovers a saved account deposit with both contracts initially undeployed, t
       expect.objectContaining({ phase: "recovered", recoveryTxHash: expect.any(String) }),
     )
   }
+})
+
+it("recovers ETH and a token sent to an undeployed account deposit in one transaction", async () => {
+  const account = await predictAccountAddress(client, accountFactory, bootstrap.address)
+  const intentHash = keccak256(toBytes("eth-recovery"))
+  const recoveryCommitment = deriveRecoveryCommitment(
+    salt,
+    EthAddress.fromString(account),
+  ).toString() as Hex
+  const sipa = await predictSIPA(
+    client,
+    factory,
+    implementation,
+    intentHash,
+    recoveryCommitment,
+    rollupVersion,
+    true,
+  )
+  const origin = {
+    protocol: "account" as const,
+    sipaFactory: factory,
+    implementation,
+    intentHash,
+    rollupVersion: String(rollupVersion),
+    resweepable: true,
+    recoveryCommitment,
+    recoveryAccount: account,
+    accountFactory,
+  }
+  const record = {
+    sipaAddress: sipa,
+    messageSecret: salt.toString(),
+    recoveryAddress: "",
+    tokenAddress: zeroAddress,
+    origin,
+  } as never
+  await waitForReceipt(
+    await wallet.sendTransaction({
+      account: deployer,
+      chain: foundry,
+      to: sipa,
+      value: parseEther("0.5"),
+    }),
+  )
+  expect(await readDeployed(sipa)).toBe(false)
+  const deps: Omit<SipaRecoveryDeps, "tokens"> = {
+    record,
+    stealthKey: stealth,
+    target,
+    chainId: foundry.id,
+    accountInitCode: (await readDeployed(account))
+      ? undefined
+      : encodeAccountInitCode(accountFactory, bootstrap.address),
+    signAccount: (account, hash) =>
+      signAccountDigest({
+        account,
+        hash,
+        chainId: foundry.id,
+        bootstrap,
+        reader: {
+          getCode: (address) => client.getCode({ address }),
+          readAuthKeys: (address) => getAuthKeys(client, address),
+        },
+      }),
+    deployment: {
+      readDeployed,
+      candidates: sipaDeployArgCandidates({ recipientHash: "", recoveryAddress: "", origin }, []),
+      predict: (candidate) =>
+        predictSIPA(
+          client,
+          candidate.sipaFactory,
+          candidate.args.implementation,
+          candidate.args.intentHash,
+          (candidate.args as { recoveryCommitment: Hex }).recoveryCommitment,
+          candidate.args.rollupVersion,
+          candidate.args.resweepable,
+        ),
+    },
+    sendTransaction,
+    waitForReceipt,
+    store: { get: () => undefined, upsert: vi.fn(async () => undefined) },
+  }
+  await expect(runSipaRecovery({ ...deps, tokens: [zeroAddress, token] })).rejects.toThrow()
+  expect(await client.getBalance({ address: sipa })).toBe(parseEther("0.5"))
+  expect(await readDeployed(sipa)).toBe(false)
+
+  await mint(sipa)
+  const before = await client.getBalance({ address: target })
+  const tokensBefore = await balance(target)
+  await runSipaRecovery({ ...deps, tokens: [zeroAddress, token] })
+
+  expect(await client.getBalance({ address: sipa })).toBe(0n)
+  expect(await client.getBalance({ address: target })).toBe(before + parseEther("0.5"))
+  expect(await balance(sipa)).toBe(0n)
+  expect(await balance(target)).toBe(tokensBefore + amount)
 })
 
 describe.each([false, true])("historical persisted deposit (resweepable=%s)", (resweepable) => {
@@ -275,7 +376,7 @@ describe.each([false, true])("historical persisted deposit (resweepable=%s)", (r
         record,
         stealthKey: stealth,
         target,
-        token,
+        tokens: [token],
         chainId: foundry.id,
         deployment: {
           readDeployed,

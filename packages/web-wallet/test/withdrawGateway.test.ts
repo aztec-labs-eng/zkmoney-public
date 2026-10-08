@@ -4,10 +4,15 @@
  * what the recipient is left with, since nothing reads it back off chain.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import { getAddress, parseUnits, type Address, type Hex } from "viem"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { ScannedWithdrawEvent } from "@obsidion/sdk"
-import { deriveBootstrapKey, deriveSwapEscrowRecoverySalt } from "@obsidion/front-core"
+import {
+  deriveBootstrapKey,
+  deriveSwapEscrowRecoverySalt,
+  withdrawalAmounts,
+} from "@obsidion/front-core"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 
 const L2_TX = `0x${"0a".repeat(32)}` as Hex
@@ -243,6 +248,55 @@ describe("submitSponsoredWithdrawal", () => {
     expect(burnRecipient.toString().toLowerCase()).toBe(RECIPIENT)
     expect(exitOpts.withdrawal).toEqual({ tuple: PORTAL_ONLY, portal: PORTAL_STATE })
   })
+
+  it("burns and records the prover tip it is given, and none by default", async () => {
+    const tip = parseUnits("2", 18)
+    const d = deps()
+    const record = await submitSponsoredWithdrawal(
+      d,
+      RECIPIENT,
+      "120",
+      vi.fn(),
+      undefined,
+      "DAI",
+      undefined,
+      tip,
+    )
+    const exit = d.tokenService.exitToL1PrivateSponsored as ReturnType<typeof vi.fn>
+    expect((exit.mock.calls[0]![3] as { proverTip?: bigint }).proverTip).toBe(tip)
+    expect(record.proverTip).toBe(tip.toString())
+    expect(withdrawalAmounts(record).netAtomic).toBe(
+      parseUnits("120", 18) - tip - CUT - WITHDRAW_RELAYER_TIP,
+    )
+
+    const plain = deps()
+    const untipped = await submitSponsoredWithdrawal(plain, RECIPIENT, "120", vi.fn())
+    const plainExit = plain.tokenService.exitToL1PrivateSponsored as ReturnType<typeof vi.fn>
+    expect((plainExit.mock.calls[0]![3] as { proverTip?: bigint }).proverTip).toBe(0n)
+    expect(untipped.proverTip).toBeUndefined()
+  })
+
+  // A stale sheet or a direct caller reaches the gateway with whatever amount it holds.
+  it("burns exactly $2,500 and refuses one atomic unit more before screening, recording or burning", async () => {
+    const exact = deps()
+    await submitSponsoredWithdrawal(exact, RECIPIENT, "2500", vi.fn())
+    const exit = exact.tokenService.exitToL1PrivateSponsored as ReturnType<typeof vi.fn>
+    expect(exit.mock.calls[0]![1]).toBe(parseUnits("2500", 18).toString())
+    await getWithdrawalStore().clearAll()
+
+    const over = deps()
+    const screen = vi.spyOn(over.screener, "screen")
+    const run = submitSponsoredWithdrawal(over, RECIPIENT, "2500.000000000000000001", vi.fn())
+    await expect(run).rejects.toThrow("This withdrawal is over the $2,500 limit, fees included.")
+    expect(screen).not.toHaveBeenCalled()
+    expect(over.tokenService.exitToL1PrivateSponsored).not.toHaveBeenCalled()
+    expect(getWithdrawalStore().list()).toHaveLength(0)
+    expect(
+      getOperationStore()
+        .list()
+        .filter((op) => op.state === "local"),
+    ).toHaveLength(0)
+  })
 })
 
 describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
@@ -313,8 +367,45 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
     expect((exitCall[3] as { meta?: unknown }).meta).toBeUndefined()
   })
 
+  it("plans the escrow net of the prover tip the burn carries", async () => {
+    const tip = parseUnits("2", 18)
+    const d = deps()
+    const record = await submitSponsoredWithdrawal(
+      d,
+      RECIPIENT,
+      "120",
+      vi.fn(),
+      undefined,
+      "USDC",
+      SWAP_COMMIT,
+      tip,
+    )
+    const exit = d.tokenService.exitToL1PrivateSponsored as ReturnType<typeof vi.fn>
+    expect((exit.mock.calls[0]![3] as { proverTip?: bigint }).proverTip).toBe(tip)
+    expect(record.proverTip).toBe(tip.toString())
+
+    // A tip that leaves the escrow nothing to swap fails the plan before anything is stored.
+    const eaten = parseUnits("120", 18) - WITHDRAW_RELAYER_TIP - CUT - RELAYER_TIP
+    await getWithdrawalStore().clearAll()
+    const rejected = deps()
+    await expect(
+      submitSponsoredWithdrawal(
+        rejected,
+        RECIPIENT,
+        "120",
+        vi.fn(),
+        undefined,
+        "USDC",
+        SWAP_COMMIT,
+        eaten,
+      ),
+    ).rejects.toThrow("nothing left to swap")
+    expect(rejected.tokenService.exitToL1PrivateSponsored).not.toHaveBeenCalled()
+    expect(getWithdrawalStore().list()).toHaveLength(0)
+  })
+
   it("rebuilds the records a rescan finds and skips the burns already stored", async () => {
-    localStorage.setItem(
+    walletStorage.setItem(
       "webwallet.identity",
       JSON.stringify({ address: `0x${"1a".repeat(32)}`, claimedAt: 0 }),
     )

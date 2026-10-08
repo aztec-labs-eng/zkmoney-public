@@ -136,6 +136,16 @@
       "selector": ".ww-withdraw"
     },
     {
+      "action": "waitFor",
+      "selector": ".ww-deposit-disclaimer"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
       "action": "screenshot",
       "file": "l1-withdraw-prefill.png",
       "state": "L1 contact withdrawal prefill"

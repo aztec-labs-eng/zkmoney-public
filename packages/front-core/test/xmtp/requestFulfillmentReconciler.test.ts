@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest"
 import type { IStorageAdapter } from "../../src/core/storages/adapter"
 import { RequestStorage, type PaymentRequest } from "../../src/core/storages/RequestStorage"
 import type { TokenTransaction } from "../../src/types/transactions"
+import { globalEventEmitter } from "../../src/core/services/GlobalEventEmitter"
 import {
   reconcileRequestFulfillments,
   startRequestFulfillmentReconciler,
@@ -77,6 +78,13 @@ describe("reconcileRequestFulfillments", () => {
     const row = await store.findById(REQ)
     expect(row?.status).toBe("fulfilled")
     expect(row?.fulfillmentTxHash).toBe(TX)
+  })
+
+  it("leaves the row pending when the network reverted the transfer", async () => {
+    const store = new RequestStorage(memoryAdapter())
+    await store.add(pendingRow())
+    await reconcileRequestFulfillments(store, verifiedTx({}, { status: "failed" }))
+    expect((await store.findById(REQ))?.status).toBe("pending")
   })
 
   it("matches the request id case-insensitively", async () => {
@@ -149,6 +157,80 @@ describe("startRequestFulfillmentReconciler reverse join", () => {
     const row = await store.findById(REQ)
     expect(row?.status).toBe("fulfilled")
     expect(row?.fulfillmentTxHash).toBe(TX)
+    stop()
+  })
+
+  it("skips a stored receive the network reverted on the reverse join", async () => {
+    const store = new RequestStorage(memoryAdapter())
+    await store.add(pendingRow())
+    const stop = startRequestFulfillmentReconciler(
+      store,
+      receivesWith(verifiedTx({}, { status: "failed" })),
+    )
+    await settle()
+    expect((await store.findById(REQ))?.status).toBe("pending")
+    stop()
+  })
+
+  it("flips the row once the network re-confirms a receive it had reverted", async () => {
+    const store = new RequestStorage(memoryAdapter())
+    await store.add(pendingRow())
+    const receive = verifiedTx({}, { status: "failed" })
+    const stop = startRequestFulfillmentReconciler(store, receivesWith(receive))
+    await settle()
+    expect((await store.findById(REQ))?.status).toBe("pending")
+    // The reorg monitor writes the row back to success; only the transactions event says so.
+    receive.status = "success"
+    globalEventEmitter.emitTransactionsUpdated()
+    await settle()
+    expect((await store.findById(REQ))?.status).toBe("fulfilled")
+    stop()
+  })
+
+  it("reopens a paid request when the network reverts its payment, and pays it from another", async () => {
+    const store = new RequestStorage(memoryAdapter())
+    await store.add(pendingRow())
+    const first = verifiedTx()
+    const second = verifiedTx({}, { txHash: "0x" + "cd".repeat(32), status: "failed" })
+    const stop = startRequestFulfillmentReconciler(store, {
+      findReceivesByRequestId: async () => [first, second],
+    })
+    await settle()
+    expect((await store.findById(REQ))?.fulfillmentTxHash).toBe(TX)
+
+    // A reverted receive that did not pay the request leaves it paid.
+    globalEventEmitter.emitTransactionsUpdated()
+    await settle()
+    expect((await store.findById(REQ))?.status).toBe("fulfilled")
+
+    first.status = "failed"
+    globalEventEmitter.emitTransactionsUpdated()
+    await settle()
+    expect((await store.findById(REQ))?.status).toBe("pending")
+
+    second.status = "success"
+    globalEventEmitter.emitTransactionsUpdated()
+    await settle()
+    const row = await store.findById(REQ)
+    expect(row?.status).toBe("fulfilled")
+    expect(row?.fulfillmentTxHash).toBe(second.txHash)
+    stop()
+  })
+
+  it("at start, reopens a request its reverted payment paid and pays it from a stored receive", async () => {
+    const store = new RequestStorage(memoryAdapter())
+    await store.add(pendingRow())
+    await store.applyStatus(REQ, "fulfilled", TX)
+    const reverted = verifiedTx({}, { status: "failed" })
+    const other = verifiedTx({}, { txHash: "0x" + "cd".repeat(32) })
+    const stop = startRequestFulfillmentReconciler(store, {
+      findReceivesByRequestId: async () => [reverted, other],
+    })
+    await settle()
+    await settle()
+    const row = await store.findById(REQ)
+    expect(row?.status).toBe("fulfilled")
+    expect(row?.fulfillmentTxHash).toBe(other.txHash)
     stop()
   })
 

@@ -9,6 +9,8 @@ import {
   globalEventEmitter,
 } from "../../src/core"
 import { TransactionTracker } from "../../src/core/services/transactions/TransactionTracker"
+import { TransferEventScanner } from "../../src/core/services/transactions/TransferEventScanner"
+import { PaylinkActionEnum } from "@obsidion/core/constants"
 import type { Transaction, TokenInTxService, ContractCallTransaction } from "../../src/types"
 import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
 import { createAztecNodeClient } from "@aztec/aztec.js/node"
@@ -330,6 +332,52 @@ describe("TransactionStorage", () => {
         () => {},
       )
       expect(ok).toBe(false)
+    })
+  })
+
+  describe("claim memo from the payout Transfer", () => {
+    it("lands the scanned payout's memo on a completed claim row, and never overwrites it", async () => {
+      const { transactions } = setup()
+      const claimHash = "0x" + "c1".repeat(32)
+      await transactions.addPreSubmitPaylinkTransaction("claim-q", "op-1", {
+        action: PaylinkActionEnum.CLAIM,
+        flavor: "direct",
+        token: sampleToken(),
+      })
+      await transactions.patchTxHashForQueue("claim-q", claimHash)
+      // Completion clears the queueId before any payout is scanned.
+      await transactions.updateTransactionCompletion("claim-q", QueueStatus.SUCCESS)
+
+      const payout = (memo: string, blockNumber: number) => ({
+        txHash: claimHash,
+        from: "0x" + "e5".repeat(32),
+        to: ADDR,
+        amount: "1000000",
+        blockNumber,
+        memo,
+      })
+      let events = [payout("for the tickets", 5)]
+      const scanner = new TransferEventScanner({
+        source: {
+          headBlock: async () => 10,
+          listIncoming: async () => events,
+          blockTimestampMs: async (b) => b * 1000,
+        },
+        storage: new InMemoryStorageAdapter(),
+        transactionStore: transactions,
+        tags: { resolveL2: async () => null },
+        contacts: { findByL2Address: async () => null },
+        token: { address: "0xtoken", symbol: "DAI", decimals: 6 },
+      })
+      const ctx = { accountAddress: ADDR, accountTag: "me", networkId: "net" }
+      await scanner.start(ctx)
+      events = [payout("other", 6)]
+      await scanner.tickNow()
+      scanner.stop()
+
+      const rows = await transactions.getTransactions()
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ action: PaylinkActionEnum.CLAIM, memo: "for the tickets" })
     })
   })
 

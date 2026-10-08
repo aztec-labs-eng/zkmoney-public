@@ -3,9 +3,11 @@ import { Fr } from "@aztec/aztec.js/fields"
 import { StoredAddressMismatchError, selectRecoveredMsk } from "@obsidion/front-core"
 import { deriveMskFromPrfOutput } from "@obsidion/sdk"
 import { describe, expect, it, vi } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import {
   type DevicePosture,
   NoPrfError,
+  PhoneRequiredError,
   type PasskeyAssertRequest,
   type PasskeyCeremony,
   type PasskeyRequestScope,
@@ -28,15 +30,18 @@ import {
   type FakeCeremonyOptions,
   MemoryStorage,
 } from "./support/fakePasskeyCeremony"
+import { testWalletDbs } from "./support/fakeWalletDb"
 
 type ServiceOptions = FakeCeremonyOptions & {
   posture?: DevicePosture
   misreportsCrossDevice?: boolean
+  trustsAttachmentLabel?: boolean
 }
 
 function makeService({
   posture = "laptop",
   misreportsCrossDevice = false,
+  trustsAttachmentLabel = false,
   ...fake
 }: ServiceOptions = {}) {
   const ceremony = new FakePasskeyCeremony(fake)
@@ -47,6 +52,7 @@ function makeService({
     ceremony,
     posture: () => posture,
     misreportsCrossDevice: () => misreportsCrossDevice,
+    trustsAttachmentLabel: () => trustsAttachmentLabel,
   })
   return { service, ceremony, storage }
 }
@@ -59,6 +65,8 @@ const phone = (opts: FakeCeremonyOptions = {}) =>
   makeService({ posture: "phone", route: "local", ...opts })
 
 const msk = (bytes: Uint8Array) => deriveMskFromPrfOutput(bytes).toString()
+
+const WINDOWS_HELLO_AAGUID = "08987058-cadc-4b81-b6e1-30de50dcbe96"
 
 /** Address derivation that recognises exactly one master key under exactly one signing key. */
 const deriveFor =
@@ -88,6 +96,13 @@ const stubLocalStorage = (refuse: () => readonly string[] = () => []) => {
   })
   vi.stubGlobal("localStorage", store)
   return () => vi.unstubAllGlobals()
+}
+
+/** Fails every wallet-store transaction that writes one of `keys`. */
+const refuseWrites = (keys: () => readonly string[]) => {
+  testWalletDbs().onApply = (_version, ops) => {
+    if (ops.some(([key]) => keys().includes(key))) throw new Error("QuotaExceededError")
+  }
 }
 
 async function record(
@@ -543,8 +558,8 @@ describe("WebAlphaAuthService.createPasskey", () => {
     expect(result.pubkey).toHaveLength(128)
     const request = ceremony.creates[0]!
     expect(request.authenticatorAttachment).toBe("cross-platform")
-    // No hint: the browser's own sheet offers the phone and the security key alike.
-    expect(request.hints).toBeUndefined()
+    // No route picked: opens on the phone, and names a key so a manager's extension stands aside.
+    expect(request.hints).toEqual(["hybrid", "security-key"])
     expect(request.prfFirstSalt).toBeDefined()
     expect(request.prfSecondSalt).toBeDefined()
   })
@@ -553,6 +568,15 @@ describe("WebAlphaAuthService.createPasskey", () => {
     const { service, ceremony } = laptop()
     await service.createPasskey("@alice", undefined, { route: "security-key" })
     expect(ceremony.creates[0]!.hints).toEqual(["security-key"])
+  })
+
+  it("laptop: the phone route also names a security key, so a manager's extension stands aside", async () => {
+    const { service, ceremony } = laptop({ prfAtCreate: false, createAuthData: false })
+    await service.createPasskey("@alice", undefined, { route: "phone" })
+    expect(ceremony.creates[0]!.authenticatorAttachment).toBe("cross-platform")
+    expect(ceremony.creates[0]!.hints).toEqual(["hybrid", "security-key"])
+    // The follow-up that reads the key material is steered the same way.
+    expect(ceremony.assertRequests[0]!.hints).toEqual(["hybrid", "security-key"])
   })
 
   it("phone: a picked route changes nothing — a phone's own two classes are fixed", async () => {
@@ -576,10 +600,53 @@ describe("WebAlphaAuthService.createPasskey", () => {
 
   it("laptop: a passkey answered locally is refused before any further prompt", async () => {
     const { service, ceremony } = makeService({ posture: "laptop", route: "local" })
+    // A sign-up has no passkey yet: the refusal says where to create one.
     await expect(service.createPasskey("@alice")).rejects.toMatchObject({
       name: "PhoneRequiredError",
+      providerName: undefined,
+      message: new PhoneRequiredError({ ceremony: "create" }).message,
     })
     expect(ceremony.assertRequests).toHaveLength(0)
+  })
+
+  it("laptop: a refused local answer names Windows Hello only when the browser's label is trusted", async () => {
+    const windowsHello = {
+      posture: "laptop",
+      route: "local",
+      aaguid: WINDOWS_HELLO_AAGUID,
+    } as const
+    await expect(
+      makeService({ ...windowsHello, trustsAttachmentLabel: true }).service.createPasskey("@alice"),
+    ).rejects.toMatchObject({
+      name: "PhoneRequiredError",
+      providerName: "Windows Hello",
+      message: new PhoneRequiredError({ providerName: "Windows Hello" }).message,
+    })
+    await expect(makeService(windowsHello).service.createPasskey("@alice")).rejects.toMatchObject({
+      name: "PhoneRequiredError",
+      providerName: undefined,
+    })
+  })
+
+  it("laptop: with no injected answer, the live browser decides whether a refusal names Windows Hello", async () => {
+    vi.stubGlobal("navigator", {
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    })
+    try {
+      const service = new WebAlphaAuthService({
+        storage: new MemoryStorage(),
+        rpId: "localhost",
+        ceremony: new FakePasskeyCeremony({ route: "local", aaguid: WINDOWS_HELLO_AAGUID }),
+        posture: () => "laptop",
+        misreportsCrossDevice: () => false,
+      })
+      await expect(service.createPasskey("@alice")).rejects.toMatchObject({
+        providerName: "Windows Hello",
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it("phone: a passkey answered by another device is refused", async () => {
@@ -1475,6 +1542,29 @@ describe("WebAlphaAuthService — one prompt, no picker", () => {
     expect(ceremony.asserts).toEqual([[created.credentialId]])
   })
 
+  it("a discoverable recovery names no passkey, so one this browser never recorded may answer", async () => {
+    const { service, ceremony } = laptop()
+    const created = await service.createPasskey("@bob")
+    await record(service, created, "0xabc")
+    service.clear()
+    const other = await ceremony.create({
+      rpId: "localhost",
+      rpName: "test",
+      userName: "@alice",
+      prfFirstSalt: new Uint8Array(32),
+    })
+    const asked: unknown[] = []
+    const answer = ceremony.assert.bind(ceremony)
+    ceremony.assert = (request) => {
+      asked.push(request.credentialIds)
+      return answer({ ...request, credentialIds: [other.credentialId] })
+    }
+
+    const begun = await service.beginRecovery({ discover: true })
+    expect(asked).toEqual([undefined])
+    expect(begun.credentialId).toBe(other.credentialId)
+  })
+
   it("adoptKnownPasskey: one assertion on the hinted credential, key checked against the signature", async () => {
     const { service, ceremony } = laptop()
     const created = await service.createPasskey("@alice")
@@ -1687,7 +1777,7 @@ describe("WebAlphaAuthService cached key restore", () => {
   it("commit writes the cache next to the pointers", async () => {
     const { restore, created } = await committed()
     try {
-      const cache = JSON.parse(localStorage.getItem("webwallet.msk")!)
+      const cache = JSON.parse(walletStorage.getItem("webwallet.msk")!)
       expect(cache).toEqual({
         v: 1,
         storageId: getActiveStorageId(),
@@ -1726,7 +1816,7 @@ describe("WebAlphaAuthService cached key restore", () => {
         derive: async (_msk, pubkeyHex) => (pubkeyHex === "ff".repeat(64) ? ADDR : "0xother"),
       })
       expect(await fresh.getSecretKey()).toBeUndefined()
-      expect(localStorage.getItem("webwallet.msk")).toBeNull()
+      expect(walletStorage.getItem("webwallet.msk")).toBeNull()
     } finally {
       restore()
     }
@@ -1777,7 +1867,7 @@ describe("WebAlphaAuthService cached key restore", () => {
     const { restore, fresh } = await committed()
     try {
       expect(await fresh.getSecretKey()).toBeUndefined()
-      expect(localStorage.getItem("webwallet.msk")).not.toBeNull()
+      expect(walletStorage.getItem("webwallet.msk")).not.toBeNull()
     } finally {
       restore()
     }
@@ -1792,10 +1882,11 @@ describe("WebAlphaAuthService cached key restore", () => {
       const { restore, fresh, inject } = await committed()
       try {
         disturb()
+        await walletStorage.flush()
         const session = { storageId: getActiveStorageId()!, credentialId: getActiveCredentialId() }
         inject()
         expect(await fresh.getSecretKey()).toBeUndefined()
-        expect(localStorage.getItem("webwallet.msk")).toBeNull()
+        expect(walletStorage.getItem("webwallet.msk")).toBeNull()
         expect(getActiveStorageId()).toBe(session.storageId)
         expect(getActiveCredentialId()).toBe(session.credentialId)
       } finally {
@@ -1837,7 +1928,7 @@ describe("WebAlphaAuthService cached key restore", () => {
         }
         inject()
         expect(await fresh.getSecretKey()).toBeUndefined()
-        expect(localStorage.getItem("webwallet.msk")).toBeNull()
+        expect(walletStorage.getItem("webwallet.msk")).toBeNull()
       } finally {
         restore()
       }
@@ -1847,12 +1938,13 @@ describe("WebAlphaAuthService cached key restore", () => {
   it("a key that does not re-derive the storage id is dropped", async () => {
     const { restore, fresh, inject } = await committed()
     try {
-      const cache = JSON.parse(localStorage.getItem("webwallet.msk")!)
+      const cache = JSON.parse(walletStorage.getItem("webwallet.msk")!)
       cache.msk = Fr.random().toString()
-      localStorage.setItem("webwallet.msk", JSON.stringify(cache))
+      walletStorage.setItem("webwallet.msk", JSON.stringify(cache))
+      await walletStorage.flush()
       inject()
       expect(await fresh.getSecretKey()).toBeUndefined()
-      expect(localStorage.getItem("webwallet.msk")).toBeNull()
+      expect(walletStorage.getItem("webwallet.msk")).toBeNull()
     } finally {
       restore()
     }
@@ -1870,7 +1962,7 @@ describe("WebAlphaAuthService cached key restore", () => {
       inject({ read: async () => twist(snapshot) as never })
       expect(await fresh.getSecretKey()).toBeUndefined()
       expect(fresh.isUnlocked()).toBe(false)
-      expect(localStorage.getItem("webwallet.msk")).toBeNull()
+      expect(walletStorage.getItem("webwallet.msk")).toBeNull()
       expect(getActiveStorageId()).toBeNull()
     } finally {
       restore()
@@ -1882,7 +1974,7 @@ describe("WebAlphaAuthService cached key restore", () => {
     try {
       inject({ derive: async () => `0x${"dd".repeat(32)}` })
       expect(await fresh.getSecretKey()).toBeUndefined()
-      expect(localStorage.getItem("webwallet.msk")).toBeNull()
+      expect(walletStorage.getItem("webwallet.msk")).toBeNull()
     } finally {
       restore()
     }
@@ -1897,7 +1989,7 @@ describe("WebAlphaAuthService cached key restore", () => {
         },
       })
       expect(await fresh.getSecretKey()).toBeUndefined()
-      expect(localStorage.getItem("webwallet.msk")).not.toBeNull()
+      expect(walletStorage.getItem("webwallet.msk")).not.toBeNull()
       expect(getActiveStorageId()).not.toBeNull()
     } finally {
       restore()
@@ -1929,7 +2021,7 @@ describe("WebAlphaAuthService cached key restore", () => {
       })
       hung.release()
       expect((await pending)?.toString()).toBe(newer.secretKey.toString())
-      expect(JSON.parse(localStorage.getItem("webwallet.msk")!).msk).toBe(
+      expect(JSON.parse(walletStorage.getItem("webwallet.msk")!).msk).toBe(
         newer.secretKey.toString(),
       )
     } finally {
@@ -1949,7 +2041,7 @@ describe("WebAlphaAuthService cached key restore", () => {
       hung.release()
       expect(await pending).toBeUndefined()
       expect(fresh.isUnlocked()).toBe(false)
-      expect(localStorage.getItem("webwallet.msk")).toBeNull()
+      expect(walletStorage.getItem("webwallet.msk")).toBeNull()
     } finally {
       restore()
     }
@@ -1964,6 +2056,7 @@ describe("WebAlphaAuthService cached key restore", () => {
         credentialId: "cred-theirs",
         msk: Fr.random().toString(),
       })
+      await walletStorage.flush()
       inject()
       expect(await fresh.getSecretKey()).toBeUndefined()
       expect(readCachedMsk()).toBeNull()
@@ -2008,6 +2101,7 @@ describe("WebAlphaAuthService cached key restore", () => {
       expect((await service.getSecretKey())?.toString()).toBe(created.secretKey.toString())
       const { clearCachedMsk } = await import("../src/platform/storage/activeStorage")
       clearCachedMsk()
+      await walletStorage.flush()
       service.clear()
       expect(await service.getSecretKey()).toBeUndefined()
     } finally {
@@ -2031,34 +2125,25 @@ describe("WebAlphaAuthService cached key restore", () => {
   })
 
   it("a store that refuses the pointers fails the commit rather than half-doing it", async () => {
-    vi.stubGlobal("localStorage", {
-      getItem: () => null,
-      setItem: () => {
-        throw new Error("QuotaExceededError")
-      },
-      removeItem: () => {
-        throw new Error("QuotaExceededError")
-      },
-    })
-    try {
-      const { service } = laptop()
-      const created = await service.createPasskey("@alice")
-      // Two dozen bytes refused means the store is refusing everything. The caller hears about it
-      // instead of being handed a session with nowhere to write.
-      await expect(
-        service.commitSecret({ secretKey: created.secretKey, authProvider: created.authProvider }),
-      ).rejects.toThrow()
-      expect(service.isUnlocked()).toBe(false)
-      expect(getActiveStorageId()).toBeNull()
-      expect(getActiveCredentialId()).toBeNull()
-    } finally {
-      vi.unstubAllGlobals()
+    testWalletDbs().onApply = () => {
+      throw new Error("QuotaExceededError")
     }
+    const { service } = laptop()
+    const created = await service.createPasskey("@alice")
+    // Two dozen bytes refused means the store is refusing everything. The caller hears about it
+    // instead of being handed a session with nowhere to write.
+    await expect(
+      service.commitSecret({ secretKey: created.secretKey, authProvider: created.authProvider }),
+    ).rejects.toThrow()
+    expect(service.isUnlocked()).toBe(false)
+    expect(getActiveStorageId()).toBeNull()
+    expect(getActiveCredentialId()).toBeNull()
   })
 
-  it("a pointer write refused halfway puts the previous session's pointers back", async () => {
+  it("a refused pointer write leaves the previous session's pointers in place", async () => {
     let refused: readonly string[] = []
-    const restore = stubLocalStorage(() => refused)
+    refuseWrites(() => refused)
+    const restore = stubLocalStorage()
     try {
       const { service } = laptop()
       const first = await service.createPasskey("@alice")
@@ -2091,60 +2176,39 @@ describe("WebAlphaAuthService cached key restore", () => {
     }
   })
 
-  it("a refused key cache keeps the namespace, and the reload asks for the passkey", async () => {
-    const map = new Map<string, string>()
-    vi.stubGlobal("localStorage", {
-      getItem: (k: string) => map.get(k) ?? null,
-      setItem: (k: string, v: string) => {
-        if (k === "webwallet.msk") throw new Error("QuotaExceededError")
-        map.set(k, v)
-      },
-      removeItem: (k: string) => void map.delete(k),
-    })
-    try {
-      const { service } = laptop()
-      const created = await service.createPasskey("@alice")
-      await service.commitSecret({
+  it("a refused key cache fails the commit and stores none of the session", async () => {
+    refuseWrites(() => ["webwallet.msk"])
+    const { service } = laptop()
+    const created = await service.createPasskey("@alice")
+    await expect(
+      service.commitSecret({
         secretKey: created.secretKey,
         authProvider: created.authProvider,
-      })
-      // The session is usable here and coherent on disk: this account's namespace and credential,
-      // no key — which is what an ordinary locked session looks like.
-      expect(service.isUnlocked()).toBe(true)
-      expect(getActiveStorageId()).not.toBeNull()
-      expect(getActiveCredentialId()).toBe(created.credentialId)
-      expect(readCachedMsk()).toBeNull()
-      expect(service.keyCached()).toBe(false)
-    } finally {
-      vi.unstubAllGlobals()
-    }
+      }),
+    ).rejects.toThrow()
+    expect(service.isUnlocked()).toBe(false)
+    expect(getActiveStorageId()).toBeNull()
+    expect(getActiveCredentialId()).toBeNull()
+    expect(readCachedMsk()).toBeNull()
+    expect(service.keyCached()).toBe(false)
   })
 
-  it("a refused key cache leaves no earlier session's key readable", async () => {
-    const map = new Map<string, string>()
+  it("a refused key cache leaves the earlier session whole, its key under its own pointers", async () => {
     let refuse = false
-    vi.stubGlobal("localStorage", {
-      getItem: (k: string) => map.get(k) ?? null,
-      setItem: (k: string, v: string) => {
-        if (refuse && k === "webwallet.msk") throw new Error("QuotaExceededError")
-        map.set(k, v)
-      },
-      removeItem: (k: string) => void map.delete(k),
-    })
-    try {
-      const { service } = laptop()
-      const a = await service.createPasskey("@alice")
-      await service.commitSecret({ secretKey: a.secretKey, authProvider: a.authProvider })
-      expect(readCachedMsk()).not.toBeNull()
-      refuse = true
-      const b = await service.createPasskey("@bob")
-      await service.commitSecret({ secretKey: b.secretKey, authProvider: b.authProvider })
-      // Alice's key belongs to nobody now that the tab holds Bob's session.
-      expect(readCachedMsk()).toBeNull()
-      expect(getActiveCredentialId()).toBe(b.credentialId)
-    } finally {
-      vi.unstubAllGlobals()
-    }
+    refuseWrites(() => (refuse ? ["webwallet.msk"] : []))
+    const { service } = laptop()
+    const a = await service.createPasskey("@alice")
+    await service.commitSecret({ secretKey: a.secretKey, authProvider: a.authProvider })
+    const held = readCachedMsk()
+    expect(held).not.toBeNull()
+    refuse = true
+    const b = await service.createPasskey("@bob")
+    await expect(
+      service.commitSecret({ secretKey: b.secretKey, authProvider: b.authProvider }),
+    ).rejects.toThrow()
+    expect(readCachedMsk()).toEqual(held)
+    expect(getActiveStorageId()).toBe(held!.storageId)
+    expect(getActiveCredentialId()).toBe(a.credentialId)
   })
 
   it("a demo commit without a passkey caches nothing and drops a passkey session's cache", async () => {
@@ -2157,13 +2221,13 @@ describe("WebAlphaAuthService cached key restore", () => {
         secretKey: created.secretKey,
         authProvider: created.authProvider,
       })
-      expect(localStorage.getItem("webwallet.msk")).not.toBeNull()
+      expect(walletStorage.getItem("webwallet.msk")).not.toBeNull()
       await service.commitSecret({
         secretKey: Fr.random(),
         authProvider: new EcdsaK256AlphaAuthProvider(Buffer.alloc(32, 7)),
       })
       expect(service.isUnlocked()).toBe(true)
-      expect(localStorage.getItem("webwallet.msk")).toBeNull()
+      expect(walletStorage.getItem("webwallet.msk")).toBeNull()
       expect(getActiveStorageId()).not.toBeNull()
       expect(getActiveCredentialId()).toBeNull()
     } finally {
@@ -2179,7 +2243,7 @@ describe("WebAlphaAuthService stale page records", () => {
   /** Leaves a record under `created`'s account, as an earlier session on this browser would. */
   const holdRecords = async (created: Created) => {
     const id = await storageIdFromSecret(new Uint8Array(created.secretKey.toBuffer()))
-    localStorage.setItem(`obsidion.${id}.obsidion_account`, "{}")
+    walletStorage.setItem(`obsidion.${id}.obsidion_account`, "{}")
   }
 
   it("a first sign-in on a browser that never held the account leaves them fresh", async () => {
@@ -2249,8 +2313,8 @@ describe("WebAlphaAuthService stale page records", () => {
     const restore = stubLocalStorage()
     try {
       const { service } = laptop()
-      localStorage.setItem("obsidion.obsidion_web_passkey_identity_map", "{}")
-      localStorage.setItem("obsidion.obsidion_withdrawals", "{}")
+      walletStorage.setItem("obsidion.obsidion_web_passkey_identity_map", "{}")
+      walletStorage.setItem("obsidion.obsidion_withdrawals", "{}")
       await commit(service, await service.createPasskey("@alice"))
       expect(service.recordsStale()).toBe(false)
     } finally {
@@ -2260,7 +2324,8 @@ describe("WebAlphaAuthService stale page records", () => {
 
   it("a refused pointer write changes nothing", async () => {
     let refused: readonly string[] = []
-    const restore = stubLocalStorage(() => refused)
+    refuseWrites(() => refused)
+    const restore = stubLocalStorage()
     try {
       const { service } = laptop()
       await commit(service, await service.createPasskey("@alice"))

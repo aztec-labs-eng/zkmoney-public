@@ -129,3 +129,25 @@ describe("registration deposit floor", () => {
     expect(await reader.scheduleFee()).toBe(1n * DAI)
   })
 })
+
+describe("registration deposit balance", () => {
+  it("reads the address in whichever accepted token funds it, in fee-token units", async () => {
+    const USDC = "0x00000000000000000000000000000000000000c0"
+    const readContract = vi.fn(async ({ address }: { address: string }) =>
+      address === USDC ? 15_000_000n : 0n,
+    )
+    const reader = createRegistrationDepositReader({
+      publicClient: { readContract } as unknown as PublicClient,
+      registrationImplementation: REGISTRATION_IMPL,
+      registry: REGISTRY,
+      portal: PORTAL,
+      fundingTokens: [
+        { address: TOKEN, symbol: "DAI", decimals: 18 },
+        { address: USDC, symbol: "USDC", decimals: 6 },
+      ],
+    })
+    expect(await reader.readBalance("0x0000000000000000000000000000000000005195", TOKEN)).toBe(
+      15n * DAI,
+    )
+  })
+})

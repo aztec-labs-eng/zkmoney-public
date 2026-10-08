@@ -222,6 +222,26 @@ describe("the start role", () => {
     await renderStart({ value: "a b" })
     expect(container.textContent).toContain("Letters, numbers and hyphens only")
   })
+
+  it.each([false, true])(
+    "Endpoints opens the editor without submitting the card (chooser first: %s)",
+    async (chooserFirst) => {
+      const onEndpoints = vi.fn()
+      await renderStart({ onEndpoints, chooserFirst, value: "alice", submitReady: true })
+      expect(byTestId("sign-in-endpoints")?.getAttribute("type")).toBe("button")
+      expect(container.textContent).toContain("Using your own node?")
+      await click("sign-in-endpoints")
+      expect(onEndpoints).toHaveBeenCalledTimes(1)
+      expect(onConfirm).not.toHaveBeenCalled()
+    },
+  )
+
+  it("Endpoints waits out a running sign-in, and is absent without a way to edit", async () => {
+    await renderStart({ onEndpoints: vi.fn(), busy: true })
+    expect((byTestId("sign-in-endpoints") as HTMLButtonElement).disabled).toBe(true)
+    await renderStart()
+    expect(byTestId("sign-in-endpoints")).toBeNull()
+  })
 })
 
 describe("the confirm role", () => {
@@ -254,6 +274,7 @@ describe("the confirm role", () => {
     await type("a b")
     expect((byTestId("primary") as HTMLButtonElement).disabled).toBe(true)
     expect(byTestId("sign-in-show-passkeys")).toBeNull()
+    expect(byTestId("sign-in-endpoints")).toBeNull()
     expect(container.textContent).toContain("Not your account?")
     await click("confirm-back")
     expect(onBack).toHaveBeenCalledTimes(1)

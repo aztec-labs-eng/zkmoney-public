@@ -4,7 +4,7 @@
  * wallet would refuse at boot cannot be baked. Nothing here may import browser or sdk code.
  */
 
-import type { ResolvedWalletProfile } from "@obsidion/config-client"
+import { assertProfileUrlShape, type ResolvedWalletProfile } from "@obsidion/config-client"
 import { Network } from "@obsidion/core/constants"
 import type { OxideEnvProfile } from "@obsidion/core/types"
 
@@ -22,6 +22,21 @@ export function parseNetwork(raw: string | undefined): Network {
     throw new Error(`Unknown VITE_NETWORK "${key}" (expected sandbox|testnet|mainnet)`)
   }
   return network
+}
+
+/**
+ * A profile URL set outside the build (the desktop launcher's setting) must have the shape artifact
+ * addresses derive from. Sandbox profiles are flat files and skip the rule.
+ */
+export function assertHostProfileUrl(url: string, network: Network): void {
+  if (network === Network.SANDBOX) return
+  try {
+    assertProfileUrlShape(url)
+  } catch (error) {
+    throw new Error(
+      `The configuration URL set in zk.money Desktop is refused: ${(error as Error).message}`,
+    )
+  }
 }
 
 type PolicyInput = Pick<ResolvedWalletProfile, "profile" | "versionId" | "snapshot">

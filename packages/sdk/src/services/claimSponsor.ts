@@ -274,8 +274,8 @@ export async function claimFpcSubscriptionUses(
 export async function linkChainInfo(
   wallet: ObsidionWallet,
 ): Promise<{ chainId: number; rollupVersion: number }> {
-  const info = await wallet.node.getNodeInfo()
-  return { chainId: Number(info.l1ChainId), rollupVersion: Number(info.rollupVersion) }
+  const { l1ChainId, rollupVersion } = await wallet.getNodeIdentity()
+  return { chainId: Number(l1ChainId), rollupVersion: Number(rollupVersion) }
 }
 
 /** Chain binding fields for authwit hashes: the wallet's cached snapshot, which its tx contexts use. */

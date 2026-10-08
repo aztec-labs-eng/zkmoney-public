@@ -12,8 +12,15 @@ vi.mock("@obsidion/web-ds", () => ({
   avatarColors: () => ["#000", "#fff"],
 }))
 
+/** Whether the open registration is one a payment link funds. */
+const ticket = vi.hoisted(() => ({ value: false }))
+vi.mock("../src/features/paylink/ticketContinuation", () => ({
+  pendingTicketRegistration: () => ticket.value,
+  ticketSignupCommitted: () => false,
+}))
+
 const { notificationRoute } = await import("../src/ui/NotificationsPanel")
-const { findBridgeItem } = await import("../src/ui/screens/useActivityEntries")
+const { detailNoticeFor, findBridgeItem } = await import("../src/ui/screens/useActivityEntries")
 
 const SIPA = "0xAbCdEf0000000000000000000000000000000001"
 
@@ -56,6 +63,28 @@ describe("notification target -> activity detail", () => {
     })
   })
 
+  it("outdates a reorg failure notice once its row confirms; a confirmation notice never", () => {
+    const reorg = { type: "reorg.txDetail", txHash: "0xt" }
+    expect(notificationRoute({ ...entry(reorg), severity: "error" })?.state).toMatchObject({
+      openTxHash: "0xt",
+      noticeStaleOn: "success",
+    })
+    expect(notificationRoute({ ...entry(reorg), severity: "success" })?.state).not.toHaveProperty(
+      "noticeStaleOn",
+    )
+  })
+
+  it("keeps a failure notice while the row is failed or demoted, drops it once confirmed", () => {
+    const failed = { text: "Payment failed: …", staleOn: "success" as const }
+    expect(detailNoticeFor(failed, { status: "failed" })).toBe("Payment failed: …")
+    // A grace-expired alert fires while the demoted row is still pending.
+    expect(detailNoticeFor(failed, { status: "pending" })).toBe("Payment failed: …")
+    expect(detailNoticeFor(failed, { status: "success" })).toBeUndefined()
+    expect(detailNoticeFor({ text: "Transfer received" }, { status: "success" })).toBe(
+      "Transfer received",
+    )
+  })
+
   it("opens a mutual-add notice on the contact page", () => {
     expect(notificationRoute(entry({ type: "contact.added", contactId: "bob" }))).toEqual({
       to: "/contacts/bob",
@@ -65,6 +94,25 @@ describe("notification target -> activity detail", () => {
 
   it("opens the Activity screen for funds left on an old version", () => {
     expect(notificationRoute(entry({ type: "migration.residuals" }))).toEqual({ to: "/activity" })
+  })
+
+  it("opens the claim screen for a registration in flight", () => {
+    expect(notificationRoute(entry({ type: "registration.pending", tag: "alice" }))).toEqual({
+      to: "/claim/alice",
+    })
+    expect(notificationRoute(entry({ type: "registration.pending" }))).toBeNull()
+  })
+
+  it("opens Home and the link's review for a registration a payment link funds", () => {
+    ticket.value = true
+    try {
+      expect(notificationRoute(entry({ type: "registration.pending", tag: "alice" }))).toEqual({
+        to: "/",
+        activate: true,
+      })
+    } finally {
+      ticket.value = false
+    }
   })
 
   it("finds the bridge row, matching SIPA addresses case-insensitively", () => {

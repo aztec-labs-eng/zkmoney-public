@@ -12,6 +12,8 @@ export interface WithdrawalPhaseCopy {
   pill?: string
   /** Detail sheet status line. */
   status: string
+  /** The status line while the device still proves it, before the burn has a hash. */
+  proving?: string
   /** Live notification row, after the amount. Undefined where no live row is shown. */
   live?: string
 }
@@ -23,7 +25,11 @@ const RELEASING: WithdrawalPhaseCopy = {
 }
 
 export const WITHDRAWAL_PHASE_COPY: Readonly<Record<WithdrawalPhase, WithdrawalPhaseCopy>> = {
-  submitting: { pill: "Pending", status: "Waiting for Aztec confirmation", live: "Proving privately" },
+  submitting: {
+    pill: "Pending",
+    status: "Waiting for Aztec confirmation",
+    proving: "Proving privately",
+  },
   l2_mined: RELEASING,
   awaiting_proven: RELEASING,
   finalizing_l1: RELEASING,
@@ -33,3 +39,6 @@ export const WITHDRAWAL_PHASE_COPY: Readonly<Record<WithdrawalPhase, WithdrawalP
   done: { status: "Paid" },
   failed: { pill: "Failed", status: "Failed" },
 }
+
+/** A group whose gas went out and whose funds leg never followed. */
+export const WITHDRAWAL_FUNDS_UNSENT = "Funds not sent"

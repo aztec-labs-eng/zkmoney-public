@@ -23,6 +23,10 @@ vi.mock("../src/walletBoot", () => {
   walletBootLoaded()
   throw new Error("wallet chunk failed")
 })
+// `/reset` must load even when the wallet store's modules cannot.
+vi.mock("../src/platform/storage/walletStorage", () => {
+  throw new Error("wallet store failed to load")
+})
 
 const { ResetScreen } = await import("../src/ui/ResetScreen")
 

@@ -92,6 +92,19 @@ export interface OxideEnvProfile {
   expectedGitSha?: string
 }
 
+/**
+ * The rollup identity every signing, derivation and store-naming site binds to, pinned for one
+ * boot. Read from L1 through the profile's portal, with the node's `getNodeInfo()` checked against
+ * it; only the default node, when L1 gives no answer, boots on its own report. Addresses are
+ * lower-cased hex; `rollupVersion` is a decimal string.
+ */
+export interface ChainIdentity {
+  l1ChainId: number
+  rollupVersion: string
+  rollupAddress: string
+  inboxAddress: string
+}
+
 // ── Config snapshot ──────────────────────────────────────────────────
 
 export interface ContractServiceConfigEntry {
@@ -472,6 +485,10 @@ export type {
   RegistrationKind,
   RegistrationSchedule,
   RegistrationPricing,
+  SignedTermsResponse,
+  NameHold,
+  NameClaimResponse,
+  NameReservationResponse,
 } from "./registration.js"
 
 // ── Local config ─────────────────────────────────────────────────────
@@ -506,6 +523,9 @@ export type WithdrawalPhase =
   | "done" // L1 payout observed (the release on a direct withdrawal, the swap on a swap). Never demotable.
   | "failed" // Terminal — pre-mine local error, or a reorg-dropped burn.
 
+/** The two burns of a fresh-address withdrawal: ETH for gas, then the funds. */
+export type WithdrawalGroupLeg = "gas" | "funds"
+
 /** SIPA deposit lifecycle (L1→L2). */
 export type SIPADepositPhase =
   | "resolved" // self-initiated flow only: the name was resolved to a SIPA address
@@ -516,5 +536,5 @@ export type SIPADepositPhase =
   | "pendingClaim" // Sweep log read; waiting for the L1→L2 message to settle
   | "claimed" // store_deposit succeeded — balance-visible. Terminal.
   | "failed" // Terminal.
-  | "recoverable" // sweep cannot proceed (e.g. sub-fee funding) — recoverERC20 is the exit
-  | "recovered" // recoverERC20 completed. Terminal.
+  | "recoverable" // sweep cannot proceed (e.g. sub-fee funding, or ETH) — recoverERC20/recoverETH is the exit
+  | "recovered" // recoverERC20/recoverETH completed. Terminal.

@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { QueueStatus } from "@obsidion/sdk"
-import { AccountStorage, NetworkStorage, TransactionStorage } from "../../src/core"
+import { PaylinkActionEnum } from "@obsidion/core/constants"
+import {
+  AccountStorage,
+  INTERRUPTED_ERRORS,
+  INTERRUPTED_SEND_ERROR,
+  failureReason,
+  NetworkStorage,
+  TransactionStorage,
+} from "../../src/core"
 import { TransactionTracker } from "../../src/core/services/transactions/TransactionTracker"
 import type { Transaction, TokenInTxService } from "../../src/types"
 import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
@@ -222,10 +230,36 @@ describe("TransactionStorage — failInterruptedSends", () => {
     expect(byQueue.stale).toMatchObject({
       status: "failed",
       detailedStatus: QueueStatus.FAILED,
-      error: expect.stringMatching(/interrupted/),
+      error: INTERRUPTED_ERRORS.send,
     })
     expect(byQueue.fresh.status).toBe("pending")
     expect(byQueue.mined.status).toBe("pending")
+  })
+
+  it("words each paylink row's failure by its action", async () => {
+    const { transactions } = setup()
+    vi.spyOn(Date, "now").mockReturnValue(NOW - 2 * HOUR)
+    for (const [queueId, action] of [
+      ["create", PaylinkActionEnum.PAY],
+      ["claim", PaylinkActionEnum.CLAIM],
+      ["reclaim", PaylinkActionEnum.CLAIM_BACK],
+    ] as const) {
+      await transactions.addPreSubmitPaylinkTransaction(queueId, `op-${queueId}`, {
+        action,
+        flavor: "direct",
+        token: sampleToken(),
+      })
+    }
+    vi.restoreAllMocks()
+    await transactions.failInterruptedSends(NOW)
+    const errors = Object.fromEntries(
+      (await transactions.getTransactions()).map((tx) => [tx.queueId, tx.error]),
+    )
+    expect(errors).toEqual({
+      create: INTERRUPTED_ERRORS.paylinkCreate,
+      claim: INTERRUPTED_ERRORS.paylinkClaim,
+      reclaim: INTERRUPTED_ERRORS.other,
+    })
   })
 
   it("is idempotent", async () => {
@@ -235,5 +269,36 @@ describe("TransactionStorage — failInterruptedSends", () => {
     vi.restoreAllMocks()
     await transactions.failInterruptedSends(NOW)
     expect(await transactions.failInterruptedSends(NOW)).toEqual([])
+  })
+})
+
+describe("failureReason", () => {
+  const row = (action: string, patch: Partial<Transaction> = {}) =>
+    ({ action, status: "failed", timestamp: 1, ...patch } as Transaction)
+
+  it("reads a row an older sweep failed in its action's words", () => {
+    const legacy = { error: INTERRUPTED_SEND_ERROR }
+    expect(failureReason(row("send", legacy))).toBe(INTERRUPTED_ERRORS.send)
+    expect(failureReason(row(PaylinkActionEnum.PAY, legacy))).toBe(INTERRUPTED_ERRORS.paylinkCreate)
+    expect(failureReason(row(PaylinkActionEnum.CLAIM, legacy))).toBe(
+      INTERRUPTED_ERRORS.paylinkClaim,
+    )
+    expect(failureReason(row("send", { error: INTERRUPTED_ERRORS.send }))).toBe(
+      INTERRUPTED_ERRORS.send,
+    )
+  })
+
+  it("gives a plain reason for the user's own raw failures, none for a receive or a live row", () => {
+    expect(failureReason(row("send", { error: "Assertion failed: Balance too low" }))).toBe(
+      "It didn't go through. The amount is still in your balance.",
+    )
+    expect(failureReason(row(PaylinkActionEnum.PAY, { error: "reverted" }))).toBe(
+      "It didn't go through. The amount is still in your balance.",
+    )
+    expect(failureReason(row(PaylinkActionEnum.CLAIM))).toBe("It didn't go through.")
+    expect(failureReason(row("receive", { error: "dropped" }))).toBeUndefined()
+    expect(
+      failureReason(row("send", { status: "success", error: INTERRUPTED_SEND_ERROR })),
+    ).toBeUndefined()
   })
 })

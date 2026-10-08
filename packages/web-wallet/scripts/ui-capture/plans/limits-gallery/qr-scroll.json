@@ -1,0 +1,83 @@
+{
+  "scenario": "activity",
+  "path": "/deposit?flowFixture=success",
+  "finalScreenshot": false,
+  "steps": [
+    {
+      "action": "waitFor",
+      "selector": ".ww-deposit-disclaimer"
+    },
+    {
+      "action": "screenshot",
+      "file": "01-privacy.png",
+      "state": "Privacy notice before the address"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"address-limits\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "02-address.png",
+      "state": "Address, then the compact limit line"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Show",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "03-one-time-warning.png",
+      "state": "One-time address warning before the QR"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"Deposit address\"] [data-testid=\"address-limits\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "04-qr.png",
+      "state": "Complete QR with the limit line under it"
+    },
+    {
+      "action": "scroll",
+      "selector": "dialog:modal .ww-modal",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "05-qr-after-scroll.png",
+      "state": "QR sheet at its end"
+    },
+    {
+      "action": "press",
+      "selector": "dialog:modal",
+      "key": "Escape"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Connect your wallet",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "06-address-actions.png",
+      "state": "Deposit address controls are reachable after scrolling"
+    }
+  ]
+}

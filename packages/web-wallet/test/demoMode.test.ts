@@ -11,6 +11,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { PaylinkTransaction } from "@obsidion/front-core"
 import type { Hex } from "viem"
+import { DEMO_ROLLUP, setActiveRollup } from "../src/platform/storage/rollupStorage"
+import {
+  closeWalletStore,
+  openWalletStore,
+  walletStorage,
+} from "../src/platform/storage/walletStorage"
+import { sandboxProfile } from "./fixtures/sandboxProfile"
+import { testWalletDbs } from "./support/fakeWalletDb"
 
 // Every test re-imports the aztec + front-core graph; the first one pays the cold transform.
 vi.setConfig({ testTimeout: 30_000 })
@@ -50,6 +58,8 @@ beforeEach(async () => {
   vi.resetModules()
   localStorage.clear()
   sessionStorage.clear()
+  // The partition outlives the module graph; each test starts on the real one, as a fresh page does.
+  setActiveRollup(sandboxProfile().shared.rollupVersion)
   window.history.replaceState({}, "", "/")
   vi.spyOn(console, "info").mockImplementation(() => {})
 })
@@ -224,12 +234,14 @@ describe("seeded session", () => {
 })
 
 describe("existing wallet guard", () => {
-  it("refuses to seed over a foreign identity and boots the real app", async () => {
+  it("refuses to seed over an identity already in the demo partition and boots the real app", async () => {
     const error = vi.spyOn(console, "error").mockImplementation(() => {})
     window.history.replaceState({}, "", "/?demo=recovery")
     const { isDemoMode, demoScenario } = await import("../src/dev/demoFlag")
     expect(demoScenario()).toBe("recovery")
 
+    setActiveRollup(DEMO_ROLLUP)
+    await openWalletStore(DEMO_ROLLUP, { persistent: false })
     const { saveWalletIdentity, loadWalletIdentity } = await import(
       "../src/features/identity/walletIdentity"
     )
@@ -243,6 +255,24 @@ describe("existing wallet guard", () => {
     expect(localStorage.getItem("obsidion.marker")).toBe("untouched")
     expect(isDemoMode()).toBe(false)
     expect(sessionStorage.getItem("webwallet.demo")).toBe(null)
+  })
+
+  it("seeds beside a real rollup's identity without reading or touching it", async () => {
+    window.history.replaceState({}, "", "/?demo=recovery")
+    const rollup = sandboxProfile().shared.rollupVersion
+    await closeWalletStore()
+    await openWalletStore(rollup, { persistent: true })
+    const { saveWalletIdentity } = await import("../src/features/identity/walletIdentity")
+    saveWalletIdentity({ handle: "alice", address: `0x${"a1".repeat(32)}`, claimedAt: 1 })
+    await walletStorage.flush()
+    const real = testWalletDbs().db(rollup).state.get("webwallet.identity")
+    expect(real).toBeDefined()
+
+    expect(await seed("recovery")).toBe(true)
+
+    expect(testWalletDbs().db(rollup).state.get("webwallet.identity")).toBe(real)
+    const { loadWalletIdentity } = await import("../src/features/identity/walletIdentity")
+    expect(loadWalletIdentity()?.handle).not.toBe("alice")
   })
 
   it("refuses on a passkey from an onboarding that never claimed a handle", async () => {
@@ -682,9 +712,9 @@ describe("fake L1", () => {
   })
 
   /**
-   * What makes the exits' "Waiting for L1 confirmation" stage visible. viem re-reads a receipt only
-   * on a block number it has not seen, so the demo head has to advance too — a still head leaves
-   * the flow polling forever.
+   * What makes the exits' "Waiting for Ethereum confirmation" stage visible. viem re-reads a
+   * receipt only on a block number it has not seen, so the demo head has to advance too — a still
+   * head leaves the flow polling forever.
    */
   it("holds a submitted transaction pending until viem polls it up", async () => {
     await seed("recovery")
@@ -1070,6 +1100,6 @@ describe("demo profile", () => {
       VITE_CONFIG_PROFILE_URL: "http://127.0.0.1:5499/__ui-capture/profile.json",
       VITE_CONFIG_EXPECTED_PROFILE_ID: "ui-capture",
     }
-    expect(demoBootInput(env)).toEqual({ env })
+    expect(demoBootInput(env)).toEqual({ env, demoStorage: true })
   })
 })

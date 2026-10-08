@@ -1,6 +1,7 @@
 import {
   type Address,
   type Hex,
+  type LocalAccount,
   type PublicClient,
   type TypedDataDefinition,
   type WalletClient,
@@ -51,6 +52,15 @@ export function buildNameClaimTypedData(args: NameClaimTypedDataArgs): NameClaim
       deadline: args.deadline,
     },
   };
+}
+
+/// The domain owner's authorization for `userAddress` to claim `nameHash`, in the form `claimName` takes.
+export async function signDomainAuth(
+  domainOwner: Pick<LocalAccount, 'signTypedData'>,
+  args: NameClaimTypedDataArgs,
+): Promise<DomainAuthArg> {
+  const signature = await domainOwner.signTypedData(buildNameClaimTypedData(args));
+  return { nonce: args.nonce, deadline: args.deadline, signature };
 }
 
 async function read<T>(publicClient: PublicClient, nameRegistry: Address, functionName: string, args: unknown[]) {

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto"
 import { expect, it, vi } from "vitest"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { SchnorrInitializerlessAccountContractArtifact } from "@aztec/accounts/schnorr"
+import { contractArtifactToBuffer } from "@aztec/stdlib/abi"
 import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
 import raw from "../../src/artifacts/lazy/broadcaster_contract.js"
 import { getBroadcasterArtifact, getHardcodedArtifact } from "../../src/services/utils.js"
@@ -25,6 +27,26 @@ it("loads and caches the exact reviewed historical class", async () => {
   expect((await getContractClassFromArtifact(a)).id.toString()).toBe(classId)
   expect(fetcher).toHaveBeenCalledTimes(1)
   expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ redirect: "error" })
+})
+
+it("loads the Aztec account artifact's reviewed storage encoding", async () => {
+  const body = contractArtifactToBuffer(SchnorrInitializerlessAccountContractArtifact)
+  const accountClassId = (
+    await getContractClassFromArtifact(SchnorrInitializerlessAccountContractArtifact)
+  ).id.toString()
+  const resolve = createClassArtifactResolver(
+    {
+      [accountClassId]: {
+        url: "https://artifacts.example/admin-account.json",
+        sha256: createHash("sha256").update(body).digest("hex"),
+        encoding: "aztec-contract-artifact",
+      },
+    },
+    async () => new Response(body),
+  )
+  expect((await getContractClassFromArtifact(await resolve(accountClassId))).id.toString()).toBe(
+    accountClassId,
+  )
 })
 
 it("accepts a lazy manifest pin resolver", async () => {

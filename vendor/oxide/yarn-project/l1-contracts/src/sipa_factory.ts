@@ -4,7 +4,7 @@ import { SIPAFactoryAbi } from './artifacts.js';
 
 /** Creation args that fix a SIPA's deterministic create2 address. The clone commits to `(implementation, intentHash)`
  *  plus the recovery commitment, the rollup version, and the single-sweep flag; `implementation` is the intent type
- *  (deposit, registration, ...). The deposit pool is deliberately absent: it is an immutable of the implementation,
+ *  (deposit, registration, ...). The portal is deliberately absent: it is an immutable of the implementation,
  *  so it follows from the implementation the address already commits to. */
 export interface SipaDeployArgs {
   implementation: Address;
@@ -49,7 +49,7 @@ export async function readSIPAImplementation(
 }
 
 /** The family `implementation` is blessed as, or {@link SipaIntent.None} when it is not blessed at all. Blessing is
- *  add-only, so this stays true for every pool's implementations once recorded. */
+ *  add-only, so this stays true for every portal's implementations once recorded. */
 export async function readBlessedIntent(
   publicClient: PublicClient,
   sipaFactory: Address,

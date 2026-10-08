@@ -14,6 +14,11 @@ const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
 const ACCOUNT = `0x${"a1".repeat(20)}` as Hex
 const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb"
 
+// Plenty of shared capacity, read from a fake bucket instead of the network.
+const capacity = vi.hoisted(() => ({ availableAtomic: 40_000n * 10n ** 18n }))
+vi.mock("../src/features/deposit/capacityStore", async () =>
+  (await import("./fakeCapacity")).fakeCapacityStore(capacity),
+)
 vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => vi.fn(),
@@ -27,10 +32,9 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   useAztecContext: () => ({ obsidionWallet: {} }),
   useContractServiceContext: () => ({ contractService: {} }),
 }))
-// A pool hit gives the sheet an address to fund without the Generate click.
 const gateway = {
-  depositAddress: vi.fn(async () => ({ address: "0xdeadbeef", name: "alice.oxide.eth" })),
-  pooledDepositAddress: vi.fn(async () => ({ address: "0xp001ed", name: "alice.oxide.eth" })),
+  wakeDeposit: vi.fn(async () => {}),
+  depositAddress: vi.fn(async () => ({ address: "0xp001ed", name: "alice.oxide.eth" })),
 }
 vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
 vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => ({
@@ -50,7 +54,10 @@ vi.mock("../src/lib/analytics", () => ({
   amountBucket: () => "b",
 }))
 const bridge = vi.hoisted(() => ({ active: false }))
-vi.mock("../src/platform/desktopBridge", () => ({ isDesktopL1SubmitActive: () => bridge.active }))
+vi.mock("../src/platform/desktopBridge", () => ({
+  isDesktopL1SubmitActive: () => bridge.active,
+  getDesktopL1Bridge: () => null,
+}))
 // Which surface shows is the question; the sheet's own behaviour has its own suite.
 vi.mock("../src/features/deposit/DepositFromWalletModal", () => ({
   DepositFromWalletModal: ({ onClose }: { onClose: () => void }) => (
@@ -76,7 +83,10 @@ const l1 = vi.hoisted(() => ({
   disconnect: vi.fn(),
 }))
 vi.mock("../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => l1 }))
-vi.mock("uqr", () => ({ renderSVG: (value: string) => `<svg data-uri="${value}"></svg>` }))
+vi.mock("uqr", () => ({
+  renderSVG: (value: string) => `<svg data-uri="${value}"></svg>`,
+  encode: () => ({ size: 21, data: Array.from({ length: 21 }, () => Array(21).fill(false)) }),
+}))
 vi.mock("@obsidion/web-ds", () => ({
   GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
   Icon: () => null,
@@ -116,7 +126,7 @@ describe("DepositScreen — funding click held across the wallet picker", () => 
     })
 
   const clickConnect = async () => {
-    const connect = buttonContaining("Connect your wallet")
+    const connect = buttonContaining("connect a wallet")
     expect(connect?.disabled).toBe(false)
     await act(async () => connect!.click())
   }
@@ -163,7 +173,7 @@ describe("DepositScreen — funding click held across the wallet picker", () => 
     walletLands()
     await render()
     expect(sheets()).toBe(0)
-    expect(container.textContent).toContain("Wallet connected")
+    expect(container.textContent).toContain("Deposit from")
   })
 
   it("drops the click when the attempt fails and the picker is then closed", async () => {
@@ -233,7 +243,7 @@ describe("DepositScreen — funding click held across the wallet picker", () => 
   it("funds straight away from a connected wallet, and on the desktop bridge", async () => {
     walletLands()
     await render()
-    await act(async () => buttonContaining("Wallet connected")!.click())
+    await act(async () => buttonContaining("Deposit from")!.click())
     expect(sheets()).toBe(1)
     expect(l1.connect).not.toHaveBeenCalled()
 
@@ -243,7 +253,7 @@ describe("DepositScreen — funding click held across the wallet picker", () => 
     l1.accounts = []
     bridge.active = true
     await render()
-    await act(async () => buttonContaining("Deposit from your browser")!.click())
+    await act(async () => buttonContaining("deposit from your browser")!.click())
     expect(sheets()).toBe(1)
     expect(l1.connect).not.toHaveBeenCalled()
   })

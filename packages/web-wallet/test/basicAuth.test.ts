@@ -67,21 +67,15 @@ describe("checkBasicAuth", () => {
 
 // Mirrors the CDN's viewer-request exemptions (iac/modules/app-tier/modules/web-wallet).
 describe("isPublicPath — what the local gate serves without a credential", () => {
-  it("the bridge frame, whatever the method", () => {
-    for (const method of ["GET", "HEAD", "POST", undefined]) {
-      expect(isPublicPath(method, "/bridge.html")).toBe(true)
-    }
-  })
-
-  it("GET and HEAD of a shared link's page and card image", () => {
-    for (const path of ["/og.png", "/link", "/request"]) {
+  it("GET and HEAD of a shared link's page, card image and the wallet icon", () => {
+    for (const path of ["/og.png", "/favicon.png", "/link", "/request"]) {
       expect(isPublicPath("GET", path)).toBe(true)
       expect(isPublicPath("HEAD", path)).toBe(true)
     }
   })
 
   it("not the same paths by another method", () => {
-    for (const path of ["/og.png", "/link", "/request"]) {
+    for (const path of ["/og.png", "/favicon.png", "/link", "/request"]) {
       for (const method of ["POST", "OPTIONS", "PUT", "PATCH", "DELETE", undefined]) {
         expect(isPublicPath(method, path)).toBe(false)
       }
@@ -104,6 +98,8 @@ describe("isPublicPath — what the local gate serves without a credential", () 
       "/og.png/",
       "/OG.png",
       "/assets/og.png",
+      "/favicon.png/",
+      "/assets/favicon.png",
       "/assets/app.js",
       "/svc/usage/events",
       "/settings",

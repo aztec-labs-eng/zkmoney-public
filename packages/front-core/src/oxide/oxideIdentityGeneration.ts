@@ -1,11 +1,11 @@
-import type { Address, Hex } from "viem"
+import { getContractAddress, type Address, type Hex } from "viem"
+import { predictAccountAddressLocally } from "@oxide/l1-contracts"
 
 import type { OxideL1Reader } from "./oxideRegistration"
 
 export interface IdentityGeneration {
   fpcAddress: string
   accountFactory: Address
-  implementation: Address
   namePortal: Address
   rollupVersion: string
 }
@@ -47,7 +47,6 @@ export class UnverifiedOxideIdentityError extends Error {
 
 export type IdentityGenerationReads = Pick<
   OxideL1Reader,
-  | "predictAccountAddress"
   | "readNameOf"
   | "readAccountMetadataRegistry"
   | "readUserRecord"
@@ -64,7 +63,7 @@ export interface OxideIdentityDeps {
 
 const sameAddress = (left: string, right: string) => left.toLowerCase() === right.toLowerCase()
 
-const isZeroHash = (value: string) => /^0x0*$/.test(value)
+export const isZeroHash = (value: string) => /^0x0*$/.test(value)
 
 function readOnce<T>(read: () => Promise<T>): () => Promise<T> {
   let pending: Promise<T> | undefined
@@ -96,10 +95,15 @@ export async function resolveOxideIdentity(
     deps.reader.readFactoryImplementation(factory),
   )
 
+  // Admission, not authentication: the portal's registry answer proves nothing, and the local prediction
+  // assumes the factory clones its nonce-1 deployment. Only the name read below trusts anything.
   const bindsThisRegistry = async (generation: IdentityGeneration) => {
     if (generation.rollupVersion !== deps.rollupVersion) return false
     if (!sameAddress(await registryBehind(generation.namePortal), deps.registry)) return false
-    return sameAddress(await cloneTargetOf(generation.accountFactory), generation.implementation)
+    return sameAddress(
+      await cloneTargetOf(generation.accountFactory),
+      getContractAddress({ from: generation.accountFactory, nonce: 1n }),
+    )
   }
 
   const verifiedByAccount = new Map<string, VerifiedOxideIdentity>()
@@ -108,7 +112,7 @@ export async function resolveOxideIdentity(
   for (const generation of deps.catalog) {
     if (!(await bindsThisRegistry(generation))) continue
     admitted += 1
-    const account = await deps.reader.predictAccountAddress(generation.accountFactory, bootstrap)
+    const account = predictAccountAddressLocally(generation.accountFactory, bootstrap)
     const key = account.toLowerCase()
     const verified = verifiedByAccount.get(key)
     if (verified) {

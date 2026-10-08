@@ -1,4 +1,4 @@
-import { RollupContract } from '@aztec/ethereum/contracts';
+import { RollupContract } from '@aztec/ethereum/contracts/rollup';
 import { AztecNode } from '@aztec/stdlib/interfaces/client';
 
 import { FrozenEvent, OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';

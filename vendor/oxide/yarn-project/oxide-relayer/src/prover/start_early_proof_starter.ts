@@ -1,4 +1,4 @@
-import type { L1TxUtils } from '@aztec/ethereum/l1-tx-utils';
+import type { PublicClient } from 'viem';
 
 import type { RunConfig } from '../cli/config.js';
 import type { DeploymentEnvManifestPublicConfig } from '../config/deployment_env_manifest.js';
@@ -12,7 +12,7 @@ import { ProfitablePartialEpochProofStarter } from './prover_claim/profitable_pa
 export async function startEarlyProofStarter(
   config: RunConfig,
   publicConfig: DeploymentEnvManifestPublicConfig,
-  l1TxUtils: L1TxUtils,
+  client: PublicClient,
   priceOracle: ChainlinkPriceOracle,
 ): Promise<ProfitablePartialEpochProofStarter> {
   if (!config.proverNodeUrl) {
@@ -25,10 +25,10 @@ export async function startEarlyProofStarter(
     nodeUrl: config.aztecNodeUrl,
     nodeApiKey: config.aztecNodeApiKey,
     proverNodeUrl: config.proverNodeUrl,
-    l1Client: l1TxUtils.client,
+    proverNodeApiKey: config.proverNodeApiKey,
+    l1Client: client,
     portalAddress: publicConfig.portal,
     proverSubsidyAddress: proverSubsidy,
-    rewardRecipient: l1TxUtils.getSenderAddress(),
     priceOracle,
     earlySubmitPolicy: config.earlyProofPolicy,
     onError: error => {

@@ -19,10 +19,12 @@ const args: SwapSimulationArgs = {
 }
 const tip = (relayerTip: bigint): RelayerTipEstimate => ({
   relayerTip,
-  breakEven: relayerTip,
-  gasLimit: 1n,
+  minPayout: relayerTip,
+  gasUsed: 1n,
   maxFeePerGas: 1n,
-  ethUsd: 1n,
+  usdPerEth: 1n,
+  baseFee: 1n,
+  priorityFee: 0n,
 })
 const quote = (relayerTip: bigint): SwapSimulation => ({
   ...tip(relayerTip),
@@ -62,10 +64,7 @@ describe("quoteFundedSandboxSwap", () => {
 
     const fundedAmount = deductions.withdrawalRelayerTip + convergedTip + 20n * DAI
     expect(result).toEqual({ amount: fundedAmount, quote: quote(convergedTip) })
-    expect(simulate).toHaveBeenNthCalledWith(
-      3,
-      expect.objectContaining({ amount: fundedAmount, previousTip: convergedTip }),
-    )
+    expect(simulate).toHaveBeenNthCalledWith(3, expect.objectContaining({ amount: fundedAmount }))
   })
 
   it("bounds repeated fee movement to three live quotes", async () => {

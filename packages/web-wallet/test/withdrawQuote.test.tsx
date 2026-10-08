@@ -1,16 +1,18 @@
 /**
  * The swap quote hook is the only source of the tip a swap withdrawal commits to, so what is pinned is
- * its lifecycle: the debounce, the 30 s refresh feeding the last tip back, stale answers dropped, the fee
+ * its lifecycle: the debounce, the 30 s refresh, stale answers dropped, the fee
  * surviving a reload, and the route closing — not falling back — when the simulation fails.
  */
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { formatUnits, parseUnits, type Address } from "viem"
+import { formatUnits, parseGwei, parseUnits, type Address } from "viem"
 import { Network, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import {
   SWAP_QUOTE_REFRESH_MS,
+  settledFloor,
   SwapFeeNote,
+  SwapGasWarning,
   swapFloorAtomic,
   swapTipIsHigh,
   useSwapSimulation,
@@ -24,10 +26,13 @@ import type { WithdrawalReceiveAsset } from "../src/features/withdraw/withdrawAs
 
 const TIP = 3n * 10n ** 18n
 const CUT = 250_000_000_000_000_000n
+const SWAP_GAS = { baseFee: parseGwei("2.4"), priorityFee: parseGwei("1") }
 const fee = (swapRelayerTip = TIP) => ({
   withdrawalRelayerTip: WITHDRAW_RELAYER_TIP,
   fpcFundingCut: CUT,
   swapRelayerTip,
+  swapGas: SWAP_GAS,
+  proverTip: 0n,
   floorAtomic: WITHDRAW_RELAYER_TIP + CUT + swapRelayerTip,
 })
 const usdc = (amountOut: bigint): SwapQuote => ({
@@ -48,6 +53,7 @@ function Harness({
   sourceKey,
   simulate,
   readCut = readPortalCut,
+  proverTip,
   onState,
 }: {
   receiveAsset: WithdrawalReceiveAsset
@@ -56,6 +62,7 @@ function Harness({
   sourceKey?: string
   simulate: SimulateSwap
   readCut?: () => Promise<bigint>
+  proverTip?: bigint
   /** Every render's status, so a one-frame flash the DOM no longer holds is still catchable. */
   onState?: (state: WithdrawalQuoteState) => void
 }) {
@@ -67,13 +74,15 @@ function Harness({
     sourceKey,
     simulate,
     readCut,
+    proverTip,
     debounceMs: 300,
   })
   onState?.(state)
   return (
     <>
       <WithdrawalEstimate receiveAsset={receiveAsset} state={state} />
-      <SwapFeeNote state={state} amountAtomic={amountAtomic} />
+      <SwapFeeNote state={state} />
+      <SwapGasWarning state={state} amountAtomic={amountAtomic} />
       <output data-testid="floor">{swapFloorAtomic(state).toString()}</output>
     </>
   )
@@ -113,7 +122,7 @@ describe("useSwapSimulation", () => {
     container.querySelector("[data-quote-state]")?.getAttribute("data-quote-state")
   const floor = () => BigInt(container.querySelector("[data-testid=floor]")!.textContent!)
 
-  it("does not carry a fee or prior tip to another source deployment", async () => {
+  it("does not carry a fee to another source deployment", async () => {
     const simulate = vi.fn<SimulateSwap>().mockResolvedValue(usdc(12n))
     const props = { receiveAsset: "USDC" as const, amountAtomic: 100n * 10n ** 18n, simulate }
     await render({ ...props, sourceKey: "old-token" })
@@ -121,8 +130,6 @@ describe("useSwapSimulation", () => {
     const frames: WithdrawalQuoteState[] = []
     await render({ ...props, sourceKey: "new-token", onState: (state) => frames.push(state) })
     expect(frames.every((state) => state.fee === undefined && state.status !== "ready")).toBe(true)
-    await tick(300)
-    expect(simulate.mock.lastCall?.[0].previousTip).toBeUndefined()
   })
 
   it("exposes idle, loading, and exact stablecoin ready states", async () => {
@@ -141,13 +148,13 @@ describe("useSwapSimulation", () => {
       output: "USDC",
       amountAtomic: 2_000_000_000_000_000_000n,
       recipient: RECIPIENT,
-      previousTip: undefined,
+      proverTip: 0n,
     })
     await act(async () => pending.resolve(usdc(1_999_123n)))
     expect(state()).toBe("ready")
     expect(container.textContent).toContain("1.99912 USDC")
     expect(container.textContent).toContain("current pool state")
-    expect(container.textContent).toContain("Includes 3 DAI for L1 gas")
+    expect(container.textContent).toContain("Includes $3 for L1 gas at 3.4 gwei.")
     expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT + TIP)
   })
 
@@ -163,6 +170,24 @@ describe("useSwapSimulation", () => {
     expect(container.textContent).toContain("2 DAI")
     expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT)
     expect(simulate).not.toHaveBeenCalled()
+  })
+
+  it("adds a prover tip to the direct route's floor", async () => {
+    await render({ receiveAsset: "DAI", simulate: vi.fn(), proverTip: 2n })
+    await tick(0)
+    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT + 2n)
+  })
+
+  it("simulates a swap net of the prover tip, and re-simulates when it changes", async () => {
+    const simulate = vi.fn<SimulateSwap>().mockResolvedValue(usdc(12n))
+    const props = { receiveAsset: "USDC" as const, amountAtomic: 100n * 10n ** 18n, simulate }
+    await render({ ...props, proverTip: 2n })
+    await tick(300)
+    expect(simulate.mock.lastCall?.[0].proverTip).toBe(2n)
+    await render({ ...props, proverTip: 5n })
+    await tick(300)
+    expect(simulate).toHaveBeenCalledTimes(2)
+    expect(simulate.mock.lastCall?.[0].proverTip).toBe(5n)
   })
 
   it("closes the direct route when the portal's cut cannot be read", async () => {
@@ -273,7 +298,7 @@ describe("useSwapSimulation", () => {
     expect(container.textContent).toContain("1 ETH")
   })
 
-  it("re-simulates every 30 s with the last tip fed back, staying ready in between", async () => {
+  it("re-simulates every 30 s, staying ready in between", async () => {
     const simulate = vi
       .fn<SimulateSwap>()
       .mockResolvedValueOnce(usdc(1_000_000n))
@@ -288,10 +313,9 @@ describe("useSwapSimulation", () => {
 
     await tick(SWAP_QUOTE_REFRESH_MS - 300)
     expect(simulate).toHaveBeenCalledTimes(2)
-    expect(simulate.mock.calls[1]![0].previousTip).toBe(TIP)
     expect(state()).toBe("ready")
     expect(container.textContent).toContain("0.9 USDC")
-    expect(container.textContent).toContain("Includes 4 DAI")
+    expect(container.textContent).toContain("Includes $4 for L1 gas")
     expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT + TIP + 10n ** 18n)
   })
 
@@ -304,10 +328,7 @@ describe("useSwapSimulation", () => {
     await render({ receiveAsset: "USDC", amountAtomic: parseUnits("6", 18), simulate })
     expect(state()).toBe("loading")
     expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT + TIP)
-    expect(container.textContent).toContain("Includes 3 DAI")
-    // The last tip seeds the next estimate.
-    await tick(300)
-    expect(simulate).toHaveBeenLastCalledWith(expect.objectContaining({ previousTip: TIP }))
+    expect(container.textContent).toContain("Includes $3 for L1 gas")
   })
 
   it("prices the direct route afresh after a swap route, never off the swap's fee", async () => {
@@ -335,7 +356,7 @@ describe("useSwapSimulation", () => {
     expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT)
   })
 
-  it("prices a swap route afresh after the direct route, with no fee or tip carried over", async () => {
+  it("prices a swap route afresh after the direct route, with no fee carried over", async () => {
     const pending = deferred<SwapQuote>()
     const simulate = vi.fn(() => pending.promise)
     await render({ receiveAsset: "DAI", amountAtomic: parseUnits("5", 18), simulate })
@@ -354,7 +375,6 @@ describe("useSwapSimulation", () => {
     expect(seen.some((s) => s.fee !== undefined)).toBe(false)
 
     await tick(300)
-    expect(simulate).toHaveBeenLastCalledWith(expect.objectContaining({ previousTip: undefined }))
     await act(async () => pending.resolve(usdc(4_990_000n)))
     expect(state()).toBe("ready")
     expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT + TIP)
@@ -396,5 +416,31 @@ describe("swap fee helpers", () => {
     expect(swapTipIsHigh(priced, TIP * 5n - 1n)).toBe(true)
     expect(swapTipIsHigh(priced, undefined)).toBe(false)
     expect(swapTipIsHigh({ status: "loading" }, 1n)).toBe(false)
+  })
+})
+
+describe("settledFloor", () => {
+  const cent = 10n ** 16n
+
+  it("takes the first floor a route prices", () => {
+    expect(settledFloor(0n, 335n * cent)).toBe(335n * cent)
+  })
+
+  it("keeps the floor the burn carries while the quote stays within a cent of it", () => {
+    const floor = 335n * cent
+    expect(settledFloor(floor, floor + 1n)).toBe(floor)
+    expect(settledFloor(floor, floor - 1n)).toBe(floor)
+    expect(settledFloor(floor, floor + cent - 1n)).toBe(floor)
+  })
+
+  it("follows a fee that moved by a cent or more", () => {
+    const floor = 335n * cent
+    expect(settledFloor(floor, floor + cent)).toBe(floor + cent)
+    expect(settledFloor(floor, floor - cent)).toBe(floor - cent)
+  })
+
+  it("keeps the floor while the route is unpriced", () => {
+    expect(settledFloor(335n * cent, undefined)).toBe(335n * cent)
+    expect(settledFloor(0n, undefined)).toBe(0n)
   })
 })

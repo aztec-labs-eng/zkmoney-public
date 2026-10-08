@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import { zeroAddress, type Address, type Hex } from "viem"
 import {
   ESCALATION_MAX_AGE_MS,
@@ -42,12 +43,11 @@ import {
   registrationTermsAreInUse,
   runDetectionTick,
   startDetectionLoop,
-  syncPendingStoreAcrossTabs,
   type WebDetectionDeps,
 } from "../src/features/onboarding/webRegistration"
 import { saveRegistrationTerms } from "../src/features/onboarding/registrationTerms"
 import type { WebWalletConfig } from "../src/config/env"
-import { WEB_STORAGE_PREFIX, WebStorageAdapter } from "../src/platform/storage/WebStorageAdapter"
+import { WebStorageAdapter } from "../src/platform/storage/WebStorageAdapter"
 import {
   clearWalletIdentity,
   confirmWalletIdentity,
@@ -71,7 +71,7 @@ const LOG_ENTRY = {
 function resetStore(): PendingRegistrationStore {
   ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
   NameClaimStore.resetForTests()
-  localStorage.clear()
+  for (const key of walletStorage.keys()) walletStorage.removeItem(key)
   NameClaimStore.get(new WebStorageAdapter())
   return getPendingStore()
 }
@@ -159,12 +159,16 @@ function settleSpy() {
 
 describe("walletIdentity — phase helpers", () => {
   it("round-trips the pending marker and confirms it away", () => {
+    sessionStorage.setItem("obsidion.name-grant", "grant-token")
+    sessionStorage.setItem("obsidion.name-grant-handle", "alice")
     saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1, pending: true })
     expect(loadWalletIdentity()?.pending).toBe(true)
+    expect(sessionStorage.getItem("obsidion.name-grant")).toBe("grant-token")
     confirmWalletIdentity()
     const settled = loadWalletIdentity()
     expect(settled?.handle).toBe("alice")
     expect(settled?.pending).toBeUndefined()
+    expect(sessionStorage.getItem("obsidion.name-grant")).toBeNull()
   })
 
   it("retracts only a pending identity — a settled one is never cleared", () => {
@@ -290,30 +294,6 @@ describe("logout gate", () => {
     expect(isLogoutBlockedByRegistration()).toBe(true)
     await store.close(ACCOUNT, "confirmed")
     expect(isLogoutBlockedByRegistration()).toBe(false)
-  })
-
-  it("sees a claim another tab started once that tab's write lands", async () => {
-    const off = syncPendingStoreAcrossTabs()
-    try {
-      await getPendingStore().load()
-      saveWalletIdentity(identity)
-      expect(isLogoutBlockedByRegistration()).toBe(false)
-
-      // Another tab's write reaches localStorage without touching this store's memory; the
-      // browser then fires `storage` here.
-      const scopedKey = `${WEB_STORAGE_PREFIX}@obsidion/pending-registration/records`
-      const written = { ...record({ startTime: Date.now() }), account: ACCOUNT }
-      localStorage.setItem(scopedKey, JSON.stringify({ [ACCOUNT.toLowerCase()]: written }))
-      expect(isLogoutBlockedByRegistration()).toBe(false)
-      window.dispatchEvent(new StorageEvent("storage", { key: scopedKey }))
-      await vi.waitFor(() => expect(isLogoutBlockedByRegistration()).toBe(true))
-
-      localStorage.removeItem(scopedKey)
-      window.dispatchEvent(new StorageEvent("storage", { key: scopedKey }))
-      await vi.waitFor(() => expect(isLogoutBlockedByRegistration()).toBe(false))
-    } finally {
-      off()
-    }
   })
 })
 
@@ -596,8 +576,8 @@ describe("registrationScheduleForSipa", () => {
     expect(registrationScheduleForSipa(SIPA)).toBe("unsweepable")
   })
 
-  it("gives up on an archived registration the earned quote replaced", () => {
-    archiveReplacedRegistration({ account: ACCOUNT, ...record({ fee: "1" }) })
+  it("gives up on an archived registration the earned quote replaced", async () => {
+    await archiveReplacedRegistration({ account: ACCOUNT, ...record({ fee: "1" }) })
     // The replacement overwrote the terms for this account:tag, so they never price it again.
     priced("2", "5")
     expect(registrationScheduleForSipa(SIPA)).toBe("unsweepable")
@@ -1015,6 +995,7 @@ describe("the chooser exit and a pending registration", () => {
     const store = resetStore()
     setActiveStorageId("aaa")
     setActiveCredentialId("cred")
+    await walletStorage.flush()
     await store.upsert(ACCOUNT, {}, record())
 
     await signOut()
@@ -1026,24 +1007,23 @@ describe("the chooser exit and a pending registration", () => {
     // A recovery of the same account moves the pointer back; the record is still on disk under it.
     // The watcher's reattachment on that move is the reload after login, not this store's.
     setActiveStorageId("aaa")
+    await walletStorage.flush()
     expect((await reopen()).get(ACCOUNT)?.tag).toBe("alice")
   })
 })
 
-describe("forced resume tick — re-broadcast wiring (the pending step's retry path)", () => {
+describe("forced resume tick — the spent-rail renewal (the pending step's retry path)", () => {
   const MASTER_SECRET = `0x${"11".repeat(32)}`
   const PIN = { account: ACCOUNT, nameHash: NAME_HASH }
 
-  /** The new OxideSignDeps: re-request the claim, re-derive to the SAME SIPA, re-publish. */
+  /** The OxideSignDeps: re-request the claim, re-derive to the SAME SIPA. */
   function makeSignDeps() {
-    const broadcast = vi.fn(async () => {})
     const signDomain = vi.fn(async () => ({
       signature: `0x${"cd".repeat(65)}` as Hex,
       nonce: "1",
       deadline: "9999999999",
     }))
     return {
-      broadcast,
       signDomain,
       sign: {
         masterSecret: MASTER_SECRET,
@@ -1054,7 +1034,6 @@ describe("forced resume tick — re-broadcast wiring (the pending step's retry p
           getUserOpHash: vi.fn(async () => `0x${"77".repeat(32)}` as Hex),
           readAccountMetadataRegistry: vi.fn(async () => OTHER),
         },
-        broadcast,
         deriveRegistrationSipa: vi.fn(async () => ({
           sipaAddress: SIPA,
           sipaArgs: {},
@@ -1075,28 +1054,11 @@ describe("forced resume tick — re-broadcast wiring (the pending step's retry p
     return { deps: { ...detectionDeps(store), getSignDeps } as WebDetectionDeps, getSignDeps }
   }
 
-  it("re-broadcasts an un-broadcast record on a forced tick, arming the retry budget", async () => {
-    const store = resetStore()
-    await store.upsert(ACCOUNT, {}, record({ broadcast: false }))
-    const sign = makeSignDeps()
-    const { deps, getSignDeps } = signingDeps(store, sign.sign)
+  const SPENT = { sipaAddress: OTHER, refunded: true, broadcastSpent: true }
 
-    expect(await runDetectionTick(deps, { force: true, expectedRecord: PIN })).toBe("pending")
-    expect(getSignDeps).toHaveBeenCalledTimes(1)
-    expect(sign.signDomain).toHaveBeenCalledTimes(1)
-    expect(sign.broadcast).toHaveBeenCalledTimes(1)
-    const rec = store.get(ACCOUNT)!
-    expect(rec.broadcast).toBe(true)
-    expect(rec.retries).toBe(1)
-  })
-
-  it("an escalated record reaches the re-broadcast branch only on a forced tick", async () => {
+  it("renews a spent-rail record's claim only on a forced tick, publishing nothing", async () => {
     const store = resetStore()
-    await store.upsert(
-      ACCOUNT,
-      {},
-      record({ broadcast: false, retries: 3, startTime: Date.now() - 60_000 }),
-    )
+    await store.upsert(ACCOUNT, {}, record({ broadcast: false, replaced: SPENT }))
     const sign = makeSignDeps()
     const { deps } = signingDeps(store, sign.sign)
 
@@ -1105,14 +1067,14 @@ describe("forced resume tick — re-broadcast wiring (the pending step's retry p
 
     expect(await runDetectionTick(deps, { force: true, expectedRecord: PIN })).toBe("pending")
     expect(sign.signDomain).toHaveBeenCalledTimes(1)
-    expect(store.get(ACCOUNT)?.broadcast).toBe(true)
+    expect(store.get(ACCOUNT)).toMatchObject({ broadcast: false, retries: 1 })
   })
 
-  it("a credential that expires between deps build and the tick blocks the cycle — zero budget", async () => {
+  it("a credential that expires between deps build and the tick blocks the renewal — zero budget", async () => {
     const store = resetStore()
-    await store.upsert(ACCOUNT, {}, record({ broadcast: false }))
+    await store.upsert(ACCOUNT, {}, record({ broadcast: false, replaced: SPENT }))
     // getSignDeps gates on a credential checked AT INVOCATION, proving it is only invoked lazily
-    // once a tick reaches the re-broadcast branch.
+    // once a forced tick reaches the renewal.
     const credential = { valid: true }
     const sign = makeSignDeps()
     const deps: WebDetectionDeps = {

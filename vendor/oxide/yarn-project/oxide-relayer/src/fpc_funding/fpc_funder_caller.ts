@@ -3,19 +3,13 @@ import { type Logger, createLogger } from '@aztec/foundation/log';
 import { RunningPromise } from '@aztec/foundation/running-promise';
 
 import { ErrorsAbi, IFPCFunderAbi, OperationExecutorAbi } from '@oxide/l1-contracts';
+import { EXECUTOR_MIN_PAYOUT_CALLDATA_GAS } from '@oxide/oxide-client/l1_operation_quote.js';
 
-import { type Hex, encodeFunctionData } from 'viem';
+import { type Hex, type PublicClient, encodeFunctionData, maxUint256 } from 'viem';
 
 import { CauseTransitions } from '../cause_transitions.js';
-import {
-  type L1SubmissionBatchSender,
-  type L1SubmissionBatcher,
-  L1SubmissionType,
-  enqueueL1Submission,
-} from '../l1_submission_batcher.js';
-import { EXECUTOR_MIN_PAYOUT_CALLDATA_GAS } from '../l1_utils.js';
+import { type L1TxQueue, type SendL1Tx, type SentL1Tx, isAboveMaxFeePerGas } from '../l1/l1_tx_queue.js';
 import type { ChainlinkPriceOracle } from '../price_oracle/chainlink_price_oracle.js';
-import type { RelayerL1TxUtils, SentL1Tx } from '../relayer_l1_tx_utils.js';
 
 export const DEFAULT_FPC_FUNDING_POLL_INTERVAL_MS = 60_000;
 
@@ -23,8 +17,8 @@ export interface FpcFunderCallerConfig {
   fpcFunder: EthAddress;
   /** OperationExecutor the call is wrapped in, so a raced call reverts on its payout floor. */
   executor: EthAddress;
-  l1TxUtils: RelayerL1TxUtils;
-  l1SubmissionBatcher?: L1SubmissionBatcher;
+  client: PublicClient;
+  l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>;
   priceOracle: ChainlinkPriceOracle;
   /** Call whenever the quote is nonzero, skipping the break-even check. */
   allowUnprofitable: boolean;
@@ -71,11 +65,7 @@ export class FpcFunderCaller {
   public async runOnce(): Promise<void> {
     const retry = this.retryNextBatch;
     this.retryNextBatch = false;
-    const sent = await enqueueL1Submission(this.config.l1SubmissionBatcher, this.config.l1TxUtils, {
-      kind: L1SubmissionType.FpcFunding,
-      retry,
-      submit: sender => this.prepareAndSubmit(sender),
-    });
+    const sent = await this.config.l1TxQueue.enqueue(send => this.prepareAndSubmit(send), { retry });
     if (!sent) {
       return;
     }
@@ -87,8 +77,8 @@ export class FpcFunderCaller {
     }
   }
 
-  private async prepareAndSubmit(sender: L1SubmissionBatchSender): Promise<SentL1Tx | undefined> {
-    const l1TxUtils = this.config.l1TxUtils;
+  private async prepareAndSubmit(send: SendL1Tx): Promise<SentL1Tx | undefined> {
+    const { client, l1TxQueue } = this.config;
     const to = this.config.executor.toString();
     const inputToken = await this.getInputToken();
 
@@ -123,13 +113,29 @@ export class FpcFunderCaller {
 
     // Estimate against a zero floor: the execution path is identical, and estimation cannot be raced into
     // a revert by a bounty change between the quote and here.
-    const estimatedGas = await l1TxUtils.estimateGas(l1TxUtils.getSenderAddress().toString(), {
+    const account = l1TxQueue.address;
+    const estimatedGas = await client.estimateGas({
+      account,
       to,
       data: this.executeCalldata(inputToken, 0n),
+      blockTag: 'latest',
+      // A random key, used when submission is disabled, holds no ETH.
+      stateOverride: [{ address: account, balance: maxUint256 }],
     });
     // Non-zero `minPayout` costs extra calldata gas, so add it here.
     const gasLimit = estimatedGas + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS;
-    const price = await l1TxUtils.getGasPrice();
+    const price = await client.estimateFeesPerGas();
+    if (isAboveMaxFeePerGas(l1TxQueue, price.maxFeePerGas)) {
+      const changed = this.deferrals.changed(this.deferralKey(), 'gas_price_above_max');
+      const write = changed ? this.log.info : this.log.debug;
+      write.call(this.log, 'FPC funding deferred by the max fee per gas', {
+        event: 'fpc_funding_deferred',
+        cause: 'gas_price_above_max',
+        maxFeePerGas: price.maxFeePerGas.toString(),
+        maxFeePerGasCap: l1TxQueue.maxFeePerGasCap?.toString(),
+      });
+      return;
+    }
 
     let floor = 0n;
     if (!this.config.allowUnprofitable) {
@@ -150,17 +156,13 @@ export class FpcFunderCaller {
       return;
     }
 
-    const sent = await sender.sendTransactionWithGasPrice(
-      { to, data: this.executeCalldata(inputToken, floor) },
-      { gasLimit },
-      { maxFeePerGas: price.maxFeePerGas, maxPriorityFeePerGas: price.maxPriorityFeePerGas },
-    );
-    const { txHash, state } = sent;
+    const sent = await send({ to, data: this.executeCalldata(inputToken, floor), gas: gasLimit, ...price });
+    const { txHash, nonce } = sent;
     this.deferrals.forget(this.deferralKey());
     this.log.info('Submitted FPC funding call', {
       event: 'fpc_funding_submitted',
       txHash,
-      nonce: state.nonce,
+      nonce,
       bounty: bounty.toString(),
       minPayout: floor.toString(),
       gasLimit: gasLimit.toString(),
@@ -187,7 +189,8 @@ export class FpcFunderCaller {
   }
 
   private async quotePayout(inputToken: EthAddress): Promise<bigint> {
-    const { result } = await this.config.l1TxUtils.client.simulateContract({
+    const sender = this.config.l1TxQueue.address;
+    const { result } = await this.config.client.simulateContract({
       abi: [...OperationExecutorAbi, ...ErrorsAbi],
       address: this.config.executor.toString(),
       functionName: 'execute',
@@ -197,14 +200,16 @@ export class FpcFunderCaller {
         inputToken.toString(),
         0n,
       ],
-      account: this.config.l1TxUtils.getSenderAddress().toString(),
+      account: sender,
+      // A random key, used when submission is disabled, holds no ETH.
+      stateOverride: [{ address: sender, balance: maxUint256 }],
     });
     return result;
   }
 
   private async getInputToken(): Promise<EthAddress> {
     if (!this.inputToken) {
-      const raw = await this.config.l1TxUtils.client.readContract({
+      const raw = await this.config.client.readContract({
         address: this.config.fpcFunder.toString(),
         abi: IFPCFunderAbi,
         functionName: 'inputToken',

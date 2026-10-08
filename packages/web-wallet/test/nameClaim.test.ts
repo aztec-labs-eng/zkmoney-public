@@ -7,6 +7,7 @@ import {
   loadRegistrationTerms,
   saveRegistrationTerms,
 } from "../src/features/onboarding/registrationTerms"
+import { earnedTerms, nameClaim } from "./support/registrationFixtures"
 
 const mocks = vi.hoisted(() => ({ signDomain: vi.fn() }))
 
@@ -59,12 +60,9 @@ describe("requireNameClaim", () => {
       depositAmount: "5",
     })
     const deadline = String(Math.floor(Date.now() / 1000) + 3600)
-    mocks.signDomain.mockResolvedValue({
-      signature: "0xbeef",
-      nonce: "2",
-      deadline,
-      terms: { fee: "1", minDeposit: "4", nonce: "2", deadline, signature: "0xcd", reduced: true },
-    })
+    mocks.signDomain.mockResolvedValue(
+      nameClaim({ deadline, terms: earnedTerms({ fee: "1", minDeposit: "4" }) }),
+    )
     await requireNameClaim({ ...RECORD, fee: "1" }, KEYS)
     expect(loadRegistrationTerms(RECORD.account, "alice")).toMatchObject({
       deadline: Number(deadline),
@@ -76,37 +74,9 @@ describe("requireNameClaim", () => {
 
   it("leaves the stored terms alone when the re-issued quote prices another fee", async () => {
     saveRegistrationTerms({ account: RECORD.account, tag: "alice", deadline: 1, feeWaived: false })
-    mocks.signDomain.mockResolvedValue({
-      signature: "0xbeef",
-      nonce: "2",
-      deadline: "9999999999",
-      terms: { fee: "2", minDeposit: "4", nonce: "2", deadline: "9999999999", signature: "0xcd" },
-    })
+    mocks.signDomain.mockResolvedValue(nameClaim({ terms: earnedTerms({ fee: "2" }) }))
     await requireNameClaim({ ...RECORD, fee: "1" }, KEYS)
     expect(loadRegistrationTerms(RECORD.account, "alice")?.deadline).toBe(1)
-  })
-
-  it("keeps the signed schedule when the re-issued claim carries none", async () => {
-    saveRegistrationTerms({
-      account: RECORD.account,
-      tag: "alice",
-      deadline: 1,
-      fee: "1",
-      minDeposit: "4",
-      feeWaived: true,
-      depositAmount: "5",
-    })
-    const deadline = String(Math.floor(Date.now() / 1000) + 3600)
-    mocks.signDomain.mockResolvedValue({ signature: "0xbeef", nonce: "2", deadline })
-    await requireNameClaim({ ...RECORD, fee: "1" }, KEYS)
-    // A claim with no terms is not evidence the earlier ones were wrong; only the deadline moves.
-    expect(loadRegistrationTerms(RECORD.account, "alice")).toMatchObject({
-      deadline: Number(deadline),
-      fee: "1",
-      minDeposit: "4",
-      feeWaived: true,
-      depositAmount: "5",
-    })
   })
 
   it("returns a live matching cached claim without touching the server", async () => {
@@ -116,50 +86,10 @@ describe("requireNameClaim", () => {
     expect(mocks.signDomain).not.toHaveBeenCalled()
   })
 
-  it("treats a cached claim with no schedule as a miss for a record with a committed fee", async () => {
-    await NameClaimStore.get().put(cachedClaim())
-    mocks.signDomain.mockResolvedValue({
-      signature: "0xbeef",
-      nonce: "2",
-      deadline: "9999999999",
-      terms: { fee: "1", minDeposit: "4", nonce: "2", deadline: "9999999999", signature: "0xcd" },
-    })
-    // The cached claim prices nothing, and the controller prices another fee, so it cannot
-    // register an address committed to this one.
-    const claim = await requireNameClaim({ ...RECORD, fee: "1" }, KEYS, { controllerFee: 9n })
-    expect(claim.terms?.fee).toBe("1")
-    expect(mocks.signDomain).toHaveBeenCalledTimes(1)
-  })
-
-  it("does not reuse the old quote for a replacement address with a different committed fee", async () => {
-    await NameClaimStore.get().put(
-      cachedClaim({
-        terms: {
-          fee: "10",
-          minDeposit: "5",
-          nonce: "1",
-          deadline: "9999999999",
-          signature: "0xab",
-        },
-      }),
-    )
-    mocks.signDomain.mockResolvedValue({
-      signature: "0xbeef",
-      nonce: "2",
-      deadline: "9999999999",
-      terms: { fee: "1", minDeposit: "4", nonce: "2", deadline: "9999999999", signature: "0xcd" },
-    })
-    expect((await requireNameClaim({ ...RECORD, fee: "1" }, KEYS)).terms?.fee).toBe("1")
-    expect(mocks.signDomain).toHaveBeenCalledTimes(1)
-  })
-
   it("re-requests on a cache miss and re-caches the replayed claim", async () => {
-    mocks.signDomain.mockResolvedValue({
-      signature: "0xbeef",
-      nonce: "2",
-      deadline: String(Math.floor(Date.now() / 1000) + 3600),
-      terms: { fee: "5", minDeposit: "10", nonce: "3", deadline: "9", signature: "0xdd" },
-    })
+    mocks.signDomain.mockResolvedValue(
+      nameClaim({ signature: "0xbeef", terms: earnedTerms({ fee: "5" }) }),
+    )
     const claim = await requireNameClaim(RECORD, KEYS)
     expect(mocks.signDomain).toHaveBeenCalledWith({
       nameHash: RECORD.nameHash,
@@ -171,33 +101,19 @@ describe("requireNameClaim", () => {
   })
 
   it("re-requests past an expired or mismatched cached claim", async () => {
-    mocks.signDomain.mockResolvedValue({ signature: "0xbeef", nonce: "2", deadline: "9999999999" })
+    mocks.signDomain.mockResolvedValue(nameClaim({ signature: "0xbeef" }))
     await NameClaimStore.get().put(cachedClaim({ deadline: "1" }))
     expect((await requireNameClaim(RECORD, KEYS)).signature).toBe("0xbeef")
     await NameClaimStore.get().put(cachedClaim({ nameHash: `0x${"88".repeat(32)}` }))
     expect((await requireNameClaim(RECORD, KEYS)).signature).toBe("0xbeef")
-  })
-
-  it("surfaces the server's refusal behind a stable message", async () => {
-    mocks.signDomain.mockRejectedValue(new Error("a still-live NameClaim binds this device/name"))
-    await expect(requireNameClaim(RECORD, KEYS)).rejects.toThrow(
-      "Couldn't refresh the reservation for this name: a still-live NameClaim binds this device/name",
-    )
   })
 })
 
 /** A terms-less claim: the controller's own fee is the only thing that can price one. */
 describe("requireNameClaim against a terms-less cache", () => {
   const OFFLINE = new Error("connection refused")
-  const withTerms = (fee: string) => ({
-    terms: { fee, minDeposit: "4", nonce: "1", deadline: "9999999999", signature: "0xab" },
-  })
-  const priced = (fee: string) => ({
-    signature: "0xbeef",
-    nonce: "2",
-    deadline: "9999999999",
-    ...withTerms(fee),
-  })
+  const withTerms = (fee: string) => ({ terms: earnedTerms({ fee }) })
+  const priced = (fee: string) => nameClaim({ signature: "0xbeef", ...withTerms(fee) })
 
   it("sweeps the committed fee off the controller's own fee, with no request", async () => {
     await NameClaimStore.get().put(cachedClaim())
@@ -219,15 +135,6 @@ describe("requireNameClaim against a terms-less cache", () => {
     expect((await NameClaimStore.get().get(RECORD.l2Address))?.signature).toBe("0xbeef")
   })
 
-  it("throws when that re-sign fails: the cache prices nothing either", async () => {
-    await NameClaimStore.get().put(cachedClaim())
-    mocks.signDomain.mockRejectedValue(OFFLINE)
-
-    await expect(
-      requireNameClaim({ ...RECORD, fee: "1" }, KEYS, { controllerFee: 9n }),
-    ).rejects.toMatchObject({ cause: OFFLINE })
-  })
-
   it("re-signs while the controller's fee is unread", async () => {
     await NameClaimStore.get().put(cachedClaim())
     mocks.signDomain.mockResolvedValue(priced("1"))
@@ -242,21 +149,16 @@ describe("requireNameClaim against a terms-less cache", () => {
     expect(mocks.signDomain).not.toHaveBeenCalled()
   })
 
-  it("does not fall back to a cache priced at another fee", async () => {
-    await NameClaimStore.get().put(cachedClaim(withTerms("10")))
-    mocks.signDomain.mockRejectedValue(OFFLINE)
-
-    await expect(requireNameClaim({ ...RECORD, fee: "1" }, KEYS)).rejects.toMatchObject({
-      cause: OFFLINE,
-    })
-  })
-
-  it("does not serve an expired cache the controller's fee would price", async () => {
-    await NameClaimStore.get().put(cachedClaim({ deadline: "1" }))
+  it.each([
+    ["a terms-less cache the controller prices otherwise", {}, 9n],
+    ["a cache priced at another fee", withTerms("10"), undefined],
+    ["an expired cache the controller's fee would price", { deadline: "1" }, 1n],
+  ])("throws when the re-sign fails rather than serve %s", async (_, cached, controllerFee) => {
+    await NameClaimStore.get().put(cachedClaim(cached))
     mocks.signDomain.mockRejectedValue(OFFLINE)
 
     await expect(
-      requireNameClaim({ ...RECORD, fee: "1" }, KEYS, { controllerFee: 1n }),
+      requireNameClaim({ ...RECORD, fee: "1" }, KEYS, { controllerFee }),
     ).rejects.toMatchObject({ cause: OFFLINE })
   })
 })
@@ -266,11 +168,7 @@ describe("requireNameClaim refusal handling", () => {
   const refusal = (status: number, reason: string) =>
     new AccountServiceError(status, "refused", { error: "refused", reason })
 
-  const CLAIM = {
-    signature: "0xbeef",
-    nonce: "2",
-    deadline: String(Math.floor(Date.now() / 1000) + 3600),
-  }
+  const CLAIM = nameClaim({ signature: "0xbeef" })
 
   beforeEach(() => vi.useFakeTimers())
   afterEach(() => vi.useRealTimers())

@@ -8,10 +8,20 @@ export {
 export type { PaylinkRefundEligibility, PaylinkRefundIneligibleReason } from "./refundParamsFromRow"
 export { paylinkStatusFor, PAYLINK_STATUS_LABEL } from "./paylinkStatus"
 export type { PaylinkStatusKind } from "./paylinkStatus"
-export { isRefundInFlight, markRefundInFlight, clearRefundInFlight } from "./refundInFlight"
+export { paylinkRowView } from "./paylinkRowView"
+export type { PaylinkRecovery, PaylinkRowStatusLabel, PaylinkRowView } from "./paylinkRowView"
+export {
+  isRefundInFlight,
+  markRefundInFlight,
+  clearRefundInFlight,
+  onRefundInFlightChanged,
+  refundInFlightVersion,
+  withRefundInFlight,
+} from "./refundInFlight"
 export {
   isPaylinkAlreadySpentRevert,
   isPaylinkWindowRevert,
+  isPaylinkWindowNotOpenRevert,
   PAYLINK_ALREADY_SPENT_MESSAGE,
   PaylinkWindowClosedError,
 } from "./refundRevert"

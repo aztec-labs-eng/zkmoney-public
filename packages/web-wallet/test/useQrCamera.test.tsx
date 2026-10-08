@@ -17,7 +17,9 @@ vi.mock("../src/features/scan/cameraSession", () => ({
     start = vi.fn(async () => {})
     stop = vi.fn()
     setTorch = vi.fn()
-    constructor(public options: { onPayload: (text: string) => void; onState: (state: CameraState) => void }) {
+    constructor(
+      public options: { onPayload: (text: string) => void; onState: (state: CameraState) => void },
+    ) {
       instances.push(this)
     }
   },
@@ -27,7 +29,13 @@ let root: Root
 let host: HTMLDivElement
 let camera: ReturnType<typeof useQrCamera>
 const onPayload = vi.fn()
-function Harness({ enabled = true, attachVideo = true }: { enabled?: boolean; attachVideo?: boolean }) {
+function Harness({
+  enabled = true,
+  attachVideo = true,
+}: {
+  enabled?: boolean
+  attachVideo?: boolean
+}) {
   camera = useQrCamera(enabled, onPayload)
   return attachVideo ? <video ref={camera.videoRef} muted playsInline /> : null
 }
@@ -103,14 +111,17 @@ describe("useQrCamera lifecycle", () => {
     expect(instances).toHaveLength(2)
     expect(instances[1].start).toHaveBeenCalledOnce()
   })
-  it.each(["denied", "unavailable", "decode-error"] as const)("preserves %s recovery copy when its panel detaches the video", (kind) => {
-    act(() => root.render(<Harness />))
-    const failure = { kind, message: `Specific ${kind} recovery instructions` }
-    act(() => instances[0].options.onState(failure))
-    act(() => root.render(<Harness attachVideo={false} />))
-    expect(camera.state).toEqual(failure)
-    expect(instances[0].stop).toHaveBeenCalledOnce()
-  })
+  it.each(["denied", "unavailable", "decode-error"] as const)(
+    "preserves %s recovery copy when its panel detaches the video",
+    (kind) => {
+      act(() => root.render(<Harness />))
+      const failure = { kind, message: `Specific ${kind} recovery instructions` }
+      act(() => instances[0].options.onState(failure))
+      act(() => root.render(<Harness attachVideo={false} />))
+      expect(camera.state).toEqual(failure)
+      expect(instances[0].stop).toHaveBeenCalledOnce()
+    },
+  )
   it("retains an unavailable state when the browser has no media API", () => {
     Object.defineProperty(navigator, "mediaDevices", { configurable: true, value: undefined })
     act(() => root.render(<Harness />))

@@ -10,6 +10,7 @@ vi.mock("src/contexts", () => ({
 
 const { useBalance } = await import("../../src/hooks/useBalance")
 const { globalEventEmitter } = await import("../../src/core/services/GlobalEventEmitter")
+const { bootPriority } = await import("../../src/core/services/transactions/bootPriority")
 
 const asset = (over: Partial<Asset>): Asset => ({
   name: "DAI",
@@ -33,13 +34,23 @@ function render(ctx: Record<string, unknown>) {
 }
 
 describe("useBalance", () => {
-  it("holds the placeholder while a fresh device's first sync pass runs", () => {
+  // Settles the process-wide gate, so it runs first and leaves it closed for the rest.
+  it("shows a boot balance as syncing until it settles, then never again", async () => {
     const live = asset({ address: "0xlive", balance: 12 })
     const ctx = { assets: [live], liveAssetsLoaded: true, activeTokenAddress: "0xlive" }
     const end = globalEventEmitter.beginSyncCatchUp()
-    expect(render(ctx).balanceKnown).toBe(false)
+    expect(render(ctx)).toMatchObject({ balanceKnown: true, balanceSyncing: true })
+    // A cached figure can be high, so while syncing only a live read counts.
+    expect(render({ ...ctx, liveAssetsLoaded: false }).balanceKnown).toBe(false)
     end()
-    expect(render(ctx).balanceKnown).toBe(true)
+    expect(render(ctx).balanceSyncing).toBe(true) // outlives the catch-up that opened it
+    bootPriority.notesSynced()
+    bootPriority.depositsReplayed()
+    await bootPriority.whenBalanceSettled()
+    expect(render(ctx).balanceSyncing).toBe(false)
+    const again = globalEventEmitter.beginSyncCatchUp()
+    expect(render(ctx).balanceSyncing).toBe(false)
+    again()
   })
 
   it("reports the balance at the active token address", () => {

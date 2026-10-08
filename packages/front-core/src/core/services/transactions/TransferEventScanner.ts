@@ -3,7 +3,8 @@
  *
  * Polls the wallet's own private `Transfer` events from a persisted block cursor and writes a
  * verified row per event: a `receive` when the account is `to`, a `send` when it is `from` (the
- * token delivers every transfer to both parties, so a fresh client rebuilds what it sent too).
+ * token delivers every transfer to both parties, so a fresh client rebuilds what it sent too), and
+ * a paylink claim row when the source verified the event's payout lane.
  * Nothing arrives off-chain: the sender's tag (and memo / request id) ride the event's `meta`, and
  * the tag is display attribution only — it is kept when the name registry resolves it to the
  * on-chain `from`, else the row shows the raw address and no contact is auto-added. Sends keep the
@@ -13,26 +14,29 @@
  * (`incomingTransfer` → notifications, balance refresh, request reconciler, reorg anchoring via
  * `blockNumber`) hangs off the receive insert; sends only land in the store.
  *
- * Scans run in chunks of at most `MAX_BLOCKS_PER_TICK`; the cursor advances per completed chunk,
- * so a failure retries only its own chunk, never the whole history. The cursor never persists past
- * the source's `anchorBlock` (PXE's synced block): head is the node tip, but `listIncoming` only
- * sees what PXE has decrypted, and PXE lags whenever a send pins the sync — advancing to head would
- * skip every block in the gap. The anchor is sampled BEFORE each list: it is monotone, so a
- * pre-read never exceeds the list's true coverage, while a post-read could claim blocks a mid-tick
- * sync added that the list never saw. While the anchor trails head the tick keeps rescanning
- * instead of idling, which re-triggers the very sync that advances the anchor. An anchor below the
- * cursor means PXE was rebuilt (store wipe, generation change) — the cursor rewinds to it so the
- * re-decrypted blocks are rescanned, just like a head that regressed below the cursor. A registry
- * outage holds the chunk's cursor so the range is retried; after `MAX_INGEST_ATTEMPTS` failures
- * the registry lookup — the only shed-able dependency — is dropped and the row is written with the
- * raw sender address, because PXE already validated the event itself: it must be recorded, never
- * skipped. Each tick rescans `REORG_MARGIN` blocks behind the cursor (the store's txHash dedup
- * makes that free).
+ * Scans run in chunks of at most `MAX_BLOCKS_PER_TICK`; the cursor advances per completed chunk, so
+ * a failure retries only its own chunk, never the whole history. Only a pass's first chunk syncs
+ * PXE; the rest read at its anchor, since each new anchor wipes the token's note discovery. The
+ * cursor never persists past the source's `anchorBlock` (PXE's synced block): head is the node tip,
+ * but `listIncoming` only sees what PXE has decrypted, and PXE lags whenever a send pins the sync —
+ * advancing to head would skip every block in the gap. The anchor is sampled BEFORE each list: it
+ * is monotone, so a pre-read never exceeds the list's true coverage, while a post-read could claim
+ * blocks a mid-tick sync added that the list never saw. While the anchor trails head the tick keeps
+ * rescanning instead of idling, which re-triggers the very sync that advances the anchor. An anchor
+ * below the cursor means PXE was rebuilt (store wipe, generation change) — the cursor rewinds to it
+ * so the re-decrypted blocks are rescanned, just like a head that regressed below the cursor. A
+ * registry outage holds the chunk's cursor so the range is retried; after `MAX_INGEST_ATTEMPTS`
+ * failures the registry lookup — the only shed-able dependency — is dropped and the row is written
+ * with the raw sender address, because PXE already validated the event itself: it must be recorded,
+ * never skipped. Each tick rescans `REORG_MARGIN` blocks behind the cursor (the store's txHash
+ * dedup makes that free).
  *
  * Every await that leaves the device is bounded by a timeout, so no hung RPC or registry fetch can
- * wedge the tick latch; consecutive failed ticks back off exponentially. While head is static the
- * tick skips the scan entirely — `headBlock` is a plain node read but `listIncoming` drags a full
- * PXE sync behind it — with a periodic full pass so a static-head rebuild is still caught.
+ * wedge the tick latch. A catch-up read gets a longer bound: a fresh device's first note discovery
+ * can outlast the normal one, and a timed-out read keeps running in PXE's queue ahead of its retry.
+ * Consecutive failed ticks back off exponentially. While head is static the tick skips the scan
+ * entirely — `headBlock` is a plain node read but `listIncoming` drags a full PXE sync behind it —
+ * with a periodic full pass so a static-head rebuild is still caught.
  *
  * Snapshot sources return events and balance from one validated PXE anchor. `onSynced` publishes
  * the snapshot before event attribution/persistence, so their failures cannot withhold a balance.
@@ -49,6 +53,7 @@ import type {
 } from "../../../xmtp/receiverTypes"
 import { globalEventEmitter } from "../GlobalEventEmitter"
 import { logger } from "src/utils/logger"
+import { PaylinkActionEnum } from "@obsidion/core/constants"
 
 export type { ScannedTransferEvent, TransferEventSource }
 
@@ -59,15 +64,55 @@ export const TRANSFER_SCAN_MAX_BLOCKS_PER_TICK = 10_000
 /** Cursor lag that hides a pass behind the activity skeleton: a rebuild or a gap of many hours, not a reopen. */
 export const TRANSFER_SCAN_CATCH_UP_BLOCKS = 1_000
 export const TRANSFER_SCAN_SOURCE_TIMEOUT_MS = 30_000
+export const TRANSFER_SCAN_CATCH_UP_TIMEOUT_MS = 300_000
 const MAX_BACKOFF_MS = 60_000
 const CURSOR_STORAGE_KEY = "@obsidion/transfer-scan/cursor/v1"
+const JOINED_STORAGE_KEY = "@obsidion/transfer-scan/joined/v1"
 /** Failed ingests for one txHash before attribution degrades to the raw sender address. */
 const MAX_INGEST_ATTEMPTS = 3
 /** Full rescan cadence while head is static, so a reorg that rebuilt without advancing head lands. */
 const IDLE_TICKS_PER_FULL_PASS = 12
 
-function cursorKey(ctx: Pick<TransferScanContext, "accountAddress" | "networkId">): string {
-  return `${CURSOR_STORAGE_KEY}/${ctx.networkId}/${ctx.accountAddress.toLowerCase()}`
+type ScanScope = Pick<TransferScanContext, "accountAddress" | "networkId">
+
+function cursorKey(ctx: ScanScope & Pick<TransferScanContext, "endpointScope">): string {
+  const scope = ctx.endpointScope ? `/${ctx.endpointScope}` : ""
+  return `${CURSOR_STORAGE_KEY}/${ctx.networkId}${scope}/${ctx.accountAddress.toLowerCase()}`
+}
+
+function joinedKey(ctx: ScanScope): string {
+  return `${JOINED_STORAGE_KEY}/${ctx.networkId}/${ctx.accountAddress.toLowerCase()}`
+}
+
+async function loadBlock(storage: IStorageAdapter, key: string): Promise<number | undefined> {
+  const raw = await storage.getItem(key)
+  const n = raw === null ? NaN : Number(raw)
+  return Number.isFinite(n) && n > 0 ? n : undefined
+}
+
+/**
+ * Where this device first scanned the account: head, and the wall clock then. A transfer at or
+ * below that block AND stamped before that time is history the device replayed; a block a later
+ * reorg replaced at that height is stamped after it, so it still reads as news. Absent on a device
+ * that scanned before the record was kept, which hides nothing.
+ */
+export interface TransferScanJoined {
+  block: number
+  ms: number
+}
+
+export async function loadTransferScanJoined(
+  storage: IStorageAdapter,
+  ctx: ScanScope,
+): Promise<TransferScanJoined | undefined> {
+  const raw = await storage.getItem(joinedKey(ctx))
+  if (raw === null) return undefined
+  try {
+    const { block, ms } = JSON.parse(raw) as Partial<TransferScanJoined>
+    return typeof block === "number" && typeof ms === "number" ? { block, ms } : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export interface TransferScanContext {
@@ -75,6 +120,11 @@ export interface TransferScanContext {
   /** Display identity written to the row's `to`. */
   accountTag: string
   networkId: string
+  /**
+   * Keys the cursor to a non-default node endpoint, so its scans never move the cursor the
+   * default endpoint resumes from. Absent on the default endpoint.
+   */
+  endpointScope?: string
 }
 
 export interface TransferEventScannerOptions {
@@ -88,6 +138,7 @@ export interface TransferEventScannerOptions {
   onSynced?: (anchorBlock: number, balance?: bigint) => Promise<void>
   pollIntervalMs?: number
   sourceTimeoutMs?: number
+  catchUpTimeoutMs?: number
   scheduler?: {
     setTimeout: (cb: () => void, ms: number) => unknown
     clearTimeout: (handle: unknown) => void
@@ -99,6 +150,7 @@ export class TransferEventScanner {
   private readonly opts: TransferEventScannerOptions
   private readonly pollIntervalMs: number
   private readonly sourceTimeoutMs: number
+  private readonly catchUpTimeoutMs: number
   private readonly scheduler: NonNullable<TransferEventScannerOptions["scheduler"]>
   private readonly now: () => number
   private context: TransferScanContext | undefined
@@ -119,6 +171,7 @@ export class TransferEventScanner {
     this.opts = options
     this.pollIntervalMs = options.pollIntervalMs ?? TRANSFER_SCAN_POLL_INTERVAL_MS
     this.sourceTimeoutMs = options.sourceTimeoutMs ?? TRANSFER_SCAN_SOURCE_TIMEOUT_MS
+    this.catchUpTimeoutMs = options.catchUpTimeoutMs ?? TRANSFER_SCAN_CATCH_UP_TIMEOUT_MS
     this.scheduler = options.scheduler ?? {
       setTimeout: (cb, ms) => setTimeout(cb, ms),
       clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
@@ -196,6 +249,13 @@ export class TransferEventScanner {
   private async scan(ctx: TransferScanContext): Promise<boolean> {
     const head = await this.bounded(this.opts.source.headBlock(), "headBlock")
     let cursor = await this.loadCursor(ctx)
+    if (
+      cursor === undefined &&
+      (await loadTransferScanJoined(this.opts.storage, ctx)) === undefined
+    ) {
+      const joined: TransferScanJoined = { block: head, ms: this.now() }
+      await this.opts.storage.setItem(joinedKey(ctx), JSON.stringify(joined))
+    }
 
     // A head behind the cursor means the chain was rebuilt shorter than the margin reaches. Pull
     // the cursor back to the surviving head, else the blocks between them are never rescanned and
@@ -230,20 +290,32 @@ export class TransferEventScanner {
       this.endCatchUp ??= globalEventEmitter.beginSyncCatchUp()
     }
 
+    const readTimeoutMs = this.endCatchUp ? this.catchUpTimeoutMs : this.sourceTimeoutMs
+    let synced = false
     while (from <= head) {
       // A stale ctx (stop/restart mid-tick) aborts without counting as a failure.
       if (!this.running || this.context !== ctx) return true
       const chunkEnd = Math.min(from + TRANSFER_SCAN_MAX_BLOCKS_PER_TICK - 1, head)
       const snapshot = this.opts.source.readSnapshot
-        ? await this.bounded(this.opts.source.readSnapshot(from, chunkEnd + 1), "readSnapshot")
+        ? await this.bounded(
+            this.opts.source.readSnapshot(
+              from,
+              chunkEnd + 1,
+              synced ? { assumeSynced: true } : undefined,
+            ),
+            "readSnapshot",
+            readTimeoutMs,
+          )
         : {
             events: await this.bounded(
               this.opts.source.listIncoming(from, chunkEnd + 1),
               "listIncoming",
+              readTimeoutMs,
             ),
             anchorBlock: await this.readAnchor(head),
             balance: undefined,
           }
+      synced = true
       if (!this.running || this.context !== ctx) return true
       anchor = snapshot.anchorBlock
       // Publish the balance before attribution or persistence can defer an event. The bounded
@@ -309,11 +381,15 @@ export class TransferEventScanner {
     return complete
   }
 
-  private bounded<T>(promise: Promise<T>, label: string): Promise<T> {
+  private bounded<T>(
+    promise: Promise<T>,
+    label: string,
+    timeoutMs: number = this.sourceTimeoutMs,
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const timer = setTimeout(
-        () => reject(new Error(`${label} timed out after ${this.sourceTimeoutMs}ms`)),
-        this.sourceTimeoutMs,
+        () => reject(new Error(`${label} timed out after ${timeoutMs}ms`)),
+        timeoutMs,
       )
       promise.then(
         (v) => {
@@ -348,11 +424,39 @@ export class TransferEventScanner {
     action: "send" | "receive",
     degraded: boolean,
   ): Promise<void> {
+    // A verified payout lane: the escrow paid this account's claim. No sender to attribute, and no
+    // hash check: the write upgrades a plain receive filed before the lane was read and is a no-op
+    // on any other row, so a claim row is never duplicated.
+    if (
+      action === "receive" &&
+      event.paylinkPayout &&
+      this.opts.transactionStore.addRecoveredPaylinkPayout
+    ) {
+      const timestamp = await this.timestampOf(event)
+      if (!this.running || this.context !== ctx) return
+      const written = await this.opts.transactionStore.addRecoveredPaylinkPayout({
+        action: PaylinkActionEnum.CLAIM,
+        txHash: event.txHash,
+        flavor: event.paylinkPayout.flavor,
+        token: buildTokenInTxService({ ...this.opts.token, rawAmount: event.amount }),
+        timestamp,
+        blockNumber: event.blockNumber,
+        memo: event.memo,
+        networkId: ctx.networkId,
+      })
+      if (written) logger.log(`${LOG_PREFIX} paylink claim ${event.txHash}`)
+      return
+    }
+
     // Any row already carrying this hash, not just a send/receive: the paylink escrow pays the
     // claimant with the same token `transfer`, so a claim or refund arrives here as a `Transfer`
     // to us. Matching only send/receive would file it a second time as a stranger receive. It is
-    // also what keeps a send this client made itself from being filed twice.
-    if (await this.opts.transactionStore.hasTxHash(event.txHash)) return
+    // also what keeps a send this client made itself from being filed twice. The payout carries the
+    // creator's memo, which a claim or refund row written before the tx mined does not have yet.
+    if (await this.opts.transactionStore.hasTxHash(event.txHash)) {
+      if (event.memo) await this.opts.transactionStore.backfillMemo?.(event.txHash, event.memo)
+      return
+    }
 
     const counterparty =
       action === "receive"
@@ -361,11 +465,7 @@ export class TransferEventScanner {
     if (action === "send") {
       await this.bounded(this.adoptRecipient(event, ctx, degraded), "adoptRecipient")
     }
-    const timestamp =
-      (await this.bounded(
-        Promise.resolve(this.opts.source.blockTimestampMs?.(event.blockNumber)),
-        "blockTimestampMs",
-      )) ?? this.now()
+    const timestamp = await this.timestampOf(event)
     // The awaits above can outlive a stop/restart or network switch; never write under a stale ctx.
     if (!this.running || this.context !== ctx) return
     const { inserted } = await this.opts.transactionStore.addIncomingTokenTransaction({
@@ -383,6 +483,19 @@ export class TransferEventScanner {
       networkId: ctx.networkId,
     })
     if (inserted) logger.log(`${LOG_PREFIX} ${action} ${event.txHash} ${counterparty}`)
+  }
+
+  /**
+   * PXE decrypted this block, so the node has it; a missing header is transient. The row's date is
+   * permanent (the store dedups by hash), so defer and retry rather than stamp the clock.
+   */
+  private async timestampOf(event: ScannedTransferEvent): Promise<number> {
+    const timestamp = await this.bounded(
+      this.opts.source.blockTimestampMs(event.blockNumber),
+      "blockTimestampMs",
+    )
+    if (timestamp === undefined) throw new Error(`block ${event.blockNumber} time unavailable`)
+    return timestamp
   }
 
   /**
@@ -436,10 +549,8 @@ export class TransferEventScanner {
     return true
   }
 
-  private async loadCursor(ctx: TransferScanContext): Promise<number | undefined> {
-    const raw = await this.opts.storage.getItem(cursorKey(ctx))
-    const n = raw === null ? NaN : Number(raw)
-    return Number.isFinite(n) && n > 0 ? n : undefined
+  private loadCursor(ctx: TransferScanContext): Promise<number | undefined> {
+    return loadBlock(this.opts.storage, cursorKey(ctx))
   }
 
   private async saveCursor(ctx: TransferScanContext, head: number): Promise<void> {

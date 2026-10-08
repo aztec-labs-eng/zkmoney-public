@@ -3,8 +3,9 @@ import { getWebBroadcasterArtifact, getWebOxideToken } from "../../config/classA
  * The SIPA deposit rail for the browser — the realistic L1→L2 funding path
  * (oxide's Segregated Incoming Payment Addresses), composing the front-core
  * wiring (`setupSipaDiscovery` / `syncSipaDeposits`) over a browser PXE.
- * Discovery and sync ride front-core, while this file owns the address-derivation cache, publish
- * deduplication, the sponsored broadcast batch, and the L1 transfer. The
+ * Discovery and sync ride front-core, while this file owns the address-derivation cache, the
+ * sponsored broadcast batch, and the L1 transfer. Every address it derives is owed to the broadcast
+ * ledger, which proves its broadcast until it lands. The
  * wallet, the `ContractService` and the `TokenService` are INJECTED per call
  * from the shared front-core contexts — the gateway never builds its own.
  *
@@ -24,8 +25,8 @@ import { getWebBroadcasterArtifact, getWebOxideToken } from "../../config/classA
 import { NO_FROM } from "@aztec/aztec.js/account"
 import type { Fr } from "@aztec/aztec.js/fields"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { TxHash } from "@aztec/stdlib/tx"
 import {
+  getAddress,
   encodeFunctionData,
   erc20Abi,
   formatUnits,
@@ -38,9 +39,11 @@ import {
 import { DEFAULT_DECIMALS, quotedDepositFee } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
+  assertSubsidySweepsSipa,
   buildClaimSponsorPayload,
   buildClaimSubscribePayload,
   buildSipaSweepBroadcasts,
+  OxideSipaIntent,
   predictAccountAddress,
   deriveSharedSecret,
   chainEpochDay,
@@ -49,6 +52,7 @@ import {
   type ClaimSponsorContext,
   ContractService,
   fetchSipaEvents,
+  readSipaBroadcastTxHashes,
   fetchSipaResolverOperators,
   type ObsidionAccount,
   type ObsidionWallet,
@@ -68,21 +72,26 @@ import {
   depositSipaImplementation,
   deriveStealthKey,
   deriveBootstrapKey,
-  isFailedSubmission,
+  BroadcastAbandoned,
+  BroadcastDeferred,
   setupSipaDiscovery,
   syncSipaDeposits,
   SIPADepositStore,
-  trackSubmission,
   upsertDepositL1WalletContact,
   WalletSyncCoordinator,
+  bootPriority,
+  type BroadcastExecutor,
+  type BroadcastKind,
   type SIPADepositRecord,
   type SipaDepositSyncResult,
+  isUnfundedSipaDeposit,
 } from "@obsidion/front-core"
 import { getConfig, l1ChainFor } from "../../config/env"
 import { isDesktopL1SubmitActive, submitViaDesktopBridge } from "../../platform/desktopBridge"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { walletStorage } from "../../platform/storage/walletStorage"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { fpcFundingCut } from "../fees/fpcFundingCut"
 import { maybeRefuelFpc } from "../fees/fpcRefuel"
@@ -90,10 +99,18 @@ import { claimSponsorContext, noteSubscribed } from "../onboarding/claimSponsors
 import { RegistrationPendingError } from "../onboarding/registrationRail"
 import { registrationScheduleForSipa } from "../onboarding/webRegistration"
 import { RAIL_REGISTERED } from "../onboarding/rails"
-import { trackBackgroundProve, userFlowActive } from "../provingGate"
+import {
+  WAITING_FOR_REGISTRATION,
+  WAITING_FOR_UNLOCK,
+  WAIT_MS,
+  getBroadcastLedger,
+} from "../broadcasts/broadcasts"
+import { getActiveStorageId } from "../../platform/storage/activeStorage"
+import { AddressesPublishingError, addressesPublishing } from "./addressesPublishing"
 import { getL1Clients } from "./l1Wallet"
 import { InsufficientL1BalanceError, readL1DepositTokenBalance } from "./l1DepositTokenBalance"
-import { depositTokensFor } from "./loadDepositFacts"
+import { sipaFundingTokens } from "./loadDepositFacts"
+import { readSipaDeployed } from "./sipaSweep"
 
 /** TestERC20 mint is minter-gated (sandbox faucet convenience; a real sender already holds funds). */
 const TEST_ERC20_MINT_ABI = parseAbi(["function mint(address to, uint256 amount)"])
@@ -117,7 +134,7 @@ export const DEPOSIT_STAGE_LABEL: Record<DepositStage, string> = {
   "minting": "Minting test tokens",
   "sending": "Sending from your wallet",
   "awaiting-browser": "Approve the transfer in your browser",
-  "confirming": "Waiting for L1 confirmation",
+  "confirming": "Waiting for Ethereum confirmation",
   "done": "Done",
 }
 
@@ -127,28 +144,15 @@ export interface DepositAddress {
   /** The wallet's name, e.g. "alice.sandbox.oxide" — display only; nothing derives from it. */
   name: string
   /**
-   * Proves and sends the L2 broadcast that makes this address sweepable; settles once it landed.
-   * Absent when the address is known published. Runs once: later calls share the first run. Funds
-   * sent before it settles are not lost — they sit at the counterfactual address until the relayer
-   * is told about it — but they are not swept either.
+   * Owes this address's broadcast to the ledger and settles once it landed. Absent when the address
+   * is known published. Funds sent before it settles are not lost — they sit at the counterfactual
+   * address until the relayer is told about it — but they are not swept either. Throws
+   * `RegistrationPendingError` while no rail can pay for the broadcast, and the attempt's error once
+   * one fails; the ledger keeps the broadcast owed either way.
    */
-  publish?: (opts?: SipaPublishOptions) => Promise<void>
-}
-
-interface PublishRun extends SipaPublishOptions {
-  onStage?: (stage: DepositStage) => void
-  /** A sponsor context the refill already built. */
-  sponsor?: ClaimSponsorContext
-}
-
-export interface SipaPublishOptions {
-  /** The user operation the caller runs this proof as. */
-  operationId?: string
-  /**
-   * Stamp the broadcast's hash on the cached address at submit, so a reload skips a second
-   * broadcast and the operation counts as sent. Leave unset while the caller has more to write.
-   */
-  saveHash?: boolean
+  publish?: () => Promise<void>
+  /** Owes the broadcast to the ledger, durably, without waiting for it: what funding needs first. */
+  owe?: () => Promise<void>
 }
 
 /**
@@ -183,7 +187,7 @@ function isCachedSipa(v: unknown): v is CachedSipa {
  */
 export function readCachedSipa(key: string): CachedSipa | null {
   try {
-    const raw = localStorage.getItem(key)
+    const raw = walletStorage.getItem(key)
     if (!raw) return null
     const parsed = JSON.parse(raw)
     return isCachedSipa(parsed) ? parsed : null
@@ -200,82 +204,23 @@ function isPublished(cacheKey: string, entry: CachedSipa): boolean {
 /**
  * Only stamp the entry this publish actually broadcast. A slower publish finishing after a newer
  * derivation replaced it would otherwise mark the NEW address published without ever having told
- * the relayer about it.
+ * the relayer about it. Resolves once the stamp is saved: an address whose stamp is lost would be
+ * handed out again as unpublished, and two senders would share it.
  */
-function markPublished(cacheKey: string, entry: CachedSipa): void {
+async function markPublished(cacheKey: string, entry: CachedSipa): Promise<void> {
   const current = readCachedSipa(cacheKey)
   if (current?.day === entry.day && current?.nonce === entry.nonce) {
-    writeCachedSipa(cacheKey, { ...entry, published: true, broadcastTxHash: undefined })
+    await saveCachedSipa(cacheKey, { ...entry, published: true, broadcastTxHash: undefined })
   }
-}
-
-/** Where a broadcast already sent stands. Only `dropped` calls for a second one. */
-export type BroadcastState = "included" | "pending" | "dropped"
-
-/** An unreachable node reads as `pending`: nothing is repeated, and nothing is marked, on a guess. */
-export async function broadcastState(
-  wallet: Pick<ObsidionWallet, "node">,
-  txHash: string,
-): Promise<BroadcastState> {
-  try {
-    const receipt = await wallet.node.getTxReceipt(TxHash.fromString(txHash))
-    if (isFailedSubmission(receipt)) return "dropped"
-    return receipt.blockNumber !== undefined ? "included" : "pending"
-  } catch {
-    return "pending"
-  }
-}
-
-interface BroadcastWait {
-  intervalMs: number
-  timeoutMs: number
-  sleep?: (ms: number) => Promise<void>
-}
-
-/** How long a `publish` waits on a broadcast an earlier page sent before giving up. */
-const BROADCAST_WAIT: BroadcastWait = { intervalMs: 5_000, timeoutMs: 5 * 60_000 }
-
-/**
- * An address's `publish`, run once however often it is called. One another view has published
- * since sends nothing. One whose earlier broadcast is `pending` waits for the chain: included, it
- * is marked published; dropped, it is sent again.
- */
-export function makePublish(deps: {
-  published: () => boolean
-  send: (opts?: SipaPublishOptions) => Promise<void>
-  pending?: { state: () => Promise<BroadcastState>; markPublished: () => void }
-  wait?: BroadcastWait
-}): (opts?: SipaPublishOptions) => Promise<void> {
-  let run: Promise<void> | undefined
-  const { intervalMs, timeoutMs, sleep = (ms: number) => new Promise((r) => setTimeout(r, ms)) } =
-    deps.wait ?? BROADCAST_WAIT
-  const awaitPending = async (
-    pending: NonNullable<typeof deps.pending>,
-    opts?: SipaPublishOptions,
-  ) => {
-    for (let waited = 0; ; waited += intervalMs) {
-      const state = await pending.state()
-      if (state === "included") return pending.markPublished()
-      if (state === "dropped") return deps.send(opts)
-      if (waited >= timeoutMs) throw new Error("The address is still being published. Try again.")
-      await sleep(intervalMs)
-    }
-  }
-  const once = async (opts?: SipaPublishOptions) => {
-    if (deps.published()) return
-    if (deps.pending) return awaitPending(deps.pending, opts)
-    return deps.send(opts)
-  }
-  return (opts) => (run ??= once(opts))
 }
 
 export function writeCachedSipa(key: string, entry: CachedSipa): void {
-  localStorage.setItem(key, JSON.stringify(entry))
+  walletStorage.setItem(key, JSON.stringify(entry))
 }
 
-/** Identifies one derivation, so a publish can never be shared with the address that replaced it. */
-export function publishKey(cacheKey: string, entry: CachedSipa): string {
-  return `${cacheKey}:${entry.day}:${entry.nonce}`
+/** A slot about to be handed out: saved first, so a later sync can still find and broadcast it. */
+export function saveCachedSipa(key: string, entry: CachedSipa): Promise<void> {
+  return walletStorage.commitItem(key, JSON.stringify(entry))
 }
 
 /**
@@ -296,7 +241,7 @@ const poolStorageKey = (cacheKey: string) => `${cacheKey}.pool`
  */
 export function readSipaPool(cacheKey: string): CachedSipa[] {
   try {
-    const raw = localStorage.getItem(poolStorageKey(cacheKey))
+    const raw = walletStorage.getItem(poolStorageKey(cacheKey))
     if (!raw) return []
     const parsed = JSON.parse(raw)
     return Array.isArray(parsed) ? parsed.filter((e) => isCachedSipa(e) && e.published) : []
@@ -306,19 +251,47 @@ export function readSipaPool(cacheKey: string): CachedSipa[] {
 }
 
 function writeSipaPool(cacheKey: string, entries: CachedSipa[]): void {
-  localStorage.setItem(poolStorageKey(cacheKey), JSON.stringify(entries))
+  walletStorage.setItem(poolStorageKey(cacheKey), JSON.stringify(entries))
 }
 
-/** Pop the oldest entry, removing it so it can never be handed out twice. */
-export function takeFromSipaPool(cacheKey: string): CachedSipa | null {
+/**
+ * Pop the oldest entry into the slot, as one transaction: the pool loses it as the slot gains it,
+ * so it is never handed out twice and never lost between the two. Resolves once saved: an address
+ * whose move failed must not be shown.
+ */
+export async function takeFromSipaPool(cacheKey: string): Promise<CachedSipa | null> {
   const [pick, ...rest] = readSipaPool(cacheKey)
-  if (pick) writeSipaPool(cacheKey, rest)
-  return pick ?? null
+  if (!pick) return null
+  await walletStorage.commitTransaction([
+    [poolStorageKey(cacheKey), JSON.stringify(rest)],
+    [cacheKey, JSON.stringify(pick)],
+  ])
+  return pick
 }
 
-/** Callers append only entries whose broadcast has landed (`published: true`). */
+/**
+ * Callers append only entries whose broadcast has landed (`published: true`). An address already
+ * pooled stays once: a landing the ledger failed to record is reported again.
+ */
 export function appendToSipaPool(cacheKey: string, entry: CachedSipa): void {
-  writeSipaPool(cacheKey, [...readSipaPool(cacheKey), entry])
+  const pool = readSipaPool(cacheKey)
+  if (pool.some((e) => e.address.toLowerCase() === entry.address.toLowerCase())) return
+  writeSipaPool(cacheKey, [...pool, entry])
+}
+
+/**
+ * Every slot under `prefix` (one per tag) whose address was handed out but never broadcast. The
+ * broadcast is the account's, not the tag's, so a slot left behind by a name lost after the
+ * hand-out still belongs here. Pool keys carry a `.pool` suffix and are not slots.
+ */
+export function readUnpublishedSlots(prefix: string): Array<{ key: string; entry: CachedSipa }> {
+  const slots: Array<{ key: string; entry: CachedSipa }> = []
+  for (const key of walletStorage.keys()) {
+    if (!key.startsWith(prefix) || key.slice(prefix.length).includes(".")) continue
+    const entry = readCachedSipa(key)
+    if (entry && !entry.published) slots.push({ key, entry })
+  }
+  return slots
 }
 
 /**
@@ -328,36 +301,22 @@ export function appendToSipaPool(cacheKey: string, entry: CachedSipa): void {
  * key per scope, reset when the day rolls. Scope is the account, not the view: every view derives
  * from the same stealth key, so they share one nonce space.
  */
-export function nextSelfSipaNonce(scope: string, day: number, floor = 0): number {
+export async function nextSelfSipaNonce(scope: string, day: number, floor = 0): Promise<number> {
   const key = `${scope}.slot`
   let slot = floor
   try {
-    const stored = JSON.parse(localStorage.getItem(key) ?? "null")
+    const stored = JSON.parse(walletStorage.getItem(key) ?? "null")
     if (stored?.day === day && Number.isInteger(stored.next)) slot = Math.max(slot, stored.next)
   } catch {
     // corrupt entry: the chain-derived floor still applies
   }
-  localStorage.setItem(key, JSON.stringify({ day, next: slot + 1 }))
+  // Saved before the nonce is used, so a reload never hands the same slot out again.
+  await walletStorage.commitItem(key, JSON.stringify({ day, next: slot + 1 }))
   return selfSipaNonce(slot)
 }
 
 export function selfSipaScope(network: string, account: string): string {
   return `webwallet.sipa.${network}.${account}`
-}
-
-export type SipaCacheDecision = "republish" | "derive"
-
-/**
- * Each address is handed out once: a published entry has been shown to someone, so the next view
- * derives a new one rather than linking a second sender to the first.
- *
- * `republish` is the one case worth keeping an entry for — an address whose broadcast never
- * landed. Abandoning it would strand anything already sent to it, so the next view finishes
- * publishing it instead; `(day, nonce)` regenerate the derivation exactly, whatever day it is now.
- */
-export function decideSipaCache(cached: CachedSipa | null, fresh: boolean): SipaCacheDecision {
-  if (fresh || !cached || cached.published) return "derive"
-  return "republish"
 }
 
 /**
@@ -376,38 +335,31 @@ export function depositWindowError(
     return `Amount must exceed the deposit fee (${formatUnits(fee, decimals)} ${symbol})`
   const capDisplay = formatUnits(TX_AMOUNT_CAP, DEFAULT_DECIMALS)
   if (amount - fee > parseUnits(capDisplay, decimals)) {
-    return `Deposit up to ${capDisplay} ${symbol} at a time`
+    return "This amount is over the network's maximum per deposit"
   }
   return undefined
 }
 
 export interface SipaDepositGateway {
   /**
-   * A single-use deposit address for THIS wallet. Pops a pooled pre-broadcast entry when one is
-   * ready (no proof). An empty pool derives and publishes — that path needs an unlocked session
-   * and costs a proof plus one sponsored-broadcast slot. `fresh` skips finishing an unpublished
-   * slot and still prefers the pool. Callers resolve once per view rather than per render. A
-   * proof runs only when the caller calls `publish`, inside its own operation.
+   * A single-use deposit address for THIS wallet, never one shown before: a pooled entry whose
+   * broadcast landed, else a pool fill still proving, else a fresh derivation, which needs an
+   * unlocked session and owes the ledger a proof once published. Callers resolve once per view.
+   * `publishingLimit` refuses a fresh derivation with `AddressesPublishingError`.
    */
   depositAddress(
     wallet: ObsidionWallet,
     contractService: ContractService,
     tag: string,
-    opts?: { fresh?: boolean; onStage?: (stage: DepositStage) => void },
+    opts?: { onStage?: (stage: DepositStage) => void; publishingLimit?: number },
   ): Promise<DepositAddress>
   /**
-   * A pooled, already-broadcast address, or null when the pool holds none. Never proves, never
-   * prompts a passkey, so screens may call it on open without a click. Popping consumes the entry.
-   */
-  pooledDepositAddress(
-    wallet: ObsidionWallet,
-    contractService: ContractService,
-    tag: string,
-  ): Promise<DepositAddress | null>
+  /** Puts an unfunded record back on the fresh scan lane, so funds just sent to it are seen soon. */
+  wakeDeposit(address: string): Promise<void>
   /**
    * Full self-initiated deposit: transfer `amountDisplay` of the token from the connected L1 wallet
-   * to `target` (optionally minting first on the sandbox faucet token), waiting for that address's
-   * broadcast to land first so the relayer will sweep it. `from` pins the sending account to the
+   * to `target` (optionally minting first on the sandbox faucet token), once that address's
+   * broadcast is owed to the ledger, so the relayer sweeps it when it lands. `from` pins the sending account to the
    * app's selection. The deposit lands in the L2 balance automatically via the sync loop.
    */
   deposit(params: {
@@ -426,9 +378,25 @@ export interface SipaDepositGateway {
     onSubmitted?: (txHash: Hex) => void
     /** Desktop bridge only: receives the helper page's URL for display. */
     onBrowserSubmit?: (submitUrl: string) => void
+    /**
+     * The caller's last check, with the fee read for this send (display units of the manifest token). It runs right
+     * before the wallet prompt, and on the desktop before the hand-off and again each time the helper page is about to
+     * send. A throw stops the transfer.
+     */
+    preflight: (fresh: { feeDisplay: string }) => Promise<void>
+    /**
+     * Desktop only: runs when the helper is about to be approved to send, after the recheck passed in time, with the
+     * desktop submission id. It must resolve once it has durably recorded that a send may follow, or reject so the send
+     * is refused.
+     */
+    beforeApprove?: (submission: string) => Promise<void>
   }): Promise<{ txHash: Hex; address: Address; name: string }>
   /** Run discovery (once) + a claim sync pass. Returns null while locked. */
-  sync(wallet: ObsidionWallet, tokenService: TokenService): Promise<SipaDepositSyncResult | null>
+  sync(
+    wallet: ObsidionWallet,
+    tokenService: TokenService,
+    opts?: { onProgress?: (done: number, total: number) => void },
+  ): Promise<SipaDepositSyncResult | null>
   /** Token display metadata (read once off L1). */
   tokenMeta(): Promise<{ address: Address; symbol: string; decimals: number }>
   /** The quoted deposit fee in display units of the manifest token (e.g. "0.5"). */
@@ -449,9 +417,22 @@ export interface SipaDepositGateway {
     sipa: SelfResolvedSipa,
     operationId?: string,
   ): Promise<void>
+  /** What the broadcast ledger runs for this wallet's deposit addresses. */
+  slotExecutor(wallet: ObsidionWallet): BroadcastExecutor
+  /** Txs from `fromBlock` on that broadcast one of `user`'s deposit addresses. */
+  broadcastTxHashes(
+    wallet: ObsidionWallet,
+    user: AztecAddress,
+    fromBlock: number,
+  ): Promise<Set<string>>
 }
 
 let singleton: RealSipaDepositGateway | undefined
+
+/** Test-only: the next `getSipaDepositGateway` builds a fresh gateway. */
+export function resetSipaDepositGatewayForTests(): void {
+  singleton = undefined
+}
 
 /**
  * The process-wide gateway: one instance so discovery, the PXE contract
@@ -481,7 +462,6 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   // Wallet-independent caches (pure L1 reads).
   private meta?: { address: Address; symbol: string; decimals: number }
   private resolverRecord?: SipaResolverOperatorRecord
-  private readonly publishing = new Map<string, Promise<void>>()
   /** Funding hashes whose record event discovery has not created yet. Drained by `sync`. */
   private readonly pendingFundingTx = new Map<string, FundingStamp>()
 
@@ -598,9 +578,14 @@ class RealSipaDepositGateway implements SipaDepositGateway {
    * proof and survives a front-core state reset, so `WebStorageAdapter.clear()` must not take it.
    */
   private addressCacheKey(tuple: OxideEnvTuple, tag: string): string {
+    return `${this.addressCachePrefix(tuple)}${tag}`
+  }
+
+  /** What every tag's slot for this account on this deployment starts with. */
+  private addressCachePrefix(tuple: OxideEnvTuple): string {
     const account = loadWalletIdentity()?.address ?? "unknown"
     const portal = requireTupleField(tuple, "portal")
-    return `webwallet.sipa.address.${this.config.network}.${portal}.${account}.${tag}`
+    return `webwallet.sipa.address.${this.config.network}.${portal}.${account}.`
   }
 
   async nextSelfNonce(wallet: ObsidionWallet, day: number): Promise<number> {
@@ -672,115 +657,102 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     wallet: ObsidionWallet,
     contractService: ContractService,
     tag: string,
-    opts?: { fresh?: boolean; onStage?: (stage: DepositStage) => void },
+    opts?: {
+      onStage?: (stage: DepositStage) => void
+      /** Shown, unfunded addresses still publishing above which no fresh one is derived. */
+      publishingLimit?: number
+    },
   ): Promise<DepositAddress> {
     this.bind(wallet)
     const tuple = await getOxideTuple(this.config)
     const name = tuple.ensDomain ? `${tag}.${tuple.ensDomain}` : tag
 
-    // A view gets its own address, so senders paying this wallet cannot be linked to each other by
-    // a shared deposit address. The cache exists only to finish an unpublished derivation, never to
-    // hand the same address out twice.
+    // Each view gets an address nobody was shown, so senders paying this wallet cannot be linked to
+    // each other by a shared deposit address. The ledger finishes publishing the ones already shown.
     const cacheKey = this.addressCacheKey(tuple, tag)
-    const cached = readCachedSipa(cacheKey)
+    const publish = (entry: CachedSipa) => () => this.publish(cacheKey, entry, opts?.onStage)
+    const owe = (entry: CachedSipa) => () => this.owe(cacheKey, entry)
+    const handedOut = <T>(address: T): T => {
+      void this.refillPool(wallet, contractService, tuple, cacheKey)
+      return address
+    }
 
-    // The sync loop tops the pool up; a refill started here would only meet the caller's gate.
-    const publisher = (entry: CachedSipa, pendingHash?: string) =>
-      makePublish({
-        published: () => isPublished(cacheKey, entry),
-        send: (publishOpts) =>
-          this.publish(wallet, contractService, tuple, entry, cacheKey, {
-            ...publishOpts,
-            onStage: opts?.onStage,
-          }),
-        pending: pendingHash
-          ? {
-              state: () => broadcastState(wallet, pendingHash),
-              markPublished: () => markPublished(cacheKey, entry),
-            }
-          : undefined,
+    // Pool entries were broadcast in the background and never shown to anyone, so popping one is
+    // as unlinkable as a fresh derivation and instantly sweepable — no proof. It becomes the
+    // slot entry so the handed-out-once bookkeeping is shared with the derive path.
+    const pooled = await takeFromSipaPool(cacheKey)
+    if (pooled) {
+      await this.wakeDeposit(pooled.address)
+      await getBroadcastLedger().markShown(pooled.address)
+      return handedOut({ address: pooled.address, name })
+    }
+
+    // A pool fill still being proven is as unshown as a landed one: it becomes this view's address,
+    // and the proof already running is the one the view waits on.
+    const filling = this.fillingPoolEntry(cacheKey)
+    if (filling) {
+      try {
+        await saveCachedSipa(cacheKey, filling)
+        await getBroadcastLedger().markShown(filling.address)
+      } catch (err) {
+        // Nobody was shown it: the next view, or the pool, takes it.
+        this.claimedFills.delete(filling.address.toLowerCase())
+        throw err
+      }
+      await this.wakeDeposit(filling.address)
+      return handedOut({
+        address: filling.address,
+        name,
+        publish: publish(filling),
+        owe: owe(filling),
       })
+    }
 
-    const result = await (async (): Promise<DepositAddress> => {
-      if (cached && decideSipaCache(cached, opts?.fresh ?? false) === "republish") {
-        // A broadcast an earlier page sent needs no second one unless the chain turned it down.
-        // Included, it is published; still pending, `publish` waits for the chain to decide.
-        const sent = cached.broadcastTxHash
-        const state = sent ? await broadcastState(wallet, sent) : "dropped"
-        if (state === "included") {
-          markPublished(cacheKey, cached)
-          return { address: cached.address, name }
-        }
-        return {
-          address: cached.address,
-          name,
-          publish: publisher(cached, state === "pending" ? sent : undefined),
-        }
-      }
+    if (
+      opts?.publishingLimit !== undefined &&
+      addressesPublishing(getBroadcastLedger().list(), getActiveStorageId()) >= opts.publishingLimit
+    )
+      throw new AddressesPublishingError()
 
-      // Pool entries were broadcast in the background and never shown to anyone, so popping one is
-      // as unlinkable as a fresh derivation and instantly sweepable — no proof. It becomes the
-      // slot entry so the handed-out-once bookkeeping is shared with the derive path.
-      const pooled = takeFromSipaPool(cacheKey)
-      if (pooled) {
-        writeCachedSipa(cacheKey, pooled)
-        await this.rearmDepositRecord(pooled.address)
-        return { address: pooled.address, name }
-      }
+    // The slot is about to hold the new address; the one it held stays owed to the ledger.
+    const previous = readCachedSipa(cacheKey)
+    if (previous && !previous.published && !getBroadcastLedger().get(previous.address))
+      await this.oweSlot(cacheKey, previous, "deposit", Date.now())
 
-      const keys = await this.unlockedKeys(wallet)
-      if (!keys) throw new Error("no account for this session — enter with your passkey first")
+    const keys = await this.unlockedKeys(wallet)
+    if (!keys) throw new Error("no account for this session — enter with your passkey first")
 
-      opts?.onStage?.("resolving")
-      const day = await chainEpochDay(wallet)
-      const { address, nonce } = await this.deriveSipa(
-        wallet,
-        tuple,
-        keys,
-        day,
-        await this.nextNonce(wallet, tuple, keys, day),
-      )
-      const entry: CachedSipa = { address, day, nonce, published: false }
-      writeCachedSipa(cacheKey, entry)
-      // The address is fully determined by the derivation — the proof and broadcast only tell the
-      // relayer it exists — so hand it back now and publish behind it. Funds sent before that
-      // lands sit at the counterfactual address (not lost) but are not swept until the relayer is
-      // told. Callers that show or fund the address publish it first.
-      return { address, name, publish: publisher(entry) }
-    })()
-
-    return result
-  }
-
-  async pooledDepositAddress(
-    wallet: ObsidionWallet,
-    contractService: ContractService,
-    tag: string,
-  ): Promise<DepositAddress | null> {
-    this.bind(wallet)
-    const tuple = await getOxideTuple(this.config)
-    const cacheKey = this.addressCacheKey(tuple, tag)
-    const entry = takeFromSipaPool(cacheKey)
-    if (!entry) return null
-    writeCachedSipa(cacheKey, entry)
-    await this.rearmDepositRecord(entry.address)
-    void this.refillPool(wallet, contractService, tuple, cacheKey)
-    return { address: entry.address, name: tuple.ensDomain ? `${tag}.${tuple.ensDomain}` : tag }
+    opts?.onStage?.("resolving")
+    const day = await chainEpochDay(wallet)
+    const { address, nonce } = await this.deriveSipa(
+      wallet,
+      tuple,
+      keys,
+      day,
+      await this.nextNonce(wallet, tuple, keys, day),
+    )
+    const entry: CachedSipa = { address, day, nonce, published: false }
+    await saveCachedSipa(cacheKey, entry)
+    // The address is fully determined by the derivation — the proof and broadcast only tell the
+    // relayer it exists — so hand it back now and publish behind it. Funds sent before that
+    // lands sit at the counterfactual address (not lost) but are not swept until the relayer is
+    // told. Callers that show or fund the address publish it first.
+    return { address, name, publish: publish(entry), owe: owe(entry) }
   }
 
   /**
-   * Put a just-handed-out address back on the deposit scanner's per-tick lane and stamp the feed
-   * time as hand-out. The record was created when the background broadcast was discovered, so
-   * `startTime` is the fill moment (the activity row would sort as if it were old) and, if it sat
-   * in the pool past the 10-minute fresh window, it has already dropped onto the 5-minute slow
-   * lane. Only the hidden unfunded shape is touched — a record with any evidence of funds is the
-   * scanner's.
+   * Put an address back on the deposit scanner's per-tick lane and stamp the feed time as now: on
+   * hand-out, and again when a screen sees funds at it. The record was created when the background
+   * broadcast was discovered, so `startTime` is the fill moment (the activity row would sort as if
+   * it were old) and, if it sat in the pool past the 10-minute fresh window, it has already dropped
+   * onto the 5-minute slow lane. Only the hidden unfunded shape is touched, whatever its phase; a
+   * record with any evidence of funds is the scanner's.
    */
-  private async rearmDepositRecord(address: Address): Promise<void> {
+  async wakeDeposit(address: Address): Promise<void> {
     try {
       await this.store.load()
       const record = this.store.get(address)
-      if (!record || record.phase !== "broadcast" || Number(record.amount) !== 0) return
+      if (!record || !isUnfundedSipaDeposit(record)) return
       await this.store.upsert(record.sipaAddress, {
         phase: record.phase,
         reorgEpoch: record.reorgEpoch,
@@ -794,16 +766,52 @@ class RealSipaDepositGateway implements SipaDepositGateway {
 
   private refilling = false
   private refillBlockedUntil = 0
+  private seeded = false
+
+  /**
+   * The ledger replaced the slots' own retries. A slot an earlier version handed out unpublished,
+   * or sent without marking, is owed to the ledger once, so its broadcast still lands.
+   */
+  private async seedLedger(tuple: OxideEnvTuple): Promise<void> {
+    if (this.seeded) return
+    for (const { key, entry } of readUnpublishedSlots(this.addressCachePrefix(tuple))) {
+      await this.oweSlot(key, entry, "deposit", Date.now())
+    }
+    this.seeded = true
+  }
+
+  /** Pool fills a view took before the ledger records them shown. */
+  private readonly claimedFills = new Set<string>()
+
+  /**
+   * Takes the cache key's pool fill still being proven, as the slot entry a view would hold. The
+   * claim is synchronous, so two views never take the same fill.
+   */
+  private fillingPoolEntry(cacheKey: string): CachedSipa | null {
+    const job = getBroadcastLedger()
+      .list()
+      .find(
+        (j) =>
+          j.kind === "pool" &&
+          j.state !== "landed" &&
+          j.source.type === "slot" &&
+          j.source.cacheKey === cacheKey &&
+          !this.claimedFills.has(j.address),
+      )
+    if (!job || job.source.type !== "slot") return null
+    this.claimedFills.add(job.address)
+    return {
+      address: getAddress(job.address),
+      day: job.source.day,
+      nonce: job.source.nonce,
+      published: false,
+    }
+  }
 
   /**
    * Keep SIPA_POOL_TARGET broadcast addresses ready so a Receive or paylink hands one out without
-   * proving. An entry is appended only AFTER its broadcast tx mined (the sponsored send resolves
-   * on the L2 receipt) — pool membership means broadcast. A fill interrupted mid-proof loses at
-   * most one never-shown derivation: nothing can strand, the worst case is an orphan broadcast the
-   * relayer watches for an address nobody funds. Serial on purpose — one in-browser proof at a
-   * time — and it yields to any user-initiated publish AND to user tx flows (`userFlowActive`):
-   * local proving is single-flight, so a refill proof in the wrong place makes a user's
-   * send/withdraw THROW, not just wait.
+   * proving. The refill only derives and owes: the ledger proves it, after anything the user is
+   * waiting on, and the landed broadcast joins the pool. Pool membership still means broadcast.
    */
   private async refillPool(
     wallet: ObsidionWallet,
@@ -811,46 +819,70 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     tuple: OxideEnvTuple,
     cacheKey: string,
   ): Promise<void> {
+    void contractService
     if (this.refilling || Date.now() < this.refillBlockedUntil) return
     this.refilling = true
     try {
       const keys = await this.unlockedKeys(wallet)
       if (!keys) return
-      while (this.publishing.size === 0 && !userFlowActive()) {
-        if (readSipaPool(cacheKey).length >= SIPA_POOL_TARGET) return
-        // The sponsor leg first: a registration the rollup has not imported yet throws here, before
-        // a slot is taken for an address that could not be broadcast.
-        const sponsor = await claimSponsorContext(
-          { wallet, account: keys.account, contractService },
-          RAIL_REGISTERED,
-        )
-        const day = await chainEpochDay(wallet)
-        const { address, nonce } = await this.deriveSipa(
-          wallet,
-          tuple,
-          keys,
-          day,
-          await this.nextNonce(wallet, tuple, keys, day),
-        )
-        const entry: CachedSipa = { address, day, nonce, published: false }
-        // Same synchronous block as the publish below — a user flow starting during the derive
-        // above bails here, before a proof is committed to.
-        if (userFlowActive()) return
-        await this.publish(wallet, contractService, tuple, entry, cacheKey, { sponsor })
-        appendToSipaPool(cacheKey, { ...entry, published: true })
-      }
+      await this.seedLedger(tuple)
+      const ledger = getBroadcastLedger()
+      await ledger.load()
+      const filling = ledger
+        .list()
+        .filter(
+          (j) =>
+            j.kind === "pool" &&
+            j.state !== "landed" &&
+            j.source.type === "slot" &&
+            j.source.cacheKey === cacheKey,
+        ).length
+      if (readSipaPool(cacheKey).length + filling >= SIPA_POOL_TARGET) return
+      const day = await chainEpochDay(wallet)
+      const { address, nonce } = await this.deriveSipa(
+        wallet,
+        tuple,
+        keys,
+        day,
+        await this.nextNonce(wallet, tuple, keys, day),
+      )
+      await this.oweSlot(cacheKey, { address, day, nonce, published: false }, "pool")
     } catch (err) {
-      // A registration message the rollup has not imported yet is the one error that resolves on
-      // its own, and the route gate already holds sponsored flows on it. Cooling down would make a
-      // freshly registered wallet sit out the whole window before its first address, so the next
-      // sync tick retries instead.
-      if (err instanceof RegistrationPendingError) return
       // ponytail: flat 5-min cooldown; the sync loop retries after it. No backoff ladder.
       console.warn("[sipaGateway] SIPA pool refill failed", err)
       this.refillBlockedUntil = Date.now() + 5 * 60_000
     } finally {
       this.refilling = false
     }
+  }
+
+  /** A sender who paid an address whose broadcast is still owed moves it to the front. */
+  private async markOwedFunded(): Promise<void> {
+    const ledger = getBroadcastLedger()
+    await ledger.load()
+    for (const job of ledger.list()) {
+      if (job.state === "landed" || job.fundedAt !== undefined || job.source.type !== "slot")
+        continue
+      const record = this.store.get(getAddress(job.address))
+      if (record && Number(record.amount) > 0) await ledger.markFunded(job.address).catch(() => {})
+    }
+  }
+
+  /** Owe a derived address's broadcast to the ledger. Owing one already owed keeps its progress. */
+  private async oweSlot(
+    cacheKey: string,
+    entry: CachedSipa,
+    kind: BroadcastKind,
+    shownAt?: number,
+  ): Promise<void> {
+    await getBroadcastLedger().enqueue({
+      address: entry.address,
+      kind,
+      scope: getActiveStorageId(),
+      source: { type: "slot", cacheKey, day: entry.day, nonce: entry.nonce },
+      ...(shownAt !== undefined ? { shownAt } : {}),
+      ...(entry.broadcastTxHash ? { txHash: entry.broadcastTxHash } : {}),
+    })
   }
 
   /**
@@ -940,64 +972,128 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     }
   }
 
+  /** Why the ledger last deferred an address: no rail can pay for it until the name lands. */
+  private readonly registrationPending = new Map<string, RegistrationPendingError>()
+
   /**
-   * Sponsor the L2 broadcast that makes the address sweepable. Runs
-   * behind the returned address; in-flight publishes are deduplicated so the screen remounting
-   * mid-proof doesn't start a second one (and burn a second daily slot).
-   *
-   * Keyed by the ENTRY rather than the cache key: a `fresh` derivation must never adopt the publish
-   * of the address it replaced, or the screen hands out one address while another is broadcast.
+   * Owe the address's broadcast, as one the user holds, and settle once it landed. The proof is
+   * the ledger's: it runs one at a time, after anything owed before it, and survives a reload.
    */
-  private publish(
-    wallet: ObsidionWallet,
-    contractService: ContractService,
-    tuple: OxideEnvTuple,
-    entry: CachedSipa,
+  private async publish(
     cacheKey: string,
-    opts: PublishRun = {},
+    entry: CachedSipa,
+    onStage?: (stage: DepositStage) => void,
   ): Promise<void> {
-    const key = publishKey(cacheKey, entry)
-    const inflight = this.publishing.get(key)
-    if (inflight) return inflight
-    // Every publish — user-facing or refill — registers as a background proof so a send/withdraw
-    // starting mid-broadcast waits it out instead of dying on the proving single-flight. So it must
-    // never enter `runOperation` itself: that gate would wait on this very proof.
-    const run = trackBackgroundProve(() =>
-      this.runPublish(wallet, contractService, tuple, entry, cacheKey, opts).finally(() =>
-        this.publishing.delete(key),
-      ),
-    )
-    this.publishing.set(key, run)
-    return run
+    if (isPublished(cacheKey, entry)) return
+    await this.owe(cacheKey, entry)
+    onStage?.("broadcasting")
+    await this.waitForBroadcast(entry.address)
   }
 
-  private async runPublish(
-    wallet: ObsidionWallet,
-    contractService: ContractService,
-    tuple: OxideEnvTuple,
-    entry: CachedSipa,
-    cacheKey: string,
-    opts: PublishRun,
-  ): Promise<void> {
+  /** Owe the address's broadcast as one the user holds. */
+  private async owe(cacheKey: string, entry: CachedSipa): Promise<void> {
+    if (isPublished(cacheKey, entry)) return
+    await this.oweSlot(cacheKey, entry, "deposit", Date.now())
+  }
+
+  /**
+   * Settles once the address's broadcast landed. Rejects with the registration's wait while no
+   * rail can pay for it, and with the attempt's error once one fails.
+   */
+  private waitForBroadcast(address: Address): Promise<void> {
+    const ledger = getBroadcastLedger()
+    const key = address.toLowerCase()
+    return new Promise((resolve, reject) => {
+      let failures: number | undefined
+      const check = () => {
+        const job = ledger.get(key)
+        const pending = this.registrationPending.get(key)
+        failures ??= job?.failures ?? 0
+        const settle = (fn: () => void) => {
+          off()
+          fn()
+        }
+        if (!job) return settle(() => reject(new Error("This address is no longer published")))
+        if (job.state === "landed") return settle(resolve)
+        if (job.state !== "queued") return
+        if (pending) return settle(() => reject(pending))
+        if (job.failures > failures)
+          return settle(() => reject(new Error(job.lastError ?? "The address was not published")))
+      }
+      const off = ledger.onListChanged(check)
+      void ledger.load().then(check)
+    })
+  }
+
+  /** Whether the address's broadcast mined: this wallet holds the `SIPA` event its salt names. */
+  private async broadcastLanded(wallet: ObsidionWallet, address: string): Promise<boolean> {
+    await this.store.load()
+    const salt = this.store.get(getAddress(address))?.messageSecret
     const keys = await this.unlockedKeys(wallet)
-    if (!keys) throw new Error("no account for this session — enter with your passkey first")
-    const { operationId } = opts
-    const submission =
-      operationId && opts.saveHash
-        ? trackSubmission(operationId, (txHash) =>
-            writeCachedSipa(cacheKey, { ...entry, broadcastTxHash: txHash }),
+    if (!salt || !keys) return false
+    const tuple = await getOxideTuple(this.config)
+    await this.ensureDiscovery(wallet, tuple)
+    const events = await fetchSipaEvents(
+      wallet,
+      AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Token")),
+      keys.account.getAddress(),
+    )
+    const wanted = salt.toLowerCase()
+    return events.some((event) => event.sharedSecretSalt.toString().toLowerCase() === wanted)
+  }
+
+  /** What the broadcast ledger runs for a derived deposit address. */
+  slotExecutor(wallet: ObsidionWallet): BroadcastExecutor {
+    return {
+      landed: (job) => this.broadcastLanded(wallet, job.address),
+      send: async (job, attempt) => {
+        if (job.source.type !== "slot") throw new BroadcastAbandoned("Not a deposit address")
+        this.bind(wallet)
+        const keys = await this.unlockedKeys(wallet)
+        if (!keys) throw new BroadcastDeferred(Date.now() + WAIT_MS, WAITING_FOR_UNLOCK)
+        const tuple = await getOxideTuple(this.config)
+        const contractService = ContractService.getInstance()
+        let sponsor: ClaimSponsorContext
+        try {
+          sponsor = await claimSponsorContext(
+            { wallet, account: keys.account, contractService },
+            RAIL_REGISTERED,
           )
-        : undefined
-    try {
-      await this.broadcastSipa(wallet, contractService, tuple, keys, entry, {
-        onStage: opts.onStage,
-        sponsor: opts.sponsor,
-        operationId,
-      })
-    } finally {
-      await submission?.stop()
+        } catch (err) {
+          if (!(err instanceof RegistrationPendingError)) throw err
+          this.registrationPending.set(job.address, err)
+          throw new BroadcastDeferred(Date.now() + WAIT_MS, WAITING_FOR_REGISTRATION)
+        }
+        this.registrationPending.delete(job.address)
+        const entry: CachedSipa = {
+          address: getAddress(job.address),
+          day: job.source.day,
+          nonce: job.source.nonce,
+          published: false,
+        }
+        return this.broadcastSipa(wallet, contractService, tuple, keys, entry, {
+          sponsor,
+          operationId: attempt.operationId,
+          onTxHash: attempt.onTxHash,
+        })
+      },
+      onLanded: async (job) => {
+        if (job.source.type !== "slot") return
+        this.registrationPending.delete(job.address)
+        const { cacheKey, day, nonce } = job.source
+        const entry: CachedSipa = { address: getAddress(job.address), day, nonce, published: true }
+        await markPublished(cacheKey, entry)
+        // Nobody saw it: it waits in the pool for the next view. Read again after the await, which a
+        // view can take it during.
+        const current = getBroadcastLedger().get(job.address) ?? job
+        if (
+          current.kind === "pool" &&
+          current.shownAt === undefined &&
+          !this.claimedFills.has(job.address)
+        )
+          appendToSipaPool(cacheKey, entry)
+      },
     }
-    markPublished(cacheKey, entry)
   }
 
   /**
@@ -1016,9 +1112,10 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       onStage?: (stage: DepositStage) => void
       sponsor?: ClaimSponsorContext
       operationId?: string
+      onTxHash?: (txHash: string) => Promise<void>
     } = {},
-  ): Promise<void> {
-    const { onStage, sponsor: prebuiltSponsor, operationId } = opts
+  ): Promise<string> {
+    const { onStage, sponsor: prebuiltSponsor, operationId, onTxHash } = opts
     const { day } = entry
     const { address, resolution, user, intent, sipaArgs } = await this.deriveSipa(
       wallet,
@@ -1031,6 +1128,18 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     // strands whatever they were sent, so refuse rather than publish the wrong one.
     if (address.toLowerCase() !== entry.address.toLowerCase()) {
       throw new Error("derived deposit address changed — refusing to broadcast a different one")
+    }
+    const deployed = await readSipaDeployed(this.publicClient, address)
+    if (!deployed && !("recoveryAddress" in sipaArgs)) {
+      await assertSubsidySweepsSipa(this.publicClient, {
+        depositSubsidy: requireTupleField(tuple, "depositSubsidy") as Address,
+        portal: requireTupleField(tuple, "portal") as Address,
+        sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
+        intent: OxideSipaIntent.Deposit,
+        deployArgs: sipaArgs,
+        intentData: intent.intentData,
+        sipa: address,
+      })
     }
 
     // The sponsor leg first: a registration the rollup has not imported yet throws here, before
@@ -1056,19 +1165,18 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       resweepable: sipaArgs.resweepable,
       intentHash: intent.intentHash,
       sipa: address,
+      deployed,
       sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
+      intent: OxideSipaIntent.Deposit,
       deployArgs: sipaArgs,
       intentData: intent.intentData,
       proofs: intent.proofs,
       operationExecutor: requireTupleField(tuple, "operationExecutor") as Address,
       depositSubsidy: requireTupleField(tuple, "depositSubsidy") as Address,
       chainId: BigInt(this.config.l1ChainId),
-      tokens: [
-        requireTupleField(tuple, "token") as Address,
-        ...depositTokensFor(this.config.network).flatMap((token) =>
-          token.address ? [token.address] : [],
-        ),
-      ],
+      // TODO(benesjan): the relayer copies this sweep for each other token it accepts.
+      // https://linear.app/aztec-labs/issue/OX-1877/for-v6-handle-multi-token-balance-condition-l1-operations-properly
+      tokens: [requireTupleField(tuple, "token") as Address],
     })
     const broadcastCalls = (await Promise.all(interactions.map((call) => call.request()))).flatMap(
       (payload) => payload.calls,
@@ -1092,15 +1200,30 @@ class RealSipaDepositGateway implements SipaDepositGateway {
 
     // NO_FROM: the entrypoint's subscription is the eligibility — no user signature at all. The
     // `SIPA` event is sent to this account, so this PXE discovers what it just broadcast.
-    await wallet.sendTx(payload, {
+    // Resolves once mined.
+    const { receipt } = await wallet.sendTx(payload, {
       from: NO_FROM,
       sendMessagesAs: user,
       additionalScopes: [user],
       fee: claimFpcSponsoredFee(policy, common.innerCalls),
       operationId,
+      ...(onTxHash ? { onTxHash } : {}),
     })
+    const txHash = receipt.txHash.toString()
     if (subscribe) noteSubscribed(keys.account, fpcAddress, railId)
     maybeRefuelFpc({ wallet, contractService, fpc: { address: fpcAddress, artifact: fpcArtifact } })
+    return txHash
+  }
+
+  async broadcastTxHashes(
+    wallet: ObsidionWallet,
+    user: AztecAddress,
+    fromBlock: number,
+  ): Promise<Set<string>> {
+    const tuple = await getOxideTuple(this.config)
+    await this.ensureDiscovery(wallet, tuple)
+    const token = AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Token"))
+    return readSipaBroadcastTxHashes(wallet, token, user, fromBlock)
   }
 
   async broadcastResolvedSipa(
@@ -1134,7 +1257,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     const onStage = params.onStage ?? (() => {})
     // Funds the address the caller is already showing. Deriving one here would send to an address
     // the user never saw — and, since each derivation is single-use, burn a second proof.
-    const { address, name, publish } = params.target
+    const { address, name, publish, owe } = params.target
     const [meta, tuple] = await Promise.all([this.tokenMeta(), getOxideTuple(this.config)])
     const token = params.token?.address ?? (requireTupleField(tuple, "token") as Address)
     const decimals = params.token?.decimals ?? meta.decimals
@@ -1158,9 +1281,10 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       if (balance.raw < amount) throw new InsufficientL1BalanceError(balance)
     }
 
-    // Unlike a displayed address — which is safe to hand out early, since an unswept SIPA just
-    // waits — this path is about to MOVE money, so it funds only an address whose broadcast landed.
-    if (publish) throw new Error("Publish this deposit address before funding it")
+    // Funds sent before the broadcast lands wait at the address, and the ledger keeps the broadcast
+    // owed until it does: owing it is all funding needs.
+    if (owe) await owe()
+    if (publish) void publish().catch(() => {})
 
     // Desktop launcher: no injected wallet exists in the dedicated Chrome profile, so the prepared
     // transfer is handed to a helper page in the user's DEFAULT browser (where their wallet lives)
@@ -1171,9 +1295,13 @@ class RealSipaDepositGateway implements SipaDepositGateway {
           "Minting test tokens isn't available through the browser bridge — use a browser with an injected wallet",
         )
       }
+      await params.preflight({ feeDisplay })
       onStage("awaiting-browser")
       const txHash = await submitViaDesktopBridge({
         onHelperOpened: params.onBrowserSubmit,
+        // The helper page can stay open for minutes, so capacity is read again when it is about to send.
+        recheck: () => params.preflight({ feeDisplay }),
+        beforeApprove: params.beforeApprove,
         tx: {
           to: token,
           data: encodeFunctionData({
@@ -1190,6 +1318,10 @@ class RealSipaDepositGateway implements SipaDepositGateway {
             ["Deposit address", address],
             ["Token contract", token],
             ["Network", l1ChainFor(this.config.l1ChainId).name],
+            [
+              "Network capacity",
+              "Checked again when you click send. A check doesn't reserve capacity, so processing can still wait.",
+            ],
           ],
         },
       })
@@ -1224,6 +1356,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     // Last stop before the wallet prompt — account may have moved since the form ceiling was read.
     const balance = await readL1DepositTokenBalance(account, token)
     if (balance.raw < amount) throw new InsufficientL1BalanceError(balance)
+    await params.preflight({ feeDisplay })
 
     onStage("sending")
     const txHash = await walletClient.writeContract({
@@ -1257,11 +1390,16 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     } catch (err) {
       console.warn("[sipaGateway] could not record the funding transaction locally", err)
     }
+    // Funds wait on its broadcast now: it goes first among what is owed.
+    await getBroadcastLedger()
+      .markFunded(address)
+      .catch(() => {})
   }
 
   async sync(
     wallet: ObsidionWallet,
     tokenService: TokenService,
+    opts: { onProgress?: (done: number, total: number) => void } = {},
   ): Promise<SipaDepositSyncResult | null> {
     this.bind(wallet)
     // Discovery needs no key, but the claim path derives the stealth key and
@@ -1284,7 +1422,8 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       node: wallet.node as never,
       wallet,
       tokenService,
-      refreshBalance: () => WalletSyncCoordinator.refresh(),
+      refreshBalance: () => WalletSyncCoordinator.refreshBalance(),
+      onProgress: opts.onProgress,
       store: this.store,
       tuple,
       recipient: keys.account.getAddress(),
@@ -1295,30 +1434,30 @@ class RealSipaDepositGateway implements SipaDepositGateway {
         deriveBootstrapKey(keys.msk).address,
       ),
       token,
-      // The picker's non-manifest entries (mainnet USDC/USDT) fund the same SIPA in another ERC-20.
-      fundingTokens: [
-        token,
-        ...depositTokensFor(this.config.network)
-          .filter((t): t is typeof t & { address: Address } => !!t.address)
-          .map(({ address, symbol, decimals }) => ({ address, symbol, decimals })),
-      ],
+      fundingTokens: sipaFundingTokens(this.config.network, token),
       l1ChainId: this.config.l1ChainId,
       registrationScheduleFor: registrationScheduleForSipa,
       onFundingWalletDetected: upsertDepositL1WalletContact,
     })
     // This pass is what creates the records the funding hashes were waiting on.
     await drainFundingTxStash(this.store, this.pendingFundingTx)
+    await this.markOwedFunded()
 
     // The sync loop is the pool's heartbeat: fills it before the first Receive of a session and
-    // retries failed fills. No-ops while full, locked, or pre-claim (no handle yet).
+    // retries failed fills. No-ops while full, locked, or pre-claim (no handle yet). A fill is a
+    // proof, so it waits for the boot balance.
     const tag = loadWalletIdentity()?.handle
     if (tag) {
-      void this.refillPool(
-        wallet,
-        ContractService.getInstance(),
-        tuple,
-        this.addressCacheKey(tuple, tag),
-      )
+      void bootPriority
+        .whenBalanceSettled()
+        .then(() =>
+          this.refillPool(
+            wallet,
+            ContractService.getInstance(),
+            tuple,
+            this.addressCacheKey(tuple, tag),
+          ),
+        )
     }
     return result
   }

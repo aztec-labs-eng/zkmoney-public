@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import type { Address } from "viem"
+import { encodeEventTopics, erc20Abi, pad, toHex, type Address } from "viem"
 import { keccak256 } from "@aztec/foundation/crypto/keccak"
 import type { OxideEnvTuple } from "@obsidion/core/types"
+
+const ZERO = "0x0000000000000000000000000000000000000000"
 
 const mocks = vi.hoisted(() => ({
   fetchSipaEvents: vi.fn(),
@@ -22,12 +24,54 @@ const mocks = vi.hoisted(() => ({
   canonicalGenerationStack: vi.fn(() => "v5"),
 }))
 
+type ScanWindow = { sipa: string; fromBlock?: bigint }
+/** A batched sdk reader answered by its per-SIPA mock, so the per-SIPA assertions hold either way. */
+const perSipa =
+  (read: (window: ScanWindow, toBlock: bigint) => Promise<unknown>) =>
+  async (windows: ScanWindow[], toBlock: bigint) =>
+    new Map(
+      await Promise.all(
+        windows.map(async (w) => [w.sipa.toLowerCase(), await read(w, toBlock)] as const),
+      ),
+    )
+
 // The composition's collaborators are all unit-tested in their own modules
 // (sdk reads, front-core crypto); here they are mocked so the test pins the
 // ORCHESTRATION: sequencing, store patches, dedup, and failure isolation.
 vi.mock("@obsidion/sdk", () => ({
   fetchSipaEvents: mocks.fetchSipaEvents,
   readSweepEvents: mocks.readSweepEvents,
+  readSweepEventsMany: vi.fn((client: unknown, windows: ScanWindow[], toBlock: bigint) =>
+    perSipa((w, to) => mocks.readSweepEvents(client, w.sipa, w.fromBlock, to))(windows, toBlock),
+  ),
+  readRecoveredEventsMany: vi.fn((client: unknown, windows: ScanWindow[], toBlock: bigint) =>
+    perSipa((w, to) => mocks.readRecoveredEvents(client, w.sipa, w.fromBlock, to))(
+      windows,
+      toBlock,
+    ),
+  ),
+  readFundingTransfersMany: vi.fn(
+    (client: unknown, token: string, windows: ScanWindow[], toBlock: bigint) =>
+      perSipa((w, to) => mocks.readFundingTransfers(client, token, w.sipa, w.fromBlock, to))(
+        windows,
+        toBlock,
+      ),
+  ),
+  // Token balances are left to the mocked funding read; ETH comes off the client's getBalance.
+  readSipaBalancesMany: vi.fn(
+    async (client: { getBalance: (p: { address: string }) => Promise<bigint> }, sipas: string[]) =>
+      new Map(
+        await Promise.all(
+          sipas.map(
+            async (sipa) =>
+              [
+                sipa.toLowerCase(),
+                new Map([[ZERO, await client.getBalance({ address: sipa })]]),
+              ] as const,
+          ),
+        ),
+      ),
+  ),
   readRecoveredEvents: mocks.readRecoveredEvents,
   readBlockTimeMs: mocks.readBlockTimeMs,
   readDepositMessageKey: mocks.readDepositMessageKey,
@@ -55,6 +99,7 @@ vi.mock("@aztec/foundation/eth-address", () => ({
   EthAddress: { fromString: (value: string) => ({ toString: () => value.toLowerCase() }) },
 }))
 
+import * as sdk from "@obsidion/sdk"
 import { syncSipaDeposits, type SipaDepositSyncDeps } from "../../src/oxide/sipaClaims"
 import { globalEventEmitter } from "../../src/core/services/GlobalEventEmitter"
 
@@ -134,6 +179,7 @@ function makeDeps(store = makeStore()) {
   const deps = {
     publicClient: {
       getBlockNumber: vi.fn(async () => HEAD),
+      getBalance: vi.fn(async () => 0n),
     } as never,
     node: {} as never,
     wallet: { getPrivateEvents: vi.fn() } as never,
@@ -170,6 +216,7 @@ function sipaEvent(
 }
 
 beforeEach(() => {
+  vi.clearAllMocks()
   for (const mock of Object.values(mocks)) mock.mockReset()
   mocks.computeStealthRecipientHash.mockImplementation((secret: { toString(): string }) =>
     fr(`0xhash${secret.toString().slice(4, 8)}`),
@@ -461,6 +508,62 @@ describe("syncSipaDeposits", () => {
     },
   )
 
+  it("hands each funding read its batched balance and leaves a token the batch missed to its own read", async () => {
+    const { deps } = makeDeps()
+    const usdc = {
+      address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" as Address,
+      symbol: "USDC",
+      decimals: 6,
+    }
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([])
+    mocks.readSipaFundingStatus.mockResolvedValue({
+      balance: 0n,
+      scaledBalance: 0n,
+      fee: 100n,
+      sweepable: false,
+    })
+    vi.mocked(sdk.readSipaBalancesMany).mockResolvedValueOnce(
+      new Map([[SIPA_A, new Map([[deps.token.address, 700n]])]]),
+    )
+
+    await syncSipaDeposits({
+      ...deps,
+      token: { ...deps.token, decimals: 18 },
+      fundingTokens: [deps.token, usdc],
+    })
+
+    expect(mocks.readSipaFundingStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ token: deps.token.address, balance: 700n }),
+    )
+    expect(mocks.readSipaFundingStatus).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ token: usdc.address, balance: undefined }),
+    )
+  })
+
+  it("isolates a record whose stored secret does not parse", async () => {
+    const store = makeStore()
+    store.records.set(SIPA_B, {
+      phase: "broadcast",
+      messageSecret: "not-a-field",
+      recipientL2Address: RECIPIENT_HEX,
+      startTime: 1,
+      amount: "0",
+    })
+    const { deps, tokenService } = makeDeps(store)
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([
+      { index: 7n, amount: 990_000n, blockNumber: 1n, txHash: TX_HASH },
+    ])
+
+    const result = await syncSipaDeposits(deps)
+
+    expect(result).toMatchObject({ claimed: 1, failed: 1 })
+    expect(tokenService.claimSweptDeposit).toHaveBeenCalledOnce()
+  })
+
   it("targets the largest normalized balance for recovery when no token is sweepable", async () => {
     const { deps, store } = makeDeps()
     const usdc = {
@@ -512,6 +615,21 @@ describe("syncSipaDeposits", () => {
         token: { ...deps.token, decimals: 18 },
         fundingTokens: [deps.token, usdc],
       }
+      ;(deps.publicClient as { getTransactionReceipt: unknown }).getTransactionReceipt = vi.fn(
+        async () => ({
+          logs: [
+            {
+              address: usdc.address,
+              topics: encodeEventTopics({
+                abi: erc20Abi,
+                eventName: "Transfer",
+                args: { from: SIPA_A, to: "0x000000000000000000000000000000000000dead" },
+              }),
+              data: pad(toHex(5_000_000n)),
+            },
+          ],
+        }),
+      )
       mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
       mocks.readSweepEvents.mockResolvedValue([
         { index: 7n, amount: 4n * 10n ** 18n, blockNumber: HEAD, txHash: TX_HASH },
@@ -536,9 +654,102 @@ describe("syncSipaDeposits", () => {
         tokenDecimals: 18,
         fundingTxHash: "0xfund",
         fundingFromAddress: "0xfeed",
+        fundingTokenSymbol: "USDC",
       })
     },
   )
+
+  it("names the token a sweep took from a re-used address, over its first funding's", async () => {
+    const store = makeStore()
+    const usdc = {
+      address: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" as Address,
+      symbol: "USDC",
+      decimals: 6,
+    }
+    // Funded in USDC once, swept and claimed; then funded again in DAI and swept before any tick.
+    store.records.set(SIPA_A, {
+      phase: "claimed",
+      claimedInboxIndexes: ["7"],
+      messageSecret: SECRET_A.toString(),
+      netAmount: "990000",
+      amount: "0.99",
+      fundingTxHash: "0xusdc",
+      fundingFromAddress: "0xfeed",
+      fundingTokenSymbol: "USDC",
+      startTime: Date.now() - 86_400_000,
+      lastScanAt: 0,
+    })
+    const { deps } = makeDeps(store)
+    const getTransactionReceipt = vi.fn(async () => ({
+      logs: [
+        {
+          address: deps.token.address,
+          topics: encodeEventTopics({
+            abi: erc20Abi,
+            eventName: "Transfer",
+            args: { from: SIPA_A, to: "0x000000000000000000000000000000000000dead" },
+          }),
+          data: pad(toHex(4n * 10n ** 18n)),
+        },
+      ],
+    }))
+    ;(deps.publicClient as { getTransactionReceipt: unknown }).getTransactionReceipt =
+      getTransactionReceipt
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([
+      { index: 8n, amount: 4n * 10n ** 18n, blockNumber: HEAD, txHash: "0xresweep" },
+    ])
+    const syncDeps = {
+      ...deps,
+      token: { ...deps.token, decimals: 18 },
+      fundingTokens: [deps.token, usdc],
+    }
+
+    // A failed receipt read leaves the sweep for the next tick rather than claiming it under the
+    // first funding's token.
+    getTransactionReceipt.mockRejectedValueOnce(new Error("rpc down"))
+    expect(await syncSipaDeposits(syncDeps)).toMatchObject({ claimed: 0, failed: 1 })
+    expect(store.records.get(SIPA_A)).toMatchObject({
+      claimedInboxIndexes: ["7"],
+      fundingTokenSymbol: "USDC",
+    })
+
+    store.records.get(SIPA_A)!.lastScanAt = 0
+    await syncSipaDeposits(syncDeps)
+
+    expect(getTransactionReceipt).toHaveBeenCalledWith({ hash: "0xresweep" })
+    expect(store.records.get(SIPA_A)).toMatchObject({
+      phase: "claimed",
+      claimedInboxIndexes: ["7", "8"],
+      sweepTxHash: "0xresweep",
+      tokenSymbol: "DAI",
+      fundingTokenSymbol: "DAI",
+    })
+
+    // A batched tx that moved two accepted tokens out of the SIPA names neither.
+    getTransactionReceipt.mockResolvedValueOnce({
+      logs: [usdc.address, deps.token.address].map((address) => ({
+        address,
+        topics: encodeEventTopics({
+          abi: erc20Abi,
+          eventName: "Transfer",
+          args: { from: SIPA_A, to: "0x000000000000000000000000000000000000dead" },
+        }),
+        data: pad(toHex(1n)),
+      })),
+    })
+    mocks.readSweepEvents.mockResolvedValue([
+      { index: 9n, amount: 1n, blockNumber: HEAD, txHash: "0xbatch" },
+    ])
+    store.records.get(SIPA_A)!.lastScanAt = 0
+    await syncSipaDeposits(syncDeps)
+
+    expect(store.records.get(SIPA_A)).toMatchObject({
+      claimedInboxIndexes: ["7", "8", "9"],
+      sweepTxHash: "0xbatch",
+      fundingTokenSymbol: "DAI",
+    })
+  })
 
   it("stamps the larger of the deposit fee and the seeded registration fee, plus the portal's cut", async () => {
     const store = makeStore()
@@ -827,6 +1038,65 @@ describe("syncSipaDeposits", () => {
     expect(store.records.get(SIPA_A)).not.toHaveProperty("recoveryTxHash")
   })
 
+  it("marks an unswept SIPA holding only ETH recoverable in ETH", async () => {
+    const store = makeStore()
+    // A token fee priced on an earlier pass must not price the ETH.
+    store.records.set(SIPA_A, { phase: "broadcast", startTime: 1, amount: "0", fee: "140" })
+    const { deps } = makeDeps(store)
+    ;(deps.publicClient.getBalance as ReturnType<typeof vi.fn>).mockResolvedValue(10n ** 16n)
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([])
+    mocks.readSipaFundingStatus.mockResolvedValue({
+      balance: 0n,
+      scaledBalance: 0n,
+      fee: 100n,
+      fpcFundingCut: 40n,
+      sweepable: false,
+    })
+
+    expect(await syncSipaDeposits(deps)).toMatchObject({ recoverable: 1 })
+    expect(store.records.get(SIPA_A)).toMatchObject({
+      phase: "recoverable",
+      amount: "0.01",
+      tokenAddress: "0x0000000000000000000000000000000000000000",
+      tokenSymbol: "ETH",
+      tokenDecimals: 18,
+    })
+    expect(store.records.get(SIPA_A)?.fee).toBeUndefined()
+  })
+
+  it("never turns a claimed deposit holding leftover ETH into an ETH recovery", async () => {
+    const store = makeStore()
+    const claimed = {
+      phase: "claimed" as const,
+      startTime: 1,
+      amount: "14.75",
+      netAmount: "14750000000000000000",
+      fee: "250000000000000000",
+      tokenSymbol: "DAI",
+      sweepTxHash: TX_HASH,
+      inboxIndex: "4",
+      claimedInboxIndexes: ["4"],
+    }
+    store.records.set(SIPA_A, claimed)
+    const { deps } = makeDeps(store)
+    // ETH sent before the sweep deployed the SIPA stays there; the sweep sits outside this window.
+    ;(deps.publicClient.getBalance as ReturnType<typeof vi.fn>).mockResolvedValue(10n ** 16n)
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([])
+    mocks.readSipaFundingStatus.mockResolvedValue({
+      balance: 0n,
+      scaledBalance: 0n,
+      fee: 100n,
+      fpcFundingCut: 40n,
+      sweepable: false,
+    })
+
+    await syncSipaDeposits(deps)
+
+    expect(store.records.get(SIPA_A)).toMatchObject(claimed)
+  })
+
   it("settles a SIPA with a Recovered log as recovered, stamping its tx", async () => {
     const store = makeStore()
     store.records.set(SIPA_A, { phase: "sweeping", startTime: 1, amount: "15" })
@@ -922,6 +1192,23 @@ describe("syncSipaDeposits", () => {
     expect(result).toMatchObject({ discovered: 2, claimed: 1, failed: 1 })
     expect(tokenService.claimSweptDeposit).toHaveBeenCalledTimes(1)
     expect(store.records.get(SIPA_B)).toMatchObject({ phase: "claimed" })
+  })
+
+  it("reports progress over the pass's unique items, failed ones included", async () => {
+    const { deps } = makeDeps()
+    mocks.fetchSipaEvents.mockResolvedValue([
+      sipaEvent(SECRET_A),
+      sipaEvent(SECRET_A),
+      sipaEvent(SECRET_B),
+    ])
+    mocks.readSweepEvents.mockRejectedValueOnce(new Error("rpc hiccup"))
+    const progress: [number, number][] = []
+    await syncSipaDeposits({ ...deps, onProgress: (done, total) => progress.push([done, total]) })
+    expect(progress).toEqual([
+      [0, 2],
+      [1, 2],
+      [2, 2],
+    ])
   })
 
   it("backfills empty discovery-derived fields on an existing self-initiated record", async () => {
@@ -1166,9 +1453,13 @@ describe("syncSipaDeposits self-initiated records", () => {
 
     await syncSipaDeposits(deps)
 
+    expect(mocks.readDepositFee).toHaveBeenCalledWith(
+      deps.publicClient,
+      REGISTRATION_IMPLEMENTATION,
+    )
     expect(mocks.readSipaFundingStatus).toHaveBeenCalledWith(
       deps.publicClient,
-      expect.objectContaining({ sipa: SIPA_C, implementation: REGISTRATION_IMPLEMENTATION }),
+      expect.objectContaining({ sipa: SIPA_C }),
     )
     expect(store.records.get(SIPA_C)).toMatchObject({ intent: "registration" })
   })
@@ -1189,10 +1480,6 @@ describe("syncSipaDeposits self-initiated records", () => {
     expect(mocks.readDepositFee).toHaveBeenCalledWith(
       deps.publicClient,
       REGISTRATION_IMPLEMENTATION,
-    )
-    expect(mocks.readSipaFundingStatus).toHaveBeenCalledWith(
-      deps.publicClient,
-      expect.objectContaining({ implementation: REGISTRATION_IMPLEMENTATION }),
     )
   })
 
@@ -1296,6 +1583,14 @@ describe("syncSipaDeposits self-initiated records", () => {
 
     expect(result).toMatchObject({ claimed: 1, failed: 0 })
     expect(mocks.readSweepEvents.mock.calls.map((c) => c[1])).toEqual([SIPA_B, SIPA_C])
+    // One batched scan for both; only the SIPA with no sweep reads its balances.
+    expect(vi.mocked(sdk.readSweepEventsMany)).toHaveBeenCalledOnce()
+    expect(vi.mocked(sdk.readSweepEventsMany).mock.calls[0][1].map((w) => w.sipa)).toEqual([
+      SIPA_B,
+      SIPA_C,
+    ])
+    expect(vi.mocked(sdk.readSipaBalancesMany)).toHaveBeenCalledOnce()
+    expect(vi.mocked(sdk.readSipaBalancesMany).mock.calls[0][1]).toEqual([SIPA_B])
     expect(tokenService.claimSweptDeposit).toHaveBeenCalledOnce()
     expect(store.records.get(SIPA_C)).toMatchObject({ phase: "claimed" })
   })
@@ -1809,6 +2104,33 @@ describe("syncSipaDeposits funding attribution", () => {
         walletProvider: undefined,
       }),
     )
+  })
+
+  it("dates a deposit this device handed out by its funding transfer's block", async () => {
+    const store = makeStore()
+    store.records.set(SIPA_A, {
+      phase: "broadcast",
+      startTime: 1,
+      messageSecret: SECRET_A.toString(),
+    })
+    const { deps } = makeDeps(store)
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readFundingTransfers.mockResolvedValue([transfer])
+    mocks.readSweepEvents.mockResolvedValue([])
+    mocks.readSipaFundingStatus.mockResolvedValue({
+      balance: 1_000_000n,
+      scaledBalance: 1_000_000n,
+      fee: 100n,
+      fpcFundingCut: 40n,
+      sweepable: true,
+    })
+    mocks.readBlockTimeMs.mockImplementation(async (_client: unknown, block: bigint) =>
+      block === transfer.blockNumber ? 1_700_000_000_000 : undefined,
+    )
+
+    await syncSipaDeposits(deps)
+
+    expect(store.records.get(SIPA_A)).toMatchObject({ startTime: 1_700_000_000_000 })
   })
 
   it("never re-reads transfers once attributed", async () => {

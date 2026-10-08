@@ -23,6 +23,11 @@ export const WITHDRAWAL_RECEIVE_ASSETS: readonly WithdrawalReceiveAssetOption[] 
   { id: "ETH", symbol: "ETH", name: "Ether", icon: ethIcon, direct: false },
 ]
 
+/** Native ETH is not an ERC20, so its network row drops the token standard. */
+export function withdrawalNetworkLabel(asset: WithdrawalReceiveAsset | undefined): string {
+  return asset === "ETH" ? "Ethereum" : "Ethereum (ERC20)"
+}
+
 /**
  * The choices to actually offer. A swap route needs the factory whose counterfactual escrow the
  * burn pays; without it there is nowhere to burn to, so offering the route would strand the DAI.

@@ -76,7 +76,7 @@ const CLASS_ID = Fr.fromString("0xc1a55")
 
 function makeService() {
   const wallet: any = {
-    node: { getNodeInfo: vi.fn(async () => ({ l1ChainId: 31337, rollupVersion: 1 })) },
+    getNodeIdentity: vi.fn(async () => ({ l1ChainId: 31337, rollupVersion: 1 })),
     registerContract: vi.fn().mockResolvedValue(undefined),
     getDefaultSendOptions: vi.fn(async () => ({})),
   }

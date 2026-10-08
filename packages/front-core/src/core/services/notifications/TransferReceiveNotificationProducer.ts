@@ -20,12 +20,18 @@
  * The bridge producer gets equivalent reconciliation implicitly from
  * snapshot replay on subscribe; the event-driven shape needs this
  * explicit catch-up.
+ *
+ * A receive from before this device first scanned the account (`joined`:
+ * at or below that head, and stamped before that time) is history the
+ * device replayed, not news: it is recorded already dismissed, so the panel
+ * never shows it and the id-keyed dedup stops the startup replay surfacing it.
  */
 
 import { globalEventEmitter } from "../GlobalEventEmitter"
 import { isZeroAddress } from "src/utils/validate"
 import { truncateMiddle } from "src/utils/shortenAddr"
 import type { TokenTransaction, Transaction } from "src/types/transactions"
+import type { TransferScanJoined } from "../transactions/TransferEventScanner"
 
 import {
   AppNotificationStore,
@@ -46,6 +52,8 @@ export interface TransferReceiveNotificationProducerOptions {
    * skips reconciliation and just subscribes to the event stream.
    */
   accountTransactions: () => Promise<Transaction[] | null>
+  /** Where this device first scanned the account; undefined hides nothing. */
+  joined?: () => Promise<TransferScanJoined | undefined>
   /** Test seam; defaults to `Date.now`. */
   now?: () => number
 }
@@ -166,10 +174,26 @@ export class TransferReceiveNotificationProducer implements NotificationProducer
     this.processChain = this.processChain.catch(() => undefined).then(task)
   }
 
+  private async replayed(tx: TokenTransaction): Promise<boolean> {
+    if (tx.blockNumber === undefined || !this.opts.joined) return false
+    try {
+      const joined = await this.opts.joined()
+      return joined !== undefined && tx.blockNumber <= joined.block && tx.timestamp <= joined.ms
+    } catch (err) {
+      logger.warn("[TransferReceiveNotificationProducer] joined read failed:", err)
+      return false
+    }
+  }
+
   private async mintFromTransaction(tx: TokenTransaction): Promise<void> {
     if (tx.action !== "receive") return
+    const input = notificationInputForReceive(tx)
+    if (await this.replayed(tx)) {
+      const at = this.now()
+      Object.assign(input, { read: true, readAt: at, dismissedAt: at })
+    }
     try {
-      await this.opts.notificationStore.createIfAbsent(notificationInputForReceive(tx))
+      await this.opts.notificationStore.createIfAbsent(input)
     } catch (err) {
       logger.warn("[TransferReceiveNotificationProducer] createIfAbsent failed:", err)
     }

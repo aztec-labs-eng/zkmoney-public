@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react"
 import { AccountServiceClient } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
+import { isBaseUnits } from "./ticketThreshold"
 
 /** What the claim server offers a paylink signup: the threshold and the reduced schedule it buys. */
 export interface GoldenTicketOffer {
@@ -19,6 +20,8 @@ export async function fetchGoldenTicketOffer(): Promise<GoldenTicketOffer | null
   }).domainInfo()
   const ticket = info.goldenTicket
   if (!ticket?.schedule) return null
+  // A threshold no note can be compared against is a failed read, not an offer.
+  if (!isBaseUnits(ticket.threshold)) throw new Error("invalid golden ticket threshold")
   return { threshold: ticket.threshold, schedule: ticket.schedule }
 }
 

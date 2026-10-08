@@ -77,7 +77,7 @@ test("shared dialog traps focus, keeps nested Escape local, and restores focus a
         await page.keyboard.press("Escape")
         await notifications.waitFor({ state: "detached" })
         assert.equal(await bell.evaluate((node) => node === document.activeElement), true)
-        for (const destination of ["Share @tag", "Logout"]) for (const method of (destination === "Logout" ? ["Escape", "Close", "Cancel"] : ["Escape", "Close"])) {
+        for (const destination of ["Share @tag", "Log out"]) for (const method of (destination === "Log out" ? ["Escape", "Close", "Cancel"] : ["Escape", "Close"])) {
           const menuOpener = await page.getByRole("button", { name: "Open menu", exact: true }).elementHandle()
           await menuOpener.click()
           const menu = page.getByRole("dialog", { name: "Wallet menu", exact: true })
@@ -311,7 +311,7 @@ test("claim signing, pending and failure fixtures preserve notification and busy
         const working = page.getByRole("dialog", { name: "Claiming payment", exact: true })
         await working.waitFor()
         if (fixture === "signing") {
-          await working.getByText("Confirm with passkey...", { exact: true }).waitFor()
+          await working.getByText("Confirm with passkey…", { exact: true }).waitFor()
           assert.equal(await working.getByRole("button", { name: /^(Close|Cancel)$/ }).count(), 0)
           await page.keyboard.press("Escape")
           assert.equal(await working.evaluate((node) => node.matches(":modal")), true)

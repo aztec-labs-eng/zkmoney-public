@@ -45,15 +45,14 @@ export function checkBasicAuth(
 
 export const BASIC_AUTH_CHALLENGE = 'Basic realm="zk.money wallet"'
 
-export const BRIDGE_PATH = "/bridge.html"
 // A shared link lands in a chat as /link#… or /request#…; the crawler behind the card fetches the
-// path alone and cannot answer a challenge. The two pages and the card image are public to GET
-// and HEAD, as on the CDN. Exact paths: nothing under them, and /claim stays gated.
-const LINK_PREVIEW_PATHS = new Set(["/og.png", "/link", "/request"])
+// path alone and cannot answer a challenge, as does a wallet app fetching the WalletConnect icon.
+// The two pages and both images are public to GET and HEAD, as on the CDN. Exact paths: nothing
+// under them, and /claim stays gated.
+const LINK_PREVIEW_PATHS = new Set(["/og.png", "/favicon.png", "/link", "/request"])
 
-/** Whether the request is served without a credential: the campaign's bridge frame, or a link preview. */
+/** Whether the request is served without a credential: a link preview or the wallet icon. */
 export function isPublicPath(method: string | undefined, path: string): boolean {
-  if (path === BRIDGE_PATH) return true
   return (method === "GET" || method === "HEAD") && LINK_PREVIEW_PATHS.has(path)
 }
 

@@ -113,6 +113,40 @@ describe("fakeOperations matches the real operations module", () => {
   }
 })
 
+/** What the tab line reads at each step of one operation's life. */
+async function tabLines(mod: typeof fake | typeof real): Promise<(string | undefined)[]> {
+  const operationId = `parity-tab-${++seq}`
+  const store = mod.getOperationStore() as ReturnType<typeof real.getOperationStore>
+  const seen: (string | undefined)[] = []
+  const host = document.createElement("div")
+  const root = createRoot(host)
+  function Probe() {
+    return <>{mod.useTabLine(operationId) ?? "none"}</>
+  }
+  const read = async (change?: () => unknown) => {
+    await act(async () => {
+      await change?.()
+      root.render(<Probe />)
+    })
+    seen.push(host.textContent ?? undefined)
+  }
+  await read()
+  await read(() => store.begin({ operationId, flow: "send", summary: "$1", scope: null }))
+  await read(() => provingProgress.emitTxHashSaved(operationId, hash))
+  await read(() => store.release(operationId))
+  await read(() => store.settle(operationId, hash))
+  await act(async () => root.unmount())
+  return seen
+}
+
+describe("the fake's tab line", () => {
+  it("reads as the real one through an operation's life", async () => {
+    const expected = await tabLines(real)
+    expect(expected).toEqual(["none", "keep", "safe", "safe", "none"])
+    expect(await tabLines(fake)).toEqual(expected)
+  })
+})
+
 describe("the fake's cancel check", () => {
   const errors: unknown[] = [
     new Error("Cancelled"),

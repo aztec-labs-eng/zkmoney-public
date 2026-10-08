@@ -3,13 +3,23 @@ import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
-  PendingRegistrationStore,
-  SIPADepositStore,
   formatDateLabel,
   formatTimeLabel,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
 import { formatUnits, type Hex } from "viem"
+import {
+  ACCOUNT,
+  DAI as ONE,
+  FAR_DEADLINE,
+  L2_ADDRESS,
+  pendingRecord,
+  registrationTerms,
+  resetRegistrationStores,
+  seedRegistrationRail,
+  ticketBoundTerms,
+  ticketSignupStash,
+} from "./support/registrationFixtures"
 
 const h = vi.hoisted(() => ({
   navigate: vi.fn(),
@@ -24,6 +34,13 @@ const h = vi.hoisted(() => ({
   deductions: undefined as { fpcCut: bigint } | undefined,
   /** The relayer's sweep fee; undefined while unread. */
   sweepFee: undefined as bigint | undefined,
+  /** The pending-deposit observer; none unless a test states a processing reason. */
+  observer: undefined as { stateFor: () => unknown; subscribe: () => () => void } | undefined,
+}))
+
+vi.mock("../src/features/deposit/sipaProcessing", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/deposit/sipaProcessing")>()),
+  sipaProcessingObserver: () => h.observer,
 }))
 
 vi.mock("react-router-dom", async (importOriginal) => ({
@@ -97,7 +114,6 @@ const { formatRemaining, saveRegistrationTerms } = await import(
 const { getPendingStore } = await import("../src/features/onboarding/webRegistration")
 const { saveWalletIdentity } = await import("../src/features/identity/walletIdentity")
 const { recordDepositAdmission } = await import("../src/features/identity/admission")
-const { webStorage } = await import("../src/platform/storage/WebStorageAdapter")
 const { loadRegistrationTerms } = await import("../src/features/onboarding/registrationTerms")
 const { askedTotal } = await import("../src/features/onboarding/registrationAsk")
 const { DETECTING_AMOUNT } = await import("../src/features/onboarding/useRegistrationDepositEntry")
@@ -105,29 +121,25 @@ const { REGISTRATIONS_PAUSED_NOTICE } = await import(
   "../src/features/onboarding/onboardingErrorCopy"
 )
 const { stashClaimLink, stashTicketSignup } = await import("../src/features/paylink/claimStash")
+const { takeClaimPromptRequest } = await import("../src/features/paylink/claimPrompt")
+const { startClaim, endClaim } = await import("../src/features/paylink/runningClaims")
 
 /** The ask, figure-free: the sheet the banner opens names the amount. */
 const ASK = "Send a deposit to keep @taga."
 const notice = (id: string) =>
   container.querySelector(`[data-testid="${id}"]`)?.textContent ?? undefined
 
-const ACCOUNT = "0x00000000000000000000000000000000000000f1"
-const L2_ADDRESS = `0x${"22".repeat(32)}` as Hex
 const DAY = 86_400_000
 
-const record = (over: Partial<PendingRegistrationRecord> = {}) => ({
-  tag: "taga",
-  nameHash: `0x${"11".repeat(32)}` as Hex,
-  l2Address: L2_ADDRESS,
-  l1ChainId: 11155111,
-  sipaAddress: "0x00000000000000000000000000000000000000c3" as Hex,
-  depositToken: "0x00000000000000000000000000000000000000d4" as Hex,
-  broadcast: true,
-  phase: "awaiting_deposit" as const,
-  retries: 0,
-  startTime: Date.now(),
-  ...over,
-})
+const record = pendingRecord
+/** The registration's deposit has reached the address, and the hero reports it rather than asks. */
+const expectReported = () => {
+  expect(container.querySelector('[data-testid="deposit-detected"]')).not.toBeNull()
+  expect(container.textContent).toContain("Claiming @taga")
+  expect(container.textContent).toContain("Deposit received. This only takes a moment.")
+  expect(container.textContent).not.toContain("Activate account")
+  expect(container.textContent).not.toContain("Send a deposit")
+}
 
 let container: HTMLDivElement
 let root: Root
@@ -145,8 +157,7 @@ const settleReads = () => act(async () => new Promise((r) => setTimeout(r, 0)))
 beforeEach(async () => {
   vi.clearAllMocks()
   vi.stubEnv("VITE_REGISTRATION_ASK_DEPOSIT_TOTAL", "")
-  ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
-  ;(SIPADepositStore as unknown as { instance: unknown }).instance = null
+  resetRegistrationStores()
   localStorage.clear()
   await getPendingStore().load()
   h.amounts = { min: 0n, fee: 0n }
@@ -180,14 +191,14 @@ describe("SecureNameNoticeCard", () => {
   it("names the tag free without a figure, and leads to the address", async () => {
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: Math.floor((Date.now() + 3 * DAY) / 1000),
-      fee: String(5n * 10n ** 17n),
-      minDeposit: String(45n * 10n ** 17n),
-      feeWaived: true,
-    })
+    saveRegistrationTerms(
+      registrationTerms({
+        deadline: Math.floor((Date.now() + 3 * DAY) / 1000),
+        fee: String(5n * 10n ** 17n),
+        minDeposit: String(45n * 10n ** 17n),
+        feeWaived: true,
+      }),
+    )
     await act(async () => {
       await getPendingStore().upsert(ACCOUNT, {}, record())
     })
@@ -196,7 +207,6 @@ describe("SecureNameNoticeCard", () => {
 
     const body = notice("secure-name-notice")!
     expect(body).toContain("Activate account")
-    // A live claim deadline is how long the reservation holds, so the hero leads with it.
     expect(body).toContain("Reserved until")
     expect(body).toContain(ASK)
     expect(body).toContain("The tag is free.")
@@ -212,15 +222,15 @@ describe("SecureNameNoticeCard", () => {
     h.deductions = undefined
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: Math.floor((Date.now() + 3 * DAY) / 1000),
-      fee: String(5n * 10n ** 17n),
-      minDeposit: String(45n * 10n ** 17n),
-      feeWaived: true,
-      depositAmount: String(4n * 10n ** 18n),
-    })
+    saveRegistrationTerms(
+      registrationTerms({
+        deadline: Math.floor((Date.now() + 3 * DAY) / 1000),
+        fee: String(5n * 10n ** 17n),
+        minDeposit: String(45n * 10n ** 17n),
+        feeWaived: true,
+        depositAmount: String(4n * 10n ** 18n),
+      }),
+    )
     await act(async () => {
       await getPendingStore().upsert(ACCOUNT, {}, record())
     })
@@ -229,45 +239,68 @@ describe("SecureNameNoticeCard", () => {
 
     const body = notice("secure-name-notice")!
     expect(body).toContain(ASK)
+    expect(body).toContain("The tag is free.")
     expect(body).not.toContain("received")
     expect(body).not.toContain("$")
   })
 
-  it("spins once the deposit is detected, instead of asking for it again", async () => {
+  /** A registration whose rail record shows the sweep under way, its record not yet stamped. */
+  const railSweeping = async (startTime = 1) => {
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: Math.floor((Date.now() + 3 * DAY) / 1000),
-      fee: String(10n * 10n ** 18n),
-      minDeposit: String(5n * 10n ** 18n),
-      feeWaived: false,
-    })
-    // The L1 watcher stamped the deposit; no detection tick has promoted the record yet.
+    const rec = record()
     await act(async () => {
-      await getPendingStore().upsert(ACCOUNT, {}, record({ fundedAt: Date.now() }))
+      await getPendingStore().upsert(ACCOUNT, {}, rec)
+      await seedRegistrationRail(rec, { phase: "sweeping" }, { startTime })
     })
     await render()
     await settleReads()
+  }
 
-    expect(container.querySelector('[data-testid="deposit-detected"]')).not.toBeNull()
-    expect(container.textContent).toContain("Deposit received")
-    expect(container.textContent).toContain("Confirming it and registering @taga")
-    // The money is in: the hero must not ask again of someone who has already paid.
-    expect(container.textContent).not.toContain("Activate account")
-    expect(container.textContent).not.toContain("Send a deposit")
+  it("keeps the claiming hero's short wait for a deposit on its way", async () => {
+    await railSweeping(Date.now())
+    expect(container.textContent).toContain("Claiming @taga")
+    expect(container.textContent).toContain("Receiving. This only takes a moment.")
   })
 
+  it.each([
+    ["once the sweep is stuck", undefined, "Receiving."],
+    ["for an aged reason the rail states", { reason: { kind: "checking" } }, "Checking status."],
+    [
+      "while a stated blocker holds the sweep",
+      {
+        reason: {
+          kind: "capacity",
+          requiredAtomic: 5n * 10n ** 18n,
+          availableAtomic: 10n ** 18n,
+          refill: { status: "unknown" },
+          decimals: 18,
+          observedAt: 1,
+        },
+        blocker: { kind: "capacity", observedAt: 1 },
+      },
+      "Waiting for capacity.",
+    ],
+  ])("promises no short wait %s", async (_, state, status) => {
+    h.observer = state && { stateFor: () => state, subscribe: () => () => {} }
+    try {
+      await railSweeping()
+      expect(container.textContent).toContain("Claiming @taga")
+      expect(container.textContent).toContain(status)
+      expect(container.textContent).not.toContain("only takes a moment")
+    } finally {
+      h.observer = undefined
+    }
+  })
   it("asks without a figure when nothing is waived, and holds once the deposit is seen", async () => {
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: Math.floor((Date.now() + 5 * 3_600_000) / 1000),
-      feeWaived: false,
-    })
+    saveRegistrationTerms(
+      registrationTerms({
+        deadline: Math.floor((Date.now() + 5 * 3_600_000) / 1000),
+        feeWaived: false,
+      }),
+    )
     await act(async () => {
       await getPendingStore().upsert(ACCOUNT, {}, record())
     })
@@ -303,14 +336,14 @@ describe("SecureNameNoticeCard — deposit admission", () => {
     "keeps a paid registration pending on %s",
     async (state) => {
       saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-      saveRegistrationTerms({
-        account: ACCOUNT,
-        tag: "taga",
-        deadline: state === "expired" ? 1 : 4102444800,
-        fee: "10000000000000000000",
-        minDeposit: "5000000000000000000",
-        feeWaived: false,
-      })
+      saveRegistrationTerms(
+        registrationTerms({
+          deadline: state === "expired" ? 1 : 4102444800,
+          fee: "10000000000000000000",
+          minDeposit: "5000000000000000000",
+          feeWaived: false,
+        }),
+      )
       await getPendingStore().upsert(ACCOUNT, {}, record())
       const original = getPendingStore().current()!
       const terms = loadRegistrationTerms(ACCOUNT)
@@ -338,23 +371,10 @@ describe("SecureNameNoticeCard — deposit admission", () => {
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     const legacy = record({ fee: "500000000000000000" })
     await getPendingStore().upsert(ACCOUNT, {}, legacy)
-    const rail = SIPADepositStore.get(webStorage)
-    await rail.load()
-    await rail.upsert(
-      legacy.sipaAddress as Hex,
+    await seedRegistrationRail(
+      legacy,
       { phase: "recovered" },
-      {
-        recipientL2Address: L2_ADDRESS,
-        tokenAddress: legacy.depositToken,
-        tokenSymbol: "DAI",
-        l1ChainId: 11155111,
-        messageSecret: legacy.nameHash,
-        recoveryAddress: ACCOUNT,
-        recipientHash: legacy.nameHash,
-        amount: "5",
-        recoveryTxHash: legacy.nameHash,
-        startTime: 1,
-      },
+      { amount: "5", recoveryTxHash: legacy.nameHash },
     )
     const terms = {
       account: ACCOUNT,
@@ -372,6 +392,30 @@ describe("SecureNameNoticeCard — deposit admission", () => {
     expect(body).toContain(ASK)
     expect(body).toContain("The tag is free.")
     expect(body).not.toContain("Do not send another deposit")
+  })
+
+  it("routes a funded deposit under a quote the earned price cannot use to recovery", async () => {
+    saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
+    h.amounts = { min: 5n * 10n ** 18n, fee: 0n }
+    await getPendingStore().upsert(
+      ACCOUNT,
+      {},
+      record({ fee: "10000000000000000000", phase: "funded", fundedAt: 1 }),
+    )
+    saveRegistrationTerms({
+      account: ACCOUNT,
+      tag: "taga",
+      deadline: 4102444800,
+      fee: "0",
+      minDeposit: "5000000000000000000",
+      feeWaived: true,
+      earnedExpected: true,
+    })
+    recordDepositAdmission(getPendingStore().current()!, 10n * 10n ** 18n)
+    await render()
+    await settleReads()
+    expect(notice("registration-pending-notice")).toContain("Registration needs recovery")
+    expect(notice("claiming-notice")).toBeUndefined()
   })
 
   it("does not use another deposit address's receipt", async () => {
@@ -394,15 +438,15 @@ describe("registration deposit entry — deposit admission", () => {
     "payment controls follow this registration's admission: %s",
     async (admitted) => {
       saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-      saveRegistrationTerms({
-        account: ACCOUNT,
-        tag: "taga",
-        deadline: 4102444800,
-        fee: "10000000000000000000",
-        minDeposit: "5000000000000000000",
-        feeWaived: false,
-        depositAmount: "5000000000000000000",
-      })
+      saveRegistrationTerms(
+        registrationTerms({
+          deadline: Number(FAR_DEADLINE),
+          fee: "10000000000000000000",
+          minDeposit: "5000000000000000000",
+          feeWaived: false,
+          depositAmount: "5000000000000000000",
+        }),
+      )
       await getPendingStore().upsert(ACCOUNT, {}, record({ fee: "10000000000000000000" }))
       const original = getPendingStore().current()!
       const saved = loadRegistrationTerms(ACCOUNT)
@@ -435,15 +479,15 @@ describe("registration deposit entry — deposit admission", () => {
     feeWaived?: boolean
   }) => {
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: 4102444800,
-      fee: over.fee ?? "10000000000000000000",
-      minDeposit: over.minDeposit ?? "5000000000000000000",
-      feeWaived: over.feeWaived ?? false,
-      depositAmount: String(over.deposited),
-    })
+    saveRegistrationTerms(
+      registrationTerms({
+        deadline: Number(FAR_DEADLINE),
+        fee: over.fee ?? "10000000000000000000",
+        minDeposit: over.minDeposit ?? "5000000000000000000",
+        feeWaived: over.feeWaived ?? false,
+        depositAmount: String(over.deposited),
+      }),
+    )
     await getPendingStore().upsert(ACCOUNT, {}, record({ fee: over.fee ?? "10000000000000000000" }))
     await act(async () =>
       root.render(
@@ -480,13 +524,13 @@ describe("registration deposit entry — deposit admission", () => {
     // Deadline 0: a stamped record, so nothing signed a schedule and nothing reads the chain's.
     // The row is settled at what arrived rather than promising a figure no read will bring.
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: 0,
-      feeWaived: false,
-      depositAmount: String(5n * 10n ** 18n),
-    })
+    saveRegistrationTerms(
+      registrationTerms({
+        deadline: 0,
+        feeWaived: false,
+        depositAmount: String(5n * 10n ** 18n),
+      }),
+    )
     await getPendingStore().upsert(ACCOUNT, {}, record())
     await act(async () =>
       root.render(
@@ -506,13 +550,13 @@ describe("registration deposit entry — deposit admission", () => {
     // settled at what arrived instead of holding the placeholder.
     h.amounts = { min: 5n * 10n ** 18n, fee: 7n * 10n ** 18n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: 4102444800,
-      feeWaived: false,
-      depositAmount: String(5n * 10n ** 18n),
-    })
+    saveRegistrationTerms(
+      registrationTerms({
+        deadline: Number(FAR_DEADLINE),
+        feeWaived: false,
+        depositAmount: String(5n * 10n ** 18n),
+      }),
+    )
     await getPendingStore().upsert(ACCOUNT, {}, record({ fee: String(5n * 10n ** 18n) }))
     await act(async () =>
       root.render(
@@ -536,19 +580,16 @@ describe("registration deposit entry — deposit admission", () => {
     expect(h.detailPay?.total).toBe(askedTotal("earned_tag"))
   })
 
-  it("asks for nothing where the deployment prices no registration a sweep could take", async () => {
-    // Zero immutables: this deployment takes no registration by deposit, so the detail withholds
-    // the pay block rather than naming a figure no sweep would accept.
-    h.amounts = { min: 0n, fee: 0n }
-    await feedRow({ deposited: 10n ** 18n, feeWaived: true, fee: "0", minDeposit: "0" })
-    await act(async () => container.querySelector("button")!.click())
-    expect(h.detailPay).toBeUndefined()
-  })
-
-  it("asks for nothing where the schedule's fee sits under the relayer's sweep fee", async () => {
-    // A fee below the cut the sweep pays can never fund one, whatever reaches the address.
-    h.amounts = { min: 44n * 10n ** 17n, fee: 10n ** 17n }
-    h.sweepFee = 5n * 10n ** 17n
+  // Zero immutables take no registration by deposit, and a fee below the relayer's sweep fee can
+  // never fund one: the detail withholds the pay block rather than name a figure no sweep accepts.
+  it.each([
+    ["the deployment prices no registration", { min: 0n, fee: 0n }],
+    [
+      "the schedule's fee sits under the relayer's sweep fee",
+      { min: 44n * 10n ** 17n, fee: 10n ** 17n },
+    ],
+  ])("asks for nothing where %s", async (_, amounts) => {
+    h.amounts = amounts
     await feedRow({ deposited: 10n ** 18n, feeWaived: true, fee: "0", minDeposit: "0" })
     await act(async () => container.querySelector("button")!.click())
     expect(h.detailPay).toBeUndefined()
@@ -559,12 +600,12 @@ describe("SecureNameNoticeCard — a quote past its deadline", () => {
   it("offers the refresh rather than saying the name was lost", async () => {
     h.amounts = { min: 44n * 10n ** 17n, fee: 5n * 10n ** 17n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: Math.floor(Date.now() / 1000) - 60,
-      feeWaived: true,
-    })
+    saveRegistrationTerms(
+      registrationTerms({
+        deadline: Math.floor(Date.now() / 1000) - 60,
+        feeWaived: true,
+      }),
+    )
     await act(async () => {
       await getPendingStore().upsert(ACCOUNT, {}, record())
     })
@@ -582,11 +623,11 @@ describe("SecureNameNoticeCard — a quote past its deadline", () => {
   it("says activation is paused where this deployment prices no registration", async () => {
     h.amounts = { min: 0n, fee: 0n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: Math.floor((Date.now() + 3 * DAY) / 1000),
-    })
+    saveRegistrationTerms(
+      registrationTerms({
+        deadline: Math.floor((Date.now() + 3 * DAY) / 1000),
+      }),
+    )
     await act(async () => {
       await getPendingStore().upsert(ACCOUNT, {}, record())
     })
@@ -639,7 +680,7 @@ describe("SecureNameNoticeCard — the lead line", () => {
   it("asks without a lead where no deadline holds the quote", async () => {
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({ account: ACCOUNT, tag: "taga", deadline: 0, feeWaived: false })
+    saveRegistrationTerms(registrationTerms({ deadline: 0, feeWaived: false }))
     await act(async () => {
       await getPendingStore().upsert(ACCOUNT, {}, record())
     })
@@ -647,24 +688,6 @@ describe("SecureNameNoticeCard — the lead line", () => {
     await settleReads()
     const body = notice("secure-name-notice")!
     expect(body).toContain(ASK)
-    expect(body).not.toContain("Reserved until")
-    expect(body).not.toContain("$")
-  })
-
-  it("asks the same way while the total is still unpriced", async () => {
-    // A waived tag prices against the funding cut; an unread cut changes nothing the hero says.
-    h.deductions = undefined
-    h.amounts = { min: 45n * 10n ** 17n, fee: 5n * 10n ** 17n }
-    saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({ ...liveTerms, deadline: 0 })
-    await act(async () => {
-      await getPendingStore().upsert(ACCOUNT, {}, record())
-    })
-    await render()
-    await settleReads()
-    const body = notice("secure-name-notice")!
-    expect(body).toContain(ASK)
-    expect(body).toContain("The tag is free.")
     expect(body).not.toContain("Reserved until")
     expect(body).not.toContain("$")
   })
@@ -672,14 +695,14 @@ describe("SecureNameNoticeCard — the lead line", () => {
 
 describe("SecureNameNoticeCard — unpublished registration", () => {
   const liveTerms = () =>
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: Math.floor((Date.now() + DAY) / 1000),
-      fee: String(10n * 10n ** 18n),
-      minDeposit: String(5n * 10n ** 18n),
-      feeWaived: false,
-    })
+    saveRegistrationTerms(
+      registrationTerms({
+        deadline: Math.floor((Date.now() + DAY) / 1000),
+        fee: String(10n * 10n ** 18n),
+        minDeposit: String(5n * 10n ** 18n),
+        feeWaived: false,
+      }),
+    )
   const renderHome = (onActivate: () => void) =>
     act(async () => {
       root.render(
@@ -733,12 +756,12 @@ describe("SecureNameNoticeCard — unpublished registration", () => {
 
   it("an unpublished registration past its quote asks for the refresh first", async () => {
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: Math.floor(Date.now() / 1000) - 60,
-      feeWaived: false,
-    })
+    saveRegistrationTerms(
+      registrationTerms({
+        deadline: Math.floor(Date.now() / 1000) - 60,
+        feeWaived: false,
+      }),
+    )
     await getPendingStore().upsert(ACCOUNT, {}, record({ broadcast: false, retries: 3 }))
     const onActivate = vi.fn()
     await renderHome(onActivate)
@@ -755,14 +778,14 @@ describe("SecureNameNoticeCard — swept deposit", () => {
   const paidName = (deadline = Math.floor((Date.now() + DAY) / 1000)) => {
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline,
-      fee: String(10n * 10n ** 18n),
-      minDeposit: String(5n * 10n ** 18n),
-      feeWaived: false,
-    })
+    saveRegistrationTerms(
+      registrationTerms({
+        deadline,
+        fee: String(10n * 10n ** 18n),
+        minDeposit: String(5n * 10n ** 18n),
+        feeWaived: false,
+      }),
+    )
   }
   const renderHome = (onActivate: () => void) =>
     act(async () => {
@@ -772,13 +795,6 @@ describe("SecureNameNoticeCard — swept deposit", () => {
         </MemoryRouter>,
       )
     })
-  const expectReported = () => {
-    expect(container.querySelector('[data-testid="deposit-detected"]')).not.toBeNull()
-    expect(container.textContent).toContain("Deposit received")
-    expect(container.textContent).toContain("Confirming it and registering @taga")
-    expect(container.textContent).not.toContain("Activate account")
-    expect(container.textContent).not.toContain("Send a deposit")
-  }
 
   it.each(["reopened", "already mounted"])(
     "a sweep recorded before the registry confirms it is reported, not priced again (%s)",
@@ -798,6 +814,27 @@ describe("SecureNameNoticeCard — swept deposit", () => {
       expectReported()
     },
   )
+
+  // Until a tick promotes the record the sheet confirms the deposit; after, its step follows it.
+  it.each([
+    // The L1 watcher stamped it; no detection tick has promoted the record yet.
+    ["a deposit the L1 watcher saw", { fundedAt: Date.now() }, "sheet"],
+    [
+      "a funded claim whose address never published",
+      { phase: "funded", fundedAt: Date.now(), broadcast: false },
+      "step",
+    ],
+  ] as const)("%s is reported, not asked for again, and opens its %s", async (_, over, opens) => {
+    paidName()
+    await getPendingStore().upsert(ACCOUNT, {}, record(over))
+    const onActivate = vi.fn()
+    await renderHome(onActivate)
+    await settleReads()
+    expectReported()
+    await act(async () => container.querySelector("button")!.click())
+    expect(onActivate).toHaveBeenCalledTimes(opens === "sheet" ? 1 : 0)
+    expect(h.navigate.mock.calls).toEqual(opens === "sheet" ? [] : [["/claim/taga"]])
+  })
 
   it("a swept deposit is neither stale nor unpublished, and still opens the sheet", async () => {
     paidName(Math.floor(Date.now() / 1000) - 60)
@@ -819,32 +856,15 @@ describe("SecureNameNoticeCard — swept deposit", () => {
 })
 
 describe("SecureNameNoticeCard — a ticket-funded name", () => {
-  const ONE = 10n ** 18n
   const pendingName = async (over: Partial<PendingRegistrationRecord> = {}) => {
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
     await act(async () => {
       await getPendingStore().upsert(ACCOUNT, {}, record(over))
     })
   }
-  const ticketTerms = (over: Record<string, unknown> = {}) =>
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: Math.floor(Date.now() / 1000) + 7200,
-      fee: (ONE / 2n).toString(),
-      minDeposit: "0",
-      feeWaived: true,
-      paylinkFunded: true,
-      paylinkId: "id:paylink-frag",
-      ...over,
-    })
-  const stash = () =>
-    stashTicketSignup({
-      fragment: "paylink-frag",
-      threshold: (2n * ONE).toString(),
-      schedule: { fee: (ONE / 2n).toString(), minDeposit: "0" },
-      amount: (3n * ONE).toString(),
-    })
+  const ticketTerms = (over: Parameters<typeof ticketBoundTerms>[0] = {}) =>
+    saveRegistrationTerms(ticketBoundTerms(over))
+  const stash = () => stashTicketSignup(ticketSignupStash({ amount: (3n * ONE).toString() }))
   const state = () =>
     container.querySelector('[data-testid="secure-name-notice"]')?.getAttribute("data-ticket-state")
 
@@ -888,8 +908,46 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
     await render()
     await settleReads()
     expect(state()).toBe("submitted")
-    expect(container.textContent).toContain("Registration pending")
+    expect(container.textContent).toContain("Claiming @taga")
     expect(container.textContent).toContain("Nothing to send")
+  })
+
+  it("reads as claiming while this page claims the link, and asks for the passkey", async () => {
+    await pendingName()
+    ticketTerms()
+    stash()
+    await render()
+    await settleReads()
+    expect(state()).toBe("ready")
+    expect(container.textContent).toContain("Claim your payment")
+
+    await act(async () => startClaim("paylink-frag"))
+    expect(container.textContent).toContain("Claiming @taga")
+    expect(container.textContent).toContain("Approve with your passkey")
+    expect(container.textContent).not.toContain("Claim your payment")
+
+    // The burn's record lands before the batch signs: still the page's claim, not a sent one.
+    await act(async () => {
+      await getPendingStore().upsert(ACCOUNT, { fundedAt: Date.now() })
+    })
+    expect(state()).toBe("submitted")
+    expect(container.textContent).toContain("Approve with your passkey")
+
+    await act(async () => endClaim("paylink-frag"))
+    expect(container.textContent).toContain("Nothing to send")
+    expect(container.textContent).not.toContain("Approve with your passkey")
+  })
+
+  it("an address still publishing reads as setting up, not as unpublished", async () => {
+    await pendingName({ broadcast: false })
+    ticketTerms()
+    stash()
+    await render()
+    await settleReads()
+    expect(state()).toBe("unpublished")
+    expect(container.textContent).toContain("Setting up @taga")
+    expect(container.textContent).toContain("Publishing your deposit address")
+    expect(container.textContent).not.toContain("was not published")
   })
 
   it("keeps a blocked, lapsed or unpublished binding a ticket, and says what to do", async () => {
@@ -912,9 +970,10 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
     expect(state()).toBe("renew")
     expect(container.textContent).toContain("Refresh your reservation")
 
+    // Nothing re-sends an escalated record's address: the way back is the pending step.
     ticketTerms()
     await act(async () => {
-      await getPendingStore().upsert(ACCOUNT, { broadcast: false })
+      await getPendingStore().upsert(ACCOUNT, { broadcast: false, retries: 3 })
     })
     await render()
     await settleReads()
@@ -922,7 +981,7 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
     expect(container.textContent).toContain("was not published")
   })
 
-  it("leads to the activation prompt when one is offered, else to the pending step", async () => {
+  it("opens the link's review when the link is on this tab, else the activation prompt", async () => {
     await pendingName()
     ticketTerms()
     stash()
@@ -938,6 +997,17 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="secure-name-notice"]')!.click()
     })
+    // The review with the claim's step and status, in the one place that owns the claim.
+    expect(takeClaimPromptRequest()).toBe("paylink-frag")
+    expect(onActivate).not.toHaveBeenCalled()
+    expect(h.navigate).not.toHaveBeenCalled()
+
+    // Without the link on this tab, the activation prompt says how to get it back.
+    sessionStorage.clear()
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-testid="secure-name-notice"]')!.click()
+    })
+    expect(takeClaimPromptRequest()).toBeNull()
     expect(onActivate).toHaveBeenCalledOnce()
     expect(h.navigate).not.toHaveBeenCalled()
   })

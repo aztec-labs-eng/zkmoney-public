@@ -70,7 +70,7 @@ contract PreservedMetadataRegistryTest is RegistriesTestBase {
         urls,
         abi.encodeWithSelector(Resolver.resolve.selector, name, data),
         Resolver.resolveWithProof.selector,
-        abi.encode(NAME_HASH)
+        abi.encode(NAME_HASH, false)
       )
     );
     resolver.resolve(name, data);

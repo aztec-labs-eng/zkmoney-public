@@ -1,3 +1,4 @@
+import { reloadPage } from "../../platform/storage/walletStorage"
 import { Modal } from "../../ui/Modal"
 /**
  * Boot-time migration detection: pop the "Migration detected" modal when the signed-in account
@@ -20,6 +21,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   AppNotificationStore,
+  bootPriority,
   checkSpentViaPaylinkService,
   useAccountContext,
   useAssetContext,
@@ -54,7 +56,6 @@ import "./migration.css"
 export const PROFILE_REPOINT_POLL_MS = 5 * 60_000
 
 const RESIDUALS_NOTIFICATION_ID = "migration:residuals"
-
 
 function useProfileRepoint(): boolean {
   const booted = getConfig().oxideProfile.portal.toLowerCase()
@@ -133,6 +134,8 @@ export function MigrationDetectionMount() {
     if (!obsidionWallet || !obsidionAccount) return
     let cancelled = false
     void (async () => {
+      await bootPriority.whenBalanceSettled()
+      if (cancelled) return
       const found = await probeAccountResiduals(obsidionWallet, obsidionAccount)
       if (cancelled) return
       setScanRevision((n) => n + 1)
@@ -270,7 +273,7 @@ export function MigrationDetectionMount() {
               buttonStyle="dark"
               onClick={() => setRepointDismissed(true)}
             />
-            <PrimaryGradientButton title="Reload" onClick={() => window.location.reload()} />
+            <PrimaryGradientButton title="Reload" onClick={() => void reloadPage()} />
           </div>
         </div>
       </Modal>

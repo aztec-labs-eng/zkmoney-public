@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest"
 import type { Address, Hex } from "viem"
 import type { WithdrawalRecord } from "@obsidion/front-core"
-import { waitingNote } from "../src/features/withdraw/waitingNote"
+import { releaseNote, waitingNote } from "../src/features/withdraw/waitingNote"
 
 const HOUR = 60 * 60 * 1000
 const L2_TX = `0x${"0a".repeat(32)}` as Hex
@@ -28,10 +28,13 @@ const delayed = (patch: Partial<WithdrawalRecord>): WithdrawalRecord =>
   record({ startTime: Date.now() - 5 * HOUR, phaseEnteredAt: Date.now() - 4 * HOUR, ...patch })
 
 describe("waitingNote", () => {
-  it("names the unmined Aztec transaction while the amount is still the user's", () => {
-    const note = waitingNote(record({ phase: "submitting" }))!
-    expect(note).toMatch(/Aztec/)
-    expect(note).toMatch(/still in your balance/)
+  it("names the proof before the burn has a hash, and the unmined Aztec transaction after", () => {
+    const proving = waitingNote(record({ phase: "submitting" }))!
+    expect(proving).toMatch(/proving/)
+    expect(proving).toMatch(/still in your balance/)
+    const sent = waitingNote(record({ phase: "submitting", l2TxHash: L2_TX }))!
+    expect(sent).toMatch(/Aztec/)
+    expect(sent).toMatch(/still in your balance/)
   })
 
   it("says the withdrawal is being released to Ethereum on both phases before Ethereum accepts it", () => {
@@ -136,5 +139,46 @@ describe("waitingNote", () => {
     it("a recovered record has nothing to wait for", () => {
       expect(waitingNote(swap({ phase: "recovered" }))).toBeUndefined()
     })
+  })
+})
+
+describe("releaseNote", () => {
+  it("promises the release only once sent, and says so when it runs late", () => {
+    expect(releaseNote(record({ phase: "submitting", l2TxHash: undefined }))).toBeUndefined()
+    const fresh = record({
+      phase: "awaiting_proven",
+      l2TxHash: "0xabc" as Hex,
+      phaseEnteredAt: Date.now(),
+    })
+    expect(releaseNote(fresh)).toMatch(/on its own/)
+    const late = record({
+      phase: "awaiting_proven",
+      l2TxHash: "0xabc" as Hex,
+      phaseEnteredAt: Date.now() - 24 * HOUR,
+    })
+    expect(releaseNote(late)).toBe("This is taking longer than usual.")
+    expect(releaseNote(record({ phase: "done", l2TxHash: "0xabc" as Hex }))).toBeUndefined()
+  })
+
+  it("names the exit the visitor page offers once no relayer has moved it", () => {
+    expect(releaseNote(delayed({ phase: "finalizing_l1", l2TxHash: L2_TX }))).toMatch(
+      /send the Ethereum transaction/,
+    )
+    // One already in flight waits on itself.
+    expect(
+      releaseNote(
+        delayed({ phase: "finalizing_l1", l2TxHash: L2_TX, finalizeTxHash: FINALIZE_TX }),
+      ),
+    ).toBe("This is taking longer than usual.")
+  })
+
+  it("says the release pays the swap escrow, not the recipient, on a swap cash-out", () => {
+    const swap = { l2TxHash: L2_TX, swapOutput: "USDC" as const }
+    expect(
+      releaseNote(record({ phase: "awaiting_proven", phaseEnteredAt: Date.now(), ...swap })),
+    ).toMatch(/swapped to USDC before they reach the recipient/)
+    expect(releaseNote(delayed({ phase: "finalizing_l1", ...swap }))).toMatch(
+      /send the Ethereum transaction.*swapped to USDC/,
+    )
   })
 })

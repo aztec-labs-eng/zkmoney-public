@@ -44,7 +44,7 @@ describe("OperationHandOff", () => {
     await begin("op-a")
     await render()
     expect(container.textContent).toContain("Preparing transaction")
-    expect(container.textContent).toContain("Don't close this screen")
+    expect(container.textContent).toContain("Keep this tab open")
     await act(async () => provingProgress.emitSigningStart())
     expect(container.textContent).toContain("Confirm with passkey")
     expect(onLeave).not.toHaveBeenCalled()
@@ -74,6 +74,20 @@ describe("OperationHandOff", () => {
     await act(async () => store().markSent("op-node", hash))
     expect(onLeave).not.toHaveBeenCalled()
     await act(async () => store().release("op-node"))
+    expect(onLeave).toHaveBeenCalledOnce()
+  })
+
+  it("with until=sent, holds the beat through the ceremony and the proof, and leaves once sent", async () => {
+    await begin("op-held")
+    await act(async () => root.render(<OperationHandOff onLeave={onLeave} until="sent" />))
+    await act(async () => provingProgress.emitSigningStart())
+    await act(async () => provingProgress.emitSigningEnd())
+    expect(onLeave).not.toHaveBeenCalled()
+    expect(container.textContent).toContain("Proving privately")
+    await act(async () => provingProgress.emitStageStart("proving", "op-held"))
+    expect(onLeave).not.toHaveBeenCalled()
+    expect(container.textContent).toContain("Keep this tab open")
+    await act(async () => store().markSent("op-held", hash))
     expect(onLeave).toHaveBeenCalledOnce()
   })
 
@@ -119,8 +133,8 @@ it("leaves no screen its own hand-off state", () => {
       e.isDirectory()
         ? files(join(dir, e.name))
         : /\.tsx?$/.test(e.name)
-          ? [join(dir, e.name)]
-          : [],
+        ? [join(dir, e.name)]
+        : [],
     )
   const handOffState =
     /useBackgroundHandOff|handOff\.(reset|leave|handedOff|proving)|provingProgress\.on\("signing-end"/

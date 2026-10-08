@@ -28,11 +28,18 @@ vi.mock("@obsidion/web-ds", () => ({
     label,
     value,
     onChange,
+    error,
   }: {
     label: string
     value?: string
     onChange: (v: string) => void
-  }) => <input aria-label={label} value={value ?? ""} onChange={(e) => onChange(e.target.value)} />,
+    error?: string
+  }) => (
+    <>
+      <input aria-label={label} value={value ?? ""} onChange={(e) => onChange(e.target.value)} />
+      {error && <span role="alert">{error}</span>}
+    </>
+  ),
   TopNavIconButton: ({ onClick }: { onClick: () => void }) => (
     <button aria-label="Close" onClick={onClick} />
   ),
@@ -106,6 +113,19 @@ describe("RequestContactModal", () => {
 
     await fill("Amount", "$45")
     expect(button("Request funds")?.disabled).toBe(false)
+  })
+
+  it.each([
+    ["1.234", "Use up to 2 decimal places"],
+    ["$1.234", "Use up to 2 decimal places"],
+    ["9007199254740993", "Amount is too large"],
+    ["1e3", "Enter a number"],
+    ["0", "Enter an amount above $0."],
+  ])("names the mistake in %s", async (input, message) => {
+    await render()
+    await fill("Amount", input)
+    expect(container.querySelector("[role=alert]")?.textContent).toBe(message)
+    expect(button("Request funds")?.disabled).toBe(true)
   })
 
   it.each(["1,000", "1,234", "1,23e3", "١٫٢٣٤", "9007199254740993"])(

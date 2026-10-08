@@ -24,6 +24,8 @@ export interface BakedProfileStamp {
   network: string
   current: string
   publishedAt: string
+  /** The document's `expiresAt`; null when it never expires. */
+  expiresAt: string | null
   /** `versions[current].gitSha`; null when the document carries none. */
   currentVersionGitSha: string | null
   /** SHA-256 of the exact JSON string the virtual module embeds. */
@@ -87,6 +89,7 @@ export async function bakeConfigProfile(
       network: profile.network,
       current: profile.current,
       publishedAt: profile.publishedAt,
+      expiresAt: profile.expiresAt ?? null,
       currentVersionGitSha: resolved.version.gitSha ?? null,
       sha256: createHash("sha256").update(payload).digest("hex"),
     },
@@ -141,6 +144,7 @@ export function bakedConfigProfile(options: BakedConfigProfileOptions = {}): Plu
             VITE_NETWORK: env.VITE_NETWORK ?? "",
             VITE_CONFIG_PROFILE_URL: env.VITE_CONFIG_PROFILE_URL ?? "",
             VITE_CONFIG_EXPECTED_PROFILE_ID: env.VITE_CONFIG_EXPECTED_PROFILE_ID ?? "",
+            VITE_DESKTOP_BUILD: env.VITE_DESKTOP_BUILD ?? "",
             bakedProfile: baked?.stamp ?? null,
           },
           null,

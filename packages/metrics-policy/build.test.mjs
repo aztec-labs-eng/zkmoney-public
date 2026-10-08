@@ -19,6 +19,10 @@ test("production build mode alone never selects production metrics", () => {
 
 test("the explicit deployment target controls hosted destinations", () => {
   assert.equal(
+    metricsBuildTarget({ VITE_METRICS_ENVIRONMENT: "dev" }, "campaign").analyticsUrl,
+    "https://wallet.dev.zk.money/svc/usage",
+  )
+  assert.equal(
     metricsBuildTarget(
       { VITE_METRICS_ENVIRONMENT: "production", VITE_ZKMONEY_API_URL: "/svc/usage" },
       "wallet",
@@ -35,6 +39,30 @@ test("the explicit deployment target controls hosted destinations", () => {
   assert.doesNotThrow(() =>
     metricsBuildTarget({ VITE_ZKMONEY_API_URL: "http://localhost:5173/svc/usage" }, "wallet"),
   )
+})
+
+test("dev artifacts use the dev wallet proxy", () => {
+  const dir = mkdtempSync(join(tmpdir(), "metrics-dev-"))
+  const file = join(dir, "metrics-target.json")
+  try {
+    writeFileSync(
+      file,
+      JSON.stringify(metricsBuildTarget({ VITE_METRICS_ENVIRONMENT: "dev" }, "campaign")),
+    )
+    assert.equal(checkMetricsArtifact(file, "dev"), "dev")
+    assert.throws(() => checkMetricsArtifact(file, "staging"))
+    assert.throws(() =>
+      metricsBuildTarget(
+        {
+          VITE_METRICS_ENVIRONMENT: "dev",
+          VITE_ZKMONEY_API_URL: "https://wallet.staging.zk.money/svc/usage",
+        },
+        "campaign",
+      ),
+    )
+  } finally {
+    rmSync(dir, { recursive: true })
+  }
 })
 
 test("campaign pings cannot target a nonexistent same-origin proxy", () => {

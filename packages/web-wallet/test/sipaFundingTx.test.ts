@@ -151,20 +151,21 @@ describe("depositWindowError", () => {
     expect(depositWindowError(dai("0.34"), FEE, 18, "DAI")).toBeDefined()
   })
 
-  it("refuses a send whose credited amount would exceed the cap, naming the maximum", () => {
+  it("refuses a send whose credited amount would exceed the cap, without naming the internal ceiling", () => {
     // The fee rides on top of what the portal meters, so the cap plus the fee is still accepted.
     expect(depositWindowError(dai(CAP) + FEE, FEE, 18, "DAI")).toBeUndefined()
-    expect(depositWindowError(dai(CAP) + FEE + 1n, FEE, 18, "DAI")).toBe(
-      `Deposit up to ${CAP} DAI at a time`,
-    )
+    const over = depositWindowError(dai(CAP) + FEE + 1n, FEE, 18, "DAI")
+    expect(over).toBe("This amount is over the network's maximum per deposit")
+    expect(over).not.toContain(CAP)
   })
 
   it("measures a 6-decimal token in its own units", () => {
     const usdc = (display: string) => parseUnits(display, 6)
     const fee = usdc("0.35")
     expect(depositWindowError(usdc("100"), fee, 6, "USDC")).toBeUndefined()
+    expect(depositWindowError(usdc(CAP) + fee, fee, 6, "USDC")).toBeUndefined()
     expect(depositWindowError(usdc(CAP) + fee + 1n, fee, 6, "USDC")).toBe(
-      `Deposit up to ${CAP} USDC at a time`,
+      "This amount is over the network's maximum per deposit",
     )
   })
 })
@@ -190,5 +191,33 @@ describe("the deposit window gate, over a send in another token", () => {
         token: { address: OTHER, decimals: 6 },
       }),
     ).rejects.toThrow("Amount must exceed the deposit fee (0.35 USDC)")
+  })
+
+  it("sends nothing to an address whose broadcast could not be owed", async () => {
+    const gateway = getSipaDepositGateway() as unknown as {
+      tokenMeta: () => Promise<{ address: Address; symbol: string; decimals: number }>
+      quotedFee: () => Promise<bigint>
+      deposit: (params: Record<string, unknown>) => Promise<unknown>
+    }
+    gateway.tokenMeta = async () => ({ address: OTHER, symbol: "DAI", decimals: 18 })
+    gateway.quotedFee = async () => parseUnits("0.35", 18)
+    const publish = vi.fn(async () => {})
+
+    await expect(
+      gateway.deposit({
+        target: {
+          address: SIPA,
+          name: "alice.oxide.eth",
+          publish,
+          owe: async () => {
+            throw new Error("storage full")
+          },
+        },
+        amountDisplay: "5",
+        tokenSymbol: "DAI",
+        token: { address: OTHER, decimals: 18 },
+      }),
+    ).rejects.toThrow("storage full")
+    expect(publish).not.toHaveBeenCalled()
   })
 })

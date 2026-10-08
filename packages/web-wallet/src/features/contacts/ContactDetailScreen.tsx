@@ -1,4 +1,4 @@
-import { decimalInput, parseAmount } from "../../ui/format"
+import { amountError, decimalInput, parseAmount } from "../../ui/format"
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 import {
@@ -18,6 +18,7 @@ import {
   type SIPADepositRecord,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
+import { TRANSFER_MEMO_MAX_BYTES, truncateUtf8 } from "@obsidion/sdk"
 import {
   GlassCircleButton,
   GradientInitialAvatar,
@@ -91,8 +92,8 @@ export function ContactDetailScreen() {
   const [alias, setAlias] = useState("")
   const [savingAlias, setSavingAlias] = useState(false)
   const [renameError, setRenameError] = useState("")
-  const [requesting, setRequesting] = useState(false)
-  const [requestAmount, setRequestAmount] = useState("")
+  /** The open inline request form; undefined when closed, so closing also drops the draft. */
+  const [requestDraft, setRequestDraft] = useState<{ amount: string; note: string }>()
   const [submitting, setSubmitting] = useState(false)
   const [requestDetail, setRequestDetail] = useState<{ id: string; step: "detail" | "confirm" }>()
   const [remindedIds, setRemindedIds] = useState<ReadonlySet<string>>(new Set())
@@ -123,6 +124,14 @@ export function ContactDetailScreen() {
     else if (el) el.scrollTop = el.scrollHeight
   }, [messages, phone])
 
+  // Phones scroll the page, so the request form and its error can open below the fold.
+  const requestAmountError = amountError(requestDraft?.amount ?? "")
+  const requestAmountInvalid = Boolean(requestAmountError)
+  const requesting = Boolean(requestDraft)
+  useEffect(() => {
+    if (phone && requesting) chatFooter.current?.scrollIntoView({ block: "end" })
+  }, [phone, requesting, requestAmountInvalid])
+
   useEffect(() => {
     let cancelled = false
     routeVisit.current += 1
@@ -134,7 +143,7 @@ export function ContactDetailScreen() {
     setAddError("")
     setRenaming(false)
     setConfirmingDelete(false)
-    setRequesting(false)
+    setRequestDraft(undefined)
     ;(async () => {
       const found = findContactEntry(await ContactStorage.get().getEntries(), idOrTag ?? "")
       if (found) {
@@ -159,8 +168,22 @@ export function ContactDetailScreen() {
       .finally(() => {
         if (!cancelled) setLookingUp(false)
       })
+    // The page stays mounted under its Send flow, which can save this person.
+    const unsubscribe = ContactStorage.get().onChange(() => {
+      void ContactStorage.get()
+        .getEntries()
+        .then((entries) => {
+          const found = findContactEntry(entries, idOrTag ?? "")
+          if (found && !cancelled) {
+            setSaved(true)
+            setEntry(found)
+          }
+        })
+        .catch(console.warn)
+    })
     return () => {
       cancelled = true
+      unsubscribe()
     }
   }, [idOrTag])
 
@@ -283,19 +306,23 @@ export function ContactDetailScreen() {
   // Compose: persist the outgoing row (the chat subscription renders the "Owes you" bubble
   // immediately), then announce over XMTP in the background — delivery is best-effort.
   const submitRequest = async () => {
-    if (!entry?.tag || submitting) return
+    if (!entry?.tag || !requestDraft || submitting) return
     setSubmitting(true)
     try {
       const config = getConfig()
       const walletAsset = resolveAssetConstants(config.network).DAI
-      const row = newOutgoingRequest(entry.tag, requestAmount, walletAsset.decimals)
+      const row = newOutgoingRequest(
+        entry.tag,
+        requestDraft.amount,
+        walletAsset.decimals,
+        requestDraft.note,
+      )
       if (!row) {
         showReportableError(new Error("Enter a valid amount"), "contact:request-compose")
         return
       }
       await RequestStorage.get().add(row)
-      setRequesting(false)
-      setRequestAmount("")
+      setRequestDraft(undefined)
       const broadcaster = getRequestBroadcaster()
       const requesterTag = loadWalletIdentity()?.handle
       const tokenAddress = tokenService?.tokenAddress?.toString()
@@ -326,6 +353,8 @@ export function ContactDetailScreen() {
       state: {
         request: { id: row.id, tag: entry?.tag, amount: row.amount, note: row.note },
         from: "detail",
+        contact: entry,
+        saved,
       },
     })
   }
@@ -412,9 +441,9 @@ export function ContactDetailScreen() {
   // resolve against. L1 contacts are the bridge counterparty — Deposit + Withdraw only.
   const selected = selectedContactOf(entry)
   const payable = selected.addressKind === "aztec-l2" && Boolean(selected.address && entry.tag)
-  const parsedAmount = parseAmount(requestAmount)
+  const parsedAmount = parseAmount(requestDraft?.amount ?? "")
   const validRequestAmount = Number.isFinite(parsedAmount) && parsedAmount > 0
-  const inlineCard = confirmingDelete || renaming || requesting
+  const inlineCard = confirmingDelete || renaming || !!requestDraft
   return (
     <div className="ww-panel">
       <div className="ww-chat__head">
@@ -533,7 +562,9 @@ export function ContactDetailScreen() {
               title="Send"
               style={{ flex: 1 }}
               onClick={() =>
-                navigate("/withdraw", { state: { recipient: entry.address, alias: entry.name } })
+                navigate("/withdraw/existing", {
+                  state: { recipient: entry.address, alias: entry.name },
+                })
               }
             />
           </>
@@ -544,53 +575,95 @@ export function ContactDetailScreen() {
             <button
               type="button"
               className="zkm-btn-reset zkm-pressable ww-chat__glassbtn"
-              onClick={() => setRequesting(true)}
+              onClick={() => setRequestDraft({ amount: "", note: "" })}
             >
               Request
             </button>
             <PrimaryGradientButton
               title="Send"
               style={{ flex: 1 }}
-              onClick={() => navigate(`/contacts/${idOrTag}/send`, { state: { from: "detail" } })}
+              onClick={() =>
+                navigate(`/contacts/${idOrTag}/send`, {
+                  state: { from: "detail", contact: entry, saved },
+                })
+              }
             />
           </>
         )}
 
-        {requesting && (
+        {requestDraft && (
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12 }}>
-            <TwoPartyAmountCard
-              role="youRequest"
-              person={{ name: handle, handle: `@${handle}`, colors: avatarColors(handle) }}
-              amount={
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              <TwoPartyAmountCard
+                role="youRequest"
+                cornerStyle="top"
+                className={["ww-request-card", requestAmountError && "ww-chat__request-card--error"]
+                  .filter(Boolean)
+                  .join(" ")}
+                person={{ name: handle, handle: `@${handle}`, colors: avatarColors(handle) }}
+                amount={
+                  <input
+                    autoFocus
+                    inputMode="decimal"
+                    placeholder="0.00"
+                    value={requestDraft.amount}
+                    onChange={(e) =>
+                      setRequestDraft({ ...requestDraft, amount: decimalInput(e.target.value) })
+                    }
+                    aria-label="Request amount"
+                    style={{
+                      width: 96,
+                      background: "transparent",
+                      border: "none",
+                      outline: "none",
+                      color: "inherit",
+                      font: "inherit",
+                      fontSize: 20,
+                      fontWeight: 700,
+                      textAlign: "right",
+                    }}
+                  />
+                }
+              />
+              <div
+                className="zkm-two-party-card ww-request-card"
+                style={{ borderRadius: "4px 4px 12px 12px" }}
+              >
                 <input
-                  autoFocus
-                  inputMode="decimal"
-                  placeholder="0.00"
-                  value={requestAmount}
-                  onChange={(e) => setRequestAmount(decimalInput(e.target.value))}
-                  aria-label="Request amount"
+                  placeholder="Add note (optional)"
+                  value={requestDraft.note}
+                  onChange={(e) =>
+                    setRequestDraft({
+                      ...requestDraft,
+                      note: truncateUtf8(e.target.value, TRANSFER_MEMO_MAX_BYTES),
+                    })
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && validRequestAmount && !submitting) void submitRequest()
+                  }}
+                  aria-label="Request note"
                   style={{
-                    width: 96,
+                    width: "100%",
                     background: "transparent",
                     border: "none",
                     outline: "none",
                     color: "inherit",
                     font: "inherit",
-                    fontSize: 20,
-                    fontWeight: 700,
-                    textAlign: "right",
+                    fontSize: 15,
                   }}
                 />
-              }
-            />
+              </div>
+            </div>
+            {requestAmountError && (
+              <p role="alert" className="zkm-field__error" style={{ margin: 0 }}>
+                {requestAmountError}
+              </p>
+            )}
             <div style={{ display: "flex", gap: 12 }}>
               <button
                 type="button"
                 className="zkm-btn-reset zkm-pressable ww-chat__glassbtn"
-                onClick={() => {
-                  setRequesting(false)
-                  setRequestAmount("")
-                }}
+                onClick={() => setRequestDraft(undefined)}
               >
                 Cancel
               </button>

@@ -29,27 +29,39 @@ import { failureCode, fireEvent, lapTimer } from "../../lib/analytics"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { HashRow, l1TxUrl } from "../../ui/detailRows"
 import { useCopy } from "../../ui/hooks"
+import { isWalletRejection, useL1Wallet } from "../deposit/l1Wallet"
 import type { L1ExitStage } from "../deposit/sipaRecovery"
+import {
+  useWalletPrompt,
+  useWalletPromptStall,
+  WalletPromptNote,
+  WalletPromptOpenError,
+  type WalletPromptToken,
+} from "../deposit/walletPrompt"
+import { ExitWalletRow } from "./ExitWalletRow"
 import { selfFinalize } from "./selfFinalize"
 
 const STAGE_LABEL: Record<L1ExitStage, string> = {
   "signing": "Approve the transaction in your wallet",
   "awaiting-browser": "Approve the transaction in your browser",
-  "confirming": "Waiting for L1 confirmation",
+  "confirming": "Waiting for Ethereum confirmation",
 }
 
+const WALLET_LEAD = "This withdrawal has already been deducted from your Aztec balance. "
+const PAYLINK_LEAD = "The link's funds have already left Aztec. "
+
 const EXPLAINER =
-  "This withdrawal has already been deducted from your Aztec balance. All that's left is one Ethereum transaction that sends the funds to the recipient, and you can send it yourself. You pay the gas, the tip this withdrawal set aside for whoever sends it comes back to your wallet, and the funds go to the address the withdrawal already named, so nobody can redirect them. If a relayer gets there first, your transaction fails without moving anything and the withdrawal still finishes."
+  "All that's left is one Ethereum transaction that sends the funds to the recipient, and you can send it yourself. You pay the gas, the tip this withdrawal set aside for whoever sends it comes back to your wallet, and the funds go to the address the withdrawal already named, so nobody can redirect them. If a relayer gets there first, your transaction fails without moving anything and the withdrawal still finishes."
 
 // The desktop helper page picks its account after the calldata is built, so the tip goes to the recipient.
 const DESKTOP_EXPLAINER =
-  "This withdrawal has already been deducted from your Aztec balance. All that's left is one Ethereum transaction that sends the funds to the recipient, and you can send it yourself. You pay the gas; the funds, and the tip this withdrawal set aside for whoever sends it, go to the address the withdrawal already named, so nobody can redirect them. If a relayer gets there first, your transaction fails without moving anything and the withdrawal still finishes."
+  "All that's left is one Ethereum transaction that sends the funds to the recipient, and you can send it yourself. You pay the gas; the funds, and the tip this withdrawal set aside for whoever sends it, go to the address the withdrawal already named, so nobody can redirect them. If a relayer gets there first, your transaction fails without moving anything and the withdrawal still finishes."
 
 // A swap withdrawal burned to a counterfactual escrow, so this transaction releases DAI THERE, not
 // to the recipient and not in the asset they chose. A separate L1 operation deploys the escrow and
 // runs the swap; finalizing here does not do it.
 const SWAP_EXPLAINER =
-  "This withdrawal has already been deducted from your Aztec balance. All that's left is one Ethereum transaction, and you can send it yourself. It releases the DAI to the swap escrow this withdrawal committed to — not to your recipient directly. The swap into your chosen asset is a separate step a relayer runs once the escrow is funded, so the recipient is paid after that, not by this transaction."
+  "All that's left is one Ethereum transaction, and you can send it yourself. It releases the DAI to the swap escrow this withdrawal committed to — not to your recipient directly. The swap into your chosen asset is a separate step a relayer runs once the escrow is funded, so the recipient is paid after that, not by this transaction."
 
 export function WithdrawalExitModal({
   record,
@@ -67,25 +79,50 @@ export function WithdrawalExitModal({
   const { obsidionWallet } = useAztecContext()
   const { teeSigner } = useAssetContext()
   const { copied, copy } = useCopy()
+  const bridgeMode = isDesktopL1SubmitActive()
+  const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
+  const ready = bridgeMode || (!!l1.account && !l1.wrongChain)
 
   const [phase, setPhase] = useState<"form" | "working" | "done">("form")
   const [stage, setStage] = useState<L1ExitStage>()
   const [submitUrl, setSubmitUrl] = useState<string>()
   const [txHash, setTxHash] = useState<Hex>()
+  const [refused, setRefused] = useState<string>()
+  const prompt = useWalletPrompt()
+  const stalled = useWalletPromptStall(phase === "working" && stage === "signing")
+  // Back to the form; the transaction the wallet still holds is handled when it answers.
+  const cancelPrompt = () => {
+    prompt.cancel()
+    setStage(undefined)
+    setPhase("form")
+  }
 
   const submit = async () => {
+    if (prompt.openElsewhere) {
+      setRefused(prompt.openElsewhere)
+      return
+    }
+    setRefused(undefined)
     setPhase("working")
     setStage(undefined)
     setSubmitUrl(undefined)
     const elapsed = lapTimer()
+    let request: WalletPromptToken | undefined
+    // Confirming means the wallet answered; the slot frees before the receipt lands.
+    const onStage = (next: L1ExitStage) => {
+      setStage(next)
+      if (next === "confirming") prompt.settle(request)
+    }
     try {
+      request = prompt.begin()
       // Null when the session is locked or still connecting; `selfFinalize` refuses it, except in
       // the dev demo, whose stubbed builder needs no wallet at all.
       const wallet =
         obsidionWallet && teeSigner ? { node: obsidionWallet.node, signer: teeSigner } : null
       const hash = await selfFinalize(record, wallet, {
+        from: l1.account ?? undefined,
         onHelperOpened: setSubmitUrl,
-        onStage: setStage,
+        onStage,
       })
       setTxHash(hash)
       setPhase("done")
@@ -93,8 +130,15 @@ export function WithdrawalExitModal({
       fireEvent("withdrawal_self_finalized", { duration_ms: elapsed() })
     } catch (e) {
       setPhase("form")
+      if (e instanceof WalletPromptOpenError) {
+        setRefused(e.message)
+        return
+      }
+      if (prompt.cancelled(request) || isWalletRejection(e)) return
       fireEvent("action_failed", { action: "withdrawal:self-finalize", code: failureCode(e) })
       showReportableError(e, "withdrawal:finalize", { title: "Finalization failed" })
+    } finally {
+      prompt.settle(request)
     }
   }
 
@@ -121,7 +165,8 @@ export function WithdrawalExitModal({
       {phase === "form" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <p style={{ color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.5, margin: 0 }}>
-            {swap ? SWAP_EXPLAINER : isDesktopL1SubmitActive() ? DESKTOP_EXPLAINER : EXPLAINER}
+            {record.source === "paylink" ? PAYLINK_LEAD : WALLET_LEAD}
+            {swap ? SWAP_EXPLAINER : bridgeMode ? DESKTOP_EXPLAINER : EXPLAINER}
           </p>
           <div>
             <ConfirmationSheetDetailRow label="Amount" value={amount} />
@@ -137,7 +182,17 @@ export function WithdrawalExitModal({
             )}
             <ConfirmationSheetDetailRow label="Network" value={l1ChainFor(config.l1ChainId).name} />
           </div>
-          <PrimaryGradientButton title="Finalize this withdrawal" onClick={() => void submit()} />
+          {!bridgeMode && <ExitWalletRow l1={l1} chainName={config.l1Chain.name} />}
+          {refused && (
+            <p role="alert" className="ww-sheet__note" data-testid="withdrawal-exit-refused">
+              {refused}
+            </p>
+          )}
+          <PrimaryGradientButton
+            title="Finalize this withdrawal"
+            isDisabled={!ready}
+            onClick={() => void submit()}
+          />
         </div>
       )}
 
@@ -147,6 +202,7 @@ export function WithdrawalExitModal({
             <Spinner size={20} />
             <span style={{ fontSize: 15 }}>{stage ? STAGE_LABEL[stage] : "Preparing…"}</span>
           </div>
+          {stalled && <WalletPromptNote walletName={l1.walletName} onCancel={cancelPrompt} />}
           {stage === "awaiting-browser" && submitUrl && (
             <p
               style={{

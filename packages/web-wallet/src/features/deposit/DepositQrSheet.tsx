@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import { Modal } from "../../ui/Modal"
 import { GradientText, TopNavIconButton } from "@obsidion/web-ds"
 import walletLineIcon from "../../assets/deposit/wallet-line.svg"
@@ -10,6 +11,7 @@ export function DepositQrSheet({
   paymentUri,
   copied,
   title = "Deposit address",
+  limits,
   onCopy,
   onClose,
 }: {
@@ -18,6 +20,8 @@ export function DepositQrSheet({
   copied: boolean
   /** Names the address for the flow showing it — a request payer is not depositing. */
   title?: string
+  /** The payment's limit, shown right under the code. */
+  limits?: ReactNode
   onCopy: () => void
   onClose: () => void
 }) {
@@ -39,6 +43,7 @@ export function DepositQrSheet({
         copied={copied}
         onCopy={onCopy}
       />
+      {limits}
     </Modal>
   )
 }

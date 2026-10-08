@@ -55,9 +55,9 @@ describe("inline resolution gating", () => {
   it("the user's own tag never resolves or surfaces", () => {
     expect(shouldResolveInline([], "me", "me")).toBe(false)
     expect(shouldResolveInline([], "@me.zk.money", "me")).toBe(false)
-    expect(inlinePanelState([], "me", { tag: "me", status: "found", address: ADDR_B }, "me")).toEqual(
-      { kind: "none" },
-    )
+    expect(
+      inlinePanelState([], "me", { tag: "me", status: "found", address: ADDR_B }, "me"),
+    ).toEqual({ kind: "none" })
   })
 })
 
@@ -68,21 +68,17 @@ describe("inlinePanelState", () => {
     address: status === "found" ? ADDR_B : undefined,
   })
 
-  it("walks looking-up → add-offer for a registry hit", () => {
-    expect(inlinePanelState([], "bob", null)).toEqual({ kind: "looking-up", tag: "bob" })
-    expect(inlinePanelState([], "bob", resolved("resolving"))).toEqual({
-      kind: "looking-up",
-      tag: "bob",
-    })
-    expect(inlinePanelState([], "bob", resolved("found"))).toEqual({
-      kind: "add-offer",
-      tag: "bob",
-    })
-  })
-
-  it("walks looking-up → no-user-found for a miss", () => {
-    expect(inlinePanelState([], "bob", resolved("not_found"))).toEqual({
-      kind: "no-user-found",
+  it.each([
+    ["no resolution yet", null, false, "looking-up"],
+    ["a resolution in flight", resolved("resolving"), false, "looking-up"],
+    ["a registry hit", resolved("found"), false, "add-offer"],
+    ["a miss", resolved("not_found"), false, "no-user-found"],
+    ["a miss the claim server is still asked about", resolved("not_found"), null, "looking-up"],
+    ["a miss the claim server holds", resolved("not_found"), true, "reserved"],
+    ["a hit the claim server also holds", resolved("found"), true, "add-offer"],
+  ] as const)("names the panel for %s", (_, resolution, held, kind) => {
+    expect(inlinePanelState([], "bob", resolution, undefined, held)).toEqual({
+      kind,
       tag: "bob",
     })
   })
@@ -163,11 +159,19 @@ describe("findContactEntry / addressKindLabel", () => {
 })
 
 describe("renamed zk.money contacts", () => {
-  const l2 = (name: string): Contact => ({ name, address: ADDR_A, addressKind: "aztec-l2", tag: "harry" })
+  const l2 = (name: string): Contact => ({
+    name,
+    address: ADDR_A,
+    addressKind: "aztec-l2",
+    tag: "harry",
+  })
 
   it("treats a name other than the tag as the user's own label", () => {
     expect(l2ContactLabel(l2("Harry B"))).toBe("Harry B")
-    expect(l2ContactHeader(l2("Harry B"))).toEqual({ title: "Harry B", subtitle: "@harry.zk.money" })
+    expect(l2ContactHeader(l2("Harry B"))).toEqual({
+      title: "Harry B",
+      subtitle: "@harry.zk.money",
+    })
   })
 
   it("counts a case-only change as a rename", () => {

@@ -1,7 +1,6 @@
 {
   "origins": [
     "https://auth.zk.money",
-    "https://recovery.zk.money",
     "https://wallet.zk.money",
     "https://launch.zk.money"
   ]

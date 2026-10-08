@@ -187,9 +187,12 @@ export class AppNotificationStore {
 
   /**
    * Create, or rewrite in place when the id is already known — the write path for a live entry
-   * whose text tracks an in-flight record. Read state carries over. A dismissed entry stays hidden
-   * while its text is unchanged and comes back the moment it changes, so a recurring source (a
-   * re-used SIPA, a second withdrawal) notifies again without minting a second row.
+   * whose text tracks an in-flight record. Read state carries over. A dismissed settled entry stays
+   * hidden while its text is unchanged and comes back the moment it changes, so a recurring source
+   * (a re-used SIPA, a second withdrawal) notifies again without minting a second row. A dismissed
+   * live (pending) entry comes back as soon as its producer asserts it again: the panel never
+   * dismisses a pending row, so only its producer retired it, and a funding burn tried again is in
+   * flight again.
    */
   upsert(input: CreateAppNotificationInput): Promise<AppNotificationEntry> {
     return this.serialized(async () => {
@@ -200,10 +203,23 @@ export class AppNotificationStore {
         read: existing?.read ?? false,
         readAt: existing?.readAt,
       }
-      if (existing && sameDisplay(existing, entry)) return existing
+      const revived = existing?.dismissedAt !== undefined && entry.pending === true
+      if (existing && !revived && sameDisplay(existing, entry)) return existing
       await this.store.setRecord(entry.id, entry)
       await this.enforceLimit()
       return entry
+    })
+  }
+
+  /** Rewrites where an entry opens; what it shows and its read and dismissed state stay put. */
+  setTarget(id: string, target: AppNotificationTarget): Promise<AppNotificationEntry | null> {
+    return this.serialized(async () => {
+      await this.load()
+      const existing = this.store.getByKey(id)
+      if (!existing) return null
+      const next: AppNotificationEntry = { ...existing, target }
+      await this.store.setRecord(id, next)
+      return next
     })
   }
 
@@ -236,6 +252,11 @@ export class AppNotificationStore {
         dismissedAt,
       })
     })
+  }
+
+  /** Deletes the entry, where a dismiss would keep its id from being minted again. */
+  remove(id: string): Promise<void> {
+    return this.serialized(() => this.store.removeByKey(id))
   }
 
   /** `keepPending` leaves live rows, which their producer retires when the work settles. */

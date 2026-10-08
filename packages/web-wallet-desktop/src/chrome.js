@@ -147,6 +147,9 @@ function findChrome() {
   )
 }
 
+// Chrome reads DevTools commands on fd 3 and answers on fd 4: a channel only the launcher holds.
+const DEVTOOLS_PIPE_FLAG = "--remote-debugging-pipe"
+
 function buildChromeArguments({
   hostname,
   localPort,
@@ -155,6 +158,7 @@ function buildChromeArguments({
   startPath,
   windowMode = "app",
   includeTestTypeFlag = true,
+  devtoolsPipe = false,
 }) {
   // localhost (sandbox dev mode) needs no resolver mapping — Chrome dials the loopback
   // server directly, and localhost is already a valid passkey RP. Real hostnames get
@@ -178,6 +182,10 @@ function buildChromeArguments({
     argumentsList.push("--test-type")
   }
 
+  if (devtoolsPipe) {
+    argumentsList.push(DEVTOOLS_PIPE_FLAG)
+  }
+
   if (windowMode === "app") {
     argumentsList.push(`--app=${targetUrl}`)
   } else {
@@ -187,11 +195,52 @@ function buildChromeArguments({
   return argumentsList
 }
 
+// A launch carrying the DevTools pipe flag gets fds 3 and 4 as pipes.
 function launchChrome(chromePath, argumentsList) {
   return spawn(chromePath, argumentsList, {
     detached: false,
-    stdio: "ignore",
+    stdio: argumentsList.includes(DEVTOOLS_PIPE_FLAG)
+      ? ["ignore", "ignore", "ignore", "pipe", "pipe"]
+      : "ignore",
   })
+}
+
+// One DevTools command over fd 3, settling with the write. The pipe is never ended: Chrome reads that
+// as a close too.
+function sendDevtoolsCommand(child, id, method) {
+  return new Promise((resolve, reject) => {
+    child.stdio[3].write(`${JSON.stringify({ id, method })}\0`, (error) =>
+      error ? reject(error) : resolve(),
+    )
+  })
+}
+
+// Browser.close shuts Chrome down the way its own quit does, flushing site storage on every platform.
+function closeChrome(child) {
+  return sendDevtoolsCommand(child, 1, "Browser.close")
+}
+
+// Resolves once Chrome answers on fd 4, which only the browser owning the profile does: a launch that
+// handed its URL to another Chrome exits without starting DevTools.
+function waitForDevtools(child) {
+  const replies = child.stdio[4]
+  let buffered = ""
+  const answered = new Promise((resolve) => {
+    // Reading also keeps the pipe drained.
+    replies.on("data", (chunk) => {
+      buffered += chunk
+      const messages = buffered.split("\0")
+      buffered = messages.pop()
+      for (const message of messages) {
+        try {
+          if (JSON.parse(message).id === 0) resolve()
+        } catch {
+          // Not a DevTools message; nothing to answer.
+        }
+      }
+    })
+  })
+  return Promise.all([sendDevtoolsCommand(child, 0, "Browser.getVersion"), answered])
 }
 
 module.exports = {
@@ -202,10 +251,12 @@ module.exports = {
   appPathsLookup,
   buildChromeArguments,
   chromeNotFoundMessage,
+  closeChrome,
   expandWindowsEnv,
   findChrome,
   launchChrome,
   parseRegQueryValue,
   pathLookup,
   platformCandidates,
+  waitForDevtools,
 }

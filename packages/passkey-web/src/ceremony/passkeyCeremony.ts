@@ -5,8 +5,10 @@
  * fake and Playwright exercises the real one.
  */
 
-import { RelatedOriginPasskeyError } from "../policy/passkeyErrors.js"
+import { RelatedOriginPasskeyError, markPasskeyWritten } from "../policy/passkeyErrors.js"
+import { encodeUserHandle } from "./userHandle.js"
 import { isRpDomainSuffix } from "../policy/relyingParty.js"
+import { iosBelowFloor, parseUserAgent } from "../policy/userAgentInfo.js"
 import { authDataFromAttestation, p256FromAuthData, p256FromSpki } from "./attestation.js"
 import {
   parseAaguid,
@@ -91,6 +93,9 @@ export type PasskeyAssertResult = {
   signatureDer: Uint8Array
   authenticatorData: Uint8Array
   clientDataJSON: Uint8Array
+  /** The user handle the credential was created with (`userHandle.ts`); undefined when the
+   *  authenticator returned none. */
+  userHandle?: Uint8Array
 }
 
 export interface PasskeyCeremony {
@@ -160,6 +165,8 @@ type TabSlot = {
   turn: Promise<void>
   /** The holder, so a waiter can evict it. */
   active?: { controller: AbortController }
+  /** Told when the tab's request goes out and when it ends. */
+  listeners?: Set<(active: boolean) => void>
 }
 
 const TAB_SLOT_KEY = "__zkMoneyWebAuthnTabSlot"
@@ -167,6 +174,38 @@ const globalScope = globalThis as typeof globalThis & { [TAB_SLOT_KEY]?: TabSlot
 
 function tabSlot(): TabSlot {
   return (globalScope[TAB_SLOT_KEY] ??= { turn: Promise.resolve() })
+}
+
+/**
+ * Subscribe to the tab's WebAuthn request: `true` just before it goes to the browser, `false` once
+ * it settles. Called synchronously, so a listener can change the page before the request is seen.
+ */
+export function onPasskeyRequest(listener: (active: boolean) => void): () => void {
+  const listeners = (tabSlot().listeners ??= new Set())
+  listeners.add(listener)
+  return () => listeners.delete(listener)
+}
+
+/**
+ * An extension (1Password, Bitwarden, …) answers WebAuthn inside the page when it has swapped
+ * `navigator.credentials.get` for its own script. Browser and OS prompts leave it native.
+ */
+export function extensionAnswersPasskeys(): boolean {
+  try {
+    return !Function.prototype.toString.call(navigator.credentials.get).includes("[native code]")
+  } catch {
+    return false
+  }
+}
+
+function announce(slot: TabSlot, active: boolean): void {
+  for (const listener of slot.listeners ?? []) {
+    try {
+      listener(active)
+    } catch {
+      // A listener never fails a ceremony.
+    }
+  }
 }
 
 const PENDING_REQUEST_RE = /request is already pending/i
@@ -179,6 +218,8 @@ const WEDGED_TAB_MESSAGE =
 const EVICTED_MESSAGE = "evicted a wedged passkey request"
 const NO_CREATED_CREDENTIAL_MESSAGE = "Passkey creation returned no credential"
 const NO_ASSERTED_CREDENTIAL_MESSAGE = "Passkey assertion returned no credential"
+const BITWARDEN_RP_REFUSAL_MESSAGE = "'rp.id' cannot be used with the current origin"
+const BITWARDEN_NOT_ALLOWED_MESSAGE = "The operation either timed out or was not allowed."
 const NOT_ES256_PREFIX = "Passkey was created with algorithm "
 const NOT_ES256_SUFFIX = ", not ES256; the account contract requires P-256"
 
@@ -215,6 +256,11 @@ export function isNoCredentialError(error: unknown): boolean {
 export function isUnsupportedAlgorithmError(error: unknown): boolean {
   const { message } = describeError(error)
   return Boolean(message?.startsWith(NOT_ES256_PREFIX) && message.endsWith(NOT_ES256_SUFFIX))
+}
+
+function isRpRefusal(error: unknown): boolean {
+  const { name, message } = describeError(error)
+  return name === "SecurityError" || message === BITWARDEN_RP_REFUSAL_MESSAGE
 }
 
 export type CeremonyTiming = {
@@ -371,11 +417,16 @@ async function withTabSlot<T>(
     await awaitDocumentReady(timing.focusWaitMs, controller.signal)
     slot.active = { controller }
     held = true
+    announce(slot, true)
     return await issueWithRetries(request, controller.signal, timing.pendingRetryDelaysMs)
   } finally {
     signal?.removeEventListener("abort", forward)
     if (held) {
-      if (slot.active?.controller === controller) slot.active = undefined
+      // An evicted holder's successor is already out; only the current holder may end the request.
+      if (slot.active?.controller === controller) {
+        slot.active = undefined
+        announce(slot, false)
+      }
       release()
     } else {
       // A waiter that left before its turn hands its place on only when that turn comes, so the
@@ -513,19 +564,43 @@ function notify(hook: PasskeyRequestHook | undefined, signal: () => PasskeyReque
   }
 }
 
+/** How long the browser held each rejected request, keyed by the error the ceremony threw for it. */
+const heldFor = new WeakMap<object, number>()
+
+/**
+ * How long the browser held the request `error` came from, issue to rejection; undefined for an
+ * error no request threw. Waits before the issue, for the tab or for focus, are not counted.
+ */
+export function requestHeldMs(error: unknown): number | undefined {
+  return typeof error === "object" && error !== null ? heldFor.get(error) : undefined
+}
+
 async function withRpError<T>(rpId: string, request: () => Promise<T>): Promise<T> {
+  const issuedAt = Date.now()
   try {
     return await request()
   } catch (error) {
-    if (
-      (error as { name?: string })?.name === "SecurityError" &&
-      typeof location !== "undefined" &&
-      !isRpDomainSuffix(location.hostname, rpId)
-    ) {
-      throw new RelatedOriginPasskeyError(rpId)
-    }
-    throw error
+    const thrown = rpErrorFor(rpId, error)
+    if (typeof thrown === "object" && thrown !== null) heldFor.set(thrown, Date.now() - issuedAt)
+    throw thrown
   }
+}
+
+function rpErrorFor(rpId: string, error: unknown): unknown {
+  if (
+    isRpRefusal(error) &&
+    typeof location !== "undefined" &&
+    !isRpDomainSuffix(location.hostname, rpId)
+  ) {
+    return new RelatedOriginPasskeyError(error, {
+      iosBelowFloor: iosBelowFloor(parseUserAgent({ userAgent: navigator.userAgent })),
+    })
+  }
+  const { name, message } = describeError(error)
+  if (name === "Error" && message === BITWARDEN_NOT_ALLOWED_MESSAGE) {
+    return new DOMException(message, "NotAllowedError")
+  }
+  return error
 }
 
 export class BrowserPasskeyCeremony implements PasskeyCeremony {
@@ -537,9 +612,10 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
   async create(request: PasskeyCreateRequest): Promise<PasskeyCreateResult> {
     const publicKey: CreationOptionsL3 = {
       rp: { id: request.rpId, name: request.rpName },
-      // Random stable identifier; carries NO secret (the PRF only exists after create).
+      // The name rides in the handle so an assertion anywhere hands it back; no secret (the PRF
+      // only exists after create).
       user: {
-        id: crypto.getRandomValues(new Uint8Array(32)),
+        id: encodeUserHandle(request.userName),
         name: request.userName,
         displayName: request.userName,
       },
@@ -567,44 +643,49 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
       return withRpError(request.rpId, () => navigator.credentials.create({ signal, publicKey }))
     }, this.timing)) as PublicKeyCredential | null
     if (!credential) throw new Error(NO_CREATED_CREDENTIAL_MESSAGE)
-    notify(this.onRequest, () => ({
-      phase: "answered",
-      kind: "create",
-      request,
-      evidence: creationEvidence(credential),
-    }))
+    // The authenticator has saved the passkey: anything thrown from here leaves it behind.
+    try {
+      notify(this.onRequest, () => ({
+        phase: "answered",
+        kind: "create",
+        request,
+        evidence: creationEvidence(credential),
+      }))
 
-    const response = credential.response as AuthenticatorAttestationResponse
-    // The attestation object is the one source the spec guarantees; the accessor methods are
-    // the browser's own parse of it, and a browser that cannot parse a given shape answers them
-    // with defaults instead of errors. Each accessor is tried first and the raw bytes stand in.
-    const attestation = new Uint8Array(response.attestationObject)
-    const authData =
-      typeof response.getAuthenticatorData === "function"
-        ? new Uint8Array(response.getAuthenticatorData())
-        : authDataFromAttestation(attestation)
-    const spki = readSpki(response)
-    const pubkey =
-      (spki && p256FromSpki(spki)) ?? (authData && p256FromAuthData(authData)) ?? undefined
-    if (!pubkey) {
-      // Only ES256 was offered, so a key that is not P-256 means the authenticator ignored the
-      // request. The refusal names what the browser reported and who answered, so a report of
-      // it says which of those it was.
-      const alg = readAlgorithm(response)
-      const provider = readAaguid(authData) ?? "unknown provider"
-      throw new Error(`${NOT_ES256_PREFIX}${String(alg)} by ${provider}${NOT_ES256_SUFFIX}`)
-    }
+      const response = credential.response as AuthenticatorAttestationResponse
+      // The attestation object is the one source the spec guarantees; the accessor methods are
+      // the browser's own parse of it, and a browser that cannot parse a given shape answers them
+      // with defaults instead of errors. Each accessor is tried first and the raw bytes stand in.
+      const attestation = new Uint8Array(response.attestationObject)
+      const authData =
+        typeof response.getAuthenticatorData === "function"
+          ? new Uint8Array(response.getAuthenticatorData())
+          : authDataFromAttestation(attestation)
+      const spki = readSpki(response)
+      const pubkey =
+        (spki && p256FromSpki(spki)) ?? (authData && p256FromAuthData(authData)) ?? undefined
+      if (!pubkey) {
+        // Only ES256 was offered, so a key that is not P-256 means the authenticator ignored the
+        // request. The refusal names what the browser reported and who answered, so a report of
+        // it says which of those it was.
+        const alg = readAlgorithm(response)
+        const provider = readAaguid(authData) ?? "unknown provider"
+        throw new Error(`${NOT_ES256_PREFIX}${String(alg)} by ${provider}${NOT_ES256_SUFFIX}`)
+      }
 
-    const extensions = credential.getClientExtensionResults() as { prf?: { results?: unknown } }
-    return {
-      credentialId: credential.id,
-      pubkey,
-      prfFirst: decodePrfSlot(extensions.prf?.results, "first"),
-      prfSecond: decodePrfSlot(extensions.prf?.results, "second"),
-      authenticatorAttachment: toAttachment(credential.authenticatorAttachment),
-      backupEligible: readBackupEligible(authData),
-      aaguid: readAaguid(authData),
-      transports: readTransports(response),
+      const extensions = credential.getClientExtensionResults() as { prf?: { results?: unknown } }
+      return {
+        credentialId: credential.id,
+        pubkey,
+        prfFirst: decodePrfSlot(extensions.prf?.results, "first"),
+        prfSecond: decodePrfSlot(extensions.prf?.results, "second"),
+        authenticatorAttachment: toAttachment(credential.authenticatorAttachment),
+        backupEligible: readBackupEligible(authData),
+        aaguid: readAaguid(authData),
+        transports: readTransports(response),
+      }
+    } catch (err) {
+      throw markPasskeyWritten(err)
     }
   }
 
@@ -653,6 +734,7 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
       signatureDer: new Uint8Array(response.signature),
       authenticatorData,
       clientDataJSON: new Uint8Array(response.clientDataJSON),
+      ...(response.userHandle ? { userHandle: new Uint8Array(response.userHandle) } : {}),
     }
   }
 }

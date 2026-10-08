@@ -133,7 +133,12 @@ describe("SharePaylinkModal", () => {
   it("reads as a result when opened from the create step, and as the link otherwise", async () => {
     await act(async () => {
       root.render(
-        <SharePaylinkModal request={request} requesterTag="renamed" justCreated onClose={() => {}} />,
+        <SharePaylinkModal
+          request={request}
+          requesterTag="renamed"
+          justCreated
+          onClose={() => {}}
+        />,
       )
     })
     expect(container.textContent).toContain("Your request link is ready")
@@ -243,7 +248,7 @@ describe("SharePaylinkModal", () => {
             id: request.id,
             kind: "outgoingLink",
             counterparty: "Requested via link",
-            statusLabel: "Pending",
+            statusLabel: "Unpaid",
             amount: "+$25.00",
             amountValue: 25,
             timestampMs: NOW,

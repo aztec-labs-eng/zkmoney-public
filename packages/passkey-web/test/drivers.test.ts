@@ -15,6 +15,11 @@ import {
   runPasskeyCreation,
 } from "../src/policy/drivers.js"
 import { candidatesFrom } from "../src/policy/evidence.js"
+import {
+  PhoneRequiredError,
+  RelatedOriginPasskeyError,
+  passkeyWritten,
+} from "../src/policy/passkeyErrors.js"
 import { hmac } from "@noble/hashes/hmac"
 import { sha256 as nobleSha256 } from "@noble/hashes/sha256"
 import {
@@ -37,6 +42,7 @@ function create(
   extra: {
     observe?: (event: ObservedCeremony) => void | Promise<void>
     misreportsCrossDevice?: boolean
+    attachmentLabelTrusted?: boolean
   } = {},
 ) {
   const ceremony = new FakePasskeyCeremony(fake)
@@ -63,8 +69,8 @@ describe("runPasskeyCreation", () => {
       bytesToHex(ceremony.prfFor(result.created.credentialId, "first")),
     )
     expect(ceremony.creates[0]).toMatchObject({ authenticatorAttachment: "cross-platform" })
-    // No hint, so the browser's own sheet offers the phone and the security key alike.
-    expect(ceremony.creates[0]!.hints).toBeUndefined()
+    // Opens on the phone, and names a key so a password manager's extension stands aside.
+    expect(ceremony.creates[0]!.hints).toEqual(["hybrid", "security-key"])
     expect(ceremony.creates[0]!.prfSecondSalt).toHaveLength(32)
   })
 
@@ -162,7 +168,8 @@ describe("runPasskeyCreation", () => {
       credentialIds: [result.created.credentialId],
       challenge: CHALLENGE,
     })
-    expect(ceremony.assertRequests[0]!.hints).toBeUndefined()
+    // Asked over the same routes as the creation.
+    expect(ceremony.assertRequests[0]!.hints).toEqual(["hybrid", "security-key"])
     expect(ceremony.assertRequests[0]!.prfSecondSalt).toHaveLength(32)
     expect(phases).toEqual(["created", "chained"])
     expect(bytesToHex(result.prfOutput)).toBe(
@@ -294,11 +301,11 @@ describe("runPasskeyCreation", () => {
     expect((seen[0]!.result as { aaguid?: string }).aaguid).toBe(UNMEASURED)
   })
 
-  it("sends no hints on a laptop, with or without the consumer's null", async () => {
+  it("a laptop names the phone and a key unless the consumer's null asks for no hints", async () => {
     const { ceremony, run } = create("laptop", { route: "cross-device" }, {})
     await run
-    expect(ceremony.creates[0]!.hints).toBeUndefined()
-    const quiet = new FakePasskeyCeremony({ route: "cross-device" })
+    expect(ceremony.creates[0]!.hints).toEqual(["hybrid", "security-key"])
+    const quiet = new FakePasskeyCeremony({ route: "cross-device", prfAtCreate: false })
     await runPasskeyCreation(quiet, {
       posture: "laptop",
       rpId: "localhost",
@@ -308,6 +315,7 @@ describe("runPasskeyCreation", () => {
       challengeForChained: () => CHALLENGE,
     })
     expect(quiet.creates[0]!.hints).toBeUndefined()
+    expect(quiet.assertRequests[0]!.hints).toBeUndefined()
   })
 })
 
@@ -481,6 +489,133 @@ describe("a browser that mislabels a cross-device answer", () => {
     expect(seen).toHaveLength(1)
     expect(seen[0]!.result.authenticatorAttachment).toBe("platform")
     expect(result.created.authenticatorAttachment).toBe("cross-platform")
+  })
+})
+
+describe("naming what answered a refused laptop sign-up", () => {
+  const WINDOWS_HELLO_AAGUIDS = [
+    "08987058-cadc-4b81-b6e1-30de50dcbe96",
+    "9ddd1817-af5a-4672-a2b9-3e3dd95000a9",
+    "6028b017-b1d4-4c02-b4b3-afcdafc96bb2",
+  ]
+  const trusted = { attachmentLabelTrusted: true }
+  // A sign-up with no name to give says where to create the passkey.
+  const unnamed = new PhoneRequiredError({ ceremony: "create" }).message
+
+  it("names a password manager that answered on this device", async () => {
+    const { ceremony, run } = create("laptop", { route: "local", aaguid: BITWARDEN }, trusted)
+    await expect(run).rejects.toMatchObject({
+      name: "PhoneRequiredError",
+      providerName: "Bitwarden",
+      message: new PhoneRequiredError({ providerName: "Bitwarden" }).message,
+    })
+    expect(ceremony.assertRequests).toHaveLength(0)
+  })
+
+  it("points Windows Hello at Windows' own prompt, whichever of its ids answered", async () => {
+    for (const aaguid of WINDOWS_HELLO_AAGUIDS) {
+      const { run } = create("laptop", { route: "local", aaguid }, trusted)
+      await expect(run).rejects.toMatchObject({
+        providerName: "Windows Hello",
+        message: expect.stringMatching(/^Windows Hello saved this passkey on this computer/),
+      })
+    }
+  })
+
+  it("says this device, not this computer, for a phone's own manager in desktop mode", async () => {
+    // A desktop-mode Android phone counts as a laptop, and its local answer is on the phone.
+    const { run } = create(
+      "laptop",
+      { route: "local", manager: "gpm", aaguid: GPM_AAGUID },
+      trusted,
+    )
+    const err = await run.then(
+      () => undefined,
+      (e: Error) => e,
+    )
+    expect(err?.message).toMatch(/^Google Password Manager saved this passkey on this device/)
+    expect(err?.message).not.toContain("this computer")
+  })
+
+  it("names nothing it cannot identify", async () => {
+    for (const aaguid of [UNMEASURED, ZERO_AAGUID, undefined]) {
+      const { run } = create("laptop", { route: "local", aaguid }, trusted)
+      await expect(run).rejects.toMatchObject({ providerName: undefined, message: unnamed })
+    }
+  })
+
+  it("names nothing unless the browser's label is trusted", async () => {
+    for (const extra of [
+      {},
+      { attachmentLabelTrusted: false },
+      { ...trusted, misreportsCrossDevice: true },
+    ]) {
+      const { run } = create("laptop", { route: "local", aaguid: BITWARDEN }, extra)
+      await expect(run).rejects.toMatchObject({ providerName: undefined, message: unnamed })
+    }
+  })
+
+  it("names nothing when the browser did not say which device answered", async () => {
+    const { run } = create(
+      "laptop",
+      { route: "local", aaguid: BITWARDEN, attachment: null },
+      trusted,
+    )
+    await expect(run).rejects.toMatchObject({
+      name: "PhoneRequiredError",
+      providerName: undefined,
+      message: unnamed,
+    })
+  })
+
+  it("names nothing for a security key's id labelled as this device", async () => {
+    const { run } = create(
+      "laptop",
+      { route: "local", manager: "security-key", aaguid: YUBIKEY_5_USB_A_AAGUID },
+      trusted,
+    )
+    await expect(run).rejects.toMatchObject({ providerName: undefined, message: unnamed })
+  })
+
+  it("names nothing for a phone's answer an untrusted browser labelled as this device", async () => {
+    const { run } = create(
+      "laptop",
+      {
+        route: "cross-device",
+        manager: "icloud",
+        aaguid: APPLE_ICLOUD_AAGUID,
+        transports: ["hybrid", "internal"],
+        attachment: "platform",
+      },
+      { attachmentLabelTrusted: false },
+    )
+    await expect(run).rejects.toMatchObject({ providerName: undefined, message: unnamed })
+  })
+
+  it("names nothing for the follow-up prompt, which names the credential and not the device", async () => {
+    for (const [manager, aaguid] of [
+      ["icloud", APPLE_ICLOUD_AAGUID],
+      ["gpm", GPM_AAGUID],
+      ["1password", ONEPASSWORD_AAGUID],
+    ] as const) {
+      const { ceremony, run } = create(
+        "laptop",
+        {
+          route: "cross-device",
+          manager,
+          aaguid,
+          prfAtCreate: false,
+          assertAttachment: "platform",
+        },
+        trusted,
+      )
+      await expect(run).rejects.toMatchObject({
+        name: "PhoneRequiredError",
+        providerName: undefined,
+        message: unnamed,
+      })
+      expect(ceremony.assertRequests).toHaveLength(1)
+    }
   })
 })
 
@@ -694,7 +829,7 @@ describe("security keys at creation", () => {
       name: "UnsupportedProviderError",
       kind: "security-key",
     })
-    await expect(run).rejects.toThrow(/FIDO2/)
+    await expect(run).rejects.toThrow(/YubiKey 5/)
   })
 
   it("gives a key whose transports were withheld the key's advice, not a manager's", async () => {
@@ -708,7 +843,177 @@ describe("security keys at creation", () => {
       name: "UnsupportedProviderError",
       kind: "security-key",
     })
-    await expect(run).rejects.toThrow(/FIDO2/)
+    await expect(run).rejects.toThrow(/YubiKey 5/)
+  })
+})
+
+describe("the written mark", () => {
+  const rejection = async (run: Promise<unknown>): Promise<unknown> => {
+    try {
+      await run
+    } catch (err) {
+      return err
+    }
+    throw new Error("expected a rejection")
+  }
+
+  it.each<[string, DevicePosture, FakeCeremonyOptions, string]>([
+    [
+      "another device answering a phone",
+      "phone",
+      { route: "cross-device" },
+      "LocalPasskeyRequiredError",
+    ],
+    [
+      "a laptop's own answer",
+      "laptop",
+      { route: "local", aaguid: UNMEASURED },
+      "PhoneRequiredError",
+    ],
+    [
+      "an unmeasured manager",
+      "laptop",
+      { route: "cross-device", aaguid: BITWARDEN },
+      "UnsupportedProviderError",
+    ],
+    [
+      "a single-salt provider",
+      "phone",
+      { route: "local", secondSlot: false },
+      "SingleSaltProviderError",
+    ],
+    [
+      "no backup flag",
+      "laptop",
+      { route: "cross-device", backupEligible: false },
+      "DeviceBoundPasskeyError",
+    ],
+    [
+      "no PRF on either prompt",
+      "laptop",
+      { route: "cross-device", prfAtCreate: false, prfAtAssert: false },
+      "NoPrfError",
+    ],
+    [
+      "a security key with no PRF",
+      "laptop",
+      {
+        route: "cross-device",
+        manager: "security-key",
+        transports: ["usb"],
+        backupEligible: false,
+        prfAtCreate: false,
+        prfAtAssert: false,
+      },
+      "SecurityKeyNoPrfError",
+    ],
+  ])("marks a refusal for %s: the passkey is already saved", async (_n, posture, fake, name) => {
+    const err = await rejection(create(posture, fake).run)
+    expect(err).toMatchObject({ name })
+    expect(passkeyWritten(err)).toBe(true)
+  })
+
+  it.each([
+    ["a blocked related-origin request", () => new RelatedOriginPasskeyError()],
+    ["the browser's cancel", () => new DOMException("Dismissed", "NotAllowedError")],
+    ["an extension's own error", () => new Error("Something went wrong.")],
+  ])("marks %s from the follow-up prompt, and keeps the error itself", async (_n, make) => {
+    const thrown = make()
+    const { ceremony, run } = create("laptop", {
+      route: "cross-device",
+      prfAtCreate: false,
+      assertOverride: () => {
+        throw thrown
+      },
+    })
+    const err = await rejection(run)
+    expect(err).toBe(thrown)
+    expect(passkeyWritten(err)).toBe(true)
+    expect(ceremony.assertRequests).toHaveLength(1)
+  })
+
+  it("marks a corrected laptop creation that came back incomplete", async () => {
+    const { run } = create(
+      "laptop",
+      {
+        route: "cross-device",
+        manager: "icloud",
+        aaguid: APPLE_ICLOUD_AAGUID,
+        transports: ["hybrid", "internal"],
+        attachment: "platform",
+        prfAtCreate: false,
+      },
+      { misreportsCrossDevice: true },
+    )
+    const err = await rejection(run)
+    expect(err).toMatchObject({ name: "IncompleteCreationError" })
+    expect(passkeyWritten(err)).toBe(true)
+  })
+
+  it("marks an observer's own error from the created phase", async () => {
+    const boom = new Error("observer")
+    const { run } = create(
+      "laptop",
+      { route: "cross-device" },
+      {
+        observe: ({ phase }) => {
+          if (phase === "created") throw boom
+        },
+      },
+    )
+    const err = await rejection(run)
+    expect(err).toBe(boom)
+    expect(passkeyWritten(err)).toBe(true)
+  })
+
+  it("marks nothing the first prompt itself threw", async () => {
+    const thrown = new RelatedOriginPasskeyError()
+    const ceremony = new FakePasskeyCeremony({ route: "cross-device" })
+    ceremony.create = async () => {
+      throw thrown
+    }
+    const err = await rejection(
+      runPasskeyCreation(ceremony, {
+        posture: "laptop",
+        rpId: "localhost",
+        rpName: "zk.money",
+        userName: "@alice",
+        challengeForChained: () => CHALLENGE,
+      }),
+    )
+    expect(err).toBe(thrown)
+    expect(passkeyWritten(err)).toBe(false)
+  })
+
+  it("marks nothing on the assertion side: the driver's refusal, or the one read from its result", async () => {
+    const assertion = async (posture: DevicePosture, fake: FakeCeremonyOptions) => {
+      const ceremony = new FakePasskeyCeremony(fake)
+      const created = await ceremony.create({
+        rpId: "localhost",
+        rpName: "zk.money",
+        userName: "@alice",
+        prfFirstSalt: new Uint8Array(32),
+      })
+      return runPasskeyAssertion(ceremony, {
+        posture,
+        rpId: "localhost",
+        challenge: CHALLENGE,
+        credentialIds: [created.credentialId],
+      })
+    }
+    const local = await rejection(assertion("laptop", { route: "local" }))
+    expect(local).toMatchObject({ name: "PhoneRequiredError" })
+    expect(passkeyWritten(local)).toBe(false)
+
+    const raw = await assertion("phone", { route: "local", backupEligible: false })
+    let bound: unknown
+    try {
+      candidatesFrom(raw)
+    } catch (err) {
+      bound = err
+    }
+    expect(bound).toMatchObject({ name: "DeviceBoundPasskeyError" })
+    expect(passkeyWritten(bound)).toBe(false)
   })
 })
 
@@ -804,7 +1109,11 @@ describe("runPasskeyAssertion", () => {
 
   it("laptop: a local answer is refused, after the observer saw it", async () => {
     const { result, phases } = await assertion("laptop", { route: "local" })
-    await expect(result).rejects.toThrow(named("PhoneRequiredError"))
+    // A sign-in keeps its own wording: its passkey already lives on a phone or a key.
+    await expect(result).rejects.toMatchObject({
+      name: "PhoneRequiredError",
+      message: new PhoneRequiredError().message,
+    })
     expect(phases).toEqual(["asserted"])
   })
 

@@ -113,6 +113,8 @@ export function fakeOperationsModule() {
   const tabBoundOperation = (list: FakeRecord[]) =>
     list.find((r) => r.state === "local" && live.has(r.operationId))
   const use = () => useSyncExternalStore(records.subscribe, records.get)
+  const tabLineOf = (record: FakeRecord | null, on: boolean) =>
+    record?.state === "sent" ? "safe" : record?.state === "local" && on ? "keep" : undefined
   const ended = () => records.get().filter((r) => r.endedAt !== undefined && !r.dismissedAt)
   const busyLabel = () => {
     const current = currentOperation(inProgress())
@@ -132,6 +134,10 @@ export function fakeOperationsModule() {
     useLeavingLosesTransaction: () => (use(), !!tabBoundOperation(records.get())),
     leavingLosesTransaction: () => !!tabBoundOperation(records.get()),
     isFlowCancelled,
+    tabLineOf,
+    useTabLine: (operationId: string | undefined) => (
+      use(), operationId ? tabLineOf(get(operationId), live.has(operationId)) : undefined
+    ),
     useBusyLabel: () => (use(), busyLabel()),
     /** Mirrors the real one: see `runOperation` in `features/operations/operations`. */
     runOperation: async <T>(

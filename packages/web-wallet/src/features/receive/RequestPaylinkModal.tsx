@@ -27,8 +27,7 @@ import { loadWalletIdentity } from "../identity/walletIdentity"
 import { useTagPresentationPending } from "../onboarding/webRegistration"
 import { createAndStoreRequestLink } from "../requests/requestLinkCreation"
 import { parseRequestAmount } from "./receiveView"
-import { runUserFlow, useUserFlowActive } from "../provingGate"
-import { runOperation } from "../operations/operations"
+import { useUserFlowActive } from "../provingGate"
 
 const MS_PER_DAY = 86_400_000
 
@@ -42,8 +41,8 @@ const STAGE_LABEL: Record<DepositStage, string> = {
 }
 
 /**
- * Request-via-paylink modal (ULT-671 flow 1): amount + note form, then a review card whose
- * "Create paylink" mints the link with no proving. The minted link is handed to `onCreated`
+ * Request link modal (ULT-671 flow 1): amount + note form, then a review card whose
+ * "Create request link" mints the link with no proving. The minted link is handed to `onCreated`
  * for the Share step.
  */
 export function RequestPaylinkModal({
@@ -92,25 +91,18 @@ export function RequestPaylinkModal({
     setError(undefined)
     try {
       const token = await deps.tokenService.fetchTokenInformation()
-      // The gate covers the derive too, so a refill proof cannot start under it.
-      const { address } = await runUserFlow(async () => {
+      const { address } = await (async () => {
         const next = await getSipaDepositGateway().depositAddress(
           deps.obsidionWallet,
           deps.contractService,
           deps.handle,
-          { fresh: true, onStage: setStage },
+          { onStage: setStage },
         )
-        // The link is written only once the address is live, so the broadcast's hash is not saved
-        // and the operation stays tab-bound until it lands.
+        // The link is written only once the address is live.
         const { publish } = next
-        if (publish) {
-          const operationId = `request-link_${crypto.randomUUID()}`
-          await runOperation({ operationId, flow: "request-link", summary: "Request link" }, () =>
-            publish({ operationId }),
-          )
-        }
+        if (publish) await publish()
         return next
-      })
+      })()
       const minted = await createAndStoreRequestLink(
         {
           requestId: Fr.random().toString(),
@@ -134,7 +126,7 @@ export function RequestPaylinkModal({
       const message =
         cause instanceof RequestLinkMintError
           ? "Enter an amount above $0."
-          : "The paylink wasn't created — try again."
+          : "The request link wasn't created — try again."
       setError(message)
       if (!(cause instanceof RequestLinkMintError)) {
         showReportableError(cause, "request-link:create", { message })
@@ -150,27 +142,27 @@ export function RequestPaylinkModal({
     : otherFlow
     ? "Another transaction in progress…"
     : busy
-    ? STAGE_LABEL[stage ?? "resolving"] ?? "Creating paylink"
+    ? STAGE_LABEL[stage ?? "resolving"] ?? "Creating request link"
     : deps
-    ? "Create paylink"
+    ? "Create request link"
     : "Connecting…"
 
   return (
-    <Modal variant="create" label="Request via paylink" onClose={busy ? undefined : onClose}>
+    <Modal variant="create" label="Request link" onClose={busy ? undefined : onClose}>
       <div className="ww-create-modal__body">
         <div className="ww-create-modal__head">
           <span className="ww-create-modal__badge">
             <Icon name="link" size={32} color="#fff" />
           </span>
           <GradientText size={24} weight={700}>
-            Request via paylink
+            Request link
           </GradientText>
         </div>
 
         {step === "form" ? (
           <>
             <TextField
-              label="Amount (optional)"
+              label="Amount"
               placeholder="Any amount"
               inputMode="decimal"
               autoFocus
@@ -204,7 +196,7 @@ export function RequestPaylinkModal({
             {error && <div style={{ color: "var(--accent-pink)", fontSize: 13 }}>{error}</div>}
             {claiming && (
               <div style={{ color: "var(--text-secondary)", fontSize: 13 }}>
-                Paylinks become available once your @tag finishes registering.
+                Request links become available once your @tag finishes registering.
               </div>
             )}
             <PrimaryGradientButton

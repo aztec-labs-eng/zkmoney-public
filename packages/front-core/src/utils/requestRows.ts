@@ -17,7 +17,7 @@ export interface RequestRowView {
   counterparty: string
   /** Bare tag — drives the gradient avatar and contact navigation. Unset for link requests. */
   contactTag?: string
-  statusLabel: "You owe" | "Owes you" | "Pending" | "Payment detected"
+  statusLabel: "You owe" | "Owes you" | "Unpaid" | "Payment detected"
   /** Signed fiat, or "Any amount" for a zero-amount link request. */
   amount: string
   /** Raw USD amount — prefill for a fulfilling send. */
@@ -136,7 +136,7 @@ export function buildRequestRows(
           ...base,
           kind: "outgoingLink",
           counterparty: "Requested via link",
-          statusLabel: deposit && depositShowsFunds(deposit) ? "Payment detected" : "Pending",
+          statusLabel: deposit && depositShowsFunds(deposit) ? "Payment detected" : "Unpaid",
           amount: r.amount > 0 ? usd(r.amount, "+") : "Any amount",
           direction: "in",
         }

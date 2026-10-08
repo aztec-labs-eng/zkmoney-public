@@ -74,7 +74,7 @@ tsconfig.tsbuildinfo
 .*.swo
 pxe-*
 
-# deploy bridge-claim resume state (see packages/backend/src/deploy.ts stateDir)
+# deploy bridge-claim resume state (see packages/tooling/l2-contracts-deployer/src/deployStateDir.ts)
 .deploy-state/
 
 # data
@@ -104,6 +104,8 @@ res
 docs/.obsidian/workspace.json
 .vercel
 .env*
+!**/.env.example
+!**/.env.mainnet.example
 
 # design-sync (claude.ai/design) machine state — durable inputs in .design-sync/ stay committed
 .ds-sync/

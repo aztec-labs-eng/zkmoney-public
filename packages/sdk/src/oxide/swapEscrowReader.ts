@@ -13,7 +13,12 @@ import {
   type Hex,
   type PublicClient,
 } from "viem"
-import { SwapEscrowAbi, SwapEscrowFactoryAbi, type SwapEscrowArgs } from "@oxide/l1-contracts"
+import {
+  LegacySwapEscrowEventsAbi,
+  SwapEscrowAbi,
+  SwapEscrowFactoryAbi,
+  type SwapEscrowArgs,
+} from "@oxide/l1-contracts"
 
 export interface SwapEscrowReader {
   /** DAI held at the escrow. Zero once the swap ran or the DAI was recovered. */
@@ -26,13 +31,13 @@ export interface SwapEscrowReader {
    */
   deploySimulates(factory: Address, args: SwapEscrowArgs): Promise<boolean>
   /**
-   * Tx of the `SwapEscrowExecuted(escrow)` log. Undefined when none is in the lookback window; an
+   * Tx of the factory's execution log for `escrow`. Undefined when none is in the lookback window; an
    * RPC failure throws so the caller retries rather than reading it as "no swap".
    */
   executedTxHash(factory: Address, escrow: Address): Promise<Hex | undefined>
   /**
-   * The escrow's `SwapEscrowRecovered` log: which tx moved the DAI out, and where. Undefined when none
-   * is in the lookback window; an RPC failure throws.
+   * The escrow's recovery log: which tx moved the DAI out, and where. Undefined when none is in the
+   * lookback window; an RPC failure throws.
    */
   recoveredTxHash(escrow: Address): Promise<SwapEscrowRecovery | undefined>
 }
@@ -101,32 +106,37 @@ export class L1SwapEscrowReader implements SwapEscrowReader {
     }
   }
 
+  // Factories and escrows deployed before oxide's `EscrowBase` emit the legacy event names, and a
+  // persisted withdrawal keeps the factory it was built against, so both names are read.
   async executedTxHash(factory: Address, escrow: Address): Promise<Hex | undefined> {
-    const hit = await this.findLog((fromBlock, toBlock) =>
-      this.client.getContractEvents({
-        address: factory,
-        abi: SwapEscrowFactoryAbi,
-        eventName: "SwapEscrowExecuted",
-        args: { escrow },
-        fromBlock,
-        toBlock,
-        strict: true,
-      }),
-    )
+    const hit = await this.findLog(async (fromBlock, toBlock) => {
+      const range = { address: factory, args: { escrow }, fromBlock, toBlock, strict: true } as const
+      const [current, legacy] = await Promise.all([
+        this.client.getContractEvents({ ...range, abi: SwapEscrowFactoryAbi, eventName: "EscrowExecuted" }),
+        this.client.getContractEvents({
+          ...range,
+          abi: LegacySwapEscrowEventsAbi,
+          eventName: "SwapEscrowExecuted",
+        }),
+      ])
+      return [...current, ...legacy]
+    })
     return hit?.transactionHash
   }
 
   async recoveredTxHash(escrow: Address): Promise<SwapEscrowRecovery | undefined> {
-    const hit = await this.findLog((fromBlock, toBlock) =>
-      this.client.getContractEvents({
-        address: escrow,
-        abi: SwapEscrowAbi,
-        eventName: "SwapEscrowRecovered",
-        fromBlock,
-        toBlock,
-        strict: true,
-      }),
-    )
+    const hit = await this.findLog(async (fromBlock, toBlock) => {
+      const range = { address: escrow, fromBlock, toBlock, strict: true } as const
+      const [current, legacy] = await Promise.all([
+        this.client.getContractEvents({ ...range, abi: SwapEscrowAbi, eventName: "EscrowRecovered" }),
+        this.client.getContractEvents({
+          ...range,
+          abi: LegacySwapEscrowEventsAbi,
+          eventName: "SwapEscrowRecovered",
+        }),
+      ])
+      return [...current, ...legacy]
+    })
     return hit ? { txHash: hit.transactionHash, target: hit.args.target } : undefined
   }
 

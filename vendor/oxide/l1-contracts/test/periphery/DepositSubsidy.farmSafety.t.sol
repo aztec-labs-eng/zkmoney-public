@@ -31,7 +31,7 @@ contract DepositSubsidyFarmSafetyTest is SweepGasFixture {
     underlying.mint(address(fm), 1_000_000 ether);
 
     vm.prank(OWNER);
-    fm.setDepositConfig(PRICED_MIN_PROFIT, type(uint128).max, PRICED_MIN_PROFIT);
+    fm.setDepositConfig(PRICED_MIN_PROFIT, type(uint128).max, PRICED_MIN_PROFIT, 0, 0);
     vm.fee(PRICED_BASEFEE);
     vm.txGasPrice(PRICED_BASEFEE);
 
@@ -139,7 +139,7 @@ contract DepositSubsidyFarmSafetyTest is SweepGasFixture {
     vm.fee(2 gwei);
     vm.txGasPrice(2 gwei);
     vm.prank(OWNER);
-    fm.setDepositConfig(fee, type(uint128).max, fee);
+    fm.setDepositConfig(fee, type(uint128).max, fee, 0, 0);
 
     GasBurningSIPA lean = new GasBurningSIPA(address(portal), DEPOSIT_FEE, 400_000);
     GasBurningSIPA padded = new GasBurningSIPA(address(portal), DEPOSIT_FEE, 700_000);

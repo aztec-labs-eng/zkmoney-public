@@ -30,6 +30,7 @@ import type { OxideEnvTuple, RegistrationIntent, RegistrationSchedule } from "@o
 import { registrationFloor } from "@obsidion/core/constants"
 import { requireNonZeroL1Address } from "@obsidion/core/oxide"
 import { deploymentScanRange } from "./deploymentScanRange"
+import { readFirstFunding, readSipaBalance, type SipaFundingToken } from "./sipaFunding"
 import {
   MAX_NONCE,
   deriveRecoveryAddress,
@@ -38,8 +39,6 @@ import {
   fetchSipaResolverOperators,
   readDepositFee,
   readFpcFundingCut,
-  readFundingTransfers,
-  readSipaFundingStatus,
   readRegistrationSIPAImplementation,
   readSweepEvents,
   resolverSelectionPolicy,
@@ -344,7 +343,18 @@ export function createRegistrationDepositReader(deps: {
   /** This account's signed-terms amounts when the wallet holds them (the record has no bearer
    *  material); undefined prices the floor off the immutable schedule. */
   termsFor?: (account: string) => { fee: bigint; minDeposit: bigint } | undefined
+  /** Every token the address may be funded with, the fee token among them. Defaults to the fee token. */
+  fundingTokens?: SipaFundingToken[]
 }): RegistrationDepositReader {
+  // The fee token first: the one balances are scaled into.
+  const acceptedTokens = (feeToken: Address): [SipaFundingToken, ...SipaFundingToken[]] => {
+    const listed = deps.fundingTokens ?? []
+    const fee = listed.find((t) => t.address.toLowerCase() === feeToken.toLowerCase())
+    return fee
+      ? [fee, ...listed.filter((t) => t !== fee)]
+      : // A lone token scales by 1 whatever its decimals.
+        [{ address: feeToken, symbol: "", decimals: 0 }]
+  }
   const scheduleHolder = deps.registrationController ?? deps.registry
   let immutables: Promise<RegistrationSchedule | undefined> | undefined
   const registrationImmutables = () =>
@@ -390,21 +400,11 @@ export function createRegistrationDepositReader(deps: {
       },
     ))
   return {
-    readFunding: async (sipa, token) =>
-      (await readFundingTransfers(deps.publicClient, token, sipa)).map((t) => ({
-        amount: t.amount,
-        txHash: t.txHash,
-      })),
-    readBalance: async (sipa, token) =>
-      (
-        await readSipaFundingStatus(deps.publicClient, {
-          sipa,
-          token,
-          implementation: deps.registrationImplementation,
-          // Only the balance is taken here; the sweep verdict this would feed is never read.
-          fpcFundingCut: 0n,
-        })
-      ).balance,
+    readFunding: async (sipa, token) => {
+      const found = await readFirstFunding(deps.publicClient, sipa, acceptedTokens(token))
+      return found ? [{ amount: found.transfer.amount, txHash: found.transfer.txHash }] : []
+    },
+    readBalance: (sipa, token) => readSipaBalance(deps.publicClient, sipa, acceptedTokens(token)),
     readSweeps: async (sipa) =>
       (await readSweepEvents(deps.publicClient, sipa)).map((s) => ({ txHash: s.txHash })),
     floor: async (token, account) => {

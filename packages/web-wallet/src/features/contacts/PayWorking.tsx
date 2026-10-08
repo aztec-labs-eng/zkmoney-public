@@ -1,32 +1,39 @@
 import { GradientSpinner } from "@obsidion/web-ds"
 
-/** What the user waits on until the passkey ceremony ends and the flow hands off to the bell. */
-export type PayWorkingBeat = "preparing" | "signing"
+/**
+ * What the user waits on until the passkey ceremony ends and the flow hands off to the bell; a flow
+ * that holds the page until its transaction is sent also waits on the proof.
+ */
+export type PayWorkingBeat = "preparing" | "signing" | "proving"
 
-/** The warning every working beat shows, as its two lines. */
+/** The warning every working beat shows, as its two lines. Nothing is sent while it shows. */
 export const WORKING_WARNING = [
-  "Don't close this screen,",
-  "your transaction may be lost",
+  "Keep this tab open until it's sent.",
+  "Closing it stops the transaction. Your funds stay where they are.",
 ] as const
 
 const LABEL: Record<PayWorkingBeat, string> = {
   preparing: "Preparing transaction…",
   signing: "Confirm with passkey…",
+  proving: "Proving privately…",
 }
 
 /**
- * `onCancel` is offered only while the caller can still honour it — each flow checks its cancel flag
+ * `onCancel` is offered only while the caller can still honor it — each flow checks its cancel flag
  * once, at its first stage boundary — so a caller withholds it once that gate has passed. `label`
- * names what the preparing beat waits on when it is more than the transaction.
+ * names what the preparing beat waits on when it is more than the transaction. `warn` is off for a
+ * beat with no transaction to lose.
  */
 export function PayWorking({
   beat,
   label,
   onCancel,
+  warn = true,
 }: {
   beat: PayWorkingBeat
   label?: string
   onCancel?: () => void
+  warn?: boolean
 }) {
   return (
     <div className="ww-pay__working">
@@ -38,11 +45,13 @@ export function PayWorking({
           Cancel
         </button>
       )}
-      <span className="ww-pay__warn">
-        {WORKING_WARNING[0]}
-        <br />
-        {WORKING_WARNING[1]}
-      </span>
+      {warn && (
+        <span className="ww-pay__warn">
+          {WORKING_WARNING[0]}
+          <br />
+          {WORKING_WARNING[1]}
+        </span>
+      )}
     </div>
   )
 }

@@ -2,11 +2,15 @@ import { Fr } from "@aztec/aztec.js/fields"
 import { EthAddress } from "@aztec/foundation/eth-address"
 import type { Address, Hex } from "viem"
 import type { LegacySipaDeployArgs } from "@oxide/l1-contracts/legacy_sipa.js"
-import { sipaERC20RecoveryDigest } from "@oxide/l1-contracts/sipa_recovery.js"
+import {
+  sipaERC20RecoveryDigest,
+  sipaETHRecoveryDigest,
+} from "@oxide/l1-contracts/sipa_recovery.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { buildDepositIntent, buildSipaRecoverCall, type SipaDeployArgs } from "@obsidion/sdk"
 import { logger } from "src/utils/logger"
 
+import { isNativeEth } from "./sipaFunding"
 import {
   buildRecoverErc20Digest,
   signSipaRecovery,
@@ -33,8 +37,8 @@ export interface SipaRecoveryDeps {
   target: Address
   signAccount?: (account: Address, digest: Hex) => Promise<Hex>
   accountInitCode?: Hex
-  /** Fallback token when the record predates `tokenAddress` tracking. */
-  token: Address
+  /** The tokens to recover, each with a balance; the record names the first after the recovery. */
+  tokens: readonly [Address, ...Address[]]
   chainId: number
   /**
    * Deploy capability for a SIPA no relayer ever touched. A relayer deploys only as part of a
@@ -135,55 +139,14 @@ async function matchDeployArgs(
   return null
 }
 
+type Recovery = Parameters<typeof buildSipaRecoverCall>[0]["recoveries"][number]
+
 export async function runSipaRecovery(deps: SipaRecoveryDeps): Promise<Hex> {
   const { record } = deps
   const messageSecret = Fr.fromHexString(record.messageSecret)
-
-  const nonceBytes = deps.makeNonce?.() ?? crypto.getRandomValues(new Uint8Array(32))
-  if (nonceBytes.length !== 32) throw new Error("Recovery nonce must be 32 bytes")
-  const nonce = `0x${Buffer.from(nonceBytes).toString("hex")}` as Hex
-  const token = record.tokenAddress ?? deps.token
-  const common = { sipa: record.sipaAddress, target: deps.target, token, nonce }
-  let recover: Parameters<typeof buildSipaRecoverCall>[0]["recover"]
-  if (record.origin?.protocol === "account") {
-    const account = record.origin.recoveryAccount
-    const commitment = deriveRecoveryCommitment(messageSecret, EthAddress.fromString(account))
-    if (commitment.toString().toLowerCase() !== record.origin.recoveryCommitment.toLowerCase()) {
-      throw new Error("Recovery account does not match the SIPA commitment")
-    }
-    if (!deps.signAccount) throw new Error("Account recovery signer is unavailable")
-    const signature = await deps.signAccount(
-      account,
-      sipaERC20RecoveryDigest(record.sipaAddress, BigInt(deps.chainId), deps.target, token, nonce),
-    )
-    recover = {
-      ...common,
-      protocol: "account",
-      account,
-      sharedSecretSalt: messageSecret.toString() as Hex,
-      signature,
-    }
-  } else {
-    const derivedAddress = deriveRecoveryAddress(deps.stealthKey.publicKey, messageSecret)
-    if (derivedAddress.toString() !== record.recoveryAddress.toLowerCase()) {
-      throw new Error(
-        "derived recovery address does not match the SIPA's — wrong stealth key for this deposit",
-      )
-    }
-    const recoveryKey = deriveRecoveryPrivateKey(deps.stealthKey.scalar, messageSecret)
-    const digest = buildRecoverErc20Digest({
-      contract: EthAddress.fromString(record.sipaAddress),
-      chainId: BigInt(deps.chainId),
-      target: EthAddress.fromString(deps.target),
-      token: EthAddress.fromString(token),
-      nonce: Buffer.from(nonceBytes),
-    })
-    recover = {
-      ...common,
-      protocol: "legacy-eoa",
-      signature: signSipaRecovery(digest, recoveryKey),
-    }
-  }
+  const [first, ...rest] = deps.tokens
+  const recoveries: [Recovery, ...Recovery[]] = [await signRecovery(deps, messageSecret, first)]
+  for (const token of rest) recoveries.push(await signRecovery(deps, messageSecret, token))
 
   const deployed = await deps.deployment.readDeployed(record.sipaAddress)
   let origin: SipaRecoverCandidate | null = null
@@ -199,7 +162,7 @@ export async function runSipaRecovery(deps: SipaRecoveryDeps): Promise<Hex> {
   const call = buildSipaRecoverCall({
     deployed,
     deployment: origin ?? undefined,
-    recover,
+    recoveries,
     accountInitCode: deps.accountInitCode,
   })
 
@@ -226,10 +189,59 @@ export async function runSipaRecovery(deps: SipaRecoveryDeps): Promise<Hex> {
   await deps.store.upsert(record.sipaAddress, {
     phase: "recovered",
     recoveryTxHash: hash,
-    tokenAddress: token,
+    tokenAddress: deps.tokens[0],
     ...(record.tokenSymbol !== undefined ? { tokenSymbol: record.tokenSymbol } : {}),
     ...(record.tokenDecimals !== undefined ? { tokenDecimals: record.tokenDecimals } : {}),
   })
   logger.log(`[sipaRecovery] recovered ${record.sipaAddress.slice(0, 10)}… in tx ${hash}`)
   return hash
+}
+
+async function signRecovery(
+  deps: SipaRecoveryDeps,
+  messageSecret: Fr,
+  token: Address,
+): Promise<Recovery> {
+  const { record } = deps
+  const nonceBytes = deps.makeNonce?.() ?? crypto.getRandomValues(new Uint8Array(32))
+  if (nonceBytes.length !== 32) throw new Error("Recovery nonce must be 32 bytes")
+  const nonce = `0x${Buffer.from(nonceBytes).toString("hex")}` as Hex
+  const common = { sipa: record.sipaAddress, target: deps.target, token, nonce }
+  if (record.origin?.protocol === "account") {
+    const account = record.origin.recoveryAccount
+    const commitment = deriveRecoveryCommitment(messageSecret, EthAddress.fromString(account))
+    if (commitment.toString().toLowerCase() !== record.origin.recoveryCommitment.toLowerCase()) {
+      throw new Error("Recovery account does not match the SIPA commitment")
+    }
+    if (!deps.signAccount) throw new Error("Account recovery signer is unavailable")
+    const chainId = BigInt(deps.chainId)
+    const signature = await deps.signAccount(
+      account,
+      isNativeEth(token)
+        ? sipaETHRecoveryDigest(record.sipaAddress, chainId, deps.target, nonce)
+        : sipaERC20RecoveryDigest(record.sipaAddress, chainId, deps.target, token, nonce),
+    )
+    return {
+      ...common,
+      protocol: "account",
+      account,
+      sharedSecretSalt: messageSecret.toString() as Hex,
+      signature,
+    }
+  }
+  const derivedAddress = deriveRecoveryAddress(deps.stealthKey.publicKey, messageSecret)
+  if (derivedAddress.toString() !== record.recoveryAddress.toLowerCase()) {
+    throw new Error(
+      "derived recovery address does not match the SIPA's — wrong stealth key for this deposit",
+    )
+  }
+  const recoveryKey = deriveRecoveryPrivateKey(deps.stealthKey.scalar, messageSecret)
+  const digest = buildRecoverErc20Digest({
+    contract: EthAddress.fromString(record.sipaAddress),
+    chainId: BigInt(deps.chainId),
+    target: EthAddress.fromString(deps.target),
+    token: EthAddress.fromString(token),
+    nonce: Buffer.from(nonceBytes),
+  })
+  return { ...common, protocol: "legacy-eoa", signature: signSipaRecovery(digest, recoveryKey) }
 }

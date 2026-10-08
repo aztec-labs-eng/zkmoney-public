@@ -9,6 +9,9 @@ export const MAINNET_USDT = EthAddress.fromString('0xdAC17F958D2ee523a2206206994
 
 export const MAINNET_DEPOSIT_TOKENS = [MAINNET_DAI, MAINNET_USDC, MAINNET_USDT];
 
+/** The largest loss a 3pool swap accepts, in basis points. Mirrors `ThreePoolLib.sol`. */
+export const THREE_POOL_SWAP_MAX_SLIPPAGE_BPS = 100n;
+
 /** Tokens a SIPA may be funded with: mainnet accepts the SIPA's swap inputs, other chains only the Portal underlying. */
 export function depositTokensFor(chainId: bigint, portalToken: EthAddress): EthAddress[] {
   return chainId === MAINNET_CHAIN_ID ? MAINNET_DEPOSIT_TOKENS : [portalToken];

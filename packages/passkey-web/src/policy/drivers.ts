@@ -15,13 +15,13 @@ import {
   NoPrfError,
   SecurityKeyNoPrfError,
   UnsupportedProviderError,
+  markPasskeyWritten,
 } from "./passkeyErrors.js"
 import { providerAllowed, providerNameFor, refusalKindFor } from "./passkeyProviders.js"
 import {
   checkAssertionRoute,
   checkCreationRoute,
   creationHintsFor,
-  hintsFor,
   isSecurityKey,
   offerableTransports,
   requestedAttachment,
@@ -52,7 +52,7 @@ export type PasskeyCreationOptions = {
   rpId: string
   rpName: string
   userName: string
-  /** Steering for laptop ceremonies; `null` sends none. */
+  /** The route a laptop creation opens on; absent opens on the phone, `null` sends no hints. */
   laptopHints?: readonly PasskeyHint[] | null
   /** Provider ids admitted beyond the measured set; a test seam, and empty in production. */
   extraProviders?: readonly string[]
@@ -60,6 +60,8 @@ export type PasskeyCreationOptions = {
   challengeForChained: () => Promise<Uint8Array> | Uint8Array
   /** Inside the window `safariMislabelsCrossDevice` names, from `currentMisreportsCrossDevice`. */
   misreportsCrossDevice?: boolean
+  /** From `currentTrustsAttachmentLabel`; only then may a refusal name the provider that answered. */
+  attachmentLabelTrusted?: boolean
   observe?: CeremonyObserver
 }
 
@@ -71,6 +73,20 @@ export type PasskeyCreation = {
   prfOutput: Uint8Array
   /** A hardware key answered, so this wallet's only copy of the key lives on it. */
   securityKey: boolean
+}
+
+/**
+ * The provider a refused creation may name as having answered on this device. None where the
+ * browser's label can't be trusted, and never a security key, whose local label is a contradiction.
+ */
+function answeringProvider(
+  created: PasskeyCreateResult,
+  securityKey: boolean,
+  options: PasskeyCreationOptions,
+): string | undefined {
+  if (!options.attachmentLabelTrusted || options.misreportsCrossDevice) return undefined
+  if (refusalKindFor(created.aaguid, securityKey) !== "manager") return undefined
+  return providerNameFor(created.aaguid)
 }
 
 /** The same response, read as another device's. */
@@ -98,65 +114,76 @@ export async function runPasskeyCreation(
     hints,
     ...salts,
   })
-  await options.observe?.({ phase: "created", result: reported })
-  // Only the creation response carries the transports and the provider id; the chained assertion
-  // below carries neither, so both are read here and the class is reused for its evidence.
-  const securityKey = isSecurityKey(reported)
-  const corrected = mislabelledCreation({
-    reported,
-    requested,
-    misreportsCrossDevice: options.misreportsCrossDevice,
-  })
-  const created = corrected ? asCrossDevice(reported) : reported
-  checkCreationRoute(posture, created.authenticatorAttachment, securityKey)
-  if (!providerAllowed(created.aaguid, securityKey, options.extraProviders)) {
-    throw new UnsupportedProviderError(refusalKindFor(created.aaguid, securityKey), {
-      providerName: providerNameFor(created.aaguid),
-      keyOfferable: true,
+  // The credential exists from here on: every refusal below leaves it behind.
+  try {
+    await options.observe?.({ phase: "created", result: reported })
+    // Only the creation response carries the transports and the provider id; the chained assertion
+    // below carries neither, so both are read here and the class is reused for its evidence.
+    const securityKey = isSecurityKey(reported)
+    const corrected = mislabelledCreation({
+      reported,
+      requested,
+      misreportsCrossDevice: options.misreportsCrossDevice,
     })
-  }
-  // Past the route check the attachment is set: reported and admitted, or corrected.
-  const slot = slotForAttachment(created.authenticatorAttachment!)
-
-  let evidence = evidenceOf(created)
-  let chained: PasskeyAssertResult | undefined
-  if (!isComplete(evidence, slot)) {
-    // The follow-up names the credential but not the device, and a corrected answer's passkey may
-    // already have synced to this one, so nothing can keep the follow-up on the phone.
-    if (corrected) {
-      forgetCredential(rpId, created.credentialId)
-      throw new IncompleteCreationError()
+    const created = corrected ? asCrossDevice(reported) : reported
+    checkCreationRoute(
+      posture,
+      created.authenticatorAttachment,
+      securityKey,
+      answeringProvider(created, securityKey, options),
+    )
+    if (!providerAllowed(created.aaguid, securityKey, options.extraProviders)) {
+      throw new UnsupportedProviderError(refusalKindFor(created.aaguid, securityKey), {
+        providerName: providerNameFor(created.aaguid),
+        keyOfferable: true,
+      })
     }
-    // Some providers only return PRF on an assertion, some evaluate one salt at creation, and
-    // some responses carry no readable flags. The assertion has to stand on its own: nothing
-    // from the create result is kept.
-    const challenge = await options.challengeForChained()
-    // A security key that just answered is asked again as itself: its transports send the browser
-    // straight back to it, and naming it keeps the sheet off the phone route.
-    const again = securityKey
-      ? {
-          hints: ["security-key"] as const,
-          ...(created.transports?.length ? { transports: created.transports } : {}),
-        }
-      : { hints: hintsFor(posture, options.laptopHints) }
-    chained = await ceremony.assert({
-      rpId,
-      challenge,
-      credentialIds: [created.credentialId],
-      ...again,
-      ...salts,
-    })
-    await options.observe?.({ phase: "chained", result: chained })
-    checkCreationRoute(posture, chained.authenticatorAttachment, securityKey)
-    evidence = evidenceOf(chained)
-  }
+    // Past the route check the attachment is set: reported and admitted, or corrected.
+    const slot = slotForAttachment(created.authenticatorAttachment!)
 
-  return {
-    created,
-    chained,
-    slot,
-    securityKey,
-    prfOutput: readPrfOrRefuseKey(evidence, slot, securityKey, rpId, created.credentialId),
+    let evidence = evidenceOf(created)
+    let chained: PasskeyAssertResult | undefined
+    if (!isComplete(evidence, slot)) {
+      // The follow-up names the credential but not the device, and a corrected answer's passkey may
+      // already have synced to this one, so nothing can keep the follow-up on the phone.
+      if (corrected) {
+        forgetCredential(rpId, created.credentialId)
+        throw new IncompleteCreationError()
+      }
+      // Some providers only return PRF on an assertion, some evaluate one salt at creation, and
+      // some responses carry no readable flags. The assertion has to stand on its own: nothing
+      // from the create result is kept.
+      const challenge = await options.challengeForChained()
+      // A security key that just answered is asked again as itself: its transports send the browser
+      // straight back to it, and naming it keeps the sheet off the phone route. A laptop otherwise
+      // asks over the routes it created on; a phone names none.
+      const again = securityKey
+        ? {
+            hints: ["security-key"] as const,
+            ...(created.transports?.length ? { transports: created.transports } : {}),
+          }
+        : { hints: posture === "laptop" ? hints : undefined }
+      chained = await ceremony.assert({
+        rpId,
+        challenge,
+        credentialIds: [created.credentialId],
+        ...again,
+        ...salts,
+      })
+      await options.observe?.({ phase: "chained", result: chained })
+      checkCreationRoute(posture, chained.authenticatorAttachment, securityKey)
+      evidence = evidenceOf(chained)
+    }
+
+    return {
+      created,
+      chained,
+      slot,
+      securityKey,
+      prfOutput: readPrfOrRefuseKey(evidence, slot, securityKey, rpId, created.credentialId),
+    }
+  } catch (err) {
+    throw markPasskeyWritten(err)
   }
 }
 
@@ -189,7 +216,7 @@ function readPrfOrRefuseKey(
 /**
  * Tell the authenticator this credential is not one of ours, which it is expected to answer by
  * deleting it. Best effort in both directions: browsers without the call do nothing, and whether a
- * key acts on it is unverified — the refusal always says how to remove it by hand.
+ * key acts on it is unverified.
  */
 function forgetCredential(rpId: string, credentialId: string): void {
   // The lookup is inside the guard too: an accessor-shaped API could throw on the read itself,
@@ -205,7 +232,7 @@ function forgetCredential(rpId: string, credentialId: string): void {
     if (typeof api?.signalUnknownCredential !== "function") return
     void Promise.resolve(api.signalUnknownCredential({ rpId, credentialId })).catch(() => {})
   } catch {
-    // Nothing to do: the refusal and its written cleanup advice stand on their own.
+    // Nothing to do: the refusal stands on its own.
   }
 }
 

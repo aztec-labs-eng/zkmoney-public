@@ -30,7 +30,12 @@ import { prepareDepositSubmit } from "./paylink/paylinkDepositSubmit.js"
 import { TokenService } from "./TokenService.js"
 import { ContractArtifact, FieldLike } from "@aztec/aztec.js/abi"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { ContractService, DEFAULT_CONTRACTS, ContractName } from "@obsidion/contracts"
+import {
+  ContractService,
+  DEFAULT_CONTRACTS,
+  ContractName,
+  ensureContractRegisteredInPXE,
+} from "@obsidion/contracts"
 import { emptyTransferMeta } from "@obsidion/core/constants"
 import { OxideTokenContract, type Transfer as TransferEvent } from "@obsidion/contracts"
 import {
@@ -88,6 +93,7 @@ import {
   type PaylinkKeyMaterial,
 } from "./paylink/paylinkKeys.js"
 import { buildPaylinkNoteView, type PaylinkNoteView } from "./paylink/paylinkNoteData.js"
+import { paylinkEscrowInstance, paylinkTypeOf } from "./paylink/paylinkEscrow.js"
 import {
   findDepositTxHash,
   findEscrowDepositTx,
@@ -402,17 +408,13 @@ export class PaylinkService extends ServiceBase {
   ): Promise<RecoveredPaylinkParams | null> {
     const lane = event.paylinkCreated
     if (!lane) return null
-    const paylinkType =
-      lane.flavor === "email" ? DEFAULT_CONTRACTS.paylinkEmail : DEFAULT_CONTRACTS.paylinkDirect
-    const artifact = await this.contractService.getArtifactForContract(paylinkType)
-    const announced = await derivePaylinkKeys({
-      secretKey: lane.secret,
-      fallbackKeyHash: lane.fallbackKeyHash,
-    })
-    const instance = await getContractInstanceFromInstantiationParams(artifact, {
-      salt: new Fr(0n),
-      publicKeys: announced.publicKeys,
-    })
+    const paylinkType = paylinkTypeOf(lane.flavor)
+    const instance = await paylinkEscrowInstance(
+      this.contractService,
+      lane.flavor,
+      lane.secret,
+      lane.fallbackKeyHash,
+    )
     if (!instance.address.equals(AztecAddress.fromStringUnsafe(event.to))) return null
     const keys = await findPaylinkKeysForDay(masterSecret, lane.day, lane.secret, paylinkType)
     if (!keys?.fallbackKeyHash.equals(lane.fallbackKeyHash)) return null
@@ -1099,8 +1101,9 @@ export class PaylinkService extends ServiceBase {
 
   /**
    * Everything chain says about a link: the escrow note (amount, windows, commitment) and the
-   * funding transfer's lane (email, memo). The transfer read is fail-open: a note without its
-   * transfer still resolves, email-less.
+   * funding transfer's lane (email, memo). The transfer is read off the token the note names, so a
+   * browser with no account and no token service still sees the memo. The transfer read is
+   * fail-open: a note without its transfer still resolves, email-less.
    */
   public async resolveLink(
     params: PaylinkParams,
@@ -1108,7 +1111,9 @@ export class PaylinkService extends ServiceBase {
   ): Promise<ResolvedPaylink> {
     const { contract, instance, depositTxHash } = await this.reconstructPaylinkContract(params)
     const note = await this.readEscrowNote(contract, account)
-    const deposit = await this.readDepositMetaOf(instance, depositTxHash).catch(() => undefined)
+    const deposit = await this.registerToken(note.tokenAddress)
+      .then(() => this.readDepositMetaOf(instance, depositTxHash, note.tokenAddress))
+      .catch(() => undefined)
     return {
       note,
       txHash: depositTxHash?.toString(),
@@ -1130,15 +1135,27 @@ export class PaylinkService extends ServiceBase {
     return this.readDepositMetaOf(instance, depositTxHash)
   }
 
+  /** The PXE decrypts a token's Transfer events only once it holds that token contract. */
+  private async registerToken(token: AztecAddress): Promise<void> {
+    const artifact = await this.contractService.getArtifactForContract(
+      DEFAULT_CONTRACTS.oxideToken,
+      token,
+    )
+    await ensureContractRegisteredInPXE(this.wallet.pxe, this.wallet.node, token, () =>
+      Promise.resolve(artifact),
+    )
+  }
+
   private async readDepositMetaOf(
     instance: ContractInstanceWithAddress,
     txHash: TxHash | undefined,
+    token: AztecAddress = this.tokenService.tokenAddress,
   ): Promise<DepositMeta | undefined> {
     const events = await this.wallet.getPrivateEvents<TransferEvent>(
       OxideTokenContract.events.Transfer,
       {
         ...(txHash ? { txHash } : {}),
-        contractAddress: this.tokenService.tokenAddress,
+        contractAddress: token,
         scopes: [instance.address],
       },
     )
@@ -1149,8 +1166,8 @@ export class PaylinkService extends ServiceBase {
   }
 
   /**
-   * The claim/refund payout meta: the deposit event's memo and tag, when readable, else none. The
-   * created lane stays on the funding transfer; the payout is a plain send.
+   * The claim payout meta: the deposit event's memo and tag, when readable, plus the payout lane
+   * that lets the claimer rebuild this claim on a fresh device. A refund carries no lane.
    */
   private async payoutMeta(params: PaylinkParams): Promise<Fr[]> {
     let read: TransferMeta | undefined
@@ -1159,7 +1176,15 @@ export class PaylinkService extends ServiceBase {
     } catch {
       read = undefined
     }
-    return buildTransferMetaForSend({ memo: read?.memo, senderTag: read?.senderTag })
+    return buildTransferMetaForSend({
+      memo: read?.memo,
+      senderTag: read?.senderTag,
+      paylinkPayout: {
+        flavor: params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail ? "email" : "direct",
+        secret: params.secret,
+        fallbackKeyHash: params.fallbackKeyHash,
+      },
+    })
   }
 
   /**

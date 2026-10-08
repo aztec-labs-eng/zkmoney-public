@@ -10,6 +10,7 @@ const PORTAL = '0x0000000000000000000000000000000000000001';
 const OTHER_PORTAL = '0x0000000000000000000000000000000000000010';
 const THIRD_PORTAL = '0x0000000000000000000000000000000000000011';
 const L2_TOKEN = '0x' + '11'.repeat(32);
+const TOKEN = '0x0000000000000000000000000000000000000006';
 const BROADCASTER = '0x' + '22'.repeat(32);
 const OPERATION_EXECUTOR = '0x0000000000000000000000000000000000000004';
 const PLAIN_WITHDRAWAL_EXECUTOR = '0x0000000000000000000000000000000000000009';
@@ -24,6 +25,7 @@ function entry(overrides: Record<string, unknown> = {}): Record<string, unknown>
     withdrawalProtocol: 'l1-operation',
     portal: PORTAL,
     l2Token: L2_TOKEN,
+    token: TOKEN,
     rollupVersion: '4',
     enclaveUrl: ENCLAVE_URL,
     l2Broadcaster: BROADCASTER,
@@ -35,6 +37,9 @@ function entry(overrides: Record<string, unknown> = {}): Record<string, unknown>
     ...overrides,
   };
 }
+
+/** The fields that select the entries the relayer watches. */
+const SELECTION_FIELDS = ['portal', 'rollupVersion', 'withdrawalProtocol'];
 
 function document(...deployments: Record<string, unknown>[]): string {
   return JSON.stringify({ schemaVersion: '4', deployments });
@@ -58,6 +63,7 @@ describe('resolveDeploymentEnvManifest', () => {
     expect(publicConfig.portal).toBeInstanceOf(EthAddress);
     expect(publicConfig.portal.toString()).toBe(PORTAL);
     expect(publicConfig.l2Token).toBeInstanceOf(AztecAddress);
+    expect(publicConfig.token.toString()).toBe(TOKEN);
     expect(publicConfig.rollupVersion).toBe(4n);
     expect(publicConfig.enclaveUrl).toBe(ENCLAVE_URL);
     expect(publicConfig.broadcaster.toString()).toBe(BROADCASTER);
@@ -66,16 +72,6 @@ describe('resolveDeploymentEnvManifest', () => {
     expect(publicConfig.plainWithdrawalExecutor.toString()).toBe(PLAIN_WITHDRAWAL_EXECUTOR);
     expect(publicConfig.operationExecutor.toString()).toBe(OPERATION_EXECUTOR);
     expect(publicConfig.fpcFunder.toString()).toBe(FPC_FUNDER);
-  });
-
-  it('throws when the withdrawal subsidy is absent', async () => {
-    const { withdrawalSubsidy: _dropped, ...noWithdrawal } = entry();
-    await expect(resolve(document(noWithdrawal))).rejects.toThrow(/\(v4\): withdrawalSubsidy missing/);
-  });
-
-  it('throws when the prover subsidy is absent', async () => {
-    const { proverSubsidy: _dropped, ...noProver } = entry();
-    await expect(resolve(document(noProver))).rejects.toThrow(/\(v4\): proverSubsidy missing/);
   });
 
   it('throws when the pinned portal is absent, listing the available deployments', async () => {
@@ -124,29 +120,11 @@ describe('resolveDeploymentEnvManifest', () => {
     const { fpcFunder: _dropped, ...noFunder } = entry();
     await expect(resolve(document(noFunder))).rejects.toThrow(/deployment .* \(v4\): fpcFunder missing/);
   });
-
-  it('is fatal when a non-pinned entry is malformed, on any rollup version', async () => {
-    const badRollup = entry({ label: 'v8', portal: OTHER_PORTAL, rollupVersion: 'x' });
-    await expect(resolve(document(entry(), badRollup))).rejects.toThrow(
-      `deployment env manifest ${URL}: deployment ${OTHER_PORTAL} (v8): rollupVersion "x": not a decimal integer`,
-    );
-    const { operationExecutor: _dropped, ...noExecutor } = entry({
-      label: 'v9',
-      portal: THIRD_PORTAL,
-      rollupVersion: '9',
-    });
-    await expect(resolve(document(entry(), noExecutor))).rejects.toThrow(
-      `deployment env manifest ${URL}: deployment ${THIRD_PORTAL} (v9): operationExecutor missing`,
-    );
-    await expect(resolve(document(entry(), { label: 'v10' }))).rejects.toThrow(
-      /deployment \(no portal\) \(v10\): portal missing/,
-    );
-  });
 });
 
 describe('historical L1-operation deployment selection', () => {
   it.each([undefined, 'legacy', 'unknown'])(
-    'skips historical protocol %s while retaining modern entries',
+    'ignores historical protocol %s while retaining modern entries',
     async withdrawalProtocol => {
       const result = await resolve(
         document(
@@ -169,5 +147,51 @@ describe('historical L1-operation deployment selection', () => {
     const result = await resolve(document(...(reverse ? entries.reverse() : entries)));
     expect(result.current.publicConfig.portal.toString()).toBe(PORTAL);
     expect(result.historical.map(d => d.publicConfig.portal.toString())).toEqual([OTHER_PORTAL]);
+  });
+});
+
+describe('manifest entries from other relayer versions', () => {
+  it.each(Object.keys(entry()).filter(field => !SELECTION_FIELDS.includes(field)))(
+    'skips a watched entry without %s exactly when a pinned entry without it is fatal, for the same reason',
+    async field => {
+      const { [field]: _dropped, ...older } = entry({ label: 'older', portal: OTHER_PORTAL });
+      const fatal = await resolve(document(older), OTHER_PORTAL).then(
+        () => undefined,
+        (err: Error) => err.message,
+      );
+      const result = await resolve(document(entry(), older, entry({ label: 'other', portal: THIRD_PORTAL })));
+      expect(result.current.label).toBe('v4');
+      expect(result.historical.map(d => d.publicConfig.portal.toString())).toEqual(
+        fatal === undefined ? [OTHER_PORTAL, THIRD_PORTAL] : [THIRD_PORTAL],
+      );
+      expect(result.unreadable).toEqual(fatal === undefined ? [] : [fatal]);
+    },
+  );
+
+  it('skips a watched entry that has only the fields that select it, and watches the rest', async () => {
+    const bare = { label: 'older', portal: OTHER_PORTAL, rollupVersion: '4', withdrawalProtocol: 'l1-operation' };
+    const result = await resolve(document(entry(), bare, entry({ label: 'other', portal: THIRD_PORTAL })));
+    expect(result.current.label).toBe('v4');
+    expect(result.historical.map(d => d.label)).toEqual(['other']);
+    expect(result.unreadable).toEqual([expect.stringContaining(`deployment ${OTHER_PORTAL} (older): `)]);
+  });
+
+  it.each([
+    ['has no protocol marker', {}],
+    ['has another protocol', { withdrawalProtocol: 'legacy' }],
+    ['is on another rollup', { withdrawalProtocol: 'l1-operation', rollupVersion: '5' }],
+  ])('ignores an entry that %s, whatever fields it lacks', async (_case, overrides) => {
+    const unwatched = { label: 'older', portal: OTHER_PORTAL, rollupVersion: '4', ...overrides };
+    const result = await resolve(document(entry(), unwatched));
+    expect(result.current.label).toBe('v4');
+    expect(result.historical).toEqual([]);
+    expect(result.unreadable).toEqual([]);
+  });
+
+  it('watches a newer entry that has fields the relayer does not read', async () => {
+    const newer = entry({ label: 'newer', portal: OTHER_PORTAL, futureContract: '0x' + '0c'.repeat(20) });
+    const result = await resolve(document(entry(), newer));
+    expect(result.historical.map(d => d.label)).toEqual(['newer']);
+    expect(result.unreadable).toEqual([]);
   });
 });

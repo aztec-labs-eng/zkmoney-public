@@ -10,6 +10,7 @@ library OxideConstants {
   uint8 internal constant TEE_SIG_DOMAIN_UNPROCESSED_DEPOSIT_REFUND = 5;
   bytes32 internal constant PORTAL_CONSTANT_SECRET_HASH = bytes32(0x1f8eff65d91ed781c2e7a28a2ff99b7f7506b7293121b5ffcf3cd339c84d2250);
   uint128 internal constant TX_AMOUNT_CAP = 0x8c06536eadf1fc0000;
+  uint128 internal constant MAX_PRIORITY_FEE_WEI = 100000000;
   uint32 internal constant MAX_FROZEN_NOTES_PER_REFUND = 10;
   uint32 internal constant FROZEN_NOTES_REFUND_PUBLIC_INPUT_COUNT = 18;
   uint32 internal constant FROZEN_DEPOSIT_REFUND_PUBLIC_INPUT_COUNT = 8;
