@@ -5,7 +5,14 @@
  * fake, so what these tests assert is the wiring.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { encodeAbiParameters, encodeEventTopics, erc20Abi, type Address, type Hex } from "viem"
+import {
+  encodeAbiParameters,
+  encodeEventTopics,
+  erc20Abi,
+  zeroAddress,
+  type Address,
+  type Hex,
+} from "viem"
 import type { SIPADepositRecord } from "@obsidion/front-core"
 
 const SIPA = `0x${"11".repeat(20)}` as Address
@@ -19,6 +26,11 @@ const l1Clients = vi.hoisted(() => ({ getL1Clients: vi.fn() }))
 const bridge = vi.hoisted(() => ({ submitViaDesktopBridge: vi.fn() }))
 
 vi.mock("../src/features/deposit/l1Wallet", () => l1Clients)
+// The refund memo the recovery leaves lists the tokens the registration accepts, per network.
+vi.mock("../src/config/env", async (original) => ({
+  ...(await original<object>()),
+  getConfig: () => ({ l1ChainId: 11155111 }),
+}))
 // The refund settle prices the entry it buys against the portal's cut, and will not decide without.
 vi.mock("../src/features/fees/fpcFundingCut", () => ({
   currentFpcFundingCut: async () => 10n ** 17n,
@@ -128,7 +140,7 @@ describe("recoverSipaDeposit", () => {
     waitForReceipt: vi.fn(async () => true),
   }
   const run = vi.fn(async () => HASH)
-  const store = { get: vi.fn(() => null), upsert: vi.fn() }
+  const store = { get: vi.fn(() => null), upsert: vi.fn(), update: vi.fn() }
   const stealthKey = { scalar: 7n, publicKey: { x: 1n, y: 2n } }
 
   const deployment = {
@@ -136,11 +148,17 @@ describe("recoverSipaDeposit", () => {
     candidates: [],
     predict: vi.fn(async () => SIPA),
   }
-  const deps = (readBalance: () => Promise<bigint>) => ({
+  const DAI = { address: TUPLE_TOKEN, symbol: "DAI", decimals: 18 }
+  const USDC = { address: TYPED, symbol: "USDC", decimals: 6 }
+  /** Answers each token's balance read from `held`, and zero for any other token. */
+  const balances = (held: Record<Address, bigint> = {}) =>
+    vi.fn(async (_sipa: Address, token: Address) => held[token] ?? 0n)
+  const deps = (readBalance = balances(), tokens = [DAI], eth = 0n) => ({
     channel,
     chainId: 11155111,
-    token: TUPLE_TOKEN,
+    tokens: tokens as [typeof DAI, ...(typeof DAI)[]],
     readBalance,
+    readEthBalance: vi.fn(async () => eth),
     readReceipt: async () =>
       ({
         status: "success",
@@ -152,7 +170,7 @@ describe("recoverSipaDeposit", () => {
               eventName: "Transfer",
               args: { from: SIPA, to: WALLET },
             }),
-            data: encodeAbiParameters([{ type: "uint256" }], [5n]),
+            data: encodeAbiParameters([{ type: "uint256" }], [5n * 10n ** 18n]),
           },
         ],
       } as never),
@@ -167,7 +185,7 @@ describe("recoverSipaDeposit", () => {
   })
 
   it("refuses a deposit whose note has not been discovered", async () => {
-    const readBalance = vi.fn(async () => 5n)
+    const readBalance = balances({ [TUPLE_TOKEN]: 5n })
     await expect(
       recoverSipaDeposit(record({ messageSecret: "" }), deps(readBalance)),
     ).rejects.toThrow(/still looking up this deposit's details/)
@@ -176,13 +194,8 @@ describe("recoverSipaDeposit", () => {
   })
 
   it("aborts on an empty SIPA rather than settling a deposit it never moved", async () => {
-    // A sweep that won the race leaves a zero balance: recoverERC20 would still confirm, moving
-    // nothing while marking the record recovered.
     await expect(
-      recoverSipaDeposit(
-        record({ tokenAddress: RECORD_TOKEN }),
-        deps(async () => 0n),
-      ),
+      recoverSipaDeposit(record({ tokenAddress: RECORD_TOKEN }), deps()),
     ).rejects.toThrow(/already been swept/)
     expect(run).not.toHaveBeenCalled()
   })
@@ -190,25 +203,21 @@ describe("recoverSipaDeposit", () => {
   it("flags the current-token fallback as inconclusive on a zero balance", async () => {
     // Without its own tokenAddress the read hit the CURRENT deployment's token — wrong contract
     // for a historic-generation SIPA, so zero must not read as "swept".
-    await expect(
-      recoverSipaDeposit(
-        record(),
-        deps(async () => 0n),
-      ),
-    ).rejects.toThrow(/predates token tracking/)
+    await expect(recoverSipaDeposit(record(), deps())).rejects.toThrow(/predates token tracking/)
     expect(run).not.toHaveBeenCalled()
   })
 
   it("runs the recovery against the channel's target and the record's token", async () => {
-    const readBalance = vi.fn(async () => 5n)
+    const readBalance = balances({ [RECORD_TOKEN]: 5n })
     const rec = record({ tokenAddress: RECORD_TOKEN })
     await expect(recoverSipaDeposit(rec, deps(readBalance))).resolves.toBe(HASH)
+    // A token the list lacks is read too.
     expect(readBalance).toHaveBeenCalledWith(SIPA, RECORD_TOKEN)
     expect(run).toHaveBeenCalledWith(
       expect.objectContaining({
         record: rec,
         target: WALLET,
-        token: RECORD_TOKEN,
+        tokens: [RECORD_TOKEN],
         chainId: 11155111,
         stealthKey,
         store,
@@ -219,11 +228,122 @@ describe("recoverSipaDeposit", () => {
     )
   })
 
+  const ETH_RECORD = { tokenAddress: zeroAddress, tokenSymbol: "ETH", tokenDecimals: 18 }
+  const ACCOUNT = { origin: { protocol: "account" } as never }
+
+  it("recovers ETH with recoverETH's zero-address token", async () => {
+    const rec = record({ ...ETH_RECORD, ...ACCOUNT })
+    await expect(recoverSipaDeposit(rec, deps(balances(), [DAI], 10n ** 16n))).resolves.toBe(HASH)
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ record: rec, tokens: [zeroAddress] }),
+    )
+  })
+
+  it("refuses an ETH deposit whose address holds no ETH", async () => {
+    const rec = record({ ...ETH_RECORD, ...ACCOUNT })
+    await expect(recoverSipaDeposit(rec, deps())).rejects.toThrow(/holds no ETH/)
+    expect(run).not.toHaveBeenCalled()
+  })
+
+  it("recovers the tokens of an ETH record without the account protocol, and never its ETH", async () => {
+    const d = deps(balances({ [TUPLE_TOKEN]: 5n }), [DAI], 1n)
+    await expect(recoverSipaDeposit(record(ETH_RECORD), d)).resolves.toBe(HASH)
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ tokens: [TUPLE_TOKEN] }))
+    expect(d.readEthBalance).not.toHaveBeenCalled()
+    await expect(recoverSipaDeposit(record(ETH_RECORD), deps())).rejects.toThrow(
+      /cannot recover ETH/,
+    )
+  })
+
   it("falls back to the manifest token for a record predating token tracking", async () => {
-    const readBalance = vi.fn(async () => 5n)
-    await expect(recoverSipaDeposit(record(), deps(readBalance))).resolves.toBe(HASH)
-    expect(readBalance).toHaveBeenCalledWith(SIPA, TUPLE_TOKEN)
-    expect(run).toHaveBeenCalledWith(expect.objectContaining({ token: TUPLE_TOKEN }))
+    await expect(recoverSipaDeposit(record(), deps(balances({ [TUPLE_TOKEN]: 5n })))).resolves.toBe(
+      HASH,
+    )
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ tokens: [TUPLE_TOKEN] }))
+  })
+
+  it("moves the accepted token that holds the funds, not the one the record names", async () => {
+    const rec = record({ tokenAddress: TUPLE_TOKEN })
+    const readBalance = balances({ [TYPED]: 5_000_000n })
+    await expect(recoverSipaDeposit(rec, deps(readBalance, [DAI, USDC]))).resolves.toBe(HASH)
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tokens: [TYPED],
+        record: expect.objectContaining({
+          tokenAddress: TYPED,
+          tokenSymbol: "USDC",
+          tokenDecimals: 6,
+        }),
+      }),
+    )
+  })
+
+  it("recovers every token with a balance in one run, the record's token first", async () => {
+    const rec = record({ tokenAddress: TYPED, ...ACCOUNT })
+    const readBalance = balances({ [TUPLE_TOKEN]: 5n, [TYPED]: 7n })
+    await expect(recoverSipaDeposit(rec, deps(readBalance, [DAI, USDC], 1n))).resolves.toBe(HASH)
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({ record: rec, tokens: [TYPED, TUPLE_TOKEN, zeroAddress] }),
+    )
+  })
+
+  describe("a token named in Settings", () => {
+    const stranded = { address: RECORD_TOKEN, symbol: "WETH", decimals: 18 }
+    const readBalance = () => balances({ [TUPLE_TOKEN]: 5n, [RECORD_TOKEN]: 7n })
+    /** One stored record; `update` writes a patch unless it answers null, as the real store does. */
+    const liveStore = (phase: SIPADepositRecord["phase"]) => {
+      const live = record({ phase, tokenAddress: TUPLE_TOKEN })
+      return {
+        live,
+        get: () => live,
+        upsert: vi.fn(),
+        update: vi.fn(async (_sipa: Address, patch: (r: SIPADepositRecord) => object | null) => {
+          const next = patch(live)
+          return next ? Object.assign(live, next) : null
+        }),
+      }
+    }
+    /** A run that writes `recovered` once its transaction confirms, as runSipaRecovery does. */
+    const runWrites = (onSigned?: () => void) =>
+      vi.fn(
+        async (d: { store: { upsert: (sipa: Address, patch: object) => Promise<unknown> } }) => {
+          onSigned?.()
+          await d.store.upsert(SIPA, { phase: "recovered" })
+          return HASH
+        },
+      )
+
+    it("is recovered with the deposit tokens", async () => {
+      const store = liveStore("recoverable")
+      const run = runWrites()
+      const d = { ...deps(readBalance()), store, stranded, run: run as never }
+      await expect(recoverSipaDeposit(store.live, d)).resolves.toBe(HASH)
+      expect(run.mock.lastCall?.[0]).toMatchObject({ tokens: [TUPLE_TOKEN, RECORD_TOKEN] })
+      expect(store.live.phase).toBe("recovered")
+    })
+
+    it("leaves a settled record as it was, even one settled while the recovery was signed", async () => {
+      const settled = liveStore("claimed")
+      const d = { ...deps(readBalance()), stranded }
+      await recoverSipaDeposit(settled.live, { ...d, store: settled, run: runWrites() as never })
+      expect(settled.live.phase).toBe("claimed")
+
+      const settling = liveStore("recoverable")
+      const signedThenClaimed = runWrites(() => (settling.live.phase = "claimed"))
+      await recoverSipaDeposit(settling.live, {
+        ...d,
+        store: settling,
+        run: signedThenClaimed as never,
+      })
+      expect(settling.live.phase).toBe("claimed")
+      expect(settling.upsert).not.toHaveBeenCalled()
+    })
+
+    it("refuses when the address no longer holds it", async () => {
+      const store = liveStore("claimed")
+      const d = { ...deps(balances({ [TUPLE_TOKEN]: 5n })), store, stranded }
+      await expect(recoverSipaDeposit(store.live, d)).rejects.toThrow(/no longer holds any WETH/)
+    })
   })
 
   it("remembers a registration deposit's recovery as its refund, whatever surface ran it", async () => {
@@ -253,15 +373,17 @@ describe("recoverSipaDeposit", () => {
     )
     expect(registrationRefunded(pending)).toBe(false)
     // Another token recovered off the address is not the registration's refund.
-    await recoverSipaDeposit(
-      record(),
-      deps(async () => 5n),
-    )
+    await recoverSipaDeposit(record(), deps(balances({ [TUPLE_TOKEN]: 5n })))
     expect(registrationRefunded(pending)).toBe(false)
     expect(getPendingStore().get(WALLET)?.phase).toBe("funded")
+    // The refund is read off an accepted token even when the recovery names ETH first.
     await recoverSipaDeposit(
-      record({ tokenAddress: RECORD_TOKEN }),
-      deps(async () => 5n),
+      record({ ...ETH_RECORD, ...ACCOUNT }),
+      deps(
+        balances({ [RECORD_TOKEN]: 5n }),
+        [DAI, { address: RECORD_TOKEN, symbol: "DAI", decimals: 18 }],
+        1n,
+      ),
     )
     expect(registrationRefunded(pending)).toBe(true)
     expect(getPendingStore().get(WALLET)).toMatchObject({ phase: "awaiting_deposit" })
@@ -425,8 +547,7 @@ describe("unsweepableCopy", () => {
   const QUARTER_DAI = "250000000000000000"
   // A record whose whole deduction is 1.25 DAI, a quarter of it the portal's cut.
   const FEE_WITH_CUT = "1250000000000000000"
-  const copy = (patch: Partial<SIPADepositRecord>, settlementSymbol?: string) =>
-    unsweepableCopy(record(patch), settlementSymbol)
+  const copy = (patch: Partial<SIPADepositRecord>) => unsweepableCopy(record(patch))
 
   it("names the fee when the deposit is at or below the floor", () => {
     for (const amount of ["0.4", "1"]) {
@@ -438,22 +559,46 @@ describe("unsweepableCopy", () => {
     }
   })
 
-  it("names the cap only where the amount the pool would forward exceeds it", () => {
+  it("names the ceiling case only where the amount the pool would forward exceeds it", () => {
     const over = copy({ amount: "4200", fee: ONE_DAI, fpcFundingCut: "0" })
-    expect(over).toContain("over the network's per-transaction deposit cap (2583 DAI)")
+    expect(over).toContain("larger than the network can process in one deposit")
+    expect(over).toContain("Waiting won't change this.")
     expect(over).not.toContain("deposit fee (")
     expect(over).not.toContain("same deposit address")
     expect(over).toContain("You can recover the funds")
-    // The pool keeps the fee, so a gross of exactly cap + fee forwards exactly the cap.
+    // The pool keeps the fee, so a gross of exactly ceiling + fee forwards exactly the ceiling.
     expect(copy({ amount: "2584", fee: ONE_DAI, fpcFundingCut: "0" })).not.toContain(
-      "per-transaction deposit cap",
+      "larger than the network",
     )
     expect(copy({ amount: "2585", fee: ONE_DAI, fpcFundingCut: "0" })).toContain(
-      "per-transaction deposit cap",
+      "larger than the network",
     )
     // With no fee on the record the gross is all there is to measure against.
-    expect(copy({ amount: "2583" })).not.toContain("per-transaction deposit cap")
-    expect(copy({ amount: "2584" })).toContain("per-transaction deposit cap")
+    expect(copy({ amount: "2583" })).not.toContain("larger than the network")
+    expect(copy({ amount: "2584" })).toContain("larger than the network")
+  })
+
+  it("never shows the internal ceiling or a wait, and points to the published limit", () => {
+    for (const tokenSymbol of ["DAI", "USDC", "TEST"]) {
+      const text = copy({ amount: "4200", fee: ONE_DAI, fpcFundingCut: "0", tokenSymbol })
+      expect(text).not.toMatch(/2[,.]?583/)
+      expect(text).not.toMatch(/\b(minute|hour|refill|later)\b/i)
+      expect(text).toContain("Each deposit is limited to $2,500 sent, including fees.")
+      expect(text).toContain(`The limit counts 1 ${tokenSymbol} as $1.`)
+    }
+  })
+
+  it("names the fee in the token sent", () => {
+    const floor = copy({ amount: "0.4", fee: ONE_DAI, fpcFundingCut: "0", tokenSymbol: "USDC" })
+    expect(floor).toContain("deposit fee (1 USDC)")
+    expect(floor).toContain("holds more than 1 USDC in total")
+    const small = copy({
+      amount: "0.2",
+      fee: "350000000000000000",
+      fpcFundingCut: "0",
+      tokenSymbol: "USDC",
+    })
+    expect(small).toContain("deposit fee (0.35 USDC)")
   })
 
   it("names the whole deduction, not the sweep fee alone", () => {
@@ -463,34 +608,11 @@ describe("unsweepableCopy", () => {
     expect(text).toContain("holds more than 1.25 DAI in total")
   })
 
-  it("names the fee in the token sent and the cap in the DAI the swap forwards", () => {
-    const text = copy({ amount: "4200", fee: ONE_DAI, fpcFundingCut: "0", tokenSymbol: "USDC" })
-    expect(text).toContain("deposit cap (2583 DAI)")
-    expect(text).not.toContain("USDC)")
-    const floor = copy({ amount: "0.4", fee: ONE_DAI, fpcFundingCut: "0", tokenSymbol: "USDC" })
-    expect(floor).toContain("deposit fee (1 USDC)")
-    expect(floor).toContain("holds more than 1 USDC in total")
-  })
-
-  it("names the cap in the deployment's settlement token", () => {
-    const over = { amount: "4200", fee: ONE_DAI, fpcFundingCut: "0" }
-    // Sandbox and testnet settle in the manifest token the picker labels TEST.
-    expect(copy({ ...over, tokenSymbol: "TEST" }, "TEST")).toContain("deposit cap (2583 TEST)")
-    // Mainnet settles in DAI whatever was sent.
-    expect(copy({ ...over, tokenSymbol: "USDC" }, "DAI")).toContain("deposit cap (2583 DAI)")
-    // The fee stays in the token the record was funded in.
-    const floor = copy(
-      { amount: "0.2", fee: "350000000000000000", fpcFundingCut: "0", tokenSymbol: "USDC" },
-      "DAI",
-    )
-    expect(floor).toContain("deposit fee (0.35 USDC)")
-  })
-
   it("claims no cause it cannot prove between the fee and the cap", () => {
     const text = copy({ amount: "95", fee: ONE_DAI, fpcFundingCut: "0" })
     expect(text).toContain("can't be moved into your private balance")
     expect(text).not.toContain("deposit fee (")
-    expect(text).not.toContain("per-transaction deposit cap")
+    expect(text).not.toContain("larger than the network")
     expect(text).toContain("recover the funds")
   })
 

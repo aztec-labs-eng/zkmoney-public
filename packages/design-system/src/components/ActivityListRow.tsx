@@ -20,7 +20,7 @@ export interface ActivityListRowProps {
   timestamp: string
   /** Signed amount string; a "+" prefix renders green. */
   amount: string
-  /** Status label under the amount (Pending / Unclaimed / Unpaid / Claimed / Migrated / You owe / Failed / Needs recovery / Recovered / Cancelled / Refunded / Expired / Paid). */
+  /** Status label under the amount (Pending / Unclaimed / Unpaid / Claimed / Migrated / You owe / Failed / Needs recovery / Funds not sent / Recovered / Cancelled / Cancelling / Reclaiming / Reclaimed / Expired / Paid, and a deposit's Awaiting funds / Receiving / Crediting / Deposit failed). */
   statusLabel?: StatusLabel
   /** Avatar node; defaults to a deterministic gradient-initial avatar from `counterparty`. */
   avatar?: ReactNode
@@ -36,10 +36,16 @@ export interface ActivityListRowProps {
 
 export const STATUS_STYLE = {
   "Failed": "failed",
+  "Deposit failed": "failed",
   "Expired": "failed",
   "Needs recovery": "failed",
+  // A received payment the network reverted.
+  "Not received": "failed",
+  "Funds not sent": "failed",
   "Cancelled": "cancelled",
   "Recovered": "cancelled",
+  "Reclaimed": "cancelled",
+  // A link refunded before the row recorded which recovery ran.
   "Refunded": "cancelled",
   "Owes you": "request",
   "You owe": "request",
@@ -47,14 +53,21 @@ export const STATUS_STYLE = {
   // A withdrawal between the burn and the payout: still in flight, so the pending orange.
   "Releasing": "pending",
   "Swapping": "pending",
+  // A deposit on its way in.
+  "Awaiting funds": "pending",
+  "Receiving": "pending",
+  "Crediting": "pending",
+  // A paylink refund on its way back to the creator.
+  "Cancelling": "pending",
+  "Reclaiming": "pending",
   // Money has arrived but is not credited yet — the same in-flight orange a deposit row wears,
   // since that is the deposit this row stands in for.
   "Payment detected": "pending",
-  "Claimed": "pending",
   "Migrated": "pending",
   "Unclaimed": "awaitingClaim",
   "Unpaid": "awaitingClaim",
   "Paid": "paid",
+  "Claimed": "paid",
 } as const satisfies Record<string, StatusBadgeStyle>
 
 /** A row label this component draws a badge for. Callers type their label maps with it. */

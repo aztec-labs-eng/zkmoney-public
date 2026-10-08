@@ -3,13 +3,16 @@ import { readFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import path from "path"
 import react from "@vitejs/plugin-react"
-import { defineConfig, loadEnv, type Connect, type Plugin } from "vite"
+import { defineConfig, loadEnv, type Connect, type Plugin, type ProxyOptions } from "vite"
 import { nodePolyfills } from "vite-plugin-node-polyfills"
-import { BASIC_AUTH_CHALLENGE, BRIDGE_PATH, gateBasicAuth, isPublicPath } from "./basicAuth.js"
+import { BASIC_AUTH_CHALLENGE, gateBasicAuth, isPublicPath } from "./basicAuth.js"
 import { bakedConfigProfile } from "./bakedConfigProfile.js"
 import { resolveBuildCommit } from "./buildCommit.js"
+import { desktopSettingsGuard } from "./desktopSettingsGuard.js"
+import { l1RpcCapability } from "./l1RpcCapability.js"
+import { socialPreview } from "./socialPreview.js"
 import { metricsBuildPlugin } from "@obsidion/metrics-policy/build"
-import { assertCampaignEnv, campaignOriginFrom } from "./src/config/campaignOrigin"
+import { assertCampaignEnv } from "./src/config/campaignOrigin"
 
 const require = createRequire(import.meta.url)
 
@@ -57,7 +60,12 @@ function backendProxies(fileEnv: Record<string, string>) {
       rewrite: (path: string) => path.replace(/^\/svc\/usage/, "/v1/usage"),
       // Stamps the ingest gate like the deployed svc-proxy; default matches zkmoney-api's .env.example.
       headers: { "x-metrics-key": process.env.ANALYTICS_METRICS_KEY ?? "0".repeat(64) },
-    },
+      // Only the deployed proxy sets the viewer's country and region; a browser-sent value must not
+      // reach the keyed API.
+      configure: (proxy) => {
+        proxy.on("proxyReq", (proxyReq) => proxyReq.removeHeader("x-viewer-geo"))
+      },
+    } satisfies ProxyOptions,
   }
 }
 
@@ -120,7 +128,7 @@ const pathOf = (url: string | undefined) => (url ?? "").split("?")[0]
 // The site-wide gate the deployed CDN applies, so a locally served build behaves like the
 // deployment. Off unless BASIC_AUTH_USER is exported into the shell — vite's `.env` files feed
 // `import.meta.env`, not `process.env`, so a value in `.env.production` would not reach this. The
-// bridge page and the link-preview paths are exempt, as on the deployed host (basicAuth.ts).
+// link-preview paths are exempt, as on the deployed host (basicAuth.ts).
 const basicAuthGate: Plugin = {
   name: "basic-auth-gate",
   configureServer: gateServer,
@@ -137,21 +145,6 @@ function gateServer(server: { middlewares: Connect.Server }) {
     res.setHeader("WWW-Authenticate", BASIC_AUTH_CHALLENGE)
     res.end("Authentication required")
   })
-}
-
-// The deployed host serves `/bridge.html` frameable by the campaign origin and nothing else (a
-// dedicated response-headers policy on that path); dev and preview do the same so the local pair
-// exercises the real header.
-function bridgeFrameHeaders(campaignOrigin: string): Plugin {
-  const install = (server: { middlewares: Connect.Server }) => {
-    server.middlewares.use((req, res, next) => {
-      if (campaignOrigin && pathOf(req.url) === BRIDGE_PATH) {
-        res.setHeader("Content-Security-Policy", `frame-ancestors ${campaignOrigin}`)
-      }
-      next()
-    })
-  }
-  return { name: "bridge-frame-headers", configureServer: install, configurePreviewServer: install }
 }
 
 // Vite 8's Rolldown bundler handles aztec.js's web workers and .wasm assets
@@ -209,10 +202,11 @@ export default defineConfig(({ mode }) => {
       sqliteRuntimeAssets,
       wasmContentType,
       basicAuthGate,
-      bridgeFrameHeaders(campaignOriginFrom(env.VITE_CAMPAIGN_URL)),
       // Bakes the config profile into the bundle and emits build-target.json.
       bakedConfigProfile(),
-      ogImageUrl(env),
+      desktopSettingsGuard(),
+      l1RpcCapability(),
+      socialPreview(env),
     ],
     // Per the @xmtp/browser-sdk README: the SDK + wasm-bindings use import.meta.url (worker/WASM
     // loading) and must not be pre-bundled; @xmtp/proto is CJS and must be.
@@ -245,21 +239,3 @@ export default defineConfig(({ mode }) => {
     },
   }
 })
-
-/**
- * Chat-app preview cards need an absolute image URL. The wallet host is not known at build time
- * everywhere (previews, local), so the image is served from VITE_SITE_ORIGIN when set, else from the
- * paired campaign origin, which is public and already ships the same og.png. With neither, a relative
- * path: the card degrades to text. Runs before vite's own HTML pass, which treats `og:image` content
- * as an asset URL and would root the placeholder under the page's path.
- */
-function ogImageUrl(env: Record<string, string>): Plugin {
-  const origin = (env.VITE_SITE_ORIGIN || campaignOriginFrom(env.VITE_CAMPAIGN_URL)).replace(/\/$/, "")
-  return {
-    name: "og-image-url",
-    transformIndexHtml: {
-      order: "pre",
-      handler: (html: string) => html.replaceAll("__OG_IMAGE_URL__", `${origin}/og.png`),
-    },
-  }
-}

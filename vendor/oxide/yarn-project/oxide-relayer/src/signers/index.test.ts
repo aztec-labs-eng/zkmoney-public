@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { loadSigner } from './index.js';
+import { hasSignerKey, loadSigner } from './index.js';
 
 const PRIVATE_KEY = `0x${'11'.repeat(32)}`;
 
@@ -41,5 +41,19 @@ describe('loadSigner', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('hasSignerKey', () => {
+  const envConfig = { backend: 'env', privateKeyEnvVar: 'L1_PRIVATE_KEY' } as const; // gitleaks:allow
+
+  it('detects an env private key only when the env var is set', () => {
+    expect(hasSignerKey(envConfig, { L1_PRIVATE_KEY: PRIVATE_KEY })).toBe(true);
+    expect(hasSignerKey(envConfig, {})).toBe(false);
+  });
+
+  it('detects a keystore only when its path is set', () => {
+    expect(hasSignerKey({ ...envConfig, backend: 'keystore', keystorePath: '/data/relayer.json' }, {})).toBe(true);
+    expect(hasSignerKey({ ...envConfig, backend: 'keystore' }, {})).toBe(false);
   });
 });

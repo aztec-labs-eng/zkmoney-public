@@ -1,13 +1,10 @@
-/**
- * The visitor's post-mine sheet: one waiting state for every Ethereum leg, then the claimed detail
- * with the L1 hash linked out.
- */
+/** The visitor's cash-out receipt: nothing while it runs, then the ended detail with the L1 hash linked out. */
+import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@obsidion/web-ds", () => ({
-  GradientSpinner: () => <div data-testid="spinner" />,
   GradientText: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
   Icon: () => null,
   PrimaryGradientButton: ({ title, onClick }: { title: string; onClick?: () => void }) => (
@@ -31,7 +28,9 @@ vi.mock("../src/ui/screens/DepositStatusValue", () => ({
   DepositStatusValue: ({ label }: { label: string }) => <b>{label}</b>,
 }))
 
-const { ClaimProgressModal } = await import("../src/features/paylink/ClaimProgressModal")
+const { ClaimProgressModal, hasClaimReceipt } = await import(
+  "../src/features/paylink/ClaimProgressModal"
+)
 
 const record = (over: Record<string, unknown> = {}) =>
   ({
@@ -42,7 +41,7 @@ const record = (over: Record<string, unknown> = {}) =>
     rawAmount: "20000000000000000000",
     relayerTip: "100000000000000000",
     fpcFundingCut: "0",
-    tokenSymbol: "zkUSD",
+    tokenSymbol: WALLET_TOKEN_SYMBOL,
     phase: "finalizing_l1",
     startTime: 0,
     ...over,
@@ -67,12 +66,20 @@ afterEach(() => {
 })
 
 describe("ClaimProgressModal", () => {
-  it("waits on the Ethereum legs with the live status", () => {
-    act(() => root.render(<ClaimProgressModal record={record()} memo="Pizza" onClose={onClose} />))
-    expect(container.textContent).toContain("Claiming payment")
-    expect(container.textContent).toContain("Releasing on Ethereum")
-    expect(container.querySelector('[data-testid="spinner"]')).toBeTruthy()
-    expect(container.textContent).not.toContain("View on Etherscan")
+  it("has no sheet while the cash-out runs: the page carries it", () => {
+    for (const phase of [
+      "submitting",
+      "l2_mined",
+      "awaiting_proven",
+      "finalizing_l1",
+      "swapping",
+    ]) {
+      act(() => root.render(<ClaimProgressModal record={record({ phase })} onClose={onClose} />))
+      expect(container.textContent).toBe("")
+      expect(hasClaimReceipt({ phase } as never)).toBe(false)
+    }
+    for (const phase of ["done", "recovered", "recoverable", "failed"])
+      expect(hasClaimReceipt({ phase } as never)).toBe(true)
   })
 
   it("names the held DAI, not a receipt, while a swap awaits recovery", () => {

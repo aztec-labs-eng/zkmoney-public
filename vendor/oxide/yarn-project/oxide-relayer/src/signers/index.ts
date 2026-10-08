@@ -3,23 +3,33 @@ import { Buffer32 } from '@aztec/foundation/buffer';
 import { Wallet } from 'ethers';
 import { readFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline/promises';
-import { type Address, type Hex, nonceManager } from 'viem';
-import { type PrivateKeyAccount, privateKeyToAccount } from 'viem/accounts';
+import type { Address, Hex } from 'viem';
+import { type PrivateKeyAccount, generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 
 import type { SignerConfig } from '../cli/config.js';
 
 /** A local account ready for later transaction signing, plus the backend that produced it. */
 export interface LoadedSigner {
-  backend: 'env' | 'keystore';
+  backend: 'env' | 'keystore' | 'ephemeral';
   address: Address;
   account: PrivateKeyAccount;
+}
+
+/** Whether the config points at key material: the private-key env var is set, or a keystore path is given. */
+export function hasSignerKey(config: SignerConfig, env: NodeJS.ProcessEnv = process.env): boolean {
+  return config.backend === 'env' ? !!env[config.privateKeyEnvVar] : config.keystorePath !== undefined;
+}
+
+/** A random in-memory key for disabled submission, which simulates as a sender but never signs. */
+export function createEphemeralSigner(): LoadedSigner {
+  const account = privateKeyToAccount(generatePrivateKey());
+  return { backend: 'ephemeral', account, address: account.address };
 }
 
 /**
  * Load the configured signer backend.
  *
- * The caller should skip this entirely when `disableSubmission` is set, so those runs never decrypt
- * keystores or require private-key env vars.
+ * When `disableSubmission` is set and no key is configured, the caller uses `createEphemeralSigner` instead.
  */
 export async function loadSigner(config: SignerConfig, env: NodeJS.ProcessEnv = process.env): Promise<LoadedSigner> {
   switch (config.backend) {
@@ -43,8 +53,7 @@ function loadEnvAccount(envVar: string, env: NodeJS.ProcessEnv): PrivateKeyAccou
   if (!raw) {
     throw new Error(`signer env backend requires ${envVar} to be set.`);
   }
-  // Attach viem's nonce manager so pipelined sweeps in one slot get sequential nonces.
-  return privateKeyToAccount(normalizePrivateKey(raw, envVar), { nonceManager });
+  return privateKeyToAccount(normalizePrivateKey(raw, envVar));
 }
 
 async function loadKeystoreAccount(config: SignerConfig): Promise<PrivateKeyAccount> {
@@ -54,7 +63,7 @@ async function loadKeystoreAccount(config: SignerConfig): Promise<PrivateKeyAcco
   const json = await readFile(config.keystorePath, 'utf8');
   const password = await loadKeystorePassword(config);
   const wallet = await Wallet.fromEncryptedJson(json, password);
-  return privateKeyToAccount(normalizePrivateKey(wallet.privateKey, 'keystore private key'), { nonceManager });
+  return privateKeyToAccount(normalizePrivateKey(wallet.privateKey, 'keystore private key'));
 }
 
 async function loadKeystorePassword(config: SignerConfig): Promise<string> {

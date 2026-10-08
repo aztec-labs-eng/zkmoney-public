@@ -7,6 +7,8 @@
  */
 import { Fr } from "@aztec/aztec.js/fields"
 import type { RecoverPasskeyResult } from "@obsidion/sdk"
+import { predictAccountAddressLocally } from "@oxide/l1-contracts"
+import { getContractAddress, type Address } from "viem"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { AnchorTier, CandidateProbe } from "@obsidion/front-core"
 import type { CampaignSlot } from "../src/features/onboarding/recoveryProbes"
@@ -16,7 +18,7 @@ const h = vi.hoisted(() => ({
   beginRecovery: vi.fn(),
   recoverFromHandoffMaterial: vi.fn(),
   recoverFromCache: vi.fn(),
-  awaitHandoffMaterial: vi.fn(),
+  takeHandoffMaterial: vi.fn(),
   commitSecret: vi.fn(),
   recordRecoveryMetadata: vi.fn(),
   addWebauthnAccount: vi.fn(),
@@ -41,7 +43,7 @@ vi.mock("../src/platform/auth/useAuthenticator", () => ({
 }))
 vi.mock("../src/platform/storage/handoffMaterial", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/platform/storage/handoffMaterial")>()),
-  awaitHandoffMaterial: h.awaitHandoffMaterial,
+  takeHandoffMaterial: h.takeHandoffMaterial,
 }))
 vi.mock("../src/features/onboarding/recoveryProbes", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/onboarding/recoveryProbes")>()),
@@ -49,13 +51,12 @@ vi.mock("../src/features/onboarding/recoveryProbes", async (importOriginal) => (
     h.tiersFor?.(campaign) ?? h.tiers,
   enterTiers: h.enterTiers,
 }))
-const FACTORY = `0x${"11".repeat(20)}`
-const OTHER_FACTORY = `0x${"19".repeat(20)}`
+const FACTORY = `0x${"11".repeat(20)}` as const
+const OTHER_FACTORY = `0x${"19".repeat(20)}` as const
 const ZERO_NAME = `0x${"0".repeat(64)}`
 const generationOn = (accountFactory: string, fpc: string) => ({
   fpcAddress: fpc,
   accountFactory,
-  implementation: `${accountFactory.slice(0, 40)}dd`,
   namePortal: `${accountFactory.slice(0, 40)}ee`,
   rollupVersion: "1",
 })
@@ -67,13 +68,12 @@ const chain = {
 }
 const published = {
   reader: {
-    predictAccountAddress: async (factory: string) =>
-      factory === OTHER_FACTORY ? `0x${"39".repeat(20)}` : `0x${"33".repeat(20)}`,
     readNameOf: async (_registry: string, account: string) => chain.names[account] ?? ZERO_NAME,
     readAccountMetadataRegistry: async () => `0x${"23".repeat(20)}`,
     readUserRecord: async () => chain.record,
     readNamePortalRegistry: async () => `0x${"22".repeat(20)}`,
-    readFactoryImplementation: async (factory: string) => `${factory.slice(0, 40)}dd`,
+    readFactoryImplementation: async (factory: string) =>
+      getContractAddress({ from: factory as Address, nonce: 1n }),
   },
   registry: `0x${"22".repeat(20)}`,
   rollupVersion: "1",
@@ -93,13 +93,13 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   AccountStorage: { get: () => ({ addWebauthnAccount: h.addWebauthnAccount }) },
 }))
 
-const { adoptHandoff, resolveHandoff, HANDOFF_POLICY_VERSION, primeHandoffMaterial, __resetPrimedHandoffMaterialForTests, CeremonyRequiredError} = await import(
-  "../src/features/onboarding/oxideOnboarding"
-)
+const { adoptHandoff, resolveHandoff, HANDOFF_POLICY_VERSION, CeremonyRequiredError } =
+  await import("../src/features/onboarding/oxideOnboarding")
 const { GateCancelledError, isGateCancelled } = await import(
   "../src/features/identity/ceremonyGate"
 )
 const { campaignSlotProbe } = await import("../src/features/onboarding/recoveryProbes")
+const { deriveBootstrapKey } = await import("@obsidion/front-core")
 
 const first = Fr.random()
 const second = Fr.random()
@@ -150,10 +150,9 @@ const absent: CandidateProbe = async () => "absent"
 const tier = (name: string, probe: CandidateProbe): AnchorTier => ({ name, probes: [probe] })
 
 beforeEach(() => {
-  __resetPrimedHandoffMaterialForTests()
   vi.clearAllMocks()
   h.adoptKnownPasskey.mockResolvedValue(recovered())
-  h.awaitHandoffMaterial.mockResolvedValue(null)
+  h.takeHandoffMaterial.mockReturnValue(null)
   h.recoverFromCache.mockResolvedValue(undefined)
   h.tiers = []
   h.tiersFor = undefined
@@ -167,6 +166,8 @@ describe("resolveHandoff", () => {
     const resolved = await resolveHandoff(wallet, {} as never, config, hints, gate)
     expect(resolved.msk.toString()).toBe(second.toString())
     expect(resolved.slot).toBe("second")
+    // No material and no held key: the key came from the ceremony.
+    expect(resolved.keySource).toBe("ceremony")
     expect(registry).toHaveBeenCalledTimes(2)
     expect(h.adoptKnownPasskey).toHaveBeenCalledWith(expect.objectContaining(hints))
     // Both candidates are derived under the hinted key, the one the signature confirmed.
@@ -174,6 +175,19 @@ describe("resolveHandoff", () => {
     // Resolving decides only: nothing is committed or recorded until adoption.
     expect(h.commitSecret).not.toHaveBeenCalled()
     expect(h.recordRecoveryMetadata).not.toHaveBeenCalled()
+  })
+
+  it("the ceremony a material-less hand-off opens is anchored, so a phone holds a sheet for its tap", async () => {
+    const anchors: Array<boolean | undefined> = []
+    const recordingGate = async (options?: { again?: AbortSignal; anchor?: boolean }) => {
+      anchors.push(options?.anchor)
+      return { signal: new AbortController().signal, reach: "unknown" as const }
+    }
+    h.tiers = [tier("campaign", anchoring(SECOND_ADDR))]
+    await resolveHandoff(wallet, {} as never, config, hints, recordingGate)
+    // Material and cache were absent (the WebKit case), so a ceremony ran — and it asked the gate
+    // to anchor it, without which a phone would fire the assertion off no tap.
+    expect(anchors).toContain(true)
   })
 
   it("a key the addresses were not derived under anchors nowhere: refused, nothing written", async () => {
@@ -189,44 +203,6 @@ describe("resolveHandoff", () => {
     expect(h.recordRecoveryMetadata).not.toHaveBeenCalled()
   })
 
-  it("material that lands after the primed wait gave up is still taken at the tap", async () => {
-    // A minimal store for the real take; the wait itself stays the stub, answering empty.
-    const store = new Map<string, string>()
-    vi.stubGlobal("localStorage", {
-      getItem: (k: string) => store.get(k) ?? null,
-      setItem: (k: string, v: string) => void store.set(k, v),
-      removeItem: (k: string) => void store.delete(k),
-    })
-    h.awaitHandoffMaterial.mockResolvedValueOnce(null)
-    h.recoverFromHandoffMaterial.mockResolvedValue(recovered())
-    h.tiers = [tier("registry", anchoring(SECOND_ADDR))]
-    try {
-      primeHandoffMaterial("cred")
-      await new Promise((r) => setTimeout(r, 0))
-      // The frame's write arrives after the wait ended.
-      store.set(
-        "webwallet.handoff",
-        JSON.stringify({
-          v: 1,
-          derivedAt: Date.now(),
-          rpId: "localhost",
-          credentialId: "cred",
-          pubkeyHex: `0x${"ab".repeat(64)}`,
-          candidates: { first: `0x${"11".repeat(32)}` },
-        }),
-      )
-      const resolved = await resolveHandoff(wallet, {} as never, config, hints, gate)
-      // Taken from storage, once: no ceremony was asked for.
-      expect(resolved.slot).toBe("second")
-      expect(h.recoverFromHandoffMaterial).toHaveBeenCalledTimes(1)
-      expect(h.adoptKnownPasskey).not.toHaveBeenCalled()
-      expect(h.beginRecovery).not.toHaveBeenCalled()
-      expect(store.has("webwallet.handoff")).toBe(false)
-    } finally {
-      vi.unstubAllGlobals()
-    }
-  })
-
   it("asks the passkey before the chain, so the tap that opened it still counts as activation", async () => {
     // A passkey prompt may only open on a live user activation. Awaiting the tuple, the node and
     // the FPC catalog first spends it, and the browser then offers another device instead of the
@@ -238,7 +214,7 @@ describe("resolveHandoff", () => {
       const pending = resolveHandoff(wallet, {} as never, config, hints, gate)
       await new Promise((r) => setTimeout(r, 0))
       // The key was asked for while the chain reads are still outstanding.
-      expect(h.awaitHandoffMaterial).toHaveBeenCalled()
+      expect(h.takeHandoffMaterial).toHaveBeenCalled()
 
       releaseChain()
       const resolved = await pending
@@ -329,7 +305,7 @@ describe("resolveHandoff", () => {
     )
   })
 
-  it("bridge material for the hinted credential is adopted with no ceremony", async () => {
+  it("hand-off material for the hinted credential is adopted with no ceremony", async () => {
     const material = {
       v: 1,
       derivedAt: 1,
@@ -338,14 +314,15 @@ describe("resolveHandoff", () => {
       pubkeyHex: "0xab",
       candidates: {},
     }
-    h.awaitHandoffMaterial.mockResolvedValue(material)
+    h.takeHandoffMaterial.mockReturnValue(material)
     h.recoverFromHandoffMaterial.mockResolvedValue(recovered({ transports: ["usb"] }))
     h.tiers = [tier("registry", anchoring(SECOND_ADDR))]
     const resolved = await resolveHandoff(wallet, {} as never, config, hints, gate)
     expect(resolved.slot).toBe("second")
     // The material's result is adopted as it came, creation list included.
     expect(resolved.recovered.transports).toEqual(["usb"])
-    expect(h.awaitHandoffMaterial).toHaveBeenCalledWith("cred", "localhost", 2_000)
+    expect(resolved.keySource).toBe("handoff")
+    expect(h.takeHandoffMaterial).toHaveBeenCalledWith("cred", "localhost")
     expect(h.recoverFromHandoffMaterial).toHaveBeenCalledWith(material)
     expect(h.adoptKnownPasskey).not.toHaveBeenCalled()
     expect(h.beginRecovery).not.toHaveBeenCalled()
@@ -354,7 +331,7 @@ describe("resolveHandoff", () => {
   it("a record left by a retired deployment does not send the hand-off to the ceremony", async () => {
     // The same passkey onboarded here before a roll: the record's address is one no candidate
     // derives any more. The material is good; only the cached address is stale.
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred" })
     h.recoverFromHandoffMaterial.mockResolvedValue(
       recovered({ expectedAddress: `0x${"de".repeat(32)}` }),
     )
@@ -367,7 +344,7 @@ describe("resolveHandoff", () => {
   })
 
   it("a stale record still cannot pass material no anchor names", async () => {
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred" })
     h.recoverFromHandoffMaterial.mockResolvedValue(
       recovered({ expectedAddress: `0x${"de".repeat(32)}` }),
     )
@@ -380,7 +357,7 @@ describe("resolveHandoff", () => {
   it("a record the ceremony's own keys cannot derive either is stale, and fails nothing closed", async () => {
     // One slot in the material, so a ceremony is still worth trying; it returns both, and the
     // record matches neither — a retired deployment's address.
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred" })
     const stale = `0x${"de".repeat(32)}`
     h.recoverFromHandoffMaterial.mockResolvedValue(
       recovered({ candidates: { first }, expectedAddress: stale }),
@@ -392,7 +369,7 @@ describe("resolveHandoff", () => {
   })
 
   it("the slot the campaign's material names is its account, and no outside record is asked", async () => {
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred", slot: "second" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred", slot: "second" })
     h.recoverFromHandoffMaterial.mockResolvedValue(recovered())
     const ledger = vi.fn(absent)
     h.tiersFor = (campaign) => [
@@ -408,7 +385,7 @@ describe("resolveHandoff", () => {
   })
 
   it("material naming no slot leaves the outside records to decide", async () => {
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred" })
     h.recoverFromHandoffMaterial.mockResolvedValue(recovered())
     const seen: (CampaignSlot | undefined)[] = []
     h.tiersFor = (campaign) => {
@@ -421,7 +398,7 @@ describe("resolveHandoff", () => {
   })
 
   it("material no anchor names is spent once, then the ceremony decides", async () => {
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred" })
     h.recoverFromHandoffMaterial.mockResolvedValue(recovered())
     let probes = 0
     h.tiers = [
@@ -431,13 +408,15 @@ describe("resolveHandoff", () => {
     ]
     const resolved = await resolveHandoff(wallet, {} as never, config, hints, gate)
     expect(resolved.slot).toBe("first")
-    expect(h.awaitHandoffMaterial).toHaveBeenCalledTimes(1)
+    // Material was taken but not used: the account came from the ceremony after it.
+    expect(resolved.keySource).toBe("ceremony")
+    expect(h.takeHandoffMaterial).toHaveBeenCalledTimes(1)
     expect(h.adoptKnownPasskey).toHaveBeenCalledTimes(1)
     expect(h.adoptKnownPasskey).toHaveBeenCalledWith(expect.objectContaining(hints))
   })
 
   it("a discoverable hand-off falls back to a discoverable ceremony, not a pinned one", async () => {
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred" })
     h.recoverFromHandoffMaterial.mockResolvedValue(recovered())
     h.beginRecovery.mockResolvedValue(recovered())
     let probes = 0
@@ -460,7 +439,7 @@ describe("resolveHandoff", () => {
   })
 
   it("material that does not derive this browser's own record is spent, then the ceremony decides", async () => {
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred" })
     // The campaign evaluated one slot; this browser recorded the account under the other.
     h.recoverFromHandoffMaterial.mockResolvedValue(
       recovered({ candidates: { first }, expectedAddress: SECOND_ADDR }),
@@ -470,6 +449,7 @@ describe("resolveHandoff", () => {
     h.tiers = [tier("registry", registry)]
     const resolved = await resolveHandoff(wallet, {} as never, config, hints, gate)
     expect(resolved.slot).toBe("second")
+    expect(resolved.keySource).toBe("ceremony")
     expect(h.adoptKnownPasskey).toHaveBeenCalledTimes(1)
     expect(registry).not.toHaveBeenCalled()
   })
@@ -479,6 +459,7 @@ describe("resolveHandoff", () => {
     h.tiers = [tier("registry", anchoring(FIRST_ADDR))]
     const resolved = await resolveHandoff(wallet, {} as never, config, hints, gate)
     expect(resolved.slot).toBe("first")
+    expect(resolved.keySource).toBe("cache")
     expect(h.adoptKnownPasskey).not.toHaveBeenCalled()
   })
 
@@ -487,6 +468,41 @@ describe("resolveHandoff", () => {
     h.tiers = [tier("registry", anchoring(FIRST_ADDR))]
     await resolveHandoff(wallet, {} as never, config, hints, gate)
     expect(h.adoptKnownPasskey).toHaveBeenCalledTimes(1)
+  })
+
+  /** A claim link's `choose=1`: the hand-off names no passkey. */
+  const choose = { discover: true, chooser: true }
+
+  it("a hand-off naming no passkey, without `choose`, is answered by whatever key this session holds", async () => {
+    h.recoverFromCache.mockResolvedValue(recovered({ credentialId: "bob" }))
+    h.tiers = [tier("registry", anchoring(FIRST_ADDR))]
+    const resolved = await resolveHandoff(wallet, {} as never, config, {}, gate, undefined, true)
+    expect(resolved.recovered.credentialId).toBe("bob")
+    expect(h.beginRecovery).not.toHaveBeenCalled()
+  })
+
+  it("`choose` asks openly: no held key, recorded root or hand-off material answers", async () => {
+    h.recoverFromCache.mockResolvedValue(recovered({ credentialId: "bob" }))
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "bob" })
+    h.beginRecovery.mockResolvedValue(recovered({ credentialId: "alice" }))
+    h.tiers = [tier("registry", anchoring(FIRST_ADDR))]
+    const resolved = await resolveHandoff(wallet, {} as never, config, choose, gate)
+    expect(resolved.recovered.credentialId).toBe("alice")
+    expect(h.beginRecovery).toHaveBeenCalledTimes(1)
+    expect(h.beginRecovery.mock.calls[0][0]).toMatchObject({ discover: true })
+    expect(h.beginRecovery.mock.calls[0][0]).not.toHaveProperty("credentialId")
+    expect(h.recoverFromCache).not.toHaveBeenCalled()
+    expect(h.takeHandoffMaterial).not.toHaveBeenCalled()
+    expect(h.adoptKnownPasskey).not.toHaveBeenCalled()
+  })
+
+  it("`choose` with no tap refuses without asking or reading a held key", async () => {
+    h.recoverFromCache.mockResolvedValue(recovered({ credentialId: "bob" }))
+    await expect(
+      resolveHandoff(wallet, {} as never, config, choose, gate, undefined, true),
+    ).rejects.toBeInstanceOf(CeremonyRequiredError)
+    expect(h.beginRecovery).not.toHaveBeenCalled()
+    expect(h.recoverFromCache).not.toHaveBeenCalled()
   })
 
   it("without a public key the credential is recovered instead of adopted", async () => {
@@ -556,7 +572,7 @@ describe("resolveHandoff", () => {
   })
 
   it("spent material, then a fallback recovery on a fresh browser, is settled the same way", async () => {
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred" })
     h.recoverFromHandoffMaterial.mockResolvedValue(recovered())
     const begun = unsettled()
     h.beginRecovery.mockResolvedValue(begun)
@@ -590,7 +606,7 @@ describe("resolveHandoff", () => {
       getCompleteAddress: () => ({ toString: () => `${ADDRESS[msk.toString()]!}:complete` }),
     }))
     const rekeyed = { deriveAccountAddress: derive, createObsidionAccount: create } as never
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred" })
     h.recoverFromHandoffMaterial.mockResolvedValue(
       recovered({ pubkey: MATERIAL_KEY, transports: ["usb"] }),
     )
@@ -638,7 +654,10 @@ describe("resolveHandoff", () => {
   })
 
   it("a hint, material or the session's key is settled already and asks no second assertion", async () => {
-    const again = vi.fn(async () => ({ signal: new AbortController().signal, reach: "unknown" as const }))
+    const again = vi.fn(async () => ({
+      signal: new AbortController().signal,
+      reach: "unknown" as const,
+    }))
     h.recoverFromCache.mockResolvedValue(recovered())
     h.tiers = [tier("registry", anchoring(FIRST_ADDR))]
     await resolveHandoff(wallet, {} as never, config, hints, again)
@@ -684,7 +703,12 @@ describe("adoptHandoff", () => {
     getCompleteAddress: () => ({ toString: () => `${SECOND_ADDR}:complete` }),
   }
   const building = { ...(wallet as object), createObsidionAccount: async () => account } as never
-  const resolved = () => ({ recovered: recovered(), msk: second, slot: "second" as const })
+  const resolved = () => ({
+    recovered: recovered(),
+    msk: second,
+    slot: "second" as const,
+    keySource: "handoff" as const,
+  })
 
   it("builds the account and its record, runs the caller's step, then commits and persists", async () => {
     const order: string[] = []
@@ -769,8 +793,12 @@ describe("adoptHandoff", () => {
 
 describe("a hand-off is adopted only when the account behind it is confirmed", () => {
   const NAME = `0x${"ab".repeat(32)}`
-  const ACCOUNT = `0x${"33".repeat(20)}`
-  const OTHER_ACCOUNT = `0x${"39".repeat(20)}`
+  /** The accounts the resolver predicts for the anchored candidate under each factory. */
+  const ACCOUNT = predictAccountAddressLocally(FACTORY, deriveBootstrapKey(first).address)
+  const OTHER_ACCOUNT = predictAccountAddressLocally(
+    OTHER_FACTORY,
+    deriveBootstrapKey(first).address,
+  )
 
   beforeEach(() => {
     chain.catalog = [generationOn(FACTORY, `0x${"0b".repeat(32)}`)]

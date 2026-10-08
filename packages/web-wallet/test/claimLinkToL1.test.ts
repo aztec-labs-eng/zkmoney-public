@@ -73,15 +73,16 @@ vi.mock("../src/platform/auth/useAuthenticator", () => ({
     getSecretKey: async () => ({ toString: () => `0x${"07".repeat(32)}` }),
   }),
 }))
+const firePaylinkEvent = vi.hoisted(() => vi.fn())
 vi.mock("../src/lib/analytics", () => ({
-  firePaylinkEvent: vi.fn(),
+  analyticsEnabled: () => true,
+  firePaylinkEvent,
   paylinkPh: async () => "ph",
-  amountBucket: () => "under_50",
+  paylinkAmountBucket: (amount: bigint | undefined) => (amount === undefined ? "unknown" : "<500"),
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   upsertSavedL1WalletContact: vi.fn(),
-  patchClaimRowMemo: vi.fn(),
   readPaylinkNote: async () => ({ amount: escrowAmount }),
 }))
 
@@ -107,9 +108,17 @@ vi.mock("../src/features/withdraw/withdrawGateway", async (importOriginal) => ({
   publishedBurn: () => publishedBurn(),
 }))
 
+const recordBurnDuration = vi.hoisted(() => vi.fn(async (_ms: number) => {}))
+vi.mock("../src/features/withdraw/burnTiming", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/withdraw/burnTiming")>()),
+  recordBurnDuration,
+}))
+
 const { claimLinkToL1 } = await import("../src/features/paylink/sponsoredPaylink")
 const { getWithdrawalStore } = await import("../src/features/withdraw/withdrawGateway")
 const { getOperationStore } = await import("../src/features/operations/operations")
+const { reportPaylinkClaims } = await import("../src/features/paylink/paylinkClaimReport")
+const { webStorage } = await import("../src/platform/storage/WebStorageAdapter")
 
 const deps = () =>
   ({
@@ -138,7 +147,39 @@ describe("claimLinkToL1", () => {
     mockTuple.mockReturnValue({ ...PORTAL_ONLY })
     escrowAmount = parseUnits("120", 18)
     claimToL1.mockClear()
+    recordBurnDuration.mockClear()
+    firePaylinkEvent.mockClear()
     publishedBurn.mockResolvedValue(undefined)
+  })
+
+  it("reports the claimed link once its burn mines, whether directly or after a receipt timeout", async () => {
+    await claimLinkToL1(deps(), "frag-direct", RECIPIENT, screener, vi.fn())
+    await vi.waitFor(() => expect(firePaylinkEvent).toHaveBeenCalledTimes(1))
+    expect(firePaylinkEvent).toHaveBeenCalledWith({
+      stage: "claimed",
+      flavor: "direct",
+      amount_bucket: "<500",
+      paylink_ph: "ph",
+    })
+
+    firePaylinkEvent.mockClear()
+    localStorage.clear()
+    await getWithdrawalStore().clearAll()
+    claimToL1.mockImplementationOnce(async (...args: unknown[]) => {
+      const { operationId } = args[4] as { operationId: string }
+      provingProgress.emitStageStart(ProvingStage.Mining, operationId, L2_TX)
+      throw new Error("Receipt timed out")
+    })
+    const d = deps()
+    ;(d.wallet as unknown as { node: object }).node = {
+      getTxReceipt: vi.fn(async () => ({ status: TxStatus.PENDING })),
+    }
+    const record = await claimLinkToL1(d, "frag-direct", RECIPIENT, screener, vi.fn())
+    await reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
+    expect(firePaylinkEvent).not.toHaveBeenCalled()
+    await getWithdrawalStore().markMined(record.localId, L2_TX, 42, escrowAmount.toString())
+    await reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
+    expect(firePaylinkEvent).toHaveBeenCalledTimes(1)
   })
 
   it("burns straight to the recipient with no swap fields on the direct route", async () => {
@@ -151,6 +192,7 @@ describe("claimLinkToL1", () => {
     // Both halves of the fee are on the record, and the display amount is net of them.
     expect(record.relayerTip).toBe(WITHDRAW_RELAYER_TIP.toString())
     expect(record.fpcFundingCut).toBe(CUT.toString())
+    expect(record.proverTip).toBeUndefined()
     expect(record.amount).toBe(formatUnits(escrowAmount - WITHDRAW_RELAYER_TIP - CUT, 18))
     const { recipient, opts } = burnArgs()
     expect(recipient).toBe(RECIPIENT.toLowerCase())
@@ -159,6 +201,73 @@ describe("claimLinkToL1", () => {
       proverTip: 0n,
       withdrawal: { tuple: PORTAL_ONLY, portal: PORTAL_STATE },
     })
+  })
+
+  it("burns the chosen prover tip, records it, and nets it off the amount", async () => {
+    const tip = parseUnits("0.5", 18)
+    const record = await claimLinkToL1(
+      deps(),
+      "frag-tip",
+      RECIPIENT,
+      screener,
+      vi.fn(),
+      undefined,
+      "DAI",
+      undefined,
+      undefined,
+      undefined,
+      tip,
+    )
+    expect(burnArgs().opts.proverTip).toBe(tip)
+    expect(record.proverTip).toBe(tip.toString())
+    expect(record.amount).toBe(formatUnits(escrowAmount - WITHDRAW_RELAYER_TIP - CUT - tip, 18))
+    expect(recordBurnDuration).toHaveBeenCalledTimes(1)
+    expect(recordBurnDuration.mock.calls[0]![0]).toBeGreaterThanOrEqual(0)
+  })
+
+  it("refuses a link the fee and the tip would consume, before any record exists", async () => {
+    const tip = parseUnits("0.5", 18)
+    escrowAmount = WITHDRAW_RELAYER_TIP + CUT + tip
+    await expect(
+      claimLinkToL1(
+        deps(),
+        "frag-tip-floor",
+        RECIPIENT,
+        screener,
+        vi.fn(),
+        undefined,
+        "DAI",
+        undefined,
+        undefined,
+        undefined,
+        tip,
+      ),
+    ).rejects.toThrow(/too little/)
+    expect(getWithdrawalStore().list()).toHaveLength(0)
+    expect(claimToL1).not.toHaveBeenCalled()
+  })
+
+  // The burn spends the whole escrow, so a link over the limit has no smaller amount to send.
+  it("claims a link of exactly $2,500 and refuses one atomic unit more before screening or recording", async () => {
+    escrowAmount = parseUnits("2500", 18)
+    await claimLinkToL1(deps(), "frag-at-limit", RECIPIENT, screener, vi.fn())
+    expect(claimToL1).toHaveBeenCalledTimes(1)
+    await getWithdrawalStore().clearAll()
+
+    escrowAmount = parseUnits("2500", 18) + 1n
+    const screen = vi.fn(async () => ({ compliant: true }))
+    const run = claimLinkToL1(deps(), "frag-over-limit", RECIPIENT, { screen } as never, vi.fn())
+    await expect(run).rejects.toThrow(
+      "This link holds more than the $2,500 withdrawal limit, so it cannot be claimed to an Ethereum wallet.",
+    )
+    expect(screen).not.toHaveBeenCalled()
+    expect(claimToL1).toHaveBeenCalledTimes(1)
+    expect(getWithdrawalStore().list()).toHaveLength(0)
+    expect(
+      getOperationStore()
+        .list()
+        .filter((op) => op.state === "local"),
+    ).toHaveLength(0)
   })
 
   it("leaves a burn that reached the node to the chain, record and operation both", async () => {
@@ -178,6 +287,8 @@ describe("claimLinkToL1", () => {
       state: "sent",
       txHash: L2_TX,
     })
+    // Only a burn this flow saw mine has a confirm-to-mined time.
+    expect(recordBurnDuration).not.toHaveBeenCalled()
   })
 
   it("fails the record, and the operation, when the burn fails after proving began", async () => {
@@ -315,6 +426,29 @@ describe("claimLinkToL1", () => {
       ),
     ).rejects.toThrow(/nothing left to swap/)
     expect(getWithdrawalStore().list()).toHaveLength(0)
+    expect(claimToL1).not.toHaveBeenCalled()
+  })
+
+  it("plans the escrow net of the prover tip the burn carries", async () => {
+    mockTuple.mockReturnValue(SWAP_TUPLE)
+    const tip = parseUnits("0.5", 18)
+    // Enough for the swap without the tip; the tip leaves the escrow nothing.
+    escrowAmount = WITHDRAW_RELAYER_TIP + CUT + RELAYER_TIP + tip
+    await expect(
+      claimLinkToL1(
+        deps(),
+        "frag-swap-tip",
+        RECIPIENT,
+        screener,
+        vi.fn(),
+        undefined,
+        "USDC",
+        SWAP_COMMIT,
+        undefined,
+        undefined,
+        tip,
+      ),
+    ).rejects.toThrow(/nothing left to swap/)
     expect(claimToL1).not.toHaveBeenCalled()
   })
 

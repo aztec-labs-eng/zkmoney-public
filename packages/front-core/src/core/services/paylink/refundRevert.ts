@@ -51,3 +51,9 @@ export function isPaylinkWindowRevert(error: unknown): boolean {
   const msg = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase()
   return WINDOW_PATTERNS.some((p) => msg.includes(p))
 }
+
+/** The window revert that waiting fixes: the window has not opened yet. */
+export function isPaylinkWindowNotOpenRevert(error: unknown): boolean {
+  const msg = (error instanceof Error ? error.message : String(error ?? "")).toLowerCase()
+  return msg.includes(WINDOW_PATTERNS[0])
+}

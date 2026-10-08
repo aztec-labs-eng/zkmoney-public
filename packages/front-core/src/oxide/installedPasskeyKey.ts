@@ -1,6 +1,8 @@
 import type { Address } from "viem"
+import { predictAccountAddressLocally } from "@oxide/l1-contracts"
 
 import { deriveBootstrapKey, type FieldLike } from "./oxideAccountKeys"
+import { isZeroHash } from "./oxideIdentityGeneration"
 import type { OxideL1Reader } from "./oxideRegistration"
 import { MAX_PASSKEY_CANDIDATES, authKeyPubkeyHex } from "./passkeyCredentialByTag"
 
@@ -8,8 +10,9 @@ const normalized = (hex: string) => hex.replace(/^0x/i, "").toLowerCase()
 
 /**
  * Which of a sign-in signature's two possible public keys is the passkey's, read from the L1
- * accounts its master-key candidates predict: registration installs the passkey's key there. The
- * key is returned only when exactly one possible key is among the inspected keys. It only picks
+ * accounts its master-key candidates predict: registration installs the passkey's key there. Only
+ * an account the trusted registry names is read, since anyone can put code at a predicted address.
+ * The key is returned only when exactly one possible key is among the inspected keys. It only picks
  * between keys the signature already produced; the anchors still decide the account. `stop` ends
  * the read before its next step. RPC failures propagate.
  */
@@ -17,7 +20,8 @@ export async function readInstalledPasskeyKey(
   masterKeys: readonly FieldLike[],
   pubkeyCandidates: readonly string[],
   deps: {
-    reader: Pick<OxideL1Reader, "predictAccountAddress" | "getCode" | "readAuthKeys">
+    reader: Pick<OxideL1Reader, "readNameOf" | "getCode" | "readAuthKeys">
+    registry: Address
     accountFactories: readonly Address[]
     stop?: AbortSignal
   },
@@ -28,10 +32,9 @@ export async function readInstalledPasskeyKey(
   }
   const installedAt = async (accountFactory: Address, msk: FieldLike): Promise<string[]> => {
     throwIfStopped()
-    const account = await deps.reader.predictAccountAddress(
-      accountFactory,
-      deriveBootstrapKey(msk).address,
-    )
+    const account = predictAccountAddressLocally(accountFactory, deriveBootstrapKey(msk).address)
+    const nameHash = await deps.reader.readNameOf(deps.registry, account)
+    if (isZeroHash(nameHash)) return []
     throwIfStopped()
     const code = await deps.reader.getCode(account)
     if (!code || code === "0x") return []

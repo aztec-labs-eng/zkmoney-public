@@ -3,9 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   currentMisreportsCrossDevice,
   currentPhoneReach,
+  currentTrustsAttachmentLabel,
   mayStartLaptopCeremony,
   safariMislabelsCrossDevice,
   probePhoneReach,
+  trustsAttachmentLabel,
 } from "../src/policy/passkeyCapabilities.js"
 import { parseUserAgent } from "../src/policy/userAgentInfo.js"
 
@@ -178,5 +180,87 @@ describe("currentMisreportsCrossDevice", () => {
     expect(currentMisreportsCrossDevice()).toBe(false)
     vi.stubGlobal("navigator", undefined)
     expect(currentMisreportsCrossDevice()).toBe(false)
+  })
+})
+
+describe("trustsAttachmentLabel", () => {
+  const ua = (userAgent: string) => parseUserAgent({ userAgent })
+
+  it("trusts the browsers that label the answering device correctly", () => {
+    expect(trustsAttachmentLabel(chromeMac)).toBe(true)
+    expect(trustsAttachmentLabel(edgeWindows)).toBe(true)
+    expect(
+      trustsAttachmentLabel(
+        ua("Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"),
+      ),
+    ).toBe(true)
+    expect(
+      trustsAttachmentLabel(
+        ua(
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        ),
+      ),
+    ).toBe(true)
+    // An Android phone in desktop mode sends a desktop Linux Chrome string.
+    expect(
+      trustsAttachmentLabel(
+        ua(
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+        ),
+      ),
+    ).toBe(true)
+    for (const version of ["26.4", "26.4.1", "27.0"]) {
+      expect(trustsAttachmentLabel(safari(version))).toBe(true)
+    }
+  })
+
+  it("does not trust a Safari below 26.4, whether it mislabels or was never observed", () => {
+    for (const version of ["18.5", "18.6", "25.0", "26.0", "26.3"]) {
+      expect(trustsAttachmentLabel(safari(version))).toBe(false)
+    }
+  })
+
+  it("does not trust a browser it cannot identify", () => {
+    // A Mac Safari string without Version/ parses as an unknown browser, not as Safari.
+    const noVersion = ua(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Safari/605.1.15",
+    )
+    expect(noVersion.browserFamily).toBe("unknown")
+    expect(trustsAttachmentLabel(noVersion)).toBe(false)
+    expect(trustsAttachmentLabel(ua(""))).toBe(false)
+  })
+
+  it("does not trust a Chromium browser nobody has measured", () => {
+    // Samsung Internet in DeX or desktop mode counts as a laptop.
+    const samsungDesktop = ua(
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/26.0 Chrome/122.0.0.0 Safari/537.36",
+    )
+    expect(samsungDesktop.browserFamily).toBe("samsung")
+    expect(trustsAttachmentLabel(samsungDesktop)).toBe(false)
+  })
+
+  it("does not trust a browser built on Apple's passkey stack apart from a measured Safari", () => {
+    // Firefox on a Mac makes passkeys through Apple's framework; every iOS browser is WebKit.
+    expect(trustsAttachmentLabel(firefoxMac("139.0"))).toBe(false)
+    const iPadChrome = ua(
+      "Mozilla/5.0 (iPad; CPU OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/140.0.0.0 Mobile/15E148 Safari/604.1",
+    )
+    expect(iPadChrome.osFamily).toBe("ios")
+    expect(trustsAttachmentLabel(iPadChrome)).toBe(false)
+  })
+})
+
+describe("currentTrustsAttachmentLabel", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("reads the live user agent, and is false without one", () => {
+    vi.stubGlobal("navigator", { userAgent: chromeMacUa() })
+    expect(currentTrustsAttachmentLabel()).toBe(true)
+    vi.stubGlobal("navigator", { userAgent: safariMacUa("26.4") })
+    expect(currentTrustsAttachmentLabel()).toBe(true)
+    vi.stubGlobal("navigator", { userAgent: safariMacUa("26.3") })
+    expect(currentTrustsAttachmentLabel()).toBe(false)
+    vi.stubGlobal("navigator", undefined)
+    expect(currentTrustsAttachmentLabel()).toBe(false)
   })
 })

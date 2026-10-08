@@ -57,7 +57,7 @@ const OXIDE_TOKEN_MAIN = join(
 
 /**
  * The fee-per-gas a deployed policy prices its ceilings at
- * (MAX_FEE_PER_{DA,L2}_GAS in packages/backend/src/claimFpcConfig.ts). A deploy that lowers it
+ * (MAX_FEE_PER_{DA,L2}_GAS in packages/tooling/l2-contracts-deployer/src/claimFpcConfig.ts). A deploy that lowers it
  * without the declared-limits side following turns every sponsored tx into the assertion failure
  * these cases exist to prevent.
  */

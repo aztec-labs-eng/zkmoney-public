@@ -14,6 +14,7 @@ BUILDER_CLI="$ROOT/yarn-project/node_modules/@aztec/builder/dest/bin/cli.js"
 # noir package dir : compiled artifact basename (<package>-<ContractName>.json)
 CONTRACTS=(
   "broadcaster_contract:broadcaster_contract-Broadcaster.json"
+  "name_notification_test_contract:name_notification_test_contract-NameNotificationTest.json"
   "oxide_token_contract:oxide_token_contract-OxideToken.json"
   "passkey_test_account_contract:passkey_test_account_contract-PasskeyTestAccount.json"
 )

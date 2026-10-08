@@ -8,6 +8,8 @@
  * other's rows (browsers without Web Locks fall back to scanning per-tab). Pauses while the tab is
  * hidden; re-acquires on visibility return.
  *
+ * The withdrawal rescan waits for the boot balance (see `bootPriority`).
+ *
  * Also owns the request-fulfillment reconciler: receive rows are inserted here, and the reconciler
  * listens to that in-process insert event (plus a store sweep for the receive-before-request
  * order), so it must live with the scanner rather than the XMTP pipeline — it then also runs in
@@ -23,13 +25,16 @@ import {
   WalletSyncCoordinator,
   WithdrawalStorage,
   balanceScope,
+  bootPriority,
   createTagForwardResolver,
   createWalletSyncSource,
   getActiveNetworkId,
   startRequestFulfillmentReconciler,
   useAssetContext,
   useAztecContext,
+  useContractServiceContext,
 } from "@obsidion/front-core"
+import { getConfig } from "../../config/env"
 import { resolveTagForCommit } from "../../features/contacts/registryResolution"
 import { loadWalletIdentity } from "../../features/identity/walletIdentity"
 import { rescanWithdrawals } from "../../features/withdraw/withdrawGateway"
@@ -41,6 +46,7 @@ const TRANSFER_SCAN_LOCK = "transfer-scan"
 export function TransferScannerMount(): null {
   const { tokenService } = useAssetContext()
   const { obsidionWallet, currentNetwork } = useAztecContext()
+  const { contractService } = useContractServiceContext()
 
   useEffect(() => {
     const identity = loadWalletIdentity()
@@ -54,9 +60,12 @@ export function TransferScannerMount(): null {
     let building = false
     let built: { acquire: () => void; release: () => void } | undefined
 
-    rescanWithdrawals(obsidionWallet, tokenService).catch((err) => {
-      console.warn("[TransferScannerMount] withdrawal rescan failed (retried on next mount)", err)
-    })
+    void bootPriority
+      .whenBalanceSettled()
+      .then(() => (disposed ? undefined : rescanWithdrawals(obsidionWallet, tokenService)))
+      .catch((err) => {
+        console.warn("[TransferScannerMount] withdrawal rescan failed (retried on next mount)", err)
+      })
 
     const build = async (): Promise<void> => {
       if (disposed || built || building) return
@@ -70,6 +79,7 @@ export function TransferScannerMount(): null {
             wallet: obsidionWallet,
             tokenAddress: token.address,
             accountAddress: identity.address,
+            contractService: contractService ?? undefined,
           }),
           storage: webStorage,
           transactionStore,
@@ -93,6 +103,7 @@ export function TransferScannerMount(): null {
           // Nameless accounts still receive; the tag is display-only, so fall back to the address.
           accountTag: identity.handle ?? identity.address,
           networkId,
+          endpointScope: getConfig().nodeEndpointDigest,
         }
 
         // Lock leadership: request while visible, withdraw/release while hidden.
@@ -156,7 +167,7 @@ export function TransferScannerMount(): null {
       built?.release()
       stopReconciler()
     }
-  }, [tokenService, obsidionWallet, currentNetwork])
+  }, [tokenService, obsidionWallet, currentNetwork, contractService])
 
   return null
 }

@@ -1,11 +1,12 @@
-import { ViemClient } from '@aztec/ethereum/types';
 import { BlockNumber } from '@aztec/foundation/branded-types';
 import { EthAddress } from '@aztec/foundation/eth-address';
-import { createSafeJsonRpcClient } from '@aztec/foundation/json-rpc/client';
-import { ProverNodeApiSchema } from '@aztec/stdlib/interfaces/server';
+import { createProverNodeAdminClient } from '@aztec/stdlib/interfaces/server';
 
 import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
+import type { SubmitEpochProofGasModel } from '@oxide/oxide-client/partial_epoch_proof_profit.js';
 import { createNodeClient } from '@oxide/oxide-lib/aztec_node_client.js';
+
+import type { PublicClient } from 'viem';
 
 import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
 import { PartialEpochProofStarter } from '../partial_epoch_proof_starter/index.js';
@@ -16,17 +17,17 @@ import { createPortalConfig } from './portal_config.js';
 export interface ProfitablePartialEpochProofStarterConfig {
   nodeUrl: string;
   nodeApiKey?: string;
-  /** Full ProverNode RPC endpoint. Defaults to `${nodeUrl}/prover` for colocated test/dev nodes. */
-  proverNodeUrl?: string;
+  /** Full ProverNode RPC endpoint. */
+  proverNodeUrl: string;
+  /** API key of the prover node's admin API, sent as `x-api-key`. */
+  proverNodeApiKey?: string;
   portalAddress: EthAddress;
   proverSubsidyAddress: EthAddress;
-  /** Address credited the prover reward. */
-  rewardRecipient: EthAddress;
-  l1Client: ViemClient;
+  l1Client: PublicClient;
   priceOracle: ChainlinkPriceOracle;
   /** Epoch-level early-submit thresholds for the whole partial epoch. */
   earlySubmitPolicy?: Partial<EarlySubmitPolicy>;
-  rollupSubmitEpochProofGas?: bigint;
+  submitEpochProofGasModel?: SubmitEpochProofGasModel;
   fromBlock?: BlockNumber;
   pollingIntervalMS?: number;
   onError?: (error: unknown) => void | Promise<void>;
@@ -43,13 +44,7 @@ export class ProfitablePartialEpochProofStarter {
     const node = createNodeClient({ url: config.nodeUrl, apiKey: config.nodeApiKey });
     // Hosted prover nodes serve their API under the `prover` namespace (prover_getJobs), like the
     // node's `node_*`.
-    const proverNode = createSafeJsonRpcClient(
-      config.proverNodeUrl ?? `${config.nodeUrl}/prover`,
-      ProverNodeApiSchema,
-      {
-        namespaceMethods: 'prover',
-      },
-    );
+    const proverNode = createProverNodeAdminClient(config.proverNodeUrl, {}, undefined, config.proverNodeApiKey);
 
     const portals = [
       await createPortalConfig({
@@ -64,7 +59,7 @@ export class ProfitablePartialEpochProofStarter {
       portals,
       priceOracle: config.priceOracle,
       earlySubmitPolicy: config.earlySubmitPolicy,
-      rollupSubmitEpochProofGas: config.rollupSubmitEpochProofGas,
+      submitEpochProofGasModel: config.submitEpochProofGasModel,
     });
 
     const starter = await PartialEpochProofStarter.create({

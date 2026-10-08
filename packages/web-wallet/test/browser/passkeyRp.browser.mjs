@@ -36,13 +36,9 @@ const spki = createHash("sha256")
 const root = new URL("../../../", import.meta.url)
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest()
 let relatedOriginRequests = 0
-const bridges = new Map()
 const server = createServer({ key: readFileSync(keyFile), cert }, (req, res) => {
   const url = new URL(req.url, `https://${req.headers.host}`)
-  if (url.pathname === "/bridge.html" && bridges.has(url.hostname)) {
-    res.writeHead(200, { "content-type": "text/html" })
-    res.end(readFileSync(bridges.get(url.hostname)))
-  } else if (url.pathname === "/.well-known/webauthn") {
+  if (url.pathname === "/.well-known/webauthn") {
     assert.equal(url.hostname, "auth.zk.money")
     relatedOriginRequests++
     res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" })
@@ -68,24 +64,6 @@ await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
 const port = server.address().port
 let browser
 try {
-  for (const [environment, wallet, campaign] of [
-    ["production", "wallet.zk.money", "launch.zk.money"],
-    ["staging", "wallet.staging.zk.money", "launch.staging.zk.money"],
-    ["preview", "wallet-pr-123.staging.zk.money", "pr-123.launch.staging.zk.money"],
-  ]) {
-    const directory = join(temp, environment)
-    execFileSync("pnpm", ["exec", "vite", "build", "-c", "vite.bridge.config.ts", "--outDir", directory], {
-      cwd: new URL("../../", import.meta.url),
-      env: {
-        ...process.env,
-        VITE_PASSKEY_ENVIRONMENT: environment,
-        VITE_PASSKEY_RP_ID: "",
-        VITE_CAMPAIGN_URL: `https://${campaign}`,
-      },
-      stdio: "pipe",
-    })
-    bridges.set(wallet, join(directory, "bridge.html"))
-  }
   browser = await chromium.launch({
     args: [
       `--host-resolver-rules=MAP *.zk.money:443 127.0.0.1:${port}`,
@@ -111,42 +89,6 @@ try {
   const visit = async (origin) => {
     await page.goto(origin)
     await page.waitForFunction(() => typeof window.rp === "function")
-  }
-  const handoff = async (campaign, wallet, rpId, credential) => {
-    await visit(campaign)
-    const material = {
-      v: 1,
-      type: "handoff-material",
-      nonce: "rp-smoke",
-      derivedAt: Date.now(),
-      rpId,
-      credentialId: credential.credentialId,
-      pubkeyHex: Buffer.from(credential.pubkey).toString("hex"),
-      candidates: { first: `0x${"00".repeat(31)}01` },
-    }
-    const ack = await page.evaluate(
-      ({ wallet, material }) =>
-        new Promise((resolve, reject) => {
-          const frame = document.createElement("iframe")
-          const timer = setTimeout(() => reject(new Error("Bridge did not acknowledge")), 5000)
-          window.addEventListener("message", (event) => {
-            if (event.origin === wallet && event.source === frame.contentWindow && event.data?.type === "handoff-ack") {
-              clearTimeout(timer)
-              resolve(event.data.nonce)
-            }
-          })
-          frame.onload = () => frame.contentWindow.postMessage(material, wallet)
-          frame.src = `${wallet}/bridge.html`
-          document.body.append(frame)
-        }),
-      { wallet, material },
-    )
-    assert.equal(ack, material.nonce)
-    await visit(wallet)
-    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("webwallet.handoff")))
-    assert.equal(stored.rpId, rpId)
-    assert.equal(stored.credentialId, credential.credentialId)
-    console.log(`PASS built ${wallet} bridge accepts its ${rpId} campaign handoff`)
   }
   const create = (environment) =>
     page.evaluate(async (environment) => {
@@ -209,7 +151,7 @@ try {
   const production = await create("production")
   const campaignProof = await sign("production", production.credentialId)
   assert.equal(campaignProof.prf.length, 32)
-  await handoff("https://launch.zk.money", "https://wallet.zk.money", "auth.zk.money", production)
+  await visit("https://wallet.zk.money")
   const walletProof = await sign("production", production.credentialId)
   assert.deepEqual(walletProof.prf, campaignProof.prf)
   checkSignature(production, walletProof, "auth.zk.money", "https://wallet.zk.money")
@@ -219,13 +161,6 @@ try {
 
   await visit("https://launch.staging.zk.money")
   const staging = await create("staging")
-  await handoff("https://launch.staging.zk.money", "https://wallet.staging.zk.money", "staging.zk.money", staging)
-  await handoff(
-    "https://pr-123.launch.staging.zk.money",
-    "https://wallet-pr-123.staging.zk.money",
-    "staging.zk.money",
-    staging,
-  )
   for (const origin of [
     "https://wallet.staging.zk.money",
     "https://wallet-pr-123.staging.zk.money",

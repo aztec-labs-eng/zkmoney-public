@@ -2,6 +2,7 @@ import { configProfileSchema } from "@obsidion/config-client"
 import * as oxide from "@obsidion/core/oxide"
 
 export const DEMO_PORTAL = "0xde1100000000000000000000000000000000da01"
+export const ROLLUP_VERSION = "1821665230"
 const timestamp = "2026-08-01T09:00:00.000Z"
 const field = (n) => `0x${n.toString(16).padStart(64, "0")}`
 
@@ -11,7 +12,7 @@ function profileFor(pointer) {
     network: "sandbox",
     publishedAt: "2026-08-12T00:00:00.000Z",
     expiresAt: "2099-01-01T00:00:00.000Z",
-    shared: { l1ChainId: 31337, xmtpEnv: "local", rollupVersion: "1821665230" },
+    shared: { l1ChainId: 31337, xmtpEnv: "local", rollupVersion: ROLLUP_VERSION },
     current: "0.0.1",
     versions: {
       "0.0.1": {

@@ -14,12 +14,14 @@
 
 import type { SIPADepositRecord, SIPADepositStore } from "../deposits/SIPADepositStore"
 import { isStuckSweep, STUCK_SWEEP_MS } from "../deposits/sipaStuck"
+import type { SipaProcessingState } from "../deposits/sipaProcessing"
 import type { WithdrawalRecord } from "./types"
 import type { WithdrawalStorage } from "./WithdrawalStorage"
 import { logger } from "src/utils/logger"
 
 export type BridgeActivityItem =
-  | { kind: "bridge.sipaDeposit"; record: SIPADepositRecord }
+  /** `processing` is set while the deposit waits for a sweep and a processing source is attached. */
+  | { kind: "bridge.sipaDeposit"; record: SIPADepositRecord; processing?: SipaProcessingState }
   | { kind: "bridge.withdrawal"; record: WithdrawalRecord }
 
 export type TransferActivityItem = {
@@ -35,6 +37,12 @@ export type BridgeItem = BridgeActivityItem
 
 type ChangedListener = (items: ActivityItem[]) => void
 
+/** Derived processing state for deposits waiting for a sweep (`createSipaProcessingObserver`). */
+export interface SipaProcessingSource {
+  stateFor(sipaAddress: string): SipaProcessingState | undefined
+  subscribe(listener: () => void): () => void
+}
+
 export class ActivityFeed {
   private static instance: ActivityFeed | null = null
   private sipaDeposits: SIPADepositStore
@@ -42,6 +50,8 @@ export class ActivityFeed {
   private changedListeners = new Set<ChangedListener>()
   private unsubSipaDeposits: (() => void) | null = null
   private unsubWithdrawals: (() => void) | null = null
+  private processing: SipaProcessingSource | null = null
+  private unsubProcessing: (() => void) | null = null
   /** Fires when a deposit hidden behind its own withdrawal has sat long enough to need the user. */
   private wake: ReturnType<typeof setTimeout> | null = null
 
@@ -76,12 +86,18 @@ export class ActivityFeed {
     const hidden = this.sipaDeposits
       .list()
       .filter((record) => hiddenBehindOwnWithdrawal(record, withdrawals, now))
-    this.wakeFor(hidden, now)
+    // A shown deposit's processing reason also waits for the stuck clock (`sipaReasonShown`).
+    this.wakeFor(this.processing ? this.sipaDeposits.list() : hidden, now)
     const items: ActivityItem[] = [
       ...this.sipaDeposits
         .list()
         .filter((record) => !hidden.includes(record))
-        .map<ActivityItem>((record) => ({ kind: "bridge.sipaDeposit", record })),
+        .map<ActivityItem>((record) => {
+          const processing = this.processing?.stateFor(record.sipaAddress)
+          return processing
+            ? { kind: "bridge.sipaDeposit", record, processing }
+            : { kind: "bridge.sipaDeposit", record }
+        }),
       ...withdrawals.map<ActivityItem>((record) => ({ kind: "bridge.withdrawal", record })),
     ]
     items.sort((a, b) => itemStartTime(b) - itemStartTime(a))
@@ -89,17 +105,31 @@ export class ActivityFeed {
   }
 
   /**
-   * A hidden deposit still sweeping surfaces on its own once its sweep has stalled; no store write
-   * marks that moment, so the feed re-emits when the earliest such clock runs out.
+   * A hidden deposit still sweeping surfaces on its own once its sweep has stalled, and a shown one
+   * then starts stating its processing reason; no store write marks that moment, so the feed
+   * re-emits when the earliest such clock runs out.
    */
-  private wakeFor(hidden: readonly SIPADepositRecord[], now: number): void {
+  private wakeFor(records: readonly SIPADepositRecord[], now: number): void {
     if (this.wake) clearTimeout(this.wake)
     this.wake = null
-    const due = hidden
+    const due = records
       .filter((r) => (r.phase === "sweeping" || r.phase === "broadcast") && !r.sweepTxHash)
       .map((r) => r.startTime + STUCK_SWEEP_MS)
+      .filter((at) => at > now)
     if (due.length === 0 || this.changedListeners.size === 0) return
     this.wake = setTimeout(() => this.emit(), Math.max(0, Math.min(...due) - now))
+  }
+
+  /**
+   * Attach the source that explains why pending deposits wait. The feed annotates their items with it and re-emits when
+   * it changes, so every consumer of the feed reads the same reason.
+   */
+  setProcessingSource(source: SipaProcessingSource | null): void {
+    this.unsubProcessing?.()
+    this.unsubProcessing = null
+    this.processing = source
+    if (this.changedListeners.size > 0) this.ensureSubscribed()
+    this.emit()
   }
 
   /**
@@ -121,6 +151,9 @@ export class ActivityFeed {
     }
     if (!this.unsubWithdrawals && this.withdrawals) {
       this.unsubWithdrawals = this.withdrawals.onListChanged(() => this.emit())
+    }
+    if (!this.unsubProcessing && this.processing) {
+      this.unsubProcessing = this.processing.subscribe(() => this.emit())
     }
   }
 

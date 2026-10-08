@@ -1,0 +1,270 @@
+{
+  "scenario": "activity",
+  "path": "/deposit?flowFixture=success&capacityFixture=fits&allowanceFixture=available",
+  "finalScreenshot": false,
+  "steps": [
+    {
+      "action": "waitFor",
+      "selector": ".ww-deposit-disclaimer"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"address-limits\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "01-address.png",
+      "state": "Deposit address, then the compact limit line with its info button"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Show",
+      "exact": false
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"Deposit address\"] [data-testid=\"address-limits\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "02-qr.png",
+      "state": "Complete QR, then \"Deposit limit: $2,500 incl. fees\" under it"
+    },
+    {
+      "action": "click",
+      "selector": "dialog[aria-label=\"Deposit address\"] [data-testid=\"about-limits-link\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-operation\"][data-expanded=\"true\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"fresh\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"available\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "03-qr-info-open.png",
+      "state": "Info open over the QR: the limit section expanded first"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"Deposit address\"] [data-testid=\"address-limits\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "04-qr-info-closed.png",
+      "state": "Info closed: back on the QR"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"Deposit address\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Connect your wallet",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "24"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"operation-limits\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "05-amount.png",
+      "state": "Deposit amount: \"Min $1 · Max sent: $2,500 incl. fees\", healthy capacity adds no line"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid=\"operation-limits\"] [data-testid=\"about-limits-link\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-operation\"][data-expanded=\"true\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"available\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "06-amount-info-open.png",
+      "state": "Info open from the amount: the deposit limit section"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "screenshot",
+      "file": "07-amount-info-closed.png",
+      "state": "Info closed: back on the amount"
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "2499.9"
+    },
+    {
+      "action": "waitFor",
+      "testId": "limit-notice"
+    },
+    {
+      "action": "screenshot",
+      "file": "08-over-limit.png",
+      "state": "Over the limit: one reason with Use maximum"
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "24"
+    },
+    {
+      "action": "waitFor",
+      "testId": "limit-notice",
+      "state": "detached"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Deposit funds",
+      "exact": false
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Confirm deposit",
+      "exact": false
+    },
+    {
+      "action": "screenshot",
+      "file": "09-review.png",
+      "state": "Review: amount, fee and received, no repeated policy notes"
+    },
+    {
+      "action": "goto",
+      "path": "/withdraw?flowFixture=success&balanceFixture=5000&allowanceFixture=available"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-deposit-disclaimer"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "placeholder": "Enter or paste address",
+      "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "fill",
+      "label": "Wallet name (optional)",
+      "value": "Weekend savings wallet"
+    },
+    {
+      "action": "waitFor",
+      "selector": "button:not([disabled]):has-text('Continue')"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Continue",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "MAX",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input[value=\"2500\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "10-withdraw-max.png",
+      "state": "Withdrawal after MAX with a 5,000 balance: $2,500, \"Max from balance: $2,500 incl. fees\""
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid=\"operation-limits\"] [data-testid=\"about-limits-link\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-operation\"][data-expanded=\"true\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"available\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "11-withdraw-info-open.png",
+      "state": "Info open from the withdrawal: the withdrawal limit section"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "screenshot",
+      "file": "12-withdraw-info-closed.png",
+      "state": "Info closed: back on the withdrawal"
+    }
+  ]
+}

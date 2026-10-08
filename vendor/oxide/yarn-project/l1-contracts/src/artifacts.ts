@@ -61,11 +61,20 @@ export { MockOperationAbi, MockOperationBytecode } from './abis/MockOperation.js
 export { FPCFunderTestnetAbi, FPCFunderTestnetBytecode } from './abis/FPCFunderTestnet.js';
 export { FPCFunderDAIAbi, FPCFunderDAIBytecode } from './abis/FPCFunderDAI.js';
 export { MockSwapRouterAbi, MockSwapRouterBytecode } from './abis/MockSwapRouter.js';
+export { EscrowBaseAbi } from './abis/EscrowBase.js';
 // Swap-on-withdraw feature (disposable — purge these with `src/swap_on_withdraw.ts`).
 export { SwapEscrowAbi, SwapEscrowBytecode } from './abis/SwapEscrow.js';
 export { SwapEscrowFactoryAbi, SwapEscrowFactoryBytecode } from './abis/SwapEscrowFactory.js';
 export { MockUniversalRouterAbi, MockUniversalRouterBytecode } from './abis/MockUniversalRouter.js';
 export { MockCurve3PoolAbi, MockCurve3PoolBytecode } from './abis/MockCurve3Pool.js';
+// CCTP bridge-on-withdraw feature (disposable — purge these with `src/cctp_bridge_on_withdraw.ts`).
+export { CCTPBridgeEscrowAbi, CCTPBridgeEscrowBytecode } from './abis/CCTPBridgeEscrow.js';
+export { CCTPBridgeEscrowFactoryAbi, CCTPBridgeEscrowFactoryBytecode } from './abis/CCTPBridgeEscrowFactory.js';
+export { MockTokenMessengerV2Abi, MockTokenMessengerV2Bytecode } from './abis/MockTokenMessengerV2.js';
+// Across bridge-on-withdraw feature (disposable — purge these with `src/across_bridge_on_withdraw.ts`).
+export { AcrossBridgeEscrowAbi, AcrossBridgeEscrowBytecode } from './abis/AcrossBridgeEscrow.js';
+export { AcrossBridgeEscrowFactoryAbi, AcrossBridgeEscrowFactoryBytecode } from './abis/AcrossBridgeEscrowFactory.js';
+export { MockAcrossSpokePoolAbi, MockAcrossSpokePoolBytecode } from './abis/MockAcrossSpokePool.js';
 export { OxideAccountAbi, OxideAccountBytecode } from './abis/OxideAccount.js';
 export { OxideAccountFactoryAbi, OxideAccountFactoryBytecode } from './abis/OxideAccountFactory.js';
 export { EntryPointAbi, EntryPointBytecode } from './abis/EntryPoint.js';

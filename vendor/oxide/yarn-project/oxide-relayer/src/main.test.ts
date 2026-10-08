@@ -2,7 +2,7 @@ import { EthAddress } from '@aztec/foundation/eth-address';
 
 import { describe, expect, it } from '@jest/globals';
 
-import { assertSimulateV1Supported, readPayoutToken } from './main.js';
+import { assertSimulateV1Supported, readUnderlyingToken, selectPayoutTokens } from './main.js';
 
 const READ_RPC_URL = 'https://eth-mainnet.example.com/v2/secret-api-key';
 
@@ -40,21 +40,79 @@ describe('assertSimulateV1Supported', () => {
   });
 });
 
-describe('readPayoutToken', () => {
-  const token = EthAddress.random();
-  const portal = { getUnderlying: () => Promise.resolve(token) };
+describe('selectPayoutTokens', () => {
+  const entryToken = EthAddress.random();
+  const dai = EthAddress.random();
+  const sUsds = EthAddress.random();
 
-  function clientWithDecimals(decimals: number) {
-    return { readContract: () => Promise.resolve(decimals) } as unknown as Parameters<typeof readPayoutToken>[0];
+  /** Answers `decimals()` from `decimalsOf`, 18 by default, and records each token it reads. */
+  function fakeClient(read: EthAddress[], decimalsOf: (token: EthAddress) => number = () => 18) {
+    return {
+      readContract: ({ address, functionName }: { address: string; functionName: string }) => {
+        expect(functionName).toBe('decimals');
+        const token = EthAddress.fromString(address);
+        read.push(token);
+        return Promise.resolve(decimalsOf(token));
+      },
+    } as unknown as Parameters<typeof selectPayoutTokens>[0];
   }
 
-  it('returns an 18-decimal portal underlying', async () => {
-    await expect(readPayoutToken(clientWithDecimals(18), portal)).resolves.toEqual(token);
+  it('defaults to the token of the manifest entry and checks its decimals', async () => {
+    const read: EthAddress[] = [];
+    await expect(selectPayoutTokens(fakeClient(read), undefined, { token: entryToken })).resolves.toEqual([entryToken]);
+    expect(read).toEqual([entryToken]);
+  });
+
+  it('takes the configured tokens in place of the entry token and checks the decimals of each', async () => {
+    const read: EthAddress[] = [];
+    await expect(selectPayoutTokens(fakeClient(read), [dai, sUsds], { token: entryToken })).resolves.toEqual([
+      dai,
+      sUsds,
+    ]);
+    expect(read).toEqual([dai, sUsds]);
+  });
+
+  it('fails startup when the entry token does not have 18 decimals', async () => {
+    await expect(
+      selectPayoutTokens(
+        fakeClient([], () => 6),
+        undefined,
+        { token: entryToken },
+      ),
+    ).rejects.toThrow(
+      `payout token ${entryToken.toString()} has 6 decimals; the relayer prices payouts as 18-decimal USD`,
+    );
+  });
+
+  it('fails startup when one configured token does not have 18 decimals', async () => {
+    const decimalsOf = (token: EthAddress) => (token.equals(sUsds) ? 6 : 18);
+    await expect(selectPayoutTokens(fakeClient([], decimalsOf), [dai, sUsds], { token: entryToken })).rejects.toThrow(
+      `payout token ${sUsds.toString()} has 6 decimals`,
+    );
+  });
+});
+
+describe('readUnderlyingToken', () => {
+  const underlying = EthAddress.random();
+  const portal = { getUnderlying: () => Promise.resolve(underlying) };
+  const clientWithDecimals = (decimals: number) =>
+    ({ readContract: () => Promise.resolve(decimals) }) as unknown as Parameters<typeof readUnderlyingToken>[0];
+
+  it('returns an 18-decimal portal underlying and reads only that token', async () => {
+    const read: string[] = [];
+    const client = {
+      readContract: ({ address, functionName }: { address: string; functionName: string }) => {
+        read.push(`${functionName}@${EthAddress.fromString(address).toString()}`);
+        return Promise.resolve(18);
+      },
+    } as unknown as Parameters<typeof readUnderlyingToken>[0];
+    await expect(readUnderlyingToken(client, portal)).resolves.toEqual(underlying);
+    expect(read).toEqual([`decimals@${underlying.toString()}`]);
   });
 
   it('fails startup on a portal underlying with other decimals', async () => {
-    await expect(readPayoutToken(clientWithDecimals(6), portal)).rejects.toThrow(
-      `portal underlying ${token.toString()} has 6 decimals; the relayer prices payouts as 18-decimal USD`,
+    await expect(readUnderlyingToken(clientWithDecimals(6), portal)).rejects.toThrow(
+      `portal underlying ${underlying.toString()} has 6 decimals; the relayer prices payouts as 18-decimal USD`,
     );
   });
 });

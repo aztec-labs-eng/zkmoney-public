@@ -12,7 +12,7 @@
  * - `iac/docs/{staging,prod}-deploy-runbook.md` schedule snippets
  * - `iac/secrets/manifest.json` schedule defaults
  * - `packages/backend/account-service/.env.example`
- * - `packages/backend/scripts/sandboxRegistration.ts` sandbox constants
+ * - `packages/tooling/sandbox-env/scripts/sandboxRegistration.ts` sandbox constants
  * - `packages/launch-campaign-web/src/registration/registrationFee.ts` tag price default
  * - `packages/desktop-download-web/content/{get-started.md,limits.md,faq.json}`
  * - `packages/web-wallet/scripts/ui-capture/plans/{registration-terms,insets}.json` step names
@@ -42,6 +42,13 @@ export function registrationFloor(schedule: RegistrationSchedule, fpcFundingCut:
   const overCut = fpcFundingCut + 1n
   return schedule.fee + (schedule.min > overCut ? schedule.min : overCut)
 }
+
+/**
+ * The largest conversion loss a SIPA's stablecoin swap accepts, in basis points. Mirrors oxide's
+ * `ThreePoolLib`: a mainnet USDC/USDT deposit is swapped into DAI before the floor is checked, so
+ * what the chain floors is at least `parity * (1 - this)`.
+ */
+export const SIPA_SWAP_MAX_SLIPPAGE_BPS = 100n
 
 /**
  * The deductions a golden-ticket registration pays beyond its schedule. The link's note is burned

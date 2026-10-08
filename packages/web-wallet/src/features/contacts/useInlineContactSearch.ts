@@ -9,6 +9,7 @@ import {
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { resolveTagForCommit, resolveTagViaRegistry } from "./registryResolution"
 import { freshResolutionConfirms, inlinePanelState, shouldResolveInline } from "./contactsView"
+import { probeNameAvailability } from "../onboarding/nameAvailability"
 
 /** Write-through for the shared add-contact hooks over ContactStorage. */
 export async function addContact(
@@ -108,8 +109,30 @@ export function useInlineContactSearch(
     }
   }
 
+  // Each Registry miss is asked of the claim server, so a later search sees a fresh answer.
+  const [answer, setAnswer] = useState<{ tag: string; reserved: boolean } | null>(null)
+  const missed = inlinePanelState(contacts, query, inline.lastResolved, ownTag)
+  const missedTag = missed.kind === "no-user-found" ? missed.tag : null
+  useEffect(() => {
+    setAnswer(null)
+    if (missedTag === null) return
+    let live = true
+    void probeNameAvailability(missedTag).then(({ status }) => {
+      if (live) {
+        setAnswer({
+          tag: missedTag,
+          reserved: status === "reserved" || status === "blocked-reserved",
+        })
+      }
+    })
+    return () => {
+      live = false
+    }
+  }, [missedTag])
+  const held = answer !== null && answer.tag === missedTag ? answer.reserved : null
+
   return {
-    panel: inlinePanelState(contacts, query, inline.lastResolved, ownTag),
+    panel: inlinePanelState(contacts, query, inline.lastResolved, ownTag, held),
     isSaving: verifying || inline.isSaving,
     saveError:
       verificationError || (savedGeneration.current === generation.current ? inline.saveError : ""),

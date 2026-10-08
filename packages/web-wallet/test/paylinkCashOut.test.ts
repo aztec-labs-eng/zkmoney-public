@@ -47,6 +47,15 @@ vi.mock("../src/features/migration/historicTokenContext", () => ({
 
 vi.mock("../src/platform/auth/useAuthenticator", () => ({ getAuthService: vi.fn() }))
 
+const PH = "f0".repeat(32)
+const analytics = vi.hoisted(() => ({ enabled: true, firePaylinkEvent: vi.fn() }))
+vi.mock("../src/lib/analytics", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/analytics")>()),
+  analyticsEnabled: () => analytics.enabled,
+  firePaylinkEvent: analytics.firePaylinkEvent,
+  paylinkPh: async () => PH,
+}))
+
 const SWAP_ESCROW = `0x${"ee".repeat(20)}` as Address
 const COMMITMENT = `0x${"c0".repeat(32)}` as Hex
 const { planSwapLeg, linkSecret } = vi.hoisted(() => ({
@@ -107,14 +116,22 @@ const { cashOutLink, cashOutNet, linkVoucherUses } = await import(
 )
 const { getWithdrawalStore } = await import("../src/features/withdraw/withdrawGateway")
 const { getOperationStore } = await import("../src/features/operations/operations")
+const { reportPaylinkClaims } = await import("../src/features/paylink/paylinkClaimReport")
+const { webStorage } = await import("../src/platform/storage/WebStorageAdapter")
 
 const deps = (compliant = true) =>
   ({
     wallet: { node: { getTxReceipt: vi.fn(async () => ({ status: TxStatus.PENDING })) }, pxe: {} },
     contractService: { getContractAddress: async () => ({ toString: () => "0xtoken" }) },
     teeSigner: { _id: "enclave" },
+    rollupAddress: `0x${"ab".repeat(20)}`,
     screener: { screen: async () => ({ compliant, reason: { message: "Sanctioned address" } }) },
   } as unknown as Parameters<typeof cashOutLink>[0])
+
+const claimedEvents = () =>
+  analytics.firePaylinkEvent.mock.calls.filter(
+    ([e]) => (e as { stage: string }).stage === "claimed",
+  )
 
 describe("cashOutLink", () => {
   beforeEach(async () => {
@@ -243,6 +260,36 @@ describe("cashOutLink", () => {
     expect(getWithdrawalStore().list()).toHaveLength(0)
   })
 
+  // The burn spends the whole escrow, so a link over the limit has no smaller amount to send.
+  it("cashes out a link of exactly $2,500 and refuses one atomic unit more before burning or writing", async () => {
+    const LIMIT = parseUnits("2500", 18)
+    const note = (amount: bigint) => ({ amount, tokenAddress: { toString: () => SOURCE.l2Token } })
+    try {
+      readPaylinkEscrowNote.mockResolvedValue(note(LIMIT))
+      await cashOutLink(deps(), "fragment-at-limit", RECIPIENT)
+      expect(exitPaylinkWithVoucher).toHaveBeenCalledTimes(1)
+      await vi.waitFor(() => expect(claimedEvents()).toHaveLength(1))
+      await getWithdrawalStore().clearAll()
+
+      readPaylinkEscrowNote.mockResolvedValue(note(LIMIT + 1n))
+      await expect(cashOutLink(deps(), "fragment-over-limit", RECIPIENT)).rejects.toThrow(
+        "This link holds more than the $2,500 withdrawal limit, so it cannot be claimed to an Ethereum wallet.",
+      )
+      expect(exitPaylinkWithVoucher).toHaveBeenCalledTimes(1)
+      expect(getWithdrawalStore().list()).toHaveLength(0)
+      expect(
+        getOperationStore()
+          .list()
+          .filter((op) => op.state === "local"),
+      ).toHaveLength(0)
+      // Nothing was owed for the refused link.
+      await reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
+      expect(claimedEvents()).toHaveLength(1)
+    } finally {
+      readPaylinkEscrowNote.mockResolvedValue(note(ESCROW))
+    }
+  })
+
   it("forwards a destination-bound email proof without requiring an account", async () => {
     const zkProof = { vkey: ["key"], proof: ["proof"], public_inputs: ["caller"] }
     await cashOutLink(deps(), "email-fragment", RECIPIENT, undefined, "DAI", undefined, zkProof)
@@ -304,6 +351,63 @@ describe("cashOutLink", () => {
     expect(record!.l2TxHash).toBeUndefined()
     // Seeded with the tip, so the sheet could show the breakdown while the burn was in flight.
     expect(record!.relayerTip).toBe(WITHDRAW_RELAYER_TIP.toString())
+  })
+})
+
+describe("cashOutLink claim reporting", () => {
+  beforeEach(async () => {
+    localStorage.clear()
+    await getWithdrawalStore().clearAll()
+    vi.clearAllMocks()
+    analytics.enabled = true
+  })
+
+  it("reports the spent escrow as one claimed link, with no address, amount or hash", async () => {
+    await cashOutLink(deps(), "fragment", RECIPIENT)
+    await vi.waitFor(() => expect(claimedEvents()).toHaveLength(1))
+    expect(claimedEvents()[0]).toEqual([
+      { stage: "claimed", flavor: "direct", amount_bucket: "<50", paylink_ph: PH },
+    ])
+    const wire = JSON.stringify(analytics.firePaylinkEvent.mock.calls).toLowerCase()
+    expect(wire).not.toContain("dd".repeat(20))
+    expect(wire).not.toContain("0a".repeat(32))
+    expect(wire).not.toContain(ESCROW.toString())
+    // The withdrawals view reporting again finds nothing owed.
+    await reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
+    expect(claimedEvents()).toHaveLength(1)
+  })
+
+  it("reports a burn left to the chain once its record mines, and only then", async () => {
+    exitPaylinkWithVoucher.mockImplementationOnce(async (args) => {
+      provingProgress.emitStageStart(ProvingStage.Mining, args.operationId as string, L2_TX)
+      throw new Error("Receipt timed out")
+    })
+    const record = await cashOutLink(deps(), "fragment", RECIPIENT)
+    expect(record.phase).toBe("submitting")
+    await reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
+    expect(claimedEvents()).toHaveLength(0)
+
+    // The tracker finds the receipt later, perhaps after a reload.
+    await getWithdrawalStore().markMined(record.localId, L2_TX, 42, ESCROW.toString())
+    await reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
+    await reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
+    expect(claimedEvents()).toHaveLength(1)
+  })
+
+  it("reports nothing for a cash-out that failed or was refused", async () => {
+    exitPaylinkWithVoucher.mockRejectedValueOnce(new Error("proving died"))
+    await expect(cashOutLink(deps(), "fragment", RECIPIENT)).rejects.toThrow(/proving died/)
+    await expect(cashOutLink(deps(false), "fragment", RECIPIENT)).rejects.toThrow(/Sanctioned/)
+    await reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
+    expect(claimedEvents()).toHaveLength(0)
+  })
+
+  it("reports nothing from a browser without analytics consent", async () => {
+    analytics.enabled = false
+    await cashOutLink(deps(), "fragment", RECIPIENT)
+    analytics.enabled = true
+    await reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
+    expect(claimedEvents()).toHaveLength(0)
   })
 })
 

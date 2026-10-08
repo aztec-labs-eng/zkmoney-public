@@ -3,6 +3,7 @@
  * diff, no sandbox. The manifest shapes mirror the oxide env registry schema v4.
  */
 
+import type { PublicClient } from "viem"
 import { describe, expect, it } from "vitest"
 
 import { IntraRollupMigrationService, Network } from "../../src/index.js"
@@ -54,6 +55,20 @@ function fetchReturning(body: unknown): typeof fetch {
   return (async () =>
     ({ ok: true, status: 200, json: async () => body } as Response)) as typeof fetch
 }
+
+const DAI = "0x" + "cc".repeat(20)
+const SUSDS = "0x" + "5d".repeat(20)
+
+/** L1 reads answering each portal's UNDERLYING; unlisted portals escrow DAI. */
+function underlyings(byPortal: Record<string, string> = {}): PublicClient {
+  return {
+    readContract: async ({ address, functionName }: { address: string; functionName: string }) => {
+      expect(functionName).toBe("UNDERLYING")
+      return byPortal[address] ?? DAI
+    },
+  } as unknown as PublicClient
+}
+const sameUnderlying = underlyings()
 
 function mapCache() {
   const map = new Map<string, string>()
@@ -178,6 +193,7 @@ describe("IntraRollupMigrationService.detectMigration", () => {
 describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
   it("returns current plus the other same-rollup entries, empty when the pin stands alone", async () => {
     const bare = await IntraRollupMigrationService.detectHistoricDeployments({
+      publicClient: sameUnderlying,
       manifestUrl: MANIFEST_URL,
       portal: PORTAL_B,
       fetchImpl: fetchReturning(manifest(TUPLE_B)),
@@ -186,6 +202,7 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
     expect(bare.historic).toEqual([])
 
     const rolled = await IntraRollupMigrationService.detectHistoricDeployments({
+      publicClient: sameUnderlying,
       manifestUrl: MANIFEST_URL,
       portal: PORTAL_B,
       fetchImpl: fetchReturning(manifest(TUPLE_A, TUPLE_B)),
@@ -198,6 +215,7 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
 
   it("keeps every other deployment after two rolls (A → B → C)", async () => {
     const twice = await IntraRollupMigrationService.detectHistoricDeployments({
+      publicClient: sameUnderlying,
       manifestUrl: MANIFEST_URL,
       portal: PORTAL_C,
       fetchImpl: fetchReturning(manifest(TUPLE_A, TUPLE_B, TUPLE_C)),
@@ -209,6 +227,7 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
 
   it("leaves a deployment on another rollup out", async () => {
     const found = await IntraRollupMigrationService.detectHistoricDeployments({
+      publicClient: sameUnderlying,
       manifestUrl: MANIFEST_URL,
       portal: PORTAL_B,
       fetchImpl: fetchReturning(manifest(TUPLE_A, TUPLE_B, { ...TUPLE_C, rollupVersion: "8" })),
@@ -219,6 +238,7 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
 
   it("leaves an entry without a plain withdrawal executor out", async () => {
     const found = await IntraRollupMigrationService.detectHistoricDeployments({
+      publicClient: sameUnderlying,
       manifestUrl: MANIFEST_URL,
       portal: PORTAL_C,
       network: Network.SANDBOX,
@@ -230,10 +250,52 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
     expect(found.historic[0]!.plainWithdrawalExecutor).toBe("0x" + "ab".repeat(20))
   })
 
+  it("leaves out an entry whose portal escrows another underlying", async () => {
+    const found = await IntraRollupMigrationService.detectHistoricDeployments({
+      publicClient: underlyings({ [PORTAL_C]: SUSDS }),
+      manifestUrl: MANIFEST_URL,
+      portal: PORTAL_B,
+      fetchImpl: fetchReturning(manifest(TUPLE_A, TUPLE_B, TUPLE_C)),
+    })
+    expect(found.historic.map((t) => t.portal)).toEqual([PORTAL_A])
+  })
+
+  it("reads no L1 state when the pin stands alone", async () => {
+    const noReads = {
+      readContract: async () => {
+        throw new Error("unexpected L1 read")
+      },
+    } as unknown as PublicClient
+    const found = await IntraRollupMigrationService.detectHistoricDeployments({
+      publicClient: noReads,
+      manifestUrl: MANIFEST_URL,
+      portal: PORTAL_B,
+      fetchImpl: fetchReturning(manifest(TUPLE_B)),
+    })
+    expect(found.historic).toEqual([])
+  })
+
+  it("throws when an underlying cannot be read", async () => {
+    const failing = {
+      readContract: async () => {
+        throw new Error("rpc down")
+      },
+    } as unknown as PublicClient
+    await expect(
+      IntraRollupMigrationService.detectHistoricDeployments({
+        publicClient: failing,
+        manifestUrl: MANIFEST_URL,
+        portal: PORTAL_B,
+        fetchImpl: fetchReturning(manifest(TUPLE_A, TUPLE_B)),
+      }),
+    ).rejects.toThrow(/rpc down/)
+  })
+
   it("throws on a failed fetch", async () => {
     const fetchImpl = (async () => ({ ok: false, status: 500 } as Response)) as typeof fetch
     await expect(
       IntraRollupMigrationService.detectHistoricDeployments({
+        publicClient: sameUnderlying,
         manifestUrl: MANIFEST_URL,
         portal: PORTAL_A,
         network: Network.SANDBOX,
@@ -251,6 +313,7 @@ describe("the mainnet gate on the pinned entry", () => {
     resolverGatewayUrl: "https://resolver.example/{sender}/{data}.json",
   }
   const args = {
+    publicClient: sameUnderlying,
     manifestUrl: MANIFEST_URL,
     portal: PORTAL_A,
     network: Network.MAINNET,

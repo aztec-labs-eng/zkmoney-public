@@ -1,4 +1,3 @@
-import { RollupContract } from '@aztec/ethereum/contracts/rollup';
 import { EthAddress } from '@aztec/foundation/eth-address';
 import { Logger } from '@aztec/foundation/log';
 
@@ -6,14 +5,16 @@ import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
 import { createNodeClient } from '@oxide/oxide-lib/aztec_node_client.js';
 import { TeeSigner } from '@oxide/oxide-lib/types.js';
 
-import type { L1SubmissionBatcher } from '../../l1_submission_batcher.js';
+import type { PublicClient } from 'viem';
+
+import type { L1TxQueue } from '../../l1/l1_tx_queue.js';
 import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
-import type { RelayerL1TxUtils } from '../../relayer_l1_tx_utils.js';
 import {
   ClaimBatchSubmitterOptions,
   ProverClaimRewardCollector,
   TrackerOptions,
 } from '../prover_claim_reward_collector/index.js';
+import { createRollupContract } from '../rollup.js';
 import { ProverClaimAdaptor } from './adaptor.js';
 import { createClaimPortalConfig } from './portal_config.js';
 
@@ -22,12 +23,12 @@ export interface OxideProverClaimRewardCollectorConfig {
   proverId: EthAddress;
   portalAddress: EthAddress;
   proverSubsidyAddress: EthAddress;
+  client: PublicClient;
   /**
-   * Tx utils to submit through. The host shares one signer across subsystems, so every send goes on the one
+   * Queue to submit through. The host shares one signer across subsystems, so every send goes on the one
    * queue and nonces cannot race. Its sender must be `proverId`.
    */
-  l1TxUtils: RelayerL1TxUtils;
-  l1SubmissionBatcher?: L1SubmissionBatcher;
+  l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>;
   nodeUrl: string;
   nodeApiKey?: string;
   /** TEE signer used to co-sign the withdrawal finalization embedded in each claim. */
@@ -47,10 +48,10 @@ export class OxideProverClaimRewardCollector {
   ) {}
 
   static async create(config: OxideProverClaimRewardCollectorConfig): Promise<OxideProverClaimRewardCollector> {
-    const l1Client = config.l1TxUtils.client;
+    const l1Client = config.client;
     const node = createNodeClient({ url: config.nodeUrl, apiKey: config.nodeApiKey });
     const portal = new OxidePortalContract(l1Client, config.portalAddress);
-    const rollup = new RollupContract(l1Client, await portal.getRollup());
+    const rollup = createRollupContract(l1Client, await portal.getRollup());
     const portals = [
       await createClaimPortalConfig({
         portal,
@@ -64,8 +65,8 @@ export class OxideProverClaimRewardCollector {
       proverId: config.proverId,
       portal,
       rollup,
-      l1TxUtils: config.l1TxUtils,
-      l1SubmissionBatcher: config.l1SubmissionBatcher,
+      client: config.client,
+      l1TxQueue: config.l1TxQueue,
       node,
       portals,
       priceOracle: config.priceOracle,

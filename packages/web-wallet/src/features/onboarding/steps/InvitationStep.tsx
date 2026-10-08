@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react"
 import { Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
 import { normalizeTag } from "@obsidion/front-core"
-import { nameIsUnavailable, useNameAvailability } from "../nameAvailability"
+import { nameIsUnavailable, useNameAvailability, type RouteNameGrant } from "../nameAvailability"
 import { TagAvailabilityNotes, type InviteNotice } from "./TagAvailabilityNotes"
 
 export type { InviteNotice } from "./TagAvailabilityNotes"
@@ -20,8 +20,10 @@ export function InvitationStep({
   notice,
   header,
   checkAvailability = false,
-  allowBlocked = false,
+  grant,
   resuming = false,
+  boundGrantOwner = false,
+  onBoundGrant,
   onUnlock,
   onLogIn,
   onCancelSignIn,
@@ -34,13 +36,14 @@ export function InvitationStep({
   header?: ReactNode
   /** Probe account-service for the typed tag. Off where the step renders as inert chrome. */
   checkAvailability?: boolean
-  /** A route grant may pass the blocklist; it never bypasses a live reservation. */
-  allowBlocked?: boolean
+  grant?: RouteNameGrant
   /**
    * The user is picking a signup back up rather than starting one, so an existing reservation is
    * no longer a reason to stop them: it may well be their own, and only the claim server can say.
    */
   resuming?: boolean
+  boundGrantOwner?: boolean
+  onBoundGrant?: (handle: string) => void
   onUnlock: (handle: string) => void
   /** Returning-user footer link; omitted on the post-passkey "type your handle" pass. */
   onLogIn?: () => void
@@ -49,14 +52,28 @@ export function InvitationStep({
 }) {
   const [typed, setTyped] = useState(normalizeTag(initialHandle ?? "") ?? "")
   const valid = normalizeTag(typed) !== null
-  const { status: availability, checking } = useNameAvailability(typed, checkAvailability)
+  const grantToken = grant?.handle === normalizeTag(typed) ? grant.token : undefined
+  const {
+    status: availability,
+    checking,
+    grantValid,
+    grantBound,
+  } = useNameAvailability(typed, checkAvailability, grantToken)
+  const recoverBoundGrant = Boolean(grantToken && grantBound && !boundGrantOwner)
+  const allowBlocked = Boolean(grantToken && (grantValid || (grantBound && boundGrantOwner)))
+  const grantUnverified = Boolean(grantToken && availability === "unknown" && !checking)
   // The probe knows a name is held, never by whom. A resume may continue through its own hold;
-  // only a route grant may continue through the blocklist.
+  // only a live route grant may continue through the blocklist.
   const taken = nameIsUnavailable(availability, { resuming, allowBlocked })
-  const submittable = valid && !taken && !checking
+  const submittable = valid && (!taken || recoverBoundGrant) && !checking && !grantUnverified
+  const activate = () => {
+    if (!submittable || busy) return
+    if (recoverBoundGrant) onBoundGrant?.(typed)
+    else onUnlock(typed)
+  }
   const submit = (e: React.FormEvent) => {
     e.preventDefault()
-    if (submittable && !busy) onUnlock(typed)
+    activate()
   }
   const errors = (
     <TagAvailabilityNotes
@@ -66,6 +83,8 @@ export function InvitationStep({
       checking={false}
       resuming={resuming}
       allowBlocked={allowBlocked}
+      grantUnverified={grantUnverified}
+      grantBound={recoverBoundGrant}
       notice={notice}
       onLogIn={onLogIn}
     />
@@ -98,10 +117,10 @@ export function InvitationStep({
         )}
         {errors}
         <PrimaryGradientButton
-          title="Create account"
+          title={recoverBoundGrant ? "Continue with passkey" : "Create account"}
           isDisabled={!submittable}
           isLoading={busy}
-          onClick={() => submittable && !busy && onUnlock(typed)}
+          onClick={activate}
         />
         {busy && (
           <button
@@ -157,7 +176,13 @@ export function InvitationStep({
           className="ww-invite__unlock"
           disabled={!submittable || busy}
         >
-          {busy ? <Spinner size={14} color="#fff" /> : <>Activate account &rarr;</>}
+          {busy ? (
+            <Spinner size={14} color="#fff" />
+          ) : recoverBoundGrant ? (
+            <>Continue with passkey &rarr;</>
+          ) : (
+            <>Activate account &rarr;</>
+          )}
         </button>
       </form>
       {errors}

@@ -48,3 +48,10 @@ export function trackBackgroundProve(start: () => Promise<void>): Promise<void> 
   backgroundProve = run.catch(() => {})
   return run
 }
+
+/** Calls `listener` each time the last user flow ends: background work held behind it may start. */
+export function onUserFlowsIdle(listener: () => void): () => void {
+  return userFlows.subscribe(() => {
+    if (!userFlowActive()) listener()
+  })
+}

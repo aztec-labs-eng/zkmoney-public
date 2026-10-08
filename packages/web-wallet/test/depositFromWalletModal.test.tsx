@@ -1,11 +1,24 @@
 /**
  * The wallet-funding sheet's gates: the charged total (amount + fee) against the wallet's balance,
- * the fee having loaded, the per-transaction cap, screening, and the confirm step.
+ * the fee having loaded, the published limit on the gross send, the protocol ceiling on the credit,
+ * shared deposit capacity (a real 1146 store behind the capacity module), screening, and the confirm
+ * step with its last capacity check.
  */
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import type { Hex } from "viem"
+import { clearWalletPrompt } from "../src/features/deposit/walletPrompt"
+
+// The wallet-request slot is page-wide; forget what a case left open.
+afterEach(clearWalletPrompt)
+import { formatUnits, parseUnits, type Hex } from "viem"
+import {
+  createPortalCapacityStore,
+  NOMINAL_USD_VALUATION,
+  type PortalCapacityStore,
+  type UsdValuation,
+} from "@obsidion/front-core"
+import { TX_AMOUNT_CAP, type PortalCapacitySnapshot } from "@obsidion/sdk"
 import type { L1TokenBalance } from "../src/features/deposit/l1DepositTokenBalance"
 import type { DepositTokenOption } from "../src/features/deposit/loadDepositFacts"
 
@@ -17,6 +30,9 @@ type DepositParams = {
   tokenSymbol: string
   token?: { address: Hex; decimals: number }
   onSubmitted?: (h: Hex) => void
+  onStage?: (stage: string) => void
+  preflight: (fresh: { feeDisplay: string }) => Promise<void>
+  beforeApprove?: (submission: string) => Promise<void>
 }
 const deposit = vi.fn(async (_params: DepositParams) => ({
   txHash: "0x01",
@@ -33,12 +49,64 @@ vi.mock("../src/ui/screening", () => ({
 vi.mock("../src/features/deposit/sipaGateway", () => ({
   getSipaDepositGateway: () => ({ deposit }),
 }))
-vi.mock("../src/platform/desktopBridge", () => ({ isDesktopL1SubmitActive: () => false }))
+vi.mock("../src/platform/desktopBridge", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/platform/desktopBridge")>()),
+  isDesktopL1SubmitActive: () => false,
+}))
+
+const DAI = 10n ** 18n
+const KEY = {
+  chainId: 11155111,
+  portal: "0x1111111111111111111111111111111111111111",
+  token: "0x2222222222222222222222222222222222222222",
+} as const
+/** What the fake portal reports; each read takes the current values. */
+const capacity = vi.hoisted(() => ({
+  availableAtomic: 0n,
+  fail: false,
+  /** Reads never answer. */
+  hang: false,
+  /** How old each read's block is, by this device's clock. */
+  blockAgeS: 0,
+  keyFails: false,
+  /** Answered reads. */
+  reads: 0,
+  /** Reads asked for, answered or not. */
+  attempts: 0,
+  store: undefined as unknown,
+}))
+vi.mock("../src/features/deposit/capacityStore", () => ({
+  activeCapacityKey: async () => {
+    if (capacity.keyFails) throw new Error("manifest unavailable")
+    return {
+      chainId: 11155111,
+      portal: "0x1111111111111111111111111111111111111111",
+      token: "0x2222222222222222222222222222222222222222",
+    }
+  },
+  depositCapacityStore: () => capacity.store,
+}))
+const snapshot = (): PortalCapacitySnapshot => ({
+  ...KEY,
+  decimals: 18,
+  blockNumber: BigInt(++capacity.reads),
+  blockTimestamp: BigInt(Math.floor(Date.now() / 1000) - capacity.blockAgeS),
+  rateAtomicPerSecond: DAI,
+  globalLimitAtomic: 50_000n * DAI,
+  availableAtomic: capacity.availableAtomic,
+})
 // Not sandbox: the balance ceiling only applies where nothing is minted on the way.
 vi.mock("../src/config/env", () => ({
   getConfig: () => ({ network: "testnet", l1Chain: { name: "Sepolia" } }),
 }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
+// About limits reads these for its policy and allowance sections; this suite covers its capacity.
+vi.mock("../src/config/oxideTuple", () => ({
+  getOxideTuple: () => Promise.reject(new Error("no manifest in this suite")),
+}))
+vi.mock("../src/features/allowance/useSponsoredAllowance", () => ({
+  useSponsoredAllowance: () => ({ snapshot: { status: "signed-out" }, refresh: () => {} }),
+}))
 const fireEvent = vi.hoisted(() => vi.fn())
 vi.mock("../src/lib/analytics", () => ({
   fireEvent,
@@ -99,8 +167,17 @@ let root: Root
 const onClose = vi.fn()
 const onSent = vi.fn()
 const onSendFailed = vi.fn()
+const onSendUnresolved = vi.fn()
+const onFeeChanged = vi.fn()
+const onApproving = vi.fn()
+const onNotApproved = vi.fn()
 
-async function render(fee?: string, pick = token) {
+async function render(
+  fee?: string,
+  pick = token,
+  /** `null`: no valuation for this token. */
+  valuation: UsdValuation | null = NOMINAL_USD_VALUATION,
+) {
   await act(async () => {
     root.render(
       <DepositFromWalletModal
@@ -108,12 +185,22 @@ async function render(fee?: string, pick = token) {
         deposit={{ address: "0xdeadbeef" as Hex, name: "alice" }}
         token={pick}
         fee={fee}
+        valuation={valuation ?? undefined}
         onClose={onClose}
         onSent={onSent}
         onSendFailed={onSendFailed}
+        onSendUnresolved={onSendUnresolved}
+        onFeeChanged={onFeeChanged}
+        onApproving={onApproving}
+        onNotApproved={onNotApproved}
       />,
     )
   })
+  await settleReads()
+}
+/** Lets the key lookup and capacity reads land. */
+async function settleReads() {
+  for (let i = 0; i < 5; i++) await act(async () => {})
 }
 async function type(value: string) {
   const input = container.querySelector("input")!
@@ -125,6 +212,23 @@ async function type(value: string) {
 }
 const button = (title: string) =>
   Array.from(container.querySelectorAll("button")).find((b) => b.textContent === title)!
+const byTestId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)
+/** Why the last send stopped before any transfer, shown next to the funding action. */
+const reason = () => byTestId("funding-action-reason")?.textContent
+/** The capacity line's reason; empty while capacity is healthy. */
+const capacityReason = () => byTestId("funding-capacity-status")?.textContent
+
+const transfer = vi.fn()
+/** A gateway that runs the caller's last check, then "transfers". */
+const checkedDeposit = (feeDisplay = "0.5", approval = false) =>
+  deposit.mockImplementationOnce(async (params) => {
+    await params.preflight({ feeDisplay })
+    // The desktop bridge records the approval only once the recheck passed in time.
+    if (approval) await params.beforeApprove?.("submission-1")
+    transfer(params.amountDisplay)
+    params.onSubmitted?.("0xabc")
+    return { txHash: "0xabc", address: "0xdeadbeef", name: "alice" }
+  })
 
 beforeEach(() => {
   container = document.createElement("div")
@@ -134,9 +238,31 @@ beforeEach(() => {
   useL1TokenBalance.mockReset().mockImplementation(() => balance.current)
   screening.cleared = true
   deposit.mockClear()
+  transfer.mockClear()
   fireEvent.mockClear()
   onClose.mockClear()
   onSent.mockClear()
+  onSendFailed.mockClear()
+  onSendUnresolved.mockClear()
+  onFeeChanged.mockClear()
+  onApproving.mockReset()
+  onNotApproved.mockClear()
+  capacity.availableAtomic = 50_000n * DAI
+  capacity.fail = false
+  capacity.hang = false
+  capacity.blockAgeS = 0
+  capacity.keyFails = false
+  capacity.reads = 0
+  capacity.attempts = 0
+  capacity.store = createPortalCapacityStore(KEY, {
+    read: () => {
+      capacity.attempts++
+      if (capacity.hang) return new Promise<never>(() => {})
+      if (capacity.fail) return Promise.reject(new Error("rpc down"))
+      return Promise.resolve(snapshot())
+    },
+    visibility: { isVisible: () => true, onResume: () => () => {} },
+  })
 })
 afterEach(async () => {
   await act(async () => root.unmount())
@@ -144,6 +270,59 @@ afterEach(async () => {
 })
 
 describe("DepositFromWalletModal", () => {
+  it("keeps healthy capacity out of the form, and its details on the same active bucket", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    await render("0.5")
+    await type("2")
+    expect(byTestId("funding-capacity-panel")!.className).toContain("ww-capacity--quiet")
+    expect(capacityReason()).toBe("")
+    expect(container.textContent).not.toContain("50,000 DAI")
+    const info = byTestId("operation-limits")!.querySelector<HTMLButtonElement>(
+      '[data-testid="about-limits-link"]',
+    )!
+    expect(info.getAttribute("aria-label")).toBe("About the deposit limit")
+    info.focus()
+    await act(async () => info.click())
+    await settleReads()
+    const sheet = container.querySelector<HTMLDialogElement>('dialog[aria-label="About limits"]')!
+    expect(sheet.open).toBe(true)
+    expect(byTestId("about-limits-operation-toggle")!.getAttribute("aria-expanded")).toBe("true")
+    expect(byTestId("about-limits-operation")!.textContent).toContain("$2,500 sent, incl. fees")
+    const section = byTestId("about-limits-capacity")!
+    expect(section.dataset.state).toBe("fresh")
+    await act(async () => byTestId("about-limits-capacity-toggle")!.click())
+    const available = [...section.querySelectorAll("dl > div")].find(
+      (row) => row.querySelector("dt")?.textContent === "Available",
+    )
+    expect(available?.querySelector("dd")?.textContent).toBe("50,000 DAI")
+    await act(async () => {
+      sheet.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+    })
+    expect(container.querySelector('dialog[aria-label="About limits"]')).toBeNull()
+    expect(document.activeElement).toBe(info)
+    vi.restoreAllMocks()
+  })
+
+  it("opens a capacity reason's details on capacity", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    capacity.availableAtomic = 500n * DAI
+    balance.current = holds("5000")
+    await render("0.5")
+    await type("2000")
+    const panel = byTestId("funding-capacity-panel")!
+    const info = panel.querySelector<HTMLButtonElement>('[data-testid="about-limits-link"]')!
+    expect(info.getAttribute("aria-label")).toBe("About network capacity")
+    await act(async () => info.click())
+    await settleReads()
+    const order = [...container.querySelectorAll('dialog[aria-label="About limits"] section')].map(
+      (section) => (section as HTMLElement).dataset.testid,
+    )
+    expect(order[0]).toBe("about-limits-capacity")
+    expect(byTestId("about-limits-capacity-toggle")!.getAttribute("aria-expanded")).toBe("true")
+    expect(byTestId("about-limits-capacity")!.textContent).toContain("500 DAI")
+    vi.restoreAllMocks()
+  })
+
   it("charges amount + fee and blocks when that total exceeds the balance", async () => {
     await render("0.5")
     await type("9.6")
@@ -167,23 +346,89 @@ describe("DepositFromWalletModal", () => {
     expect(button("Deposit funds").disabled).toBe(true)
   })
 
-  it("refuses a send over the cap and names the maximum it will take", async () => {
-    const { TX_AMOUNT_CAP } = await import("@obsidion/sdk")
-    const { DEFAULT_DECIMALS } = await import("@obsidion/core/constants")
-    const { formatUnits } = await import("viem")
-    const cap = formatUnits(TX_AMOUNT_CAP, DEFAULT_DECIMALS)
-    balance.current = holds("5000")
-
+  it("shows the minimum and the maximum per deposit, and its basis, before anything is typed", async () => {
     await render("0.5")
-    await type(String(Number(cap) + 1))
-    expect(button("Deposit funds").disabled).toBe(true)
-    expect(container.textContent).toContain("$2583")
-    // Nothing lands, so nothing is quoted as received either.
-    expect(container.textContent).toContain("$--")
+    const limits = container.querySelector('[data-testid="operation-limits"]')!.textContent
+    // The typed amount is what lands; the limit names the send it is checked on.
+    expect(limits).toBe("Min $1 · Max sent: $2,500 incl. fees")
+    expect(container.textContent).toContain("Amount to receive")
+    for (const label of ["You send", "Fee", "You receive"]) {
+      expect(container.textContent).toContain(label)
+    }
+  })
 
-    await type(cap)
-    expect(container.textContent).not.toContain("Deposit up to")
+  it("counts the gross send, fee included, against the $2,500 limit and offers the largest amount that fits", async () => {
+    balance.current = holds("5000")
+    await render("0.5")
+    await type("2499.5")
     expect(button("Deposit funds").disabled).toBe(false)
+    expect(container.textContent).toContain("You send$2,500")
+    expect(container.querySelector('[data-testid="limit-notice"]')).toBeNull()
+
+    await type("2499.51")
+    expect(button("Deposit funds").disabled).toBe(true)
+    const notice = container.querySelector('[data-testid="limit-notice"]')!
+    expect(notice.getAttribute("role")).toBe("alert")
+    expect(notice.textContent).toContain("Over the $2,500 limit")
+    // Said once: the field keeps its figure instead of repeating the reason.
+    expect(container.querySelector(".ww-fund__amount small")!.textContent).not.toMatch(
+      /limit|maximum/i,
+    )
+    // Nothing lands, so nothing is quoted as sent or received either.
+    expect(container.textContent).toContain("You send$--")
+    expect(container.textContent).toContain("You receive$--")
+
+    // The correction is the user's choice, never applied on its own.
+    expect(container.querySelector("input")!.value).toBe("2499.51")
+    await act(async () => button("Use maximum ($2,499.50)").click())
+    expect(container.querySelector("input")!.value).toBe("2499.5")
+    expect(button("Deposit funds").disabled).toBe(false)
+  })
+
+  it("never shows the internal settlement ceiling as a deposit limit", async () => {
+    balance.current = holds("5000")
+    await render("0.5")
+    await type(formatUnits(TX_AMOUNT_CAP + 10n ** 18n, 18))
+    expect(button("Deposit funds").disabled).toBe(true)
+    expect(container.textContent).not.toMatch(/2,?583/)
+  })
+
+  it("checks the credit against the protocol ceiling separately from the published limit", async () => {
+    // A valuation under a dollar puts the published limit above the ceiling, so only the ceiling
+    // stops 2,583.01; the correction names no figure for it.
+    const cheap: UsdValuation = { source: "test", usdPerToken: { numerator: 9n, denominator: 10n } }
+    balance.current = holds("5000")
+    await render("0.5", token, cheap)
+    await type(formatUnits(TX_AMOUNT_CAP, 18))
+    expect(button("Deposit funds").disabled).toBe(false)
+    await type(`${formatUnits(TX_AMOUNT_CAP, 18)}.01`)
+    expect(button("Deposit funds").disabled).toBe(true)
+    const notice = container.querySelector('[data-testid="limit-notice"]')!
+    expect(notice.textContent).toContain("Over the network's maximum per deposit")
+    expect(notice.textContent).not.toMatch(/2,?583/)
+    await act(async () => button("Use maximum").click())
+    expect(container.querySelector("input")!.value).toBe(formatUnits(TX_AMOUNT_CAP, 18))
+  })
+
+  it("refuses to send a token it cannot value against the limit", async () => {
+    await render("0.5", token, null)
+    expect(container.querySelector('[data-testid="limit-notice"]')!.textContent).toContain(
+      "can't be checked against the $2,500 limit",
+    )
+    await type("5")
+    expect(button("Deposit funds").disabled).toBe(true)
+  })
+
+  it("counts a 6-decimal token's send in its own units and does not promise a 1:1 swap", async () => {
+    const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Hex
+    const usdcToken = { address: USDC, symbol: "USDC", decimals: 6, icon: "" }
+    balance.current = undefined
+    await render("0.5", usdcToken)
+    await type("2499.5")
+    expect(container.querySelector('[data-testid="limit-notice"]')).toBeNull()
+    expect(container.textContent).toContain("USDC is swapped to DAI at the market rate")
+    await type("2499.51")
+    expect(container.querySelector('[data-testid="limit-notice"]')).not.toBeNull()
   })
 
   it("is gated on the sender clearing screening", async () => {
@@ -221,22 +466,9 @@ describe("DepositFromWalletModal", () => {
     )
   })
 
-  it("transfers the picked token, not the manifest one", async () => {
-    const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Hex
-    await render("0.5", { address: USDC, symbol: "USDC", decimals: 6, icon: "" })
-    expect(useL1TokenBalance).toHaveBeenCalledWith(expect.objectContaining({ token: USDC }))
-    await type("2")
-    await act(async () => button("Deposit funds").click())
-    await act(async () => button("Confirm deposit").click())
-    expect(deposit.mock.calls[0][0]).toMatchObject({
-      amountDisplay: "2.5",
-      tokenSymbol: "USDC",
-      token: { address: USDC, decimals: 6 },
-    })
-  })
-
   it("hands off once broadcast and reports a later confirmation failure to the caller", async () => {
     deposit.mockImplementationOnce(async (params) => {
+      await params.preflight({ feeDisplay: "0.5" })
       params.onSubmitted?.("0xabc")
       throw new Error("reverted")
     })
@@ -253,5 +485,515 @@ describe("DepositFromWalletModal", () => {
       "action_failed",
       expect.objectContaining({ action: "deposit:send" }),
     )
+  })
+})
+
+describe("DepositFromWalletModal shared capacity", () => {
+  beforeEach(() => {
+    balance.current = holds("5000")
+  })
+
+  it("blocks 2,000 against 500 of capacity: the reason sits by the action and nothing is requested", async () => {
+    capacity.availableAtomic = 500n * DAI
+    await render("0.5")
+    await type("2000")
+    expect(button("Deposit funds").disabled).toBe(true)
+    expect(capacityReason()).toBe("This deposit needs 2,000 DAI; 500 DAI is available now.")
+    // Said once, by the capacity line.
+    expect(reason()).toBeUndefined()
+    await act(async () => button("Deposit funds").click())
+    expect(deposit).not.toHaveBeenCalled()
+    expect(transfer).not.toHaveBeenCalled()
+
+    // A smaller amount only when the user asks for it.
+    expect(container.querySelector("input")!.value).toBe("2000")
+    await act(async () => byTestId("funding-capacity-use-available")!.click())
+    expect(container.querySelector("input")!.value).toBe("500")
+    expect(button("Deposit funds").disabled).toBe(false)
+    // A fit is not a promise: the whole of a low bucket says only that it is low.
+    expect(capacityReason()).toBe("Network capacity is low.")
+  })
+
+  it("returns to the form, with no transfer, when capacity drops between entry and confirmation", async () => {
+    await render("0.5")
+    await type("2")
+    await act(async () => button("Deposit funds").click())
+    // The review keeps to the transfer itself; capacity rules are in the details.
+    expect(container.textContent).not.toContain("doesn't reserve capacity")
+    capacity.availableAtomic = DAI
+    checkedDeposit()
+    await act(async () => button("Confirm deposit").click())
+    await settleReads()
+    expect(transfer).not.toHaveBeenCalled()
+    expect(onSent).not.toHaveBeenCalled()
+    expect(button("Deposit funds").disabled).toBe(true)
+    expect(capacityReason()).toBe("This deposit needs 2 DAI; 1 DAI is available now.")
+    expect(reason()).toBeUndefined()
+  })
+
+  it("does not call a later capacity drop a failed transfer", async () => {
+    await render("0.5")
+    await type("2")
+    await act(async () => button("Deposit funds").click())
+    checkedDeposit()
+    await act(async () => button("Confirm deposit").click())
+    expect(transfer).toHaveBeenCalledWith("2.5")
+    capacity.availableAtomic = 0n
+    await act(async () => void (capacity.store as PortalCapacityStore).retry())
+    expect(onSent).toHaveBeenCalledWith(expect.objectContaining({ txHash: "0xabc" }))
+    expect(onSendFailed).not.toHaveBeenCalled()
+  })
+
+  it("stops before the transfer when the fee read for the send differs from the one shown", async () => {
+    await render("0.5")
+    await type("2")
+    await act(async () => button("Deposit funds").click())
+    checkedDeposit("0.6")
+    await act(async () => button("Confirm deposit").click())
+    expect(transfer).not.toHaveBeenCalled()
+    expect(reason()).toBe("The deposit fee changed. Review the new amount before sending.")
+    expect(onFeeChanged).toHaveBeenCalledOnce()
+  })
+
+  it("saves the hold only for an approval, after capacity passes", async () => {
+    await render("0.5")
+    await type("2")
+    await act(async () => button("Deposit funds").click())
+    checkedDeposit("0.5", false)
+    await act(async () => button("Confirm deposit").click())
+    expect(onApproving).not.toHaveBeenCalled()
+    expect(transfer).toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      "cannot be saved",
+      "UnresolvedSendStorageError",
+      "This browser couldn't save the deposit's progress.",
+    ],
+    [
+      "would replace another send's",
+      "UnresolvedSendHeldError",
+      "Another deposit from your browser wallet may still be sent.",
+    ],
+  ] as const)(
+    "approves nothing when the hold %s, and returns to the form",
+    async (_case, name, note) => {
+      const errors = await import("../src/features/deposit/unresolvedSend")
+      onApproving.mockImplementation(async () => {
+        throw new errors[name]()
+      })
+      await render("0.5")
+      await type("2")
+      await act(async () => button("Deposit funds").click())
+      checkedDeposit("0.5", true)
+      await act(async () => button("Confirm deposit").click())
+      expect(onApproving).toHaveBeenCalledOnce()
+      expect(onApproving).toHaveBeenCalledWith("submission-1")
+      expect(transfer).not.toHaveBeenCalled()
+      expect(reason()).toBe(note)
+    },
+  )
+
+  it.each([
+    ["the recheck budget ran out", true, "DesktopRecheckTimeoutError"],
+    ["the send was approved without a hash", false, "DesktopSendUnresolvedError"],
+  ] as const)(
+    "when %s, reports the submission as never approved: %s",
+    async (_case, notApproved, name) => {
+      const desktop = await import("../src/platform/desktopBridge")
+      onApproving.mockResolvedValue(undefined)
+      await render("0.5")
+      await type("2")
+      await act(async () => button("Deposit funds").click())
+      deposit.mockImplementationOnce(async (params) => {
+        await params.beforeApprove?.("submission-1")
+        throw name === "DesktopSendUnresolvedError"
+          ? new desktop.DesktopSendUnresolvedError(new Error("no hash"))
+          : new desktop.DesktopRecheckTimeoutError()
+      })
+      await act(async () => button("Confirm deposit").click())
+      if (notApproved) expect(onNotApproved).toHaveBeenCalledWith("submission-1")
+      else expect(onNotApproved).not.toHaveBeenCalled()
+    },
+  )
+
+  it("reports nothing unapproved when the send never reached an approval", async () => {
+    await render("0.5")
+    await type("2")
+    await act(async () => button("Deposit funds").click())
+    capacity.availableAtomic = DAI
+    checkedDeposit("0.5", true)
+    await act(async () => button("Confirm deposit").click())
+    expect(onNotApproved).not.toHaveBeenCalled()
+  })
+
+  it("does not save a hold when capacity refuses the approval", async () => {
+    await render("0.5")
+    await type("2")
+    await act(async () => button("Deposit funds").click())
+    capacity.availableAtomic = DAI
+    checkedDeposit("0.5", true)
+    await act(async () => button("Confirm deposit").click())
+    expect(onApproving).not.toHaveBeenCalled()
+    expect(transfer).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [
+      "an outdated desktop launcher",
+      "DesktopBridgeUpdateRequiredError",
+      "Update zk.money Desktop to send this transfer from your browser wallet.",
+    ],
+    [
+      "a transfer still open in the browser wallet",
+      "DesktopSendOpenError",
+      "zk.money Desktop is still waiting on an earlier transfer from your browser wallet. Finish or cancel it there. If your wallet no longer shows it, restart zk.money Desktop.",
+    ],
+  ] as const)(
+    "explains %s next to the action instead of filing an error report",
+    async (_case, name, note) => {
+      const desktop = await import("../src/platform/desktopBridge")
+      const { showReportableError } = await import("../src/errors/errorModal")
+      vi.mocked(showReportableError).mockClear()
+      await render("0.5")
+      await type("2")
+      await act(async () => button("Deposit funds").click())
+      deposit.mockImplementationOnce(async () => {
+        throw new desktop[name]()
+      })
+      await act(async () => button("Confirm deposit").click())
+      expect(reason()).toBe(note)
+      expect(showReportableError).not.toHaveBeenCalled()
+    },
+  )
+
+  it("sends while capacity cannot be read, and says nothing about it", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    capacity.fail = true
+    await render("0.5")
+    await type("2")
+    expect(capacityReason()).toBe("")
+    expect(byTestId("funding-capacity-retry")).toBeNull()
+    expect(button("Deposit funds").disabled).toBe(false)
+    await act(async () => button("Deposit funds").click())
+    expect(capacityReason()).toBe("")
+    const before = capacity.attempts
+    checkedDeposit()
+    await act(async () => button("Confirm deposit").click())
+    // The last check still reads again; a failed read is not a reason to stop.
+    expect(capacity.attempts).toBeGreaterThan(before)
+    expect(transfer).toHaveBeenCalledWith("2.5")
+    vi.restoreAllMocks()
+  })
+
+  it("sends when the deployment's bucket cannot be found, and says nothing about it", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    capacity.keyFails = true
+    await render("0.5")
+    await type("2")
+    expect(capacityReason()).toBe("")
+    expect(byTestId("funding-capacity-retry")).toBeNull()
+    await act(async () => button("Deposit funds").click())
+    checkedDeposit()
+    await act(async () => button("Confirm deposit").click())
+    expect(capacity.attempts).toBe(0)
+    expect(transfer).toHaveBeenCalledWith("2.5")
+    vi.restoreAllMocks()
+  })
+
+  it("sends while the first read is still pending, with no checking line", async () => {
+    capacity.hang = true
+    await render("0.5")
+    await type("2")
+    expect(byTestId("funding-capacity-panel")!.dataset.tone).toBe("ok")
+    expect(capacityReason()).toBe("")
+    expect(container.textContent).not.toContain("Checking capacity")
+    expect(button("Deposit funds").disabled).toBe(false)
+  })
+
+  it("sends when the read before the transfer finds the bucket out of date", async () => {
+    await render("0.5")
+    await type("2")
+    await act(async () => button("Deposit funds").click())
+    // An hour-old block: the empty bucket it reports proves nothing.
+    capacity.availableAtomic = 0n
+    capacity.blockAgeS = 3_600
+    checkedDeposit()
+    await act(async () => button("Confirm deposit").click())
+    expect(transfer).toHaveBeenCalledWith("2.5")
+  })
+
+  it("keeps every other gate: a fitting amount still waits for screening", async () => {
+    screening.cleared = false
+    await render("0.5")
+    await type("2")
+    expect(capacityReason()).toBe("")
+    expect(button("Deposit funds").disabled).toBe(true)
+    expect(reason()).toBeUndefined()
+  })
+
+  it("hands a possibly funded address back to the caller instead of the form", async () => {
+    const { DesktopSendUnresolvedError } = await import("../src/platform/desktopBridge")
+    await render("0.5")
+    await type("2")
+    await act(async () => button("Deposit funds").click())
+    deposit.mockImplementationOnce(async () => {
+      throw new DesktopSendUnresolvedError(new Error("Network capacity changed."))
+    })
+    await act(async () => button("Confirm deposit").click())
+    expect(onSendUnresolved).toHaveBeenCalledOnce()
+    expect(onSendFailed).not.toHaveBeenCalled()
+    expect(container.textContent).not.toContain("Deposit funds")
+  })
+
+  it("returns to the form when the desktop recheck ran out of time before any approval", async () => {
+    const { DesktopRecheckTimeoutError } = await import("../src/platform/desktopBridge")
+    await render("0.5")
+    await type("2")
+    await act(async () => button("Deposit funds").click())
+    deposit.mockImplementationOnce(async () => {
+      throw new DesktopRecheckTimeoutError()
+    })
+    await act(async () => button("Confirm deposit").click())
+    expect(button("Deposit funds")).toBeDefined()
+    expect(reason()).toBe("Checking this transfer took too long.")
+  })
+})
+
+describe.each([
+  ["USDC", "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"],
+  ["USDT", "0xdAC17F958D2ee523a2206206994597C13D831ec7"],
+] as const)("DepositFromWalletModal from mainnet %s", (symbol, address) => {
+  // Swapped to DAI by the sweep, so the credit capacity meters is not known before the send.
+  const pick: DepositTokenOption = { address, symbol, decimals: 6, icon: "" }
+  const holdsStable = (display: string): L1TokenBalance => ({
+    raw: parseUnits(display, 6),
+    value: Number(display),
+    display: `${display} ${symbol}`,
+    symbol,
+    decimals: 6,
+  })
+  const UNCERTAIN =
+    /can't be checked|could not be checked|Checking capacity|Fits the current capacity/
+
+  beforeEach(() => {
+    balance.current = holdsStable("5000")
+  })
+
+  async function reviewAndConfirm(feeDisplay = "0.5") {
+    await act(async () => button("Deposit funds").click())
+    checkedDeposit(feeDisplay)
+    await act(async () => button("Confirm deposit").click())
+  }
+
+  it("says nothing about capacity, and sends past the last check", async () => {
+    await render("0.5", pick)
+    expect(useL1TokenBalance).toHaveBeenCalledWith(expect.objectContaining({ token: address }))
+    await type("2")
+    expect(capacityReason()).toBe("")
+    expect(byTestId("funding-capacity-retry")).toBeNull()
+    expect(container.textContent).not.toMatch(UNCERTAIN)
+    expect(button("Deposit funds").disabled).toBe(false)
+    await act(async () => button("Deposit funds").click())
+    expect(capacityReason()).toBe("")
+    expect(container.textContent).not.toMatch(UNCERTAIN)
+    expect(button("Confirm deposit").disabled).toBe(false)
+    const before = capacity.reads
+    checkedDeposit()
+    await act(async () => button("Confirm deposit").click())
+    expect(capacity.reads).toBeGreaterThan(before)
+    expect(transfer).toHaveBeenCalledWith("2.5")
+    expect(deposit.mock.calls[0][0]).toMatchObject({
+      tokenSymbol: symbol,
+      token: { address, decimals: 6 },
+    })
+    expect(onSent).toHaveBeenCalledWith(
+      expect.objectContaining({ txHash: "0xabc", amount: "2.5", tokenSymbol: symbol }),
+    )
+  })
+
+  it("says nothing and holds nothing for an amount above a low, nonzero bucket", async () => {
+    capacity.availableAtomic = 500n * DAI
+    await render("0.5", pick)
+    await type("2000")
+    expect(capacityReason()).toBe("")
+    expect(container.textContent).not.toContain("Network capacity is low")
+    expect(byTestId("funding-capacity-use-available")).toBeNull()
+    expect(byTestId("funding-capacity-retry")).toBeNull()
+    expect(button("Deposit funds").disabled).toBe(false)
+    await reviewAndConfirm()
+    expect(transfer).toHaveBeenCalledWith("2000.5")
+  })
+
+  it("sends while capacity cannot be read, and says nothing about it", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    capacity.fail = true
+    await render("0.5", pick)
+    await type("2")
+    expect(capacityReason()).toBe("")
+    expect(container.textContent).not.toMatch(UNCERTAIN)
+    expect(button("Deposit funds").disabled).toBe(false)
+    await reviewAndConfirm()
+    expect(transfer).toHaveBeenCalledWith("2.5")
+    vi.restoreAllMocks()
+  })
+
+  it("sends when the deployment's bucket cannot be found, and says nothing about it", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    capacity.keyFails = true
+    await render("0.5", pick)
+    await type("2")
+    expect(capacityReason()).toBe("")
+    expect(button("Deposit funds").disabled).toBe(false)
+    await reviewAndConfirm()
+    expect(transfer).toHaveBeenCalledWith("2.5")
+    vi.restoreAllMocks()
+  })
+
+  it("holds an empty bucket, which takes no deposit", async () => {
+    capacity.availableAtomic = 0n
+    await render("0.5", pick)
+    await type("2")
+    expect(button("Deposit funds").disabled).toBe(true)
+    expect(capacityReason()).toBe("No network capacity is available right now.")
+    await act(async () => button("Deposit funds").click())
+    expect(deposit).not.toHaveBeenCalled()
+  })
+
+  it("keeps holding an empty bucket when the next read fails", async () => {
+    capacity.availableAtomic = 0n
+    await render("0.5", pick)
+    await type("2")
+    expect(capacityReason()).toBe("No network capacity is available right now.")
+    capacity.fail = true
+    const before = capacity.attempts
+    await act(async () => void (capacity.store as PortalCapacityStore).retry())
+    expect(capacity.attempts).toBeGreaterThan(before)
+    expect((capacity.store as PortalCapacityStore).getState().status).toBe("unavailable")
+    expect(button("Deposit funds").disabled).toBe(true)
+    expect(capacityReason()).toBe("No network capacity is available right now.")
+    await act(async () => button("Deposit funds").click())
+    expect(deposit).not.toHaveBeenCalled()
+  })
+
+  it("returns to the form, with no transfer, when the bucket empties before confirmation", async () => {
+    await render("0.5", pick)
+    await type("2")
+    await act(async () => button("Deposit funds").click())
+    capacity.availableAtomic = 0n
+    checkedDeposit()
+    await act(async () => button("Confirm deposit").click())
+    await settleReads()
+    expect(transfer).not.toHaveBeenCalled()
+    expect(onSent).not.toHaveBeenCalled()
+    expect(button("Deposit funds").disabled).toBe(true)
+    expect(capacityReason()).toBe("No network capacity is available right now.")
+  })
+
+  it("stops before the transfer when the fee read for the send differs from the one shown", async () => {
+    await render("0.5", pick)
+    await type("2")
+    await reviewAndConfirm("0.6")
+    expect(transfer).not.toHaveBeenCalled()
+    expect(reason()).toBe("The deposit fee changed. Review the new amount before sending.")
+    expect(onFeeChanged).toHaveBeenCalledOnce()
+  })
+
+  it("keeps the $2,500 limit, the balance and screening", async () => {
+    await render("0.5", pick)
+    await type("2499.51")
+    expect(button("Deposit funds").disabled).toBe(true)
+    expect(byTestId("limit-notice")!.textContent).toContain("Over the $2,500 limit")
+    await type("2499.5")
+    expect(button("Deposit funds").disabled).toBe(false)
+
+    balance.current = holdsStable("2")
+    await render("0.5", pick)
+    await type("2")
+    expect(button("Deposit funds").disabled).toBe(true)
+    expect(container.textContent).toContain("Not enough funds")
+
+    balance.current = holdsStable("5000")
+    screening.cleared = false
+    await render("0.5", pick)
+    await type("2")
+    expect(button("Deposit funds").disabled).toBe(true)
+    expect(container.textContent).toContain("screening-notice")
+  })
+})
+
+describe("DepositFromWalletModal waiting on the wallet", () => {
+  const OPEN = "Your wallet still has the previous request open. Approve or reject it there first."
+  const note = () => byTestId("wallet-prompt-stall")
+  const stall = () => act(async () => vi.advanceTimersByTime(30_000))
+  const cancel = () => act(async () => note()!.querySelector("button")!.click())
+  /** Reaches the confirm step, then a transfer the wallet holds until the test answers for it. */
+  async function toPrompt() {
+    await render("0.5")
+    await type("2")
+    await act(async () => button("Deposit funds").click())
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+    const held = {} as { resolve: (hash: Hex) => void; reject: (e: unknown) => void }
+    deposit.mockImplementationOnce(async (params) => {
+      params.onStage?.("sending")
+      const txHash = await new Promise<Hex>((resolve, reject) =>
+        Object.assign(held, { resolve, reject }),
+      )
+      params.onSubmitted?.(txHash)
+      return { txHash, address: "0xdeadbeef", name: "alice" }
+    })
+    await act(async () => button("Confirm deposit").click())
+    expect(container.textContent).toContain("Approve the transfer in your wallet")
+    return held
+  }
+
+  afterEach(() => vi.useRealTimers())
+
+  it("offers a way back once the wallet has shown nothing for 30 seconds", async () => {
+    await toPrompt()
+    await act(async () => vi.advanceTimersByTime(29_999))
+    expect(note()).toBeNull()
+    await act(async () => vi.advanceTimersByTime(1))
+    expect(note()!.textContent).toContain("Still waiting for Rainbow.")
+    await cancel()
+    expect(note()).toBeNull()
+    expect(button("Confirm deposit").disabled).toBe(false)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it("still hands off a hash that arrives after Cancel", async () => {
+    const held = await toPrompt()
+    await stall()
+    await cancel()
+    await act(async () => held.resolve("0xabc" as Hex))
+    expect(onSent).toHaveBeenCalledWith(expect.objectContaining({ txHash: "0xabc" }))
+    expect(fireEvent).toHaveBeenCalledWith(
+      "deposit_funded",
+      expect.objectContaining({ funding: "wallet" }),
+    )
+  })
+
+  it("swallows a rejection that arrives after Cancel", async () => {
+    const { showReportableError } = await import("../src/errors/errorModal")
+    vi.mocked(showReportableError).mockClear()
+    const held = await toPrompt()
+    await stall()
+    await cancel()
+    await act(async () => held.reject(new Error("wallet closed")))
+    expect(showReportableError).not.toHaveBeenCalled()
+    expect(fireEvent).not.toHaveBeenCalledWith("action_failed", expect.anything())
+    expect(onSendFailed).not.toHaveBeenCalled()
+    expect(button("Confirm deposit").disabled).toBe(false)
+  })
+
+  it("refuses a second confirm while the wallet still holds the first request", async () => {
+    await toPrompt()
+    await stall()
+    await cancel()
+    await act(async () => button("Confirm deposit").click())
+    expect(deposit).toHaveBeenCalledTimes(1)
+    expect(reason()).toBe(OPEN)
+    expect(button("Confirm deposit").disabled).toBe(false)
   })
 })

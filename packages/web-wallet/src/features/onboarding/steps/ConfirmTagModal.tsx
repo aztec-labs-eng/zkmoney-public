@@ -9,6 +9,7 @@ import { tagError } from "../tagError"
 export type ByTagNotice =
   | { kind: "listed"; tag: string }
   | { kind: "notFound"; tag: string }
+  | { kind: "reserved"; tag: string }
   | { kind: "staleRollup"; tag: string }
   | { kind: "noKeyInstalled"; tag: string }
   | { kind: "unreadable"; tag: string }
@@ -20,6 +21,8 @@ export function noticeText(notice: ByTagNotice): string {
       return `@${notice.tag} is already on this browser — choose it in the list above.`
     case "notFound":
       return `No registered account for @${notice.tag} yet. If you just signed up, continue with Show passkeys; otherwise check the spelling.`
+    case "reserved":
+      return `@${notice.tag} is reserved but not active yet. Tap Show passkeys and pick the passkey you reserved it with. Until its deposit lands, the network can't find @${notice.tag} by name.`
     case "staleRollup":
       return `@${notice.tag} was registered on an earlier version of the network. Sign in on the device you registered on to move it.`
     case "noKeyInstalled":
@@ -49,6 +52,8 @@ export type SignInStart = {
   chooserFirst: boolean
   /** A sign-in is running: no second tap may start a competing prompt. */
   busy: boolean
+  /** Opens the endpoint editor; unset where the wallet does not own the endpoints. */
+  onEndpoints?: () => void
 }
 
 /**
@@ -88,6 +93,20 @@ export function ConfirmTagModal({
   // The confirm role submits any well-formed tag; the start role only the tag that resolved.
   const canSubmit = start ? start.submitReady && prepared && !busy : valid
   const submit = () => canSubmit && onConfirm(typed)
+  const endpointsFoot = start?.onEndpoints && (
+    <p className="ww-invite-modal-foot">
+      Using your own node?{" "}
+      <button
+        type="button"
+        className="zkm-btn-reset ww-invite__link"
+        data-testid="sign-in-endpoints"
+        disabled={busy}
+        onClick={start.onEndpoints}
+      >
+        Endpoints
+      </button>
+    </p>
+  )
   const foot = start ? (
     <p className="ww-invite-modal-foot">
       Can't find your account?{" "}
@@ -246,6 +265,7 @@ export function ConfirmTagModal({
             >
               {submitTitle}
             </button>
+            {endpointsFoot}
           </>
         ) : (
           <>
@@ -257,6 +277,7 @@ export function ConfirmTagModal({
               onClick={submit}
             />
             {foot}
+            {endpointsFoot}
           </>
         )}
       </form>

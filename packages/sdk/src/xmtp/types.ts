@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { Fr } from "@aztec/aztec.js/fields"
+import { TRANSFER_MEMO_MAX_BYTES } from "../services/transferMeta.js"
 
 /**
  * Maximum accepted length of a connect-back `uuid` string, in characters.
@@ -70,7 +71,7 @@ const PaymentRequestIdSchema = z
   }, "requestId must fit a BN254 field")
 
 /** Max accepted length of a request `note`, mirroring the send-transfer memo cap. */
-export const PAYMENT_REQUEST_NOTE_MAX_LEN = 500
+export const PAYMENT_REQUEST_NOTE_MAX_LEN = TRANSFER_MEMO_MAX_BYTES
 
 /**
  * Payment-request content carried by the custom XMTP content type

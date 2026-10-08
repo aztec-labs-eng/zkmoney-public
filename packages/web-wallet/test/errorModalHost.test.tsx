@@ -122,6 +122,22 @@ describe("ErrorModalHost", () => {
     expect(container.textContent).toBe("")
   })
 
+  it("offers a caller's retry, which closes the modal and runs once tapped", () => {
+    const run = vi.fn()
+    act(() =>
+      showErrorModal({
+        title: "Could not save",
+        message: "disk",
+        context: "test:retry",
+        retry: { label: "Retry entering wallet", run },
+      }),
+    )
+    expect(container.textContent).toContain("Could not save")
+    act(() => button("Retry entering wallet")!.click())
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(container.textContent).toBe("")
+  })
+
   it("auto-surfaces an uncaught flow rejection — no showErrorModal call at the site", async () => {
     // A flow with no try/catch and no .catch — e.g. paylink creation kicked off fire-and-forget.
     const createPaylink = async () => {
@@ -149,6 +165,21 @@ describe("ErrorModalHost", () => {
 
     act(() => button("Close")!.click())
     expect(container.textContent).toBe("")
+  })
+
+  it("reports a plain-object rejection by its message", async () => {
+    const event = new Event("unhandledrejection") as Event & { reason: unknown }
+    event.reason = { code: 4001, message: "User rejected the request." }
+    act(() => {
+      window.dispatchEvent(event)
+    })
+
+    expect(container.textContent).toContain("User rejected the request. (code 4001)")
+    expect(container.textContent).not.toContain("[object Object]")
+
+    await act(async () => button("Report")!.click())
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
+    expect(JSON.parse(init.body as string).message).toBe("User rejected the request. (code 4001)")
   })
 
   it("auto-surfaces an uncaught synchronous throw", () => {
@@ -182,6 +213,81 @@ describe("ErrorModalHost", () => {
       window.dispatchEvent(event)
     })
     expect(container.textContent).toBe("")
+  })
+
+  it("ignores the TypeError that a WalletConnect chain change throws under switchEthereumChain", () => {
+    const reason = new TypeError("Cannot read properties of undefined (reading 'request')")
+    reason.stack = `TypeError: ${reason.message}\n    at e.request (https://wallet.zk.money/assets/dist-abc.js:11:159174)\n    at e.switchEthereumChain (https://wallet.zk.money/assets/dist-abc.js:11:173625)`
+    const event = new Event("unhandledrejection", { cancelable: true }) as Event & {
+      reason: unknown
+    }
+    event.reason = reason
+    act(() => {
+      window.dispatchEvent(event)
+    })
+    expect(event.defaultPrevented).toBe(true)
+    expect(container.textContent).toBe("")
+  })
+
+  it("surfaces the same TypeError when no switchEthereumChain frame threw it", () => {
+    const reason = new TypeError("Cannot read properties of undefined (reading 'request')")
+    reason.stack = `TypeError: ${reason.message}\n    at sendDeposit (https://wallet.zk.money/assets/index-abc.js:3:100)`
+    const event = new Event("unhandledrejection") as Event & { reason: unknown }
+    event.reason = reason
+    act(() => {
+      window.dispatchEvent(event)
+    })
+    expect(container.textContent).toContain("sendDeposit")
+  })
+
+  it("ignores an uncaught expired WalletConnect proposal", () => {
+    const reason = new Error("Proposal expired")
+    reason.stack = `Error: ${reason.message}\n    at https://wallet.zk.money/assets/index.es-abc.js:2:4111`
+    const event = new Event("unhandledrejection", { cancelable: true }) as Event & {
+      reason: unknown
+    }
+    event.reason = reason
+    act(() => {
+      window.dispatchEvent(event)
+    })
+    expect(event.defaultPrevented).toBe(true)
+    expect(container.textContent).toBe("")
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it("ignores the muted error of a cross-origin script, which carries no error object", () => {
+    act(() => {
+      window.dispatchEvent(new ErrorEvent("error", { message: "Script error." }))
+    })
+    expect(container.textContent).toBe("")
+  })
+
+  it("surfaces a thrown error whose message is Script error.", () => {
+    const error = new Error("Script error.")
+    act(() => {
+      window.dispatchEvent(new ErrorEvent("error", { message: error.message, error }))
+    })
+    expect(container.textContent).toContain("errorModalHost.test")
+  })
+
+  it("ignores the browser's ResizeObserver loop notice, which carries no error object", () => {
+    act(() => {
+      window.dispatchEvent(
+        new ErrorEvent("error", {
+          message: "ResizeObserver loop completed with undelivered notifications.",
+        }),
+      )
+    })
+    expect(container.textContent).toBe("")
+  })
+
+  it("surfaces an uncaught error event that has a message and no error object", () => {
+    act(() => {
+      window.dispatchEvent(
+        new ErrorEvent("error", { message: "Uncaught ReferenceError: x is not defined" }),
+      )
+    })
+    expect(container.textContent).toContain("Uncaught ReferenceError: x is not defined")
   })
 
   it("surfaces an error caught by a screen action instead of swallowing it into toast state", async () => {
@@ -269,13 +375,15 @@ describe("the device a report says it came from", () => {
   const button = (label: string) =>
     [...container.querySelectorAll("button")].find((b) => b.textContent === label)
 
-  /** Reports the modal on screen, then closes it; the provider its report sent. */
-  async function reportedProvider(): Promise<string> {
+  /** Reports the modal on screen, then closes it; the device its report sent. */
+  async function reportedEnv(): Promise<Record<string, unknown>> {
     await act(async () => button("Report")!.click())
     const [, init] = fetchMock.mock.calls.filter(([url]) => url.endsWith("/error-reports")).at(-1)!
     act(() => button("Close")!.click())
-    return JSON.parse(String(init!.body)).env.provider
+    return JSON.parse(String(init!.body)).env
   }
+
+  const reportedProvider = async () => (await reportedEnv()).provider
 
   const recordEarlierVisit = (aaguid: string | undefined) =>
     localStorage.setItem(
@@ -301,6 +409,22 @@ describe("the device a report says it came from", () => {
     expect(await reportedProvider()).toBe("icloud_keychain")
     expect(container.textContent).toContain("Second")
     expect(await reportedProvider()).toBe("1password")
+  })
+
+  it("keeps on a queued report the AAGUID of the other provider current when it was raised", async () => {
+    const unnamed = "0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f"
+    const { fake, ceremony } = await load()
+    fake.opts.aaguid = unnamed
+    await ceremony.create(CREATE)
+    raise("First")
+    fake.opts.aaguid = ONEPASSWORD_AAGUID
+    await ceremony.create(CREATE)
+    raise("Second")
+
+    expect(await reportedEnv()).toMatchObject({ provider: "other", aaguid: unnamed })
+    const second = await reportedEnv()
+    expect(second.provider).toBe("1password")
+    expect(second).not.toHaveProperty("aaguid")
   })
 
   it.each([

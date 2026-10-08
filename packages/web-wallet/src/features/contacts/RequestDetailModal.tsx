@@ -6,7 +6,7 @@ import {
   GradientText,
   Icon,
 } from "@obsidion/web-ds"
-import cancelArt from "../../assets/contacts/cancel-request.png"
+import cancelArt from "../../assets/contacts/cancel-request.webp"
 import { getConfig } from "../../config/env"
 import { showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent } from "../../lib/analytics"
@@ -19,7 +19,7 @@ const STATUS_VIEW: Record<
   PaymentRequest["status"],
   { label: string; icon: string; color: string }
 > = {
-  pending: { label: "Waiting", icon: "clock", color: "#eed04e" },
+  pending: { label: "Unpaid", icon: "clock", color: "#eed04e" },
   fulfilled: { label: "Completed", icon: "check", color: "#2ecc71" },
   declined: { label: "Declined", icon: "x", color: "#fe708b" },
   cancelled: { label: "Cancelled", icon: "x", color: "#fe708b" },

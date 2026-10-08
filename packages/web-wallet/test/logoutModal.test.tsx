@@ -42,8 +42,8 @@ const button = (label: string) =>
 describe("LogoutModal", () => {
   it("asks plainly when nothing is being sent", async () => {
     await act(async () => root.render(<LogoutModal onClose={() => {}} onConfirm={() => {}} />))
-    expect(document.body.textContent).toContain("Logout from zk.money?")
-    expect(button("Logout")).toBeDefined()
+    expect(document.body.textContent).toContain("Log out of zk.money?")
+    expect(button("Log out")).toBeDefined()
   })
 
   it("warns over a running proof and still lets the user log out", async () => {
@@ -62,6 +62,6 @@ describe("LogoutModal", () => {
     await act(async () => void (endOperation = await startTabBoundOperation()))
     await act(async () => root.render(<LogoutModal onClose={() => {}} onConfirm={() => {}} />))
     await act(async () => endOperation?.())
-    expect(document.body.textContent).toContain("Logout from zk.money?")
+    expect(document.body.textContent).toContain("Log out of zk.money?")
   })
 })

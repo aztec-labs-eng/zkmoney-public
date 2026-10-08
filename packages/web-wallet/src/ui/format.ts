@@ -13,7 +13,7 @@ export function shortAddr(value: string): string {
   return value.length <= 10 ? value : `${value.slice(0, 6)}…${value.slice(-4)}`
 }
 
-export { normalizeAmountInput as decimalInput } from "@obsidion/front-core"
+export { normalizeAmountInput as decimalInput, tokenAmount } from "@obsidion/front-core"
 
 /** Field message for typed amount text the wallet will not accept; nothing while the field is empty. */
 export function amountError(text: string): string | undefined {
@@ -65,17 +65,4 @@ export function requestAmountLabel(amount: number): string {
 /** One timestamp shape for every activity row, over front-core's date/time labels. */
 export function rowTimestamp(ms: number): string {
   return `${formatDateLabel(ms)}, ${formatTimeLabel(ms)}`
-}
-
-/**
- * `0.03163` / `1,234.5` — a token display amount trimmed to at most `maxDecimals` places, with
- * trailing zeros dropped. Full precision is unreadable in a quote line; an amount too small to
- * show at all renders as a `<` bound rather than rounding away to zero.
- */
-export function tokenAmount(display: string, maxDecimals = 5): string {
-  const n = Number(display)
-  if (!Number.isFinite(n)) return display
-  const smallest = 10 ** -maxDecimals
-  if (n > 0 && n < smallest) return `<${smallest.toFixed(maxDecimals)}`
-  return n.toLocaleString("en-US", { maximumFractionDigits: maxDecimals })
 }

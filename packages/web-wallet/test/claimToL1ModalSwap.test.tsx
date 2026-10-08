@@ -39,6 +39,7 @@ vi.mock("../src/features/paylink/emailClaim", () => ({
 }))
 vi.mock("../src/features/withdraw/withdrawQuote", () => ({
   FEE_UNAVAILABLE_COPY: "fee-unavailable",
+  SWAP_QUOTE_REFRESH_MS: 30_000,
   withdrawalFeeDisplay: (state: { fee?: { floorAtomic?: bigint } }) =>
     state.fee ? String(state.fee.floorAtomic ?? 1n) : undefined,
   swapFloorAtomic: (state: { fee?: { floorAtomic?: bigint } }) => state.fee?.floorAtomic ?? 1n,
@@ -46,6 +47,23 @@ vi.mock("../src/features/withdraw/withdrawQuote", () => ({
   WithdrawalEstimate: ({ state }: { state: { estimate?: { amountOut: bigint } } }) => (
     <span>Swap estimate {String(state.estimate?.amountOut ?? "")}</span>
   ),
+}))
+// The faster option the review offers; undefined offers no speed choice.
+const faster = vi.hoisted(() => ({
+  offer: undefined as
+    | {
+        proverTip: bigint
+        standardEtaSeconds: number
+        tippedEtaSeconds: number
+        worstSpeedupSeconds: number
+      }
+    | undefined,
+  loading: false,
+}))
+vi.mock("../src/features/withdraw/useFasterWithdrawal", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/withdraw/useFasterWithdrawal")>()),
+  useFasterWithdrawal: ({ active }: { active: boolean }) =>
+    active ? { offer: faster.offer, loading: faster.loading } : { loading: false },
 }))
 vi.mock("@obsidion/web-ds", () => ({
   GradientText: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
@@ -84,11 +102,18 @@ beforeEach(() => {
   planSwap.mockClear()
   verify.mockReset()
   verify.mockResolvedValue(proof)
-  simulation.mockReturnValue({
+  faster.offer = undefined
+  simulation.mockImplementation(({ proverTip = 0n }: { proverTip?: bigint }) => ({
     status: "ready",
-    fee: { withdrawalRelayerTip: 1n, fpcFundingCut: 2n, swapRelayerTip: 5n, floorAtomic: 8n },
+    fee: {
+      withdrawalRelayerTip: 1n,
+      fpcFundingCut: 2n,
+      swapRelayerTip: 5n,
+      proverTip,
+      floorAtomic: 8n + proverTip,
+    },
     estimate: { amountOut: 123n, decimals: 6 },
-  })
+  }))
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -132,7 +157,7 @@ async function confirmSheet(amount: string | undefined = "25", flavor = "direct"
   await renderSheet(amount, flavor)
   await fillAddress()
   if (asset) await pickAsset(asset)
-  await click(amount ? `Claim $${amount}` : "Claim")
+  await click("Claim")
 }
 
 const pickAsset = async (asset: string, current = "DAI") => {
@@ -150,7 +175,7 @@ describe("ClaimToL1Modal email swap", () => {
     await confirmSheet("25", "email", "USDC")
     await click("Cancel")
     await act(async () => finish(leg))
-    await click("Claim $25")
+    await click("Claim")
     expect(button("Verify email with Google").disabled).toBe(false)
     expect(planSwap).toHaveBeenCalledTimes(1)
     await click("Verify email with Google")
@@ -165,10 +190,10 @@ describe("ClaimToL1Modal email swap", () => {
     await pickAsset("USDC")
     await pickAsset("DAI", "USDC")
     await act(async () => finish(leg))
-    await click("Claim $25")
+    await click("Claim")
     await click("Verify email with Google")
     expect(verify.mock.calls[0]![0]).toBe(recipient)
-    await click("Confirm and claim $25")
+    await click("Confirm and claim")
     expect(onConfirm.mock.calls[0]![0].swap).toBeUndefined()
   })
 
@@ -182,15 +207,15 @@ describe("ClaimToL1Modal email swap", () => {
     const committedFee = feeText()
     simulation.mockReturnValue({
       status: "ready",
-      fee: { swapRelayerTip: 9n, floorAtomic: 30n * 10n ** 18n },
+      fee: { swapRelayerTip: 9n, proverTip: 0n, floorAtomic: 30n * 10n ** 18n },
       estimate: { amountOut: 119n, decimals: 6 },
     })
     await renderSheet("25", "email")
     expect(container.textContent).toContain("Swap estimate 123")
     expect(container.textContent).not.toContain("Swap estimate 119")
     expect(feeText()).toBe(committedFee)
-    expect(button("Confirm and claim $25").disabled).toBe(false)
-    await click("Confirm and claim $25")
+    expect(button("Confirm and claim").disabled).toBe(false)
+    await click("Confirm and claim")
     expect(onConfirm.mock.calls[0]![0].quote).toEqual({
       relayerTip: 5n,
       amountOut: 123n,
@@ -205,7 +230,12 @@ describe("ClaimToL1Modal email swap", () => {
       "../src/features/withdraw/withdrawQuote",
     )
     const simulate = vi.fn(async ({ output }: { output: string }) => ({
-      fee: { swapRelayerTip: output === "ETH" ? 99n : 5n, fpcFundingCut: 0n, floorAtomic: 100n },
+      fee: {
+        swapRelayerTip: output === "ETH" ? 99n : 5n,
+        fpcFundingCut: 0n,
+        proverTip: 0n,
+        floorAtomic: 100n,
+      },
       estimate: { amountOut: 123n, decimals: output === "ETH" ? 18 : 6 },
     }))
     simulation.mockImplementation((args) => actual.useSwapSimulation({ ...args, simulate }))
@@ -217,7 +247,7 @@ describe("ClaimToL1Modal email swap", () => {
     })
     expect(planSwap).toHaveBeenCalledTimes(1)
     await pickAsset("ETH", "USDC")
-    await click("Claim $25")
+    await click("Claim")
     expect(planSwap).toHaveBeenCalledTimes(1)
     expect(button("Verify email with Google").disabled).toBe(true)
     await act(async () => {
@@ -228,6 +258,7 @@ describe("ClaimToL1Modal email swap", () => {
       "ETH",
       { relayerTip: 99n, amountOut: 123n, decimals: 18 },
       25_000_000_000_000_000_000n,
+      0n,
     )
     expect(button("Verify email with Google").disabled).toBe(false)
   })
@@ -239,11 +270,12 @@ describe("ClaimToL1Modal email swap", () => {
       "USDC",
       { relayerTip: 5n, amountOut: 123n, decimals: 6 },
       25_000_000_000_000_000_000n,
+      0n,
     )
     await click("Verify email with Google")
     expect(verify.mock.calls[0]![0]).toBe(escrow)
     expect(caller).toHaveBeenCalledWith(EXECUTOR, escrow)
-    await click("Confirm and claim $25")
+    await click("Confirm and claim")
     expect(onConfirm).toHaveBeenCalledWith(
       expect.objectContaining({ receiveAsset: "USDC", zkProof: proof, swap: leg }),
       expect.any(Function),
@@ -266,12 +298,144 @@ describe("ClaimToL1Modal email swap", () => {
     // The asset lives on the form: back out of the review to change it.
     await click("Cancel")
     await pickAsset("DAI", "USDC")
-    await click("Claim $25")
+    await click("Claim")
     await click("Verify email with Google")
     expect(verify.mock.calls[1]![0]).toBe(recipient)
-    await click("Confirm and claim $25")
+    await click("Confirm and claim")
     expect(onConfirm).toHaveBeenCalledWith(
       expect.objectContaining({ receiveAsset: "DAI", swap: undefined }),
+      expect.any(Function),
+    )
+  })
+})
+
+describe("ClaimToL1Modal email swap speed", () => {
+  const TIP = 500_000_000_000_000_000n
+  const tippedLeg = { plan: { escrow: `0x${"ab".repeat(20)}` } }
+  const chooseSpeed = async (name: string) => {
+    const speed = [...container.querySelectorAll(".ww-deposit__fact")]
+      .find((f) => f.querySelector("span")?.textContent === "Speed")!
+      .querySelector("button")!
+    await act(async () => speed.click())
+    const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((o) =>
+      o.textContent?.startsWith(name),
+    )!
+    await act(async () => option.click())
+  }
+
+  beforeEach(() => {
+    faster.offer = {
+      proverTip: TIP,
+      standardEtaSeconds: 44 * 60,
+      tippedEtaSeconds: 12 * 60,
+      worstSpeedupSeconds: 30 * 60,
+    }
+  })
+
+  it("re-plans the leg with the tip and binds the proof to that escrow", async () => {
+    await confirmSheet("25", "email", "USDC")
+    planSwap.mockResolvedValueOnce(tippedLeg as never)
+    await chooseSpeed("Faster")
+    expect(planSwap).toHaveBeenLastCalledWith(
+      recipient,
+      "USDC",
+      { relayerTip: 5n, amountOut: 123n, decimals: 6 },
+      25_000_000_000_000_000_000n,
+      TIP,
+    )
+    await click("Verify email with Google")
+    expect(verify.mock.calls[0]![0]).toBe(tippedLeg.plan.escrow)
+    await click("Confirm and claim")
+    expect(onConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ swap: tippedLeg, proverTip: TIP }),
+      expect.any(Function),
+    )
+  })
+
+  it("drops a proof bound to the untipped escrow when Faster is chosen", async () => {
+    await confirmSheet("25", "email", "USDC")
+    await click("Verify email with Google")
+    expect(button("Confirm and claim")).toBeTruthy()
+    planSwap.mockResolvedValueOnce(tippedLeg as never)
+    await chooseSpeed("Faster")
+    expect(button("Confirm and claim")).toBeUndefined()
+    expect(button("Verify email with Google")).toBeTruthy()
+    expect(planSwap).toHaveBeenCalledTimes(2)
+  })
+
+  it("burns the tip its leg was planned with when the offer re-quotes", async () => {
+    await confirmSheet("25", "email", "USDC")
+    planSwap.mockResolvedValueOnce(tippedLeg as never)
+    await chooseSpeed("Faster")
+    faster.offer = { ...faster.offer!, proverTip: TIP * 2n }
+    await renderSheet("25", "email")
+    expect(planSwap).toHaveBeenCalledTimes(2)
+    await click("Verify email with Google")
+    await click("Confirm and claim")
+    expect(onConfirm.mock.calls[0]![0].proverTip).toBe(TIP)
+  })
+
+  it("keeps a verified tipped leg through a failed re-quote", async () => {
+    await confirmSheet("25", "email", "USDC")
+    planSwap.mockResolvedValueOnce(tippedLeg as never)
+    await chooseSpeed("Faster")
+    await click("Verify email with Google")
+    faster.offer = undefined
+    simulation.mockReturnValue({ status: "unavailable" })
+    await renderSheet("25", "email")
+    expect(button("Confirm and claim").disabled).toBe(false)
+    expect(planSwap).toHaveBeenCalledTimes(2)
+    await click("Confirm and claim")
+    expect(onConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ swap: tippedLeg, proverTip: TIP }),
+      expect.any(Function),
+    )
+  })
+
+  const speedRow = () =>
+    [...container.querySelectorAll(".ww-deposit__fact")].find(
+      (f) => f.querySelector("span")?.textContent === "Speed",
+    )
+  const fasterDetail = async () => {
+    await act(async () => speedRow()!.querySelector("button")!.click())
+    const detail = [...container.querySelectorAll('[role="option"]')].find((o) =>
+      o.textContent?.startsWith("Faster"),
+    )!.textContent
+    await act(async () => speedRow()!.querySelector("button")!.click())
+    return detail
+  }
+
+  it("keeps a held tip on the Speed row after the offer goes, and Standard re-plans", async () => {
+    await confirmSheet("25", "email", "USDC")
+    planSwap.mockResolvedValueOnce(tippedLeg as never)
+    await chooseSpeed("Faster")
+    await click("Verify email with Google")
+    faster.offer = undefined
+    await renderSheet("25", "email")
+    expect(speedRow()!.querySelector("button")!.textContent).toBe("Faster")
+    expect(await fasterDetail()).toContain("0.5 DAI")
+    await chooseSpeed("Standard")
+    expect(planSwap).toHaveBeenCalledTimes(3)
+    expect((planSwap.mock.calls[2] as unknown[])[4]).toBe(0n)
+    expect(button("Confirm and claim")).toBeUndefined()
+    expect(button("Verify email with Google")).toBeTruthy()
+  })
+
+  it("keeps a verified leg's tip when a new quote's tip exceeds the link", async () => {
+    await confirmSheet("25", "email", "USDC")
+    planSwap.mockResolvedValueOnce(tippedLeg as never)
+    await chooseSpeed("Faster")
+    await click("Verify email with Google")
+    faster.offer = { ...faster.offer!, proverTip: 30n * 10n ** 18n }
+    await renderSheet("25", "email")
+    expect(planSwap).toHaveBeenCalledTimes(2)
+    expect(speedRow()!.querySelector("button")!.textContent).toBe("Faster")
+    // The row names the tip the burn carries, not the newer quote.
+    expect(await fasterDetail()).toContain("0.5 DAI")
+    expect(button("Confirm and claim").disabled).toBe(false)
+    await click("Confirm and claim")
+    expect(onConfirm).toHaveBeenCalledWith(
+      expect.objectContaining({ swap: tippedLeg, zkProof: proof, proverTip: TIP }),
       expect.any(Function),
     )
   })
@@ -288,15 +452,15 @@ describe("ClaimToL1Modal receive asset", () => {
   it("blocks a swap while its fee simulation is unavailable", async () => {
     simulation.mockReturnValue({ status: "unavailable" })
     await confirmSheet("25", "direct", "USDC")
-    expect(button("Confirm and claim $25").disabled).toBe(true)
-    await click("Confirm and claim $25")
+    expect(button("Confirm and claim").disabled).toBe(true)
+    await click("Confirm and claim")
     expect(onConfirm).not.toHaveBeenCalled()
   })
 
   it("preserves swap selection and the confirm-time quote for account-backed claims", async () => {
     await confirmSheet("25", "direct", "USDC")
     expect(container.textContent).toContain("Swap estimate")
-    await click("Confirm and claim $25")
+    await click("Confirm and claim")
     expect(onConfirm).toHaveBeenCalledWith(
       expect.objectContaining({
         recipient,

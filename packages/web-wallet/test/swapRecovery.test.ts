@@ -6,7 +6,7 @@
  * where the wiring must open a real commitment.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import type { Address, Hex } from "viem"
+import { pad, toHex, type Address, type Hex } from "viem"
 import type { WithdrawalRecord } from "@obsidion/front-core"
 
 const RECIPIENT = `0x${"dd".repeat(20)}` as Address
@@ -20,6 +20,7 @@ const HASH = `0x${"ab".repeat(32)}` as Hex
 const L2_TX = `0x${"0a".repeat(32)}` as Hex
 const NONCE = `0x${"77".repeat(32)}` as Hex
 const RELAYER_TIP = 5n * 10n ** 18n
+const CHAIN_NOW = 1_700_000_000n
 const SECRET = { toString: () => `0x${"11".repeat(32)}` }
 const PASSKEY_KEY = { qx: `0x${"01".repeat(32)}` as Hex, qy: `0x${"02".repeat(32)}` as Hex }
 const AUTH = {
@@ -42,6 +43,8 @@ const h = vi.hoisted(() => ({
   getCode: vi.fn(),
   readAuthKeys: vi.fn(),
   sign: vi.fn(),
+  signMessage: vi.fn(),
+  connected: { current: "" as string },
   sendTransaction: vi.fn(),
   store: { patch: vi.fn() },
   bridgeActive: { current: false },
@@ -64,6 +67,13 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
       return true
     }
   },
+  decodePaylinkInline: () => ({ secret: SECRET }),
+}))
+vi.mock("../src/features/deposit/l1Wallet", () => ({
+  getL1Clients: async () => ({
+    walletClient: { signMessage: h.signMessage },
+    account: h.connected.current,
+  }),
 }))
 vi.mock("../src/features/deposit/sipaRecovery", () => ({
   injectedWalletChannel: h.injectedWalletChannel,
@@ -85,7 +95,10 @@ vi.mock("../src/config/env", async (importOriginal) => ({
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
   getOxideTuple: async () => ({ token: TOKEN }),
-  l1PublicClient: () => ({ kind: "public-client" }),
+  l1PublicClient: () => ({
+    kind: "public-client",
+    getBlock: async () => ({ timestamp: CHAIN_NOW }),
+  }),
 }))
 vi.mock("../src/features/withdraw/withdrawGateway", () => ({
   getWithdrawalStore: () => h.store,
@@ -95,9 +108,8 @@ vi.mock("../src/features/withdraw/withdrawGateway", () => ({
 const { executeSwapWithdrawal, recoverSwapWithdrawal, swapExitReasonFor } = await import(
   "../src/features/withdraw/swapRecovery"
 )
-const { SWAP_STUCK_THRESHOLD_MS, deriveSwapEscrowRecoverySalt } = await import(
-  "@obsidion/front-core"
-)
+const { SWAP_ESCROW_RECOVERY_DEADLINE_S, SWAP_STUCK_THRESHOLD_MS, deriveSwapEscrowRecoverySalt } =
+  await import("@obsidion/front-core")
 const { runSwapEscrowRecovery: runRecoveryForReal } = await vi.importActual<
   typeof import("@obsidion/front-core")
 >("@obsidion/front-core")
@@ -155,6 +167,8 @@ beforeEach(() => {
   h.getCode.mockReset().mockResolvedValue("0x01")
   h.readAuthKeys.mockReset().mockResolvedValue([{ key: PASSKEY_KEY, metadata: "0x" }])
   h.sign.mockReset().mockResolvedValue(AUTH)
+  h.signMessage.mockReset().mockResolvedValue(`0x${"05".repeat(65)}`)
+  h.connected.current = RECIPIENT
   h.sendTransaction.mockReset().mockResolvedValue(HASH)
   h.store.patch.mockReset()
   h.bridgeActive.current = false
@@ -259,6 +273,8 @@ describe("recoverSwapWithdrawal", () => {
     expect(h.readAuthKeys).toHaveBeenCalledWith(ACCOUNT, 64)
     expect(h.sign).toHaveBeenCalledOnce()
     expect(h.sendTransaction).toHaveBeenCalledWith(PLAN.escrow, expect.stringMatching(/^0x/))
+    const deadline = pad(toHex(CHAIN_NOW + SWAP_ESCROW_RECOVERY_DEADLINE_S)).slice(2)
+    expect(h.sendTransaction.mock.calls[0]![1]).toContain(deadline)
     expect(h.store.patch).toHaveBeenCalledWith(
       L2_TX,
       expect.objectContaining({ phase: "recovered", recoveryTarget: RECIPIENT }),
@@ -286,6 +302,57 @@ describe("recoverSwapWithdrawal", () => {
     )
     expect(h.sign).not.toHaveBeenCalled()
     expect(h.sendTransaction).not.toHaveBeenCalled()
+  })
+
+  describe("a paylink visitor's cash-out", () => {
+    const LINK = "frag"
+    // The visitor's escrow commits to the recipient, salted by the link secret.
+    const visitor = () =>
+      record({ swapRecoveryCommitment: planFor(RECIPIENT).escrowArgs.recoveryCommitment })
+
+    it("is signed by the connected recipient wallet, with no account or passkey", async () => {
+      h.runSwapEscrowRecovery.mockImplementation(runRecoveryForReal)
+      await expect(
+        recoverSwapWithdrawal(visitor(), { from: RECIPIENT, linkFragment: LINK }),
+      ).resolves.toBe(HASH)
+      expect(h.signMessage).toHaveBeenCalledWith({
+        account: RECIPIENT,
+        message: { raw: expect.stringMatching(/^0x[0-9a-f]{64}$/) },
+      })
+      expect(h.ownSwapRecoverer).not.toHaveBeenCalled()
+      expect(h.oxideAccountPasskey).not.toHaveBeenCalled()
+      expect(h.sendTransaction).toHaveBeenCalledWith(PLAN.escrow, expect.stringMatching(/^0x/))
+      expect(h.store.patch).toHaveBeenCalledWith(
+        L2_TX,
+        expect.objectContaining({ phase: "recovered", recoveryTarget: RECIPIENT }),
+      )
+    })
+
+    it("refuses to sign from any wallet but the recipient's", async () => {
+      h.runSwapEscrowRecovery.mockImplementation(runRecoveryForReal)
+      h.connected.current = OTHER_ACCOUNT
+      await expect(
+        recoverSwapWithdrawal(visitor(), { from: OTHER_ACCOUNT, linkFragment: LINK }),
+      ).rejects.toThrow(new RegExp(`Connect ${RECIPIENT}`))
+      expect(h.signMessage).not.toHaveBeenCalled()
+      expect(h.sendTransaction).not.toHaveBeenCalled()
+    })
+
+    it("refuses a wallet's own escrow, whose commitment the link cannot open", async () => {
+      h.runSwapEscrowRecovery.mockImplementation(runRecoveryForReal)
+      await expect(
+        recoverSwapWithdrawal(record(), { from: RECIPIENT, linkFragment: LINK }),
+      ).rejects.toThrow(/not the recovery account/)
+      expect(h.signMessage).not.toHaveBeenCalled()
+    })
+
+    it("has no desktop launcher path: the recipient's wallet must be in the browser", async () => {
+      h.bridgeActive.current = true
+      await expect(recoverSwapWithdrawal(visitor(), { linkFragment: LINK })).rejects.toThrow(
+        /Open this link in a browser/,
+      )
+      expect(h.desktopBridgeChannel).not.toHaveBeenCalled()
+    })
   })
 
   it("refuses a record without its escrow details before asking for the account", async () => {

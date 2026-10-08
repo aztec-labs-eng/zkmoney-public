@@ -12,6 +12,7 @@
 
 import { sha256 } from "@aztec/foundation/crypto/sha256"
 import { BOOTSTRAP_SIGNATURE_HEADER } from "@obsidion/core/constants"
+import type { NameClaimResponse, SignedTermsResponse } from "@obsidion/core/types"
 import { type Hex, encodeAbiParameters, keccak256, parseAbiParameters } from "viem"
 import type { PackedUserOperation } from "@oxide/l1-contracts"
 
@@ -44,20 +45,6 @@ export interface UserOpJson {
   signature: Hex
 }
 
-/** Operator-signed registration terms — the `SignedTerms` calldata struct `register()` reads. */
-export interface SignedTermsResponse {
-  /** Decimal-string wei amounts the signature DEFINES for this name. */
-  fee: string
-  minDeposit: string
-  nonce: string
-  deadline: string
-  signature: Hex
-  /** The reduced schedule: the tag price is waived and `fee` is at least the relayer's sweep fee. */
-  reduced?: boolean
-  /** A golden ticket bought the reduced schedule (no opening minimum); otherwise an earned tag. */
-  ticket?: boolean
-}
-
 export interface DomainInfoResponse {
   service: string
   registry: Hex
@@ -84,19 +71,6 @@ export interface GoldenTicketRedeemRequest {
 
 export interface GoldenTicketRedeemResponse {
   status: "created" | "repeat"
-}
-
-export interface NameClaimResponse {
-  signature: Hex
-  nonce: string
-  deadline: string
-  /**
-   * Present whenever the claim server signs terms (backend `SignNameOutput.terms`): the reduced
-   * schedule under the campaign policy, the standard one otherwise. The fields are exactly the
-   * `SignedTerms` struct the registration sweep forwards — passed straight through, never
-   * re-derived on the client. Absent, the contract's immutable schedule applies.
-   */
-  terms?: SignedTermsResponse
 }
 
 /**
@@ -199,7 +173,12 @@ export class AccountServiceError extends Error {
 /** How the global name gate sees a tag: blocklisted, held by a live reservation, or free. */
 export type AvailabilityStatus = "available" | "reserved" | "blocked"
 /** A name can be both reserved and blocklisted; status keeps the existing primary result. */
-export type AvailabilityDetails = { status: AvailabilityStatus; blocked: boolean }
+export type AvailabilityDetails = {
+  status: AvailabilityStatus
+  blocked: boolean
+  grantValid?: boolean
+  grantBound?: boolean
+}
 
 /** Reads retry a rejected fetch this many times before giving up. */
 const READ_ATTEMPTS = 3
@@ -540,17 +519,30 @@ export class AccountServiceClient {
   }
 
   /**
-   * GET /domain/available — open route, no credential, issues nothing. The pre-commit probe of
-   * the global blocklist and live reservations; `/domain/sign` still decides the claim.
+   * GET /domain/available probes the global name policy. With a grant, POST keeps the bearer token
+   * out of the URL and checks revocation and binding without consuming it. `/domain/sign` decides the claim.
    */
-  async availableNameDetails(nameHash: Hex): Promise<AvailabilityDetails> {
-    const { status, blocked } = await this.get<{
-      status: AvailabilityStatus
-      blocked?: boolean
-    }>(
-      `/domain/available?nameHash=${nameHash}`,
-    )
-    return { status, blocked: blocked ?? (status === "blocked") }
+  async availableNameDetails(
+    nameHash: Hex,
+    grantToken?: string,
+    bootstrap?: string,
+  ): Promise<AvailabilityDetails> {
+    const details = grantToken
+      ? await this.postRead<AvailabilityDetails>("/domain/available", {
+          nameHash,
+          grantToken,
+          ...(bootstrap ? { bootstrap } : {}),
+        })
+      : await this.get<AvailabilityDetails>(`/domain/available?nameHash=${nameHash}`)
+    const { status, blocked, grantValid, grantBound } = details
+    if (grantToken && (typeof grantValid !== "boolean" || typeof grantBound !== "boolean")) {
+      throw new Error("account-service /domain/available omitted grant state")
+    }
+    return {
+      status,
+      blocked: blocked ?? status === "blocked",
+      ...(grantToken ? { grantValid, grantBound } : {}),
+    }
   }
 
   /** Existing status-only view for callers that do not need the simultaneous blocklist state. */
@@ -617,22 +609,28 @@ export class AccountServiceClient {
   }
 
   private async get<T>(path: string): Promise<T> {
-    return this.parse(await this.fetchRead(`${this.baseUrl}${path}`))
+    return this.parse(await this.fetchRead(`${this.baseUrl}${path}`, { method: "GET" }))
+  }
+
+  private async postRead<T>(path: string, body: unknown): Promise<T> {
+    return this.parse(
+      await this.fetchRead(`${this.baseUrl}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }),
+    )
   }
 
   /**
-   * Reads retry a REJECTED fetch — no response arrived, so the service processed nothing. Two
-   * things are deliberately never retried. A response of any status, 429 included, is handed to
-   * `parse` to raise: the onboarding budget is small enough that retrying a 429 spends what is
-   * left of it instead of waiting out `Retry-After`. And writes do not come through here at all,
-   * because `/domain/sign` bumps a capped attempts counter for every call the service processes
-   * and a lost response is indistinguishable from an unsent request.
+   * Read-only requests retry a rejected fetch. A response of any status, 429 included, goes to
+   * `parse` without a retry. Mutating requests never come through here.
    */
-  private async fetchRead(url: string): Promise<Response> {
+  private async fetchRead(url: string, init: RequestInit): Promise<Response> {
     let lastError: unknown
     for (let attempt = 0; attempt < READ_ATTEMPTS; attempt++) {
       try {
-        return await this.fetchWithTimeout(url, { method: "GET" })
+        return await this.fetchWithTimeout(url, init)
       } catch (err) {
         lastError = err
         if (attempt < READ_ATTEMPTS - 1) await sleep(READ_BACKOFF_MS * 2 ** attempt)

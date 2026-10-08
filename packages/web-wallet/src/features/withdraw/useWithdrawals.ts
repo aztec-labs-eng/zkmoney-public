@@ -3,6 +3,7 @@ import { useAztecContext, useCachedRecords } from "@obsidion/front-core"
 import type { WithdrawalRecord } from "@obsidion/front-core"
 import { ensureWithdrawalTracker, getWithdrawalStore } from "./withdrawGateway"
 import { reportWithdrawFunnel } from "./withdrawFunnel"
+import { reportPaylinkClaims } from "../paylink/paylinkClaimReport"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 
 export interface WithdrawalsState {
@@ -25,6 +26,7 @@ export function useWithdrawals(): WithdrawalsState {
   useEffect(() => {
     if (!hydrated) return
     reportWithdrawFunnel(records, webStorage)
+    void reportPaylinkClaims(records, webStorage)
   }, [records, hydrated])
   const checkAgain = useCallback(
     async (l2TxHash: string) => {

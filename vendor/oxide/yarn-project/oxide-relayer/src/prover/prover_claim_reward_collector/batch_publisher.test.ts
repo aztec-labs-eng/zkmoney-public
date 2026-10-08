@@ -30,13 +30,18 @@ const portal = {
   context: { l1Portal: EthAddress.random(), proverSubsidy: EthAddress.random() },
 } as ProverPortalConfig;
 
+const FEES = { maxFeePerGas: 2_000_000_000n, maxPriorityFeePerGas: 100_000_000n };
+const GAS = 250_000n;
+
 type MinedReceipt = { blockNumber: bigint; transactionHash: `0x${string}`; status: 'success' | 'reverted' };
 
 describe('BatchPublisher', () => {
   let head: bigint;
   let getBlockNumber: jest.Mock<() => Promise<bigint>>;
   let getTransactionReceipt: jest.Mock<(arg: { hash: `0x${string}` }) => Promise<MinedReceipt>>;
-  let sendTransaction: jest.Mock<() => Promise<{ txHash: `0x${string}`; settled: Promise<MinedReceipt> }>>;
+  let send: jest.Mock<
+    (request: any) => Promise<{ txHash: `0x${string}`; nonce: number; settled: Promise<MinedReceipt> }>
+  >;
 
   const minedReceipt: MinedReceipt = { blockNumber: 100n, transactionHash: '0xabc', status: 'success' };
 
@@ -45,18 +50,20 @@ describe('BatchPublisher', () => {
       address: EthAddress.random(),
       getContract: () => ({ simulate: { claimProverTips: () => Promise.resolve() } }),
     } as any;
-    const l1TxUtils = {
-      getSenderAddress: () => EthAddress.random(),
-      // The queued utils monitor their own sends, so `settled` is the mined receipt.
-      sendTransaction: (...a: any[]) => (sendTransaction as any)(...a),
-      client: {
-        getBlockNumber: () => getBlockNumber(),
-        getTransactionReceipt: (arg: any) => getTransactionReceipt(arg),
-      },
+    // The queue monitors its own sends, so `settled` is the mined receipt.
+    const l1TxQueue = {
+      address: EthAddress.random().toString(),
+      enqueue: (submit: (send: any) => Promise<unknown>) => submit(send),
+    } as any;
+    const client = {
+      estimateGas: () => Promise.resolve(GAS),
+      getBlockNumber: () => getBlockNumber(),
+      getTransactionReceipt: (arg: any) => getTransactionReceipt(arg),
     } as any;
     const publisher = new BatchPublisher({
       portal,
-      l1TxUtils,
+      client,
+      l1TxQueue,
       confirmations: 3n,
       confirmationPollIntervalMs: POLL_MS,
       ...overrides,
@@ -80,14 +87,22 @@ describe('BatchPublisher', () => {
     head = 100n;
     getBlockNumber = jest.fn(() => Promise.resolve(head));
     getTransactionReceipt = jest.fn(() => Promise.resolve(minedReceipt));
-    sendTransaction = jest.fn(() =>
-      Promise.resolve({ txHash: '0xabc' as const, settled: Promise.resolve(minedReceipt) }),
+    send = jest.fn(() =>
+      Promise.resolve({ txHash: '0xabc' as const, nonce: 0, settled: Promise.resolve(minedReceipt) }),
     );
+  });
+
+  it('sends the claim tx with the fee values the batch was priced at and the estimated gas', async () => {
+    const publisher = build({ confirmations: 0n });
+
+    await publisher.publish(portal, [claim], FEES);
+
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ gas: GAS, ...FEES }));
   });
 
   it('publish resolves at mined; confirmed resolves only once the tx is confirmations blocks deep', async () => {
     const publisher = build();
-    const { confirmed } = await publisher.publish(portal, [claim]); // resolves at mined
+    const { confirmed } = await publisher.publish(portal, [claim], FEES); // resolves at mined
 
     expect(await settle(confirmed)).toBe('pending'); // head 100, mined at 100 => 1 block deep < 3
 
@@ -101,7 +116,7 @@ describe('BatchPublisher', () => {
     const publisher = build();
     head = 102n;
 
-    const { confirmed } = await publisher.publish(portal, [claim]);
+    const { confirmed } = await publisher.publish(portal, [claim], FEES);
     await expect(confirmed).rejects.toThrow(/reorged out or reverted/);
   });
 
@@ -110,7 +125,7 @@ describe('BatchPublisher', () => {
     const publisher = build();
     head = 102n;
 
-    const { confirmed } = await publisher.publish(portal, [claim]);
+    const { confirmed } = await publisher.publish(portal, [claim], FEES);
     await expect(confirmed).rejects.toThrow(/reorged out or reverted/);
   });
 
@@ -118,7 +133,7 @@ describe('BatchPublisher', () => {
     getTransactionReceipt.mockResolvedValue({ ...minedReceipt, blockNumber: 105n });
     const publisher = build();
     head = 102n; // first depth check passes (100..102) but fresh receipt is at 105
-    const { confirmed } = await publisher.publish(portal, [claim]);
+    const { confirmed } = await publisher.publish(portal, [claim], FEES);
 
     expect(await settle(confirmed)).toBe('pending'); // now measuring from 105; head 102 < 105
 
@@ -129,7 +144,7 @@ describe('BatchPublisher', () => {
   it('confirmed resolves immediately at the mined receipt when confirmations is 0n', async () => {
     const publisher = build({ confirmations: 0n });
 
-    const { confirmed } = await publisher.publish(portal, [claim]);
+    const { confirmed } = await publisher.publish(portal, [claim], FEES);
     await expect(confirmed).resolves.toBeUndefined();
     expect(getBlockNumber).not.toHaveBeenCalled();
     expect(getTransactionReceipt).not.toHaveBeenCalled();
@@ -141,10 +156,10 @@ describe('BatchPublisher', () => {
 
     // The first tx is reorged out; the second confirms normally.
     getTransactionReceipt.mockRejectedValueOnce(new Error('not found'));
-    const first = await publisher.publish(portal, [claim]);
+    const first = await publisher.publish(portal, [claim], FEES);
     await expect(first.confirmed).rejects.toThrow(/reorged out or reverted/);
 
-    const second = await publisher.publish(portal, [claim]);
+    const second = await publisher.publish(portal, [claim], FEES);
     // Confirmations are not chained: the collector retries the first batch, so a later batch must still settle.
     await expect(second.confirmed).resolves.toBeUndefined();
   });

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest"
+import { PhoneRequiredError } from "../src/policy/passkeyErrors.js"
 import {
   checkAssertionRoute,
   checkCreationRoute,
   creationHintsFor,
   offerableTransports,
-  hintsFor,
   impliedKeyTransports,
   isPhysicalOnly,
   isSecurityKey,
@@ -12,6 +12,8 @@ import {
   signInHintsFor,
   slotForAttachment,
 } from "../src/policy/slotRule.js"
+
+const SIGN_UP = new PhoneRequiredError({ ceremony: "create" }).message
 
 describe("the slot rule", () => {
   it("binds a local answer to second and a cross-device answer to first", () => {
@@ -174,14 +176,41 @@ describe("the creation route rule", () => {
       }
     }
   })
+
+  it("names what answered a laptop only when the browser reported this device", () => {
+    expect(() => checkCreationRoute("laptop", "platform", false, "Bitwarden")).toThrow(
+      expect.objectContaining({
+        name: "PhoneRequiredError",
+        providerName: "Bitwarden",
+        message: expect.stringContaining("Bitwarden saved this passkey on this device"),
+      }),
+    )
+    // An unreported answer says nothing about the device, so the name is dropped and the sign-up
+    // wording says where to create the passkey.
+    expect(() => checkCreationRoute("laptop", undefined, false, "Bitwarden")).toThrow(
+      expect.objectContaining({
+        name: "PhoneRequiredError",
+        providerName: undefined,
+        message: SIGN_UP,
+      }),
+    )
+    expect(() => checkCreationRoute("laptop", "platform", false)).toThrow(
+      expect.objectContaining({ providerName: undefined, message: SIGN_UP }),
+    )
+  })
 })
 
 describe("the assertion route rule", () => {
   it("a laptop still needs another device", () => {
     expect(() => checkAssertionRoute("laptop", "cross-platform")).not.toThrow()
     for (const attachment of ["platform", undefined] as const) {
+      // A sign-in carries no provider id, so it never names one.
       expect(() => checkAssertionRoute("laptop", attachment)).toThrow(
-        expect.objectContaining({ name: "PhoneRequiredError" }),
+        expect.objectContaining({
+          name: "PhoneRequiredError",
+          providerName: undefined,
+          message: new PhoneRequiredError().message,
+        }),
       )
     }
   })
@@ -203,36 +232,31 @@ describe("the assertion route rule", () => {
 })
 
 describe("hints", () => {
-  it("an assertion sends a laptop only what its consumer asked for, and a phone none", () => {
-    expect(hintsFor("laptop")).toBeUndefined()
-    expect(hintsFor("laptop", undefined)).toBeUndefined()
-    expect(hintsFor("laptop", null)).toBeUndefined()
-    expect(hintsFor("laptop", ["security-key"])).toEqual(["security-key"])
-    expect(hintsFor("laptop", ["hybrid"])).toEqual(["hybrid", "security-key"])
-    // A phone sign-in legitimately accepts another phone over QR, so it is never steered.
-    expect(hintsFor("phone")).toBeUndefined()
-    expect(hintsFor("phone", ["hybrid"])).toBeUndefined()
-  })
-
-  it("a creation names a phone's two admitted classes, and leaves a laptop as it was", () => {
+  it("a phone creation names its two admitted classes, whatever the consumer asked for", () => {
     expect(creationHintsFor("phone")).toEqual(["client-device", "security-key"])
     // Never hybrid: the route rule would refuse what it would open.
     expect(creationHintsFor("phone")).not.toContain("hybrid")
     expect(creationHintsFor("phone", ["hybrid"])).toEqual(["client-device", "security-key"])
-    expect(creationHintsFor("laptop")).toBeUndefined()
+    expect(creationHintsFor("phone", null)).toEqual(["client-device", "security-key"])
+  })
+
+  it("a laptop creation opens on the phone when no route is named, and null sends nothing", () => {
+    expect(creationHintsFor("laptop")).toEqual(["hybrid", "security-key"])
+    expect(creationHintsFor("laptop", undefined)).toEqual(["hybrid", "security-key"])
+    expect(creationHintsFor("laptop", [])).toEqual(["hybrid", "security-key"])
     expect(creationHintsFor("laptop", null)).toBeUndefined()
-    expect(creationHintsFor("laptop", ["hybrid"])).toEqual(["hybrid", "security-key"])
   })
 
   it("a laptop always names a security key, after the route it was asked for", () => {
     // A password manager's extension takes the request over unless a security key is named.
-    expect(hintsFor("laptop", ["hybrid"])).toEqual(["hybrid", "security-key"])
-    expect(hintsFor("laptop", ["security-key", "hybrid"])).toEqual(["security-key", "hybrid"])
     expect(creationHintsFor("laptop", ["hybrid"])).toEqual(["hybrid", "security-key"])
+    expect(creationHintsFor("laptop", ["security-key"])).toEqual(["security-key"])
+    expect(creationHintsFor("laptop", ["security-key", "hybrid"])).toEqual([
+      "security-key",
+      "hybrid",
+    ])
     expect(signInHintsFor("laptop", ["hybrid"])).toEqual(["hybrid", "security-key"])
     expect(signInHintsFor("laptop", ["security-key"])).toEqual(["security-key"])
-    // Phones are never steered, so nothing is added there either.
-    expect(hintsFor("phone", ["hybrid"])).toBeUndefined()
   })
 
   it("a laptop sign-in names both routes it accepts, since a local answer is refused anyway", () => {

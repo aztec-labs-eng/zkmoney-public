@@ -4,8 +4,8 @@ import {
   OxidePortalAbi,
   SwapEscrowFactoryAbi,
   SwapRoute,
+  encodeEscrowRecoverERC20,
   encodeSwapEscrowDeploy,
-  encodeSwapEscrowRecoverERC20,
   predictSwapEscrowAddressLocally,
   type SwapEscrowArgs,
 } from "@oxide/l1-contracts"
@@ -159,7 +159,7 @@ export function buildSwapEscrowExecuteCall(factory: Address, args: SwapEscrowArg
 
 /**
  * `SwapEscrow.recoverERC20`, the escape hatch for DAI the committed route cannot deliver: the
- * recovery account's ERC-1271 signature over `swapEscrowERC20RecoveryDigest`, plus the salt and
+ * recovery account's ERC-1271 signature over `escrowERC20RecoveryDigest`, plus the salt and
  * account that open the escrow's `recoveryCommitment`. A reverting `deployAndExecute` unwinds the
  * clone, so an escrow whose swap never ran has no code: the deploy-only `deploy` leg and the
  * recovery then ride one Multicall3 `aggregate3`, all-or-nothing, the way {@link buildSipaSweepCall}
@@ -180,7 +180,7 @@ export function buildSwapEscrowRecoverCall(params: {
   deadline: bigint
   multicall3?: Address
 }): SwapEscrowCall {
-  const recoverData = encodeSwapEscrowRecoverERC20({
+  const recoverData = encodeEscrowRecoverERC20({
     recoverySalt: params.recovery.salt.toString() as Hex,
     account: params.recovery.account,
     signature: params.signature,

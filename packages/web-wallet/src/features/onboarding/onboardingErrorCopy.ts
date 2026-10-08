@@ -1,4 +1,5 @@
 import { isClaimAttemptsExhausted, isClaimConflict } from "@obsidion/front-core"
+import { passkeyWritten } from "@obsidion/passkey-web"
 import { NameTakenError } from "./oxideOnboarding"
 
 /** Shown in place of the deposit address where this network prices no registration a sweep can take. */
@@ -29,7 +30,11 @@ const withCause = (lead: string, err: unknown): string => {
 
 export const passkeyErrorMessage = (err: unknown): string => {
   if (err instanceof Error && err.name === "NotAllowedError") {
-    return "The passkey prompt was closed before it finished. Nothing was created. Try again when you're ready."
+    // A closed follow-up prompt comes after the passkey was written, so only a closed first prompt
+    // may say nothing was created.
+    return passkeyWritten(err)
+      ? "The passkey prompt was closed before it finished. Try again when you're ready."
+      : "The passkey prompt was closed before it finished. Nothing was created. Try again when you're ready."
   }
   return withCause("Couldn't create your passkey", err)
 }

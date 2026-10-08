@@ -70,6 +70,41 @@ describe("useCeremonyGate", () => {
     expect(result.route).toBeUndefined()
   })
 
+  it("an anchored sign-in (the hand-off) holds the sheet on a phone, so its assertion runs from a tap", async () => {
+    await mount("phone")
+    let settled = false
+    let promise!: Promise<GateResult>
+    await act(async () => {
+      promise = handle.gate({ anchor: true }).then((r) => {
+        settled = true
+        return r
+      })
+    })
+    await flush()
+    // No route to pick, so it never probes; it holds the sheet only for the tap that anchors it.
+    expect(h.probePhoneReach).not.toHaveBeenCalled()
+    expect(container.textContent).toBe("awaiting-action")
+    expect(settled).toBe(false)
+    const state = handle.state
+    if (state.kind !== "awaiting-action") throw new Error("expected the sheet")
+    expect(state.prompt).toBe("sign-in")
+    await act(async () => state.proceed())
+    const result = await promise
+    expect(settled).toBe(true)
+    expect(result.route).toBeUndefined()
+    expect(container.textContent).toBe("idle")
+  })
+
+  it("an anchor is ignored when the screen owns the tap: a holdsSignIn-false phone sign-in still passes", async () => {
+    await mount("phone", false)
+    let result!: GateResult
+    await act(async () => {
+      result = await handle.gate({ anchor: true })
+    })
+    expect(container.textContent).toBe("idle")
+    expect(result.route).toBeUndefined()
+  })
+
   it("a laptop sign-in holds the Sign in sheet without probing, and resolves on proceed", async () => {
     await mount("laptop")
     let settled = false
@@ -94,6 +129,21 @@ describe("useCeremonyGate", () => {
     expect(settled).toBe(true)
     expect(result.route).toBeUndefined()
     expect(container.textContent).toBe("idle")
+  })
+
+  it("a sign-in ignores a creation sheet's pick and still holds its own sheet", async () => {
+    await mount("laptop")
+    let promise!: Promise<GateResult>
+    await act(async () => {
+      promise = handle.gate({ purpose: "sign-in", unheld: "security-key" })
+    })
+    await flush()
+    expect(h.probePhoneReach).not.toHaveBeenCalled()
+    const state = handle.state
+    if (state.kind !== "awaiting-action") throw new Error("expected the sheet")
+    expect(state.prompt).toBe("sign-in")
+    await act(async () => state.proceed())
+    expect((await promise).route).toBeUndefined()
   })
 
   it("a screen that owns the tap: a laptop sign-in resolves at once, with no sheet and no probe", async () => {
@@ -159,6 +209,43 @@ describe("useCeremonyGate", () => {
     await flush()
     expect(error).toMatchObject({ name: "PhoneUnreachableError" })
     expect(container.textContent).toBe("idle")
+  })
+
+  it("a creation whose screen was the sheet probes and resolves at once, on the route the reach allows", async () => {
+    await mount("laptop")
+    const result = await act(() => handle.gate({ purpose: "create", unheld: "phone" }))
+    expect(h.probePhoneReach).toHaveBeenCalledTimes(1)
+    expect(result.route).toBe("phone")
+    expect(container.textContent).toBe("idle")
+
+    h.probePhoneReach.mockResolvedValue("no-hybrid")
+    const keyOnly = await act(() => handle.gate({ purpose: "create", unheld: "phone" }))
+    expect(keyOnly.route).toBe("security-key")
+  })
+
+  it("keeps the sheet's security-key pick where a phone is reachable", async () => {
+    h.probePhoneReach.mockResolvedValue("ok")
+    await mount("laptop")
+    const result = await act(() => handle.gate({ purpose: "create", unheld: "security-key" }))
+    expect(result.route).toBe("security-key")
+    expect(container.textContent).toBe("idle")
+  })
+
+  it("refuses a browser below the floor whatever the sheet picked", async () => {
+    h.probePhoneReach.mockResolvedValue("below-floor")
+    await mount("laptop")
+    for (const unheld of ["phone", "security-key"] as const) {
+      let error: unknown
+      let result: unknown
+      await act(async () =>
+        handle.gate({ purpose: "create", unheld }).then(
+          (r) => (result = r),
+          (e) => (error = e),
+        ),
+      )
+      expect(error).toMatchObject({ name: "PhoneUnreachableError" })
+      expect(result).toBeUndefined()
+    }
   })
 
   it("a creation holds the steps with the probed reach in hand", async () => {
@@ -300,7 +387,10 @@ describe("useCeremonyGate", () => {
     })
     let settled = false
     await act(async () => {
-      void handle.gate({ again: result.signal }).then(() => (settled = true)).catch(() => {})
+      void handle
+        .gate({ again: result.signal })
+        .then(() => (settled = true))
+        .catch(() => {})
     })
     await flush()
     expect(h.probePhoneReach).not.toHaveBeenCalled()
@@ -334,7 +424,10 @@ describe("useCeremonyGate", () => {
     h.probePhoneReach.mockClear()
     let settled = false
     await act(async () => {
-      void handle.gate({ again: signal }).then(() => (settled = true)).catch(() => {})
+      void handle
+        .gate({ again: signal })
+        .then(() => (settled = true))
+        .catch(() => {})
     })
     await flush()
     expect(h.probePhoneReach).not.toHaveBeenCalled()
@@ -441,7 +534,10 @@ describe("useCeremonyGate", () => {
 
     let newer = false
     await act(async () => {
-      void handle.gate().then(() => (newer = true)).catch(() => {})
+      void handle
+        .gate()
+        .then(() => (newer = true))
+        .catch(() => {})
     })
     await flush()
     expect(container.textContent).toBe("awaiting-action")
@@ -470,7 +566,10 @@ describe("useCeremonyGate", () => {
     if (stale.kind !== "awaiting-action") throw new Error("expected the picker")
     let second = false
     await act(async () => {
-      void handle.gate().then(() => (second = true)).catch(() => {})
+      void handle
+        .gate()
+        .then(() => (second = true))
+        .catch(() => {})
     })
     await flush()
     expect(isGateCancelled(first)).toBe(true)

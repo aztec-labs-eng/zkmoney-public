@@ -12,6 +12,7 @@ import {PlainWithdrawalExecutor} from "@periphery/PlainWithdrawalExecutor.sol";
 import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";
 import {DepositSIPA, DEPOSIT_FEE} from "@periphery/DepositSIPA.sol";
 import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
+import {UpdateMetadataSIPA, METADATA_UPDATE_SWEEP_FEE} from "@periphery/UpdateMetadataSIPA.sol";
 import {SIPAFactory} from "@periphery/SIPAFactory.sol";
 import {INameRegistry} from "@periphery/interfaces/INameRegistry.sol";
 import {RegistrationSIPA, REGISTRATION_SWEEP_FEE} from "@periphery/RegistrationSIPA.sol";
@@ -100,6 +101,7 @@ contract DeployOxide is OxideScript {
     address fpcFunder;
     address depositSIPAImplementation;
     address registrationSIPAImplementation;
+    address updateMetadataSIPAImplementation;
   }
 
   function run() external returns (Deployment memory d) {
@@ -138,15 +140,21 @@ contract DeployOxide is OxideScript {
       d.depositSIPAImplementation = address(new DepositSIPA(IOxidePortal(d.portal), DEPOSIT_FEE));
       d.registrationSIPAImplementation =
         address(new RegistrationSIPA(IOxidePortal(d.portal), INameRegistry(i.nameRegistry), REGISTRATION_SWEEP_FEE));
+      d.updateMetadataSIPAImplementation = address(
+        new UpdateMetadataSIPA(IOxidePortal(d.portal), INameRegistry(i.nameRegistry), METADATA_UPDATE_SWEEP_FEE)
+      );
       SIPAFactory(i.sipaFactory).bless(d.depositSIPAImplementation);
       SIPAFactory(i.sipaFactory).bless(d.registrationSIPAImplementation);
+      SIPAFactory(i.sipaFactory).bless(d.updateMetadataSIPAImplementation);
       d.firstProverProofSubmitter = address(new FirstProverProofSubmitter(rollup, IOxidePortal(d.portal)));
       DepositSubsidy depositSubsidyContract =
         new DepositSubsidy(i.owner, d.portal, i.priceFeed, SIPAFactory(i.sipaFactory));
       depositSubsidyContract.setDepositConfig(
         uint128(_envOr("OXIDE_DEPOSIT_MIN_PROFIT", uint256(0.1e18))),
         uint128(_envOr("OXIDE_DEPOSIT_MAX", uint256(12e18))),
-        uint128(_envOr("OXIDE_DEPOSIT_MIN_FEE", DEPOSIT_FEE))
+        uint128(_envOr("OXIDE_DEPOSIT_MIN_FEE", DEPOSIT_FEE)),
+        uint128(_envOr("OXIDE_DEPOSIT_MIN_CREDITED_AMOUNT", uint256(1e18))),
+        uint128(_envOr("OXIDE_DEPOSIT_OVERHEAD_GAS", uint256(0)))
       );
       if (i.postDeployOwner != i.owner) {
         depositSubsidyContract.transferOwnership(i.postDeployOwner);
@@ -192,6 +200,7 @@ contract DeployOxide is OxideScript {
     vm.serializeAddress(obj, "fpcFunder", d.fpcFunder);
     vm.serializeAddress(obj, "depositSIPAImplementation", d.depositSIPAImplementation);
     vm.serializeAddress(obj, "registrationSIPAImplementation", d.registrationSIPAImplementation);
+    vm.serializeAddress(obj, "updateMetadataSIPAImplementation", d.updateMetadataSIPAImplementation);
     string memory json = vm.serializeAddress(obj, "firstProverProofSubmitter", d.firstProverProofSubmitter);
     vm.writeJson(json, manifestPath);
   }

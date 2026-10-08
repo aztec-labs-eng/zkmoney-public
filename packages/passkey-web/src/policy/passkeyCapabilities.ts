@@ -24,6 +24,9 @@ export type PhoneReachInput = {
   capabilities?: Record<string, boolean>
 }
 
+export const MAC_SAFARI_FLOOR = "26"
+export const MAC_FIREFOX_FLOOR = "139"
+
 /**
  * Desktop browsers below these versions cannot create a wallet passkey on a phone. Safari 18
  * returns no PRF from a creation over QR, and labels the follow-up assertion as this computer's
@@ -34,8 +37,8 @@ const DESKTOP_FLOORS: {
   browser: UserAgentInfo["browserFamily"]
   floor: string
 }[] = [
-  { os: "macos", browser: "safari", floor: "26" },
-  { os: "macos", browser: "firefox", floor: "139" },
+  { os: "macos", browser: "safari", floor: MAC_SAFARI_FLOOR },
+  { os: "macos", browser: "firefox", floor: MAC_FIREFOX_FLOOR },
 ]
 
 export function probePhoneReach(input: PhoneReachInput): PhoneReach {
@@ -87,6 +90,32 @@ export function safariMislabelsCrossDevice(ua: UserAgentInfo): boolean {
 export function currentMisreportsCrossDevice(): boolean {
   if (typeof navigator === "undefined") return false
   return safariMislabelsCrossDevice(parseUserAgent({ userAgent: navigator.userAgent ?? "" }))
+}
+
+/** The first Safari seen labelling a phone's answer as another device's. */
+const SAFARI_LABEL_FLOOR = "26.4"
+
+/** The Chromium browsers whose label is trusted; any other family is unmeasured. */
+const TRUSTED_CHROMIUM: readonly UserAgentInfo["browserFamily"][] = ["chrome", "edge", "brave"]
+
+/**
+ * Whether the browser is known to report truthfully which device answered, so a refusal may name
+ * what answered on this one. Only the browsers listed here are: a Safari below the floor or one
+ * whose version can't be read is not. Every iOS browser is WebKit, and Firefox on a Mac makes
+ * passkeys through Apple's framework; neither has been measured apart from Safari, so neither is.
+ */
+export function trustsAttachmentLabel(ua: UserAgentInfo): boolean {
+  if (ua.osFamily === "ios") return false
+  if (ua.browserFamily === "firefox") return ua.osFamily !== "macos"
+  if (ua.browserFamily !== "safari") return TRUSTED_CHROMIUM.includes(ua.browserFamily)
+  const version = ua.browserVersionReported
+  return version !== UNKNOWN && !versionBelow(version, SAFARI_LABEL_FLOOR)
+}
+
+/** The live browser's answer; no browser to read is not trusted. */
+export function currentTrustsAttachmentLabel(): boolean {
+  if (typeof navigator === "undefined") return false
+  return trustsAttachmentLabel(parseUserAgent({ userAgent: navigator.userAgent ?? "" }))
 }
 
 /** The parts of a create answer the gate below reads. */

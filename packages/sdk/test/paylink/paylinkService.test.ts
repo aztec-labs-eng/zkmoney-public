@@ -116,6 +116,52 @@ describe("PaylinkService Encryption and URL Tests", () => {
     },
   )
 
+  it("resolves a link's memo off the note's token when no token service names one", async () => {
+    const escrow = await AztecAddress.random()
+    const noteToken = await AztecAddress.random()
+    const getPrivateEvents = vi.fn().mockResolvedValue([
+      {
+        event: {
+          to: escrow,
+          from: await AztecAddress.random(),
+          meta: buildTransferMetaForSend({ memo: "lunch" }),
+        },
+      },
+    ])
+    // The visitor page's placeholder service: no account, no token service.
+    const service = new PaylinkService(
+      { getPrivateEvents } as never,
+      null as never,
+      {} as never,
+      null as never,
+    )
+    vi.spyOn(service, "reconstructPaylinkContract").mockResolvedValue({
+      instance: { address: escrow },
+    } as never)
+    const internals = service as unknown as {
+      readEscrowNote: () => Promise<unknown>
+      registerToken: (token: AztecAddress) => Promise<void>
+    }
+    vi.spyOn(internals, "readEscrowNote").mockResolvedValue({
+      tokenAddress: noteToken,
+      hash: Fr.ZERO,
+    })
+    const registerToken = vi.spyOn(internals, "registerToken").mockResolvedValue()
+    const resolved = await service.resolveLink({
+      secret: Fr.random(),
+      paylinkType: DEFAULT_CONTRACTS.paylinkDirect,
+      classId: Fr.ZERO,
+      chainId: 31337,
+      rollupVersion: 1,
+    })
+    expect(resolved.memo).toBe("lunch")
+    expect(registerToken).toHaveBeenCalledWith(noteToken)
+    expect(getPrivateEvents.mock.calls[0]![1]).toMatchObject({
+      contractAddress: noteToken,
+      scopes: [escrow],
+    })
+  })
+
   describe("serverless link (generate + parse)", () => {
     it("generates an inline link and parses it back to the original params", async () => {
       const keys = await derivePaylinkKeys({ secretKey: Fr.random(), fallbackSecret: Fr.random() })
@@ -499,7 +545,10 @@ describe("escrow class assertion", () => {
     type: ContractName = DEFAULT_CONTRACTS.paylinkDirect,
   ) => {
     const service = new PaylinkService(null as any, null as any, null as any, contractService)
-    const paylinkKeys = await derivePaylinkKeys({ secretKey: Fr.random(), fallbackSecret: Fr.random() })
+    const paylinkKeys = await derivePaylinkKeys({
+      secretKey: Fr.random(),
+      fallbackSecret: Fr.random(),
+    })
     return service.getContractInstance(type, [], undefined, paylinkKeys)
   }
 

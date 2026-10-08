@@ -4,7 +4,7 @@ import { assertPaylinkSwapSource, readPaylinkSource } from "./paylinkSource"
  * The sponsored create/claim/view orchestration lives in the
  * shared `PaylinkService`; this module only supplies
  * the web-specific inputs: the ClaimFPC sponsor context (via
- * `claimSponsorContext`), the localStorage-parked
+ * `claimSponsorContext`), the parked
  * funding-deposit redemption, and the amount/link formatting. Screens build
  * `PaylinkService` from the shared front-core contexts and call these helpers.
  */
@@ -19,6 +19,7 @@ import {
   trackSubmission,
   trackWithdrawalSubmission,
   TxInFlightError,
+  type PaylinkRecovery,
   type SubmissionTracker,
 } from "@obsidion/front-core"
 import {
@@ -29,9 +30,8 @@ import {
   nextOperationId,
   PaylinkActionEnum,
   QueueStatus,
-  claimFpcSubscriptionUses,
-  hasClaimFpcSubscription,
   paylinkVoucherUses,
+  readClaimFpcAllowance,
   UnknownRailError,
   type ClaimSponsorContext,
   type ObsidionAccount,
@@ -47,7 +47,6 @@ import {
   tokenDecimalsForNetwork,
   ZKJWT_VKEY_HASH,
   WITHDRAW_RELAYER_TIP,
-  GOLDEN_TICKET_PROVER_TIP,
 } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
@@ -61,37 +60,50 @@ import {
   type AddressScreener,
   type WithdrawalRecord,
   readPaylinkNote,
-  patchClaimRowMemo,
   paylinkWindows,
   withdrawalAmounts,
   withdrawalRecipients,
   PendingRegistrationStore,
   goldenTicketCoverage,
+  withRefundInFlight,
+  allowanceCovers,
+  deriveAllowanceState,
 } from "@obsidion/front-core"
 import {
+  committedProverTip,
   loadRegistrationTerms,
   PAYLINK_TICKET_REFUSED_MESSAGE,
+  quoteExpired,
   registrationOffer,
   signedSchedule,
 } from "../onboarding/registrationTerms"
+import { recordBurnDuration } from "../withdraw/burnTiming"
 import { fpcFundingCut } from "../fees/fpcFundingCut"
 import { isFlowCancelled, runOperation, type OperationHandle } from "../operations/operations"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { walletStorage } from "../../platform/storage/walletStorage"
 import { withTimeout } from "../../lib/withTimeout"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
-import { amountBucket, firePaylinkEvent, paylinkPh, type PaylinkEvent } from "../../lib/analytics"
+import {
+  firePaylinkEvent,
+  paylinkAmountBucket,
+  paylinkPh,
+  type PaylinkEvent,
+} from "../../lib/analytics"
 import { holdSigningFlow } from "../../lib/passkeyTelemetry"
 import { getConfig } from "../../config/env"
 import { emailLockedLinksEnabled } from "../../config/features"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { maybeRefuelFpc } from "../fees/fpcRefuel"
 import { findHistoricTuple, historicTokenContext } from "../migration/historicTokenContext"
+import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
 import {
   claimSponsorContext,
   claimSponsorRail,
   noteSubscribed,
 } from "../onboarding/claimSponsorship"
 import { latestChainSeconds } from "./chainTime"
+import { owePaylinkClaim, reportPaylinkClaims } from "./paylinkClaimReport"
 import { canCancelAt } from "./claimWindow"
 import { RAIL_REGISTERED, RAIL_VOUCHER } from "../onboarding/rails"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
@@ -137,7 +149,6 @@ export interface ViewLinkDeps {
   contractService: ContractService
   /** When present, `sync_note` simulates from this account instead of the placeholder. */
   account?: ObsidionAccount
-  tokenService?: TokenService
 }
 
 interface PendingDeposit {
@@ -161,7 +172,7 @@ function service(deps: SponsoredPaylinkDeps): PaylinkService {
 /** Parked funding deposits, or [] when the key is absent or unparseable. */
 function readPendingDeposits(): PendingDeposit[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(PENDING_DEPOSITS_KEY) ?? "[]")
+    const parsed = JSON.parse(walletStorage.getItem(PENDING_DEPOSITS_KEY) ?? "[]")
     return Array.isArray(parsed) ? parsed : []
   } catch {
     return []
@@ -179,7 +190,7 @@ export function hasPendingDeposits(): boolean {
 }
 
 /**
- * Redeem funding deposits parked in localStorage by `pnpm sandbox:fund-oxide`
+ * Redeem funding deposits parked in wallet storage by the e2e funding helper
  * (STORE PARAMS): `store_deposit` is a free utility sim in this PXE;
  * the create tx then claims the deposit lazily.
  */
@@ -202,7 +213,7 @@ async function redeemPendingDeposits(deps: SponsoredPaylinkDeps): Promise<void> 
       if (!/already|dedup/i.test(msg)) remaining.push(dep)
     }
   }
-  localStorage.setItem(PENDING_DEPOSITS_KEY, JSON.stringify(remaining))
+  walletStorage.setItem(PENDING_DEPOSITS_KEY, JSON.stringify(remaining))
 }
 
 /**
@@ -350,6 +361,7 @@ export async function markCreateRowRefunded(
   flavor: LinkFlavor,
   account: string,
   refundTxHash?: string,
+  refundKind?: PaylinkRecovery,
 ): Promise<void> {
   try {
     await TransactionStorage.get(webStorage).updateTransaction(
@@ -359,6 +371,7 @@ export async function markCreateRowRefunded(
         ptx.isRefunded = true
         ptx.paylink = undefined
         if (refundTxHash) ptx.refundTxHash = refundTxHash
+        if (refundKind) ptx.refundKind = refundKind
       },
     )
   } catch (e) {
@@ -372,11 +385,14 @@ export async function markCreateRowRefundSubmitted(
   flavor: LinkFlavor,
   account: string,
   refundTxHash: string,
+  refundKind: PaylinkRecovery,
 ): Promise<void> {
   await TransactionStorage.get(webStorage).updateTransaction(
     createRowMatcher(secret, flavor, account),
     (tx) => {
-      ;(tx as PaylinkTransaction).refundTxHash = refundTxHash
+      const ptx = tx as PaylinkTransaction
+      ptx.refundTxHash = refundTxHash
+      ptx.refundKind = refundKind
     },
   )
 }
@@ -417,7 +433,7 @@ function emitPaylinkStage(
       firePaylinkEvent({
         stage,
         flavor,
-        amount_bucket: amount === undefined ? "unknown" : amountBucket(amount, decimals),
+        amount_bucket: paylinkAmountBucket(amount, decimals),
         paylink_ph: ph,
       }),
     )
@@ -492,10 +508,11 @@ async function linkVoucher(
 }
 
 /**
- * Whether a link created now can carry a voucher: the deployment offers the voucher rail and
- * the creator's allowance covers both the create and the gift it pops. A creator not yet subscribed
- * on the open rail subscribes in the create batch and holds the whole allowance. Never throws — a
- * link without a voucher is still a link.
+ * Whether a link created now can carry a voucher: the deployment offers the voucher rail and the
+ * creator's allowance covers both the create and the gift it pops. A creator not yet subscribed on
+ * the open rail subscribes in the create batch and holds the whole allowance. A stored zero counts as
+ * none, since the read cannot say whether the create renews it. Never throws — a link without a
+ * voucher is still a link.
  */
 export async function voucherAvailable(deps: SponsoredPaylinkDeps): Promise<boolean> {
   try {
@@ -504,25 +521,14 @@ export async function voucherAvailable(deps: SponsoredPaylinkDeps): Promise<bool
         // The deployment has to offer the rail at all — an older one has no voucher slot.
         await claimSponsorRail(deps, RAIL_VOUCHER)
         const { sponsor } = await claimSponsorRail(deps, RAIL_REGISTERED)
-        const user = deps.account.getAddress()
-        const uses = await claimFpcSubscriptionUses(
+        const allowance = await readClaimFpcAllowance(
           deps.wallet,
           sponsor.fpcAddress,
           sponsor.fpcArtifact,
-          user,
+          deps.account.getAddress(),
           sponsor.railId,
         )
-        if (uses >= 2) return true
-        // A stored 0 is either no subscription (the create subscribes, full allowance) or an
-        // allowance spent today; 1 covers the create alone.
-        if (uses === 1) return false
-        return !(await hasClaimFpcSubscription(
-          deps.wallet,
-          sponsor.fpcAddress,
-          sponsor.fpcArtifact,
-          user,
-          sponsor.railId,
-        ))
+        return allowanceCovers(deriveAllowanceState(allowance), 2)
       })(),
       VOUCHER_CHECK_TIMEOUT_MS,
     )
@@ -794,7 +800,6 @@ async function claimSponsoredLinkFlow(
       throw new TxInFlightError(broadcast, err)
     }
     await burn?.mined(txHash)
-    patchClaimRowMemo(svc, params, queueId)
     if (sponsor.subscribe) noteSubscribed(deps.account, sponsor.fpcAddress, sponsor.railId)
     maybeRefuelFpc({ ...deps, fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact } })
     onStage?.("submitting")
@@ -888,11 +893,11 @@ export async function claimRail(
 /**
  * The golden ticket's second half: when this account's registration still waits for its deposit,
  * the claim batch also burns the ticket quote to the registration SIPA, so the link pays for the
- * tag. The quote is `goldenTicketCoverage` off the signed schedule and the portal's live cut on
- * both legs. Undefined leaves an ordinary claim as it was; a required burn that cannot be priced
- * or covered refuses the claim, as does one the SIPA cannot take yet: lapsed terms need a renewal
- * and an unpublished address its broadcast before a burn to it is swept, and the burn is the
- * irreversible half.
+ * tag. The quote is `goldenTicketCoverage` off the signed schedule, the portal's live cut on both
+ * legs and the prover tip the review committed, none when it committed nothing. Undefined leaves an
+ * ordinary claim as it was; a required burn that cannot be priced or covered refuses the claim, as
+ * does one the SIPA cannot take yet: lapsed terms need a renewal and an unpublished address its
+ * broadcast before a burn to it is swept, and the burn is the irreversible half.
  */
 export async function registrationSlice(
   deps: SponsoredPaylinkDeps,
@@ -921,7 +926,7 @@ export async function registrationSlice(
   if (offer.blocked) {
     throw new RegistrationFundingError("blocked", PAYLINK_TICKET_REFUSED_MESSAGE)
   }
-  if (terms !== null && terms.deadline > 0 && nowMs > terms.deadline * 1000) {
+  if (quoteExpired(terms, nowMs)) {
     throw new RegistrationFundingError(
       "expired",
       "the registration's reservation lapsed; renew it before the link funds it",
@@ -956,10 +961,13 @@ export async function registrationSlice(
   } catch (err) {
     throw unpriced("funding cut", err)
   }
-  const coverage = goldenTicketCoverage(noteAmount, schedule, {
-    withdrawalCut: cut,
-    depositCut: cut,
-  })
+  const proverTip = committedProverTip(terms)
+  const coverage = goldenTicketCoverage(
+    noteAmount,
+    schedule,
+    { withdrawalCut: cut, depositCut: cut },
+    proverTip,
+  )
   if (!coverage.covers) {
     throw new RegistrationFundingError(
       "uncovered",
@@ -976,7 +984,7 @@ export async function registrationSlice(
     l1Recipient: EthAddress.fromString(record.sipaAddress),
     amount: coverage.burn,
     relayerTip: WITHDRAW_RELAYER_TIP,
-    proverTip: GOLDEN_TICKET_PROVER_TIP,
+    proverTip,
     fundingCut: cut,
     target: coverage.sipaTarget,
     withdrawal,
@@ -1000,6 +1008,7 @@ async function seedRegistrationBurn(
   const token = await deps.tokenService.fetchTokenInformation()
   const tuple = await getOxideTuple(getConfig())
   const localId = newWithdrawalLocalId()
+  const startTime = Date.now()
   await store.create({
     localId,
     operationId,
@@ -1008,14 +1017,15 @@ async function seedRegistrationBurn(
     source: "paylink",
     intent: "registration",
     paylinkId: paylinkIdentity(params),
-    amount: formatUnits(slice.target, tokenDecimalsForNetwork(getConfig().network)),
+    // The gross the batch burns: what leaves the balance, and what the feed's row shows.
+    amount: formatUnits(slice.amount, tokenDecimalsForNetwork(getConfig().network)),
     rawAmount: slice.amount.toString(),
     relayerTip: slice.relayerTip.toString(),
-    proverTip: slice.proverTip.toString(),
+    ...(slice.proverTip ? { proverTip: slice.proverTip.toString() } : {}),
     fpcFundingCut: slice.fundingCut.toString(),
     tokenSymbol: token.symbol,
     phase: "submitting",
-    startTime: Date.now(),
+    startTime,
     deployment: await currentDeployment(tuple),
   })
   // The claim's own tracker announces the batch, once this stamp and its row both saved.
@@ -1054,6 +1064,7 @@ async function seedRegistrationBurn(
     },
     /** Mined. Nothing here may fail the claim: a record left at its hash resumes on the next boot. */
     async mined(txHash: string): Promise<void> {
+      const durationMs = Date.now() - startTime
       await submission.stop()
       try {
         const [published, receipt] = await Promise.all([
@@ -1072,6 +1083,7 @@ async function seedRegistrationBurn(
                 (published?.relayerTip ?? slice.relayerTip).toString(),
               )
             : await store.patch(localId, { phase: "submitting", l2TxHash: txHash as Hex })
+        if (receipt?.blockNumber !== undefined) void recordBurnDuration(durationMs)
         await arm(record)
       } catch (e) {
         console.warn("registration burn mined; its record could not be updated, resumes on boot", e)
@@ -1108,6 +1120,8 @@ export function claimLinkToL1(
   zkProof?: PaylinkL1Proof,
   /** A leg planned ahead of the burn (an email proof binds to its escrow); planned here otherwise. */
   swap?: SwapLeg,
+  /** Paid to the first prover of the burn's checkpoint; a planned leg's must match. */
+  proverTip = 0n,
 ): Promise<WithdrawalRecord> {
   const live = inFlightL1Claims.get(fragment)
   if (live) return live
@@ -1127,6 +1141,7 @@ export function claimLinkToL1(
         quote,
         zkProof,
         swap,
+        proverTip,
       ),
   ).finally(() => inFlightL1Claims.delete(fragment))
   inFlightL1Claims.set(fragment, run)
@@ -1141,10 +1156,20 @@ export async function planLinkClaimSwap(
   recipient: Address,
   receiveAsset: WithdrawalReceiveAsset,
   quote?: SwapCommit,
+  proverTip = 0n,
 ): Promise<SwapLeg | undefined> {
   const { note, tuple } = await readPaylinkSource(deps, fragment)
   if (note.amount !== amount) throw new Error("The link balance changed; reopen the withdrawal")
-  return planSwapLeg(deps.wallet, receiveAsset, recipient, amount, quote, undefined, tuple)
+  return planSwapLeg(
+    deps.wallet,
+    receiveAsset,
+    recipient,
+    amount,
+    quote,
+    undefined,
+    tuple,
+    proverTip,
+  )
 }
 
 async function claimLinkToL1Flow(
@@ -1159,7 +1184,9 @@ async function claimLinkToL1Flow(
   quote?: SwapCommit,
   zkProof?: PaylinkL1Proof,
   planned?: SwapLeg,
+  proverTip = 0n,
 ): Promise<WithdrawalRecord> {
+  const startedAt = Date.now()
   onStage("building")
   const network = getConfig().network
   const { params, note, tuple } = await readPaylinkSource(liveDeps, fragment)
@@ -1170,10 +1197,12 @@ async function claimLinkToL1Flow(
   const svc = service(deps)
   // The burn spends the escrow note and the fee comes off it. A note that cannot clear the fee
   // would revert, or leave the recipient nothing — refuse up front, and take the mined burn's
-  // figures as the truth below.
+  // figures as the truth below. The whole note is the withdrawal the limit counts.
   const amount = note.amount
+  const decimals = tokenDecimalsForNetwork(network)
+  assertWithinWithdrawalLimit(amount, "link", decimals)
   const cut = await fpcFundingCut(l1PublicClient(getConfig()), tuple.portal as Address)
-  const fee = WITHDRAW_RELAYER_TIP + cut
+  const fee = WITHDRAW_RELAYER_TIP + cut + proverTip
   if (amount <= fee) {
     throw new Error("This link holds too little to cover the withdrawal fee")
   }
@@ -1186,12 +1215,20 @@ async function claimLinkToL1Flow(
   const sponsor = await claimSponsorContext(deps, RAIL_REGISTERED, { tuple })
   // The escrow is sized off the note; the burn refuses to sign if the note holds anything else.
   const swap =
-    planned ?? (await planLinkClaimSwap(deps, fragment, amount, recipient, receiveAsset, quote))
+    planned ??
+    (await planLinkClaimSwap(deps, fragment, amount, recipient, receiveAsset, quote, proverTip))
   assertPaylinkSwapSource(swap, tuple)
   const withdrawal = await withdrawalOptions(tuple, swap)
   const token = await deps.tokenService.fetchTokenInformation()
-  const decimals = tokenDecimalsForNetwork(getConfig().network)
   op.describe(`$${formatUnits(amount - fee, decimals)} to ${recipientAlias?.trim() || "Ethereum"}`)
+  const paylinkId = paylinkIdentity(params)
+  await owePaylinkClaim(webStorage, paylinkId, {
+    rollupAddress: deps.rollupAddress,
+    secret: params.secret,
+    flavor,
+    amount,
+    decimals,
+  })
   const { record, result } = await runBurn({
     op,
     wallet: deps.wallet,
@@ -1200,10 +1237,11 @@ async function claimLinkToL1Flow(
       recipientProvenance: "saved-recipient",
       recipientAlias: recipientAlias?.trim() || undefined,
       source: "paylink",
-      paylinkId: paylinkIdentity(params),
+      paylinkId,
       amount: formatUnits(amount - fee, decimals),
       rawAmount: amount.toString(),
       relayerTip: WITHDRAW_RELAYER_TIP.toString(),
+      ...(proverTip ? { proverTip: proverTip.toString() } : {}),
       fpcFundingCut: cut.toString(),
       tokenSymbol: token.symbol,
       phase: "submitting",
@@ -1218,7 +1256,7 @@ async function claimLinkToL1Flow(
       return svc.claimSponsoredPaylinkToL1(
         params,
         EthAddress.fromString(withdrawalRecipients(seeded).release),
-        { proverTip: 0n, withdrawal },
+        { proverTip, withdrawal },
         sponsor,
         { operationId: op.operationId, zkProof },
       )
@@ -1233,7 +1271,10 @@ async function claimLinkToL1Flow(
       )
     },
   })
+  // A burn left to the chain reports once the tracker marks its record mined.
+  void reportPaylinkClaims(getWithdrawalStore().list(), webStorage)
   if (!result) return record
+  void recordBurnDuration(Date.now() - startedAt)
   // Mined and irreversible: none of this may fail the record.
   onStage("submitting")
   let mined = record
@@ -1253,7 +1294,6 @@ async function claimLinkToL1Flow(
       deps.account.getAddress().toString(),
     )
     void upsertSavedL1WalletContact({ address: recipient, name: recipientAlias })
-    emitPaylinkStage("claimed", flavor, deps, params.secret, amount, decimals)
   } catch (e) {
     console.warn("paylink claim_to_l1 mined; post-mine bookkeeping failed", e)
   }
@@ -1280,7 +1320,11 @@ export function recoverSponsoredLink(
       flow: "paylink-reclaim",
       summary: linkSummary(null),
     },
-    (op) => recoverSponsoredLinkFlow(op, deps, fragment, onStage),
+    // The link reads as refunding from here: its row learns the refund's hash only at submit.
+    (op) =>
+      withRefundInFlight(decodePaylinkInline(fragment).secret.toString(), () =>
+        recoverSponsoredLinkFlow(op, deps, fragment, onStage),
+      ),
     (txHash) => txHash,
   )
 }
@@ -1329,6 +1373,7 @@ async function recoverSponsoredLinkFlow(
   const svc = service(deps)
   const sponsor = await claimSponsorContext(deps, RAIL_REGISTERED, { tuple })
   const expired = row?.untilClaimable != null && now > row.untilClaimable
+  const refundKind: PaylinkRecovery = expired ? "reclaim" : "cancel"
   if (!expired && row?.refundableUntil != null && !canCancelAt(row.refundableUntil, now)) {
     throw new PaylinkWindowClosedError()
   }
@@ -1351,7 +1396,7 @@ async function recoverSponsoredLinkFlow(
   // otherwise read the spent note as a recipient's claim.
   const submission = trackSubmission(operationId, async (txHash) => {
     await saveRowTxHash(queueId)(txHash)
-    await markCreateRowRefundSubmitted(secret, flavor, account, txHash)
+    await markCreateRowRefundSubmitted(secret, flavor, account, txHash, refundKind)
   })
   let txHash: string
   try {
@@ -1362,7 +1407,7 @@ async function recoverSponsoredLinkFlow(
     maybeRefuelFpc({ ...deps, fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact } })
     onStage?.("submitting")
     await finishPaylinkRow(queueId, txHash)
-    await markCreateRowRefunded(secret, flavor, account, txHash)
+    await markCreateRowRefunded(secret, flavor, account, txHash, refundKind)
   } catch (e) {
     throw await paylinkFailure(queueId, e, submission, deps.wallet.node)
   } finally {
@@ -1441,15 +1486,14 @@ export function emitLinkOpened(rollupAddress: string, fragment: string): void {
 }
 
 /**
- * `PaylinkService` requires an Account/TokenService in its constructor, but
- * `isPaylinkClaimed` only uses wallet.node + contractService. Placeholder keeps
- * the status path runnable before passkey unlock.
+ * `PaylinkService` requires an Account/TokenService in its constructor, but the status and note
+ * reads use neither: the memo comes off the token the escrow note names. Placeholders keep the
+ * status path runnable before passkey unlock.
  */
 function statusService(deps: ViewLinkDeps): PaylinkService {
   const sender =
     deps.account ?? ({ getAddress: () => AztecAddress.ZERO } as unknown as ObsidionAccount)
-  const tokenService = deps.tokenService ?? ({} as TokenService)
-  return new PaylinkService(deps.wallet, sender, tokenService, deps.contractService)
+  return new PaylinkService(deps.wallet, sender, {} as TokenService, deps.contractService)
 }
 
 /**
@@ -1477,6 +1521,7 @@ export async function viewLink(deps: ViewLinkDeps, fragment: string): Promise<Pa
       amount: formatUnits(resolved.note.amount, decimals),
       tokenAddress: resolved.note.tokenAddress.toString(),
       claimableFrom: resolved.note.claimableFrom,
+      claimableUntil: resolved.note.claimableUntil,
       memo: resolved.memo,
       email: resolved.email,
       commitment: resolved.commitment.toString(),

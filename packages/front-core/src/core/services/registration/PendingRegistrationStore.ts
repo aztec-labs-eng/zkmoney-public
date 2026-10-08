@@ -67,12 +67,6 @@ export interface PendingRegistrationRecord {
   depositToken: Hex
   /** Whether the initial broadcast to relayers landed (the SIPA is discoverable). */
   broadcast: boolean
-  /** ms epoch of the last broadcast. Paces the re-broadcast nudge: without it a funded record that
-   *  never gets swept re-broadcasts on every poll, each one a client proof. */
-  lastBroadcastAt?: number
-  /** ms epoch a session began proving a broadcast that has not landed. A tick inside the in-flight
-   *  window leaves the record to that session instead of proving again. */
-  broadcastStartedAt?: number
   /** ms epoch a funding transfer at/above the floor was first seen at the SIPA. */
   fundedAt?: number
   /** The L1 transfer that funded the SIPA (self-initiated deposits only; a third-party's is invisible). */
@@ -86,13 +80,13 @@ export interface PendingRegistrationRecord {
   refundedEntry?: { sipaAddress: string; recoveryTxHash: Hex; amount: string }
   /** The address this one replaced. `refunded`: its deposit was recovered first. `broadcastSpent`:
    *  it, or one before it, used the account's one-shot broadcast, so only a manual sweep registers
-   *  this address and the tick never re-broadcasts it. */
+   *  this address and nothing broadcasts it. */
   replaced?: { sipaAddress: string; refunded: boolean; broadcastSpent: boolean }
 
   phase: PendingRegistrationPhase
   /** ms epoch before which resume must not re-run mutating calls (server Retry-After / backoff floor). */
   nextAttemptAt?: number
-  /** Armed re-broadcast cycles — incremented only once sign-deps are in hand, right before signDomain. */
+  /** Forced re-sign cycles — incremented only once sign-deps are in hand, right before signDomain. */
   retries: number
   /** ms epoch when the session created the record. */
   startTime: number
@@ -102,7 +96,7 @@ export interface PendingRegistrationRecord {
 
 export const PENDING_REGISTRATION_STORAGE_KEY = "@obsidion/pending-registration/records"
 
-/** Silent re-broadcasts stop being silent past either bound; detection continues. */
+/** Past either bound the registration reads as escalated: the pending step leads with its retry. */
 export const ESCALATION_MAX_RETRIES = 3
 export const ESCALATION_MAX_AGE_MS = 48 * 60 * 60 * 1000
 
@@ -116,7 +110,7 @@ export function isTerminalRegistrationPhase(phase: PendingRegistrationPhase): bo
   return TERMINAL_PHASES.has(phase)
 }
 
-/** Past either bound the machine stops silent re-broadcasting; the re-broadcast branch becomes manual-only. */
+/** Whether the registration is past either escalation bound. */
 export function isRegistrationEscalated(
   record: Pick<PendingRegistrationRecord, "retries" | "startTime">,
   nowMs: number = Date.now(),

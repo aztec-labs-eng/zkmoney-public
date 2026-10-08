@@ -2,9 +2,6 @@ import { amountError, decimalInput } from "../../ui/format"
 import { PrimaryGradientButton, TextField } from "@obsidion/web-ds"
 import { TRANSFER_MEMO_MAX_BYTES, truncateUtf8 } from "@obsidion/sdk"
 
-/** Request notes ride XMTP, not the on-chain memo (whose guaranteed budget is TRANSFER_MEMO_MAX_BYTES). */
-const REQUEST_NOTE_MAX_CHARS = 500
-
 export function PayAmountForm({
   amount,
   note,
@@ -64,11 +61,7 @@ export function PayAmountForm({
         label="Add note (optional)"
         placeholder="e.g. dinner"
         value={note}
-        onChange={(v) =>
-          onNote(
-            isSend ? truncateUtf8(v, TRANSFER_MEMO_MAX_BYTES) : v.slice(0, REQUEST_NOTE_MAX_CHARS),
-          )
-        }
+        onChange={(v) => onNote(truncateUtf8(v, TRANSFER_MEMO_MAX_BYTES))}
         onSubmit={go}
       />
       <PrimaryGradientButton

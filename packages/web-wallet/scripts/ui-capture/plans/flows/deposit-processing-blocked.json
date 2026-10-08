@@ -1,0 +1,83 @@
+{
+  "scenario": "activity",
+  "bootstrap": "/?demo=activity&flowFixture=success&capacityFixture=empty",
+  "path": "/activity",
+  "ready": {
+    "text": "Waiting for capacity",
+    "first": true
+  },
+  "steps": [
+    {
+      "action": "reachable",
+      "text": "+$17.65",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "activity.png",
+      "state": "Activity rows: a fresh deposit and a stuck one both state the confirmed capacity wait; the stuck one offers Recover, not a sweep"
+    },
+    {
+      "action": "click",
+      "text": "+$17.65",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "testId": "deposit-pending-reason"
+    },
+    {
+      "action": "screenshot",
+      "file": "detail.png",
+      "state": "Deposit detail: waiting for network capacity, amounts, last checked, Check again"
+    },
+    {
+      "action": "scroll",
+      "selector": "dialog:modal .ww-modal",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "detail-actions.png",
+      "state": "Deposit detail end: the offered exit is Recover, not a sweep"
+    },
+    {
+      "action": "click",
+      "selector": "dialog:modal >> role=button[name=\"Recover\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal >> text=\"Recover deposit\""
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal >> role=button[name=\"Sweep now\"]",
+      "state": "detached"
+    },
+    {
+      "action": "screenshot",
+      "file": "exit.png",
+      "state": "Recover-only sheet: the capacity reason and Connect wallet, no sweep offered"
+    },
+    {
+      "action": "click",
+      "selector": "dialog:modal >> role=button[name=\"Connect wallet\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal >> role=button[name=\"Connect wallet\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "scroll",
+      "selector": "dialog:modal .ww-modal",
+      "top": "end"
+    },
+    {
+      "action": "screenshot",
+      "file": "exit-actions.png",
+      "state": "Recover-only sheet with a connected wallet: Recover to the connected address enabled, no sweep offered"
+    }
+  ],
+  "finalScreenshot": false
+}

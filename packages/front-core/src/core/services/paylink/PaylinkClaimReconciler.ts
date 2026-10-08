@@ -195,6 +195,7 @@ export class PaylinkClaimReconciler {
             ptx.paylink = undefined
           } else {
             ptx.refundTxHash = undefined
+            ptx.refundKind = undefined
           }
         },
       )

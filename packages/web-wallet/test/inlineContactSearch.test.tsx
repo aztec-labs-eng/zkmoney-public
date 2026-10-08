@@ -8,6 +8,10 @@ const mocks = vi.hoisted(() => ({
   fresh: vi.fn(),
   add: vi.fn(),
   entries: vi.fn(),
+  probe: vi.fn(),
+}))
+vi.mock("../src/features/onboarding/nameAvailability", () => ({
+  probeNameAvailability: mocks.probe,
 }))
 vi.mock("../src/features/contacts/registryResolution", () => ({
   resolveTagViaRegistry: mocks.resolve,
@@ -70,6 +74,7 @@ describe("shared inline contact verification", () => {
     mocks.fresh.mockResolvedValue(hit())
     mocks.add.mockResolvedValue(undefined)
     mocks.entries.mockResolvedValue([])
+    mocks.probe.mockResolvedValue({ status: "unknown", grantValid: false, grantBound: false })
     container = document.createElement("div")
     document.body.append(container)
     root = createRoot(container)
@@ -78,6 +83,36 @@ describe("shared inline contact verification", () => {
     act(() => root.unmount())
     container.remove()
     vi.useRealTimers()
+  })
+
+  it.each([
+    ["reserved", "reserved"],
+    ["available", "no-user-found"],
+  ])(
+    "keeps a miss looking up until the claim server answers: %s reads %s",
+    async (status, kind) => {
+      mocks.resolve.mockResolvedValue({ status: "notFound" })
+      const answer = deferred<{ status: string; grantValid: boolean; grantBound: boolean }>()
+      mocks.probe.mockReturnValueOnce(answer.promise)
+      await resolveQuery("bob")
+      expect(current.panel).toEqual({ kind: "looking-up", tag: "bob" })
+      await act(async () => answer.resolve({ status, grantValid: false, grantBound: false }))
+      expect(current.panel).toEqual({ kind, tag: "bob" })
+      await render("bob")
+      expect(mocks.probe).toHaveBeenCalledTimes(1)
+    },
+  )
+
+  it("asks again on a later search, so an unknown answer does not stick", async () => {
+    mocks.resolve.mockResolvedValue({ status: "notFound" })
+    await resolveQuery("bob")
+    await act(async () => {})
+    expect(current.panel).toEqual({ kind: "no-user-found", tag: "bob" })
+    mocks.probe.mockResolvedValue({ status: "reserved", grantValid: false, grantBound: false })
+    await resolveQuery("bo")
+    await resolveQuery("bob")
+    await act(async () => {})
+    expect(current.panel).toEqual({ kind: "reserved", tag: "bob" })
   })
 
   it("shows busy and prevents repeat Add while fresh verification is pending", async () => {

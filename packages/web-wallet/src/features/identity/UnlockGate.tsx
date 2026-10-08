@@ -1,3 +1,4 @@
+import { leavePage } from "../../platform/storage/walletStorage"
 import { useEffect, useRef, useState, type ReactNode } from "react"
 import { Navigate } from "react-router-dom"
 import { useAccountContext, useAztecContext } from "@obsidion/front-core"
@@ -6,7 +7,7 @@ import { isDemoMode } from "../../dev/demoFlag"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
 import {
-  isPasskeyCancelled,
+  inAppBrowserRefusal,
   isPasskeyPolicyError,
   type PasskeyAttemptHandle,
 } from "@obsidion/passkey-web"
@@ -17,7 +18,12 @@ import { hasRecordFor } from "../../platform/auth/WebPasskeyIdentityMap"
 import { getActiveCredentialId } from "../../platform/storage/activeStorage"
 import { useAsyncAction } from "../../ui/hooks"
 import { BootSplash } from "../../ui/PxeBoot"
-import { PasskeyRefusal, STORED_ADDRESS_MISMATCH, type RouteRefusal } from "./PasskeyRefusal"
+import {
+  PasskeyRefusal,
+  STORED_ADDRESS_MISMATCH,
+  isPasskeyNotOffered,
+  type RouteRefusal,
+} from "./PasskeyRefusal"
 import { signOut } from "./signOut"
 
 /**
@@ -82,7 +88,7 @@ export function UnlockGate({ children }: { children: ReactNode }) {
         )
       } catch (e) {
         // A superseded attempt's late answer belongs to nobody: the newer tap owns the pane.
-        if (controller.signal.aborted || isPasskeyCancelled(e)) return
+        if (controller.signal.aborted || isPasskeyNotOffered(e)) return
         if (e instanceof Error && e.name === "NoPasskeySessionError") {
           setToEnter(true)
           return
@@ -101,6 +107,13 @@ export function UnlockGate({ children }: { children: ReactNode }) {
         if (isPasskeyPolicyError(e)) {
           fireEvent("action_failed", { action: "identity:unlock", code: failureCode(e) })
           setRefusal({ name: e.name, message: e.message })
+          return
+        }
+        // Closed prompts returned above, an iOS app's included: only a NotSupportedError is left.
+        const unusable = inAppBrowserRefusal(e)
+        if (unusable) {
+          fireEvent("action_failed", { action: "identity:unlock", code: failureCode(e) })
+          setRefusal({ ...unusable, cause: e })
           return
         }
         throw e
@@ -122,7 +135,7 @@ export function UnlockGate({ children }: { children: ReactNode }) {
     attemptRef.current?.userCancelled()
     void run(async () => {
       await signOut()
-      location.assign(
+      await leavePage(
         avoid ? `/enter?choose=1&avoid=${encodeURIComponent(avoid)}` : "/enter?choose=1",
       )
     }, "identity:choose-passkey")
@@ -168,6 +181,8 @@ export function UnlockGate({ children }: { children: ReactNode }) {
               : undefined
           }
           exits={exits}
+          escapePath="/enter"
+          reportContext="identity:unlock"
           testId="unlock-refused"
           retryTestId="unlock-retry"
         />

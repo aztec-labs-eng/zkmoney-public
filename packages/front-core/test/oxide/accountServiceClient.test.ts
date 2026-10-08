@@ -208,6 +208,27 @@ describe("AccountServiceClient HTTP", () => {
     })
   })
 
+  it("checks a grant in the POST body without putting the token in the URL", async () => {
+    fetchMock.mockResolvedValueOnce(
+      json({ status: "blocked", blocked: true, grantValid: false, grantBound: true }),
+    )
+    const client = new AccountServiceClient("https://acct.test", { readOnly: true })
+
+    expect(await client.availableNameDetails(`0x${"ab".repeat(32)}`, "grant-token")).toEqual({
+      status: "blocked",
+      blocked: true,
+      grantValid: false,
+      grantBound: true,
+    })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe("https://acct.test/domain/available")
+    expect(init.method).toBe("POST")
+    expect(JSON.parse(init.body)).toEqual({
+      nameHash: `0x${"ab".repeat(32)}`,
+      grantToken: "grant-token",
+    })
+  })
+
   it("retries a read whose fetch rejected, since nothing was processed", async () => {
     fetchMock
       .mockRejectedValueOnce(new TypeError("network down"))

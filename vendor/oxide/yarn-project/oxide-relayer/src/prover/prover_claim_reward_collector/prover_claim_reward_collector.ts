@@ -6,9 +6,10 @@ import { AztecNode } from '@aztec/stdlib/interfaces/server';
 
 import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
 
-import type { L1SubmissionBatcher } from '../../l1_submission_batcher.js';
+import type { PublicClient } from 'viem';
+
+import type { L1TxQueue } from '../../l1/l1_tx_queue.js';
 import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
-import { RelayerL1TxUtils } from '../../relayer_l1_tx_utils.js';
 import { ProverClaimDiscoverer, ProverClaimPortalConfig } from '../prover_claim_lib/index.js';
 import { Binding } from '../types.js';
 import { BatchPublisher } from './batch_publisher.js';
@@ -32,12 +33,12 @@ export interface ProverClaimRewardCollectorCreateOptions {
   proverId: EthAddress;
   portal: OxidePortalContract;
   rollup: RollupContract;
+  client: PublicClient;
   /**
-   * Tx utils to submit through. The host shares one signer across subsystems, so every send goes on the one
+   * Queue to submit through. The host shares one signer across subsystems, so every send goes on the one
    * queue and nonces cannot race. Its sender must be `proverId`.
    */
-  l1TxUtils: RelayerL1TxUtils;
-  l1SubmissionBatcher?: L1SubmissionBatcher;
+  l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>;
   node: AztecNode;
   portals: ProverClaimPortalConfig[];
   priceOracle: ChainlinkPriceOracle;
@@ -78,8 +79,8 @@ export class ProverClaimRewardCollector {
 
     this.publisher = new BatchPublisher({
       portal: options.portal,
-      l1TxUtils: options.l1TxUtils,
-      l1SubmissionBatcher: options.l1SubmissionBatcher,
+      client: options.client,
+      l1TxQueue: options.l1TxQueue,
       confirmations: options.trackerOptions?.confirmations ?? config.FIRST_PROVER_TRACKER__MIN_CONFIRMATIONS,
       log: this.log,
     });
@@ -101,9 +102,10 @@ export class ProverClaimRewardCollector {
       portals: options.portals,
       backlog: this.backlog,
       priceOracle: options.priceOracle,
-      getEffectiveGasPriceWei: () => options.portal.client.getGasPrice(),
+      getFeeValues: () => options.client.estimateFeesPerGas(),
+      maxFeePerGasCap: options.l1TxQueue.maxFeePerGasCap,
       publisher: this.publisher,
-      senderAddress: options.l1TxUtils.getSenderAddress(),
+      senderAddress: EthAddress.fromString(options.l1TxQueue.address),
       minBatchProfit: options.minBatchProfit ?? config.PROVER_CLAIM__MIN_BATCH_PROFIT,
       onError: error => this.log.error(`Prover claim batch submitter error: ${error}`),
       log: this.log,
@@ -125,9 +127,9 @@ export class ProverClaimRewardCollector {
   }
 
   static async create(options: ProverClaimRewardCollectorCreateOptions): Promise<ProverClaimRewardCollector> {
-    const l1Client = options.l1TxUtils.client;
+    const l1Client = options.client;
 
-    const sender = options.l1TxUtils.getSenderAddress();
+    const sender = EthAddress.fromString(options.l1TxQueue.address);
     if (!sender.equals(options.proverId)) {
       throw new Error(
         `Prover claim collector must sign with the prover's key: sender is ${sender}, proverId is ${options.proverId}`,

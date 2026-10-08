@@ -1,11 +1,12 @@
 import { RollupContract } from '@aztec/ethereum/contracts/rollup';
-import { ViemClient } from '@aztec/ethereum/types';
 import { maxBigint } from '@aztec/foundation/bigint';
 import { CheckpointNumber, SlotNumber } from '@aztec/foundation/branded-types';
 import { Logger, createLogger } from '@aztec/foundation/log';
 
+import type { PublicClient } from 'viem';
+
 export interface ResolveStartBlockOptions {
-  client: ViemClient;
+  client: Pick<PublicClient, 'getBlockNumber' | 'getBlock'>;
   rollup: RollupContract;
   /** Size of the rollup's circular checkpoint-log buffer. */
   roundaboutSize: number;

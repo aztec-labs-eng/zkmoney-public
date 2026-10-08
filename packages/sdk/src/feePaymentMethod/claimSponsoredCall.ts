@@ -374,7 +374,7 @@ export async function parseClaimFpcPolicyManifest(raw: unknown): Promise<ClaimFp
   if (!raw || typeof raw !== "object")
     throw new Error(
       "ClaimFPC policy manifest is missing — deploy it with " +
-        "`pnpm run:deploy -n <network>` from packages/backend",
+        "`pnpm run:deploy -n <network>` from packages/tooling/l2-contracts-deployer",
     )
   const manifest = raw as Partial<ClaimFpcPolicyManifest>
   if (manifest.version !== CLAIM_FPC_POLICY_VERSION) {
@@ -536,10 +536,10 @@ interface CommonOpts {
   innerCalls: FunctionCall[]
   classWitnesses?: (ClassWitnessInput | undefined)[]
   /**
-   * Intent hashes the batch's `authorize_intents` call authorizes. The FPC
-   * never sees these — they feed the PXE-side capsule `verify_private_authwit` reads, and
-   * `combinedAuthWitness` (the user's one signature over their intents-only hash) rides the
-   * payload for the account's oracle load.
+   * The intent list the account's intents note commits to. The FPC never sees these — they feed
+   * the PXE-side capsule `verify_private_authwit` reads. `combinedAuthWitness` (the user's one
+   * signature over their intents-only hash) rides the payload of the batch whose
+   * `authorize_intents` call writes that note; a batch that only reads the note carries none.
    */
   intentHashes?: Fr[]
   combinedAuthWitness?: AuthWitness
@@ -611,7 +611,11 @@ async function buildPayload(
   extraArgsPreimages: HashedValues[] = [],
 ): Promise<ExecutionPayload> {
   const intentHashes = opts.intentHashes ?? []
-  if (intentHashes.length > 0 && !opts.combinedAuthWitness) {
+  const account = opts.intentsAccount ?? opts.user
+  // A batch that calls the account authorizes its intents and needs the signature. One that only
+  // consumes them reads the intents note an earlier batch wrote.
+  const authorizes = opts.innerCalls.some((call) => call.to.equals(account))
+  if (intentHashes.length > 0 && authorizes && !opts.combinedAuthWitness) {
     throw new Error("intentHashes provided without the combined auth witness")
   }
 

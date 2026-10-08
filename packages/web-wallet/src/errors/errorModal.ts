@@ -1,5 +1,7 @@
-import { type PasskeyReportEnv, passkeyReportEnvFor } from "@obsidion/passkey-web"
+import { type PasskeyReportEnv, isWedgedTabError, passkeyReportEnvFor } from "@obsidion/passkey-web"
 import { passkeyTelemetry } from "../lib/passkeyTelemetry"
+import { sponsorshipErrorCopy } from "../features/allowance/sponsorshipError"
+import { reloadPage } from "../platform/storage/walletStorage"
 
 /**
  * Module-level emitter for the global error/info modal, callable from any
@@ -21,6 +23,8 @@ export type ErrorModalPayload = {
   context?: string
   /** Device and passkey provider when the modal was raised; a report sends it. */
   env?: PasskeyReportEnv
+  /** A way to try the failed step again, offered as a button that closes the modal first. */
+  retry?: { label: string; run: () => void }
 }
 
 let listener: ((payload: ErrorModalPayload) => void) | null = null
@@ -44,20 +48,68 @@ function reportEnv(): PasskeyReportEnv | undefined {
   }
 }
 
+const OUT_OF_MEMORY = {
+  title: "Not enough memory",
+  message:
+    "The browser could not give zk.money the memory it needs. Wait a few seconds, then reload the page.",
+  retry: { label: "Reload page", run: () => void reloadPage() },
+}
+
 /** Normalize a caught value into the reportable modal used for unexpected failures. */
 export function showReportableError(
   raw: unknown,
   context: string,
-  options: { title?: string; message?: string } = {},
+  options: { title?: string; message?: string; retry?: ErrorModalPayload["retry"] } = {},
 ): void {
-  const error = raw instanceof Error ? raw : new Error(String(raw))
+  if (raw instanceof Error && raw.message === "Out of memory") {
+    showErrorModal({ ...OUT_OF_MEMORY, detail: raw.stack, showReport: true, context })
+    return
+  }
+  const sponsorship = sponsorshipErrorCopy(raw, context)
+  if (sponsorship) {
+    showErrorModal({ ...sponsorship, context })
+    return
+  }
+  if (isWedgedTabError(raw)) {
+    showErrorModal({
+      title: "Passkey request still open",
+      message: (raw as Error).message,
+      context,
+      retry: { label: "Reload page", run: () => void reloadPage() },
+    })
+    return
+  }
+  const error = raw instanceof Error ? raw : new Error(nonErrorMessage(raw))
   showErrorModal({
     title: options.title ?? "Unexpected error",
     message: options.message ?? error.message,
     detail: error.stack,
     showReport: true,
     context,
+    ...(options.retry ? { retry: options.retry } : {}),
   })
+}
+
+function nonErrorMessage(raw: unknown): string {
+  if (typeof raw !== "object" || raw === null) return String(raw)
+  try {
+    return objectMessage(raw as Record<string, unknown>)
+  } catch {
+    return "Non-Error object that cannot be read"
+  }
+}
+
+function objectMessage(raw: Record<string, unknown>): string {
+  const { message, shortMessage, code } = raw
+  const text = [message, shortMessage].find(
+    (v): v is string => typeof v === "string" && v.trim() !== "",
+  )
+  const codeText = typeof code === "number" || typeof code === "string" ? String(code) : undefined
+  if (text) return codeText ? `${text} (code ${codeText})` : text
+  if (codeText) return `Error code ${codeText}`
+  const keys = Object.keys(raw).filter((k) => /^[A-Za-z_$][\w$]{0,31}$/.test(k))
+  if (keys.length === 0) return "Non-Error object with no named keys"
+  return `Non-Error object with keys: ${keys.slice(0, 10).join(", ")}`
 }
 
 export function subscribeErrorModal(l: (payload: ErrorModalPayload) => void): () => void {

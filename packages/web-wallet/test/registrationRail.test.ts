@@ -1,17 +1,25 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
-const { findRegistrationMessage, registrationInbox, loadClaimFpcPolicy, registerSponsorFpc, hasClaimFpcSubscription } =
-  vi.hoisted(() => ({
-    findRegistrationMessage: vi.fn(),
-    registrationInbox: vi.fn(),
-    loadClaimFpcPolicy: vi.fn(),
-    registerSponsorFpc: vi.fn(),
-    hasClaimFpcSubscription: vi.fn(),
-  }))
+const {
+  findRegistrationMessage,
+  readPortalChainIdentity,
+  registrationInbox,
+  loadClaimFpcPolicy,
+  registerSponsorFpc,
+  hasClaimFpcSubscription,
+} = vi.hoisted(() => ({
+  findRegistrationMessage: vi.fn(),
+  readPortalChainIdentity: vi.fn(),
+  registrationInbox: vi.fn(),
+  loadClaimFpcPolicy: vi.fn(),
+  registerSponsorFpc: vi.fn(),
+  hasClaimFpcSubscription: vi.fn(),
+}))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   findRegistrationMessage,
+  readPortalChainIdentity,
   registrationInbox,
   loadClaimFpcPolicy,
   registerSponsorFpc,
@@ -47,6 +55,10 @@ const REGISTRY = "0x1111111111111111111111111111111111111111"
 const INBOX = "0x2222222222222222222222222222222222222222"
 const ACCOUNT_FACTORY = "0x3333333333333333333333333333333333333333"
 const NAME_PORTAL = "0x4444444444444444444444444444444444444444"
+const PORTAL = "0x9999999999999999999999999999999999999999"
+const ROLLUP = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+const L1_CHAIN_ID = 11155111
+const ROLLUP_VERSION = 3
 const CURRENT_TUPLE = {
   l2Token: `0x${"07".repeat(32)}`,
   registry: REGISTRY,
@@ -67,20 +79,27 @@ const L1_CLIENT = { getBlockNumber: async () => 4242n }
 const INBOX_SOURCE = { kind: "inbox-source" }
 const MESSAGE_HASH = new Fr(0x5151n)
 
+/** Answers other values than the pinned identity, so a read off the node would show. */
 const node = {
   getNodeInfo: async () => ({
     l1ChainId: 31337,
-    rollupVersion: 3,
-    l1ContractAddresses: { inboxAddress: { toString: () => INBOX } },
+    rollupVersion: 9,
+    l1ContractAddresses: {
+      inboxAddress: { toString: () => "0x2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b" },
+    },
   }),
+}
+const wallet = {
+  node,
+  getNodeIdentity: async () => ({ l1ChainId: L1_CHAIN_ID, rollupVersion: ROLLUP_VERSION }),
 }
 
 /** What the caller resolved before it chose a generation: the account and the name it holds. */
 const IDENTITY = { account: OXIDE_ACCOUNT, nameHash: NAME_HASH, generations: [] }
 const witnessDeps = (identity: unknown, tuple: { namePortal: string } = CURRENT_TUPLE) =>
   ({
-    wallet: { node },
-    config: { network: "sandbox" },
+    wallet,
+    config: { network: "sandbox", l1ChainId: L1_CHAIN_ID, oxideProfile: { portal: PORTAL } },
     identity,
     generation: { fpcAddress: FPC.toString(), namePortal: tuple.namePortal },
   } as never)
@@ -93,6 +112,13 @@ const witnessFor = (user: AztecAddress) => registrationGateWitness(witnessDeps(I
 describe("the registration message a sponsored subscribe rides on", () => {
   beforeEach(() => {
     findRegistrationMessage.mockReset()
+    readPortalChainIdentity.mockReset()
+    readPortalChainIdentity.mockResolvedValue({
+      l1ChainId: L1_CHAIN_ID,
+      rollupVersion: String(ROLLUP_VERSION),
+      rollupAddress: ROLLUP,
+      inboxAddress: INBOX,
+    })
     registrationInbox.mockReset()
     registrationInbox.mockReturnValue(INBOX_SOURCE)
     predictAccountAddress.mockReset()
@@ -167,10 +193,12 @@ describe("the registration message a sponsored subscribe rides on", () => {
     expect(target.owner.toString()).toBe(OXIDE_ACCOUNT)
     expect(target.namePortal.toString()).toBe(NAME_PORTAL)
     expect(target.nameHash.toString("hex")).toBe(NAME_HASH.slice(2))
-    expect(target.rollupVersion).toBe(3)
+    // The wallet's pinned identity, not the node's answer.
+    expect(target.rollupVersion).toBe(ROLLUP_VERSION)
+    expect(target.l1ChainId).toBe(L1_CHAIN_ID)
   })
 
-  it("scans the Inbox the node names through the sdk's reader, not a hand-rolled ABI", async () => {
+  it("scans the Inbox the portal names through the sdk's reader, not a hand-rolled ABI", async () => {
     findRegistrationMessage.mockResolvedValue({
       leafIndex: 1n,
       messageHash: MESSAGE_HASH,
@@ -179,6 +207,7 @@ describe("the registration message a sponsored subscribe rides on", () => {
 
     await witnessFor(AztecAddress.fromNumberUnsafe(14))
 
+    expect(readPortalChainIdentity).toHaveBeenCalledWith(L1_CLIENT, PORTAL, L1_CHAIN_ID)
     expect(registrationInbox.mock.calls[0][0]).toBe(L1_CLIENT)
     expect(registrationInbox.mock.calls[0][1].toString()).toBe(INBOX)
     expect(findRegistrationMessage.mock.calls[0][0]).toBe(INBOX_SOURCE)

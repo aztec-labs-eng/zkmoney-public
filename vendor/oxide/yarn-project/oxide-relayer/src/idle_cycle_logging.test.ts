@@ -8,13 +8,13 @@ import { describe, expect, it, jest } from '@jest/globals';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import type { PublicClient } from 'viem';
 
-import { FpcFunderCaller } from './fpc_funding/fpc_funder_caller.js';
+import { FpcFunderCaller, type FpcFunderCallerConfig } from './fpc_funding/fpc_funder_caller.js';
 import { L1OperationRelayer } from './l1_operations/l1_operation_relayer.js';
 import type { WithdrawalCompletion } from './l1_operations/withdrawal_completion.js';
 import { LogRecorder, OPERATOR_LEVELS } from './log_recorder.js';
 import type { ChainlinkPriceOracle } from './price_oracle/chainlink_price_oracle.js';
-import type { RelayerL1TxUtils } from './relayer_l1_tx_utils.js';
 import { openSqliteStateStore } from './state/sqlite_store.js';
 import { TEST_RELAYER_DEPLOYMENT } from './state/test_fixtures.js';
 import type { StateStore } from './state/types.js';
@@ -52,7 +52,7 @@ function fakePublicClient() {
 }
 
 /** A funder whose quote reverts below the fundable minimum. Viem exposes the decoded custom error in the cause chain. */
-function fakeFunderTxUtils(): RelayerL1TxUtils {
+function fakeFunderClient(): PublicClient {
   const revert = Object.assign(new Error('The contract function "execute" reverted.'), {
     cause: {
       data: {
@@ -62,15 +62,17 @@ function fakeFunderTxUtils(): RelayerL1TxUtils {
     },
   });
   return {
-    getSenderAddress: () => SENDER,
-    getGasPrice: jest.fn(() => Promise.resolve({ maxFeePerGas: 10n, maxPriorityFeePerGas: 1n })),
-    estimateGas: jest.fn(() => Promise.resolve(100_000n)),
-    sendTransactionWithGasPrice: jest.fn(() => Promise.reject(new Error('the measurement never submits'))),
-    client: {
-      readContract: jest.fn(() => Promise.resolve(TOKEN.toString())),
-      simulateContract: jest.fn(() => Promise.reject(revert)),
-    },
-  } as unknown as RelayerL1TxUtils;
+    readContract: jest.fn(() => Promise.resolve(TOKEN.toString())),
+    simulateContract: jest.fn(() => Promise.reject(revert)),
+  } as unknown as PublicClient;
+}
+
+function passThroughL1TxQueue(): FpcFunderCallerConfig['l1TxQueue'] {
+  return {
+    address: SENDER.toString(),
+    enqueue: submit => submit(() => Promise.reject(new Error('the measurement never submits'))),
+    maxFeePerGasCap: undefined,
+  };
 }
 
 /** A node with no broadcasts, so the L1 operation measurement sees only the pending operation it seeded. */
@@ -83,17 +85,14 @@ function emptyNode(): AztecNode {
 }
 
 /** An executor whose quote always pays less than the gas it costs, so the operation defers on every due cycle. */
-function unprofitableOperationTxUtils(): RelayerL1TxUtils {
+function unprofitableOperationClient(): PublicClient {
   return {
-    getSenderAddress: () => SENDER,
-    getGasPrice: jest.fn(() => Promise.resolve({ maxFeePerGas: 10n, maxPriorityFeePerGas: 1n })),
-    sendTransactionWithGasPrice: jest.fn(() => Promise.reject(new Error('the measurement never submits'))),
-    client: {
-      getBlock: jest.fn(() => Promise.resolve({ number: 10n, baseFeePerGas: 1n })),
-      simulateBlocks: jest.fn(() => Promise.resolve([{ calls: [{ status: 'success', result: 1n }] }])),
-      estimateGas: jest.fn(() => Promise.resolve(100_000n)),
-    },
-  } as unknown as RelayerL1TxUtils;
+    ...fakePublicClient(),
+    getBlock: jest.fn(() => Promise.resolve({ number: L1_TIP, baseFeePerGas: 9n })),
+    estimateMaxPriorityFeePerGas: jest.fn(() => Promise.resolve(1n)),
+    simulateBlocks: jest.fn(() => Promise.resolve([{ calls: [{ status: 'success', result: 1n, gasUsed: 100_000n }] }])),
+    estimateGas: jest.fn(() => Promise.resolve(100_000n)),
+  } as unknown as PublicClient;
 }
 
 const CLEAN_LIST: SanctionsList = { isListed: () => false };
@@ -135,19 +134,20 @@ describe('idle-cycle logging', () => {
         condition: L1OperationCondition.immediate(),
         status: 'pending',
         attempts: 0,
+        createdAt: new Date(),
       });
 
       const recorder = new LogRecorder();
       const relayer = L1OperationRelayer.create({
         node: emptyNode(),
-        publicClient: fakePublicClient(),
+        publicClient: unprofitableOperationClient(),
         store,
         broadcaster: BROADCASTER,
-        payoutToken: TOKEN,
-        supportedTokens: [TOKEN],
-        l1OperationsSubmission: { retryBackoffMs: 0, maxRetries: 100 },
+        payoutTokens: [TOKEN],
+        watchedTokens: [TOKEN],
+        l1OperationsSubmission: { retryBackoffMs: 0, maxPendingAgeMs: 48 * 60 * 60_000 },
         executor: EXECUTOR,
-        l1TxUtils: unprofitableOperationTxUtils(),
+        l1TxQueue: passThroughL1TxQueue(),
         sanctionsList: CLEAN_LIST,
         withdrawalCompletion: NO_WITHDRAWALS,
         priceOracle: IDENTITY_ORACLE,
@@ -177,7 +177,8 @@ describe('idle-cycle logging', () => {
     const caller = FpcFunderCaller.create({
       fpcFunder: FUNDER,
       executor: EXECUTOR,
-      l1TxUtils: fakeFunderTxUtils(),
+      client: fakeFunderClient(),
+      l1TxQueue: passThroughL1TxQueue(),
       priceOracle: IDENTITY_ORACLE,
       allowUnprofitable: false,
       logger: recorder.logger('oxide-relayer:fpc-funder-caller'),

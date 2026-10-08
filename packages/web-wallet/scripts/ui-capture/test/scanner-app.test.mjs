@@ -120,16 +120,14 @@ test("actual app scanner transitions, payload routes, guards and dev module work
       await context.addInitScript(({ edges, launcher, walletState }) => {
         if (walletState) {
           // Seed the guard before the first App render, as a cold wallet session would see it.
-          const write = Storage.prototype.setItem
-          Storage.prototype.setItem = function (key, value) {
-            if (this === localStorage && key === "webwallet.identity") {
-              const identity = JSON.parse(value)
-              if (walletState === "nameless") delete identity.handle
-              else identity.pending = true
-              value = JSON.stringify(identity)
-              Storage.prototype.setItem = write
-            }
-            return write.call(this, key, value)
+          let replaced = false
+          window.__zkmWalletWrite = (key, value) => {
+            if (replaced || value === null || !key.endsWith("webwallet.identity")) return undefined
+            replaced = true
+            const identity = JSON.parse(value)
+            if (walletState === "nameless") delete identity.handle
+            else identity.pending = true
+            return JSON.stringify(identity)
           }
         }
         if (launcher) window.__ZKMONEY_DESKTOP_BRIDGE__ = { l1SubmitPath: "/launcher-test" }

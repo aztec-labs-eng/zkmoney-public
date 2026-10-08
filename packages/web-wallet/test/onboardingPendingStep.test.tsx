@@ -2,7 +2,9 @@ import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
+import type { SignInRoute } from "@obsidion/core/types"
 import { AccountStorage, PendingRegistrationStore, SIPADepositStore } from "@obsidion/front-core"
 import {
   beginTicketSignupAccount,
@@ -31,14 +33,32 @@ import {
   passkeyEvents,
   passkeyTelemetryHarness,
 } from "./support/passkeyTelemetryHarness"
+import { testWalletDbs } from "./support/fakeWalletDb"
+import {
+  earnedTerms,
+  nameClaim,
+  pendingRecord,
+  resetRegistrationStores,
+} from "./support/registrationFixtures"
 
 const ACCOUNT = "0x00000000000000000000000000000000000000aa"
 const NAME_HASH = `0x${"77".repeat(32)}` as Hex
 const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
 
 const h = vi.hoisted(() => ({
+  /** The pending deposit's processing state, as the observer reports it; none unless a test sets one. */
+  processing: { current: undefined as unknown },
+  /** One observer object, like the production singleton. */
+  observer: {
+    stateFor: () => h.processing.current,
+    capacityKeyFor: () => ({ status: "unknown", retryable: false }),
+    subscribe: () => () => {},
+    retry: async () => undefined,
+    refreshForSweep: async () => undefined,
+  },
   navigate: vi.fn(),
   reloadIfSessionSwitched: vi.fn(() => false),
+  takeOnboardingResume: vi.fn(() => false),
   prepareRefund: vi.fn(),
   recoverDeposit: vi.fn(),
   fireEvent: vi.fn(),
@@ -50,6 +70,7 @@ const h = vi.hoisted(() => ({
   resolveHandoff: vi.fn(),
   adoptHandoff: vi.fn(),
   buildRetrySignDeps: vi.fn(),
+  routeGrantIsCurrent: vi.fn(async () => true),
   runDetectionTick: vi.fn(),
   buildWebDetectionDeps: vi.fn(),
   createAccount: vi.fn(),
@@ -62,7 +83,10 @@ const h = vi.hoisted(() => ({
   /** The signing account in the React context, as a host inside the wallet has it. */
   obsidionAccount: { getAddress: () => ({ toString: () => "0xacc" }) } as object | undefined,
   gateHook: () => ({
-    gate: async () => ({ signal: new AbortController().signal, reach: "unknown" as const }),
+    gate: async (_options?: unknown) => ({
+      signal: new AbortController().signal,
+      reach: "unknown" as const,
+    }),
     state: { kind: "idle" },
     cancel: () => {},
     dismiss: () => {},
@@ -95,6 +119,8 @@ const h = vi.hoisted(() => ({
   skim: 0n,
   /** What the fake token answers for balanceOf(sipa). */
   balance: 0n,
+  /** Holds balanceOf(sipa) until the test lands it. */
+  balanceRead: undefined as Promise<bigint> | undefined,
   /** The oxide tuple the fake manifest serves. */
   tuple: { registry: "0x00000000000000000000000000000000000000e4" } as Record<string, string>,
   l1: { account: null as string | null, walletName: null as string | null, connect: vi.fn() },
@@ -150,6 +176,7 @@ vi.mock("../src/config/env", async (importOriginal) => ({
 // their tag step independent of the probe's debounce and network response.
 vi.mock("../src/features/onboarding/nameAvailability", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/onboarding/nameAvailability")>()),
+  routeGrantIsCurrent: h.routeGrantIsCurrent,
   useNameAvailability: () => ({ status: "available" as const, checking: false }),
 }))
 vi.mock("../src/platform/auth/WebPasskeyIdentityMap", async (importOriginal) => ({
@@ -170,6 +197,11 @@ vi.mock("../src/errors/errorModal", () => ({ showReportableError: h.showReportab
 vi.mock("../src/features/onboarding/registrationQuoteRecovery", async (original) => ({
   ...(await original<object>()),
   prepareRegistrationRefund: h.prepareRefund,
+}))
+vi.mock("../src/features/deposit/sipaProcessing", async (original) => ({
+  ...(await original<object>()),
+  useSipaProcessing: () => ({ state: h.processing.current, shown: h.processing.current }),
+  sipaProcessingObserver: () => h.observer,
 }))
 vi.mock("../src/features/deposit/sipaRecovery", async (original) => ({
   ...(await original<object>()),
@@ -198,8 +230,8 @@ vi.mock("../src/features/identity/ceremonyGate", async (importOriginal) => ({
     const hook = h.gateHook()
     return {
       ...hook,
-      gate: () => {
-        const pending = hook.gate()
+      gate: (options?: unknown) => {
+        const pending = hook.gate(options)
         rerender()
         return pending
       },
@@ -219,13 +251,15 @@ vi.mock("@obsidion/web-ds", () => ({
     testId,
     onClick,
     isDisabled,
+    buttonStyle,
   }: {
     title: string
     testId?: string
     onClick?: () => void
     isDisabled?: boolean
+    buttonStyle?: string
   }) => (
-    <button data-testid={testId} disabled={isDisabled} onClick={onClick}>
+    <button data-testid={testId} data-style={buttonStyle} disabled={isDisabled} onClick={onClick}>
       {title}
     </button>
   ),
@@ -339,31 +373,9 @@ vi.mock("../src/features/onboarding/steps/ClaimTagModal", () => ({
   ),
   AllSetModal: () => <div>all-set</div>,
 }))
-vi.mock("../src/features/onboarding/steps/OnboardingCarousel", () => ({
-  // The real carousel calls `onStart` on the first "Next →", which is the tap a hand-off's prompt
-  // needs; the stub keeps both controls so a walk can make that tap.
-  OnboardingCarousel: ({
-    handle,
-    onDone,
-    onStart,
-  }: {
-    handle: string
-    onDone: () => void
-    onStart?: () => void
-  }) => (
-    <>
-      <span>@{handle}.zk.money</span>
-      {onStart && (
-        <button data-testid="carousel-next" onClick={onStart}>
-          Next →
-        </button>
-      )}
-      <button onClick={onDone}>Let's go!</button>
-    </>
-  ),
-}))
 vi.mock("../src/features/onboarding/sessionReload", () => ({
   reloadIfSessionSwitched: h.reloadIfSessionSwitched,
+  takeOnboardingResume: h.takeOnboardingResume,
 }))
 vi.mock("../src/features/onboarding/webRegistration", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/onboarding/webRegistration")>()),
@@ -398,6 +410,37 @@ vi.mock("../src/features/paylink/usePaylinkDeps", async (importOriginal) => ({
 vi.mock("../src/features/paylink/goldenTicketOffer", () => ({
   useGoldenTicketOffer: () => h.offer,
 }))
+/** The tip the split decides; its quote and decision have a suite of their own. */
+const splitTip = vi.hoisted(() => ({ value: (10n ** 18n) as bigint | undefined }))
+vi.mock("../src/features/paylink/registrationProverTip", async () => {
+  const { useEffect } = await import("react")
+  return {
+    useRegistrationSpeed: ({
+      active,
+      onCommit,
+    }: {
+      active: boolean
+      onCommit: (tip: bigint, speed: string) => void
+    }) => {
+      const tip = active ? splitTip.value : undefined
+      useEffect(() => {
+        if (tip !== undefined) onCommit(tip, "faster")
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [tip])
+      return {
+        choice: {
+          loading: false,
+          speed: "faster",
+          setSpeed: () => {},
+          settled: false,
+          pricedTip: 0n,
+        },
+        outcome: { proverTip: 0n },
+        proverTip: tip,
+      }
+    },
+  }
+})
 // The real buildRetrySignDeps (below) fetches the registration env; stub it so the unit test needs
 // no L1. The tuple carries portal/sipaFactory/token/accountMetadataRegistry so the SIPA deriver
 // constructs offline.
@@ -413,7 +456,7 @@ vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
         ? h.amounts.fee
         : functionName === "depositFee"
         ? 0n
-        : h.balance,
+        : h.balanceRead ?? h.balance,
   }),
   oxideEnvFor: vi.fn(async () => ({
     tuple: {
@@ -452,22 +495,33 @@ const { applyIdentityOutcome, getPendingStore } = await import(
 const { NameTakenError, PasskeyMismatchError } = await import(
   "../src/features/onboarding/oxideOnboarding"
 )
+// Bound before a test resets modules, so it is the class the screen's refusal check knows.
+const { PhoneRequiredError: ScreenPhoneRequiredError } = await import("@obsidion/passkey-web")
 const realOxideOnboarding = await vi.importActual<
   typeof import("../src/features/onboarding/oxideOnboarding")
 >("../src/features/onboarding/oxideOnboarding")
 const { loadWalletIdentity, saveWalletIdentity } = await import(
   "../src/features/identity/walletIdentity"
 )
+const { clearNameGrant } = await import("../src/features/onboarding/nameGrant")
 const { loadRegistrationTerms, saveRegistrationTerms } = await import(
   "../src/features/onboarding/registrationTerms"
 )
 const { GateCancelledError } = await import("../src/features/identity/ceremonyGate")
+const { getBroadcastLedger, resetBroadcastsForTests } = await import(
+  "../src/features/broadcasts/broadcasts"
+)
+const { userFlowActive } = await import("../src/features/provingGate")
 const { isActivationPromptOpen, resetActivationPrompt } = await import(
   "../src/features/onboarding/activationPrompt"
 )
-const { CLAIM_STASH_KEY, TICKET_STASH_KEY, stashTicketSignup } = await import(
+const { CLAIM_STASH_KEY, TICKET_STASH_KEY, stashTicketSignup, updateTicketSignup } = await import(
   "../src/features/paylink/claimStash"
 )
+const { firstWalletEntry } = await import("../src/features/onboarding/walletEntry")
+const { isClaimRunning } = await import("../src/features/paylink/runningClaims")
+const { getOperationStore } = await import("../src/features/operations/operations")
+const { provingProgress } = await import("@obsidion/proving-progress")
 
 const fakeAccount = {
   getAuthProvider: () => ({}),
@@ -482,38 +536,14 @@ const fakeKeys = {
 }
 /** What `resolveHandoff` hands to `adoptHandoff`; nothing is read from it here. */
 const fakeResolved = { recovered: {}, msk: fakeKeys.secretKey, slot: "first" }
-const CLAIM = { signature: "0x", nonce: "1", deadline: "4102444800" }
-const WAIVED_CLAIM = {
-  ...CLAIM,
-  terms: {
-    fee: "500000000000000000",
-    minDeposit: "0",
-    nonce: "1",
-    deadline: "4102444800",
-    signature: "0x00",
-  },
-}
+const CLAIM = nameClaim()
+const WAIVED_CLAIM = nameClaim({ terms: earnedTerms({ minDeposit: "0" }) })
 
 let container: HTMLDivElement
 let root: Root
 
-function baseRecord(
-  over: Partial<PendingRegistrationRecord> = {},
-): Omit<PendingRegistrationRecord, "account"> {
-  return {
-    tag: "taga",
-    nameHash: NAME_HASH,
-    l2Address: L2_ADDRESS,
-    l1ChainId: 11155111,
-    sipaAddress: "0x00000000000000000000000000000000000000c3",
-    depositToken: "0x00000000000000000000000000000000000000d4",
-    broadcast: true,
-    phase: "awaiting_deposit",
-    retries: 0,
-    startTime: Date.now(),
-    ...over,
-  }
-}
+const baseRecord = (over: Partial<PendingRegistrationRecord> = {}) =>
+  pendingRecord({ account: ACCOUNT, nameHash: NAME_HASH, l2Address: L2_ADDRESS, ...over })
 
 const seedRecord = (over: Partial<PendingRegistrationRecord> = {}) =>
   getPendingStore().upsert(ACCOUNT, {}, baseRecord(over))
@@ -521,14 +551,7 @@ const seedRecord = (over: Partial<PendingRegistrationRecord> = {}) =>
 /** The reduced schedule an earned tag signs: the tag price waived, the relayer's 0.5 cut kept. */
 const REDUCED_FEE = String(5n * 10n ** 17n)
 /** The reduced schedule a waived claim carries. */
-const TERMS = {
-  fee: REDUCED_FEE,
-  minDeposit: "10000000000000000000",
-  nonce: "1",
-  deadline: "9999999999",
-  signature: "0x00",
-  reduced: true,
-}
+const TERMS = earnedTerms({ fee: REDUCED_FEE })
 
 /** A live claim the service signed without a schedule — the one state the controller prices. */
 const unsignedTerms = () =>
@@ -587,16 +610,8 @@ const clickDeposit = () =>
     if (!target) throw new Error(`no Deposit button — have: ${buttons().map((b) => b.textContent)}`)
     target.click()
   })
-/** The intro's first tap: the hand-off's ceremony rides on it. */
-const enterHandoff = () =>
-  act(async () => {
-    const target = container.querySelector<HTMLButtonElement>('[data-testid="carousel-next"]')
-    if (!target)
-      throw new Error(`no carousel control — have: ${buttons().map((b) => b.textContent)}`)
-    target.click()
-  })
-/** The intro's last tap, with no account yet: the terms sheet, which carries the prompt. */
-const leaveIntro = () => click("Let's go!")
+/** The hand-off's no-tap attempt settles; with no material the spinner gives way to the terms sheet. */
+const settleHandoff = () => act(async () => new Promise((r) => setTimeout(r, 0)))
 const click = (label: string) =>
   act(async () => {
     const target = button(label)
@@ -642,18 +657,21 @@ const seen = (amount: bigint) => formatDepositSeen(amount, decimals())
 const ask = (kind: "standard" | "earned_tag") => due(askedTotal(kind))
 
 beforeEach(async () => {
+  h.processing.current = undefined
   vi.clearAllMocks()
   h.getAuthService.mockReset()
   h.reloadIfSessionSwitched.mockReset().mockReturnValue(false)
+  h.takeOnboardingResume.mockReset().mockReturnValue(false)
   // The asked total must come from the constants here, never from a developer's .env.local.
   vi.stubEnv("VITE_REGISTRATION_ASK_DEPOSIT_TOTAL", "")
-  ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
-  ;(SIPADepositStore as unknown as { instance: unknown }).instance = null
+  resetRegistrationStores()
   h.prepareRefund.mockReset()
   h.recoverDeposit.mockReset()
   h.l1.account = null
   localStorage.clear()
   sessionStorage.clear()
+  clearNameGrant()
+  h.routeGrantIsCurrent.mockReset().mockResolvedValue(true)
   await getPendingStore().load()
   h.realNavigation = false
   h.hasRootBreadcrumb = true
@@ -667,6 +685,7 @@ beforeEach(async () => {
   h.asked = true
   h.getClaimStatus.mockResolvedValue("reserved")
   h.balance = 0n
+  h.balanceRead = undefined
   h.config.admissionGate = false
   h.amounts = { min: 0n, fee: 0n }
   // The sandbox relayer's cut, and what a waived schedule's whole fee is.
@@ -886,18 +905,22 @@ describe("pending step — an unbroadcast claim re-publishes beside the check", 
     expect(h.createAccount).not.toHaveBeenCalled()
   })
 
-  it("a missing passkey renders inline copy, never the error modal", async () => {
-    await seedRecord({ broadcast: false })
-    await render()
-    const err = new Error("no credential")
-    err.name = "NotAllowedError"
-    h.reusePasskeyAccount.mockRejectedValue(err)
+  it.each([
+    ["NotAllowedError", () => Object.assign(new Error("closed"), { name: "NotAllowedError" })],
+    ["no credential", () => new Error("Passkey assertion returned no credential")],
+  ])(
+    "a missing passkey (%s) renders inline copy, never the error modal",
+    async (_name, missing) => {
+      await seedRecord({ broadcast: false })
+      await render()
+      h.reusePasskeyAccount.mockRejectedValue(missing())
 
-    await click("Retry")
-    expect(container.textContent).toContain("Couldn't find your passkey")
-    expect(h.showReportableError).not.toHaveBeenCalled()
-    expect(h.runDetectionTick).not.toHaveBeenCalled()
-  })
+      await click("Retry")
+      expect(container.textContent).toContain("Couldn't find your passkey")
+      expect(h.showReportableError).not.toHaveBeenCalled()
+      expect(h.runDetectionTick).not.toHaveBeenCalled()
+    },
+  )
 
   it("a mismatched passkey stops inline with nothing staged and no tick", async () => {
     await seedRecord({ broadcast: false })
@@ -1050,120 +1073,194 @@ describe("pending step — escape, custody, and background closes", () => {
   })
 })
 
-describe("pending step — deferred broadcast behind the revealed address", () => {
-  const walkDeferred = async (done: Promise<boolean>) => {
-    h.claimTag.mockImplementation(async (tag: string) => {
-      await getPendingStore().upsert(ACCOUNT, {}, baseRecord({ tag, broadcast: false }))
-      return { kind: "pending", claim: CLAIM, oxideAccount: ACCOUNT, broadcastDone: done }
+describe("pending step — a resumed signup's wallet entry", () => {
+  const entries = () => h.fireEvent.mock.calls.filter(([name]) => name === "wallet_entered")
+  const confirmOnTick = () =>
+    h.runDetectionTick.mockImplementation(async () => {
+      await getPendingStore().close(ACCOUNT, "confirmed")
+      return "confirmed"
     })
-    await render("/claim/taga")
-    await click("landing-signin")
-    await act(async () =>
-      buttons()
-        .find((b) => b.textContent?.startsWith("Deposit"))!
-        .click(),
-    )
-  }
 
-  it("reveals the address while publishing, holds the retry, then relaxes when it lands", async () => {
-    h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
-    let release!: (ok: boolean) => void
-    await walkDeferred(new Promise<boolean>((r) => (release = r)))
-    // Address on screen, broadcast still in flight: publishing note, no retry pill.
-    expect(container.textContent).toContain("0x000000...0000c3")
-    expect(container.textContent).toContain("Publishing your deposit address…")
-    expect(button("Retry")).toBeUndefined()
+  it("reports the entry once when a reloaded registration confirms", async () => {
+    await seedRecord({ broadcast: false })
+    await render("/claim/taga?src=campaign")
+    confirmOnTick()
+    await click("Retry")
+
+    expect(loadWalletIdentity()).toMatchObject({ handle: "taga", address: L2_ADDRESS })
+    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+    expect(entries()).toEqual([["wallet_entered", { has_claim_link: true, entry: "campaign" }]])
+  })
+
+  it("a registration entered while pending sends no second entry when it confirms", async () => {
+    vi.useFakeTimers()
+    await seedRecord()
+    await render("/claim/taga")
     await act(async () => {
-      await getPendingStore().upsert(ACCOUNT, { broadcast: true })
-      release(true)
+      await getPendingStore().upsert(ACCOUNT, { phase: "funded", fundedAt: Date.now() })
     })
-    expect(container.textContent).not.toContain("Publishing your deposit address…")
-    expect(h.buildRetrySignDeps).not.toHaveBeenCalled()
+    expect(loadWalletIdentity()).toMatchObject({ address: L2_ADDRESS, pending: true })
+    expect(entries()).toEqual([["wallet_entered", { has_claim_link: true, entry: "link" }]])
+
+    h.navigate.mockClear()
+    await act(async () => {
+      await getPendingStore().close(ACCOUNT, "confirmed")
+    })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_600)
+    })
+    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+    expect(entries()).toHaveLength(1)
   })
 
-  it("a signup that chose the deposit starts its proof on the pending step, not before", async () => {
-    h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
-    const start = vi.fn(async () => true)
+  it("resuming a registration after logging out of it is a return, not a second entry", async () => {
+    await seedRecord({ broadcast: false })
+    waivedTerms()
+    await render("/claim/taga")
+    await click("Enter now, deposit later")
+    expect(loadWalletIdentity()).toMatchObject({ address: L2_ADDRESS, pending: true })
+    expect(entries()).toHaveLength(1)
+
+    // Back on the pending sheet, logging out drops the identity and keeps the registration.
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    await render("/claim/taga")
+    await click("Log out")
+    expect(loadWalletIdentity()).toBeNull()
+
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    h.navigate.mockClear()
+    await render("/claim/taga")
+    confirmOnTick()
+    await click("Retry")
+    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+    expect(entries()).toHaveLength(1)
+  })
+
+  it("another account's entry does not hold back this account's first", async () => {
+    const OTHER_L2 = `0x${"aa".repeat(32)}`
+    saveWalletIdentity({ address: OTHER_L2, claimedAt: 1 })
+    expect(await firstWalletEntry(OTHER_L2)).toBe(true)
+    await seedRecord({ broadcast: false })
+    await render("/claim/taga")
+    confirmOnTick()
+    await click("Retry")
+
+    expect(entries()).toEqual([["wallet_entered", { has_claim_link: true, entry: "link" }]])
+  })
+
+  it("overlapping entries for one account find one first", async () => {
+    expect(await Promise.all([firstWalletEntry(L2_ADDRESS), firstWalletEntry(L2_ADDRESS)])).toEqual(
+      [true, false],
+    )
+  })
+
+  it("a funded registration its deposit admits enters from two effects at once, reporting once", async () => {
+    await seedRecord({ phase: "funded", fundedAt: 1, broadcast: true })
+    const { recordDepositAdmission } = await import("../src/features/identity/admission")
+    expect(recordDepositAdmission(getPendingStore().current()!, 10n ** 20n)).toBe(true)
+    await render("/claim/taga")
+
+    expect(h.navigate.mock.calls.filter(([to]) => to === "/").length).toBeGreaterThan(1)
+    expect(entries()).toEqual([["wallet_entered", { has_claim_link: true, entry: "link" }]])
+  })
+
+  it("a funded record whose identity save fails keeps a retry that enters once saving works", async () => {
+    await seedRecord({ phase: "funded", fundedAt: 1, broadcast: true })
+    let refuse = true
+    let attempts = 0
+    testWalletDbs().onApply = (_version, ops) => {
+      if (!ops.some(([key]) => key === "webwallet.identity")) return
+      attempts++
+      if (refuse) throw new Error("disk")
+    }
+    await render("/claim/taga")
+    await act(async () => {})
+    expect(h.navigate).not.toHaveBeenCalledWith("/", { replace: true })
+    expect(button("Retry entering wallet")).toBeDefined()
+    // The failed entry is not tried again on its own.
+    expect(attempts).toBe(1)
+
+    refuse = false
+    await click("Retry entering wallet")
+    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+    expect(loadWalletIdentity()?.handle).toBe("taga")
+  })
+
+  it("adds no consent prompt: the entry goes to the consent-gated sender", async () => {
+    h.asked = false
+    await seedRecord({ broadcast: false })
+    await render("/claim/taga")
+    confirmOnTick()
+    await click("Retry")
+
+    expect(button("Share anonymous data")).toBeUndefined()
+    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+    expect(entries()).toEqual([["wallet_entered", { has_claim_link: true, entry: "link" }]])
+  })
+
+  it("a registration that must recover its passkey signs in, reporting no entry", async () => {
+    h.hasRootBreadcrumb = false
+    await seedRecord({ broadcast: false })
+    await render("/claim/taga")
+    confirmOnTick()
+    await click("Retry")
+
+    expect(h.navigate).toHaveBeenCalledWith("/enter?handle=taga", { replace: true })
+    expect(entries()).toEqual([])
+  })
+})
+
+describe("pending step — the broadcast behind the shown address", () => {
+  const SIPA = "0x00000000000000000000000000000000000000c3"
+  beforeEach(() => resetBroadcastsForTests())
+  const claimUnpublished = (claim = CLAIM) =>
     h.claimTag.mockImplementation(async (tag: string) => {
       await getPendingStore().upsert(ACCOUNT, {}, baseRecord({ tag, broadcast: false }))
-      return {
-        kind: "pending",
-        claim: CLAIM,
-        oxideAccount: ACCOUNT,
-        broadcastDone: new Promise<boolean>(() => {}),
-        startBroadcast: start,
-      }
+      return { kind: "pending", claim, oxideAccount: ACCOUNT }
     })
+
+  it("owes the broadcast once the pending step shows the address, and drops its status once it lands", async () => {
+    h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
+    claimUnpublished()
     await render("/claim/taga")
     await click("landing-signin")
+    // The terms sheet shows no address, so nothing is owed yet.
+    expect(getBroadcastLedger().get(SIPA)).toBeNull()
     await act(async () =>
       buttons()
         .find((b) => b.textContent?.startsWith("Deposit"))!
         .click(),
     )
-    // The address is on screen and the proof behind it has begun: the step reports the publishing.
     expect(container.textContent).toContain("0x000000...0000c3")
-    expect(start).toHaveBeenCalledTimes(1)
-    expect(container.textContent).toContain("Publishing your deposit address…")
+    await vi.waitFor(() =>
+      expect(getBroadcastLedger().get(SIPA)).toMatchObject({ kind: "registration" }),
+    )
+    expect(
+      container.querySelector('[data-testid="registration-address-publishing"]'),
+    ).not.toBeNull()
+    await act(async () => void (await getPendingStore().upsert(ACCOUNT, { broadcast: true })))
+    expect(container.textContent).toContain("0x000000...0000c3")
+    expect(container.querySelector('[data-testid="registration-address-publishing"]')).toBeNull()
   })
 
-  it("a free name entering first lands on the wallet with the activation sheet before its proof starts", async () => {
+  it("a free name entering first owes nothing from the wizard: the activation sheet does", async () => {
     resetActivationPrompt()
-    const start = vi.fn(async () => true)
-    h.claimTag.mockImplementation(async (tag: string) => {
-      await getPendingStore().upsert(ACCOUNT, {}, baseRecord({ tag, broadcast: false }))
-      return {
-        kind: "pending",
-        claim: {
-          ...CLAIM,
-          deadline: "4102444800",
-          terms: { ...TERMS, minDeposit: "4500000000000000000" },
-        },
-        oxideAccount: ACCOUNT,
-        broadcastDone: new Promise<boolean>(() => {}),
-        startBroadcast: start,
-      }
-    })
+    claimUnpublished({ ...CLAIM, terms: TERMS })
     try {
       await render("/claim/taga?fee=waived")
       await click("landing-signin")
       await click("I'll do this later")
-      expect(container.textContent).toContain("all-set")
-      // Nothing proves while the intro plays: the page is the user's.
-      expect(start).not.toHaveBeenCalled()
       await act(async () => {
         await new Promise((resolve) => setTimeout(resolve, 1_600))
       })
-      await click("Let's go!")
       expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
-      // Home is up with the activation sheet raised; only now does the proof start behind them.
       expect(isActivationPromptOpen()).toBe(true)
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 10))
-      })
-      expect(start).toHaveBeenCalledTimes(1)
+      expect(getBroadcastLedger().get(SIPA)).toBeNull()
     } finally {
       resetActivationPrompt()
     }
-  })
-
-  it("a failed deferred broadcast retries once in-session without a prompt", async () => {
-    h.buildRetrySignDeps.mockResolvedValue({ sign: true })
-    h.runDetectionTick.mockResolvedValue("pending")
-    let release!: (ok: boolean) => void
-    await walkDeferred(new Promise<boolean>((r) => (release = r)))
-    const ticksBefore = h.runDetectionTick.mock.calls.length
-    await act(async () => {
-      release(false)
-    })
-    // The silent retry ran a forced tick armed with sign deps — no passkey ceremony involved.
-    expect(h.runDetectionTick.mock.calls.length).toBe(ticksBefore + 1)
-    const [, opts] = h.runDetectionTick.mock.calls.at(-1)!
-    expect(opts).toMatchObject({ force: true })
-    const [, extras] = h.buildWebDetectionDeps.mock.calls.at(-1)!
-    await (extras as { getSignDeps: () => Promise<unknown> }).getSignDeps()
-    expect(h.buildRetrySignDeps).toHaveBeenCalledTimes(1)
-    expect(h.reusePasskeyAccount).not.toHaveBeenCalled()
   })
 })
 
@@ -1183,7 +1280,45 @@ describe("pending step — the status check runs itself", () => {
     expect(h.runDetectionTick.mock.calls.length).toBe(calls + 2)
   })
 
-  it("the note under the address carries the manual check as text, with no spinner", async () => {
+  it("a failed check it runs by itself waits for the next one; a failed click still reports", async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    await seedRecord()
+    await render()
+    const failed = new Error("HTTP request failed.")
+    h.runDetectionTick.mockRejectedValueOnce(failed)
+    h.buildWebDetectionDeps.mockRejectedValueOnce(failed)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(48_050)
+    })
+    expect(h.showReportableError).not.toHaveBeenCalled()
+    expect(container.textContent).not.toContain("Last checked")
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(24_000)
+    })
+    expect(container.textContent).toContain("Last checked 0s ago")
+    h.runDetectionTick.mockRejectedValueOnce(failed)
+    await clickCheck()
+    expect(h.showReportableError).toHaveBeenCalledWith(failed, "registration:deposit")
+    warn.mockRestore()
+  })
+
+  it("a failed tick that a landed deposit nudges stays quiet", async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    await seedRecord()
+    await render()
+    h.runDetectionTick.mockRejectedValueOnce(new Error("HTTP request failed."))
+    h.balance = 15n * 10n ** 18n
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_500)
+    })
+    expect(h.runDetectionTick).toHaveBeenCalledTimes(1)
+    expect(h.showReportableError).not.toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it("the paused notice carries the manual check as text, with no spinner", async () => {
     await walkToPendingWithKeys({ broadcast: false })
     let release!: (outcome: "pending") => void
     h.runDetectionTick.mockImplementation(() => new Promise((resolve) => (release = resolve)))
@@ -1196,6 +1331,88 @@ describe("pending step — the status check runs itself", () => {
   })
 })
 
+describe("pending step: the waiting block under the address", () => {
+  const block = () => container.querySelector(".ww-deposit-sheet__live")
+  const pill = () =>
+    container.querySelector<HTMLButtonElement>('[data-testid="deposit-check-again"]')
+  const line = () => container.querySelector('[data-testid="deposit-balance"]')?.textContent
+  const blockButton = (label: string) =>
+    Array.from(block()?.querySelectorAll("button") ?? []).find((b) => b.textContent === label)
+
+  it("waits with the balance at the address, and the pill runs the step's check", async () => {
+    vi.useFakeTimers()
+    await seedRecord()
+    await render()
+    expect(block()!.textContent).toContain("Waiting for deposit")
+    expect(line()).toBe(`Balance at this address: ${seen(0n)}`)
+    expect(blockButton("Retry")).toBeUndefined()
+    const calls = h.runDetectionTick.mock.calls.length
+    await act(async () => pill()!.click())
+    expect(pill()!.disabled).toBe(true)
+    expect(h.runDetectionTick.mock.calls.length).toBe(calls + 1)
+    expect(h.runDetectionTick.mock.calls[calls][1]).toMatchObject({ force: true })
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700)
+    })
+    expect(pill()!.textContent).toBe("Checked")
+    expect(line()).toBe(`Balance at this address: ${seen(0n)} · Last checked 0s ago`)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(3_000)
+    })
+    expect(line()).toContain("Last checked 3s ago")
+    expect(pill()!.textContent).toBe("Check again")
+    expect(pill()!.disabled).toBe(false)
+  })
+
+  it("the pill stays busy until its read of the address lands, past the step's check", async () => {
+    vi.useFakeTimers()
+    await seedRecord()
+    await render()
+    let land!: (balance: bigint) => void
+    h.balanceRead = new Promise((resolve) => (land = resolve))
+    await act(async () => pill()!.click())
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(700)
+    })
+    expect(pill()!.disabled).toBe(true)
+    expect(pill()!.textContent).toContain("Check again")
+    h.balanceRead = undefined
+    await act(async () => {
+      land(0n)
+      await vi.advanceTimersByTimeAsync(1)
+    })
+    expect(pill()!.disabled).toBe(false)
+    expect(pill()!.textContent).toBe("Checked")
+    expect(line()).toBe(`Balance at this address: ${seen(0n)} · Last checked 0s ago`)
+  })
+
+  it("a partial deposit puts the shortfall on the line", async () => {
+    h.balance = 5n * 10n ** 18n
+    await seedRecord()
+    await render()
+    await settleReads()
+    // The landed deposit nudges a check, so the line also says when.
+    expect(line()).toBe(
+      `${seen(5n * 10n ** 18n)} of ${ask("standard")} received · Send at least ${due(
+        askedTotal("standard") - 5n * 10n ** 18n,
+      )} more · Last checked 0s ago`,
+    )
+  })
+
+  it("a claim that needs a hand puts Retry beside the pill, and the click retries it", async () => {
+    await seedRecord({ broadcast: false })
+    await render("/claim/taga")
+    expect(blockButton("Retry")).toBeDefined()
+    expect(pill()).not.toBeNull()
+    h.runDetectionTick.mockImplementation(async () => {
+      await getPendingStore().close(ACCOUNT, "confirmed")
+      return "confirmed"
+    })
+    await act(async () => blockButton("Retry")!.click())
+    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+  })
+})
+
 describe("pending step — the check control is the only affordance", () => {
   const states: [string, Partial<PendingRegistrationRecord>][] = [
     ["custody held", { fundedAt: Date.now() }],
@@ -1203,19 +1420,24 @@ describe("pending step — the check control is the only affordance", () => {
     ["never broadcast", { broadcast: false }],
     ["escalated", { fundedAt: Date.now(), retries: 3 }],
   ]
-  for (const [name, over] of states) {
-    it(`a record ${name} offers the check and no register button`, async () => {
-      await seedRecord(over)
-      await render()
-      expect(checkControl()).toBeTruthy()
-      expect(buttons().some((b) => b.textContent?.startsWith("Register @"))).toBe(false)
-    })
-  }
-
-  it("a custody-held record says the deposit is in", async () => {
-    await seedRecord({ fundedAt: Date.now() })
+  it.each(states)("a record %s offers the check and no register button", async (_, over) => {
+    await seedRecord(over)
     await render()
+    expect(checkControl()).toBeTruthy()
+    expect(buttons().some((b) => b.textContent?.startsWith("Register @"))).toBe(false)
+  })
+
+  it.each([
+    ["custody held", { fundedAt: Date.now() }],
+    ["swept before any funded stamp", { sweptAt: Date.now() }],
+    ["funded", { phase: "funded" as const, fundedAt: Date.now() }],
+  ])("a record %s says the deposit is in and never asks for it again", async (_, over) => {
+    await seedRecord(over)
+    await render()
+    expect(container.textContent).toContain("Deposit received")
     expect(container.textContent).toContain("Your deposit is in")
+    expect(container.textContent).not.toContain("Send at least")
+    expect(container.querySelector('[aria-label^="Copy deposit address"]')).toBeNull()
   })
 })
 
@@ -1223,7 +1445,6 @@ describe("pending step — urgency and wrong-chain states", () => {
   it("a record awaiting its deposit says what to do, and never ages into urgency", async () => {
     await seedRecord({ startTime: Date.now() - 60 * 60_000 })
     await render()
-    expect(container.textContent).toContain("@taga is reserved for you")
     expect(container.textContent).toContain("@taga is reserved for you")
     expect(container.textContent).not.toContain("taking longer than usual")
   })
@@ -1284,7 +1505,7 @@ describe("check status — ordering fix and custody heuristic", () => {
 })
 
 describe("signup modals — chained create-then-claim (ULT-667)", () => {
-  it("custody completes the signup: identity first, then All set! and the carousel", async () => {
+  it("custody completes the signup: identity first, then All set! and the wallet", async () => {
     h.claimTag.mockResolvedValue({
       kind: "custody",
       confirmed: false,
@@ -1298,7 +1519,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     await clickDeposit()
     expect(h.createAccount).toHaveBeenCalledTimes(1)
 
-    // Identity saved BEFORE the carousel: closing the tab mid-carousel loses nothing.
+    // Identity saved BEFORE "All set!": closing the tab on it loses nothing.
     expect(loadWalletIdentity()).toMatchObject({ handle: "taga", address: L2_ADDRESS })
     // `named` mirrors the identity write: a handle was saved, so this is a named completion.
     expect(h.fireEvent).toHaveBeenCalledWith(
@@ -1310,12 +1531,78 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1_600))
     })
-    expect(container.querySelectorAll(".ww-modal-overlay")).toHaveLength(0)
-    await click("Let's go!")
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
   })
 
-  it("Let's go! asks for analytics consent before entering the wallet", async () => {
+  it("a custody completion whose identity save fails offers a retry that finishes the signup", async () => {
+    h.claimTag.mockResolvedValue({
+      kind: "custody",
+      confirmed: false,
+      oxideAccount: ACCOUNT,
+      claim: CLAIM,
+    })
+    let refuse = true
+    testWalletDbs().onApply = (_version, ops) => {
+      if (refuse && ops.some(([key]) => key === "webwallet.identity")) throw new Error("disk")
+    }
+    await render("/claim/taga")
+    await click("landing-signin")
+    await clickDeposit()
+    expect(loadWalletIdentity()).toBeNull()
+    expect(container.textContent).not.toContain("all-set")
+    // The create step has no sheet button for it, so the error itself carries the retry.
+    const reported = h.showReportableError.mock.calls.find(
+      ([, context]) => context === "onboarding:identity",
+    )
+    const options = reported?.[2] as { retry?: { label: string; run: () => void } } | undefined
+    const retry = options?.retry
+    expect(retry?.label).toBe("Retry entering wallet")
+
+    refuse = false
+    await act(async () => retry!.run())
+    expect(loadWalletIdentity()).toMatchObject({ handle: "taga", address: L2_ADDRESS })
+    expect(container.textContent).toContain("all-set")
+  })
+
+  it("a name the chain already holds for this account owes the campaign its claim notice", async () => {
+    const owed = () =>
+      JSON.parse(walletStorage.getItem("obsidion.obsidion_campaign_claim_notices") ?? "{}")
+    h.config.campaignUrl = "https://launch.test.invalid"
+    const real = window.location
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...real, assign: vi.fn(), href: real.href, origin: real.origin, pathname: "/claim" },
+    })
+    try {
+      h.claimTag.mockResolvedValue({ kind: "custody", confirmed: false, oxideAccount: ACCOUNT })
+      await render("/claim/taga")
+      await click("landing-signin")
+      await clickDeposit()
+      // Custody without confirmation owes nothing: the detection tick owes it once the name lands.
+      expect(owed()).toEqual({})
+      act(() => root.unmount())
+      root = createRoot(container)
+
+      h.claimTag.mockResolvedValue({ kind: "custody", confirmed: true, oxideAccount: ACCOUNT })
+      await render("/claim/taga")
+      await click("landing-signin")
+      await clickDeposit()
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 0)))
+      expect(owed()).toEqual({
+        [L2_ADDRESS]: {
+          l2Address: L2_ADDRESS,
+          tag: "taga",
+          owedAt: expect.any(Number),
+          attempts: 0,
+        },
+      })
+    } finally {
+      Object.defineProperty(window, "location", { configurable: true, value: real })
+      h.config.campaignUrl = ""
+    }
+  })
+
+  it("All set! asks for analytics consent before entering the wallet", async () => {
     h.asked = false
     h.claimTag.mockResolvedValue({
       kind: "custody",
@@ -1329,18 +1616,45 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1_600))
     })
-    await click("Let's go!")
     expect(h.navigate).not.toHaveBeenCalled()
+    const started = () => h.fireEvent.mock.calls.filter(([name]) => name === "onboarding_started")
+    const startsBeforeAnswer = started().length
     await click("Share anonymous data")
     await act(async () => {
       await Promise.resolve()
       await Promise.resolve()
     })
-    expect(h.fireEvent).toHaveBeenCalledWith("onboarding_started", {
+    // The answer comes at the end: the exit is reported as the wallet entry, never as a start.
+    expect(h.fireEvent).toHaveBeenCalledWith("wallet_entered", {
       has_claim_link: true,
       entry: "link",
     })
+    expect(started()).toHaveLength(startsBeforeAnswer)
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+  })
+
+  it("reports the start and the exit of a signup in a browser that answered before it", async () => {
+    h.asked = true
+    h.claimTag.mockResolvedValue({
+      kind: "custody",
+      confirmed: false,
+      oxideAccount: ACCOUNT,
+      claim: CLAIM,
+    })
+    await render("/claim/taga")
+    const started = h.fireEvent.mock.calls.filter(([name]) => name === "onboarding_started")
+    expect(started).toEqual([["onboarding_started", { has_claim_link: true, entry: "link" }]])
+    await click("landing-signin")
+    await clickDeposit()
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_600))
+    })
+    expect(h.fireEvent.mock.calls.filter(([name]) => name === "wallet_entered")).toEqual([
+      ["wallet_entered", { has_claim_link: true, entry: "link" }],
+    ])
+    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+    // The exit marks the account, so resuming this registration later is no new entry.
+    expect(await firstWalletEntry(L2_ADDRESS)).toBe(false)
   })
 
   it("an already-claimed handle stays on the invitation page with a log-in lead", async () => {
@@ -1620,17 +1934,37 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     )
   })
 
+  it("a create refused after the passkey was written links the cleanup entry", async () => {
+    const { UnsupportedProviderError, markPasskeyWritten } = await import("@obsidion/passkey-web")
+    h.createAccount.mockRejectedValueOnce(
+      markPasskeyWritten(new UnsupportedProviderError("manager")),
+    )
+    await render("/claim/taga")
+    await click("landing-signin")
+    await clickDeposit()
+    const refused = container.querySelector<HTMLElement>('[data-testid="create-refused"]')
+    expect(refused?.dataset.reason).toBe("UnsupportedProviderError")
+    const link = refused?.querySelector<HTMLAnchorElement>('[data-testid="passkey-leftover"] a')
+    expect(link?.getAttribute("href")).toBe("https://docs.zk.money/docs/passkeys#leftover-passkey")
+  })
+
   it("a policy refusal on create shows the refusal in the modal with a retry", async () => {
     const { PhoneRequiredError } = await import("@obsidion/passkey-web")
-    h.createAccount.mockRejectedValueOnce(new PhoneRequiredError())
+    const refusal = new PhoneRequiredError({ providerName: "Windows Hello" })
+    h.createAccount.mockRejectedValueOnce(refusal)
     await render("/claim/taga")
     await click("landing-signin")
     await clickDeposit()
     const refused = container.querySelector<HTMLElement>('[data-testid="create-refused"]')
     expect(refused?.dataset.reason).toBe("PhoneRequiredError")
     expect(container.textContent).toContain("Use your phone")
+    expect(refused?.querySelector('[role="alert"]')?.textContent).toBe(refusal.message)
     expect(container.textContent).not.toContain("passkey prompt was closed")
+    // Refused before any passkey was written: nothing to clean up.
+    expect(refused?.querySelector('[data-testid="passkey-leftover"]')).toBeNull()
     expect(h.showReportableError).not.toHaveBeenCalled()
+    // The card's retry is the only way to try again: the sheet's own button steps aside.
+    expect(buttons().some((b) => b.textContent?.startsWith("Deposit"))).toBe(false)
 
     h.claimTag.mockResolvedValue({
       kind: "custody",
@@ -1681,7 +2015,8 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     // The source stage answers first (no held key here), then the gate opens.
     await settleReads()
     expect(container.querySelector('[data-testid="phone-steps"]')).not.toBeNull()
-    expect(container.textContent).toContain("Your new passkey will be saved")
+    // The campaign's sign-up sheet, mirrored: what to do with the QR code, not the sign-in copy.
+    expect(container.textContent).toContain("Scan QR code to save the key on your phone")
     expect(container.textContent).not.toContain("signed up with")
     expect(h.createAccount).not.toHaveBeenCalled()
     expect(container.querySelector('button[aria-label="Close"]')).toBeNull()
@@ -1734,6 +2069,343 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     )
     expect(container.textContent).toContain("all-set")
     expect(loadWalletIdentity()).toMatchObject({ handle: "taga" })
+  })
+})
+
+describe("signup in an app's built-in browser", () => {
+  const UA = {
+    android:
+      "Mozilla/5.0 (Linux; Android 16; Pixel 9 Build/BP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/154.0.0.0 Mobile Safari/537.36",
+    // Chrome itself: a browser the in-app rule misses, so a request runs and can fail there.
+    androidChrome:
+      "Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36",
+    iosX: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Twitter for iPhone/10.80",
+    laptop:
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
+  }
+  const startUrl = window.location.href
+  const unsupported = () =>
+    new DOMException("Error connecting to Web Authentication service", "NotSupportedError")
+  const closed = () => new DOMException("closed", "NotAllowedError")
+  // jsdom's DOMException is not an Error, and the closed-prompt line is shown only for an Error.
+  const closedError = () => Object.assign(new Error("closed"), { name: "NotAllowedError" })
+  const refused = () => container.querySelector<HTMLElement>('[data-testid="create-refused"]')
+  const cta = () => buttons().find((b) => b.textContent?.startsWith("Deposit"))
+  const events = (name: string) =>
+    h.fireEvent.mock.calls.filter(([event]) => event === name).map(([, props]) => props)
+
+  const notice = () => container.querySelector<HTMLElement>('[data-testid="create-in-app-notice"]')
+  const escape = () => container.querySelector<HTMLElement>('[data-testid="open-in-browser"]')
+
+  let ua: { mockReturnValue: (value: string) => unknown; mockRestore: () => void } | undefined
+  /** The sheet as a visitor in this user agent first sees it, before any tap on it. */
+  const toSheet = async (userAgent: string, path = "/claim/taga") => {
+    ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent)
+    window.history.replaceState(null, "", path)
+    await render(path)
+    await click("landing-signin")
+  }
+  /** A signup at `path` in a browser with this user agent, up to its passkey request. */
+  const toCreate = async (userAgent: string, path = "/claim/taga") => {
+    await toSheet(userAgent, path)
+    await clickDeposit()
+  }
+  /** A granted-tag link with the campaign configured, so Back has somewhere real to go. */
+  const onGrantLink = async (run: (assign: ReturnType<typeof vi.fn>) => Promise<void>) => {
+    sessionStorage.setItem("obsidion.name-grant", "grant-token")
+    sessionStorage.setItem("obsidion.name-grant-handle", "taga")
+    h.config.campaignUrl = "https://launch.test.invalid"
+    const assign = vi.fn()
+    const real = window.location
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...real, assign, href: real.href, origin: real.origin, pathname: "/claim/taga" },
+    })
+    try {
+      await run(assign)
+    } finally {
+      Object.defineProperty(window, "location", { configurable: true, value: real })
+      h.config.campaignUrl = ""
+    }
+  }
+
+  beforeEach(() => {
+    // A visitor who has never made a passkey here: the card's case. The fixtures otherwise
+    // record one by default, and every case that means an account is here says so.
+    h.hasRootBreadcrumb = false
+  })
+
+  afterEach(() => {
+    ua?.mockRestore()
+    ua = undefined
+    window.history.replaceState(null, "", startUrl)
+  })
+
+  it("in an iPhone app, the sheet opens on the card: no passkey button, no terms, a Back", async () => {
+    await onGrantLink(async (assign) => {
+      await toSheet(UA.iosX)
+      expect(notice()?.textContent).toContain("Passkeys don't work in this app's browser")
+      expect(cta()).toBeUndefined()
+      expect(container.textContent).not.toContain("Deposit")
+      // X's app drops the link: Copy link leads, the app's own menu follows.
+      expect(container.querySelector('[data-testid="open-in-browser-link"]')).toBeNull()
+      expect(escape()?.textContent).toContain("Copy link")
+      expect(h.createAccount).not.toHaveBeenCalled()
+      expect(container.querySelector('[data-testid="create-in-app-back"]')).not.toBeNull()
+      await click("Back")
+      expect(assign).not.toHaveBeenCalled()
+      expect(h.navigate).toHaveBeenCalledWith("/claim/taga", { replace: true })
+    })
+  })
+
+  it("the card's report carries the user agent", async () => {
+    await toSheet(UA.iosX)
+    await act(async () =>
+      notice()!.querySelector<HTMLElement>('[data-testid="passkey-report"]')!.click(),
+    )
+    expect(h.showReportableError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: UA.iosX }),
+      "onboarding",
+      { title: "In-app browser notice" },
+    )
+  })
+
+  it("in an Android web view, the sheet opens on the card too: no terms, no button, no way to try", async () => {
+    await toSheet(UA.android)
+    expect(notice()?.textContent).toContain("Passkeys don't work in this app's browser")
+    expect(cta()).toBeUndefined()
+    expect(container.textContent).not.toContain("Deposit")
+    expect(container.querySelector('[data-testid="open-in-browser-link"]')).not.toBeNull()
+    expect(h.createAccount).not.toHaveBeenCalled()
+  })
+
+  it("a fresh visit gets the card whatever the address claims: a resume, or a hand-off with no material", async () => {
+    await toSheet(UA.iosX, "/claim/taga?resume=1")
+    expect(notice()).not.toBeNull()
+    expect(cta()).toBeUndefined()
+
+    act(() => root.unmount())
+    root = createRoot(container)
+    ua?.mockRestore()
+    ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(UA.iosX)
+    await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
+    await settleHandoff()
+    expect(notice()).not.toBeNull()
+    expect(cta()).toBeUndefined()
+  })
+
+  it.each([
+    ["a laptop", UA.laptop],
+    [
+      "iPhone Safari",
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1",
+    ],
+  ])("%s opens on the terms and the button, with no card", async (_name, userAgent) => {
+    await toSheet(userAgent)
+    expect(notice()).toBeNull()
+    expect(cta()).toBeDefined()
+  })
+
+  it("a silent hand-off still running keeps the setup spinner: no card, no button", async () => {
+    // The bridge left material, so the silent attempt claims behind the spinner; the claim hangs.
+    h.resolveHandoff.mockResolvedValue(fakeResolved)
+    let settle!: () => void
+    h.claimTag.mockImplementation(
+      (tag: string) =>
+        new Promise<unknown>((resolve) => {
+          settle = () => {
+            void getPendingStore()
+              .upsert(ACCOUNT, {}, baseRecord({ tag }))
+              .then(() => resolve({ kind: "pending", claim: CLAIM, oxideAccount: ACCOUNT }))
+          }
+        }),
+    )
+    ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(UA.iosX)
+    vi.useFakeTimers()
+    try {
+      await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(25_001)
+      })
+      expect(container.querySelector('[data-testid="handoff-entering"]')).not.toBeNull()
+      expect(notice()).toBeNull()
+      expect(cta()).toBeUndefined()
+      expect(h.createAccount).not.toHaveBeenCalled()
+
+      await act(async () => {
+        settle()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(loadWalletIdentity()).toMatchObject({ handle: "taga", pending: true })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("a browser with a root passkey record and no wallet identity still gets the after-failure card on a closed iPhone sheet", async () => {
+    h.hasRootBreadcrumb = true
+    h.createAccount.mockRejectedValueOnce(closed())
+    await toCreate(UA.iosX)
+    expect(notice()).toBeNull()
+    expect(refused()?.dataset.reason).toBe("InAppBrowser")
+    expect(container.querySelector('[data-testid="create-retry"]')).toBeNull()
+    expect(cta()).toBeUndefined()
+    expect(container.querySelector('[data-testid="create-start-over"]')).not.toBeNull()
+  })
+
+  it("the credential the session was entered with exempts on its own", async () => {
+    setActiveCredentialId("cred-held")
+    await toSheet(UA.android)
+    expect(notice()).toBeNull()
+    expect(cta()).toBeDefined()
+  })
+
+  it("a create refused as not supported shows the card and Chrome, and the sheet's own button stays the retry", async () => {
+    h.createAccount.mockRejectedValueOnce(unsupported())
+    await toCreate(UA.androidChrome)
+    expect(refused()?.dataset.reason).toBe("NotSupportedError")
+    expect(container.textContent).toContain("open it in your phone's browser")
+    expect(
+      container.querySelector('[data-testid="open-in-browser-link"]')!.getAttribute("href"),
+    ).toBe(
+      `intent://${window.location.host}/claim/taga#Intent;scheme=http;package=com.android.chrome;end`,
+    )
+    expect(container.querySelector('[data-testid="create-retry"]')).toBeNull()
+    expect(container.querySelector('[data-testid="create-start-over"]')).not.toBeNull()
+    expect(container.textContent).not.toContain("Couldn't create your passkey")
+    expect(cta()?.dataset.style).toBe("dark")
+    expect(refused()?.querySelector('[data-testid="passkey-leftover"]')).toBeNull()
+    expect(h.showReportableError).not.toHaveBeenCalled()
+    expect(events("action_failed")).toEqual([{ action: "create_account", code: "err" }])
+
+    h.fireEvent.mockClear()
+    h.claimTag.mockResolvedValue({
+      kind: "custody",
+      confirmed: false,
+      oxideAccount: ACCOUNT,
+      claim: CLAIM,
+    })
+    await clickDeposit()
+    expect(h.createAccount).toHaveBeenCalledTimes(2)
+    expect(events("registration_terms_accepted")).toHaveLength(1)
+  })
+
+  it("a not-supported failure after the passkey was written links the cleanup entry beside the way out", async () => {
+    const { markPasskeyWritten } = await import("@obsidion/passkey-web")
+    h.createAccount.mockRejectedValueOnce(markPasskeyWritten(unsupported()))
+    await toCreate(UA.androidChrome)
+    expect(refused()?.dataset.reason).toBe("NotSupportedError")
+    expect(escape()).not.toBeNull()
+    expect(
+      refused()?.querySelector('[data-testid="passkey-leftover"] a')?.getAttribute("href"),
+    ).toBe("https://docs.zk.money/docs/passkeys#leftover-passkey")
+  })
+
+  it("a reuse attempt's refusal on the create step gets no cleanup line: it wrote nothing", async () => {
+    const { PhoneRequiredError } = await import("@obsidion/passkey-web")
+    h.hasRootBreadcrumb = true
+    saveWalletIdentity({ address: `0x${"aa".repeat(32)}`, claimedAt: 1 })
+    h.reusePasskeyAccount.mockRejectedValueOnce(new PhoneRequiredError())
+    await toSheet(UA.laptop)
+    await clickDeposit()
+    expect(h.reusePasskeyAccount).toHaveBeenCalledTimes(1)
+    expect(h.createAccount).not.toHaveBeenCalled()
+    expect(refused()?.dataset.reason).toBe("PhoneRequiredError")
+    expect(refused()?.querySelector('[data-testid="passkey-leftover"]')).toBeNull()
+  })
+
+  it("the same failure on a laptop has no way out, and the sheet's button keeps its usual look", async () => {
+    h.createAccount.mockRejectedValueOnce(unsupported())
+    await toCreate(UA.laptop)
+    expect(refused()?.dataset.reason).toBe("NotSupportedError")
+    expect(container.querySelector('[data-testid="open-in-browser"]')).toBeNull()
+    expect(cta()?.dataset.style).toBe("gradient")
+  })
+
+  it("a closed prompt on a laptop keeps the closed-prompt line and button", async () => {
+    h.createAccount.mockRejectedValueOnce(closedError())
+    await toCreate(UA.laptop)
+    expect(refused()).toBeNull()
+    expect(container.textContent).toContain("The passkey prompt was closed before it finished")
+    expect(container.textContent).toContain("Nothing was created.")
+    expect(cta()).toBeDefined()
+  })
+
+  it("a closed follow-up prompt, after the passkey was written, gets the card with the cleanup link", async () => {
+    const { markPasskeyWritten } = await import("@obsidion/passkey-web")
+    h.createAccount.mockRejectedValueOnce(markPasskeyWritten(closedError()))
+    await toCreate(UA.laptop)
+    expect(refused()?.dataset.reason).toBe("NotAllowedError")
+    expect(refused()?.querySelector("h2")?.textContent).toBe("The passkey prompt was closed")
+    expect(refused()?.querySelector('[role="alert"]')?.textContent).toBe(
+      "The passkey prompt was closed before it finished. Try again when you're ready.",
+    )
+    expect(
+      refused()?.querySelector('[data-testid="passkey-leftover"] a')?.getAttribute("href"),
+    ).toBe("https://docs.zk.money/docs/passkeys#leftover-passkey")
+    expect(container.querySelector('[data-testid="create-retry"]')).not.toBeNull()
+  })
+
+  it("any other failure after the passkey was written gets the same card", async () => {
+    const { markPasskeyWritten } = await import("@obsidion/passkey-web")
+    h.createAccount.mockRejectedValueOnce(markPasskeyWritten(new Error("challenge fetch failed")))
+    await toCreate(UA.laptop)
+    expect(refused()?.dataset.reason).toBe("Error")
+    expect(refused()?.querySelector('[role="alert"]')?.textContent).toBe(
+      "Couldn't create your passkey. challenge fetch failed. Try again.",
+    )
+    expect(refused()?.querySelector('[data-testid="passkey-leftover"]')).not.toBeNull()
+  })
+
+  it("a browser that already holds an account gets no card and keeps the create error: that account can't travel", async () => {
+    h.hasRootBreadcrumb = true
+    saveWalletIdentity({ handle: "alice", address: `0x${"aa".repeat(32)}`, claimedAt: 1 })
+    h.createAccount.mockRejectedValueOnce(unsupported())
+    await toSheet(UA.android)
+    expect(notice()).toBeNull()
+    await clickDeposit()
+    expect(h.createAccount).toHaveBeenCalledTimes(1)
+    expect(refused()).toBeNull()
+    expect(container.textContent).toContain("Couldn't create your passkey")
+  })
+
+  it("a reuse of the key this session holds, with no account stored, gets no card and keeps the create error", async () => {
+    // Recovering cached material needs the root record and the session's credential.
+    h.hasRootBreadcrumb = true
+    setActiveCredentialId("cred-held")
+    h.getAuthService.mockReturnValue({
+      recoverFromCache: async () => ({ credentialId: "cred-held", expectedAddress: L2_ADDRESS }),
+      clear: vi.fn(),
+      lockOut: vi.fn(),
+    })
+    h.reusePasskeyAccount.mockRejectedValueOnce(unsupported())
+    await toSheet(UA.android)
+    expect(notice()).toBeNull()
+    await clickDeposit()
+    expect(h.createAccount).not.toHaveBeenCalled()
+    expect(h.reusePasskeyAccount).toHaveBeenCalledTimes(1)
+    expect(refused()).toBeNull()
+    expect(container.querySelector('[data-testid="open-in-browser"]')).toBeNull()
+    expect(container.textContent).toContain("Couldn't create your passkey")
+  })
+
+  it("a reuse of this browser's nameless account gets no card and keeps the create error and the way on", async () => {
+    h.hasRootBreadcrumb = true
+    saveWalletIdentity({ address: `0x${"aa".repeat(32)}`, claimedAt: 1 })
+    h.reusePasskeyAccount.mockRejectedValueOnce(unsupported())
+    await toSheet(UA.android)
+    expect(notice()).toBeNull()
+    await clickDeposit()
+    expect(h.reusePasskeyAccount).toHaveBeenCalledTimes(1)
+    expect(refused()).toBeNull()
+    expect(container.querySelector('[data-testid="open-in-browser"]')).toBeNull()
+    expect(container.textContent).toContain("Couldn't create your passkey")
+
+    h.reusePasskeyAccount.mockRejectedValueOnce(closedError())
+    ua!.mockReturnValue(UA.iosX)
+    await clickDeposit()
+    expect(refused()).toBeNull()
+    expect(container.textContent).toContain("The passkey prompt was closed before it finished")
   })
 })
 
@@ -1890,7 +2562,7 @@ describe("reusePasskeyAccount — pre-commit expectedL2Address verification", ()
   })
 })
 
-describe("buildRetrySignDeps — re-broadcast half", () => {
+describe("buildRetrySignDeps — the rebuild's sign half", () => {
   // The install's credential id is read from the stored passkey record.
   const storedCredential = () =>
     vi.spyOn(AccountStorage, "get").mockReturnValue({
@@ -1898,7 +2570,7 @@ describe("buildRetrySignDeps — re-broadcast half", () => {
     } as never)
   afterEach(() => vi.restoreAllMocks())
 
-  it("arms on any deployment (bootstrap-key gated), with the deriver + broadcast wired", async () => {
+  it("arms on any deployment (bootstrap-key gated), with the deriver wired", async () => {
     storedCredential()
     const deps = await realOxideOnboarding.buildRetrySignDeps(
       "alice",
@@ -1906,7 +2578,6 @@ describe("buildRetrySignDeps — re-broadcast half", () => {
       h.config as never,
     )
     expect(typeof deps.deriveRegistrationSipa).toBe("function")
-    expect(typeof deps.broadcast).toBe("function")
     expect(deps.accountService).toBeDefined()
     expect(deps.credentialId).toBe("cred-alice")
   })
@@ -1933,11 +2604,7 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
       await getPendingStore().upsert(ACCOUNT, {}, baseRecord({ tag }))
       return {
         kind: "pending",
-        claim: {
-          ...CLAIM,
-          deadline: "4102444800",
-          terms: { ...TERMS, minDeposit: "4500000000000000000" },
-        },
+        claim: { ...CLAIM, terms: TERMS },
         oxideAccount: ACCOUNT,
       }
     })
@@ -2154,7 +2821,7 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
       return {
         kind: "pending",
         oxideAccount: ACCOUNT,
-        claim: { ...CLAIM, terms: { ...TERMS, minDeposit: "4500000000000000000" } },
+        claim: { ...CLAIM, terms: TERMS },
       }
     })
     await render("/claim/taga?recovery=1")
@@ -2197,6 +2864,27 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
     await click("Check again")
     expect(h.navigate).not.toHaveBeenCalled()
     expect(button("Sweep manually")).toBeDefined()
+
+    // Confirmed short capacity holds the action and says so beside it, not "choose Sweep manually".
+    h.processing.current = {
+      reason: {
+        kind: "capacity",
+        availableAtomic: 0n,
+        refill: { status: "unknown" },
+        decimals: 18,
+        observedAt: Date.now(),
+      },
+      blocker: { kind: "capacity", observedAt: Date.now(), zeroCapacity: true },
+    }
+    await click("Check again")
+    expect(container.textContent).toContain(
+      "Sweep manually finishes registration once network capacity is available.",
+    )
+    expect(container.textContent).not.toContain("Choose Sweep manually")
+    expect(button("Sweep manually")?.disabled).toBe(true)
+    expect(
+      container.querySelector('[data-testid="deposit-pending-reason"]')?.textContent,
+    ).toContain("Waiting for network capacity")
   })
 
   it("offers the earned-price restart after a sign-out cleared the admission receipt", async () => {
@@ -2206,7 +2894,7 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
     const { recordDepositAdmission, hasDepositAdmission } = await import(
       "../src/features/identity/admission"
     )
-    const { signOutNow } = await import("../src/features/identity/signOut")
+    const { signOut } = await import("../src/features/identity/signOut")
     const rail = SIPADepositStore.get(webStorage)
     await rail.load()
     await rail.upsert(
@@ -2237,7 +2925,7 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
     })
     recordDepositAdmission(original, 5n * 10n ** 18n)
     // The refund emptied the address, so nothing the L1 watcher reads can rewrite the receipt.
-    signOutNow()
+    await signOut()
     expect(hasDepositAdmission(original)).toBe(false)
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, pending: true, claimedAt: 2 })
     const newAddress = "0x00000000000000000000000000000000000000c9"
@@ -2251,7 +2939,7 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
       return {
         kind: "pending",
         oxideAccount: ACCOUNT,
-        claim: { ...CLAIM, terms: { ...TERMS, minDeposit: "4500000000000000000" } },
+        claim: { ...CLAIM, terms: TERMS },
       }
     })
     await render("/claim/taga?recovery=1")
@@ -2423,7 +3111,10 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
       earnedExpected: true,
     })
     const newAddress = "0x00000000000000000000000000000000000000c9"
+    let ledgerHeld: boolean | undefined
     h.claimTag.mockImplementation(async () => {
+      // No broadcast of the old address may start while the replacement decides on the rail.
+      ledgerHeld = userFlowActive()
       // The old address was broadcast, so the rail's one use is gone.
       await getPendingStore().upsert(ACCOUNT, {
         sipaAddress: newAddress,
@@ -2434,7 +3125,7 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
       return {
         kind: "pending",
         oxideAccount: ACCOUNT,
-        claim: { ...CLAIM, terms: { ...TERMS, minDeposit: "4500000000000000000" } },
+        claim: { ...CLAIM, terms: TERMS },
       }
     })
     await render("/claim/taga?fee=waived")
@@ -2454,6 +3145,7 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
       undefined,
       expect.objectContaining({ sipaAddress: original.sipaAddress, broadcast: true }),
     )
+    expect(ledgerHeld).toBe(true)
     expect(h.runDetectionTick).not.toHaveBeenCalled()
     expect(getPendingStore().current()?.sipaAddress).toBe(newAddress)
     expect(loadRegistrationTerms(ACCOUNT)).toMatchObject({ fee: TERMS.fee })
@@ -2469,6 +3161,75 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
     // No deposit was refunded, so nothing bought wallet entry.
     expect(button("Back to wallet")).toBeUndefined()
     expect(button("Enter now, deposit later")).toBeDefined()
+  })
+
+  it("owes nothing for an old-price address a payment link would fund, while it is to be replaced", async () => {
+    resetBroadcastsForTests()
+    await seedRecord({ fee: "10000000000000000000", broadcast: false, retries: 3 })
+    const original = getPendingStore().current()!
+    saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, pending: true, claimedAt: 1 })
+    saveRegistrationTerms({
+      account: ACCOUNT,
+      tag: "taga",
+      deadline: 4102444800,
+      fee: original.fee,
+      minDeposit: "5000000000000000000",
+      feeWaived: false,
+      earnedExpected: true,
+      paylinkFunded: true,
+      paylinkId: "id:paylink-frag",
+    })
+    stashTicketSignup({
+      fragment: "paylink-frag",
+      threshold: (2n * 10n ** 18n).toString(),
+      schedule: { fee: (10n ** 18n / 2n).toString(), minDeposit: "0" },
+      amount: (20n * 10n ** 18n).toString(),
+    })
+    await render("/claim/taga?fee=waived")
+    await settleReads()
+    expect(button("Register at earned price")).toBeDefined()
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 20))
+    })
+    expect(getBroadcastLedger().get(original.sipaAddress)).toBeNull()
+  })
+
+  it("stops a replacement whose old address has a broadcast still undecided, to be asked for again", async () => {
+    resetBroadcastsForTests()
+    await seedRecord({ fee: "10000000000000000000", broadcast: false, retries: 3 })
+    const original = getPendingStore().current()!
+    saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, pending: true, claimedAt: 1 })
+    saveRegistrationTerms({
+      account: ACCOUNT,
+      tag: "taga",
+      deadline: 4102444800,
+      fee: original.fee,
+      minDeposit: "5000000000000000000",
+      feeWaived: false,
+      earnedExpected: true,
+    })
+    // An earlier page sent the old address's broadcast; the chain has not decided it.
+    await getBroadcastLedger().enqueue({
+      address: original.sipaAddress,
+      kind: "registration",
+      scope: null,
+      source: { type: "registration", account: ACCOUNT },
+      txHash: `0x${"aa".repeat(32)}`,
+    })
+    await render("/claim/taga?fee=waived")
+    await settleReads()
+    vi.useFakeTimers()
+    try {
+      await act(async () => {
+        button("Register at earned price")!.click()
+        await vi.advanceTimersByTimeAsync(60_001)
+      })
+      expect(container.textContent).toContain("The original address is still being published")
+      expect(h.claimTag).not.toHaveBeenCalled()
+      expect(userFlowActive()).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("a replacement whose session died past its checkpoint still completes manually after a reload", async () => {
@@ -2498,6 +3259,8 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
         "earned_tag",
       )} total, then choose Sweep manually`,
     )
+    // Never broadcast, yet shown: only a manual sweep registers it.
+    expect(container.querySelector('[aria-label^="Copy deposit address"]')).not.toBeNull()
     expect(button("Sweep manually")).toBeDefined()
     expect(button("Retry")).toBeUndefined()
     expect(button("Register at earned price")).toBeUndefined()
@@ -2618,36 +3381,33 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
 
   it("without a waiver the gate quotes the registry's minimum, fee and total on the deposit chain", async () => {
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
-    try {
-      await walkToPendingWithKeys()
-      await settleReads()
-      const text = container.textContent!
-      expect(text).toContain("@taga is reserved for you")
-      expect(text).toContain("Send at least $15.00 to claim your tag and activate your account.")
-      expect(text).toContain("NetworkSepolia")
-      expect(termsValue("opening-balance")).toBe(usd(475n * 10n ** 16n))
-      // The tag price is what the fee carries above the relayer's sweep; the sweep and the portal's
-      // cut are network funding, the same figure a free schedule quotes.
-      expect(termsValue("tag-price")).toBe(usd(95n * 10n ** 17n))
-      expect(termsValue("network-funding")).toBe(usd(75n * 10n ** 16n))
-      expect(termsValue("total")).toBe(ask("standard"))
-      expect(text).toContain("Reserved until")
-      expect(checkControl()).toBeTruthy()
-      expect(button("Register @taga")).toBeUndefined()
-      expect(button("Enter now, deposit later")).toBeUndefined()
-      expect(loadRegistrationTerms(ACCOUNT)?.feeWaived).toBe(false)
-    } finally {
-      h.amounts = { min: 0n, fee: 0n }
-    }
+    await walkToPendingWithKeys()
+    await settleReads()
+    const text = container.textContent!
+    expect(text).toContain("@taga is reserved for you")
+    expect(text).toContain("Send at least $15.00 to claim your tag and activate your account.")
+    expect(text).toContain("NetworkSepolia")
+    expect(termsValue("opening-balance")).toBe(usd(475n * 10n ** 16n))
+    // The tag price is what the fee carries above the relayer's sweep; the sweep and the portal's
+    // cut are network funding, the same figure a free schedule quotes.
+    expect(termsValue("tag-price")).toBe(usd(95n * 10n ** 17n))
+    expect(termsValue("network-funding")).toBe(usd(75n * 10n ** 16n))
+    expect(termsValue("total")).toBe(ask("standard"))
+    expect(text).toContain("Reserved until")
+    expect(checkControl()).toBeTruthy()
+    expect(button("Register @taga")).toBeUndefined()
+    expect(button("Enter now, deposit later")).toBeUndefined()
+    // A claim carrying no schedule names no kind.
+    expect(loadRegistrationTerms(ACCOUNT)?.feeWaived).toBeUndefined()
   })
 
-  it("a waived quote still totals the relay fee it signed", async () => {
+  it("a waived reload totals the relay fee it signed and can enter now, deposit later", async () => {
     await seedRecord()
     saveRegistrationTerms({
       account: ACCOUNT,
       tag: "taga",
       deadline: 4102444800,
-      fee: "500000000000000000",
+      fee: REDUCED_FEE,
       minDeposit: "4500000000000000000",
       feeWaived: true,
     })
@@ -2665,23 +3425,6 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
     )
     // The ask, never the signed floor.
     expect(termsValue("total")).not.toBe(due(45n * 10n ** 17n))
-  })
-
-  it("a waived reload shows the fee as waived and can enter now, deposit later", async () => {
-    await seedRecord()
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: 4102444800,
-      fee: REDUCED_FEE,
-      minDeposit: "4500000000000000000",
-      feeWaived: true,
-    })
-    await render()
-    expect(container.textContent).toContain("Tag priceWaived")
-    expect(container.textContent).toContain("Network funding$0.75")
-    expect(container.textContent).toContain("The tag is free, and $0.75 is network funding.")
-    expect(button("Enter now, deposit later")).toBeTruthy()
 
     await click("Enter now, deposit later")
     expect(loadWalletIdentity()).toMatchObject({
@@ -2861,7 +3604,7 @@ describe("pending step — a reload with no signed quote left", () => {
     expect(h.scheduleReads).toBe(reads)
   })
 
-  it("says the same where the schedule's fee sits under the relayer's sweep fee", async () => {
+  it("says the same, holding the name, where the schedule's fee sits under the relayer's sweep fee", async () => {
     // Nothing at the address could fund the sweep, so the deposit is never asked for.
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n ** 17n }
     await seedRecord()
@@ -2870,14 +3613,6 @@ describe("pending step — a reload with no signed quote left", () => {
     await settleReads()
     expect(paused()).toContain(REGISTRATIONS_PAUSED_NOTICE)
     expect(termsValue("total")).toBeUndefined()
-  })
-
-  it("holds the name and asks for nothing while registrations are paused", async () => {
-    h.amounts = { min: 5n * 10n ** 18n, fee: 10n ** 17n }
-    await seedRecord()
-    unsignedTerms()
-    await render("/claim/taga")
-    await settleReads()
     expect(container.textContent).not.toContain("Send the deposit to the address below")
     // The notice stands once, with the check control beside it rather than inside its sentence.
     expect(container.textContent!.split(REGISTRATIONS_PAUSED_NOTICE)).toHaveLength(2)
@@ -2944,7 +3679,7 @@ describe("pending step — a quote past its deadline", () => {
     h.tuple = { registry: "0x00000000000000000000000000000000000000e4" }
     const freshDeadline = String(Math.floor(Date.now() / 1000) + 7200)
     h.buildRetrySignDeps.mockReturnValue({
-      accountService: { signDomain: vi.fn(async () => ({ ...CLAIM, deadline: freshDeadline })) },
+      accountService: { signDomain: vi.fn(async () => nameClaim({ deadline: freshDeadline })) },
     })
     h.runDetectionTick.mockImplementation(async (deps: { getSignDeps: () => Promise<any> }) => {
       const sign = await deps.getSignDeps()
@@ -2992,18 +3727,9 @@ describe("pending step — a quote past its deadline", () => {
     const freshDeadline = String(Math.floor(Date.now() / 1000) + 7200)
     h.buildRetrySignDeps.mockReturnValue({
       accountService: {
-        signDomain: vi.fn(async () => ({
-          ...CLAIM,
-          deadline: freshDeadline,
-          terms: {
-            fee: REDUCED_FEE,
-            minDeposit: "4500000000000000000",
-            nonce: "1",
-            deadline: freshDeadline,
-            signature: "0x",
-            reduced: true,
-          },
-        })),
+        signDomain: vi.fn(async () =>
+          nameClaim({ deadline: freshDeadline, terms: earnedTerms({ deadline: freshDeadline }) }),
+        ),
       },
     })
     // The tick renews the claim and publishes nothing: the rail is spent.
@@ -3098,7 +3824,7 @@ describe("pending step — log out", () => {
   })
 })
 
-describe("the intro's wait applies what the hand-off decides after the last tap", () => {
+describe("the setup spinner applies what the hand-off decides", () => {
   const HANDOFF = "/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12"
   const deferredClaim = () => {
     let settle!: { resolve: () => void; reject: (error: Error) => void }
@@ -3118,20 +3844,74 @@ describe("the intro's wait applies what the hand-off decides after the last tap"
     return () => settle
   }
 
-  it("a claim that succeeds after the wait gave up still enters, with no second claim", async () => {
-    const claim = deferredClaim()
-    await render(HANDOFF)
-    await enterHandoff()
+  it("a Cancel while the wallet still boots keeps the hand-off from starting once it boots", async () => {
+    h.resolveHandoff.mockResolvedValue(fakeResolved)
+    const wallet = h.aztec.obsidionWallet
+    h.aztec.obsidionWallet = undefined
     vi.useFakeTimers()
     try {
-      await leaveIntro()
-      expect(container.querySelector('[data-testid="handoff-entering"]')).not.toBeNull()
+      await render(HANDOFF)
       await act(async () => {
         await vi.advanceTimersByTimeAsync(25_001)
       })
-      // The wait gave up on the terms sheet, which can ask again.
+      await act(async () => {
+        button("Cancel")!.click()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      h.aztec.obsidionWallet = wallet
+      await render(HANDOFF)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(h.resolveHandoff).not.toHaveBeenCalled()
       expect(container.textContent).toContain("Get instant access")
-      expect(h.navigate).not.toHaveBeenCalled()
+    } finally {
+      h.aztec.obsidionWallet = wallet
+      vi.useRealTimers()
+    }
+  })
+
+  it("offers Cancel on the spinner once the hold passes, which falls back to the terms sheet", async () => {
+    h.resolveHandoff.mockResolvedValue(fakeResolved)
+    deferredClaim()
+    vi.useFakeTimers()
+    try {
+      await render(HANDOFF)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(button("Cancel")).toBeUndefined()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(25_001)
+      })
+      expect(container.querySelector('[data-testid="handoff-entering"]')).not.toBeNull()
+      await act(async () => {
+        button("Cancel")!.click()
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(container.querySelector('[data-testid="handoff-entering"]')).toBeNull()
+      expect(container.textContent).toContain("Get instant access")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("waits out a slow claim on the spinner, with no sheet between it and the wallet", async () => {
+    // The bridge left material, so the silent attempt runs the claim behind the spinner.
+    h.resolveHandoff.mockResolvedValue(fakeResolved)
+    const claim = deferredClaim()
+    vi.useFakeTimers()
+    try {
+      await render(HANDOFF)
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(0)
+      })
+      expect(container.querySelector('[data-testid="handoff-entering"]')).not.toBeNull()
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000)
+      })
+      expect(container.querySelector('[data-testid="handoff-entering"]')).not.toBeNull()
+      expect(container.textContent).not.toContain("Get instant access")
 
       await act(async () => {
         claim().resolve()
@@ -3145,30 +3925,32 @@ describe("the intro's wait applies what the hand-off decides after the last tap"
     }
   })
 
-  it("a tap parked on a running hand-off is released when it succeeds: the last tap enters at once", async () => {
-    // The bridge left material, so the silent attempt runs the claim with no prompt.
+  it("lands a hand-off that must deposit to enter on the deposit step, with its address", async () => {
+    h.config.admissionGate = true
+    h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     h.resolveHandoff.mockResolvedValue(fakeResolved)
     const claim = deferredClaim()
     await render(HANDOFF)
-    // The first tap lands while that attempt runs, so it is kept for a prompt.
-    await enterHandoff()
     await act(async () => {
       claim().resolve()
       await new Promise((r) => setTimeout(r, 0))
     })
-    expect(loadWalletIdentity()).toMatchObject({ handle: "taga", pending: true })
-    await leaveIntro()
-    // The attempt ended with an account: nothing is owed a prompt, and nothing holds the entry.
-    expect(container.querySelector('[data-testid="handoff-entering"]')).toBeNull()
-    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+    await vi.waitFor(() =>
+      expect(container.querySelector('[data-testid="handoff-entering"]')).toBeNull(),
+    )
+    expect(container.textContent).toContain("Send to")
+    expect(container.textContent).toContain("0x000000...0000c3")
+    expect(loadWalletIdentity()).toBeNull()
   })
 
   it("a hand-off that commits another account than this page loaded reloads before the claim", async () => {
     // This browser's stores loaded under an earlier account; the material names a new one.
     setActiveStorageId("account-a")
+    await walletStorage.flush()
     h.resolveHandoff.mockResolvedValue(fakeResolved)
     h.adoptHandoff.mockImplementationOnce(async () => {
       setActiveStorageId("account-b")
+      await walletStorage.flush()
       return fakeKeys
     })
     h.reloadIfSessionSwitched.mockReturnValueOnce(true)
@@ -3182,11 +3964,25 @@ describe("the intro's wait applies what the hand-off decides after the last tap"
     expect(loadWalletIdentity()).toBeNull()
   })
 
-  it("a claim refused after the last tap shows its error, not the terms sheet", async () => {
+  it("a session-switch reload resumes in the setup spinner", async () => {
+    h.takeOnboardingResume.mockReturnValueOnce(true)
+    h.resolveHandoff.mockResolvedValue(fakeResolved)
     const claim = deferredClaim()
     await render(HANDOFF)
-    await enterHandoff()
-    await leaveIntro()
+    expect(container.querySelector('[data-testid="handoff-entering"]')).not.toBeNull()
+    await act(async () => {
+      claim().resolve()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(loadWalletIdentity()).toMatchObject({ handle: "taga", pending: true })
+    expect(h.navigate).toHaveBeenCalled()
+  })
+
+  it("a claim refused behind the spinner shows its error, not the terms sheet", async () => {
+    h.resolveHandoff.mockResolvedValue(fakeResolved)
+    const claim = deferredClaim()
+    await render(HANDOFF)
+    await settleHandoff()
     expect(container.querySelector('[data-testid="handoff-entering"]')).not.toBeNull()
 
     await act(async () => {
@@ -3199,17 +3995,16 @@ describe("the intro's wait applies what the hand-off decides after the last tap"
     expect(h.navigate).not.toHaveBeenCalled()
   })
 
-  it("a claim refused after the wait gave up shows its error over the terms sheet", async () => {
+  it("a slow claim that is refused shows its error over the terms sheet", async () => {
+    h.resolveHandoff.mockResolvedValue(fakeResolved)
     const claim = deferredClaim()
-    await render(HANDOFF)
-    await enterHandoff()
     vi.useFakeTimers()
     try {
-      await leaveIntro()
+      await render(HANDOFF)
       await act(async () => {
         await vi.advanceTimersByTimeAsync(25_001)
       })
-      expect(container.textContent).toContain("Get instant access")
+      expect(container.querySelector('[data-testid="handoff-entering"]')).not.toBeNull()
 
       await act(async () => {
         claim().reject(new Error("claim refused late"))
@@ -3221,23 +4016,9 @@ describe("the intro's wait applies what the hand-off decides after the last tap"
       vi.useRealTimers()
     }
   })
-
-  it("a claim refused before the last tap still owns the screen after it", async () => {
-    const claim = deferredClaim()
-    await render(HANDOFF)
-    await enterHandoff()
-    await act(async () => {
-      claim().reject(new Error("claim refused early"))
-      await new Promise((r) => setTimeout(r, 0))
-    })
-    // The slides are not pulled from under the reader; the last tap lands on the error.
-    expect(container.textContent).not.toContain("claim refused early")
-    await leaveIntro()
-    expect(container.textContent).toContain("claim refused early")
-  })
 })
 
-describe("the intro's spinner holds until there is something to enter on", () => {
+describe("the setup spinner holds until there is something to enter on", () => {
   it("enters on a registration still publishing, which Home's activation hero owns", async () => {
     h.resolveHandoff.mockResolvedValue(fakeResolved)
     h.claimTag.mockImplementation(async (tag: string) => {
@@ -3251,9 +4032,7 @@ describe("the intro's spinner holds until there is something to enter on", () =>
       }
     })
     await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
-    await act(async () => new Promise((r) => setTimeout(r, 0)))
-
-    await leaveIntro()
+    await settleHandoff()
     // The deposit address is good before the claim publishes, so nothing is gained by holding it.
     expect(h.navigate).toHaveBeenCalled()
   })
@@ -3262,17 +4041,40 @@ describe("the intro's spinner holds until there is something to enter on", () =>
     h.aztec = { obsidionWallet: undefined }
     try {
       await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
-      await act(async () => new Promise((r) => setTimeout(r, 0)))
-      // Nothing could start, so the tap is owed and the last slide must not give up on it.
+      await settleHandoff()
       expect(h.resolveHandoff).not.toHaveBeenCalled()
-
-      await enterHandoff()
-      await leaveIntro()
       expect(container.querySelector('[data-testid="handoff-entering"]')).not.toBeNull()
       expect(container.textContent).not.toContain("Get instant access")
     } finally {
       h.aztec = { obsidionWallet: { wallet: true } }
     }
+  })
+
+  it("a claim still running holds the spinner, and never lands on a gate that bounces", async () => {
+    let release!: () => void
+    h.resolveHandoff.mockResolvedValue(fakeResolved)
+    h.claimTag.mockImplementation(async (tag: string) => {
+      await new Promise<void>((r) => (release = r))
+      await getPendingStore().upsert(ACCOUNT, {}, baseRecord({ tag }))
+      return { kind: "pending", claim: CLAIM, oxideAccount: ACCOUNT }
+    })
+    await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
+    await settleHandoff()
+
+    // The claim has saved no identity yet. Entering here is what sent the user back to /claim, so
+    // the wait holds — on a spinner, not on a step of the wizard.
+    expect(loadWalletIdentity()).toBeNull()
+    expect(h.navigate).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-testid="handoff-entering"]')).not.toBeNull()
+    expect(container.textContent).not.toContain("Get instant access")
+
+    await act(async () => {
+      release()
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    // The claim landed: the identity the gate reads is there, and the wait spends itself entering.
+    expect(loadWalletIdentity()).toMatchObject({ handle: "taga", pending: true })
+    expect(h.navigate).toHaveBeenCalled()
   })
 })
 
@@ -3309,6 +4111,51 @@ describe("the wallet keeps no signup of its own", () => {
     })
   })
 
+  it("a name grant stays in the wallet, including after closing the terms sheet", async () => {
+    sessionStorage.setItem("obsidion.name-grant", "grant-token")
+    sessionStorage.setItem("obsidion.name-grant-handle", "taga")
+    await withStubbedAssign(async (assign) => {
+      await render("/claim/taga")
+      await settleReads()
+      expect(assign).not.toHaveBeenCalled()
+      expect(h.routeGrantIsCurrent).toHaveBeenCalledWith("taga", "grant-token")
+      expect(container.querySelector('[data-testid="invite-probe"]')?.textContent).toBe("true")
+
+      await click("landing-signin")
+      const close = container.querySelector<HTMLButtonElement>('button[aria-label="Close"]')
+      expect(close).not.toBeNull()
+      await act(async () => close!.click())
+
+      expect(assign).not.toHaveBeenCalled()
+      expect(h.navigate).toHaveBeenCalledWith("/claim/taga", { replace: true })
+    })
+  })
+
+  it("clears a revoked grant and sends the visitor back to the campaign", async () => {
+    sessionStorage.setItem("obsidion.name-grant", "revoked-token")
+    sessionStorage.setItem("obsidion.name-grant-handle", "taga")
+    h.routeGrantIsCurrent.mockResolvedValue(false)
+    await withStubbedAssign(async (assign) => {
+      await render("/claim/taga")
+      await settleReads()
+      expect(h.routeGrantIsCurrent).toHaveBeenCalledWith("taga", "revoked-token")
+      expect(sessionStorage.getItem("obsidion.name-grant")).toBeNull()
+      expect(assign).toHaveBeenCalledWith("https://launch.test.invalid")
+    })
+  })
+
+  it("keeps the grant when the validation request fails", async () => {
+    sessionStorage.setItem("obsidion.name-grant", "grant-token")
+    sessionStorage.setItem("obsidion.name-grant-handle", "taga")
+    h.routeGrantIsCurrent.mockRejectedValue(new Error("offline"))
+    await withStubbedAssign(async (assign) => {
+      await render("/claim/taga")
+      await settleReads()
+      expect(assign).not.toHaveBeenCalled()
+      expect(sessionStorage.getItem("obsidion.name-grant")).toBe("grant-token")
+    })
+  })
+
   it("a hand-off naming another wallet's RP is no hand-off either", async () => {
     await withStubbedAssign(async (assign) => {
       await render("/claim/taga?entry=passkey&rp=wallet.zk.money&cred=cred-1&pk=ab12")
@@ -3322,7 +4169,7 @@ describe("the wallet keeps no signup of its own", () => {
       await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
       await act(async () => new Promise((r) => setTimeout(r, 0)))
       expect(assign).not.toHaveBeenCalled()
-      expect(container.querySelector('[data-testid="carousel-next"]')).not.toBeNull()
+      expect(container.textContent).toContain("Get instant access")
     })
   })
 
@@ -3402,36 +4249,32 @@ describe("a second arrival on a name this browser already entered", () => {
 })
 
 describe("campaign hand-off — the bridge's material needs no tap", () => {
-  it("material in place completes the hand-off while the first slide is read", async () => {
+  it("material in place enters the wallet with no tap", async () => {
     h.resolveHandoff.mockResolvedValue(fakeResolved)
     h.claimTag.mockImplementation(async (tag: string) => {
       await getPendingStore().upsert(ACCOUNT, {}, baseRecord({ tag }))
       return { kind: "pending", claim: CLAIM, oxideAccount: ACCOUNT }
     })
     await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
-    await act(async () => new Promise((r) => setTimeout(r, 0)))
-    // No tap yet: the material was taken with no prompt, and the name was claimed.
+    await settleHandoff()
     expect(h.resolveHandoff).toHaveBeenCalledTimes(1)
     expect(h.resolveHandoff.mock.calls[0][6]).toBe(true)
     expect(h.claimTag).toHaveBeenCalledTimes(1)
-    expect(container.querySelector('[data-testid="carousel-next"]')).not.toBeNull()
-
-    await leaveIntro()
     expect(h.navigate).toHaveBeenCalled()
   })
 
-  it("a tap before the wallet is ready is kept, and spent on the prompt once it is", async () => {
+  it("material that needs a prompt falls to the terms sheet, whose Deposit asks", async () => {
     h.claimTag.mockImplementation(async (tag: string) => {
       await getPendingStore().upsert(ACCOUNT, {}, baseRecord({ tag }))
       return { kind: "pending", claim: CLAIM, oxideAccount: ACCOUNT }
     })
     await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
-    await act(async () => new Promise((r) => setTimeout(r, 0)))
-    // The attempt made with no tap was refused: a prompt is needed.
+    await settleHandoff()
     expect(h.resolveHandoff).toHaveBeenCalledTimes(1)
     expect(h.claimTag).not.toHaveBeenCalled()
+    expect(container.textContent).toContain("Get instant access")
 
-    await enterHandoff()
+    await clickDeposit()
     expect(h.resolveHandoff).toHaveBeenCalledTimes(2)
     expect(h.resolveHandoff.mock.calls[1][6]).toBeFalsy()
     expect(h.claimTag).toHaveBeenCalledTimes(1)
@@ -3746,6 +4589,33 @@ describe("campaign hand-off — the URL's tag and passkey win", () => {
     },
   )
 
+  it.each([
+    [
+      "`choose=1` asks for any passkey, whatever else it names",
+      "&choose=1",
+      { discover: true, chooser: true },
+    ],
+    [
+      "without `choose=1` the link's passkey is the one asked for",
+      "",
+      {
+        credentialId: "bob-cred",
+        pubkeyHex: "bb",
+        expectedL2Address: undefined,
+        policyVersion: undefined,
+      },
+    ],
+  ])("a claim link: %s, on every attempt", async (_, choose, hints) => {
+    await render(
+      `/claim/newtag?entry=passkey&src=campaign&rp=localhost&cred=bob-cred&pk=bb${choose}`,
+    )
+    await act(async () => new Promise((r) => setTimeout(r, 0)))
+    await settleHandoff()
+    await clickDeposit()
+    // Once with no tap, refused; once on the tap.
+    expect(h.resolveHandoff.mock.calls.map((call) => call[3])).toEqual([hints, hints])
+  })
+
   it("an in-flight record for another tag does not capture the wizard, and is abandoned only once the hand-off passkey resolves (no custody)", async () => {
     h.claimTag.mockImplementation(async (tag: string) => {
       await getPendingStore().upsert(ACCOUNT, {}, baseRecord({ tag }))
@@ -3771,7 +4641,7 @@ describe("campaign hand-off — the URL's tag and passkey win", () => {
         return fakeKeys
       },
     )
-    await leaveIntro()
+    await settleHandoff()
     await clickDeposit()
     expect(h.resolveHandoff).toHaveBeenCalledTimes(2)
     expect(tagBefore).toBe("oldtag")
@@ -3801,7 +4671,7 @@ describe("campaign hand-off — the URL's tag and passkey win", () => {
       await settleReads()
       expect(container.textContent).toContain("@newtag.zk.money")
 
-      await leaveIntro()
+      await settleHandoff()
       expect(termsValue("total")).toBe(ask("standard"))
       expect(container.textContent).not.toContain("Tag priceWaived")
       expect(button("I'll do this later")).toBeUndefined()
@@ -3837,7 +4707,7 @@ describe("campaign hand-off — the URL's tag and passkey win", () => {
     expect(loadWalletIdentity()?.handle).toBe("someoneelse")
     expect(auth.clear).not.toHaveBeenCalled()
 
-    await leaveIntro()
+    await settleHandoff()
     await clickDeposit()
     expect(loadWalletIdentity()?.handle).not.toBe("someoneelse")
   })
@@ -3848,7 +4718,7 @@ describe("campaign hand-off — the URL's tag and passkey win", () => {
     await render("/claim/newtag?entry=passkey&rp=localhost&cred=c1&pk=ab")
     await act(async () => new Promise((r) => setTimeout(r, 0)))
     h.resolveHandoff.mockRejectedValueOnce(new Error("No wallet was found for this passkey"))
-    await leaveIntro()
+    await settleHandoff()
     await clickDeposit()
     // Once with no tap, refused; once on the tap.
     expect(h.resolveHandoff).toHaveBeenCalledTimes(2)
@@ -3874,7 +4744,7 @@ describe("campaign hand-off — the URL's tag and passkey win", () => {
     await render("/claim/newtag?entry=passkey&rp=localhost&cred=c1&pk=ab")
     await act(async () => new Promise((r) => setTimeout(r, 0)))
     h.resolveHandoff.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)))
-    await leaveIntro()
+    await settleHandoff()
     await clickDeposit()
     await click("Cancel")
 
@@ -3904,7 +4774,7 @@ describe("campaign hand-off — the URL's tag and passkey win", () => {
     })
     await render("/claim/newtag?entry=passkey&rp=localhost&cred=c1&pk=ab")
     await act(async () => new Promise((r) => setTimeout(r, 0)))
-    await leaveIntro()
+    await settleHandoff()
     await clickDeposit()
     await act(async () => new Promise((r) => setTimeout(r, 0)))
     expect(container.textContent).toContain("Finishing sign-in")
@@ -3920,7 +4790,7 @@ describe("campaign hand-off — the URL's tag and passkey win", () => {
 describe("deposit terms step — before any passkey prompt", () => {
   it("closes paid terms only with the X before creating an account", async () => {
     await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
-    await leaveIntro()
+    await settleHandoff()
     expect(container.textContent).toContain("Get instant access")
     const close = container.querySelector<HTMLButtonElement>('button[aria-label="Close"]')
     expect(close).not.toBeNull()
@@ -3962,33 +4832,28 @@ describe("deposit terms step — before any passkey prompt", () => {
   it("quotes the terms and the campaign's benefits, then goes on to the passkey", async () => {
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     h.skim = 5n * 10n ** 17n
-    try {
-      await render("/claim/taga?fee=waived&until=1700000000")
-      await click("landing-signin")
-      await settleReads()
-      const text = container.textContent!
-      expect(text).toContain("Activate account")
-      expect(text).toContain("@taga.zk.money")
-      expect(text).toContain("The tag is free.")
-      // The schedule arrives with the signed claim; the ask needs none, so the hint quotes it now
-      // and the split it would buy is left off entirely.
-      expect(termsValue("total")).toBe(ask("earned_tag"))
-      expect(h.scheduleReads).toBe(0)
-      expect(termsValue("network-fee")).toBeUndefined()
-      expect(termsValue("network-funding")).toBeUndefined()
-      expect(termsValue("opening-balance")).toBeUndefined()
-      expect(termsValue("tag-price")).toBe("Waived")
-      expect(text).toContain("Reserved until")
-      expect(text).not.toContain("create-modal")
-      expect(h.createAccount).not.toHaveBeenCalled()
-      expect(button("I'll do this later")).toBeTruthy()
+    await render("/claim/taga?fee=waived&until=4102444800")
+    await click("landing-signin")
+    await settleReads()
+    const text = container.textContent!
+    expect(text).toContain("Activate account")
+    expect(text).toContain("@taga.zk.money")
+    expect(text).toContain("The tag is free.")
+    // The schedule arrives with the signed claim; the ask needs none, so the hint quotes it now
+    // and the split it would buy is left off entirely.
+    expect(termsValue("total")).toBe(ask("earned_tag"))
+    expect(h.scheduleReads).toBe(0)
+    expect(termsValue("network-fee")).toBeUndefined()
+    expect(termsValue("network-funding")).toBeUndefined()
+    expect(termsValue("opening-balance")).toBeUndefined()
+    expect(termsValue("tag-price")).toBe("Waived")
+    expect(text).toContain("Reserved until")
+    expect(text).not.toContain("create-modal")
+    expect(h.createAccount).not.toHaveBeenCalled()
+    expect(button("I'll do this later")).toBeTruthy()
 
-      await click(`Deposit ${ask("earned_tag")}`)
-      expect(h.createAccount).toHaveBeenCalledTimes(1)
-    } finally {
-      h.amounts = { min: 0n, fee: 0n }
-      h.skim = 0n
-    }
+    await click(`Deposit ${ask("earned_tag")}`)
+    expect(h.createAccount).toHaveBeenCalledTimes(1)
   })
 
   it("quotes a paid tag's ask alone before the claim, with no schedule read behind it", async () => {
@@ -4043,13 +4908,16 @@ describe("deposit terms step — before any passkey prompt", () => {
     beforeEach(() => {
       screenProps = { ticketSignup: true }
     })
-    const ticketStash = (over: { fragment?: string; amount?: bigint } = {}) =>
+    /** The visitor page stashes the note's amount with every new ticket signup; `null` omits it. */
+    const ticketStash = (
+      over: { fragment?: string; amount?: bigint | null; threshold?: bigint } = {},
+    ) =>
       stashTicketSignup({
         fragment: over.fragment ?? "paylink-frag",
-        threshold: (2n * ONE).toString(),
+        threshold: (over.threshold ?? 2n * ONE).toString(),
         schedule: { fee: (ONE / 2n).toString(), minDeposit: "0" },
         memo: "Pizza dinner",
-        ...(over.amount !== undefined ? { amount: over.amount.toString() } : {}),
+        ...(over.amount !== null ? { amount: (over.amount ?? 20n * ONE).toString() } : {}),
       })
     const setValue = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!
       .set!
@@ -4060,18 +4928,26 @@ describe("deposit terms step — before any passkey prompt", () => {
         setValue.call(input, tag)
         input.dispatchEvent(new Event("input", { bubbles: true }))
       })
+    /** The welcome step: the card's welcome on a phone, the creation sheet on a laptop. */
+    const expectWelcomeStep = () =>
+      expect(
+        container.textContent!.includes("Welcome taga!") ||
+          container.querySelector('[data-testid="phone-steps"]') !== null,
+      ).toBe(true)
     /** Tag step → welcome step → the ceremony's CTA. */
     const walkToPasskey = async () => {
       await render("/claim")
       if (container.querySelector('input[aria-label="Your tag"]')) {
         await typeTag("taga")
         await click("Claim tag")
-        expect(container.textContent).toContain("Welcome taga!")
+        expectWelcomeStep()
       }
       expect(container.textContent).not.toContain("Deposit")
       await click(
         button("Continue with your passkey")
           ? "Continue with your passkey"
+          : button("Show QR Code")
+          ? "Show QR Code"
           : "Create account with passkey",
       )
     }
@@ -4080,6 +4956,216 @@ describe("deposit terms step — before any passkey prompt", () => {
         await getPendingStore().upsert(ACCOUNT, {}, baseRecord({ tag, ...recordOver }))
         return { kind: "pending", claim, oxideAccount: ACCOUNT }
       })
+
+    it("shows the payment's split with the passkey: what the account costs and what is kept", async () => {
+      ticketStash({ amount: 20n * ONE })
+      const skim = h.skim
+      h.skim = ONE / 2n
+      try {
+        await render("/claim")
+        await typeTag("taga")
+        await click("Claim tag")
+        await settleReads()
+        expectWelcomeStep()
+        const split = (id: string) =>
+          container.querySelector(`[data-testid="paylink-signup-${id}"]`)?.textContent
+        expect(split("paylink")).toBe("20 DAI")
+        expect(split("tag-price")).toBe("Waived")
+        const kept = parseFloat(split("you-receive") ?? "")
+        expect(kept).toBeGreaterThan(15)
+        expect(kept).toBeLessThan(20)
+        expect(container.textContent).not.toContain(DEPOSIT_TERMS_PENDING)
+      } finally {
+        h.skim = skim
+      }
+    })
+
+    it("prices the split at the tip it commits, keeps that tip for the terms, and holds while it is quoted", async () => {
+      ticketStash({ amount: 20n * ONE })
+      const split = (id: string) =>
+        container.querySelector(`[data-testid="paylink-signup-${id}"]`)?.textContent ?? ""
+      try {
+        splitTip.value = 0n
+        await render("/claim")
+        await typeTag("taga")
+        await click("Claim tag")
+        await settleReads()
+        const kept = parseFloat(split("you-receive"))
+        const fee = parseFloat(split("network-fee"))
+        expect(JSON.parse(sessionStorage.getItem(TICKET_STASH_KEY)!).proverTip).toBe("0")
+
+        splitTip.value = 10n ** 18n
+        await render("/claim")
+        expect(parseFloat(split("you-receive"))).toBeCloseTo(kept - 1)
+        expect(parseFloat(split("network-fee"))).toBeCloseTo(fee + 1)
+        expect(JSON.parse(sessionStorage.getItem(TICKET_STASH_KEY)!).proverTip).toBe(
+          (10n ** 18n).toString(),
+        )
+
+        splitTip.value = undefined
+        await render("/claim")
+        expect(split("network-fee")).toBe(DEPOSIT_TERMS_PENDING)
+      } finally {
+        splitTip.value = 10n ** 18n
+      }
+    })
+
+    describe("the threshold, before any passkey", () => {
+      /** The CTA on either posture: a laptop's creation sheet, a phone's card. */
+      const passkeyCta = () =>
+        button("Show QR Code") ??
+        button("Create account with passkey") ??
+        button("Create another passkey")
+      const walkToWelcome = async () => {
+        await render("/claim")
+        await typeTag("taga")
+        await click("Claim tag")
+        await settleReads()
+        expectWelcomeStep()
+      }
+      const PHONE_UA =
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1"
+
+      it.each(["laptop", "phone"])(
+        "a note below the threshold that covers the deposit opens no passkey (%s)",
+        async (posture) => {
+          const ua =
+            posture === "phone"
+              ? vi.spyOn(navigator, "userAgent", "get").mockReturnValue(PHONE_UA)
+              : undefined
+          try {
+            // 4 covers the 2.61 burn at the 0.5 cut; the threshold asks for 5.
+            ticketStash({ amount: 4n * ONE, threshold: 5n * ONE })
+            pendingClaim(TICKET_CLAIM)
+            await walkToWelcome()
+            expect(container.querySelector('[data-testid="phone-steps"]') !== null).toBe(
+              posture === "laptop",
+            )
+            expect(container.textContent).toContain(
+              "This payment is below the 5 DAI minimum for a new account.",
+            )
+            expect(container.textContent).not.toContain("cannot cover the account deposit")
+            expect(passkeyCta()?.disabled).toBe(true)
+            await act(async () => passkeyCta()!.click())
+            expect(h.createAccount).not.toHaveBeenCalled()
+            expect(h.claimTag).not.toHaveBeenCalled()
+            expect(loadTicketSignupAttempt("localhost", "id:paylink-frag")).toBeNull()
+          } finally {
+            ua?.mockRestore()
+          }
+        },
+      )
+
+      it("a note exactly at the threshold opens the passkey", async () => {
+        ticketStash({ amount: 5n * ONE, threshold: 5n * ONE })
+        pendingClaim(TICKET_CLAIM)
+        await walkToWelcome()
+        expect(container.textContent).not.toContain("minimum for a new account")
+        expect(passkeyCta()?.disabled).toBe(false)
+        await act(async () => passkeyCta()!.click())
+        expect(h.createAccount).toHaveBeenCalledTimes(1)
+        expect(h.claimTag).toHaveBeenCalledTimes(1)
+      })
+
+      it("an unread amount opens no passkey", async () => {
+        ticketStash({ amount: null })
+        await walkToWelcome()
+        expect(container.textContent).toContain("Couldn't check this payment's amount")
+        expect(passkeyCta()?.disabled).toBe(true)
+        await act(async () => passkeyCta()!.click())
+        expect(h.createAccount).not.toHaveBeenCalled()
+      })
+
+      it("a retry checks the threshold again instead of trusting the button it came from", async () => {
+        // The first attempt is refused at the gate, before any attempt is saved, and the note
+        // read since then no longer clears the threshold.
+        const gate = vi.fn(async () => {
+          updateTicketSignup({ amount: (4n * ONE).toString() })
+          throw new ScreenPhoneRequiredError()
+        })
+        h.gateHook = () => ({ gate, state: { kind: "idle" }, cancel: () => {}, dismiss: () => {} })
+        ticketStash({ amount: 20n * ONE, threshold: 5n * ONE })
+        await walkToWelcome()
+        await act(async () => passkeyCta()!.click())
+        await settleReads()
+        expect(gate).toHaveBeenCalledTimes(1)
+        expect(container.querySelector('[data-testid="create-refused"]')).not.toBeNull()
+        expect(container.textContent).toContain("below the 5 DAI minimum")
+        expect(container.textContent).not.toContain("cannot cover the account deposit")
+        await act(async () =>
+          container.querySelector<HTMLButtonElement>('[data-testid="create-retry"]')!.click(),
+        )
+        expect(gate).toHaveBeenCalledTimes(1)
+        expect(h.createAccount).not.toHaveBeenCalled()
+        expect(loadTicketSignupAttempt("localhost", "id:paylink-frag")).toBeNull()
+      })
+
+      it("an interrupted attempt below the threshold is not restarted", async () => {
+        ticketStash({ amount: 4n * ONE, threshold: 5n * ONE })
+        const first = await beginTicketSignupAccount("localhost", "id:paylink-frag", "taga")
+        await render("/claim")
+        await settleReads()
+        expect(button("Create another passkey")?.disabled).toBe(true)
+        await click("Create another passkey")
+        expect(loadTicketSignupAttempt("localhost", "id:paylink-frag")).toEqual(first)
+        expect(h.createAccount).not.toHaveBeenCalled()
+      })
+
+      it("an account the ticket already bound resumes after the threshold rose past the note", async () => {
+        ticketStash({ amount: 4n * ONE, threshold: 5n * ONE })
+        saveTicketSignupAccount("localhost", "id:paylink-frag", {
+          credentialId: "ticket-a",
+          l2Address: L2_ADDRESS,
+          tag: "taga",
+        })
+        pendingClaim(TICKET_CLAIM)
+        await render("/claim")
+        await settleReads()
+        expect(container.textContent).not.toContain("minimum for a new account")
+        expect(button("Continue with your passkey")?.disabled).toBe(false)
+        await click("Continue with your passkey")
+        expect(h.reusePasskeyAccount).toHaveBeenCalledWith(
+          h.aztec.obsidionWallet,
+          L2_ADDRESS,
+          { credentialId: "ticket-a" },
+          expect.any(Function),
+          expect.any(AbortSignal),
+          expect.any(Function),
+        )
+        expect(h.createAccount).not.toHaveBeenCalled()
+      })
+
+      it("a registration the ticket already bought resumes after the threshold rose past the note", async () => {
+        ticketStash({ amount: ONE, threshold: 5n * ONE })
+        await seedRecord({ tag: "taga" })
+        saveRegistrationTerms({
+          account: ACCOUNT,
+          tag: "taga",
+          deadline: Math.floor(Date.now() / 1000) + 7200,
+          fee: String(ONE / 2n),
+          minDeposit: "0",
+          feeWaived: true,
+          paylinkFunded: true,
+          paylinkId: "id:paylink-frag",
+        })
+        await render("/claim")
+        await settleReads()
+        expect(container.textContent).toContain("@taga")
+        expect(container.textContent).not.toContain("minimum for a new account")
+        expect(h.createAccount).not.toHaveBeenCalled()
+      })
+
+      it("an ordinary signup ignores a below-threshold marker left in the tab", async () => {
+        screenProps = {}
+        ticketStash({ amount: ONE, threshold: 5n * ONE })
+        await render("/claim/taga")
+        await click("landing-signin")
+        await settleReads()
+        expect(container.textContent).not.toContain("minimum for a new account")
+        await clickDeposit()
+        expect(h.createAccount).toHaveBeenCalledTimes(1)
+      })
+    })
 
     it("recovers the saved ticket account after key collection fails", async () => {
       ticketStash()
@@ -4162,38 +5248,34 @@ describe("deposit terms step — before any passkey prompt", () => {
 
     it("a refused attempt write prevents opening the authenticator", async () => {
       ticketStash()
-      const original = Storage.prototype.setItem
-      const write = vi
-        .spyOn(Storage.prototype, "setItem")
-        .mockImplementation(function (this: Storage, key, value) {
-          if (key.startsWith("obsidion.ticket-signup.account:"))
-            throw new DOMException("full", "QuotaExceededError")
-          return original.call(this, key, value)
-        })
-      try {
-        await walkToPasskey()
-        expect(h.createAccount).not.toHaveBeenCalled()
-        expect(h.claimTag).not.toHaveBeenCalled()
-      } finally {
-        write.mockRestore()
+      testWalletDbs().onApply = (_version, ops) => {
+        if (ops.some(([key]) => key.startsWith("obsidion.ticket-signup.account:")))
+          throw new DOMException("full", "QuotaExceededError")
       }
+      await walkToPasskey()
+      expect(h.createAccount).not.toHaveBeenCalled()
+      expect(h.claimTag).not.toHaveBeenCalled()
     })
 
     it("a failed binding write preserves the incomplete attempt and requires an explicit restart", async () => {
       ticketStash()
-      const original = Storage.prototype.setItem
-      const write = vi
-        .spyOn(Storage.prototype, "setItem")
-        .mockImplementation(function (this: Storage, key, value) {
-          if (key.startsWith("obsidion.ticket-signup.account:") && JSON.parse(value).credentialId)
-            throw new DOMException("full", "QuotaExceededError")
-          return original.call(this, key, value)
-        })
-      try {
-        await walkToPasskey()
-      } finally {
-        write.mockRestore()
+      let refuse = true
+      testWalletDbs().onApply = async (_version, ops) => {
+        const binding = ops.some(
+          ([key, value]) =>
+            key.startsWith("obsidion.ticket-signup.account:") &&
+            JSON.parse(value ?? "{}").credentialId,
+        )
+        if (refuse && binding) {
+          // A real transaction fails after the flow has moved on, not within a microtask.
+          await new Promise((resolve) => setTimeout(resolve, 20))
+          throw new DOMException("full", "QuotaExceededError")
+        }
       }
+      await walkToPasskey()
+      // Let the refused write settle.
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 50)))
+      refuse = false
       expect(h.createAccount).toHaveBeenCalledTimes(1)
       expect(h.claimTag).not.toHaveBeenCalled()
       expect(loadTicketSignupAttempt("localhost", "id:paylink-frag")).toMatchObject({
@@ -4213,9 +5295,102 @@ describe("deposit terms step — before any passkey prompt", () => {
       expect(h.claimTag).toHaveBeenCalledTimes(1)
     })
 
+    it("in a phone browser the in-app rule misses, a refused create points back to the payment link, and its retry restarts the attempt", async () => {
+      const startUrl = window.location.href
+      const ua = vi
+        .spyOn(navigator, "userAgent", "get")
+        .mockReturnValue(
+          "Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36",
+        )
+      window.history.replaceState(null, "", "/link#paylink-frag")
+      try {
+        h.hasRootBreadcrumb = false
+        ticketStash()
+        h.createAccount.mockRejectedValueOnce(
+          new DOMException("Error connecting to Web Authentication service", "NotSupportedError"),
+        )
+        await render("/claim")
+        await typeTag("taga")
+        await click("Claim tag")
+        expect(container.querySelector('[data-testid="create-in-app-notice"]')).toBeNull()
+        await click("Create account with passkey")
+        const card = container.querySelector<HTMLElement>('[data-testid="create-refused"]')
+        expect(card?.dataset.reason).toBe("NotSupportedError")
+        const escape = container.querySelector<HTMLElement>('[data-testid="open-in-browser"]')
+        expect(escape?.dataset.escape).toBe("hint")
+        expect(container.querySelector('[data-testid="open-in-browser-link"]')).toBeNull()
+        expect(container.innerHTML).not.toContain("paylink-frag")
+        expect(container.textContent).toContain("No ticket was redeemed")
+        expect(container.querySelector('[data-testid="create-retry"]')).toBeNull()
+        expect(button("Create another passkey")?.dataset.style).toBe("dark")
+
+        pendingClaim(TICKET_CLAIM)
+        await click("Create another passkey")
+        expect(h.createAccount).toHaveBeenCalledTimes(2)
+        expect(h.claimTag).toHaveBeenCalledTimes(1)
+      } finally {
+        ua.mockRestore()
+        window.history.replaceState(null, "", startUrl)
+      }
+    })
+
+    it("in an iPhone app's browser with a root record here, the closed prompt shows the card alone, with nothing to create", async () => {
+      const startUrl = window.location.href
+      const ua = vi
+        .spyOn(navigator, "userAgent", "get")
+        .mockReturnValue(
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Twitter for iPhone/10.80",
+        )
+      window.history.replaceState(null, "", "/link#paylink-frag")
+      try {
+        ticketStash()
+        h.createAccount.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
+        await walkToPasskey()
+        const card = container.querySelector<HTMLElement>('[data-testid="create-refused"]')
+        expect(card?.dataset.reason).toBe("InAppBrowser")
+        expect(container.textContent).not.toContain("Creating another passkey")
+        expect(button("Create another passkey")).toBeUndefined()
+        expect(h.claimTag).not.toHaveBeenCalled()
+      } finally {
+        ua.mockRestore()
+        window.history.replaceState(null, "", startUrl)
+      }
+    })
+
+    it("in an iPhone app's browser, the sheet shows the card alone before any request, with nothing to create", async () => {
+      const startUrl = window.location.href
+      const ua = vi
+        .spyOn(navigator, "userAgent", "get")
+        .mockReturnValue(
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Twitter for iPhone/10.80",
+        )
+      window.history.replaceState(null, "", "/link#paylink-frag")
+      try {
+        h.hasRootBreadcrumb = false
+        ticketStash()
+        await render("/claim")
+        await typeTag("taga")
+        await click("Claim tag")
+        await settleReads()
+        expect(container.querySelector('[data-testid="create-in-app-notice"]')).not.toBeNull()
+        // The payment lives in the address's fragment, which no link can carry: the app's menu.
+        const escape = container.querySelector<HTMLElement>('[data-testid="open-in-browser"]')
+        expect(escape?.dataset.escape).toBe("hint")
+        expect(container.querySelector('[data-testid="open-in-browser-link"]')).toBeNull()
+        expect(container.textContent).not.toContain("Welcome taga!")
+        expect(container.textContent).not.toContain("Pizza dinner")
+        expect(button("Create account with passkey")).toBeUndefined()
+        expect(h.createAccount).not.toHaveBeenCalled()
+        expect(h.claimTag).not.toHaveBeenCalled()
+      } finally {
+        ua.mockRestore()
+        window.history.replaceState(null, "", startUrl)
+      }
+    })
+
     it("an interrupted creation cannot silently create again on reopening", async () => {
       ticketStash()
-      beginTicketSignupAccount("localhost", "id:paylink-frag", "taga")
+      await beginTicketSignupAccount("localhost", "id:paylink-frag", "taga")
       await render("/claim")
       await settleReads()
       expect(container.textContent).toContain("No ticket was redeemed")
@@ -4226,13 +5401,13 @@ describe("deposit terms step — before any passkey prompt", () => {
 
     it("a stale tab cannot restart an attempt another tab already restarted", async () => {
       ticketStash()
-      const first = beginTicketSignupAccount("localhost", "id:paylink-frag", "taga")
+      const first = await beginTicketSignupAccount("localhost", "id:paylink-frag", "taga")
       await render("/claim")
       await settleReads()
       expect(button("Create another passkey")).toBeTruthy()
       // Another tab restarts the same attempt and opens its own ceremony.
       restartTicketSignupAccount("localhost", "id:paylink-frag", first.attemptId)
-      const second = beginTicketSignupAccount("localhost", "id:paylink-frag", "taga")
+      const second = await beginTicketSignupAccount("localhost", "id:paylink-frag", "taga")
       await click("Create another passkey")
       expect(h.createAccount).not.toHaveBeenCalled()
       expect(h.claimTag).not.toHaveBeenCalled()
@@ -4240,7 +5415,7 @@ describe("deposit terms step — before any passkey prompt", () => {
       expect(container.textContent).toContain("restarted in another tab")
       expect(button("Create another passkey")).toBeTruthy()
       // The other tab's ceremony completes and binds the account this link continues with.
-      completeTicketSignupAccount("localhost", "id:paylink-frag", second.attemptId, {
+      await completeTicketSignupAccount("localhost", "id:paylink-frag", second.attemptId, {
         credentialId: "other-tab-passkey",
         l2Address: L2_ADDRESS,
       })
@@ -4296,6 +5471,7 @@ describe("deposit terms step — before any passkey prompt", () => {
     it("recovers the bound account before loading its registration after an account switch", async () => {
       const { setActiveStorageId } = await import("../src/platform/storage/activeStorage")
       setActiveStorageId("account-a")
+      await walletStorage.flush()
       await getPendingStore().reload()
       ticketStash()
       saveTicketSignupAccount("localhost", "id:paylink-frag", {
@@ -4315,6 +5491,7 @@ describe("deposit terms step — before any passkey prompt", () => {
         paylinkId: "id:paylink-frag",
       })
       setActiveStorageId("account-b")
+      await walletStorage.flush()
       ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
       await getPendingStore().load()
       await getPendingStore().upsert(
@@ -4327,6 +5504,7 @@ describe("deposit terms step — before any passkey prompt", () => {
       expect(container.textContent).not.toContain("Choose your")
       h.reusePasskeyAccount.mockImplementationOnce(async () => {
         setActiveStorageId("account-a")
+        await walletStorage.flush()
         return fakeKeys
       })
       h.reloadIfSessionSwitched.mockReturnValueOnce(true)
@@ -4365,6 +5543,157 @@ describe("deposit terms step — before any passkey prompt", () => {
         l2Address: L2_ADDRESS,
         tag: "taga",
       })
+    })
+
+    it("a ticket signup refused for its route names what answered, then restarts with another passkey", async () => {
+      ticketStash({ amount: 20n * ONE })
+      const refusal = new ScreenPhoneRequiredError({ providerName: "Bitwarden" })
+      h.createAccount.mockRejectedValueOnce(refusal)
+      await walkToPasskey()
+      const refused = container.querySelector<HTMLElement>('[data-testid="create-refused"]')
+      expect(refused?.querySelector('[role="alert"]')?.textContent).toBe(refusal.message)
+      pendingClaim(TICKET_CLAIM)
+      await click("Create another passkey")
+      expect(h.createAccount).toHaveBeenCalledTimes(2)
+    })
+
+    /** The route a gate call was handed by the screen's own sheet. */
+    const pickOf = (options: unknown) => (options as { unheld?: SignInRoute } | undefined)?.unheld
+    /** A gate that resolves on the route the sheet picked, as the real one does where a phone is reachable. */
+    const pickingGate = () =>
+      vi.fn(async (options?: unknown) => ({
+        signal: new AbortController().signal,
+        reach: "unknown" as const,
+        route: pickOf(options),
+      }))
+
+    it.each([
+      ["Show QR Code", "phone"],
+      ["Have a security key? Use it instead", "security-key"],
+    ] as const)("the ticket sheet's %s creates the account on its route", async (label, route) => {
+      ticketStash({ amount: 20n * ONE })
+      h.getAuthService.mockReturnValue({ recoverFromCache: async () => undefined })
+      pendingClaim(TICKET_CLAIM)
+      const gate = pickingGate()
+      h.gateHook = () => ({ gate, state: { kind: "idle" }, cancel: () => {}, dismiss: () => {} })
+      await render("/claim")
+      await typeTag("taga")
+      await click("Claim tag")
+      await settleReads()
+      await click(label)
+      if (route === "security-key") {
+        // The link only swaps the sheet to its key variant; that variant's button creates.
+        expect(gate).not.toHaveBeenCalled()
+        await click("Create account with my security key")
+      }
+      expect(gate.mock.calls[0]?.[0]).toMatchObject({ purpose: "create", unheld: route })
+      expect(h.createAccount.mock.calls[0]?.[5]).toMatchObject({ route })
+    })
+
+    it("the ticket sheet holds both routes until the browser says whether it reaches a phone", async () => {
+      ticketStash({ amount: 20n * ONE })
+      let answer!: (reach: string) => void
+      h.getAuthService.mockReturnValue({
+        recoverFromCache: async () => undefined,
+        probePhoneReach: () => new Promise((resolve) => (answer = resolve)),
+      })
+      await render("/claim")
+      await typeTag("taga")
+      await click("Claim tag")
+      await settleReads()
+      const phone = () =>
+        container.querySelector<HTMLButtonElement>('[data-testid="phone-steps-continue"]')!
+      const key = () =>
+        container.querySelector<HTMLButtonElement>('[data-testid="phone-steps-security-key"]')
+      expect(phone().disabled).toBe(true)
+      expect(key()?.disabled).toBe(true)
+      // A laptop reads the loss line on the sheet itself, never as a second notice above it.
+      expect(container.querySelector('[data-testid="passkey-loss-notice"]')).toBeNull()
+      // A browser that reaches no phone is offered its key alone, never a phone it cannot use.
+      await act(async () => answer("no-hybrid"))
+      expect(phone().disabled).toBe(false)
+      expect(phone().textContent).toBe("Create account with my security key")
+      expect(key()).toBeNull()
+      expect(h.createAccount).not.toHaveBeenCalled()
+    })
+
+    it("a phone's own card warns of loss, then starts the creation with no pick of its own", async () => {
+      const ua = vi
+        .spyOn(navigator, "userAgent", "get")
+        .mockReturnValue(
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1",
+        )
+      try {
+        ticketStash({ amount: 20n * ONE })
+        h.getAuthService.mockReturnValue({ recoverFromCache: async () => undefined })
+        pendingClaim(TICKET_CLAIM)
+        const gate = pickingGate()
+        h.gateHook = () => ({ gate, state: { kind: "idle" }, cancel: () => {}, dismiss: () => {} })
+        await render("/claim")
+        await typeTag("taga")
+        await click("Claim tag")
+        await settleReads()
+        expectWelcomeStep()
+        // A phone has no sheet, so the loss line sits with its button, before any tap.
+        expect(container.querySelectorAll('[data-testid="passkey-loss-notice"]')).toHaveLength(1)
+        expect(container.querySelector('[data-testid="phone-steps"]')).toBeNull()
+        expect(h.createAccount).not.toHaveBeenCalled()
+        await click("Create account with passkey")
+        expect(pickOf(gate.mock.calls[0]?.[0])).toBeUndefined()
+      } finally {
+        ua.mockRestore()
+      }
+    })
+
+    it("a laptop retry after a key pick holds the sheet again instead of reusing the pick", async () => {
+      ticketStash({ amount: 20n * ONE })
+      h.getAuthService.mockReturnValue({ recoverFromCache: async () => undefined })
+      h.createAccount.mockRejectedValueOnce(new ScreenPhoneRequiredError({ ceremony: "create" }))
+      const signal = new AbortController().signal
+      let proceedHeld!: (route?: SignInRoute) => void
+      type Opened = { signal: AbortSignal; reach: "unknown"; route?: SignInRoute }
+      const gate = vi.fn(
+        (options?: unknown): Promise<Opened> =>
+          gate.mock.calls.length === 1
+            ? Promise.resolve({ signal, reach: "unknown", route: pickOf(options) })
+            : new Promise((resolve) => {
+                proceedHeld = (route) => resolve({ signal, reach: "unknown", route })
+              }),
+      )
+      h.gateHook = () => ({
+        gate,
+        state:
+          gate.mock.calls.length > 1
+            ? {
+                kind: "awaiting-action",
+                prompt: "phone-steps",
+                reach: "ok",
+                proceed: (route?: SignInRoute) => proceedHeld(route),
+              }
+            : { kind: "idle" },
+        cancel: () => {},
+        dismiss: () => {},
+      })
+      await render("/claim")
+      await typeTag("taga")
+      await click("Claim tag")
+      await settleReads()
+      await click("Have a security key? Use it instead")
+      await click("Create account with my security key")
+      await settleReads()
+      expect(gate.mock.calls[0]?.[0]).toMatchObject({ purpose: "create", unheld: "security-key" })
+      expect(container.querySelector('[data-testid="create-refused"]')).not.toBeNull()
+      // The refused attempt stays saved, so the way on is a restart: the sheet asks again.
+      pendingClaim(TICKET_CLAIM)
+      await click("Create another passkey")
+      await settleReads()
+      expect(gate.mock.calls[1]?.[0]).toMatchObject({ purpose: "create" })
+      expect(pickOf(gate.mock.calls[1]?.[0])).toBeUndefined()
+      expect(container.querySelector('[data-testid="phone-steps"]')).not.toBeNull()
+      expect(h.createAccount).toHaveBeenCalledTimes(1)
+      await click("Show QR Code")
+      await settleReads()
+      expect(h.createAccount.mock.calls[1]?.[5]).toMatchObject({ route: "phone" })
     })
 
     it.each([false, true])(
@@ -4424,7 +5753,7 @@ describe("deposit terms step — before any passkey prompt", () => {
 
     it("an unreadable saved binding fails without creating or claiming", async () => {
       ticketStash()
-      localStorage.setItem("obsidion.ticket-signup.account:localhost:id:paylink-frag", "broken")
+      walletStorage.setItem("obsidion.ticket-signup.account:localhost:id:paylink-frag", "broken")
       await walkToPasskey()
       expect(h.createAccount).not.toHaveBeenCalled()
       expect(h.claimTag).not.toHaveBeenCalled()
@@ -4494,14 +5823,13 @@ describe("deposit terms step — before any passkey prompt", () => {
 
     it("tickets paused before the redeem: the signup goes on at the signed price and keeps the link for Home", async () => {
       ticketStash({ amount: 20n * ONE })
-      const PAID_CLAIM = {
-        ...CLAIM,
-        terms: {
-          ...WAIVED_CLAIM.terms,
+      const PAID_CLAIM = nameClaim({
+        terms: earnedTerms({
           fee: "4900000000000000000",
           minDeposit: "9500000000000000000",
-        },
-      }
+          reduced: false,
+        }),
+      })
       h.claimTag.mockImplementation(async (tag: string) => {
         await getPendingStore().upsert(ACCOUNT, {}, baseRecord({ tag }))
         return {
@@ -4540,7 +5868,8 @@ describe("deposit terms step — before any passkey prompt", () => {
       })
       await walkToPasskey()
       expect(sessionStorage.getItem(TICKET_STASH_KEY)).not.toBeNull()
-      expect(container.textContent).toContain("Someone sent you")
+      expect(container.textContent).toContain("all-set")
+      expect(h.claimSponsoredLink).not.toHaveBeenCalled()
       expect(container.textContent).not.toContain("paylink tickets are paused")
       expect(loadRegistrationTerms(ACCOUNT, "taga")).toMatchObject({
         paylinkFunded: true,
@@ -4605,7 +5934,8 @@ describe("deposit terms step — before any passkey prompt", () => {
       expect(button("Enter now, deposit later")).toBeUndefined()
     })
 
-    it("holds the claim of a bound link while the address is unpublished, and says so", async () => {
+    it("holds the claim of a bound link while the address is unpublished, and owes its broadcast", async () => {
+      resetBroadcastsForTests()
       screenProps = {}
       await seedRecord({ broadcast: false })
       saveRegistrationTerms({
@@ -4625,6 +5955,12 @@ describe("deposit terms step — before any passkey prompt", () => {
       expect(container.textContent).not.toContain("Send 15 DAI")
       expect(button("Claim your payment")?.disabled).toBe(true)
       expect(h.claimSponsoredLink).not.toHaveBeenCalled()
+      // The claim it holds needs the address published, so the step owes its broadcast.
+      await vi.waitFor(() =>
+        expect(getBroadcastLedger().get(getPendingStore().current()!.sipaAddress)).toMatchObject({
+          kind: "registration",
+        }),
+      )
     })
 
     it("re-reads the activation at the click: a burn already out claims nothing", async () => {
@@ -4661,6 +5997,98 @@ describe("deposit terms step — before any passkey prompt", () => {
       expect(container.textContent).toContain("already claimed")
     })
 
+    it("claims from the pending step on the working beat, and enters once it is sent", async () => {
+      screenProps = {}
+      // No burn left in the store by an earlier case: this one's claim is ready.
+      ;(WithdrawalStorage as unknown as { instance: unknown }).instance = null
+      await seedRecord()
+      saveRegistrationTerms({
+        account: ACCOUNT,
+        tag: "taga",
+        deadline: Math.floor(Date.now() / 1000) + 7200,
+        fee: (ONE / 2n).toString(),
+        minDeposit: "0",
+        feeWaived: true,
+        paylinkFunded: true,
+        paylinkId: "id:paylink-frag",
+      })
+      ticketStash({ amount: 20n * ONE })
+      const controller = new AbortController()
+      h.gateHook = () => ({
+        gate: async () => ({ signal: controller.signal, reach: "unknown" as const }),
+        state: { kind: "idle" },
+        cancel: () => controller.abort(),
+        dismiss: () => {},
+      })
+      const settle = {} as { resolve: (hash: string) => void }
+      h.claimSponsoredLink.mockImplementation(async () => {
+        await getOperationStore().begin({
+          operationId: "pending-claim-op",
+          flow: "paylink-claim",
+          summary: "$20",
+          scope: null,
+        })
+        return new Promise<string>((resolve) => Object.assign(settle, { resolve }))
+      })
+      await render("/claim")
+      await settleReads()
+      await click("Claim your payment")
+      await settleReads()
+      expect(h.claimSponsoredLink).toHaveBeenCalledOnce()
+      expect(container.textContent).toContain("Keep this tab open")
+      expect(loadWalletIdentity()).toBeNull()
+
+      // The proof runs in this page: the beat holds until it is sent.
+      await act(async () => {
+        provingProgress.emitStageStart("proving", "pending-claim-op")
+        await new Promise((r) => setTimeout(r, 0))
+      })
+      expect(container.textContent).toContain("Proving privately")
+      expect(loadWalletIdentity()).toBeNull()
+
+      await act(async () => {
+        provingProgress.emitTxHashSaved("pending-claim-op", `0x${"cd".repeat(32)}`)
+        await new Promise((r) => setTimeout(r, 0))
+      })
+      expect(loadWalletIdentity()).toMatchObject({ handle: "taga" })
+      expect(container.textContent).not.toContain("Keep this tab open")
+      expect(isClaimRunning("paylink-frag")).toBe(true)
+
+      await act(async () => settle.resolve("0xclaim"))
+      expect(isClaimRunning("paylink-frag")).toBe(false)
+      expect(sessionStorage.getItem(CLAIM_STASH_KEY)).toBeNull()
+      getOperationStore().release("pending-claim-op")
+      await getOperationStore().remove("pending-claim-op")
+    })
+
+    it("a status check on the pending step is no claim: the Claim stays, held, with no working beat", async () => {
+      screenProps = {}
+      await seedRecord()
+      saveRegistrationTerms({
+        account: ACCOUNT,
+        tag: "taga",
+        deadline: Math.floor(Date.now() / 1000) + 7200,
+        fee: (ONE / 2n).toString(),
+        minDeposit: "0",
+        feeWaived: true,
+        paylinkFunded: true,
+        paylinkId: "id:paylink-frag",
+      })
+      ticketStash({ amount: 20n * ONE })
+      let tick!: () => void
+      h.runDetectionTick.mockImplementation(
+        () => new Promise<string>((resolve) => (tick = () => resolve("pending"))),
+      )
+      await render("/claim")
+      await settleReads()
+      await click("Check again")
+      expect(button("Claim your payment")?.disabled).toBe(true)
+      expect(container.textContent).not.toContain("Keep this tab open")
+      await act(async () => tick())
+      await settleReads()
+      expect(button("Claim your payment")?.disabled).toBe(false)
+    })
+
     /**
      * Expired paylink-funded terms plus a forced tick whose re-sign answers `quote`. A reduced quote
      * runs a stubbed tick (the real machine would go on to broadcast); a paid one runs the real
@@ -4685,16 +6113,17 @@ describe("deposit terms step — before any passkey prompt", () => {
       ticketStash({ amount: 20n * ONE })
       await render()
       const deadline = Math.floor(Date.now() / 1000) + 7200
-      const signDomain = vi.fn(async (_req: unknown) => ({
-        ...CLAIM,
-        deadline: String(deadline),
-        terms: {
-          fee: quote.fee.toString(),
-          minDeposit: quote.minDeposit.toString(),
-          reduced: quote.reduced,
-          ticket: quote.reduced,
-        },
-      }))
+      const signDomain = vi.fn(async (_req: unknown) =>
+        nameClaim({
+          deadline: String(deadline),
+          terms: earnedTerms({
+            fee: quote.fee.toString(),
+            minDeposit: quote.minDeposit.toString(),
+            reduced: quote.reduced,
+            ticket: quote.reduced,
+          }),
+        }),
+      )
       if (quote.reduced) {
         h.buildRetrySignDeps.mockReturnValue({ accountService: { signDomain } })
         h.runDetectionTick.mockImplementation(
@@ -4879,28 +6308,24 @@ describe("deposit terms step — before any passkey prompt", () => {
       expect(sessionStorage.getItem(TICKET_STASH_KEY)).not.toBeNull()
     })
 
-    it("reviews the full split before the claim, then claims into the SIPA and opens the wallet", async () => {
+    it("enters the wallet as soon as the name is reserved, and leaves the link's claim to Home", async () => {
       ticketStash({ amount: 20n * ONE })
       pendingClaim(TICKET_CLAIM)
       await walkToPasskey()
-      const text = container.textContent!
-      expect(text).toContain("Someone sent you")
-      expect(text).toContain("20 DAI")
-      expect(text).toContain("Pizza dinner")
-      expect(text).toContain("Tag priceWaived")
-      // The mocked portal cut (0.25) is paid on both legs: 0.5 sweep + 0.25 + 0.25 + 0.1 relayer.
-      expect(text).toContain("Network fee1.1 DAI")
-      expect(text).toContain("Proving fee1 DAI")
-      expect(text).toContain("Returned after registration0.01 DAI")
-      // 20 - (0.5 + 0.25 + 0.01 to the SIPA, then 0.25 + 0.1 + 1 on the way there).
-      expect(text).toContain("You'll receive17.89 DAI")
-      expect(text).toContain("Unclaimed")
+      expect(container.textContent).toContain("all-set")
+      expect(container.textContent).not.toContain("Someone sent you")
       expect(h.claimSponsoredLink).not.toHaveBeenCalled()
-      expect(loadWalletIdentity()).toBeNull()
+      expect(loadWalletIdentity()).toMatchObject({
+        handle: "taga",
+        address: L2_ADDRESS,
+        pending: true,
+      })
+      // The tip the split showed before the passkey is the one the terms carry to the claim.
       expect(loadRegistrationTerms(ACCOUNT, "taga")).toMatchObject({
         feeWaived: true,
         paylinkFunded: true,
         paylinkId: "id:paylink-frag",
+        proverTip: (10n ** 18n).toString(),
       })
 
       // The wizard handed its ticket in: the claim redeems it, not a marker read off the tab.
@@ -4916,72 +6341,13 @@ describe("deposit terms step — before any passkey prompt", () => {
         expect.objectContaining({ fragment: "paylink-frag" }),
       )
 
-      await click("Claim")
-      expect(h.claimSponsoredLink).toHaveBeenCalledWith(
-        expect.objectContaining({ wallet: true }),
-        "paylink-frag",
-        undefined,
-        undefined,
-        { fundRegistration: true },
-      )
-      expect(sessionStorage.getItem(CLAIM_STASH_KEY)).toBeNull()
-      expect(sessionStorage.getItem(TICKET_STASH_KEY)).toBeNull()
-      expect(container.textContent).toContain("all-set")
-      expect(loadWalletIdentity()).toMatchObject({
-        handle: "taga",
-        address: L2_ADDRESS,
-        pending: true,
-      })
-    })
-
-    it("closing the review enters the wallet with the payment unclaimed and the link kept", async () => {
-      ticketStash({ amount: 20n * ONE })
-      pendingClaim(TICKET_CLAIM)
-      await walkToPasskey()
-      await click("Close")
-      expect(h.claimSponsoredLink).not.toHaveBeenCalled()
+      // The link stays stashed for Home's claim; nothing here spends it.
       expect(sessionStorage.getItem(CLAIM_STASH_KEY)).toBe("paylink-frag")
-      expect(loadWalletIdentity()).toMatchObject({ handle: "taga", pending: true })
+      expect(sessionStorage.getItem(TICKET_STASH_KEY)).not.toBeNull()
+      expect(isClaimRunning("paylink-frag")).toBe(false)
     })
 
-    it("proves a stashed email link using its resolved commitment before claiming", async () => {
-      ticketStash({ fragment: "reduced-email-frag" })
-      h.viewLink.mockResolvedValue({
-        flavor: "email",
-        commitment: "0x123",
-        email: "recipient@example.com",
-      })
-      pendingClaim(TICKET_CLAIM)
-      await walkToPasskey()
-      await click("Claim")
-      expect(h.obtainEmailClaimProof).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({ commitment: "0x123", email: "recipient@example.com" }),
-      )
-      expect(h.claimSponsoredLink).toHaveBeenCalledWith(
-        expect.anything(),
-        "reduced-email-frag",
-        undefined,
-        { vkey: [], proof: [], public_inputs: [] },
-        { fundRegistration: true },
-      )
-      expect(sessionStorage.getItem(CLAIM_STASH_KEY)).toBeNull()
-    })
-
-    it("keeps the stashed email link on the review when ownership verification fails", async () => {
-      ticketStash({ fragment: "reduced-email-frag" })
-      h.viewLink.mockResolvedValue({ flavor: "email", commitment: "0x123" })
-      h.obtainEmailClaimProof.mockRejectedValueOnce(new Error("email ownership was not proved"))
-      pendingClaim(TICKET_CLAIM)
-      await walkToPasskey()
-      await click("Claim")
-      expect(h.claimSponsoredLink).not.toHaveBeenCalled()
-      expect(sessionStorage.getItem(CLAIM_STASH_KEY)).toBe("reduced-email-frag")
-      expect(container.textContent).toContain("email ownership was not proved")
-      expect(button("Claim")).toBeTruthy()
-    })
-
-    it("holds the passkey step until the SIPA broadcast lands, then reviews the claim", async () => {
+    it("enters before the SIPA broadcast lands: Home waits for the address, not the wizard", async () => {
       ticketStash()
       let release!: (ok: boolean) => void
       h.claimTag.mockImplementation(async (tag: string) => {
@@ -4996,25 +6362,17 @@ describe("deposit terms step — before any passkey prompt", () => {
         }
       })
       await walkToPasskey()
-      expect(container.textContent).toContain("Publishing your deposit address")
+      expect(container.textContent).toContain("all-set")
+      expect(container.textContent).not.toContain("Publishing your deposit address")
+      expect(loadWalletIdentity()).toMatchObject({ handle: "taga", pending: true })
       expect(h.claimSponsoredLink).not.toHaveBeenCalled()
-      expect(loadWalletIdentity()).toBeNull()
 
       await act(async () => release(true))
-      expect(container.textContent).toContain("Someone sent you")
       expect(h.claimSponsoredLink).not.toHaveBeenCalled()
-      await click("Claim")
-      expect(h.claimSponsoredLink).toHaveBeenCalledWith(
-        expect.objectContaining({ wallet: true }),
-        "paylink-frag",
-        undefined,
-        undefined,
-        { fundRegistration: true },
-      )
-      expect(container.textContent).toContain("all-set")
+      expect(sessionStorage.getItem(CLAIM_STASH_KEY)).toBe("paylink-frag")
     })
 
-    it("a failed SIPA broadcast lands on the pending step without claiming or entering", async () => {
+    it("a failed SIPA broadcast leaves the wallet entered and the link stashed, with no claim", async () => {
       ticketStash()
       let release!: (ok: boolean) => void
       h.claimTag.mockImplementation(async (tag: string) => {
@@ -5030,11 +6388,11 @@ describe("deposit terms step — before any passkey prompt", () => {
       })
       await walkToPasskey()
       await act(async () => release(false))
+      await settleReads()
       expect(h.claimSponsoredLink).not.toHaveBeenCalled()
       expect(sessionStorage.getItem(CLAIM_STASH_KEY)).toBe("paylink-frag")
-      expect(container.textContent).not.toContain("all-set")
       expect(container.textContent).not.toContain("Deposit 0")
-      expect(loadWalletIdentity()).toBeNull()
+      expect(loadWalletIdentity()).toMatchObject({ handle: "taga", pending: true })
     })
 
     describe("inside the visitor page (the link opened with no account)", () => {
@@ -5047,32 +6405,16 @@ describe("deposit terms step — before any passkey prompt", () => {
       } as never
       const BURN_HASH = `0x${"11".repeat(32)}` as Hex
       const store = () => WithdrawalStorage.get(webStorage)
-      /** The record `seedRegistrationBurn` writes for this link before its batch signs. */
-      const seedBurn = (localId = "wdraw_burn") =>
-        store().create({
-          localId,
-          operationId: "paylink-claim-1",
-          recipient: "0x00000000000000000000000000000000000000c3",
-          recipientProvenance: "saved-recipient",
-          source: "paylink",
-          intent: "registration",
-          paylinkId: "id:paylink-frag",
-          amount: "0.61",
-          rawAmount: "1810000000000000000",
-          tokenSymbol: "DAI",
-          phase: "submitting",
-          startTime: Date.now(),
-        })
       const resetStore = () => {
         ;(WithdrawalStorage as unknown as { instance: unknown }).instance = null
       }
       beforeEach(resetStore)
       afterEach(resetStore)
-      const renderVisitor = () =>
+      const renderVisitor = (link = LINK) =>
         act(async () => {
           root.render(
             <MemoryRouter initialEntries={["/link"]}>
-              <PaylinkVisitorScreen link={LINK} />
+              <PaylinkVisitorScreen link={link} onRetryStatus={vi.fn()} />
             </MemoryRouter>,
           )
         })
@@ -5082,75 +6424,38 @@ describe("deposit terms step — before any passkey prompt", () => {
           if (!target) throw new Error(`no button containing "${label}"`)
           target.click()
         })
-      /** Account → tag → welcome → passkey → the review's Claim, held open with its burn seeded. */
-      const walkToHeldClaim = async () => {
-        const settle = {} as { resolve: (hash: string) => void; reject: (err: unknown) => void }
-        h.claimSponsoredLink.mockImplementation(async () => {
-          await seedBurn()
-          return new Promise<string>((resolve, reject) =>
-            Object.assign(settle, { resolve, reject }),
-          )
-        })
+      /** Account → tag → welcome → passkey: the wizard enters, and Home owns the link's claim. */
+      it("enters the wallet as soon as the name is reserved, and never claims the link itself", async () => {
         pendingClaim(TICKET_CLAIM)
         await renderVisitor()
         await clickContaining("Receive to zk.money")
         expect(container.textContent).toContain("Choose your")
         await typeTag("taga")
         await click("Claim tag")
-        await click("Create account with passkey")
-        expect(container.textContent).toContain("Someone sent you")
-        await click("Claim")
+        await click(button("Show QR Code") ? "Show QR Code" : "Create account with passkey")
         await settleReads()
-        expect(h.claimSponsoredLink).toHaveBeenCalledTimes(1)
-        if (!settle.resolve) throw new Error("the claim is not held")
-        expect(store().list()).toMatchObject([{ localId: "wdraw_burn", phase: "submitting" }])
-        return settle
-      }
-
-      it("keeps the wizard up while its burn is pending, and completes the signup on it", async () => {
-        const settle = await walkToHeldClaim()
-        expect(container.textContent).toContain("Someone sent you")
-        expect(container.textContent).not.toContain("You withdrew")
-        await act(async () => settle.resolve("0xclaim"))
         expect(container.textContent).toContain("all-set")
+        expect(container.textContent).not.toContain("Keep this tab open")
+        expect(h.claimSponsoredLink).not.toHaveBeenCalled()
         expect(loadWalletIdentity()).toMatchObject({ handle: "taga", pending: true })
-        // The mined burn is the link's record from here on; the page is still the signup's.
-        await act(async () => {
-          await store().patch("wdraw_burn", { phase: "l2_mined", l2TxHash: BURN_HASH })
-        })
-        expect(container.textContent).toContain("all-set")
-        expect(container.textContent).not.toContain("You withdrew")
-      })
-
-      it("a refused batch fails on the review with its Claim, and the retry completes", async () => {
-        const settle = await walkToHeldClaim()
-        // The burn's recovery fails its record before the error reaches the wizard.
-        await act(async () => {
-          await store().patch("wdraw_burn", { phase: "failed", error: "Simulation failed" })
-          settle.reject(new Error("Simulation failed"))
-        })
-        expect(container.textContent).toContain("Simulation failed")
-        expect(button("Claim")).toBeTruthy()
-        expect(container.textContent).not.toContain("You withdrew")
-        h.claimSponsoredLink.mockImplementation(async () => {
-          await seedBurn("wdraw_burn_2")
-          return "0xclaim"
-        })
-        await click("Claim")
-        expect(h.claimSponsoredLink).toHaveBeenCalledTimes(2)
-        expect(container.textContent).toContain("all-set")
-      })
-
-      it("a cancelled passkey drops the burn's record and leaves the review with its Claim", async () => {
-        const settle = await walkToHeldClaim()
-        await act(async () => {
-          await store().remove("wdraw_burn")
-          settle.reject(new Error("Cancelled"))
-        })
-        expect(container.textContent).toContain("Someone sent you")
-        expect(button("Claim")).toBeTruthy()
-        expect(loadWalletIdentity()).toBeNull()
+        // No burn of the wizard's own: the batch is Home's to send.
         expect(store().list()).toHaveLength(0)
+        expect(isClaimRunning("paylink-frag")).toBe(false)
+        expect(sessionStorage.getItem(CLAIM_STASH_KEY)).toBe("paylink-frag")
+        expect(sessionStorage.getItem(TICKET_STASH_KEY)).not.toBeNull()
+      })
+
+      it("a link one wei below the threshold keeps the account option shut", async () => {
+        await renderVisitor({ ...(LINK as object), amount: "1.999999999999999999" } as never)
+        const account = buttons().find((b) => b.textContent?.includes("Receive to zk.money"))!
+        expect(account.disabled).toBe(true)
+        expect(account.textContent).toContain(
+          "This payment is below the $2 minimum for a new account.",
+        )
+        await clickContaining("Receive to zk.money")
+        expect(container.textContent).not.toContain("Choose your")
+        expect(sessionStorage.getItem(TICKET_STASH_KEY)).toBeNull()
+        expect(h.createAccount).not.toHaveBeenCalled()
       })
 
       it("an ordinary cash-out of the link still shows its withdrawal page", async () => {
@@ -5173,20 +6478,20 @@ describe("deposit terms step — before any passkey prompt", () => {
     })
   })
 
-  it("a campaign hand-off starts from the intro and asserts the existing passkey in one step", async () => {
+  it("a campaign hand-off with no material opens on the terms sheet and asserts the existing passkey in one step", async () => {
     h.claimTag.mockImplementation(async (tag: string) => {
       await getPendingStore().upsert(ACCOUNT, {}, baseRecord({ tag }))
       return { kind: "pending", claim: CLAIM, oxideAccount: ACCOUNT }
     })
     await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
-    // The intro, not a screen of its own: the campaign already took the name and the passkey.
+    await settleHandoff()
     expect(container.textContent).toContain("@taga.zk.money")
-    expect(container.textContent).not.toContain("Get instant access")
+    expect(container.textContent).toContain("Get instant access")
     // Only the attempt with no tap so far, and it found no material.
     expect(h.resolveHandoff).toHaveBeenCalledTimes(1)
     expect(h.claimTag).not.toHaveBeenCalled()
 
-    await enterHandoff()
+    await clickDeposit()
     expect(h.resolveHandoff).toHaveBeenCalledWith(
       h.aztec.obsidionWallet,
       { service: true },
@@ -5200,13 +6505,13 @@ describe("deposit terms step — before any passkey prompt", () => {
     expect(h.reusePasskeyAccount).not.toHaveBeenCalled()
     expect(h.createAccount).not.toHaveBeenCalled()
     expect(h.claimTag).toHaveBeenCalledTimes(1)
-    // The claim landed while the user was still reading: the slides stay, and what it decided
-    // waits for the last tap.
-    expect(h.navigate).not.toHaveBeenCalled()
 
-    // The intro ends in the wallet. The deposit the reservation still owes is the activation
+    // "All set!", then the wallet. The deposit the reservation still owes is the activation
     // sheet's to ask for, on Home — never a step of the wizard.
-    await leaveIntro()
+    expect(container.textContent).toContain("all-set")
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1_600))
+    })
     expect(h.navigate).toHaveBeenCalled()
     expect(container.textContent).not.toContain("@taga is reserved for you")
   })
@@ -5217,77 +6522,13 @@ describe("deposit terms step — before any passkey prompt", () => {
       return { kind: "pending", claim: CLAIM, oxideAccount: ACCOUNT }
     })
     await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
-    await enterHandoff()
-    await leaveIntro()
+    await settleHandoff()
+    await clickDeposit()
 
-    // The two conditions `useAwaitingDepositRecord` reads on Home. Without the pending flag the
+    // The two conditions `openRegistration` reads on Home. Without the pending flag the
     // activation sheet never opens and the deposit is never asked for.
     expect(loadWalletIdentity()).toMatchObject({ handle: "taga", pending: true })
     expect(getPendingStore().current()).toMatchObject({ tag: "taga", phase: "awaiting_deposit" })
-    expect(h.navigate).toHaveBeenCalled()
-  })
-
-  it("a wait that ends with no account falls back to the terms sheet, which carries the retry", async () => {
-    let fail!: (err: Error) => void
-    await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
-    await act(async () => new Promise((r) => setTimeout(r, 0)))
-    h.resolveHandoff.mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)))
-    await enterHandoff()
-    await leaveIntro()
-    expect(container.querySelector('[data-testid="handoff-entering"]')).not.toBeNull()
-
-    await act(async () => {
-      fail(new Error("the prompt was closed"))
-      await new Promise((r) => setTimeout(r, 0))
-    })
-    // Not stuck on the spinner, and not in the wallet: the sheet that can ask again.
-    expect(container.querySelector('[data-testid="handoff-entering"]')).toBeNull()
-    expect(h.navigate).not.toHaveBeenCalled()
-    expect(container.textContent).toContain("Get instant access")
-  })
-
-  it("a laptop's ceremony asks for its tap over the intro, which is the whole screen there", async () => {
-    h.gateHook = () => ({
-      gate: () => new Promise<{ signal: AbortSignal; reach: "unknown" }>(() => {}),
-      state: { kind: "awaiting-action", proceed: () => {} },
-      cancel: () => {},
-      dismiss: () => {},
-    })
-    await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
-    await enterHandoff()
-
-    // Without this the hand-off begun on the first slide waits forever on a prompt the intro
-    // never shows, and the last slide finds no account.
-    expect(container.querySelector('[data-testid="phone-steps-continue"]')).not.toBeNull()
-    // The slides are still underneath: the gate rides over the intro, it does not replace it.
-    expect(container.querySelector('[data-testid="carousel-next"]')).not.toBeNull()
-  })
-
-  it("an intro finished before the claim waits for it, and never lands on a gate that bounces", async () => {
-    let release!: () => void
-    h.claimTag.mockImplementation(async (tag: string) => {
-      await new Promise<void>((r) => (release = r))
-      await getPendingStore().upsert(ACCOUNT, {}, baseRecord({ tag }))
-      return { kind: "pending", claim: CLAIM, oxideAccount: ACCOUNT }
-    })
-    await render("/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12")
-    await enterHandoff()
-    await leaveIntro()
-
-    // The claim has saved no identity yet. Entering here is what sent the user back to /claim, so
-    // the tap waits — on a spinner, not on a step of the wizard.
-    expect(loadWalletIdentity()).toBeNull()
-    expect(h.navigate).not.toHaveBeenCalled()
-    expect(container.querySelector('[data-testid="handoff-entering"]')).not.toBeNull()
-    expect(container.textContent).not.toContain("Get instant access")
-
-    await act(async () => {
-      release()
-      await new Promise((r) => setTimeout(r, 0))
-    })
-    // The claim landed: the identity the gate reads is there, and the wait spends itself entering.
-    expect(loadWalletIdentity()).toMatchObject({ handle: "taga", pending: true })
-    expect(h.navigate).toHaveBeenCalled()
   })
 
   it("the hand-off's I'll do this later reserves the name and defers only the deposit", async () => {
@@ -5298,9 +6539,8 @@ describe("deposit terms step — before any passkey prompt", () => {
       return { kind: "pending", claim: CLAIM, oxideAccount: ACCOUNT }
     })
     await render("/claim/taga?entry=passkey&rp=localhost&fee=waived&cred=cred-1&pk=ab12")
+    await settleHandoff()
     expect(container.textContent).toContain("@taga.zk.money")
-
-    await leaveIntro()
     await click("I'll do this later")
 
     // The campaign already made the passkey: assert it, never mint a second one.
@@ -5325,5 +6565,33 @@ describe("deposit terms step — before any passkey prompt", () => {
     // ask for once Home is up, so the wizard keeps no screen of its own.
     expect(container.textContent).toContain("all-set")
     expect(container.textContent).not.toContain("@taga is reserved for you")
+  })
+})
+
+describe("the loss line on an ordinary sign-up", () => {
+  const PHONE_UA =
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.4 Mobile/15E148 Safari/604.1"
+  const notices = () => container.querySelectorAll('[data-testid="passkey-loss-notice"]').length
+
+  it("a phone reads it on the terms sheet before Deposit, which then starts the creation", async () => {
+    const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(PHONE_UA)
+    try {
+      await render("/claim/taga")
+      await click("landing-signin")
+      expect(notices()).toBe(1)
+      expect(container.textContent).toContain("Lose your passkey, lose the wallet.")
+      expect(h.createAccount).not.toHaveBeenCalled()
+      await clickDeposit()
+      expect(h.createAccount).toHaveBeenCalledTimes(1)
+    } finally {
+      ua.mockRestore()
+    }
+  })
+
+  it("a laptop has no notice on the terms sheet: its creation sheet carries the line", async () => {
+    await render("/claim/taga")
+    await click("landing-signin")
+    expect(buttons().some((b) => b.textContent?.startsWith("Deposit"))).toBe(true)
+    expect(notices()).toBe(0)
   })
 })

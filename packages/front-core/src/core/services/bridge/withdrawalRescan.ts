@@ -85,5 +85,6 @@ function rebuiltRecord(
           swapRelayerTip: swap.relayerTip.toString(),
         }
       : {}),
+    ...(event.group ? { groupId: event.group.id, groupLeg: event.group.leg } : {}),
   }
 }

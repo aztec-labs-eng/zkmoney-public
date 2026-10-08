@@ -22,6 +22,14 @@ import {
   voucherAvailable,
 } from "./sponsoredPaylink"
 import { usePaylinkDeps } from "./usePaylinkDeps"
+import { useGoldenTicketOffer } from "./goldenTicketOffer"
+import {
+  linkBaseUnits,
+  linkTicketEligibility,
+  TICKET_GRANT_COPY,
+  ticketThresholdHint,
+  ticketThresholdLabel,
+} from "./ticketThreshold"
 import { PayModalChrome } from "../../ui/PayModalChrome"
 import { TeeSignerNotice } from "../../ui/TeeSignerNotice"
 import { useBack, useProvingOutcome } from "../../ui/hooks"
@@ -30,9 +38,11 @@ import { amountError, decimalInput, floorToCents, parseAmount, usd } from "../..
 import { emailLockedLinksEnabled } from "../../config/features"
 import { useBusyLabel } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
+import { SponsoredActionNotice, useSponsoredActionBlock } from "../allowance/SponsoredActionNotice"
 
 type Phase = "amount" | "options" | "confirm" | "working"
 
+const PREVIOUS_PHASE: Partial<Record<Phase, Phase>> = { options: "amount", confirm: "options" }
 const EXPIRY_DAYS = [1, 7, 30]
 const MIN_AMOUNT = 1
 
@@ -49,6 +59,7 @@ export function NewLinkScreen() {
   const { walletAsset, walletBalance, assetsLoaded } = useBalance()
 
   const [phase, setPhase] = useState<Phase>("amount")
+  const previousPhase = PREVIOUS_PHASE[phase]
   const [amount, setAmount] = useState("")
   const [note, setNote] = useState("")
   const [expiryDays, setExpiryDays] = useState(DEFAULT_CLAIM_WINDOW_DAYS)
@@ -97,6 +108,7 @@ export function NewLinkScreen() {
   const ready = !!deps
   const busy = useUserFlowActive()
   const busyLabel = useBusyLabel()
+  const unsponsored = useSponsoredActionBlock(phase === "confirm")
   // Resolved on the review sheet, so the row promises exactly what the create will do.
   useEffect(() => {
     if (phase !== "confirm" || !deps) return
@@ -108,6 +120,16 @@ export function NewLinkScreen() {
     }
   }, [phase, deps])
   const voucherKnown = voucher !== undefined
+  // The visitor page reads the same offer and amount: a link at the threshold, carrying a voucher,
+  // pays a new user's tag.
+  const { offer } = useGoldenTicketOffer()
+  const decimals = walletAsset?.decimals
+  const ticketMinimum =
+    offer && decimals !== undefined ? ticketThresholdLabel(offer.threshold, decimals) : undefined
+  const amountUnits =
+    validAmount && decimals !== undefined ? linkBaseUnits(amount, decimals) : undefined
+  // The voucher is read on the review sheet: only there can the link itself be promised.
+  const grantsTicket = linkTicketEligibility(offer, amountUnits, voucher === true) === "eligible"
 
   // Input complete (amount + options), review sheet next — email_locked is decided by here.
   const toConfirm = () => {
@@ -200,6 +222,7 @@ export function NewLinkScreen() {
               title="Send via paylink"
               subtitle=""
               onClose={back}
+              onBack={previousPhase && (() => setPhase(previousPhase))}
               avatar={
                 <span className="ww-send-option__icon">
                   <Icon name="link" size={24} color="#fff" />
@@ -251,6 +274,11 @@ export function NewLinkScreen() {
                   onSubmit={() => canNext && setPhase("options")}
                 />
                 {feeRows}
+                {ticketMinimum !== undefined && (
+                  <span className="zkm-type-body-sm" style={{ color: "var(--text-secondary)" }}>
+                    {ticketThresholdHint(ticketMinimum)}
+                  </span>
+                )}
                 <PrimaryGradientButton
                   title="Next"
                   isDisabled={!canNext}
@@ -261,14 +289,6 @@ export function NewLinkScreen() {
 
             {phase === "options" && (
               <div className="ww-pay__form">
-                <button
-                  type="button"
-                  className="zkm-btn-reset ww-pay__back"
-                  aria-label="Back"
-                  onClick={() => setPhase("amount")}
-                >
-                  <Icon name="chevron-left" size={14} color="var(--text-primary)" />
-                </button>
                 <label className="zkm-field">
                   <span className="zkm-field__label">Link expiry</span>
                   <span className="zkm-field__box ww-select">
@@ -350,14 +370,20 @@ export function NewLinkScreen() {
                     }
                   />
                 </div>
+                {grantsTicket && (
+                  <span className="zkm-type-body-sm" style={{ color: "var(--text-secondary)" }}>
+                    {TICKET_GRANT_COPY}
+                  </span>
+                )}
                 {/* Reachable when the balance lands after Next — the CTA is dead without this. */}
                 {overspent && <span className="ww-pay__error">Balance not enough</span>}
+                <SponsoredActionNotice reason={unsponsored} />
                 <PrimaryGradientButton
                   testId="paylink-create"
                   title={
                     busy ? busyLabel : ready && voucherKnown ? "Create paylink" : "Connecting…"
                   }
-                  isDisabled={!ready || !voucherKnown || overspent || busy}
+                  isDisabled={!ready || !voucherKnown || overspent || busy || !!unsponsored}
                   onClick={create}
                 />
               </div>

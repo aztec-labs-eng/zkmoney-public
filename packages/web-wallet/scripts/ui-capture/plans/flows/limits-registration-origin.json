@@ -1,0 +1,81 @@
+{
+  "scenario": "onboarding",
+  "finalScreenshot": false,
+  "recordHoldMs": 0,
+  "steps": [
+    {
+      "action": "goto",
+      "path": "/claim?demo=onboarding&flowFixture=success&processingFixture=earned-sweep&capacityFixture=fits&originFixture=other&originCapacity=empty&allowanceFixture=available"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-invite"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "waitFor",
+      "testId": "deposit-pending-reason"
+    },
+    {
+      "action": "hover",
+      "testId": "manual-sweep"
+    },
+    {
+      "action": "screenshot",
+      "file": "registration-original-held.png",
+      "state": "registration card scrolled to the held action: one reason on the original bucket, the funds line, info and Sweep manually held"
+    },
+    {
+      "action": "scroll",
+      "selector": ".ww-reg-sheet__card",
+      "top": 0
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"funding-capacity-panel\"]:has-text(\"This payment needs 4.9 DAI; 0 DAI is available now.\")"
+    },
+    {
+      "action": "waitFor",
+      "selector": "[data-testid=\"funding-capacity-panel\"]:has-text(\"48,250\")",
+      "state": "detached"
+    },
+    {
+      "action": "screenshot",
+      "file": "registration-original-panel.png",
+      "state": "the funding panel on the same card reads the same original bucket"
+    },
+    {
+      "action": "click",
+      "selector": "[data-testid=\"deposit-pending-reason-help\"] [data-testid=\"about-limits-link\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"fresh\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"]:has-text(\"needs 4.9 DAI; 0 DAI of network capacity\")"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"]:has-text(\"48,250\")",
+      "state": "detached"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"available\"]"
+    },
+    {
+      "action": "hover",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity-state\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "registration-original-help.png",
+      "state": "the wait's details name the original bucket's 4.9 DAI need and 0 DAI, not the active 48,250 DAI"
+    }
+  ]
+}

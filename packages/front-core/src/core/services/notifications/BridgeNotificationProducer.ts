@@ -1,14 +1,21 @@
 import {
   isBridgeActivityItem,
+  isWithdrawalGroupTerminal,
   withdrawalAmounts,
+  withdrawalGroupAmount,
+  withdrawalGroupTime,
+  withdrawalGroupsOf,
+  worstWithdrawalPhase,
   type ActivityItem,
   type BridgeActivityItem,
+  type WithdrawalGroup,
   type WithdrawalRecord,
 } from "../bridge"
 import { depositAmounts } from "../deposits/depositAmounts"
 import { WITHDRAWAL_PHASE_COPY } from "../bridge/withdrawalCopy"
-import type { SIPADepositPhase } from "@obsidion/core/types"
-import { isUnfundedSipaDeposit, type SIPADepositRecord } from "../deposits/SIPADepositStore"
+import { depositPhaseCopy } from "../deposits/depositCopy"
+import type { SIPADepositRecord } from "../deposits/SIPADepositStore"
+import { SIPA_PROCESSING_COPY, sipaReasonShown } from "../deposits/sipaProcessing"
 import { AppNotificationStore } from "./AppNotificationStore"
 import type {
   AppNotificationSeverity,
@@ -18,9 +25,9 @@ import type {
 import { SnapshotNotificationProducer } from "./NotificationProducer"
 import type { NotificationFeed, NotificationProducer } from "./NotificationProducer"
 import { dollars } from "./TransferReceiveNotificationProducer"
+import { isNativeEth } from "../../../oxide/sipaFunding"
 import { logger } from "src/utils/logger"
-import { AMOUNT_MAX_DECIMALS } from "src/utils/validate"
-import { formatUnits, parseUnits } from "viem"
+import { tokenAmount } from "src/utils/tokenAmount"
 
 export type BridgeNotificationFeed = NotificationFeed<ActivityItem>
 
@@ -52,29 +59,38 @@ function terminalPhaseForItem(item: BridgeActivityItem): TerminalBridgePhase | n
 }
 
 /**
- * What the user is waiting on, per non-terminal phase. A phase absent from these maps has nothing in
- * flight — the deposit has not been funded yet (`resolved`), or it is parked waiting on the user
- * (`recoverable`), and a spinner would claim progress that is not happening. Kept short: the row
- * ellipsizes past roughly thirty characters including the amount.
+ * What a deposit's live row says it is waiting on; undefined for one not yet funded, parked, or
+ * settled, where a spinner would claim progress that is not happening.
  */
-const SIPA_INFLIGHT: Partial<Record<SIPADepositPhase, string>> = {
-  funding: "Awaiting transfer",
-  funded: "Transfer received",
-  broadcast: "Deposit detected",
-  sweeping: "Moving into the pool",
-  pendingClaim: "Crediting balance",
+export function sipaDepositInflightLabel(record: SIPADepositRecord): string | undefined {
+  return depositPhaseCopy(record).live
 }
 
-/** What a deposit's live row says it is waiting on; undefined for one not yet funded, parked, or settled. */
-export function sipaDepositInflightLabel(record: SIPADepositRecord): string | undefined {
-  return isUnfundedSipaDeposit(record) ? undefined : SIPA_INFLIGHT[record.phase]
-}
+/** Phases a rebuilt withdrawal sits in until the tracker has seen its L1 release. */
+const UNRELEASED: ReadonlySet<WithdrawalRecord["phase"]> = new Set([
+  "l2_mined",
+  "awaiting_proven",
+  "finalizing_l1",
+])
 
 /**
  * A withdrawal's burn before it mines is the front's own operation, which the front shows with
- * whether the tab may close; the live row starts once the chain has it.
+ * whether the tab may close; the live row starts once the chain has it. A deposit waiting for a
+ * sweep says why when `sipaReasonShown`, in the words its activity row and detail sheet use. A
+ * record rebuilt from chain starts at the burn: its release was never observed here, so until the
+ * tracker sees it spent on L1 a live row would report an old, settled withdrawal as in progress.
  */
 function inflightLabel(item: BridgeActivityItem, migration: boolean): string | undefined {
+  if (item.kind === "bridge.sipaDeposit" && sipaReasonShown(item.processing, item.record)) {
+    return SIPA_PROCESSING_COPY[item.processing.reason.kind].short
+  }
+  if (
+    item.kind === "bridge.withdrawal" &&
+    item.record.rebuilt &&
+    UNRELEASED.has(item.record.phase)
+  ) {
+    return undefined
+  }
   if (migration) {
     if (item.kind === "bridge.withdrawal") {
       const phase = item.record.phase
@@ -83,16 +99,37 @@ function inflightLabel(item: BridgeActivityItem, migration: boolean): string | u
         : "Leaving old network"
     }
     // Funded and on its way in; before that the exit's row says where the funds are.
-    return !isUnfundedSipaDeposit(item.record) && SIPA_INFLIGHT[item.record.phase]
-      ? "Arriving on new network"
-      : undefined
+    return sipaDepositInflightLabel(item.record) ? "Arriving on new network" : undefined
   }
   if (item.kind === "bridge.withdrawal") {
     return item.record.phase === "submitting"
       ? undefined
       : WITHDRAWAL_PHASE_COPY[item.record.phase].live
   }
-  return isUnfundedSipaDeposit(item.record) ? undefined : SIPA_INFLIGHT[item.record.phase]
+  return sipaDepositInflightLabel(item.record)
+}
+
+/**
+ * A group as one withdrawal item on its lead leg (the failed one, else funds, else gas), so the
+ * pair reports once through the single-record paths.
+ */
+function groupAsItem(group: WithdrawalGroup): BridgeActivityItem {
+  const legs = [group.legs.gas, group.legs.funds].filter((r): r is WithdrawalRecord => !!r)
+  const over = (records: WithdrawalRecord[]): WithdrawalGroup => ({ ...group, legs: {}, records })
+  const terminal = isWithdrawalGroupTerminal(group)
+  const failed = terminal ? legs.find((r) => r.phase === "failed") : undefined
+  const lead = failed ?? group.legs.funds ?? group.legs.gas ?? group.records[0]
+  // A submitting leg is the front's own operation; the least advanced leg on chain names the row.
+  const live = legs.filter((r) => r.phase !== "submitting" && WITHDRAWAL_PHASE_COPY[r.phase].live)
+  const shown = terminal ? group : over(live)
+  const phase = terminal || live.length ? worstWithdrawalPhase(shown) : "submitting"
+  // Only what was recovered came back; a leg that paid out is not returned.
+  const amount = withdrawalGroupAmount(
+    phase === "recovered" ? over(legs.filter((r) => r.phase === "recovered")) : group,
+  )
+  const startTime = Math.min(...group.records.map((r) => r.startTime))
+  const endTime = terminal ? withdrawalGroupTime(group) : undefined
+  return { kind: "bridge.withdrawal", record: { ...lead, phase, amount, startTime, endTime } }
 }
 
 /**
@@ -113,13 +150,20 @@ function migrationMatcher(items: BridgeActivityItem[]): (item: BridgeActivityIte
       : arrivals.has(item.record.sipaAddress.toLowerCase())
 }
 
+/** A grouped leg keys its rows by its group, so the pair keeps one live row across the hand-off. */
+function withdrawalSourceKey(record: WithdrawalRecord): string {
+  return record.groupId
+    ? `withdrawal-group:${record.groupId.toLowerCase()}`
+    : `withdrawal:${record.localId.toLowerCase()}`
+}
+
 /**
  * Id of the live row for a record. Distinct from the terminal id (which is keyed per completed
  * deposit) so the two never collide: the live row is dismissed as the terminal one is created.
  */
 function inflightSourceId(item: BridgeActivityItem): string {
   return item.kind === "bridge.withdrawal"
-    ? `bridge:withdrawal:${item.record.localId.toLowerCase()}:inflight`
+    ? `bridge:${withdrawalSourceKey(item.record)}:inflight`
     : `bridge:sipaDeposit:${item.record.sipaAddress.toLowerCase()}:inflight`
 }
 
@@ -142,7 +186,7 @@ function inflightInput(
         ? "Paylink withdrawal in progress"
         : "Withdrawal in progress"
       : "Deposit in progress",
-    description: `${amountLabel(item, migration)} · ${label}`,
+    description: `${amountLabel(item)} · ${label}`,
     timestampMs: item.record.startTime,
     systemIcon: withdrawal ? "arrow.up.right" : "arrow.down.left",
     severity: "info",
@@ -153,7 +197,10 @@ function inflightInput(
 
 function bridgeNotificationSourceId(item: BridgeActivityItem, phase: TerminalBridgePhase): string {
   if (item.kind === "bridge.withdrawal") {
-    return `bridge:withdrawal:${item.record.localId.toLowerCase()}:${phase}`
+    // A grouped leg sent again after a failure is a new record, so its failure reports anew.
+    const leg =
+      item.record.groupId && phase === "failed" ? `:${item.record.localId.toLowerCase()}` : ""
+    return `bridge:${withdrawalSourceKey(item.record)}:${phase}${leg}`
   }
   // A re-used SIPA claims more than once; key per inbox index so each
   // completed deposit notifies once.
@@ -167,16 +214,16 @@ function notificationTimestamp(item: BridgeActivityItem): number | undefined {
 }
 
 /**
- * The figure the push names. A withdrawal names the burn, the same figure its activity row carries;
- * a deposit names what credits the balance once the fee has come off. A migration moves the
- * wallet's dollars between versions, so it reads in dollars like its rows.
+ * The figure the push names, in the dollars the balance is in: a withdrawal names its burn, a
+ * deposit what credits the balance once the fee has come off. ETH sent to a deposit address is
+ * named in ETH.
  */
-function amountLabel(item: BridgeActivityItem, migration: boolean): string {
-  const amount = item.kind === "bridge.withdrawal" ? item.record.amount : depositFigure(item.record)
-  if (migration) return dollars(Number(amount))
-  // At cents like the activity row; a sweep is stamped at the deposit token's full precision.
-  const cents = formatUnits(parseUnits(amount, AMOUNT_MAX_DECIMALS), AMOUNT_MAX_DECIMALS)
-  return `${cents} ${item.record.tokenSymbol}`
+function amountLabel(item: BridgeActivityItem): string {
+  if (item.kind === "bridge.withdrawal") return dollars(Number(item.record.amount))
+  const figure = depositFigure(item.record)
+  return isNativeEth(item.record.tokenAddress)
+    ? `${tokenAmount(figure)} ETH`
+    : dollars(Number(figure))
 }
 
 /**
@@ -226,12 +273,12 @@ function descriptionForItem(
   migration: boolean,
 ): string {
   if (phase === "done") {
-    const amountDisplay = amountLabel(item, migration)
+    const amountDisplay = amountLabel(item)
     if (item.record.phase === "recovered") {
       return `${amountDisplay} returned to your wallet`
     }
     return item.kind === "bridge.withdrawal"
-      ? `${amountDisplay} sent to L1`
+      ? `${amountDisplay} sent to Ethereum`
       : `${amountDisplay} arrived`
   }
   return item.record.error ?? "Tap to view details"
@@ -343,9 +390,8 @@ export class BridgeNotificationProducer implements NotificationProducer {
     items: BridgeActivityItem[],
     isMigration: (item: BridgeActivityItem) => boolean,
   ): Promise<void> {
-    // Preserve restored rows during initial loading. Once records have appeared, an empty
-    // snapshot means the last record was removed (for example, a cancelled withdrawal).
-    if (items.length) this.hasSeenBridgeItems = true
+    // Preserve restored rows until the feed has loaded; from then on an empty snapshot means the
+    // last record was removed (a cancelled withdrawal) or is another producer's to carry.
     if (!this.hasSeenBridgeItems) return
     await this.notifications.load()
     const stillFlying = new Set<string>()
@@ -367,9 +413,67 @@ export class BridgeNotificationProducer implements NotificationProducer {
     }
   }
 
+  /**
+   * A withdrawal that failed and is no longer failed loses its failed entry, so a later failure
+   * reports anew, and its dismissed live row, so the next sync shows it. A reorg failure alert
+   * for its burn goes too. A failed leg that a later record of the same leg replaced is retired
+   * with it.
+   */
+  private async retireRecovered(withdrawals: WithdrawalRecord[]): Promise<void> {
+    await this.notifications.load()
+    const replaced = new Set(
+      withdrawalGroupsOf(withdrawals).flatMap((group) =>
+        group.records
+          .filter((r) => r.groupLeg && group.legs[r.groupLeg]?.localId !== r.localId)
+          .map((r) => r.localId),
+      ),
+    )
+    for (const record of withdrawals) {
+      // A group that names no leg keys its failed entry by its first record, failed or not.
+      if (record.groupId && !record.groupLeg) continue
+      if (record.phase === "failed" && !replaced.has(record.localId)) continue
+      const item: BridgeActivityItem = { kind: "bridge.withdrawal", record }
+      const failed = bridgeNotificationSourceId(item, "failed")
+      if (!this.notifications.get(failed)) continue
+      await this.notifications.remove(failed)
+      const live = this.notifications.get(inflightSourceId(item))
+      if (live?.dismissedAt) await this.notifications.remove(live.id)
+    }
+    // Matched by burn: the id holds the failure's epoch, and a revived record's is a later one.
+    const alerts = this.notifications.list().filter((e) => e.id.startsWith("reorg:failed:"))
+    if (!alerts.length) return
+    // A registration burn rides a claim's transaction, and that alert is the claim's.
+    const burns = new Set(
+      withdrawals
+        .filter((r) => r.phase !== "failed" && r.intent !== "registration")
+        .map((r) => r.l2TxHash?.toLowerCase()),
+    )
+    for (const alert of alerts) {
+      if (burns.has(alert.sourceId)) await this.notifications.remove(alert.id)
+    }
+  }
+
   private async process(items: ActivityItem[], baseline: number): Promise<void> {
-    const bridgeItems = items.filter(isBridgeActivityItem)
+    const allBridgeItems = items.filter(isBridgeActivityItem)
+    // Readiness is read off every bridge record, before the exclusion below: a wallet whose only
+    // bridge activity is its registration deposit still retires the stored live row for it.
+    if (allBridgeItems.length) this.hasSeenBridgeItems = true
+    const withdrawals = allBridgeItems.flatMap((i) =>
+      i.kind === "bridge.withdrawal" ? [i.record] : [],
+    )
+    // A registration's deposit and the burn that funds it (a ticket signup's claim) are carried
+    // by RegistrationNotificationProducer as one claim story. Excluding both here is what stops a
+    // duplicate row for the deposit, and what stops the funding burn reading as a cash-out
+    // withdrawal to Ethereum. Each fresh-address group stands in for its legs.
+    const bridgeItems = allBridgeItems
+      .filter(
+        (item) =>
+          item.record.intent !== "registration" &&
+          !(item.kind === "bridge.withdrawal" && item.record.groupId),
+      )
+      .concat(withdrawalGroupsOf(withdrawals).map(groupAsItem))
     const isMigration = migrationMatcher(bridgeItems)
+    await this.retireRecovered(withdrawals)
     if (this.liveRows) await this.syncLiveRows(bridgeItems, isMigration)
 
     for (const item of bridgeItems) {
@@ -388,7 +492,10 @@ export class BridgeNotificationProducer implements NotificationProducer {
         })
         continue
       }
-      if (endTime < baseline) continue
+      // A reorg can drop the burn while this producer is stopped (wallet locked mid-pass), and
+      // nothing else reports it; createIfAbsent keeps the replay to one alert.
+      const reorgDropped = item.kind === "bridge.withdrawal" && item.record.droppedBurn
+      if (endTime < baseline && !reorgDropped) continue
 
       try {
         await this.notifications.createIfAbsent(inputForItem(item, phase, migration))

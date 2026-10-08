@@ -128,7 +128,7 @@ const fakeRecover: typeof actual.recoverSponsoredLink = async (...args) => {
   const refundHash = field("5c")
   await operation("paylink-recover", onStage, true, { txHash: refundHash })
   const params = decodePaylinkInline(args[1])
-  await actual.markCreateRowRefunded(params.secret.toString(), actual.decodeLink(args[1]).flavor, args[0].account.getAddress().toString(), refundHash)
+  await actual.markCreateRowRefunded(params.secret.toString(), actual.decodeLink(args[1]).flavor, args[0].account.getAddress().toString(), refundHash, "cancel")
   return refundHash
 }
 export const viewLink: typeof actual.viewLink = async (...args) => {

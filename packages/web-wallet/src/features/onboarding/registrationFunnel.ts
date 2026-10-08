@@ -1,11 +1,12 @@
 /**
  * Registration-deposit funnel reporters (ULT-777): shown → funded → swept, each latched in
- * localStorage so reloads and the several surfaces that can observe one registration (the
+ * wallet storage so reloads and the several surfaces that can observe one registration (the
  * onboarding panel, the activity feed row, the detail modal, the manual sweep) never
  * double-count. Keys carry the SIPA address / account only locally — no event does.
  */
 import type { RegistrationKind } from "@obsidion/core/types"
 import { fireEvent } from "../../lib/analytics"
+import { walletStorage } from "../../platform/storage/walletStorage"
 
 const REPORTED_KEY = "webwallet.registration.reported"
 const memory = new Set<string>()
@@ -15,10 +16,10 @@ function latch(key: string): boolean {
   if (memory.has(key)) return false
   memory.add(key)
   try {
-    const map = JSON.parse(localStorage.getItem(REPORTED_KEY) ?? "{}") as Record<string, true>
+    const map = JSON.parse(walletStorage.getItem(REPORTED_KEY) ?? "{}") as Record<string, true>
     if (map[key]) return false
     map[key] = true
-    localStorage.setItem(REPORTED_KEY, JSON.stringify(map))
+    walletStorage.setItem(REPORTED_KEY, JSON.stringify(map))
   } catch {
     // In-memory latch already set.
   }

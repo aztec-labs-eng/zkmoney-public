@@ -3,7 +3,6 @@
  * stays the user's cancel even when the next attempt finishes first, and each way out of the
  * wizard marks the attempt it ends before the gate goes.
  */
-import { PendingRegistrationStore } from "@obsidion/front-core"
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
@@ -18,6 +17,7 @@ import {
   passkeyEvents,
   passkeyTelemetryHarness,
 } from "./support/passkeyTelemetryHarness"
+import { nameClaim, resetRegistrationStores } from "./support/registrationFixtures"
 
 vi.setConfig({ testTimeout: 30_000 })
 
@@ -34,6 +34,9 @@ const h = vi.hoisted(() => ({
   resolveHandoff: vi.fn(),
   adoptHandoff: vi.fn(),
   probePhoneReach: vi.fn(),
+  setObsidionAccount: vi.fn(),
+  reportHandoffAdopted: vi.fn(),
+  hasRootBreadcrumb: true,
 }))
 
 vi.mock("react-router-dom", async (importOriginal) => ({
@@ -42,7 +45,10 @@ vi.mock("react-router-dom", async (importOriginal) => ({
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  useAccountContext: () => ({ createAccount: h.createAccount, setObsidionAccount: vi.fn() }),
+  useAccountContext: () => ({
+    createAccount: h.createAccount,
+    setObsidionAccount: h.setObsidionAccount,
+  }),
   useAztecContext: () => ({ obsidionWallet: { wallet: true } }),
   useContractServiceContext: () => ({ contractService: { service: true } }),
   useConfigValue: () => ({ value: true, setValue: vi.fn() }),
@@ -63,11 +69,13 @@ vi.mock("../src/lib/analytics", () => ({
   lapTimer: () => () => 0,
   failureCode: () => "err",
 }))
+vi.mock("../src/lib/handoffHealth", () => ({ reportHandoffAdopted: h.reportHandoffAdopted }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
-// A saved identity only counts as onboarded beside this browser's root-passkey breadcrumb.
+// A saved identity only counts as onboarded beside this browser's root-passkey breadcrumb, and an
+// app's browser is told before any request only where there is none.
 vi.mock("../src/platform/auth/WebPasskeyIdentityMap", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/platform/auth/WebPasskeyIdentityMap")>()),
-  hasMskRootBreadcrumb: () => true,
+  hasMskRootBreadcrumb: () => h.hasRootBreadcrumb,
 }))
 vi.mock("../src/features/deposit/l1Wallet", () => ({
   useL1Wallet: () => ({ account: null, walletName: null, connect: vi.fn() }),
@@ -141,19 +149,6 @@ vi.mock("../src/features/onboarding/steps/ClaimTagModal", () => ({
   ),
   AllSetModal: () => <div>all-set</div>,
 }))
-// The real carousel spends the first "Next →" on the hand-off's prompt and ends on "Let's go!".
-vi.mock("../src/features/onboarding/steps/OnboardingCarousel", () => ({
-  OnboardingCarousel: ({ onDone, onStart }: { onDone: () => void; onStart?: () => void }) => (
-    <>
-      {onStart && (
-        <button data-testid="carousel-next" onClick={onStart}>
-          Next
-        </button>
-      )}
-      <button onClick={onDone}>Let's go!</button>
-    </>
-  ),
-}))
 vi.mock("../src/features/onboarding/oxideOnboarding", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/onboarding/oxideOnboarding")>()),
   getClaimStatus: h.getClaimStatus,
@@ -179,7 +174,7 @@ const CUSTODY = {
   kind: "custody",
   confirmed: false,
   oxideAccount: ACCOUNT,
-  claim: { signature: "0x", nonce: "1", deadline: "4102444800" },
+  claim: nameClaim(),
 }
 
 let container: HTMLDivElement
@@ -197,9 +192,6 @@ const press = async (find: () => HTMLElement | undefined | null) => {
 const pressLabel = (label: string) => press(() => buttons().find((b) => b.textContent === label))
 const deposit = () => press(() => buttons().find((b) => b.textContent?.startsWith("Deposit")))
 const continueAtSteps = () => press(() => byTestId("phone-steps-continue"))
-/** The intro's first tap, which is what a hand-off's prompt rides on. */
-const startHandoff = () => press(() => byTestId("carousel-next"))
-const leaveIntro = () => pressLabel("Let's go!")
 
 const HANDOFF = "/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12"
 const RESOLVED = { recovered: {}, msk: fakeKeys.secretKey, slot: "first" }
@@ -245,7 +237,7 @@ async function toCreateRequest() {
 beforeEach(async () => {
   vi.clearAllMocks()
   localStorage.clear()
-  ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
+  resetRegistrationStores()
   await getPendingStore().load()
   // A fresh page load's tracker: attempt numbers and once-per-page events start over.
   __resetPasskeyTelemetryForTests()
@@ -254,6 +246,7 @@ beforeEach(async () => {
   h.collectOnboardingKeys.mockResolvedValue(fakeKeys)
   h.claimTag.mockResolvedValue(CUSTODY)
   h.probePhoneReach.mockResolvedValue("unknown")
+  h.hasRootBreadcrumb = true
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -469,13 +462,34 @@ describe("signup create step — passkey telemetry", () => {
         prompts: "0",
       }),
     ])
+    // The gate hands the phone check back only once a route is picked.
+    expect(events()[0]).not.toHaveProperty("phone_reach")
+  })
+
+  it("a laptop create past the phone steps carries the phone check", async () => {
+    h.probePhoneReach.mockResolvedValue("ok")
+    const held = await toCreateRequest()
+    await act(async () => held.answer())
+    await flush()
+    expect(events()).toEqual([
+      expect.objectContaining({ ceremony: "create", outcome: "succeeded", phone_reach: "ok" }),
+    ])
+  })
+
+  it("a laptop create the browser closed carries what the check could not tell", async () => {
+    const held = await toCreateRequest()
+    await act(async () => held.reject(new DOMException("closed", "NotAllowedError")))
+    await flush()
+    expect(events()).toEqual([
+      expect.objectContaining({ reason: "prompt_closed", phone_reach: "unknown" }),
+    ])
   })
 })
 
 /**
- * The campaign hand-off as it ships: a silent attempt on mount, the intro's first tap spending a
- * prompt when the bridge material was not enough, and the terms sheet as the fallback that can ask
- * again. A run that asks nothing reports nothing — a prompt-free success is no ceremony.
+ * The campaign hand-off as it ships: a silent attempt on mount, and the terms sheet's Deposit
+ * spending a prompt when the bridge material was not enough. A run that asks nothing reports
+ * nothing — a prompt-free success is no ceremony.
  */
 describe("signup hand-off — passkey telemetry", () => {
   /** A fresh page for a hand-off URL, since the silent attempt fires on mount. */
@@ -517,11 +531,11 @@ describe("signup hand-off — passkey telemetry", () => {
     expect(events()).toEqual([])
   })
 
-  it("the intro's first tap spends the hand-off's one prompt and reports it", async () => {
+  it("the terms sheet's Deposit spends the hand-off's one prompt and reports it", async () => {
     await silentRefuses()
     await openHandoff()
     handoffAsks()
-    await startHandoff()
+    await deposit()
     expect(h.resolveHandoff).toHaveBeenCalledTimes(2)
     expect(h.resolveHandoff.mock.calls[1][6]).toBeFalsy()
     expect(events()).toEqual([
@@ -538,23 +552,9 @@ describe("signup hand-off — passkey telemetry", () => {
   it("entering the wallet on a claim the silent attempt won sends no passkey event at all", async () => {
     h.resolveHandoff.mockResolvedValueOnce(RESOLVED)
     await openHandoff()
-    await leaveIntro()
-    // The identity the claim saved is what the wallet's gate reads: the intro ends inside it.
+    // The identity the claim saved is what the wallet's gate reads: the spinner enters on it.
     expect(h.navigate).toHaveBeenCalled()
     expect(events()).toEqual([])
-  })
-
-  it("the terms sheet is the fallback, and its Deposit is a second hand-off attempt", async () => {
-    await silentRefuses()
-    await openHandoff()
-    // The intro ends with no account, so the sheet that can ask again takes over.
-    await leaveIntro()
-    handoffAsks()
-    await deposit()
-    expect(h.resolveHandoff).toHaveBeenCalledTimes(2)
-    expect(events()).toEqual([
-      expect.objectContaining({ ceremony: "sign_in", flow: "handoff", outcome: "succeeded" }),
-    ])
   })
 
   it("a prompt the user closes is reported as the browser's close, once", async () => {
@@ -563,7 +563,7 @@ describe("signup hand-off — passkey telemetry", () => {
     handoffAsks(() => {
       throw new DOMException("closed", "NotAllowedError")
     })
-    await startHandoff()
+    await deposit()
     expect(events()).toEqual([
       expect.objectContaining({
         ceremony: "sign_in",
@@ -582,7 +582,7 @@ describe("signup hand-off — passkey telemetry", () => {
       await (args[4] as () => Promise<unknown>)()
       return RESOLVED
     })
-    await startHandoff()
+    await deposit()
     expect(byTestId("sign-in-cancel")).not.toBeNull()
     act(() => {
       byTestId("sign-in-cancel")!.click()
@@ -615,7 +615,7 @@ describe("signup hand-off — passkey telemetry", () => {
       await silentRefuses()
       await openHandoff()
       handoffAsks()
-      await startHandoff()
+      await deposit()
       expect(events()).toEqual([
         expect.objectContaining({
           ceremony: "sign_in",
@@ -633,7 +633,7 @@ describe("signup hand-off — passkey telemetry", () => {
     }
   })
 
-  it("leaving the intro while the tap's hand-off is still asking sends nothing", async () => {
+  it("leaving while the hand-off's prompt is still asking sends nothing", async () => {
     await silentRefuses()
     await openHandoff()
     const held: { request?: HeldRequest } = {}
@@ -642,7 +642,7 @@ describe("signup hand-off — passkey telemetry", () => {
       await held.request.settled
       return RESOLVED
     })
-    await startHandoff()
+    await deposit()
     expect(held.request).toBeDefined()
     act(() => {
       root.unmount()
@@ -652,4 +652,281 @@ describe("signup hand-off — passkey telemetry", () => {
     await flush()
     expect(events()).toEqual([])
   })
+})
+
+describe("signup hand-off — health report", () => {
+  const CAMPAIGN_HANDOFF = `${HANDOFF}&src=campaign`
+  const resolvedFrom = (keySource: string) => ({ ...RESOLVED, keySource })
+  const open = async (path = CAMPAIGN_HANDOFF) => {
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    await render(path)
+  }
+
+  beforeEach(() => {
+    h.adoptHandoff.mockResolvedValue(fakeKeys)
+  })
+
+  it("reports the key source of a campaign hand-off's adoption, once", async () => {
+    h.resolveHandoff.mockResolvedValueOnce(resolvedFrom("handoff"))
+    await open()
+    expect(h.reportHandoffAdopted.mock.calls).toEqual([["handoff"]])
+  })
+
+  it("reports nothing for a passkey link the campaign did not send", async () => {
+    h.resolveHandoff.mockResolvedValueOnce(resolvedFrom("handoff"))
+    await open(HANDOFF)
+    expect(h.adoptHandoff).toHaveBeenCalledTimes(1)
+    expect(h.reportHandoffAdopted).not.toHaveBeenCalled()
+  })
+
+  it("reports nothing for a silent run that needs a prompt, then once for the Deposit's ceremony", async () => {
+    const { CeremonyRequiredError } = await import("../src/features/onboarding/oxideOnboarding")
+    h.resolveHandoff.mockRejectedValueOnce(new CeremonyRequiredError())
+    await open()
+    expect(h.reportHandoffAdopted).not.toHaveBeenCalled()
+    h.resolveHandoff.mockResolvedValueOnce(resolvedFrom("ceremony"))
+    await deposit()
+    expect(h.reportHandoffAdopted.mock.calls).toEqual([["ceremony"]])
+  })
+
+  it("an adoption that lands after its screen left still adopts, and reports nothing", async () => {
+    h.resolveHandoff.mockResolvedValueOnce(resolvedFrom("handoff"))
+    let land!: (keys: typeof fakeKeys) => void
+    h.adoptHandoff.mockImplementationOnce(
+      () => new Promise<typeof fakeKeys>((resolve) => (land = resolve)),
+    )
+    await open()
+    expect(h.adoptHandoff).toHaveBeenCalledTimes(1)
+    // The op goes stale while the adoption is past its point of no return.
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    await act(async () => land(fakeKeys))
+    await flush()
+    expect(h.setObsidionAccount).toHaveBeenCalledWith(fakeKeys.account)
+    expect(h.reportHandoffAdopted).not.toHaveBeenCalled()
+  })
+
+  it("reports nothing for the op StrictMode's repeated effects ended, however it lands", async () => {
+    h.resolveHandoff.mockResolvedValue(resolvedFrom("cache"))
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    await act(async () => {
+      root.render(
+        <React.StrictMode>
+          <MemoryRouter initialEntries={[CAMPAIGN_HANDOFF]}>
+            <Routes>
+              <Route path="/claim/:handle?" element={<OnboardingScreen />} />
+            </Routes>
+          </MemoryRouter>
+        </React.StrictMode>,
+      )
+    })
+    await flush()
+    // The simulated unmount runs the screen's cleanup, which ends the silent op's scope; its
+    // adoption still lands, but for an op that is no longer the screen's.
+    expect(h.adoptHandoff).toHaveBeenCalledTimes(1)
+    expect(h.reportHandoffAdopted).not.toHaveBeenCalled()
+  })
+})
+
+/** A reminder-email hand-off opened inside an app: its passkey fails, the card follows it. */
+describe("signup hand-off in an app's built-in browser", () => {
+  const REMINDER = "/claim/taga?entry=passkey&rp=localhost&choose=1"
+  const UA = {
+    android:
+      "Mozilla/5.0 (Linux; Android 16; Pixel 9 Build/BP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/154.0.0.0 Mobile Safari/537.36",
+    iosX: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Twitter for iPhone/10.80",
+    iosInstagram:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 370.0.0.0.0 (iPhone15,2; iOS 18_5; en_US; en; scale=3.00; 1179x2556; 000000000)",
+  }
+  const startUrl = window.location.href
+  let ua: { mockRestore: () => void } | undefined
+  const refused = () => byTestId("create-refused")
+  const failures = () =>
+    h.fireEvent.mock.calls.filter(([event]) => event === "action_failed").map(([, props]) => props)
+
+  type Gate = (options: { anchor: boolean }) => Promise<{ signal: AbortSignal }>
+  /**
+   * The silent attempt finds no material; the Deposit's attempt waits at the gate's sheet, then asks
+   * `asks` times, each request held for the test.
+   */
+  const handoffAsks = (asks = 1) => {
+    const requests: HeldRequest[] = []
+    h.resolveHandoff.mockImplementation(async (...args: unknown[]) => {
+      const { CeremonyRequiredError } = await import("../src/features/onboarding/oxideOnboarding")
+      if (args[6]) throw new CeremonyRequiredError()
+      const { signal } = await (args[4] as Gate)({ anchor: true })
+      for (let i = 0; i < asks; i++) {
+        const request = harness.request("assert", signal, args[7] as never)
+        requests.push(request)
+        await request.settled
+      }
+      return RESOLVED
+    })
+    return requests
+  }
+  const open = async (userAgent: string, strict = false) => {
+    ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent)
+    window.history.replaceState(null, "", REMINDER)
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    const tree = (
+      <MemoryRouter initialEntries={[REMINDER]}>
+        <Routes>
+          <Route path="/claim/:handle?" element={<OnboardingScreen />} />
+        </Routes>
+      </MemoryRouter>
+    )
+    await act(async () => root.render(strict ? <React.StrictMode>{tree}</React.StrictMode> : tree))
+    await flush()
+  }
+  /** The terms sheet's Deposit, then Continue on the gate's sheet: the request is now in the browser. */
+  const tapThroughSheet = async () => {
+    await deposit()
+    expect(byTestId("sign-in-continue")).not.toBeNull()
+    await press(() => byTestId("sign-in-continue"))
+  }
+
+  beforeEach(() => {
+    h.adoptHandoff.mockResolvedValue(fakeKeys)
+  })
+  afterEach(() => {
+    ua?.mockRestore()
+    ua = undefined
+    window.history.replaceState(null, "", startUrl)
+    h.resolveHandoff.mockReset()
+  })
+
+  it("with no passkey record here, an iPhone app's browser is told before any request, and nothing is reported", async () => {
+    h.hasRootBreadcrumb = false
+    const requests = handoffAsks()
+    await open(UA.iosInstagram, true)
+    // The silent attempt found no material; the sheet now shows the card, not the terms.
+    expect(byTestId("create-in-app-notice")).not.toBeNull()
+    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toBe(
+      `x-safari-http://${window.location.host}${REMINDER}`,
+    )
+    expect(buttons().some((b) => b.textContent?.startsWith("Deposit"))).toBe(false)
+    expect(requests).toHaveLength(0)
+    expect(failures()).toEqual([])
+    expect(events()).toEqual([])
+  })
+
+  // The cases below hold a root passkey record: a passkey worked here once, so the sheet asks,
+  // and the card follows the failure.
+  it.each([false, true])(
+    "an iPhone app browser's instant close lands on the card, not the terms (strict: %s)",
+    async (strict) => {
+      const requests = handoffAsks()
+      await open(UA.iosInstagram, strict)
+      await tapThroughSheet()
+      await act(async () => requests.at(-1)!.reject(new DOMException("closed", "NotAllowedError")))
+      await flush()
+      expect(refused()?.dataset.reason).toBe("InAppBrowser")
+      expect(byTestId("open-in-browser-link")!.getAttribute("href")).toBe(
+        `x-safari-http://${window.location.host}${REMINDER}`,
+      )
+      expect(byTestId("create-start-over")).not.toBeNull()
+      expect(buttons().some((b) => b.textContent?.startsWith("Deposit"))).toBe(false)
+      expect(failures()).toEqual([{ action: "enter_passkey", code: "err" }])
+      expect(events()).toEqual([
+        expect.objectContaining({ flow: "handoff", outcome: "cancelled", reason: "prompt_closed" }),
+      ])
+    },
+  )
+
+  it("a not-supported second approval lands on the card with its retry on the sheet", async () => {
+    const requests = handoffAsks(2)
+    await open(UA.android)
+    await tapThroughSheet()
+    await act(async () => requests[0]!.answer())
+    await flush()
+    await act(async () =>
+      requests[1]!.reject(
+        new DOMException("Error connecting to Web Authentication service", "NotSupportedError"),
+      ),
+    )
+    await flush()
+    expect(refused()?.dataset.reason).toBe("NotSupportedError")
+    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toContain("intent://")
+    expect(buttons().some((b) => b.textContent?.startsWith("Deposit"))).toBe(true)
+    expect(events()).toEqual([
+      expect.objectContaining({ flow: "handoff", outcome: "failed", reason: "not_supported" }),
+    ])
+
+    // The sheet's button runs the hand-off again, never a create, and lands on the same card.
+    const calls = h.resolveHandoff.mock.calls.length
+    h.fireEvent.mockClear()
+    await deposit()
+    expect(byTestId("sign-in-continue")).not.toBeNull()
+    await press(() => byTestId("sign-in-continue"))
+    expect(h.resolveHandoff).toHaveBeenCalledTimes(calls + 1)
+    await act(async () => requests.at(-1)!.reject(new DOMException("again", "NotSupportedError")))
+    await flush()
+    expect(h.createAccount).not.toHaveBeenCalled()
+    expect(refused()?.dataset.reason).toBe("NotSupportedError")
+    expect(
+      h.fireEvent.mock.calls.filter(([e]) => e === "registration_terms_accepted"),
+    ).toHaveLength(1)
+    expect(failures()).toEqual([{ action: "enter_passkey", code: "err" }])
+  })
+})
+
+describe("signup create in an app's built-in browser", () => {
+  it("a create Cancel ended shows nothing when it then fails as not supported", async () => {
+    const ua = vi
+      .spyOn(navigator, "userAgent", "get")
+      .mockReturnValue(
+        "Mozilla/5.0 (Linux; Android 16; Pixel 9 Build/BP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/154.0.0.0 Mobile Safari/537.36",
+      )
+    try {
+      const held = heldCreate()
+      await pressLabel("landing-signin")
+      // A phone has no steps to pass: Deposit asks the browser.
+      await deposit()
+      expect(held.request).toBeDefined()
+      await pressLabel("Cancel")
+      await act(async () => held.request!.reject(new DOMException("late", "NotSupportedError")))
+      await flush()
+      expect(byTestId("create-refused")).toBeNull()
+      expect(h.fireEvent.mock.calls.filter(([e]) => e === "action_failed")).toEqual([])
+    } finally {
+      ua.mockRestore()
+    }
+  })
+})
+
+/** Saving endpoints reloads the page, so the pill waits out "Unlock access" wherever it renders. */
+describe("the endpoints hold", () => {
+  const renderEmbedded = async () => {
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/claim/taga"]}>
+          <Routes>
+            <Route path="/claim/:handle?" element={<OnboardingScreen embedded />} />
+          </Routes>
+        </MemoryRouter>,
+      )
+    })
+    await flush()
+  }
+
+  it.each([false, true])(
+    "holds while Unlock access reads the claim status (embedded: %s)",
+    async (embedded) => {
+      if (embedded) await renderEmbedded()
+      const { endpointsHeld } = await import("../src/ui/endpointsHold")
+      let settle!: (status: string) => void
+      h.getClaimStatus.mockImplementationOnce(() => new Promise((resolve) => (settle = resolve)))
+      expect(endpointsHeld()).toBe(false)
+      await pressLabel("landing-signin")
+      expect(endpointsHeld()).toBe(true)
+      await act(async () => settle("claimed"))
+      await flush()
+      expect(endpointsHeld()).toBe(false)
+    },
+  )
 })

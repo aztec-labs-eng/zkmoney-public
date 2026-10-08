@@ -620,6 +620,227 @@ describe("each run owns the requests it makes", () => {
   })
 })
 
+describe("the laptop phone check", () => {
+  const closed = () => new DOMException("Dismissed", "NotAllowedError")
+
+  it("rides on every event the handle sends after the note, later runs included", async () => {
+    const h = harness()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [{ error: closed() }, { answer: QR_CREATE }]),
+    )
+    const handle = h.telemetry.begin({ ceremony: "create" })
+    handle.notePhoneReach("no-hybrid")
+    await caught(handle.run((own) => own(ceremony).create(createRequest())))
+    await handle.run((own) => own(ceremony).create(createRequest()))
+    expect(h.sent).toEqual([
+      expect.objectContaining({
+        outcome: "cancelled",
+        reason: "prompt_closed",
+        phone_reach: "no_hybrid",
+      }),
+      expect.objectContaining({ outcome: "succeeded", phone_reach: "no_hybrid" }),
+    ])
+  })
+
+  it("is sent as the vocabulary names it, and not at all for a browser below the floor", async () => {
+    const h = harness()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [{ answer: QR_CREATE }, { answer: QR_CREATE }]),
+    )
+    const ok = h.telemetry.begin({ ceremony: "create" })
+    ok.notePhoneReach("ok")
+    await ok.run((own) => own(ceremony).create(createRequest()))
+    const floor = h.telemetry.begin({ ceremony: "create" })
+    floor.notePhoneReach("below-floor")
+    await floor.run((own) => own(ceremony).create(createRequest()))
+    expect(h.sent[0]).toMatchObject({ phone_reach: "ok" })
+    expect(h.sent[1]).not.toHaveProperty("phone_reach")
+  })
+
+  it("rides on a cancel before any request", () => {
+    const h = harness()
+    const handle = h.telemetry.begin({ ceremony: "create" })
+    handle.notePhoneReach("unknown")
+    handle.end({ outcome: "cancelled", reason: "in_app_cancel" })
+    expect(h.sent).toEqual([
+      expect.objectContaining({ reason: "in_app_cancel", prompts: "0", phone_reach: "unknown" }),
+    ])
+  })
+
+  it("keeps the once-per-page-load rule for prompt-free events, whatever the note", () => {
+    const h = harness()
+    const first = h.telemetry.begin({ ceremony: "create" })
+    first.end({ outcome: "cancelled", reason: "in_app_cancel" })
+    const second = h.telemetry.begin({ ceremony: "create" })
+    second.notePhoneReach("ok")
+    second.end({ outcome: "cancelled", reason: "in_app_cancel" })
+    expect(h.sent).toHaveLength(1)
+    expect(h.sent[0]).not.toHaveProperty("phone_reach")
+  })
+
+  it("never revises an event already sent, and reaches the next run", async () => {
+    const h = harness()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [{ error: closed() }, { error: closed() }]),
+    )
+    const handle = h.telemetry.begin({ ceremony: "create" })
+    await caught(handle.run((own) => own(ceremony).create(createRequest())))
+    handle.notePhoneReach("ok")
+    expect(h.sent).toHaveLength(1)
+    expect(h.sent[0]).not.toHaveProperty("phone_reach")
+    await caught(handle.run((own) => own(ceremony).create(createRequest())))
+    expect(h.sent).toHaveLength(2)
+    expect(h.sent[1]).toMatchObject({ phone_reach: "ok" })
+  })
+
+  it("stays with its own handle", async () => {
+    const h = harness()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [
+        { answer: QR_CREATE },
+        { answer: LOCAL_ASSERT },
+      ]),
+    )
+    const noted = h.telemetry.begin({ ceremony: "create" })
+    noted.notePhoneReach("ok")
+    await noted.run((own) => own(ceremony).create(createRequest()))
+    await h.telemetry.track({ ceremony: "sign_in" }, (own) => own(ceremony).assert(assertRequest()))
+    expect(h.sent[0]).toMatchObject({ phone_reach: "ok" })
+    expect(h.sent[1]).not.toHaveProperty("phone_reach")
+  })
+
+  it("never reaches a request made outside the noted run", async () => {
+    const h = harness()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [
+        { answer: QR_CREATE },
+        { answer: LOCAL_ASSERT },
+      ]),
+    )
+    const noted = h.telemetry.begin({ ceremony: "create" })
+    noted.notePhoneReach("ok")
+    await noted.run((own) => own(ceremony).create(createRequest()))
+    await ceremony.assert(assertRequest())
+    expect(h.sent[1]).toMatchObject({ ceremony: "untracked" })
+    expect(h.sent[1]).not.toHaveProperty("phone_reach")
+  })
+
+  it("keeps a replaced run's late request out of the attempt that replaced it", async () => {
+    const h = harness()
+    const late = deferred()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [
+        { answer: LOCAL_ASSERT },
+        { answer: QR_CREATE },
+      ]),
+    )
+    const noted = h.telemetry.begin({ ceremony: "create" })
+    noted.notePhoneReach("no-hybrid")
+    const replaced = noted.run(async (own) => {
+      await late.promise
+      return own(ceremony).create(createRequest())
+    })
+    noted.superseded()
+    await h.telemetry.track({ ceremony: "sign_in" }, (own) => own(ceremony).assert(assertRequest()))
+    late.resolve()
+    await replaced
+    // A replaced attempt still reports its own success, under its own note.
+    expect(h.sent).toEqual([
+      expect.objectContaining({ ceremony: "sign_in" }),
+      expect.objectContaining({ ceremony: "create", phone_reach: "no_hybrid" }),
+    ])
+    expect(h.sent[0]).not.toHaveProperty("phone_reach")
+  })
+})
+
+describe("a run's own request signals", () => {
+  const phases = (signals: PasskeyRequestSignal[]) => signals.map((s) => [s.phase, s.kind])
+
+  it("reach the run that made the requests, a chained one included", async () => {
+    const h = harness()
+    const fake = new FakePasskeyCeremony({
+      onRequest: h.telemetry.requestHook,
+      aaguid: APPLE_ICLOUD_AAGUID,
+      route: "cross-device",
+      prfAtCreate: false,
+    })
+    const heard: PasskeyRequestSignal[] = []
+    const handle = h.telemetry.begin({ ceremony: "create" })
+    await handle.run(
+      (own) =>
+        runPasskeyCreation(own(h.telemetry.wrap(fake)), {
+          posture: "laptop",
+          rpId: "localhost",
+          rpName: "zk.money",
+          userName: "@alice",
+          challengeForChained: () => new Uint8Array(32),
+        }),
+      undefined,
+      (signal) => heard.push(signal),
+    )
+    expect(phases(heard)).toEqual([
+      ["issued", "create"],
+      ["answered", "create"],
+      ["issued", "assert"],
+      ["answered", "assert"],
+    ])
+  })
+
+  it("never reach another run, even when the older run's answer comes last", async () => {
+    const h = harness()
+    const holdA = deferred()
+    const holdB = deferred()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [
+        { hold: holdA.promise, answer: QR_CREATE },
+        { hold: holdB.promise, error: new DOMException("Dismissed", "NotAllowedError") },
+      ]),
+    )
+    const heardA: PasskeyRequestSignal[] = []
+    const heardB: PasskeyRequestSignal[] = []
+    const a = h.telemetry.begin({ ceremony: "create" })
+    const creatingA = a.run(
+      (own) => own(ceremony).create(createRequest()),
+      undefined,
+      (signal) => heardA.push(signal),
+    )
+    a.unmounted()
+    const b = h.telemetry.begin({ ceremony: "create" })
+    const creatingB = caught(
+      b.run(
+        (own) => own(ceremony).create(createRequest()),
+        undefined,
+        (signal) => heardB.push(signal),
+      ),
+    )
+    holdA.resolve()
+    await creatingA
+    holdB.resolve()
+    await creatingB
+    expect(phases(heardA)).toEqual([
+      ["issued", "create"],
+      ["answered", "create"],
+    ])
+    expect(phases(heardB)).toEqual([["issued", "create"]])
+  })
+
+  it("leave the run and its event alone when the listener throws", async () => {
+    const h = harness()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [{ answer: QR_CREATE }]),
+    )
+    const result = await h.telemetry.begin({ ceremony: "create" }).run(
+      (own) => own(ceremony).create(createRequest()),
+      undefined,
+      () => {
+        throw new Error("listener broke")
+      },
+    )
+    expect(result).toMatchObject({ credentialId: "cred-1" })
+    expect(h.sent).toEqual([expect.objectContaining({ outcome: "succeeded", prompts: "1" })])
+  })
+})
+
 describe("end causes", () => {
   class GateCancelledError extends Error {
     override name = "GateCancelledError"
@@ -1098,6 +1319,101 @@ describe("snapshot", () => {
   })
 })
 
+describe("an unnamed provider's AAGUID", () => {
+  const UNNAMED = "0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f"
+  const UNNAMED_CREATE: PasskeyAnswerEvidence = { ...QR_CREATE, aaguid: UNNAMED }
+  const unnamed = { provider: "other", aaguid: UNNAMED }
+
+  it("stays in the snapshot for every request that names its credential", async () => {
+    const h = harness()
+    const hold = deferred()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [
+        { answer: UNNAMED_CREATE, credentialId: "cred-u" },
+        { hold: hold.promise, error: new DOMException("Dismissed", "NotAllowedError") },
+        {},
+        {},
+      ]),
+    )
+    await ceremony.create(createRequest())
+    expect(h.telemetry.snapshot()).toMatchObject(unnamed)
+
+    const asserting = caught(ceremony.assert(assertRequest({ credentialIds: ["cred-u"] })))
+    expect(h.telemetry.snapshot()).toMatchObject(unnamed)
+    hold.resolve()
+    await asserting
+    expect(h.telemetry.snapshot()).toMatchObject(unnamed)
+
+    await ceremony.assert(assertRequest({ credentialIds: ["cred-u", "cred-x"] }))
+    expect(h.telemetry.snapshot()).toMatchObject({ provider: "unknown" })
+    expect(h.telemetry.snapshot()).not.toHaveProperty("aaguid")
+
+    await ceremony.assert(assertRequest({ credentialIds: ["cred-u"] }))
+    expect(h.telemetry.snapshot()).toMatchObject(unnamed)
+    await ceremony.assert(assertRequest({ credentialIds: ["cred-x"] }))
+    expect(h.telemetry.snapshot()).not.toHaveProperty("aaguid")
+  })
+
+  it("is absent while a creation waits, and kept when its answer fails to decode", async () => {
+    const h = harness()
+    const hold = deferred()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [
+        { hold: hold.promise, answer: UNNAMED_CREATE, error: new TypeError("decode") },
+      ]),
+    )
+    const creating = caught(
+      h.telemetry.track({ ceremony: "create" }, () => ceremony.create(createRequest())),
+    )
+    expect(h.telemetry.snapshot()).not.toHaveProperty("aaguid")
+    hold.resolve()
+    await creating
+    expect(h.telemetry.snapshot()).toMatchObject(unnamed)
+  })
+
+  it("comes from a creation the tracker only heard", async () => {
+    const h = harness()
+    const bare = new FakePasskeyCeremony({ onRequest: h.telemetry.requestHook, aaguid: UNNAMED })
+    await bare.create(createRequest())
+    expect(h.telemetry.snapshot()).toMatchObject(unnamed)
+  })
+
+  it("is never taken from the fallback", () => {
+    const h = harness({ fallbackProvider: () => "other" })
+    expect(h.telemetry.snapshot().provider).toBe("other")
+    expect(h.telemetry.snapshot()).not.toHaveProperty("aaguid")
+  })
+
+  it("never reaches the event", async () => {
+    const h = harness()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [{ answer: UNNAMED_CREATE }]),
+    )
+    await Promise.resolve()
+    await caught(
+      h.telemetry.track({ ceremony: "create" }, async () => {
+        await ceremony.create(createRequest())
+        throw new UnsupportedProviderError("manager")
+      }),
+    )
+    expect(h.sent).toEqual([
+      {
+        ceremony: "create",
+        outcome: "refused",
+        reason: "provider_not_supported",
+        provider: "other",
+        credential_created: "yes",
+        backup_eligible: "yes",
+        route: "phone_qr",
+        prompts: "1",
+        attempt: "1",
+        elapsed: "under_1s",
+        ...HINTED_MAC_PROPS,
+      },
+    ])
+  })
+})
+
 describe("never in the way", () => {
   it("settles as the run does when sending throws", async () => {
     const h = harness({
@@ -1243,6 +1559,20 @@ describe("over the browser ceremony", () => {
     expect(h.sent).toEqual([
       expect.objectContaining({ outcome: "succeeded", prompts: "1", elapsed: "1_10s" }),
     ])
+  })
+
+  it("tells a run's listener of each issue of a re-issued request", async () => {
+    const h = harness()
+    const ceremony = h.telemetry.wrap(new BrowserPasskeyCeremony(timing, h.telemetry.requestHook))
+    get.mockImplementationOnce(() => Promise.reject(pending()))
+    get.mockImplementationOnce(() => Promise.resolve(assertionCredential()))
+    const heard: string[] = []
+    await h.telemetry.begin({ ceremony: "sign_in" }).run(
+      (own) => own(ceremony).assert(assertRequest()),
+      undefined,
+      (signal) => heard.push(signal.phase),
+    )
+    expect(heard).toEqual(["issued", "issued", "answered"])
   })
 
   it("keeps the provider of a creation that answered and then failed to decode", async () => {

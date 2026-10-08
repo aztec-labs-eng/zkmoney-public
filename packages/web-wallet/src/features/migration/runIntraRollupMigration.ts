@@ -107,6 +107,7 @@ async function migrateFlow(
       recoveryProtocol: params.current.sipaRecoveryProtocol ?? "legacy-eoa",
       portal: requireTupleField(params.current, "portal") as Hex,
       sipaFactory: requireTupleField(params.current, "sipaFactory") as Hex,
+      rollupVersion: requireTupleField(params.current, "rollupVersion"),
     },
     publicClient,
   })

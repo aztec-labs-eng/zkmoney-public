@@ -55,13 +55,19 @@ export type InlinePanelState =
   | { kind: "looking-up"; tag: string }
   | { kind: "add-offer"; tag: string }
   | { kind: "no-user-found"; tag: string }
+  | { kind: "reserved"; tag: string }
 
-/** Panel under the search field: looking-up → add-offer | no-user-found. */
+/**
+ * Panel under the search field: looking-up → add-offer | no-user-found | reserved. A tag the
+ * Registry does not know but the claim server holds is reserved: its signup waits for a deposit.
+ * `held` is the claim server's answer for a Registry miss; null while it is still asked.
+ */
 export function inlinePanelState(
   contacts: ContactRow[],
   query: string,
   lastResolved: InlineResolveResult | null,
   ownTag?: string,
+  held: boolean | null = false,
 ): InlinePanelState {
   const tag = normalizeTag(query)
   if (!tag || !shouldResolveInline(contacts, query, ownTag)) return { kind: "none" }
@@ -69,7 +75,8 @@ export function inlinePanelState(
     return { kind: "looking-up", tag }
   }
   if (lastResolved.status === "found") return { kind: "add-offer", tag }
-  return { kind: "no-user-found", tag }
+  if (held === null) return { kind: "looking-up", tag }
+  return held ? { kind: "reserved", tag } : { kind: "no-user-found", tag }
 }
 
 /** Resolve a detail-route param (directory row id, tag, or address) to its stored entry. */

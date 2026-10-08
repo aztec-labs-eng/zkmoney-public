@@ -50,6 +50,17 @@ afterEach(() => {
 })
 
 describe("reorgNotificationInput", () => {
+  it("tells the recipient of a failed payment it was a payment to them", () => {
+    for (const type of ["failed", "grace-expired"] as const) {
+      expect(reorgNotificationInput({ type, txHash: TX, incoming: true }, NOW)?.description).toBe(
+        "This payment to you was reverted by the network and did not complete",
+      )
+      expect(reorgNotificationInput({ type, txHash: TX }, NOW)?.description).toBe(
+        "Your transaction was reverted by the network and did not complete",
+      )
+    }
+  })
+
   it("maps failed and grace-expired to the same payment-failed id (one alert per episode)", () => {
     const failed = reorgNotificationInput({ type: "failed", txHash: TX }, NOW)
     const expired = reorgNotificationInput({ type: "grace-expired", txHash: TX }, NOW)
@@ -57,6 +68,15 @@ describe("reorgNotificationInput", () => {
     expect(expired?.id).toBe("reorg:failed:0xabc1:0")
     expect(failed?.severity).toBe("error")
     expect(failed?.target).toEqual({ type: "reorg.txDetail", txHash: TX })
+  })
+
+  it("stays silent on a withdrawal's failed burn (the bridge producer reports it)", () => {
+    expect(
+      reorgNotificationInput(
+        { type: "failed", txHash: TX, reorgEpoch: 1, source: "withdrawal" },
+        NOW,
+      ),
+    ).toBeNull()
   })
 
   it("keys failure and corrective ids by reorgEpoch", () => {
@@ -81,6 +101,16 @@ describe("reorgNotificationInput", () => {
     )
     expect(corrective?.id).toBe("reorg:reconfirmed:0xabc1:0")
     expect(corrective?.severity).toBe("success")
+  })
+
+  it('a recovered withdrawal is announced as "Withdrawal resumed"', () => {
+    const recovered = { type: "re-confirmed", txHash: TX, hadAlerted: true } as const
+    expect(reorgNotificationInput({ ...recovered, source: "withdrawal" }, NOW)).toMatchObject({
+      id: "reorg:reconfirmed:0xabc1:0",
+      title: "Withdrawal resumed",
+      description: "A withdrawal we reported as failed is on its way again",
+    })
+    expect(reorgNotificationInput(recovered, NOW)?.title).toBe("Payment confirmed")
   })
 
   it("maps exit-required to a withdrawal-routed notice, never retry-framed", () => {

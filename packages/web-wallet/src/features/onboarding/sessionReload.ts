@@ -1,3 +1,4 @@
+import { reloadPage } from "../../platform/storage/walletStorage"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { getActiveStorageId } from "../../platform/storage/activeStorage"
 import { clearWalletIdentity, loadWalletIdentity } from "../identity/walletIdentity"
@@ -18,8 +19,34 @@ export function reloadIfSessionSwitched(
     getAuthService()?.recordsStale?.() ||
     (previousStorageId !== null && previousStorageId !== getActiveStorageId())
   ) {
-    window.location.reload()
+    markOnboardingResume()
+    void reloadPage()
     return true
   }
   return false
+}
+
+const ONBOARDING_RESUME_KEY = "webwallet.onboarding.resumed"
+
+/**
+ * Stamp that the reload above is a hand-off resume, so the reloaded wizard waits on the work it
+ * already started before the switch.
+ */
+function markOnboardingResume(): void {
+  try {
+    sessionStorage.setItem(ONBOARDING_RESUME_KEY, "1")
+  } catch {
+    // Without it the reloaded wizard starts the hand-off afresh: slower, not broken.
+  }
+}
+
+/** True once for the wizard a session-switch reload landed on; the mark is spent on read. */
+export function takeOnboardingResume(): boolean {
+  try {
+    if (sessionStorage.getItem(ONBOARDING_RESUME_KEY) !== "1") return false
+    sessionStorage.removeItem(ONBOARDING_RESUME_KEY)
+    return true
+  } catch {
+    return false
+  }
 }

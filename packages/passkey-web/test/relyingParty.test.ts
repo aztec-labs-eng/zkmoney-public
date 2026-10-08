@@ -6,6 +6,7 @@ import { assertWebPasskeyBuild, selectWebPasskeyRpId } from "../src/policy/relyi
 describe("deployment RP selection", () => {
   it.each([
     ["production", "auth.zk.money"],
+    ["dev", "dev.zk.money"],
     ["staging", "staging.zk.money"],
     ["preview", "staging.zk.money"],
     ["prod-preview", "preview.zk.money"],
@@ -56,6 +57,17 @@ describe("deployment RP selection", () => {
     expect(() =>
       assertWebPasskeyBuild({ VITE_PASSKEY_ENVIRONMENT: "prod-preview", VITE_CAMPAIGN_URL: "https://launch.zk.money" }),
     ).toThrow(/cannot use/)
+  })
+
+  it("accepts the dev wallet and campaign hosts", () => {
+    expect(
+      assertWebPasskeyBuild({
+        VITE_PASSKEY_ENVIRONMENT: "dev",
+        VITE_SITE_ORIGIN: "https://launch-aws.dev.zk.money",
+        VITE_WALLET_URL: "https://wallet.dev.zk.money",
+        VITE_CAMPAIGN_URL: "https://launch-aws.dev.zk.money",
+      }),
+    ).toBe("dev.zk.money")
   })
 
   it("accepts the production wallet/campaign pair", () => {

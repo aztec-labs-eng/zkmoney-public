@@ -1,4 +1,3 @@
-import type { GasPrice } from '@aztec/ethereum/l1-tx-utils';
 import { startAnvil } from '@aztec/ethereum/test';
 import { sleep } from '@aztec/foundation/sleep';
 
@@ -11,7 +10,9 @@ import {
   type PublicClient,
   type TestClient,
   type TransactionSerialized,
+  createPublicClient,
   createTestClient,
+  createWalletClient,
   http as httpTransport,
   keccak256,
   parseTransaction,
@@ -21,10 +22,8 @@ import {
 import { privateKeyToAccount } from 'viem/accounts';
 import { foundry } from 'viem/chains';
 
-import { type L1SubmissionBatchSender, L1SubmissionType } from './l1_submission_batcher.js';
-import { RelayerL1SubmissionBatcher } from './relayer_l1_submission_batcher.js';
-import { type SentL1Tx, createRelayerL1TxUtils } from './relayer_l1_tx_utils.js';
-import { createRelayerL1Client } from './relayer_submission.js';
+import { l1Transport } from './l1/client.js';
+import { L1TxQueue, type SendL1Tx, type SentL1Tx } from './l1/l1_tx_queue.js';
 
 const ACCOUNT = privateKeyToAccount('0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80');
 const SUCCESS_TARGET = '0x1111111111111111111111111111111111111111' as Address;
@@ -34,8 +33,7 @@ const OTHER_L1_ACTION_COUNT = 6;
 const LATER_OPERATION_TARGETS = makeTargets(0x1000, LATER_OPERATION_COUNT);
 const OTHER_L1_ACTION_TARGETS = makeTargets(0x2000, OTHER_L1_ACTION_COUNT);
 const LATE_L1_ACTION_TARGET = makeTargets(0x3000, 1)[0];
-const GAS_PRICE: GasPrice = { maxFeePerGas: 2_000_000_000n, maxPriorityFeePerGas: 100_000_000n };
-const TX_TIMEOUT_MS = 10_000;
+const GAS_PRICE = { maxFeePerGas: 2_000_000_000n, maxPriorityFeePerGas: 100_000_000n };
 const BLOCK_RANGE = 2;
 
 type ProtectStatus = 'PENDING' | 'INCLUDED' | 'FAILED' | 'UNKNOWN';
@@ -243,8 +241,7 @@ describe('Relayer submission through Protect', () => {
   let anvilUrl: string;
   let chain: TestClient & PublicClient;
   let relay: TestProtectRelay;
-  let l1TxUtils: ReturnType<typeof createRelayerL1TxUtils>;
-  let batcher: RelayerL1SubmissionBatcher;
+  let batcher: L1TxQueue;
   let sent: SentL1Tx[] = [];
 
   beforeAll(async () => {
@@ -258,29 +255,23 @@ describe('Relayer submission through Protect', () => {
 
     relay = new TestProtectRelay(anvilUrl);
     await relay.start();
-    const client = createRelayerL1Client(anvilUrl, relay.submissionUrl, ACCOUNT, foundry);
-    l1TxUtils = createRelayerL1TxUtils(
-      client,
-      {
-        txTimeoutMs: TX_TIMEOUT_MS,
-        stallTimeMs: TX_TIMEOUT_MS,
-        checkIntervalMs: 25,
-        maxSpeedUpAttempts: 0,
-        gasLimitBufferPercentage: 0,
-        priorityFeeRetryBumpPercentage: 0,
-      },
-      relay.statusUrl,
-    );
-    batcher = new RelayerL1SubmissionBatcher({
-      l1TxUtils,
+    batcher = new L1TxQueue({
+      client: createPublicClient({ chain: foundry, transport: l1Transport(anvilUrl) }),
+      wallet: createWalletClient({
+        chain: foundry,
+        account: ACCOUNT,
+        transport: l1Transport(anvilUrl, relay.submissionUrl),
+      }),
       blockWindow: BLOCK_RANGE,
-      statusPollIntervalMs: 10,
+      protectTxStatusUrl: relay.statusUrl,
+      pollIntervalMs: 25,
     });
   }, 30_000);
 
+  // A monitor stops only when its nonce is used or the chain passes its expiry bound, so the teardown mines past it.
   afterEach(async () => {
     await batcher?.stop();
-    l1TxUtils?.interrupt();
+    await chain.mine({ blocks: BLOCK_RANGE + 3 });
     await Promise.allSettled(sent.map(transaction => transaction.settled));
     sent = [];
   });
@@ -292,32 +283,30 @@ describe('Relayer submission through Protect', () => {
 
   it('does not let a rejected L1 operation transaction time out later L1 actions', async () => {
     const before = await chain.getTransactionCount({ address: ACCOUNT.address, blockTag: 'latest' });
-    const submit = (sender: L1SubmissionBatchSender, to: Address) =>
-      sender.sendTransactionWithGasPrice({ to, data: '0x' }, { gasLimit: 100_000n }, GAS_PRICE);
+    const submit = (sender: SendL1Tx, to: Address) => sender({ to, data: '0x', gas: 100_000n, ...GAS_PRICE });
     // The batcher sends in arrival order: the operations enqueued first get the first nonces.
-    const operationBatch = batcher.enqueue({
-      kind: L1SubmissionType.L1Operation,
-      submit: sender =>
-        Promise.all([
-          submit(sender, SUCCESS_TARGET),
-          submit(sender, REVERT_TARGET),
-          ...LATER_OPERATION_TARGETS.map(target => submit(sender, target)),
-        ]),
-    });
-    const otherBatch = batcher.enqueue({
-      kind: L1SubmissionType.Withdrawal,
-      submit: sender => Promise.all(OTHER_L1_ACTION_TARGETS.map(target => submit(sender, target))),
-    });
+    const operationBatch = batcher.enqueue(sender =>
+      Promise.all([
+        submit(sender, SUCCESS_TARGET),
+        submit(sender, REVERT_TARGET),
+        ...LATER_OPERATION_TARGETS.map(target => submit(sender, target)),
+      ]),
+    );
+    const otherBatch = batcher.enqueue(sender =>
+      Promise.all(OTHER_L1_ACTION_TARGETS.map(target => submit(sender, target))),
+    );
     const [operationTransactions, otherTransactions] = await Promise.all([operationBatch, otherBatch]);
     const [successfulOperationTx, revertingOperationTx, ...laterOperationTransactions] = operationTransactions;
     const laterTransactions = [...laterOperationTransactions, ...otherTransactions];
     sent = [...operationTransactions, ...otherTransactions];
 
-    expect(sent.map(transaction => transaction.state.nonce)).toEqual(sent.map((_transaction, index) => before + index));
+    expect(sent.map(transaction => transaction.nonce)).toEqual(sent.map((_transaction, index) => before + index));
     await expect(relay.buildBlock()).resolves.toEqual([successfulOperationTx.txHash]);
     await expect(successfulOperationTx.settled).resolves.toMatchObject({ status: 'success' });
 
-    await expect(l1TxUtils.getProtectTxStatus(revertingOperationTx.txHash)).resolves.toMatchObject({
+    await expect(
+      fetch(`${relay.statusUrl}${revertingOperationTx.txHash}`).then(response => response.json()),
+    ).resolves.toMatchObject({
       status: 'FAILED',
       simError: 'ExecutionReverted',
     });
@@ -333,15 +322,10 @@ describe('Relayer submission through Protect', () => {
     const maxBlockNumber = initialStatuses.at(-1)!.maxBlockNumber!;
 
     // Work queued after the snapshot must wait. Retried work gets the first nonces in the next application batch.
-    const lateAction = batcher.enqueue({
-      kind: L1SubmissionType.FpcFunding,
-      submit: sender => submit(sender, LATE_L1_ACTION_TARGET),
-    });
+    const lateAction = batcher.enqueue(sender => submit(sender, LATE_L1_ACTION_TARGET));
     const retryTargets = [...LATER_OPERATION_TARGETS, ...OTHER_L1_ACTION_TARGETS];
-    const retriedBatch = batcher.enqueue({
-      kind: L1SubmissionType.Withdrawal,
+    const retriedBatch = batcher.enqueue(sender => Promise.all(retryTargets.map(target => submit(sender, target))), {
       retry: true,
-      submit: sender => Promise.all(retryTargets.map(target => submit(sender, target))),
     });
 
     while ((await chain.getBlock({ blockTag: 'latest' })).number <= BigInt(maxBlockNumber)) {
@@ -353,10 +337,10 @@ describe('Relayer submission through Protect', () => {
 
     const [lateTransaction, retriedTransactions] = await Promise.all([lateAction, retriedBatch]);
     sent.push(...retriedTransactions, lateTransaction);
-    expect(retriedTransactions.map(transaction => transaction.state.nonce)).toEqual(
+    expect(retriedTransactions.map(transaction => transaction.nonce)).toEqual(
       retriedTransactions.map((_transaction, index) => before + 1 + index),
     );
-    expect(lateTransaction.state.nonce).toBe(before + 1 + retriedTransactions.length);
+    expect(lateTransaction.nonce).toBe(before + 1 + retriedTransactions.length);
     await expect(relay.buildBlock()).resolves.toEqual([
       ...retriedTransactions.map(transaction => transaction.txHash),
       lateTransaction.txHash,
@@ -367,12 +351,7 @@ describe('Relayer submission through Protect', () => {
       [...retriedTransactions, lateTransaction].map(() => expect.objectContaining({ status: 'success' })),
     );
 
-    const latestBlock = await chain.getBlock({ blockTag: 'latest' });
-    await chain.setNextBlockTimestamp({
-      timestamp: latestBlock.timestamp + BigInt(TX_TIMEOUT_MS / 1000 + 1),
-    });
-    await chain.mine({ blocks: 1 });
-
+    // The retried transactions used the nonces of the dropped ones.
     await expect(revertingOperationTx.settled).rejects.toThrow();
     for (const transaction of laterTransactions) {
       await expect(transaction.settled).rejects.toThrow();
@@ -386,8 +365,7 @@ describe('Relayer submission through Protect', () => {
 describe('Relayer submission through the read RPC', () => {
   let stopAnvil: () => Promise<void>;
   let chain: TestClient & PublicClient;
-  let l1TxUtils: ReturnType<typeof createRelayerL1TxUtils>;
-  let batcher: RelayerL1SubmissionBatcher;
+  let batcher: L1TxQueue;
   let sent: SentL1Tx[] = [];
 
   beforeAll(async () => {
@@ -398,20 +376,18 @@ describe('Relayer submission through the read RPC', () => {
     ) as unknown as TestClient & PublicClient;
     // Mining off: a submitted tx stays pending until the test mines a block.
     await chain.setAutomine(false);
-    l1TxUtils = createRelayerL1TxUtils(createRelayerL1Client(anvilUrl, undefined, ACCOUNT, foundry), {
-      txTimeoutMs: TX_TIMEOUT_MS,
-      stallTimeMs: TX_TIMEOUT_MS,
-      checkIntervalMs: 25,
-      maxSpeedUpAttempts: 0,
-      gasLimitBufferPercentage: 0,
-      priorityFeeRetryBumpPercentage: 0,
+    batcher = new L1TxQueue({
+      client: createPublicClient({ chain: foundry, transport: l1Transport(anvilUrl) }),
+      wallet: createWalletClient({ chain: foundry, account: ACCOUNT, transport: l1Transport(anvilUrl) }),
+      blockWindow: BLOCK_RANGE,
+      pollIntervalMs: 25,
     });
-    batcher = new RelayerL1SubmissionBatcher({ l1TxUtils, blockWindow: BLOCK_RANGE, statusPollIntervalMs: 10 });
   }, 30_000);
 
+  // A monitor stops only when its nonce is used or the chain passes its expiry bound, so the teardown mines past it.
   afterEach(async () => {
     await batcher?.stop();
-    l1TxUtils?.interrupt();
+    await chain.mine({ blocks: BLOCK_RANGE + 3 });
     await Promise.allSettled(sent.map(transaction => transaction.settled));
     sent = [];
   });
@@ -421,21 +397,16 @@ describe('Relayer submission through the read RPC', () => {
   });
 
   it('holds the next batch past the block window and the local expiry until the pending transaction lands', async () => {
-    const submit = (sender: L1SubmissionBatchSender, to: Address) =>
-      sender.sendTransactionWithGasPrice({ to, data: '0x' }, { gasLimit: 100_000n }, GAS_PRICE);
-    const [first, second] = await batcher.enqueue({
-      kind: L1SubmissionType.L1Operation,
-      submit: sender => Promise.all([submit(sender, SUCCESS_TARGET), submit(sender, LATER_OPERATION_TARGETS[0])]),
-    });
+    const submit = (sender: SendL1Tx, to: Address) => sender({ to, data: '0x', gas: 100_000n, ...GAS_PRICE });
+    const [first, second] = await batcher.enqueue(sender =>
+      Promise.all([submit(sender, SUCCESS_TARGET), submit(sender, LATER_OPERATION_TARGETS[0])]),
+    );
     sent = [first, second];
-    const nextBatch = batcher.enqueue({
-      kind: L1SubmissionType.Withdrawal,
-      submit: sender => submit(sender, LATE_L1_ACTION_TARGET),
-    });
+    const nextBatch = batcher.enqueue(sender => submit(sender, LATE_L1_ACTION_TARGET));
     const held = Symbol('held');
     const expectHeld = async () => {
       await expect(chain.getTransactionCount({ address: ACCOUNT.address, blockTag: 'latest' })).resolves.toBe(
-        first.state.nonce,
+        first.nonce,
       );
       await expect(Promise.race([nextBatch, sleep(200).then(() => held)])).resolves.toBe(held);
     };
@@ -445,10 +416,7 @@ describe('Relayer submission through the read RPC', () => {
     await chain.mine({ blocks: BLOCK_RANGE + 3 });
     await expectHeld();
 
-    // The local expiry passes while the tx is still pending: the monitor gives up, the batch does not.
-    const { timestamp } = await chain.getBlock({ blockTag: 'latest' });
-    await chain.setNextBlockTimestamp({ timestamp: timestamp + BigInt(TX_TIMEOUT_MS / 1000 + 1) });
-    await chain.mine({ blocks: 1 });
+    // The expiry bound passed while the tx is still pending: the monitor gives up, the batch does not.
     await expect(first.settled).rejects.toThrow();
     await expect(second.settled).rejects.toThrow();
     await expectHeld();
@@ -458,7 +426,7 @@ describe('Relayer submission through the read RPC', () => {
     await expect(chain.getTransactionReceipt({ hash: second.txHash })).resolves.toMatchObject({ status: 'success' });
     const next = await nextBatch;
     sent.push(next);
-    expect(next.state.nonce).toBe(second.state.nonce + 1);
+    expect(next.nonce).toBe(second.nonce + 1);
     await chain.mine({ blocks: 1 });
     await expect(next.settled).resolves.toMatchObject({ status: 'success' });
   }, 30_000);

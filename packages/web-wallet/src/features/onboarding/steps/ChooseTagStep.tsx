@@ -2,7 +2,7 @@ import { useState } from "react"
 import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import { normalizeTag } from "@obsidion/front-core"
 import { OnboardingCard } from "../OnboardingCard"
-import { nameIsUnavailable, useNameAvailability } from "../nameAvailability"
+import { nameIsUnavailable, useNameAvailability, type RouteNameGrant } from "../nameAvailability"
 import { SignupStepper } from "./SignupStepper"
 import { TagAvailabilityNotes, type InviteNotice } from "./TagAvailabilityNotes"
 
@@ -16,7 +16,9 @@ export function ChooseTagStep({
   busy,
   notice,
   resuming = false,
-  allowBlocked = false,
+  grant,
+  boundGrantOwner = false,
+  onBoundGrant,
   onClaim,
   onLogIn,
   onCancel,
@@ -26,7 +28,9 @@ export function ChooseTagStep({
   busy: boolean
   notice?: InviteNotice
   resuming?: boolean
-  allowBlocked?: boolean
+  grant?: RouteNameGrant
+  boundGrantOwner?: boolean
+  onBoundGrant?: (handle: string) => void
   onClaim: (handle: string) => void
   onLogIn: () => void
   /** Abandons the claim-status read the busy state is waiting on. */
@@ -35,11 +39,22 @@ export function ChooseTagStep({
 }) {
   const [typed, setTyped] = useState(normalizeTag(initialHandle ?? "") ?? "")
   const valid = normalizeTag(typed) !== null
-  const { status: availability, checking } = useNameAvailability(typed, true)
+  const grantToken = grant?.handle === normalizeTag(typed) ? grant.token : undefined
+  const {
+    status: availability,
+    checking,
+    grantValid,
+    grantBound,
+  } = useNameAvailability(typed, true, grantToken)
+  const recoverBoundGrant = Boolean(grantToken && grantBound && !boundGrantOwner)
+  const allowBlocked = Boolean(grantToken && (grantValid || (grantBound && boundGrantOwner)))
+  const grantUnverified = Boolean(grantToken && availability === "unknown" && !checking)
   const taken = nameIsUnavailable(availability, { resuming, allowBlocked })
-  const submittable = valid && !taken && !checking
+  const submittable = valid && (!taken || recoverBoundGrant) && !checking && !grantUnverified
   const submit = () => {
-    if (submittable && !busy) onClaim(typed)
+    if (!submittable || busy) return
+    if (recoverBoundGrant) onBoundGrant?.(typed)
+    else onClaim(typed)
   }
   return (
     <OnboardingCard
@@ -86,11 +101,13 @@ export function ChooseTagStep({
           checking={checking}
           resuming={resuming}
           allowBlocked={allowBlocked}
+          grantUnverified={grantUnverified}
+          grantBound={recoverBoundGrant}
           notice={notice}
           onLogIn={onLogIn}
         />
         <PrimaryGradientButton
-          title="Claim tag"
+          title={recoverBoundGrant ? "Continue with passkey" : "Claim tag"}
           isDisabled={!submittable}
           isLoading={busy}
           onClick={submit}

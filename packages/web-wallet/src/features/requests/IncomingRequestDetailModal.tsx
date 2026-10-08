@@ -34,13 +34,13 @@ export function IncomingRequestDetailModal({
       <div className="ww-txd__card">
         <ConfirmationSheetDetailRow
           label="Status"
-          value={<StatusBadge label="Pending" badgeStyle="pending" />}
+          value={<StatusBadge label="Unpaid" badgeStyle="awaitingClaim" />}
         />
         <ConfirmationSheetDetailRow label="To" value={`${request.contactTag}.zk.money`} />
         {request.note && <ConfirmationSheetDetailRow label="Note" value={request.note} />}
         <ConfirmationSheetDetailRow label="Fee" value="Free" />
         <hr className="ww-divider" />
-        <ConfirmationSheetDetailRow label="Sent" value={amount} />
+        <ConfirmationSheetDetailRow label="Amount" value={amount} />
       </div>
       <div className="ww-txd__actions">
         <PrimaryGradientButton title="Decline" buttonStyle="dark" onClick={onDecline} />

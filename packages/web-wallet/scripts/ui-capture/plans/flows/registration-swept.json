@@ -1,0 +1,15 @@
+{
+  "scenario": "onboarding",
+  "path": "/claim?demo=onboarding&flowFixture=success&registrationFixture=swept",
+  "ready": {
+    "selector": ".ww-reg-sheet__card"
+  },
+  "steps": [
+    {
+      "action": "screenshot",
+      "file": "10-pending-swept.png",
+      "state": "Pending step: a swept deposit is in, with Check again"
+    }
+  ],
+  "finalScreenshot": false
+}

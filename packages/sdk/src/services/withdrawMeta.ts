@@ -12,13 +12,18 @@
  *               0x01 swap route (1 byte, the escrow's `SwapRoute` id), 0x02 swap recipient
  *               (20 bytes), 0x03 escrow factory (20 bytes), 0x04 recovery commitment (32 bytes),
  *               0x05 relayer tip (32 bytes, uint256 big-endian), 0x06 escrow nonce (32 bytes),
- *               0x07 recipient the executor pays (20 bytes; the escrow on a swap)
+ *               0x07 recipient the executor pays (20 bytes; the escrow on a swap),
+ *               0x08 group id (16 bytes), 0x09 group leg (1 byte: 0x01 gas, 0x02 funds)
  *   then        0x00 terminator, zero fill
  *
+ * The group entries label the two burns of a fresh-address withdrawal so a rescan pairs them.
+ * A swap burn with a group uses 193 of the 217 bytes.
+ *
  * Decoding is total — any input yields a (possibly empty) WithdrawMeta, never a throw — and a swap
- * is reported only when all six of its entries are present and well-formed. The values are what
- * the wallet asserted at burn time; `withdrawEventSource.ts` checks them against the escrow the
- * burn actually paid before a reader trusts them.
+ * is reported only when all six of its entries are present and well-formed, a group only when
+ * both of its entries are. The values are what the wallet asserted at burn time;
+ * `withdrawEventSource.ts` checks the swap's against the escrow the burn actually paid before a
+ * reader trusts them.
  */
 
 import type { Fr } from "@aztec/aztec.js/fields"
@@ -26,7 +31,7 @@ import type { FieldLike } from "@aztec/aztec.js/abi"
 import { getAddress, isAddress, type Address, type Hex } from "viem"
 import { WITHDRAW_META_LEN } from "@obsidion/core/constants"
 import { swapOutputForRoute, swapRouteForOutput } from "../oxide/swapOnWithdraw.js"
-import type { SwapOnWithdrawOutput } from "@obsidion/core/types"
+import type { SwapOnWithdrawOutput, WithdrawalGroupLeg } from "@obsidion/core/types"
 import { metaCapacity, packMetaFields, unpackMetaFields } from "./metaFields.js"
 
 const META_CAPACITY = metaCapacity(WITHDRAW_META_LEN)
@@ -40,10 +45,15 @@ const TYPE_RECOVERY_COMMITMENT = 0x04
 const TYPE_RELAYER_TIP = 0x05
 const TYPE_ESCROW_NONCE = 0x06
 const TYPE_RECIPIENT = 0x07
+const TYPE_GROUP_ID = 0x08
+const TYPE_GROUP_LEG = 0x09
 
 const ADDRESS_LEN = 20
 const WORD_LEN = 32
+const GROUP_ID_LEN = 16
 const ZERO_ADDRESS = `0x${"00".repeat(ADDRESS_LEN)}`
+/** Leg byte = index + 1, so the zero fill never reads as a leg. */
+const GROUP_LEGS: readonly WithdrawalGroupLeg[] = ["gas", "funds"]
 
 /** What a swap-on-withdraw's escrow address commits to, beside the escrow itself. */
 export interface SwapWithdrawMeta {
@@ -57,10 +67,18 @@ export interface SwapWithdrawMeta {
   nonce: Hex
 }
 
+/** The fresh-address withdrawal a burn belongs to, and which of its two legs it is. */
+export interface WithdrawGroupMeta {
+  /** 16 random bytes as 0x-hex, shared by both legs. */
+  id: Hex
+  leg: WithdrawalGroupLeg
+}
+
 export interface WithdrawMeta {
   /** The L1 address the executor pays: the recipient, or the escrow on a swap. */
   recipient?: Address
   swap?: SwapWithdrawMeta
+  group?: WithdrawGroupMeta
 }
 
 export function buildWithdrawMeta(input: WithdrawMeta): Fr[] {
@@ -82,6 +100,10 @@ export function buildWithdrawMeta(input: WithdrawMeta): Fr[] {
     put(TYPE_RELAYER_TIP, wordBytes(swap.relayerTip))
     put(TYPE_ESCROW_NONCE, hexBytes(swap.nonce, WORD_LEN, "nonce"))
   }
+  if (input.group) {
+    put(TYPE_GROUP_ID, hexBytes(input.group.id, GROUP_ID_LEN, "group id"))
+    put(TYPE_GROUP_LEG, Buffer.from([groupLegByte(input.group.leg)]))
+  }
   if (input.recipient) put(TYPE_RECIPIENT, addressBytes(input.recipient, "recipient"))
   return packMetaFields(buf, WITHDRAW_META_LEN)
 }
@@ -89,7 +111,8 @@ export function buildWithdrawMeta(input: WithdrawMeta): Fr[] {
 /**
  * Total decode: a wrong version, a truncated or overrunning entry, a duplicate (first wins), or a
  * malformed value never throws. A swap missing any entry, naming the zero address or a zero
- * recovery commitment, or naming a route no output maps to decodes as no swap.
+ * recovery commitment, or naming a route no output maps to decodes as no swap. A group missing
+ * either entry, with a zero id or an unknown leg byte decodes as no group.
  */
 export function decodeWithdrawMeta(meta: readonly FieldLike[] | undefined): WithdrawMeta {
   const buf = unpackMetaFields(meta, WITHDRAW_META_LEN)
@@ -97,6 +120,8 @@ export function decodeWithdrawMeta(meta: readonly FieldLike[] | undefined): With
 
   const swap: Partial<SwapWithdrawMeta> = {}
   let recipient: Address | undefined
+  let groupId: Hex | undefined
+  let groupLeg: WithdrawalGroupLeg | undefined
   let pos = 1
   while (pos + 1 < META_CAPACITY) {
     const type = buf[pos]!
@@ -120,20 +145,31 @@ export function decodeWithdrawMeta(meta: readonly FieldLike[] | undefined): With
       swap.recoveryCommitment === undefined &&
       len === WORD_LEN
     ) {
-      swap.recoveryCommitment = nonZeroWord(value)
+      swap.recoveryCommitment = nonZeroHex(value)
     } else if (type === TYPE_RELAYER_TIP && swap.relayerTip === undefined && len === WORD_LEN) {
       swap.relayerTip = BigInt(`0x${value.toString("hex")}`)
     } else if (type === TYPE_ESCROW_NONCE && swap.nonce === undefined && len === WORD_LEN) {
       swap.nonce = `0x${value.toString("hex")}`
     } else if (type === TYPE_RECIPIENT && recipient === undefined && len === ADDRESS_LEN) {
       recipient = nonZeroAddress(value)
+    } else if (type === TYPE_GROUP_ID && groupId === undefined && len === GROUP_ID_LEN) {
+      groupId = nonZeroHex(value)
+    } else if (type === TYPE_GROUP_LEG && groupLeg === undefined && len === 1) {
+      groupLeg = GROUP_LEGS[value[0]! - 1]
     }
     pos = end
   }
   return {
     ...(recipient ? { recipient } : {}),
     ...(isSwapMeta(swap) ? { swap } : {}),
+    ...(groupId && groupLeg ? { group: { id: groupId, leg: groupLeg } } : {}),
   }
+}
+
+function groupLegByte(leg: WithdrawalGroupLeg): number {
+  const index = GROUP_LEGS.indexOf(leg)
+  if (index < 0) throw new Error(`withdraw meta group leg is unknown: ${leg}`)
+  return index + 1
 }
 
 function isSwapMeta(swap: Partial<SwapWithdrawMeta>): swap is SwapWithdrawMeta {
@@ -152,7 +188,7 @@ function nonZeroAddress(bytes: Buffer): Address | undefined {
   return hex === ZERO_ADDRESS ? undefined : getAddress(hex)
 }
 
-function nonZeroWord(bytes: Buffer): Hex | undefined {
+function nonZeroHex(bytes: Buffer): Hex | undefined {
   return bytes.some((byte) => byte !== 0) ? `0x${bytes.toString("hex")}` : undefined
 }
 

@@ -1,15 +1,17 @@
 import { Modal } from "../../ui/Modal"
-import { useState } from "react"
+import { deviceStorage } from "../../platform/storage/rollupStorage"
+import { useEffect, useState } from "react"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
+import { ADDRESS_RECHECK_NOTE } from "./AddressCapacity"
 
 const HIDE_KEY = "webwallet.hide-one-time-address-warning"
 
 export function isOneTimeAddressWarningHidden(): boolean {
-  return localStorage.getItem(HIDE_KEY) === "true"
+  return deviceStorage.getItem(HIDE_KEY) === "true"
 }
 
 export function hideOneTimeAddressWarning(): void {
-  localStorage.setItem(HIDE_KEY, "true")
+  deviceStorage.setItem(HIDE_KEY, "true")
 }
 
 export interface OneTimeAddressPoint {
@@ -61,19 +63,39 @@ export function OneTimeAddressPoints({ points }: { points: OneTimeAddressPoint[]
   )
 }
 
+/**
+ * The dialog in front of Copy and Show QR. `capacityWarning` is said every time it is set; the
+ * checkbox hides only the privacy points.
+ */
 export function OneTimeAddressWarning({
   symbol,
+  capacityWarning,
+  privacy = true,
   onClose,
   onGotIt,
 }: {
   symbol: string
+  /** Shared capacity is zero or not confirmed for this address. */
+  capacityWarning?: string
+  /** Show the privacy points and their checkbox; false once the user has hidden them. */
+  privacy?: boolean
   onClose: () => void
   onGotIt: () => void
 }) {
   const [dontShowAgain, setDontShowAgain] = useState(false)
+  // A reading that improves while the dialog is open does not empty it: the last warning stays.
+  const [shownWarning, setShownWarning] = useState(capacityWarning)
+  useEffect(() => {
+    if (capacityWarning) setShownWarning(capacityWarning)
+  }, [capacityWarning])
 
   return (
-    <Modal variant="bare" label="One-time deposit address" className="ww-deposit-warning" onClose={onClose}>
+    <Modal
+      variant="bare"
+      label={privacy ? "One-time deposit address" : "Network capacity"}
+      className="ww-deposit-warning"
+      onClose={onClose}
+    >
       <div className="ww-deposit-warning__close">
         <TopNavIconButton icon="x" ariaLabel="Close" onClick={onClose} />
       </div>
@@ -81,24 +103,42 @@ export function OneTimeAddressWarning({
         <Icon name="alert-triangle" size={32} color="#fff" />
       </span>
       <GradientText size={24} weight={700}>
-        This is a unique
-        <br />
-        one-time address
+        {privacy ? (
+          <>
+            This is a unique
+            <br />
+            one-time address
+          </>
+        ) : (
+          "Before you share this address"
+        )}
       </GradientText>
-      <OneTimeAddressPoints points={oneTimeAddressPoints(symbol)} />
+      {shownWarning && (
+        <div
+          className="ww-deposit-warning__capacity"
+          role="alert"
+          data-testid="address-capacity-warning"
+        >
+          <p>{shownWarning}</p>
+          <p>{ADDRESS_RECHECK_NOTE}</p>
+        </div>
+      )}
+      {privacy && <OneTimeAddressPoints points={oneTimeAddressPoints(symbol)} />}
       <div className="ww-deposit-warning__actions">
-        <label className="ww-deposit-warning__again">
-          <input
-            type="checkbox"
-            checked={dontShowAgain}
-            onChange={(e) => setDontShowAgain(e.target.checked)}
-          />
-          Don't show this again
-        </label>
+        {privacy && (
+          <label className="ww-deposit-warning__again">
+            <input
+              type="checkbox"
+              checked={dontShowAgain}
+              onChange={(e) => setDontShowAgain(e.target.checked)}
+            />
+            {shownWarning ? "Don't show the privacy tips again" : "Don't show this again"}
+          </label>
+        )}
         <PrimaryGradientButton
           title="Got it!"
           onClick={() => {
-            if (dontShowAgain) hideOneTimeAddressWarning()
+            if (privacy && dontShowAgain) hideOneTimeAddressWarning()
             onGotIt()
           }}
           style={{ width: 166, height: 48 }}

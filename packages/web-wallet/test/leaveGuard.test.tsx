@@ -9,16 +9,28 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const fireEvent = vi.hoisted(() => vi.fn())
 vi.mock("../src/lib/analytics", () => ({ fireEvent }))
 
-import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
-import { trackSubmission } from "@obsidion/front-core"
-import { runOperation } from "../src/features/operations/operations"
-import { LeaveGuardMount } from "../src/features/operations/LeaveGuardMount"
+import { ProvingStage } from "@obsidion/proving-progress"
+import { resetModulesAsActiveTab } from "./support/activeTab"
 
+/** Each test is a new page, running as the active tab. */
+async function page() {
+  await resetModulesAsActiveTab()
+  const { provingProgress } = await import("@obsidion/proving-progress")
+  const { trackSubmission } = await import("@obsidion/front-core")
+  const { runOperation } = await import("../src/features/operations/operations")
+  const { LeaveGuardMount } = await import("../src/features/operations/LeaveGuardMount")
+  const { revokeTab } = await import("../src/platform/storage/activeTab")
+  return { provingProgress, trackSubmission, runOperation, LeaveGuardMount, revokeTab }
+}
+
+let m: Awaited<ReturnType<typeof page>>
 let container: HTMLDivElement
 let root: Root
 let finish: (() => void) | undefined
 
 beforeEach(async () => {
+  m = await page()
+  const { LeaveGuardMount } = m
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -43,8 +55,8 @@ function leave(): boolean {
 async function start(operationId: string, flow: "send" | "withdraw" = "withdraw") {
   let done!: Promise<void>
   await act(async () => {
-    done = runOperation({ operationId, flow, summary: "$25" }, () => {
-      const submission = trackSubmission(operationId, async () => {})
+    done = m.runOperation({ operationId, flow, summary: "$25" }, () => {
+      const submission = m.trackSubmission(operationId, async () => {})
       return new Promise<void>((resolve) => {
         finish = () => void submission.stop().then(resolve)
       })
@@ -69,9 +81,16 @@ describe("LeaveGuardMount", () => {
     await start("op-2", "send")
     expect(leave()).toBe(true)
     await act(async () => {
-      provingProgress.emitStageStart(ProvingStage.Mining, "op-2", "0x" + "ab".repeat(32))
+      m.provingProgress.emitStageStart(ProvingStage.Mining, "op-2", "0x" + "ab".repeat(32))
       await new Promise((r) => setTimeout(r, 0))
     })
+    expect(leave()).toBe(false)
+  })
+
+  it("lets the page go once another tab has taken over, even mid-proof", async () => {
+    await start("op-4")
+    expect(leave()).toBe(true)
+    m.revokeTab()
     expect(leave()).toBe(false)
   })
 

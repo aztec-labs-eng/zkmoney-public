@@ -4,25 +4,35 @@ import {
   SIPADepositStore,
   formatDateLabel,
   formatTimeLabel,
+  isStuckSweep,
+  SIPA_PROCESSING_COPY,
+  STUCK_SWEEP_MS,
   sipaDepositInflightLabel,
-  type PendingRegistrationRecord,
+  sipaReasonShown,
+  depositOwed,
+  fundsIn,
 } from "@obsidion/front-core"
 import { Card, Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
 import paylinkCoins from "../../assets/home/paylink-coins.webp"
 import { getConfig } from "../../config/env"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { loadWalletIdentity } from "../identity/walletIdentity"
+import { openTicketClaimReview } from "../paylink/claimPrompt"
+import { peekClaimStash } from "../paylink/claimStash"
+import { useClaimRunning } from "../paylink/runningClaims"
 import { ticketActivation } from "../paylink/ticketContinuation"
 import { getWithdrawalStore } from "../withdraw/withdrawGateway"
+import { sipaProcessingObserver } from "../deposit/sipaProcessing"
 import { useDepositAdmission } from "../identity/admission"
 import {
   getPendingStore,
-  registrationSwept,
   useRegistrationEscalated,
   useRegistrationPublishStalled,
-  useTagPresentationPending,
 } from "./webRegistration"
+import { useOpenRegistration } from "./openRegistration"
 import {
+  quoteExpired,
+  reservedUntil,
   signedWithoutSchedule,
   termsUnpriced,
   useChainReadRetry,
@@ -36,71 +46,80 @@ import { registrationRecoveryNeeded, useRegistrationRefunded } from "./registrat
 
 const CLOCK_MS = 60_000
 
-/** The active wallet's registration whose deposit landed and whose claim is on the wire: the
- *  only state that is genuinely "claiming". An unfunded or unbroadcast record is still waiting. */
-function claimingRecord(): PendingRegistrationRecord | null {
-  const identity = loadWalletIdentity()
-  const record = getPendingStore().current()
-  if (!identity?.pending || !record || record.phase !== "funded" || !record.broadcast) return null
-  return record.l2Address.toLowerCase() === identity.address.toLowerCase() ? record : null
-}
-
 /**
  * Where the open registration's deposit is on the rail, as the bell's live row words it, or null
- * before the funds are seen and once they are credited.
+ * before the funds are seen and once they are credited. A deposit waiting for its sweep says why,
+ * by the shared `sipaReasonShown` rule.
  */
-function railStage(): string | null {
-  const open = getPendingStore().current()
-  if (!open) return null
-  const deposit = SIPADepositStore.get(webStorage).get(open.sipaAddress as never)
-  return deposit ? sipaDepositInflightLabel(deposit) ?? null : null
+function railLabel(): string | null {
+  const { deposit, shown } = railReason()
+  if (!deposit) return null
+  return shown
+    ? SIPA_PROCESSING_COPY[shown.reason.kind].short
+    : sipaDepositInflightLabel(deposit) ?? null
 }
 
-/** The active wallet's registration still waiting for its deposit, if any. */
-export function awaitingDepositRecord(): PendingRegistrationRecord | null {
-  const identity = loadWalletIdentity()
-  const record = getPendingStore().current()
-  if (!identity?.pending || !record || record.phase !== "awaiting_deposit") return null
-  return record.l2Address.toLowerCase() === identity.address.toLowerCase() ? record : null
+/** A stated reason or a stuck sweep has no known end, so the hero promises no short wait. */
+function railWaitOpenEnded(): boolean {
+  const { deposit, shown } = railReason()
+  return shown !== undefined || (deposit !== null && isStuckSweep(deposit))
 }
 
-/**
- * What the activation surfaces read off the open record, as one snapshot: the store hands out
- * fresh objects, which would never settle. The custody stamps are in because a sweep or a funding
- * observed between polls changes them and nothing else.
- */
-export function awaitingDepositKey(): string | null {
+/** When the open deposit's sweep turns stuck, if that is still ahead. */
+function railStuckAt(): number | null {
+  const { deposit } = railReason()
+  if (!deposit || isStuckSweep(deposit)) return null
+  return deposit.phase === "sweeping" || deposit.phase === "broadcast"
+    ? deposit.startTime + STUCK_SWEEP_MS
+    : null
+}
+
+function railReason() {
   const open = getPendingStore().current()
-  if (!open) return null
-  return [open.account, open.phase, open.broadcast, open.fundedAt, open.sweptAt, open.sweepTxHash]
-    .map((v) => v ?? "")
-    .join(":")
+  const deposit = open ? SIPADepositStore.get(webStorage).get(open.sipaAddress as never) : null
+  if (!deposit) return { deposit: null, shown: undefined }
+  const processing = sipaProcessingObserver()?.stateFor(deposit.sipaAddress)
+  return { deposit, shown: sipaReasonShown(processing, deposit) ? processing : undefined }
+}
+
+function subscribeRailStage(onChange: () => void): () => void {
+  const stopDeposits = SIPADepositStore.get(webStorage).onListChanged(onChange)
+  const stopProcessing = sipaProcessingObserver()?.subscribe(onChange)
+  return () => {
+    stopDeposits()
+    stopProcessing?.()
+  }
 }
 
 /**
  * The standing reminder for a name entered before its deposit (registration-fee.md Campaign:
  * Free names enter at once, and a waived reload may enter early): that a deposit is owed and how
  * long the reservation holds. The amount and address are in the deposit prompt (`onActivate`),
- * else the pending step. Gone once the deposit is seen.
+ * else the pending step. Once funds are in it reads as claiming until the name registers.
  */
 export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void } = {}) {
   const navigate = useNavigate()
   const config = getConfig()
-  const claiming = useTagPresentationPending()
   const escalated = useRegistrationEscalated()
-  const key = useSyncExternalStore(
-    (onChange) => getPendingStore().onListChanged(onChange),
-    awaitingDepositKey,
-  )
-  const stage = useSyncExternalStore(
-    (onChange) => SIPADepositStore.get(webStorage).onListChanged(onChange),
-    railStage,
-  )
-  const account = key === null ? null : awaitingDepositRecord()?.account ?? null
-  const record = account === null ? null : awaitingDepositRecord()
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  const open = useOpenRegistration()
+  const record = open?.record ?? null
+  const rail = useSyncExternalStore(subscribeRailStage, railLabel)
+  const moment = useSyncExternalStore(subscribeRailStage, railWaitOpenEnded)
+    ? ""
+    : " This only takes a moment."
+  const stuckAt = useSyncExternalStore(subscribeRailStage, railStuckAt)
+  const [, tick] = useState(0)
+  useEffect(() => {
+    if (stuckAt === null) return
+    const timer = setTimeout(() => tick((n) => n + 1), Math.max(0, stuckAt - Date.now()))
+    return () => clearTimeout(timer)
+  }, [stuckAt])
   const depositAdmitted = useDepositAdmission(record)
   const refunded = useRegistrationRefunded(record)
   const publishStalled = useRegistrationPublishStalled(record)
+  // Whether this page is claiming the stashed link, for a ticket-funded name.
+  const claimRunning = useClaimRunning(peekClaimStash())
   const terms = useRegistrationTerms(record?.account, record?.tag)
   const unsignedFallback = signedWithoutSchedule(terms)
   const [readAttempt, setReadAttempt] = useState(0)
@@ -120,55 +139,33 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
         deductions === undefined),
     retryReads,
   )
-  const [nowMs, setNowMs] = useState(() => Date.now())
   useEffect(() => {
     if (!record) return
     const timer = setInterval(() => setNowMs(Date.now()), CLOCK_MS)
     return () => clearInterval(timer)
   }, [record])
 
-  const identity = loadWalletIdentity()
-  // The claim is still in flight: the same hero, holding, rather than a separate line on Home.
-  // An escalated claim has no background driver left, so it says so and stays the way back in.
-  if (claiming && identity?.handle && claimingRecord()) {
-    return (
-      <button
-        type="button"
-        className="zkm-btn-reset ww-banner ww-banner--activate"
-        data-testid="claiming-notice"
-        aria-label={`Claiming @${identity.handle}`}
-        onClick={() => navigate(`/claim/${identity.handle}`)}
-      >
-        <span className="ww-banner__text">
-          <span className="ww-banner__title">Claiming @{identity.handle}</span>
-          <span className="ww-banner__body">
-            {escalated
-              ? "This is taking longer than expected. Check on it."
-              : `${stage ?? "Securing your tag"}. This only takes a moment.`}
-          </span>
-        </span>
-        <img src={paylinkCoins} alt="" />
-        <span className="ww-banner__chevron">
-          <Spinner size={12} color="#fff" />
-        </span>
-      </button>
-    )
-  }
-
-  if (!record) return null
+  if (!open || !record) return null
+  const { stage } = open
   // A paylink-funded registration is never asked for an L1 deposit: its link's claim funds the
-  // SIPA. What it needs is decided before any price: progress while the burn is on its way,
-  // the claim while the bound link is on this tab, else the way back to the link or the renewal.
+  // SIPA. What it needs is decided before any price: progress while the address publishes, this
+  // page claims or the burn is on its way; the claim while the bound link is on this tab; else the
+  // way back to the link or the renewal.
   const ticket = ticketActivation(record, terms, getWithdrawalStore().list(), nowMs)
   if (ticket) {
-    const reservedUntil =
-      terms?.deadline && terms.deadline > 0
-        ? ` until ${formatDateLabel(terms.deadline * 1000)}`
-        : ""
-    const submitted = ticket.state === "submitted"
+    const holdEnds = reservedUntil(terms, nowMs)
+    const heldFor = holdEnds === undefined ? "" : ` until ${formatDateLabel(holdEnds)}`
+    // The burn's record is written before its batch signs, so `submitted` alone would read as sent
+    // too early: the page's own claim covers proving, the passkey and the send.
+    const claimingLink = claimRunning && (ticket.state === "ready" || ticket.state === "submitted")
+    // An address still on its way to the relayer, as opposed to one nothing re-sends.
+    const publishing = ticket.state === "unpublished" && !publishStalled
+    const submitted = claimingLink || publishing || ticket.state === "submitted"
     const title =
-      ticket.state === "submitted"
-        ? "Registration pending"
+      claimingLink || ticket.state === "submitted"
+        ? `Claiming @${record.tag}`
+        : publishing
+        ? `Setting up @${record.tag}`
         : ticket.state === "ready"
         ? "Claim your payment"
         : ticket.state === "blocked"
@@ -178,18 +175,23 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
         : ticket.state === "unpublished"
         ? "Activate account"
         : "Open your payment link"
-    const body =
-      ticket.state === "submitted"
-        ? `Payment claimed. @${record.tag} registers once the network sweeps the deposit. Nothing to send.`
-        : ticket.state === "ready"
-        ? `@${record.tag} is reserved${reservedUntil}. The payment you were sent funds it — claim it to finish.`
-        : ticket.state === "blocked"
-        ? "The renewed price is not one the payment covers. Check on the registration."
-        : ticket.state === "renew"
-        ? `The reservation for @${record.tag} needs a fresh quote. Open it to renew.`
-        : ticket.state === "unpublished"
-        ? "Your deposit address was not published. Check on it to try again."
-        : `@${record.tag} is reserved${reservedUntil}. Open the payment link you were sent again to claim it and fund the tag.`
+    const body = claimingLink
+      ? "Claiming your payment. Approve with your passkey when asked."
+      : ticket.state === "submitted"
+      ? rail
+        ? `${rail}. This only takes a moment.`
+        : `Payment claimed. @${record.tag} registers once the network sweeps the deposit. Nothing to send.`
+      : publishing
+      ? "Publishing your deposit address. The payment you were sent funds it next."
+      : ticket.state === "ready"
+      ? `@${record.tag} is reserved${heldFor}. The payment you were sent funds it. Claim it to finish.`
+      : ticket.state === "blocked"
+      ? "The renewed price is not one the payment covers. Check on the registration."
+      : ticket.state === "renew"
+      ? `The reservation for @${record.tag} needs a fresh quote. Open it to renew.`
+      : ticket.state === "unpublished"
+      ? "Your deposit address was not published. Check on it to try again."
+      : `@${record.tag} is reserved${heldFor}. Open the payment link you were sent again to claim it and fund the tag.`
     return (
       <button
         type="button"
@@ -197,7 +199,9 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
         data-testid="secure-name-notice"
         data-ticket-state={ticket.state}
         aria-label={`Activate @${record.tag}`}
-        onClick={() => (onActivate ? onActivate() : navigate(`/claim/${record.tag}`))}
+        onClick={() =>
+          openTicketClaimReview() || (onActivate ? onActivate() : navigate(`/claim/${record.tag}`))
+        }
       >
         <span className="ww-banner__text">
           <span className="ww-banner__title">{title}</span>
@@ -222,19 +226,20 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
     deductions?.fpcCut,
   )
   // A past refund holds this hero only while the restart it calls for is still owed: a registration
-  // resumed under the corrected quote wants its deposit again.
-  if (depositAdmitted || needsRefund) {
+  // resumed under the corrected quote wants its deposit again. A funded one is the sweep's to finish
+  // unless its committed quote must be recovered first.
+  if (needsRefund || (record.phase === "awaiting_deposit" && depositAdmitted)) {
     return (
       <button
         type="button"
-        className="zkm-btn-reset ww-banner ww-banner--activate ww-banner--registration-pending"
+        className="zkm-btn-reset ww-banner ww-banner--activate"
         data-testid="registration-pending-notice"
         aria-label={`Check registration for @${record.tag}`}
         onClick={() => navigate(`/claim/${record.tag}?recovery=1`)}
       >
         <span className="ww-banner__text">
           <span className="ww-banner__title">
-            {needsRefund ? "Registration needs recovery" : "Deposit received"}
+            {needsRefund ? "Registration needs recovery" : `Claiming @${record.tag}`}
           </span>
           <span className="ww-banner__body">
             {needsRefund
@@ -258,24 +263,52 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
       </button>
     )
   }
+  // Funds are in: the hero holds and spins until the name is registered. A deposit still waiting
+  // for its sweep after the background driver gave up says so and stays the way back in.
+  if (fundsIn(stage) || stage === "funding") {
+    const stuck = escalated && (stage === "received" || stage === "sweeping")
+    return (
+      <button
+        type="button"
+        className="zkm-btn-reset ww-banner ww-banner--activate"
+        data-testid="claiming-notice"
+        aria-label={`Claiming @${record.tag}`}
+        // The sheet holds a registration only while it awaits its deposit; a promoted one is
+        // followed on its pending step.
+        onClick={() =>
+          openTicketClaimReview() ||
+          (onActivate && record.phase === "awaiting_deposit"
+            ? onActivate()
+            : navigate(`/claim/${record.tag}`))
+        }
+      >
+        <span className="ww-banner__text">
+          <span className="ww-banner__title">Claiming @{record.tag}</span>
+          <span className="ww-banner__body">
+            {stuck
+              ? "This is taking longer than expected. Check on it."
+              : `${
+                  rail ?? (stage === "funding" ? "Securing your tag" : "Deposit received")
+                }.${moment}`}
+          </span>
+        </span>
+        <img src={paylinkCoins} alt="" />
+        <span className="ww-banner__chevron" data-testid="deposit-detected">
+          <Spinner size={12} color="#fff" />
+        </span>
+      </button>
+    )
+  }
+  if (!depositOwed(stage)) return null
   // An unpriced quote cannot waive a fee it never priced.
   const feeWaived = !termsUnpriced(terms) && terms?.feeWaived === true
-  // A swept deposit is past its deadline and its publication: the sweep is what registers the name.
-  const swept = registrationSwept(record)
   // Past the stored deadline the resume path signs a fresh quote, so the banner leads back there.
-  const quoteStale = !swept && terms !== null && terms.deadline > 0 && nowMs > terms.deadline * 1000
+  const quoteStale = quoteExpired(terms, nowMs)
   const paused = unsignedFallback && chainAmounts === null
   // An unpublished address is not asked for: the pending step's retry publishes it first.
-  const stalled = !quoteStale && !paused && !swept && publishStalled
-  /**
-   * The deposit landed at the address, or was already swept from it, and no detection tick has
-   * promoted the record yet. The money is in: the hero says so and spins, rather than asking again
-   * for what was just sent.
-   */
-  const detected = !quoteStale && !paused && !stalled && (record.fundedAt !== undefined || swept)
-  // A live quote's deadline is the headline. The amount it holds is the sheet's to name.
-  const held =
-    !quoteStale && terms !== null && terms.deadline > 0 ? terms.deadline * 1000 : undefined
+  const stalled = !quoteStale && !paused && publishStalled
+  // The hold is the headline. The amount it holds is the sheet's to name.
+  const held = quoteStale ? undefined : reservedUntil(terms, nowMs)
   const heldLine =
     held === undefined
       ? undefined
@@ -300,8 +333,6 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
             ? "Refresh your deposit"
             : paused
             ? "Activation is paused"
-            : detected
-            ? "Deposit received"
             : "Activate account"}
         </span>
         <span className="ww-banner__body">
@@ -313,10 +344,6 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
             `${
               heldLine ? `${heldLine} ` : ""
             }Your deposit address was not published. Check on it to try again.`
-          ) : detected ? (
-            `${stage ? `${stage}. Registering` : "Confirming it and registering"} @${
-              record.tag
-            }. This only takes a moment.`
           ) : (
             <>
               {heldLine !== undefined && (
@@ -331,15 +358,8 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
         </span>
       </span>
       <img src={paylinkCoins} alt="" />
-      <span
-        className="ww-banner__chevron"
-        {...(detected ? { "data-testid": "deposit-detected" } : {})}
-      >
-        {detected ? (
-          <Spinner size={12} color="#fff" />
-        ) : (
-          <Icon name="chevron-right" size={8.5} color="#fff" />
-        )}
+      <span className="ww-banner__chevron">
+        <Icon name="chevron-right" size={8.5} color="#fff" />
       </span>
     </button>
   )

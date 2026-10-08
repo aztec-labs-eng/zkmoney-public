@@ -140,7 +140,7 @@ describe("PaylinkClaimedNotificationProducer", () => {
     const list = store.list()
     expect(list).toHaveLength(2)
     const corrective = list.find((n) => n.id === "paylink:claim-reversed:0xpay-1")
-    expect(corrective?.title).toBe("Paylink claim reversed")
+    expect(corrective?.title).toBe("Paylink claim reverted")
     expect(corrective?.target).toEqual({ type: "paylink.claimed", txHash: "0xpay-1" })
   })
 

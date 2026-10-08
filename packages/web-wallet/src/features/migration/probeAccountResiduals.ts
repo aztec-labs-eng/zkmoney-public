@@ -74,9 +74,11 @@ export async function probeAccountResiduals(
   pendingWithdrawals: number
 } | null> {
   const config = getConfig()
+  const publicClient = l1PublicClient(config)
   const { current, historic } = await IntraRollupMigrationService.detectHistoricDeployments({
     ...config.oxideProfile,
     network: config.network,
+    publicClient,
   })
   if (historic.length === 0) {
     console.info("[migration] no historic deployments in manifest")
@@ -85,7 +87,6 @@ export async function probeAccountResiduals(
 
   const { transactions, pendingPaylinks } = pendingPaylinkService()
   const chainSec = await chainSeconds(wallet)
-  const publicClient = l1PublicClient(config)
   const msk = await getAuthService().getSecretKey()
   if (!msk) {
     console.info("[migration] wallet locked — probe skipped")

@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta
       name="viewport"
-      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <!-- Chromium browsers tint their chrome with this. Safari 26 ignores it and samples a fixed
          element at the viewport edge instead, which #tint below exists to be. Both carry the
@@ -12,18 +12,21 @@
     <meta name="theme-color" content="#49087e" />
     <meta name="color-scheme" content="dark" />
     <title>zk.money</title>
-    <!-- Chat apps render these as a card, so a shared link reads as a message rather than a bare URL.
-         The fragment never reaches a crawler, so the card cannot name the amount. __OG_IMAGE_URL__ is
-         filled at build time (vite.config.ts): crawlers need an absolute image URL. -->
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
+    <!-- Chat apps render these as a card. socialPreview.ts fills the __OG_*__ values per page: the
+         zk.money card here, a payment-link card at /link and /request. -->
+    <meta name="description" content="__OG_DESCRIPTION__" />
     <meta property="og:site_name" content="zk.money" />
-    <meta property="og:title" content="You have a zk.money payment link" />
-    <meta property="og:description" content="Private payments on Ethereum. Open it to continue." />
+    <meta property="og:title" content="__OG_TITLE__" />
+    <meta property="og:description" content="__OG_DESCRIPTION__" />
     <meta property="og:type" content="website" />
     <meta property="og:image" content="__OG_IMAGE_URL__" />
     <meta property="og:image:width" content="1200" />
-    <meta property="og:image:height" content="630" />
+    <meta property="og:image:height" content="600" />
+    <meta property="og:image:type" content="image/png" />
+    <meta property="og:image:alt" content="zk.money, your money is your business" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="You have a zk.money payment link" />
+    <meta name="twitter:title" content="__OG_TITLE__" />
     <meta name="twitter:image" content="__OG_IMAGE_URL__" />
     <link rel="preload" as="font" type="font/ttf" href="/fonts/Sen-VariableFont.ttf" crossorigin />
     <style>

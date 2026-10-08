@@ -1,7 +1,7 @@
 import { parseUnits } from "viem"
 
 /**
- * Dev-only `?mock=create|creating|claim|claiming|carousel|deposit|deposit-free|deposit-wrong-chain|deposit-expired|funded&handle=<tag>`
+ * Dev-only `?mock=create|creating|claim|claiming|deposit|deposit-free|deposit-wrong-chain|deposit-expired|funded&handle=<tag>`
  * on /claim: opens the onboarding modals directly (the -ing forms hold the spinner) and fakes every
  * backend op (passkey, claim) so the UI can be iterated without services. `deposit`/`deposit-free`/
  * `funded` render the campaign deposit panel (registration-fee.md Campaign) over a synthetic record
@@ -19,7 +19,6 @@ const MOCKS = {
   "creating": { step: "create", busy: true },
   "claim": { step: "claim", busy: false },
   "claiming": { step: "claim", busy: true },
-  "carousel": { step: "carousel", busy: false },
   "deposit": { step: "pending", busy: false, depositPhase: "awaiting_deposit", free: false },
   "deposit-free": { step: "pending", busy: false, depositPhase: "awaiting_deposit", free: true },
   "deposit-wrong-chain": {
@@ -42,7 +41,7 @@ const MOCKS = {
 const TOKENS = ["DAI", "USDC", "USDT"] as const
 
 export function mockOnboarding(): {
-  step: "create" | "claim" | "carousel" | "pending"
+  step: "create" | "claim" | "pending"
   busy: boolean
   handle: string
   /** Set only for the deposit-panel previews; seeds a synthetic record instead of hitting the chain. */

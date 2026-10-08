@@ -1,27 +1,54 @@
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import type { Address } from "viem"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import type { RegistrationKind } from "@obsidion/core/types"
+import type { Network, RegistrationKind } from "@obsidion/core/types"
 import { Icon } from "@obsidion/web-ds"
 import { formatDateLabel, formatTimeLabel } from "@obsidion/front-core"
 import type { PaylinkSignupQuote } from "../paylink/paylinkSignupQuote"
 import { OnboardingCard } from "./OnboardingCard"
-import { DepositAddressRow, DepositPayBlock } from "./steps/DepositAddress"
+import { BroadcastStatusRow } from "../broadcasts/BroadcastStatusRow"
+import {
+  DepositAddressRow,
+  DepositPayBlock,
+  registrationOverLimit,
+  useRegistrationFunding,
+} from "./steps/DepositAddress"
+import { ADDRESS_RECHECK_NOTE, AddressCapacityPanel } from "../deposit/AddressCapacity"
+import { CheckAgainPill, WaitingBlock } from "../deposit/WaitingBlock"
+import { WalletAboutLimitsSheet } from "../limits/AboutLimitsSheet"
+import { sourceFromTarget } from "../limits/capacitySources"
+import { InfoButton } from "../limits/InfoButton"
+import type { LimitsTopic } from "../limits/aboutLimitsView"
 import {
   DepositTermsRows,
   formatDepositAmount,
   formatDepositDue,
   formatDepositSeen,
+  fundingAssetsLabel,
 } from "./steps/DepositTermsRows"
 import { PaylinkSignupRows } from "./steps/PaylinkSignupRows"
+import { depositTokensFor } from "../deposit/loadDepositFacts"
+import ethIcon from "../../assets/deposit/ethereum.webp"
+
+const PUBLISHING_NOTE = "Getting your fresh deposit address ready."
+
+/** The caller's check of the registration, run from the pill under the address. */
+export interface RegistrationCheck {
+  /** When the registration was last checked, unix ms. */
+  lastCheckedAt?: number
+  busy: boolean
+  onCheck: () => void
+  /** Sits beside the pill: the claim's retry, when the caller offers one. */
+  action?: ReactNode
+}
 
 export interface RegistrationSheetProps {
   /** Bare tag, rendered as the @tag pill. */
   tag: string
   /** Sheet heading. "Activate account" wherever a reservation is waiting on its deposit. */
   title: string
-  /** How long the quoted amounts stand, unix seconds. Past it the quote is re-signed on resume. */
-  deadline?: number
+  /** When the name's hold ends, unix ms. */
+  reservedUntil?: number
   /** State prose the design has no slot for: expired, wrong chain, queued. */
   note?: ReactNode
   /** What to send. The address half is absent until the claim returns one. */
@@ -39,23 +66,34 @@ export interface RegistrationSheetProps {
     /** The schedule this registration is quoted on. */
     kind: RegistrationKind
     tokenSymbol: string
-    /** What the user may send: the settlement token and anything the sweep swaps into it. */
-    fundingAssets: string
+    /** Picks what the user may send: the settlement token and anything the sweep swaps into it. */
+    network: Network
+    /** The funding tokens the sweep swaps into the settlement token; unset where none are. */
+    swapAssets?: string
     tokenDecimals: number
-    /** The reserved address, once the claim has published one. */
+    /** The reserved address, once the claim has returned one. */
     address?: Address
+    /** The address's broadcast has not landed: its status shows under it until the ledger lands it. */
+    publishing?: boolean
     token?: Address
     chainId?: number
     /** Already at the address, in base units; drives the shortfall line. */
     received?: bigint
+    /** The token already at the address: a top-up stays in it, since balances are not summed. */
+    receivedToken?: Address
     /** The machine has the deposit: report rather than ask. */
     funded?: boolean
-    /** "Checked just now · Check again · Retry", under the address. */
-    checkNote?: ReactNode
+    /** The waiting block under the address: the balance there, the last check, the pill. */
+    check?: RegistrationCheck
   }
   /** Paylink-funded signup: split the note instead of asking for an L1 deposit. The quote is
    *  absent while the cut that prices it is unread. */
-  settlement?: { quote?: PaylinkSignupQuote; tokenSymbol: string; tokenDecimals: number }
+  settlement?: {
+    quote?: PaylinkSignupQuote
+    tokenSymbol: string
+    tokenDecimals: number
+    speed?: ReactNode
+  }
   /** Inline feedback under the payment block. */
   notices?: ReactNode
   /** Caller CTAs — deposit, enter-now, log out. */
@@ -75,7 +113,7 @@ export interface RegistrationSheetProps {
 export function RegistrationSheet({
   tag,
   title,
-  deadline,
+  reservedUntil,
   note,
   payment,
   settlement,
@@ -101,9 +139,9 @@ export function RegistrationSheet({
             <strong>@{tag}</strong>
             <span>.zk.money</span>
           </span>
-          {deadline !== undefined && deadline > 0 && (
+          {reservedUntil !== undefined && (
             <span className="ww-reserved-until">
-              Reserved until {formatDateLabel(deadline * 1000)}, {formatTimeLabel(deadline * 1000)}
+              Reserved until {formatDateLabel(reservedUntil)}, {formatTimeLabel(reservedUntil)}
             </span>
           )}
         </div>
@@ -125,18 +163,21 @@ export function RegistrationSheet({
 
 /** What to send and where: the summary line, the address, the amounts, and the network warning. */
 function RegistrationSheetPayment({
-  address,
+  address: reserved,
+  publishing,
   token,
   chainId,
   chainLabel,
-  fundingAssets,
+  network,
   received,
+  receivedToken,
   funded,
-  checkNote,
+  check,
   floor,
   ...terms
 }: NonNullable<RegistrationSheetProps["payment"]>) {
   const { total, sweepFee, fpcCut, tokenSymbol, tokenDecimals, kind, scheduleUnavailable } = terms
+  const address = reserved
   const free = kind === "earned_tag"
   // The relayer's sweep fee and the portal's cut are the network's, on every schedule: one figure.
   const funding = sweepFee === undefined || fpcCut === undefined ? undefined : sweepFee + fpcCut
@@ -146,6 +187,14 @@ function RegistrationSheetPayment({
   const seen = received !== undefined && received > 0n ? received : undefined
   const remaining =
     seen !== undefined && total !== undefined && total > seen ? total - seen : undefined
+  const overLimit = registrationOverLimit({
+    token,
+    chainId,
+    decimals: tokenDecimals,
+    askAtomic: total,
+    scheduleFeeAtomic: terms.fee,
+    fpcCutAtomic: fpcCut,
+  })
 
   // Covered: the machine has what it needs, so the sheet stops asking and reports. A deposit at the
   // whole ask covers any floor the ask was priced to, so it reports while the floor is still unread;
@@ -153,31 +202,40 @@ function RegistrationSheetPayment({
   const covered =
     seen !== undefined &&
     ((floor !== undefined && seen >= floor) || (total !== undefined && seen >= total))
+  // Once nothing more is asked, the address's capacity is not read.
+  const registration = useRegistrationFunding({
+    address: funded || covered ? undefined : address,
+    askAtomic: total,
+    decimals: tokenDecimals,
+    tokenSymbol,
+  })
+  const [aboutLimits, setAboutLimits] = useState<LimitsTopic>()
   if (funded || covered) {
     return (
-      <div className="ww-deposit-panel ww-deposit-panel--funded">
-        <Icon name="check-circle" size={20} color="var(--accent-green)" />
-        <span>Deposit received{seen ? `: ${got(seen)}` : ""}. Confirming your name.</span>
-      </div>
+      <>
+        <div className="ww-deposit-panel ww-deposit-panel--funded">
+          <Icon name="check-circle" size={20} color="var(--accent-green)" />
+          <span>Deposit received{seen ? `: ${got(seen)}` : ""}. Confirming your name.</span>
+        </div>
+        {check && (
+          <div className="ww-send-to__note">
+            <CheckAgainPill
+              checking={check.busy}
+              onClick={check.onCheck}
+              testId="deposit-check-again"
+            />
+            {check.action}
+          </div>
+        )}
+      </>
     )
   }
 
-  const warning = (
-    <>
-      <p className="ww-reg-sheet__warn">
-        <Icon name="info-circle" size={16} color="var(--text-secondary)" />
-        <span>
-          Fund with {fundingAssets} on {chainLabel}. Other tokens or networks can&apos;t be
-          recovered.
-        </span>
-      </p>
-      {tokenSymbol !== WALLET_TOKEN_SYMBOL && (
-        <p className="ww-reg-sheet__warn">
-          <Icon name="info-circle" size={16} color="var(--text-secondary)" />
-          <span>Your opening balance is set when your {tokenSymbol} arrives.</span>
-        </p>
-      )}
-    </>
+  const warning = tokenSymbol !== WALLET_TOKEN_SYMBOL && (
+    <p className="ww-reg-sheet__warn">
+      <Icon name="info-circle" size={16} color="var(--text-secondary)" />
+      <span>Your opening balance is set when your {tokenSymbol} arrives.</span>
+    </p>
   )
 
   return (
@@ -214,13 +272,74 @@ function RegistrationSheetPayment({
           ) : (
             <>Send at least {due(total)} to claim your tag and activate your account.</>
           )}
+          {/* What and where, with logos, right under the ask: readers looked for it here. */}
+          <span className="ww-reg-sheet__fund" data-testid="registration-sheet-funding">
+            <span className="ww-reg-sheet__fund-row">
+              <span className="ww-reg-sheet__fund-logos">
+                {depositTokensFor(network).map((t) => (
+                  <img key={t.symbol} src={t.icon} alt="" width={20} height={20} />
+                ))}
+              </span>
+              {fundingAssetsLabel(network)}
+            </span>
+            <span className="ww-reg-sheet__fund-row">
+              on <img src={ethIcon} alt="" width={20} height={20} /> {chainLabel}
+            </span>
+            <span className="ww-reg-sheet__fund-note">
+              Other tokens or networks can&apos;t be recovered.
+            </span>
+          </span>
         </span>
       </p>
 
       <div className="ww-reg-sheet__details">
-        {address && <DepositAddressRow address={address} kind={kind} note={checkNote} />}
+        {address && (
+          <>
+            <DepositAddressRow
+              address={address}
+              kind={kind}
+              note={
+                check && (
+                  <WaitingBlock
+                    line={
+                      remaining
+                        ? `${got(seen!)} of ${due(total!)} received · Send at least ${due(
+                            remaining,
+                          )} more`
+                        : `Balance at this address: ${got(seen ?? 0n)}`
+                    }
+                    lastReadAt={check.lastCheckedAt}
+                    checking={check.busy}
+                    onCheck={check.onCheck}
+                    action={check.action}
+                  />
+                )
+              }
+              overLimit={overLimit}
+              capacityHold={registration.hold}
+              capacityWarning={registration.capacityWarning}
+            />
+            {/* Safe to fund now: the ledger publishes it, and funds wait at the address until then. */}
+            {publishing && (
+              <div data-testid="registration-address-publishing">
+                <BroadcastStatusRow address={address} fallback={PUBLISHING_NOTE} />
+              </div>
+            )}
+            <AddressCapacityPanel
+              view={registration.view}
+              onRetry={registration.capacity.retry}
+              onAboutLimits={() => setAboutLimits("capacity")}
+            />
+          </>
+        )}
         <div className="ww-reg-sheet__amounts">
-          <DepositTermsRows {...terms} networkLabel={chainLabel} />
+          <DepositTermsRows
+            {...terms}
+            networkLabel={chainLabel}
+            limitInfo={
+              <InfoButton label="About the deposit limit" onClick={() => setAboutLimits("limit")} />
+            }
+          />
         </div>
         {/* The pay block encodes a figure to send: it waits for one rather than naming a guess. */}
         {address && token && chainId !== undefined && total !== undefined ? (
@@ -229,12 +348,28 @@ function RegistrationSheetPayment({
             token={token}
             chainId={chainId}
             total={remaining ?? total}
+            heldToken={remaining !== undefined ? receivedToken : undefined}
+            terms={remaining === undefined ? terms : undefined}
+            overLimit={overLimit}
+            funding={registration.funding}
             note={warning}
           />
         ) : (
           warning
         )}
       </div>
+      {aboutLimits && (
+        <WalletAboutLimitsSheet
+          topic={aboutLimits}
+          details={{
+            capacity: address && <p className="ww-about-limits__note">{ADDRESS_RECHECK_NOTE}</p>,
+          }}
+          // Before the claim: no account yet, and the address will come from the active deployment.
+          capacity={address ? sourceFromTarget(registration.capacity) : { kind: "active" }}
+          account={!!address}
+          onClose={() => setAboutLimits(undefined)}
+        />
+      )}
     </>
   )
 }
@@ -243,14 +378,15 @@ function PaylinkSettlementBlock({
   quote,
   tokenSymbol,
   tokenDecimals,
+  speed,
 }: NonNullable<RegistrationSheetProps["settlement"]>) {
   return (
     <>
       <p className="ww-reg-sheet__summary">
         <Icon name="coins" size={20} color="#fff" />
         <span>
-          This payment covers your account. Network fees come out of the link; the rest lands in
-          your wallet.
+          The fees come out of the payment to register your tag; the remainder stays in your wallet.
+          Registration can take up to 40 minutes.
         </span>
       </p>
       <div className="ww-reg-sheet__details">
@@ -259,16 +395,9 @@ function PaylinkSettlementBlock({
             quote={quote}
             tokenSymbol={tokenSymbol}
             tokenDecimals={tokenDecimals}
+            speed={speed}
           />
         </div>
-        <p className="ww-reg-sheet__warn">
-          <Icon name="info-circle" size={16} color="var(--text-secondary)" />
-          <span>
-            What is left of the link opens your wallet at once, and the sweep returns a little more
-            once the name registers. The network fee covers the L1 sweep, both portal cuts and
-            processing; the proving fee buys faster withdrawal proving.
-          </span>
-        </p>
       </div>
     </>
   )

@@ -11,7 +11,7 @@ vi.mock("../src/config/env", () => ({
 }))
 
 const { getPendingStore } = await import("../src/features/onboarding/webRegistration")
-const { registrationForFeed } = await import(
+const { registrationForFeed, registrationTagForDeposit, registrationTagForSipa } = await import(
   "../src/features/onboarding/useRegistrationDepositEntry"
 )
 const { webStorage } = await import("../src/platform/storage/WebStorageAdapter")
@@ -92,6 +92,26 @@ describe("registration deposit hands over to the rail exactly once", () => {
     }
   })
 
+  it("speaks again once a recovered deposit leaves it waiting for payment", async () => {
+    await getPendingStore().upsert(
+      ACCOUNT,
+      { phase: "awaiting_deposit", fundedAt: undefined } as never,
+      record(),
+    )
+    await seedDeposit("recovered", "0.02")
+    expect(registrationForFeed()?.tag).toBe("taga")
+  })
+
+  it("stays silent while the deposit still needs recovery", async () => {
+    await getPendingStore().upsert(
+      ACCOUNT,
+      { phase: "awaiting_deposit", fundedAt: undefined } as never,
+      record(),
+    )
+    await seedDeposit("recoverable", "0.02")
+    expect(registrationForFeed()).toBeNull()
+  })
+
   it("speaks when the rail has no record of the deposit at all", async () => {
     expect(registrationForFeed()?.tag).toBe("taga")
   })
@@ -116,5 +136,35 @@ describe("a landed manual sweep advances the rail itself", () => {
     ] as const) {
       expect(sweptPhase(phase), `from ${phase}`).toBe(phase)
     }
+  })
+})
+
+/** Only the returned deposit's own row drops the registration identity. */
+describe("a refunded deposit reads as a plain deposit", () => {
+  const awaiting = () =>
+    getPendingStore().upsert(
+      ACCOUNT,
+      { phase: "awaiting_deposit", fundedAt: undefined } as never,
+      record(),
+    )
+
+  it("drops the tag once recovered and the registration waits for payment", async () => {
+    await awaiting()
+    await seedDeposit("recovered", "0.02")
+    expect(registrationTagForDeposit(SIPA)).toBeUndefined()
+  })
+
+  it("keeps the registration identity for every other reader", async () => {
+    await awaiting()
+    await seedDeposit("recovered", "0.02")
+    expect(registrationTagForSipa(SIPA)).toBe("taga")
+  })
+
+  it("keeps the tag while the deposit still needs recovery or the record is funded", async () => {
+    await seedDeposit("recovered", "0.02")
+    expect(registrationTagForDeposit(SIPA), "funded").toBe("taga")
+    await awaiting()
+    await seedDeposit("recoverable", "0.02")
+    expect(registrationTagForDeposit(SIPA), "recoverable").toBe("taga")
   })
 })

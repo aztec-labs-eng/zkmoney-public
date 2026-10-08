@@ -7,13 +7,17 @@ import { PaylinkActionEnum } from "@obsidion/core/constants"
 import type { StatusLabel } from "@obsidion/web-ds"
 import {
   depositAmounts,
+  depositPhaseCopy,
   formatDateLabel,
   formatTimeLabel,
-  isSettledSipaPhase,
+  isNativeEth,
   isZeroAddress,
   normalizeTag,
   PAYLINK_STATUS_LABEL,
+  paylinkRowView,
   paylinkStatusFor,
+  SIPA_PROCESSING_COPY,
+  sipaReasonShown,
   resolveContactByCounterparty,
   resolveContactForTx,
   truncateMiddle,
@@ -25,18 +29,20 @@ import {
   type PaymentRequest,
   type SIPADepositPhase,
   type SIPADepositRecord,
+  type SipaProcessingState,
   type TokenTransaction,
   type Transaction,
   type TransactionStatus,
   type TxContactDirectory,
   DETECTING_AMOUNT,
-  INTERRUPTED_SEND_ERROR,
+  isRefundInFlight,
+  failureReason,
 } from "@obsidion/front-core"
 import {
   creatorLinkAction,
   type CreatorLinkAction,
 } from "../../features/paylink/creatorLinkActions"
-import { usdFigure } from "../format"
+import { tokenAmount, usdFigure } from "../format"
 import { contactDisplayName } from "../../features/contacts/contactsView"
 
 export { DETECTING_AMOUNT }
@@ -56,17 +62,17 @@ export interface ActivityRowView {
   timestampMs: number
   /** Signed fiat, e.g. "+$25.00" / "-$25.00". */
   amount: string
-  /** "Pending" / "Failed", or a settled creator paylink row's link status (`activityStatusLabel`). */
+  /**
+   * "Pending" / "Failed" / "Not received", or a settled creator paylink row's link status
+   * (`paylinkRowView`).
+   */
   statusLabel?: StatusLabel
   /**
-   * The transaction's own state. Carried so the detail modal can re-derive the badge through
-   * `activityStatusLabel` off a refreshed link status instead of parsing the row's wording.
+   * The transaction's own state. Carried so the detail modal can re-derive the badge off a
+   * refreshed link status instead of parsing the row's wording.
    */
   status: TransactionStatus
-  /**
-   * What the detail sheet says about a failed row. Only the interruption sweep's own message is
-   * carried; other stored errors are raw throws and stay off the screen.
-   */
+  /** What the detail sheet says about a failed row, in words (`failureReason`); never a raw throw. */
   error?: string
   /** On-chain hash — drives the detail modal's explorer link. Unset for pre-submit synth rows. */
   txHash?: string
@@ -78,6 +84,10 @@ export interface ActivityRowView {
   paylinkStatus?: PaylinkStatusKind
   /** The refund that returned this link's escrow, on a refunded creator row. */
   refundTxHash?: string
+  /** The state of the refund behind `refundTxHash`, as its own stored row has it. */
+  refundStatus?: TransactionStatus
+  /** The creator's link can still be handed out: Share / Copy. */
+  canShare?: boolean
   /**
    * The recovery this creator paylink row offers, off its own stored flags and the clock — the row
    * reads no chain. Present means the escrow is the user's to take back, and the row carries the
@@ -125,14 +135,27 @@ export function neverCreditsL2(phase: SIPADepositPhase): boolean {
 }
 
 /**
- * The figure a deposit shows in the feed and in its detail modal. The leading "+" is what renders
- * an amount as a credit, so only a deposit whose net is on its way into the L2 balance carries one —
- * the rest show the whole sum that sits at (or left) the deposit address, unsigned. `exitable`
- * records show that gross for want of a net.
+ * A deposit's gross: ETH sent by mistake in ETH, the stables in dollars. The detail sheet shows
+ * every ETH digit; a row trims them, or a long figure squeezes out the row's label.
+ */
+export function depositGrossFigure(
+  record: SIPADepositRecord,
+  precision: "full" | "row" = "full",
+): string {
+  const { grossDisplay } = depositAmounts(record)
+  if (!isNativeEth(record.tokenAddress)) return usdFigure(grossDisplay)
+  return `${precision === "row" ? tokenAmount(grossDisplay) : grossDisplay} ETH`
+}
+
+/**
+ * The figure a deposit shows in the feed. The leading "+" is what renders an amount as a credit, so
+ * only a deposit whose net is on its way into the L2 balance carries one — the rest show the whole
+ * sum that sits at (or left) the deposit address, unsigned. `exitable` records show that gross for
+ * want of a net.
  */
 export function depositRowAmount(record: SIPADepositRecord, exitable: boolean): string {
   const amounts = depositAmounts(record)
-  const gross = usdFigure(amounts.grossDisplay)
+  const gross = depositGrossFigure(record, "row")
   if (neverCreditsL2(record.phase)) return gross
   // An exact net needs a stored fee or a stored net; crediting a record with neither hands the user the fee.
   if ((amounts.feeKnown || record.netAmount != null) && amounts.netAtomic > 0n)
@@ -142,22 +165,11 @@ export function depositRowAmount(record: SIPADepositRecord, exitable: boolean): 
 }
 
 /**
- * The badge under a deposit row's amount. A deposit no sweep can move leads, because what it asks
- * of the user outranks where it sits; anything still moving is simply pending; the settled phases
- * that never credited say which one they are, and a claimed deposit carries no badge at all.
- *
- * Keyed on the phase alone, in the words `depositStatus` uses for the same phases, so the row and
- * the detail sheet cannot read differently — including on a record whose recovery this device has no
- * key for, which still needs one.
+ * The badge under a deposit row's amount, from front-core's `DEPOSIT_PHASE_COPY` so the row, the
+ * detail sheet and the bell read the same word. A claimed deposit carries no badge.
  */
-export function depositRowStatusLabel(
-  record: Pick<SIPADepositRecord, "phase">,
-): StatusLabel | undefined {
-  if (record.phase === "recoverable") return "Needs recovery"
-  if (!isSettledSipaPhase(record.phase)) return "Pending"
-  if (record.phase === "recovered") return "Recovered"
-  if (record.phase === "failed") return "Cancelled"
-  return undefined
+export function depositRowStatusLabel(record: SIPADepositRecord): StatusLabel | undefined {
+  return depositPhaseCopy(record).pill as StatusLabel | undefined
 }
 
 /**
@@ -184,19 +196,17 @@ export function sipaDepositIntentRow(
 }
 
 /**
- * The badge under a row's amount. An in-flight or failed transaction says so first — nothing about a
- * link's lifecycle is settled while the transaction that created it isn't. Past that, a creator
- * paylink row reads out where its link stands, in the same words the detail modal uses.
- *
- * That standing comes from stored flags and the clock alone (`paylinkStatusFor`): the feed reads no
- * chain, so "Expired" is `untilClaimable` against now, and "Claimed" means this device saw the claim.
+ * The badge under a row's amount: "Pending" / "Failed" ("Not received" for a receive) while the
+ * transaction is unsettled, else the given link status's label. The feed's paylink rows read theirs
+ * from `paylinkRowView`.
  */
 export function activityStatusLabel(
   status: TransactionStatus,
   paylinkStatus: PaylinkStatusKind | undefined,
+  incoming = false,
 ): StatusLabel | undefined {
   if (status === "pending") return "Pending"
-  if (status === "failed") return "Failed"
+  if (status === "failed") return incoming ? "Not received" : "Failed"
   return paylinkStatus && PAYLINK_STATUS_LABEL[paylinkStatus]
 }
 
@@ -214,7 +224,7 @@ export function isPendingActivityRow(row: ActivityRowView): boolean {
 }
 
 // A refund is not a movement of its own: the escrow left and came back, so the creator's PAY row —
-// reading "Refunded", carrying both hashes — is the whole round trip in one row.
+// reading Cancelled or Reclaimed, carrying both hashes — is the whole round trip in one row.
 const VISIBLE_ACTIONS = new Set<string>([
   "send",
   "receive",
@@ -232,10 +242,6 @@ function isVisibleActivityRow(
 
 function formatFiat(amount: number, price: number, sign: "+" | "-"): string {
   return `${sign}$${Math.abs(amount * price).toFixed(2)}`
-}
-
-function paylinkLabel(action: string): string {
-  return action === PaylinkActionEnum.PAY ? "Sent via paylink" : "Received via paylink"
 }
 
 function sendLabel(to: string | undefined, contact: ContactRow | undefined, toTag?: string): string {
@@ -263,13 +269,18 @@ export function txNoteFor(row: ActivityRowView, requests: PaymentRequest[]): str
 /**
  * Projects TransactionStorage rows to enriched activity rows, newest first. `nowSec` is chain
  * time; while it is unknown no creator recovery is offered (the contract gates on block time, not
- * the wall clock).
+ * the wall clock). Reads this page's running refunds, so callers re-run it on
+ * `onRefundInFlightChanged`.
  */
 export function buildActivityRows(
   transactions: Transaction[],
   directory: TxContactDirectory,
   nowSec?: number,
 ): ActivityRowView[] {
+  // A refund files no activity row of its own, but its stored row settles like any other.
+  const statusByHash = new Map(
+    transactions.flatMap((tx) => (tx.txHash ? [[tx.txHash, tx.status] as const] : [])),
+  )
   return transactions
     .filter(isVisibleActivityRow)
     .sort((a, b) => b.timestamp - a.timestamp)
@@ -289,11 +300,33 @@ export function buildActivityRows(
           ? tx.senderL2Address
           : undefined
 
+      const clockSec = nowSec ?? Math.floor(Date.now() / 1000)
+      const paylinkStatus = isPaylinkCreate
+        ? paylinkStatusFor(tx as PaylinkTransaction, clockSec)
+        : undefined
+      const refundTxHash =
+        isPaylinkCreate && "refundTxHash" in tx && typeof tx.refundTxHash === "string"
+          ? tx.refundTxHash
+          : undefined
+      const refundStatus = refundTxHash ? statusByHash.get(refundTxHash) : undefined
+      const linkView = isPaylink
+        ? paylinkRowView(tx as PaylinkTransaction, {
+            linkStatus: paylinkStatus,
+            offer:
+              paylinkStatus && nowSec != null
+                ? creatorLinkAction(tx as PaylinkTransaction, { nowSec, liveStatus: paylinkStatus })
+                : null,
+            refundStatus,
+            refundStarting: isRefundInFlight((tx as PaylinkTransaction).payToEmailSecret ?? ""),
+            nowSec: clockSec,
+          })
+        : undefined
+
       let contact: ContactRow | undefined
       let counterparty: string
       let counterpartyTag: string | undefined
-      if (isPaylink) {
-        counterparty = paylinkLabel(tx.action)
+      if (linkView) {
+        counterparty = linkView.title
       } else if (isFaucet) {
         counterparty = "Faucet drip"
       } else if (isSend) {
@@ -308,13 +341,6 @@ export function buildActivityRows(
         counterpartyTag = from && !validateAddress(from) ? (normalizeTag(from) ?? undefined) : undefined
       }
 
-      const paylinkStatus = isPaylinkCreate
-        ? paylinkStatusFor(tx as PaylinkTransaction, nowSec ?? Math.floor(Date.now() / 1000))
-        : undefined
-      const creatorAction =
-        paylinkStatus && nowSec != null
-          ? creatorLinkAction(tx as PaylinkTransaction, { nowSec, liveStatus: paylinkStatus })
-          : null
       const outgoing = isSend || tx.action === PaylinkActionEnum.PAY
       return {
         id: tx.txHash || tx.queueId || String(tx.timestamp),
@@ -322,29 +348,41 @@ export function buildActivityRows(
         contact,
         counterpartyTag: contact?.addressKind === "aztec-l2" ? contact.tag : counterpartyTag,
         avatarIcon: isPaylink ? "link" : tx.status === "pending" ? "clock-outline" : undefined,
-        // A tx still waiting for the network says so where its time will go.
-        timestamp:
-          tx.status === "pending"
-            ? outgoing
-              ? "Sending…"
-              : "Receiving…"
-            : `${formatDateLabel(tx.timestamp)}, ${formatTimeLabel(tx.timestamp)}`,
+        timestamp: `${formatDateLabel(tx.timestamp)}, ${formatTimeLabel(tx.timestamp)}`,
         timestampMs: tx.timestamp,
         // Scanned rows carry no price; the wallet's assets are USD-pegged, so 1:1.
         amount: formatFiat(tx.token?.amount ?? 0, tx.token?.price || 1, outgoing ? "-" : "+"),
-        statusLabel: activityStatusLabel(tx.status, paylinkStatus),
+        statusLabel: linkView
+          ? linkView.statusLabel
+          : activityStatusLabel(tx.status, undefined, tx.action === "receive"),
         status: tx.status,
-        error: tx.status === "failed" && tx.error === INTERRUPTED_SEND_ERROR ? tx.error : undefined,
+        error: failureReason(tx),
         txHash: tx.txHash || undefined,
         note: "memo" in tx && typeof tx.memo === "string" && tx.memo ? tx.memo : undefined,
         paylink,
-        paylinkStatus,
-        refundTxHash:
-          isPaylinkCreate && "refundTxHash" in tx && typeof tx.refundTxHash === "string"
-            ? tx.refundTxHash
-            : undefined,
-        creatorAction: creatorAction ?? undefined,
+        // A landed refund reads refunded before the reconciler flags the row; the Pending tab follows it.
+        paylinkStatus: linkView?.refunded ? "refunded" : paylinkStatus,
+        refundTxHash,
+        refundStatus,
+        canShare: linkView?.canShare,
+        creatorAction: linkView?.recovery ?? undefined,
         paylinkRow: isPaylinkCreate ? (tx as PaylinkTransaction) : undefined,
       }
     })
 }
+
+/**
+ * What a pending deposit row says in its timestamp slot, or undefined for the time: the processing reason by the
+ * shared `sipaReasonShown` rule, in the words its notification uses, else the stuck wording once `stuck`.
+ */
+export function depositRowSubline(
+  processing: SipaProcessingState | undefined,
+  record: Pick<SIPADepositRecord, "phase" | "startTime" | "sweepTxHash">,
+  stuck: boolean,
+): string | undefined {
+  if (sipaReasonShown(processing, record)) return SIPA_PROCESSING_COPY[processing.reason.kind].short
+  return stuck ? STUCK_SUBLINE : undefined
+}
+
+/** What a row still waiting on a relayer or a finalizer says in the timestamp slot. */
+export const STUCK_SUBLINE = "Taking longer than usual"

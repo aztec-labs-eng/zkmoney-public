@@ -38,7 +38,7 @@ describe("PaylinkService.recoverPaylinkFromTransfer", () => {
     const creator = (await CompleteAddress.fromSecretKeyAndPartialAddress(Fr.random(), Fr.random()))
       .address
     const service = new PaylinkService(
-      { node: { getNodeInfo: async () => ({ l1ChainId: 31337, rollupVersion: 1 }) } } as any,
+      { getNodeIdentity: async () => ({ l1ChainId: 31337, rollupVersion: 1 }) } as any,
       { getAddress: () => creator } as any,
       null as any,
       { getArtifactForContract: async () => ARTIFACT } as any,

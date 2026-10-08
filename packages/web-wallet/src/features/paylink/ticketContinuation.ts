@@ -1,5 +1,6 @@
 import {
   PendingRegistrationStore,
+  fundsIn,
   isTerminalRegistrationPhase,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
@@ -7,13 +8,17 @@ import type { RegistrationSchedule } from "@obsidion/core/types"
 import {
   loadRegistrationTerms,
   PAYLINK_TICKET_REFUSED_MESSAGE,
+  quoteExpired,
   registrationOffer,
   signedSchedule,
   type RegistrationTerms,
 } from "../onboarding/registrationTerms"
+import { readRegistrationStage } from "../onboarding/openRegistration"
+import { getConfig } from "../../config/env"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { peekClaimStash, peekTicketSignup, type TicketSignupStash } from "./claimStash"
 import { linkIdentity } from "./linkIdentity"
+import { isTicketSignupCreating, loadTicketSignupAttempt } from "./ticketSignupAccount"
 
 /** `linkIdentity` for a fragment that may not decode: null names nothing. */
 function identityOf(fragment: string): string | null {
@@ -51,6 +56,11 @@ export function boundTicketSignup(
   return markerFor(terms, fragment)
 }
 
+/** Fires as the open registrations change, when what a ticket-funded signup may do is read again. */
+export function onTicketRegistrationsChanged(listener: () => void): () => void {
+  return PendingRegistrationStore.get(webStorage).onListChanged(listener)
+}
+
 /** The open reservation on this browser is one a payment link funds: its pending step claims that link. */
 export function pendingTicketRegistration(): boolean {
   const record = PendingRegistrationStore.get(webStorage).current()
@@ -83,6 +93,22 @@ export function ticketSignupCommitted(fragment: string): boolean {
 }
 
 /**
+ * This link's ticket signup already has a registration or a saved account, so reopening it resumes
+ * that signup rather than starting one: the offer's threshold now does not gate it.
+ */
+export function ticketSignupResumable(fragment: string): boolean {
+  if (ticketSignupCommitted(fragment)) return true
+  const paylinkId = identityOf(fragment)
+  if (!paylinkId) return false
+  try {
+    const attempt = loadTicketSignupAttempt(getConfig().rpId, paylinkId)
+    return attempt !== null && !isTicketSignupCreating(attempt)
+  } catch {
+    return false
+  }
+}
+
+/**
  * What an activation surface may do for a ticket-funded registration, decided before any price:
  *
  * - `submitted`: the burn is on its way to L1 (a withdrawal to the SIPA, or custody stamped), so
@@ -91,7 +117,7 @@ export function ticketSignupCommitted(fragment: string): boolean {
  *   published, so the review may open.
  * - `blocked`: the last renewal quoted terms the link cannot pay. The link stays bound.
  * - `renew`: the terms lapsed or carry no schedule; the pending step's tick re-signs them.
- * - `unpublished`: the SIPA broadcast has not landed; the pending step retries it.
+ * - `unpublished`: the SIPA broadcast has not landed; Home's claim flow owes it to the ledger.
  * - `missing_link`: the bound link is not on this tab; the original link has to be reopened.
  *
  * Null for a registration no paylink funds.
@@ -113,16 +139,11 @@ function ticketState(
 ): TicketActivation | null {
   const offer = registrationOffer(terms)
   if (offer.funding !== "paylink") return null
-  const sipa = record.sipaAddress.toLowerCase()
-  const burning = withdrawals.some(
-    (w) => w.recipient.toLowerCase() === sipa && w.phase !== "failed",
-  )
-  if (burning || record.fundedAt !== undefined || record.sweptAt !== undefined) {
-    return { state: "submitted" }
-  }
+  const stage = readRegistrationStage(record, withdrawals)
+  if (stage === "funding" || fundsIn(stage)) return { state: "submitted" }
   if (offer.blocked) return { state: "blocked", stash }
   const schedule = signedSchedule(terms)
-  const lapsed = terms !== null && terms.deadline > 0 && nowMs > terms.deadline * 1000
+  const lapsed = quoteExpired(terms, nowMs)
   if (lapsed || !schedule) return { state: "renew", stash }
   if (!record.broadcast) return { state: "unpublished", stash }
   if (!stash) return { state: "missing_link" }
@@ -160,8 +181,15 @@ export function ticketSignupContinuation(
 ): TicketSignupContinuation | null {
   if (l2Address === undefined) return null
   const record = PendingRegistrationStore.get(webStorage).current(l2Address)
-  if (!record || record.phase !== "awaiting_deposit") return null
-  if (record.fundedAt !== undefined || record.sweptAt !== undefined) return null
+  if (!record) return null
+  // A registration this account's own burn funds keeps its continuation, submitted, until the
+  // name confirms: the review is where the claim and the registration report. One funded or swept
+  // by other means is not the link's.
+  const sipa = record.sipaAddress.toLowerCase()
+  const burnFunded = withdrawals.some(
+    (w) => w.recipient.toLowerCase() === sipa && w.phase !== "failed",
+  )
+  if (fundsIn(readRegistrationStage(record, withdrawals)) && !burnFunded) return null
   const terms = loadRegistrationTerms(record.account, record.tag)
   const stash = terms && markerFor(terms, fragment)
   if (!stash) return null

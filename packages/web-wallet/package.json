@@ -6,7 +6,7 @@
   "license": "MIT",
   "scripts": {
     "dev": "vite",
-    "build": "rm -rf dist && NODE_OPTIONS=--max-old-space-size=8192 vite build && node scripts/assert-bridge-standalone.mjs snapshot && vite build -c vite.bridge.config.ts && node scripts/assert-bridge-standalone.mjs verify",
+    "build": "rm -rf dist && NODE_OPTIONS=--max-old-space-size=8192 vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit",
     "test": "vitest run",
@@ -18,14 +18,17 @@
     "test:wallet-modal": "node --test test/browser/rainbowkitModal.browser.mjs",
     "test:modal-badges": "node --test --test-concurrency=1 test/browser/modalBadges.browser.mjs",
     "test:qr-sheets": "node --test --test-concurrency=1 test/browser/qrSheets.browser.mjs",
+    "test:active-tab": "node --test --test-concurrency=1 test/browser/activeTab.browser.mjs",
     "test:qr": "vitest run --config vitest.qr.config.ts",
-    "test:passkey-rp-browser": "node test/browser/passkeyRp.browser.mjs"
+    "test:passkey-rp-browser": "node test/browser/passkeyRp.browser.mjs",
+    "test:sealed-handoff-browser": "node --test --test-concurrency=1 test/browser/sealedHandoff.browser.mjs"
   },
   "dependencies": {
     "@aztec/aztec.js": "v5.2.0",
     "@aztec/bb.js": "v5.2.0",
     "@aztec/foundation": "v5.2.0",
     "@aztec/kv-store": "v5.2.0",
+    "@aztec/l1-artifacts": "v5.2.0",
     "@aztec/noir-acvm_js": "v5.2.0",
     "@aztec/noir-noirc_abi": "v5.2.0",
     "@aztec/stdlib": "v5.2.0",
@@ -53,6 +56,7 @@
   "devDependencies": {
     "@aztec/sqlite3mc-wasm": "v5.2.0",
     "@obsidion/metrics-policy": "workspace:*",
+    "@oxide/l1-contracts": "workspace:*",
     "@playwright/test": "^1.61.1",
     "@types/jsdom": "^21.1.7",
     "@types/node": "^18.7.23",

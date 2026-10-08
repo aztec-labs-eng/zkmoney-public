@@ -1,10 +1,10 @@
 /**
  * Whether a link being created can carry a cash-out voucher.
  *
- * The gift is a second transaction out of the creator's own daily allowance, so promising one the
- * allowance cannot cover would fail the whole create — the link would never exist. The read is
- * therefore conservative, and a creator who is not subscribed yet counts as able: their create
- * batch subscribes and the whole allowance opens with it.
+ * The gift is a second use of the creator's own allowance, so promising one the allowance cannot
+ * cover would fail the whole create — the link would never exist. A creator who is not subscribed
+ * yet counts as able (the create subscribes). A stored 0 stays conservative: the read cannot say
+ * whether the create renews it.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -23,43 +23,46 @@ vi.mock("../src/features/onboarding/claimSponsorship", () => ({
   claimSponsorContext: vi.fn(),
   noteSubscribed: vi.fn(),
 }))
-const { claimFpcSubscriptionUses, hasClaimFpcSubscription } = vi.hoisted(() => ({
-  claimFpcSubscriptionUses: vi.fn(async () => 0),
-  hasClaimFpcSubscription: vi.fn(async () => true),
+const { readClaimFpcAllowance } = vi.hoisted(() => ({
+  readClaimFpcAllowance: vi.fn(),
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
-  claimFpcSubscriptionUses,
-  hasClaimFpcSubscription,
+  readClaimFpcAllowance,
 }))
 
 const { voucherAvailable } = await import("../src/features/paylink/sponsoredPaylink")
 
 const deps = { wallet: {}, account: { getAddress: () => ({}) }, contractService: {} } as never
 
+const allowance = (over: Record<string, unknown>) => ({
+  subscribed: true,
+  uses: 0,
+  maxTx: 100,
+  refillPeriod: 86_400,
+  ...over,
+})
+
 describe("voucherAvailable", () => {
   beforeEach(() => vi.clearAllMocks())
 
   it("gifts when the allowance covers the create and the gift both", async () => {
-    claimFpcSubscriptionUses.mockResolvedValueOnce(2)
+    readClaimFpcAllowance.mockResolvedValueOnce(allowance({ uses: 2 }))
     expect(await voucherAvailable(deps)).toBe(true)
   })
 
   it("withholds the gift when only the create itself is covered", async () => {
-    claimFpcSubscriptionUses.mockResolvedValueOnce(1)
+    readClaimFpcAllowance.mockResolvedValueOnce(allowance({ uses: 1 }))
     expect(await voucherAvailable(deps)).toBe(false)
   })
 
   it("gifts for a creator whose first batch is the one that subscribes them", async () => {
-    // A stored 0 is either "no note yet" or "spent today"; only the subscription read separates them.
-    claimFpcSubscriptionUses.mockResolvedValueOnce(0)
-    hasClaimFpcSubscription.mockResolvedValueOnce(false)
+    readClaimFpcAllowance.mockResolvedValueOnce(allowance({ subscribed: false }))
     expect(await voucherAvailable(deps)).toBe(true)
   })
 
-  it("withholds the gift from a subscriber who has spent today's allowance", async () => {
-    claimFpcSubscriptionUses.mockResolvedValueOnce(0)
-    hasClaimFpcSubscription.mockResolvedValueOnce(true)
+  it("withholds the gift on a stored zero, since the read cannot say whether the create renews it", async () => {
+    readClaimFpcAllowance.mockResolvedValueOnce(allowance({}))
     expect(await voucherAvailable(deps)).toBe(false)
   })
 
@@ -70,7 +73,7 @@ describe("voucherAvailable", () => {
   })
 
   it("withholds the gift when the allowance cannot be read", async () => {
-    claimFpcSubscriptionUses.mockRejectedValueOnce(new Error("PXE is busy"))
+    readClaimFpcAllowance.mockRejectedValueOnce(new Error("PXE is busy"))
     expect(await voucherAvailable(deps)).toBe(false)
   })
 })

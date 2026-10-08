@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { pathToFileURL } from "node:url"
 
 const origins = {
+  dev: "https://wallet.dev.zk.money",
   staging: "https://wallet.staging.zk.money",
   production: "https://wallet.zk.money",
 }
@@ -10,7 +11,7 @@ const origins = {
 export function metricsBuildTarget(env, app, command = "build") {
   const environment = env.VITE_METRICS_ENVIRONMENT || "staging"
   if (!Object.hasOwn(origins, environment)) {
-    throw new Error("VITE_METRICS_ENVIRONMENT must be staging or production")
+    throw new Error("VITE_METRICS_ENVIRONMENT must be dev, staging, or production")
   }
   if (command === "serve" && environment === "production") {
     throw new Error("Local development must use staging metrics")
@@ -82,10 +83,14 @@ export function metricsBuildPlugin(app) {
 export function checkMetricsArtifact(file, slot) {
   if (!["staging", "prod", "production", "preview", "dev"].includes(slot))
     throw new Error("Unknown deployment slot")
-  const expected = ["prod", "production"].includes(slot) ? "production" : "staging"
+  const expected = ["prod", "production"].includes(slot)
+    ? "production"
+    : slot === "dev"
+    ? "dev"
+    : "staging"
   if (!existsSync(file)) {
     throw new Error(
-      "Metrics artifact missing: set VITE_METRICS_ENVIRONMENT to staging or production and rebuild",
+      "Metrics artifact missing: set VITE_METRICS_ENVIRONMENT to dev, staging, or production and rebuild",
     )
   }
   const target = JSON.parse(readFileSync(file, "utf8"))
@@ -108,7 +113,7 @@ export function checkMetricsArtifact(file, slot) {
   metricsBuildTarget(
     {
       VITE_METRICS_ENVIRONMENT: expected,
-      VITE_CAMPAIGN_ENV: expected === "production" ? "prod" : "staging",
+      VITE_CAMPAIGN_ENV: expected === "production" ? "prod" : expected,
       VITE_ZKMONEY_API_URL: target.analyticsUrl,
     },
     target.app,

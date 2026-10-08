@@ -1,15 +1,20 @@
 import { describe, expect, it } from "vitest"
 import { PaylinkActionEnum } from "@obsidion/core/constants"
 import {
+  formatDateLabel,
+  formatTimeLabel,
   PAYLINK_STATUS_LABEL,
   type ContactRow,
   type SIPADepositRecord,
   type Transaction,
+  INTERRUPTED_ERRORS,
   INTERRUPTED_SEND_ERROR,
+  withRefundInFlight,
 } from "@obsidion/front-core"
 import {
   buildActivityRows,
   depositAttribution,
+  depositGrossFigure,
   depositHeadline,
   depositRowAmount,
   isPendingActivityRow,
@@ -207,28 +212,53 @@ describe("buildActivityRows — row projection", () => {
 
   it("marks pending and failed rows", () => {
     const [pending] = buildActivityRows([send(L2_ADDR, { status: "pending" })], directory([]))
+    // The pill says Pending; the time slot keeps the time.
     expect(pending.statusLabel).toBe("Pending")
-    expect(pending.timestamp).toBe("Sending…")
+    const when = (ms: number) => `${formatDateLabel(ms)}, ${formatTimeLabel(ms)}`
+    expect(pending.timestamp).toBe(when(pending.timestampMs))
     expect(pending.avatarIcon).toBe("clock-outline")
     const [receiving] = buildActivityRows([receive("bob", { status: "pending" })], directory([]))
-    expect(receiving.timestamp).toBe("Receiving…")
+    expect(receiving.statusLabel).toBe("Pending")
+    expect(receiving.timestamp).toBe(when(receiving.timestampMs))
     expect(receiving.avatarIcon).toBe("clock-outline")
     const [failed] = buildActivityRows([send(L2_ADDR, { status: "failed" })], directory([]))
     expect(failed.statusLabel).toBe("Failed")
   })
 
-  it("carries a reason only for the interruption sweep's own message", () => {
+  it("carries a failed row's reason in words, never its raw throw", () => {
     const [interrupted] = buildActivityRows(
+      [send(L2_ADDR, { status: "failed", error: INTERRUPTED_ERRORS.send })],
+      directory([]),
+    )
+    expect(interrupted.error).toBe(INTERRUPTED_ERRORS.send)
+    // A row an older sweep failed keeps its reason, in the current words.
+    const [legacy] = buildActivityRows(
       [send(L2_ADDR, { status: "failed", error: INTERRUPTED_SEND_ERROR })],
       directory([]),
     )
-    expect(interrupted.error).toBe(INTERRUPTED_SEND_ERROR)
-    // A raw throw stays off the screen, as does any error on a row that did not fail.
+    expect(legacy.error).toBe(INTERRUPTED_ERRORS.send)
+    const legacyLinks = buildActivityRows(
+      [PaylinkActionEnum.PAY, PaylinkActionEnum.CLAIM].map((action) =>
+        send(L2_ADDR, {
+          action,
+          emailPaymentAction: action,
+          timestamp: action === PaylinkActionEnum.PAY ? 2 : 1,
+          status: "failed",
+          error: INTERRUPTED_SEND_ERROR,
+        } as never),
+      ),
+      directory([]),
+    )
+    expect(legacyLinks.map((row) => row.error)).toEqual([
+      INTERRUPTED_ERRORS.paylinkCreate,
+      INTERRUPTED_ERRORS.paylinkClaim,
+    ])
+    // A raw throw reads as a plain line; any error on a row that did not fail stays off the screen.
     const [raw] = buildActivityRows(
       [send(L2_ADDR, { status: "failed", error: "Assertion failed: Balance too low" })],
       directory([]),
     )
-    expect(raw.error).toBeUndefined()
+    expect(raw.error).toBe("It didn't go through. The amount is still in your balance.")
     const [succeeded] = buildActivityRows(
       [send(L2_ADDR, { status: "success", error: INTERRUPTED_SEND_ERROR })],
       directory([]),
@@ -426,6 +456,10 @@ describe("isPendingActivityRow — what Home and Activity file under Pending", (
 
 describe("depositRowAmount", () => {
   const ONE = "1000000000000000000"
+  const eth = {
+    tokenAddress: "0x0000000000000000000000000000000000000000",
+    tokenSymbol: "ETH",
+  } as const
   function deposit(over: Partial<SIPADepositRecord>): SIPADepositRecord {
     return {
       sipaAddress: ETH_ADDR,
@@ -456,6 +490,35 @@ describe("depositRowAmount", () => {
     expect(
       depositRowAmount(deposit({ phase, amount: "0.2", fee: ONE, fpcFundingCut: "0" }), false),
     ).toBe("$0.20")
+  })
+
+  it("shows ETH sent to a deposit address in ETH, not dollars", () => {
+    expect(depositRowAmount(deposit({ ...eth, phase: "recoverable", amount: "0.05" }), true)).toBe(
+      "0.05 ETH",
+    )
+  })
+
+  // A full-precision figure takes the row's width from its label on a phone.
+  it.each(["recoverable", "recovered"] as const)(
+    "bounds a %s ETH row's figure and keeps every digit for the detail sheet",
+    (phase) => {
+      const cases = [
+        ["0.05", "0.05 ETH", "0.05 ETH"],
+        ["0.123456789123456789", "0.12346 ETH", "0.123456789123456789 ETH"],
+        ["0.000000000000000001", "<0.00001 ETH", "0.000000000000000001 ETH"],
+      ]
+      for (const [amount, row, detail] of cases) {
+        const record = deposit({ ...eth, phase, amount })
+        expect(depositRowAmount(record, phase === "recoverable")).toBe(row)
+        expect(depositGrossFigure(record)).toBe(detail)
+      }
+    },
+  )
+
+  it("keeps a stablecoin's gross in dollars in the row and the detail sheet", () => {
+    const record = deposit({ phase: "recoverable", amount: "0.123456789123456789" })
+    expect(depositRowAmount(record, true)).toBe("$0.12")
+    expect(depositGrossFigure(record)).toBe("$0.12")
   })
 
   it("credits the net once a deposit is on its way into the balance", () => {
@@ -586,5 +649,108 @@ describe("depositHeadline", () => {
       title: "Wallet",
       address: "0x22",
     })
+  })
+})
+
+describe("buildActivityRows — what a creator link row offers across its lifecycle", () => {
+  const REFUND_HASH = "0x" + "9".repeat(64)
+  const cancellable = {
+    flavor: "direct",
+    fallbackSecret: `0x${"55".repeat(32)}`,
+    fromClaimable: 0,
+    untilClaimable: NOW_SEC + 86_400,
+    refundableUntil: NOW_SEC + 3_600,
+  }
+  const refund = (status: Transaction["status"]): Transaction =>
+    ({
+      action: PaylinkActionEnum.CLAIM_BACK,
+      emailPaymentAction: PaylinkActionEnum.CLAIM_BACK,
+      token,
+      timestamp: 3000,
+      status,
+      txHash: REFUND_HASH,
+    }) as Transaction
+  const withRefund = (status: Transaction["status"]) =>
+    buildActivityRows(
+      [payRow({ ...cancellable, refundTxHash: REFUND_HASH }), refund(status)],
+      directory([]),
+      NOW_SEC,
+    )
+
+  it("a pending create is shareable but offers no recovery", () => {
+    const row = builtPayRow({ ...cancellable, status: "pending" })
+    expect(row).toMatchObject({ counterparty: "Paylink", statusLabel: "Pending", canShare: true })
+    expect(row.creatorAction).toBeUndefined()
+  })
+
+  it("a failed create offers neither Share nor recovery", () => {
+    const row = builtPayRow({ ...cancellable, status: "failed" })
+    expect(row).toMatchObject({ counterparty: "Paylink", statusLabel: "Failed", canShare: false })
+    expect(row.creatorAction).toBeUndefined()
+  })
+
+  it("a settled unclaimed link offers Share and Cancel", () => {
+    expect(builtPayRow(cancellable)).toMatchObject({
+      counterparty: "Sent via paylink",
+      statusLabel: "Unclaimed",
+      canShare: true,
+      creatorAction: "cancel",
+    })
+  })
+
+  it("a refund in flight reads Cancelling and offers nothing", () => {
+    const rows = withRefund("pending")
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({
+      statusLabel: "Cancelling",
+      canShare: false,
+      refundStatus: "pending",
+    })
+    expect(rows[0].creatorAction).toBeUndefined()
+  })
+
+  // The recovery sheet hands off at the passkey; the refund proves before its hash exists.
+  it("a refund this page is proving reads Cancelling before its hash reaches the row", async () => {
+    const secret = `0x${"66".repeat(32)}`
+    const row = payRow({ ...cancellable, payToEmailSecret: secret })
+    let during: ReturnType<typeof buildActivityRows>[number] | undefined
+    await withRefundInFlight(secret, async () => {
+      during = buildActivityRows([row], directory([]), NOW_SEC)[0]
+    })
+    expect(during).toMatchObject({ statusLabel: "Cancelling", canShare: false })
+    expect(during?.creatorAction).toBeUndefined()
+    expect(buildActivityRows([row], directory([]), NOW_SEC)[0]).toMatchObject({
+      statusLabel: "Unclaimed",
+      creatorAction: "cancel",
+    })
+  })
+
+  it("a landed refund reads Refunded before the reconciler flags the row", () => {
+    const [row] = withRefund("success")
+    expect(row).toMatchObject({ statusLabel: "Refunded", canShare: false })
+    expect(row.creatorAction).toBeUndefined()
+  })
+
+  it("a failed refund returns the link to Unclaimed with Cancel", () => {
+    expect(withRefund("failed")[0]).toMatchObject({
+      statusLabel: "Unclaimed",
+      canShare: true,
+      creatorAction: "cancel",
+    })
+  })
+
+  it("a pending claim row is a paylink until it settles", () => {
+    const [claim] = buildActivityRows(
+      [
+        send(L2_ADDR, {
+          action: PaylinkActionEnum.CLAIM,
+          emailPaymentAction: PaylinkActionEnum.CLAIM,
+          status: "pending",
+        } as never),
+      ],
+      directory([]),
+      NOW_SEC,
+    )
+    expect(claim).toMatchObject({ counterparty: "Paylink", statusLabel: "Pending" })
   })
 })

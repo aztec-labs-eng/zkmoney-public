@@ -1,5 +1,6 @@
 import { p256 } from "@noble/curves/p256"
 import { hmac } from "@noble/hashes/hmac"
+import { encodeUserHandle } from "../../src/ceremony/userHandle.js"
 import { sha256 as nobleSha256 } from "@noble/hashes/sha256"
 import { MSK_PRF_SALT } from "@obsidion/core/constants"
 import { bytesToBase64Url } from "../../src/ceremony/bytes.js"
@@ -117,7 +118,7 @@ export type FakeCeremonyOptions = {
 
 /** Deterministic authenticator: real P-256 signatures, PRF from a per-credential secret. */
 export class FakePasskeyCeremony implements PasskeyCeremony {
-  creds = new Map<string, { priv: Uint8Array; secret: Uint8Array }>()
+  creds = new Map<string, { priv: Uint8Array; secret: Uint8Array; handle: Uint8Array }>()
   creates: PasskeyCreateRequest[] = []
   assertRequests: PasskeyAssertRequest[] = []
   /** Every assertion's `credentialIds`, in order: what the browser would show a picker for. */
@@ -213,7 +214,11 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
     this.notify({ phase: "issued", kind: "create", request })
     const priv = p256.utils.randomPrivateKey()
     const credentialId = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(16)))
-    this.creds.set(credentialId, { priv, secret: crypto.getRandomValues(new Uint8Array(32)) })
+    this.creds.set(credentialId, {
+      priv,
+      secret: crypto.getRandomValues(new Uint8Array(32)),
+      handle: encodeUserHandle(request.userName),
+    })
     const result: PasskeyCreateResult = {
       credentialId,
       pubkey: p256.getPublicKey(priv, false).slice(1),
@@ -269,6 +274,7 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
       signatureDer: signature.toDERRawBytes(),
       authenticatorData,
       clientDataJSON,
+      userHandle: cred.handle,
     }
     this.notify({
       phase: "answered",

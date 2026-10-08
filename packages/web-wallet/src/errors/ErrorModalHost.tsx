@@ -4,6 +4,13 @@ import { PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { showReportableError, subscribeErrorModal, type ErrorModalPayload } from "./errorModal"
 import { copyErrorReport, sendErrorReport } from "./shareErrorReport"
 import { isExtensionError } from "./extensionError"
+import { isWalletConnectChainSwitchError } from "./walletConnectError"
+
+const WALLETCONNECT_PROPOSAL_EXPIRED = "Proposal expired"
+const BROWSER_NOTICES = new Set([
+  "Script error.",
+  "ResizeObserver loop completed with undelivered notifications.",
+])
 
 /** Uncaught errors and promise rejections — nothing caught them, so no screen Toast owns them. */
 function surfaceUncaught(raw: unknown): void {
@@ -42,11 +49,14 @@ export function ErrorModalHost() {
   useEffect(() => {
     const onError = (e: ErrorEvent) => {
       if (isExtensionError(e.filename, e.error)) return
+      if (e.error == null && BROWSER_NOTICES.has(e.message)) return
       surfaceUncaught(e.error ?? e.message)
     }
     const onRejection = (e: PromiseRejectionEvent) => {
       if (isExtensionError(undefined, e.reason)) return
       e.preventDefault() // handled: keep the default console spam down
+      if (e.reason instanceof Error && e.reason.message === WALLETCONNECT_PROPOSAL_EXPIRED) return
+      if (isWalletConnectChainSwitchError(e.reason)) return
       surfaceUncaught(e.reason)
     }
     window.addEventListener("error", onError)
@@ -121,6 +131,16 @@ export function ErrorModalHost() {
           >
             {payload.detail}
           </span>
+        )}
+        {payload.retry && (
+          <PrimaryGradientButton
+            title={payload.retry.label}
+            onClick={() => {
+              const { run } = payload.retry!
+              dismiss()
+              run()
+            }}
+          />
         )}
         {payload.showReport && (
           <>

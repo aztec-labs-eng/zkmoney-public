@@ -61,7 +61,7 @@ contract DepositSubsidyIntentPricingTest is SweepGasFixture {
     underlying.mint(address(sm), 1_000_000 ether);
 
     vm.prank(OWNER);
-    sm.setDepositConfig(PRICED_MIN_PROFIT, type(uint128).max, PRICED_MIN_PROFIT);
+    sm.setDepositConfig(PRICED_MIN_PROFIT, type(uint128).max, PRICED_MIN_PROFIT, 0, 0);
     vm.fee(PRICED_BASEFEE);
     vm.txGasPrice(PRICED_BASEFEE);
     metadataGasBurner = new GasBurningSIPA(address(portal), METADATA_UPDATE_SWEEP_FEE, 1_000_000);
@@ -153,7 +153,7 @@ contract DepositSubsidyIntentPricingTest is SweepGasFixture {
     uint128 cap = 1 ether;
     uint128 fee = uint128(DEPOSIT_FEE);
     vm.prank(OWNER);
-    sm.setDepositConfig(fee, cap, fee);
+    sm.setDepositConfig(fee, cap, fee, 0, 0);
     feed.setAnswer(1e60);
 
     DepositSIPA sipa = _depositSIPA(_depositIntent("absurd"));
@@ -175,7 +175,7 @@ contract DepositSubsidyIntentPricingTest is SweepGasFixture {
     underlying.mint(address(sm), 1_000_000 ether);
     uint128 fee = uint128(DEPOSIT_FEE);
     vm.prank(OWNER);
-    sm.setDepositConfig(fee, type(uint128).max, fee);
+    sm.setDepositConfig(fee, type(uint128).max, fee, 0, 0);
 
     DepositSIPA sipa = _depositSIPA(_depositIntent("wide"));
     underlying.mint(address(sipa), DEPOSIT);

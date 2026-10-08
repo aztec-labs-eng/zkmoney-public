@@ -8,8 +8,11 @@
  *
  * Google only: Apple's web flow requires `response_mode=form_post` for the email scope — a server
  * endpoint this stack doesn't have — so Apple-provider claims stay app-only.
+ *
+ * Unreachable while `emailLockedLinksEnabled` is off.
  */
 import { useEffect, useState } from "react"
+import { rollupKey, rollupStorage } from "../../platform/storage/rollupStorage"
 
 export const GOOGLE_CALLBACK_PATH = "/auth/google/callback"
 
@@ -38,7 +41,7 @@ interface GoogleRelayResult {
 // A callback can arrive after its opener was closed. Reap expired relay entries without
 // touching another live attempt's token or heartbeat.
 function clearExpiredRelays() {
-  for (const key of Object.keys(localStorage)) {
+  for (const key of rollupStorage.keys()) {
     if (!key.startsWith(`${RESULT_KEY}:`)) continue
     const state = key.slice(RESULT_KEY.length + 1)
     const result = readResult(state)
@@ -47,12 +50,12 @@ function clearExpiredRelays() {
 }
 
 const clearRelay = (state: string) => {
-  localStorage.removeItem(`${RESULT_KEY}:${state}`)
-  localStorage.removeItem(`${ALIVE_KEY}:${state}`)
+  rollupStorage.removeItem(`${RESULT_KEY}:${state}`)
+  rollupStorage.removeItem(`${ALIVE_KEY}:${state}`)
 }
 
 const readResult = (state: string): GoogleRelayResult | undefined => {
-  const raw = localStorage.getItem(`${RESULT_KEY}:${state}`)
+  const raw = rollupStorage.getItem(`${RESULT_KEY}:${state}`)
   if (!raw) return undefined
   try {
     return JSON.parse(raw) as GoogleRelayResult
@@ -62,7 +65,7 @@ const readResult = (state: string): GoogleRelayResult | undefined => {
 }
 
 const msSinceAlive = (state: string): number | undefined => {
-  const raw = localStorage.getItem(`${ALIVE_KEY}:${state}`)
+  const raw = rollupStorage.getItem(`${ALIVE_KEY}:${state}`)
   if (!raw) return undefined
   const at = Number(raw)
   return Number.isFinite(at) ? Date.now() - at : undefined
@@ -81,7 +84,7 @@ export function GoogleCallbackScreen() {
       setMessage("Sign-in state is missing — close this window and try again.")
       return
     }
-    localStorage.setItem(
+    rollupStorage.setItem(
       `${RESULT_KEY}:${state}`,
       JSON.stringify({
         idToken,
@@ -90,7 +93,7 @@ export function GoogleCallbackScreen() {
         createdAt: Date.now(),
       } satisfies GoogleRelayResult),
     )
-    const beat = () => localStorage.setItem(`${ALIVE_KEY}:${state}`, String(Date.now()))
+    const beat = () => rollupStorage.setItem(`${ALIVE_KEY}:${state}`, String(Date.now()))
     beat()
     const timer = setInterval(beat, BEAT_INTERVAL_MS)
     window.close()
@@ -165,7 +168,7 @@ export async function signInWithGoogleIdToken(
       settle(() => resolve(result.idToken!))
     }
     const onStorage = (event: StorageEvent) => {
-      if (event.key === `${RESULT_KEY}:${state}`) consume()
+      if (event.key === rollupKey(`${RESULT_KEY}:${state}`)) consume()
     }
     const poll = setInterval(() => {
       consume()

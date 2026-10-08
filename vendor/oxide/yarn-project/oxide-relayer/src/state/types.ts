@@ -53,14 +53,14 @@ export interface PendingL1Operation {
   /** The broadcaster-chosen condition that must fire before the operation leaves `waiting`. */
   condition: L1OperationCondition;
   status: L1OperationStatus;
-  /** Consecutive failed executor simulations; the submitter drops the operation past its retry budget. */
+  /** Consecutive failed executor simulations. */
   attempts: number;
   lastCheckedAt?: Date;
   nextCheckAt?: Date;
   /** When a waiting Balance operation's one-time `balanceOf` read ran; a set value stops it being read again. */
   lastBalanceCheckAt?: Date;
   lastReason?: PendingL1OperationReason;
-  createdAt?: Date;
+  createdAt: Date;
   updatedAt?: Date;
 }
 
@@ -116,6 +116,8 @@ export interface StateStore {
   /** Waiting Balance operations whose one-time `balanceOf` read has not run yet, oldest first. */
   listUncheckedBalanceOperations(limit: number): Promise<WaitingBalanceOperation[]>;
   markL1OperationBalanceChecked(operationId: Hex): Promise<void>;
+  /** `waiting` → `dropped` for each operation of one condition kind recorded before `createdBefore`. Returns the count. */
+  dropWaitingL1Operations(kind: L1OperationConditionKind, createdBefore: Date): Promise<number>;
   /** `waiting` → `pending`, due immediately. False when the operation is not waiting. */
   markL1OperationPending(operationId: Hex): Promise<boolean>;
   updatePendingL1OperationRetry(operationId: Hex, retry: PendingL1OperationRetry): Promise<boolean>;

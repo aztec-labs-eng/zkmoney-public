@@ -70,6 +70,8 @@ const sheets = [
       await external.waitFor({ state: "visible" })
       await external.click()
       await dialogFor(page, "Pay with an Ethereum wallet").getByRole("button", { name: "Show", exact: true }).click()
+      // The link's own address has no proven portal, so its capacity warning comes first.
+      await dialogFor(page, "Network capacity").getByRole("button", { name: "Got it!" }).click()
     },
   },
 ]

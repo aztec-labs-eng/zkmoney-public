@@ -2,6 +2,8 @@ import {
   ATTRIBUTE_DEFINITIONS,
   HTTP_RESPONSE_STATUS_CODE,
   HTTP_ROUTE,
+  L1_OBSERVER_CHECK_NAME,
+  L1_OBSERVER_DEPLOYMENT_LABEL,
   L1_OBSERVER_TOKEN_SYMBOL,
   RELAYER_DEFER_REASON,
   RELAYER_OUTCOME,
@@ -497,6 +499,141 @@ export const L1_OBSERVER_REGISTRATION_FEES = defineMetric({
   optionalAttributes: [],
 });
 
+export const L1_OBSERVER_L2_PROVEN_TIP_AGE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.l2.proven_tip_age',
+  description: 'Age of the proven L2 tip of the rollup a manifest entry is bound to, from its block timestamp.',
+  unit: 's',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_L2_PROVEN_TIP_OVERDUE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.l2.proven_tip_overdue',
+  description:
+    'Part of the proven L2 tip age beyond the proof submission window of the rollup a manifest entry is bound to. Zero while the rollup proves on time.',
+  unit: 's',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_L2_FINALIZED_TIP_AGE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.l2.finalized_tip_age',
+  description: 'Age of the finalized L2 tip of the rollup a manifest entry is bound to, from its block timestamp.',
+  unit: 's',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_L2_PROVEN_TIP_BLOCK = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.l2.proven_tip_block',
+  description: 'Block number of the proven L2 tip of the rollup a manifest entry is bound to.',
+  unit: '{block}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_WITHDRAWAL_UNCLAIMED = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.withdrawal.unclaimed',
+  description:
+    'Number of proven L2 burns of a manifest entry whose withdrawal is not claimed on L1 after the stuck threshold.',
+  unit: '{withdrawal}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_WITHDRAWAL_UNCLAIMED_VOLUME = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.withdrawal.unclaimed_volume',
+  description: 'Total amount of the unclaimed withdrawals of a manifest entry, in underlying token units.',
+  unit: '{token}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL, L1_OBSERVER_TOKEN_SYMBOL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_WITHDRAWAL_UNCLAIMED_OLDEST_AGE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.withdrawal.unclaimed_oldest_age',
+  description: 'Age of the oldest unclaimed withdrawal of a manifest entry, from its burn block timestamp.',
+  unit: 's',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_SIPA_SWEEP_OPEN = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.sipa_sweep.open',
+  description: 'Number of SIPAs of a manifest entry with a broadcast sweep that still hold a balance.',
+  unit: '{sipa}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_SIPA_SWEEP_UNSWEPT = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.sipa_sweep.unswept',
+  description:
+    'Number of SIPAs of a manifest entry that still hold a balance after the stuck threshold from their sweep broadcast.',
+  unit: '{sipa}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_SIPA_SWEEP_DUST = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.sipa_sweep.dust',
+  description:
+    'Number of SIPAs of a manifest entry with a broadcast sweep whose balance is at or below the deposit fee, so no sweep can execute.',
+  unit: '{sipa}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_SIPA_SWEEP_STRANDED = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.sipa_sweep.stranded',
+  description:
+    'Number of SIPAs of a manifest entry that hold a balance above the deposit fee but are swept and not resweepable, so only a recovery can move the balance.',
+  unit: '{sipa}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_SIPA_SWEEP_UNSWEPT_OLDEST_AGE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.sipa_sweep.unswept_oldest_age',
+  description: 'Age of the oldest unswept SIPA of a manifest entry, from the block timestamp of its sweep broadcast.',
+  unit: 's',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_CHECK_FAILED = defineMetric({
+  kind: 'counter',
+  name: 'oxide.l1_observer.check.failed',
+  description: 'Number of L1 observer runs in which an L2 check failed for at least one label or did not finish.',
+  unit: '{failure}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_CHECK_NAME] as const,
+  optionalAttributes: [],
+});
+
 export const TELEMETRY_E2E_VERIFICATION = defineMetric({
   kind: 'gauge',
   name: 'oxide.telemetry.e2e_verification',
@@ -554,6 +691,19 @@ export const METRIC_DEFINITIONS = [
   L1_OBSERVER_TIP_RELEASED_VOLUME,
   L1_OBSERVER_REGISTRATION_COUNT,
   L1_OBSERVER_REGISTRATION_FEES,
+  L1_OBSERVER_L2_PROVEN_TIP_AGE,
+  L1_OBSERVER_L2_PROVEN_TIP_OVERDUE,
+  L1_OBSERVER_L2_FINALIZED_TIP_AGE,
+  L1_OBSERVER_L2_PROVEN_TIP_BLOCK,
+  L1_OBSERVER_WITHDRAWAL_UNCLAIMED,
+  L1_OBSERVER_WITHDRAWAL_UNCLAIMED_VOLUME,
+  L1_OBSERVER_WITHDRAWAL_UNCLAIMED_OLDEST_AGE,
+  L1_OBSERVER_SIPA_SWEEP_OPEN,
+  L1_OBSERVER_SIPA_SWEEP_UNSWEPT,
+  L1_OBSERVER_SIPA_SWEEP_DUST,
+  L1_OBSERVER_SIPA_SWEEP_STRANDED,
+  L1_OBSERVER_SIPA_SWEEP_UNSWEPT_OLDEST_AGE,
+  L1_OBSERVER_CHECK_FAILED,
   TELEMETRY_E2E_VERIFICATION,
 ] as const;
 

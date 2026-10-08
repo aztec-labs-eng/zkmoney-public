@@ -1,5 +1,5 @@
-import { isPaylinkWindowRevert, type OperationFailureCause } from "@obsidion/front-core"
-import { PAYLINK_NOT_CLAIMABLE_YET_MESSAGE } from "../paylink/claimWindow"
+import { INTERRUPTED_ERRORS, type OperationFailureCause } from "@obsidion/front-core"
+import { claimWindowRevertCopy } from "../paylink/claimWindow"
 import type { OperationFlow } from "./operations"
 
 interface FlowCopy {
@@ -18,16 +18,24 @@ interface FlowCopy {
   outcome: "operation" | "record"
   /** Row text for a failure the store recorded itself; `null` writes no row. */
   causes: Readonly<Record<OperationFailureCause, string | null>>
-  /** Row text for a failure the flow threw, where its message is not for the user. */
+  /** Row text for a failure the flow threw: its message stays on the record, never on screen. */
+  thrown: string
+  /** Row text for a thrown failure the flow can name. */
   describeError?: (error: string) => string | undefined
 }
 
-/** `balanceKept`: the amount came out of the balance, so the user needs to hear it is still there. */
-function causes(balanceKept: boolean): FlowCopy["causes"] {
+/**
+ * `balanceKept`: the amount came out of the balance, so the user needs to hear it is still there.
+ * `interrupted` is the activity row's own tab-close text, where the flow writes one.
+ */
+function failures(balanceKept: boolean, interrupted?: string): Pick<FlowCopy, "causes" | "thrown"> {
   const kept = balanceKept ? " The amount is still in your balance." : ""
   return {
-    interrupted: `The tab closed before it was sent.${kept}`,
-    dropped: `The network turned it down.${kept}`,
+    causes: {
+      interrupted: interrupted ?? `The tab closed before it was sent.${kept}`,
+      dropped: `The network turned it down.${kept}`,
+    },
+    thrown: `It didn't go through.${kept}`,
   }
 }
 
@@ -39,7 +47,7 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     busy: "Waiting for your send to finish",
     icon: "arrow.up.right",
     outcome: "operation",
-    causes: causes(true),
+    ...failures(true, INTERRUPTED_ERRORS.send),
   },
   "withdraw": {
     live: "Withdrawing",
@@ -47,16 +55,16 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     busy: "Waiting for your withdrawal to finish",
     icon: "arrow.up.right",
     outcome: "record",
-    causes: causes(true),
+    ...failures(true),
   },
   "paylink-create": {
     live: "Creating",
     settled: "Paylink created",
     failed: "Paylink failed",
-    busy: "Waiting for your paylink to be created",
+    busy: "Waiting for your new paylink to be created",
     icon: "link",
     outcome: "operation",
-    causes: causes(true),
+    ...failures(true, INTERRUPTED_ERRORS.paylinkCreate),
   },
   "paylink-claim": {
     live: "Receiving",
@@ -65,9 +73,8 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     busy: "Waiting for your paylink claim to finish",
     icon: "arrow.down.left",
     outcome: "operation",
-    causes: causes(false),
-    describeError: (error) =>
-      isPaylinkWindowRevert(error) ? PAYLINK_NOT_CLAIMABLE_YET_MESSAGE : undefined,
+    ...failures(false, INTERRUPTED_ERRORS.paylinkClaim),
+    describeError: (error) => claimWindowRevertCopy(error)?.message,
   },
   "paylink-claim-l1": {
     live: "Withdrawing",
@@ -75,7 +82,7 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     busy: "Waiting for your withdrawal to finish",
     icon: "arrow.up.right",
     outcome: "record",
-    causes: causes(false),
+    ...failures(false),
   },
   "paylink-reclaim": {
     live: "Recovering",
@@ -84,7 +91,7 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     busy: "Waiting for your paylink recovery to finish",
     icon: "arrow.uturn.backward",
     outcome: "operation",
-    causes: causes(false),
+    ...failures(false),
   },
   "deposit": {
     live: "Preparing",
@@ -92,7 +99,7 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     busy: "Waiting for your deposit address",
     icon: "arrow.down.left",
     outcome: "operation",
-    causes: causes(false),
+    ...failures(false),
   },
   "request-link": {
     live: "Preparing",
@@ -100,7 +107,7 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     busy: "Waiting for your request link",
     icon: "link",
     outcome: "operation",
-    causes: causes(false),
+    ...failures(false),
   },
   "migration": {
     live: "Moving",
@@ -108,7 +115,7 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     busy: "Waiting for your funds to move",
     icon: "arrow.up.right",
     outcome: "record",
-    causes: causes(false),
+    ...failures(false),
   },
   "migration-arrival": {
     live: "Publishing your new address",
@@ -116,8 +123,10 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     busy: "Waiting for your new address",
     icon: "arrow.down.left",
     outcome: "operation",
-    // It runs before the burn: one the store ended burned nothing, and the move is offered again.
+    // It runs before the burn: nothing moved, and the move is offered again.
     causes: { interrupted: null, dropped: null },
+    thrown: "Nothing moved. You can try again.",
+    describeError: () => "Nothing moved. You can try again.",
   },
 }
 

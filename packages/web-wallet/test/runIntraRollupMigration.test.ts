@@ -112,6 +112,7 @@ const tuple = (version: string, l2Token: string) => ({
   sipaFactory: "0xfactory",
   accountFactory: "0x" + "33".repeat(20),
   resolverGatewayUrl: "https://resolver.test",
+  rollupVersion: "7",
 })
 const HISTORIC = tuple("v6", `0x${"01".repeat(32)}`)
 const CURRENT = tuple("v7", `0x${"02".repeat(32)}`)
@@ -122,14 +123,14 @@ const account = {
   makeSpendMetadataResolver: async () => vi.fn(),
   makeDepositSpendMetadataResolver: async () => vi.fn(),
 }
-const run = () =>
+const run = (current = CURRENT) =>
   runIntraRollupMigration({
     wallet: { node: { getTxReceipt: async () => ({ status: "pending" }) } },
     account,
     contractService: {},
     toTokenService: { fetchTokenInformation: async () => ({ symbol: "DAI" }) },
     historic: HISTORIC,
-    current: CURRENT,
+    current,
     summary: "$85.00 to the new version",
   } as never)
 const MINED = { burnTxHash: BURN, burnBlockNumber: 7, grossAmount: 85n * 10n ** 18n }
@@ -200,6 +201,17 @@ describe("runIntraRollupMigration", () => {
       expect(h.burn).not.toHaveBeenCalled()
       expect(store.list()).toEqual([])
     }
+  })
+
+  // The SIPA is keyed by the manifest's rollup version, so a thin manifest fails by name before
+  // the service (the flow's only node consumer) is built and before any record exists.
+  it("fails before the service is built when the manifest names no rollupVersion", async () => {
+    await expect(run({ ...CURRENT, rollupVersion: "" })).rejects.toThrow(/lacks rollupVersion/)
+    expect(h.migrationDeps).not.toHaveBeenCalled()
+    expect(h.prepareExit).not.toHaveBeenCalled()
+    expect(h.publish).not.toHaveBeenCalled()
+    expect(h.burn).not.toHaveBeenCalled()
+    expect(store.list()).toEqual([])
   })
 
   it("seeds nothing when the exit could not be prepared", async () => {

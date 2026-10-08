@@ -15,6 +15,7 @@ import type {
 } from "../ceremony/passkeyCeremony.js"
 import { currentDevicePosture } from "./devicePosture.js"
 import {
+  type PhoneReach,
   mislabelledAssertion,
   mislabelledCreation,
   safariMislabelsCrossDevice,
@@ -32,6 +33,7 @@ import {
   elapsedBucketFor,
   passkeyEnvironmentPropsFor,
   passkeyRouteFor,
+  phoneReachFor,
   promptsBucketFor,
 } from "./passkeyTelemetry.js"
 import {
@@ -45,6 +47,7 @@ import {
   type PasskeyElapsed,
   type PasskeyFlow,
   type PasskeyOutcome,
+  type PasskeyPhoneReach,
   type PasskeyPrompts,
   type PasskeyProvider,
   type PasskeyReason,
@@ -65,6 +68,7 @@ export type PasskeyCeremonyProps = {
   prompts: PasskeyPrompts
   attempt?: PasskeyAttempt
   elapsed?: PasskeyElapsed
+  phone_reach?: PasskeyPhoneReach
 } & PasskeyEnvironmentProps
 
 export type PasskeyTelemetryEnvironment = Pick<PasskeyTelemetrySnapshot, "posture" | "userAgent">
@@ -83,17 +87,30 @@ export type PasskeyResultClassifier<T> = (result: T) => PasskeyClassification | 
  */
 export type PasskeyRequestScope = (ceremony: PasskeyCeremony) => PasskeyCeremony
 
-/** One user attempt. Every method is a no-op once the attempt has ended, except `run`. */
+/** Hears the request signals of one run's own requests. */
+export type PasskeyRequestListener = (signal: PasskeyRequestSignal) => void
+
+/**
+ * One user attempt. Every method is a no-op once the attempt has ended, except `run` and
+ * `notePhoneReach`.
+ */
 export type PasskeyAttemptHandle = {
   /**
    * Runs `fn` as this attempt, which ends when it settles. Returns or throws what `fn` does. A run
    * that starts after the attempt ended is the next attempt of the same kind; one still in flight
-   * when its attempt ends keeps its requests, and they send nothing.
+   * when its attempt ends keeps its requests, and they send nothing. `onRequest` hears the signals
+   * of the requests made through this run's scope, and of no others, however late they arrive.
    */
   run<T>(
     fn: (own: PasskeyRequestScope) => Promise<T>,
     classify?: PasskeyResultClassifier<T>,
+    onRequest?: PasskeyRequestListener,
   ): Promise<T>
+  /**
+   * What a laptop's phone-route check answered. Every event this handle sends afterwards carries
+   * it, later runs included; an event already sent is not changed.
+   */
+  notePhoneReach(reach: PhoneReach): void
   /** Ends the attempt with an outcome no request produced. */
   end(outcome: PasskeyClassification): void
   /** The user cancelled in the app. */
@@ -147,6 +164,8 @@ type Call = {
   evidence?: PasskeyAnswerEvidence
   /** Creation only: the class the request asked for, which the mislabel gate reads. */
   requested?: PasskeyAttachment
+  /** The run whose scope made this request. */
+  listener?: PasskeyRequestListener
 }
 
 type IssuedCall = Call & { issuedAt: number }
@@ -165,6 +184,7 @@ type Attempt = {
   running: boolean
   /** Its event is decided; requests its run still makes are silent. */
   closed: boolean
+  phoneReach?: PasskeyPhoneReach
 }
 
 type Ending =
@@ -235,9 +255,9 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
   const promptFreeSent = new Set<string>()
   let attemptsIssued = 0
   let issuedAny = false
-  let latestProvider: PasskeyProvider = "unknown"
-  /** Held in memory only: ids never leave the tracker. */
-  const credentialProviders = new Map<string, PasskeyProvider>()
+  let latestAaguid: string | undefined
+  /** Held in memory only: credential ids never leave the tracker. */
+  const credentialAaguids = new Map<string, string | undefined>()
 
   const currentEnvironment = () => environment ?? quiet(syncEnvironment) ?? UNKNOWN_ENVIRONMENT
 
@@ -351,39 +371,47 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
       prompts: promptsBucketFor(issued.length),
       ...(attempt.number === undefined ? {} : { attempt: attemptBucketFor(attempt.number) }),
       ...(last ? { elapsed: elapsedBucketFor((last.settledAt ?? now()) - last.issuedAt) } : {}),
+      ...(attempt.phoneReach ? { phone_reach: attempt.phoneReach } : {}),
       ...passkeyEnvironmentPropsFor(env),
     }
     quiet(() => Promise.resolve(options.send(props)).catch(() => {}))
   }
 
   /** An assertion naming exactly one credential this tracker knows; anything else is unknown. */
-  function targetedProvider(signal: PasskeyRequestSignal): PasskeyProvider {
+  function targetedAaguid(signal: PasskeyRequestSignal): string | undefined {
     const ids = signal.kind === "assert" ? signal.request.credentialIds : undefined
-    return (ids?.length === 1 && credentialProviders.get(ids[0]!)) || "unknown"
+    return ids?.length === 1 ? credentialAaguids.get(ids[0]!) : undefined
   }
 
   function hear(signal: PasskeyRequestSignal): void {
     const call = calls.get(signal.request)
+    const listener = call?.listener
+    if (listener) quiet(() => listener(signal))
     if (signal.phase === "issued") {
       issuedAny = true
-      latestProvider = targetedProvider(signal)
+      latestAaguid = targetedAaguid(signal)
       if (!call || call.issuedAt !== undefined) return
       call.issuedAt = now()
       if (!call.attempt.closed) call.attempt.number ??= ++attemptsIssued
       return
     }
-    if (signal.kind === "create") latestProvider = providerSlugFor(signal.evidence?.aaguid)
+    if (signal.kind === "create") latestAaguid = signal.evidence?.aaguid
     if (!call || call.evidence) return
     call.evidence = signal.evidence ?? {}
     if (signal.kind === "create") call.requested = signal.request.authenticatorAttachment
     call.attempt.firstAnswered ??= call
   }
 
-  function startCall(kind: Call["kind"], request: object, owner?: Attempt): Call {
+  function startCall(
+    kind: Call["kind"],
+    request: object,
+    owner?: Attempt,
+    listener?: PasskeyRequestListener,
+  ): Call {
     // A call with no scope joins whichever attempt is newest when it is made, which is all a call
     // made outside a run can be read as. A run's own requests take its scope and stay its.
     const attempt = owner ?? open.at(-1) ?? openAttempt({ ceremony: "untracked" }, false)
-    const call: Call = { kind, attempt }
+    const call: Call = { kind, attempt, listener }
     attempt.calls.push(call)
     calls.set(request, call)
     return call
@@ -393,9 +421,7 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
     call.settledAt = now()
     if ("result" in settled && call.kind === "create" && call.evidence) {
       const id = (settled.result as { credentialId?: unknown } | undefined)?.credentialId
-      if (typeof id === "string") {
-        credentialProviders.set(id, providerSlugFor(call.evidence.aaguid))
-      }
+      if (typeof id === "string") credentialAaguids.set(id, call.evidence.aaguid)
     }
     if (call.attempt.tracked) return
     finish(call.attempt, "result" in settled ? SUCCEEDED : failure(call.attempt, settled.error))
@@ -406,9 +432,10 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
     request: R,
     owner: Attempt | undefined,
     invoke: (request: R) => Promise<T>,
+    listener?: PasskeyRequestListener,
   ): Promise<T> {
     const copy = { ...request }
-    const call = quiet(() => startCall(kind, copy, owner))
+    const call = quiet(() => startCall(kind, copy, owner, listener))
     let result: T
     try {
       result = await invoke(copy)
@@ -423,19 +450,25 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
   /** The browser behind a ceremony this tracker wrapped, so a scope can ask the same one. */
   const browsers = new WeakMap<PasskeyCeremony, PasskeyCeremony>()
 
-  function wrapping(inner: PasskeyCeremony, owner?: Attempt): PasskeyCeremony {
+  function wrapping(
+    inner: PasskeyCeremony,
+    owner?: Attempt,
+    listener?: PasskeyRequestListener,
+  ): PasskeyCeremony {
     const ceremony: PasskeyCeremony = {
-      create: (request) => watched("create", request, owner, (copy) => inner.create(copy)),
-      assert: (request) => watched("assert", request, owner, (copy) => inner.assert(copy)),
+      create: (request) =>
+        watched("create", request, owner, (copy) => inner.create(copy), listener),
+      assert: (request) =>
+        watched("assert", request, owner, (copy) => inner.assert(copy), listener),
     }
     quiet(() => browsers.set(ceremony, inner))
     return ceremony
   }
 
   const scopeFor =
-    (owner: Attempt): PasskeyRequestScope =>
+    (owner: Attempt, listener?: PasskeyRequestListener): PasskeyRequestScope =>
     (ceremony) =>
-      quiet(() => wrapping(browsers.get(ceremony) ?? ceremony, owner)) ?? ceremony
+      quiet(() => wrapping(browsers.get(ceremony) ?? ceremony, owner, listener)) ?? ceremony
 
   function begin(context: PasskeyAttemptContext): PasskeyAttemptHandle {
     const of: Pick<Attempt, "ceremony" | "flow"> = {
@@ -444,6 +477,7 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
     }
     /** What the handle speaks for; a run started after it ended speaks for the next one. */
     let attempt = quiet(() => openAttempt(of, true))
+    let phoneReach: PasskeyPhoneReach | undefined
     const ended = () => !attempt || attempt.closed
 
     // The first cause stays. Replacing or unmounting an attempt with no run ends it there.
@@ -458,14 +492,18 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
       async run<T>(
         fn: (own: PasskeyRequestScope) => Promise<T>,
         classify?: PasskeyResultClassifier<T>,
+        onRequest?: PasskeyRequestListener,
       ): Promise<T> {
-        if (ended()) attempt = quiet(() => openAttempt(of, true))
+        if (ended()) {
+          attempt = quiet(() => openAttempt(of, true))
+          if (attempt) attempt.phoneReach = phoneReach
+        }
         const owner = attempt
         if (!owner) return fn((ceremony) => ceremony)
         owner.running = true
         let result: T
         try {
-          result = await fn(scopeFor(owner))
+          result = await fn(scopeFor(owner, onRequest))
         } catch (error) {
           quiet(() => finish(owner, failure(owner, error)))
           throw error
@@ -482,6 +520,11 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
         })
         return result
       },
+      notePhoneReach: (reach) =>
+        quiet(() => {
+          phoneReach = phoneReachFor(reach)
+          if (!ended()) attempt!.phoneReach = phoneReach
+        }),
       end: (outcome) =>
         quiet(() => {
           if (!ended()) finish(attempt!, { kind: "failed", classification: () => outcome })
@@ -499,7 +542,14 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
     track: (context, fn, classify) => begin(context).run(fn, classify),
     snapshot() {
       const { posture, userAgent } = currentEnvironment()
-      if (issuedAny) return { posture, userAgent, provider: latestProvider }
+      if (issuedAny) {
+        return {
+          posture,
+          userAgent,
+          provider: providerSlugFor(latestAaguid),
+          ...(latestAaguid ? { aaguid: latestAaguid } : {}),
+        }
+      }
       const fallback = quiet(() => options.fallbackProvider?.())
       return {
         posture,

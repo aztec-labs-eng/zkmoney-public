@@ -5,11 +5,12 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest"
 import { PendingRegistrationStore, WithdrawalStorage } from "@obsidion/front-core"
-import { GOLDEN_TICKET_PROVER_TIP, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
 import { TxStatus } from "@aztec/stdlib/tx"
 import { webStorage } from "../src/platform/storage/WebStorageAdapter"
 import { saveRegistrationTerms } from "../src/features/onboarding/registrationTerms"
+import { testWalletDbs } from "./support/fakeWalletDb"
 
 const dai = (n: number) => BigInt(Math.round(n * 100)) * 10n ** 16n
 const CUT = dai(0.1)
@@ -48,7 +49,6 @@ vi.mock("../src/config/oxideTuple", async (original) => ({
 vi.mock("@obsidion/front-core", async (original) => ({
   ...(await original<typeof import("@obsidion/front-core")>()),
   readPaylinkNote: async () => ({ amount: 3n * 10n ** 18n }),
-  patchClaimRowMemo: () => {},
   TxLifecycleService: {
     getInstance: () => ({
       startTrackingTx: async () => "claim-row",
@@ -104,8 +104,9 @@ const deps = {
   },
 } as never
 const pending = PendingRegistrationStore.get(webStorage)
-/** Fee 0.5, no minimum, both cuts 0.1: SIPA target 0.61, burn 1.81. */
-const BURN = dai(1.81)
+/** Fee 0.5, no minimum, both cuts 0.1: SIPA target 0.61, burn 0.81, plus the committed tip. */
+const BURN = dai(0.81)
+const TIP = dai(1)
 
 const terms = (overrides: Partial<Parameters<typeof saveRegistrationTerms>[0]> = {}) =>
   saveRegistrationTerms({
@@ -160,6 +161,7 @@ beforeEach(async () => {
 
 describe("a registration-funding claim's burn record", () => {
   it("is seeded before the batch signs and marked mined after it, armed on the watcher", async () => {
+    await terms({ proverTip: TIP.toString() })
     let seeded: ReturnType<typeof withdrawals> = []
     h.claimSdk.mockImplementation(async () => {
       seeded = withdrawals()
@@ -173,10 +175,10 @@ describe("a registration-funding claim's burn record", () => {
       recipient: "0xCcCCccccCCCCcCCCCCCcCcCccCcCCCcCcccccccC",
       source: "paylink",
       intent: "registration",
-      amount: "0.61",
-      rawAmount: BURN.toString(),
+      amount: "1.81",
+      rawAmount: (BURN + TIP).toString(),
       relayerTip: WITHDRAW_RELAYER_TIP.toString(),
-      proverTip: GOLDEN_TICKET_PROVER_TIP.toString(),
+      proverTip: TIP.toString(),
       fpcFundingCut: CUT.toString(),
       tokenSymbol: "DAI",
     })
@@ -190,8 +192,8 @@ describe("a registration-funding claim's burn record", () => {
       "proverTip",
       "withdrawal",
     ])
-    expect(withdraw?.amount).toBe(BURN)
-    expect(withdraw?.proverTip).toBe(GOLDEN_TICKET_PROVER_TIP)
+    expect(withdraw?.amount).toBe(BURN + TIP)
+    expect(withdraw?.proverTip).toBe(TIP)
     expect(withdraw?.withdrawal).toEqual({
       tuple: { portal: h.portal.address },
       portal: { fpcFundingCut: CUT, frozen: false },
@@ -203,6 +205,21 @@ describe("a registration-funding claim's burn record", () => {
     expect(mined).toMatchObject({ phase: "l2_mined", l2TxHash: HASH, blockNumber: 42 })
     expect(h.watch).toHaveBeenCalledWith(expect.objectContaining({ l2TxHash: HASH }))
     expect(withdrawals()).toHaveLength(1)
+  })
+
+  it("burns no prover tip when the review committed none, and learns the device's burn time", async () => {
+    h.claimSdk.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5))
+      return HASH
+    })
+    expect(await fund()).toBe(HASH)
+    await new Promise((r) => setTimeout(r))
+    const [record] = withdrawals()
+    expect(record?.rawAmount).toBe(BURN.toString())
+    expect(record?.proverTip).toBeUndefined()
+    expect(sdkOptions().voucher?.withdraw?.proverTip).toBe(0n)
+    const durations = JSON.parse((await webStorage.getItem("burnDurations")) ?? "[]") as number[]
+    expect(durations).toHaveLength(1)
   })
 
   it("tells the activation surfaces the funding is on its way, with the link's stash gone", async () => {
@@ -265,17 +282,15 @@ describe("a registration-funding claim's burn record", () => {
   })
 
   it("keeps the claim tab-bound when the burn's hash stamp did not persist", async () => {
-    const setItem = Storage.prototype.setItem
-    const failing = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (
-      this: Storage,
-      key: string,
-      value: string,
-    ) {
-      if (key.includes("@obsidion/withdrawals/records") && value.includes(HASH)) {
+    testWalletDbs().onApply = (_version, ops) => {
+      if (
+        ops.some(
+          ([key, value]) => key.includes("@obsidion/withdrawals/records") && value?.includes(HASH),
+        )
+      ) {
         throw new Error("quota")
       }
-      return setItem.call(this, key, value)
-    })
+    }
     h.claimSdk.mockImplementation(async (_params, _sponsor, options) => {
       const { operationId } = options as { operationId: string }
       provingProgress.emitStageStart(ProvingStage.Mining, operationId, HASH)
@@ -283,11 +298,7 @@ describe("a registration-funding claim's burn record", () => {
       expect(getOperationStore().get(operationId)?.state).toBe("local")
       return HASH
     })
-    try {
-      expect(await fund()).toBe(HASH)
-    } finally {
-      failing.mockRestore()
-    }
+    expect(await fund()).toBe(HASH)
   })
 
   /**

@@ -200,7 +200,7 @@ describe("paylink activity rows", () => {
       const refundHash = `0x${"ef".repeat(32)}`
       await finishPaylinkRow(backId, refundHash)
       await settle()
-      await markCreateRowRefunded(SECRET, flavor, ACCOUNT, refundHash)
+      await markCreateRowRefunded(SECRET, flavor, ACCOUNT, refundHash, "cancel")
 
       const rows = (await store.getTransactions()) as PaylinkTransaction[]
       const back = rows.find((r) => r.emailPaymentAction === PaylinkActionEnum.CLAIM_BACK)!
@@ -219,7 +219,7 @@ describe("paylink activity rows", () => {
       // And the create row's own status pill follows its flag, so no CTA survives.
       const [createView] = buildActivityRows([create], emptyDirectory)
       expect(createView.paylinkStatus).toBe("refunded")
-      expect(createView.statusLabel).toBe("Refunded")
+      expect(createView.statusLabel).toBe("Cancelled")
       expect(createView.refundTxHash).toBe(refundHash)
       expect(
         creatorLinkAction(createView.paylinkRow!, {
@@ -352,7 +352,7 @@ describe("paylink activity rows", () => {
       untilClaimable: 1234,
     })
     await settle()
-    await markCreateRowRefundSubmitted(SECRET, "direct", ACCOUNT, `0x${"ef".repeat(32)}`)
+    await markCreateRowRefundSubmitted(SECRET, "direct", ACCOUNT, `0x${"ef".repeat(32)}`, "cancel")
 
     const spent = async (rows: PaylinkTransaction[]) => new Map(rows.map((r) => [r.txHash, true]))
     await new PaylinkClaimReconciler({ checkSpent: spent, storage: store }).reconcile()

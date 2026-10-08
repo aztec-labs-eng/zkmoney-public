@@ -1,0 +1,57 @@
+{
+  "scenario": "activity",
+  "bootstrap": "/?demo=activity&flowFixture=success&capacityFixture=fits&processingFixture=conversion",
+  "path": "/activity?flowFixture=success&capacityFixture=fits&processingFixture=conversion",
+  "ready": {
+    "text": "$250",
+    "first": true
+  },
+  "steps": [
+    {
+      "action": "reachable",
+      "text": "$250",
+      "first": true
+    },
+    {
+      "action": "screenshot",
+      "file": "activity.png",
+      "state": "A fresh USDC deposit keeps its time, with no delay reason"
+    },
+    {
+      "action": "click",
+      "text": "$250",
+      "first": true
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal"
+    },
+    {
+      "action": "screenshot",
+      "file": "detail.png",
+      "state": "Fresh conversion deposit detail: no reason block, no delay alarm"
+    },
+    {
+      "action": "press",
+      "selector": "dialog:modal",
+      "key": "Escape"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Notifications",
+      "first": true
+    },
+    {
+      "action": "waitFor",
+      "role": "dialog",
+      "name": "Notifications"
+    },
+    {
+      "action": "screenshot",
+      "file": "notifications.png",
+      "state": "Bell live row keeps the phase wording for the fresh conversion deposit"
+    }
+  ],
+  "finalScreenshot": false
+}

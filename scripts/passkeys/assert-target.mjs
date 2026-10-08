@@ -23,7 +23,7 @@ if (process.argv.includes("--live") && environment === "production") {
   const expected = [...WEB_PASSKEY_PRODUCTION_ORIGINS].sort()
   if (!Array.isArray(document.origins) || JSON.stringify([...document.origins].sort()) !== JSON.stringify(expected)) {
     throw new Error(
-      "Publish the four approved production related origins at auth.zk.money before deploying this bundle",
+      "Publish the approved production related origins at auth.zk.money before deploying this bundle",
     )
   }
   console.log("Live production related origins verified")

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { signInWithGoogleIdToken } from "../src/features/paylink/googleAuth"
+import { rollupKey } from "../src/platform/storage/rollupStorage"
 
 const opened: string[] = []
 beforeEach(() => {
@@ -18,7 +19,7 @@ afterEach(() => {
 })
 const stateAt = (i: number) => new URL(opened[i]!).searchParams.get("state")!
 function deliver(state: string, token: string) {
-  const key = `obsidion-google-callback:${state}`
+  const key = rollupKey(`obsidion-google-callback:${state}`)
   localStorage.setItem(key, JSON.stringify({ state, idToken: token, createdAt: Date.now() }))
   window.dispatchEvent(new StorageEvent("storage", { key }))
 }
@@ -48,8 +49,8 @@ it("isolates concurrent attempts, including errors and cleanup", async () => {
 })
 
 it("cleans expired orphan callbacks without deleting a live attempt", async () => {
-  const expired = "obsidion-google-callback:expired"
-  const live = "obsidion-google-callback:live"
+  const expired = rollupKey("obsidion-google-callback:expired")
+  const live = rollupKey("obsidion-google-callback:live")
   localStorage.setItem(expired, JSON.stringify({ createdAt: Date.now() - 6 * 60_000 }))
   localStorage.setItem(live, JSON.stringify({ createdAt: Date.now() }))
   const abort = new AbortController()

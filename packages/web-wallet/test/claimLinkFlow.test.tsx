@@ -17,6 +17,7 @@ vi.mock("@obsidion/web-ds", () => ({
     </div>
   ),
   GradientSpinner: () => <i data-icon="spinner" />,
+  Shimmer: ({ children }: { children: React.ReactNode }) => <div data-skeleton>{children}</div>,
   Icon: ({ name }: { name: string }) => <i data-icon={name} />,
   PrimaryGradientButton: ({ title, onClick }: { title: string; onClick?: () => void }) => (
     <button onClick={onClick}>{title}</button>
@@ -31,20 +32,18 @@ const isWindowRevert = vi.fn((_e: unknown) => false)
 vi.mock("@obsidion/front-core", async () => {
   // The ticket quote is core's real arithmetic under front-core's tips; the wallet runtime around
   // it is stubbed, since this suite's sdk mock carries none of it.
-  const {
-    GOLDEN_TICKET_BRIDGE_REMAINDER,
-    GOLDEN_TICKET_PROVER_TIP,
-    goldenTicketQuote,
-    WITHDRAW_RELAYER_TIP,
-  } = await import("@obsidion/core/constants")
+  const { GOLDEN_TICKET_BRIDGE_REMAINDER, goldenTicketQuote, WITHDRAW_RELAYER_TIP } = await import(
+    "@obsidion/core/constants"
+  )
   const goldenTicketBurn = (
     schedule: { fee: bigint; min: bigint },
     cuts: { withdrawalCut: bigint; depositCut: bigint },
+    proverTip: bigint,
   ) =>
     goldenTicketQuote(schedule, {
       ...cuts,
       relayerTip: WITHDRAW_RELAYER_TIP,
-      proverTip: GOLDEN_TICKET_PROVER_TIP,
+      proverTip,
       bridgeRemainder: GOLDEN_TICKET_BRIDGE_REMAINDER,
     })
   return {
@@ -53,8 +52,9 @@ vi.mock("@obsidion/front-core", async () => {
       noteAmount: bigint,
       schedule: { fee: bigint; min: bigint },
       cuts: { withdrawalCut: bigint; depositCut: bigint },
+      proverTip: bigint,
     ) => {
-      const quote = goldenTicketBurn(schedule, cuts)
+      const quote = goldenTicketBurn(schedule, cuts, proverTip)
       const immediate = noteAmount - quote.burn
       return {
         ...quote,
@@ -65,6 +65,8 @@ vi.mock("@obsidion/front-core", async () => {
       }
     },
     isPaylinkWindowRevert: (e: unknown) => isWindowRevert(e),
+    isPaylinkWindowNotOpenRevert: (e: unknown) => isWindowRevert(e),
+    INTERRUPTED_ERRORS: {},
     useAztecContext: () => aztec,
     useContractServiceContext: () => contracts,
     formatDateLabel: () => "Today",
@@ -86,7 +88,11 @@ const viewLink = vi.fn()
 const claimSponsoredLink = vi.fn(
   async (_deps: unknown, _fragment: string, _setStage: Stage, _proof?: unknown) => "0xclaimtx",
 )
+const claimLinkToL1 = vi.fn(async (..._a: unknown[]) => ({}))
+const planLinkClaimSwap = vi.fn(async (..._a: unknown[]) => undefined)
 vi.mock("../src/features/paylink/sponsoredPaylink", () => ({
+  claimLinkToL1: (...a: unknown[]) => claimLinkToL1(...a),
+  planLinkClaimSwap: (...a: unknown[]) => planLinkClaimSwap(...a),
   decodeLink: (f: string) => decodeLink(f),
   viewLink: (...a: unknown[]) => viewLink(...a),
   claimSponsoredLink: asOperation(
@@ -98,7 +104,18 @@ const obtainEmailClaimProof = vi.fn(
   async (_account: unknown, _params: unknown, _s: Stage) => "proof",
 )
 // The withdraw-to-Ethereum modal pulls in the notifications panel and web storage; out of scope here.
-vi.mock("../src/features/paylink/ClaimToL1Modal", () => ({ ClaimToL1Modal: () => null }))
+type L1ModalProps = {
+  node?: unknown
+  onConfirm: (choice: Record<string, unknown>, onStage: () => void) => Promise<unknown>
+  planSwap: (...a: unknown[]) => Promise<unknown>
+}
+const l1Modal: { props?: L1ModalProps } = {}
+vi.mock("../src/features/paylink/ClaimToL1Modal", () => ({
+  ClaimToL1Modal: (props: L1ModalProps) => {
+    l1Modal.props = props
+    return null
+  },
+}))
 
 vi.mock("../src/features/paylink/emailClaim", () => ({
   obtainEmailClaimProof: (...a: Parameters<typeof obtainEmailClaimProof>) =>
@@ -118,12 +135,21 @@ vi.mock("../src/features/paylink/claimStash", () => ({
 }))
 /** The ticket signup this account left at its review, or null for an ordinary claim. */
 const continuation: { value: unknown } = { value: null }
+/** A registration whose terms name the link exists, whatever its phase. */
+const committed = { value: false }
 const ticketSignupContinuation = vi.fn(
   (_fragment: string, _l2: string | undefined, _withdrawals: unknown) => continuation.value,
 )
+/** Listeners on the open registrations; a test fires them as the store would. */
+const registrationListeners = new Set<() => void>()
 vi.mock("../src/features/paylink/ticketContinuation", () => ({
   ticketSignupContinuation: (f: string, l2: string | undefined, w: unknown) =>
     ticketSignupContinuation(f, l2, w),
+  ticketSignupCommitted: () => committed.value,
+  onTicketRegistrationsChanged: (listener: () => void) => {
+    registrationListeners.add(listener)
+    return () => registrationListeners.delete(listener)
+  },
   ticketHoldNotice: (state: string, tag: string) =>
     state === "blocked"
       ? "this payment's ticket did not waive the tag price"
@@ -135,15 +161,61 @@ vi.mock("../src/features/paylink/ticketContinuation", () => ({
       ? "This payment is already claimed"
       : undefined,
 }))
+const publishStalled = { value: false }
+vi.mock("../src/features/onboarding/webRegistration", () => ({
+  useRegistrationPublishStalled: () => publishStalled.value,
+}))
+const oweBroadcast = vi.hoisted(() => vi.fn())
+vi.mock("../src/features/broadcasts/useOweRegistrationBroadcast", () => ({
+  useOweRegistrationBroadcast: oweBroadcast,
+}))
+vi.mock("../src/features/broadcasts/BroadcastStatusRow", () => ({
+  BroadcastStatusRow: ({ address }: { address: string }) => (
+    <span data-testid="broadcast-status">{address}</span>
+  ),
+}))
 const withdrawals: { list: unknown[] } = { list: [] }
 vi.mock("../src/features/withdraw/withdrawGateway", () => ({
-  getWithdrawalStore: () => ({ list: () => withdrawals.list }),
+  getWithdrawalStore: () => ({ list: () => withdrawals.list, onListChanged: () => () => {} }),
 }))
 const navigate = vi.fn()
 vi.mock("react-router-dom", () => ({ useNavigate: () => navigate }))
+const commitTip = vi.fn((_account: string, _tag: string, _tip: bigint) => {})
 vi.mock("../src/features/onboarding/registrationTerms", () => ({
   useDepositSkim: () => 5n,
   useSweepDeductions: () => ({ skim: 0n, fpcCut: 10n }),
+  commitRegistrationProverTip: (account: string, tag: string, tip: bigint) =>
+    commitTip(account, tag, tip),
+  useRegistrationTerms: () => null,
+  committedProverTip: () => 0n,
+}))
+/** The tip the review decides; its quote and decision have a suite of their own. */
+const reviewTip: { value: bigint | undefined } = { value: 10n ** 18n }
+vi.mock("../src/features/withdraw/speedChoice", () => ({ SpeedRow: () => null }))
+vi.mock("../src/features/paylink/registrationProverTip", () => ({
+  useRegistrationSpeed: ({
+    active,
+    onCommit,
+  }: {
+    active: boolean
+    onCommit: (tip: bigint, speed: string) => void
+  }) => {
+    const tip = active ? reviewTip.value : undefined
+    React.useEffect(() => {
+      if (tip !== undefined) onCommit(tip, "faster")
+    }, [tip])
+    return {
+      choice: {
+        loading: false,
+        speed: "faster",
+        setSpeed: () => {},
+        settled: false,
+        pricedTip: 0n,
+      },
+      outcome: { proverTip: 0n },
+      proverTip: tip,
+    }
+  },
 }))
 vi.mock("../src/features/onboarding/steps/ClaimReviewStep", () => ({
   ClaimReviewStep: ({
@@ -152,26 +224,41 @@ vi.mock("../src/features/onboarding/steps/ClaimReviewStep", () => ({
     error,
     notices,
     claimable = true,
+    busy = false,
+    status,
     onClaim,
     onClose,
   }: {
-    quote: { paylink?: bigint; youReceive?: bigint; slice: bigint }
+    quote?: { paylink?: bigint; youReceive?: bigint; provingFee: bigint }
     memo?: string
     error?: string
     notices?: React.ReactNode
     claimable?: boolean
+    busy?: boolean
+    status?: string
     onClaim: () => void
     onClose: () => void
   }) => (
     <div data-testid="claim-review">
-      <span>{`paylink ${quote.paylink} receive ${quote.youReceive} slice ${quote.slice}`}</span>
+      <span>
+        {quote
+          ? `paylink ${quote.paylink} receive ${quote.youReceive} proving ${quote.provingFee}`
+          : "pricing"}
+      </span>
       {memo && <span>{memo}</span>}
+      {status && <span>{status}</span>}
       {error && <span role="alert">{error}</span>}
       {notices}
-      <button onClick={onClose}>Close</button>
-      <button disabled={!claimable} onClick={onClaim}>
-        Claim
-      </button>
+      {busy ? (
+        <span>working</span>
+      ) : (
+        <>
+          <button onClick={onClose}>Close</button>
+          <button disabled={!claimable} onClick={onClaim}>
+            Claim
+          </button>
+        </>
+      )}
     </div>
   ),
 }))
@@ -194,11 +281,16 @@ vi.mock("../src/errors/errorModal", () => ({
   showErrorModal: (...a: unknown[]) => showErrorModal(...a),
   showReportableError: (...a: unknown[]) => showReportableError(...a),
 }))
-vi.mock("../src/lib/analytics", () => ({ fireEvent: vi.fn(), failureCode: () => "x" }))
+const fireEvent = vi.fn()
+vi.mock("../src/lib/analytics", () => ({
+  fireEvent: (...a: unknown[]) => fireEvent(...a),
+  failureCode: () => "x",
+}))
 
 const { useClaimLinkFlow, resetRunningClaimsForTests } = await import(
   "../src/features/paylink/useClaimLinkFlow"
 )
+const { takeClaimPromptRequest } = await import("../src/features/paylink/claimPrompt")
 const { EmailMismatchError } = await import("@obsidion/sdk")
 const { TxInFlightError } = (await import("@obsidion/front-core")) as unknown as {
   TxInFlightError: new (txHash: string, cause?: unknown) => Error
@@ -216,6 +308,8 @@ const directLink = {
   status: "unclaimed",
   flavor: "direct",
   txHash: "0x0093c3aabbccddee",
+  // Read with the escrow note; an open window unless a test says otherwise.
+  claimableFrom: 0,
 }
 const emailLink = { ...directLink, flavor: "email", email: "satoshi@gmail.com", commitment: "0x2a" }
 const emailLock = {
@@ -224,8 +318,16 @@ const emailLock = {
   commitment: "0x2a",
 }
 
-function Harness({ fragment, onDone }: { fragment: string | null; onDone: () => void }) {
-  return <div>{useClaimLinkFlow(fragment, onDone).modal}</div>
+function Harness({
+  fragment,
+  onDone,
+  requested = false,
+}: {
+  fragment: string | null
+  onDone: () => void
+  requested?: boolean
+}) {
+  return <div>{useClaimLinkFlow(fragment, onDone, requested).modal}</div>
 }
 
 describe("useClaimLinkFlow", () => {
@@ -239,13 +341,15 @@ describe("useClaimLinkFlow", () => {
     document.body.appendChild(container)
     root = createRoot(container)
     decodeLink.mockReturnValue(directLink)
+    publishStalled.value = false
     delete aztec.obsidionWallet
     delete contracts.contractService
     claimSponsoredLink.mockImplementation(async () => "0xclaimtx")
     paylinkDeps = undefined
-    chainNowRef.now = undefined
+    chainNowRef.now = 1_000
     isWindowRevert.mockReturnValue(false)
     continuation.value = null
+    fireEvent.mockClear()
     resetRunningClaimsForTests()
   })
 
@@ -257,12 +361,34 @@ describe("useClaimLinkFlow", () => {
 
   const button = (title: string) =>
     [...container.querySelectorAll("button")].find((b) => b.textContent === title)
+  // The value cell of the ConfirmationSheetDetailRow mock.
+  const detail = (label: string) =>
+    [...container.querySelectorAll("span")].find((s) => s.textContent === label)?.nextElementSibling
 
   async function render(fragment: string | null = "frag") {
     await act(async () => {
       root.render(<Harness fragment={fragment} onDone={onDone} />)
     })
   }
+
+  it("hands the claim-to-L1 review this wallet's node, and its prover tip to the burn", async () => {
+    const node = {}
+    aztec.obsidionWallet = { node }
+    paylinkDeps = { account: { getAddress: () => "0xme" } }
+    l1Modal.props = undefined
+    await render()
+    await act(async () => button("Claim to an Ethereum wallet instead")!.click())
+    expect(l1Modal.props!.node).toBe(node)
+    await l1Modal.props!.planSwap("0xr", "USDC", { relayerTip: 1n }, 100n, 7n)
+    expect(planLinkClaimSwap.mock.calls[0]!.at(-1)).toBe(7n)
+    await act(async () => {
+      await l1Modal.props!.onConfirm(
+        { recipient: "0xr", screener: {}, receiveAsset: "DAI", proverTip: 7n },
+        () => {},
+      )
+    })
+    expect(claimLinkToL1.mock.calls[0]![10]).toBe(7n)
+  })
 
   it("renders the direct flavor with Decline / Accept and the funding tx", async () => {
     await render()
@@ -278,17 +404,37 @@ describe("useClaimLinkFlow", () => {
   })
 
   // The fragment's amount is unsigned text; only the escrow note's figure is ever shown.
-  it("shows no amount until the escrow note is read", async () => {
-    decodeLink.mockReturnValue({ ...directLink, amount: undefined })
+  it("holds the amount, note and Accept until the escrow note is read", async () => {
+    decodeLink.mockReturnValue({ ...directLink, amount: undefined, claimableFrom: undefined })
     let resolveView: (v: unknown) => void = () => {}
     viewLink.mockReturnValue(new Promise((r) => (resolveView = r)))
     aztec.obsidionWallet = {}
     contracts.contractService = {}
     await render()
     expect(container.textContent).not.toContain("$")
-    expect(button("Accept")).toBeDefined()
+    expect(detail("Note")?.querySelector("[data-skeleton]")).not.toBeNull()
+    // The note carries the claim window, so nothing is claimable until it is read.
+    expect(button("Accept")).toBeUndefined()
+    await act(async () => button("Checking…")?.click())
+    expect(claimSponsoredLink).not.toHaveBeenCalled()
     await act(async () => resolveView({ ...directLink, amount: "5" }))
+    expect(button("Accept")).toBeDefined()
     expect(container.textContent).toContain("$5")
+    expect(container.querySelector("[data-skeleton]")).toBeNull()
+    expect(detail("Note")?.textContent).toBe("—")
+  })
+
+  it("offers a re-read, never Accept, when the read ends without the claim window", async () => {
+    decodeLink.mockReturnValue({ ...directLink, amount: undefined, claimableFrom: undefined })
+    viewLink.mockRejectedValueOnce(new Error("node down"))
+    aztec.obsidionWallet = {}
+    contracts.contractService = {}
+    await render()
+    expect(button("Accept")).toBeUndefined()
+    viewLink.mockResolvedValueOnce({ ...directLink, amount: "5" })
+    await act(async () => button("Try again")?.click())
+    expect(viewLink).toHaveBeenCalledTimes(2)
+    expect(button("Accept")).toBeDefined()
   })
 
   it("shows a countdown instead of Accept while the grace window is open", async () => {
@@ -364,9 +510,9 @@ describe("useClaimLinkFlow", () => {
     await act(async () => button("Accept")?.click())
     // The sheet holds the user through the beats that need them (never the proof); the row
     // mirrors each stage.
-    expect(container.textContent).toContain("Preparing transaction...")
+    expect(container.textContent).toContain("Preparing transaction…")
     expect(container.textContent).not.toContain("Proving")
-    expect(container.textContent).toContain("Don't close this screen")
+    expect(container.textContent).toContain("Keep this tab open")
     expect(container.textContent).not.toContain("Claim your payment")
     expect(onDone).not.toHaveBeenCalled()
 
@@ -423,7 +569,7 @@ describe("useClaimLinkFlow", () => {
     await render()
     await act(async () => button("Accept")?.click())
     await act(async () => advance("building"))
-    expect(container.textContent).toContain("Preparing transaction...")
+    expect(container.textContent).toContain("Preparing transaction…")
 
     // Leave Home and come back while the stash still holds the fragment.
     await act(async () => root.unmount())
@@ -454,7 +600,7 @@ describe("useClaimLinkFlow", () => {
     )
     await render("fragA")
     await act(async () => button("Accept")?.click())
-    expect(container.textContent).toContain("Preparing transaction...")
+    expect(container.textContent).toContain("Preparing transaction…")
 
     // The user lands on another link while A is still proving.
     decodeLink.mockReturnValue({ ...directLink, fragment: "fragB", amount: "7" })
@@ -485,6 +631,7 @@ describe("useClaimLinkFlow", () => {
     expect(button("Accept")).toBeDefined()
     expect(clearClaimStash).not.toHaveBeenCalled()
     expect(onDone).not.toHaveBeenCalled()
+    expect(fireEvent).toHaveBeenCalledWith("action_failed", { action: "paylink:claim", code: "x" })
   })
 
   it("a cached email proof that fails at the claim stage explains itself, and the prompt retries", async () => {
@@ -572,6 +719,8 @@ describe("useClaimLinkFlow", () => {
     expect(showErrorModal).not.toHaveBeenCalled()
     expect(button("Accept")).toBeDefined()
     expect(onDone).not.toHaveBeenCalled()
+    // The user's choice, not a failure.
+    expect(fireEvent).not.toHaveBeenCalledWith("action_failed", expect.anything())
   })
 
   it("an email mismatch keeps its own sheet", async () => {
@@ -606,7 +755,7 @@ describe("useClaimLinkFlow", () => {
     expect(button("Accept")).toBeDefined()
   })
 
-  describe("a ticket signup left at its review", () => {
+  describe("a ticket-funded signup entering Home", () => {
     const ONE = 10n ** 18n
     const ready = {
       stash: {
@@ -615,31 +764,41 @@ describe("useClaimLinkFlow", () => {
         memo: "Pizza dinner",
         schedule: { fee: (ONE / 2n).toString(), minDeposit: "0" },
       },
-      record: { phase: "awaiting_deposit", tag: "taga" },
+      record: { phase: "awaiting_deposit", account: "0xacct", tag: "taga" },
       activation: { state: "ready", schedule: { fee: ONE / 2n, min: 0n } },
     }
-    const left = () => {
+    /** The account is open, the chain clock read, and the escrow note read: the window is known. */
+    const entered = (link: Record<string, unknown> = { ...directLink, claimableFrom: 0 }) => {
       paylinkDeps = { account: { getAddress: () => "0xme" } }
+      aztec.obsidionWallet = {}
+      contracts.contractService = {}
+      chainNowRef.now = 1_800_000_000
+      viewLink.mockResolvedValue(link)
       continuation.value = ready
     }
     const held = (state: string) => {
-      paylinkDeps = { account: { getAddress: () => "0xme" } }
+      entered()
       continuation.value = { ...ready, activation: { state, stash: ready.stash } }
     }
+    const settle = () => act(async () => new Promise((r) => setTimeout(r)))
+    const cancelled = () => Object.assign(new Error("Cancelled"), { name: "NotAllowedError" })
+    /** Home again with the same link: the flow mounts afresh, as when the activation sheet asks. */
+    const remount = async () => {
+      await render(null)
+      await render()
+    }
+    const review = () => container.querySelector('[data-testid="claim-review"]')
+    beforeEach(() => {
+      takeClaimPromptRequest()
+    })
 
-    it("prompts with the review split, and claims with the registration burn", async () => {
-      left()
+    it("claims the link by itself, with the registration burn, and hands off to the bell at once", async () => {
+      entered()
       withdrawals.list = [{ recipient: "0xsipa", phase: "done" }]
       await render()
       expect(ticketSignupContinuation).toHaveBeenCalledWith("frag", "0xme", withdrawals.list)
-      expect(container.querySelector('[data-testid="claim-review"]')).not.toBeNull()
-      expect(container.textContent).toContain("Pizza dinner")
-      // 20 - (0.5 fee + 10 wei return-deposit cut + 0.01 remainder + 10 wei withdrawal cut + 0.1
-      // relayer + 1 prover)
-      expect(container.textContent).toContain(`receive ${18_390_000_000_000_000_000n - 20n}`)
-      expect(container.textContent).not.toContain("Accept to receive funds")
-
-      await act(async () => button("Claim")!.click())
+      expect(review()).toBeNull()
+      expect(button("Accept")).toBeUndefined()
       expect(claimSponsoredLink).toHaveBeenCalledWith(
         paylinkDeps,
         "frag",
@@ -647,12 +806,191 @@ describe("useClaimLinkFlow", () => {
         undefined,
         { fundRegistration: true },
       )
-      await act(async () => new Promise((r) => setTimeout(r)))
-      expect(clearClaimStash).toHaveBeenCalledWith("frag")
+      expect(onDone).toHaveBeenCalledOnce()
+      await settle()
+      // The link stays stashed: its review reports the claim and the registration from here.
+      expect(clearClaimStash).not.toHaveBeenCalled()
+      expect(takeClaimPromptRequest()).toBeNull()
+      // No review, no fresh quote: the burn carries the tip the signup committed.
+      expect(commitTip).not.toHaveBeenCalled()
+    })
+
+    it("opens the review on request whatever the claim's state, working while a claim runs", async () => {
+      entered()
+      claimSponsoredLink.mockReturnValueOnce(new Promise(() => {}))
+      await render(null)
+      await act(async () => root.render(<Harness fragment="frag" onDone={onDone} requested />))
+      await settle()
+      // Home's own try went out and handed off; the asked-for review reports it at work, priced at
+      // the tip that claim burns rather than a fresh quote.
+      expect(claimSponsoredLink).toHaveBeenCalledOnce()
+      expect(review()).not.toBeNull()
+      expect(container.textContent).toContain("Claiming")
+      expect(container.textContent).toContain("proving 0")
+      expect(button("Claim")).toBeUndefined()
+    })
+
+    it("lets the link go once its registration has moved past the claim", async () => {
+      entered()
+      continuation.value = null
+      committed.value = true
+      try {
+        await render()
+        expect(clearClaimStash).toHaveBeenCalledWith("frag")
+        expect(onDone).toHaveBeenCalled()
+        expect(claimSponsoredLink).not.toHaveBeenCalled()
+      } finally {
+        committed.value = false
+      }
+    })
+
+    it("shows the review, not a claim, for a link that closed before Home's first try", async () => {
+      for (const status of ["claimed", "expired"] as const) {
+        // `decodeLink` knows neither the window nor the close: the escrow read brings both.
+        entered({ ...directLink, status, claimableFrom: 0 })
+        decodeLink.mockReturnValue({ ...directLink, claimableFrom: undefined })
+        await render()
+        await settle()
+        expect(claimSponsoredLink).not.toHaveBeenCalled()
+        // The closed link is said where the payment is reviewed, with nothing to claim.
+        expect(review()).not.toBeNull()
+        expect(takeClaimPromptRequest()).toBeNull()
+        await render(null)
+      }
+    })
+
+    it("waits for the escrow read and the claim window before its one try", async () => {
+      let resolveView: (v: unknown) => void = () => {}
+      entered()
+      // `decodeLink` knows no window: nothing is tried on that alone.
+      decodeLink.mockReturnValue({ ...directLink, claimableFrom: undefined })
+      viewLink.mockReturnValue(new Promise((r) => (resolveView = r)))
+      chainNowRef.now = 1_800_000_000
+      await render()
+      expect(claimSponsoredLink).not.toHaveBeenCalled()
+      expect(review()).toBeNull()
+
+      await act(async () => resolveView({ ...directLink, claimableFrom: 1_800_000_100 }))
+      expect(claimSponsoredLink).not.toHaveBeenCalled()
+      expect(onDone).not.toHaveBeenCalled()
+
+      chainNowRef.now = 1_800_000_130
+      await render()
+      expect(claimSponsoredLink).toHaveBeenCalledOnce()
+      expect(onDone).toHaveBeenCalledOnce()
+    })
+
+    it("a claim that fails reports itself and asks Home for the review again", async () => {
+      entered()
+      claimSponsoredLink.mockRejectedValueOnce(new Error("Transaction simulation failed"))
+      await render()
+      await settle()
+      expect(showReportableError).toHaveBeenCalledWith(
+        expect.any(Error),
+        "paylink:claim",
+        expect.objectContaining({ title: "Claim failed" }),
+      )
+      expect(takeClaimPromptRequest()).toBe("frag")
+      expect(clearClaimStash).not.toHaveBeenCalled()
+    })
+
+    it("tries once per page: a cancelled passkey keeps the link stashed, and Home then shows the review with its Claim", async () => {
+      entered()
+      claimSponsoredLink.mockRejectedValueOnce(cancelled())
+      await render()
+      await settle()
+      expect(claimSponsoredLink).toHaveBeenCalledOnce()
+      expect(clearClaimStash).not.toHaveBeenCalled()
+      expect(showReportableError).not.toHaveBeenCalled()
+      expect(fireEvent).not.toHaveBeenCalledWith("action_failed", expect.anything())
+      // Home is asked to show the link again: the review, with its Claim.
+      expect(takeClaimPromptRequest()).toBe("frag")
+
+      await remount()
+      expect(review()).not.toBeNull()
+      expect(container.textContent).toContain("Pizza dinner")
+      // 20 - (0.5 fee + 10 wei return-deposit cut + 0.01 remainder + 10 wei withdrawal cut + 0.1
+      // relayer + 1 prover)
+      expect(container.textContent).toContain(`receive ${18_390_000_000_000_000_000n - 20n}`)
+      expect(container.textContent).toContain(`proving ${10n ** 18n}`)
+      // The tip on screen is the one the claim burns.
+      expect(commitTip).toHaveBeenCalledWith("0xacct", "taga", 10n ** 18n)
+      expect(container.textContent).not.toContain("Accept to receive funds")
+      await act(async () => button("Claim")!.click())
+      expect(claimSponsoredLink).toHaveBeenCalledTimes(2)
+      expect(claimSponsoredLink).toHaveBeenLastCalledWith(
+        paylinkDeps,
+        "frag",
+        expect.any(Function),
+        undefined,
+        { fundRegistration: true },
+      )
+    })
+
+    it("prices the review at the tip it commits, and holds the price while that tip is quoted", async () => {
+      held("renew")
+      const asked = () =>
+        act(async () => root.render(<Harness fragment="frag" onDone={onDone} requested />))
+      try {
+        reviewTip.value = 0n
+        await asked()
+        await settle()
+        // 20 - (0.5 fee + 10 wei return-deposit cut + 0.01 remainder + 10 wei withdrawal cut + 0.1
+        // relayer)
+        expect(container.textContent).toContain(`receive ${19_390_000_000_000_000_000n - 20n}`)
+        expect(container.textContent).toContain("proving 0")
+        expect(commitTip).toHaveBeenCalledWith("0xacct", "taga", 0n)
+        reviewTip.value = undefined
+        await render(null)
+        await asked()
+        expect(container.textContent).toContain("pricing")
+      } finally {
+        reviewTip.value = 10n ** 18n
+      }
+    })
+
+    it("claims once the address is published, on the registrations' own change", async () => {
+      held("unpublished")
+      await render()
+      expect(claimSponsoredLink).not.toHaveBeenCalled()
+      expect(review()).toBeNull()
+      expect(onDone).not.toHaveBeenCalled()
+
+      continuation.value = ready
+      await act(async () => registrationListeners.forEach((listener) => listener()))
+      expect(claimSponsoredLink).toHaveBeenCalledOnce()
+      expect(onDone).toHaveBeenCalledOnce()
+    })
+
+    it("an email-locked link waits for the tap: its sign-in needs the gesture", async () => {
+      entered({ ...emailLink, claimableFrom: 0 })
+      decodeLink.mockReturnValue(emailLink)
+      await render()
+      await settle()
+      expect(claimSponsoredLink).not.toHaveBeenCalled()
+      expect(review()).not.toBeNull()
+      expect(onDone).not.toHaveBeenCalled()
+    })
+
+    it("shows the review with a re-read while the claim window is unread, then claims by itself once read", async () => {
+      entered()
+      decodeLink.mockReturnValue({ ...directLink, claimableFrom: undefined })
+      viewLink.mockRejectedValueOnce(new Error("node down"))
+      await render()
+      expect(claimSponsoredLink).not.toHaveBeenCalled()
+      expect(button("Claim")!.disabled).toBe(true)
+      expect(container.textContent).toContain("Couldn't check when this link can be claimed.")
+      viewLink.mockResolvedValueOnce(directLink)
+      await act(async () => button("Try again")!.click())
+      expect(viewLink).toHaveBeenCalledTimes(2)
+      // The window read open, Home's own claim starts with no tap.
+      expect(claimSponsoredLink).toHaveBeenCalledOnce()
+      expect(onDone).toHaveBeenCalledOnce()
     })
 
     it("Close keeps the link stashed: the signup's funding waits for its claim", async () => {
-      left()
+      entered({ ...emailLink, claimableFrom: 0 })
+      decodeLink.mockReturnValue(emailLink)
       await render()
       await act(async () => button("Close")!.click())
       expect(onDone).toHaveBeenCalledOnce()
@@ -660,56 +998,68 @@ describe("useClaimLinkFlow", () => {
       expect(claimSponsoredLink).not.toHaveBeenCalled()
     })
 
-    it("a signup whose renewed quote the link cannot pay shows the refusal and claims nothing", async () => {
-      held("blocked")
-      await render()
-      expect(container.querySelector('[data-testid="claim-review"]')).not.toBeNull()
-      expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/did not waive/)
-      expect(button("Claim")?.disabled).toBe(true)
-      expect(button("Accept")).toBeUndefined()
-      await act(async () => button("Claim")!.click())
-      expect(claimSponsoredLink).not.toHaveBeenCalled()
-      await act(async () => button("Close")!.click())
-      expect(onDone).toHaveBeenCalledOnce()
-      expect(clearClaimStash).not.toHaveBeenCalled()
-    })
-
-    it("a lapsed or unpublished signup shows why, offers the registration page, and claims nothing", async () => {
-      held("renew")
-      await render()
-      expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/fresh quote/)
-      expect(button("Claim")?.disabled).toBe(true)
-      expect(button("Accept")).toBeUndefined()
-      await act(async () => button("Check registration")!.click())
-      expect(onDone).toHaveBeenCalledOnce()
-      expect(navigate).toHaveBeenCalledWith("/claim/taga")
-      expect(claimSponsoredLink).not.toHaveBeenCalled()
-      expect(clearClaimStash).not.toHaveBeenCalled()
-
+    it("owes the broadcast of a ticket's address that is not published, so Home can claim into it", async () => {
       held("unpublished")
       await render()
-      expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/not published/)
-      expect(button("Claim")?.disabled).toBe(true)
-      expect(button("Check registration")).toBeDefined()
-
-      // A burn already on its way: nothing to claim, and no registration page to send to.
-      held("submitted")
+      expect(oweBroadcast).toHaveBeenLastCalledWith(ready.record, true)
+      held("ready")
       await render()
-      expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/already claimed/)
-      expect(button("Claim")?.disabled).toBe(true)
-      expect(button("Check registration")).toBeUndefined()
-      expect(claimSponsoredLink).not.toHaveBeenCalled()
+      expect(oweBroadcast).toHaveBeenLastCalledWith(ready.record, false)
     })
 
-    it("re-reads the signup at the click: terms that lapsed after the render claim nothing", async () => {
-      left()
+    it("a review asked for while the address publishes shows where the broadcast stands, not the hold", async () => {
+      held("unpublished")
+      continuation.value = {
+        ...ready,
+        activation: { state: "unpublished", stash: ready.stash },
+        record: { ...ready.record, sipaAddress: "0xsipa" },
+      }
+      await render(null)
+      await act(async () => root.render(<Harness fragment="frag" onDone={onDone} requested />))
+      await settle()
+      expect(container.querySelector('[data-testid="broadcast-status"]')?.textContent).toBe(
+        "0xsipa",
+      )
+      expect(container.textContent).not.toContain("Your deposit address is not published yet")
+      expect(button("Check registration")).toBeUndefined()
+      expect(button("Claim")?.disabled).toBe(true)
+
+      // A stalled publish no longer retries itself: the hold sends the user to the registration.
+      publishStalled.value = true
+      await render(null)
+      await act(async () => root.render(<Harness fragment="frag" onDone={onDone} requested />))
+      await settle()
+      expect(container.querySelector('[data-testid="broadcast-status"]')).toBeNull()
+      expect(container.textContent).toContain("Your deposit address is not published yet")
+      expect(button("Check registration")).toBeDefined()
+    })
+
+    it("a blocked, lapsed, unpublished or already-burning signup claims nothing and shows nothing: the hero says why", async () => {
+      for (const state of ["blocked", "renew", "unpublished", "submitted"]) {
+        held(state)
+        await render()
+        expect(review()).toBeNull()
+        expect(button("Accept")).toBeUndefined()
+        expect(claimSponsoredLink).not.toHaveBeenCalled()
+        expect(onDone).not.toHaveBeenCalled()
+      }
+    })
+
+    it("the review re-reads the signup at the click: terms that lapsed after the render claim nothing", async () => {
+      entered()
+      claimSponsoredLink.mockRejectedValueOnce(cancelled())
       await render()
+      await settle()
+      await remount()
       expect(button("Claim")?.disabled).toBe(false)
       continuation.value = { ...ready, activation: { state: "renew", stash: ready.stash } }
       await act(async () => button("Claim")!.click())
-      expect(claimSponsoredLink).not.toHaveBeenCalled()
+      expect(claimSponsoredLink).toHaveBeenCalledOnce()
       expect(container.querySelector('[role="alert"]')?.textContent).toMatch(/fresh quote/)
       expect(button("Claim")?.disabled).toBe(true)
+      await act(async () => button("Check registration")!.click())
+      expect(navigate).toHaveBeenCalledWith("/claim/taga")
+      expect(clearClaimStash).not.toHaveBeenCalled()
     })
 
     it("a review rebuilt without the signup's own note read takes the amount and memo from the link", async () => {
@@ -718,7 +1068,7 @@ describe("useClaimLinkFlow", () => {
         ...ready,
         stash: { fragment: "frag", schedule: ready.stash.schedule },
       }
-      decodeLink.mockReturnValue({ ...directLink, amount: "20", memo: "From the link" })
+      decodeLink.mockReturnValue({ ...emailLink, amount: "20", memo: "From the link" })
       await render()
       expect(container.textContent).toContain("From the link")
       expect(container.textContent).toContain(`receive ${18_390_000_000_000_000_000n - 20n}`)
@@ -727,7 +1077,7 @@ describe("useClaimLinkFlow", () => {
     it("a link this account's signup did not leave claims the ordinary way", async () => {
       paylinkDeps = { account: { getAddress: () => "0xme" } }
       await render()
-      expect(container.querySelector('[data-testid="claim-review"]')).toBeNull()
+      expect(review()).toBeNull()
       await act(async () => button("Accept")!.click())
       expect(claimSponsoredLink).toHaveBeenCalledWith(
         paylinkDeps,
@@ -750,10 +1100,13 @@ describe("useClaimLinkFlow", () => {
     expect(onDone).toHaveBeenCalled()
   })
 
-  it("an already-claimed link offers no claim actions", async () => {
-    decodeLink.mockReturnValue({ ...directLink, status: "claimed" })
+  it.each([
+    ["claimed", "This link is no longer available"],
+    ["expired", "This link has expired"],
+  ] as const)("a %s link offers no claim actions", async (status, title) => {
+    decodeLink.mockReturnValue({ ...directLink, status })
     await render()
-    expect(container.textContent).toContain("This link has been used")
+    expect(container.textContent).toContain(title)
     expect(button("Accept")).toBeUndefined()
     expect(button("Go to wallet")).toBeDefined()
   })
@@ -765,5 +1118,22 @@ describe("useClaimLinkFlow", () => {
     await render()
     expect(onDone).toHaveBeenCalled()
     expect(clearClaimStash).toHaveBeenCalled()
+  })
+})
+
+describe("ClaimProvingModal", () => {
+  it("offers Cancel with no warning while nothing has moved, then the warning", async () => {
+    const { ClaimProvingModal } = await import("../src/features/paylink/ClaimLinkModal")
+    const container = document.createElement("div")
+    const root = createRoot(container)
+    await act(async () =>
+      root.render(<ClaimProvingModal beat="signing-in" onCancel={vi.fn()} onLeave={vi.fn()} />),
+    )
+    expect(container.textContent).toContain("Signing in with Google")
+    expect(container.textContent).toContain("Cancel")
+    expect(container.textContent).not.toContain("Keep this tab open")
+    await act(async () => root.render(<ClaimProvingModal beat="proving-jwt" onLeave={vi.fn()} />))
+    expect(container.textContent).toContain("Keep this tab open")
+    act(() => root.unmount())
   })
 })

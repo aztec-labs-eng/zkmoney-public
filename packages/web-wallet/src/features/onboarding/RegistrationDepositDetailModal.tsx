@@ -3,8 +3,21 @@ import { useEffect, useRef, useState, type MutableRefObject } from "react"
 import { Link } from "react-router-dom"
 import { useDepositAdmission } from "../identity/admission"
 import type { Address } from "viem"
+import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import type { RegistrationKind } from "@obsidion/core/types"
-import { useAztecContext, useScreener, type PendingRegistrationRecord } from "@obsidion/front-core"
+import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
+import {
+  depositOwed,
+  fundsIn,
+  isTerminalRegistrationPhase,
+  sipaSweepAllowed,
+  truncateMiddle,
+  useAztecContext,
+  useScreener,
+  type PendingRegistrationRecord,
+  type RegistrationStage,
+} from "@obsidion/front-core"
+import { useRegistrationStage } from "./openRegistration"
 import { readSweepEvents } from "@obsidion/sdk"
 import {
   ConfirmationSheetDetailRow,
@@ -23,7 +36,15 @@ import {
   whenLabel,
 } from "../../ui/detailRows"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
+import { useL1Wallet } from "../deposit/l1Wallet"
 import type { L1ExitStage } from "../deposit/sipaRecovery"
+import {
+  useWalletPrompt,
+  useWalletPromptStall,
+  WalletPromptNote,
+  WalletPromptOpenError,
+  type WalletPromptToken,
+} from "../deposit/walletPrompt"
 import { isGateCancelled, useCeremonyGate } from "../identity/ceremonyGate"
 import { PasskeyRefusal, type RefusalState } from "../identity/PasskeyRefusal"
 import { isPasskeyPolicyError, type PasskeyAttemptHandle } from "@obsidion/passkey-web"
@@ -32,22 +53,39 @@ import { reusePasskeyAccount } from "./oxideOnboarding"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
 import { canManualRegistrationSweep, manualRegistrationSweep } from "./registrationSweep"
-import type { RegistrationTerms, SweepDeductions } from "./registrationTerms"
+import { reservedUntil, type RegistrationTerms, type SweepDeductions } from "./registrationTerms"
 import { registrationNeedsRefund, useRegistrationRefunded } from "./registrationQuoteRecovery"
-import { DepositAddressRow, DepositPayBlock } from "./steps/DepositAddress"
+import { DepositProcessingNotice } from "../deposit/DepositProcessingNotice"
+import { SELF_SWEEP_PRIVACY } from "../deposit/DepositExitModal"
+import { useSipaProcessing } from "../deposit/sipaProcessing"
+import { depositTokensFor } from "../deposit/loadDepositFacts"
+import { useOweRegistrationBroadcast } from "../broadcasts/useOweRegistrationBroadcast"
+import {
+  DepositAddressRow,
+  DepositPayBlock,
+  registrationOverLimit,
+  useRegistrationFunding,
+} from "./steps/DepositAddress"
+import { ADDRESS_RECHECK_NOTE, AddressCapacityPanel } from "../deposit/AddressCapacity"
+import { PendingLimitsLink, WalletAboutLimitsSheet } from "../limits/AboutLimitsSheet"
+import { sourceFromTarget } from "../limits/capacitySources"
+import { DepositLimitRows, type DepositTerms } from "./steps/DepositTermsRows"
+import { InfoButton } from "../limits/InfoButton"
+import type { LimitsTopic } from "../limits/aboutLimitsView"
 import type { RegistrationFunding } from "./registrationFunding"
 
 /** Where the registration stands once a deposit is at the address, in the feed's words. */
-export function registrationDepositStatus(record: PendingRegistrationRecord): {
+export function registrationDepositStatus(
+  tag: string,
+  stage: RegistrationStage,
+): {
   label: string
   badge: StatusBadgeStyle
 } {
-  if (record.phase === "confirmed")
-    return { label: "Registered, funds on the way", badge: "pending" }
-  if (record.sweptAt !== undefined) return { label: "Confirming on-chain", badge: "pending" }
-  if (record.phase === "funded" || record.fundedAt !== undefined) {
-    return { label: `Registering @${record.tag}`, badge: "pending" }
-  }
+  if (stage === "registered") return { label: "Registered, funds on the way", badge: "pending" }
+  if (stage === "claiming" || stage === "crediting")
+    return { label: "Confirming on-chain", badge: "pending" }
+  if (fundsIn(stage)) return { label: `Registering @${tag}`, badge: "pending" }
   return { label: "Deposit received, waiting for the sweep", badge: "pending" }
 }
 
@@ -116,11 +154,16 @@ export function RegistrationDepositDetailModal({
     total: bigint
     tokenSymbol: string
     kind?: RegistrationKind
+    /** The token already at the address; a top-up stays in it. */
+    heldToken?: Address
+    /** What `total` covers, for a first payment. */
+    terms?: DepositTerms
   }
   onClose: () => void
 }) {
   const depositAdmitted = useDepositAdmission(record)
   const refunded = useRegistrationRefunded(record)
+  const stage = useRegistrationStage(record)
   const needsRefund = registrationNeedsRefund(
     record,
     terms,
@@ -130,8 +173,12 @@ export function RegistrationDepositDetailModal({
   )
   const status = needsRefund
     ? { label: "Refund needed for earned price", badge: "pending" as const }
-    : registrationDepositStatus(record)
+    : registrationDepositStatus(record.tag, stage)
+  // The detail shows the address, so it owes the address's broadcast; one whose deposit must be
+  // recovered instead is not published.
+  useOweRegistrationBroadcast(record, !needsRefund)
   const fundingTxHash = record.fundingTxHash ?? funding?.txHash
+  const { shown: processing, capacityKey } = useSipaProcessing(record.sipaAddress)
   const sweepTxHash = useSweepTx(record)
   // The manual sweep's passkey attempt: closing the modal is the user's cancel of it.
   const sweepAttempt = useRef<PasskeyAttemptHandle | undefined>(undefined)
@@ -139,6 +186,13 @@ export function RegistrationDepositDetailModal({
     sweepAttempt.current?.userCancelled()
     onClose()
   }
+  // While the address still takes funds, its only copy is the pay block's, which the limits and
+  // capacity gate; the record row shows the address without offering it. Every state that shows
+  // the pay block is one of these.
+  const fundingOpen = depositOwed(stage) && !depositAdmitted && !needsRefund
+  const holdEnds = isTerminalRegistrationPhase(record.phase)
+    ? undefined
+    : reservedUntil(terms, Date.now())
   return (
     <Modal variant="bare" label="Registration deposit details" onClose={close}>
       <div
@@ -160,6 +214,23 @@ export function RegistrationDepositDetailModal({
           <StatusBadge label={status.label} badgeStyle={status.badge} />
         </div>
       </div>
+      {processing && (
+        <DepositProcessingNotice
+          sipaAddress={record.sipaAddress}
+          state={processing}
+          symbol={depositTokensFor(getConfig().network)[0]?.symbol ?? WALLET_TOKEN_SYMBOL}
+          help={(detail) => (
+            <PendingLimitsLink
+              sipaAddress={record.sipaAddress}
+              capacityKey={capacityKey}
+              settlementSymbol={
+                depositTokensFor(getConfig().network)[0]?.symbol ?? WALLET_TOKEN_SYMBOL
+              }
+              detail={detail}
+            />
+          )}
+        />
+      )}
       <ConfirmationSheetDetailRow label="Name" value={`${record.tag}.zk.money`} />
       <ConfirmationSheetDetailRow label="Started" value={whenLabel(record.startTime)} />
       {record.fundedAt !== undefined && (
@@ -188,15 +259,20 @@ export function RegistrationDepositDetailModal({
           value={<span data-testid="registration-detail-cut">{cutLabel}</span>}
         />
       )}
-      {terms && terms.deadline > 0 && (
-        <ConfirmationSheetDetailRow
-          label="Reserved until"
-          value={whenLabel(terms.deadline * 1000)}
-        />
+      {holdEnds !== undefined && (
+        <ConfirmationSheetDetailRow label="Reserved until" value={whenLabel(holdEnds)} />
       )}
       <ConfirmationSheetDetailRow
         label="Deposit address"
-        value={<CopyableValue text={record.sipaAddress} />}
+        value={
+          fundingOpen ? (
+            <span title={record.sipaAddress} data-testid="registration-detail-address">
+              {truncateMiddle(record.sipaAddress, 12)}
+            </span>
+          ) : (
+            <CopyableValue text={record.sipaAddress} />
+          )
+        }
       />
       {/* Where the funds came from identifies the deposit, so both rows hold their place
           until the Transfer log read lands. */}
@@ -214,15 +290,7 @@ export function RegistrationDepositDetailModal({
         <HashRow label="Sweep transaction" hash={sweepTxHash} url={l1TxUrl(sweepTxHash)} />
       )}
       {pay && !depositAdmitted && !needsRefund && (
-        <div style={{ marginTop: 16 }}>
-          <DepositAddressRow address={record.sipaAddress as Address} kind={pay.kind} />
-          <DepositPayBlock
-            address={record.sipaAddress as Address}
-            token={pay.token}
-            chainId={pay.chainId}
-            total={pay.total}
-          />
-        </div>
+        <PayAtAddress address={record.sipaAddress as Address} pay={pay} />
       )}
       <p className="zkm-type-body-sm" style={{ color: "var(--text-secondary)", marginTop: 12 }}>
         The sweep registers the name and bridges what is left after the fee into this wallet.
@@ -244,9 +312,81 @@ export function RegistrationDepositDetailModal({
         </p>
       )}
       {!needsRefund && canManualRegistrationSweep(record) && (
-        <ManualSweepAction record={record} attempt={sweepAttempt} />
+        <ManualSweepAction record={record} attempt={sweepAttempt} showReason={false} />
       )}
     </Modal>
+  )
+}
+
+/** The address and the pay action, held when the ask is over a per-deposit limit. */
+function PayAtAddress({
+  address,
+  pay,
+}: {
+  address: Address
+  pay: {
+    token: Address
+    chainId: number
+    total: bigint
+    tokenSymbol: string
+    kind?: RegistrationKind
+    heldToken?: Address
+    terms?: DepositTerms
+  }
+}) {
+  const { network } = getConfig()
+  const decimals = tokenDecimalsForNetwork(network)
+  const overLimit = registrationOverLimit({
+    token: pay.token,
+    chainId: pay.chainId,
+    decimals,
+    askAtomic: pay.total,
+  })
+  const [aboutLimits, setAboutLimits] = useState<LimitsTopic>()
+  const { capacity, view, hold, capacityWarning, funding } = useRegistrationFunding({
+    address,
+    askAtomic: pay.total,
+    decimals,
+    tokenSymbol: pay.tokenSymbol,
+  })
+  return (
+    <div style={{ marginTop: 16 }}>
+      <DepositAddressRow
+        address={address}
+        kind={pay.kind}
+        overLimit={overLimit}
+        capacityHold={hold}
+        capacityWarning={capacityWarning}
+      />
+      <AddressCapacityPanel
+        view={view}
+        onRetry={capacity.retry}
+        onAboutLimits={() => setAboutLimits("capacity")}
+      />
+      {aboutLimits && (
+        <WalletAboutLimitsSheet
+          topic={aboutLimits}
+          details={{ capacity: <p className="ww-about-limits__note">{ADDRESS_RECHECK_NOTE}</p> }}
+          capacity={sourceFromTarget(capacity)}
+          onClose={() => setAboutLimits(undefined)}
+        />
+      )}
+      <DepositLimitRows
+        info={
+          <InfoButton label="About the deposit limit" onClick={() => setAboutLimits("limit")} />
+        }
+      />
+      <DepositPayBlock
+        address={address}
+        token={pay.token}
+        chainId={pay.chainId}
+        total={pay.total}
+        heldToken={pay.heldToken}
+        terms={pay.terms}
+        overLimit={overLimit}
+        funding={funding}
+      />
+    </div>
   )
 }
 
@@ -263,10 +403,13 @@ const SWEEP_STAGE_LABELS: Record<L1ExitStage, string> = {
 export function ManualSweepAction({
   record,
   attempt,
+  showReason = true,
 }: {
   record: PendingRegistrationRecord
   /** This action's passkey attempt, held where the modal's close can mark it. */
   attempt: MutableRefObject<PasskeyAttemptHandle | undefined>
+  /** Whether to say why the sweep is held; false where the surface already states the reason. */
+  showReason?: boolean
 }) {
   const { obsidionWallet } = useAztecContext()
   const screener = useScreener()
@@ -288,7 +431,19 @@ export function ManualSweepAction({
   const [notice, setNotice] = useState<string>()
   const [error, setError] = useState<string>()
   const [refusal, setRefusal] = useState<RefusalState>()
+  const [nudged, setNudged] = useState(false)
+  const l1 = useL1Wallet()
   const busy = stage !== "idle" && stage !== "destination"
+  const prompt = useWalletPrompt()
+  const stalled = useWalletPromptStall(stage === "signing")
+  // Back to idle; the sweep the wallet still holds is handled when it answers.
+  const cancelPrompt = () => {
+    prompt.cancel()
+    setStage("idle")
+  }
+  // Capacity gates the sweep live; recovery never waits on it.
+  const { state: processing, capacityKey } = useSipaProcessing(record.sipaAddress)
+  const sweepBlocked = !sipaSweepAllowed(processing)
 
   const run = async () => {
     setError(undefined)
@@ -298,11 +453,28 @@ export function ManualSweepAction({
       setStage("destination")
       return
     }
+    // Ask for the wallet before the passkey, not after it.
+    if (!isDesktopL1SubmitActive() && !l1.account) {
+      setNudged(true)
+      void l1.connect()
+      return
+    }
     if (!obsidionWallet) {
       setError("The wallet is still starting. Try again in a moment.")
       return
     }
+    if (prompt.openElsewhere) {
+      setError(prompt.openElsewhere)
+      return
+    }
+    let request: WalletPromptToken | undefined
+    // Confirming means the wallet answered; the slot frees before the receipt lands.
+    const onStage = (next: L1ExitStage) => {
+      setStage(next)
+      if (next === "confirming") prompt.settle(request)
+    }
     try {
+      request = prompt.begin()
       setStage("passkey")
       op.current?.abort()
       op.current = new AbortController()
@@ -319,19 +491,25 @@ export function ManualSweepAction({
         keys,
         ...opts,
         screen: (a) => screener.screen(a),
-        onStage: setStage,
+        onStage,
         onNotice: setNotice,
       })
       setStage("idle")
     } catch (err) {
       setStage("idle")
-      if (isGateCancelled(err)) return
+      if (err instanceof WalletPromptOpenError) {
+        setError(err.message)
+        return
+      }
+      if (isGateCancelled(err) || prompt.cancelled(request)) return
       fireEvent("action_failed", { action: "registration_deposit", code: failureCode(err) })
       if (isPasskeyPolicyError(err)) {
         setRefusal({ name: err.name, message: err.message })
         return
       }
       setError(err instanceof Error ? err.message.split("\n")[0] : "The sweep didn't go through.")
+    } finally {
+      prompt.settle(request)
     }
   }
 
@@ -349,6 +527,23 @@ export function ManualSweepAction({
 
   return (
     <div style={{ marginTop: 10, textAlign: "center" }}>
+      {sweepBlocked && showReason && processing && (
+        <DepositProcessingNotice
+          sipaAddress={record.sipaAddress}
+          state={processing}
+          symbol={depositTokensFor(getConfig().network)[0]?.symbol ?? WALLET_TOKEN_SYMBOL}
+          help={(detail) => (
+            <PendingLimitsLink
+              sipaAddress={record.sipaAddress}
+              capacityKey={capacityKey}
+              settlementSymbol={
+                depositTokensFor(getConfig().network)[0]?.symbol ?? WALLET_TOKEN_SYMBOL
+              }
+              detail={detail}
+            />
+          )}
+        />
+      )}
       {stage === "destination" && (
         <input
           className="ww-manual-sweep__destination"
@@ -363,7 +558,7 @@ export function ManualSweepAction({
           className="zkm-btn-reset ww-deposit-actions__link"
           data-testid="manual-sweep"
           onClick={() => void run()}
-          disabled={busy || (stage === "destination" && !destination)}
+          disabled={busy || sweepBlocked || (stage === "destination" && !destination)}
         >
           {busy
             ? stage === "passkey"
@@ -372,6 +567,16 @@ export function ManualSweepAction({
             : "Sweep manually"}
         </button>
       )}
+      {stalled && <WalletPromptNote walletName={l1.walletName} onCancel={cancelPrompt} />}
+      {!refusal && !busy && (
+        <p
+          className="zkm-type-body-sm"
+          data-testid="manual-sweep-privacy"
+          style={{ color: "var(--text-secondary)", marginTop: 6 }}
+        >
+          {SELF_SWEEP_PRIVACY}
+        </p>
+      )}
       {refusal && (
         <PasskeyRefusal
           error={refusal}
@@ -379,6 +584,11 @@ export function ManualSweepAction({
           testId="manual-sweep-refused"
           retryTestId="manual-sweep-retry"
         />
+      )}
+      {nudged && !l1.account && (
+        <p role="alert" className="zkm-type-body-sm" data-testid="manual-sweep-connect-first">
+          Connect wallet first.
+        </p>
       )}
       {error && (
         <p

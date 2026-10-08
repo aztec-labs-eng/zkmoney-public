@@ -55,6 +55,7 @@ export function ChatBubble({
           >
             {view.request || view.settled ? message.amount.replace(/^[+-]/, "") : message.amount}
           </span>
+          {message.memo && <span className="ww-bubble__memo">{message.memo}</span>}
           {!view.request && (
             <span className="ww-bubble__time">
               {message.timeLabel}

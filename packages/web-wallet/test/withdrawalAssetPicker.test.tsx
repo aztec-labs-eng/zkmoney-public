@@ -7,6 +7,7 @@ vi.mock("../src/config/env", () => ({ getConfig: () => ({}) }))
 vi.mock("../src/config/oxideTuple", () => ({ getOxideTuple: () => new Promise(() => {}) }))
 
 const { WithdrawalAssetPicker } = await import("../src/features/withdraw/WithdrawalAssetPicker")
+const { Modal } = await import("../src/ui/Modal")
 
 describe("WithdrawalAssetPicker dismissal", () => {
   let container: HTMLDivElement
@@ -38,15 +39,20 @@ describe("WithdrawalAssetPicker dismissal", () => {
       el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }))
       el.dispatchEvent(new MouseEvent("click", { bubbles: true }))
     })
-  const escape = () =>
-    act(() => {
-      document.activeElement?.dispatchEvent(
-        new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
-      )
-    })
+  const escape = () => {
+    const event = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })
+    act(() => void document.activeElement?.dispatchEvent(event))
+    return event
+  }
 
-  async function renderOpen() {
-    await act(async () => root.render(<WithdrawalAssetPicker value="DAI" onChange={onChange} />))
+  async function renderOpen(onSheetClose?: () => void) {
+    const picker = <WithdrawalAssetPicker value="DAI" onChange={onChange} />
+    const sheet = (
+      <Modal variant="bare" onClose={onSheetClose}>
+        {picker}
+      </Modal>
+    )
+    await act(async () => root.render(onSheetClose ? sheet : picker))
     press(trigger())
     expect(listbox()).not.toBeNull()
     expect(trigger().getAttribute("aria-expanded")).toBe("true")
@@ -71,6 +77,17 @@ describe("WithdrawalAssetPicker dismissal", () => {
     escape()
     expectClosed()
     expect(document.activeElement).toBe(trigger())
+  })
+
+  it.each([
+    ["Escape", () => expect(escape().defaultPrevented).toBe(true)],
+    ["a press on the sheet", () => press(container.querySelector(".ww-modal")!)],
+  ])("inside a sheet, %s closes the list and leaves the sheet open", async (_, dismiss) => {
+    const onSheetClose = vi.fn()
+    await renderOpen(onSheetClose)
+    dismiss()
+    expectClosed()
+    expect(onSheetClose).not.toHaveBeenCalled()
   })
 
   it("closes on a second press of the trigger", async () => {

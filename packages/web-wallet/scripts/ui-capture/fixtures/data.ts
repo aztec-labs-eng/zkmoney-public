@@ -6,6 +6,8 @@ export const field = (byte: string) => `0x${byte.repeat(32)}`
 export const TOKEN = field("1b")
 export const ROLLUP = "0x00000000000000000000000000000000000000cafe"
 export const SIPA = "0x1111111111111111111111111111111111111111" as const
+/** The pool's next address, once `SIPA` may still receive an unresolved send. */
+export const SIPA_NEXT = "0x2222222222222222222222222222222222222222" as const
 export const TX_HASH = field("0a")
 export const TOKEN_INFO = { address: TOKEN, name: "DAI", symbol: "DAI", decimals: 18 }
 

@@ -5,6 +5,7 @@ vi.mock("../src/platform/auth/useAuthenticator", () => ({
 }))
 import { reloadIfSessionSwitched } from "../src/features/onboarding/sessionReload"
 import { setActiveStorageId } from "../src/platform/storage/activeStorage"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import { loadWalletIdentity, saveWalletIdentity } from "../src/features/identity/walletIdentity"
 
 const address = `0x${"ab".repeat(32)}`
@@ -15,28 +16,33 @@ describe("reloadIfSessionSwitched", () => {
     h.stale = false
     h.reload.mockClear()
     vi.stubGlobal("window", { location: { reload: h.reload }, dispatchEvent: vi.fn() })
+    vi.stubGlobal("location", { reload: h.reload })
   })
   afterEach(() => vi.unstubAllGlobals())
 
-  it("reloads after an account switch and clears the unrelated entered identity", () => {
-    saveWalletIdentity({ address: "other-account", claimedAt: 1 })
+  it("reloads after an account switch and clears the unrelated entered identity", async () => {
+    await saveWalletIdentity({ address: "other-account", claimedAt: 1 })
     setActiveStorageId("new-account")
+    await walletStorage.flush()
     expect(reloadIfSessionSwitched("old-account", address)).toBe(true)
-    expect(h.reload).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(h.reload).toHaveBeenCalledTimes(1))
     expect(loadWalletIdentity()).toBeNull()
   })
 
-  it("reloads when recovery into an existing namespace left stores stale without an old pointer", () => {
+  it("reloads when recovery into an existing namespace left stores stale without an old pointer", async () => {
     h.stale = true
     setActiveStorageId("existing-account")
+    await walletStorage.flush()
     expect(reloadIfSessionSwitched(null, address)).toBe(true)
-    expect(h.reload).toHaveBeenCalledTimes(1)
+    await vi.waitFor(() => expect(h.reload).toHaveBeenCalledTimes(1))
   })
 
-  it("keeps a fresh or unchanged account on the current page", () => {
+  it("keeps a fresh or unchanged account on the current page", async () => {
     setActiveStorageId("same-account")
+    await walletStorage.flush()
     expect(reloadIfSessionSwitched(null, address)).toBe(false)
     expect(reloadIfSessionSwitched("same-account", address)).toBe(false)
+    await walletStorage.flush()
     expect(h.reload).not.toHaveBeenCalled()
   })
 })

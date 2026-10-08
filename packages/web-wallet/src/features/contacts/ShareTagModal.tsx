@@ -9,6 +9,7 @@ import { PhoneIcon, type PhoneIconName } from "../../ui/PhoneIcon"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { useCopy, useLinkSharing } from "../../ui/hooks"
 import { loadWalletIdentity } from "../identity/walletIdentity"
+import { useTagPresentationPending } from "../onboarding/webRegistration"
 import { mintMyConnectLink } from "./myCode"
 
 function ShareAction({
@@ -58,6 +59,8 @@ export function ShareTagModal({ onClose, onScan }: { onClose: () => void; onScan
   // missing, and its confirmation belongs on its own button.
   const { copied: shareCopied, share } = useLinkSharing(payload ?? undefined, "My zk.money tag")
   const { copied: linkCopied, copy: copyLink } = useCopy()
+  const inactive = useTagPresentationPending()
+  const handle = loadWalletIdentity()?.handle
 
   const mint = useCallback(async () => {
     if (!alive.current || inFlight.current) return
@@ -129,6 +132,11 @@ export function ShareTagModal({ onClose, onScan }: { onClose: () => void; onScan
           </GradientText>
           <span className="ww-share-tag__subtitle">{phone ? "Let other users find you" : "Let your friends find you"}</span>
         </div>
+        {inactive && handle && (
+          <span className="ww-share-tag__pending" data-testid="share-tag-inactive">
+            @{handle} isn't active yet, so it can't receive payments. People can still connect with you.
+          </span>
+        )}
 
         {payload ? (
           <>

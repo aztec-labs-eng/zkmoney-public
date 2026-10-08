@@ -1,0 +1,24 @@
+{
+  "scenario": "contact-search",
+  "path": "/contacts?flowFixture=success&nameFixture=reserved",
+  "ready": {
+    "selector": ".ww-panel"
+  },
+  "steps": [
+    {
+      "action": "fill",
+      "label": "Search @tag",
+      "value": "maria"
+    },
+    {
+      "action": "waitFor",
+      "text": "@maria is reserved"
+    },
+    {
+      "action": "screenshot",
+      "file": "12-search-reserved.png",
+      "state": "Contact search: a reserved tag cannot receive yet"
+    }
+  ],
+  "finalScreenshot": false
+}

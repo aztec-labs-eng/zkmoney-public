@@ -13,47 +13,49 @@ const account = { credentialId: "created-passkey", l2Address: `0x${"ab".repeat(3
 describe("ticket signup creation checkpoints", () => {
   beforeEach(() => localStorage.clear())
 
-  it("an interrupted attempt cannot be mistaken for an account or a new signup", () => {
-    const attempt = beginTicketSignupAccount("rp", "link", "alice")
+  it("an interrupted attempt cannot be mistaken for an account or a new signup", async () => {
+    const attempt = await beginTicketSignupAccount("rp", "link", "alice")
     expect(loadTicketSignupAttempt("rp", "link")).toEqual(attempt)
     expect(() => loadTicketSignupAccount("rp", "link")).toThrow("previous passkey attempt")
-    expect(() => beginTicketSignupAccount("rp", "link", "bob")).toThrow("already has a signup")
+    await expect(beginTicketSignupAccount("rp", "link", "bob")).rejects.toThrow(
+      "already has a signup",
+    )
   })
 
-  it("completes the same attempt with its original tag and survives reopening", () => {
-    const attempt = beginTicketSignupAccount("rp", "link", "alice")
-    completeTicketSignupAccount("rp", "link", attempt.attemptId, account)
+  it("completes the same attempt with its original tag and survives reopening", async () => {
+    const attempt = await beginTicketSignupAccount("rp", "link", "alice")
+    await completeTicketSignupAccount("rp", "link", attempt.attemptId, account)
     expect(loadTicketSignupAccount("rp", "link")).toEqual({ ...account, tag: "alice" })
     expect(() => restartTicketSignupAccount("rp", "link", attempt.attemptId)).toThrow(
       "already has an account",
     )
   })
 
-  it("a late completion cannot overwrite an explicitly restarted attempt", () => {
-    const first = beginTicketSignupAccount("rp", "link", "alice")
+  it("a late completion cannot overwrite an explicitly restarted attempt", async () => {
+    const first = await beginTicketSignupAccount("rp", "link", "alice")
     restartTicketSignupAccount("rp", "link", first.attemptId)
-    const second = beginTicketSignupAccount("rp", "link", "bob")
-    expect(() => completeTicketSignupAccount("rp", "link", first.attemptId, account)).toThrow(
+    const second = await beginTicketSignupAccount("rp", "link", "bob")
+    await expect(completeTicketSignupAccount("rp", "link", first.attemptId, account)).rejects.toThrow(
       "no longer active",
     )
     expect(loadTicketSignupAttempt("rp", "link")).toEqual(second)
   })
 
-  it("a tab that saw an older attempt cannot restart the one another tab began since", () => {
-    const first = beginTicketSignupAccount("rp", "link", "alice")
+  it("a tab that saw an older attempt cannot restart the one another tab began since", async () => {
+    const first = await beginTicketSignupAccount("rp", "link", "alice")
     // Tab A restarts and opens its ceremony while tab B still shows the first attempt.
     restartTicketSignupAccount("rp", "link", first.attemptId)
-    const second = beginTicketSignupAccount("rp", "link", "alice")
+    const second = await beginTicketSignupAccount("rp", "link", "alice")
     expect(() => restartTicketSignupAccount("rp", "link", first.attemptId)).toThrow(
       "restarted in another tab",
     )
     expect(loadTicketSignupAttempt("rp", "link")).toEqual(second)
-    completeTicketSignupAccount("rp", "link", second.attemptId, account)
+    await completeTicketSignupAccount("rp", "link", second.attemptId, account)
     expect(loadTicketSignupAccount("rp", "link")).toEqual({ ...account, tag: "alice" })
   })
 
-  it("an attempt restarted elsewhere cannot be restarted again before its successor is written", () => {
-    const first = beginTicketSignupAccount("rp", "link", "alice")
+  it("an attempt restarted elsewhere cannot be restarted again before its successor is written", async () => {
+    const first = await beginTicketSignupAccount("rp", "link", "alice")
     restartTicketSignupAccount("rp", "link", first.attemptId)
     expect(() => restartTicketSignupAccount("rp", "link", first.attemptId)).toThrow(
       "restarted in another tab",

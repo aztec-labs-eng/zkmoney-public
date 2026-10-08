@@ -135,4 +135,4 @@ without the flag carries none of it. Caveats and how to read a report:
 
 ## Passkey RP policy
 
-`VITE_PASSKEY_ENVIRONMENT` selects the RP for the wallet and its separately built `bridge.html`: `production` → `auth.zk.money`, `staging`/`preview` → `staging.zk.money`, `prod-preview` → `preview.zk.money`, `local` → `localhost`. Runtime network selection and desktop endpoint overrides cannot change it. Builds reject conflicting `VITE_PASSKEY_RP_ID` overrides and handoff origins from another environment. `passkey-target.json` records the selected environment and RP.
+`VITE_PASSKEY_ENVIRONMENT` selects the RP for the wallet: `production` → `auth.zk.money`, `staging`/`preview` → `staging.zk.money`, `prod-preview` → `preview.zk.money`, `local` → `localhost`. Runtime network selection and desktop endpoint overrides cannot change it. Builds reject conflicting `VITE_PASSKEY_RP_ID` overrides and handoff origins from another environment. `passkey-target.json` records the selected environment and RP.

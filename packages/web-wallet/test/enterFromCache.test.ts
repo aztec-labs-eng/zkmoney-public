@@ -5,6 +5,8 @@
  */
 import { Fr } from "@aztec/aztec.js/fields"
 import type { RecoverPasskeyResult } from "@obsidion/sdk"
+import { predictAccountAddressLocally } from "@oxide/l1-contracts"
+import { getContractAddress, type Address } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const h = vi.hoisted(() => ({
@@ -43,16 +45,19 @@ vi.mock("../src/config/oxideTuple", () => ({
   requireTupleField: (tuple: Record<string, string>, key: string) => tuple[key],
   l1PublicClient: () => ({}),
 }))
-const ACTIVE_FACTORY = `0x${"11".repeat(20)}`
-const PREVIOUS_FACTORY = `0x${"19".repeat(20)}`
+const { deriveBootstrapKey } = await import("@obsidion/front-core")
+const msk = Fr.random()
+const ACTIVE_FACTORY = `0x${"11".repeat(20)}` as const
+const PREVIOUS_FACTORY = `0x${"19".repeat(20)}` as const
 const REGISTRY = `0x${"22".repeat(20)}`
 const METADATA = `0x${"23".repeat(20)}`
-const ACTIVE_ACCOUNT = `0x${"33".repeat(20)}`
-const PREVIOUS_ACCOUNT = `0x${"39".repeat(20)}`
+/** The account the resolver predicts for the held key under `factory`. */
+const accountUnder = (factory: Address) =>
+  predictAccountAddressLocally(factory, deriveBootstrapKey(msk).address)
+const ACTIVE_ACCOUNT = accountUnder(ACTIVE_FACTORY)
 const generation = (fpcAddress: string, accountFactory: string) => ({
   fpcAddress,
   accountFactory,
-  implementation: `${accountFactory.slice(0, 40)}dd`,
   namePortal: `${accountFactory.slice(0, 40)}ee`,
   rollupVersion: "1",
 })
@@ -62,14 +67,13 @@ const CATALOG = [
 ]
 /** The chain the identity resolver really reads: both factories, one registry, one record. */
 const reader = {
-  predictAccountAddress: async (factory: string) =>
-    factory === PREVIOUS_FACTORY ? PREVIOUS_ACCOUNT : ACTIVE_ACCOUNT,
   readNameOf: async (_registry: string, account: string) =>
     account === ACTIVE_ACCOUNT ? await h.readNameOf() : await h.previousName(),
   readAccountMetadataRegistry: async () => METADATA,
   readUserRecord: async () => ({ l2Address: h.recordedL2(), rollupVersion: 1n }),
   readNamePortalRegistry: async () => REGISTRY,
-  readFactoryImplementation: async (factory: string) => `${factory.slice(0, 40)}dd`,
+  readFactoryImplementation: async (factory: string) =>
+    getContractAddress({ from: factory as Address, nonce: 1n }),
 }
 const published = { catalog: CATALOG as unknown[] }
 vi.mock("../src/features/onboarding/oxideGenerations", () => ({
@@ -92,7 +96,6 @@ const { enterWithPasskey, reusePasskeyAccount } = await import(
 )
 const { isGateCancelled } = await import("../src/features/identity/ceremonyGate")
 
-const msk = Fr.random()
 const ADDR = `0x${"aa".repeat(32)}`
 const PUBKEY = "ab".repeat(64)
 const account = {

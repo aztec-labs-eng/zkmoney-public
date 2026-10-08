@@ -26,6 +26,7 @@ const CHAIN_TIP = 4_321n;
 const CHAIN_TIP_HASH = `0x${'cd'.repeat(32)}` as Hex;
 
 const BALANCE_CONDITION: L1OperationCondition = L1OperationCondition.balance(TOKEN, SIPA);
+const MAX_AGE_MS = 48 * 60 * 60_000;
 
 function operation(condition: L1OperationCondition, overrides: Partial<PendingL1Operation> = {}): PendingL1Operation {
   return {
@@ -39,6 +40,7 @@ function operation(condition: L1OperationCondition, overrides: Partial<PendingL1
     condition,
     status: 'waiting',
     attempts: 0,
+    createdAt: new Date(),
     ...overrides,
   };
 }
@@ -90,7 +92,7 @@ function fakePublicClient(opts: ClientOpts = {}) {
 }
 
 function balanceWatcher(store: StateStore, client: PublicClient = fakePublicClient()) {
-  return new BalanceWatcher({ publicClient: client, store, tokens: [TOKEN], logWindow: 1_000n });
+  return new BalanceWatcher({ publicClient: client, store, tokens: [TOKEN], logWindow: 1_000n, maxAgeMs: MAX_AGE_MS });
 }
 
 const CURSOR_KEY = { source: LogCursorSources.l1OperationTransferDiscovery, address: EthAddress.ZERO };
@@ -114,6 +116,64 @@ describe('BalanceWatcher', () => {
       expect(calls(client, 'getBlock')).toHaveLength(0);
       expect(calls(client, 'getLogs')).toHaveLength(0);
       await expect(store.getL1Cursor(CURSOR_KEY)).resolves.toBeUndefined();
+    });
+  });
+
+  describe('max age', () => {
+    it('drops a waiting Balance operation older than the max age and then reads nothing from L1', async () => {
+      await withStore(async store => {
+        const expired = operation(BALANCE_CONDITION, { createdAt: new Date(Date.now() - MAX_AGE_MS - 1_000) });
+        await store.upsertPendingL1Operation(expired);
+        const client = fakePublicClient({ balance: 7n });
+
+        await expect(balanceWatcher(store, client).runOnce()).resolves.toBe(0);
+
+        await expect(store.getPendingL1Operation(expired.operationId)).resolves.toMatchObject({ status: 'dropped' });
+        expect(calls(client, 'readContract')).toHaveLength(0);
+        expect(calls(client, 'getLogs')).toHaveLength(0);
+      });
+    });
+
+    it('keeps a waiting Balance operation below the max age', async () => {
+      await withStore(async store => {
+        const recent = operation(BALANCE_CONDITION, { createdAt: new Date(Date.now() - MAX_AGE_MS + 60_000) });
+        await store.upsertPendingL1Operation(recent);
+
+        await balanceWatcher(store, fakePublicClient()).runOnce();
+
+        await expect(store.getPendingL1Operation(recent.operationId)).resolves.toMatchObject({ status: 'waiting' });
+      });
+    });
+
+    it('drops a waiting Balance operation that an older relayer already read and left', async () => {
+      await withStore(async store => {
+        const left = operation(BALANCE_CONDITION, {
+          createdAt: new Date(Date.now() - MAX_AGE_MS - 1_000),
+          lastBalanceCheckAt: new Date(Date.now() - MAX_AGE_MS),
+        });
+        await store.upsertPendingL1Operation(left);
+        await store.upsertL1Cursor({ ...CURSOR_KEY, blockNumber: CHAIN_TIP, blockHash: CHAIN_TIP_HASH });
+        const client = fakePublicClient();
+
+        await balanceWatcher(store, client).runOnce();
+
+        await expect(store.getPendingL1Operation(left.operationId)).resolves.toMatchObject({ status: 'dropped' });
+        expect(calls(client, 'getLogs')).toHaveLength(0);
+        await expect(store.getL1Cursor(CURSOR_KEY)).resolves.toBeUndefined();
+      });
+    });
+
+    it('does not drop a waiting operation of another condition kind', async () => {
+      await withStore(async store => {
+        const withdrawal = operation(L1OperationCondition.messageInOutbox(), {
+          createdAt: new Date(Date.now() - MAX_AGE_MS - 1_000),
+        });
+        await store.upsertPendingL1Operation(withdrawal);
+
+        await balanceWatcher(store, fakePublicClient()).runOnce();
+
+        await expect(store.getPendingL1Operation(withdrawal.operationId)).resolves.toMatchObject({ status: 'waiting' });
+      });
     });
   });
 

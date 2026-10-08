@@ -130,7 +130,7 @@ export async function setupTestnet(options?: SetupTestnetOptions): Promise<Testn
   // PXE MUST run with `proverEnabled: true` for testnet — the node's
   // `TxProofValidator` uses a real BB circuit verifier that rejects the
   // test prover's fake proofs with `Invalid proof`. Mirrors
-  // `packages/backend/scripts/bridgeFeeJuice.ts` which sets
+  // `packages/tooling/l2-contracts-deployer/scripts/bridgeFeeJuice.ts` which sets
   // `proverEnabled = !isSandbox`. (Server-side PXE proving for testnet
   // is several seconds per circuit — WASM via bb.js.)
   const wallet = await ObsidionWalletTest.create(node, {

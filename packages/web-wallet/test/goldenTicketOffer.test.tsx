@@ -72,6 +72,15 @@ describe("useGoldenTicketOffer", () => {
     expect(state()).toBe("none")
   })
 
+  it.each(["3.5", "", "0x3"])(
+    "reads a threshold that is not base units (%j) as a failed read, not an offer",
+    async (threshold) => {
+      fetchMock.mockResolvedValueOnce(response({ goldenTicket: { ...OFFER, threshold } }))
+      await mount()
+      expect(state()).toBe("failed")
+    },
+  )
+
   it("keeps a failed read apart from an absent offer, and reads again on retry", async () => {
     fetchMock.mockResolvedValueOnce(response({ error: "account service unavailable" }, 503))
     await mount()

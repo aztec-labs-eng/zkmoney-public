@@ -321,23 +321,6 @@
       "action": "screenshot",
       "file": "onboarding-funded.png",
       "state": "onboarding funded"
-    },
-    {
-      "action": "goto",
-      "path": "/claim?demo=onboarding&mock=carousel&handle=demo"
-    },
-    {
-      "action": "waitFor",
-      "selector": ".ww-invite"
-    },
-    {
-      "action": "wait",
-      "ms": 400
-    },
-    {
-      "action": "screenshot",
-      "file": "onboarding-carousel.png",
-      "state": "onboarding carousel"
     }
   ],
   "finalScreenshot": false,

@@ -64,7 +64,7 @@ describe("buildRequestRows", () => {
     expect(row).toMatchObject({
       kind: "outgoingLink",
       counterparty: "Requested via link",
-      statusLabel: "Pending",
+      statusLabel: "Unpaid",
       amount: "+$47.63",
     })
     expect(row.contactTag).toBeUndefined()
@@ -95,24 +95,24 @@ describe("buildRequestRows", () => {
     }
   })
 
-  it("keeps a link row 'Pending' with no deposit, an unfunded one, or another SIPA's", () => {
+  it("keeps a link row 'Unpaid' with no deposit, an unfunded one, or another SIPA's", () => {
     const request = req({
       direction: "outgoing",
       kind: "link",
       contactTag: "",
       sipaAddress: "0xabc1",
     })
-    expect(buildRequestRows([request], NOW)[0].statusLabel).toBe("Pending")
+    expect(buildRequestRows([request], NOW)[0].statusLabel).toBe("Unpaid")
     expect(
       buildRequestRows([request], NOW, [
         { sipaAddress: "0xabc1", phase: "broadcast", amount: "0" },
       ])[0].statusLabel,
-    ).toBe("Pending")
+    ).toBe("Unpaid")
     expect(
       buildRequestRows([request], NOW, [
         { sipaAddress: "0xother", phase: "sweeping", amount: "9" },
       ])[0].statusLabel,
-    ).toBe("Pending")
+    ).toBe("Unpaid")
   })
 
   it("ignores deposits for contact rows", () => {

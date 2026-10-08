@@ -1,7 +1,7 @@
 import { oxideAccountPasskey } from "../../platform/auth/oxideAccountPasskey"
 /**
- * The `recoverERC20` exit in the browser: pulls a SIPA deposit the sweep path can never move back
- * out to an L1 address the user controls. front-core's `runSipaRecovery` owns the key derivation,
+ * The `recoverERC20` / `recoverETH` exit in the browser: pulls a SIPA deposit the sweep path can
+ * never move back out to an L1 address the user controls. front-core's `runSipaRecovery` owns the key derivation,
  * the signature and the store write; this file supplies the browser collaborators — an L1
  * submission channel and the pre-submit balance read that stops a recovery from settling a record
  * it never moved.
@@ -13,6 +13,7 @@ import { oxideAccountPasskey } from "../../platform/auth/oxideAccountPasskey"
  */
 import {
   erc20Abi,
+  formatUnits,
   isAddress,
   type Address,
   type Hex,
@@ -34,6 +35,10 @@ import {
   type SIPADepositRecord,
   type SipaRecoverCandidate,
   type SipaRecoveryDeps,
+  isNativeEth,
+  isSettledSipaPhase,
+  NATIVE_ETH,
+  type SipaFundingToken,
 } from "@obsidion/front-core"
 import {
   predictSIPA,
@@ -52,18 +57,20 @@ import {
   requireTupleField,
 } from "../../config/oxideTuple"
 import { registrationRefundConfirmed } from "../onboarding/registrationQuoteRecovery"
+import { healRegistrationDeposits } from "../onboarding/registrationDepositSeed"
 import { registrationRecordForSipa } from "../onboarding/webRegistration"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { isDesktopL1SubmitActive, submitViaDesktopBridge } from "../../platform/desktopBridge"
 import { WebStorageAdapter } from "../../platform/storage/WebStorageAdapter"
 import { getL1Clients } from "./l1Wallet"
-import { readSipaDeployed } from "./sipaSweep"
+import { AlreadySweptError, readSipaDeployed, UNTRACKED_TOKEN_ZERO } from "./sipaSweep"
+import { sipaFundingTokens } from "./loadDepositFacts"
 
 /** The stuck-sweep clock the activity feed and both exits share. */
 export { isStuckSweep, STUCK_SWEEP_MS }
 
 /** Why a record offers the exit: `unsweepable` can never be swept, `stuck` still can. */
-export type RecoveryReason = "unsweepable" | "stuck" | "registration-quote"
+export type RecoveryReason = "unsweepable" | "stuck" | "registration-quote" | "stranded"
 
 /** Progress of one L1 submission — shared by both exits. */
 export type L1ExitStage = "signing" | "awaiting-browser" | "confirming"
@@ -93,26 +100,31 @@ export interface L1ExitChannel {
 export interface RecoveryDeps {
   channel: L1ExitChannel
   chainId: number
-  /** Fallback token for records predating `tokenAddress` tracking. */
-  token: Address
-  /** The SIPA's live token balance. */
+  /** Every token the address accepts, the manifest token first. */
+  tokens: [SipaFundingToken, ...SipaFundingToken[]]
   readBalance: (sipa: Address, token: Address) => Promise<bigint>
+  readEthBalance: (sipa: Address) => Promise<bigint>
   /** A confirmed recovery's receipt, for what it moved. */
   readReceipt: (hash: Hex) => Promise<TransactionReceipt>
   /** Deploy capability for an undeployed SIPA (see `SipaRecoveryDeps.deployment`). */
   deployment: SipaRecoveryDeps["deployment"]
-  store: Pick<SIPADepositStore, "get" | "upsert">
+  store: Pick<SIPADepositStore, "get" | "upsert" | "update">
   stealthKey: () => Promise<SipaRecoveryDeps["stealthKey"]>
   signAccount?: SipaRecoveryDeps["signAccount"]
   accountInitCode?: Hex
+  /**
+   * A token the person names in Settings, recovered with the others. A settled record keeps its
+   * history: the recovery writes nothing to it or to its registration.
+   */
+  stranded?: SipaFundingToken
   /** Injectable for tests. */
   run?: typeof runSipaRecovery
 }
 
 /**
- * Guard the recovery, then run it. The balance read is load-bearing: a `recoverERC20` over an
- * already-swept SIPA transfers nothing yet still confirms, which would settle the record as
- * `recovered` and hide a deposit that is on its way into the balance.
+ * Guard the recovery, then run it. It moves every token that has a balance when it is read, so no
+ * sweep has to move a token left at an address the recovery deploys. A token without a balance is
+ * left out, because its recovery call reverts on the empty balance.
  */
 export async function recoverSipaDeposit(
   record: SIPADepositRecord,
@@ -123,38 +135,99 @@ export async function recoverSipaDeposit(
       "This wallet is still looking up this deposit's details. Recovery becomes available once it has them.",
     )
   }
-  const token = record.tokenAddress ?? deps.token
-  const balance = await deps.readBalance(record.sipaAddress, token)
-  if (balance === 0n) {
-    // A record without its own token read the CURRENT deployment's token — on a historic-generation
-    // SIPA that read is against the wrong contract, so zero is inconclusive there.
-    throw new Error(
-      record.tokenAddress
-        ? "This deposit has already been swept. It will appear in your balance shortly."
-        : "This deposit reads as already swept, but it predates token tracking — if it was made on an older deployment, report it from Settings before assuming the funds moved.",
-    )
+  const same = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
+  // A record naming a token off the list (a historic deployment's) is read too.
+  const named = record.tokenAddress
+  const erc20s: SipaFundingToken[] = [...deps.tokens]
+  const addToken = (t: SipaFundingToken) => {
+    if (!isNativeEth(t.address) && !erc20s.some((e) => same(e.address, t.address))) erc20s.push(t)
   }
-  const hash = await (deps.run ?? runSipaRecovery)({
+  if (named)
+    addToken({
+      address: named,
+      symbol: record.tokenSymbol ?? "",
+      decimals: record.tokenDecimals ?? deps.tokens[0].decimals,
+    })
+  const stranded = deps.stranded
+  if (stranded) addToken(stranded)
+  const account = record.origin?.protocol === "account"
+  const listed = account ? [...erc20s, NATIVE_ETH] : erc20s
+  const balances = await Promise.all(
+    listed.map((t) =>
+      isNativeEth(t.address)
+        ? deps.readEthBalance(record.sipaAddress)
+        : deps.readBalance(record.sipaAddress, t.address),
+    ),
+  )
+  const held = listed.filter((_, i) => balances[i]! > 0n)
+  if (stranded && !held.some((t) => same(t.address, stranded.address))) {
+    throw new Error(`This deposit address no longer holds any ${stranded.symbol}.`)
+  }
+  const token = held.find((t) => named && same(t.address, named)) ?? held[0]
+  if (!token) {
+    if (isNativeEth(named)) {
+      throw new Error(
+        account
+          ? "This deposit address holds no ETH. It may already have been recovered."
+          : "This deposit address cannot recover ETH. Contact support to move it.",
+      )
+    }
+    throw named ? new AlreadySweptError() : new Error(UNTRACKED_TOKEN_ZERO)
+  }
+  const moved =
+    named && same(token.address, named)
+      ? record
+      : {
+          ...record,
+          tokenAddress: token.address,
+          tokenSymbol: token.symbol,
+          tokenDecimals: token.decimals,
+        }
+  const others = held.filter((t) => t !== token).map((t) => t.address)
+  // Checked at each write: a sync can settle the record while the recovery is signed.
+  let kept = false
+  const store: RecoveryDeps["store"] = stranded
+    ? {
+        get: (sipa) => deps.store.get(sipa),
+        update: (sipa, patch) => deps.store.update(sipa, patch),
+        upsert: async (sipa, patch) =>
+          (await deps.store.update(sipa, (current) => {
+            if (!isSettledSipaPhase(current.phase)) return patch
+            kept = true
+            return null
+          })) ?? record,
+      }
+    : deps.store
+  const hash = await runRecovery(moved, [token.address, ...others], { ...deps, store })
+  if (kept) return hash
+  await registrationRefundConfirmed(
+    record.sipaAddress,
+    (held.find((t) => !isNativeEth(t.address)) ?? token).address,
+    deps.chainId,
+    hash,
+    deps.readReceipt,
+  ).catch(() => {})
+  return hash
+}
+
+async function runRecovery(
+  record: SIPADepositRecord,
+  tokens: [Address, ...Address[]],
+  deps: RecoveryDeps,
+) {
+  return await (deps.run ?? runSipaRecovery)({
     record,
     stealthKey: await deps.stealthKey(),
     signAccount: deps.signAccount,
     accountInitCode: deps.accountInitCode,
     target: deps.channel.target,
-    token,
+    tokens,
     chainId: deps.chainId,
     deployment: deps.deployment,
     sendTransaction: deps.channel.sendTransaction,
     waitForReceipt: deps.channel.waitForReceipt,
     store: deps.store,
   })
-  await registrationRefundConfirmed(
-    record.sipaAddress,
-    token,
-    deps.chainId,
-    hash,
-    deps.readReceipt,
-  ).catch(() => {})
-  return hash
 }
 
 /**
@@ -252,6 +325,7 @@ export interface RecoverDepositOptions {
   from?: Hex
   onHelperOpened?: (submitUrl: string) => void
   onStage?: (stage: L1ExitStage) => void
+  stranded?: RecoveryDeps["stranded"]
 }
 
 /** Recover `record` over whichever channel this build has. Resolves to the L1 recovery tx hash. */
@@ -279,7 +353,14 @@ export async function recoverDeposit(
       display: {
         title: "Recover your zk.money deposit",
         lines: [
-          ["Amount", `${depositAmounts(record).grossDisplay} ${record.tokenSymbol}`],
+          [
+            "Amount",
+            opts.stranded
+              ? `All ${opts.stranded.symbol}, and any deposit tokens at the address`
+              : `${depositAmounts(record).grossDisplay} ${
+                  record.tokenSymbol
+                }, and any other tokens at the address`,
+          ],
           ["Deposit address", record.sipaAddress],
           ["Recovered to", destination],
         ],
@@ -315,13 +396,21 @@ export async function recoverDeposit(
   return await recoverSipaDeposit(record, {
     channel,
     chainId: config.l1ChainId,
-    token,
-    readBalance: (sipa, tok) => readSipaTokenBalance(publicClient, sipa, tok),
+    tokens: sipaFundingTokens(config.network, token),
+    readBalance: (sipa, token) =>
+      publicClient.readContract({
+        address: token,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [sipa],
+      }),
+    readEthBalance: (address) => publicClient.getBalance({ address }),
     readReceipt: (hash) => publicClient.getTransactionReceipt({ hash }),
     deployment: await recoveryDeployment(publicClient, record, tuple),
     store: SIPADepositStore.get(new WebStorageAdapter()),
     stealthKey: webStealthKey,
     accountInitCode,
+    stranded: opts.stranded,
     signAccount: (account, hash) =>
       signAccountDigest({ account, hash, chainId: config.l1ChainId, bootstrap, reader, passkey }),
   })
@@ -343,6 +432,7 @@ async function recoveryDeployment(
     const { historic } = await IntraRollupMigrationService.detectHistoricDeployments({
       ...config.oxideProfile,
       network: config.network,
+      publicClient,
     })
     for (const candidate of [tuple, ...historic]) {
       if (
@@ -426,16 +516,51 @@ async function registrationCandidate(
     : { protocol: "account", sipaFactory, args: derivation.sipaArgs }
 }
 
-/** The SIPA's current token balance. */
-export function readSipaTokenBalance(
-  publicClient: PublicClient,
+/** What the Settings recovery needs for a token stranded at one of this wallet's deposit addresses. */
+export async function readStrandedToken(
   sipa: Address,
   token: Address,
-): Promise<bigint> {
-  return publicClient.readContract({
-    address: token,
-    abi: erc20Abi,
-    functionName: "balanceOf",
-    args: [sipa],
-  })
+): Promise<{ record: SIPADepositRecord; token: SipaFundingToken; balance: string }> {
+  const config = getConfig()
+  // A registration address has a deposit record only once the registration seeds one.
+  const healed = await healRegistrationDeposits(config).then(
+    () => true,
+    () => false,
+  )
+  const store = SIPADepositStore.get(new WebStorageAdapter())
+  await store.load()
+  const record = store.get(sipa)
+  if (!record) {
+    throw new Error(
+      healed
+        ? "This wallet has no deposit at that address. Open the wallet that made the address and try there."
+        : "Couldn't check this wallet's registration addresses. Check your connection and try again.",
+    )
+  }
+  if (record.l1ChainId !== config.l1ChainId) {
+    throw new Error("This deposit address is on another network. Switch networks and try again.")
+  }
+  if (!record.messageSecret) {
+    throw new Error(
+      "This wallet is still looking up this deposit's details. Try again once it has them.",
+    )
+  }
+  const client = l1PublicClient(config)
+  const erc20 = { address: token, abi: erc20Abi } as const
+  const balance = await client
+    .readContract({ ...erc20, functionName: "balanceOf", args: [sipa] })
+    .catch(() => {
+      throw new Error("That address is not an ERC-20 token on this network.")
+    })
+  if (balance === 0n) throw new Error("This deposit address holds none of that token.")
+  const [symbol, decimals] = await Promise.all([
+    client.readContract({ ...erc20, functionName: "symbol" }).catch(() => "tokens"),
+    client.readContract({ ...erc20, functionName: "decimals" }).catch(() => undefined),
+  ])
+  // Recovery needs only the address; without decimals the amount cannot be shown, so it reads "All".
+  return {
+    record,
+    token: { address: token, symbol, decimals: decimals ?? 18 },
+    balance: decimals === undefined ? "All" : formatUnits(balance, decimals),
+  }
 }

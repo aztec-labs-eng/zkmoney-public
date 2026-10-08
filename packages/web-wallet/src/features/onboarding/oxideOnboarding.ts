@@ -44,7 +44,6 @@ import {
   type BootstrapKeyProvider,
   NameClaimStore,
   type PendingRegistrationRecord,
-  type NameClaimResponse,
   type NameTakenReason,
   type OxideL1Reader,
   type OxideRegistrationSessionDeps,
@@ -53,13 +52,13 @@ import {
   type ResolvedMsk,
   type OxideRegistrationStage,
   type OxideSignDeps,
-  type RegistrationBroadcaster,
   goldenTicketCoverage,
 } from "@obsidion/front-core"
 import { SANDBOX_REGISTRATION_BENEFICIARY_ID } from "@obsidion/core/constants"
-import type { RegistrationSchedule } from "@obsidion/core/types"
+import type { NameClaimResponse, RegistrationSchedule } from "@obsidion/core/types"
 import { makeRegistrationDepositSeeder } from "./registrationDepositSeed"
 import {
+  claimTerms,
   readRegistrationSchedule,
   resolveBeneficiary,
   saveRegistrationTerms,
@@ -74,7 +73,7 @@ import {
 } from "./webRegistration"
 import { updateTicketSignup, type TicketSignupStash } from "../paylink/claimStash"
 import { redeemGoldenTicketForLink } from "./goldenTicket"
-import { createWebRegistrationBroadcaster } from "./webRegistrationBroadcast"
+import { rememberRegistrationPayload } from "../broadcasts/broadcasts"
 import {
   ContractService,
   type ObsidionWallet,
@@ -105,42 +104,13 @@ import {
   isUnsettled,
 } from "../../platform/auth/WebAlphaAuthService"
 import { usertagFor } from "../../platform/auth/WebPasskeyIdentityMap"
-import {
-  awaitHandoffMaterial,
-  takeHandoffMaterial,
-  type HandoffMaterial,
-} from "../../platform/storage/handoffMaterial"
+import { takeHandoffMaterial } from "../../platform/storage/handoffMaterial"
 import { anchorTiers, bootstrapKeyProvider, enterTiers, requireResolved } from "./recoveryProbes"
 import { generationFactories, loadOxideGenerations } from "./oxideGenerations"
 import { resolveTagForCommit } from "../contacts/registryResolution"
 
-const NAME_GRANT_KEY = "obsidion.name-grant"
-let nameGrant: string | undefined
-
-export function stashInboundNameGrant(): void {
-  const url = new URL(window.location.href)
-  if (!url.searchParams.has("grant")) return
-
-  nameGrant = url.searchParams.get("grant") || undefined
-  try {
-    if (nameGrant) window.sessionStorage.setItem(NAME_GRANT_KEY, nameGrant)
-    else window.sessionStorage.removeItem(NAME_GRANT_KEY)
-  } catch {
-    // The in-memory copy still keeps this page's claim usable when storage is unavailable.
-  }
-
-  url.searchParams.delete("grant")
-  window.history.replaceState(window.history.state, "", url)
-}
-
-export function nameGrantToken(): string | undefined {
-  if (nameGrant) return nameGrant
-  try {
-    return window.sessionStorage.getItem(NAME_GRANT_KEY) ?? undefined
-  } catch {
-    return undefined
-  }
-}
+import { nameGrantToken } from "./nameGrant"
+export { nameGrantToken, stashInboundNameGrant } from "./nameGrant"
 
 export type ClaimStatus = "reserved" | "claimed"
 
@@ -156,6 +126,8 @@ export type EnterResult =
       bootstrap: PrivateKeyAccount
       /** The wire domain a claimed tag hashes under, to name a reservation the caller finds. */
       ensDomain: string
+      /** The name the passkey carries, to name that reservation without asking. */
+      userHandle?: string
     }
   /** Claim found; the plaintext tag is needed to name it (hash-only on-chain). */
   | { entered: false; reason: "confirm"; claim: EnteredClaim; account: ObsidionAccount }
@@ -368,7 +340,7 @@ export const HANDOFF_POLICY_VERSION = "phone-v1"
 
 /**
  * Which passkey a ceremony asks for: a hinted hand-off, a known credential, or the open chooser.
- * `handoff` marks the hand-off navigation itself, the one place bridge material may be taken.
+ * `handoff` marks the hand-off navigation itself, the one place hand-off material may be taken.
  * `discover` runs a discoverable ceremony (no credential pinned); `chooser` bypasses the
  * ceremony-free sources (cache and hand-off) so no saved key answers.
  */
@@ -381,8 +353,8 @@ export type CeremonyRequest = {
 }
 
 /**
- * Where the key comes from, decided without a ceremony: material the campaign bridge left for
- * this hand-off, the key this session already holds, or a ceremony described by `request`.
+ * Where the key comes from, decided without a ceremony: material the campaign handed off on this
+ * page load, the key this session already holds, or a ceremony described by `request`.
  */
 /** The hand-off needs a passkey prompt, which only a user's tap may open. */
 export class CeremonyRequiredError extends Error {
@@ -397,53 +369,6 @@ export type KeySource =
   | { kind: "cache"; result: RecoverPasskeyResult }
   | { kind: "ceremony-required"; request: CeremonyRequest }
 
-/** How long a hand-off waits for the bridge's write when the material is not there yet. */
-const HANDOFF_MATERIAL_WAIT_MS = 2_000
-
-let primedMaterial: { key: string; value: Promise<HandoffMaterial | null> } | undefined
-
-/**
- * Start waiting for the campaign bridge's write now.
- *
- * A passkey prompt may only open while the user's tap still counts as activation, and this wait
- * would otherwise sit between the two and spend it — leaving the browser to offer another device
- * instead of the passkey sitting on this one. Called as the hand-off screen opens, the wait is
- * over by the time anything is tapped.
- */
-export function primeHandoffMaterial(credentialId: string | undefined): void {
-  if (!credentialId) return
-  const rpId = getAuthService()?.rpId
-  if (!rpId) return
-  const key = `${rpId}:${credentialId}`
-  if (primedMaterial?.key === key) return
-  const value = awaitHandoffMaterial(credentialId, rpId, HANDOFF_MATERIAL_WAIT_MS)
-  value.catch(() => {})
-  primedMaterial = { key, value }
-}
-
-/**
- * The primed wait when it is for this passkey, else a fresh one. A primed wait that ended empty
- * may simply have been early — the frame's write can land after it — so the tap reads once more,
- * without waiting: the read costs nothing the tap needs.
- */
-function handoffMaterialFor(credentialId: string, rpId: string): Promise<HandoffMaterial | null> {
-  const key = `${rpId}:${credentialId}`
-  if (primedMaterial?.key === key) {
-    // The wait is spent once. Every later attempt for this passkey reads storage at once instead:
-    // the material is single-take, and a tap must never sit through a second wait — on a phone
-    // that wait alone would cost the activation the prompt needs.
-    const { value } = primedMaterial
-    primedMaterial = { key, value: Promise.resolve(null) }
-    return value.then((material) => material ?? takeHandoffMaterial(credentialId, rpId))
-  }
-  return awaitHandoffMaterial(credentialId, rpId, HANDOFF_MATERIAL_WAIT_MS)
-}
-
-/** Test seam: forget a primed wait. */
-export function __resetPrimedHandoffMaterialForTests(): void {
-  primedMaterial = undefined
-}
-
 /**
  * `restore: false` consults only a key already in memory: a call answering a tap must not start
  * the cache proof on the way to the prompt.
@@ -457,7 +382,7 @@ export async function resolveKeySource(
   if (request.chooser) return { kind: "ceremony-required", request }
   const service = getAuthService()
   if (request.handoff && request.credentialId) {
-    const material = await handoffMaterialFor(request.credentialId, service.rpId)
+    const material = takeHandoffMaterial(request.credentialId, service.rpId)
     if (material) {
       try {
         return {
@@ -518,7 +443,9 @@ async function ceremonyPath(
   own?: PasskeyRequestScope,
 ) {
   if (cancel?.aborted) throw new GateCancelledError()
-  const { signal } = await gate()
+  // A hand-off's prompt runs off no button of its own, so the gate holds a sheet even on a phone:
+  // the tap it waits for is the activation the assertion needs.
+  const { signal } = await gate(request.handoff ? { anchor: true } : undefined)
   if (cancel?.aborted) throw new GateCancelledError()
   const attempt = attemptFrom(signal)
   try {
@@ -616,6 +543,7 @@ async function withinBudget<T>(
 async function installedKeyFor(
   recovered: UnsettledRecovery,
   l1: OxideL1Reader,
+  registry: Hex,
   accountFactories: readonly Hex[],
   cancels: readonly AbortSignal[],
 ): Promise<string | undefined> {
@@ -626,6 +554,7 @@ async function installedKeyFor(
     (stop) =>
       readInstalledPasskeyKey(masterKeys, recovered.pubkeyCandidates, {
         reader: l1,
+        registry,
         accountFactories,
         stop,
       }),
@@ -799,6 +728,8 @@ export interface ResolvedHandoff {
   attempt?: AbortSignal
   /** The caller's cancel; the adoption asks it beside the attempt before every write. */
   cancel?: AbortSignal
+  /** Where the key in `recovered` came from, after any fallback from hand-off material. */
+  keySource: "handoff" | "cache" | "ceremony"
 }
 
 /**
@@ -816,7 +747,7 @@ export async function resolveHandoff(
   hints: PasskeyHints | undefined,
   gate: CeremonyGate,
   signal?: AbortSignal,
-  /** Take the bridge's material or refuse: no prompt, so this can run with no tap behind it. */
+  /** Take the hand-off material or refuse: no prompt, so this can run with no tap behind it. */
   silentOnly = false,
   own?: PasskeyRequestScope,
 ): Promise<ResolvedHandoff> {
@@ -870,20 +801,21 @@ export async function resolveHandoff(
   if (source === "handoff" && everySlot && !(await derivesRecorded(recovered))) {
     recovered = { ...recovered, expectedAddress: undefined }
   }
-  // Bridge material that does not derive this browser's own record for its passkey (the campaign
+  // Hand-off material that does not derive this browser's own record for its passkey (the campaign
   // evaluates one slot) is no candidate for that record: it is spent, and the ceremony decides.
   const usable = source !== "handoff" || (await derivesRecorded(recovered))
   let result: ResolvedMsk = usable ? await decide(recovered) : { kind: "unknown" }
-  // Bridge material no anchor names was taken once and is gone; the ceremony decides as before.
+  // Hand-off material no anchor names was taken once and is gone; the ceremony decides as before.
   if (result.kind === "unknown" && source === "handoff") {
     if (silentOnly) throw new CeremonyRequiredError()
     ;({ recovered: begun, attempt } = await ceremonyPath(
-      { credentialId: hints?.credentialId, pubkeyHex: hints?.pubkeyHex, discover: hints?.discover },
+      { credentialId: hints?.credentialId, pubkeyHex: hints?.pubkeyHex, discover: hints?.discover, handoff: true },
       gate,
       signal,
       own,
     ))
     recovered = await settleRecovery(begun, gate, attempt)
+    source = "ceremony-required"
     // The ceremony holds every slot this passkey has. A record none of them derives is stale by
     // the same reasoning as above, and must not fail the sign-in closed.
     if (!(await derivesRecorded(recovered))) {
@@ -904,7 +836,14 @@ export async function resolveHandoff(
   )
   throwIfCancelled(attemptFrom(attempt))
   if (signal?.aborted) throw new GateCancelledError()
-  return { recovered, msk: resolved.msk, slot: resolved.slot, attempt, cancel: signal }
+  return {
+    recovered,
+    msk: resolved.msk,
+    slot: resolved.slot,
+    attempt,
+    cancel: signal,
+    keySource: source === "ceremony-required" ? "ceremony" : source,
+  }
 }
 
 /**
@@ -957,15 +896,11 @@ async function narrowToHint<R extends BeginRecoveryResult>(
 export type ClaimTagOutcome =
   | { kind: "custody"; confirmed: boolean; oxideAccount: string }
   /** `claim` is the fresh NameClaim (+ optional fee waiver) the deposit screen renders — in memory
-   *  only, same as the session result it comes from; a resumed record has no claim to show.
-   *  `broadcastDone` resolves when the deferred broadcast lands (true) or fails (false), and only
-   *  once `startBroadcast` has run it: the screen picks when the proof costs the page. */
+   *  only, same as the session result it comes from; a resumed record has no claim to show. */
   | {
       kind: "pending"
       oxideAccount: string
       claim: NameClaimResponse
-      broadcastDone?: Promise<boolean>
-      startBroadcast?: () => Promise<boolean>
       /** The network paused paylink tickets before this signup's was redeemed; `claim.terms` say
        *  whether one redeemed earlier still priced it. */
       ticketUnavailable?: true
@@ -982,6 +917,7 @@ function bootstrapProviderFor(masterSecret: OnboardingKeys["secretKey"]): Bootst
 export function accountServiceFor(
   config: WebWalletConfig,
   keys: Pick<OnboardingKeys, "secretKey">,
+  handle?: string,
 ): AccountServiceClient {
   // The bootstrap key names the subject in test mode too, so the sandbox binds claims (and earned
   // entitlements) to the same subject production does.
@@ -990,40 +926,8 @@ export function accountServiceFor(
     // Sandbox testMode skips the HTTP gate; the bootstrap subject still names the ticket owner
     // and the NameClaim's keyId, so the ticket's entitlement prices the claim.
     bootstrapProvider: bootstrapProviderFor(keys.secretKey),
-    grantToken: nameGrantToken(),
+    grantToken: handle ? nameGrantToken(handle) : undefined,
   })
-}
-
-/**
- * The broadcast leg when no wallet is in hand — the machine still returns `awaiting_deposit` (the
- * deposit address is valid; funds wait at the counterfactual address) and a later tick re-broadcasts
- * once the wallet is unlocked. The real rail is {@link createWebRegistrationBroadcaster} (D3a).
- */
-const registrationBroadcastSeam: RegistrationBroadcaster = async (payload) => {
-  console.warn(
-    "[oxideOnboarding] no wallet wired for the registration broadcast — SIPA",
-    payload.sipaAddress,
-    "will be re-broadcast by a later tick once the wallet is available",
-  )
-}
-
-/** The registration broadcaster for this session: the real ClaimFPC-sponsored rail when the wallet
- *  is unlocked, else the deposit-address-only fallback a later tick re-broadcasts. */
-function broadcasterFor(
-  handle: string,
-  keys: OnboardingKeys,
-  config: WebWalletConfig,
-  wallet?: ObsidionWallet,
-): RegistrationBroadcaster {
-  return wallet
-    ? createWebRegistrationBroadcaster({
-        wallet,
-        account: keys.account,
-        contractService: ContractService.getInstance(),
-        config,
-        handle,
-      })
-    : registrationBroadcastSeam
 }
 
 /** The current account's passkey credential id, or a loud failure — registration installs the r1 key
@@ -1041,7 +945,6 @@ async function registrationSessionDeps(
   handle: string,
   keys: OnboardingKeys,
   config: WebWalletConfig,
-  wallet?: ObsidionWallet,
   onStage?: (stage: OxideRegistrationStage) => void,
 ): Promise<OxideRegistrationSessionDeps> {
   const { tuple, env, publicClient } = await oxideEnvFor(config)
@@ -1050,7 +953,7 @@ async function registrationSessionDeps(
     env,
     masterSecret: keys.secretKey,
     l2Address: keys.account.getAddress().toString() as Hex,
-    accountService: accountServiceFor(config, keys),
+    accountService: accountServiceFor(config, keys, handle),
     beneficiary: await resolveBeneficiary(config, Number(SANDBOX_REGISTRATION_BENEFICIARY_ID)),
     // Read live at derivation: the committed fee must be exactly what the controller checks at
     // sweep, and signed terms (when the claim carries them) take precedence over this schedule.
@@ -1065,14 +968,10 @@ async function registrationSessionDeps(
       tuple,
       network: config.network,
     }),
-    broadcast: broadcasterFor(handle, keys, config, wallet),
     seedSipaDeposit: makeRegistrationDepositSeeder({
       feeToken: env.feeToken,
       l1ChainId: env.l1ChainId,
     }),
-    // The address is revealed at the checkpoint; the broadcast (client proving + a block) continues
-    // behind the pending step and reports through the outcome's broadcastDone.
-    deferBroadcast: true,
     pendingStore: getPendingStore(),
     onStage,
   }
@@ -1080,7 +979,8 @@ async function registrationSessionDeps(
 
 /**
  * The link's note covers the ticket burn on the advertised ticket schedule at the portal's live
- * cut. An unread cut or an unadvertised schedule prices nothing, and nothing is spent on a guess.
+ * cut, with no prover tip: registration does not need one, so gas never fails a link here. An
+ * unread cut or an unadvertised schedule prices nothing, and nothing is spent on a guess.
  */
 export async function linkCoversTicketBurn(
   amount: bigint,
@@ -1088,7 +988,8 @@ export async function linkCoversTicketBurn(
 ): Promise<boolean> {
   if (!advertised) return false
   const cut = await currentFpcFundingCut()
-  return goldenTicketCoverage(amount, advertised, { withdrawalCut: cut, depositCut: cut }).covers
+  return goldenTicketCoverage(amount, advertised, { withdrawalCut: cut, depositCut: cut }, 0n)
+    .covers
 }
 
 /** How a ticket-funded signup's redemption went before its claim was signed. */
@@ -1142,21 +1043,20 @@ export function checkpointRegistrationTerms(
   claim: NameClaimResponse,
   opts: { earnedExpected: boolean; ticket: TicketSignupStash | null },
 ): RegistrationTerms {
-  const link =
-    opts.ticket && wireTermsFundTicket(claim.terms) ? linkIdentity(opts.ticket.fragment) : undefined
+  const ticket = opts.ticket && wireTermsFundTicket(claim.terms) ? opts.ticket : null
   return {
     account,
     tag,
-    deadline: Number(claim.deadline),
-    ...(claim.terms
+    ...claimTerms(claim),
+    ...(opts.earnedExpected ? { earnedExpected: true } : {}),
+    ...(ticket
       ? {
-          fee: claim.terms.fee,
-          minDeposit: claim.terms.minDeposit,
-          feeWaived: claim.terms.reduced === true,
+          paylinkFunded: true,
+          paylinkId: linkIdentity(ticket.fragment),
+          ...(ticket.proverTip !== undefined ? { proverTip: ticket.proverTip } : {}),
+          ...(ticket.speed !== undefined ? { speed: ticket.speed } : {}),
         }
       : {}),
-    ...(opts.earnedExpected ? { earnedExpected: true } : {}),
-    ...(link ? { paylinkFunded: true, paylinkId: link } : {}),
   }
 }
 
@@ -1190,7 +1090,7 @@ export async function claimTag(
     }
     entry = refundedEntry(refundedRecord, refund, fpcCut)
   }
-  const deps = await registrationSessionDeps(handle, keys, config, wallet, onStage)
+  const deps = await registrationSessionDeps(handle, keys, config, onStage)
   // Entry rides on the replacement record from its checkpoint: the receipt a sign-out clears cannot
   // be rebuilt from an address that holds nothing, and a session that dies after the checkpoint
   // must not lose it.
@@ -1201,7 +1101,7 @@ export async function claimTag(
     // off this copy, kept even when the name is refused before anything derives. The old address
     // spent the account's one-shot broadcast only if it recorded one, or inherited that: a refund
     // moves L1 funds and says nothing about it.
-    archiveReplacedRegistration(prior)
+    await archiveReplacedRegistration(prior)
     deps.replaced = {
       sipaAddress: prior.sipaAddress,
       refunded: refundedRecord !== undefined,
@@ -1267,7 +1167,7 @@ export async function claimTag(
   // record whose stored terms would otherwise still price the address it replaced.
   deps.onCheckpoint = async (record) => {
     if (!quoted) return
-    saveRegistrationTerms(
+    await saveRegistrationTerms(
       checkpointRegistrationTerms(record.account, handle, quoted, {
         earnedExpected: requireEarnedQuote,
         ticket,
@@ -1302,12 +1202,12 @@ export async function claimTag(
           terms: result.claim.terms,
         })
       }
+      // The sheet that shows the address owes its broadcast; the first attempt reuses this payload.
+      if (result.broadcastOwed) rememberRegistrationPayload(result.sipaAddress, result.payload)
       return {
         kind: "pending",
         oxideAccount: result.oxideAccount,
         claim: result.claim,
-        broadcastDone: result.broadcastDone,
-        startBroadcast: result.startBroadcast,
         ...(ticketUnavailable ? { ticketUnavailable: true as const } : {}),
       }
     }
@@ -1315,22 +1215,19 @@ export async function claimTag(
 }
 
 /**
- * Sign half of the pending step's forced resume tick — the collaborators the machine's re-broadcast
- * branch needs (re-derive the SIPA, re-request the claim, re-publish). The bootstrap key gates
- * `/domain/sign` directly, so this arms on any deployment with an unlocked wallet. With the wallet in
- * hand the re-broadcast rides the real ClaimFPC-sponsored rail; without it the deposit address stays
- * valid and a still-later tick retries.
+ * What rebuilding a registration's broadcast needs: re-derive the SIPA, re-request the claim,
+ * re-sign the consent. The bootstrap key gates `/domain/sign` directly, so this arms on any
+ * deployment with an unlocked wallet.
  */
 export async function buildRetrySignDeps(
   handle: string,
   keys: OnboardingKeys,
   config: WebWalletConfig,
-  wallet?: ObsidionWallet,
 ): Promise<OxideSignDeps> {
   const { tuple, env, publicClient } = await oxideEnvFor(config)
   return {
     masterSecret: keys.secretKey,
-    accountService: accountServiceFor(config, keys),
+    accountService: accountServiceFor(config, keys, handle),
     r1Key: pubkeyToR1KeyArg(keys.pubkeyHex),
     passkey: await oxideAccountPasskey(keys.account.getAuthProvider()),
     credentialId: await requireCredentialId(),
@@ -1341,7 +1238,6 @@ export async function buildRetrySignDeps(
       tuple,
       network: config.network,
     }),
-    broadcast: broadcasterFor(handle, keys, config, wallet),
     seedSipaDeposit: makeRegistrationDepositSeeder({
       feeToken: env.feeToken,
       l1ChainId: env.l1ChainId,
@@ -1387,7 +1283,7 @@ export async function buildOxideAccountBinding(
 export async function buildClaimSubscribeWitness(
   handle: string,
   keys: Pick<OnboardingKeys, "account" | "secretKey">,
-  claim: NameClaimResponse,
+  claim: Pick<NameClaimResponse, "signature" | "nonce" | "deadline">,
   config: WebWalletConfig,
   nameHash?: Hex,
 ): Promise<NameClaimWitness> {
@@ -1428,6 +1324,7 @@ export async function enterWithPasskey(
   options: {
     contractService: ContractService
     tiers?: AnchorTier[]
+    grantToken?: string
     gate: CeremonyGate
     chooser?: boolean
     hints?: PasskeyCredentialCandidate
@@ -1463,7 +1360,13 @@ export async function enterWithPasskey(
   if (isUnsettled(begun)) {
     throwIfEnded()
     const cancels = [options.signal, attempt].filter((s): s is AbortSignal => s !== undefined)
-    installedKey = await installedKeyFor(begun, l1, generationFactories(generations), cancels)
+    installedKey = await installedKeyFor(
+      begun,
+      l1,
+      generations.registry,
+      generationFactories(generations),
+      cancels,
+    )
     throwIfEnded()
   }
   const recovered = await settleRecovery(begun, options.gate, attemptFrom(attempt), installedKey)
@@ -1475,7 +1378,15 @@ export async function enterWithPasskey(
   let storedAddressMismatch = false
   let verdict: MismatchVerdict | undefined
   try {
-    resolved = await resolveRecoveredMsk(recovered, deriver.derive, options.tiers ?? enterTiers(config, generations))
+    const grantToken = handle ? options.grantToken : undefined
+    const grant = grantToken && handle
+      ? { nameHash: composeWireNameHash(handle, ensDomain), token: grantToken }
+      : undefined
+    resolved = await resolveRecoveredMsk(
+      recovered,
+      deriver.derive,
+      options.tiers ?? enterTiers(config, generations, grant),
+    )
   } catch (err) {
     // This browser's own record for the credential no longer reproduces from the passkey.
     if (!(err instanceof StoredAddressMismatchError)) throw err
@@ -1519,6 +1430,7 @@ export async function enterWithPasskey(
       account: await adopt(),
       bootstrap: deriveBootstrapKey(msk),
       ensDomain,
+      ...(recovered.userHandle ? { userHandle: recovered.userHandle } : {}),
     }
   }
 
@@ -1528,10 +1440,15 @@ export async function enterWithPasskey(
     address: account.getAddress().toString(),
     ensDomain,
   }
-  // Naming the claim: the caller-supplied handle (from the claim link) or the tag this
-  // credential claimed on this browser, each verified against the on-chain nameHash — a wrong
-  // or missing one confirms manually.
-  const matched = (handle && tagMatches(claim, handle)) || (remembered && tagMatches(claim, remembered)) || null
+  // Naming the claim: the caller-supplied handle (from the claim link), the tag this credential
+  // claimed on this browser, or the name the passkey itself carries, each verified against the
+  // on-chain nameHash — none that matches confirms manually.
+  const carried = strict ? undefined : recovered.userHandle
+  const matched =
+    (handle && tagMatches(claim, handle)) ||
+    (remembered && tagMatches(claim, remembered)) ||
+    (carried && tagMatches(claim, carried)) ||
+    null
   if (matched) {
     return { entered: true, handle: matched, address: claim.address, account }
   }

@@ -137,6 +137,45 @@ describe("AppNotificationStore", () => {
     expect(writes).not.toHaveBeenCalled()
   })
 
+  it("remove deletes the entry, so its id is minted again", async () => {
+    await store.createIfAbsent(notification({ id: "a", title: "First" }))
+    await store.createIfAbsent(notification({ id: "b" }))
+    await store.dismiss("a", 500)
+    const changed = vi.fn()
+    store.onListChanged(changed)
+
+    await store.remove("a")
+    expect(store.list().map((entry) => entry.id)).toEqual(["b"])
+    expect(changed).toHaveBeenCalledTimes(1)
+    const reloaded = new AppNotificationStore(storage)
+    await reloaded.load()
+    expect(reloaded.get("a")).toBeNull()
+
+    const { created } = await store.createIfAbsent(notification({ id: "a", title: "Second" }))
+    expect(created).toBe(true)
+    expect(store.get("a")).toMatchObject({ title: "Second", read: false })
+    expect(store.get("a")?.dismissedAt).toBeUndefined()
+  })
+
+  it("remove skips the write when the entry is absent", async () => {
+    await store.createIfAbsent(notification({ id: "a" }))
+    const writes = vi.spyOn(storage, "setItem")
+    await store.remove("missing")
+    expect(writes).not.toHaveBeenCalled()
+    expect(store.list().map((entry) => entry.id)).toEqual(["a"])
+  })
+
+  it("a remove landing inside another mutation keeps the removal", async () => {
+    for (let ticks = 0; ticks < 10; ticks++) {
+      const fresh = new AppNotificationStore(new InMemoryStorageAdapter())
+      await fresh.createIfAbsent(notification({ id: "a" }))
+      const read = fresh.markRead("a", 500)
+      for (let i = 0; i < ticks; i++) await Promise.resolve()
+      await Promise.all([read, fresh.remove("a")])
+      expect(fresh.get("a")).toBeNull()
+    }
+  })
+
   it("a dismiss followed by markAllRead in the same tick keeps the dismissal", async () => {
     await store.createIfAbsent(notification({ id: "a" }))
     await store.createIfAbsent(notification({ id: "b" }))
@@ -215,6 +254,22 @@ describe("AppNotificationStore", () => {
     expect(entry.target).toEqual(BASE_NOTIFICATION.target)
   })
 
+  it("setTarget rewrites where an entry opens and nothing else", async () => {
+    await store.createIfAbsent(notification({ read: true, readAt: 5 }))
+    await store.dismiss(BASE_NOTIFICATION.id, 7)
+    const target = { type: "registration.pending", tag: "alice" }
+
+    expect((await store.setTarget(BASE_NOTIFICATION.id, target))?.target).toEqual(target)
+    expect(store.list()[0]).toMatchObject({
+      title: "Deposit complete",
+      target,
+      read: true,
+      readAt: 5,
+      dismissedAt: 7,
+    })
+    expect(await store.setTarget("missing", target)).toBeNull()
+  })
+
   it("upserts a live entry in place, keeping read state", async () => {
     await store.upsert(notification({ description: "Sweeping", pending: true }))
     await store.markRead(BASE_NOTIFICATION.id)
@@ -225,14 +280,28 @@ describe("AppNotificationStore", () => {
     ])
   })
 
-  it("leaves a dismissed entry hidden until its text changes", async () => {
+  it("shows a dismissed live entry again once its producer asserts it, same text or not", async () => {
     await store.upsert(notification({ description: "Sweeping", pending: true }))
     await store.dismiss(BASE_NOTIFICATION.id)
-
-    await store.upsert(notification({ description: "Sweeping", pending: true }))
     expect(store.list()[0].dismissedAt).toBeDefined()
 
+    await store.upsert(notification({ description: "Sweeping", pending: true }))
+    expect(store.list()[0].dismissedAt).toBeUndefined()
+    expect(store.list()).toHaveLength(1)
+
+    await store.dismiss(BASE_NOTIFICATION.id)
     await store.upsert(notification({ description: "Crediting your balance", pending: true }))
+    expect(store.list()[0].dismissedAt).toBeUndefined()
+  })
+
+  it("leaves a dismissed settled entry hidden until its text changes", async () => {
+    await store.upsert(notification({ description: "2 deposits in transit" }))
+    await store.dismiss(BASE_NOTIFICATION.id)
+
+    await store.upsert(notification({ description: "2 deposits in transit" }))
+    expect(store.list()[0].dismissedAt).toBeDefined()
+
+    await store.upsert(notification({ description: "3 deposits in transit" }))
     expect(store.list()[0].dismissedAt).toBeUndefined()
   })
 

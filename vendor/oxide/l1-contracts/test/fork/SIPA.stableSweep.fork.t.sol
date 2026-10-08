@@ -362,7 +362,7 @@ contract SIPAStableSweepForkTest is MainnetForkFixture, RegistrationTestBase {
     MockV3Aggregator aggregator = new MockV3Aggregator(8, 2500e8);
     sm = new DepositSubsidy(OWNER, address(daiPortal), aggregator, sipaFactory);
     vm.prank(OWNER);
-    sm.setDepositConfig(uint128(_fee), type(uint128).max, uint128(_fee));
+    sm.setDepositConfig(uint128(_fee), type(uint128).max, uint128(_fee), 0, 0);
     deal(address(DAI), address(sm), 100e18);
   }
 

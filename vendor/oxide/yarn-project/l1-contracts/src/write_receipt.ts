@@ -1,6 +1,6 @@
-import type { Hex, TransactionReceipt } from 'viem';
+import { retryUntil } from '@aztec/foundation/retry';
 
-import { waitForRpcHead } from './rpc_head.js';
+import type { Hex, TransactionReceipt } from 'viem';
 
 export interface WriteOptions {
   waitForReceipt?: boolean;
@@ -20,7 +20,9 @@ export interface ReceiptClient {
 }
 
 /** Without `waitForReceipt`, returns just the tx hash. With it, awaits the receipt, throws on revert, and waits for
- *  the RPC head to reach the receipt's block so follow-up reads see the written state (see `waitForRpcHead`). */
+ *  the RPC head to reach the receipt's block. A load-balanced RPC can return the receipt from one node while a
+ *  different node, one block behind, answers the next call. The wait makes sure that follow-up reads see the written
+ *  state. */
 export async function maybeWaitForReceipt(
   client: ReceiptClient,
   txHash: Hex,
@@ -33,6 +35,11 @@ export async function maybeWaitForReceipt(
   if (receipt.status !== 'success') {
     throw new Error(`L1 tx ${txHash} reverted in block ${receipt.blockNumber}`);
   }
-  await waitForRpcHead(client, receipt.blockNumber);
+  await retryUntil(
+    async () => (await client.getBlockNumber({ cacheTime: 0 })) >= receipt.blockNumber,
+    `RPC head at block ${receipt.blockNumber}`,
+    30,
+    0.25,
+  );
   return { txHash, receipt };
 }

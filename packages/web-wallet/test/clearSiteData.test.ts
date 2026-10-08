@@ -81,7 +81,11 @@ async function run(d: ClearSiteDataDeps) {
 
 describe("clearSiteData", () => {
   it("clears every kind of storage and reports nothing left", async () => {
-    const { root, removed } = fakeRoot([".aztec-kv-pxe-0xabc", "xmtp.db3"])
+    const { root, removed } = fakeRoot([
+      ".aztec-kv-pxe-0xabc",
+      ".aztec-kv-wallet_1821665230",
+      "xmtp.db3",
+    ])
     const deletePoolDirectory = vi.fn(async () => {})
     const { idb, deleted } = fakeIdb(["a", "b"])
 
@@ -95,6 +99,7 @@ describe("clearSiteData", () => {
 
     expect(left).toEqual([])
     expect(deletePoolDirectory).toHaveBeenCalledWith(".aztec-kv-pxe-0xabc")
+    expect(deletePoolDirectory).toHaveBeenCalledWith(".aztec-kv-wallet_1821665230")
     expect(removed).toEqual(["xmtp.db3"])
     expect(deleted).toEqual(["a", "b"])
     expect(localStorage.length).toBe(0)

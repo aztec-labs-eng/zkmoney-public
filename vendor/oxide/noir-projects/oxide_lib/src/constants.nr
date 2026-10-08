@@ -67,6 +67,11 @@ pub global PORTAL_CONSTANT_SECRET_HASH: Field = compute_secret_hash([PORTAL_CONS
 // internal ceiling, not a product limit, so it must never be surfaced as the UI deposit cap.
 pub global TX_AMOUNT_CAP: u128 = 2_583_000_000_000_000_000_000; // 2583 * 1e18
 
+// Cap on the L1 priority fee per gas, in wei. Subsidy pays for gas at no more than the base fee plus this cap, and
+// the relayer signs L1 operations with a priority fee of no more than this cap. This is done to protect the subsidy
+// from griefing attacks by the relayer.
+pub global MAX_PRIORITY_FEE_WEI: u128 = 100_000_000; // 0.1 gwei
+
 // Frozen-notes refund sizing and the verifier public-input counts the L1 portal rebuilds.
 pub global MAX_FROZEN_NOTES_PER_REFUND: u32 = 10;
 pub global FROZEN_NOTES_REFUND_PUBLIC_INPUT_COUNT: u32 = MAX_FROZEN_NOTES_PER_REFUND + 8;

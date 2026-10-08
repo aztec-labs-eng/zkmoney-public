@@ -1,7 +1,8 @@
 /**
  * The closed vocabulary of the `passkey_ceremony` event and the error-report `env` object. Every
- * value either front sends, and every value the API stores, is one of these. Imports nothing, so
- * the API can read this file by path and fail when its projection drifts from it.
+ * value either front sends, and every value the API stores, is one of these, except the `env`
+ * object's `aaguid`. Imports nothing, so the API can read this file by path and fail when its
+ * projection drifts from it.
  */
 
 export const PASSKEY_CEREMONY_EVENT = "passkey_ceremony"
@@ -105,6 +106,13 @@ export type PasskeyAttempt = (typeof PASSKEY_ATTEMPTS)[number]
 export const PASSKEY_ELAPSED = ["under_1s", "1_10s", "10_60s", "over_60s"] as const
 export type PasskeyElapsed = (typeof PASSKEY_ELAPSED)[number]
 
+/**
+ * What a laptop's phone-route check answered, on a creation it let start. A browser below the
+ * floor is refused, and its row says so in `reason`.
+ */
+export const PASSKEY_PHONE_REACHES = ["ok", "no_hybrid", "unknown"] as const
+export type PasskeyPhoneReach = (typeof PASSKEY_PHONE_REACHES)[number]
+
 export const PASSKEY_DEVICE_CLASSES = ["phone", "laptop"] as const
 export type PasskeyDeviceClass = (typeof PASSKEY_DEVICE_CLASSES)[number]
 
@@ -160,6 +168,7 @@ export const PASSKEY_CEREMONY_ENUM_PROPS = {
   prompts: PASSKEY_PROMPTS,
   attempt: PASSKEY_ATTEMPTS,
   elapsed: PASSKEY_ELAPSED,
+  phone_reach: PASSKEY_PHONE_REACHES,
   device_class: PASSKEY_DEVICE_CLASSES,
   os: PASSKEY_OS_FAMILIES,
   browser: PASSKEY_BROWSER_FAMILIES,
@@ -177,10 +186,8 @@ export const PASSKEY_REPORT_ENV_KEYS = [
   "browser",
   "browser_major",
   "provider",
+  "aaguid",
 ] as const
-
-/** The part of a report's `env` that leaves Postgres; majors stay behind. */
-export const PASSKEY_REPORT_EXPORT_KEYS = ["device_class", "os", "browser", "provider"] as const
 
 /**
  * The only `platform` values the event is stored under. `web` is the wallet with a consent answer

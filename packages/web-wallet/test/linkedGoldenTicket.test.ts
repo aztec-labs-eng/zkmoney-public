@@ -110,9 +110,9 @@ describe("redeemLinkedGoldenTicket", () => {
       }) => {
         const advertised = { fee: DAI / 2n, min: 0n }
         // Burn at a 0.1 cut on each leg: 0.5 fee + 0.1 return cut + 0.01 remainder, then 0.1
-        // withdrawal cut + 0.1 relayer + 1 prover = 1.81 DAI.
-        expect(await args.covers((181n * DAI) / 100n, advertised)).toBe(false)
-        expect(await args.covers((181n * DAI) / 100n + 1n, advertised)).toBe(true)
+        // withdrawal cut + 0.1 relayer = 0.81 DAI. No prover tip: gas never fails a link here.
+        expect(await args.covers((81n * DAI) / 100n, advertised)).toBe(false)
+        expect(await args.covers((81n * DAI) / 100n + 1n, advertised)).toBe(true)
         // An unadvertised schedule prices nothing, so nothing is spent on it.
         expect(await args.covers(20n * DAI, undefined)).toBe(false)
         return { status: "created", amount: 20n * DAI }

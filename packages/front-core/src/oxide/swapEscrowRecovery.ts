@@ -15,7 +15,7 @@
 
 import { EthAddress } from "@aztec/foundation/eth-address"
 import type { Address, Hex } from "viem"
-import { swapEscrowERC20RecoveryDigest } from "@oxide/l1-contracts/swap_on_withdraw.js"
+import { escrowERC20RecoveryDigest } from "@oxide/l1-contracts/escrow.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import {
   buildSwapEscrowExecuteCall,
@@ -29,8 +29,8 @@ import { swapEscrowTarget } from "../core/services/bridge/swapEscrowArgs"
 import type { WithdrawalRecord } from "../core/services/bridge/types"
 import type { WithdrawalStorage } from "../core/services/bridge/WithdrawalStorage"
 
-/** How long a recovery signature stays valid after signing. */
-export const SWAP_ESCROW_RECOVERY_DEADLINE_MS = 60 * 60 * 1000
+/** How long a recovery signature stays valid after signing, in chain seconds. */
+export const SWAP_ESCROW_RECOVERY_DEADLINE_S = 60n * 60n
 
 /** Who the transaction pays and how it reaches L1. */
 export interface SwapEscrowExitChannel {
@@ -58,8 +58,8 @@ export interface SwapEscrowRecoveryDeps extends SwapEscrowExitDeps {
   chainId: number
   /** Injectable for tests; defaults to crypto.getRandomValues. */
   makeNonce?: () => Uint8Array
-  /** Injectable for tests; defaults to Date.now. */
-  now?: () => number
+  /** Latest L1 block timestamp in seconds: the escrow checks the deadline against `block.timestamp`. */
+  chainNow: () => Promise<bigint>
 }
 
 /** The record's escrow, or a user-facing error when the record cannot rebuild it. */
@@ -115,7 +115,7 @@ export async function runSwapEscrowRecovery(deps: SwapEscrowRecoveryDeps): Promi
   const target = requireTarget(record)
 
   // Fail closed: an account or salt that does not open the commitment is a guaranteed
-  // SwapEscrow__RecoveryCommitmentMismatch revert.
+  // recovery-commitment-mismatch revert.
   const commitment = deriveRecoveryCommitment(
     recovery.salt,
     EthAddress.fromString(recovery.account),
@@ -127,10 +127,8 @@ export async function runSwapEscrowRecovery(deps: SwapEscrowRecoveryDeps): Promi
 
   const nonceBytes = deps.makeNonce?.() ?? crypto.getRandomValues(new Uint8Array(32))
   const nonce = `0x${Buffer.from(nonceBytes).toString("hex")}` as Hex
-  const deadline = BigInt(
-    Math.floor(((deps.now?.() ?? Date.now()) + SWAP_ESCROW_RECOVERY_DEADLINE_MS) / 1000),
-  )
-  const digest = swapEscrowERC20RecoveryDigest(
+  const deadline = (await deps.chainNow()) + SWAP_ESCROW_RECOVERY_DEADLINE_S
+  const digest = escrowERC20RecoveryDigest(
     target.escrow,
     BigInt(deps.chainId),
     deps.target,

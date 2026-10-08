@@ -4,7 +4,9 @@
   "safeArea": "47,6,34,6",
   "steps": [
     { "action": "click", "role": "button", "name": "Open menu", "exact": true },
-    { "action": "click", "role": "button", "name": "Scan QR code", "exact": true },
+    { "action": "click", "role": "button", "name": "Share @tag", "exact": true },
+    { "action": "waitFor", "label": "My connect QR code", "exact": true },
+    { "action": "click", "role": "button", "name": "Searching someone? Scan instead", "exact": true },
     { "action": "waitFor", "text": "Point your camera at a wallet QR code.", "exact": true },
     { "action": "screenshot", "file": "scan-live.png" },
     { "action": "click", "role": "button", "name": "Show my QR code", "exact": true },

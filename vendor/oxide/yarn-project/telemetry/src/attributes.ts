@@ -91,6 +91,7 @@ export const RELAYER_DEFER_REASON = defineAttribute({
     'simulation_reverted',
     'completion_error',
     'broadcast_failed',
+    'gas_price_above_max',
     'other',
   ] as const,
   privacy: 'A fixed reason enum; error messages and work item identifiers are excluded.',
@@ -152,6 +153,23 @@ export const L1_OBSERVER_TOKEN_SYMBOL = defineAttribute({
   privacy: 'The value is public ERC-20 contract metadata or a public contract address; it contains no user data.',
 });
 
+export const L1_OBSERVER_DEPLOYMENT_LABEL = defineAttribute({
+  name: 'oxide.l1_observer.deployment_label',
+  description: 'Label of the deployment-env manifest entry an observed L2 value belongs to.',
+  valueType: 'string',
+  validate: value => typeof value === 'string' && /^[A-Za-z0-9._-]{1,32}$/.test(value),
+  cardinalityLimit: 100,
+  privacy: 'The label names a public manifest entry; it contains no user data.',
+});
+
+export const L1_OBSERVER_CHECK_NAME = defineAttribute({
+  name: 'oxide.l1_observer.check_name',
+  description: 'The L2 check of the L1 observer that a failure belongs to.',
+  valueType: 'string',
+  allowedValues: ['nodes', 'l2_tips', 'withdrawals', 'sipa_sweeps'] as const,
+  privacy: 'A fixed enum of check names; it contains no user data.',
+});
+
 export const ATTRIBUTE_DEFINITIONS = [
   HTTP_REQUEST_METHOD,
   HTTP_ROUTE,
@@ -167,4 +185,6 @@ export const ATTRIBUTE_DEFINITIONS = [
   RESOLVER_BROADCAST_OUTCOME,
   RESOLVER_SIPA_STATE,
   L1_OBSERVER_TOKEN_SYMBOL,
+  L1_OBSERVER_DEPLOYMENT_LABEL,
+  L1_OBSERVER_CHECK_NAME,
 ] as const;

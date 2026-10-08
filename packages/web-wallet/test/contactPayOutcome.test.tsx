@@ -18,6 +18,7 @@ vi.mock("@obsidion/front-core", () => ({
   useContractServiceContext: () => ({ contractService: {} }),
   useBalance: () => ({ walletBalance: "100", assetsLoaded: false }),
   TxInFlightError: class TxInFlightError extends Error {},
+  INTERRUPTED_ERRORS: {},
 }))
 vi.mock("@obsidion/web-ds", () => ({ Icon: () => null, GradientSpinner: () => null }))
 vi.mock("../src/lib/analytics", () => ({

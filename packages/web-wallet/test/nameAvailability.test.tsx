@@ -47,7 +47,7 @@ describe("probeNameAvailability", () => {
     const fetchMock = answering({ status: "reserved" })
     vi.stubGlobal("fetch", fetchMock)
 
-    expect(await probeNameAvailability("satoshi")).toBe("reserved")
+    expect((await probeNameAvailability("satoshi")).status).toBe("reserved")
     const url = new URL(fetchMock.mock.calls[0][0])
     expect(url.origin + url.pathname).toBe("https://account.test/domain/available")
     expect(url.searchParams.get("nameHash")).toMatch(/^0x[0-9a-f]{64}$/)
@@ -64,20 +64,38 @@ describe("probeNameAvailability", () => {
 
   it("reads a refusal, an unrecognised status and a dead network as unknown", async () => {
     vi.stubGlobal("fetch", answering({ error: "down" }, 503))
-    expect(await probeNameAvailability("satoshi")).toBe("unknown")
+    expect((await probeNameAvailability("satoshi")).status).toBe("unknown")
 
     vi.stubGlobal("fetch", answering({ status: "maybe" }))
-    expect(await probeNameAvailability("satoshi")).toBe("unknown")
+    expect((await probeNameAvailability("satoshi")).status).toBe("unknown")
 
     vi.stubGlobal("fetch", async () => {
       throw new Error("offline")
     })
-    expect(await probeNameAvailability("satoshi")).toBe("unknown")
+    expect((await probeNameAvailability("satoshi")).status).toBe("unknown")
+  })
+
+  it("answers unknown within one timeout, however many reads the client retries", async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal(
+      "fetch",
+      (_url: string, init?: RequestInit) =>
+        new Promise<Response>((_, reject) =>
+          init?.signal?.addEventListener("abort", () => reject(new Error("aborted"))),
+        ),
+    )
+    try {
+      const probe = probeNameAvailability("satoshi")
+      await vi.advanceTimersByTimeAsync(2000)
+      expect((await probe).status).toBe("unknown")
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("preserves both reservation and blocklist state", async () => {
     vi.stubGlobal("fetch", answering({ status: "reserved", blocked: true }))
-    expect(await probeNameAvailability("admin")).toBe("blocked-reserved")
+    expect((await probeNameAvailability("admin")).status).toBe("blocked-reserved")
   })
 })
 
@@ -86,12 +104,14 @@ describe("InvitationStep availability", () => {
   let container: HTMLDivElement
   let root: Root
   const onUnlock = vi.fn()
+  const onBoundGrant = vi.fn()
 
   const render = async (
     header: boolean = true,
     initialHandle?: string,
     resuming = false,
-    allowBlocked = false,
+    grant?: { handle: string; token: string },
+    boundGrantOwner = false,
   ) => {
     await act(async () => {
       root.render(
@@ -100,8 +120,10 @@ describe("InvitationStep availability", () => {
           header={header ? <span /> : undefined}
           initialHandle={initialHandle}
           checkAvailability
-          allowBlocked={allowBlocked}
+          grant={grant}
           resuming={resuming}
+          boundGrantOwner={boundGrantOwner}
+          onBoundGrant={onBoundGrant}
           onUnlock={onUnlock}
           onCancelSignIn={vi.fn()}
         />,
@@ -169,7 +191,7 @@ describe("InvitationStep availability", () => {
     await type("admin")
     await settle()
 
-    expect(container.textContent).toContain("isn't available")
+    expect(container.textContent).toContain("is reserved")
     expect(cta().disabled).toBe(true)
   })
 
@@ -179,34 +201,80 @@ describe("InvitationStep availability", () => {
     await type("admin")
     await settle()
 
-    expect(container.textContent).toContain("isn't available")
+    expect(container.textContent).toContain("is reserved")
     expect(container.textContent).not.toContain("Continue with your passkey")
     expect(cta().disabled).toBe(true)
   })
 
-  it("blocks a blocklisted name", async () => {
+  it("blocks a blocklisted name and links to the reserved-names docs", async () => {
     vi.stubGlobal("fetch", answering({ status: "blocked" }))
     await render()
     await type("admin")
     await settle()
 
-    expect(container.textContent).toContain("isn't available")
+    expect(container.textContent).toContain("is reserved")
+    const link = container.querySelector<HTMLAnchorElement>("a.ww-invite__link")
+    expect(link?.textContent).toBe("Learn more")
+    expect(link?.getAttribute("href")).toBe("https://docs.zk.money/docs/get-started")
+    expect(link?.getAttribute("target")).toBe("_blank")
     expect(cta().disabled).toBe(true)
   })
 
   it("lets a route grant pass a blocklisted name", async () => {
-    vi.stubGlobal("fetch", answering({ status: "blocked" }))
-    await render(true, undefined, false, true)
+    vi.stubGlobal(
+      "fetch",
+      answering({ status: "blocked", blocked: true, grantValid: true, grantBound: false }),
+    )
+    await render(true, undefined, false, { handle: "admin", token: "grant-token" })
     await type("admin")
     await settle()
 
-    expect(container.textContent).not.toContain("isn't available")
+    expect(container.textContent).not.toContain("is reserved")
     expect(cta().disabled).toBe(false)
   })
 
+  it("sends a bound grant to its existing passkey instead of creating an account", async () => {
+    vi.stubGlobal(
+      "fetch",
+      answering({ status: "blocked", blocked: true, grantValid: false, grantBound: true }),
+    )
+    await render(true, "admin", false, { handle: "admin", token: "bound-token" })
+    await settle()
+
+    expect(container.textContent).toContain("already linked to a passkey")
+    expect(cta().textContent).toContain("Continue with passkey")
+    expect(cta().disabled).toBe(false)
+    await act(async () => cta().click())
+    expect(onBoundGrant).toHaveBeenCalledWith("admin")
+    expect(onUnlock).not.toHaveBeenCalled()
+  })
+
+  it("lets the recovered owner continue a bound, blocked reservation", async () => {
+    vi.stubGlobal(
+      "fetch",
+      answering({ status: "reserved", blocked: true, grantValid: false, grantBound: true }),
+    )
+    await render(true, "admin", true, { handle: "admin", token: "bound-token" }, true)
+    await settle()
+
+    expect(cta().disabled).toBe(false)
+    await act(async () => cta().click())
+    expect(onUnlock).toHaveBeenCalledWith("admin")
+    expect(onBoundGrant).not.toHaveBeenCalled()
+  })
+
+  it("does not offer an unverified grant when the service cannot answer", async () => {
+    vi.stubGlobal("fetch", answering({ error: "missing route" }, 404))
+    await render(true, "admin", false, { handle: "admin", token: "grant-token" })
+    await settle()
+
+    expect(container.textContent).toContain("couldn't check this grant")
+    expect(cta().disabled).toBe(true)
+  })
+
   it("does not let a route grant pass a live reservation", async () => {
-    vi.stubGlobal("fetch", answering({ status: "reserved" }))
-    await render(true, undefined, false, true)
+    vi.stubGlobal("fetch", answering({ status: "reserved", grantValid: true, grantBound: false }))
+    await render(true, undefined, false, { handle: "satoshi", token: "grant-token" })
     await type("satoshi")
     await settle()
 
@@ -215,8 +283,11 @@ describe("InvitationStep availability", () => {
   })
 
   it("still checks a blocked reservation when a grant is present", async () => {
-    vi.stubGlobal("fetch", answering({ status: "reserved", blocked: true }))
-    await render(true, undefined, false, true)
+    vi.stubGlobal(
+      "fetch",
+      answering({ status: "reserved", blocked: true, grantValid: true, grantBound: false }),
+    )
+    await render(true, undefined, false, { handle: "admin", token: "grant-token" })
     await type("admin")
     await settle()
 
@@ -225,8 +296,11 @@ describe("InvitationStep availability", () => {
   })
 
   it("lets the granted holder retry a blocked reservation", async () => {
-    vi.stubGlobal("fetch", answering({ status: "reserved", blocked: true }))
-    await render(true, undefined, true, true)
+    vi.stubGlobal(
+      "fetch",
+      answering({ status: "reserved", blocked: true, grantValid: true, grantBound: false }),
+    )
+    await render(true, undefined, true, { handle: "admin", token: "grant-token" })
     await type("admin")
     await settle()
 
@@ -303,7 +377,7 @@ describe("InvitationStep availability", () => {
     // uppercase tag would register under a hash nobody can pay to.
     const probed = new URL(fetchMock.mock.calls[0][0]).searchParams.get("nameHash")
     const lower = await probeNameAvailability("abc-def")
-    expect(lower).toBe("available")
+    expect(lower.status).toBe("available")
     expect(probed).toBe(
       new URL(fetchMock.mock.calls[fetchMock.mock.calls.length - 1][0]).searchParams.get(
         "nameHash",
@@ -375,7 +449,7 @@ describe("InvitationStep availability", () => {
       )
     })
     await settle()
-    expect(container.textContent).toContain("isn't available")
+    expect(container.textContent).toContain("is reserved")
     expect(cta().disabled).toBe(true)
   })
 })

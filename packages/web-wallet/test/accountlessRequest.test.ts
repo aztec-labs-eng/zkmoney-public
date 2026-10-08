@@ -3,7 +3,10 @@ import { quotedDepositFee } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { RegistryTagResolution, RequestInlinePacket } from "@obsidion/front-core"
 import type { PublicClient } from "viem"
-import { resolveAccountlessRequest } from "../src/features/requests/accountlessRequest"
+import {
+  RequestDecimalsMismatchError,
+  resolveAccountlessRequest,
+} from "../src/features/requests/accountlessRequest"
 import {
   buildErc20TransferUri,
   buildErc20TransferUriWithoutAmount,
@@ -73,7 +76,8 @@ function packet(over: Partial<RequestInlinePacket> = {}): RequestInlinePacket {
 function deps(resolveRequester: () => Promise<RegistryTagResolution> = async () => resolved) {
   return {
     tuple,
-    publicClient: {} as PublicClient,
+    // The token contract reports the decimals the packets below declare.
+    publicClient: { readContract: async () => 6 } as unknown as PublicClient,
     resolveRequester,
     chainId: 11155111,
   }
@@ -94,6 +98,37 @@ describe("resolveAccountlessRequest", () => {
       `ethereum:${TOKEN}@11155111/transfer?address=${SIPA}&uint256=${1_000_000n + FEE}`,
     )
     expect(result.tagWarning).toBeUndefined()
+  })
+
+  it("returns the token and the decimals its contract reports", async () => {
+    const result = await resolveAccountlessRequest(packet({ sipaAddress: SIPA }), deps())
+    expect(result.token).toBe(TOKEN)
+    expect(result.decimals).toBe(6)
+  })
+
+  it("refuses a link that declares other decimals than the token has", async () => {
+    await expect(
+      resolveAccountlessRequest(packet({ sipaAddress: SIPA, tokenDecimals: 18 }), deps()),
+    ).rejects.toBeInstanceOf(RequestDecimalsMismatchError)
+    expect(resolveSipaAddressMock).not.toHaveBeenCalled()
+  })
+
+  it("reads a link without decimals as 6, as the codec defines", async () => {
+    const result = await resolveAccountlessRequest(
+      packet({ sipaAddress: SIPA, tokenDecimals: undefined }),
+      deps(),
+    )
+    expect(result.decimals).toBe(6)
+  })
+
+  it("refuses a link without decimals when the token does not have 6", async () => {
+    const client = { readContract: async () => 18 } as unknown as PublicClient
+    await expect(
+      resolveAccountlessRequest(packet({ sipaAddress: SIPA, tokenDecimals: undefined }), {
+        ...deps(),
+        publicClient: client,
+      }),
+    ).rejects.toBeInstanceOf(RequestDecimalsMismatchError)
   })
 
   it("omits uint256 for an any-amount request", async () => {

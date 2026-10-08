@@ -17,6 +17,8 @@ import {MockPortal} from "@test/mocks/MockPortal.sol";
 contract ResolutionTest is RegistriesTestBase {
   uint256 internal constant SECONDS_PER_DAY = 86_400;
   uint256 internal constant DAY_BOUNDARY_GRACE = 30 minutes;
+  bytes4 internal constant MULTICHAIN_ADDR_SELECTOR = 0xf1cb7e06;
+  uint256 internal constant COIN_TYPE_ETH = 60;
 
   bytes internal constant PROOF = hex"50524f4f46";
 
@@ -103,7 +105,7 @@ contract ResolutionTest is RegistriesTestBase {
         urls,
         callData,
         Resolver.resolveWithProof.selector,
-        abi.encode(NAME_HASH)
+        abi.encode(NAME_HASH, false)
       )
     );
     resolver.resolve(name, data);
@@ -157,11 +159,63 @@ contract ResolutionTest is RegistriesTestBase {
     resolver.resolve(name, abi.encodeWithSelector(selector, NAME_HASH));
   }
 
+  function test_resolve_multichainEth_revertsWithOffchainLookupForAddr() public {
+    string[] memory urls = new string[](1);
+    urls[0] = RESOLVER_OPERATOR_URL;
+    bytes memory callData = abi.encodeWithSelector(Resolver.resolve.selector, name, data);
+
+    vm.expectRevert(
+      abi.encodeWithSelector(
+        Resolver.OffchainLookup.selector,
+        address(resolver),
+        urls,
+        callData,
+        Resolver.resolveWithProof.selector,
+        abi.encode(NAME_HASH, true)
+      )
+    );
+    resolver.resolve(name, abi.encodeWithSelector(MULTICHAIN_ADDR_SELECTOR, NAME_HASH, COIN_TYPE_ETH));
+  }
+
+  function testFuzz_resolve_multichainOtherCoinType_returnsEmpty(uint256 coinType) public view {
+    vm.assume(coinType != COIN_TYPE_ETH);
+    bytes memory result = resolver.resolve(name, abi.encodeWithSelector(MULTICHAIN_ADDR_SELECTOR, NAME_HASH, coinType));
+    assertEq(abi.decode(result, (bytes)).length, 0);
+  }
+
+  function test_resolve_multichainEth_revertsOnUnknownName() public {
+    vm.expectRevert(Errors.Resolver__UserNotFound.selector);
+    resolver.resolve(
+      name, abi.encodeWithSelector(MULTICHAIN_ADDR_SELECTOR, keccak256("namehash(unknown.oxide.eth)"), COIN_TYPE_ETH)
+    );
+  }
+
+  function test_resolveWithProof_multichain_returnsTheSameSIPAAsBytes() public view {
+    Resolver.ResolutionPublicInputs memory resolution = _validResolution();
+    bytes memory result = resolver.resolveWithProof(_response(resolution), abi.encode(NAME_HASH, true));
+    bytes memory addrBytes = abi.decode(result, (bytes));
+
+    assertEq(addrBytes.length, 20);
+    assertEq(address(bytes20(addrBytes)), _sipaWith(ROLLUP_VERSION));
+    assertEq(
+      address(bytes20(addrBytes)),
+      abi.decode(resolver.resolveWithProof(_response(resolution), abi.encode(NAME_HASH, false)), (address))
+    );
+  }
+
+  function test_resolveWithProof_multichain_revertsOnInvalidProof() public {
+    bytes memory response = _response(_validResolution());
+    verifier.setResult(false);
+
+    vm.expectRevert(Errors.Resolver__InvalidProof.selector);
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, true));
+  }
+
   function test_resolveWithProof_returnsDeterministicSIPA() public {
     Resolver.ResolutionPublicInputs memory resolution = _validResolution();
 
     vm.expectCall(address(verifier), abi.encodeCall(IVerifier.verify, (PROOF, _serialize(resolution))));
-    bytes memory result = resolver.resolveWithProof(_response(resolution), abi.encode(NAME_HASH));
+    bytes memory result = resolver.resolveWithProof(_response(resolution), abi.encode(NAME_HASH, false));
     address sipa = abi.decode(result, (address));
 
     assertEq(sipa, _sipaWith(ROLLUP_VERSION));
@@ -181,7 +235,7 @@ contract ResolutionTest is RegistriesTestBase {
   function test_resolveWithProof_revertsOnUnknownName() public {
     bytes memory response = _response(_validResolution());
     vm.expectRevert(Errors.Resolver__UserNotFound.selector);
-    resolver.resolveWithProof(response, abi.encode(keccak256("namehash(unknown.oxide.eth)")));
+    resolver.resolveWithProof(response, abi.encode(keccak256("namehash(unknown.oxide.eth)"), false));
   }
 
   function test_resolveWithProof_revertsOnRollupVersionMismatch() public {
@@ -191,7 +245,7 @@ contract ResolutionTest is RegistriesTestBase {
     vm.expectRevert(
       abi.encodeWithSelector(Errors.Resolver__RollupVersionMismatch.selector, ROLLUP_VERSION + 1, ROLLUP_VERSION)
     );
-    resolver.resolveWithProof(response, abi.encode(NAME_HASH));
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
   }
 
   function test_resolveWithProof_revertsOnInvalidProof() public {
@@ -199,7 +253,7 @@ contract ResolutionTest is RegistriesTestBase {
     verifier.setResult(false);
 
     vm.expectRevert(Errors.Resolver__InvalidProof.selector);
-    resolver.resolveWithProof(response, abi.encode(NAME_HASH));
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
   }
 
   function testFuzz_resolveWithProof_revertsOnWrongDay(uint32 day) public {
@@ -212,7 +266,7 @@ contract ResolutionTest is RegistriesTestBase {
     bytes memory response = _response(resolution);
 
     vm.expectRevert(abi.encodeWithSelector(Errors.Resolver__StaleProof.selector, day, currentDay));
-    resolver.resolveWithProof(response, abi.encode(NAME_HASH));
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
   }
 
   function test_resolveWithProof_revertsAfterGraceWindow() public {
@@ -221,20 +275,20 @@ contract ResolutionTest is RegistriesTestBase {
     vm.warp((uint256(resolution.day) + 1) * SECONDS_PER_DAY + DAY_BOUNDARY_GRACE + 1);
 
     vm.expectRevert(abi.encodeWithSelector(Errors.Resolver__StaleProof.selector, resolution.day, resolution.day + 1));
-    resolver.resolveWithProof(response, abi.encode(NAME_HASH));
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
   }
 
   function test_resolveWithProof_acceptsYesterdayWithinGrace() public {
     Resolver.ResolutionPublicInputs memory resolution = _validResolution();
     vm.warp((uint256(resolution.day) + 1) * SECONDS_PER_DAY + DAY_BOUNDARY_GRACE - 1);
-    resolver.resolveWithProof(_response(resolution), abi.encode(NAME_HASH));
+    resolver.resolveWithProof(_response(resolution), abi.encode(NAME_HASH, false));
   }
 
   function test_resolveWithProof_acceptsTomorrowWithinGrace() public {
     Resolver.ResolutionPublicInputs memory resolution = _validResolution();
     resolution.day += 1;
     vm.warp(uint256(resolution.day) * SECONDS_PER_DAY - DAY_BOUNDARY_GRACE);
-    resolver.resolveWithProof(_response(resolution), abi.encode(NAME_HASH));
+    resolver.resolveWithProof(_response(resolution), abi.encode(NAME_HASH, false));
   }
 
   function test_resolveWithProof_revertsOnUserKeyXMismatch() public {
@@ -243,7 +297,7 @@ contract ResolutionTest is RegistriesTestBase {
     bytes memory response = _response(resolution);
 
     vm.expectRevert(Errors.Resolver__UserRecordMismatch.selector);
-    resolver.resolveWithProof(response, abi.encode(NAME_HASH));
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
   }
 
   function test_resolveWithProof_revertsOnUserKeyYMismatch() public {
@@ -252,7 +306,7 @@ contract ResolutionTest is RegistriesTestBase {
     bytes memory response = _response(resolution);
 
     vm.expectRevert(Errors.Resolver__UserRecordMismatch.selector);
-    resolver.resolveWithProof(response, abi.encode(NAME_HASH));
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
   }
 
   function test_resolveWithProof_revertsOnL2AddressMismatch() public {
@@ -261,7 +315,7 @@ contract ResolutionTest is RegistriesTestBase {
     bytes memory response = _response(resolution);
 
     vm.expectRevert(Errors.Resolver__UserRecordMismatch.selector);
-    resolver.resolveWithProof(response, abi.encode(NAME_HASH));
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
   }
 
   function test_resolveWithProof_revertsOnResolverOperatorKeyMismatch() public {
@@ -270,7 +324,7 @@ contract ResolutionTest is RegistriesTestBase {
     bytes memory response = _response(resolution);
 
     vm.expectRevert(Errors.Resolver__ResolverOperatorRecordMismatch.selector);
-    resolver.resolveWithProof(response, abi.encode(NAME_HASH));
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
   }
 
   function test_resolveWithProof_revertsOnTamperedKeyLimb() public {
@@ -278,7 +332,7 @@ contract ResolutionTest is RegistriesTestBase {
     inputs[3] = bytes32(uint256(inputs[3]) ^ 1);
 
     vm.expectRevert(Errors.Resolver__UserRecordMismatch.selector);
-    resolver.resolveWithProof(abi.encode(PROOF, inputs, address(0)), abi.encode(NAME_HASH));
+    resolver.resolveWithProof(abi.encode(PROOF, inputs, address(0)), abi.encode(NAME_HASH, false));
   }
 
   function test_recoveryCommitmentBindsTheNameOwner() public {
@@ -298,14 +352,14 @@ contract ResolutionTest is RegistriesTestBase {
       true
     );
     bytes memory result =
-      resolver.resolveWithProof(abi.encode(PROOF, _serialize(resolution), expected), abi.encode(NAME_HASH_2));
+      resolver.resolveWithProof(abi.encode(PROOF, _serialize(resolution), expected), abi.encode(NAME_HASH_2, false));
     assertEq(abi.decode(result, (address)), expected);
   }
 
   function test_resolveWithProof_derivesAgainstTheOperatorsPoolImplementation() public {
     Resolver.ResolutionPublicInputs memory resolution = _validResolution();
     bytes memory staleResponse = _response(resolution);
-    address before = abi.decode(resolver.resolveWithProof(staleResponse, abi.encode(NAME_HASH)), (address));
+    address before = abi.decode(resolver.resolveWithProof(staleResponse, abi.encode(NAME_HASH, false)), (address));
     address funded = _sipaDeployed(ROLLUP_VERSION);
     assertEq(funded, before, "the first resolution's address is the one a payer funds");
 
@@ -329,8 +383,8 @@ contract ResolutionTest is RegistriesTestBase {
     assertNotEq(next, before);
     bytes memory freshResponse = _response(resolution, next);
     vm.expectRevert(abi.encodeWithSelector(Errors.Resolver__SIPAMismatch.selector, before, next));
-    resolver.resolveWithProof(staleResponse, abi.encode(NAME_HASH));
-    assertEq(abi.decode(resolver.resolveWithProof(freshResponse, abi.encode(NAME_HASH)), (address)), next);
+    resolver.resolveWithProof(staleResponse, abi.encode(NAME_HASH, false));
+    assertEq(abi.decode(resolver.resolveWithProof(freshResponse, abi.encode(NAME_HASH, false)), (address)), next);
 
     assertTrue(sipaFactory.isBlessed(funded), "the funded SIPA's implementation stays blessed");
   }
@@ -365,7 +419,7 @@ contract ResolutionTest is RegistriesTestBase {
         true
       );
     vm.expectRevert(abi.encodeWithSelector(Errors.Resolver__SIPAMismatch.selector, predicted, live));
-    resolver.resolveWithProof(response, abi.encode(NAME_HASH));
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
 
     assertTrue(sipaFactory.isBlessed(_sipaDeployed(ROLLUP_VERSION)), "an older implementation must stay blessed");
   }
@@ -381,7 +435,7 @@ contract ResolutionTest is RegistriesTestBase {
     metadataRegistry.setResolverOperator(updated);
 
     vm.expectRevert(abi.encodeWithSelector(Errors.Resolver__NoImplementationForPortal.selector, unpointed));
-    resolver.resolveWithProof(response, abi.encode(NAME_HASH));
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
   }
 
   function _sipaDeployed(uint256 rollupVersion) internal returns (address) {
@@ -400,6 +454,6 @@ contract ResolutionTest is RegistriesTestBase {
     address tampered = makeAddr("tampered");
 
     vm.expectRevert(abi.encodeWithSelector(Errors.Resolver__SIPAMismatch.selector, tampered, live));
-    resolver.resolveWithProof(_response(resolution, tampered), abi.encode(NAME_HASH));
+    resolver.resolveWithProof(_response(resolution, tampered), abi.encode(NAME_HASH, false));
   }
 }

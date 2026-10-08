@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 
 const fireEvent = vi.fn()
 vi.mock("../src/lib/analytics", () => ({ fireEvent }))
@@ -39,11 +40,11 @@ describe("registration funnel reporters", () => {
   it("the latch persists in localStorage so a reload (fresh module memory) stays deduped", () => {
     const addr = `0x${"ab".repeat(20)}`
     reportRegistrationDepositShown(addr)
-    const stored = JSON.parse(localStorage.getItem("webwallet.registration.reported") ?? "{}")
+    const stored = JSON.parse(walletStorage.getItem("webwallet.registration.reported") ?? "{}")
     expect(stored[`shown:${addr}`]).toBe(true)
     // A pre-seeded latch (another tab / an earlier load) suppresses a first in-memory report.
     const other = `0x${"ba".repeat(20)}`
-    localStorage.setItem(
+    walletStorage.setItem(
       "webwallet.registration.reported",
       JSON.stringify({ [`shown:${other}`]: true }),
     )

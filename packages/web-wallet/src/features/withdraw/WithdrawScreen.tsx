@@ -1,38 +1,41 @@
 import { useEffect, useState } from "react"
-import { useLocation } from "react-router-dom"
+import { useLocation, useNavigate } from "react-router-dom"
 import { getAddress, isAddress, type Address } from "viem"
-import { ContactStorage, L1_PLACEHOLDER_NAME, useBalance } from "@obsidion/front-core"
-import { GradientText, Icon, PrimaryGradientButton } from "@obsidion/web-ds"
+import {
+  ContactStorage,
+  L1_PLACEHOLDER_NAME,
+  contactRowFromEntry,
+  type Contact,
+} from "@obsidion/front-core"
+import { Card, GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
 import { fireEvent } from "../../lib/analytics"
-import { shortAddr, tokenAmount } from "../../ui/format"
+import { shortAddr } from "../../ui/format"
+import { useBack } from "../../ui/hooks"
+import { Modal } from "../../ui/Modal"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
+import { Warning } from "../../ui/Warning"
 import { useL1Wallet } from "../deposit/l1Wallet"
-import {
-  WithdrawPrivacyDisclaimer,
-  isWithdrawPrivacyDisclaimerHidden,
-} from "./WithdrawPrivacyDisclaimer"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { WithdrawToWalletModal } from "./WithdrawToWalletModal"
+import { useFreshAddressAvailable } from "./freshAddressAvailability"
 import {
-  FEE_UNAVAILABLE_COPY,
-  SwapFeeNote,
-  useSwapSimulation,
-  withdrawalFeeDisplay,
-} from "./withdrawQuote"
-import { useEthRecipientHasCode } from "./ethRecipientCheck"
-import { WithdrawalAssetPicker } from "./WithdrawalAssetPicker"
-import type { WithdrawalReceiveAsset } from "./withdrawAssets"
-import ethIcon from "../../assets/deposit/ethereum.webp"
-import connectIcon from "../../assets/deposit/eth-fill.svg"
+  FRESH_ADDRESS_VERDICT_COPY,
+  localVerdict,
+  useFreshAddressVerdict,
+} from "./freshAddressCheck"
+import { VerdictCard, type VerdictKind } from "./WithdrawFreshScreen"
+import { useWithdrawals } from "./useWithdrawals"
+import walletIcon from "../../assets/deposit/wallet-line.svg"
 
 export interface SavedL1Wallet {
   address: Address
   name: string
+  entry: Contact
 }
 
 /** Most-recent L1 wallet contacts (saved recipients + deposit funders), tombstones hidden. */
-export function useSavedL1Wallets(): SavedL1Wallet[] {
+export function useSavedL1Wallets(limit = 3): SavedL1Wallet[] {
   const [wallets, setWallets] = useState<SavedL1Wallet[]>([])
   useEffect(() => {
     ContactStorage.get()
@@ -45,123 +48,168 @@ export function useSavedL1Wallets(): SavedL1Wallet[] {
             return !w.deletedAt || (w.lastUsedAt ?? 0) > w.deletedAt
           })
           .sort((a, b) => (b.l1Wallet!.lastUsedAt ?? 0) - (a.l1Wallet!.lastUsedAt ?? 0))
-          .slice(0, 3)
-          .map((e) => ({ address: e.address as Address, name: e.name }))
+          .slice(0, limit)
+          .map((e) => ({ address: e.address as Address, name: e.name, entry: e }))
         setWallets(rows)
       })
       .catch(() => {})
-  }, [])
+  }, [limit])
   return wallets
 }
 
+const TAGS = { "linked-deposit": "Has history", "withdrew-before": "Used before" } as const
+/** How long a pressed row waits on Ethereum before the address reads as unchecked. */
+const VERDICT_WAIT_MS = 5_000
+
+/** The first and last four hex digits stand out, so a destination can be checked by eye. */
+function HexAddress({ address, full }: { address: string; full?: boolean }) {
+  const strong = { color: "var(--text-primary)" }
+  return (
+    <span style={{ overflowWrap: "anywhere" }}>
+      0x<strong style={strong}>{address.slice(2, 6)}</strong>
+      {full ? address.slice(6, -4) : `${address.slice(6, 10)}…${address.slice(-8, -4)}`}
+      <strong style={strong}>{address.slice(-4)}</strong>
+    </span>
+  )
+}
+
 /**
- * Withdraw to L1: name (optional) + recipient address — typed, pasted, picked from the connected
- * wallet, or picked from a saved L1 wallet — then amount → confirm → sponsored burn in
- * `WithdrawToWalletModal`, which hands the burn to the bell. Finalization is oxide's relayer; the
- * withdrawal's own rows track it through the same phases the Activity tab shows.
+ * Existing-address withdrawal, as a sheet over the method step: pick or paste a destination, read
+ * what ties it to the user, then hand it to `WithdrawToWalletModal`. A pressed row leaves for the
+ * next step on its own once its address clears screening and its history is read.
  */
 export function WithdrawScreen() {
   const config = getConfig()
-  const location = useLocation()
-  // Prefill from contact-detail navigation; the form's own isAddress gate validates it.
-  const prefill = (location.state ?? {}) as { recipient?: string; alias?: string }
-  const [walletName, setWalletName] = useState(prefill.alias ?? "")
-  const [recipient, setRecipient] = useState(prefill.recipient ?? "")
-  const [receiveAsset, setReceiveAsset] = useState<WithdrawalReceiveAsset>("DAI")
-  const [amountOpen, setAmountOpen] = useState(false)
+  const navigate = useNavigate()
+  const close = useBack("/withdraw")
+  // Prefill from contact-detail navigation.
+  const prefill = (useLocation().state ?? {}) as { recipient?: string; alias?: string }
+  const [query, setQuery] = useState(prefill.recipient ?? "")
+  const [picked, setPicked] = useState<Address | "connected">()
+  const [naming, setNaming] = useState(false)
+  const [typedName, setTypedName] = useState("")
+  const [step, setStep] = useState<"pick" | "privacy" | "amount">("pick")
+  // A pressed row, waiting on the checks before it leaves the step.
+  const [going, setGoing] = useState(false)
+  // Fixed as the row leaves, so nothing that changes under a later step can move the destination.
+  const [chosen, setChosen] = useState<{ recipient: Address; name?: string; kind: VerdictKind }>()
 
-  const { walletAsset } = useBalance()
-  const saved = useSavedL1Wallets()
-  // Connected-wallet pick — withdrawing back to the wallet you funded from is the common case,
-  // and the injected provider already knows it.
+  const saved = useSavedL1Wallets(Infinity)
+  const { records } = useWithdrawals()
   const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
-  // The desktop launcher's Chrome profile carries no wallet extension, so there is nothing to
-  // connect — the typed/saved paths remain.
-  const bridgeMode = isDesktopL1SubmitActive()
+  const freshOffered = useFreshAddressAvailable() === true
+  const connected = l1.account
 
-  const validRecipient = isAddress(recipient)
-  // The fee row states the same all-in figure the amount and confirm steps do, so switching the
-  // receive asset here cannot promise the direct route's fee and then charge the swap route's floor.
-  // A route that cannot be priced is closed here, before an amount is ever typed.
-  const quote = useSwapSimulation({
-    receiveAsset,
-    recipient: validRecipient ? getAddress(recipient) : undefined,
-    network: config.network,
-  })
-  const feeDisplay = withdrawalFeeDisplay(quote)
-  const feeUnavailable = quote.status === "unavailable"
-  const ethRecipientIsContract = useEthRecipientHasCode(recipient, receiveAsset === "ETH")
-  // Screen the recipient once it parses as an address; typing and the picks all land here.
-  const {
-    verdict: screening,
-    cleared: recipientCleared,
-    rescreen,
-  } = useScreenedAddress(validRecipient ? getAddress(recipient) : null, "withdraw", {
-    debounceMs: 300,
-  })
+  const search = query.trim()
+  const raw = search || (picked === "connected" ? connected : picked) || ""
+  const target = isAddress(raw) ? getAddress(raw) : null
+  const same = (address?: string | null) =>
+    !!target && address?.toLowerCase() === target.toLowerCase()
+  const match = saved.find((w) => same(w.address))
+  const name =
+    (naming && typedName.trim()) ||
+    (match && match.name !== L1_PLACEHOLDER_NAME && match.name) ||
+    (same(connected) && l1.walletName) ||
+    (same(prefill.recipient) && prefill.alias) ||
+    undefined
+
+  const contacts = saved.map((w) => w.entry)
+  const tie = (address: string) => localVerdict(address.toLowerCase(), records, contacts)?.kind
+  // Past the pick step the read follows the fixed destination, not the live one.
+  const checked = step === "pick" ? target : chosen?.recipient ?? null
+  const onchain = useFreshAddressVerdict(checked, VERDICT_WAIT_MS).kind
+  // The wallet's own records answer at once. The contract copy is about the fresh flow's ETH leg.
+  const kind = (target && tie(target)) || (onchain === "contract" ? "history" : onchain)
+  const screened = useScreenedAddress(target, "withdraw", { debounceMs: 300 })
 
   useEffect(() => {
     fireEvent("withdraw_opened")
   }, [])
 
-  // Connecting is itself a pick: fill the row, leaving anything typed or prefilled alone.
-  const connected = l1.account
+  // Connecting is a pick, and only while nothing else is chosen.
   useEffect(() => {
-    if (!connected) return
-    setRecipient((r) => r || connected)
-    setWalletName((n) => n || l1.walletName || "")
+    if (connected) setPicked((current) => current ?? "connected")
   }, [connected])
 
-  const [disclaimer, setDisclaimer] = useState(() => !isWithdrawPrivacyDisclaimerHidden())
+  useEffect(() => {
+    if (!going || !target || !screened.cleared || kind === "idle" || kind === "checking") return
+    setGoing(false)
+    setChosen({ recipient: target, name: name || undefined, kind })
+    setStep(kind === "fresh" ? "amount" : "privacy")
+  }, [going, target, screened.cleared, kind, name])
 
-  const pick = (wallet: SavedL1Wallet) => {
-    setRecipient(wallet.address)
-    setWalletName(wallet.name === L1_PLACEHOLDER_NAME ? "" : wallet.name)
+  const rows = search
+    ? saved.filter((w) => `${w.name} ${w.address}`.toLowerCase().includes(search.toLowerCase()))
+    : saved.filter((w, i) => i < 3 || same(w.address))
+
+  // An address in the field that no saved wallet answers to gets a row of its own.
+  const typed = !!search && !!target && !match
+  const type = (value: string) => {
+    setQuery(value)
+    setPicked(undefined)
+    setGoing(false)
   }
-
+  const pick = (address: Address | "connected") => {
+    setQuery("")
+    setNaming(false)
+    setPicked(address)
+    setGoing(true)
+  }
   const paste = () =>
     navigator.clipboard
       .readText()
-      .then((text) => setRecipient(text.trim()))
+      .then((text) => type(text.trim()))
       .catch(() => {})
 
-  return (
-    <div className="ww-panel ww-deposit ww-withdraw">
-      <div className="ww-deposit__stealth">
-        <GradientText size={24} weight={700}>
-          Withdraw
-        </GradientText>
+  if (step === "amount" && chosen) {
+    return (
+      <WithdrawToWalletModal
+        recipient={chosen.recipient}
+        walletName={chosen.name}
+        recipientIsContract={onchain === "contract"}
+        onClose={() => setStep("pick")}
+        onDone={() => navigate("/")}
+      />
+    )
+  }
 
-        <div className="ww-deposit__fields">
-          <p className="ww-withdraw__warning" role="note">
-            Use a fresh withdrawal address each time. Withdrawing to the same Ethereum address
-            repeatedly will link your withdrawals together.
-          </p>
-          <label className="ww-withdraw__field">
-            <span>Wallet name (optional)</span>
+  return (
+    <Modal
+      variant="bare"
+      label={step === "pick" ? "Withdraw" : "You'll lose privacy"}
+      className="ww-deposit-warning"
+      onClose={close}
+    >
+      {step === "privacy" && (
+        <div className="ww-fresh__back">
+          <TopNavIconButton icon="chevron-left" ariaLabel="Back" onClick={() => setStep("pick")} />
+        </div>
+      )}
+      <div className="ww-deposit-warning__close">
+        <TopNavIconButton icon="x" ariaLabel="Close" onClick={close} />
+      </div>
+      {step === "pick" ? (
+        <>
+          <GradientText size={24} weight={700}>
+            Withdraw
+          </GradientText>
+          <div className="ww-fund__fields">
             <span className="ww-withdraw__box">
+              <Icon name="search" size={16} color="var(--text-secondary)" />
               <input
-                placeholder="e.g. Rainbow"
-                value={walletName}
-                onChange={(e) => setWalletName(e.target.value)}
-              />
-            </span>
-          </label>
-          <label className="ww-withdraw__field">
-            <span>Address</span>
-            <span className="ww-withdraw__box">
-              <input
-                placeholder="Enter or paste address"
+                aria-label="Address"
+                placeholder="Search or paste an address"
                 spellCheck={false}
-                value={recipient}
-                onChange={(e) => setRecipient(e.target.value)}
+                data-autofocus
+                value={query}
+                onChange={(e) => type(e.target.value)}
               />
-              {recipient ? (
+              {query ? (
                 <button
                   type="button"
                   className="zkm-btn-reset ww-withdraw__clear"
                   aria-label="Clear address"
-                  onClick={() => setRecipient("")}
+                  onClick={() => type("")}
                 >
                   <Icon name="x" size={12} />
                 </button>
@@ -171,134 +219,245 @@ export function WithdrawScreen() {
                 </button>
               )}
             </span>
-          </label>
-          {saved.length > 0 && (
-            <div className="ww-withdraw__saved">
-              <span className="ww-withdraw__saved-title">Saved wallets</span>
-              {saved.map((w) => (
-                <button
-                  key={w.address}
-                  type="button"
-                  className="zkm-btn-reset zkm-pressable ww-withdraw__saved-row"
-                  onClick={() => pick(w)}
-                >
-                  <Icon name="wallet" size={18} color="var(--text-secondary)" />
-                  <b>{w.name}</b>
-                  <span>{shortAddr(w.address)}</span>
-                </button>
-              ))}
-            </div>
-          )}
-          {validRecipient && !recipientCleared && (
-            <ScreeningNotice
-              verdict={screening}
-              checkingCopy="Checking address…"
-              blockedFallback="This address can't receive withdrawals."
-              errorCopy="Couldn't verify this address."
-              onRetry={rescreen}
-            />
-          )}
-          {ethRecipientIsContract && (
-            <p className="ww-withdraw__warning" role="status">
-              This address is a contract. The ETH route pays it with a plain transfer, and a
-              contract that rejects ETH would leave the funds stuck at the swap escrow. Pick a
-              different address, or receive USDC or USDT instead.
-            </p>
-          )}
-          <div className="ww-deposit__facts">
-            <WithdrawalAssetPicker value={receiveAsset} onChange={setReceiveAsset} />
-            <div className="ww-deposit__fact">
-              <span>Network</span>
-              <b>
-                <img src={ethIcon} alt="" width={16} height={16} />
-                Ethereum (ERC20)
-              </b>
-            </div>
-            <hr className="ww-divider" />
-            <div className="ww-deposit__fact">
-              <span>Fee</span>
-              <b>
-                {feeDisplay === undefined
-                  ? "--"
-                  : `${tokenAmount(feeDisplay)} ${walletAsset?.symbol ?? "zkUSD"}`}
-              </b>
-            </div>
-            {receiveAsset === "DAI" ? (
-              feeUnavailable && (
-                <p className="ww-withdraw__warning" role="status">
-                  {FEE_UNAVAILABLE_COPY}
-                </p>
-              )
+            {target && !screened.cleared ? (
+              <ScreeningNotice
+                verdict={screened.verdict}
+                checkingCopy="Checking address…"
+                blockedFallback="This address can't receive withdrawals."
+                errorCopy="Couldn't verify this address. Check your internet connection or try another address."
+                onRetry={screened.rescreen}
+              />
             ) : (
-              <SwapFeeNote state={quote} />
+              kind === "checking" && (
+                <span className="ww-fund__label">Checking address history…</span>
+              )
             )}
-          </div>
-          <PrimaryGradientButton
-            title="Continue"
-            isDisabled={!validRecipient || !recipientCleared || feeUnavailable}
-            onClick={() => setAmountOpen(true)}
-            style={{ width: "100%", height: 48 }}
-          />
-        </div>
-      </div>
-
-      {!bridgeMode && (
-        <>
-          <div className="ww-deposit__or">
-            <hr className="ww-divider" />
-            <span>or</span>
-            <hr className="ww-divider" />
-          </div>
-
-          <button
-            type="button"
-            className="zkm-btn-reset zkm-pressable ww-deposit__connect"
-            onClick={() => {
-              if (!connected) return void l1.connect()
-              setRecipient(connected)
-              setWalletName(l1.walletName ?? "")
-            }}
-          >
-            <span className="ww-deposit__connect-icon">
-              <img src={connectIcon} alt="" width={24} height={24} />
-            </span>
-            <span className="ww-deposit__connect-text">
-              <b>{l1.account ? "Use your connected wallet" : "Connect your wallet"}</b>
-              <span>
-                {l1.account
-                  ? `${l1.walletName ?? "Wallet"} · ${shortAddr(l1.account)}`
-                  : "Use WalletConnect, Rainbow, or MetaMask"}
-              </span>
-            </span>
-            <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
-          </button>
-          {l1.account && (
             <button
               type="button"
-              className="zkm-btn-reset ww-deposit__disconnect"
-              onClick={l1.disconnect}
+              className="zkm-btn-reset zkm-pressable ww-deposit__connect ww-withdraw__howto"
+              onClick={() => {
+                setNaming(true)
+                setPicked(undefined)
+                setGoing(false)
+              }}
             >
-              Disconnect
+              <span
+                className="ww-deposit__connect-icon"
+                style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 4,
+                  background: "rgba(255,255,255,.1)",
+                }}
+              >
+                <Icon name="plus" size={20} color="#fff" />
+              </span>
+              <span className="ww-deposit__connect-text">
+                <b>New address</b>
+                <span>Name an address you own</span>
+              </span>
             </button>
+            {naming && (
+              <label className="ww-withdraw__field">
+                <span>Wallet name (optional)</span>
+                <span className="ww-withdraw__box">
+                  <input
+                    autoFocus
+                    placeholder="e.g. Rainbow"
+                    value={typedName}
+                    onChange={(e) => setTypedName(e.target.value)}
+                  />
+                </span>
+              </label>
+            )}
+            {(typed || rows.length > 0) && (
+              <Card>
+                <div className="ww-withdraw__saved">
+                  {typed && target && (
+                    <div
+                      className="ww-deposit__actions"
+                      style={{
+                        borderRadius: 8,
+                        background: going ? "var(--surface-card)" : undefined,
+                      }}
+                    >
+                      <button
+                        type="button"
+                        aria-label="Use this address"
+                        aria-current={going || undefined}
+                        className="zkm-btn-reset ww-deposit__connect ww-paymethod"
+                        style={{ flex: 1, paddingBlock: 12, background: "none" }}
+                        onClick={() => setGoing(true)}
+                      >
+                        <span
+                          className="ww-deposit__connect-icon"
+                          style={{ width: 44, height: 44 }}
+                        >
+                          <img src={walletIcon} alt="" width={16} height={14} />
+                        </span>
+                        <span className="ww-deposit__connect-text">
+                          <b>{name ?? "Address"}</b>
+                          <HexAddress address={target} />
+                        </span>
+                        {tie(target) && (
+                          <span
+                            className="ww-withdraw__tag"
+                            data-tone={FRESH_ADDRESS_VERDICT_COPY[tie(target)!].tone}
+                          >
+                            {TAGS[tie(target)!]}
+                          </span>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                  {rows.map((w) => {
+                    const id = contactRowFromEntry(w.entry).id
+                    const tag = tie(w.address)
+                    return (
+                      <div
+                        key={id}
+                        className="ww-deposit__actions"
+                        style={{
+                          borderRadius: 8,
+                          background: same(w.address) ? "var(--surface-card)" : undefined,
+                        }}
+                      >
+                        <button
+                          type="button"
+                          aria-current={same(w.address) || undefined}
+                          className="zkm-btn-reset ww-deposit__connect ww-paymethod"
+                          style={{
+                            flex: 1,
+                            paddingBlock: 12,
+                            paddingRight: 0,
+                            background: "none",
+                          }}
+                          onClick={() => pick(w.address)}
+                        >
+                          <span
+                            className="ww-deposit__connect-icon"
+                            style={{ width: 44, height: 44 }}
+                          >
+                            <img src={walletIcon} alt="" width={16} height={14} />
+                          </span>
+                          <span className="ww-deposit__connect-text">
+                            <b>{w.name}</b>
+                            <HexAddress address={w.address} />
+                          </span>
+                          {tag && (
+                            <span
+                              className="ww-withdraw__tag"
+                              data-tone={FRESH_ADDRESS_VERDICT_COPY[tag].tone}
+                            >
+                              {TAGS[tag]}
+                            </span>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          className="zkm-btn-reset"
+                          style={{ paddingRight: 12 }}
+                          aria-label={`Edit ${w.name}`}
+                          onClick={() => navigate(`/contacts/${encodeURIComponent(id)}`)}
+                        >
+                          <Icon name="ellipsis" size={16} style={{ transform: "rotate(90deg)" }} />
+                        </button>
+                      </div>
+                    )
+                  })}
+                </div>
+              </Card>
+            )}
+          </div>
+          {!isDesktopL1SubmitActive() && (
+            <div className="ww-fund__fields">
+              <div className="ww-deposit__or">
+                <hr className="ww-divider" />
+                <span>or</span>
+                <hr className="ww-divider" />
+              </div>
+              <button
+                type="button"
+                className={
+                  "zkm-btn-reset zkm-pressable ww-deposit__connect" +
+                  (same(connected) ? " ww-paymethod--best" : "")
+                }
+                style={{ position: "relative" }}
+                onClick={() => (connected ? pick("connected") : void l1.connect())}
+              >
+                <span className="ww-deposit__connect-icon">
+                  <img src={walletIcon} alt="" width={19} height={17} />
+                </span>
+                <span className="ww-deposit__connect-text">
+                  <b>{connected ? "Use your connected wallet" : "Connect your wallet"}</b>
+                  <span>
+                    {connected
+                      ? `${l1.walletName ?? "Wallet"} · ${shortAddr(connected)}`
+                      : "Use Rainbow, MetaMask, Rabby, or WalletConnect"}
+                  </span>
+                </span>
+                <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
+              </button>
+              {connected && (
+                <button
+                  type="button"
+                  className="zkm-btn-reset ww-deposit__disconnect"
+                  onClick={l1.disconnect}
+                >
+                  Disconnect
+                </button>
+              )}
+            </div>
           )}
         </>
+      ) : (
+        chosen && (
+          <>
+            <div className="ww-sheet__title" style={{ gap: 10 }}>
+              <GradientText size={24} weight={700}>
+                You'll lose privacy
+              </GradientText>
+              <small>
+                None of this can be undone later.
+                {freshOffered &&
+                  " A fresh address takes about three minutes to create and keeps your funds private."}
+              </small>
+            </div>
+            <div className="ww-fund__fields">
+              <div className="ww-withdraw__field">
+                <span>{chosen.name ?? "Address"}</span>
+                <span
+                  className="ww-withdraw__box"
+                  style={{ fontSize: 11, boxShadow: "inset 0 0 0 1px var(--accent-pink)" }}
+                >
+                  <HexAddress address={chosen.recipient} full />
+                </span>
+              </div>
+              <VerdictCard kind={chosen.kind} address={chosen.recipient} />
+              <Warning title="Address traceability" tone="error" role="note">
+                Any action taken by this address can be tracked for as long as it remains in use.
+              </Warning>
+            </div>
+            <div className="ww-fund__fields">
+              {freshOffered && (
+                <PrimaryGradientButton
+                  title="Use a fresh address instead"
+                  onClick={() => navigate("/withdraw/fresh", { replace: true })}
+                  style={{ width: "100%", height: 48 }}
+                />
+              )}
+              <button
+                type="button"
+                className="zkm-btn-reset zkm-pressable ww-deposit__btn"
+                style={{ flex: "none", width: "100%" }}
+                onClick={() => setStep("amount")}
+              >
+                Continue without privacy
+              </button>
+            </div>
+          </>
+        )
       )}
-
-      {amountOpen && validRecipient && (
-        <WithdrawToWalletModal
-          recipient={getAddress(recipient)}
-          walletName={walletName.trim() || undefined}
-          receiveAsset={receiveAsset}
-          onClose={() => setAmountOpen(false)}
-          onDone={() => {
-            setAmountOpen(false)
-            setRecipient("")
-            setWalletName("")
-          }}
-        />
-      )}
-
-      {disclaimer && <WithdrawPrivacyDisclaimer onClose={() => setDisclaimer(false)} />}
-    </div>
+    </Modal>
   )
 }

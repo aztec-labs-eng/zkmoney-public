@@ -4,6 +4,9 @@ import { nameIsUnavailable, type NameAvailability } from "../nameAvailability"
 
 export type InviteNotice = { kind: "taken"; handle: string } | { kind: "error"; message: string }
 
+/** Where the docs explain reserved names and how a matching X handle claims one. */
+const RESERVED_NAMES_URL = "https://docs.zk.money/docs/get-started"
+
 /**
  * What the tag field says under itself: the shape error, the availability answer, a claim-status
  * failure or an already-claimed handle. Shared by the invitation page and the choose-tag step.
@@ -15,6 +18,8 @@ export function TagAvailabilityNotes({
   checking,
   resuming,
   allowBlocked = false,
+  grantUnverified = false,
+  grantBound = false,
   notice,
   onLogIn,
 }: {
@@ -24,6 +29,8 @@ export function TagAvailabilityNotes({
   checking: boolean
   resuming: boolean
   allowBlocked?: boolean
+  grantUnverified?: boolean
+  grantBound?: boolean
   notice?: InviteNotice
   onLogIn?: () => void
 }) {
@@ -43,11 +50,33 @@ export function TagAvailabilityNotes({
           {tagError(typed)}
         </p>
       )}
-      {!notice && taken && (
+      {!notice && grantBound && (
+        <p className="ww-invite__checking">
+          This grant is already linked to a passkey. Continue with that passkey to finish signup.
+        </p>
+      )}
+      {!notice && taken && !grantBound && (
         <p className="ww-invite__error" role="alert">
-          {reserved && (!blocked || allowBlocked)
-            ? `@${typed} is being claimed by someone else.`
-            : `@${typed} isn't available.`}
+          {reserved && (!blocked || allowBlocked) ? (
+            `@${typed} is being claimed by someone else.`
+          ) : (
+            <>
+              @{typed} is reserved.{" "}
+              <a
+                className="ww-invite__link"
+                href={RESERVED_NAMES_URL}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Learn more
+              </a>
+            </>
+          )}
+        </p>
+      )}
+      {!notice && grantUnverified && (
+        <p className="ww-invite__error" role="alert">
+          We couldn't check this grant. Reload to try again.
         </p>
       )}
       {!notice && resuming && reserved && !taken && (
@@ -55,7 +84,7 @@ export function TagAvailabilityNotes({
           @{typed} is reserved. Continue with your passkey to pick it back up.
         </p>
       )}
-      {!notice && availability === "available" && (
+      {!notice && availability === "available" && !grantBound && (
         <p className="ww-invite__ok">@{typed} is available.</p>
       )}
       {notice?.kind === "error" && (

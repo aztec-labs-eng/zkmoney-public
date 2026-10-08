@@ -1,4 +1,4 @@
-// Drives the fixture produced by `dest/fixtures/gen_test_attestation.js` through `verifyTeeAttestation`
+// Drives the fixture produced by `end-to-end/dest/src/test_utils/tee/gen_test_attestation.js` through `verifyTeeAttestation`
 // end-to-end: success, wrong trust anchor, and mismatched user_data. The success case implicitly
 // pins the gen script's `user_data` against this package's `computeAttestationUserData` because
 // the wrapper recomputes the preimage from the supplied `UserData` and compares it to the parsed

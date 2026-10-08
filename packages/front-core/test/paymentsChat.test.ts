@@ -47,6 +47,7 @@ function tokenTx(overrides: {
   amount?: number
   timestamp?: number
   txHash?: string
+  memo?: string
 }): Transaction {
   return {
     timestamp: overrides.timestamp ?? 1_700_000_000_000,
@@ -54,6 +55,7 @@ function tokenTx(overrides: {
     txHash: overrides.txHash ?? "0xtxhash",
     action: overrides.action,
     token: { amount: overrides.amount ?? 5 } as any,
+    memo: overrides.memo,
     to: overrides.to,
     from: overrides.from,
     senderL2Address: overrides.senderL2Address,
@@ -118,6 +120,22 @@ describe("buildChatMessages", () => {
     expect(result).toHaveLength(1)
     expect(result[0].role).toBe("sent-confirmed")
     expect(result[0].amount).toBe("-$5.00")
+  })
+
+  it("carries the transfer memo onto the bubble; an empty memo is dropped", () => {
+    const withMemo = tokenTx({ action: "receive", from: MARIA_ADDRESS, memo: "for pizza 🍕" })
+    const blank = tokenTx({ action: "send", to: MARIA_ADDRESS, memo: "", txHash: "0xother" })
+    const result = buildChatMessages(maria, { transactions: [withMemo, blank] })
+    expect(result[0].memo).toBe("for pizza 🍕")
+    expect(result[1].memo).toBeUndefined()
+  })
+
+  it("carries the request note onto the request bubble", () => {
+    const result = buildChatMessages(maria, {
+      requests: [request({ note: "for pizza" }), request({ id: "r-2", note: "" })],
+    })
+    expect(result[0].memo).toBe("for pizza")
+    expect(result[1].memo).toBeUndefined()
   })
 
   it("maps a pending outgoing send to sent-pending and timeLabel='Pending'", () => {

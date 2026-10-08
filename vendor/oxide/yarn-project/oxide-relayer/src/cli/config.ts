@@ -13,17 +13,22 @@ export type SignerBackend = (typeof SIGNER_BACKENDS)[number];
 
 /**
  * Operator-local policy for executing broadcast L1 operations. Only present when the l1-operations mode is
- * enabled and submission is not disabled.
+ * enabled.
  *
  * Operations submit through the deployment env manifest's published OperationExecutor for the version. Wherever
- * the chain has a Flashbots Protect endpoint (see `l1_submission_rpc.ts`) submission goes through it, so lost
+ * the chain has a Flashbots Protect endpoint (see `l1/flashbots_protect.ts`) submission goes through it, so lost
  * races and unprofitable executions revert for free.
  */
 export interface L1OperationsSubmissionConfig {
-  /** Backoff before re-checking a deferred operation. */
+  /** Backoff before re-checking a deferred operation. After a reverting simulation it doubles on each revert. */
   retryBackoffMs: number;
-  /** Failed executor simulations before an operation is dropped. */
-  maxRetries: number;
+  /** Time from when an operation is recorded until a deferral drops it, whatever the defer cause. */
+  maxPendingAgeMs: number;
+  /**
+   * Percentage by which the tx fee ceiling allows the latest base fee to increase. minPayout is priced at the ceiling,
+   * so more headroom keeps a tx valid through a larger base-fee increase but defers more operations as unprofitable.
+   */
+  maxFeeHeadroomPercent?: number;
 }
 
 /**
@@ -37,35 +42,41 @@ export interface RunConfig extends ProverRunConfig {
   portal: EthAddress;
   /**
    * L1 RPC for every read, and for submission too on a chain with no Flashbots Protect endpoint. Rejected when
-   * it points at Protect: submission picks its own endpoint and takes no configuration (`l1_submission_rpc.ts`).
+   * it points at Protect: submission picks its own endpoint and takes no configuration (`l1/flashbots_protect.ts`).
    */
   readL1RpcUrl: string;
-  /** Protect drop window in blocks of 12s; the local tx expiry derives from it on mainnet and Sepolia. */
+  /** Block window of an L1 tx on every chain: the Protect drop window, and the window the relayer expires a tx on. */
   flashbotsBlockRange: number;
-  l1MinPriorityFeeGwei?: number;
+  /** Cap on the `maxFeePerGas` of every relayer tx. Unset means no relayer cap. */
+  l1MaxFeePerGasGwei?: number;
   aztecNodeUrl: string;
   aztecNodeApiKey?: string;
   modes: RelayerMode[];
   signer: SignerConfig;
   state: StateConfig;
-  workerId: string;
-  leaseTtlMs: number;
   sdnUrl?: string;
   /** Blocks per L1 `eth_getLogs` call of the balance watcher's transfer scan. */
   logScanWindow?: bigint;
+  /**
+   * Run every check up to the L1 send, then skip the send: nothing is signed or broadcast. The flows continue as if
+   * the tx was mined, so metrics show what a real relayer would do. With no signer key configured, the signer is an
+   * ephemeral key.
+   */
   disableSubmission: boolean;
   /** Submit even when unprofitable. */
   allowUnprofitable: boolean;
   /** Interval between L1 operation poll cycles (broadcast sync, quote, submission). */
   l1OperationsPollIntervalMs?: number;
-  /** Present only when the l1-operations mode is enabled and submission is not disabled. */
+  /** Accepted payout tokens for L1 operations. Defaults to the manifest entry's `token` if unset. */
+  l1OperationsPayoutTokens?: EthAddress[];
+  /** Present only when the l1-operations mode is enabled. */
   l1OperationsSubmission?: L1OperationsSubmissionConfig;
   /** Interval between FPC funder bounty checks. */
   fpcFundingPollIntervalMs?: number;
   predicate?: PredicateScreenerConfig;
 }
 
-/** Local L1 signing configuration. The signer is not loaded when `disableSubmission` is true. */
+/** Local L1 signing configuration. Optional when `disableSubmission` is true: a random key is then used. */
 export interface SignerConfig {
   backend: SignerBackend;
   privateKeyEnvVar: string;
@@ -74,10 +85,41 @@ export interface SignerConfig {
   keystorePasswordFile?: string;
 }
 
-/** State backend selection. SQLite is the public Docker/default backend for this ticket. */
+/** Persistent SQLite state for each deployment. */
 export interface StateConfig {
   backend: 'sqlite';
   sqlitePath: string;
+}
+
+const REDACTED = '<redacted>';
+
+/**
+ * The config as a loggable object. Secrets are redacted. Only the origin of each URL is kept, because RPC
+ * providers and signed URLs put credentials in the path or the query.
+ */
+export function redactRunConfig(config: RunConfig): Record<string, unknown> {
+  const redacted = {
+    ...config,
+    portal: config.portal.toString(),
+    l1OperationsPayoutTokens: config.l1OperationsPayoutTokens?.map(token => token.toString()),
+    deploymentEnvManifestUrl: urlOrigin(config.deploymentEnvManifestUrl),
+    sdnUrl: config.sdnUrl && urlOrigin(config.sdnUrl),
+    readL1RpcUrl: urlOrigin(config.readL1RpcUrl),
+    aztecNodeUrl: urlOrigin(config.aztecNodeUrl),
+    aztecNodeApiKey: config.aztecNodeApiKey && REDACTED,
+    proverNodeUrl: config.proverNodeUrl && urlOrigin(config.proverNodeUrl),
+    signer: { ...config.signer, keystorePassword: config.signer.keystorePassword && REDACTED },
+    predicate: config.predicate && { ...config.predicate, apiKey: REDACTED, log: undefined },
+  };
+  return JSON.parse(JSON.stringify(redacted, (_key, value) => (typeof value === 'bigint' ? value.toString() : value)));
+}
+
+export function urlOrigin(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return REDACTED;
+  }
 }
 
 /** Raw Commander option object before relayer cross-field validation is applied. */
@@ -86,7 +128,7 @@ export interface CommanderRunOptions extends ProverCommanderOptions {
   portal?: string;
   readL1Rpc?: string;
   flashbotsBlockRange?: number;
-  l1MinPriorityFeeGwei?: number;
+  l1MaxFeePerGasGwei?: number;
   aztecNode?: string;
   modes?: string;
   signer?: SignerBackend;
@@ -96,20 +138,17 @@ export interface CommanderRunOptions extends ProverCommanderOptions {
   keystorePasswordFile?: string;
   stateBackend?: string;
   state?: string;
-  sqlitePath?: string;
-  workerId?: string;
-  leaseTtlMs?: number;
   sdnUrl?: string;
   logScanWindow?: number;
   disableSubmission?: boolean;
   l1OperationsPollIntervalMs?: number;
   fpcFundingPollIntervalMs?: number;
   l1OperationsRetryBackoffMs?: number;
-  l1OperationsMaxRetries?: number;
+  l1OperationsMaxPendingAgeSeconds?: number;
+  l1OperationsMaxFeeHeadroomPercent?: number;
+  l1OperationsPayoutTokens?: string;
   allowUnprofitable?: boolean;
   predicateApiKey?: string;
   predicateVerificationHash?: string;
   predicateChain?: string;
-  predicateBaseUrl?: string;
-  predicateTimeoutMs?: number;
 }

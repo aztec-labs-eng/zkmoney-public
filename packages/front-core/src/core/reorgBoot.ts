@@ -23,7 +23,7 @@ import type { ReorgNodeLike } from "./services/chain/receiptTypes"
 import { TransactionStorage } from "./storages"
 
 export interface CreateReorgMonitorOptions {
-  wallet: Pick<ObsidionWallet, "node" | "pxe">
+  wallet: Pick<ObsidionWallet, "node" | "pxe" | "getNodeIdentity">
   storage: IStorageAdapter
   /** Defaults to the in-app reorg notification producer over `AppNotificationStore.get(storage)`. */
   onOutcome?: ConfirmationListener
@@ -55,21 +55,21 @@ export function createReorgMonitor({
         notificationStore: AppNotificationStore.get(storage),
       }).handleOutcome(outcome))
 
-  // Freeze probe: the node reporting a rollupVersion the manifest lists as FROZEN means the
-  // active generation froze. A version the manifest does not know (sandbox, staging previews,
-  // fresh deploys) is not a freeze. One hit only arms a pending signal (a lone bad read must not
-  // terminal-fail every watched payment); a second consecutive hit confirms — latched, no
-  // unfreeze — and runs the once-per-launch freeze sweep so persisted rows get terminal demotes
-  // + exit-required notices even on a cold launch into a frozen generation. A non-frozen probe
-  // disarms; a probe error keeps the latched state.
+  // Freeze probe: a rollupVersion the manifest lists as FROZEN means the active generation froze.
+  // The wallet answers with the identity boot pinned, else the node's. A version the manifest
+  // does not know (sandbox, staging previews, fresh deploys) is not a freeze. One hit only arms a
+  // pending signal (a lone bad read must not terminal-fail every watched payment); a second
+  // consecutive hit confirms — latched, no unfreeze — and runs the once-per-launch freeze sweep so
+  // persisted rows get terminal demotes + exit-required notices even on a cold launch into a
+  // frozen generation. A non-frozen probe disarms; a probe error keeps the latched state.
   let frozen = false
   let pendingFreezeSignal = false
   let freezeSweepRan = false
   const isFrozen = async (): Promise<boolean> => {
     if (frozen) return true
     try {
-      const info = await wallet.node.getNodeInfo()
-      if (!isFrozenGenerationVersion(Number(info.rollupVersion))) {
+      const { rollupVersion } = await wallet.getNodeIdentity()
+      if (!isFrozenGenerationVersion(Number(rollupVersion))) {
         pendingFreezeSignal = false
         return false
       }

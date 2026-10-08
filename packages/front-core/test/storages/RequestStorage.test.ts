@@ -83,6 +83,19 @@ describe("RequestStorage", () => {
     expect((await store.findById("req-1"))?.fulfillmentTxHash).toBe("0xpay")
   })
 
+  it("reopens a paid request only for the payment that paid it", async () => {
+    const store = new RequestStorage(new InMemoryStorageAdapter())
+    await store.add(request())
+    expect(await store.reopen("req-1", "0xpaid")).toEqual({ applied: false })
+    await store.applyStatus("req-1", "fulfilled", "0xPaid")
+    expect(await store.reopen("req-1", "0xother")).toEqual({ applied: false })
+    expect(await store.reopen("req-1", "0xpaid")).toEqual({ applied: true })
+    const row = await store.findById("req-1")
+    expect(row?.status).toBe("pending")
+    expect(row).not.toHaveProperty("fulfillmentTxHash")
+    expect(await store.reopen("missing", "0xpaid")).toEqual({ applied: false })
+  })
+
   it("removes a request by id", async () => {
     const store = new RequestStorage(new InMemoryStorageAdapter())
     await store.add(request())

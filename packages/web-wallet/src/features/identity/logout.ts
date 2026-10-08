@@ -1,3 +1,4 @@
+import { leavePage } from "../../platform/storage/walletStorage"
 import { showReportableError } from "../../errors/errorModal"
 import { campaignSignedOutUrl } from "./campaignReturn"
 import { signOut } from "./signOut"
@@ -21,5 +22,5 @@ export async function logout(stopPxe: () => Promise<void>): Promise<void> {
     showReportableError(e, "identity:logout", { message: "Couldn't sign out. Try again." })
     return
   }
-  location.assign(campaignSignedOutUrl() || "/claim")
+  await leavePage(campaignSignedOutUrl() || "/claim")
 }

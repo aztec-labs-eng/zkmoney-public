@@ -139,6 +139,31 @@ describe("ObsidionWallet anchor pin", () => {
     },
   )
 
+  it("skips the entry sync for an assumeSynced snapshot and still checks the anchor", async () => {
+    const { wallet, stubPxe } = makeStubWallet()
+    const header = { hash: async () => new Fr(5), globalVariables: { blockNumber: 50 } }
+    stubPxe.getSyncedBlockHeader = vi.fn(async () => header)
+    vi.spyOn(BaseWallet.prototype, "getPrivateEvents").mockResolvedValue([])
+    const snapshot = await wallet.getPrivateEventsSnapshot({} as any, {} as any, async () => 1n, {
+      assumeSynced: true,
+    })
+    expect(snapshot.anchorBlock).toBe(50)
+    expect(stubPxe.sync).not.toHaveBeenCalled()
+    expect(stubPxe.getSyncedBlockHeader).toHaveBeenCalledTimes(2)
+  })
+
+  it("reads a projection alone on one sync", async () => {
+    const { wallet, stubPxe } = makeStubWallet()
+    stubPxe.getSyncedBlockHeader = vi.fn(async () => ({
+      hash: async () => new Fr(3),
+      globalVariables: { blockNumber: 30 },
+    }))
+    const events = vi.spyOn(BaseWallet.prototype, "getPrivateEvents")
+    expect(await wallet.getSnapshot(async () => 9n)).toEqual({ value: 9n, anchorBlock: 30 })
+    expect(stubPxe.sync).toHaveBeenCalledTimes(1)
+    expect(events).not.toHaveBeenCalled()
+  })
+
   it("reuses the send pin without another sync when taking a snapshot", async () => {
     const { wallet, stubPxe } = makeStubWallet()
     ;(wallet as any).anchorPinDepth = 1

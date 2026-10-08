@@ -1,7 +1,7 @@
 import { useMemo } from "react"
 import { useAssetContext } from "src/contexts"
 import { selectWalletAsset } from "../utils/tokenIdentity"
-import { useSyncCatchingUp } from "./useSyncCatchingUp"
+import { useBalanceSyncing } from "./useBalanceSyncing"
 
 /**
  * Derives balance from asset context.
@@ -9,7 +9,7 @@ import { useSyncCatchingUp } from "./useSyncCatchingUp"
  */
 export function useBalance() {
   const { assets, liveAssetsLoaded, activeTokenAddress } = useAssetContext()
-  const catchingUp = useSyncCatchingUp()
+  const { syncing, progress } = useBalanceSyncing()
 
   return useMemo(() => {
     const walletAsset = selectWalletAsset(assets, activeTokenAddress)
@@ -30,10 +30,15 @@ export function useBalance() {
       // hydrated balance the cache exists to show. A resolved asset is enough,
       // and so is a completed live fetch that legitimately found none — but an
       // ambiguous cache the selector declined to guess at is NOT, or the
-      // placeholder gives way to a confident $0 that may not be the truth. A fresh device's first
-      // chain pass rewrites the balance chunk by chunk as its deposits replay, so the placeholder
-      // also holds until that pass ends rather than show each intermediate figure.
-      balanceKnown: !catchingUp && (liveAssetsLoaded || walletAsset !== null),
+      // placeholder gives way to a confident $0 that may not be the truth. While the boot sync runs
+      // only a live read counts: a cached figure can be high, and the syncing pill says it can
+      // only climb.
+      balanceKnown: liveAssetsLoaded || (!syncing && walletAsset !== null),
+      // A fresh device's first balance can still be short of deposits the boot replay has not
+      // claimed yet (see `bootPriority`).
+      balanceSyncing: syncing,
+      // Share of that replay checked, 0–1; null until its total is known.
+      balanceSyncProgress: progress,
     }
-  }, [assets, liveAssetsLoaded, activeTokenAddress, catchingUp])
+  }, [assets, liveAssetsLoaded, activeTokenAddress, syncing, progress])
 }

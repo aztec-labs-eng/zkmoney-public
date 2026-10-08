@@ -35,7 +35,7 @@
     {
       "action": "reachable",
       "role": "button",
-      "name": "Logout",
+      "name": "Log out",
       "exact": true
     },
     {
@@ -79,7 +79,7 @@
     },
     {
       "action": "waitFor",
-      "text": "Claiming your tag...",
+      "text": "Claiming your tag…",
       "exact": true
     },
     {

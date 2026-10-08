@@ -6,6 +6,12 @@
 import React, { act } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRoot, type Root } from "react-dom/client"
+import {
+  clearRefundInFlight,
+  markRefundInFlight,
+  type PaylinkTransaction,
+} from "@obsidion/front-core"
+import { provingProgress } from "@obsidion/proving-progress"
 import type { ActivityRowView } from "../src/ui/screens/activityView"
 
 const h = vi.hoisted(() => ({
@@ -50,6 +56,7 @@ vi.mock("@obsidion/web-ds", () => ({
 }))
 
 const { TxDetailModal } = await import("../src/ui/screens/TxDetailModal")
+const { getOperationStore } = await import("../src/features/operations/operations")
 
 declare global {
   // eslint-disable-next-line no-var
@@ -152,7 +159,12 @@ describe("TxDetailModal", () => {
     const onClose = vi.fn()
     await show(
       <TxDetailModal
-        row={{ ...plain, counterparty: "@pleaswork", counterpartyTag: "pleaswork", amount: "-$1.00" }}
+        row={{
+          ...plain,
+          counterparty: "@pleaswork",
+          counterpartyTag: "pleaswork",
+          amount: "-$1.00",
+        }}
         onClose={onClose}
       />,
     )
@@ -184,7 +196,19 @@ describe("TxDetailModal", () => {
     expect(value("Status")).toBe("Failed")
   })
 
-  it("pending send: -- date and hash, Sending badge, no See all", async () => {
+  it("reverted receive: titled by the action, in the feed row's words", async () => {
+    await show(
+      <TxDetailModal
+        row={{ ...plain, status: "failed", statusLabel: "Not received" }}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(container.querySelector(".ww-pay__title")?.textContent).toBe("Receive")
+    expect(value("Status")).toBe("Not received")
+  })
+
+  it("pending send: -- date and hash, Pending badge, no See all", async () => {
     await show(
       <TxDetailModal
         row={{ ...fromContact, amount: "-$5.00", status: "pending", txHash: undefined }}
@@ -195,34 +219,116 @@ describe("TxDetailModal", () => {
     expect(container.querySelector(".ww-pay__title")?.textContent).toBe("Send")
     expect(value("Date")).toBe("--")
     expect(value("Tx hash")).toBe("--")
-    expect(value("Status")).toBe("Sending")
+    expect(value("Status")).toBe("Pending")
     expect(links()).toEqual([])
     expect(seeAll()).toBeNull()
   })
 
-  it("pending creator paylink: the link is copyable and the sheet says the proof still runs here", async () => {
-    const paylink = "https://wallet/link#frag"
-    const pendingLink: ActivityRowView = {
-      ...plain,
-      id: "queue-1",
-      counterparty: "Sent via paylink",
-      amount: "-$25.00",
-      status: "pending",
-      txHash: undefined,
+  const paylink = "https://wallet/link#frag"
+  const linkRow = (
+    status: ActivityRowView["status"],
+    over: Partial<PaylinkTransaction> = {},
+  ): ActivityRowView => ({
+    ...plain,
+    id: "queue-1",
+    counterparty: status === "success" ? "Sent via paylink" : "Paylink",
+    amount: "-$25.00",
+    status,
+    txHash: status === "success" ? HASH : undefined,
+    paylink,
+    paylinkStatus: "awaitingClaim",
+    paylinkRow: {
+      action: "Pay To Email",
+      emailPaymentAction: "Pay To Email",
+      flavor: "direct",
+      status,
+      timestamp: plain.timestampMs,
       paylink,
-      paylinkStatus: "awaitingClaim",
-    }
+      untilClaimable: Math.floor(Date.now() / 1000) + 86_400,
+      ...over,
+    } as PaylinkTransaction,
+  })
+
+  it("pending creator paylink: the banner follows the link's operation, not the row", async () => {
+    const store = getOperationStore()
+    await store.begin({
+      operationId: "op-link",
+      flow: "paylink-create",
+      summary: "$25",
+      scope: null,
+    })
+    const pendingLink = linkRow("pending", { operationId: "op-link" })
     await show(<TxDetailModal row={pendingLink} onClose={vi.fn()} />)
 
-    const live = container.querySelector(".ww-txd__notice--live")
-    expect(live?.textContent).toContain("Keep the tab open")
+    const keep = () => container.querySelector(".ww-txd__notice--live")
+    const safe = () => container.querySelector(".ww-txd__notice--safe")
+    expect(keep()?.textContent).toContain("Keep this tab open until it's finished creation")
+    expect(keep()?.querySelector('[data-icon="spinner"]')).not.toBeNull()
+    expect(safe()).toBeNull()
     expect(container.textContent).toContain("Copy paylink")
+    expect(container.querySelector(".ww-pay__title")?.textContent).toBe("Paylink")
     expect(value("Status")).toBe("Pending")
 
-    // Landed: the notice leaves with the pending state.
+    await act(async () => {
+      provingProgress.emitTxHashSaved("op-link", HASH)
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(keep()).toBeNull()
+    expect(safe()?.textContent).toContain("Sent. You can close this tab.")
+    expect(safe()?.querySelector('[data-icon="spinner"]')).toBeNull()
+
+    // Settled: the banner leaves with the operation, whatever the row still says.
+    await act(async () => {
+      store.release("op-link")
+      await store.settle("op-link", HASH)
+    })
+    expect(keep()).toBeNull()
+    expect(safe()).toBeNull()
+  })
+
+  it("failed creator paylink: no Share or Copy, no expiry, and its reason", async () => {
     await show(
-      <TxDetailModal row={{ ...pendingLink, status: "success", txHash: HASH }} onClose={vi.fn()} />,
+      <TxDetailModal
+        row={{ ...linkRow("failed"), error: "The send was interrupted" }}
+        onClose={vi.fn()}
+      />,
     )
-    expect(container.querySelector(".ww-txd__notice--live")).toBeNull()
+
+    expect(container.querySelector(".ww-pay__title")?.textContent).toBe("Paylink")
+    expect(value("Status")).toBe("Failed")
+    expect(value("Reason")).toBe("The send was interrupted")
+    expect(labels()).not.toContain("Link expiry")
+    expect(container.querySelectorAll("button:not([aria-label])")).toHaveLength(0)
+  })
+
+  it("creator paylink this page is refunding: Cancelling until the refund ends", async () => {
+    const secret = `0x${"66".repeat(32)}`
+    await show(
+      <TxDetailModal row={linkRow("success", { payToEmailSecret: secret })} onClose={vi.fn()} />,
+    )
+    expect(value("Status")).toBe("Unclaimed")
+
+    await act(async () => markRefundInFlight(secret))
+    expect(value("Status")).toBe("Cancelling")
+    expect(container.textContent).not.toContain("Copy paylink")
+
+    await act(async () => clearRefundInFlight(secret))
+    expect(value("Status")).toBe("Unclaimed")
+    expect(container.textContent).toContain("Copy paylink")
+  })
+
+  it("creator paylink with a refund in flight: Cancelling, and nothing to tap", async () => {
+    const refundTxHash = `0x${"77".repeat(32)}`
+    await show(
+      <TxDetailModal
+        row={{ ...linkRow("success", { refundTxHash }), refundTxHash, refundStatus: "pending" }}
+        onClose={vi.fn()}
+      />,
+    )
+
+    expect(container.querySelector(".ww-pay__title")?.textContent).toBe("Send via paylink")
+    expect(value("Status")).toBe("Cancelling")
+    expect(container.textContent).not.toContain("Copy paylink")
+    expect(container.textContent).not.toContain("Cancel paylink")
   })
 })

@@ -39,6 +39,7 @@ const PENDING_L1_OPERATION: PendingL1Operation = {
   condition: L1OperationCondition.immediate(),
   status: 'pending',
   attempts: 0,
+  createdAt: new Date(),
 };
 
 const WAITING_BALANCE_OPERATION: PendingL1Operation = {
@@ -237,6 +238,22 @@ describe('SqliteStateStore L1 operations', () => {
         status: 'blocked',
       });
       await expect(store.listPendingL1Operations()).resolves.toHaveLength(0);
+    });
+  });
+
+  it('gives a dropped operation a fresh created_at when a later broadcast reopens it', async () => {
+    await withStore(async store => {
+      const first = new Date('2026-06-16T00:00:00.000Z');
+      const rebroadcast = new Date('2026-06-20T00:00:00.000Z');
+      await store.upsertPendingL1Operation({ ...PENDING_L1_OPERATION, createdAt: first });
+      await store.setL1OperationStatus(PENDING_L1_OPERATION.operationId, 'dropped');
+
+      await store.upsertPendingL1Operation({ ...PENDING_L1_OPERATION, l2BlockNumber: 6n, createdAt: rebroadcast });
+
+      await expect(store.getPendingL1Operation(PENDING_L1_OPERATION.operationId)).resolves.toMatchObject({
+        status: 'pending',
+        createdAt: rebroadcast,
+      });
     });
   });
 

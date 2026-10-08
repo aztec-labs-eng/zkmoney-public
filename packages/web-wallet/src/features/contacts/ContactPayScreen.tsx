@@ -1,7 +1,7 @@
 import { floorToCents, parseAmount } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { useLocation, useNavigate, useParams } from "react-router-dom"
+import { useLocation, useNavigate, useOutletContext, useParams } from "react-router-dom"
 import {
   ContactStorage,
   useAccountContext,
@@ -35,8 +35,6 @@ import { lookUpUnsavedContact } from "./unsavedContact"
 import { PayAmountForm } from "./PayAmountForm"
 import { PayConfirmForm } from "./PayConfirmForm"
 import { PayWorking } from "./PayWorking"
-import { ContactDetailScreen } from "./ContactDetailScreen"
-import { SendScreen } from "./SendScreen"
 
 /** Router state: a fulfilling send carries the request (activity-row Send, or a decoded request
  *  link via `/request`); `from` marks entry from the contact detail, which stays as the backdrop
@@ -55,6 +53,14 @@ interface PayScreenState {
     hash?: string
   }
   from?: "detail"
+  /** The person the page already loaded, so the flow opens without looking them up again. */
+  contact?: Contact
+  saved?: boolean
+}
+
+/** What the contact route hands its Send flow: whether the sponsored rail check has cleared. */
+export interface ContactPayOutlet {
+  railReady: boolean
 }
 
 type Phase = "amount" | "confirm" | "working" | "sent"
@@ -82,7 +88,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   const { contractService } = useContractServiceContext()
   const { walletAsset, walletBalance, assetsLoaded } = useBalance()
 
-  const [entry, setEntry] = useState<Contact | null | undefined>(undefined)
+  const [entry, setEntry] = useState<Contact | null | undefined>(routerState?.contact)
   const [phase, setPhase] = useState<Phase>(request && request.amount > 0 ? "confirm" : "amount")
   const [amount, setAmount] = useState(request && request.amount > 0 ? String(request.amount) : "")
   const [note, setNote] = useState(request?.note ?? "")
@@ -93,6 +99,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   const left = useRef(false)
 
   useEffect(() => {
+    if (routerState?.contact) return
     let current = true
     ContactStorage.get()
       .getEntries()
@@ -133,8 +140,9 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   // Only a KNOWN shortfall blocks: a balance still loading reads 0 and would flag every amount.
   const overspent = isSend && assetsLoaded && parsed > (walletAsset?.balance ?? 0)
   const targetTag = entry?.tag ?? (isSend ? request?.tag : undefined)
+  const railReady = useOutletContext<ContactPayOutlet | undefined>()?.railReady ?? true
   const ready = isSend
-    ? !!(obsidionWallet && obsidionAccount && tokenService && contractService)
+    ? railReady && !!(obsidionWallet && obsidionAccount && tokenService && contractService)
     : !!tokenService
   const busy = useUserFlowActive()
   // Abandoning the flow: pop history so the close returns wherever the user came from.
@@ -195,7 +203,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
               amountDisplay: amount,
               note: note.trim() || undefined,
               request,
-              saveUnsavedRequester: !entry,
+              saveUnsavedRequester: routerState?.contact ? !routerState.saved : !entry,
             }
           : {
               mode: "request",
@@ -269,95 +277,92 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   const title = isSend ? "Send" : "Request"
 
   return (
-    <>
-      {routerState?.from === "detail" ? <ContactDetailScreen /> : <SendScreen />}
-      <Modal
-        variant="bare"
-        label={title}
-        className="ww-pay"
-        onClose={
-          phase === "working" || phase === "sent"
-            ? undefined
-            : () => (phase === "confirm" && !request ? setPhase("amount") : back())
-        }
-      >
-        {phase === "sent" ? (
-          <div className="ww-pay__working">
-            <Icon name="check" size={36} color="var(--accent-green)" strokeWidth={2.5} />
-            <span className="ww-pay__title">Request sent</span>
-          </div>
-        ) : phase === "working" && isSend ? (
-          <OperationHandOff
-            onLeave={leave}
-            onCancel={
-              stage === "resolving"
-                ? () => {
-                    cancelled.current = true
-                  }
-                : undefined
-            }
+    <Modal
+      variant="bare"
+      label={title}
+      className="ww-pay"
+      onClose={phase === "working" || phase === "sent" ? undefined : back}
+    >
+      {phase === "sent" ? (
+        <div className="ww-pay__working">
+          <Icon name="check" size={36} color="var(--accent-green)" strokeWidth={2.5} />
+          <span className="ww-pay__title">Request sent</span>
+        </div>
+      ) : phase === "working" && isSend ? (
+        <OperationHandOff
+          onLeave={leave}
+          onCancel={
+            stage === "resolving"
+              ? () => {
+                  cancelled.current = true
+                }
+              : undefined
+          }
+        />
+      ) : phase === "working" ? (
+        <PayWorking beat="preparing" label="Sending request…" warn={false} />
+      ) : (
+        <>
+          <PayModalChrome
+            title={title}
+            subtitle={`@${handle}.zk.money`}
+            name={handle}
+            onClose={back}
+            onBack={phase === "confirm" && !request ? () => setPhase("amount") : undefined}
           />
-        ) : phase === "working" ? (
-          <PayWorking beat="preparing" />
-        ) : (
-          <>
-            <PayModalChrome
-              title={title}
-              subtitle={`@${handle}.zk.money`}
-              name={handle}
-              onClose={() => (phase === "confirm" && !request ? setPhase("amount") : back())}
+          {/* Requests hard-fail without a live XMTP leader; surface the state before submit. */}
+          {!isSend && <MessagingBanner />}
+          {isSend && <TeeSignerNotice />}
+
+          {notFound && <div className="ww-pay__handle">Contact not found.</div>}
+
+          {!notFound && phase === "amount" && (
+            <PayAmountForm
+              amount={amount}
+              note={note}
+              isSend={isSend}
+              walletBalance={walletBalance}
+              maxAmount={
+                walletAsset
+                  ? floorToCents(walletAsset.balanceAtomic, walletAsset.decimals)
+                  : undefined
+              }
+              overspent={overspent}
+              validAmount={validAmount}
+              onAmount={setAmount}
+              onNote={setNote}
+              onContinue={toConfirm}
             />
-            {/* Requests hard-fail without a live XMTP leader; surface the state before submit. */}
-            {!isSend && <MessagingBanner />}
-            {isSend && <TeeSignerNotice />}
+          )}
 
-            {notFound && <div className="ww-pay__handle">Contact not found.</div>}
-
-            {!notFound && phase === "amount" && (
-              <PayAmountForm
-                amount={amount}
-                note={note}
-                isSend={isSend}
-                walletBalance={walletBalance}
-                maxAmount={
-                  walletAsset
-                    ? floorToCents(walletAsset.balanceAtomic, walletAsset.decimals)
-                    : undefined
-                }
-                overspent={overspent}
-                validAmount={validAmount}
-                onAmount={setAmount}
-                onNote={setNote}
-                onContinue={toConfirm}
-              />
-            )}
-
-            {!notFound && phase === "confirm" && (
-              <PayConfirmForm
-                title={title}
-                amount={parsed}
-                note={note}
-                ready={ready}
-                busy={busy}
-                overspent={overspent}
-                isSend={isSend}
-                onConfirm={submit}
-              />
-            )}
-            {!notFound && phase === "confirm" && request?.source === "link" && request.hash && (
-              <button
-                type="button"
-                className="zkm-btn-reset ww-claim-modal__alt"
-                onClick={() =>
-                  navigate({ pathname: "/request", hash: request.hash }, { state: { external: true } })
-                }
-              >
-                Pay with an Ethereum wallet instead
-              </button>
-            )}
-          </>
-        )}
-      </Modal>
-    </>
+          {!notFound && phase === "confirm" && (
+            <PayConfirmForm
+              title={title}
+              amount={parsed}
+              note={note}
+              ready={ready}
+              busy={busy}
+              overspent={overspent}
+              isSend={isSend}
+              onConfirm={submit}
+            />
+          )}
+          {!notFound && phase === "confirm" && request?.source === "link" && request.hash && (
+            <button
+              type="button"
+              className="zkm-btn-reset ww-claim-modal__alt"
+              onClick={() =>
+                navigate(
+                  { pathname: "/request", hash: request.hash },
+                  { state: { external: true } },
+                )
+              }
+            >
+              Pay with an Ethereum wallet instead
+            </button>
+          )}
+        </>
+      )}
+    </Modal>
   )
 }

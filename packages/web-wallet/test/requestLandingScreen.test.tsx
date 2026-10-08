@@ -1,13 +1,25 @@
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
-import { MemoryRouter, Route, Routes, useNavigate, type NavigateFunction } from "react-router-dom"
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+  type NavigateFunction,
+} from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { encodeRequestInline, type RequestInlinePacket } from "@obsidion/front-core"
+import {
+  encodeRequestInline,
+  getActiveNetworkId,
+  type RequestInlinePacket,
+} from "@obsidion/front-core"
 
 const SIPA = `0x${"aa".repeat(20)}`
 const L1_TOKEN = `0x${"22".repeat(20)}`
 const L2_TOKEN = `0x${"1b".repeat(32)}`
 const ROLLUP = "0xrollup"
+const PORTAL = `0x${"c".repeat(40)}`
 const CHAIN_ID = 31337
 
 function fragmentFor(over: Partial<RequestInlinePacket> = {}): string {
@@ -26,9 +38,11 @@ function fragmentFor(over: Partial<RequestInlinePacket> = {}): string {
   })
 }
 
-const { resolve, identity } = vi.hoisted(() => ({
+const { resolve, identity, portal, nodeIsDefault } = vi.hoisted(() => ({
   resolve: vi.fn(),
   identity: { value: null as object | null },
+  portal: vi.fn(),
+  nodeIsDefault: { value: true },
 }))
 
 vi.mock("../src/features/identity/walletIdentity", () => ({
@@ -43,6 +57,13 @@ vi.mock("../src/config/env", async () => {
       nodeUrl: "http://127.0.0.1:8080",
       l1ChainId: CHAIN_ID,
       l1Chain: foundry,
+      oxideProfile: { portal: PORTAL },
+      profileRollupVersion: "1",
+      endpoints: {
+        node: { isDefault: nodeIsDefault.value },
+        l1Rpc: { isDefault: true },
+        enclave: { isDefault: true },
+      },
     }),
     l1Transport: () => http("http://127.0.0.1:8545"),
   }
@@ -50,8 +71,14 @@ vi.mock("../src/config/env", async () => {
 vi.mock("../src/config/oxideTuple", () => ({
   getOxideTuple: async () => ({ token: L1_TOKEN, l2Token: L2_TOKEN }),
   requireTupleField: (tuple: Record<string, unknown>, key: string) => tuple[key],
+  l1PublicClient: () => "l1-client",
 }))
-vi.mock("../src/features/requests/accountlessRequest", () => ({
+vi.mock("@obsidion/sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/sdk")>()),
+  readPortalChainIdentity: portal,
+}))
+vi.mock("../src/features/requests/accountlessRequest", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/requests/accountlessRequest")>()),
   resolveAccountlessRequest: resolve,
 }))
 // The sheet pulls wagmi/RainbowKit; the landing is what these cover.
@@ -71,8 +98,18 @@ vi.mock("@obsidion/web-ds", () => ({
 }))
 
 const { RequestLandingScreen } = await import("../src/features/requests/RequestLandingScreen")
-/** The node the app hands the screen. */
-const node = { getL1ContractAddresses: async () => ({ rollupAddress: ROLLUP }) } as never
+const { L1IdentityUnavailableError } = await import("@obsidion/front-core")
+
+/** The node's answer, agreeing with the portal; only the default node's L1-outage fallback boots on it. */
+const getNodeInfo = vi.fn(async () => ({
+  l1ChainId: CHAIN_ID,
+  rollupVersion: 1,
+  l1ContractAddresses: {
+    rollupAddress: { toString: () => ROLLUP },
+    inboxAddress: { toString: () => `0x${"b".repeat(40)}` },
+  },
+}))
+const node = { getNodeInfo } as never
 
 declare global {
   // eslint-disable-next-line no-var
@@ -87,11 +124,24 @@ describe("RequestLandingScreen accountless landing", () => {
     navigate = useNavigate()
     return null
   }
+  function EnterProbe() {
+    const { state } = useLocation()
+    return <div data-testid="enter-next">{(state as { next?: string } | null)?.next}</div>
+  }
 
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     resolve.mockReset()
+    portal.mockReset()
+    portal.mockResolvedValue({
+      l1ChainId: CHAIN_ID,
+      rollupVersion: "1",
+      rollupAddress: ROLLUP,
+      inboxAddress: `0x${"b".repeat(40)}`,
+    })
     identity.value = null
+    nodeIsDefault.value = true
+    getNodeInfo.mockClear()
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -112,6 +162,7 @@ describe("RequestLandingScreen accountless landing", () => {
               <Route index element={<div>signup</div>} />
             </Route>
             <Route path="/contacts/:tag/send" element={<div>send-sheet</div>} />
+            <Route path="/enter" element={<EnterProbe />} />
           </Routes>
         </MemoryRouter>
       )
@@ -126,6 +177,78 @@ describe("RequestLandingScreen accountless landing", () => {
       button(text).dispatchEvent(new MouseEvent("click", { bubbles: true }))
     })
   }
+
+  it("refuses a link whose declared decimals the token does not have", async () => {
+    const { RequestDecimalsMismatchError } = await import(
+      "../src/features/requests/accountlessRequest"
+    )
+    resolve.mockRejectedValue(new RequestDecimalsMismatchError(6, 18))
+    await render(fragmentFor())
+    expect(container.textContent).toContain("for a token this wallet doesn't support")
+    expect(container.textContent).not.toContain("Try again")
+  })
+
+  it("validates the packet against the portal's rollup, with no identity pinned", async () => {
+    // Mounted outside AccountGate: nothing has published a network id yet.
+    expect(getActiveNetworkId()).toBeUndefined()
+    resolve.mockReturnValue(new Promise(() => {}))
+    await render(fragmentFor())
+
+    expect(portal).toHaveBeenCalledWith("l1-client", PORTAL, CHAIN_ID)
+    expect(container.textContent).toContain("Choose a method to pay")
+    expect(resolve).toHaveBeenCalledTimes(1)
+  })
+
+  it("refuses a packet stamped for another rollup", async () => {
+    await render(fragmentFor({ networkId: "0xother" }))
+
+    expect(container.textContent).toContain("This payment request is for a different network.")
+    expect(resolve).not.toHaveBeenCalled()
+  })
+
+  it("hands a signed-in payer to the send sheet once the portal's rollup matches", async () => {
+    identity.value = {}
+    await render(fragmentFor())
+
+    expect(portal).toHaveBeenCalledWith("l1-client", PORTAL, CHAIN_ID)
+    expect(container.textContent).toContain("send-sheet")
+  })
+
+  it("falls back to the default node when L1 gives no answer, as boot does", async () => {
+    identity.value = {}
+    portal.mockRejectedValue(
+      new L1IdentityUnavailableError({ call: "ROLLUP", cause: new TypeError("Failed to fetch") }),
+    )
+    await render(fragmentFor())
+
+    expect(getNodeInfo).toHaveBeenCalledTimes(1)
+    expect(container.textContent).toContain("send-sheet")
+  })
+
+  it("refuses a default node on another chain when L1 gives no answer, as boot does", async () => {
+    identity.value = {}
+    portal.mockRejectedValue(
+      new L1IdentityUnavailableError({ call: "ROLLUP", cause: new TypeError("Failed to fetch") }),
+    )
+    getNodeInfo.mockResolvedValueOnce({
+      ...(await getNodeInfo()),
+      l1ChainId: CHAIN_ID + 1,
+    })
+    await render(fragmentFor())
+
+    expect(container.textContent).not.toContain("send-sheet")
+  })
+
+  it("never takes a custom node's word when L1 gives no answer", async () => {
+    identity.value = {}
+    nodeIsDefault.value = false
+    portal.mockRejectedValue(
+      new L1IdentityUnavailableError({ call: "ROLLUP", cause: new TypeError("Failed to fetch") }),
+    )
+    await render(fragmentFor())
+
+    expect(container.textContent).not.toContain("send-sheet")
+  })
 
   it("holds the external-wallet row until the address and fee resolve", async () => {
     resolve.mockReturnValue(new Promise(() => {}))
@@ -142,6 +265,7 @@ describe("RequestLandingScreen accountless landing", () => {
   it("quotes amount plus fee and opens the pay sheet once resolved", async () => {
     resolve.mockResolvedValue({
       sipaAddress: SIPA,
+      decimals: 6,
       feeAtomic: 500_000n,
       grossAtomic: 1_500_000n,
       paymentUri: `ethereum:${L1_TOKEN}@${CHAIN_ID}/transfer?address=${SIPA}&uint256=1500000`,
@@ -165,6 +289,7 @@ describe("RequestLandingScreen accountless landing", () => {
     await act(async () =>
       finish({
         sipaAddress: SIPA,
+        decimals: 6,
         feeAtomic: 500_000n,
         grossAtomic: 1_500_000n,
         paymentUri: `ethereum:${L1_TOKEN}@${CHAIN_ID}/transfer?address=${SIPA}&uint256=1500000`,
@@ -192,6 +317,7 @@ describe("RequestLandingScreen accountless landing", () => {
     await act(async () =>
       finish({
         sipaAddress: SIPA,
+        decimals: 6,
         feeAtomic: 500_000n,
         grossAtomic: 1_500_000n,
         paymentUri: "ethereum:capture",
@@ -215,6 +341,7 @@ describe("RequestLandingScreen accountless landing", () => {
       )
       resolve.mockResolvedValueOnce({
         sipaAddress: SIPA,
+        decimals: 6,
         feeAtomic: 500_000n,
         grossAtomic: 2_500_000n,
         paymentUri: "ethereum:new",
@@ -232,6 +359,7 @@ describe("RequestLandingScreen accountless landing", () => {
         else
           finishOld({
             sipaAddress: SIPA,
+            decimals: 6,
             feeAtomic: 500_000n,
             grossAtomic: 1_500_000n,
             paymentUri: "ethereum:old",
@@ -246,6 +374,7 @@ describe("RequestLandingScreen accountless landing", () => {
   it("does not reopen a previous packet's payment sheet after the fragment changes", async () => {
     resolve.mockResolvedValue({
       sipaAddress: SIPA,
+      decimals: 6,
       feeAtomic: 500_000n,
       grossAtomic: 1_500_000n,
       paymentUri: "ethereum:capture",
@@ -274,6 +403,7 @@ describe("RequestLandingScreen accountless landing", () => {
     await act(async () =>
       finish({
         sipaAddress: SIPA,
+        decimals: 6,
         feeAtomic: 500_000n,
         grossAtomic: 1_500_000n,
         paymentUri: "ethereum:capture",
@@ -299,6 +429,20 @@ describe("RequestLandingScreen accountless landing", () => {
     expect(container.textContent).not.toContain("Choose a method to pay")
     await click("Create account")
     expect(container.textContent).toContain("signup")
+  })
+
+  it.each([
+    ["the footer's", async () => {}],
+    ["the payment options'", () => click("Pay with zk.money")],
+  ])("%s Log in carries the request through sign-in", async (_name, open) => {
+    resolve.mockReturnValue(new Promise(() => {}))
+    const fragment = fragmentFor()
+    await render(fragment)
+    await open()
+    await click("Log in")
+    expect(container.querySelector('[data-testid="enter-next"]')?.textContent).toBe(
+      `/request#${fragment}`,
+    )
   })
 
   it("offers a signed-in payer the send sheet back instead of a log-in prompt", async () => {

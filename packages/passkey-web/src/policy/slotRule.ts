@@ -73,17 +73,25 @@ const expectedAtCreation = (posture: DevicePosture, securityKey: boolean): Passk
  *
  * An unreported attachment refuses on either posture. Nothing downstream may pick a slot from a
  * route the browser declined to name.
+ *
+ * `providerName` is what answered, for a laptop refusal to name; it is dropped unless the browser
+ * reported this device, since an unreported answer says nothing about where the passkey went.
  */
 export function checkCreationRoute(
   posture: DevicePosture,
   attachment: PasskeyAttachment | undefined,
   securityKey: boolean,
+  providerName?: string,
 ): void {
   if (attachment === expectedAtCreation(posture, securityKey)) return
   // Each refusal names the device this ceremony was already using: the key it started on, this
   // phone's own passkey, or the phone a laptop is waiting for.
   if (securityKey) throw new SecurityKeyRequiredError()
-  throw posture === "phone" ? new LocalPasskeyRequiredError() : new PhoneRequiredError()
+  if (posture === "phone") throw new LocalPasskeyRequiredError()
+  throw new PhoneRequiredError({
+    ceremony: "create",
+    providerName: attachment === "platform" ? providerName : undefined,
+  })
 }
 
 /** The route rule for a sign-in: a laptop still needs another device, a phone takes any answer. */
@@ -146,34 +154,25 @@ export function offerableTransports(
 const namingSecurityKey = (hints: readonly PasskeyHint[]): readonly PasskeyHint[] =>
   hints.includes("security-key") ? hints : [...hints, "security-key"]
 
-/**
- * Steering for the browser sheet on a sign-in, sent only where a consumer asks for it. A laptop may
- * use a phone over QR or a security key, and a hint leans the sheet towards the route it names, as
- * a preference the browser may overrule. None is sent by default, so the browser offers both.
- * Phones send none: a phone sign-in accepts an answer from anywhere, including another phone over
- * QR, and steering would push those users away from the route they need.
- */
-export function hintsFor(
-  posture: DevicePosture,
-  laptopHints?: readonly PasskeyHint[] | null,
-): readonly PasskeyHint[] | undefined {
-  if (posture !== "laptop" || !laptopHints?.length) return undefined
-  return namingSecurityKey(laptopHints)
-}
-
 /** The two classes a phone creation admits, named so its sheet opens on them rather than on QR. */
 const PHONE_CREATION_HINTS: readonly PasskeyHint[] = ["client-device", "security-key"]
 
+/** A laptop creation whose consumer names no route: the phone over QR first, then a key. */
+const LAPTOP_CREATION_HINTS: readonly PasskeyHint[] = ["hybrid", "security-key"]
+
 /**
- * Steering for a creation. A laptop takes whatever its consumer configured, as at sign-in. A phone
- * names its own passkey and a security key — the two classes the route rule admits — and never
- * `hybrid`, which it would refuse. Steering is advisory: the route rule is what enforces this.
+ * Steering for a creation. A laptop leads with the route its consumer names, the phone when it
+ * names none, and always names a security key; `null` sends nothing. A phone names its own passkey
+ * and a security key — the two classes the route rule admits — and never `hybrid`, which it would
+ * refuse. Steering is advisory: the route rule is what enforces this.
  */
 export function creationHintsFor(
   posture: DevicePosture,
   laptopHints?: readonly PasskeyHint[] | null,
 ): readonly PasskeyHint[] | undefined {
-  return posture === "laptop" ? hintsFor(posture, laptopHints) : PHONE_CREATION_HINTS
+  if (posture !== "laptop") return PHONE_CREATION_HINTS
+  if (laptopHints === null) return undefined
+  return laptopHints?.length ? namingSecurityKey(laptopHints) : LAPTOP_CREATION_HINTS
 }
 
 /** The two routes a laptop sign-in accepts when the device's own copy is not admitted. */

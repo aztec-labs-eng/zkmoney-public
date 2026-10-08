@@ -6,7 +6,8 @@
  * across restarts and replays — a later reorg episode (higher epoch) mints a
  * fresh alert.
  *
- * Alert semantics: `failed` / `grace-expired` → payment-failed alert;
+ * Alert semantics: `failed` / `grace-expired` → payment-failed alert, except a withdrawal's
+ * `failed`, which BridgeNotificationProducer reports off the record;
  * `re-confirmed {hadAlerted:true}` → corrective notice; `exit-required` →
  * freeze notice routing to the withdrawal flow (never retry-framed);
  * `demoted`, `re-confirmed {hadAlerted:false}`, `finalized` → silence.
@@ -32,7 +33,7 @@ export function reorgNotificationInput(
   const hash = outcome.txHash.toLowerCase()
   const target: ReorgNotificationTarget = { type: "reorg.txDetail", txHash: outcome.txHash }
   const base = { producer: PRODUCER_ID, domain: "reorg", sourceId: hash, timestampMs, target }
-
+  if (outcome.type === "failed" && outcome.source === "withdrawal") return null
   switch (outcome.type) {
     case "failed":
     case "grace-expired":
@@ -40,7 +41,9 @@ export function reorgNotificationInput(
         ...base,
         id: `reorg:failed:${hash}:${outcome.reorgEpoch ?? 0}`,
         title: "Payment failed",
-        description: "Your transaction was reversed by the network and did not complete",
+        description: outcome.incoming
+          ? "This payment to you was reverted by the network and did not complete"
+          : "Your transaction was reverted by the network and did not complete",
         systemIcon: "exclamationmark.triangle",
         severity: "error",
       }
@@ -49,8 +52,11 @@ export function reorgNotificationInput(
       return {
         ...base,
         id: `reorg:reconfirmed:${hash}:${outcome.reorgEpoch ?? 0}`,
-        title: "Payment confirmed",
-        description: "A payment we reported as failed was confirmed after all — no action needed",
+        title: outcome.source === "withdrawal" ? "Withdrawal resumed" : "Payment confirmed",
+        description:
+          outcome.source === "withdrawal"
+            ? "A withdrawal we reported as failed is on its way again"
+            : "A payment we reported as failed was confirmed after all — no action needed",
         systemIcon: "checkmark.circle",
         severity: "success",
       }

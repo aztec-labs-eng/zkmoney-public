@@ -1,7 +1,7 @@
 /**
- * The one boot pass for user transactions, mounted under the PXE boot so only the tab that holds
- * the wallet runs it: whatever an earlier page left `local` ends with its flow's record, `sent`
- * operations settle from the chain, and the withdrawal tracker picks up burns past submit.
+ * The one boot pass for user transactions, mounted only in the active tab: whatever an earlier tab
+ * left `local` ends with its flow's record, `sent` operations settle from the chain, and the
+ * withdrawal tracker picks up burns past submit.
  */
 import { useEffect } from "react"
 import type { AztecNode } from "@aztec/stdlib/interfaces/client"
@@ -18,25 +18,26 @@ const warn = (err: unknown) =>
   console.warn("[OperationsMount] could not recover interrupted operations:", err)
 
 /**
- * End what an earlier page left before submit: every operation, and the active scope's flow
- * records. One tab runs the wallet, so a record that started before this page loaded and holds no
- * hash can never be sent. First the operation and its flow's record are made to agree on a hash
- * either one holds, so neither is failed while the other says it is on chain.
+ * End what an earlier tab left before submit: every operation, and the active scope's flow
+ * records. One tab runs the wallet and this one starts nothing before `activeSince`, when it became
+ * the active tab, so a record that started by then and holds no hash can never be sent. First the
+ * operation and its flow's record are made to agree on a hash either one holds, so neither is
+ * failed while the other says it is on chain.
  */
 export async function recoverInterrupted(
-  pageLoadedAt: number = performance.timeOrigin,
+  activeSince: number,
   now: number = Date.now(),
 ): Promise<void> {
-  await reconcileHashes(pageLoadedAt).catch(warn)
-  const age = now - pageLoadedAt
+  await reconcileHashes(activeSince).catch(warn)
+  const age = now - activeSince
   await Promise.all([
-    getOperationStore().failInterrupted(pageLoadedAt, now).catch(warn),
+    getOperationStore().failInterrupted(activeSince, now).catch(warn),
     TransactionStorage.get(webStorage).failInterruptedSends(now, age).catch(warn),
     getWithdrawalStore().failInterruptedSubmissions(now, age).catch(warn),
   ])
 }
 
-async function reconcileHashes(pageLoadedAt: number): Promise<void> {
+async function reconcileHashes(activeSince: number): Promise<void> {
   const ops = getOperationStore()
   const rows = TransactionStorage.get(webStorage)
   const withdrawals = getWithdrawalStore()
@@ -62,7 +63,7 @@ async function reconcileHashes(pageLoadedAt: number): Promise<void> {
           reorgEpoch: burn.reorgEpoch,
         })
       }
-    } else if (op.state === "local" && op.startedAt < pageLoadedAt) {
+    } else if (op.state === "local" && op.startedAt <= activeSince) {
       const txHash = row?.txHash || burn?.l2TxHash
       if (txHash) await ops.markSent(op.operationId, txHash)
     }
@@ -71,16 +72,21 @@ async function reconcileHashes(pageLoadedAt: number): Promise<void> {
 
 let swept = false
 
-export function OperationsMount({ node }: { node: AztecNode }): null {
+export function OperationsMount({
+  node,
+  activeSince,
+}: {
+  node: AztecNode
+  activeSince: number
+}): null {
   const { obsidionWallet } = useAztecContext()
-  // A tab that did not get the wallet runs none of this: the operations are the other tab's.
   const ready = usePxeBoot().bootStatus === "ready"
 
   useEffect(() => {
     if (!ready || swept) return
     swept = true
-    void recoverInterrupted()
-  }, [ready])
+    void recoverInterrupted(activeSince)
+  }, [ready, activeSince])
 
   useEffect(() => {
     if (!ready) return

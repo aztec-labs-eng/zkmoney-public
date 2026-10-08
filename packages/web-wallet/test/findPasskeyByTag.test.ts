@@ -7,7 +7,9 @@
  */
 import { Fr } from "@aztec/aztec.js/fields"
 import type { AnchorTier, CandidateProbe } from "@obsidion/front-core"
+import { getContractAddress } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import { WebAlphaAuthService } from "../src/platform/auth/WebAlphaAuthService"
 import { WebPasskeyIdentityMap } from "../src/platform/auth/WebPasskeyIdentityMap"
 import {
@@ -26,19 +28,19 @@ const h = vi.hoisted(() => ({
   readAuthKeys: vi.fn(),
   readAuthKeysCounted: vi.fn(),
   getCode: vi.fn(),
-  awaitHandoffMaterial: vi.fn(),
+  takeHandoffMaterial: vi.fn(),
   resolveTagForCommit: vi.fn(),
   storageIdFromSecret: vi.fn(),
 }))
 
 vi.mock("../src/platform/auth/useAuthenticator", () => ({ getAuthService: () => h.service }))
+const FACTORY = `0x${"11".repeat(20)}` as const
 const identityReader = {
-  predictAccountAddress: async () => `0x${"33".repeat(20)}`,
   readNameOf: (...args: unknown[]) => h.readNameOf(...(args as [])),
   readAccountMetadataRegistry: async () => `0x${"23".repeat(20)}`,
   readUserRecord: async () => ({ l2Address: ADDR, rollupVersion: 1n }),
   readNamePortalRegistry: async () => `0x${"22".repeat(20)}`,
-  readFactoryImplementation: async () => `0x${"11".repeat(19)}dd`,
+  readFactoryImplementation: async () => getContractAddress({ from: FACTORY, nonce: 1n }),
 }
 vi.mock("../src/features/onboarding/oxideGenerations", () => ({
   loadOxideGenerations: async () => ({
@@ -48,14 +50,13 @@ vi.mock("../src/features/onboarding/oxideGenerations", () => ({
     catalog: [
       {
         fpcAddress: `0x${"0b".repeat(32)}`,
-        accountFactory: `0x${"11".repeat(20)}`,
-        implementation: `0x${"11".repeat(19)}dd`,
+        accountFactory: FACTORY,
         namePortal: `0x${"11".repeat(19)}ee`,
         rollupVersion: "1",
       },
     ],
   }),
-  generationFactories: () => [`0x${"11".repeat(20)}`],
+  generationFactories: () => [FACTORY],
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ rpId: "localhost" }) }))
 vi.mock("../src/config/oxideTuple", () => ({
@@ -72,7 +73,7 @@ vi.mock("../src/features/contacts/registryResolution", () => ({
 }))
 vi.mock("../src/platform/storage/handoffMaterial", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/platform/storage/handoffMaterial")>()),
-  awaitHandoffMaterial: h.awaitHandoffMaterial,
+  takeHandoffMaterial: h.takeHandoffMaterial,
 }))
 vi.mock("../src/platform/storage/activeStorage", async (importOriginal) => {
   const original = await importOriginal<typeof import("../src/platform/storage/activeStorage")>()
@@ -83,9 +84,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   AccountStorage: { get: () => ({ addWebauthnAccount: h.addWebauthnAccount }) },
   createOxideL1Reader: () => ({
-    predictAccountAddress: async () => `0x${"33".repeat(20)}`,
     readNameOf: h.readNameOf,
-
     readAuthKeys: h.readAuthKeys,
     readAuthKeysCounted: h.readAuthKeysCounted,
     getCode: h.getCode,
@@ -185,7 +184,7 @@ async function committed(service: WebAlphaAuthService, created: Created) {
 
 /** The tag this browser remembers for a credential, as `usertagFor` reads it from local storage. */
 function remember(created: Created, usertag: string) {
-  localStorage.setItem(
+  walletStorage.setItem(
     "obsidion.obsidion_web_passkey_identity_map",
     JSON.stringify({
       version: 1,
@@ -239,7 +238,7 @@ beforeEach(() => {
     setItem: (k: string, v: string) => void store.set(k, v),
     removeItem: (k: string) => void store.delete(k),
   })
-  h.awaitHandoffMaterial.mockResolvedValue(null)
+  h.takeHandoffMaterial.mockReturnValue(null)
   h.readNameOf.mockResolvedValue(nameOf("alice"))
   // No L1 account for an unhinted sign-in's installed-key read.
   h.getCode.mockResolvedValue(undefined)
@@ -261,7 +260,7 @@ describe("enterWithPasskey under a credential hint", () => {
     expect(result).toMatchObject({ entered: true, handle: "alice", address: ADDR })
     expect(ceremony.asserts).toEqual([[a.credentialId]])
     expect(ceremony.assertRequests[0]!.prfSecondSalt).toBeDefined()
-    expect(h.awaitHandoffMaterial).not.toHaveBeenCalled()
+    expect(h.takeHandoffMaterial).not.toHaveBeenCalled()
     expect((await service.getSecretKey())?.toString()).toBe(a.secretKey.toString())
     expect(getActiveCredentialId()).toBe(a.credentialId)
     expect(h.addWebauthnAccount).toHaveBeenCalledWith(

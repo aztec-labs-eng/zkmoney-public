@@ -1,7 +1,51 @@
 {
   "scenario": "activity",
-  "path": "/withdraw?flowFixture=success&quoteFixture=loading",
+  "path": "/withdraw/existing?flowFixture=success&quoteFixture=loading",
   "steps": [
+    {
+      "action": "fill",
+      "placeholder": "Search or paste an address",
+      "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "New address",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "label": "Wallet name (optional)",
+      "value": "Weekend savings wallet"
+    },
+    {
+      "action": "reachable",
+      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "address.png",
+      "state": "address"
+    },
+    {
+      "action": "click",
+      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "privacy.png",
+      "state": "privacy"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Continue without privacy",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input"
+    },
     {
       "action": "click",
       "role": "button",
@@ -18,26 +62,6 @@
       "role": "option",
       "name": "USDC",
       "exact": false
-    },
-    {
-      "action": "fill",
-      "placeholder": "Enter or paste address",
-      "value": "0x7777777777777777777777777777777777777777"
-    },
-    {
-      "action": "fill",
-      "label": "Wallet name (optional)",
-      "value": "Weekend savings wallet"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Continue",
-      "exact": true
-    },
-    {
-      "action": "waitFor",
-      "selector": ".ww-fund__amount input"
     },
     {
       "action": "fill",
@@ -60,7 +84,7 @@
     },
     {
       "action": "goto",
-      "path": "/withdraw?flowFixture=success&quoteFixture=unavailable"
+      "path": "/withdraw/existing?flowFixture=success&quoteFixture=amount-unavailable"
     },
     {
       "action": "waitFor",
@@ -69,6 +93,36 @@
     {
       "action": "wait",
       "ms": 1500
+    },
+    {
+      "action": "fill",
+      "placeholder": "Search or paste an address",
+      "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "New address",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "label": "Wallet name (optional)",
+      "value": "Weekend savings wallet"
+    },
+    {
+      "action": "click",
+      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Continue without privacy",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input"
     },
     {
       "action": "click",
@@ -89,26 +143,6 @@
     },
     {
       "action": "fill",
-      "placeholder": "Enter or paste address",
-      "value": "0x7777777777777777777777777777777777777777"
-    },
-    {
-      "action": "fill",
-      "label": "Wallet name (optional)",
-      "value": "Weekend savings wallet"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Continue",
-      "exact": true
-    },
-    {
-      "action": "waitFor",
-      "selector": ".ww-fund__amount input"
-    },
-    {
-      "action": "fill",
       "selector": ".ww-fund__amount input",
       "value": "24"
     },
@@ -122,31 +156,17 @@
       "ms": 1500
     },
     {
+      "action": "waitFor",
+      "selector": "dialog[open] .ww-withdraw__warning:has-text(\"Swap fee unavailable. Withdraw DAI instead.\")"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[open] button:disabled:has-text(\"Withdraw funds\")"
+    },
+    {
       "action": "screenshot",
       "file": "quote-unavailable.png",
       "state": "quote unavailable"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Withdraw funds",
-      "exact": true
-    },
-    {
-      "action": "screenshot",
-      "file": "review-without-estimate.png",
-      "state": "review without estimate"
-    },
-    {
-      "action": "reachable",
-      "role": "button",
-      "name": "Confirm withdrawal",
-      "exact": true
-    },
-    {
-      "action": "screenshot",
-      "file": "review-final-controls.png",
-      "state": "review final controls"
     }
   ],
   "finalScreenshot": false,

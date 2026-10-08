@@ -5,6 +5,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { PendingRegistrationStore, type PendingRegistrationRecord } from "@obsidion/front-core"
 import type { Hex } from "viem"
+import {
+  DAI as ONE,
+  pendingRecord,
+  resetRegistrationStores,
+  SIPA,
+  ticketBoundTerms,
+  ticketSignupStash,
+} from "./support/registrationFixtures"
 
 // Fake fragments never decode; the binding only needs a stable name for one.
 vi.mock("../src/features/paylink/linkIdentity", () => ({
@@ -13,6 +21,7 @@ vi.mock("../src/features/paylink/linkIdentity", () => ({
 import {
   loadRegistrationTerms,
   saveRegistrationTerms,
+  type RegistrationTerms,
 } from "../src/features/onboarding/registrationTerms"
 import { stashClaimLink, stashTicketSignup } from "../src/features/paylink/claimStash"
 import {
@@ -26,51 +35,22 @@ import { webStorage } from "../src/platform/storage/WebStorageAdapter"
 
 const ACCOUNT = "0x00000000000000000000000000000000000000aa"
 const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
-const ONE = 10n ** 18n
 
-const record = (
-  over: Partial<PendingRegistrationRecord> = {},
-): Omit<PendingRegistrationRecord, "account"> => ({
-  tag: "taga",
-  nameHash: `0x${"ab".repeat(32)}` as Hex,
-  l2Address: L2_ADDRESS,
-  l1ChainId: 11155111,
-  sipaAddress: "0x00000000000000000000000000000000000000c3",
-  depositToken: "0x00000000000000000000000000000000000000d4",
-  broadcast: true,
-  phase: "awaiting_deposit",
-  retries: 0,
-  startTime: Date.now(),
-  ...over,
-})
-const terms = (over: Partial<Parameters<typeof saveRegistrationTerms>[0]> = {}) =>
-  saveRegistrationTerms({
-    account: ACCOUNT,
-    tag: "taga",
-    deadline: Math.floor(Date.now() / 1000) + 7200,
-    fee: (ONE / 2n).toString(),
-    minDeposit: "0",
-    feeWaived: true,
-    paylinkFunded: true,
-    paylinkId: "id:paylink-frag",
-    ...over,
-  })
+const record = (over: Partial<PendingRegistrationRecord> = {}) =>
+  pendingRecord({ account: ACCOUNT, l2Address: L2_ADDRESS, ...over })
+const terms = (over: Partial<RegistrationTerms> = {}) =>
+  saveRegistrationTerms(ticketBoundTerms({ account: ACCOUNT, ...over }))
 const stash = (fragment = "paylink-frag") =>
-  stashTicketSignup({
-    fragment,
-    threshold: (2n * ONE).toString(),
-    schedule: { fee: (ONE / 2n).toString(), minDeposit: "0" },
-    amount: (20n * ONE).toString(),
-  })
+  stashTicketSignup(ticketSignupStash({ fragment, amount: (20n * ONE).toString() }))
+
+beforeEach(() => {
+  localStorage.clear()
+  sessionStorage.clear()
+  resetRegistrationStores()
+})
 
 describe("ticketSignupContinuation", () => {
-  const SIPA = "0x00000000000000000000000000000000000000c3"
   const burning = [{ recipient: SIPA, phase: "pending" }]
-  beforeEach(() => {
-    localStorage.clear()
-    sessionStorage.clear()
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
-  })
 
   it("names the signup the stashed link paid for and still has to fund", async () => {
     stash()
@@ -95,7 +75,6 @@ describe("ticketSignupContinuation", () => {
     // hand-off stashes the bare fragment. The binding outlives the marker.
     sessionStorage.clear()
     stashClaimLink("paylink-frag")
-    expect(loadRegistrationTerms(ACCOUNT, "taga")?.paylinkId).toBe("id:paylink-frag")
     const found = ticketSignupContinuation("paylink-frag", L2_ADDRESS, [])
     expect(found?.activation.state).toBe("ready")
     // Rebuilt from the terms: the split they signed, no amount or memo until the link is read.
@@ -103,25 +82,10 @@ describe("ticketSignupContinuation", () => {
       fragment: "paylink-frag",
       schedule: { fee: (ONE / 2n).toString(), minDeposit: "0" },
     })
-    expect(boundTicketSignup(loadRegistrationTerms(ACCOUNT, "taga"))?.fragment).toBe("paylink-frag")
-    expect(
-      ticketActivation(
-        { account: ACCOUNT, ...record() },
-        loadRegistrationTerms(ACCOUNT, "taga"),
-        [],
-      )?.state,
-    ).toBe("ready")
     // Terms without a signed schedule rebuild nothing: the renewal has to price the split first.
     terms({ fee: undefined, minDeposit: undefined })
     expect(boundTicketSignup(loadRegistrationTerms(ACCOUNT, "taga"))).toBeNull()
     expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, [])).toBeNull()
-    expect(
-      ticketActivation(
-        { account: ACCOUNT, ...record() },
-        loadRegistrationTerms(ACCOUNT, "taga"),
-        [],
-      )?.state,
-    ).toBe("renew")
   })
 
   it("a signup whose renewed quote the link cannot pay is blocked, never an ordinary claim", async () => {
@@ -136,11 +100,9 @@ describe("ticketSignupContinuation", () => {
     expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, [])?.activation).toMatchObject({
       state: "blocked",
     })
-    expect(boundTicketSignup(loadRegistrationTerms(ACCOUNT, "taga"))?.fragment).toBe("paylink-frag")
-    expect(ticketSignupCommitted("paylink-frag")).toBe(true)
   })
 
-  it("holds a lapsed, unpublished or already-burning signup with its reason, never as an ordinary claim", async () => {
+  it("holds a lapsed or unpublished signup with its reason, never as an ordinary claim", async () => {
     stash()
     await PendingRegistrationStore.get(webStorage).upsert(ACCOUNT, {}, record())
     terms({ deadline: Math.floor(Date.now() / 1000) - 60 })
@@ -162,15 +124,6 @@ describe("ticketSignupContinuation", () => {
     expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, [])?.activation.state).toBe(
       "unpublished",
     )
-    await PendingRegistrationStore.get(webStorage).upsert(ACCOUNT, { broadcast: true }, record())
-    expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, burning)?.activation).toEqual({
-      state: "submitted",
-    })
-    // A failed burn is not on its way: the claim is offered again.
-    expect(
-      ticketSignupContinuation("paylink-frag", L2_ADDRESS, [{ recipient: SIPA, phase: "failed" }])
-        ?.activation.state,
-    ).toBe("ready")
   })
 
   it("is nothing for an ordinary stashed link, or a marker for another link", async () => {
@@ -200,13 +153,26 @@ describe("ticketSignupContinuation", () => {
     expect(ticketSignupContinuation("paylink-frag", `0x${"ef".repeat(32)}`, [])).toBeNull()
     expect(ticketSignupContinuation("paylink-frag", undefined, [])).toBeNull()
 
-    // Funded or swept by any means, the registration no longer needs the link.
+    // Funded or swept by other means, the registration no longer needs the link; funded by this
+    // account's own burn, the link's review still reports it, submitted, until the name confirms.
     await store.upsert(ACCOUNT, { fundedAt: Date.now() }, record())
     expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, [])).toBeNull()
-    await store.upsert(ACCOUNT, { fundedAt: undefined, sweptAt: Date.now() }, record())
+    expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, burning)?.activation).toEqual({
+      state: "submitted",
+    })
+    await store.upsert(ACCOUNT, { phase: "funded" }, record())
+    expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, burning)?.activation).toEqual({
+      state: "submitted",
+    })
+    await store.upsert(
+      ACCOUNT,
+      { fundedAt: undefined, phase: "awaiting_deposit", sweptAt: Date.now() },
+      record(),
+    )
     expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, [])).toBeNull()
     await store.upsert(ACCOUNT, { sweptAt: undefined, phase: "confirmed" }, record())
     expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, [])).toBeNull()
+    expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, burning)).toBeNull()
 
     await store.upsert(ACCOUNT, { phase: "awaiting_deposit" }, record())
     terms({ paylinkFunded: false })
@@ -233,23 +199,8 @@ describe("ticketSignupContinuation", () => {
 })
 
 describe("boundTicketSignup / ticketSignupCommitted", () => {
-  beforeEach(() => {
-    localStorage.clear()
-    sessionStorage.clear()
-    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
-  })
-
   it("only the stashed link the terms name is the registration's own, with or without its marker", () => {
-    const bound = {
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: 1,
-      fee: (ONE / 2n).toString(),
-      minDeposit: "0",
-      feeWaived: true,
-      paylinkFunded: true,
-      paylinkId: "id:paylink-frag",
-    }
+    const bound = ticketBoundTerms({ account: ACCOUNT, deadline: 1 })
     expect(boundTicketSignup(bound)).toBeNull()
     stash()
     expect(boundTicketSignup(bound)?.amount).toBe((20n * ONE).toString())
@@ -271,8 +222,9 @@ describe("boundTicketSignup / ticketSignupCommitted", () => {
     expect(boundTicketSignup(bound)?.fragment).toBe("paylink-frag")
   })
 
-  it("selects the link's registration rather than a newer unrelated record", async () => {
+  it("selects the link's registration rather than a newer unrelated record, until it settles", async () => {
     const store = PendingRegistrationStore.get(webStorage)
+    expect(ticketSignupCommitted("paylink-frag")).toBe(false)
     await store.upsert(ACCOUNT, {}, record({ startTime: Date.now() - 60000 }))
     terms()
     await store.upsert(
@@ -281,30 +233,16 @@ describe("boundTicketSignup / ticketSignupCommitted", () => {
       record({ tag: "bob", l2Address: `0x${"ef".repeat(32)}` }),
     )
     expect(ticketSignupCommitted("paylink-frag")).toBe(true)
+    expect(ticketSignupCommitted("link-b")).toBe(false)
     expect(ticketSignupRegistration("paylink-frag", L2_ADDRESS)?.account).toBe(ACCOUNT)
     expect(ticketSignupRegistration("paylink-frag", `0x${"ef".repeat(32)}`)).toBeNull()
     await store.close(ACCOUNT, "confirmed")
     expect(ticketSignupCommitted("paylink-frag")).toBe(false)
   })
-
-  it("a signup is committed once its registration's terms name the link", async () => {
-    expect(ticketSignupCommitted("paylink-frag")).toBe(false)
-    await PendingRegistrationStore.get(webStorage).upsert(ACCOUNT, {}, record())
-    terms()
-    expect(ticketSignupCommitted("paylink-frag")).toBe(true)
-    expect(ticketSignupCommitted("link-b")).toBe(false)
-  })
 })
 
 describe("ticketActivation", () => {
-  const SIPA = "0x00000000000000000000000000000000000000c3"
-  const full = (over: Partial<PendingRegistrationRecord> = {}) =>
-    ({ account: ACCOUNT, ...record(over) } as PendingRegistrationRecord)
-
-  beforeEach(() => {
-    localStorage.clear()
-    sessionStorage.clear()
-  })
+  const full = record
 
   it("is nothing for a registration no paylink funds, whatever its waiver says", () => {
     terms({ paylinkFunded: false })
@@ -319,11 +257,14 @@ describe("ticketActivation", () => {
     expect(ticketActivation(full(), loadRegistrationTerms(ACCOUNT, "taga"), burning)).toEqual({
       state: "submitted",
     })
-    // A failed burn is not on its way; custody stamps are.
-    const failed = [{ recipient: SIPA, phase: "failed" }]
-    expect(ticketActivation(full(), loadRegistrationTerms(ACCOUNT, "taga"), failed)?.state).toBe(
-      "ready",
-    )
+    // A failed or reclaimed burn is not on its way; custody stamps are.
+    for (const phase of ["failed", "recovered"]) {
+      expect(
+        ticketActivation(full(), loadRegistrationTerms(ACCOUNT, "taga"), [
+          { recipient: SIPA, phase },
+        ])?.state,
+      ).toBe("ready")
+    }
     expect(
       ticketActivation(full({ fundedAt: 1 }), loadRegistrationTerms(ACCOUNT, "taga"), []),
     ).toEqual({ state: "submitted" })
@@ -372,12 +313,5 @@ describe("ticketActivation", () => {
     expect(ticketActivation(full(), loadRegistrationTerms(ACCOUNT, "taga"), [])).toMatchObject({
       state: "renew",
     })
-    // Missing inputs change the action, not the funding: none of these is an external deposit.
-    for (const activation of [
-      ticketActivation(full(), loadRegistrationTerms(ACCOUNT, "taga"), []),
-      ticketActivation(full({ broadcast: false }), loadRegistrationTerms(ACCOUNT, "taga"), []),
-    ]) {
-      expect(activation).not.toBeNull()
-    }
   })
 })

@@ -1,15 +1,17 @@
 /**
  * One path for every user transaction: an operation is tab-bound until its flow's record holds the
- * hash, and a reload settles it either way. A record from an earlier page that never got a hash
- * fails at once; one with a hash is left to the chain.
+ * hash, and a reload or a takeover settles it either way. A record from before this tab became
+ * active that never got a hash fails at once; one with a hash is left to the chain.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import { TransactionStorage, TxInFlightError, trackSubmission } from "@obsidion/front-core"
 import { webStorage } from "../src/platform/storage/WebStorageAdapter"
+import { testWalletDbs } from "./support/fakeWalletDb"
 import {
   currentOperation,
   getOperationStore,
+  getOperationsInProgress,
   leavingLosesTransaction,
   runOperation,
   tabBoundOperation,
@@ -35,9 +37,9 @@ describe("runOperation", () => {
     const result = await runOperation(
       { operationId: "op-full", flow: "send", summary: "$1 to @bob" },
       async () => {
-        vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+        testWalletDbs().onApply = () => {
           throw new Error("QuotaExceededError")
-        })
+        }
         return "done"
       },
     )
@@ -204,8 +206,30 @@ describe("currentOperation", () => {
   })
 })
 
+describe("a background operation", () => {
+  it("is listed in no notification, names no busy label, and leaving does not lose it", async () => {
+    const store = getOperationStore()
+    await store.begin({
+      operationId: "op-bg",
+      flow: "deposit",
+      summary: "Deposit address",
+      scope: null,
+      resumable: true,
+      background: true,
+    })
+    try {
+      expect(store.isLive("op-bg")).toBe(true)
+      expect(leavingLosesTransaction()).toBe(false)
+      expect(currentOperation(store.list())).toBeUndefined()
+      expect(getOperationsInProgress().map((r) => r.operationId)).not.toContain("op-bg")
+    } finally {
+      await store.remove("op-bg")
+    }
+  })
+})
+
 describe("recoverInterrupted", () => {
-  const pageLoadedAt = 10_000
+  const activeSince = 10_000
   const now = 20_000
 
   it("fails a withdrawal a reload cut off before submit, and keeps one that was sent", async () => {
@@ -218,38 +242,38 @@ describe("recoverInterrupted", () => {
         amount: "12.1",
         tokenSymbol: "DAI",
         phase: "submitting",
-        startTime: pageLoadedAt - 5_000,
+        startTime: activeSince - 5_000,
         ...(l2TxHash ? { l2TxHash } : {}),
       } as Parameters<typeof withdrawals.create>[0])
     await seed("cut-off")
     await seed("sent", hash)
-    await recoverInterrupted(pageLoadedAt, now)
+    await recoverInterrupted(activeSince, now)
     expect(withdrawals.get("cut-off")?.phase).toBe("failed")
     expect(withdrawals.get("sent")?.phase).toBe("submitting")
   })
 
-  it("fails a send row and every operation from an earlier page, never this page's", async () => {
+  it("fails a send row and every operation from before this tab became active, never this tab's", async () => {
     const ops = getOperationStore()
     await ops.begin(
       { operationId: "old", flow: "send", summary: "$1", scope: null },
-      pageLoadedAt - 1,
+      activeSince - 1,
     )
     await ops.markProving("old")
     ops.release("old")
     await ops.begin(
       { operationId: "other-scope", flow: "paylink-claim", summary: "$1", scope: "acct" },
-      pageLoadedAt - 1,
+      activeSince - 1,
     )
     await ops.markProving("other-scope")
     ops.release("other-scope")
     await ops.begin(
       { operationId: "never-proved", flow: "send", summary: "$1", scope: null },
-      pageLoadedAt - 1,
+      activeSince - 1,
     )
     ops.release("never-proved")
     await ops.begin(
       { operationId: "new", flow: "send", summary: "$1", scope: null },
-      pageLoadedAt + 1,
+      activeSince + 1,
     )
     const rows = TransactionStorage.get(webStorage)
     await rows.addTokenTransaction(
@@ -262,9 +286,9 @@ describe("recoverInterrupted", () => {
     )
     await rows.updateTransaction(
       (tx) => tx.queueId === "old",
-      (tx) => void (tx.timestamp = pageLoadedAt - 1),
+      (tx) => void (tx.timestamp = activeSince - 1),
     )
-    await recoverInterrupted(pageLoadedAt, now)
+    await recoverInterrupted(activeSince, now)
     expect(ops.get("old")).toMatchObject({ state: "failed", cause: "interrupted" })
     expect(ops.get("other-scope")).toMatchObject({ state: "failed", cause: "interrupted" })
     expect(ops.get("never-proved")).toBeNull()
@@ -285,7 +309,7 @@ describe("recoverInterrupted", () => {
     )
     await rows.updateTransaction(
       (tx) => tx.queueId === queueId,
-      (tx) => void (tx.timestamp = pageLoadedAt - 1),
+      (tx) => void (tx.timestamp = activeSince - 1),
     )
     return async () => (await rows.getTransactions()).find((tx) => tx.queueId === queueId)
   }
@@ -305,9 +329,9 @@ describe("recoverInterrupted", () => {
       amount: "1",
       tokenSymbol: "DAI",
       phase: "submitting",
-      startTime: pageLoadedAt - 5_000,
+      startTime: activeSince - 5_000,
     } as Parameters<typeof withdrawals.create>[0])
-    await recoverInterrupted(pageLoadedAt, now)
+    await recoverInterrupted(activeSince, now)
     expect(await row()).toMatchObject({ status: "pending", txHash: hash })
     expect(withdrawals.get("rep-burn")).toMatchObject({ phase: "submitting", l2TxHash: hash })
     expect(ops.get("rep")?.state).toBe("sent")
@@ -319,8 +343,18 @@ describe("recoverInterrupted", () => {
     await ops.markProving("rep2")
     ops.release("rep2")
     const row = await sendRow("rep2", hash)
-    await recoverInterrupted(pageLoadedAt, now)
+    await recoverInterrupted(activeSince, now)
     expect(ops.get("rep2")).toMatchObject({ state: "sent", txHash: hash })
     expect((await row())?.status).toBe("pending")
+  })
+
+  it("sends an operation begun the moment this tab became active whose flow's record holds the hash", async () => {
+    const ops = getOperationStore()
+    await ops.begin({ operationId: "edge", flow: "send", summary: "$1", scope: null }, activeSince)
+    await ops.markProving("edge")
+    ops.release("edge")
+    await sendRow("edge", hash)
+    await recoverInterrupted(activeSince, now)
+    expect(ops.get("edge")).toMatchObject({ state: "sent", txHash: hash })
   })
 })

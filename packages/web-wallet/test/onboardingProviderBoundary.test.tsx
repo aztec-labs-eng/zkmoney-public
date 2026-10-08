@@ -52,6 +52,11 @@ vi.mock("../src/config/env", async (importOriginal) => ({
     rpId: "localhost",
     rpName: "zk.money",
     l1Chain: { name: "Sepolia" },
+    endpoints: {
+      node: { source: "default", isDefault: true },
+      l1Rpc: { source: "default", isDefault: true },
+      enclave: { source: "default", isDefault: true },
+    },
   }),
 }))
 vi.mock("../src/features/onboarding/registrationTerms", async (importOriginal) => ({

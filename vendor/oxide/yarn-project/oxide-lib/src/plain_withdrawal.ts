@@ -67,11 +67,21 @@ export function assertPlainWithdrawalTip(
   if (proverTip > amount) {
     throw new Error('Withdrawal prover tip exceeds the withdrawal amount.');
   }
-  const beforeCut = amount - proverTip;
-  const executorAmount = frozen ? beforeCut : beforeCut - (fpcFundingCut < beforeCut ? fpcFundingCut : beforeCut);
+  const executorAmount = plainWithdrawalExecutorAmount(amount, proverTip, fpcFundingCut, frozen);
   if (relayerTip > executorAmount) {
     throw new Error(`Plain withdrawal relayer tip ${relayerTip} exceeds executor amount ${executorAmount}.`);
   }
+}
+
+/** The DAI the portal pays the executor: the amount less the prover tip and the FPC funding cut. */
+export function plainWithdrawalExecutorAmount(
+  amount: bigint,
+  proverTip: bigint,
+  fpcFundingCut: bigint,
+  frozen: boolean,
+): bigint {
+  const beforeCut = amount - proverTip;
+  return frozen ? beforeCut : beforeCut - (fpcFundingCut < beforeCut ? fpcFundingCut : beforeCut);
 }
 
 function assertPayloadLength(payload: Buffer, label: string): void {

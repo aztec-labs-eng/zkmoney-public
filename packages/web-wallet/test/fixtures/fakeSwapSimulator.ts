@@ -21,10 +21,12 @@ export function fakeSwapSimulator(sdk: typeof import("@obsidion/sdk"), control: 
       const funding = args.amount - withdrawalRelayerTip - proverTip - fpcFundingCut
       const tip = {
         relayerTip: control.relayerTip,
-        breakEven: (control.relayerTip * 2n) / 3n,
-        gasLimit: 300_000n,
+        minPayout: (control.relayerTip * 2n) / 3n,
+        gasUsed: 300_000n,
         maxFeePerGas: 10n ** 9n,
-        ethUsd: 3000n * 10n ** 8n,
+        usdPerEth: 3000n * 10n ** 8n,
+        baseFee: 10n ** 9n,
+        priorityFee: 0n,
       }
       if (funding <= control.relayerTip) throw new sdk.SwapTipExceedsInputError(tip, funding)
       const swapInput = funding - control.relayerTip

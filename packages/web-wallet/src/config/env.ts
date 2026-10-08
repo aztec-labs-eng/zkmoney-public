@@ -9,6 +9,16 @@ import {
   type ResolveWalletProfileInput,
 } from "@obsidion/config-client"
 import { setWebClassArtifactResolver } from "./classArtifacts"
+import { DEMO_ROLLUP, setActiveRollup } from "../platform/storage/rollupStorage"
+import { openWalletStore } from "../platform/storage/walletStorage"
+import {
+  endpointDigest,
+  readEndpointOverrides,
+  tryNormalizeEndpoint,
+  type EndpointKind,
+  type EndpointOverrides,
+} from "./endpointOverrides"
+import { getDesktopL1Bridge } from "../platform/desktopBridge"
 import {
   DEFAULT_FPC_REFUEL_THRESHOLD,
   l1ChainIdForNetwork,
@@ -17,20 +27,39 @@ import {
   ZKJWT_VKEY_HASH,
 } from "@obsidion/core/constants"
 import type { ContractServiceOptions, OxideEnvProfile } from "@obsidion/core/types"
-import { assertProfilePolicy, parseNetwork } from "./profilePolicy"
+import { assertHostProfileUrl, assertProfilePolicy, parseNetwork } from "./profilePolicy"
 import type { PredicateScreeningConfig } from "@obsidion/front-core"
 import { http } from "viem"
 import { foundry, mainnet, sepolia, type Chain } from "viem/chains"
+
+export type EndpointSource = "settings" | "default"
+
+/** Who chose an endpoint's URL, and whether it normalizes to the build/profile default's. */
+export interface EndpointProvenance {
+  source: EndpointSource
+  isDefault: boolean
+}
 
 export type WebWalletConfig = {
   network: Network
   nodeUrl: string
   /**
-   * Key for a gateway-fronted node, sent as `x-api-key` on every JSON-RPC request. It ships in
-   * the public bundle by design, so the gateway key must be origin-restricted or disposable.
-   * Empty means the node is open, which is what sandbox is.
+   * Key for a gateway-fronted node, sent as `x-api-key` on every JSON-RPC request. The build's key
+   * ships in the public bundle by design, so the gateway key must be origin-restricted or
+   * disposable. Empty means the node is open, which is what sandbox is. A key goes only to the URL
+   * it came with: the build's to the default node, a Settings key to the node saved beside it.
    */
   nodeApiKey?: string
+  /**
+   * Per endpoint, provenance and default-equality. `source` drives the recovery actions; the
+   * node's `isDefault` also decides its PXE store and scan cursors, and whether it takes the build's
+   * API key.
+   */
+  endpoints: Record<EndpointKind, EndpointProvenance>
+  /** Digest of the node's normalized endpoint; set only when the node is not the default. */
+  nodeEndpointDigest?: string
+  /** The profile's `shared.rollupVersion`, read only by the rollup-skew report. */
+  profileRollupVersion: string
   /**
    * The oxide env-registry profile EVERY consumer must use — ContractService's
    * address overlay, tag resolution, a1 onboarding and the SIPA rail alike.
@@ -55,7 +84,7 @@ export type WebWalletConfig = {
   accountServiceUrl: string
   /**
    * Launch-campaign API base: the admission verify call, the hand-off anchor tier, and (as an
-   * origin) the one sender the bridge page accepts material from. Empty means no campaign, for
+   * origin) the one referrer the sealed hand-off accepts material from. Empty means no campaign, for
    * sandbox and self-hosted setups.
    */
   campaignUrl: string
@@ -145,20 +174,9 @@ function resolveAccountServiceTestMode(
  * CORS-free, so it rides the same-origin `/svc/enclave` vite proxy. Any other tier whose enclave
  * predates the CORS fix — oxide's dev tier, notably — sets `VITE_ENCLAVE_URL=/svc/enclave`
  * explicitly and points the proxy at that tier's host via `ENCLAVE_TARGET`.
- *
- * A packaged desktop build takes the injected value first, which is how its retarget setting
- * reaches a bundle that dials the enclave directly.
  */
-function resolveEnclaveUrl(
-  env: Record<string, string | undefined>,
-  network: Network,
-  runtime: RuntimeEndpoints,
-): string {
-  return (
-    runtime.enclaveUrl ??
-    env.VITE_ENCLAVE_URL ??
-    (network === Network.SANDBOX ? "/svc/enclave" : "")
-  )
+function defaultEnclaveUrl(env: Record<string, string | undefined>, network: Network): string {
+  return env.VITE_ENCLAVE_URL ?? (network === Network.SANDBOX ? "/svc/enclave" : "")
 }
 
 /**
@@ -217,37 +235,62 @@ function resolvePredicateConfig(
 }
 
 /**
- * Runtime endpoint overrides injected by a host page: the desktop launcher writes
- * `window.__ZKMONEY_ENDPOINTS__` into index.html ahead of the module scripts, so a
- * packaged desktop bundle can be repointed without a rebuild. Nothing injects the
- * global on the hosted deployment, so every value falls through to the baked env.
- * Only the keys named here are honored — an injected object cannot touch the RP ID
- * or any other config.
+ * The desktop launcher's configuration setting, which it writes into index.html as
+ * `window.__ZKMONEY_ENDPOINTS__` ahead of the module scripts. Only these keys are read, and only in
+ * a desktop build running under the launcher (`hostConfiguration`).
  */
-export type RuntimeEndpoints = Partial<Pick<WebWalletConfig, "nodeUrl" | "l1RpcUrl" | "enclaveUrl">>
-
-const RUNTIME_ENDPOINT_KEYS = ["nodeUrl", "l1RpcUrl", "enclaveUrl"] as const
+export type RuntimeEndpoints = {
+  /**
+   * Where to fetch the config profile, in place of `VITE_CONFIG_PROFILE_URL`. The document decides
+   * every contract address the wallet uses and carries no signature, so this is the one injected
+   * key that can cost a user their funds; the host that injects it owns that warning. The checks
+   * that still run — shape, identity, network, schema, expiry, the mainnet policy — are format
+   * checks any author can satisfy, so they bound mistakes, not malice.
+   */
+  configProfileUrl?: string
+  /** Boot from the profile baked into this build, whatever the live document says. */
+  bootFromBakedProfile?: boolean
+}
 
 function runtimeEndpoints(): RuntimeEndpoints {
   const raw = (globalThis as { __ZKMONEY_ENDPOINTS__?: unknown }).__ZKMONEY_ENDPOINTS__
   if (!raw || typeof raw !== "object") return {}
   const source = raw as Record<string, unknown>
   const picked: RuntimeEndpoints = {}
-  for (const key of RUNTIME_ENDPOINT_KEYS) {
-    const value = source[key]
-    if (typeof value === "string" && value.length > 0) picked[key] = value
+  if (typeof source.configProfileUrl === "string" && source.configProfileUrl.length > 0) {
+    picked.configProfileUrl = source.configProfileUrl
   }
+  if (source.bootFromBakedProfile === true) picked.bootFromBakedProfile = true
   return picked
+}
+
+/**
+ * What the host may change: nothing on the hosted bundle, whose build lacks the desktop flag, nor
+ * on any page the launcher does not serve. The switch starts the wallet without fetching, so a URL
+ * beside it is unused.
+ */
+function hostConfiguration(
+  env: Record<string, string | undefined>,
+  runtime: RuntimeEndpoints,
+): RuntimeEndpoints {
+  if (env.VITE_DESKTOP_BUILD !== "true" || !getDesktopL1Bridge()) return {}
+  return runtime.bootFromBakedProfile ? { bootFromBakedProfile: true } : runtime
 }
 
 export function resolveNetwork(env: Record<string, string | undefined>): Network {
   return parseNetwork(env.VITE_NETWORK)
 }
 
-/** Env-resolved half; the oxide pointer only ever comes from the profile version, so `mergeProfileConfig` completes it. */
-export type BaseWebWalletConfig = Omit<WebWalletConfig, "oxideProfile">
+/**
+ * Env-resolved half; the oxide pointer and the endpoint facts only exist once the profile has
+ * supplied the defaults, so `mergeProfileConfig` completes it.
+ */
+export type BaseWebWalletConfig = Omit<
+  WebWalletConfig,
+  "oxideProfile" | "endpoints" | "nodeEndpointDigest" | "profileRollupVersion"
+>
 
-/** The campaign URL as baked, once its origin has passed the bridge's rule (see campaignOrigin.ts). */
+/** The campaign URL as baked, once its origin has passed the hand-off's rule (see campaignOrigin.ts). */
 function resolveCampaignUrl(env: { VITE_CAMPAIGN_URL?: string }): string {
   const url = env.VITE_CAMPAIGN_URL ?? ""
   campaignOriginFrom(url)
@@ -256,19 +299,18 @@ function resolveCampaignUrl(env: { VITE_CAMPAIGN_URL?: string }): string {
 
 export function loadConfig(
   env: Record<string, string | undefined> = import.meta.env,
-  runtime: RuntimeEndpoints = runtimeEndpoints(),
 ): BaseWebWalletConfig {
   const network = resolveNetwork(env)
   const l1ChainId = l1ChainIdForNetwork(network)
   return {
     network,
-    nodeUrl: runtime.nodeUrl ?? env.VITE_NODE_URL ?? "http://localhost:8080",
+    nodeUrl: env.VITE_NODE_URL ?? "http://localhost:8080",
     nodeApiKey: env.VITE_NODE_API_KEY || undefined,
     l1ChainId,
     l1Chain: l1ChainFor(l1ChainId),
     rpId: selectWebPasskeyRpId(env),
     rpName: env.VITE_PASSKEY_RP_NAME ?? PASSKEY_RP_NAME,
-    l1RpcUrl: runtime.l1RpcUrl ?? env.VITE_L1_RPC_URL ?? "http://localhost:8545",
+    l1RpcUrl: env.VITE_L1_RPC_URL ?? "http://localhost:8545",
     // Whole fee-juice units (1 FJ = 1e18 wei).
     fpcRefuelThreshold: env.VITE_FPC_REFUEL_THRESHOLD
       ? BigInt(env.VITE_FPC_REFUEL_THRESHOLD) * 10n ** 18n
@@ -281,7 +323,7 @@ export function loadConfig(
     campaignUrl: resolveCampaignUrl(env),
     admissionGate: false,
     accountServiceTestMode: resolveAccountServiceTestMode(env, network),
-    enclaveUrl: resolveEnclaveUrl(env, network, runtime),
+    enclaveUrl: defaultEnclaveUrl(env, network),
     proverEnabled: env.VITE_PROVER_ENABLED !== "false",
     xmtpEnv: resolveXmtpEnv(env, network),
     googleClientId: env.VITE_GOOGLE_CLIENT_ID || undefined,
@@ -317,10 +359,14 @@ export interface ResolveBootConfigInput {
   env?: Record<string, string | undefined>
   fetchImpl?: typeof fetch
   now?: () => Date
-  /** Host-injected endpoint overrides; defaults to reading the desktop launcher's global. */
+  /** The host's configuration setting; defaults to reading the desktop launcher's global. */
   runtime?: RuntimeEndpoints
+  /** Settings-stored endpoint overrides; defaults to reading this browser's localStorage. */
+  readEndpointOverrides?: () => EndpointOverrides
   /** The profile baked into this build; the app tree passes the virtual module's export. */
   bakedProfile?: unknown
+  /** Demo mode: its own partition and an in-memory wallet database; nothing persistent is touched. */
+  demoStorage?: boolean
 }
 
 export interface WebBootConfig {
@@ -329,13 +375,24 @@ export interface WebBootConfig {
   contractServiceOptions: ContractServiceOptions
   /** The version's zkJWT vkey hash differs from the bundled one. Reported at boot, never gating. */
   zkJwtVkeySkew: boolean
-  /** The config service was unreachable and the build's baked profile booted the wallet. */
+  /** The build's baked profile booted the wallet: the service was unreachable, or the host asked. */
   bootedFromBakedProfile: boolean
-  /** Set on a snapshot boot: what the wallet is running on, and the live failure it stood in for. */
+  /**
+   * The host pointed the wallet at this profile URL and a document from it booted the wallet. Set
+   * only when that document is what the wallet is actually running on — a fallback to the baked
+   * copy reports `bakedProfile` instead.
+   */
+  customProfileUrl?: string
+  /** Set on a snapshot boot: what the wallet is running on and why. */
   bakedProfile?: {
     publishedAt: string
     current: string
-    liveFailure: { code: ConfigProfileErrorCode; message: string }
+    /** The host (the desktop launcher's setting) chose the snapshot; nothing was fetched. */
+    forced: boolean
+    /** The snapshot has passed its `expiresAt` — only a forced boot gets this far. */
+    expired: boolean
+    /** The live failure the snapshot stood in for; absent on a forced boot. */
+    liveFailure?: { code: ConfigProfileErrorCode; message: string }
   }
 }
 
@@ -348,18 +405,31 @@ function mergeProfileConfig(
   env: Record<string, string | undefined>,
   base: BaseWebWalletConfig,
   boot: WalletProfileBoot,
-  runtime: RuntimeEndpoints,
+  readOverrides: () => EndpointOverrides,
 ): WebWalletConfig {
   // The version's pointer, alone: nothing outside the document supplies or overrides it.
   const oxideProfile = assertProfilePolicy(boot, base.network)
+  // One read, so the three endpoints come from one record even while another tab saves.
+  const stored = readOverrides()
+  // `||`, not `??`: the deploy script writes every allow-listed key into .env.production even
+  // when the operator left it unset, so an omitted var arrives as "" rather than undefined.
+  const node = resolveEndpoint(stored.node, env.VITE_NODE_URL || boot.nodeUrl)
+  const l1Rpc = resolveEndpoint(stored.l1Rpc, env.VITE_L1_RPC_URL || boot.version.l1RpcUrl)
+  const enclave = resolveEndpoint(stored.enclave, defaultEnclaveUrl(env, base.network))
   return {
     ...base,
-    // A host-injected endpoint outranks both: the desktop launcher writes the user's saved
-    // override into the page, and a profile value replacing it would make that setting inert.
-    // `||`, not `??`: the deploy script writes every allow-listed key into .env.production even
-    // when the operator left it unset, so an omitted var arrives as "" rather than undefined.
-    nodeUrl: runtime.nodeUrl || env.VITE_NODE_URL || boot.nodeUrl,
-    l1RpcUrl: runtime.l1RpcUrl || env.VITE_L1_RPC_URL || boot.version.l1RpcUrl,
+    nodeUrl: node.url,
+    nodeApiKey:
+      (node.provenance.source === "settings" ? stored.nodeApiKey : undefined) ??
+      (node.provenance.isDefault ? env.VITE_NODE_API_KEY || undefined : undefined),
+    l1RpcUrl: l1Rpc.url,
+    enclaveUrl: enclave.url,
+    endpoints: { node: node.provenance, l1Rpc: l1Rpc.provenance, enclave: enclave.provenance },
+    // A stored URL the normalizer refuses still gets a stable digest; the dial fails later.
+    nodeEndpointDigest: node.provenance.isDefault
+      ? undefined
+      : endpointDigest(tryNormalizeEndpoint(node.url) ?? node.url),
+    profileRollupVersion: boot.profile.shared.rollupVersion,
     // A loopback origin keeps `loadConfig`'s value — sandbox's browser-restricted port needs the
     // same-origin proxy, which a document (absolute URLs only) cannot express.
     accountServiceUrl: env.VITE_ACCOUNT_SERVICE_URL || accountServiceFrom(boot, base),
@@ -367,6 +437,26 @@ function mergeProfileConfig(
     oxideProfile,
     claimFpcAddress: boot.snapshot.contracts.claimFpc?.address,
   }
+}
+
+/**
+ * One endpoint's URL and provenance: the stored override, else the build/profile default.
+ * `isDefault` compares normalized forms, so a retyped default still counts as the default and a
+ * same-origin URL with another path does not. A default that is not an absolute URL (the enclave's
+ * `""` or `/svc/enclave`) makes any override custom.
+ */
+function resolveEndpoint(
+  stored: string | undefined,
+  fallback: string,
+): { url: string; provenance: EndpointProvenance } {
+  const [url, source]: [string, EndpointSource] = stored
+    ? [stored, "settings"]
+    : [fallback, "default"]
+  const defaultNormalized = tryNormalizeEndpoint(fallback)
+  const isDefault =
+    source === "default" ||
+    (defaultNormalized !== undefined && tryNormalizeEndpoint(url) === defaultNormalized)
+  return { url, provenance: { source, isDefault } }
 }
 
 const LOOPBACK = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/
@@ -379,24 +469,29 @@ function accountServiceFrom(boot: WalletProfileBoot, base: BaseWebWalletConfig):
 }
 
 /**
- * The app's one boot path: `VITE_CONFIG_PROFILE_URL` names the profile; a build without it does
- * not boot. Seeds `getConfig()` before returning — consumers read it synchronously.
+ * The app's one boot path: `VITE_CONFIG_PROFILE_URL` names the profile, or a host override replaces
+ * it; a build with neither does not boot. Seeds `getConfig()` before returning — consumers read it
+ * synchronously.
  */
 export async function resolveBootConfig(
   input: ResolveBootConfigInput = {},
 ): Promise<WebBootConfig> {
   const env = input.env ?? import.meta.env
+  const runtime = hostConfiguration(env, input.runtime ?? runtimeEndpoints())
 
-  const profileUrl = env.VITE_CONFIG_PROFILE_URL
+  // resolveWalletProfile needs the network before any config is built.
+  const network = resolveNetwork(env)
+
+  if (runtime.configProfileUrl) assertHostProfileUrl(runtime.configProfileUrl, network)
+  // The expected profile id is NOT overridable alongside the URL: it is what makes an overridden
+  // URL serve this build's profile rather than some other one.
+  const profileUrl = runtime.configProfileUrl || env.VITE_CONFIG_PROFILE_URL
   if (!profileUrl) {
     throw new Error(
       "VITE_CONFIG_PROFILE_URL is not set — the wallet boots from a config profile and has no " +
         "other address source.",
     )
   }
-
-  // resolveWalletProfile needs the network before any config is built.
-  const network = resolveNetwork(env)
 
   const request: LiveProfileRequest = {
     profileUrl,
@@ -407,9 +502,16 @@ export async function resolveBootConfig(
   const boot: WalletProfileBoot = await resolveWalletProfile({
     ...request,
     bakedProfile: input.bakedProfile,
+    forceBakedProfile: runtime.bootFromBakedProfile,
     fetchImpl: input.fetchImpl,
     now: input.now,
   })
+
+  // The rollup first, before anything reads storage. A wallet's database opens only once its tab is
+  // the active tab; demo mode's opens here.
+  const rollup = input.demoStorage ? DEMO_ROLLUP : boot.profile.shared.rollupVersion
+  setActiveRollup(rollup)
+  if (input.demoStorage) await openWalletStore(rollup, { persistent: false })
 
   if (boot.zkJwtVkeySkew) {
     console.error(
@@ -417,25 +519,41 @@ export async function resolveBootConfig(
         `${boot.version.vkeys?.zkJwtVkeyHash}, this build bundles ${ZKJWT_VKEY_HASH}`,
     )
   }
-  const bakedProfile =
-    boot.bootedFromBakedProfile && boot.liveFailure
-      ? {
-          publishedAt: boot.profile.publishedAt,
-          current: boot.versionId,
-          liveFailure: boot.liveFailure,
-        }
-      : undefined
+  const bakedProfile: WebBootConfig["bakedProfile"] = boot.bootedFromBakedProfile
+    ? {
+        publishedAt: boot.profile.publishedAt,
+        current: boot.versionId,
+        forced: !boot.liveFailure,
+        expired: boot.bakedProfileExpired === true,
+        ...(boot.liveFailure ? { liveFailure: boot.liveFailure } : {}),
+      }
+    : undefined
   if (bakedProfile) {
+    const why = bakedProfile.liveFailure
+      ? `config service unreachable (${bakedProfile.liveFailure.message})`
+      : `the host asked for the shipped configuration${bakedProfile.expired ? " (expired)" : ""}`
     console.warn(
-      `[bootConfig] config service unreachable (${bakedProfile.liveFailure.message}); booting on ` +
-        `the baked profile "${boot.profile.profileId}" version ${bakedProfile.current}, published ` +
-        bakedProfile.publishedAt,
+      `[bootConfig] ${why}; booting on the baked profile "${boot.profile.profileId}" version ` +
+        `${bakedProfile.current}, published ${bakedProfile.publishedAt}`,
     )
   }
 
-  const runtime = input.runtime ?? runtimeEndpoints()
-  const base = loadConfig(env, runtime)
-  const merged = mergeProfileConfig(env, base, boot, runtime)
+  const customProfileUrl =
+    runtime.configProfileUrl && !boot.bootedFromBakedProfile ? runtime.configProfileUrl : undefined
+  if (customProfileUrl) {
+    console.warn(
+      `[bootConfig] running on the configuration at ${customProfileUrl}, set on this device — not ` +
+        "zk.money's own",
+    )
+  }
+
+  const base = loadConfig(env)
+  const merged = mergeProfileConfig(
+    env,
+    base,
+    boot,
+    input.readEndpointOverrides ?? readEndpointOverrides,
+  )
   const resolveClassArtifact = createClassArtifactResolver(
     createArtifactPinResolver({
       profileUrl,
@@ -460,6 +578,7 @@ export async function resolveBootConfig(
     zkJwtVkeySkew: boot.zkJwtVkeySkew,
     bootedFromBakedProfile: boot.bootedFromBakedProfile,
     ...(bakedProfile ? { bakedProfile } : {}),
+    ...(customProfileUrl ? { customProfileUrl } : {}),
   })
 }
 

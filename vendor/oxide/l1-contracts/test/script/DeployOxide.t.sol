@@ -6,6 +6,7 @@ import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";
 import {SIPABase} from "@periphery/SIPABase.sol";
 import {DEPOSIT_FEE} from "@periphery/DepositSIPA.sol";
 import {RegistrationSIPA, REGISTRATION_SWEEP_FEE} from "@periphery/RegistrationSIPA.sol";
+import {METADATA_UPDATE_SWEEP_FEE} from "@periphery/UpdateMetadataSIPA.sol";
 import {FirstProverProofSubmitter} from "@periphery/FirstProverProofSubmitter.sol";
 import {IFPCFunder} from "@periphery/interfaces/IFPCFunder.sol";
 import {OxidePortal} from "@core/OxidePortal.sol";
@@ -56,10 +57,13 @@ contract DeployOxideTest is OxidePortalBase {
     assertEq(IFPCFunder(d.fpcFunder).L2_BENEFICIARY(), bytes32(uint256(0xFBC)));
     assertEq(address(IFPCFunder(d.fpcFunder).FEE_ASSET()), address(feeAsset));
     assertEq(address(IFPCFunder(d.fpcFunder).FEE_JUICE_PORTAL()), address(0xFEEB));
-    (uint128 approximateMinProfit, uint128 max, uint128 minFee) = DepositSubsidy(d.depositSubsidy).$depositConfig();
+    (uint128 approximateMinProfit, uint128 max, uint128 minFee, uint128 minCreditedAmount, uint128 overheadGas) =
+      DepositSubsidy(d.depositSubsidy).$depositConfig();
     assertEq(approximateMinProfit, 0.1e18);
     assertEq(max, 12e18);
     assertEq(minFee, DEPOSIT_FEE);
+    assertEq(minCreditedAmount, 1e18);
+    assertEq(overheadGas, 0);
     assertTrue(d.operationExecutor.code.length > 0);
     assertEq(address(FirstProverProofSubmitter(d.firstProverProofSubmitter).ROLLUP()), address(rollup));
     assertEq(address(FirstProverProofSubmitter(d.firstProverProofSubmitter).PORTAL()), d.portal);
@@ -77,8 +81,28 @@ contract DeployOxideTest is OxidePortalBase {
 
     DepositSubsidy depositSubsidy = DepositSubsidy(moved.depositSubsidy);
     assertEq(depositSubsidy.owner(), postDeployOwner);
-    (uint128 approximateMinProfit,,) = depositSubsidy.$depositConfig();
+    (uint128 approximateMinProfit,,,,) = depositSubsidy.$depositConfig();
     assertEq(approximateMinProfit, 0.1e18);
+  }
+
+  function test_runReadsTheMinimumCreditedAmountFromTheEnvironment() public {
+    (DeployOxideHarness deploy,) = _prepareRun();
+    deploy.withEnv("OXIDE_DEPOSIT_MIN_CREDITED_AMOUNT", "5000000000000000000");
+
+    DeployOxide.Deployment memory d = deploy.run();
+
+    (,,, uint128 minCreditedAmount,) = DepositSubsidy(d.depositSubsidy).$depositConfig();
+    assertEq(minCreditedAmount, 5e18);
+  }
+
+  function test_runReadsTheOverheadGasFromTheEnvironment() public {
+    (DeployOxideHarness deploy,) = _prepareRun();
+    deploy.withEnv("OXIDE_DEPOSIT_OVERHEAD_GAS", "30000");
+
+    DeployOxide.Deployment memory d = deploy.run();
+
+    (,,,, uint128 storedOverheadGas) = DepositSubsidy(d.depositSubsidy).$depositConfig();
+    assertEq(storedOverheadGas, 30_000);
   }
 
   function test_runBlessesIntentImplementationsAgainstTheVersionsPortal() public {
@@ -88,13 +112,19 @@ contract DeployOxideTest is OxidePortalBase {
 
     assertTrue(sipaFactory.intentOf(d.depositSIPAImplementation) == SIPABase.Intent.Deposit);
     assertTrue(sipaFactory.intentOf(d.registrationSIPAImplementation) == SIPABase.Intent.Registration);
+    assertTrue(sipaFactory.intentOf(d.updateMetadataSIPAImplementation) == SIPABase.Intent.UpdateMetadata);
     assertEq(sipaFactory.implementationFor(d.portal, SIPABase.Intent.Deposit), d.depositSIPAImplementation);
     assertEq(sipaFactory.implementationFor(d.portal, SIPABase.Intent.Registration), d.registrationSIPAImplementation);
+    assertEq(
+      sipaFactory.implementationFor(d.portal, SIPABase.Intent.UpdateMetadata), d.updateMetadataSIPAImplementation
+    );
 
     assertEq(address(SIPABase(d.depositSIPAImplementation).PORTAL()), d.portal);
     assertEq(address(SIPABase(d.registrationSIPAImplementation).PORTAL()), d.portal);
+    assertEq(address(SIPABase(d.updateMetadataSIPAImplementation).PORTAL()), d.portal);
     assertEq(SIPABase(d.depositSIPAImplementation).DEPOSIT_FEE(), DEPOSIT_FEE);
     assertEq(SIPABase(d.registrationSIPAImplementation).DEPOSIT_FEE(), REGISTRATION_SWEEP_FEE);
+    assertEq(SIPABase(d.updateMetadataSIPAImplementation).DEPOSIT_FEE(), METADATA_UPDATE_SWEEP_FEE);
   }
 
   function test_runWiresPortalSubsidyAndSubmitter() public {

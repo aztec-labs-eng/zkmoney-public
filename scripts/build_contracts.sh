@@ -372,6 +372,16 @@ fi
 
 echo "Compiled contract outputs are available in: $COMPILED_TARGET_DIR"
 
+# Stamp the source content key this artifact set was built from, so a later build can
+# tell a current set from one left behind by earlier sources or another vendor/oxide
+# pin. A filtered build leaves the set partial and writes no stamp.
+if [[ -z "$TARGET_CONTRACT" && ${#EXCLUDE_CONTRACTS[@]} -eq 0 ]]; then
+  NOIR_KEY="$(AZTEC_VERSION="${VERSION#v}" node "$REPO_ROOT/.github/scripts/noir-cache.mjs" store-key 2>/dev/null || true)"
+  if [[ -n "$NOIR_KEY" ]]; then
+    printf '%s\n' "$NOIR_KEY" > "$COMPILED_TARGET_DIR/.noir-store-key"
+  fi
+fi
+
 # 7) Propagate the freshly-built artifacts (JSON + codegen .ts) into
 # packages/contracts/dist/ so workspace consumers (backend, sdk) pick
 # them up. `getHardcodedArtifact` in src/services/utils.ts imports the JSON

@@ -21,9 +21,12 @@ vi.mock("../src/features/operations/operations", async () =>
 )
 vi.mock("../src/features/onboarding/RegistrationDepositPrompt", () => ({
   RegistrationDepositPrompt: () => null,
-  useAwaitingDepositRecord: () => null,
+}))
+vi.mock("../src/features/onboarding/openRegistration", () => ({
+  useRegistrationDepositOwed: () => false,
 }))
 vi.mock("@obsidion/front-core", () => ({
+  INTERRUPTED_ERRORS: {},
   useAccountContext: () => ({ obsidionAccount: state.unlocked ? {} : undefined }),
   useAztecContext: () => ({ obsidionWallet: undefined }),
   useAppNotifications: () => ({
@@ -32,6 +35,8 @@ vi.mock("@obsidion/front-core", () => ({
     unreadCount: 0,
     markAllRead: state.markAllRead,
   }),
+  useCachedRecords: () => ({ records: [] }),
+  WithdrawalStorage: { get: () => null },
 }))
 vi.mock("@obsidion/web-ds", () => ({
   GradientInitialAvatar: () => null,
@@ -43,21 +48,30 @@ vi.mock("@obsidion/web-ds", () => ({
     </div>
   ),
   Spinner: () => null,
-  TopNavIconButton: ({ ariaLabel, onClick }: { ariaLabel: string; onClick: () => void }) => <button aria-label={ariaLabel} onClick={onClick} />,
+  TopNavIconButton: ({ ariaLabel, onClick }: { ariaLabel: string; onClick: () => void }) => (
+    <button aria-label={ariaLabel} onClick={onClick} />
+  ),
   ZkMoneyRoot: ({ children }: { children: ReactNode }) => children,
 }))
 vi.mock("../src/dev/demoFlag", () => ({ isDemoMode: () => false }))
 vi.mock("../src/features/identity/walletIdentity", () => ({
   loadWalletIdentity: () => ({ handle: state.handle, address: "0x123", pending: state.pending }),
-  loadOnboardedIdentity: () => state.onboarded ? { handle: state.handle, address: "0x123", pending: state.pending } : null,
+  loadOnboardedIdentity: () =>
+    state.onboarded ? { handle: state.handle, address: "0x123", pending: state.pending } : null,
 }))
 vi.mock("../src/features/identity/admission", () => ({ hasWalletEntry: () => state.admitted }))
 vi.mock("../src/platform/auth/useAuthenticator", () => ({
   getAuthService: () => ({ getSecretKey: async () => new Uint8Array([1]) }),
 }))
-vi.mock("../src/platform/desktopBridge", () => ({ getDesktopL1Bridge: () => state.launcher ? { l1SubmitPath: "/bridge" } : null }))
+vi.mock("../src/platform/desktopBridge", () => ({
+  getDesktopL1Bridge: () => (state.launcher ? { l1SubmitPath: "/bridge" } : null),
+}))
 vi.mock("../src/features/scan/ScannerModal", () => ({
-  ScannerModal: ({ onClose }: { onClose: () => void }) => <div role="dialog" aria-label="Scan QR code"><button onClick={onClose}>Close scanner</button></div>,
+  ScannerModal: ({ onClose }: { onClose: () => void }) => (
+    <div role="dialog" aria-label="Scan QR code">
+      <button onClick={onClose}>Close scanner</button>
+    </div>
+  ),
 }))
 vi.mock("../src/features/scan/scanPayload", () => ({ scanPayload: vi.fn() }))
 vi.mock("../src/features/identity/logout", () => ({ logout: state.logout }))
@@ -65,20 +79,33 @@ vi.mock("../src/features/onboarding/webRegistration", () => ({
   isLogoutBlockedByRegistration: () => state.blocked,
 }))
 vi.mock("../src/features/contacts/TagSearchBar", () => ({
-  TagSearchBar: ({ autoFocus, onDismiss }: { autoFocus?: boolean; onDismiss?: () => void }) => (
+  TagSearchBar: ({
+    autoFocus,
+    onDismiss,
+    placeholder,
+  }: {
+    autoFocus?: boolean
+    onDismiss?: () => void
+    placeholder?: string
+  }) => (
     <input
       aria-label="Search @tag"
       autoFocus={autoFocus}
+      placeholder={placeholder}
       onKeyDown={(e) => e.key === "Escape" && onDismiss?.()}
     />
   ),
 }))
 vi.mock("../src/features/contacts/ShareTagModal", () => ({
-  ShareTagModal: () => <div role="dialog" aria-label="Share @tag" />,
+  ShareTagModal: ({ onScan }: { onScan?: () => void }) => (
+    <div role="dialog" aria-label="Share @tag">
+      {onScan && <button onClick={onScan}>Scan instead</button>}
+    </div>
+  ),
 }))
 vi.mock("../src/ui/LogoutModal", () => ({
   LogoutModal: ({ onConfirm }: { onConfirm: () => void }) => (
-    <div role="dialog" aria-label="Logout">
+    <div role="dialog" aria-label="Log out">
       <button onClick={onConfirm}>Confirm logout</button>
     </div>
   ),
@@ -118,18 +145,33 @@ const click = (label: string) =>
     button(label).click()
   })
 const menu = () => host.querySelector<HTMLDialogElement>("dialog")
-const render = (path = "/", mobilePageHeaderPaths: readonly string[] = [], autoFocusContacts = false, enablePhoneScan = false) =>
+const render = (
+  path = "/",
+  mobilePageHeaderPaths: readonly string[] = [],
+  autoFocusContacts = false,
+  enablePhoneScan = false,
+) =>
   act(() => {
     root.render(
       <MemoryRouter initialEntries={[path]}>
         <Routes>
-          <Route element={<SidebarLayout mobilePageHeaderPaths={mobilePageHeaderPaths} enablePhoneScan={enablePhoneScan} />}>
-            <Route path="contacts" element={
-              <>
-                {autoFocusContacts && <input aria-label="Contacts search" autoFocus />}
-                <Page />
-              </>
-            } />
+          <Route
+            element={
+              <SidebarLayout
+                mobilePageHeaderPaths={mobilePageHeaderPaths}
+                enablePhoneScan={enablePhoneScan}
+              />
+            }
+          >
+            <Route
+              path="contacts"
+              element={
+                <>
+                  {autoFocusContacts && <input aria-label="Contacts search" autoFocus />}
+                  <Page />
+                </>
+              }
+            />
             <Route path="*" element={<Page />} />
           </Route>
         </Routes>
@@ -149,7 +191,9 @@ beforeEach(() => {
   state.markAllRead.mockClear()
   state.logout.mockClear()
   vi.stubGlobal("matchMedia", () => ({
-    get matches() { return state.phone },
+    get matches() {
+      return state.phone
+    },
     addEventListener: (_: string, fn: () => void) => state.listeners.add(fn),
     removeEventListener: (_: string, fn: () => void) => state.listeners.delete(fn),
   }))
@@ -178,34 +222,53 @@ describe("phone shell", () => {
     state.phone = phone
     render()
     if (phone) click("Open menu")
-    expect([...host.querySelectorAll(".ww-sidebar__menu .ww-nav-item")].map((b) => b.textContent)).toEqual([
-      "Home", "Contacts", "Deposit", ...(phone ? ["Receive", "Send"] : ["Send", "Receive"]),
-      "Withdraw", "Activity", "Settings",
+    expect(
+      [...host.querySelectorAll(".ww-sidebar__menu .ww-nav-item")].map((b) => b.textContent),
+    ).toEqual([
+      "Home",
+      "Contacts",
+      "Deposit",
+      ...(phone ? ["Receive", "Send"] : ["Send", "Receive"]),
+      "Withdraw",
+      "Activity",
+      "Settings",
     ])
   })
   it("scopes the new Home composition to the exact phone Home route", () => {
     render("/send")
     expect(host.querySelector(".ww-shell--home")).toBeNull()
   })
-  it("focuses expanded search and returns to its trigger on Escape", () => {
+  it("mounts the inline search field in the phone header", () => {
     render()
-    expect(host.querySelector("input")).toBeNull()
-    click("Open search")
-    expect(document.activeElement).toBe(host.querySelector("input"))
-    act(() =>
-      host
-        .querySelector("input")!
-        .dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
-    )
-    expect(host.querySelector("input")).toBeNull()
-    expect(document.activeElement).toBe(button("Open search"))
+    const input = host.querySelector<HTMLInputElement>('input[aria-label="Search @tag"]')!
+    expect(input).not.toBeNull()
+    expect(input.placeholder).toBe("tag")
+    expect(button("Open search")).toBeUndefined()
   })
-  it("closes search, enters the menu, and restores focus and scrolling on Escape", () => {
+  it("shows the tab bar on phone Home and navigates through it", () => {
+    render()
+    const tabs = [...host.querySelectorAll<HTMLButtonElement>(".ww-tabbar button")]
+    expect(tabs.map((b) => b.textContent)).toEqual([
+      "Home",
+      "Deposit",
+      "Receive",
+      "Send",
+      "Withdraw",
+    ])
+    expect(tabs[0].getAttribute("aria-current")).toBe("page")
+    expect(host.querySelector(".ww-shell--tabbar")).not.toBeNull()
+    act(() => tabs[3].click())
+    expect(host.querySelector('.ww-tabbar [aria-current="page"]')?.textContent).toBe("Send")
+  })
+  it("keeps the tab bar off desktop", () => {
+    state.phone = false
+    render()
+    expect(host.querySelector(".ww-tabbar")).toBeNull()
+  })
+  it("enters the menu and restores focus and scrolling on Escape", () => {
     document.documentElement.style.overflow = "clip"
     render()
-    click("Open search")
     click("Open menu")
-    expect(host.querySelector("input")).toBeNull()
     expect(menu()?.open).toBe(true)
     expect(document.documentElement.style.overflow).toBe("hidden")
     expect(document.activeElement).toBe(button("Close menu"))
@@ -227,23 +290,25 @@ describe("phone shell", () => {
     click("Open menu")
     click("Contacts")
     expect(menu()).toBeNull()
-    expect(button("Open search")).toBeDefined()
-    expect(button("Account settings, @alice.zk.money")).toBeDefined()
+    expect(host.querySelector('input[aria-label="Search @tag"]')).not.toBeNull()
     click("Open menu")
-    click("Home")
+    expect(button("Home, @alice.zk.money")).toBeDefined()
+    click("Home, @alice.zk.money")
     expect(menu()).toBeNull()
+    expect(host.querySelector('.ww-tabbar [aria-current="page"]')?.textContent).toBe("Home")
   })
   it("lets an exact page path own the phone header", () => {
     render("/contacts", ["/contacts"])
-    expect(button("Open search")).toBeUndefined()
-    expect(button("Account settings, @alice.zk.money")).toBeUndefined()
+    expect(host.querySelector('input[aria-label="Search @tag"]')).toBeNull()
+    expect(button("Open menu")).toBeUndefined()
+    expect(host.querySelector(".ww-tabbar")).toBeNull()
     click("Page menu")
     expect(menu()?.open).toBe(true)
   })
   it("keeps the shell header on contact detail paths", () => {
     render("/contacts/alice", ["/contacts"])
     expect(button("Open menu")).toBeDefined()
-    expect(button("Open search")).toBeDefined()
+    expect(host.querySelector('input[aria-label="Search @tag"]')).not.toBeNull()
   })
   it("preserves focus requested by the destination page", () => {
     render("/", [], true)
@@ -272,38 +337,36 @@ describe("phone shell", () => {
   it("does not expose identity, notifications or search above the phone unlock gate", () => {
     state.unlocked = false
     render()
-    expect(button("Account settings, @alice.zk.money")).toBeUndefined()
+    expect(host.querySelector('input[aria-label="Search @tag"]')).toBeNull()
     expect(button("Notifications")).toBeUndefined()
-    expect(button("Open search")).toBeUndefined()
+    expect(host.querySelector(".ww-tabbar")).toBeNull()
     expect(button("Open menu")).toBeDefined()
+    click("Open menu")
+    expect(button("Home, @alice.zk.money")).toBeUndefined()
+    expect(host.querySelector(".ww-sidebar .ww-brand")).not.toBeNull()
   })
   it("keeps the brand lockup and menu on locked Contacts until its page can render", () => {
     state.unlocked = false
     render("/contacts", ["/contacts"])
     expect(host.querySelector(".ww-shell-header .ww-brand")).not.toBeNull()
-    expect(button("Open search")).toBeUndefined()
+    expect(host.querySelector('input[aria-label="Search @tag"]')).toBeNull()
     expect(button("Notifications")).toBeUndefined()
     click("Open menu")
     expect(menu()?.open).toBe(true)
-    expect(button("Logout")).toBeDefined()
+    expect(button("Log out")).toBeDefined()
     click("Close menu")
     state.unlocked = true
     render("/contacts", ["/contacts"])
     expect(host.querySelector(".ww-shell-header")).toBeNull()
   })
-  it("clears expanded search when the account locks", () => {
+  it("unmounts the search field when the account locks", () => {
     render()
-    click("Open search")
+    expect(host.querySelector('input[aria-label="Search @tag"]')).not.toBeNull()
     state.unlocked = false
     render()
-    expect(host.querySelector("input")).toBeNull()
-    expect(button("Open search")).toBeUndefined()
-    state.unlocked = true
-    render()
-    expect(button("Open search")).toBeDefined()
-    expect(host.querySelector("input")).toBeNull()
+    expect(host.querySelector('input[aria-label="Search @tag"]')).toBeNull()
   })
-  it.each(["Open search", "Open menu", "Page Share"])(
+  it.each(["Open menu", "Page Share"])(
     "marks notifications read when %s closes the panel",
     (action) => {
       render()
@@ -324,7 +387,12 @@ describe("phone shell", () => {
     }
     render()
     await act(async () => {
-      await store.begin({ operationId: "op-toast", flow: "send", summary: "$2 to @bo", scope: null })
+      await store.begin({
+        operationId: "op-toast",
+        flow: "send",
+        summary: "$2 to @bo",
+        scope: null,
+      })
       await store.settle("op-toast", "0x02")
     })
     const toasts = () => host.querySelectorAll('[data-testid="toast"]')
@@ -359,13 +427,10 @@ describe("phone shell", () => {
   })
   it("keeps phone focus order aligned with the visible header", () => {
     render()
-    expect([...host.querySelectorAll(".ww-topbar button")].map((b) => b.getAttribute("aria-label"))).toEqual([
-      "Account settings, @alice.zk.money", "Notifications", "Open search", "Open menu",
-    ])
-    expect(button("Open search").hasAttribute("aria-controls")).toBe(false)
+    expect(
+      [...host.querySelectorAll(".ww-topbar button")].map((b) => b.getAttribute("aria-label")),
+    ).toEqual(["Notifications", "Open menu"])
     expect(button("Open menu").hasAttribute("aria-controls")).toBe(false)
-    click("Open search")
-    expect(host.querySelector(`#${button("Close search").getAttribute("aria-controls")}`)).not.toBeNull()
     click("Open menu")
     expect(host.querySelector(`#${button("Open menu").getAttribute("aria-controls")}`)).toBe(menu())
   })
@@ -383,38 +448,58 @@ describe("phone shell", () => {
       this.open = false
       queueMicrotask(() => this.dispatchEvent(new Event("close")))
     }
-    await act(async () => root.render(
-      <StrictMode><MobileMenu onClose={close}><button aria-label="Close menu" /><dialog aria-label="Nested test" /></MobileMenu></StrictMode>,
-    ))
+    await act(async () =>
+      root.render(
+        <StrictMode>
+          <MobileMenu onClose={close}>
+            <button aria-label="Close menu" />
+            <dialog aria-label="Nested test" />
+          </MobileMenu>
+        </StrictMode>,
+      ),
+    )
     expect(menu()!.open).toBe(true)
     expect(close).not.toHaveBeenCalled()
-    act(() => host.querySelector('[aria-label="Nested test"]')!.dispatchEvent(new Event("close", { bubbles: true })))
+    act(() =>
+      host
+        .querySelector('[aria-label="Nested test"]')!
+        .dispatchEvent(new Event("close", { bubbles: true })),
+    )
     expect(close).not.toHaveBeenCalled()
     await act(async () => menu()!.close())
     expect(close).toHaveBeenCalledOnce()
   })
-
 })
 
 describe("phone scanner entry guards", () => {
-  it("opens from the menu only with the explicit wallet opt-in and returns focus to its viable trigger", () => {
+  it("opens from a page opt-in only, never from the menu, and returns focus to its trigger", () => {
     render("/", [], false, true)
     click("Open menu")
-    click("Scan QR code")
-    expect(menu()).toBeNull()
+    expect(button("Scan QR code")).toBeUndefined()
+    click("Close menu")
+    click("Page Scan")
     expect(host.querySelector('[role="dialog"][aria-label="Scan QR code"]')).not.toBeNull()
     click("Close scanner")
-    expect(document.activeElement).toBe(button("Open menu"))
+    expect(document.activeElement).toBe(button("Page Scan"))
+    click("Page Share")
+    click("Scan instead")
+    expect(host.querySelector('[role="dialog"][aria-label="Scan QR code"]')).not.toBeNull()
   })
-  it.each(["phone", "unlocked", "onboarded", "admitted", "handle", "pending", "launcher"] as const)("does not expose Scan when %s fails its gate", (gate) => {
-    if (gate === "handle") state.handle = undefined
-    else if (gate === "pending" || gate === "launcher") state[gate] = true
-    else state[gate] = false
-    render("/", [], false, true)
-    if (state.phone) click("Open menu")
-    expect(button("Scan QR code")).toBeUndefined()
-    expect(button("Page Scan")).toBeUndefined()
-  })
+  it.each(["phone", "unlocked", "onboarded", "admitted", "handle", "pending", "launcher"] as const)(
+    "does not expose Scan when %s fails its gate",
+    (gate) => {
+      if (gate === "handle") state.handle = undefined
+      else if (gate === "pending" || gate === "launcher") state[gate] = true
+      else state[gate] = false
+      render("/", [], false, true)
+      if (state.phone) click("Open menu")
+      expect(button("Scan QR code")).toBeUndefined()
+      expect(button("Page Scan")).toBeUndefined()
+      click("Page Share")
+      expect(host.querySelector('[role="dialog"][aria-label="Share @tag"]')).not.toBeNull()
+      expect(button("Scan instead")).toBeUndefined()
+    },
+  )
   it("closes an active scanner when the wallet locks", () => {
     render("/", [], false, true)
     click("Page Scan")
@@ -429,14 +514,14 @@ describe("logout gate", () => {
   const dialog = (label: string) => host.querySelector(`[role="dialog"][aria-label="${label}"]`)
   const openLogout = () => {
     click("Open menu")
-    click("Logout")
+    click("Log out")
   }
 
   it("confirms and logs out when no claim is in flight", () => {
     render()
     openLogout()
     expect(menu()).toBeNull()
-    expect(dialog("Logout")).not.toBeNull()
+    expect(dialog("Log out")).not.toBeNull()
     expect(dialog("Registration in progress")).toBeNull()
     click("Confirm logout")
     expect(state.logout).toHaveBeenCalledTimes(1)
@@ -448,7 +533,7 @@ describe("logout gate", () => {
     openLogout()
     expect(menu()).toBeNull()
     expect(dialog("Registration in progress")).not.toBeNull()
-    expect(dialog("Logout")).toBeNull()
+    expect(dialog("Log out")).toBeNull()
     click("OK")
     expect(host.querySelector('[role="dialog"]')).toBeNull()
     expect(state.logout).not.toHaveBeenCalled()
@@ -458,13 +543,13 @@ describe("logout gate", () => {
     render()
     click("Open menu")
     state.blocked = true
-    click("Logout")
+    click("Log out")
     expect(dialog("Registration in progress")).not.toBeNull()
     click("OK")
     click("Open menu")
     state.blocked = false
-    click("Logout")
-    expect(dialog("Logout")).not.toBeNull()
+    click("Log out")
+    expect(dialog("Log out")).not.toBeNull()
   })
 
   it("keeps the open popup when the claim settles underneath it", () => {
@@ -474,18 +559,18 @@ describe("logout gate", () => {
     state.blocked = false
     render()
     expect(dialog("Registration in progress")).not.toBeNull()
-    expect(dialog("Logout")).toBeNull()
+    expect(dialog("Log out")).toBeNull()
     click("OK")
     openLogout()
-    expect(dialog("Logout")).not.toBeNull()
+    expect(dialog("Log out")).not.toBeNull()
   })
 
-  it("leaves a locked wallet's Logout alone even with a claim in flight", () => {
+  it("leaves a locked wallet's Log out alone even with a claim in flight", () => {
     state.unlocked = false
     state.blocked = true
     render()
     openLogout()
-    expect(dialog("Logout")).not.toBeNull()
+    expect(dialog("Log out")).not.toBeNull()
     click("Confirm logout")
     expect(state.logout).toHaveBeenCalledTimes(1)
   })

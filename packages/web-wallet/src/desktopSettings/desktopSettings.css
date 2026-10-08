@@ -1,0 +1,120 @@
+.ww-dsettings {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 48px 16px 64px;
+  box-sizing: border-box;
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.ww-dsettings h1 {
+  margin: 0;
+  font-size: 21px;
+  font-weight: 600;
+}
+.ww-dsettings h2 {
+  margin: 24px 0 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+.ww-dsettings h3 {
+  margin: 16px 0 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+.ww-dsettings p {
+  margin: 0;
+}
+.ww-dsettings code {
+  word-break: break-all;
+  font-size: 0.9em;
+  padding: 0.08em 0.35em;
+  border-radius: var(--radius-4);
+  background: var(--surface-card);
+}
+.ww-dsettings__hint {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.ww-dsettings__hint--err {
+  color: var(--accent-pink);
+}
+.ww-dsettings__hint--warn {
+  color: var(--accent-gold);
+}
+.ww-dsettings__banner {
+  padding: 12px 16px;
+  border: 1px solid var(--accent-pink);
+  border-radius: var(--radius-12);
+  background: var(--surface-pink);
+  color: var(--accent-pink);
+}
+.ww-dsettings__banner--info {
+  border-color: var(--border-hairline);
+  background: var(--surface-card);
+  color: var(--text-primary);
+}
+.ww-dsettings__danger {
+  padding: 12px 16px;
+  border: 1px solid var(--accent-pink);
+  border-radius: var(--radius-12);
+  background: var(--surface-pink);
+  font-size: 13px;
+}
+.ww-dsettings__danger strong {
+  color: var(--accent-pink);
+}
+.ww-dsettings__tablewrap {
+  overflow-x: auto;
+}
+.ww-dsettings__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.ww-dsettings__table td {
+  padding: 6px 8px;
+  border-top: 1px solid var(--border-hairline);
+  vertical-align: top;
+}
+.ww-dsettings__table td:first-child {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ww-dsettings label {
+  font-weight: 600;
+}
+.ww-dsettings__switch {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+.ww-dsettings__switch input {
+  margin-top: 5px;
+  accent-color: #ad33ff;
+}
+.ww-dsettings__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+}
+.ww-dsettings__reset {
+  align-self: flex-start;
+  color: var(--text-secondary);
+}
+.ww-dsettings__reset:hover:not(:disabled) {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+.ww-dsettings__status {
+  font-size: 14px;
+}
+.ww-dsettings__status--err {
+  color: var(--accent-pink);
+}

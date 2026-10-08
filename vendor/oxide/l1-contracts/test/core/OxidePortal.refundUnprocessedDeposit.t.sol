@@ -9,6 +9,7 @@ import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {IExecutor} from "@core/interfaces/IExecutor.sol";
 import {OxidePortalBase} from "@test/core/OxidePortalBase.t.sol";
 import {Errors} from "@core/lib/Errors.sol";
+import {Errors as AztecErrors} from "@aztec/core/libraries/Errors.sol";
 
 contract OxidePortalRefundUnprocessedDepositTest is OxidePortalBase {
   bytes32 internal constant DEFAULT_MESSAGE_HASH = bytes32(uint256(0xDEEDF0));
@@ -233,6 +234,44 @@ contract OxidePortalRefundUnprocessedDepositTest is OxidePortalBase {
     );
   }
 
+  function test_revertsWhenInboxSiblingPathIsWrong()
+    external
+    givenPortalIsInitialized
+    givenTeeIsRegistered("tee-unprocessed-bad-path")
+    givenPortalIsFrozen
+  {
+    WithdrawParams memory p = _defaultWithdrawParams();
+    (, bytes32[] memory inboxSiblingPath) = _primeInbox(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX);
+    inboxSiblingPath[0] = bytes32(uint256(1));
+
+    _expectInboxRejects(p, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, inboxSiblingPath);
+  }
+
+  function test_revertsWhenMessageIsNotInInbox()
+    external
+    givenPortalIsInitialized
+    givenTeeIsRegistered("tee-unprocessed-no-message")
+    givenPortalIsFrozen
+  {
+    WithdrawParams memory p = _defaultWithdrawParams();
+    (, bytes32[] memory inboxSiblingPath) = _primeInbox(bytes32(uint256(0xDEAD)), DEFAULT_MESSAGE_LEAF_INDEX);
+
+    _expectInboxRejects(p, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX, inboxSiblingPath);
+  }
+
+  function test_revertsWhenLeafIndexPointsAtAnotherCheckpoint()
+    external
+    givenPortalIsInitialized
+    givenTeeIsRegistered("tee-unprocessed-other-checkpoint")
+    givenPortalIsFrozen
+  {
+    WithdrawParams memory p = _defaultWithdrawParams();
+    (, bytes32[] memory inboxSiblingPath) = _primeInbox(DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX);
+    _primeInbox(bytes32(uint256(0xDEAD)), DEFAULT_MESSAGE_LEAF_INDEX + SUBTREE_SIZE);
+
+    _expectInboxRejects(p, DEFAULT_MESSAGE_HASH, DEFAULT_MESSAGE_LEAF_INDEX + SUBTREE_SIZE, inboxSiblingPath);
+  }
+
   function test_refundUnprocessedDepositHappyPath()
     external
     givenPortalIsInitialized
@@ -321,5 +360,26 @@ contract OxidePortalRefundUnprocessedDepositTest is OxidePortalBase {
 
     assertEq(underlying.balanceOf(p.recipient), recipientBalanceBefore + p.amount - p.processorTip);
     assertEq(underlying.balanceOf(p.tipRecipient), tipRecipientBalanceBefore + p.processorTip);
+  }
+
+  function _expectInboxRejects(
+    WithdrawParams memory p,
+    bytes32 messageHash,
+    uint256 messageLeafIndex,
+    bytes32[] memory inboxSiblingPath
+  ) internal {
+    bytes memory proof = hex"c0ffee";
+    unprocessedDepositRefundVerifier.setExpected(
+      proof,
+      _unprocessedDepositRefundPublicInputs(
+        p.executor, p.userPayloadHash, p.amount, messageHash, messageLeafIndex, DEFAULT_SILOED_NULLIFIER
+      )
+    );
+    underlying.mint(address(portal), p.amount);
+    bytes memory sig =
+      _signTee(teePk, _unprocessedDepositRefundFinalDigest(p, messageHash, messageLeafIndex, DEFAULT_SILOED_NULLIFIER));
+
+    vm.expectPartialRevert(AztecErrors.MerkleLib__InvalidRoot.selector);
+    _refundUnprocessedDeposit(p, DEFAULT_SILOED_NULLIFIER, messageHash, messageLeafIndex, inboxSiblingPath, proof, sig);
   }
 }

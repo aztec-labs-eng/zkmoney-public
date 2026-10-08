@@ -26,3 +26,9 @@ export const Flat: Story = {
   args: { values: [10, 25, 50, 100], glass: false },
   render: (args) => <InteractiveChips key={args.selectedValue} {...args} />,
 }
+
+/** A live minimum puts the smallest chip out of reach; it stays visible so the row keeps its shape. */
+export const WithDisabled: Story = {
+  args: { values: [1, 5, 10, 15], selectedValue: 5, disabledValues: [1], glass: false },
+  render: (args) => <InteractiveChips key={args.selectedValue} {...args} />,
+}

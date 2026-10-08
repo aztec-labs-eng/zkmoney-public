@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
+import { testWalletDbs } from "./support/fakeWalletDb"
 
 const h = vi.hoisted(() => ({ showReportableError: vi.fn(), campaignUrl: "" }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: h.showReportableError }))
@@ -40,13 +42,13 @@ describe("logout", () => {
     setActiveStorageId("aaa")
     setActiveCredentialId("cred-a")
     writeCachedMsk({ v: 1, storageId: "aaa", credentialId: "cred-a", msk: `0x${"11".repeat(32)}` })
-    localStorage.setItem("obsidion.aaa.obsidion_contacts", "keep")
+    walletStorage.setItem("obsidion.aaa.obsidion_contacts", "keep")
     await logout(stopPxe)
     expect(loadWalletIdentity()).toBeNull()
     expect(getActiveStorageId()).toBeNull()
     expect(getActiveCredentialId()).toBeNull()
     expect(readCachedMsk()).toBeNull()
-    expect(localStorage.getItem("obsidion.aaa.obsidion_contacts")).toBe("keep")
+    expect(walletStorage.getItem("obsidion.aaa.obsidion_contacts")).toBe("keep")
     expect(stopPxe).toHaveBeenCalledOnce()
     // No campaign in this build: the wallet's own route is all there is.
     expect(assign).toHaveBeenCalledWith("/claim")
@@ -73,14 +75,11 @@ describe("logout", () => {
   it("a store that refuses the removal is reported and nothing reloads", async () => {
     setActiveStorageId("aaa")
     writeCachedMsk({ v: 1, storageId: "aaa", credentialId: "cred-a", msk: `0x${"11".repeat(32)}` })
-    const blocked = vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+    await walletStorage.flush()
+    testWalletDbs().onApply = () => {
       throw new Error("blocked")
-    })
-    try {
-      await logout(stopPxe)
-    } finally {
-      blocked.mockRestore()
     }
+    await logout(stopPxe)
     expect(h.showReportableError).toHaveBeenCalledWith(
       expect.any(Error),
       "identity:logout",

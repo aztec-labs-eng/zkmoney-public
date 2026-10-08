@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
-import type { Address, Hex } from "viem"
+import { getContractAddress, type Address, type Hex } from "viem"
+import { predictAccountAddressLocally } from "@oxide/l1-contracts"
 import {
   AmbiguousOxideIdentityError,
   resolveOxideIdentity,
@@ -11,8 +12,6 @@ const OTHER_REGISTRY = "0x00000000000000000000000000000000000000f9" as Address
 const METADATA = "0x00000000000000000000000000000000000000f3" as Address
 const BOOTSTRAP = "0x00000000000000000000000000000000000000b0" as Address
 
-const OLD_ACCOUNT = "0x00000000000000000000000000000000000000a1" as Address
-const NEW_ACCOUNT = "0x00000000000000000000000000000000000000a2" as Address
 const L2 = `0x${"11".repeat(32)}`
 const OTHER_L2 = `0x${"22".repeat(32)}`
 const ZERO_HASH = `0x${"00".repeat(32)}` as Hex
@@ -24,7 +23,6 @@ const generation = (
   over: Partial<IdentityGeneration> & { fpcAddress: string },
 ): IdentityGeneration => ({
   accountFactory: "0x00000000000000000000000000000000000000c1" as Address,
-  implementation: "0x00000000000000000000000000000000000000d1" as Address,
   namePortal: "0x00000000000000000000000000000000000000e1" as Address,
   rollupVersion: ROLLUP,
   ...over,
@@ -33,18 +31,25 @@ const generation = (
 const OLD = generation({
   fpcAddress: `0x${"aa".repeat(32)}`,
   accountFactory: "0x00000000000000000000000000000000000000c1" as Address,
-  implementation: "0x00000000000000000000000000000000000000d1" as Address,
   namePortal: "0x00000000000000000000000000000000000000e1" as Address,
 })
 
 const CURRENT = generation({
   fpcAddress: `0x${"bb".repeat(32)}`,
   accountFactory: "0x00000000000000000000000000000000000000c2" as Address,
-  implementation: "0x00000000000000000000000000000000000000d2" as Address,
   namePortal: "0x00000000000000000000000000000000000000e2" as Address,
 })
 
+/** The account `BOOTSTRAP` gets under `factory`, as the resolver predicts it. */
+const accountUnder = (factory: Address) => predictAccountAddressLocally(factory, BOOTSTRAP)
+/** What a factory built from `OxideAccountFactory` clones: its nonce-1 deployment. */
+const nonceOneOf = (factory: Address) => getContractAddress({ from: factory, nonce: 1n })
+
+const OLD_ACCOUNT = accountUnder(OLD.accountFactory)
+const NEW_ACCOUNT = accountUnder(CURRENT.accountFactory)
+
 interface Chain {
+  /** What a factory's own `predictAccountAddress` answers; the resolver must never ask. */
   accounts?: Record<string, Address>
   names?: Record<string, Hex>
   records?: Record<string, { l2Address: string; rollupVersion?: bigint }>
@@ -54,9 +59,7 @@ interface Chain {
 
 function readerFor(chain: Chain) {
   const predictAccountAddress = vi.fn(
-    async (factory: Address) =>
-      chain.accounts?.[factory.toLowerCase()] ??
-      (`0x${factory.slice(-2).padStart(40, "0")}` as Address),
+    async (factory: Address) => chain.accounts?.[factory.toLowerCase()] ?? accountUnder(factory),
   )
   const readNameOf = vi.fn(
     async (_registry: Address, account: Address) =>
@@ -76,10 +79,7 @@ function readerFor(chain: Chain) {
   )
   const readFactoryImplementation = vi.fn(
     async (factory: Address) =>
-      chain.implementations?.[factory.toLowerCase()] ??
-      (factory.toLowerCase() === OLD.accountFactory.toLowerCase()
-        ? OLD.implementation
-        : CURRENT.implementation),
+      chain.implementations?.[factory.toLowerCase()] ?? nonceOneOf(factory),
   )
   return {
     predictAccountAddress,
@@ -92,7 +92,6 @@ function readerFor(chain: Chain) {
 }
 
 const registeredUnderOld: Chain = {
-  accounts: { [OLD.accountFactory.toLowerCase()]: OLD_ACCOUNT },
   names: { [OLD_ACCOUNT.toLowerCase()]: NAME_HASH },
   records: { [OLD_ACCOUNT.toLowerCase()]: { l2Address: L2 } },
 }
@@ -123,7 +122,6 @@ describe("resolveOxideIdentity", () => {
   it("keeps a new user on the active factory", async () => {
     const identity = await verified(
       {
-        accounts: { [CURRENT.accountFactory.toLowerCase()]: NEW_ACCOUNT },
         names: { [NEW_ACCOUNT.toLowerCase()]: NAME_HASH },
         records: { [NEW_ACCOUNT.toLowerCase()]: { l2Address: L2 } },
       },
@@ -145,10 +143,6 @@ describe("resolveOxideIdentity", () => {
 
   it("refuses two distinct accounts rather than choosing one", async () => {
     const chain: Chain = {
-      accounts: {
-        [OLD.accountFactory.toLowerCase()]: OLD_ACCOUNT,
-        [CURRENT.accountFactory.toLowerCase()]: NEW_ACCOUNT,
-      },
       names: { [OLD_ACCOUNT.toLowerCase()]: NAME_HASH, [NEW_ACCOUNT.toLowerCase()]: NAME_HASH },
       records: {
         [OLD_ACCOUNT.toLowerCase()]: { l2Address: L2 },
@@ -175,14 +169,40 @@ describe("resolveOxideIdentity", () => {
     expect(await kindOf(chain, [CURRENT, OLD])).toBe("none")
   })
 
-  it("skips a generation whose factory no longer clones the pinned implementation", async () => {
+  it("drops a factory whose implementation is not its nonce-1 deployment", async () => {
     const chain: Chain = {
       ...registeredUnderOld,
       implementations: {
-        [OLD.accountFactory.toLowerCase()]: "0x00000000000000000000000000000000000000dd" as Address,
+        [OLD.accountFactory.toLowerCase()]: "0x00000000000000000000000000000000000000d1" as Address,
       },
     }
     expect(await kindOf(chain, [CURRENT, OLD])).toBe("none")
+    expect(await kindOf(chain, [OLD])).toBe("no-generation")
+  })
+
+  it("never asks the catalog's factory who the user is", async () => {
+    // A shim the admission checks let through: its own code at nonce 1, behind the genuine name
+    // portal. Its RPC answer points at an account the attacker registered, whose record names the
+    // victim's L2 address.
+    const SHIM = generation({
+      fpcAddress: `0x${"dd".repeat(32)}`,
+      accountFactory: "0x00000000000000000000000000000000000000c9" as Address,
+      namePortal: OLD.namePortal,
+    })
+    const ATTACKER = "0x00000000000000000000000000000000000000a9" as Address
+    const reader = readerFor({
+      accounts: { [SHIM.accountFactory.toLowerCase()]: ATTACKER },
+      names: { [ATTACKER.toLowerCase()]: NAME_HASH },
+      records: { [ATTACKER.toLowerCase()]: { l2Address: L2 } },
+    })
+    const outcome = await resolveOxideIdentity(
+      { reader, registry: REGISTRY, catalog: [SHIM], rollupVersion: ROLLUP },
+      BOOTSTRAP,
+      L2,
+    )
+    expect(reader.predictAccountAddress).not.toHaveBeenCalled()
+    expect(reader.readNameOf).toHaveBeenCalledWith(REGISTRY, accountUnder(SHIM.accountFactory))
+    expect(outcome).toEqual({ kind: "none" })
   })
 
   it("skips a generation from another rollup without reading L1", async () => {
@@ -198,8 +218,8 @@ describe("resolveOxideIdentity", () => {
       L2,
     )
     expect(outcome.kind).toBe("no-generation")
-    expect(reader.predictAccountAddress).not.toHaveBeenCalled()
     expect(reader.readNamePortalRegistry).not.toHaveBeenCalled()
+    expect(reader.readNameOf).not.toHaveBeenCalled()
   })
 
   it("reports a named account recorded under another L2 address as unverified", async () => {

@@ -15,6 +15,7 @@ import {
   oxideAccountPersonalSignDigest,
   userRecordStateHash,
 } from './metadata_update.js';
+import { SipaIntent } from './sipa_factory.js';
 import { buildSipaDeployAndSweepOperation } from './sipa_sweep_operation.js';
 
 const OWNER = '0x1111111111111111111111111111111111111111';
@@ -47,6 +48,7 @@ function metadataUpdateOperation(signature: Hex) {
     operation: buildSipaDeployAndSweepOperation({
       sipa: SIPA,
       sipaFactory: REGISTRY,
+      intent: SipaIntent.UpdateMetadata,
       deployArgs: {
         implementation: OWNER,
         intentHash: keccak256(intentData),

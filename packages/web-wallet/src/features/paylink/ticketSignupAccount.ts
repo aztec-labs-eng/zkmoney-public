@@ -1,3 +1,5 @@
+import { walletStorage } from "../../platform/storage/walletStorage"
+
 /** Public account binding for a ticket signup interrupted before its registration was saved. */
 export interface TicketSignupAccount {
   credentialId: string
@@ -24,7 +26,7 @@ export function loadTicketSignupAttempt(
   rpId: string,
   paylinkId: string,
 ): TicketSignupAttempt | null {
-  const raw = localStorage.getItem(keyFor(rpId, paylinkId))
+  const raw = walletStorage.getItem(keyFor(rpId, paylinkId))
   if (raw === null) return null
   try {
     const record = JSON.parse(raw)
@@ -69,30 +71,36 @@ export function loadTicketSignupAccount(
   return attempt
 }
 
-/** Refuse creation unless its intent can be saved before opening the authenticator. */
-export function beginTicketSignupAccount(
+/** Refuse creation unless its intent is saved before the authenticator opens. */
+export async function beginTicketSignupAccount(
   rpId: string,
   paylinkId: string,
   tag: string,
-): TicketSignupCreating {
+): Promise<TicketSignupCreating> {
   if (loadTicketSignupAttempt(rpId, paylinkId))
     throw new Error("This payment already has a signup. Continue that signup first.")
   const attempt: TicketSignupCreating = { phase: "creating", attemptId: crypto.randomUUID(), tag }
-  localStorage.setItem(keyFor(rpId, paylinkId), JSON.stringify(attempt))
+  await walletStorage.commitItem(keyFor(rpId, paylinkId), JSON.stringify(attempt))
   return attempt
 }
 
-/** A late completion cannot replace an attempt the user explicitly restarted. */
-export function completeTicketSignupAccount(
+/**
+ * A late completion cannot replace an attempt the user explicitly restarted. Resolves once the
+ * binding is saved: the ticket is spent on this account only after that.
+ */
+export async function completeTicketSignupAccount(
   rpId: string,
   paylinkId: string,
   attemptId: string,
   account: TicketSignupAccount,
-): void {
+): Promise<void> {
   const attempt = loadTicketSignupAttempt(rpId, paylinkId)
   if (!isTicketSignupCreating(attempt) || attempt.attemptId !== attemptId)
     throw new Error("This signup attempt is no longer active.")
-  saveTicketSignupAccount(rpId, paylinkId, { ...account, tag: attempt.tag })
+  await walletStorage.commitItem(
+    keyFor(rpId, paylinkId),
+    JSON.stringify({ ...account, tag: attempt.tag }),
+  )
 }
 
 /**
@@ -109,7 +117,7 @@ export function restartTicketSignupAccount(
     throw new Error("This signup already has an account. Continue with its passkey.")
   if (attempt === null || attempt.attemptId !== attemptId)
     throw new Error("This signup attempt was restarted in another tab. Continue there.")
-  localStorage.removeItem(keyFor(rpId, paylinkId))
+  walletStorage.removeItem(keyFor(rpId, paylinkId))
 }
 
 /** Retained when the wizard closes: a redemption may already have bound the ticket to this account. */
@@ -118,5 +126,5 @@ export function saveTicketSignupAccount(
   paylinkId: string,
   account: TicketSignupAccount,
 ): void {
-  localStorage.setItem(keyFor(rpId, paylinkId), JSON.stringify(account))
+  walletStorage.setItem(keyFor(rpId, paylinkId), JSON.stringify(account))
 }

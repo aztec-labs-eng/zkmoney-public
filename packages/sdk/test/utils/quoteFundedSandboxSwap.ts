@@ -21,21 +21,20 @@ export async function quoteFundedSandboxSwap(
   const deductions =
     args.deductions.withdrawalRelayerTip + args.deductions.proverTip + args.deductions.fpcFundingCut
   let amount = args.amount
-  let previousTip = args.previousTip
   let lastError: SwapTipExceedsInputError | undefined
 
   for (let attempt = 1; attempt <= MAX_QUOTE_ATTEMPTS; attempt++) {
     try {
-      const quote = await simulator.simulate({ ...args, amount, previousTip })
+      const quote = await simulator.simulate({ ...args, amount })
       return { amount, quote }
     } catch (error) {
       if (!(error instanceof SwapTipExceedsInputError)) throw error
       lastError = error
-      previousTip = error.tip.relayerTip
-      amount = deductions + previousTip + RETAINED_SWAP_AMOUNT
+      const tip = error.tip.relayerTip
+      amount = deductions + tip + RETAINED_SWAP_AMOUNT
       if (attempt < MAX_QUOTE_ATTEMPTS) {
         console.log(
-          `Sandbox swap quote ${attempt}/${MAX_QUOTE_ATTEMPTS} needs ${previousTip} in relayer fees; ` +
+          `Sandbox swap quote ${attempt}/${MAX_QUOTE_ATTEMPTS} needs ${tip} in relayer fees; ` +
             `retrying with gross amount ${amount}`,
         )
       }

@@ -1,3 +1,4 @@
+import { leavePage } from "../../platform/storage/walletStorage"
 import { ModalFrame } from "../../ui/Modal"
 import {
   useCallback,
@@ -12,24 +13,29 @@ import { useLocation, useNavigate, useParams, useSearchParams } from "react-rout
 import type { Address, Hex } from "viem"
 import {
   deriveBootstrapKey,
+  depositOwed,
+  fundsIn,
   isRegistrationEscalated,
   normalizeTag,
+  TxInFlightError,
   useAccountContext,
   useAztecContext,
   useContractServiceContext,
   useConfigValue,
-  type NameClaimResponse,
   type OxideResumeOutcome,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
 import { AUTH_TYPE, DEFAULT_CONTRACTS } from "@obsidion/sdk"
 import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/constants"
+import type { NameClaimResponse, SignInRoute } from "@obsidion/core/types"
 import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
 import { mockOnboarding } from "../../dev/mockOnboarding"
 import { showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent, lapTimer } from "../../lib/analytics"
+import { reportHandoffAdopted } from "../../lib/handoffHealth"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
+import { useHoldEndpoints } from "../../ui/endpointsHold"
 import { useAsyncAction, useNextRoute } from "../../ui/hooks"
 import {
   checkAdmission,
@@ -39,18 +45,33 @@ import {
   hasDepositAdmission,
   useDepositAdmission,
 } from "../identity/admission"
-import { isGateCancelled, useCeremonyGate } from "../identity/ceremonyGate"
+import { oweCampaignClaimNotice } from "../identity/campaignClaimNotice"
+import { isGateCancelled, routeForHints, useCeremonyGate } from "../identity/ceremonyGate"
 import { IosFloorNotice } from "../identity/IosFloorNotice"
-import { PasskeyRefusal, refusalFor, type RefusalState } from "../identity/PasskeyRefusal"
-import { GateStep } from "../identity/PhoneSteps"
+import {
+  PasskeyRefusal,
+  isPasskeyNotOffered,
+  refusalFor,
+  type RefusalState,
+  type RouteRefusal,
+} from "../identity/PasskeyRefusal"
+import { GateStep, PasskeyWarn, PhoneSteps } from "../identity/PhoneSteps"
 import { signOut } from "../identity/signOut"
 import {
+  PHONE_STEPS_COPY,
+  currentDevicePosture,
+  currentOpenInBrowserHref,
+  inAppBrowserRefusal,
   isPasskeyPolicyError,
+  passkeyWritten,
   type PasskeyAttemptContext,
   type PasskeyAttemptHandle,
   type PasskeyRequestScope,
+  type PhoneReach,
 } from "@obsidion/passkey-web"
 import { statusForAttempt } from "../../platform/auth/passkeyAttemptScope"
+import { InAppBrowserNotice } from "../identity/InAppBrowserNotice"
+import { walletInAppUpFront } from "../identity/inAppUpFront"
 import {
   clearWalletIdentity,
   loadOnboardedIdentity,
@@ -62,8 +83,11 @@ import {
   clearTicketSignup,
   peekClaimStash,
   peekTicketSignup,
+  updateTicketSignup,
 } from "../paylink/claimStash"
 import { linkIdentity } from "../paylink/linkIdentity"
+import { endClaim, startClaim } from "../paylink/runningClaims"
+import { OperationHandOff } from "../operations/OperationHandOff"
 import {
   beginTicketSignupAccount,
   completeTicketSignupAccount,
@@ -73,9 +97,10 @@ import {
   restartTicketSignupAccount,
   saveTicketSignupAccount,
 } from "../paylink/ticketSignupAccount"
-import { reloadIfSessionSwitched } from "./sessionReload"
+import { reloadIfSessionSwitched, takeOnboardingResume } from "./sessionReload"
 import {
   boundTicketSignup,
+  pendingTicketRegistration,
   ticketActivation,
   ticketSignupRegistration,
   ticketHoldNotice,
@@ -88,11 +113,15 @@ import {
 import { obtainEmailClaimProof } from "../paylink/emailClaim"
 import type { PaylinkKit } from "../paylink/usePaylinkDeps"
 import { paylinkSignupQuote } from "../paylink/paylinkSignupQuote"
+import { useRegistrationSpeed } from "../paylink/registrationProverTip"
+import { SpeedRow } from "../withdraw/speedChoice"
+import { belowTicketThresholdCopy, ticketEligibility } from "../paylink/ticketThreshold"
 import { getWithdrawalStore } from "../withdraw/withdrawGateway"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { getActiveCredentialId, getActiveStorageId } from "../../platform/storage/activeStorage"
 import {
   buildRetrySignDeps,
+  checkpointRegistrationTerms,
   claimTag,
   collectOnboardingKeys,
   adoptHandoff,
@@ -101,25 +130,27 @@ import {
   NameTakenError,
   PasskeyMismatchError,
   CeremonyRequiredError,
-  primeHandoffMaterial,
   resolveHandoff,
   reusePasskeyAccount,
   type ClaimTagOutcome,
   type OnboardingKeys,
   type PasskeyHints,
 } from "./oxideOnboarding"
+import { clearNameGrant, scopeNameGrant } from "./nameGrant"
+import { routeGrantIsCurrent } from "./nameAvailability"
 import {
   abandonPendingRegistration,
   buildWebDetectionDeps,
   cacheConfirmedNameClaim,
   getPendingStore,
   hasCustody,
+  registrationAddressPublished,
   registrationTermsAreInUse,
   runDetectionTick,
 } from "./webRegistration"
-import { registrationBroadcastSeen } from "./registrationResume"
 import { activationPromptDismissed, openActivationPrompt } from "./activationPrompt"
 import { noteRegistrationDepositSeen } from "./registrationRailSync"
+import { useRegistrationStage } from "./openRegistration"
 import { AnalyticsConsentModal } from "./AnalyticsConsentModal"
 import { InvitationChrome } from "./InvitationChrome"
 import { LostRegistrationNoticeCard } from "./LostRegistrationNoticeCard"
@@ -132,8 +163,16 @@ import {
   REGISTRATIONS_PAUSED_NOTICE,
 } from "./onboardingErrorCopy"
 import { passkeysSupported, UNSUPPORTED_BROWSER_MESSAGE } from "@obsidion/passkey-web"
-import { formatDepositDue, formatDepositSeen, fundingAssetsLabel } from "./steps/DepositTermsRows"
-import { RegistrationSheet } from "./RegistrationSheet"
+import {
+  formatDepositDue,
+  formatDepositSeen,
+  formatTokenAmount,
+  swapAssetsLabel,
+} from "./steps/DepositTermsRows"
+import { broadcastSettled, getBroadcastLedger } from "../broadcasts/broadcasts"
+import { runUserFlow } from "../provingGate"
+import { useOweRegistrationBroadcast } from "../broadcasts/useOweRegistrationBroadcast"
+import { RegistrationSheet, type RegistrationCheck } from "./RegistrationSheet"
 import {
   assertRegistrationUnfunded,
   registrationNeedsRefund,
@@ -141,13 +180,15 @@ import {
 } from "./registrationQuoteRecovery"
 import { RegistrationRefundAction } from "./RegistrationRefundAction"
 import { ManualSweepAction } from "./RegistrationDepositDetailModal"
+import { useSipaProcessing } from "../deposit/sipaProcessing"
+import { depositTokensFor } from "../deposit/loadDepositFacts"
+import { heldDepositLine } from "../deposit/processingCopy"
 import { canManualRegistrationSweep } from "./registrationSweep"
 import { InvitationStep, type InviteNotice } from "./steps/InvitationStep"
 import { AllSetModal, ClaimTagModal } from "./steps/ClaimTagModal"
 import { ChooseTagStep } from "./steps/ChooseTagStep"
-import { ClaimReviewStep } from "./steps/ClaimReviewStep"
+import { PaylinkSignupRows } from "./steps/PaylinkSignupRows"
 import { WelcomeStep } from "./steps/WelcomeStep"
-import { OnboardingCarousel } from "./steps/OnboardingCarousel"
 import { useDepositWatch } from "./useDepositWatch"
 import {
   depositChainLabel,
@@ -159,10 +200,13 @@ import {
   clearRegistrationTerms,
   rememberReissuedClaim,
   askedTotal,
+  claimTerms,
   floorExceedsAsk,
   quotedRegistrationKind,
   registrationKind,
   registrationQuote,
+  reservedUntil,
+  commitRegistrationProverTip,
   saveRegistrationTerms,
   scheduleForRecord,
   signedSchedule,
@@ -174,21 +218,18 @@ import {
   useRegistrationSchedule,
   useRegistrationTerms,
 } from "./registrationTerms"
+import { firstWalletEntry } from "./walletEntry"
 import {
   reportRegistrationDepositFunded,
   reportRegistrationDepositSwept,
 } from "./registrationFunnel"
 
-type Step =
-  | "invite"
-  | "tag"
-  | "terms"
-  | "create"
-  | "claim"
-  | "review"
-  | "allset"
-  | "carousel"
-  | "pending"
+function warnQuietCheck(err: unknown): undefined {
+  console.warn("[onboarding] status check failed; the next one retries:", err)
+  return undefined
+}
+
+type Step = "invite" | "tag" | "terms" | "create" | "claim" | "allset" | "entering" | "pending"
 
 // Age past which a funded-but-unconfirmed claim warrants the retry lead and the urgency copy.
 // Presentation only; the machine guards the claim budget. A record still waiting for its deposit
@@ -200,14 +241,20 @@ const URGENCY_TICK_MS = 30_000
 // A background confirm writes the identity moments after the record close — wait it out before
 // discriminating on identity presence.
 const CONFIRM_SETTLE_MS = 1_500
-/** How long the intro's spinner waits on the hand-off and its broadcast before showing what it has. */
+/** How long an earned-price replacement waits on the old address's broadcast. */
+const REPLACE_SETTLE_MS = 60_000
+// Proposed copy, pending review.
+const REPLACE_WAITING_MESSAGE =
+  "The original address is still being published. Try again in a few minutes."
+/** How long the hand-off's setup spinner waits for the wallet to boot. */
 const ENTRY_HOLD_MS = 25_000
-// How long the "All set!" card holds before the carousel takes over.
+// How long the "All set!" card holds before the wallet.
 const ALL_SET_MS = 1_400
 
 const BUSY_LABELS = {
   passkey: "Confirm your passkey…",
   checking: "Checking your claim…",
+  claiming: "Claiming your payment…",
 } as const
 
 const subscribePendingStore = (onChange: () => void) => getPendingStore().onListChanged(onChange)
@@ -219,23 +266,22 @@ const HANDOFF_PASSKEY: PasskeyAttemptContext = { ceremony: "sign_in", flow: "han
 /**
  * Signup wizard (/claim/:handle?), ULT-667: a full-bleed invitation page with
  * the signup steps as modals over it — create account (passkey, then the
- * chained claim on the same spinner), "All set!", then the onboarding carousel
- * into Home. The passkey must exist BEFORE the claim — the claimed OxideAccount
- * is CREATE2-derived from the bootstrap key, which derives from the passkey's
- * PRF — but the claim itself needs no extra click. An already-claimed handle
- * surfaces on the invitation page with a log-in lead. A failed claim drops to
- * the claim-retry modal without minting a second passkey.
+ * chained claim on the same spinner), "All set!", then Home. The passkey
+ * must exist BEFORE the claim — the claimed OxideAccount is CREATE2-derived
+ * from the bootstrap key, which derives from the passkey's PRF — but the
+ * claim itself needs no extra click. An already-claimed handle surfaces on
+ * the invitation page with a log-in lead. A failed claim drops to the
+ * claim-retry modal without minting a second passkey.
  *
  * The claim returns as soon as the bundler holds the op, and the wizard's
  * chain work ends there: the L2 subscription rides the account's first
  * sponsored batch, so no setup step depends on this session. The identity is
- * saved at that point — before the carousel — so closing the tab mid-carousel
- * just skips it. An open durable record enters at the pending step. Its
- * same-tag retry — a FORCED resume tick over the record, recovering the
- * passkey first when this tab holds no in-memory keys — leads only when the
- * record says a fresh op could help (retryWarranted); a healthy in-flight
- * record leads with the status check instead. Start-over renders only while
- * abandonment can succeed.
+ * saved at that point, so closing the tab on "All set!" loses nothing. An open
+ * durable record enters at the pending step. Its same-tag retry — a FORCED
+ * resume tick over the record, recovering the passkey first when this tab
+ * holds no in-memory keys — leads only when the record says a fresh op could
+ * help (retryWarranted); a healthy in-flight record leads with the status
+ * check instead. Start-over renders only while abandonment can succeed.
  */
 export interface OnboardingScreenProps {
   embedded?: boolean
@@ -265,20 +311,34 @@ export function OnboardingScreen({
   // falls back to asking for one.
   const { handle: routeParam } = useParams()
   const routeHandle = (routeParam === undefined ? null : normalizeTag(routeParam)) ?? undefined
-  const { pathname } = useLocation()
+  const [, refreshGrant] = useState(0)
+  const { pathname, state } = useLocation()
   const [params] = useSearchParams()
-  // A route-bound grant may pass a blocklisted name, but the open availability probe still checks
-  // for a live reservation before the authenticated /domain/sign request validates the grant.
-  const hasRouteGrant = Boolean(routeHandle && nameGrantToken())
+  // A route grant keeps the link here; the availability probe validates it before passing the blocklist.
+  const routeGrantToken = routeHandle ? nameGrantToken(routeHandle) : undefined
+  const hasRouteGrant = Boolean(routeGrantToken)
+  const routeGrant =
+    routeHandle && routeGrantToken ? { handle: routeHandle, token: routeGrantToken } : undefined
   // The campaign hand-off (`/claim/:handle?entry=passkey`, launch-campaign-web handoff.ts): the
   // user already holds the shared passkey, so the wizard opens on the create step with entering
   // as the lead instead of asking them to "unlock access" and create.
   const handoffRpMatches = params.get("rp") === getConfig().rpId
   const passkeyEntry = params.get("entry") === "passkey" && Boolean(routeHandle) && handoffRpMatches
+  // A session-switch reload landed back on the wizard mid hand-off. The mark is consumed here on any
+  // wizard mount (a non-passkey reload takes it too) so it never lingers to mislead a later
+  // hand-off in the same tab. Read once.
+  const resumedRef = useRef<boolean | undefined>(undefined)
+  if (resumedRef.current === undefined) resumedRef.current = takeOnboardingResume() && passkeyEntry
+  const resumed = resumedRef.current ?? false
+  // Only a resume onto a NEW account enters from the spinner: the onboarded identity, if any, names
+  // a different tag. A resume onto the account this browser already holds takes the fast path below.
+  const resumeNewAccount = resumed && loadOnboardedIdentity()?.handle !== routeHandle
   // `?resume=1`: arrived from a signup already begun (the queue card's exit), so the tag they are
   // about to type may be their own reservation. It proves nothing on its own — the claim server
   // still decides — it only stops the anonymous availability probe from refusing them first.
   const resuming = params.get("resume") === "1"
+  const boundGrantOwner =
+    resuming && (state as { boundGrantOwner?: string } | null)?.boundGrantOwner === routeHandle
   const recoveryVisit = params.get("recovery") === "1"
   // The rest of the hand-off contract, all optional: `fee=waived` (the campaign's reservation
   // carried a fee waiver; a hint for the terms step, the claim after the passkey decides),
@@ -289,14 +349,18 @@ export function OnboardingScreen({
   const entryCohort =
     params.get("src") === "campaign" ? "campaign" : routeHandle ? "link" : "direct"
   const untilHint = Number(params.get("until")) || undefined
-  const passkeyHints = handoffRpMatches
-    ? {
+  // `choose=1` (a reminder email's claim link): the campaign cannot say whose passkey this is, so
+  // the user picks one and no key this browser holds answers, as on `/enter?choose=1`.
+  const passkeyHints: PasskeyHints = !handoffRpMatches
+    ? {}
+    : params.get("choose") === "1"
+    ? { discover: true, chooser: true }
+    : {
         credentialId: params.get("cred") ?? undefined,
         pubkeyHex: params.get("pk") ?? undefined,
         expectedL2Address: params.get("l2") ?? undefined,
         policyVersion: params.get("pv") ?? undefined,
       }
-    : {}
   const navigate = useNavigate()
   const config = getConfig()
   const { obsidionWallet } = useAztecContext()
@@ -311,13 +375,21 @@ export function OnboardingScreen({
   const paylinkKitRef = useRef(paylinkKit)
   paylinkKitRef.current = paylinkKit
   const paylinkSettleRef = useRef(false)
+  /** The claim was sent and the signup entered: its end is the bell's to report. */
+  const claimHandedOff = useRef(false)
+  const [claimLeft, setClaimLeft] = useState(false)
+  const beginClaim = () => {
+    claimHandedOff.current = false
+    setClaimLeft(false)
+  }
   const next = useNextRoute()
   // Omit empty `next` so a direct /claim visit doesn't write `{ next: undefined }` into history.
   const go = (to: string) => navigate(to, { replace: true, ...(next ? { state: { next } } : {}) })
-  // A leftover inbound stash still claims on Home; a paylink signup settles the claim before entry.
+  // A leftover inbound stash still claims on Home, unless a signup's own claim is spending it.
   /**
-   * The wallet first, the proof behind it: Home paints, a name still owed its deposit raises the
-   * activation sheet on arrival, and only then does a deferred broadcast start proving.
+   * Home paints, and a name still owed its deposit raises the activation sheet on arrival, which owes
+   * its broadcast. A name a payment link funds raises nothing: Home claims the link itself and the
+   * hero carries it.
    */
   const intoWallet = () => {
     go(peekClaimStash() ? "/" : next ?? "/")
@@ -325,11 +397,11 @@ export function OnboardingScreen({
     if (
       rec &&
       (rec.phase === "awaiting_deposit" || rec.phase === "funded") &&
-      !activationPromptDismissed(rec)
+      !activationPromptDismissed(rec) &&
+      !pendingTicketRegistration()
     ) {
       openActivationPrompt()
     }
-    setTimeout(startDeferredBroadcast, 0)
   }
 
   // Any open record lands on the pending step, whether or not its op reached the bundler: the tag
@@ -371,7 +443,7 @@ export function OnboardingScreen({
       (openRecord
         ? "pending"
         : passkeyEntry
-        ? "carousel"
+        ? "entering"
         : fromPaylink
         ? ticketAttempt
           ? "terms"
@@ -385,14 +457,13 @@ export function OnboardingScreen({
     setStepState(to)
   }
   /**
-   * A hand-off's claim runs while the user reads the intro, and lands on its own schedule. The
-   * step it asks for is held until the last slide, so the slides are never pulled out from under
-   * them; every other step applies at once. The hold reads the current step, not the one the
-   * caller was rendered with: an outcome that lands after the intro has moved on applies.
+   * A hand-off's claim runs behind the setup spinner and lands on its own schedule. The step it asks
+   * for is held until the spinner's wait settles; every other step applies at once. The hold reads
+   * the current step, not the one the caller was rendered with.
    */
   const heldStep = useRef<Step | undefined>(undefined)
   const setStep = (to: Step) => {
-    if (stepRef.current === "carousel" && to !== "carousel" && passkeyEntry && !mock)
+    if (stepRef.current === "entering" && to !== "entering" && passkeyEntry && !mock)
       heldStep.current = to
     else setStepNow(to)
   }
@@ -401,11 +472,14 @@ export function OnboardingScreen({
     normalizeTag(mock?.handle ?? routeHandle ?? openRecord?.tag ?? ticketAttempt?.tag ?? "") ?? "",
   )
   const [inviteBusy, setInviteBusy] = useState(false)
+  // Embedded, the pill is in the host page's frame, out of reach of a prop.
+  useHoldEndpoints(inviteBusy)
   const [inviteNotice, setInviteNotice] = useState<InviteNotice>()
-  const [modalBusy, setModalBusy] = useState(mock?.busy ?? false)
-  const [createBusyPhase, setCreateBusyPhase] = useState<
-    "passkey" | "claim" | "broadcast" | "paylink"
-  >("passkey")
+  // A hand-off opens on the setup spinner. Busy is seeded so its wait holds for the no-tap attempt
+  // the wallet's boot starts, instead of reading a stale idle on that first commit.
+  const entersFromSpinner = resumeNewAccount || (passkeyEntry && !mock && !openRecord)
+  const [modalBusy, setModalBusy] = useState(mock?.busy ?? entersFromSpinner)
+  const [createBusyPhase, setCreateBusyPhase] = useState<"passkey" | "claim" | "paylink">("passkey")
   // A hand-off past its point of no return: the account is being adopted and storage is about to
   // switch, so Cancel is withdrawn until it lands. The ref is what the handlers read.
   const [adopting, setAdopting] = useState(false)
@@ -415,18 +489,28 @@ export function OnboardingScreen({
     setAdopting(value)
   }
   const [modalError, setModalError] = useState<string>()
-  // A policy refusal renders as its own state with a retry; anything else is `modalError` text.
-  const [modalRefusal, setModalRefusal] = useState<RefusalState>()
+  // A refusal renders as its own state, with a retry where it has one; anything else is
+  // `modalError` text.
+  const [modalRefusal, setModalRefusal] = useState<RouteRefusal>()
   const retryRef = useRef<(() => void) | undefined>(undefined)
   const { gate, state: gateState, cancel: cancelGate, dismiss: dismissGate } = useCeremonyGate()
+  // The route the ticket signup's own passkey sheet picked, when that sheet took the tap: the gate
+  // then holds no sheet of its own.
+  const unheldGate = useRef<SignInRoute | undefined>(undefined)
+  // The ticket signup's passkey CTA is held; its actions read this, so a retry holds too.
+  const ticketHeldRef = useRef(false)
   const [busyStage, setBusyStage] = useState<keyof typeof BUSY_LABELS>()
   const [inlineNotice, setInlineNotice] = useState<string>()
   // A policy refusal on the pending step's retry, rendered with its own retry.
   const [pendingRefusal, setPendingRefusal] = useState<RefusalState>()
   const [queuedNote, setQueuedNote] = useState<string>()
+  // An identity save that failed, kept as the entry to try again once storage answers. The effects
+  // that enter on their own stand down from then on: only the retry enters, once.
+  const [identityRetry, setIdentityRetry] = useState<() => Promise<void>>()
+  const entryRetryRef = useRef(false)
   const [lastCheckedAt, setLastCheckedAt] = useState<number>()
-  const [broadcastInFlight, setBroadcastInFlight] = useState(false)
-  const autoRebroadcastRef = useRef(false)
+  // The pill's own read of the address is out.
+  const [reading, setReading] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
   // The fresh NameClaim a live claim just returned — the deposit panel's deadline/waiver source.
   // In memory only, same as the session result it comes from: a resumed record (reload) has none,
@@ -438,6 +522,7 @@ export function OnboardingScreen({
           signature: "0x00",
           nonce: "1",
           deadline: String(Math.floor(Date.now() / 1000) + (mock.expired ? -60 : 3600)),
+          hold: { deadline: String(Math.floor(Date.now() / 1000) + 7 * 86_400) },
           terms: {
             fee: String(mock.fee),
             minDeposit: String(mock.min),
@@ -445,6 +530,7 @@ export function OnboardingScreen({
             deadline: "9999999999",
             signature: "0x00",
             reduced: mock.free === true,
+            ticket: false,
           },
         }
       : undefined,
@@ -506,7 +592,7 @@ export function OnboardingScreen({
   // is watching — including after a terminal close makes the record invisible to current().
   const oxideAccountRef = useRef<string | undefined>(openRecord?.account)
   // Keys recovered via the pending step's passkey reuse end at the identity write, never the
-  // all-set/carousel funnel — that funnel belongs to live signup sessions.
+  // all-set funnel — that funnel belongs to live signup sessions.
   const recoveredRef = useRef(false)
   const retryInFlight = useRef(false)
   // A forced tick whose re-sign quoted a schedule the paylink cannot pay: the resume machine
@@ -517,17 +603,22 @@ export function OnboardingScreen({
   // The passkey attempts still running, each with the generation it belongs to. Whatever ends one
   // marks why before it touches the gate.
   const passkeyAttempts = useRef(new Map<PasskeyAttemptHandle, number>())
+  // Which kind of attempt ran last, so a failure can tell a reuse from a create or a hand-off.
+  const lastAttempt = useRef<PasskeyAttemptContext | undefined>(undefined)
   const passkeyAttempt = <T,>(
     context: PasskeyAttemptContext,
     gen: number,
-    fn: (own: PasskeyRequestScope) => Promise<T>,
+    fn: (own: PasskeyRequestScope, attempt: PasskeyAttemptHandle) => Promise<T>,
   ): Promise<T> => {
     // The gate this attempt takes cancels whatever was waiting on it, so the older ones are
     // replaced, not cancelled by the user.
     markAttempts("superseded")
+    lastAttempt.current = context
     const attempt = passkeyTelemetry.begin(context)
     passkeyAttempts.current.set(attempt, gen)
-    return attempt.run(fn).finally(() => passkeyAttempts.current.delete(attempt))
+    return attempt
+      .run((own) => fn(own, attempt))
+      .finally(() => passkeyAttempts.current.delete(attempt))
   }
   // The manual sweep on the deposit sheet runs its own attempt; the sheet's exits speak for it too.
   const sweepAttempt = useRef<PasskeyAttemptHandle | undefined>(undefined)
@@ -575,47 +666,72 @@ export function OnboardingScreen({
     if (record) oxideAccountRef.current = record.account
   }, [record])
 
-  // Consent lands at the end of signup, so every onboarding event above fires behind a closed
-  // gate and never leaves the device. This marks the start of the measurable session — the
-  // wallet — not the start of onboarding. `asked` only goes false→true, so it fires once.
+  // Consent is asked at the end of signup, so a first signup's steps, this start included, fire
+  // behind a closed gate and never leave the device; the answer reports from wallet_entered on.
   const { value: asked, setValue: setAsked } = useConfigValue("analyticsAsked")
   const { setValue: setConsent } = useConfigValue("analyticsConsent")
   // The consent prompt is the last thing between a finished signup and the wallet.
   const [consentPending, setConsentPending] = useState(false)
   const startedAtRef = useRef<number>(performance.now())
   useEffect(() => {
-    if (!asked) return
     startedAtRef.current = performance.now()
     fireEvent("onboarding_started", { has_claim_link: !!routeHandle, entry: entryCohort })
-  }, [asked, routeHandle, entryCohort])
+  }, [routeHandle, entryCohort])
+  /** Every signup exit into the wallet; the entry is reported for the account's first one only. */
+  const enterWallet = () => {
+    const address = loadWalletIdentity()?.address
+    const report = () =>
+      fireEvent("wallet_entered", { has_claim_link: !!routeHandle, entry: entryCohort })
+    if (address === undefined) report()
+    else void firstWalletEntry(address).then((first) => first && report())
+    intoWallet()
+  }
 
-  /**
-   * Signup lives on the campaign, so the wallet keeps no invitation to land on. A visit that is
-   * not the campaign's hand-off and has no reservation in flight leaves for the campaign's landing
-   * rather than offering a signup of its own, which is where closing a sheet used to strand people.
-   * An account already entered here stays: a nameless one registers its name on this step
-   * (RegisterNameCard), asserting the passkey it owns, and the campaign cannot sign that passkey
-   * in. A build with no campaign (a local pair, a self-hosted wallet, the e2e) has nowhere to send
-   * them, so it keeps the step.
-   */
+  /** Fresh signup starts on the campaign; grants, active registrations and entered accounts stay here. */
   const leaveForCampaign = (): boolean => {
-    if (mock || embedded || !config.campaignUrl) return false
+    if (mock || embedded || hasRouteGrant || !config.campaignUrl) return false
     try {
-      window.location.assign(config.campaignUrl)
+      void leavePage(config.campaignUrl)
     } catch {
       return false
     }
     return true
   }
   useEffect(() => {
-    // A name in the path is not an invitation to sign up: only the campaign's hand-off is, so a
-    // link typed, shared or kept from an older build goes back there. A signup already in flight
-    // stays — its record, its recovery and its resume are the wallet's own to finish.
     if (passkeyEntry || openRecord || recoveryVisit || resuming) return
     if (loadWalletIdentity()) return
     leaveForCampaign()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- a bare visit is decided at mount
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- retry only when the route grant is cleared
+  }, [hasRouteGrant])
+  const checkRouteGrant = Boolean(
+    routeHandle &&
+      routeGrantToken &&
+      !mock &&
+      !embedded &&
+      !passkeyEntry &&
+      !openRecord &&
+      !recoveryVisit &&
+      !resuming &&
+      !loadWalletIdentity() &&
+      config.campaignUrl,
+  )
+  useEffect(() => {
+    if (!checkRouteGrant || !routeHandle || !routeGrantToken) return
+    let active = true
+    void routeGrantIsCurrent(routeHandle, routeGrantToken)
+      .then((current) => {
+        if (!active) return
+        if (current) scopeNameGrant(routeHandle, routeGrantToken)
+        else {
+          clearNameGrant(routeHandle, routeGrantToken)
+          refreshGrant((revision) => revision + 1)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      active = false
+    }
+  }, [checkRouteGrant, routeHandle, routeGrantToken])
 
   const logIn = () => {
     const taken = inviteNotice?.kind === "taken" ? inviteNotice.handle : undefined
@@ -732,6 +848,7 @@ export function OnboardingScreen({
     const gen = ++opGen.current
     const signal = startOp()
     const previousStorageId = getActiveStorageId()
+    lastAttempt.current = undefined
     setCreateBusyPhase("passkey")
     setModalBusy(true)
     try {
@@ -754,15 +871,8 @@ export function OnboardingScreen({
           /* The original error is shown below. */
         }
       }
-      // The material-only attempt found no material: not an error, the tap will ask. A tap that
-      // already came in is not made to wait for another.
-      if (err instanceof CeremonyRequiredError) {
-        if (tapPending.current) {
-          tapPending.current = false
-          void enterPasskeyStep()
-        }
-        return
-      }
+      // The material-only attempt found no material: not an error, the terms sheet will ask.
+      if (err instanceof CeremonyRequiredError) return
       if (keysRef.current) {
         fireEvent("action_failed", { action: "claim_tag", code: failureCode(err) })
         if (!steerAfterNameRefusal(err)) {
@@ -774,8 +884,28 @@ export function OnboardingScreen({
           action: mode === "create" ? "create_account" : "enter_passkey",
           code: failureCode(err),
         })
-        if (isPasskeyPolicyError(err)) {
-          setModalRefusal({ name: err.name, message: err.message })
+        // Only a fresh create or hand-off can start again in another browser: a reuse, or any
+        // attempt in a browser that holds an account, needs an account that browser doesn't have.
+        const portable =
+          (lastAttempt.current === CREATE_PASSKEY || lastAttempt.current === HANDOFF_PASSKEY) &&
+          !loadWalletIdentity()
+        const unusable = portable ? inAppBrowserRefusal(err) : undefined
+        const leftover = passkeyWritten(err)
+        if (unusable) {
+          setModalRefusal({ ...unusable, cause: err, leftover })
+          // Held while a hand-off's spinner waits, so the wait ends on the card rather than the terms.
+          setStep("create")
+        } else if (isPasskeyPolicyError(err)) {
+          setModalRefusal({ name: err.name, message: err.message, leftover })
+        } else if (leftover) {
+          // A passkey was saved before this failed, so the card that links the cleanup shows it.
+          const { name } = err as { name?: unknown }
+          setModalRefusal({
+            name: typeof name === "string" ? name : "Error",
+            message: passkeyErrorMessage(err),
+            cause: err,
+            leftover,
+          })
         } else {
           setModalError(mode === "create" ? passkeyErrorMessage(err) : enterErrorMessage(err))
         }
@@ -784,9 +914,6 @@ export function OnboardingScreen({
       if (gen === opGen.current) {
         setModalBusy(false)
         setCreateBusyPhase("passkey")
-        // A tap kept for a prompt has nothing left to open: the attempt ended, with an account,
-        // a refusal or an error, and none of those asks for one.
-        tapPending.current = false
       }
     }
   }
@@ -803,6 +930,7 @@ export function OnboardingScreen({
       setCreateBusyPhase("claim")
       return mockAdvance("allset")
     }
+    if (ticketHeldRef.current) return
     const identity = loadWalletIdentity()
     const namelessAddress = identity && !identity.handle ? identity.address : undefined
     retryRef.current = createAccountStep
@@ -899,17 +1027,20 @@ export function OnboardingScreen({
       if (fromPaylink && !obsidionWallet) {
         throw new Error("wallet is still starting, try again in a moment")
       }
-      const account = await passkeyAttempt(CREATE_PASSKEY, gen, async (own) => {
-        const { route } = await gate({ purpose: "create" })
-        const ticket = ticketId ? beginTicketSignupAccount(config.rpId, ticketId, handle) : null
+      const account = await passkeyAttempt(CREATE_PASSKEY, gen, async (own, attempt) => {
+        const { route, reach } = await gate({ purpose: "create", unheld: unheldGate.current })
+        // A route means a laptop creation, the only gate that checks for a phone.
+        if (route) attempt.notePhoneReach(reach)
+        const ticket = ticketId
+          ? await beginTicketSignupAccount(config.rpId, ticketId, handle)
+          : null
         if (ticket) setTicketAttempt(ticket)
         return createAccount(false, AUTH_TYPE.WEB_AUTHN, statusForAttempt(own), handle, undefined, {
           route,
           ...(ticket && ticketId
             ? {
-                onAccountCreated: (created: { credentialId: string; l2Address: string }) => {
-                  completeTicketSignupAccount(config.rpId, ticketId, ticket.attemptId, created)
-                },
+                onAccountCreated: (created: { credentialId: string; l2Address: string }) =>
+                  completeTicketSignupAccount(config.rpId, ticketId, ticket.attemptId, created),
               }
             : {}),
         })
@@ -933,7 +1064,7 @@ export function OnboardingScreen({
       if (!obsidionWallet || !contractService) {
         throw new Error("wallet is still starting, try again in a moment")
       }
-      // A silent run asks nothing, so its attempt reports nothing when it takes the bridge material
+      // A silent run asks nothing, so its attempt reports nothing when it takes the hand-off material
       // or refuses for want of a prompt. Only a refusal the material itself earns is worth an
       // event, and the tracker sends that one with no prompt counted.
       const resolved = await passkeyAttempt(HANDOFF_PASSKEY, gen, (own) =>
@@ -967,6 +1098,16 @@ export function OnboardingScreen({
           }
         })
         setObsidionAccount(keys.account)
+        // Counted only for the attempt still current once the adoption lands, and only for a
+        // campaign hand-off: another `entry=passkey` link is not one.
+        if (
+          gen === opGen.current &&
+          !signal.aborted &&
+          passkeyEntry &&
+          entryCohort === "campaign"
+        ) {
+          reportHandoffAdopted(resolved.keySource)
+        }
         return keys
       } finally {
         markAdopting(false)
@@ -1000,6 +1141,11 @@ export function OnboardingScreen({
           tag: handle,
           l2Address: keys.account.getAddress().toString(),
         })
+        // Nor does it owe the campaign's claim notice.
+        void oweCampaignClaimNotice({
+          l2Address: keys.account.getAddress().toString(),
+          tag: handle,
+        })
       } else if (outcome.kind === "custody") {
         fireEvent("onboarding_tag_custody", { duration_ms: elapsed() })
       }
@@ -1009,13 +1155,13 @@ export function OnboardingScreen({
 
   /**
    * The signup is complete once the account-service holds the op: save the
-   * identity NOW (before the carousel), so cancelling or closing anything from
-   * here on cannot strand a claimed tag without a wallet identity.
+   * identity NOW, so cancelling or closing anything from here on cannot
+   * strand a claimed tag without a wallet identity.
    *
    * The handle is a parameter rather than the `handle` state so that what gets persisted is the
    * tag this completion actually claimed, not whatever the field happened to hold.
    */
-  const completeSignup = (effectiveHandle: string) => {
+  const completeSignup = async (effectiveHandle: string) => {
     const rec = oxideAccountRef.current ? getPendingStore().get(oxideAccountRef.current) : null
     const stillPending = rec !== null && rec.phase !== "confirmed"
     // The persisted terms are the waiver authority; a custody/nameless completion has none.
@@ -1025,17 +1171,30 @@ export function OnboardingScreen({
       named: !!effectiveHandle,
       fee_waived: completedTerms ? completedTerms.feeWaived === true : undefined,
     })
-    saveWalletIdentity({
-      handle: effectiveHandle,
-      address: addressRef.current!,
-      claimedAt: Date.now(),
-      ...(stillPending ? { pending: true } : {}),
-    })
-    // The intro is waiting, or gave up on this very claim: its wait enters once the broadcast has
-    // settled too, however late this completion lands.
+    // Nothing advances until the identity is saved; a failure keeps this screen.
+    try {
+      await saveWalletIdentity({
+        handle: effectiveHandle,
+        address: addressRef.current!,
+        claimedAt: Date.now(),
+        ...(stillPending ? { pending: true } : {}),
+      })
+    } catch (e) {
+      entryRetryRef.current = true
+      const retry = () => completeSignup(effectiveHandle)
+      setIdentityRetry(() => retry)
+      showReportableError(e, "onboarding:identity", {
+        retry: { label: "Retry entering wallet", run: () => void retry() },
+      })
+      return
+    }
+    setIdentityRetry(undefined)
+    if (rec?.phase === "confirmed") clearNameGrant(effectiveHandle)
+    // The setup spinner is waiting, or gave up on this very claim: its wait enters however late
+    // this completion lands.
     if (enterWhenReady.current) {
       setAwaitingEntry(true)
-      setStepNow("carousel")
+      setStepNow("entering")
       return
     }
     setStep("allset")
@@ -1069,7 +1228,6 @@ export function OnboardingScreen({
     }
     if (rec) {
       setQueuedNote(waitlistNote(position))
-      startDeferredBroadcast()
       setStep("pending")
     } else {
       markAttempts("superseded")
@@ -1089,24 +1247,8 @@ export function OnboardingScreen({
    * or create one), then the claim, then the address. A laptop holds at the phone steps first; the
    * create modal only shows again if the ceremony fails and needs a retry.
    */
-  /**
-   * The intro's first tap: the ceremony the hand-off needs. A wallet still booting has nothing to
-   * run yet, so the tap is not spent and the last slide asks again — `handoffDone` says whether an
-   * account exists. A refusal falls back to the terms sheet, which carries the retry.
-   */
-  // The bridge's write is waited for from here, while the slides are read, so the tap that starts
-  // the hand-off still counts as activation when the passkey is asked for.
-  useEffect(() => {
-    if (passkeyEntry && !mock) primeHandoffMaterial(passkeyHints.credentialId)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the hand-off's credential is fixed by the URL
-  }, [passkeyEntry, mock, passkeyHints.credentialId])
-
-  const handoffDone = () => loadOnboardedIdentity()?.handle === handle
-  /**
-   * The bridge's material needs no tap. It is taken as soon as the wallet can use it, while the
-   * first slide is read, so a hand-off that has it is done before the last slide. Only one that
-   * needs a prompt waits for the tap that can open one.
-   */
+  // A saved identity: a wait that enters on one still being written could land with none.
+  const handoffDone = () => loadOnboardedIdentity({ saved: true })?.handle === handle
   useEffect(() => {
     // Arriving from the campaign again, on a name this browser already entered: the wallet is
     // theirs, and the deposit it still owes is the activation sheet's to ask for over Home.
@@ -1117,99 +1259,61 @@ export function OnboardingScreen({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- the record snapshot is fixed at mount
   }, [passkeyEntry, mock])
 
+  /** The hand-off material needs no tap, so it is taken as soon as the wallet can use it. */
   const silentTried = useRef(false)
-  const tapPending = useRef(false)
   useEffect(() => {
     if (!passkeyEntry || mock || !obsidionWallet || !contractService) return
-    if (silentTried.current || handoffTried.current || handoffDone()) return
+    if (silentTried.current || handoffDone()) return
     silentTried.current = true
     depositIntentRef.current = false
     void enterPasskeyStep(true)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runs once, when the wallet is ready
   }, [passkeyEntry, mock, obsidionWallet, contractService])
   /**
-   * The intro ended before the claim did. The slides give way to a spinner, and the signup enters
-   * the wallet the moment it saves an identity — the thing the wallet's gate reads. Work that ends
-   * with no account instead falls back to the terms sheet, which carries the prompt and its retry,
-   * or to the refusal or claim error the work itself asked for while the wait was up. A wait that
-   * gives up on work still running keeps `enterWhenReady`: that work's completion enters late.
+   * The setup spinner enters the wallet the moment the signup saves an identity — the thing the
+   * wallet's gate reads. It waits out the hand-off's own work however long it runs; work that ends
+   * with no account falls back to the terms sheet, which carries the prompt and its retry, or to the
+   * refusal or claim error the work itself asked for. Only a wallet that never boots is given up on.
    */
-  const enterWhenReady = useRef(false)
-  const [awaitingEntry, setAwaitingEntry] = useState(false)
+  const enterWhenReady = useRef(entersFromSpinner)
+  const [awaitingEntry, setAwaitingEntry] = useState(entersFromSpinner)
   const [holdExpired, setHoldExpired] = useState(false)
   /**
-   * Everything the intro waits on: work in flight, a tap still owed, or a wallet that has not
-   * booted, none of which has an account yet to enter on. The deferred broadcast is not among
-   * them. Its deposit address is valid before it lands, funds waiting at the counterfactual
-   * address for a later tick to re-broadcast, and Home's activation hero owns everything left to
-   * say from there, down to an address that never published.
+   * Everything the spinner waits on: work in flight, or a wallet that has not booted, neither of
+   * which has an account yet to enter on. The address's broadcast is not among them: the sheet that
+   * shows the address owes it.
    */
   const notReady = () =>
-    !holdExpired &&
-    (modalBusy || tapPending.current || !silentTried.current || !obsidionWallet || !contractService)
-  // Nothing here is allowed to hold forever: the record is durable, and Home's activation sheet
-  // carries the address and the re-broadcast from here.
+    modalBusy || (!holdExpired && (!silentTried.current || !obsidionWallet || !contractService))
+  // A wallet that never boots is not waited on forever.
   useEffect(() => {
     if (!awaitingEntry) return
     const timer = setTimeout(() => setHoldExpired(true), ENTRY_HOLD_MS)
     return () => clearTimeout(timer)
   }, [awaitingEntry])
   useEffect(() => {
-    if (!awaitingEntry || notReady()) return
-    setAwaitingEntry(false)
+    if (!awaitingEntry) return
     if (handoffDone()) {
+      setAwaitingEntry(false)
       enterWhenReady.current = false
       return finishOnboarding()
     }
-    // Given up on work still running: what it decides still applies, and a completion enters.
-    enterWhenReady.current = modalBusy
+    if (notReady()) return
+    setAwaitingEntry(false)
+    enterWhenReady.current = false
     const held = heldStep.current
     heldStep.current = undefined
-    handoffTried.current = false
-    setStepNow(held && held !== "allset" && held !== "pending" ? held : "terms")
+    // A claim that needs its deposit lands on the pending step, which shows the address; only work
+    // that ended with no account falls back to the terms sheet and its passkey prompt.
+    setStepNow(held && held !== "allset" ? held : "terms")
     // eslint-disable-next-line react-hooks/exhaustive-deps -- reacts to the op ending, read fresh
   }, [awaitingEntry, modalBusy, obsidionWallet, contractService, holdExpired])
-  const handoffTried = useRef(false)
-  const startHandoff = () => {
-    if (handoffTried.current || handoffDone()) return
-    // The material attempt may still be running, or the wallet still booting: the tap is kept, and
-    // spent on the prompt the moment either says one is needed.
-    if (modalBusy || !obsidionWallet || !silentTried.current) {
-      tapPending.current = true
-      return
-    }
-    handoffTried.current = true
-    depositIntentRef.current = false
-    void enterPasskeyStep()
-  }
 
-  /**
-   * The intro's last tap lands on the wallet. A reservation still owed its deposit is chased there
-   * by the activation sheet, not by a step of the wizard. Only a hand-off that never got an
-   * account falls back to the terms sheet, which carries the prompt and its retry.
-   */
-  const finishIntro = () => {
-    const held = heldStep.current
-    heldStep.current = undefined
-    // A refusal or a claim error still owns the screen: it is the only place to act on it.
-    if (held && held !== "allset" && held !== "pending") return setStepNow(held)
-    if (passkeyEntry && !mock) {
-      if (held || notReady()) {
-        enterWhenReady.current = true
-        setAwaitingEntry(true)
-        return
-      }
-      // Settled with no account: the sheet that can ask again.
-      if (!handoffDone()) {
-        handoffTried.current = false
-        setStepNow("terms")
-        return
-      }
-    }
-    finishOnboarding()
-  }
+  // An app's built-in browser is told before the first prompt, and no passkey action starts there.
+  const inAppHold = walletInAppUpFront(config.rpId) !== undefined
 
   const leaveTerms = (wantsDeposit: boolean) => {
+    if (ticketHeldRef.current || inAppHold) return
     depositIntentRef.current = wantsDeposit
     setStep("create")
     if (mock) return
@@ -1240,7 +1344,6 @@ export function OnboardingScreen({
         : undefined
       : deps
     if (!live) throw new Error("wallet is still starting, try again in a moment")
-    setCreateBusyPhase("paylink")
     const link = await viewLink(live, fragment)
     const zkProof =
       link.flavor === "email"
@@ -1250,8 +1353,31 @@ export function OnboardingScreen({
             email: link.email,
           })
         : undefined
-    await claimSponsoredLink(live, fragment, undefined, zkProof, { fundRegistration: true })
+    // Home offers no prompt for a link this claim is spending, even once the wizard has gone.
+    startClaim(fragment)
+    try {
+      await claimSponsoredLink(live, fragment, undefined, zkProof, { fundRegistration: true })
+    } catch (err) {
+      // The node has the batch: offering the link again would spend it twice.
+      if (err instanceof TxInFlightError) clearClaimStash(fragment)
+      throw err
+    } finally {
+      endClaim(fragment)
+    }
     clearClaimStash(fragment)
+  }
+
+  /**
+   * Once, when the claim is sent or lands, whichever is first: the signup does not wait on the
+   * chain, and the wallet does not start its own work while this page proves. A claim that fails
+   * after that is the bell's to report, and Home offers the link again.
+   */
+  const enterPastClaim = (tag: string) => {
+    if (claimHandedOff.current) return
+    claimHandedOff.current = true
+    setClaimLeft(true)
+    setModalBusy(false)
+    return finishSignup(tag)
   }
 
   /**
@@ -1260,16 +1386,15 @@ export function OnboardingScreen({
    * already took the name — and the activation sheet on Home asks for a deposit still owed. Only a
    * signup that chose the deposit up front waits on the wizard's own pending step.
    *
-   * A ticket-funded signup waits for the SIPA broadcast (the burn must target an address the
-   * relayer can see), then reviews the payment split before the one batch that claims the link and
-   * funds the registration. Every other reduced (earned) signup keeps its deferred broadcast and
-   * enters the wallet at once when the user chose to deposit later, reminded to deposit the signed
-   * total before the claim deadline.
+   * A ticket-funded signup enters at once too: Home owes the SIPA's broadcast, then claims the link
+   * and funds the registration in one batch once it lands, and the bell carries the claim. Every
+   * other reduced (earned) signup enters the wallet at once when the user chose to deposit later,
+   * reminded to deposit the signed total before the claim deadline.
    */
   const applyClaimOutcome = async (outcome: ClaimTagOutcome) => {
     oxideAccountRef.current = outcome.oxideAccount
     if (outcome.kind === "custody") {
-      completeSignup(handle)
+      await completeSignup(handle)
       return
     }
     let ticket = fromPaylink ? peekTicketSignup() : null
@@ -1285,111 +1410,22 @@ export function OnboardingScreen({
       fireEvent("paylink_ticket_paused")
       setInlineNotice(PAYLINK_TICKET_PAUSED_MESSAGE)
     }
-    saveRegistrationTerms({
-      account: outcome.oxideAccount,
-      tag: handle,
-      deadline: Number(outcome.claim.deadline),
-      ...(outcome.claim.terms
-        ? { fee: outcome.claim.terms.fee, minDeposit: outcome.claim.terms.minDeposit }
-        : {}),
-      feeWaived: outcome.claim.terms?.reduced === true,
-      earnedExpected: expectedEarned,
-      ...(ticket ? { paylinkFunded: true, paylinkId: linkIdentity(ticket.fragment) } : {}),
-    })
+    saveRegistrationTerms(
+      checkpointRegistrationTerms(outcome.oxideAccount, handle, outcome.claim, {
+        earnedExpected: expectedEarned,
+        ticket,
+      }),
+    )
     setFreshClaim(outcome.claim)
-    if (ticket) {
-      if (outcome.broadcastDone) {
-        setCreateBusyPhase("broadcast")
-        void outcome.startBroadcast?.()
-        const published = await outcome.broadcastDone
-        if (!published) {
-          setStep("pending")
-          if (keysRef.current && !autoRebroadcastRef.current) {
-            autoRebroadcastRef.current = true
-            void retryClaim()
-          }
-          return
-        }
-      }
-      setStep("review")
-      return
-    }
-    watchDeferredBroadcast(outcome.broadcastDone, outcome.startBroadcast)
-    if (passkeyEntry || (outcome.claim.terms?.reduced === true && !depositIntentRef.current)) {
+    if (
+      ticket ||
+      passkeyEntry ||
+      (outcome.claim.terms?.reduced === true && !depositIntentRef.current)
+    ) {
       await finishSignup(handle)
       return
     }
-    // The pending step shows the address and reports its publishing, so the proof runs now.
-    startDeferredBroadcast()
     setStep("pending")
-  }
-
-  /**
-   * The review step's Claim: the one batch that claims the link into this account and burns the
-   * registration slice to the SIPA, then wallet entry. Keys are still in memory from the ceremony.
-   */
-  const claimReviewedPaylink = () => {
-    const ticket = peekTicketSignup()
-    if (!ticket || paylinkSettleRef.current) return
-    paylinkSettleRef.current = true
-    setModalError(undefined)
-    setModalBusy(true)
-    const gen = ++opGen.current
-    void (async () => {
-      try {
-        await consumeStashedPaylink(ticket.fragment, keysRef.current?.account)
-        await finishSignup(handle)
-      } catch (err) {
-        paylinkSettleRef.current = false
-        fireEvent("action_failed", { action: "paylink_settle", code: failureCode(err) })
-        if (gen !== opGen.current) return
-        setModalError(claimErrorMessage(err, { tag: handle, until: untilHint }))
-      } finally {
-        if (gen === opGen.current) setModalBusy(false)
-      }
-    })()
-  }
-
-  /** The review step's Close: enter with the payment unclaimed; Home leads back to the claim. */
-  const closeReview = () => {
-    if (modalBusy) return
-    void finishSignup(handle)
-  }
-
-  /**
-   * The deferred broadcast behind the revealed address: the address-side spinner runs until it
-   * lands, and one silent in-session retry (keys are still in memory, no prompt) covers a
-   * transient failure before the manual pill takes over.
-   */
-  const broadcastDoneRef = useRef<Promise<boolean> | undefined>(undefined)
-  /** A deferred broadcast not yet proving: the screen starts it at the moment it picks. */
-  const startBroadcastRef = useRef<(() => Promise<boolean>) | undefined>(undefined)
-  const startDeferredBroadcast = () => {
-    const start = startBroadcastRef.current
-    if (!start) return
-    startBroadcastRef.current = undefined
-    setBroadcastInFlight(true)
-    void start()
-  }
-  // Leaving the screen by any route starts it too: the proof must not wait on a page that is gone.
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- reads a ref and a stable setter
-  useEffect(() => () => startDeferredBroadcast(), [])
-  const watchDeferredBroadcast = (done?: Promise<boolean>, start?: () => Promise<boolean>) => {
-    if (!done) return
-    broadcastDoneRef.current = done
-    // Without a start it is already proving; with one, it proves from the moment the screen picks.
-    if (start) startBroadcastRef.current = start
-    else setBroadcastInFlight(true)
-    const settled = () => {
-      if (broadcastDoneRef.current === done) broadcastDoneRef.current = undefined
-      setBroadcastInFlight(false)
-    }
-    void done.then((ok) => {
-      settled()
-      if (ok || !keysRef.current || autoRebroadcastRef.current) return
-      autoRebroadcastRef.current = true
-      void retryClaim()
-    }, settled)
   }
 
   /**
@@ -1436,23 +1472,40 @@ export function OnboardingScreen({
     setCreateBusyPhase("passkey")
   }
 
+  const cancelEntering = () => {
+    silentTried.current = true
+    cancelModalOp()
+  }
+
   /** Reloaded-tab completion: the record carries the identity and no wizard step remains. */
-  const enterWithRecordIdentity = (rec: PendingRegistrationRecord) => {
-    saveWalletIdentity({
-      handle: rec.tag,
-      address: rec.l2Address,
-      claimedAt: Date.now(),
-      ...(rec.phase !== "confirmed" ? { pending: true } : {}),
-    })
+  const enterWithRecordIdentity = async (rec: PendingRegistrationRecord) => {
+    try {
+      await saveWalletIdentity({
+        handle: rec.tag,
+        address: rec.l2Address,
+        claimedAt: Date.now(),
+        ...(rec.phase !== "confirmed" ? { pending: true } : {}),
+      })
+    } catch (e) {
+      entryRetryRef.current = true
+      const retry = () => enterWithRecordIdentity(rec)
+      setIdentityRetry(() => retry)
+      showReportableError(e, "onboarding:identity", {
+        retry: { label: "Retry entering wallet", run: () => void retry() },
+      })
+      return
+    }
+    setIdentityRetry(undefined)
+    if (rec.phase === "confirmed") clearNameGrant(rec.tag)
     // All navigations in this screen replace: onboarding panes must never be back targets once in
     // the wallet (useBack pops history), and a pushed /enter hop would keep /claim behind it.
     // A deposit grants access, but cannot recreate missing passkey metadata. Recover the
     // existing account instead of sending it to WalletGate, which bounces it back to /claim.
     if (!loadOnboardedIdentity()) go(`/enter?handle=${encodeURIComponent(rec.tag)}`)
-    else intoWallet()
+    else enterWallet()
   }
 
-  /** Back to the invitation page, dropping a `/claim/:handle` pin so the input is editable. */
+  /** Back to the invitation page, retaining the name on a grant link. */
   const steerToInvite = (notice?: InviteNotice) => {
     // Every way back to the invitation ends what the sheet was running: no gate waiting behind it,
     // no adoption still short of its keys, and no refusal from the last attempt hiding the next
@@ -1462,12 +1515,17 @@ export function OnboardingScreen({
     setModalBusy(false)
     setCreateBusyPhase("passkey")
     setModalRefusal(undefined)
-    // Nothing to say and nothing to show: the campaign owns signup. A notice has to land
-    // somewhere, so the step stays to carry it.
+    // A notice and a grant link stay here; other fresh signups return to the campaign.
     if (!notice && leaveForCampaign()) return
     setInviteNotice(notice)
     setStep(fromPaylink ? "tag" : "invite")
-    if (pathname.startsWith("/claim")) go(resuming ? "/claim?resume=1" : "/claim")
+    if (pathname.startsWith("/claim")) {
+      let invitePath = resuming ? "/claim?resume=1" : "/claim"
+      if (hasRouteGrant && routeHandle) {
+        invitePath = `/claim/${encodeURIComponent(routeHandle)}${resuming ? "?resume=1" : ""}`
+      }
+      go(invitePath)
+    }
   }
   /** The user's own close of a sheet: back to the invitation, the running attempt cancelled. */
   const closeToInvite = () => {
@@ -1503,10 +1561,16 @@ export function OnboardingScreen({
     setModalBusy(false)
     keysRef.current = undefined
     recoveredRef.current = false
-    void signOut({ keepPointers: true }).catch((e) => showReportableError(e, "onboarding:sign-out"))
     const account = oxideAccountRef.current
-    if (account && !registrationTermsAreInUse(account, tag)) clearRegistrationTerms(account, tag)
-    steerToInvite(takenNotice(tag))
+    // Steering can leave for the campaign, so it waits until the sign-out is saved.
+    void signOut({ keepPointers: true, localOnly: true }).then(
+      () => {
+        if (account && !registrationTermsAreInUse(account, tag))
+          clearRegistrationTerms(account, tag)
+        steerToInvite(takenNotice(tag))
+      },
+      (e) => showReportableError(e, "onboarding:sign-out"),
+    )
   }
   const failedNotice: InviteNotice = {
     kind: "error",
@@ -1571,12 +1635,9 @@ export function OnboardingScreen({
   const forcedTick = async (rec: PendingRegistrationRecord) => {
     setBusyStage("checking")
     const deps = await buildWebDetectionDeps(config, {
-      ...(obsidionWallet
-        ? { broadcastSeen: (r) => registrationBroadcastSeen(r, config, obsidionWallet) }
-        : {}),
       getSignDeps: async () => {
         if (!keysRef.current) return null
-        const signDeps = await buildRetrySignDeps(rec.tag, keysRef.current, config, obsidionWallet)
+        const signDeps = await buildRetrySignDeps(rec.tag, keysRef.current, config)
         // A re-issued claim carries a new deadline (and maybe a waiver); the terms shown follow it.
         // A paylink-funded signup keeps its link either way: fundable, the continuation goes on;
         // not, the link is blocked on this registration until a later quote waives the tag again
@@ -1650,10 +1711,7 @@ export function OnboardingScreen({
                 )
                 return
               }
-              if (
-                err instanceof Error &&
-                (err.name === "NotAllowedError" || err.name === "AbortError")
-              ) {
+              if (isPasskeyNotOffered(err)) {
                 setInlineNotice(
                   "Couldn't find your passkey on this device — use the device you signed up on, or check status here.",
                 )
@@ -1707,6 +1765,7 @@ export function OnboardingScreen({
     }
     const fragment = ticket.stash.fragment
     paylinkSettleRef.current = true
+    beginClaim()
     return run(
       async () => {
         try {
@@ -1733,11 +1792,14 @@ export function OnboardingScreen({
             addressRef.current = keys.account.getAddress().toString()
           }
           if (!addressRef.current) addressRef.current = rec.l2Address
+          setBusyStage("claiming")
           await consumeStashedPaylink(fragment, keysRef.current?.account)
-          await finishSignup(rec.tag)
+          await enterPastClaim(rec.tag)
         } catch (err) {
           paylinkSettleRef.current = false
           if (isGateCancelled(err)) return
+          // Handed off, so the bell reports it; a queued signup still here can claim again.
+          if (claimHandedOff.current) return beginClaim()
           throw err
         } finally {
           setBusyStage(undefined)
@@ -1788,7 +1850,7 @@ export function OnboardingScreen({
   const chainReadPending = useRef(false)
   const retryReads = useCallback(() => setReadAttempt((attempt) => attempt + 1), [])
 
-  const checkPendingStatus = () => {
+  const checkPendingStatus = (quiet = false) => {
     if (chainReadPending.current) setReadAttempt((attempt) => attempt + 1)
     // The pin is captured at click time — deps construction awaits network work, and a record
     // that became current meanwhile must not be driven by this stale click.
@@ -1796,11 +1858,14 @@ export function OnboardingScreen({
     if (!rec) return
     return run(
       async () => {
-        const outcome = await runDetectionTick(await buildWebDetectionDeps(config), {
-          force: true,
-          expectedRecord: { account: rec.account, nameHash: rec.nameHash },
-        })
-        if (routeSettledOutcome(outcome, rec)) return
+        const tick = buildWebDetectionDeps(config).then((deps) =>
+          runDetectionTick(deps, {
+            force: true,
+            expectedRecord: { account: rec.account, nameHash: rec.nameHash },
+          }),
+        )
+        const outcome = await (quiet ? tick.catch(warnQuietCheck) : tick)
+        if (!outcome || routeSettledOutcome(outcome, rec)) return
         const latest = getPendingStore().get(rec.account)
         // Deposit landed: the wizard can end — a reloaded tab enters on the record's identity.
         if (latest && hasCustody(latest) && !shouldStayInRecovery(latest)) {
@@ -1826,7 +1891,7 @@ export function OnboardingScreen({
   // deposit above the minimum activates the moment it's seen, without waiting for the relayer's
   // sweep. Skipped in a dev preview (`mock`), which must never navigate the screen it demonstrates.
   useEffect(() => {
-    if (step !== "pending" || !record || mock) return
+    if (step !== "pending" || !record || mock || entryRetryRef.current) return
     if (record.sweptAt !== undefined) {
       reportRegistrationDepositSwept(
         record.account,
@@ -1873,25 +1938,20 @@ export function OnboardingScreen({
   }, [step])
 
   /**
-   * The single exit from signup into the wallet. Consent is asked here and nowhere earlier: by
-   * this point the account exists, so the question lands on someone who has finished rather than
-   * over the page they arrived on. Everything the gate would have covered has already run, so a
-   * grant here starts reporting from the wallet onward, not from onboarding.
+   * The exit into the wallet from a signup this tab ran. Consent is asked here and nowhere
+   * earlier: by this point the account exists, so the question lands on someone who has finished
+   * rather than over the page they arrived on. Everything the gate would have covered has already
+   * run, so a grant here starts reporting from the wallet onward, not from onboarding.
    */
-  const finishOnboarding = () => (asked ? intoWallet() : setConsentPending(true))
+  const finishOnboarding = () => (asked ? enterWallet() : setConsentPending(true))
 
-  // "All set!" holds briefly, then the carousel — except embedded surfaces (the /request pane),
-  // which return straight to their flow instead of hijacking it with the carousel. Either way the
-  // next thing after it is the exit above.
+  // "All set!" holds briefly, then the exit above.
   useEffect(() => {
     if (step !== "allset") return
-    const timer = setTimeout(() => {
-      if (embedded) finishOnboarding()
-      else setStep("carousel")
-    }, ALL_SET_MS)
+    const timer = setTimeout(finishOnboarding, ALL_SET_MS)
     return () => clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- finishOnboarding is stable per render
-  }, [step, embedded, next, asked])
+  }, [step, next, asked])
 
   // The whole pending surface pins the record's tag; the typed/route handle is only a fallback.
   const pendingTag = record?.tag ?? handle
@@ -1903,10 +1963,16 @@ export function OnboardingScreen({
    */
   const alreadyEntered = loadOnboardedIdentity() !== null
   const wrongChain = record !== null && record.l1ChainId !== config.l1ChainId
+  const stage = useRegistrationStage(record)
   const openPending =
-    record !== null && (record.phase === "awaiting_deposit" || record.phase === "funded")
-  const custodyHeld = openPending && hasCustody(record)
-  const awaitingDeposit = openPending && record.phase === "awaiting_deposit"
+    record !== null &&
+    stage !== null &&
+    (depositOwed(stage) || stage === "funding" || fundsIn(stage))
+  const custodyHeld = openPending && fundsIn(stage)
+  // A capacity blocker on the address outranks "being processed", in the words its stated reason uses.
+  const { shown: sweepHold } = useSipaProcessing(record?.sipaAddress)
+  const sweepBlocker = sweepHold?.blocker
+  const awaitingDeposit = openPending && !fundsIn(stage)
   const pendingUrgent =
     openPending &&
     (custodyHeld || !record.broadcast) &&
@@ -1934,11 +2000,32 @@ export function OnboardingScreen({
       await claimTag(record.tag, keys, config, obsidionWallet, undefined, true, record),
     )
   }
+  /**
+   * A broadcast of the old address already proving or sent may yet take the rail, and whether it
+   * did decides how the replacement registers. It is waited out, for a bounded time, before the
+   * replacement runs as a user flow, in which the ledger starts no other attempt; one still
+   * undecided then stops the replacement, to be asked for again.
+   */
   const replaceAtEarnedPrice = async (keys: OnboardingKeys) => {
     if (!record) return
-    // A broadcast still proving may yet take the rail; whether it did decides how the replacement
-    // registers, so it settles first and the record is re-read.
-    await broadcastDoneRef.current
+    const inFlight = () => {
+      const job = getBroadcastLedger().get(record.sipaAddress)
+      return job?.state === "proving" || job?.state === "sent" ? job : undefined
+    }
+    const owed = inFlight()
+    if (owed) {
+      await Promise.race([
+        broadcastSettled(owed.address),
+        new Promise((resolve) => setTimeout(resolve, REPLACE_SETTLE_MS)),
+      ])
+    }
+    return runUserFlow(async () => {
+      if (inFlight()) throw new Error(REPLACE_WAITING_MESSAGE)
+      return replaceOnce(keys)
+    })
+  }
+  const replaceOnce = async (keys: OnboardingKeys) => {
+    if (!record) return
     const current = getPendingStore().get(record.account)
     if (!current) return
     await assertRegistrationUnfunded(current, config)
@@ -1994,7 +2081,7 @@ export function OnboardingScreen({
   // An unpriced quote cannot waive a fee it never priced.
   const feeWaived = !termsUnpriced(signedTerms) && (signedWaiver ?? expectedEarned)
   // A stamped record carries deadline 0: no deadline known, which is not a lapsed one.
-  const claimDeadline = freshClaim ? Number(freshClaim.deadline) : terms?.deadline || undefined
+  const claimDeadline = freshClaim ? claimTerms(freshClaim).deadline : terms?.deadline || undefined
   // The chain read is only worth making where the controller's immutables would price this
   // registration; elsewhere the prompt quotes the ask alone.
   const readChainSchedule = readChain && signedWithoutSchedule(terms)
@@ -2052,13 +2139,33 @@ export function OnboardingScreen({
         min: BigInt(ticketStash.schedule.minDeposit),
       }
     : undefined
+  const ticketCuts =
+    sweepDeductions === undefined
+      ? undefined
+      : { withdrawalCut: sweepDeductions.fpcCut, depositCut: sweepDeductions.fpcCut }
+  // Before the terms exist the stash holds the tip, and the terms take it once signed.
+  const ticketSpeed = useRegistrationSpeed({
+    active: !mock && ticketStash !== null,
+    node: obsidionWallet?.node,
+    noteAmount: ticketStash?.amount !== undefined ? BigInt(ticketStash.amount) : undefined,
+    schedule: ticketSchedule,
+    cuts: ticketCuts,
+    initialSpeed: ticketStash?.speed ?? terms?.speed,
+    onCommit: (tip, speed) => {
+      updateTicketSignup({ proverTip: tip.toString(), speed })
+      if (terms) commitRegistrationProverTip(terms.account, terms.tag, tip, speed)
+    },
+    commitKey: terms ? `${terms.account}:${terms.tag}` : undefined,
+  })
+  const ticketProverTip = mock ? 0n : ticketSpeed.proverTip
   const paylinkQuote =
-    ticketStash && ticketSchedule && sweepDeductions !== undefined
+    ticketStash && ticketSchedule && ticketCuts && ticketProverTip !== undefined
       ? paylinkSignupQuote({
           ...(ticketStash.amount !== undefined ? { paylink: BigInt(ticketStash.amount) } : {}),
           schedule: ticketSchedule,
-          cuts: { withdrawalCut: sweepDeductions.fpcCut, depositCut: sweepDeductions.fpcCut },
+          cuts: ticketCuts,
           sweepFee: relayerFee,
+          proverTip: ticketProverTip,
         })
       : undefined
   const chainLabel = depositChainLabel(config)
@@ -2076,7 +2183,7 @@ export function OnboardingScreen({
       : null,
   )
   // The preview seeds what the address holds, so its panel, celebration and title agree.
-  const depositSeen = mock ? mock.received ?? 0n : watchedDeposit
+  const depositSeen = mock ? mock.received ?? 0n : watchedDeposit.balance
   // Seen here first: the rail carries it from now on.
   useEffect(() => {
     if (!mock && record && depositSeen > 0n) {
@@ -2112,7 +2219,7 @@ export function OnboardingScreen({
     recordRegistrationDeposit(record.account, record.tag, depositSeen)
     if (nudgedRef.current || busy) return
     nudgedRef.current = true
-    void checkPendingStatus()
+    void checkPendingStatus(true)
   }, [depositSeenAny, depositSeen, record, busy, mock])
   // A deposit covering the campaign's promised total buys pending access even if the signer
   // returned a higher quote. Keep the original terms and phase for sweep/recovery inside the app.
@@ -2123,7 +2230,7 @@ export function OnboardingScreen({
       !recordDepositAdmission(record, depositSeen, sweepDeductions?.fpcCut)
     )
       return
-    if (recoveryVisit) return
+    if (recoveryVisit || entryRetryRef.current) return
     if (keysRef.current && !recoveredRef.current) completeSignup(record.tag)
     else enterWithRecordIdentity(record)
   }, [
@@ -2145,7 +2252,7 @@ export function OnboardingScreen({
     if (step !== "pending" || !openPending || wrongChain || mock) return
     const timer = setInterval(() => {
       if (busyRef.current) return
-      void checkPendingStatus()
+      void checkPendingStatus(true)
     }, AUTO_CHECK_MS)
     return () => clearInterval(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- checkPendingStatus reads live state
@@ -2183,6 +2290,8 @@ export function OnboardingScreen({
     fireEvent("registration_lapsed", { phase: record?.phase ?? "none" })
   }, [quoteExpired, record, mock])
   const paylinkPending = paylinkStashed && awaitingDeposit && !wrongChain && !quoteExpired
+  // The pending step's own claim, not a status check sharing the busy flag.
+  const paylinkClaiming = busy && (busyStage === "passkey" || busyStage === "claiming")
   const pendingTitle = (() => {
     if (needsRefund && !wrongChain) return `Recover deposit for @${pendingTag}`
     if (depositAdmitted && !wrongChain) return `Deposit received for @${pendingTag}`
@@ -2249,9 +2358,19 @@ export function OnboardingScreen({
     !replaceUnfunded &&
     !broadcastSpent &&
     (!record.broadcast || isRegistrationEscalated(record, nowMs) || pendingUrgent)
+  const retryButton = (className: string) =>
+    retryWarranted && !pendingRefusal ? (
+      <button
+        type="button"
+        className={`zkm-btn-reset zkm-pressable ${className}`}
+        onClick={retryClaim}
+        disabled={busy}
+      >
+        {busy && busyStage ? BUSY_LABELS[busyStage] : "Retry"}
+      </button>
+    ) : undefined
   const checkNote = (() => {
     if (record === null) return undefined
-    if (broadcastInFlight) return "Publishing your deposit address…"
     const minutes =
       lastCheckedAt === undefined ? undefined : Math.floor((nowMs - lastCheckedAt) / 60_000)
     return (
@@ -2263,24 +2382,29 @@ export function OnboardingScreen({
           type="button"
           className="zkm-btn-reset ww-send-to__link"
           aria-label="Check again"
-          onClick={checkPendingStatus}
+          onClick={() => checkPendingStatus()}
           disabled={busy}
         >
           {busy ? "Checking…" : "Check again"}
         </button>
-        {retryWarranted && !pendingRefusal && (
-          <button
-            type="button"
-            className="zkm-btn-reset zkm-pressable ww-send-to__link"
-            onClick={retryClaim}
-            disabled={busy}
-          >
-            {busy && busyStage ? BUSY_LABELS[busyStage] : "Retry"}
-          </button>
-        )}
+        {retryButton("ww-send-to__link")}
       </>
     )
   })()
+  // The sheet's pill: the step's forced tick, and the watcher's read for the balance line.
+  const check: RegistrationCheck | undefined =
+    record === null
+      ? undefined
+      : {
+          lastCheckedAt,
+          busy: busy || reading,
+          onCheck: () => {
+            void checkPendingStatus()
+            setReading(true)
+            void watchedDeposit.read().finally(() => setReading(false))
+          },
+          action: retryButton("ww-deposit-sheet__check"),
+        }
   const enterDepositLater = () => {
     if (!record) return
     if (keysRef.current) return void finishSignup(handle)
@@ -2301,12 +2425,17 @@ export function OnboardingScreen({
     setModalBusy(false)
     keysRef.current = undefined
     recoveredRef.current = false
-    void signOut({ keepPointers: true }).catch((e) => showReportableError(e, "onboarding:sign-out"))
-    if (record && !registrationTermsAreInUse(record.account, record.tag))
-      clearRegistrationTerms(record.account, record.tag)
-    steerToInvite()
+    // Steering can leave for the campaign, so it waits until the sign-out is saved.
+    void signOut({ keepPointers: true }).then(
+      () => {
+        if (record && !registrationTermsAreInUse(record.account, record.tag))
+          clearRegistrationTerms(record.account, record.tag)
+        steerToInvite()
+      },
+      (e) => showReportableError(e, "onboarding:sign-out"),
+    )
   }
-  // Rendered beside every terminal step, including the carousel, which returns early.
+  // Rendered beside every terminal step, including the setup spinner, which returns early.
   const consentModal = consentPending ? (
     <AnalyticsConsentModal
       onChoose={(granted) => {
@@ -2314,8 +2443,7 @@ export function OnboardingScreen({
         void (async () => {
           await setConsent(granted)
           await setAsked(true)
-          fireEvent("onboarding_started", { has_claim_link: !!routeHandle, entry: entryCohort })
-          intoWallet()
+          enterWallet()
         })()
       }}
     />
@@ -2339,29 +2467,68 @@ export function OnboardingScreen({
     termsQuote === undefined
       ? undefined
       : formatDepositDue(termsQuote.total, tokenDecimalsForNetwork(config.network))
+  const refusalRow = modalRefusal && refusalFor(modalRefusal)
+  const inAppRefusal = !!refusalRow?.openInBrowser
+  // The in-app card with no retry: nothing more can be created in this browser.
+  const inAppDeadEnd = inAppRefusal && !refusalRow?.retry
+  // Open in browser is the one bright action while this device has a browser to go to.
+  const ctaStyle =
+    inAppRefusal && currentOpenInBrowserHref(window.location.href) ? "dark" : "gradient"
+  // The card takes the idle sheet. A running attempt keeps its spinner, the hand-off's silent one
+  // included, since what it lands needs no prompt here.
+  const inAppWait = inAppHold && modalBusy
+  const inAppCard = inAppHold && !modalBusy && !(step === "create" && modalRefusal)
+  // The sheet's button stays beside a refusal card only where it is not a second retry: the in-app
+  // card borrows it as its retry, and a payment-link signup starts another passkey with it.
+  const refusalKeepsActions = !!refusalRow?.retry && (inAppRefusal || fromPaylink)
 
   // The ceremony's own surface, shared by the terms sheet and the ticket signup's welcome step:
   // refusals and errors above, then the CTA or whatever the ceremony shows in its place.
   const termsNotices = (
     <>
+      {inAppCard && (
+        <InAppBrowserNotice
+          reportContext="onboarding"
+          testId="create-in-app-notice"
+          exits={
+            termsDismissible && (
+              <button
+                type="button"
+                className="zkm-btn-reset zkm-pressable ww-invite-pill"
+                data-testid="create-in-app-back"
+                onClick={closeToInvite}
+              >
+                Back
+              </button>
+            )
+          }
+        />
+      )}
       {step === "terms" && registrationsPaused && (
         <p className="ww-deposit-feedback" data-testid="registrations-paused">
           {REGISTRATIONS_PAUSED_NOTICE}
         </p>
       )}
-      {fromPaylink && isTicketSignupCreating(ticketAttempt) && !termsBusy && (
-        <p className="ww-invite-modal-error" role="alert">
-          The previous attempt did not finish saving this signup. No ticket was redeemed. Creating
-          another passkey starts a new account; the previous passkey may remain in your password
-          manager.
-        </p>
-      )}
+      {fromPaylink &&
+        isTicketSignupCreating(ticketAttempt) &&
+        !termsBusy &&
+        !inAppDeadEnd &&
+        !inAppCard && (
+          <p className="ww-invite-modal-error" role="alert">
+            The previous attempt did not finish saving this signup. No ticket was redeemed. Creating
+            another passkey starts a new account; the previous passkey may remain in your password
+            manager.
+          </p>
+        )}
       {step === "create" && <IosFloorNotice />}
       {step === "create" && modalRefusal && (
         <PasskeyRefusal
           error={modalRefusal}
-          onRetry={() => retryRef.current?.()}
+          // The sheet's own button is the in-app card's retry: it also restarts an interrupted
+          // payment-link signup.
+          onRetry={inAppRefusal ? undefined : () => retryRef.current?.()}
           busy={modalBusy}
+          reportContext="onboarding"
           testId="create-refused"
           retryTestId="create-retry"
           exits={
@@ -2389,32 +2556,131 @@ export function OnboardingScreen({
       )}
     </>
   )
+  const gateHeld = termsBusy && gateState.kind === "awaiting-action"
+  // A fresh ticket signup on a laptop is the creation sheet itself, shown once: what comes next, the
+  // split, the phone and the key. A phone's own passkey needs no route, so its card keeps the CTA.
+  const ticketSheet =
+    fromPaylink &&
+    !!ticketStash &&
+    !resumingTicket &&
+    !isTicketSignupCreating(ticketAttempt) &&
+    currentDevicePosture() === "laptop"
+  // The sheet names the device the passkey can live on from the browser's own answer, the one
+  // the gate will probe again before the ceremony. Its routes wait for that answer, so a phone
+  // pick is never turned into a key after the tap.
+  const [sheetReach, setSheetReach] = useState<PhoneReach>()
+  useEffect(() => {
+    if (!ticketSheet) return
+    const probe = getAuthService()?.probePhoneReach?.()
+    if (!probe) {
+      setSheetReach("unknown")
+      return
+    }
+    let live = true
+    probe
+      .then((reach) => {
+        if (live) setSheetReach(reach ?? "unknown")
+      })
+      .catch(() => {
+        if (live) setSheetReach("unknown")
+      })
+    return () => {
+      live = false
+    }
+  }, [ticketSheet])
+  // What the payment link's signup keeps and what the account costs, before the passkey is made:
+  // the claim on Home commits to this split with no review of its own, so the signup waits for
+  // the split to be priced and refuses a payment that cannot cover the account.
+  const ticketUnpriced =
+    fromPaylink &&
+    !!ticketStash &&
+    (paylinkQuote === undefined || paylinkQuote.tagWaived === undefined)
+  const ticketUncovered = fromPaylink && !!ticketStash && paylinkQuote?.covers === false
+  // A new passkey spends the ticket next, so it needs the note at or above the threshold. A bound
+  // account resumes what it committed; its redeem checks the live threshold before spending.
+  const ticketThreshold =
+    fromPaylink && ticketStash && !resumingTicket
+      ? ticketEligibility(ticketStash.amount, ticketStash.threshold)
+      : undefined
+  const ticketHeld =
+    ticketUnpriced ||
+    ticketUncovered ||
+    (ticketThreshold !== undefined && ticketThreshold !== "eligible")
+  ticketHeldRef.current = ticketHeld
+  const ticketSplit =
+    fromPaylink && ticketStash ? (
+      <>
+        <PaylinkSignupRows
+          quote={paylinkQuote}
+          tokenSymbol={WALLET_TOKEN_SYMBOL}
+          tokenDecimals={tokenDecimalsForNetwork(config.network)}
+          speed={
+            mock ? undefined : (
+              <SpeedRow choice={ticketSpeed.choice} outcome={ticketSpeed.outcome} />
+            )
+          }
+        />
+        {ticketThreshold === "below_threshold" && ticketStash.threshold && (
+          <p className="ww-invite-modal-error" role="alert">
+            {belowTicketThresholdCopy(
+              formatTokenAmount(
+                BigInt(ticketStash.threshold),
+                tokenDecimalsForNetwork(config.network),
+                WALLET_TOKEN_SYMBOL,
+              ),
+            )}
+          </p>
+        )}
+        {ticketThreshold === "unknown" && (
+          <p className="ww-invite-modal-error" role="alert">
+            Couldn&apos;t check this payment&apos;s amount. Go back to the payment and try again.
+          </p>
+        )}
+        {ticketUncovered && (
+          <p className="ww-invite-modal-error" role="alert">
+            This payment cannot cover the account deposit.
+          </p>
+        )}
+      </>
+    ) : undefined
   const termsActions =
     termsBusy && gateState.kind === "awaiting-action" ? (
-      <GateStep state={gateState} onCancel={cancelModalOp} />
-    ) : termsBusy ? (
+      <GateStep state={gateState} onCancel={cancelModalOp} details={ticketSplit} />
+    ) : termsBusy || inAppWait ? (
       <OnboardingSpinnerBody
         label={
           adopting
-            ? "Finishing sign-in..."
-            : createBusyPhase === "broadcast"
-            ? "Publishing your deposit address..."
-            : createBusyPhase === "paylink"
-            ? "Claiming your payment..."
+            ? "Finishing sign-in…"
             : createBusyPhase === "claim"
             ? fromPaylink
-              ? "Using your paylink..."
-              : "Preparing deposit address..."
+              ? "Using your paylink…"
+              : "Preparing deposit address…"
             : passkeyEntry || resumingTicket
-            ? "Confirming with your passkey..."
-            : "Creating your passkey..."
+            ? "Confirming with your passkey…"
+            : "Creating your passkey…"
         }
         cancelLabel="Cancel"
         onCancel={adopting ? undefined : cancelModalOp}
       />
-    ) : modalRefusal && !refusalFor(modalRefusal).retry ? null : (
-      // A refusal another attempt cannot fix leaves only its exit.
+    ) : (refusalRow && !refusalKeepsActions) || inAppCard ? null : ticketSheet ? (
+      // A refusal or the in-app card leaves only what the card itself offers.
+      <PhoneSteps
+        reach={sheetReach ?? "unknown"}
+        details={ticketSplit}
+        disabled={!passkeysSupported() || ticketHeld || !sheetReach}
+        onChoose={(hints) => {
+          unheldGate.current = routeForHints(hints)
+          leaveTerms(false)
+        }}
+      />
+    ) : (
       <div className="ww-deposit-actions">
+        {/* A laptop reads this on its sheet; a phone has no sheet, so it reads it with its button. */}
+        {currentDevicePosture() === "phone" && (
+          <PasskeyWarn testId="passkey-loss-notice">
+            <p>{PHONE_STEPS_COPY.loss.line}</p>
+          </PasskeyWarn>
+        )}
         <PrimaryGradientButton
           title={
             fromPaylink
@@ -2427,8 +2693,10 @@ export function OnboardingScreen({
               ? `Deposit ${termsTotalLabel}`
               : "Deposit to register"
           }
-          isDisabled={!passkeysSupported()}
+          buttonStyle={ctaStyle}
+          isDisabled={!passkeysSupported() || ticketHeld}
           onClick={() => {
+            if (ticketHeld) return
             if (ticketFragment && isTicketSignupCreating(ticketAttempt)) {
               try {
                 restartTicketSignupAccount(
@@ -2448,6 +2716,7 @@ export function OnboardingScreen({
                 return
               }
             }
+            unheldGate.current = undefined
             leaveTerms(!fromPaylink)
           }}
         />
@@ -2464,6 +2733,29 @@ export function OnboardingScreen({
       </div>
     )
 
+  // One "scan this code" at a time: the deposit address steps aside for the phone steps. A stashed
+  // paylink funds the SIPA — never offer an L1 send beside it.
+  const pendingAddressShown =
+    step === "pending" &&
+    !paylinkPending &&
+    !ticketBlocked &&
+    openPending &&
+    !wrongChain &&
+    !quoteExpired &&
+    !depositAdmitted &&
+    !needsRefund &&
+    !quoteMismatch &&
+    !registrationsPaused &&
+    !!record &&
+    gateState.kind !== "awaiting-action"
+  // A payment link funds the address instead, so the pending step claims into it: that needs it
+  // published too.
+  useOweRegistrationBroadcast(
+    mock ? null : record,
+    pendingAddressShown ||
+      (step === "pending" && paylinkPending && !quoteMismatch && !needsRefund && !replaceUnfunded),
+  )
+
   const modals = step !== "invite" && (
     // Close through the card's X only; outside clicks and Escape must leave onboarding open.
     <ModalFrame label="Account setup">
@@ -2474,6 +2766,9 @@ export function OnboardingScreen({
           <WelcomeStep
             tag={handle}
             resuming={resumingTicket}
+            gated={gateHeld || (ticketSheet && !termsBusy) || inAppCard}
+            busy={termsBusy && !gateHeld}
+            split={ticketSplit}
             onClose={termsDismissible ? closeToInvite : undefined}
             notices={termsNotices}
             actions={termsActions}
@@ -2482,12 +2777,12 @@ export function OnboardingScreen({
           <RegistrationSheet
             tag={handle}
             title={termsFree ? "Activate account" : "Get instant access"}
-            deadline={untilHint}
+            reservedUntil={reservedUntil({ deadline: untilHint ?? 0 }, nowMs)}
             onClose={termsDismissible ? closeToInvite : undefined}
             // One thing at a time, as on the pending step: the terms stand aside while the passkey
             // runs, and come back under the deposit address the claim returns.
             payment={
-              step === "create" || registrationsPaused
+              step === "create" || registrationsPaused || inAppCard
                 ? undefined
                 : {
                     chainLabel,
@@ -2499,7 +2794,8 @@ export function OnboardingScreen({
                     scheduleUnavailable,
                     kind: termsKind ?? registrationKind(termsFree),
                     tokenSymbol: mock?.tokenSymbol ?? WALLET_TOKEN_SYMBOL,
-                    fundingAssets: fundingAssetsLabel(config.network),
+                    network: config.network,
+                    swapAssets: swapAssetsLabel(config.network),
                     tokenDecimals: tokenDecimalsForNetwork(config.network),
                   }
             }
@@ -2513,23 +2809,13 @@ export function OnboardingScreen({
           busy={inviteBusy}
           notice={inviteNotice}
           resuming={resuming || leftoverTag !== undefined}
-          allowBlocked={hasRouteGrant}
+          grant={routeGrant}
+          boundGrantOwner={boundGrantOwner}
+          onBoundGrant={(tag) => go(`/enter?handle=${encodeURIComponent(tag)}&bound=1`)}
           onClaim={(h) => void unlockAccess(h)}
           onLogIn={logIn}
           onCancel={cancelUnlock}
           onClose={() => onExit?.()}
-        />
-      )}
-      {step === "review" && (
-        <ClaimReviewStep
-          quote={paylinkQuote}
-          tokenSymbol={WALLET_TOKEN_SYMBOL}
-          tokenDecimals={tokenDecimalsForNetwork(config.network)}
-          memo={ticketStash?.memo}
-          busy={modalBusy}
-          error={modalError}
-          onClaim={claimReviewedPaylink}
-          onClose={closeReview}
         />
       )}
       {step === "claim" && (
@@ -2547,7 +2833,7 @@ export function OnboardingScreen({
         <RegistrationSheet
           tag={pendingTag}
           title={pendingTitle}
-          deadline={claimDeadline}
+          reservedUntil={reservedUntil(freshClaim ? claimTerms(freshClaim) : terms, nowMs)}
           note={pendingBody}
           onClose={
             depositAdmitted || refundedFrom || alreadyEntered
@@ -2557,21 +2843,10 @@ export function OnboardingScreen({
               : undefined
           }
           payment={
-            // One "scan this code" at a time: the deposit address steps aside for the phone steps.
-            // A stashed paylink funds the SIPA — never offer an L1 send beside it.
-            !paylinkPending &&
-            !ticketBlocked &&
-            openPending &&
-            !wrongChain &&
-            !quoteExpired &&
-            !depositAdmitted &&
-            !needsRefund &&
-            !quoteMismatch &&
-            !registrationsPaused &&
-            record &&
-            gateState.kind !== "awaiting-action"
+            pendingAddressShown && record
               ? {
                   address: record.sipaAddress as Address,
+                  publishing: !registrationAddressPublished(record),
                   token: record.depositToken as Address,
                   chainId: record.l1ChainId,
                   chainLabel,
@@ -2583,11 +2858,18 @@ export function OnboardingScreen({
                   scheduleUnavailable,
                   kind: quotedKind ?? registrationKind(feeWaived),
                   tokenSymbol: mock?.tokenSymbol ?? WALLET_TOKEN_SYMBOL,
-                  fundingAssets: fundingAssetsLabel(config.network),
+                  network: config.network,
+                  swapAssets: swapAssetsLabel(config.network),
                   tokenDecimals: tokenDecimalsForNetwork(config.network),
                   received: depositSeenAny ? depositSeen : undefined,
-                  funded: record.phase === "funded",
-                  checkNote,
+                  receivedToken: !depositSeenAny
+                    ? undefined
+                    : mock
+                    ? depositTokensFor(config.network).find((t) => t.symbol === mock.tokenSymbol)
+                        ?.address ?? (record.depositToken as Address)
+                    : watchedDeposit.token,
+                  funded: custodyHeld,
+                  check,
                 }
               : undefined
           }
@@ -2597,6 +2879,9 @@ export function OnboardingScreen({
                   quote: paylinkQuote,
                   tokenSymbol: WALLET_TOKEN_SYMBOL,
                   tokenDecimals: tokenDecimalsForNetwork(config.network),
+                  speed: mock ? undefined : (
+                    <SpeedRow choice={ticketSpeed.choice} outcome={ticketSpeed.outcome} />
+                  ),
                 }
               : undefined
           }
@@ -2631,7 +2916,9 @@ export function OnboardingScreen({
                         {formatDepositSeen(depositSeen, tokenDecimalsForNetwork(config.network))}
                       </p>
                     )}
-                    {custodyHeld && <p>Your deposit is being processed.</p>}
+                    {custodyHeld && (
+                      <p>{heldDepositLine(sweepHold) ?? "Your deposit is being processed."}</p>
+                    )}
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 8 }}>
                       {checkNote}
                     </div>
@@ -2648,7 +2935,11 @@ export function OnboardingScreen({
               {broadcastSpent && record && !wrongChain && canManualRegistrationSweep(record) && (
                 <section aria-label="Complete earned registration">
                   <p>
-                    {custodyHeld || depositReceived || depositAdmitted
+                    {(custodyHeld || depositReceived || depositAdmitted) && sweepBlocker
+                      ? sweepBlocker.kind === "capacity"
+                        ? "The new address has received your deposit. Sweep manually finishes registration once network capacity is available."
+                        : "The new address has received your deposit, but it is too large to sweep."
+                      : custodyHeld || depositReceived || depositAdmitted
                       ? "The new address has received your deposit. Choose Sweep manually to finish registration."
                       : `${
                           refundedFrom ? "The original deposit was refunded. " : ""
@@ -2690,6 +2981,13 @@ export function OnboardingScreen({
           }
           actions={
             <div className="ww-deposit-actions">
+              {identityRetry && (
+                <PrimaryGradientButton
+                  title="Retry entering wallet"
+                  isDisabled={busy}
+                  onClick={() => void identityRetry()}
+                />
+              )}
               {openPending && !wrongChain && (
                 <>
                   {quoteExpired && !replaceUnfunded && (
@@ -2699,19 +2997,23 @@ export function OnboardingScreen({
                       onClick={refreshExpiredQuote}
                     />
                   )}
-                  {paylinkPending && !ticketBlocked && busy && (
-                    <OnboardingSpinnerBody
-                      label={
-                        busyStage === "passkey"
-                          ? "Confirming with your passkey..."
-                          : "Claiming your payment..."
-                      }
-                    />
-                  )}
-                  {paylinkPending && !ticketBlocked && !busy && (
+                  {paylinkPending &&
+                    !ticketBlocked &&
+                    paylinkClaiming &&
+                    !claimLeft &&
+                    (busyStage === "passkey" ? (
+                      <OnboardingSpinnerBody label="Confirming with your passkey…" />
+                    ) : (
+                      <OperationHandOff
+                        onLeave={() => void enterPastClaim(pendingTag)}
+                        until="sent"
+                      />
+                    ))}
+                  {paylinkPending && !ticketBlocked && !paylinkClaiming && (
                     <PrimaryGradientButton
                       title="Claim your payment"
                       isDisabled={
+                        busy ||
                         paylinkQuote === undefined ||
                         paylinkQuote.covers === false ||
                         record?.broadcast === false
@@ -2770,8 +3072,10 @@ export function OnboardingScreen({
         header={inviteHeader}
         notice={step === "invite" ? inviteNotice : undefined}
         checkAvailability={step === "invite" && !passkeyEntry}
-        allowBlocked={hasRouteGrant}
+        grant={routeGrant}
         resuming={resuming}
+        boundGrantOwner={boundGrantOwner}
+        onBoundGrant={(tag) => go(`/enter?handle=${encodeURIComponent(tag)}&bound=1`)}
         onUnlock={(h) => void unlockAccess(h)}
         onLogIn={logIn}
         onCancelSignIn={cancelUnlock}
@@ -2788,33 +3092,19 @@ export function OnboardingScreen({
       </>
     )
   }
-  if (step === "carousel") {
+  if (step === "entering") {
     return (
       <InvitationChrome topBar={false}>
-        {awaitingEntry ? (
-          <div className="ww-carousel" data-testid="handoff-entering">
-            <OnboardingSpinnerBody label="Setting up your wallet..." />
-          </div>
-        ) : (
-          <OnboardingCarousel
-            handle={handle}
-            onDone={finishIntro}
-            onStart={passkeyEntry ? startHandoff : undefined}
+        <div className="ww-entering" data-testid="handoff-entering">
+          <OnboardingSpinnerBody
+            label="Setting up your wallet…"
+            // Past the hold, work still running may never settle: the visitor can stop it, and the
+            // terms sheet's passkey prompt is the way on from there. A silent attempt not yet
+            // started never starts after it.
+            cancelLabel="Cancel"
+            onCancel={holdExpired && !adopting ? cancelEntering : undefined}
           />
-        )}
-        {/* A laptop's ceremony holds for a tap it can only ask for on screen, and the intro is the
-            whole screen here. The ask is the registration sheet, as on the create step, so it is a
-            card on a backdrop and not steps drawn over the slide's text. */}
-        {gateState.kind === "awaiting-action" && (
-          <ModalFrame label="Account setup">
-            <RegistrationSheet
-              tag={handle}
-              title="Confirm it's you"
-              onClose={cancelModalOp}
-              actions={<GateStep state={gateState} onCancel={cancelModalOp} />}
-            />
-          </ModalFrame>
-        )}
+        </div>
         {consentModal}
       </InvitationChrome>
     )

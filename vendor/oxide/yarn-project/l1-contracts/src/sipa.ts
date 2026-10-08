@@ -1,6 +1,7 @@
 import { type Address, type Hex, type PublicClient, encodeFunctionData } from 'viem';
 
 import { DepositSubsidyAbi, SIPAAbi } from './artifacts.js';
+import type { SipaIntent } from './sipa_factory.js';
 
 /** Inputs for `SIPA.sweep(token, relayer, intentData, proofs)`. */
 export interface SweepArgs {
@@ -32,6 +33,31 @@ export function encodeSweepForSubsidy(sipa: Address, args: SweepArgs): Hex {
     abi: DepositSubsidyAbi,
     functionName: 'sweepForSubsidy',
     args: [sipa, args.token, args.relayer, args.intentData, args.proofs],
+  });
+}
+
+/** The SIPA that `deployAndSweepForSubsidy` deploys. The deposit subsidy gets the implementation and the rollup version
+ *  from its portal, and gets the intent hash from the sweep's `intentData`. */
+export interface SubsidizedDeployArgs {
+  intent: SipaIntent;
+  recoveryCommitment: Hex;
+  resweepable: boolean;
+}
+
+/** `DepositSubsidy.deployAndSweepForSubsidy(...)` calldata: deploys the SIPA if it has no code, then sweeps it. */
+export function encodeDeployAndSweepForSubsidy(deploy: SubsidizedDeployArgs, args: SweepArgs): Hex {
+  return encodeFunctionData({
+    abi: DepositSubsidyAbi,
+    functionName: 'deployAndSweepForSubsidy',
+    args: [
+      deploy.intent,
+      deploy.recoveryCommitment,
+      deploy.resweepable,
+      args.token,
+      args.relayer,
+      args.intentData,
+      args.proofs,
+    ],
   });
 }
 

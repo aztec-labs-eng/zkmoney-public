@@ -1,8 +1,8 @@
 /**
  * A swap route has to leave the escrow something to swap after the withdrawal relayer tip, the FPC
- * cut and the escrow's relayer tip. Below that floor `planSwapOnWithdraw` throws at submit, so the
- * form must refuse the amount instead. The relayer tip comes from a live simulation, so the floor is
- * whatever the simulator answers — here a fake with the sdk's contract — and the boundaries derive
+ * cut and the escrow's relayer tip. That floor rides on top of the typed amount, so the escrow
+ * always has the typed amount to swap. The relayer tip comes from a live simulation, so the floor
+ * is whatever the simulator answers — here a fake with the sdk's contract — and the burn derives
  * from it.
  */
 import React, { act } from "react"
@@ -18,9 +18,6 @@ const RELAYER_TIP = 3n * 10n ** 18n
 // What the mocked portal reads back as FPC_FUNDING_CUT.
 const CUT = 250_000_000_000_000_000n
 const FLOOR = WITHDRAW_RELAYER_TIP + CUT + RELAYER_TIP
-const AT_FLOOR = formatUnits(FLOOR, 18)
-const BELOW_FLOOR = formatUnits(FLOOR - 10n ** 18n, 18)
-const ABOVE_FLOOR = formatUnits(FLOOR + 10n ** 18n, 18)
 
 const control = vi.hoisted<FakeSwapControl>(() => ({ relayerTip: 3n * 10n ** 18n, calls: [] }))
 
@@ -66,6 +63,10 @@ vi.mock("../src/lib/analytics", () => ({
   amountBucket: () => "under_50",
 }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
+vi.mock("../src/features/allowance/SponsoredActionNotice", () => ({
+  useSponsoredActionBlock: () => undefined,
+  SponsoredActionNotice: () => null,
+}))
 vi.mock("@obsidion/web-ds", () => ({
   GradientSpinner: () => null,
   GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
@@ -150,24 +151,19 @@ describe("WithdrawToWalletModal — swap floor", () => {
     container.remove()
   })
 
-  it("refuses an amount at or below the floor the escrow needs", async () => {
-    await type(BELOW_FLOOR)
-    expect(button("Withdraw funds")?.disabled).toBe(true)
-    await type(AT_FLOOR)
-    expect(button("Withdraw funds")?.disabled).toBe(true)
+  it("accepts the $1 minimum: the floor rides on top, so the escrow has the typed amount to swap", async () => {
+    await type("1")
+    expect(button("Review")?.disabled).toBe(false)
   })
 
-  it("accepts an amount that leaves the escrow something to swap", async () => {
-    await type(ABOVE_FLOOR)
-    expect(button("Withdraw funds")?.disabled).toBe(false)
-  })
-
-  it("simulates the burned amount for the typed recipient", async () => {
-    await type(ABOVE_FLOOR)
+  it("simulates the typed amount plus the floor, for the typed recipient", async () => {
+    await type("1")
+    // The floor is learned from the first pass over the typed amount alone; the second prices
+    // the burn that carries it.
+    await settle()
     const last = control.calls.at(-1)!
     expect(last.recipient).toBe(RECIPIENT)
-    // The burn is the typed amount: the tip comes out of it, not on top.
-    expect(last.amount).toBe(FLOOR + 10n ** 18n)
+    expect(last.amount).toBe(10n ** 18n + FLOOR)
     expect(last.deductions).toEqual({
       withdrawalRelayerTip: WITHDRAW_RELAYER_TIP,
       proverTip: 0n,
@@ -176,12 +172,12 @@ describe("WithdrawToWalletModal — swap floor", () => {
   })
 
   // The floor doubles as the swap route's all-in fee; the row must show it whole, not the
-  // portal's deductions alone, as a deduction from the burn, and say what the relayer's share is.
+  // portal's deductions alone, and say what the relayer's share is.
   it("shows the all-in swap fee and the relayer tip inside it", async () => {
-    const fee = Array.from(container.querySelectorAll(".ww-deposit__fact")).find(
-      (f) => f.querySelector("span")?.textContent === "Fee",
+    const fee = Array.from(container.querySelectorAll(".ww-sheet__fact")).find(
+      (f) => f.querySelector("span")?.textContent === "Withdrawal fee",
     )
-    expect(fee?.querySelector("b")?.textContent).toBe(`-${usdFigure(formatUnits(FLOOR, 18))}`)
-    expect(container.textContent).toContain("Includes 3 DAI for L1 gas")
+    expect(fee?.querySelector("b")?.textContent).toBe(usdFigure(formatUnits(FLOOR, 18)))
+    expect(container.textContent).toContain("Includes $3 for L1 gas at 1 gwei.")
   })
 })

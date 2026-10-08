@@ -27,7 +27,7 @@ export function ClaimTagModal({
         className="ww-modal--create"
         banner={`People pay to '${handle}.zk.money', instead of a complex 0x hex address.`}
       >
-        <OnboardingSpinnerBody label="Claiming your tag..." onCancel={onCancel} />
+        <OnboardingSpinnerBody label="Claiming your tag…" onCancel={onCancel} />
       </OnboardingCard>
     )
   }
@@ -50,7 +50,7 @@ export function ClaimTagModal({
   )
 }
 
-/** The brief "All set!" success card between the claim and the carousel. */
+/** The brief "All set!" success card between the claim and the wallet. */
 export function AllSetModal() {
   return (
     <OnboardingCard narrow>

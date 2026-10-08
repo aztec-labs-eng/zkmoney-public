@@ -66,7 +66,9 @@ describe("RemoveRequestLinkModal", () => {
     })
   }
   const show = async () => {
-    await act(async () => root.render(<RemoveRequestLinkModal requestId="req-1" onClose={onClose} />))
+    await act(async () =>
+      root.render(<RemoveRequestLinkModal requestId="req-1" onClose={onClose} />),
+    )
   }
 
   it("closes only once the row is gone, and holds the buttons while it goes", async () => {

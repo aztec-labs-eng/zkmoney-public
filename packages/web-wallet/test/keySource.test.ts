@@ -1,6 +1,6 @@
 // @vitest-environment node
 /**
- * Where the key comes from before any ceremony: bridge material only on the hand-off naming it,
+ * Where the key comes from before any ceremony: hand-off material only on the hand-off naming it,
  * the held key when it is the passkey asked for, the chooser always a ceremony.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 const h = vi.hoisted(() => ({
   recoverFromHandoffMaterial: vi.fn(),
   recoverFromCache: vi.fn(),
-  awaitHandoffMaterial: vi.fn(),
+  takeHandoffMaterial: vi.fn(),
 }))
 
 vi.mock("../src/platform/auth/useAuthenticator", () => ({
@@ -20,7 +20,7 @@ vi.mock("../src/platform/auth/useAuthenticator", () => ({
 }))
 vi.mock("../src/platform/storage/handoffMaterial", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/platform/storage/handoffMaterial")>()),
-  awaitHandoffMaterial: h.awaitHandoffMaterial,
+  takeHandoffMaterial: h.takeHandoffMaterial,
 }))
 
 const { resolveKeySource } = await import("../src/features/onboarding/oxideOnboarding")
@@ -30,7 +30,7 @@ const held = { credentialId: "cred-held" }
 
 beforeEach(() => {
   vi.clearAllMocks()
-  h.awaitHandoffMaterial.mockResolvedValue(null)
+  h.takeHandoffMaterial.mockReturnValue(null)
   h.recoverFromCache.mockResolvedValue(undefined)
 })
 
@@ -40,7 +40,7 @@ describe("resolveKeySource", () => {
       kind: "ceremony-required",
       request: { credentialId: "cred" },
     })
-    expect(h.awaitHandoffMaterial).not.toHaveBeenCalled()
+    expect(h.takeHandoffMaterial).not.toHaveBeenCalled()
   })
 
   it("the held key answers a visit that names no passkey, or names the held one", async () => {
@@ -73,34 +73,34 @@ describe("resolveKeySource", () => {
   })
 
   it("the chooser bypasses the hand-off material too, not only the cache", async () => {
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred" })
     h.recoverFromHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
     h.recoverFromCache.mockResolvedValue(held)
     expect(
       (await resolveKeySource({ credentialId: "cred", handoff: true, chooser: true })).kind,
     ).toBe("ceremony-required")
-    expect(h.awaitHandoffMaterial).not.toHaveBeenCalled()
+    expect(h.takeHandoffMaterial).not.toHaveBeenCalled()
     expect(h.recoverFromCache).not.toHaveBeenCalled()
   })
 
-  it("bridge material is read only on the hand-off navigation, and only for its credential", async () => {
+  it("hand-off material is read only on the hand-off navigation, and only for its credential", async () => {
     const material = { credentialId: "cred" }
     const result = { credentialId: "cred" }
-    h.awaitHandoffMaterial.mockResolvedValue(material)
+    h.takeHandoffMaterial.mockReturnValue(material)
     h.recoverFromHandoffMaterial.mockResolvedValue(result)
     // Not a hand-off: material untouched.
     expect((await resolveKeySource({ credentialId: "cred" })).kind).toBe("ceremony-required")
-    expect(h.awaitHandoffMaterial).not.toHaveBeenCalled()
+    expect(h.takeHandoffMaterial).not.toHaveBeenCalled()
     // The hand-off itself.
     expect(await resolveKeySource({ credentialId: "cred", handoff: true })).toEqual({
       kind: "handoff",
       result,
     })
-    expect(h.awaitHandoffMaterial).toHaveBeenCalledWith("cred", "localhost", 2_000)
+    expect(h.takeHandoffMaterial).toHaveBeenCalledWith("cred", "localhost")
   })
 
   it("material with no usable candidate is spent, and what follows decides", async () => {
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred" })
     h.recoverFromHandoffMaterial.mockRejectedValue(new NoPrfError())
     h.recoverFromCache.mockResolvedValue({ credentialId: "cred" })
     expect((await resolveKeySource({ credentialId: "cred", handoff: true })).kind).toBe("cache")
@@ -111,7 +111,7 @@ describe("resolveKeySource", () => {
   })
 
   it("material naming a rotated credential is refused, as after a ceremony", async () => {
-    h.awaitHandoffMaterial.mockResolvedValue({ credentialId: "cred" })
+    h.takeHandoffMaterial.mockReturnValue({ credentialId: "cred" })
     h.recoverFromHandoffMaterial.mockRejectedValue(new RotatedCredentialError())
     await expect(resolveKeySource({ credentialId: "cred", handoff: true })).rejects.toMatchObject({
       name: "RotatedCredentialError",

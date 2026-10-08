@@ -9,12 +9,20 @@ import { capturePaylinkRows, claimSponsoredLink, createSponsoredLink } from "../
 import { runContactPay as runCaptureContactPay } from "../scripts/ui-capture/fixtures/contact-pay"
 import { demoClaimFragments, demoFundingTxHash } from "../src/dev/demoFixtures"
 import type { SponsoredPaylinkDeps } from "../src/features/paylink/sponsoredPaylink"
+import { getSipaDepositGateway } from "../scripts/ui-capture/fixtures/deposits"
+import { SIPA } from "../scripts/ui-capture/fixtures/data"
+import { DesktopSendUnresolvedError } from "../src/platform/desktopBridge"
 
 const demo = vi.hoisted(() => ({ enabled: true }))
 vi.mock("../src/dev/demoFlag", () => ({ isDemoMode: () => demo.enabled }))
 vi.mock("../src/config/env", async (importOriginal) => ({
   ...await importOriginal<object>(),
   getConfig: () => ({ network: "sandbox" }),
+}))
+// The capture gateway wraps the real one only for records; this file drives its fixture path alone.
+vi.mock("../src/features/deposit/sipaGateway", async (importOriginal) => ({
+  ...await importOriginal<object>(),
+  getSipaDepositGateway: () => ({}),
 }))
 
 const deps = {
@@ -168,6 +176,24 @@ describe("capture service boundary contracts", () => {
       { kind: "start", operationId: failed.queueId },
       { kind: "end", operationId: failed.queueId, failed: true },
     ])
+  })
+
+  it("a desktop send saves its hold at the helper's approval, after the recheck, then ends unresolved", async () => {
+    vi.stubGlobal("location", new URL("http://localhost/?demo=activity&flowFixture=success&desktopFixture=unresolved"))
+    const calls: string[] = []
+    const sent = handled(getSipaDepositGateway().deposit({
+      target: { address: SIPA, name: "demo.sandbox.oxide" },
+      amountDisplay: "24",
+      onStage: (stage) => calls.push(stage),
+      preflight: async () => { calls.push("preflight") },
+      beforeApprove: async (submission) => {
+        calls.push(`approve:${submission}`)
+      },
+    }))
+    await vi.runAllTimersAsync()
+    const { error } = await sent
+    expect(error).toBeInstanceOf(DesktopSendUnresolvedError)
+    expect(calls).toEqual(["preflight", "awaiting-browser", "preflight", `approve:${"1".repeat(32)}`])
   })
 
   it("requires demo plus an explicit fixture, rejects unknown controls, and clears the latch", async () => {

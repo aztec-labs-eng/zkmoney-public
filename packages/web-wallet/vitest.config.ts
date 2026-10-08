@@ -11,6 +11,11 @@ export default defineConfig({
   resolve: {
     alias: {
       "@obsidion/web-ds": path.resolve(__dirname, "../design-system/src/index.ts"),
+      // The boot's build-time profile; as under `vite dev`, a test bakes none.
+      "virtual:baked-config-profile": path.resolve(
+        __dirname,
+        "test/fixtures/bakedConfigProfile.ts",
+      ),
     },
   },
 })

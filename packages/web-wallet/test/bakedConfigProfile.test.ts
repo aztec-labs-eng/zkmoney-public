@@ -32,6 +32,7 @@ describe("bakeConfigProfile", () => {
       network: "sandbox",
       current: "0.0.1",
       publishedAt: "2026-08-12T00:00:00.000Z",
+      expiresAt: "2099-01-01T00:00:00.000Z",
       currentVersionGitSha: "c".repeat(40),
       sha256: createHash("sha256").update(baked!.payload).digest("hex"),
     })
@@ -223,5 +224,17 @@ describe("the vite plugin", () => {
     const emitFile = vi.fn()
     ;(plugin.generateBundle as Hook).call({ emitFile } as never)
     expect(JSON.parse(emitFile.mock.calls[0][0].source).bakedProfile).toBeNull()
+  })
+
+  it.each([
+    [{ VITE_DESKTOP_BUILD: "true" }, "true"],
+    [{}, ""],
+  ])("records the desktop flag %j in the manifest as %j", async (flag, recorded) => {
+    const plugin = drive({ ...ENV, ...flag }, "build", serve(sandboxProfile()))
+    await (plugin.buildStart as Hook)()
+
+    const emitFile = vi.fn()
+    ;(plugin.generateBundle as Hook).call({ emitFile } as never)
+    expect(JSON.parse(emitFile.mock.calls[0][0].source).VITE_DESKTOP_BUILD).toBe(recorded)
   })
 })

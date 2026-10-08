@@ -15,17 +15,26 @@
  * Nothing is settled here. A confirmed sweep only moves the funds into the portal; the L2 claim is
  * the sync loop's job on its next pass, which reads the very `Sweep` event this transaction emits.
  */
-import { createPublicClient, isAddress, type Address, type Hex, type PublicClient } from "viem"
+import {
+  createPublicClient,
+  formatUnits,
+  isAddress,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem"
 import { Fr } from "@aztec/aztec.js/fields"
 import { EthAddress } from "@aztec/foundation/eth-address"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   buildDepositIntent,
   buildSipaSweepCall,
+  classifyPortalCapError,
   readDepositSIPAImplementation,
   readSipaFundingStatus,
   SELF_BROADCAST_RESWEEPABLE,
   TX_AMOUNT_CAP,
+  type PortalCapErrorKind,
   type SipaSweepDeployArgs,
   type SipaFundingStatus,
 } from "@obsidion/sdk"
@@ -34,7 +43,11 @@ import {
   computeAccountSIPAAddress,
   depositAmounts,
   SIPADepositStore,
+  sipaSweepAllowed,
   type SIPADepositRecord,
+  type SipaProcessingState,
+  type SipaSweepBlocker,
+  type SipaSweepSubject,
 } from "@obsidion/front-core"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { getConfig, l1Transport, type WebWalletConfig } from "../../config/env"
@@ -42,6 +55,7 @@ import { getOxideTuple, requireTupleField } from "../../config/oxideTuple"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { fpcFundingCut } from "../fees/fpcFundingCut"
 import { WebStorageAdapter } from "../../platform/storage/WebStorageAdapter"
+import { sipaProcessingObserver } from "./sipaProcessing"
 import {
   desktopBridgeChannel,
   injectedWalletChannel,
@@ -76,6 +90,83 @@ export function canSelfSweep(
   )
 }
 
+/**
+ * A sweep stopped for a reason the user can act on: capacity, the per-deposit ceiling or a frozen portal. The sheet
+ * shows it beside the action instead of reporting it as a fault.
+ */
+export class SweepRefusedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "SweepRefusedError"
+  }
+}
+
+/** The address is already empty: the relayer won the race and the funds are on their way. Not a fault. */
+export class AlreadySweptError extends Error {
+  constructor() {
+    super("This deposit has already been swept. It will appear in your balance shortly.")
+    this.name = "AlreadySweptError"
+  }
+}
+
+/** A zero read on a record without its own token was against the current deployment's token, so it proves nothing. */
+export const UNTRACKED_TOKEN_ZERO =
+  "This deposit reads as already swept, but it predates token tracking — if it was made on an older deployment, report it from Settings before assuming the funds moved."
+
+const RECOVER_INSTEAD = "Recover it to an Ethereum address instead."
+
+const BLOCKED: Record<SipaSweepBlocker["kind"], string> = {
+  "capacity":
+    "Network capacity is currently insufficient for this deposit, so the sweep was stopped before signing. Check again later, or recover the deposit.",
+  "ceiling": `This deposit is larger than the network's total deposit capacity, so it can't be swept. ${RECOVER_INSTEAD}`,
+  "operation-cap": `This deposit is larger than the network can process in one deposit, so it can't be swept. ${RECOVER_INSTEAD}`,
+}
+
+const REFUSED: Record<PortalCapErrorKind, string> = {
+  "global-limit":
+    "Network capacity is currently insufficient for this deposit, so the sweep did not go through. Check again later, or recover the deposit.",
+  "tx-limit": BLOCKED["operation-cap"],
+  "frozen":
+    "The network is not accepting deposits right now, so the sweep did not go through. You can recover the deposit.",
+}
+
+/** Re-reads the deposit's portal before a manual sweep and stops it while a blocker is confirmed. */
+export async function assertSweepCapacity(
+  check: (() => Promise<SipaProcessingState | undefined>) | undefined,
+): Promise<void> {
+  const state = await check?.()
+  if (!sipaSweepAllowed(state)) throw new SweepRefusedError(BLOCKED[state!.blocker!.kind])
+}
+
+/**
+ * Submit a sweep, turning a portal refusal decoded from the estimate into its own copy. A deploy-and-sweep batch
+ * hides the portal's revert, and so does the desktop helper page; those failures pass through unchanged.
+ */
+export async function submitSweep(channel: L1ExitChannel, to: Address, data: Hex): Promise<Hex> {
+  try {
+    return await channel.sendTransaction(to, data)
+  } catch (err) {
+    const kind = classifyPortalCapError(err)
+    throw kind ? new SweepRefusedError(REFUSED[kind]) : err
+  }
+}
+
+/**
+ * A reverted receipt carries no reason. A capacity read taken now can show a current blocker, but not that it caused
+ * this failure, so the copy says both.
+ */
+export function revertedSweepMessage(
+  hash: Hex,
+  state: SipaProcessingState | undefined,
+  otherCause: string,
+): string {
+  const capacity =
+    state?.blocker?.kind === "capacity"
+      ? " Network capacity is currently insufficient for this deposit."
+      : ""
+  return `Sweep transaction ${hash} failed, and the wallet could not determine why. ${otherCause}${capacity}`
+}
+
 /** The manifest surface the derivation and the sweep bind to. */
 export interface SweepManifest {
   sipaFactory: Address
@@ -97,6 +188,13 @@ export interface SweepDeps {
   /** Offline create2 prediction (`computeSIPAAddress`), checked before any deploy. */
   predict: (args: SipaSweepDeployArgs) => Promise<Address>
   store: Pick<SIPADepositStore, "upsert" | "get">
+  /**
+   * A new capacity read of the deposit's own portal, given the funding just read; undefined where
+   * no observer runs.
+   */
+  checkCapacity?: (
+    live: Omit<SipaSweepSubject, "sipaAddress">,
+  ) => Promise<SipaProcessingState | undefined>
   /** Injectable for tests. */
   build?: typeof buildSipaSweepCall
 }
@@ -143,7 +241,7 @@ export function sweepDeployArgs(
 /**
  * Guard the sweep, then submit it. The funding read is the honest failure: a relayer that won the
  * race leaves nothing to sweep and the transaction would revert in the user's wallet, and a balance
- * that fell to the fee floor or was topped up past the per-transaction cap can never be swept at all.
+ * that fell to the fee floor or was topped up past the per-operation ceiling can never be swept at all.
  */
 export async function selfSweepDeposit(record: SIPADepositRecord, deps: SweepDeps): Promise<Hex> {
   const { manifest } = deps
@@ -155,19 +253,28 @@ export async function selfSweepDeposit(record: SIPADepositRecord, deps: SweepDep
   const token = record.tokenAddress ?? manifest.token
   const funding = await deps.readFunding(record.sipaAddress, token)
   if (funding.balance === 0n) {
-    throw new Error("This deposit has already been swept. It will appear in your balance shortly.")
+    throw record.tokenAddress ? new AlreadySweptError() : new Error(UNTRACKED_TOKEN_ZERO)
   }
   if (!funding.sweepable) {
-    // The fee and the portal's cut come off first, and the cap measures what is forwarded after
+    // The fee and the portal's cut come off first, and the ceiling measures what is forwarded after
     // them. `scaledBalance` is the balance in the fee's denomination.
-    const reason =
+    throw new SweepRefusedError(
       funding.scaledBalance - funding.fee - funding.fpcFundingCut > TX_AMOUNT_CAP
-        ? "is over the network's per-transaction deposit cap"
-        : "is at or below the network's deposit fee"
-    throw new Error(
-      `This deposit ${reason}, so it can't be moved into your private balance. Recover it to an Ethereum address instead.`,
+        ? BLOCKED["operation-cap"]
+        : `This deposit is at or below the network's deposit fee, so it can't be moved into your private balance. ${RECOVER_INSTEAD}`,
     )
   }
+  // The rail may not have seen this funding yet.
+  const decimals = record.tokenDecimals ?? DEFAULT_DECIMALS
+  const live = {
+    l1ChainId: record.l1ChainId,
+    origin: record.origin,
+    phase: record.phase,
+    amount: formatUnits(funding.balance, decimals),
+    tokenAddress: token,
+    tokenDecimals: decimals,
+  }
+  await assertSweepCapacity(deps.checkCapacity && (() => deps.checkCapacity!(live)))
 
   // The deposit intent: forward the whole balance to the recipient, no fee, no proofs. The record
   // revealed at sweep is `abi.encode(recipientCommitment)`; the clone delegates to the deposit impl.
@@ -199,10 +306,15 @@ export async function selfSweepDeposit(record: SIPADepositRecord, deps: SweepDep
     },
   })
 
-  const hash = await deps.channel.sendTransaction(call.to, call.data)
+  const hash = await submitSweep(deps.channel, call.to, call.data)
   if (!(await deps.channel.waitForReceipt(hash))) {
+    const state = await deps.checkCapacity?.(live).catch(() => undefined)
     throw new Error(
-      `Sweep transaction ${hash} failed. A relayer may have swept this deposit first, in which case it is already on its way into your balance, or the network's deposit limit was reached. Try again later.`,
+      revertedSweepMessage(
+        hash,
+        state,
+        "A relayer may have swept this deposit first, in which case it is already on its way into your balance.",
+      ),
     )
   }
   // Deliberately not terminal: the funds are in the portal, not the balance. The record stays on
@@ -314,6 +426,9 @@ export async function selfSweep(
         sipaAddressFromArgs(record.origin?.sipaFactory ?? manifest.sipaFactory, args),
       ),
     store: SIPADepositStore.get(new WebStorageAdapter()),
+    checkCapacity: (live) =>
+      sipaProcessingObserver()?.refreshForSweep(record.sipaAddress, live) ??
+      Promise.resolve(undefined),
   })
 }
 

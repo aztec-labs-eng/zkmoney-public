@@ -21,8 +21,8 @@ import {
   elapsedBucketFor,
   passkeyEnvironmentPropsFor,
   passkeyReportEnvFor,
-  passkeyReportExportFor,
   passkeyRouteFor,
+  phoneReachFor,
   promptsBucketFor,
 } from "../src/policy/passkeyTelemetry.js"
 import {
@@ -32,7 +32,6 @@ import {
   PASSKEY_MAJOR_MAX,
   PASSKEY_MAJOR_MIN,
   PASSKEY_REFUSAL_REASONS,
-  PASSKEY_REPORT_EXPORT_KEYS,
 } from "../src/policy/passkeyTelemetryVocabulary.js"
 import { type UserAgentSnapshot, parseUserAgent } from "../src/policy/userAgentInfo.js"
 
@@ -489,7 +488,7 @@ describe("buckets", () => {
 })
 
 describe("report env", () => {
-  it("describes the device and the provider, and exports only the families", () => {
+  it("describes the device and the provider", () => {
     const reportEnv = passkeyReportEnvFor({
       posture: "laptop",
       userAgent: parseUserAgent(hinted(UA.chromeMac, "macOS", "15.1.0")),
@@ -503,14 +502,6 @@ describe("report env", () => {
       browser_major: 140,
       provider: "icloud_keychain",
     })
-    const exported = passkeyReportExportFor(reportEnv)
-    expect(exported).toEqual({
-      device_class: "laptop",
-      os: "macos",
-      browser: "chrome",
-      provider: "icloud_keychain",
-    })
-    expect(Object.keys(exported).sort()).toEqual([...PASSKEY_REPORT_EXPORT_KEYS].sort())
   })
 
   it("names an unlisted provider unknown", () => {
@@ -521,6 +512,35 @@ describe("report env", () => {
         provider: "lastpass" as "unknown",
       }).provider,
     ).toBe("unknown")
+  })
+
+  const UNNAMED = "0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f"
+  const envWith = (provider: string, aaguid?: string) =>
+    passkeyReportEnvFor({
+      posture: "phone",
+      userAgent: parseUserAgent({ userAgent: UA.safariIphone }),
+      provider: provider as "other",
+      ...(aaguid === undefined ? {} : { aaguid }),
+    })
+
+  it("carries the AAGUID of an other provider, lowercased", () => {
+    expect(envWith("other", UNNAMED)).toMatchObject({ provider: "other", aaguid: UNNAMED })
+    expect(envWith("other", UNNAMED.toUpperCase()).aaguid).toBe(UNNAMED)
+  })
+
+  it.each([
+    ["a named provider", "icloud_keychain", APPLE_ICLOUD_AAGUID],
+    ["a provider that did not report itself", "not_reported", ZERO_AAGUID],
+    ["the stored placeholder", "unknown", "unknown"],
+    ["an other provider with no AAGUID", "other", undefined],
+    ["an other provider whose AAGUID is named", "other", APPLE_ICLOUD_AAGUID],
+    ["an other provider whose AAGUID is not UUID-shaped", "other", "0f0f0f0f"],
+    ["an unnamed AAGUID under a named provider", "icloud_keychain", UNNAMED],
+    ["an unnamed AAGUID under an unknown provider", "unknown", UNNAMED],
+    ["an unnamed AAGUID under a provider that did not report itself", "not_reported", UNNAMED],
+    ["an unnamed AAGUID under an unlisted provider", "lastpass", UNNAMED],
+  ])("carries no AAGUID for %s", (_case, provider, aaguid) => {
+    expect(envWith(provider, aaguid)).not.toHaveProperty("aaguid")
   })
 })
 
@@ -586,6 +606,11 @@ describe("every mapped value is in the vocabulary", () => {
       listed("attempt", attemptBucketFor(n))
       listed("elapsed", elapsedBucketFor(n))
     }
+    for (const reach of ["ok", "no-hybrid", "unknown"] as const) {
+      listed("phone_reach", phoneReachFor(reach))
+    }
+    expect(phoneReachFor("below-floor")).toBeUndefined()
+    expect(phoneReachFor("__proto__" as never)).toBeUndefined()
   })
 
   it("classification", () => {

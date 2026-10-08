@@ -2,6 +2,50 @@
   "scenario": "activity",
   "steps": [
     {
+      "action": "fill",
+      "placeholder": "Search or paste an address",
+      "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "New address",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "label": "Wallet name (optional)",
+      "value": "Weekend savings wallet"
+    },
+    {
+      "action": "reachable",
+      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "address.png",
+      "state": "address"
+    },
+    {
+      "action": "click",
+      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "privacy.png",
+      "state": "privacy"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Continue without privacy",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input"
+    },
+    {
       "action": "click",
       "role": "button",
       "name": "Receive as",
@@ -20,26 +64,6 @@
     },
     {
       "action": "fill",
-      "placeholder": "Enter or paste address",
-      "value": "0x7777777777777777777777777777777777777777"
-    },
-    {
-      "action": "fill",
-      "label": "Wallet name (optional)",
-      "value": "Weekend savings wallet"
-    },
-    {
-      "action": "click",
-      "role": "button",
-      "name": "Continue",
-      "exact": true
-    },
-    {
-      "action": "waitFor",
-      "selector": ".ww-fund__amount input"
-    },
-    {
-      "action": "fill",
       "selector": ".ww-fund__amount input",
       "value": "24"
     },
@@ -51,7 +75,7 @@
     {
       "action": "click",
       "role": "button",
-      "name": "Withdraw funds",
+      "name": "Review",
       "exact": true
     },
     {
@@ -94,6 +118,6 @@
     }
   ],
   "finalScreenshot": false,
-  "path": "/withdraw?flowFixture=success",
+  "path": "/withdraw/existing?flowFixture=success",
   "recordHoldMs": 0
 }

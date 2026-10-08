@@ -12,7 +12,7 @@ import { oxideAccountPasskey } from "../../platform/auth/oxideAccountPasskey"
  * the plain deposit's self-sweep.
  */
 
-import { createPublicClient, type Address, type Hex, type PublicClient } from "viem"
+import { createPublicClient, formatUnits, type Address, type Hex, type PublicClient } from "viem"
 import { registrationFloor } from "@obsidion/core/constants"
 import { EMPTY_SIGNED_TERMS, type SignedTermsArg } from "@obsidion/sdk"
 import {
@@ -24,13 +24,26 @@ import {
   signAccountDigest,
   deriveBootstrapKey,
   consentDigest,
+  readSipaFunding,
+  settledBalance,
   type AddressScreener,
   type PendingRegistrationRecord,
+  type SipaFundingToken,
+  type SipaSweepSubject,
 } from "@obsidion/front-core"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { getConfig, l1Transport } from "../../config/env"
 import { oxideEnvFor } from "../../config/oxideTuple"
-import { readSipaDeployed, sweepManifestFrom } from "../deposit/sipaSweep"
+import {
+  AlreadySweptError,
+  assertSweepCapacity,
+  readSipaDeployed,
+  revertedSweepMessage,
+  submitSweep,
+  sweepManifestFrom,
+} from "../deposit/sipaSweep"
+import { sipaProcessingObserver } from "../deposit/sipaProcessing"
+import { sipaFundingTokens } from "../deposit/loadDepositFacts"
 import {
   desktopBridgeChannel,
   injectedWalletChannel,
@@ -144,40 +157,55 @@ export async function manualRegistrationSweep(
     controllerFee: controllerSchedule?.fee,
   })
 
-  const balance = await publicClient.readContract({
-    address: record.depositToken as Address,
-    abi: [
-      {
-        type: "function",
-        name: "balanceOf",
-        stateMutability: "view",
-        inputs: [{ type: "address" }],
-        outputs: [{ type: "uint256" }],
-      },
-    ] as const,
-    functionName: "balanceOf",
-    args: [record.sipaAddress as Address],
-  })
-  if (balance === 0n) {
-    throw new Error("This deposit has already been swept. It will appear in your balance shortly.")
-  }
-
   const schedule = claim.terms
     ? { fee: BigInt(claim.terms.fee), min: BigInt(claim.terms.minDeposit) }
     : controllerSchedule
-  if (schedule === undefined || schedule.fee !== BigInt(record.fee)) {
+  const priced = schedule !== undefined && schedule.fee === BigInt(record.fee)
+  // The pre-flight checks the same floor the sweep enforces, so an unread cut signs nothing.
+  const fpcCut = await currentFpcFundingCut().catch(() => undefined)
+  const floor = priced && fpcCut !== undefined ? registrationFloor(schedule, fpcCut) : undefined
+  // The SIPA swaps whichever accepted token it holds into the fee token at sweep time, and the
+  // controller floors what lands, so a swapped deposit is judged on the least the swap may settle.
+  const tokens = sipaFundingTokens(config.network, record.depositToken as Address)
+  const covers = (balance: bigint, sent: SipaFundingToken) =>
+    floor !== undefined && settledBalance(tokens[0], sent, balance) >= floor
+  const { token, status } = await readSipaFunding(publicClient, {
+    sipa: record.sipaAddress as Address,
+    feeToken: tokens[0],
+    fundingTokens: tokens,
+    fee: BigInt(record.fee),
+    fpcFundingCut: fpcCut ?? 0n,
+    accepted: floor === undefined ? undefined : covers,
+    decided: floor !== undefined,
+  })
+  if (status.balance === 0n) throw new AlreadySweptError()
+  if (!priced) {
     // A signed schedule naming another fee is the price this address is shut out of; a claim that
     // carried none fell back to the deployment's own figures and a re-signed one may yet price it.
     throw new Error(claim.terms ? SWEEP_PRICE_COMMITTED : SWEEP_QUOTE_UNUSABLE)
   }
-  // The pre-flight checks the same floor the sweep enforces, so an unread cut signs nothing.
-  const fpcCut = await currentFpcFundingCut().catch(() => undefined)
-  if (fpcCut === undefined) {
+  if (floor === undefined) {
     throw new Error("This registration's minimum is not available yet. Try again in a moment.")
   }
-  if (balance < registrationFloor(schedule, fpcCut)) {
+  if (!covers(status.scaledBalance, token)) {
     throw new Error("The deposit does not yet cover this registration's fee and opening balance.")
   }
+  // The rail can lag this balance or lack the record; the re-derived address pins its origin. The
+  // amount is in the token the SIPA holds, which may not be the fee token.
+  const live: Omit<SipaSweepSubject, "sipaAddress"> = {
+    l1ChainId: record.l1ChainId,
+    origin: derivation.origin,
+    phase: "funded",
+    amount: formatUnits(status.balance, token.decimals),
+    tokenAddress: token.address,
+    tokenDecimals: token.decimals,
+    intent: "registration",
+    registrationFee: record.fee,
+  }
+  const checkCapacity = () =>
+    sipaProcessingObserver()?.refreshForSweep(record.sipaAddress, live) ??
+    Promise.resolve(undefined)
+  await assertSweepCapacity(checkCapacity)
 
   // The controller resolves the metadata registry off the NameRegistry at sweep time, and checks
   // the committed SIPA against its own caller, so both are read the same way the sweep will.
@@ -243,15 +271,20 @@ export async function manualRegistrationSweep(
       relayer: channel.target,
       manifest: {
         sipaFactory: manifest.sipaFactory,
-        token: record.depositToken as Address,
+        token: token.address,
       },
     },
   )
 
-  const hash = await channel.sendTransaction(call.to, call.data)
+  const hash = await submitSweep(channel, call.to, call.data)
   if (!(await channel.waitForReceipt(hash))) {
+    const state = await checkCapacity().catch(() => undefined)
     throw new Error(
-      `Sweep transaction ${hash} failed. A relayer may have swept this deposit first, or the deposit is below the registration total. Check the amounts and try again.`,
+      revertedSweepMessage(
+        hash,
+        state,
+        "A relayer may have swept this deposit first, or the deposit is below the registration total.",
+      ),
     )
   }
   // The receipt is authoritative: the detection tick and the rail's sync loop reconcile from the

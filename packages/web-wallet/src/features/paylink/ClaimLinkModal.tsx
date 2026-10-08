@@ -10,9 +10,10 @@ import { getConfig } from "../../config/env"
 import { l2TxUrl } from "../../lib/explorer"
 import { rowTimestamp, shortAddr } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
+import { BalanceSkeleton, TextSkeleton } from "../../ui/Skeletons"
 import { useUserFlowActive } from "../provingGate"
-import { formatClaimCountdown } from "./claimWindow"
-import type { CreateStage, PaymentLink } from "./types"
+import { closedLinkMessage, LINK_STATUS_LABEL } from "./claimWindow"
+import type { CreateStage, LinkStatus, PaymentLink } from "./types"
 import type { EmailClaimStage } from "./emailClaim"
 import { useBusyLabel } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
@@ -24,11 +25,17 @@ export type ClaimStage = CreateStage | EmailClaimStage
 export type ClaimBeat = EmailClaimStage | "building"
 
 const BEAT_LABEL: Record<ClaimBeat, string> = {
-  "signing-in": "Signing in with Google...",
+  "signing-in": "Signing in with Google…",
   "proving-jwt": "Proving your email — this can take a minute",
-  "building": "Preparing transaction...",
+  "building": "Preparing transaction…",
 }
-const SIGNING_LABEL = "Confirm with passkey..."
+const SIGNING_LABEL = "Confirm with passkey…"
+
+const BADGE_STYLE = {
+  unclaimed: "awaitingClaim",
+  claimed: "paid",
+  expired: "cancelled",
+} as const satisfies Record<LinkStatus, string>
 
 /**
  * Claim prompt for an inbound paylink, shown over Home (ULT-671 page 6). Direct flavor offers
@@ -37,41 +44,52 @@ const SIGNING_LABEL = "Confirm with passkey..."
  */
 export function ClaimLinkModal({
   link,
-  claimableInSec,
-  timingPending = false,
+  claimWait,
+  countdown,
+  loading = false,
+  onRetryRead,
   onClose,
   onClaim,
   onClaimToL1,
 }: {
   link: PaymentLink
-  /** Seconds of grace left; while set the claim buttons give way to a countdown. */
-  claimableInSec?: number
-  /** The link has a grace window and chain time is not known yet: hold the claim rather than offer
-   *  one the chain may still refuse. */
-  timingPending?: boolean
+  /** Seconds until a claim is offered: a countdown while positive, none offered while the window
+   *  or chain time is unknown. */
+  claimWait: number | undefined
+  /** The countdown label while `claimWait` is positive. */
+  countdown: string | undefined
+  /** The escrow note (amount, memo) is still being read. */
+  loading?: boolean
+  /** Set when the note could not be read, so the claim window is unknown: offers a re-read. */
+  onRetryRead?: () => void
   onClose: () => void
   onClaim: () => void
   /** Open the external-wallet claim sheet instead of claiming into the wallet. */
   onClaimToL1?: () => void
 }) {
   const config = getConfig()
-  const claimed = link.status === "claimed"
+  const closed = closedLinkMessage(link.status)
   const busy = useUserFlowActive()
   const busyLabel = useBusyLabel()
+  const timingPending = claimWait === undefined
   return (
     <Modal variant="create" label="Claim your payment" onClose={onClose}>
       <div className="ww-create-modal__body">
         <div className="ww-claim-modal__head">
           <StatusBadge
-            label={claimed ? "Claimed" : "Unclaimed"}
-            badgeStyle={claimed ? "pending" : "awaitingClaim"}
+            label={LINK_STATUS_LABEL[link.status]}
+            badgeStyle={BADGE_STYLE[link.status]}
           />
-          {link.amount && <span className="ww-claim-modal__amount">${link.amount}</span>}
+          {loading ? (
+            <BalanceSkeleton />
+          ) : (
+            link.amount && <span className="ww-claim-modal__amount">${link.amount}</span>
+          )}
           <div className="ww-claim-modal__copy">
             <span className="ww-claim-modal__title">Claim your payment</span>
             <span className="ww-claim-modal__sub">
-              {claimed
-                ? "This link has been used: claimed, or cancelled by the sender. It can't be claimed again."
+              {closed
+                ? closed
                 : link.flavor === "email"
                 ? `Confirm ${link.email ?? "your email"} to securely receive funds in your account`
                 : "Accept to receive funds in your account"}
@@ -80,7 +98,11 @@ export function ClaimLinkModal({
         </div>
 
         <div className="ww-review-card">
-          {link.memo && <ConfirmationSheetDetailRow label="Note" value={link.memo} />}
+          {/* Always shown: the note arrives after the modal opens, and a row that comes or goes shifts the buttons. */}
+          <ConfirmationSheetDetailRow
+            label="Note"
+            value={loading ? <TextSkeleton /> : link.memo || "—"}
+          />
           <ConfirmationSheetDetailRow label="Date" value={rowTimestamp(Date.now())} />
           {link.txHash && (
             <ConfirmationSheetDetailRow
@@ -100,14 +122,19 @@ export function ClaimLinkModal({
           )}
         </div>
 
-        {claimed ? (
+        {closed ? (
           <PrimaryGradientButton title="Go to wallet" buttonStyle="dark" onClick={onClose} />
-        ) : claimableInSec != null ? (
+        ) : onRetryRead ? (
+          <div className="ww-claim-modal__actions">
+            <span className="ww-claim-modal__sub">
+              Couldn't check when this link can be claimed.
+            </span>
+            <PrimaryGradientButton title="Try again" buttonStyle="dark" onClick={onRetryRead} />
+          </div>
+        ) : claimWait ? (
           <div className="ww-claim-modal__actions">
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              <span className="ww-claim-modal__sub">
-                {`Ready to claim in ${formatClaimCountdown(claimableInSec)}`}
-              </span>
+              <span className="ww-claim-modal__sub">{countdown}</span>
               <span className="ww-claim-modal__sub">
                 New links wait a moment so the sender can cancel a mistake.
               </span>
@@ -120,6 +147,7 @@ export function ClaimLinkModal({
               <button
                 type="button"
                 className="zkm-btn-reset ww-claim-modal__alt"
+                disabled={timingPending}
                 onClick={onClaimToL1}
               >
                 Claim to an Ethereum wallet instead
@@ -149,6 +177,7 @@ export function ClaimLinkModal({
               <button
                 type="button"
                 className="zkm-btn-reset ww-claim-modal__alt"
+                disabled={timingPending}
                 onClick={onClaimToL1}
               >
                 Claim to an Ethereum wallet instead
@@ -188,10 +217,11 @@ export function ClaimProvingModal({
                 {passkey === "signing"
                   ? SIGNING_LABEL
                   : (beat ?? "building") === "building" && child
-                    ? child
-                    : BEAT_LABEL[beat ?? "building"]}
+                  ? child
+                  : BEAT_LABEL[beat ?? "building"]}
               </span>
             </div>
+            {/* Cancel is offered only while nothing has moved; the warning takes over after. */}
             {onCancel ? (
               <PrimaryGradientButton title="Cancel" buttonStyle="dark" onClick={onCancel} />
             ) : (

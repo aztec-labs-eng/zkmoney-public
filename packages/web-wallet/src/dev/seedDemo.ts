@@ -29,8 +29,11 @@ import { getWithdrawalStore } from "../features/withdraw/withdrawGateway"
 import { loadWalletIdentity, saveWalletIdentity } from "../features/identity/walletIdentity"
 import { getAuthService } from "../platform/auth/useAuthenticator"
 import { WebPasskeyIdentityMap } from "../platform/auth/WebPasskeyIdentityMap"
+import { activateTab } from "../platform/storage/activeTab"
 import { contactsWriteLock, requestsWriteLock } from "../platform/storage/contactsLock"
 import { WebStorageAdapter, WEB_STORAGE_PREFIX } from "../platform/storage/WebStorageAdapter"
+import { deviceStorage } from "../platform/storage/rollupStorage"
+import { walletStorage } from "../platform/storage/walletStorage"
 import {
   disableDemoMode,
   DEMO_DEFAULT_SCENARIO,
@@ -66,12 +69,14 @@ import { installL1RpcStub, registerDemoSipaPrediction } from "./fakeL1Rpc"
  */
 function resetWalletStorage(): void {
   // Both prefixes: front-core's stores go through the adapter, while the identity record and the
-  // UI prefs are written directly. A hidden-balance pref left behind would blank the seeded figure.
-  for (const key of Object.keys(localStorage)) {
+  // session are written directly.
+  for (const key of walletStorage.keys()) {
     if (key.startsWith(WEB_STORAGE_PREFIX) || key.startsWith("webwallet.")) {
-      localStorage.removeItem(key)
+      walletStorage.removeItem(key)
     }
   }
+  // A hidden-balance pref left behind would blank the seeded figure.
+  deviceStorage.removeItem("webwallet.hide-balances")
 }
 
 /**
@@ -99,7 +104,7 @@ async function seedIdentity(rpId: string): Promise<void> {
       webauthnData: { credentialId: DEMO_CREDENTIAL_ID, pubkey: DEMO_PASSKEY_PUBKEY_HEX },
     },
   })
-  saveWalletIdentity({ handle: DEMO_HANDLE, address: DEMO_L2_ADDRESS, claimedAt: Date.now() })
+  await saveWalletIdentity({ handle: DEMO_HANDLE, address: DEMO_L2_ADDRESS, claimedAt: Date.now() })
 }
 
 /** Token row + scoped balance record — the pair `useAsset` hydrates the home figure from. */
@@ -209,6 +214,8 @@ export async function seedDemo(scenario: DemoScenario): Promise<boolean> {
     return false
   }
 
+  // Demo mode runs no active-tab lifecycle, so the seed marks this page as the active tab.
+  activateTab()
   const now = Date.now()
   console.info(`[demo] seeding scenario "${scenario}" — this origin's wallet state is replaced`)
   console.info(demoHelp())

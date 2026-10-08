@@ -275,6 +275,8 @@ describe("bubbleViewOf", () => {
     expect(bubbleViewOf("request-in").label).toBe("You owe")
     expect(bubbleViewOf("request-declined").label).toBe("Declined")
     expect(bubbleViewOf("sent-pending").label).toBe("Pending")
+    expect(bubbleViewOf("sent-failed").label).toBe("Failed")
+    expect(bubbleViewOf("received-failed").label).toBe("Not received")
   })
 
   it("sides outgoing right, tints declined red + struck", () => {

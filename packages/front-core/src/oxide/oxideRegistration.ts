@@ -11,11 +11,12 @@ import type { LegacySipaDeployArgs } from "@oxide/l1-contracts/legacy_sipa.js"
  *
  * One machine, two entry points. `startOxideRegistrationSession` prechecks the name, derives the
  * registration SIPA, obtains the NameClaim (+ signed terms) and the consent signature,
- * persists an `awaiting_deposit` record, and broadcasts the SIPA to relayers — returning the deposit
- * address for the UI to fund. `resumeOxideRegistration` ticks the pending record from ANY point to
- * on-chain confirmation: it reads the Registry (authoritative), observes the deposit and sweep for
- * progress, and re-broadcasts (re-deriving the consent and re-requesting the claim) when the relayer
- * never heard about the SIPA. The record exists before the claim, so no crash strands a registration.
+ * persists an `awaiting_deposit` record, and returns the deposit address with the broadcast payload,
+ * which the sheet that shows the address owes to the broadcast ledger. `resumeOxideRegistration`
+ * ticks the pending record from ANY point to on-chain confirmation: it reads the Registry
+ * (authoritative) and observes the deposit and sweep for progress; a forced tick re-derives the
+ * consent and re-requests the claim. The record exists before the claim, so no crash strands a
+ * registration.
  *
  * Pure over injected collaborators (claim server client, L1 reader, SIPA deriver, broadcaster,
  * deposit reader) so the full sequence is testable without HTTP/RPC/real passkeys. Deterministic
@@ -39,16 +40,13 @@ import {
 } from "@obsidion/sdk"
 
 import { composeWireNameHash } from "../core/services/wireDomain"
-import { isRegistrationEscalated, isTerminalRegistrationPhase } from "../core/services/registration"
+import { isTerminalRegistrationPhase } from "../core/services/registration"
 import type {
   PendingRegistrationPhase,
   PendingRegistrationRecord,
 } from "../core/services/registration"
-import type {
-  AccountServiceClient,
-  NameClaimResponse,
-  SignedTermsResponse,
-} from "./accountServiceClient"
+import type { NameClaimResponse, SignedTermsResponse } from "@obsidion/core/types"
+import type { AccountServiceClient } from "./accountServiceClient"
 import {
   AccountServiceError,
   isClaimAttemptsExhausted,
@@ -232,7 +230,10 @@ export interface RegistrationBroadcastPayload {
  * rides a sponsored L2 tx): web's impl is `createWebRegistrationBroadcaster`, over `buildSipaBroadcast`
  * in the sdk.
  */
-export type RegistrationBroadcaster = (payload: RegistrationBroadcastPayload) => Promise<void>
+export type RegistrationBroadcaster = (
+  payload: RegistrationBroadcastPayload,
+  attempt?: { operationId?: string; onTxHash?: (txHash: string) => Promise<void> },
+) => Promise<string>
 
 export type OxideRegistrationStage = "derive" | "claim" | "broadcast"
 
@@ -247,13 +248,9 @@ function retryDelayMs(err: unknown, floorMs: number): number {
 }
 
 // Detection cadences. Confirmation (registry read) opens the in-app gate, so the loops sit at
-// seconds. The re-broadcast branch backs off further so a relayer outage is not hammered.
+// seconds; a failing dependency gets the transient window.
 export const RESUME_TRANSIENT_RETRY_MS = 30_000
 const RESUME_DETECT_POLL_MS = 5_000
-/** After the deposit is funded, how long to wait for the sweep before re-broadcasting. */
-export const AWAITING_SWEEP_WINDOW_MS = 3 * 60_000
-/** How long a started broadcast is the proving session's alone before a tick may broadcast again. */
-export const BROADCAST_IN_FLIGHT_MS = 10 * 60_000
 
 export const signedTermsStruct = (terms?: SignedTermsResponse): SignedTermsArg =>
   terms
@@ -387,8 +384,8 @@ export interface PendingRegistrationStoreLike {
  * L1 deposit/sweep reads for a registration SIPA — the progress signal behind the registry read.
  *
  * What the tick expects of the set: `readBalance` and `floor` may each come back without a figure.
- * Either gap leaves the funding verdict unknown, so the record keeps its phase and only a positive
- * balance nudges a re-broadcast. `readSweeps` and `scheduleFee` must produce a value; a rejection
+ * Either gap leaves the funding verdict unknown, so the record keeps its phase. `readSweeps` and
+ * `scheduleFee` must produce a value; a rejection
  * there ends the tick on its transient retry.
  */
 export interface RegistrationDepositReader {
@@ -406,7 +403,7 @@ export interface RegistrationDepositReader {
   scheduleFee(): Promise<bigint>
 }
 
-/** What a re-broadcast cycle needs — loaded lazily, only when a tick actually enters that branch. */
+/** What rebuilding a broadcast needs: the unlocked wallet's keys and the claim server. */
 export interface OxideSignDeps {
   masterSecret: FieldLike
   accountService: OxideAccountServiceRoutes
@@ -415,10 +412,9 @@ export interface OxideSignDeps {
   passkey?: AccountPasskey
   /** The passkey credential id (base64url) — the install's `addAuthKey` metadata. */
   credentialId: string
-  /** L1 reads the re-broadcast rebuild needs (the AccountMetadataRegistry pointer + the install op hash). */
+  /** L1 reads a broadcast rebuild needs (the AccountMetadataRegistry pointer + the install op hash). */
   l1: RegistrationL1Reads
   deriveRegistrationSipa: RegistrationSipaDeriver
-  broadcast: RegistrationBroadcaster
   persistStealthScalar?: (scalar: bigint) => Promise<void>
   /** Records the deposit's claim inputs for the SIPA rail (self-initiated intent tracking). */
   seedSipaDeposit?: (seed: RegistrationSipaSeed) => Promise<void>
@@ -448,7 +444,6 @@ export interface OxideRegistrationDeps {
   seedSipaDeposit?: (seed: RegistrationSipaSeed) => Promise<void>
   l1: RegistrationL1Reads
   deriveRegistrationSipa: RegistrationSipaDeriver
-  broadcast: RegistrationBroadcaster
   /** Optional: persist the stealth scalar. SP-B can also re-derive it from the wallet secret. */
   persistStealthScalar?: (scalar: bigint) => Promise<void>
   onStage?: (stage: OxideRegistrationStage) => void
@@ -460,12 +455,6 @@ export interface OxideRegistrationSessionDeps extends OxideRegistrationDeps {
   resolveLocalTag?: (nameHash: Hex) => Promise<string | null>
   /** ms clock, injectable for tests. */
   now?: () => number
-  /**
-   * Return `awaiting_deposit` as soon as the record is checkpointed instead of holding the session
-   * through the broadcast (client proving + a block). The broadcast continues after the return,
-   * stamps `broadcast: true` on landing, and reports through the result's `broadcastDone`.
-   */
-  deferBroadcast?: boolean
   /** Written with the record at its checkpoint: the entry a verified refund of the prior address bought. */
   refundedEntry?: PendingRegistrationRecord["refundedEntry"]
   /** Written with the record at its checkpoint: the address this session replaces. */
@@ -479,13 +468,17 @@ export interface OxideResumeDeps {
   l1: RegistrationL1Reads
   deposits: RegistrationDepositReader
   pendingStore: PendingRegistrationStoreLike
-  /** Lazy + account-scoped: called only when a tick enters the re-sign branch (a re-broadcast, or a
-   *  forced tick renewing a spent-rail record's claim). Return null (or throw) when secrets are
-   *  unavailable — the tick stays pending and no retry budget is spent. */
+  /** Lazy + account-scoped: called only for a forced tick renewing a spent-rail record's claim.
+   *  Return null (or throw) when secrets are unavailable — the tick stays pending. */
   getSignDeps?: (record: PendingRegistrationRecord) => Promise<OxideSignDeps | null>
-  /** Whether the record's broadcast mined: its discovery `SIPA` event is in the PXE. Throw when it
-   *  cannot tell (locked, unseeded, no PXE) — the tick then spends nothing. */
-  broadcastSeen?: (record: PendingRegistrationRecord) => Promise<boolean>
+  /**
+   * Owes the record's broadcast to the ledger, for a forced tick: the user asked from the sheet that
+   * shows the address. Idempotent. `payload` is one this tick just signed; `now` drops the backoff.
+   */
+  oweBroadcast?: (
+    record: PendingRegistrationRecord,
+    owed?: { payload?: RegistrationBroadcastPayload; now?: boolean },
+  ) => Promise<void>
   resolveLocalTag?: (nameHash: Hex) => Promise<string | null>
   now?: () => number
 }
@@ -514,12 +507,8 @@ export type OxideSessionResult =
       claim: NameClaimResponse
       terms?: SignedTermsResponse
       payload: RegistrationBroadcastPayload
-      /** Deferred-broadcast sessions only: resolves true when the started broadcast lands, false if
-       *  it failed. Settles nothing until `startBroadcast` is called. */
-      broadcastDone?: Promise<boolean>
-      /** Deferred-broadcast sessions only: proves and sends the broadcast, once; every call returns
-       *  the same landing. The deposit address is good before it, so the caller picks the moment. */
-      startBroadcast?: () => Promise<boolean>
+      /** The caller owes this payload's broadcast; false when a predecessor spent the rail. */
+      broadcastOwed: boolean
     }
   | { status: "taken"; reason: NameTakenReason }
   /** The account already holds a different name on-chain — the chain wins. `name` is set only when a
@@ -665,7 +654,6 @@ async function sessionBody(deps: OxideRegistrationSessionDeps): Promise<OxideSes
       fundingTxHash: undefined,
       sweptAt: undefined,
       sweepTxHash: undefined,
-      lastBroadcastAt: undefined,
       nextAttemptAt: undefined,
       endTime: undefined,
       ...(deps.refundedEntry ? { refundedEntry: deps.refundedEntry } : {}),
@@ -702,59 +690,13 @@ async function sessionBody(deps: OxideRegistrationSessionDeps): Promise<OxideSes
   )
   const payload = assemblePayload(derivation, claim, consentSig, r1Install, bootstrap.address)
 
-  deps.onStage?.("broadcast")
-  // A failed broadcast is resumable, not fatal: the deposit address is valid (funds wait at the
-  // counterfactual address), and a later tick re-broadcasts. Never fails the session.
-  // A deferred broadcast can land after the account moved to another address: the rail's one use
-  // then went to this address, which the current one records instead of claiming the broadcast.
-  const runBroadcast = async () => {
-    await pendingStore.upsert(oxideAccount, { broadcastStartedAt: Date.now() }).catch(() => {})
-    return deps.broadcast(payload).then(
-      async () => {
-        const current = pendingStore.get(oxideAccount)
-        const patch: Partial<PendingRegistrationRecord> =
-          !current || eqAddr(current.sipaAddress, derivation.sipaAddress)
-            ? { broadcast: true, lastBroadcastAt: Date.now(), broadcastStartedAt: undefined }
-            : {
-                broadcastStartedAt: undefined,
-                replaced: {
-                  sipaAddress: current.replaced?.sipaAddress ?? derivation.sipaAddress,
-                  refunded: current.replaced?.refunded ?? false,
-                  broadcastSpent: true,
-                },
-              }
-        await pendingStore.upsert(oxideAccount, patch).catch(() => {})
-        return true
-      },
-      async (err) => {
-        logger.warn("[oxideRegistration] broadcast failed; deposit address still valid:", err)
-        await pendingStore.upsert(oxideAccount, { broadcastStartedAt: undefined }).catch(() => {})
-        return false
-      },
-    )
-  }
-  // A predecessor that spent the account's one-shot rail leaves nothing to broadcast.
-  const spent = deps.replaced?.broadcastSpent === true
-  // Deferred: the proof waits for `startBroadcast`, so the caller picks the moment it costs the
-  // page; `broadcastDone` reports that started broadcast's landing and nothing before it.
-  const deferred = deps.deferBroadcast === true && !spent
-  let started: Promise<boolean> | undefined
-  let signalStart!: () => void
-  const startSignal = new Promise<void>((resolve) => (signalStart = resolve))
-  const startBroadcast = deferred
-    ? () => {
-        started ??= runBroadcast()
-        signalStart()
-        return started
-      }
-    : undefined
-  const broadcastDone = deferred ? startSignal.then(() => started!) : undefined
-  if (!deferred && !spent) await runBroadcast()
-
+  // The broadcast is the ledger's: the caller owes it, and it retries until it lands. A predecessor
+  // that spent the account's one-shot rail leaves nothing to broadcast.
+  const broadcastOwed = deps.replaced?.broadcastSpent !== true
   logger.info(
     "[oxideRegistration] awaiting deposit at",
     derivation.sipaAddress,
-    `(session ${Date.now() - t0}ms${broadcastDone ? ", broadcast deferred" : ""})`,
+    `(session ${Date.now() - t0}ms)`,
   )
   return {
     status: "awaiting_deposit",
@@ -765,8 +707,7 @@ async function sessionBody(deps: OxideRegistrationSessionDeps): Promise<OxideSes
     claim,
     terms: claim.terms,
     payload,
-    broadcastDone,
-    startBroadcast,
+    broadcastOwed,
   }
 }
 
@@ -828,7 +769,6 @@ async function resumeTickBody(
   }
   if (record.l1ChainId !== env.l1ChainId) return "pending"
 
-  const escalated = isRegistrationEscalated(record, now())
   if (!opts.force && record.nextAttemptAt !== undefined && now() < record.nextAttemptAt) {
     return "pending"
   }
@@ -891,9 +831,15 @@ async function resumeTickBody(
 
   if (swept && record.sweptAt === undefined) {
     // The sweep landed but the registry read above is still zero (RPC lag / reorg window): stamp it
-    // and keep polling the registry, which is the authoritative close.
+    // and keep polling the registry, which is the authoritative close. A sweep only succeeds on a
+    // deposit at the floor, so a swept record is funded even when no tick saw the funds first.
     await pendingStore
-      .upsert(account, { sweptAt: now(), sweepTxHash: sweeps[0].txHash })
+      .upsert(account, {
+        sweptAt: now(),
+        sweepTxHash: sweeps[0].txHash,
+        fundedAt: record.fundedAt ?? now(),
+        phase: "funded",
+      })
       .catch(() => {})
     return backoff(RESUME_DETECT_POLL_MS)
   }
@@ -904,59 +850,87 @@ async function resumeTickBody(
       .catch(() => {})
   }
 
-  // ── Re-broadcast branch: the relayer never heard about the SIPA. Needs sign deps (re-derive
-  //    consent, re-request the claim). ──
-  // `broadcast` is stamped at submission, not inclusion. Once the window since the last broadcast
-  // has passed with no sweep, the mined `SIPA` event decides: absent means the tx never landed and
-  // the one-shot registration rail is still unspent, so broadcast again; present means the relayer
-  // already heard it, and a second broadcast the rail would refuse buys nothing. Without the event
-  // read, a funded record is nudged on the window, and one whose verdict is unknown is nudged on
-  // any positive balance.
-  // Paced off the last broadcast, not off `fundedAt`: `fundedAt` never moves, so keying the nudge
-  // on it re-broadcasts on EVERY poll once the window has passed — a client proof each time.
-  // A record whose predecessor spent the rail has nothing to re-broadcast, whatever the event
-  // read says: only a manual sweep registers it. Its sign half serves the reservation alone, so
-  // only a forced tick (the user renewing a lapsed claim) runs it.
+  // ── The broadcast is the ledger's, owed by the surface that shows the address; a tick only reads.
+  //    A forced tick (the user refreshing a lapsed quote, or retrying) re-signs the claim now and
+  //    hands the ledger the fresh payload. A record whose predecessor spent the account's one-shot
+  //    rail has nothing to publish: only a manual sweep registers it, and a forced tick only
+  //    renews its claim. ──
   const spent = record.replaced?.broadcastSpent === true
-  if (spent && !opts.force) return backoff(RESUME_DETECT_POLL_MS)
-  const lastNudge = record.lastBroadcastAt ?? record.fundedAt
-  const windowPassed = lastNudge !== undefined && now() - lastNudge > AWAITING_SWEEP_WINDOW_MS
-  let needsBroadcast = !record.broadcast
-  if (!needsBroadcast && windowPassed && !swept) {
-    needsBroadcast = deps.broadcastSeen
-      ? !(await deps.broadcastSeen(record).catch(() => true))
-      : funded ?? (balance !== undefined && balance > 0n)
-  }
-  // A broadcast a session is still proving is not missing: inside its window the tick leaves it.
-  const inFlight =
-    record.broadcastStartedAt !== undefined &&
-    now() - record.broadcastStartedAt < BROADCAST_IN_FLIGHT_MS
-  if (needsBroadcast && inFlight && !opts.force) return backoff(RESUME_DETECT_POLL_MS)
-  // A tick that learned nothing and could not read the deposit asks for the transient window: the
-  // detect cadence would only hammer an RPC that just failed to answer.
-  if (!needsBroadcast)
+  const sweptBefore = record.sweptAt !== undefined || record.sweepTxHash !== undefined
+  if (swept || sweptBefore || (spent && !opts.force)) return backoff(RESUME_DETECT_POLL_MS)
+  if (!opts.force || (!spent && record.broadcast))
     return backoff(unreadDeposit ? RESUME_TRANSIENT_RETRY_MS : RESUME_DETECT_POLL_MS)
-  if (escalated && !opts.force) return backoff(RESUME_TRANSIENT_RETRY_MS)
-
   let signDeps: OxideSignDeps | null = null
   try {
     signDeps = (await deps.getSignDeps?.(record)) ?? null
   } catch {
     signDeps = null
   }
-  // Blocked (locked wallet, no provider wired): stay pending, zero budget.
-  if (!signDeps) return backoff(RESUME_TRANSIENT_RETRY_MS)
+  if (!signDeps) {
+    if (!spent) await deps.oweBroadcast?.(record, { now: true }).catch(() => {})
+    return backoff(RESUME_TRANSIENT_RETRY_MS)
+  }
+  const rebuilt = await rebuildBody(deps, record, signDeps)
+  if (rebuilt.kind === "closed") return rebuilt.outcome
+  if (rebuilt.kind === "payload") {
+    await deps.oweBroadcast?.(record, { payload: rebuilt.payload, now: true }).catch(() => {})
+  }
+  return backoff(rebuilt.kind === "wait" ? rebuilt.ms : RESUME_DETECT_POLL_MS)
+}
+
+// ── Rebuilding a broadcast ──────────────────────────────────────────────────────
+
+/**
+ * `payload`: ready to send. `spent`: the rail was spent by a predecessor, so the claim was renewed
+ * and nothing is published. `wait`: not possible yet, ask again in `ms`. `closed`: the record ended
+ * (the name was lost, the claim budget ran out, or its address no longer derives), so nothing is
+ * owed.
+ */
+export type RegistrationRebuild =
+  | { kind: "payload"; payload: RegistrationBroadcastPayload }
+  | { kind: "spent" }
+  | { kind: "wait"; ms: number; reason: string }
+  | { kind: "closed"; outcome: "failed" | "taken" }
+
+/**
+ * The broadcast for a record whose session payload is gone: its committed address is re-derived,
+ * the claim re-requested and the consent re-signed. Serialized with sessions and ticks, which also
+ * request claims.
+ */
+export function rebuildRegistrationBroadcast(
+  deps: Pick<OxideResumeDeps, "env" | "l1" | "deposits" | "pendingStore" | "now">,
+  record: PendingRegistrationRecord,
+  signDeps: OxideSignDeps,
+): Promise<RegistrationRebuild> {
+  return serialize(() => {
+    const current = deps.pendingStore.get(record.account)
+    if (!current || isTerminalRegistrationPhase(current.phase))
+      return Promise.resolve<RegistrationRebuild>({ kind: "closed", outcome: "failed" })
+    return rebuildBody(deps, current, signDeps)
+  })
+}
+
+async function rebuildBody(
+  deps: Pick<OxideResumeDeps, "env" | "l1" | "deposits" | "pendingStore" | "now">,
+  record: PendingRegistrationRecord,
+  signDeps: OxideSignDeps,
+): Promise<RegistrationRebuild> {
+  const { env, l1, deposits, pendingStore } = deps
+  const account = record.account as Address
+  const nameHash = record.nameHash as Hex
+  const wait = (ms: number, reason: string): RegistrationRebuild => ({ kind: "wait", ms, reason })
 
   // Account-scoped: the unlocked secret must derive THIS record's account.
   const bootstrap = deriveBootstrapKey(signDeps.masterSecret)
   const predicted = await l1.predictAccountAddress(env.factory, bootstrap.address as Address)
-  if (!eqAddr(predicted, account)) return backoff(RESUME_TRANSIENT_RETRY_MS)
+  if (!eqAddr(predicted, account))
+    return wait(RESUME_TRANSIENT_RETRY_MS, "Another account is unlocked")
 
-  // Arm the cycle before anything is spent; a strict-write failure aborts.
+  // Counted before anything is spent; a strict-write failure aborts.
   try {
     await pendingStore.upsert(account, { retries: record.retries + 1 })
   } catch {
-    return backoff(RESUME_TRANSIENT_RETRY_MS)
+    return wait(RESUME_TRANSIENT_RETRY_MS, "Could not save the registration")
   }
 
   // The record's own committed payment, never a fresh quote: the SIPA address commits to it. A
@@ -990,17 +964,19 @@ async function resumeTickBody(
       record.fundedAt !== undefined ||
       record.sweptAt !== undefined ||
       record.fundingTxHash !== undefined
-    if (custodial) return backoff(RESUME_TRANSIENT_RETRY_MS)
+    if (custodial) return wait(RESUME_TRANSIENT_RETRY_MS, "The address no longer derives")
     // Those flags are written by deposit detection, which only ever polls the record's CURRENT
     // SIPA — so a deposit sent to the address this record is about to be dropped for leaves no
     // trace on it, and the record reads as clean. Ask the chain before discarding: money at the
-    // old address makes the record custodial no matter what the flags say.
+    // old address makes the record custodial no matter what the flags say. An unread balance is
+    // no proof the address is empty, so the record holds for a read that can tell.
     const held = await deposits
       .readBalance(record.sipaAddress as Address, env.feeToken as Address)
-      .catch(() => 0n)
-    if (held > 0n) return backoff(RESUME_TRANSIENT_RETRY_MS)
+      .catch(() => undefined)
+    if (held === undefined || held > 0n)
+      return wait(RESUME_TRANSIENT_RETRY_MS, "The address no longer derives")
     await pendingStore.remove(account).catch(() => {})
-    return "failed"
+    return { kind: "closed", outcome: "failed" }
   }
   await signDeps
     .seedSipaDeposit?.({
@@ -1019,59 +995,71 @@ async function resumeTickBody(
   } catch (err) {
     if (isClaimAttemptsExhausted(err)) {
       await pendingStore.close(account, "failed_terminal")
-      return "failed"
+      return { kind: "closed", outcome: "failed" }
     }
     if (isNameReserved(err) || isNameBlocked(err)) {
       await pendingStore.close(account, "failed_taken")
-      return "taken"
+      return { kind: "closed", outcome: "taken" }
     }
-    return backoff(retryDelayMs(err, RESUME_TRANSIENT_RETRY_MS))
+    return wait(retryDelayMs(err, RESUME_TRANSIENT_RETRY_MS), "The claim server did not answer")
   }
 
   // The re-issued quote must price the fee the address committed to: the sweep pays exactly that
   // fee and the controller refuses any other, so a payload carrying different terms cannot land.
   const quotedFee = claim.terms ? BigInt(claim.terms.fee) : await deposits.scheduleFee()
   if (quotedFee !== committed.fee) {
-    logger.warn(
-      "[oxideRegistration] re-issued quote does not match the committed fee; not re-broadcasting",
-      {
-        committed: committed.fee.toString(),
-        quoted: quotedFee.toString(),
-      },
-    )
-    return backoff(RESUME_TRANSIENT_RETRY_MS)
+    logger.warn("[oxideRegistration] re-issued quote does not match the committed fee", {
+      committed: committed.fee.toString(),
+      quoted: quotedFee.toString(),
+    })
+    return wait(RESUME_TRANSIENT_RETRY_MS, "The quote no longer matches the address")
   }
   // The renewed claim is all a spent rail gets: nothing to publish.
-  if (spent) return backoff(RESUME_DETECT_POLL_MS)
+  if (record.replaced?.broadcastSpent === true) return { kind: "spent" }
 
-  try {
-    const consentSig = await consentFor(
-      signDeps.masterSecret,
-      account,
-      derivation,
-      env,
-      l1,
-      signDeps.passkey,
-    )
-    const r1Install = await buildRegistrationR1Install(
-      signDeps.masterSecret,
-      account,
-      env,
-      signDeps.l1,
-      signDeps.r1Key,
-      signDeps.credentialId,
-    )
-    await pendingStore.upsert(account, { broadcastStartedAt: now() }).catch(() => {})
-    await signDeps.broadcast(
-      assemblePayload(derivation, claim, consentSig, r1Install, bootstrap.address),
-    )
-    await signDeps.persistStealthScalar?.(derivation.stealthScalar)
-    await pendingStore
-      .upsert(account, { broadcast: true, lastBroadcastAt: now(), broadcastStartedAt: undefined })
-      .catch(() => {})
-  } catch (err) {
-    await pendingStore.upsert(account, { broadcastStartedAt: undefined }).catch(() => {})
-    return backoff(retryDelayMs(err, RESUME_TRANSIENT_RETRY_MS))
+  const consentSig = await consentFor(
+    signDeps.masterSecret,
+    account,
+    derivation,
+    env,
+    l1,
+    signDeps.passkey,
+  )
+  const r1Install = await buildRegistrationR1Install(
+    signDeps.masterSecret,
+    account,
+    env,
+    signDeps.l1,
+    signDeps.r1Key,
+    signDeps.credentialId,
+  )
+  await signDeps.persistStealthScalar?.(derivation.stealthScalar).catch(() => {})
+  return {
+    kind: "payload",
+    payload: assemblePayload(derivation, claim, consentSig, r1Install, bootstrap.address),
   }
-  return backoff(RESUME_DETECT_POLL_MS)
+}
+
+/**
+ * Stamps a sent registration broadcast on its record. One sent after the account moved to another
+ * address spent the account's one-shot rail on this address: the current record says so instead of
+ * claiming the broadcast.
+ */
+export async function recordRegistrationBroadcastSent(
+  pendingStore: PendingRegistrationStoreLike,
+  account: string,
+  sipaAddress: string,
+): Promise<void> {
+  const current = pendingStore.get(account)
+  if (!current) return
+  const patch: Partial<PendingRegistrationRecord> = eqAddr(current.sipaAddress, sipaAddress)
+    ? { broadcast: true }
+    : {
+        replaced: {
+          sipaAddress: current.replaced?.sipaAddress ?? sipaAddress,
+          refunded: current.replaced?.refunded ?? false,
+          broadcastSpent: true,
+        },
+      }
+  await pendingStore.upsert(account, patch)
 }

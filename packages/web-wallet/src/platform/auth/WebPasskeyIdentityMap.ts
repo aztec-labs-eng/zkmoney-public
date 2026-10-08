@@ -4,6 +4,7 @@ import {
   PASSKEY_IDENTITY_MAP_KEY as STORAGE_KEY,
   WEB_STORAGE_PREFIX,
 } from "../storage/WebStorageAdapter"
+import { walletStorage } from "../storage/walletStorage"
 import { withWebLock } from "../storage/webLock"
 const MAP_VERSION = 1
 const LOCK_NAME = "webwallet.passkey-identity-map"
@@ -20,7 +21,7 @@ type StoredMap = { version: number; entries: Record<string, StoredEntry> }
 
 function readMap(): StoredMap | undefined {
   try {
-    const raw = localStorage.getItem(WEB_STORAGE_PREFIX + STORAGE_KEY)
+    const raw = walletStorage.getItem(WEB_STORAGE_PREFIX + STORAGE_KEY)
     if (!raw) return undefined
     const parsed = JSON.parse(raw) as StoredMap
     return parsed.entries ? parsed : undefined
@@ -31,8 +32,8 @@ function readMap(): StoredMap | undefined {
 
 /**
  * Sync probe for route gating: does this device hold an MSK-root passkey
- * breadcrumb for `rpId`? Reads localStorage directly (the adapter is async but
- * localStorage-backed) so the router can gate without a loading frame. A
+ * breadcrumb for `rpId`? Reads the partition directly (the adapter is async but
+ * backed by the same store) so the router can gate without a loading frame. A
  * breadcrumb only proves a passkey WAS created here — deletion at the
  * authenticator is invisible until an assertion fails.
  */
@@ -104,11 +105,7 @@ export function rememberUsertag(
     const entry = map?.entries[credentialId]
     if (!map || entry?.rpId !== rpId || entry.usertag === usertag) return
     map.entries[credentialId] = { ...entry, usertag }
-    try {
-      localStorage.setItem(WEB_STORAGE_PREFIX + STORAGE_KEY, JSON.stringify(map))
-    } catch {
-      // A full localStorage only costs the hint.
-    }
+    await walletStorage.commitItem(WEB_STORAGE_PREFIX + STORAGE_KEY, JSON.stringify(map))
   })
 }
 

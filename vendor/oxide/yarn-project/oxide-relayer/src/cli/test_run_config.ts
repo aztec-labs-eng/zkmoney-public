@@ -44,6 +44,14 @@ export async function parseRunConfig(args: readonly string[], env: NodeJS.Proces
   });
 }
 
+/** Return the `run --help` text in an environment that holds only `env`. */
+export async function runHelpText(env: NodeJS.ProcessEnv = {}): Promise<string> {
+  return await withTestEnv(env, () => {
+    const program = createCliProgram(() => {});
+    return Promise.resolve(program.commands.find(command => command.name() === 'run')!.helpInformation());
+  });
+}
+
 function configureCommandForTest(command: Command, writeErr: (message: string) => void): void {
   command.exitOverride();
   command.configureOutput({

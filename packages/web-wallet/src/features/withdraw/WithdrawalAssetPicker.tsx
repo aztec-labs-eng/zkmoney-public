@@ -1,84 +1,75 @@
-import { useEffect, useId, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState, type RefObject } from "react"
 import { Icon } from "@obsidion/web-ds"
-import { getConfig } from "../../config/env"
-import { getOxideTuple } from "../../config/oxideTuple"
+import { useOxideTuple } from "./useOxideTuple"
 import {
-  WITHDRAWAL_RECEIVE_ASSETS,
   withdrawalReceiveAsset,
   withdrawalReceiveAssets,
   type WithdrawalReceiveAssetOption,
 } from "./withdrawAssets"
 import type { WithdrawalReceiveAsset } from "./withdrawAssets"
 
-/**
- * Which outputs this deployment can actually deliver, per its oxide manifest. DAI-only until the
- * tuple answers, so a slow or failed manifest fetch never offers a swap route the relayer cannot
- * execute.
- */
-function useReceiveAssetOptions(): readonly WithdrawalReceiveAssetOption[] {
-  const [options, setOptions] = useState<readonly WithdrawalReceiveAssetOption[]>(() =>
-    WITHDRAWAL_RECEIVE_ASSETS.filter((o) => o.direct),
-  )
-  useEffect(() => {
-    let active = true
-    void (async () => {
-      try {
-        const tuple = await getOxideTuple(getConfig())
-        if (active) setOptions(withdrawalReceiveAssets(tuple))
-      } catch {
-        // Stay DAI-only: a manifest we cannot read cannot promise a relayer either.
-      }
-    })()
-    return () => {
-      active = false
-    }
-  }, [])
-  return options
-}
-
-export function WithdrawalAssetPicker({
-  value,
-  onChange,
-  label = "Receive as",
-}: {
-  value: WithdrawalReceiveAsset
-  onChange: (asset: WithdrawalReceiveAsset) => void
-  label?: string
-}) {
-  const [open, setOpen] = useState(false)
-  const options = useReceiveAssetOptions()
-  const labelId = useId()
-  const listboxId = useId()
-  const selected = withdrawalReceiveAsset(value)
-  const anchorRef = useRef<HTMLDivElement>(null)
-  const triggerRef = useRef<HTMLButtonElement>(null)
-
+/** Closes an open picker on an outside press, or on Escape with focus back on its trigger. */
+export function usePickerDismiss(
+  open: boolean,
+  setOpen: (open: boolean) => void,
+  anchorRef: RefObject<HTMLElement | null>,
+  triggerRef: RefObject<HTMLElement | null>,
+) {
   useEffect(() => {
     if (!open) return
+    // A sheet that scrolls clips the list. jsdom has no scrollIntoView.
+    anchorRef.current?.lastElementChild?.scrollIntoView?.({ block: "nearest" })
     const onDown = (event: MouseEvent) => {
       if (!anchorRef.current?.contains(event.target as Node)) setOpen(false)
     }
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return
+      event.preventDefault()
+      event.stopPropagation()
       setOpen(false)
       triggerRef.current?.focus()
     }
-    document.addEventListener("mousedown", onDown)
-    document.addEventListener("keydown", onKey)
+    // Capture: a sheet around the picker stops presses and closes on Escape.
+    document.addEventListener("mousedown", onDown, true)
+    document.addEventListener("keydown", onKey, true)
     return () => {
-      document.removeEventListener("mousedown", onDown)
-      document.removeEventListener("keydown", onKey)
+      document.removeEventListener("mousedown", onDown, true)
+      document.removeEventListener("keydown", onKey, true)
     }
-  }, [open])
+  }, [open, setOpen, anchorRef, triggerRef])
+}
+
+/** A labeled listbox over the given output choices; closes on an outside press or Escape. */
+export function AssetPicker<A extends WithdrawalReceiveAsset>({
+  value,
+  options,
+  onChange,
+  label = "Receive as",
+  inline,
+}: {
+  value: A
+  options: readonly (WithdrawalReceiveAssetOption & { id: A })[]
+  onChange: (asset: A) => void
+  label?: string
+  /** Sits inside another field: the label names the button without showing. */
+  inline?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const listboxId = useId()
+  const selected = withdrawalReceiveAsset(value)
+  const anchorRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+
+  usePickerDismiss(open, setOpen, anchorRef, triggerRef)
 
   return (
     <div className="ww-deposit__fact" ref={anchorRef}>
-      <span id={labelId}>{label}</span>
+      {!inline && <span>{label}</span>}
       <button
         ref={triggerRef}
         type="button"
         className="zkm-btn-reset ww-deposit__pill"
-        aria-labelledby={labelId}
+        aria-label={label}
         aria-haspopup="listbox"
         aria-expanded={open}
         aria-controls={listboxId}
@@ -89,7 +80,14 @@ export function WithdrawalAssetPicker({
         <Icon name={open ? "chevron-up" : "chevron-down"} size={16} />
       </button>
       {open && (
-        <div id={listboxId} className="ww-deposit__picker" role="listbox" aria-labelledby={labelId}>
+        <div
+          id={listboxId}
+          className="ww-deposit__picker"
+          role="listbox"
+          aria-label={label}
+          // A label around the picker would send a press on the padding to its input.
+          onClick={(event) => event.preventDefault()}
+        >
           {options.map((option) => (
             <button
               key={option.id}
@@ -114,4 +112,14 @@ export function WithdrawalAssetPicker({
       )}
     </div>
   )
+}
+
+/** The web withdrawal's picker: what the manifest can deliver, DAI-only until it answers. */
+export function WithdrawalAssetPicker(props: {
+  value: WithdrawalReceiveAsset
+  onChange: (asset: WithdrawalReceiveAsset) => void
+  label?: string
+  inline?: boolean
+}) {
+  return <AssetPicker {...props} options={withdrawalReceiveAssets(useOxideTuple() ?? {})} />
 }

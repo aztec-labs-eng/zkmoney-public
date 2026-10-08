@@ -5,8 +5,9 @@ import { RunningPromise } from '@aztec/foundation/running-promise';
 
 import { OxidePortalContract, ProverClaim, toProverTipClaim } from '@oxide/l1-contracts/oxide_portal.js';
 
-import { maxUint256 } from 'viem';
+import { type FeeValuesEIP1559, maxUint256 } from 'viem';
 
+import { isAboveMaxFeePerGas } from '../../l1/l1_tx_queue.js';
 import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
 import { MAX_ITEMS_PER_BATCH, selectProfitableBatch, sortByTipDescending } from '../batch_selection.js';
 import { ProverClaimPortalConfig } from '../prover_claim_lib/index.js';
@@ -20,8 +21,10 @@ export interface ProfitableClaimBatchSubmitterOptions {
   portals: ProverClaimPortalConfig[];
   backlog: ProverClaimBacklog;
   priceOracle: ChainlinkPriceOracle;
-  /** The per-gas price the batch tx is expected to pay. */
-  getEffectiveGasPriceWei: () => Promise<bigint>;
+  /** The fee values of the batch tx. The batch is priced at their `maxFeePerGas`, the most that the tx can pay per gas. */
+  getFeeValues: () => Promise<FeeValuesEIP1559>;
+  /** Operator cap on `maxFeePerGas`, in wei. The batch is deferred while its fee values are above it. */
+  maxFeePerGasCap?: bigint;
   publisher: BatchPublisher;
   /**
    * Account the gas simulation runs as, and the account that must sign the batch. It must be the prover:
@@ -47,6 +50,8 @@ export class ProfitableClaimBatchSubmitter {
   private readonly loops: RunningPromise[] = [];
   private readonly portals = new Map<string, ProverClaimPortalConfig>();
   private readonly log: Logger;
+  /** Set while the fee is above the cap, so the deferral logs at info once for each spike. */
+  #aboveMaxFeePerGas = false;
 
   constructor(private readonly options: ProfitableClaimBatchSubmitterOptions) {
     this.log = options.log ?? createLogger('atlatl:prover-claim-batch-submitter');
@@ -146,6 +151,19 @@ export class ProfitableClaimBatchSubmitter {
   }
 
   async #evaluatePortal(portal: ProverClaimPortalConfig, claims: PendingProverClaim[]): Promise<void> {
+    const feeValues = await this.options.getFeeValues();
+    if (isAboveMaxFeePerGas(this.options, feeValues.maxFeePerGas)) {
+      // The claims stay backlogged for the next poll, or expire while the fee stays above the cap.
+      const write = this.#aboveMaxFeePerGas ? this.log.debug : this.log.info;
+      write.call(
+        this.log,
+        `Deferring ${claims.length} prover claim(s): max fee per gas ${feeValues.maxFeePerGas} is above the cap`,
+      );
+      this.#aboveMaxFeePerGas = true;
+      return;
+    }
+    this.#aboveMaxFeePerGas = false;
+
     // Only the highest-tipped claims can make a batch, and assembly signs with the TEE, so bound the work to
     // what a single batch could carry.
     const shortlist = sortByTipDescending(claims, claim => claim.claim.rewardContext.tip).slice(0, MAX_ITEMS_PER_BATCH);
@@ -154,15 +172,14 @@ export class ProfitableClaimBatchSubmitter {
       return;
     }
 
-    const effectiveGasPriceWei = await this.options.getEffectiveGasPriceWei();
-    const quote = this.#quoteFor(portal, effectiveGasPriceWei);
+    const quote = this.#quoteFor(portal, feeValues.maxFeePerGas);
 
     // A claim whose tip does not cover its own marginal gas is left for a cheaper block rather than riding
     // along on the fat tips beside it.
     const { batch } = await selectProfitableBatch(assembled, quote, {
       tipOf: claim => claim.claim.rewardContext.tip,
       minProfit: this.options.minBatchProfit,
-      profitOf: async (gas, reward) => reward - (await this.options.priceOracle.weiToUSD(gas * effectiveGasPriceWei)),
+      profitOf: async (gas, reward) => reward - (await this.options.priceOracle.weiToUSD(gas * feeValues.maxFeePerGas)),
     });
 
     if (batch.length === 0) {
@@ -170,7 +187,7 @@ export class ProfitableClaimBatchSubmitter {
       return;
     }
 
-    await this.#publish(portal, batch);
+    await this.#publish(portal, batch, feeValues);
   }
 
   /** Assemble the claims that have no encoding yet. Cached on the backlog entry: assembly signs with the TEE. */
@@ -221,7 +238,7 @@ export class ProfitableClaimBatchSubmitter {
    */
   #quoteFor(
     portal: ProverClaimPortalConfig,
-    effectiveGasPriceWei: bigint,
+    maxFeePerGas: bigint,
   ): (subset: readonly PendingProverClaim[]) => Promise<{ totalGas: bigint; subsidy: bigint }> {
     const portalContract = this.options.portal.getContract();
     const account = this.options.senderAddress.toString();
@@ -237,7 +254,7 @@ export class ProfitableClaimBatchSubmitter {
       // A non-zero gas price makes the node check the sender's balance, so override it.
       const { result } = await portalContract.simulate.claimProverTips(args, {
         account,
-        gasPrice: effectiveGasPriceWei,
+        gasPrice: maxFeePerGas,
         stateOverride: [{ address: account, balance: maxUint256 }],
       });
       return { totalGas, subsidy: result };
@@ -251,7 +268,11 @@ export class ProfitableClaimBatchSubmitter {
    * and can rule the claim out entirely. Re-building here keeps that check next to the send. It does not move
    * the quote, because only the proof-length word can change and that does not alter the encoded size.
    */
-  async #publish(portal: ProverClaimPortalConfig, batch: PendingProverClaim[]): Promise<void> {
+  async #publish(
+    portal: ProverClaimPortalConfig,
+    batch: PendingProverClaim[],
+    feeValues: FeeValuesEIP1559,
+  ): Promise<void> {
     this.options.backlog.update(batch.map(claim => ({ ...claim, status: 'publishing' as const })));
 
     const rebuilt = await Promise.all(batch.map(claim => this.#build(portal, claim, /* force */ true)));
@@ -271,6 +292,7 @@ export class ProfitableClaimBatchSubmitter {
       const { confirmed } = await this.options.publisher.publish(
         portal,
         claims.map(claim => claim.assembled as ProverClaim),
+        feeValues,
       );
       await confirmed;
       this.options.backlog.resolve(ids);

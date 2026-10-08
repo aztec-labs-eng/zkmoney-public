@@ -17,3 +17,7 @@ export const contactsWriteLock: StorageLock = webLock(CONTACTS_WRITE_LOCK)
 /** Guards RequestStorage. */
 const REQUESTS_WRITE_LOCK = "requests-write"
 export const requestsWriteLock: StorageLock = webLock(REQUESTS_WRITE_LOCK)
+
+/** Guards CampaignClaimNoticeStore. */
+const CAMPAIGN_CLAIM_NOTICES_WRITE_LOCK = "campaign-claim-notices-write"
+export const campaignClaimNoticesWriteLock: StorageLock = webLock(CAMPAIGN_CLAIM_NOTICES_WRITE_LOCK)

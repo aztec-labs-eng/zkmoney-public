@@ -125,9 +125,13 @@ test("registration keeps phone Close outside scrolling text and preserves paid a
           const dialog = page.getByRole("dialog", { name: "Account setup", exact: true })
           await page.keyboard.press("Tab")
           assert(await dialog.evaluate((node) => node.contains(document.activeElement)), "Tab stays in the registration dialog")
-          entry.dismissal = colorScheme === "dark" ? "Close" : "Escape"
-          if (entry.dismissal === "Close") await close.click()
-          else await page.keyboard.press("Escape")
+          // Onboarding stays open on Escape; only its Close control dismisses it.
+          await page.keyboard.press("Escape")
+          await settle(page)
+          assert(await card.isVisible(), "Escape leaves the registration sheet open")
+          assert(await page.locator("dialog:modal").count() > 0, "Escape leaves the native frame open")
+          entry.dismissal = "Close (Escape stays open)"
+          await close.click()
           await card.waitFor({ state: "detached" })
           assert.equal(await page.locator("dialog:modal").count(), 0, "dismissal closes the native frame")
           assert.notEqual(await page.evaluate(() => getComputedStyle(document.documentElement).overflow), "hidden", "dismissal releases document scrolling")

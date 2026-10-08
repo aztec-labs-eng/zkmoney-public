@@ -58,6 +58,11 @@ const RELEASED_PHASES: ReadonlySet<WithdrawalPhase> = new Set<WithdrawalPhase>([
   "done",
 ])
 
+/** What a reorg can still undo: a mined burn not yet released. */
+function isDemotable(phase: WithdrawalPhase): boolean {
+  return !RELEASED_PHASES.has(phase) && phase !== "failed" && phase !== "submitting"
+}
+
 function mergeWithdrawalRecords(
   existing: WithdrawalRecord,
   incoming: WithdrawalRecord,
@@ -267,8 +272,9 @@ export class WithdrawalStorage {
    * post-mine phase and the receipt poll re-verifies it), clears `endTime`, and
    * bumps `reorgEpoch` so stale forward patches are fenced. `droppedBurn: true`
    * is the reorg exception to never-fails-post-mine: the burn dropped, the
-   * record lands `failed` terminally. Refuses every released phase (L1-derived),
-   * `failed`, and pre-mine `submitting` — returns the record unchanged.
+   * record lands `failed` until `reviveDroppedBurn` sees the burn on chain.
+   * Refuses every released phase (L1-derived), `failed`, and pre-mine
+   * `submitting` — returns the record unchanged.
    *
    * `finalizeTxHash` is dropped: it names a release of the very burn the reorg invalidated, so
    * showing it would link the row to a transaction that no longer settles it. Offering the manual
@@ -284,13 +290,7 @@ export class WithdrawalStorage {
     const stored = await this.store.updateRecord(keyForRecord(found), (current) => {
       const existing = current ?? found
       previousHash = existing.l2TxHash
-      if (
-        RELEASED_PHASES.has(existing.phase) ||
-        existing.phase === "failed" ||
-        existing.phase === "submitting"
-      ) {
-        return null
-      }
+      if (!isDemotable(existing.phase)) return null
       const reorgEpoch = (existing.reorgEpoch ?? 0) + 1
       return opts.droppedBurn
         ? {
@@ -299,6 +299,7 @@ export class WithdrawalStorage {
             reorgEpoch,
             endTime: Date.now(),
             droppedBurn: true,
+            burnDroppedAt: undefined,
             error: "Withdrawal transaction dropped in a reorg",
             finalizeTxHash: undefined,
           }
@@ -307,6 +308,7 @@ export class WithdrawalStorage {
             phase: existing.phase === "finalizing_l1" ? "awaiting_proven" : "l2_mined",
             reorgEpoch,
             endTime: undefined,
+            burnDroppedAt: undefined,
             phaseEnteredAt: Date.now(),
             finalizeTxHash: undefined,
           }
@@ -314,6 +316,56 @@ export class WithdrawalStorage {
     if (!stored) return found
     this.indexReplace(previousHash, stored)
     return stored
+  }
+
+  /**
+   * Returns a dropped-burn failure to tracking once its burn is seen on chain: `l2_mined`, the
+   * failure cleared, and `reorgEpoch` bumped so writes from before the failure stay fenced. Null
+   * for any record that is not a dropped-burn failure.
+   */
+  async reviveDroppedBurn(keyOrHash: string): Promise<WithdrawalRecord | null> {
+    await this.load()
+    const found = this.get(keyOrHash)
+    if (!found) {
+      throw new Error(`WithdrawalStorage.reviveDroppedBurn: no record for key ${keyOrHash}`)
+    }
+    let revived = false
+    const stored = await this.store.updateRecord(keyForRecord(found), (current) => {
+      const existing = current ?? found
+      if (existing.phase !== "failed" || !existing.droppedBurn) return null
+      revived = true
+      return {
+        ...existing,
+        phase: "l2_mined",
+        reorgEpoch: (existing.reorgEpoch ?? 0) + 1,
+        phaseEnteredAt: Date.now(),
+        endTime: undefined,
+        error: undefined,
+        droppedBurn: undefined,
+        burnDroppedAt: undefined,
+      }
+    })
+    return revived ? stored : null
+  }
+
+  /**
+   * Records when the burn first read as dropped, or clears it with `undefined`. Touches no other
+   * field, so the phase and the epoch fence stand. Sets only on a record `demote` would accept,
+   * and never moves a time already recorded.
+   */
+  async setBurnDroppedAt(keyOrHash: string, at: number | undefined): Promise<WithdrawalRecord> {
+    await this.load()
+    const found = this.get(keyOrHash)
+    if (!found) {
+      throw new Error(`WithdrawalStorage.setBurnDroppedAt: no record for key ${keyOrHash}`)
+    }
+    const stored = await this.store.updateRecord(keyForRecord(found), (current) => {
+      const existing = current ?? found
+      const recorded = existing.burnDroppedAt !== undefined
+      if (at === undefined) return recorded ? { ...existing, burnDroppedAt: undefined } : null
+      return recorded || !isDemotable(existing.phase) ? null : { ...existing, burnDroppedAt: at }
+    })
+    return stored ?? found
   }
 
   async remove(currentKey: string): Promise<void> {

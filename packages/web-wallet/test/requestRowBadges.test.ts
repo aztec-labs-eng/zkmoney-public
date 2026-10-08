@@ -35,10 +35,8 @@ describe("request-link row badges", () => {
       ])[0].statusLabel,
     ]
 
-    expect(labels).toEqual(["Pending", "Payment detected"])
+    expect(labels).toEqual(["Unpaid", "Payment detected"])
     for (const label of labels) expect(statusBadgeStyle(label)).toBeDefined()
-    // The feed swaps a link row's "Pending" for "Unpaid"; that word needs a style of its own.
-    expect(statusBadgeStyle("Unpaid")).toBeDefined()
     // Detected must not wear the settled colour — that is the state it has to be told apart from.
     expect(statusBadgeStyle("Payment detected")).not.toBe(statusBadgeStyle("Paid"))
   })

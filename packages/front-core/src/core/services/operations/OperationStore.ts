@@ -3,11 +3,6 @@
  * surface that says whether the tab may close (the flow's modal, the bell, the leave guard) reads
  * it, the notifications panel lists it running and ended, and one boot pass settles it after a
  * reload.
- *
- * `local`: proving or submitting in this tab, which closing loses. `sent`: the hash is on the flow's
- * own record, so the chain decides from here and the tab may close. Only a page that is still
- * running an operation can advance it past `local`, so a `local` record from an earlier page was
- * interrupted.
  */
 import {
   provingProgress,
@@ -21,6 +16,12 @@ import { RecordStorage } from "../bridge/RecordStorage"
 import { logger } from "src/utils/logger"
 import { isFailedSubmission } from "../transactions/trackSubmission"
 
+/**
+ * `local`: proving or submitting in this tab, which closing loses. `sent`: the hash is on the flow's
+ * own record, so the chain decides from here and the tab may close. Only a page that is still
+ * running an operation can advance it past `local`, so a `local` record from a page that no longer
+ * runs the wallet was interrupted.
+ */
 export type OperationState = "local" | "sent" | "settled" | "failed"
 
 /**
@@ -39,6 +40,16 @@ export interface OperationRecord {
   scope: string | null
   /** The operation this one runs inside, e.g. a claim's deposit address. */
   parent?: string
+  /**
+   * Its owner retries it after a reload: a `local` one interrupted, or a `sent` one the chain
+   * dropped, goes back to its owner instead of failing.
+   */
+  resumable?: boolean
+  /**
+   * Bookkeeping the user never asked for, such as a deposit address's broadcast: no notification
+   * shows it, and leaving the page does not lose it.
+   */
+  background?: boolean
   state: OperationState
   startedAt: number
   /**
@@ -145,7 +156,10 @@ export class OperationStore {
   }
 
   async begin(
-    input: Pick<OperationRecord, "operationId" | "flow" | "summary" | "scope" | "parent">,
+    input: Pick<
+      OperationRecord,
+      "operationId" | "flow" | "summary" | "scope" | "parent" | "resumable" | "background"
+    >,
     now: number = Date.now(),
   ): Promise<OperationRecord> {
     const record = await this.store.setRecord(input.operationId, {
@@ -155,6 +169,19 @@ export class OperationStore {
     })
     this.setLive(input.operationId, true)
     return record
+  }
+
+  /**
+   * A resumable record's owner runs it again in this page: it is `local` and owned until sent, as a
+   * fresh attempt. Its start and summary stay.
+   */
+  async resume(operationId: string): Promise<void> {
+    await this.store.updateRecord(operationId, (r) =>
+      r?.resumable && r.endedAt === undefined
+        ? { ...r, state: "local", provingStartedAt: undefined, txHash: undefined }
+        : null,
+    )
+    if (this.store.getByKey(operationId)?.state === "local") this.setLive(operationId, true)
   }
 
   /** Renames a record whose summary needed data the flow read after it began. */
@@ -239,11 +266,12 @@ export class OperationStore {
   }
 
   /**
-   * End every `local` record that started before this page loaded, whatever its scope: one tab runs
-   * the wallet, so the page that owned it is gone. One that began proving fails; one that did not
-   * lost nothing and is dropped. Drops ended records past retention.
+   * End every `local` record that started by `activeSince`, whatever its scope: one tab runs the
+   * wallet and starts nothing before it becomes the active tab at `activeSince`, so the tab that
+   * owned the record has stopped. One that began proving fails; one that did not lost nothing and
+   * is dropped. A resumable one waits for its owner. Drops ended records past retention.
    */
-  async failInterrupted(pageLoadedAt: number, now: number = Date.now()): Promise<void> {
+  async failInterrupted(activeSince: number, now: number = Date.now()): Promise<void> {
     await this.store.load()
     for (const record of this.list()) {
       try {
@@ -251,7 +279,7 @@ export class OperationStore {
           await this.store.removeByKey(record.operationId)
           continue
         }
-        if (record.state !== "local" || record.startedAt >= pageLoadedAt) continue
+        if (record.state !== "local" || record.startedAt > activeSince || record.resumable) continue
         if (record.provingStartedAt === undefined) {
           await this.store.removeByKey(record.operationId)
           continue
@@ -263,9 +291,11 @@ export class OperationStore {
     }
   }
 
-  /** `sent` records no running flow owns: the chain settles these. */
+  /** `sent` records no running flow owns and no owner resumes: the chain settles these. */
   unowned(): OperationRecord[] {
-    return this.list().filter((r) => r.state === "sent" && !this.live.has(r.operationId))
+    return this.list().filter(
+      (r) => r.state === "sent" && !r.resumable && !this.live.has(r.operationId),
+    )
   }
 
   /**

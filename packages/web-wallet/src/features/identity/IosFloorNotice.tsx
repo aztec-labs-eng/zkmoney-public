@@ -9,8 +9,7 @@ import { Icon } from "@obsidion/web-ds"
 
 /**
  * A warning, never a block, for a phone whose browser claims an iOS below the passkey floor. The
- * version is a claim (Safari freezes it), so the notice asks the user to check rather than
- * disabling anything.
+ * version is a claim (Safari freezes it), so the notice warns rather than disabling anything.
  */
 export function IosFloorNotice() {
   const [below, setBelow] = useState(false)

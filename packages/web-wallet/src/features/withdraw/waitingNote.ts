@@ -9,15 +9,20 @@
 import {
   canSelfExecuteSwap,
   canSelfFinalizeWithdrawal,
+  isWithdrawalDelayed,
+  WITHDRAWAL_TERMINAL_PHASES,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { unswappableCopy } from "./unswappableCopy"
+
+const PROVING =
+  "Your device is proving this withdrawal privately. The amount is still in your balance."
 
 const SUBMITTING =
   "Waiting for the Aztec transaction to be mined. The amount is still in your balance until then."
 
 const RELEASING =
-  "The amount has been deducted from your balance. This withdrawal is being released to Ethereum. Once Ethereum accepts it, a relayer sends the funds to the recipient."
+  "The amount has been deducted from your balance. This withdrawal is being released to Ethereum, which can take up to 40 minutes. Once Ethereum accepts it, a relayer sends the funds to the recipient."
 
 const AWAITING_RELAYER =
   "The amount has been deducted from your balance and Ethereum has accepted this withdrawal. Waiting for a relayer to send the transaction that pays the recipient."
@@ -39,7 +44,7 @@ const AWAITING_OWN_SWAP =
 export function waitingNote(record: WithdrawalRecord): string | undefined {
   switch (record.phase) {
     case "submitting":
-      return SUBMITTING
+      return record.l2TxHash ? SUBMITTING : PROVING
     case "l2_mined":
     case "awaiting_proven":
       return withSwapLeg(RELEASING, record)
@@ -62,6 +67,28 @@ export function waitingNote(record: WithdrawalRecord): string | undefined {
     case "recovered":
       return undefined
   }
+}
+
+const RELEASES_ON_ITS_OWN =
+  "Ethereum releases the funds on its own, usually in about 15 minutes. Reopen this link to check on it."
+const RELEASE_DELAYED = "This is taking longer than usual."
+const RELEASE_IT_YOURSELF = `${RELEASE_DELAYED} No relayer has released it, so you can send the Ethereum transaction that does it yourself.`
+const SWAP_IT_YOURSELF = `${RELEASE_DELAYED} No relayer has run the swap, so you can run it yourself.`
+
+/**
+ * A cash-out visitor's wait once the burn is sent, until it ends. The page has no activity list, so
+ * this note is where a late release names the exit the page offers.
+ */
+export function releaseNote(
+  record: WithdrawalRecord,
+  now: number = Date.now(),
+): string | undefined {
+  if (record.phase === "recoverable") return unswappableCopy(record)
+  if (!record.l2TxHash || WITHDRAWAL_TERMINAL_PHASES.has(record.phase)) return
+  if (canSelfFinalizeWithdrawal(record, now)) return withSwapLeg(RELEASE_IT_YOURSELF, record)
+  if (canSelfExecuteSwap(record, now)) return SWAP_IT_YOURSELF
+  if (isWithdrawalDelayed(record, now)) return RELEASE_DELAYED
+  return withSwapLeg(RELEASES_ON_ITS_OWN, record)
 }
 
 // The release pays a swap escrow, not the recipient — say so wherever a note promises the release.

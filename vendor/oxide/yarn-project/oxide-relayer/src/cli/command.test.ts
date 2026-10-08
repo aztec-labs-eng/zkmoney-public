@@ -1,9 +1,13 @@
+import { EthAddress } from '@aztec/foundation/eth-address';
+
 import { OFAC_SDN_LIST_URL } from '@oxide/watcher-lib/sanctions';
 
 import { describe, expect, it } from '@jest/globals';
 
 import { DEFAULT_LOG_SCAN_WINDOW } from '../l1_operations/l1_operation_relayer.js';
-import { REQUIRED_ARGS, parseRunConfig } from './test_run_config.js';
+import { createCliProgram } from './command.js';
+import { redactRunConfig } from './config.js';
+import { REQUIRED_ARGS, parseRunConfig, runHelpText } from './test_run_config.js';
 
 describe('createCliProgram', () => {
   it('rejects the removed prover-claims mode', async () => {
@@ -36,6 +40,118 @@ describe('createCliProgram', () => {
     expect(config.disableSubmission).toBe(false);
     expect(config.l1OperationsSubmission).toBeDefined();
     expect(config.allowUnprofitable).toBe(false);
+  });
+
+  it.each([
+    '--worker-id',
+    '--lease-ttl-ms',
+    '--sqlite-path',
+    '--predicate-base-url',
+    '--predicate-timeout-ms',
+    '--l1-operations-max-retries',
+  ])('rejects removed option %s', async flag => {
+    await expect(parseRunConfig([...REQUIRED_ARGS, flag, '1'], {})).rejects.toThrow(`unknown option '${flag}'`);
+  });
+
+  it('starts with the removed max retries env var of an older configuration, and uses the max pending age', async () => {
+    const config = await parseRunConfig(REQUIRED_ARGS, { OXIDE_RELAYER_L1_OPERATIONS_MAX_RETRIES: '10' });
+
+    expect(config.l1OperationsSubmission).toEqual(expect.objectContaining({ maxPendingAgeMs: 72 * 60 * 60_000 }));
+    expect(config.l1OperationsSubmission).not.toHaveProperty('maxRetries');
+  });
+
+  it('reads the max pending age in seconds', async () => {
+    const config = await parseRunConfig([...REQUIRED_ARGS, '--l1-operations-max-pending-age-seconds', '3600'], {});
+
+    expect(config.l1OperationsSubmission?.maxPendingAgeMs).toBe(3_600_000);
+  });
+
+  it('accepts the SQLite backend and rejects unsupported backends', async () => {
+    const config = await parseRunConfig([...REQUIRED_ARGS, '--state-backend', 'sqlite'], {});
+    expect(config.state.backend).toBe('sqlite');
+    await expect(parseRunConfig([...REQUIRED_ARGS, '--state-backend', 'postgres'], {})).rejects.toThrow(
+      /invalid state backend/,
+    );
+  });
+
+  it('hides the state backend option from help', async () => {
+    const help = await runHelpText();
+    expect(help).toContain('--state <path>');
+    expect(help).not.toContain('--state-backend');
+  });
+
+  it('does not print secrets from the environment in help', async () => {
+    const help = await runHelpText({
+      OXIDE_RELAYER_KEYSTORE_PASSWORD: 'keystore-secret',
+      OXIDE_RELAYER_PREDICATE_API_KEY: 'predicate-secret',
+      AZTEC_NODE_API_KEY: 'aztec-secret',
+    });
+    expect(help).not.toMatch(/keystore-secret|predicate-secret|aztec-secret/);
+    expect(help).toMatch(/--keystore-password <password>[\s\S]*default: <redacted>/);
+    expect(help).toMatch(/--predicate-api-key <key>[\s\S]*default: <redacted>/);
+  });
+
+  it('shows only the origin of env-set RPC URLs in help', async () => {
+    const help = await runHelpText({
+      READ_L1_RPC_URL: 'https://eth.example/v2/rpc-secret',
+      AZTEC_NODE_URL: 'https://aztec.example/node-secret',
+      OXIDE_RELAYER_PROVER_NODE_URL: 'https://prover.example/?key=prover-secret',
+    });
+    expect(help).not.toMatch(/rpc-secret|node-secret|prover-secret/);
+    expect(help).toContain('default: "https://eth.example"');
+    expect(help).toContain('default: "https://aztec.example"');
+    expect(help).toContain('default: "https://prover.example"');
+  });
+
+  it('reads the env signer key from L1_PRIVATE_KEY or the variable that --private-key-env names', async () => {
+    const defaults = await parseRunConfig([...REQUIRED_ARGS], { L1_PRIVATE_KEY: '0x' + '11'.repeat(32) });
+    expect(defaults.signer).toMatchObject({ backend: 'env', privateKeyEnvVar: 'L1_PRIVATE_KEY' }); // gitleaks:allow
+
+    const custom = await parseRunConfig([...REQUIRED_ARGS, '--private-key-env', 'RELAYER_KEY'], {
+      RELAYER_KEY: '0x' + '22'.repeat(32),
+    });
+    expect(custom.signer).toMatchObject({ backend: 'env', privateKeyEnvVar: 'RELAYER_KEY' }); // gitleaks:allow
+  });
+
+  it('reads the keystore password from the flag or the environment', async () => {
+    const fromFlag = await parseRunConfig([...REQUIRED_ARGS, '--keystore-password', 'flag-secret'], {});
+    expect(fromFlag.signer.keystorePassword).toBe('flag-secret');
+
+    const fromEnv = await parseRunConfig([...REQUIRED_ARGS], { OXIDE_RELAYER_KEYSTORE_PASSWORD: 'env-secret' });
+    expect(fromEnv.signer.keystorePassword).toBe('env-secret');
+  });
+
+  it('redacts secrets and RPC URL paths in the loggable config', async () => {
+    const config = await parseRunConfig(
+      [
+        ...REQUIRED_ARGS,
+        '--read-l1-rpc',
+        'https://eth.example/v2/rpc-secret',
+        '--predicate-verification-hash',
+        'x-managed-policy-abc',
+        '--predicate-chain',
+        'ethereum-mainnet',
+      ],
+      {
+        AZTEC_NODE_API_KEY: 'aztec-secret',
+        OXIDE_RELAYER_KEYSTORE_PASSWORD: 'keystore-secret',
+        OXIDE_RELAYER_PREDICATE_API_KEY: 'predicate-secret',
+      },
+    );
+    const redacted = redactRunConfig(config);
+    expect(JSON.stringify(redacted)).not.toMatch(/rpc-secret|aztec-secret|keystore-secret|predicate-secret/);
+    expect(redacted.readL1RpcUrl).toBe('https://eth.example');
+    expect(redacted.deploymentEnvManifestUrl).toBe('https://manifest.example');
+    expect(redacted.sdnUrl).toBe('https://sanctionslistservice.ofac.treas.gov');
+    expect(redacted.portal).toBe('0x0000000000000000000000000000000000000001');
+    expect(redacted.logScanWindow).toBe(DEFAULT_LOG_SCAN_WINDOW.toString());
+  });
+
+  it('uses the state flag before its environment default', async () => {
+    const config = await parseRunConfig([...REQUIRED_ARGS, '--state', '/data/flag-{portal}.sqlite3'], {
+      OXIDE_RELAYER_STATE_PATH: '/data/env-{portal}.sqlite3',
+    });
+    expect(config.state).toEqual({ backend: 'sqlite', sqlitePath: '/data/flag-{portal}.sqlite3' });
   });
 
   it('requires --portal or OXIDE_PORTAL', async () => {
@@ -149,6 +265,12 @@ describe('createCliProgram', () => {
     expect(config.disableSubmission).toBe(true);
   });
 
+  it('rejects disabled submission with epoch proofs', async () => {
+    await expect(
+      parseRunConfig([...REQUIRED_ARGS, '--disable-submission', '--modes', 'l1-operations,epoch-proofs'], {}),
+    ).rejects.toThrow(/epoch-proofs mode cannot run with --disable-submission/);
+  });
+
   it('rejects the removed deposits mode and its flags', async () => {
     await expect(parseRunConfig([...REQUIRED_ARGS, '--modes', 'deposits'], {})).rejects.toThrow(
       /invalid relayer mode 'deposits'/,
@@ -180,9 +302,9 @@ describe('createCliProgram', () => {
     expect(config.l1OperationsSubmission).toBeUndefined();
   });
 
-  it('omits the L1 operation submission policy when submission is disabled', async () => {
+  it('keeps the L1 operation submission policy when submission is disabled', async () => {
     const config = await parseRunConfig([...REQUIRED_ARGS, '--modes', 'l1-operations', '--disable-submission'], {});
-    expect(config.l1OperationsSubmission).toBeUndefined();
+    expect(config.l1OperationsSubmission).toBeDefined();
   });
 
   it('parses the unprofitable opt-in', async () => {
@@ -205,10 +327,6 @@ describe('createCliProgram', () => {
         'x-managed-policy-abc',
         '--predicate-chain',
         'ethereum-mainnet',
-        '--predicate-base-url',
-        'https://staging.predicate.test',
-        '--predicate-timeout-ms',
-        '2000',
       ],
       {},
     );
@@ -216,8 +334,6 @@ describe('createCliProgram', () => {
       apiKey: 'secret-key',
       verificationHash: 'x-managed-policy-abc',
       chain: 'ethereum-mainnet',
-      baseUrl: 'https://staging.predicate.test',
-      timeoutMs: 2000,
     });
   });
 
@@ -257,33 +373,60 @@ describe('createCliProgram', () => {
     );
   });
 
-  it('defaults the L1 priority fee floor and accepts CLI/env overrides', async () => {
+  it('leaves the L1 max fee per gas unset by default and accepts CLI/env overrides', async () => {
     const defaults = await parseRunConfig([...REQUIRED_ARGS], {});
-    expect(defaults.l1MinPriorityFeeGwei).toBe(0.1);
+    expect(defaults.l1MaxFeePerGasGwei).toBeUndefined();
 
-    const fromFlag = await parseRunConfig([...REQUIRED_ARGS, '--l1-min-priority-fee-gwei', '2.5'], {});
-    expect(fromFlag.l1MinPriorityFeeGwei).toBe(2.5);
+    const fromFlag = await parseRunConfig([...REQUIRED_ARGS, '--l1-max-fee-per-gas-gwei', '80'], {});
+    expect(fromFlag.l1MaxFeePerGasGwei).toBe(80);
 
-    const fromEnv = await parseRunConfig([...REQUIRED_ARGS], { OXIDE_RELAYER_L1_MIN_PRIORITY_FEE_GWEI: '0.25' });
-    expect(fromEnv.l1MinPriorityFeeGwei).toBe(0.25);
-  });
+    const fromEnv = await parseRunConfig([...REQUIRED_ARGS], { OXIDE_RELAYER_L1_MAX_FEE_PER_GAS_GWEI: '12.5' });
+    expect(fromEnv.l1MaxFeePerGasGwei).toBe(12.5);
 
-  it('rejects a non-positive or non-numeric L1 priority fee floor', async () => {
-    await expect(parseRunConfig([...REQUIRED_ARGS, '--l1-min-priority-fee-gwei', '0'], {})).rejects.toThrow(
-      /positive decimal gwei/,
-    );
-    await expect(parseRunConfig([...REQUIRED_ARGS, '--l1-min-priority-fee-gwei', 'fast'], {})).rejects.toThrow(
+    await expect(parseRunConfig([...REQUIRED_ARGS, '--l1-max-fee-per-gas-gwei', '0'], {})).rejects.toThrow(
       /positive decimal gwei/,
     );
   });
 
-  it('rejects an L1 priority fee floor that rounds down to no tip at all', async () => {
-    await expect(parseRunConfig([...REQUIRED_ARGS, '--l1-min-priority-fee-gwei', '0.0000000001'], {})).rejects.toThrow(
-      /at least one wei/,
-    );
+  it('defaults the L1 operations max fee headroom and accepts CLI/env overrides', async () => {
+    const defaults = await parseRunConfig([...REQUIRED_ARGS], {});
+    expect(defaults.l1OperationsSubmission?.maxFeeHeadroomPercent).toBe(6.25);
+
+    const fromFlag = await parseRunConfig([...REQUIRED_ARGS, '--l1-operations-max-fee-headroom-percent', '12.5'], {});
+    expect(fromFlag.l1OperationsSubmission?.maxFeeHeadroomPercent).toBe(12.5);
+
+    const fromEnv = await parseRunConfig([...REQUIRED_ARGS], {
+      OXIDE_RELAYER_L1_OPERATIONS_MAX_FEE_HEADROOM_PERCENT: '0',
+    });
+    expect(fromEnv.l1OperationsSubmission?.maxFeeHeadroomPercent).toBe(0);
+  });
+
+  it.each(['-1', 'fast', '6.255'])('rejects L1 operations max fee headroom %s', async value => {
     await expect(
-      parseRunConfig([...REQUIRED_ARGS], { OXIDE_RELAYER_L1_MIN_PRIORITY_FEE_GWEI: '0.0000000001' }),
-    ).rejects.toThrow(/at least one wei/);
+      parseRunConfig([...REQUIRED_ARGS, '--l1-operations-max-fee-headroom-percent', value], {}),
+    ).rejects.toThrow(/non-negative percentage/);
+  });
+
+  it('leaves the L1 operation payout tokens unset by default and parses a CLI/env list', async () => {
+    const dai = EthAddress.random();
+    const sUsds = EthAddress.random();
+    const defaults = await parseRunConfig([...REQUIRED_ARGS], {});
+    expect(defaults.l1OperationsPayoutTokens).toBeUndefined();
+
+    const fromFlag = await parseRunConfig([...REQUIRED_ARGS, '--l1-operations-payout-tokens', `${dai}, ${sUsds},`], {});
+    expect(fromFlag.l1OperationsPayoutTokens).toEqual([dai, sUsds]);
+
+    const fromEnv = await parseRunConfig([...REQUIRED_ARGS], {
+      OXIDE_RELAYER_L1_OPERATIONS_PAYOUT_TOKENS: sUsds.toString(),
+    });
+    expect(fromEnv.l1OperationsPayoutTokens).toEqual([sUsds]);
+  });
+
+  it.each([
+    ['an invalid address', 'not-an-address', /invalid address: not-an-address/],
+    ['an empty list', ',', /at least one address/],
+  ])('rejects L1 operation payout tokens with %s', async (_case, value, error) => {
+    await expect(parseRunConfig([...REQUIRED_ARGS, '--l1-operations-payout-tokens', value], {})).rejects.toThrow(error);
   });
 
   it('defaults the L1 operations poll interval and accepts CLI/env overrides', async () => {
@@ -316,5 +459,38 @@ describe('createCliProgram', () => {
 
     const fromEnv = await parseRunConfig([...REQUIRED_ARGS], { OXIDE_RELAYER_LOG_SCAN_WINDOW: '500' });
     expect(fromEnv.logScanWindow).toBe(500n);
+  });
+});
+
+describe('--version', () => {
+  const printVersion = async (version: string | undefined): Promise<string> => {
+    const previous = process.env.OXIDE_RELAYER_VERSION;
+    if (version === undefined) {
+      delete process.env.OXIDE_RELAYER_VERSION;
+    } else {
+      process.env.OXIDE_RELAYER_VERSION = version;
+    }
+    try {
+      let output = '';
+      const program = createCliProgram(() => {})
+        .exitOverride()
+        .configureOutput({ writeOut: str => (output += str) });
+      await expect(program.parseAsync(['--version'], { from: 'user' })).rejects.toThrow();
+      return output.trim();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.OXIDE_RELAYER_VERSION;
+      } else {
+        process.env.OXIDE_RELAYER_VERSION = previous;
+      }
+    }
+  };
+
+  it('prints the release version that the image build sets', async () => {
+    expect(await printVersion('1.2.3')).toBe('1.2.3');
+  });
+
+  it('prints dev when no release version is set', async () => {
+    expect(await printVersion(undefined)).toBe('dev');
   });
 });

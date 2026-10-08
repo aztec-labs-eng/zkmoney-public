@@ -7,8 +7,75 @@ import {
   type StepsHero,
   stepsCopyFor,
 } from "@obsidion/passkey-web"
-import { NumberedStepRow, PrimaryGradientButton } from "@obsidion/web-ds"
-import type { GateState } from "./ceremonyGate"
+import { useEffect, useId, useRef, useState, type ReactNode } from "react"
+import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
+import qrPreview from "../../assets/onboarding/passkey-qr-preview.png"
+import { PASSKEYS_DOCS_URL, TERMS_URL } from "../../lib/links"
+import { routeForHints, type GateState } from "./ceremonyGate"
+
+/** A label under the reason for the phone; its tooltip opens above the card while hovered or focused. */
+function TipRow({
+  mark,
+  label,
+  gold,
+  children,
+}: {
+  mark: ReactNode
+  label: string
+  /** The loss row: gold, as the warn box is. */
+  gold?: boolean
+  children: ReactNode
+}) {
+  const id = useId()
+  return (
+    <div className="ww-phone-steps__tiprow">
+      <button
+        type="button"
+        className={
+          gold
+            ? "zkm-btn-reset ww-phone-steps__tiprow-label ww-phone-steps__tiprow-label--gold"
+            : "zkm-btn-reset ww-phone-steps__tiprow-label"
+        }
+        aria-describedby={id}
+      >
+        {mark}
+        {label}
+      </button>
+      <div className="ww-phone-steps__tip" role="tooltip" id={id}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+/** The managers and keys that work. */
+function SupportedPasskeys() {
+  const { label, title, providers, refused } = PHONE_STEPS_COPY.supported
+  return (
+    <TipRow mark={<Icon name="info-circle" size={14} />} label={label}>
+      <strong>{title}</strong>
+      <ul>
+        {providers.map((name) => (
+          <li key={name}>{name}</li>
+        ))}
+      </ul>
+      <p>{refused}</p>
+    </TipRow>
+  )
+}
+
+/** Why the passkey is the only way in, for a synced passkey and for a key. */
+function PasskeyLoss() {
+  const { label, title, body } = PHONE_STEPS_COPY.loss
+  return (
+    <TipRow gold mark={<Icon name="alert-triangle" size={14} />} label={label}>
+      <strong>{title}</strong>
+      {body.map((line) => (
+        <p key={line}>{line}</p>
+      ))}
+    </TipRow>
+  )
+}
 
 /** The device the steps ask for, drawn so the sheet reads at a glance for people who skip the words. */
 function DeviceGlyph({ glyph }: { glyph: StepsHero["glyph"] }) {
@@ -65,57 +132,163 @@ function WarningMark() {
   )
 }
 
+/** The gold box on a sign-up step: what losing the passkey, or the key, means. */
+export function PasskeyWarn({
+  alert,
+  testId,
+  children,
+}: {
+  /** Announced to assistive technology when it appears. */
+  alert?: boolean
+  testId?: string
+  children: ReactNode
+}) {
+  return (
+    <div className="ww-passkey-warn" role={alert ? "alert" : undefined} data-testid={testId}>
+      <Icon name="alert-triangle" size={16} color="var(--accent-gold)" />
+      <div className="ww-passkey-warn__body">{children}</div>
+    </div>
+  )
+}
+
 /**
- * The two things a laptop user does next before a creation, which asks for a cross-device
- * authenticator: `onChoose` names the route the browser opens on. `reach` is required so a new call
- * site cannot silently show a browser the phone steps for a route it just said it lacks. The steps
- * are worth showing: the phone that answers may be in another room.
+ * The creation sheet, the campaign's sign-up sheet in the wallet's frame so a passkey is offered the
+ * same way on both fronts. The phone variant: the button drawn over a blurred picture of the
+ * browser's QR step, so the picture is not taken for the code to scan, and under the card a link
+ * that swaps the sheet to its key variant. The key variant: what a key means for the wallet, the
+ * button that opens the browser's sheet on the key, and a way back. Only the two buttons open the
+ * browser's sheet. Where the browser reports no phone route the key variant is all there is, with
+ * no way back. `reach` is required so a new call site cannot silently show a browser the phone route
+ * it just said it lacks.
  */
 export function PhoneSteps({
   onChoose,
   onCancel,
   cancelLabel = PHONE_STEPS_COPY.cancelLabel,
   reach,
+  details,
+  disabled,
 }: {
-  onChoose: (hint: PasskeyHint) => void
+  onChoose: (hints: readonly PasskeyHint[]) => void
   onCancel?: () => void
   cancelLabel?: string
   reach: PhoneReach
+  /** What the signup commits to, above both routes: a payment's split. */
+  details?: ReactNode
+  /** Both routes wait: what they would commit to is not priced yet, or cannot be afforded. */
+  disabled?: boolean
 }) {
-  const copy = stepsCopyFor(reach)
-  const steps = copy.createSteps
+  const [keyPicked, setKeyPicked] = useState(false)
+  const root = useRef<HTMLDivElement>(null)
+  const swapped = useRef(false)
+  // A swap removes the control that had focus; the variant's primary button takes it.
+  useEffect(() => {
+    if (!swapped.current) return
+    swapped.current = false
+    root.current?.querySelector<HTMLElement>(".ww-phone-steps__primary")?.focus()
+  }, [keyPicked])
+  const pick = (key: boolean) => {
+    swapped.current = true
+    setKeyPicked(key)
+  }
+  const reachCopy = stepsCopyFor(reach)
+  const keyOnly = reachCopy === PHONE_STEPS_COPY.noPhone
+  const copy = keyPicked ? PHONE_STEPS_COPY.noPhone : reachCopy
+  const [route, alt] = copy.routes
+  const phone = route.hint === "hybrid"
   return (
-    <div className="ww-invite-spinner ww-phone-steps" data-testid="phone-steps">
-      <div className="ww-phone-steps__hero">
-        <DeviceGlyph glyph={copy.hero.glyph} />
-        <p className="ww-phone-steps__hero-title">
-          <WarningMark />
-          {copy.hero.title}
-        </p>
+    <div
+      ref={root}
+      className="ww-invite-spinner ww-phone-steps ww-phone-steps--create"
+      data-testid="phone-steps"
+    >
+      <span className="ww-phone-steps__badge">
+        <Icon name="key" size={28} color="#fff" />
+      </span>
+      <div className="ww-phone-steps__heading">
+        <p className="ww-phone-steps__hero-title">{copy.title}</p>
+        <p className="ww-phone-steps__sub">{copy.subtitle}</p>
       </div>
-      <NumberedStepRow index={1}>{steps[0]}</NumberedStepRow>
-      <NumberedStepRow index={2}>{steps[1]}</NumberedStepRow>
-      <p className="ww-phone-steps__caption">{copy.caption}</p>
-      {copy.routes.map((route, i) =>
-        i === 0 ? (
+      {phone ? (
+        <>
+          {details}
+          <div className="ww-phone-steps__preview">
+            <div className="ww-phone-steps__shot">
+              <span className="ww-phone-steps__crop">
+                <img src={qrPreview} alt="" width={304} height={333} />
+              </span>
+              <button
+                type="button"
+                className="zkm-btn-reset ww-phone-steps__show ww-phone-steps__primary"
+                data-testid="phone-steps-continue"
+                disabled={disabled}
+                onClick={() => onChoose([route.hint])}
+              >
+                <span className="ww-phone-steps__pill">{route.label}</span>
+              </button>
+            </div>
+            <div className="ww-phone-steps__why">
+              <p className="ww-phone-steps__why-title">
+                <Icon name="shield-check" size={16} color="var(--accent-green)" />
+                {PHONE_STEPS_COPY.why.title}
+              </p>
+              <p className="ww-phone-steps__why-body">
+                {PHONE_STEPS_COPY.why.body}{" "}
+                <a href={PASSKEYS_DOCS_URL} target="_blank" rel="noreferrer">
+                  {PHONE_STEPS_COPY.why.link}
+                </a>
+                .
+              </p>
+              <SupportedPasskeys />
+              <PasskeyLoss />
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <PasskeyWarn alert>
+            <p>{PHONE_STEPS_COPY.noPhone.note}</p>
+            <p>{PHONE_STEPS_COPY.noPhone.models}</p>
+          </PasskeyWarn>
+          {details}
           <PrimaryGradientButton
-            key={route.hint}
             title={route.label}
             testId="phone-steps-continue"
-            onClick={() => onChoose(route.hint)}
+            className="ww-phone-steps__primary"
+            isDisabled={disabled}
+            onClick={() => onChoose([route.hint])}
           />
-        ) : (
-          <button
-            key={route.hint}
-            type="button"
-            className="zkm-btn-reset zkm-pressable ww-phone-steps__alt"
-            data-testid={`phone-steps-${route.hint}`}
-            onClick={() => onChoose(route.hint)}
-          >
-            {route.label}
-          </button>
-        ),
+        </>
       )}
+      {alt && (
+        <button
+          type="button"
+          className="zkm-btn-reset ww-phone-steps__alt"
+          data-testid="phone-steps-security-key"
+          disabled={disabled}
+          onClick={() => pick(true)}
+        >
+          {alt.label}
+        </button>
+      )}
+      {keyPicked && !keyOnly && (
+        <button
+          type="button"
+          className="zkm-btn-reset ww-phone-steps__alt"
+          data-testid="phone-steps-back"
+          disabled={disabled}
+          onClick={() => pick(false)}
+        >
+          {PHONE_STEPS_COPY.noPhone.back}
+        </button>
+      )}
+      <p className="ww-phone-steps__legal">
+        This is experimental software. Use at your own risk. By signing up you agree to the{" "}
+        <a href={TERMS_URL} target="_blank" rel="noreferrer">
+          Terms &amp; Conditions
+        </a>
+        .
+      </p>
       {onCancel && (
         <button
           type="button"
@@ -223,10 +396,13 @@ export function GateStep({
   state,
   onCancel,
   cancelLabel,
+  details,
 }: {
   state: Extract<GateState, { kind: "awaiting-action" }>
   onCancel?: () => void
   cancelLabel?: string
+  /** A creation's payment split, shown on its sheet. */
+  details?: ReactNode
 }) {
   if (state.prompt === "approve-again") {
     return (
@@ -239,16 +415,22 @@ export function GateStep({
   }
   if (state.prompt === "sign-in") {
     return (
-      <SignInSheet onContinue={() => state.proceed()} onCancel={onCancel} cancelLabel={cancelLabel} />
+      <SignInSheet
+        onContinue={() => state.proceed()}
+        onCancel={onCancel}
+        cancelLabel={cancelLabel}
+      />
     )
   }
-  // A creation names the cross-device route the browser then opens on.
+  // The phone route also names a security key, which keeps a password manager's extension from
+  // answering here.
   return (
     <PhoneSteps
-      onChoose={(hint) => state.proceed(hint === "security-key" ? "security-key" : "phone")}
+      onChoose={(hints) => state.proceed(routeForHints(hints))}
       onCancel={onCancel}
       cancelLabel={cancelLabel}
       reach={state.reach}
+      details={details}
     />
   )
 }

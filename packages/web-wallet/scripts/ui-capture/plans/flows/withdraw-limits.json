@@ -1,0 +1,123 @@
+{
+  "scenario": "activity",
+  "path": "/withdraw?flowFixture=success&balanceFixture=5000",
+  "steps": [
+    {
+      "action": "waitFor",
+      "selector": ".ww-deposit-disclaimer"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
+      "action": "fill",
+      "placeholder": "Enter or paste address",
+      "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "fill",
+      "label": "Wallet name (optional)",
+      "value": "Weekend savings wallet"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Continue",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input"
+    },
+    {
+      "action": "waitFor",
+      "testId": "operation-limits"
+    },
+    {
+      "action": "screenshot",
+      "file": "limits-before-typing.png",
+      "state": "per-withdrawal limit before typing"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "MAX",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input[value=\"2500\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "max.png",
+      "state": "MAX with a 5,000 balance"
+    },
+    {
+      "action": "fill",
+      "selector": ".ww-fund__amount input",
+      "value": "2500.01"
+    },
+    {
+      "action": "waitFor",
+      "testId": "limit-notice"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[open] button:disabled:has-text(\"Withdraw funds\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "over-limit.png",
+      "state": "one cent over the $2,500 limit"
+    },
+    {
+      "action": "hover",
+      "selector": "dialog[open] button:disabled:has-text(\"Withdraw funds\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "over-limit-cta.png",
+      "state": "one cent over: the disabled action scrolled into view"
+    },
+    {
+      "action": "press",
+      "role": "button",
+      "name": "Use maximum ($2,500)",
+      "exact": true,
+      "key": "Enter"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-fund__amount input[value=\"2500\"]"
+    },
+    {
+      "action": "waitFor",
+      "testId": "limit-notice",
+      "state": "detached"
+    },
+    {
+      "action": "press",
+      "role": "button",
+      "name": "Withdraw funds",
+      "exact": true,
+      "key": "Enter"
+    },
+    {
+      "action": "reachable",
+      "role": "button",
+      "name": "Confirm withdrawal",
+      "exact": true
+    },
+    {
+      "action": "screenshot",
+      "file": "review-at-limit.png",
+      "state": "review at the limit"
+    }
+  ],
+  "finalScreenshot": false,
+  "recordHoldMs": 0
+}

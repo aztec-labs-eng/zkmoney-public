@@ -24,10 +24,12 @@ export function TagSearchBar({
   autoFocus = false,
   onDismiss,
   initialQuery = "",
+  placeholder = "Search @tag",
 }: {
   autoFocus?: boolean
   onDismiss?: () => void
   initialQuery?: string
+  placeholder?: string
 } = {}) {
   const phone = usePhoneLayout()
   const navigate = useNavigate()
@@ -113,7 +115,7 @@ export function TagSearchBar({
         aria-label="Search @tag"
         aria-controls={open ? resultId : undefined}
         autoFocus={autoFocus}
-        placeholder="Search @tag"
+        placeholder={placeholder}
         inputMode="search"
         value={query}
         onChange={(e) => {
@@ -180,6 +182,14 @@ export function TagSearchBar({
               className="ww-search__row ww-search__row--static"
               title="User not found"
               subtitle="To find a user type full @tag"
+              leading={<IconCircle name="user-unfollow" glyphSize={24} />}
+            />
+          )}
+          {panel.kind === "reserved" && (
+            <ListRow
+              className="ww-search__row ww-search__row--static"
+              title={`@${panel.tag} is reserved`}
+              subtitle="Not active yet, so it can't receive payments"
               leading={<IconCircle name="user-unfollow" glyphSize={24} />}
             />
           )}

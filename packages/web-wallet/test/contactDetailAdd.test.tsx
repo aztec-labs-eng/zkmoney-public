@@ -18,9 +18,12 @@ const m = vi.hoisted(() => ({
   entries: [] as unknown[],
   lookUp: vi.fn(),
   save: vi.fn(),
+  phone: false,
 }))
-vi.mock("@obsidion/front-core", () => ({
-  ContactStorage: { get: () => ({ getEntries: async () => m.entries }) },
+vi.mock("@obsidion/front-core", async () => ({
+  ...(await import("../../front-core/src/utils/validate")),
+  ...(await import("../../front-core/src/utils/amountInput")),
+  ContactStorage: { get: () => ({ getEntries: async () => m.entries, onChange: () => () => {} }) },
   TransactionStorage: { get: () => ({ getTransactions: async () => [] }) },
   RequestStorage: { get: () => ({ list: async () => [], subscribe: () => () => {} }) },
   getActiveNetworkId: () => "net",
@@ -54,19 +57,32 @@ vi.mock("@obsidion/web-ds", () => ({
     <span data-gradient>{children}</span>
   ),
   Icon: () => null,
-  PrimaryGradientButton: ({ title, onClick }: { title: string; onClick?: () => void }) => (
-    <button onClick={onClick}>{title}</button>
+  PrimaryGradientButton: ({
+    title,
+    isDisabled,
+    onClick,
+  }: {
+    title: string
+    isDisabled?: boolean
+    onClick?: () => void
+  }) => (
+    <button disabled={isDisabled} onClick={onClick}>
+      {title}
+    </button>
   ),
   Spinner: () => null,
   TextField: () => null,
-  TwoPartyAmountCard: () => null,
+  TwoPartyAmountCard: ({ amount, className }: { amount: React.ReactNode; className?: string }) => (
+    <div data-card className={className}>
+      {amount}
+    </div>
+  ),
   avatarColors: () => [],
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
-vi.mock("../src/ui/format", () => ({ decimalInput: (s: string) => s, parseAmount: Number }))
 vi.mock("../src/ui/hooks", () => ({ useBack: () => () => {} }))
-vi.mock("../src/ui/usePhoneLayout", () => ({ usePhoneLayout: () => false }))
+vi.mock("../src/ui/usePhoneLayout", () => ({ usePhoneLayout: () => m.phone }))
 vi.mock("../src/ui/screens/activityView", () => ({
   buildActivityRows: () => [],
   txNoteFor: () => undefined,
@@ -156,6 +172,7 @@ const unsaved = new Map([
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  m.phone = false
   vi.spyOn(console, "warn").mockImplementation(() => {})
   m.entries = [ADA]
   m.lookUp.mockImplementation(async (idOrTag: string) => unsaved.get(idOrTag) ?? null)
@@ -284,5 +301,57 @@ describe("Add contact on the person page", () => {
     expect(m.save).toHaveBeenCalledTimes(2)
     expect(unsavedStrip()).toBeNull()
     expect(deleteButton()).not.toBeNull()
+  })
+})
+
+describe("Inline request card", () => {
+  const requestButton = () =>
+    [...container.querySelectorAll("button")].find((b) => b.textContent === "Request")
+  const amountInput = () =>
+    container.querySelector<HTMLInputElement>('input[aria-label="Request amount"]')!
+  const typeAmount = async (value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!
+    await act(async () => {
+      setter.call(amountInput(), value)
+      amountInput().dispatchEvent(new Event("input", { bubbles: true }))
+    })
+  }
+
+  it("names a decimals mistake under the card and tints the card", async () => {
+    await goTo("ada")
+    await act(async () => requestButton()!.click())
+    await typeAmount("1.234")
+    expect(alertText()).toBe("Use up to 2 decimal places")
+    expect(
+      container.querySelector("[data-card]")?.classList.contains("ww-chat__request-card--error"),
+    ).toBe(true)
+    expect(requestButton()!.disabled).toBe(true)
+
+    await typeAmount("1.23")
+    expect(alertText()).toBeUndefined()
+    expect(
+      container.querySelector("[data-card]")?.classList.contains("ww-chat__request-card--error"),
+    ).toBe(false)
+    expect(requestButton()!.disabled).toBe(false)
+  })
+
+  it("scrolls the phone composer into view when the form opens and when the error shows", async () => {
+    m.phone = true
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    await goTo("ada")
+    scrollIntoView.mockClear()
+    await act(async () => requestButton()!.click())
+    const footer = container.querySelector(".ww-chat__foot")
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    expect(scrollIntoView.mock.instances[0]).toBe(footer)
+
+    await typeAmount("1.234")
+    expect(scrollIntoView).toHaveBeenCalledTimes(2)
+    expect(scrollIntoView.mock.instances[1]).toBe(footer)
+    expect(alertText()).toBe("Use up to 2 decimal places")
+
+    await typeAmount("1.235")
+    expect(scrollIntoView).toHaveBeenCalledTimes(2)
   })
 })

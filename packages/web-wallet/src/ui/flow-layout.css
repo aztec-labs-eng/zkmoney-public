@@ -146,6 +146,10 @@ body:has(dialog.ww-modal-overlay[open]) .ww-main {
     gap: 12px;
     flex-wrap: wrap;
   }
+  /* Two pills and the paylink bell outgrow a 320px screen. */
+  .ww-invite .ww-invite__topbar-end {
+    flex-wrap: wrap;
+  }
   .ww-invite .ww-invite__center {
     padding: 24px calc(16px + var(--ww-safe-area-right)) calc(24px + var(--ww-safe-area-bottom)) calc(16px + var(--ww-safe-area-left));
   }
@@ -162,7 +166,7 @@ body:has(dialog.ww-modal-overlay[open]) .ww-main {
 }
 
 @media (max-width: 640px) {
-  .ww-shell dialog.ww-modal-overlay > .ww-modal.ww-notifications {
+  :is(.ww-shell, .ww-invite) dialog.ww-modal-overlay > .ww-modal.ww-notifications {
     --flow-pad-x: 0px;
     --sheet-pad-bottom: 8px;
     position: static;
@@ -171,28 +175,28 @@ body:has(dialog.ww-modal-overlay[open]) .ww-main {
     border-radius: var(--radius-32) var(--radius-32) 0 0;
     padding-top: 0;
   }
-  .ww-shell .ww-modal.ww-notifications .ww-notifications__head {
+  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__head {
     padding: 16px 20px;
     gap: 12px;
   }
-  .ww-shell .ww-modal.ww-notifications > .ww-notifications__list {
+  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications > .ww-notifications__list {
     min-height: 0;
     flex-shrink: 1;
     overscroll-behavior: contain;
   }
-  .ww-shell .ww-modal.ww-notifications .ww-notifications__row {
+  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__row {
     flex-wrap: wrap;
   }
-  .ww-shell .ww-modal.ww-notifications .ww-notifications__body {
+  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__body {
     flex-basis: 150px;
   }
-  .ww-shell .ww-modal.ww-notifications .ww-notifications__title,
-  .ww-shell .ww-modal.ww-notifications .ww-notifications__desc {
+  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__title,
+  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__desc {
     white-space: normal;
     overflow: visible;
     overflow-wrap: anywhere;
   }
-  .ww-shell .ww-modal.ww-notifications .ww-notifications__dismiss {
+  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__dismiss {
     width: 32px;
     height: 44px;
     opacity: 1;

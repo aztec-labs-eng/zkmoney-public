@@ -5,6 +5,7 @@ import { Command } from 'commander';
 
 import type { PredicateScreenerConfig } from '../l1_operations/predicate_screener.js';
 import { toProverRunConfig } from '../prover/cli.js';
+import { relayerVersion } from '../version.js';
 import {
   type CommanderRunOptions,
   type L1OperationsSubmissionConfig,
@@ -27,6 +28,7 @@ export function createCliProgram(run: (config: RunConfig) => Promise<void> | voi
   program
     .name('oxide-relayer')
     .description('Oxide relayer')
+    .version(relayerVersion())
     .showHelpAfterError()
     .action(() => {
       program.help();
@@ -69,10 +71,13 @@ function runOptionsToConfig(opts: CommanderRunOptions): RunConfig {
   }
 
   const modes = parseModes(opts.modes!);
+  // only the first prover can claim tips.
+  if (disableSubmission && modes.includes('epoch-proofs')) {
+    throw new Error('epoch-proofs mode cannot run with --disable-submission');
+  }
   const prover = toProverRunConfig(opts, modes);
 
-  const l1OperationsSubmission =
-    modes.includes('l1-operations') && !disableSubmission ? toL1OperationsSubmissionConfig(opts) : undefined;
+  const l1OperationsSubmission = modes.includes('l1-operations') ? toL1OperationsSubmissionConfig(opts) : undefined;
 
   return {
     deploymentEnvManifestUrl:
@@ -80,7 +85,7 @@ function runOptionsToConfig(opts: CommanderRunOptions): RunConfig {
     portal: opts.portal ? EthAddress.fromString(opts.portal) : missing('--portal or OXIDE_PORTAL'),
     readL1RpcUrl: opts.readL1Rpc ?? missing('--read-l1-rpc, READ_L1_RPC_URL, L1_RPC_URL, or ETHEREUM_HOST'),
     flashbotsBlockRange: opts.flashbotsBlockRange!,
-    l1MinPriorityFeeGwei: opts.l1MinPriorityFeeGwei,
+    l1MaxFeePerGasGwei: opts.l1MaxFeePerGasGwei,
     aztecNodeUrl: opts.aztecNode ?? missing('--aztec-node, AZTEC_NODE_URL, or OXIDE_AZTEC_NODE_URL'),
     aztecNodeApiKey: aztecNodeApiKeyFromEnv(),
     ...prover,
@@ -94,15 +99,17 @@ function runOptionsToConfig(opts: CommanderRunOptions): RunConfig {
     },
     state: {
       backend: 'sqlite',
-      sqlitePath: opts.sqlitePath ?? opts.state!,
+      sqlitePath: opts.state!,
     },
-    workerId: opts.workerId ?? `${process.pid}@${process.env.HOSTNAME ?? 'localhost'}`,
-    leaseTtlMs: opts.leaseTtlMs!,
     sdnUrl: opts.sdnUrl,
     logScanWindow: BigInt(opts.logScanWindow!),
     disableSubmission,
     allowUnprofitable: opts.allowUnprofitable!,
     l1OperationsPollIntervalMs: opts.l1OperationsPollIntervalMs!,
+    l1OperationsPayoutTokens:
+      opts.l1OperationsPayoutTokens === undefined
+        ? undefined
+        : parseEthAddresses(opts.l1OperationsPayoutTokens, '--l1-operations-payout-tokens'),
     l1OperationsSubmission,
     fpcFundingPollIntervalMs: opts.fpcFundingPollIntervalMs!,
     predicate: toPredicateConfig(opts),
@@ -115,13 +122,9 @@ function runOptionsToConfig(opts: CommanderRunOptions): RunConfig {
  * are all required.
  */
 function toPredicateConfig(opts: CommanderRunOptions): PredicateScreenerConfig | undefined {
-  const { predicateApiKey, predicateVerificationHash, predicateChain, predicateBaseUrl, predicateTimeoutMs } = opts;
+  const { predicateApiKey, predicateVerificationHash, predicateChain } = opts;
   const configured =
-    predicateApiKey !== undefined ||
-    predicateVerificationHash !== undefined ||
-    predicateChain !== undefined ||
-    predicateBaseUrl !== undefined ||
-    predicateTimeoutMs !== undefined;
+    predicateApiKey !== undefined || predicateVerificationHash !== undefined || predicateChain !== undefined;
   if (!configured) {
     return undefined;
   }
@@ -135,15 +138,14 @@ function toPredicateConfig(opts: CommanderRunOptions): PredicateScreenerConfig |
     apiKey: predicateApiKey,
     verificationHash: predicateVerificationHash,
     chain: predicateChain,
-    baseUrl: predicateBaseUrl,
-    timeoutMs: predicateTimeoutMs,
   };
 }
 
 function toL1OperationsSubmissionConfig(opts: CommanderRunOptions): L1OperationsSubmissionConfig {
   return {
     retryBackoffMs: opts.l1OperationsRetryBackoffMs!,
-    maxRetries: opts.l1OperationsMaxRetries!,
+    maxPendingAgeMs: opts.l1OperationsMaxPendingAgeSeconds! * 1000,
+    maxFeeHeadroomPercent: opts.l1OperationsMaxFeeHeadroomPercent!,
   };
 }
 
@@ -158,6 +160,20 @@ function parseModes(value: string): RelayerMode[] {
     throw new Error('--modes must include at least one mode.');
   }
   return [...new Set(modes)];
+}
+
+/** Parse a comma-separated list of L1 addresses from CLI/env input. `label` names the option in errors. */
+function parseEthAddresses(value: string, label: string): EthAddress[] {
+  const addresses = parseCsv(value).map(address => {
+    if (!EthAddress.isAddress(address)) {
+      throw new Error(`${label} has an invalid address: ${address}.`);
+    }
+    return EthAddress.fromString(address);
+  });
+  if (addresses.length === 0) {
+    throw new Error(`${label} must include at least one address.`);
+  }
+  return addresses;
 }
 
 /** Parse comma-separated CLI/env list values. Empty segments are ignored so trailing commas are harmless. */

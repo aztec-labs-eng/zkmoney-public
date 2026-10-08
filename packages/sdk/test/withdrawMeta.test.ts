@@ -9,6 +9,7 @@ import {
   buildWithdrawMeta,
   decodeWithdrawMeta,
   type SwapWithdrawMeta,
+  type WithdrawGroupMeta,
 } from "../src/services/withdrawMeta.js"
 import {
   createWithdrawEventSource,
@@ -43,10 +44,14 @@ const SWAP: SwapWithdrawMeta = {
   nonce: `0x${"77".repeat(32)}` as Hex,
 }
 
+const GROUP: WithdrawGroupMeta = { id: `0x${"c1".repeat(16)}` as Hex, leg: "funds" }
+
 const hex = (s: string) => [...Buffer.from(s.slice(2), "hex")]
 
 /** Byte length of the swap entries `buildWithdrawMeta(SWAP)` lays out after the version byte. */
 const SWAP_ENTRIES_LEN = 3 + 22 * 2 + 34 * 3
+/** Byte length of the group entries: the id (2 + 16) and the leg (2 + 1). */
+const GROUP_ENTRIES_LEN = 18 + 3
 
 /** The stream `buildWithdrawMeta(SWAP)` lays out, as raw bytes; `commitment` overrides entry 0x04. */
 function swapStream(commitment = hex(SWAP.recoveryCommitment)): Uint8Array {
@@ -68,13 +73,35 @@ function swapStream(commitment = hex(SWAP.recoveryCommitment)): Uint8Array {
   return buf
 }
 
+/** `stream` with a `[type, len, value]` entry written at `pos`. */
+function withEntry(stream: Uint8Array, type: number, value: number[], pos: number) {
+  const bytes = stream.slice()
+  bytes[pos] = type
+  bytes[pos + 1] = value.length
+  bytes.set(value, pos + 2)
+  return bytes
+}
+
 /** `stream` with a recipient entry appended after its last entry. */
 function withRecipient(stream: Uint8Array, recipient: string, pos = 1 + SWAP_ENTRIES_LEN) {
-  const bytes = stream.slice()
-  bytes[pos] = 0x07
-  bytes[pos + 1] = 20
-  bytes.set(Buffer.from(recipient.slice(2), "hex"), pos + 2)
-  return bytes
+  return withEntry(stream, 0x07, hex(recipient), pos)
+}
+
+/** `stream` with the group entries at `pos`: the id, then the leg byte. */
+function withGroup(
+  stream: Uint8Array,
+  group: WithdrawGroupMeta,
+  pos: number,
+  legByte = group.leg === "gas" ? 1 : 2,
+) {
+  return withEntry(withEntry(stream, 0x08, hex(group.id), pos), 0x09, [legByte], pos + 18)
+}
+
+/** Bytes the stream occupies up to its terminator, the version byte included. */
+function usedBytes(stream: Uint8Array): number {
+  let pos = 1
+  while (stream[pos] !== 0) pos += 2 + stream[pos + 1]!
+  return pos
 }
 
 function emptyStream(): Uint8Array {
@@ -192,7 +219,55 @@ describe("withdrawMeta", () => {
     expect(decodeWithdrawMeta(packRaw(duplicate))).toEqual({ recipient: RECIPIENT })
   })
 
-  it("refuses to encode a malformed swap", () => {
+  it("round-trips a group after the swap entries, using 193 of the 217 bytes", () => {
+    const meta = buildWithdrawMeta({ recipient: RECIPIENT, swap: SWAP, group: GROUP })
+    const stream = withRecipient(
+      withGroup(swapStream(), GROUP, 1 + SWAP_ENTRIES_LEN),
+      RECIPIENT,
+      1 + SWAP_ENTRIES_LEN + GROUP_ENTRIES_LEN,
+    )
+    expect(meta).toEqual(packRaw(stream))
+    expect(decodeWithdrawMeta(meta)).toEqual({ recipient: RECIPIENT, swap: SWAP, group: GROUP })
+    expect(usedBytes(stream)).toBe(193)
+    expect(CAPACITY).toBe(217)
+  })
+
+  it("round-trips a group on a direct withdrawal, either leg", () => {
+    const gas: WithdrawGroupMeta = { ...GROUP, leg: "gas" }
+    const meta = buildWithdrawMeta({ recipient: RECIPIENT, group: gas })
+    expect(meta).toEqual(
+      packRaw(withRecipient(withGroup(emptyStream(), gas, 1), RECIPIENT, 1 + GROUP_ENTRIES_LEN)),
+    )
+    expect(decodeWithdrawMeta(meta)).toEqual({ recipient: RECIPIENT, group: gas })
+    expect(decodeWithdrawMeta(buildWithdrawMeta({ group: GROUP }))).toEqual({ group: GROUP })
+  })
+
+  it("decodes a group only when both entries are present and well-formed", () => {
+    const loneId = withEntry(emptyStream(), 0x08, hex(GROUP.id), 1)
+    expect(decodeWithdrawMeta(packRaw(withRecipient(loneId, RECIPIENT, 19)))).toEqual({
+      recipient: RECIPIENT,
+    })
+    const loneLeg = withEntry(emptyStream(), 0x09, [2], 1)
+    expect(decodeWithdrawMeta(packRaw(withRecipient(loneLeg, RECIPIENT, 4)))).toEqual({
+      recipient: RECIPIENT,
+    })
+    const zeroId = withGroup(emptyStream(), { ...GROUP, id: `0x${"00".repeat(16)}` }, 1)
+    expect(decodeWithdrawMeta(packRaw(zeroId))).toEqual({})
+    for (const legByte of [0, 3, 0xff]) {
+      expect(decodeWithdrawMeta(packRaw(withGroup(emptyStream(), GROUP, 1, legByte)))).toEqual({})
+    }
+    const shortId = withEntry(emptyStream(), 0x08, hex(GROUP.id).slice(0, 15), 1)
+    expect(decodeWithdrawMeta(packRaw(withEntry(shortId, 0x09, [2], 18)))).toEqual({})
+    // The swap and the recipient decode independently of a malformed group.
+    const badLeg = withRecipient(
+      withGroup(swapStream(), GROUP, 1 + SWAP_ENTRIES_LEN, 9),
+      RECIPIENT,
+      1 + SWAP_ENTRIES_LEN + GROUP_ENTRIES_LEN,
+    )
+    expect(decodeWithdrawMeta(packRaw(badLeg))).toEqual({ recipient: RECIPIENT, swap: SWAP })
+  })
+
+  it("refuses to encode a malformed value", () => {
     expect(() => buildWithdrawMeta({ swap: { ...SWAP, recipient: "0x12" as Address } })).toThrow(
       /recipient/,
     )
@@ -202,6 +277,7 @@ describe("withdrawMeta", () => {
     ).toThrow(/recoveryCommitment/)
     expect(() => buildWithdrawMeta({ swap: { ...SWAP, relayerTip: -1n } })).toThrow(/tip/)
     expect(() => buildWithdrawMeta({ recipient: "0x12" as Address })).toThrow(/recipient/)
+    expect(() => buildWithdrawMeta({ group: { ...GROUP, id: "0x77" as Hex } })).toThrow(/group id/)
   })
 })
 
@@ -282,5 +358,12 @@ describe("createWithdrawEventSource", () => {
   it("leaves the payee and the swap out when the meta names no recipient", async () => {
     const [event] = await listed(buildWithdrawMeta({ swap: SWAP }))
     expect(event).toMatchObject({ l1Recipient: undefined, swap: undefined, amount: 42n })
+  })
+
+  it("copies the group off the meta, checked against nothing", async () => {
+    const [event] = await listed(
+      buildWithdrawMeta({ recipient: RECIPIENT, swap: SWAP, group: GROUP }),
+    )
+    expect(event).toMatchObject({ l1Recipient: RECIPIENT, swap: undefined, group: GROUP })
   })
 })

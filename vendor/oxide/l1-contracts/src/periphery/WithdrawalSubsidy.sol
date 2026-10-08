@@ -12,6 +12,7 @@ import {AggregatorV3Interface} from "./interfaces/AggregatorV3Interface.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {IExecutor} from "@core/interfaces/IExecutor.sol";
 import {Errors} from "@periphery/Errors.sol";
+import {OxideConstants} from "@generated/OxideConstants.gen.sol";
 
 contract WithdrawalSubsidy is IWithdrawalSubsidy, Ownable {
   using SafeERC20 for IERC20;
@@ -29,8 +30,6 @@ contract WithdrawalSubsidy is IWithdrawalSubsidy, Ownable {
   uint256 internal constant MAX_PRICE_AGE = 1 hours;
 
   uint8 internal constant MAX_FEED_DECIMALS = 77;
-
-  uint256 public constant MAX_PRIORITY_FEE_WEI = 0.1 gwei;
 
   uint256 public constant WITHDRAWAL_TX_GAS = 127_000;
   uint256 public constant FROZEN_NOTES_REFUND_TX_GAS = 2_350_000;
@@ -69,7 +68,7 @@ contract WithdrawalSubsidy is IWithdrawalSubsidy, Ownable {
 
   function quoteSubsidy(IExecutor.Flow _flow) public view returns (uint256) {
     FlowPricing memory pricing = $flowPricing[_flow];
-    uint256 gasPrice = Math.min(tx.gasprice, block.basefee + MAX_PRIORITY_FEE_WEI);
+    uint256 gasPrice = Math.min(tx.gasprice, block.basefee + OxideConstants.MAX_PRIORITY_FEE_WEI);
     if (gasPrice <= pricing.startPriceWei) {
       return 0;
     }

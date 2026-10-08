@@ -13,6 +13,7 @@ import {
   type IStorageAdapter,
 } from "@obsidion/front-core"
 import { NotificationsPanel, freshToasts, toastKey } from "../src/ui/NotificationsPanel"
+import { NotificationsBell } from "../src/ui/NotificationsBell"
 
 const layout = vi.hoisted(() => ({ phone: false }))
 vi.mock("../src/ui/usePhoneLayout", () => ({ usePhoneLayout: () => layout.phone }))
@@ -126,24 +127,125 @@ describe("NotificationsPanel", () => {
     expect(store.get("send:1")?.dismissedAt).toBeUndefined()
   })
 
+  const cashOut = (sourceId: string, timestampMs = 1_700_000_001_000) => ({
+    id: `bridge:withdrawal:${sourceId}`,
+    producer: "bridge",
+    domain: "bridge",
+    sourceId,
+    title: "Withdrawal complete",
+    description: `$5 · ${sourceId}`,
+    timestampMs,
+    systemIcon: "arrow.up.right",
+    severity: "success" as const,
+    target: { type: "bridge.txDetail", bridgeKind: "withdrawal", sourceId },
+  })
+  /** A visitor page's bell: one cash-out, no operations. */
+  const only = (sourceId: string) => ({
+    entry: (e: AppNotificationEntry) => (e.target as { sourceId?: string }).sourceId === sourceId,
+    operation: () => false,
+  })
+
+  it("a scoped panel lists, counts and clears only its scope, and leaves the rest untouched", async () => {
+    const store = AppNotificationStore.get()
+    await store.createIfAbsent(cashOut("mine"))
+    await store.createIfAbsent(cashOut("theirs"))
+    await store.createIfAbsent({
+      ...cashOut("other"),
+      target: { type: "transfer.txDetail", txHash: "0x1" },
+    })
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <NotificationsPanel onClose={() => {}} scope={only("mine")} />
+        </MemoryRouter>,
+      )
+    })
+    expect(container.textContent).toContain("1 new")
+    expect(container.textContent).toContain("$5 · mine")
+    expect(container.textContent).not.toContain("$5 · theirs")
+    expect(container.textContent).not.toContain("$5 · other")
+
+    await act(async () => {
+      ;[...container.querySelectorAll("button")].find((b) => b.textContent === "Clear all")!.click()
+    })
+    expect(store.get("bridge:withdrawal:mine")?.dismissedAt).toBeTruthy()
+    expect(store.get("bridge:withdrawal:theirs")?.dismissedAt).toBeUndefined()
+    expect(store.get("bridge:withdrawal:other")?.dismissedAt).toBeUndefined()
+  })
+
+  it("a scoped bell toasts and counts only its scope", async () => {
+    const store = AppNotificationStore.get()
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <NotificationsBell scope={only("toast-mine")} openEntry={() => null} />
+        </MemoryRouter>,
+      )
+    })
+    expect(container.querySelector(".ww-notifications__bell-dot")).toBeNull()
+    await act(async () => void (await store.createIfAbsent(cashOut("toast-theirs", Date.now()))))
+    expect(container.textContent).not.toContain("$5 · toast-theirs")
+    expect(container.querySelector(".ww-notifications__bell-dot")).toBeNull()
+    await act(async () => void (await store.createIfAbsent(cashOut("toast-mine", Date.now()))))
+    expect(container.textContent).toContain("$5 · toast-mine")
+    expect(container.querySelector(".ww-notifications__bell-dot")).toBeTruthy()
+  })
+
+  it("toasts a failure reported again once its entry was removed, never one that was dismissed", async () => {
+    const store = AppNotificationStore.get()
+    const failed = { ...cashOut("again", Date.now()), title: "Withdrawal failed" }
+    const report = () => act(async () => void (await store.createIfAbsent(failed)))
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <NotificationsBell openEntry={() => null} />
+        </MemoryRouter>,
+      )
+    })
+    await report()
+    expect(container.textContent).toContain("$5 · again")
+    await act(() => store.remove(failed.id))
+    expect(container.textContent).not.toContain("$5 · again")
+    await report()
+    expect(container.textContent).toContain("$5 · again")
+    await act(() => store.dismiss(failed.id))
+    await report()
+    expect(container.textContent).not.toContain("$5 · again")
+  })
+
   it("uses a dismissible native sheet on phones and the existing panel on desktop", async () => {
     layout.phone = true
     const close = vi.fn()
-    await act(async () => root.render(<MemoryRouter><NotificationsPanel onClose={close} /></MemoryRouter>))
+    await act(async () =>
+      root.render(
+        <MemoryRouter>
+          <NotificationsPanel onClose={close} />
+        </MemoryRouter>,
+      ),
+    )
     const dialog = container.querySelector("dialog")!
     expect(dialog.open).toBe(true)
     expect(dialog.getAttribute("aria-label")).toBe("Notifications")
-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Close notifications"]')!.click())
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[aria-label="Close notifications"]')!.click(),
+    )
     expect(close).toHaveBeenCalledOnce()
     close.mockClear()
-    await act(async () => dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })))
+    await act(async () =>
+      dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })),
+    )
     expect(close).toHaveBeenCalledOnce()
     layout.phone = false
-    await act(async () => root.render(<MemoryRouter><NotificationsPanel onClose={close} /></MemoryRouter>))
+    await act(async () =>
+      root.render(
+        <MemoryRouter>
+          <NotificationsPanel onClose={close} />
+        </MemoryRouter>,
+      ),
+    )
     expect(container.querySelector("dialog")).toBeNull()
     expect(container.querySelector('.ww-notifications[role="dialog"]')).not.toBeNull()
   })
-
 })
 
 describe("freshToasts", () => {

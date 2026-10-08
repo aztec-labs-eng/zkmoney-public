@@ -22,6 +22,7 @@ const artifactPinSchema = z.strictObject({
     }, "artifact URL must not contain credentials")
     .optional(),
   sha256: z.string().regex(SHA256, "artifact sha256 must be lowercase hexadecimal"),
+  encoding: z.literal("aztec-contract-artifact").optional(),
 })
 
 const artifactEntrySchema = z.strictObject({
@@ -63,6 +64,7 @@ export type ArtifactPin = z.infer<typeof artifactPinSchema>
 export interface ResolvedArtifactPin {
   url: string
   sha256: string
+  encoding?: "aztec-contract-artifact"
 }
 
 export class ArtifactManifestError extends Error {
@@ -108,6 +110,11 @@ function parseProfileUrl(profileUrl: string): { url: URL; generation: string; fi
   }
   const [, generation, fileVersion] = match
   return { url, generation: generation!, fileVersion: fileVersion! }
+}
+
+/** Throws unless artifact addresses can derive from this profile URL. */
+export function assertProfileUrlShape(profileUrl: string): void {
+  parseProfileUrl(profileUrl)
 }
 
 /** Map a fetched profile document to the immutable artifact manifest for its selected version. */
@@ -242,13 +249,13 @@ export function createArtifactPinResolver(input: ArtifactPinResolverInput) {
     const manifest = await manifestPromise
     const entry = manifest.classes[classId]
     if (!entry) throw new ArtifactManifestError(`No reviewed artifact for class ${classId}`)
-    const { sha256, url: named } = entry.artifact
+    const { sha256, url: named, encoding } = entry.artifact
     const url = artifactBlobUrl(input.profileUrl, sha256)
     if (named !== undefined && named !== url) {
       throw new ArtifactManifestError(
         `artifact for class ${classId} names ${named}, but the profile's store serves it at ${url}`,
       )
     }
-    return { url, sha256 }
+    return { url, sha256, ...(encoding && { encoding }) }
   }
 }

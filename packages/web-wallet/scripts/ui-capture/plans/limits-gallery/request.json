@@ -1,0 +1,72 @@
+{
+  "scenario": "onboarding",
+  "bootstrap": "/request?demo=onboarding&flowFixture=success&flowEntry=request",
+  "ready": {
+    "role": "button",
+    "name": "Pay with an Ethereum wallet",
+    "exact": false
+  },
+  "finalScreenshot": false,
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Pay with an Ethereum wallet",
+      "exact": false
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal [data-testid=\"address-limits\"]"
+    },
+    {
+      "action": "reachable",
+      "selector": "dialog:modal [data-testid=\"address-limits\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "03-request-sheet.png",
+      "state": "Request payment sheet: the link's own address, then the limit line; capacity for it can't be confirmed"
+    },
+    {
+      "action": "click",
+      "selector": "dialog:modal [data-testid=\"address-limits\"] [data-testid=\"about-limits-link\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"unavailable\"]"
+    },
+    {
+      "action": "waitFor",
+      "testId": "about-limits-capacity-retry",
+      "state": "hidden"
+    },
+    {
+      "action": "hover",
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity-state\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "01-request-embedded-unproven.png",
+      "state": "A request link's own address: capacity unavailable, no Check again, no active bucket (R-D4); accountless"
+    },
+    {
+      "action": "press",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog[aria-label=\"About limits\"]",
+      "state": "hidden"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal [data-testid=\"address-limits\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "02-request-after-close.png",
+      "state": "Back on the payment sheet after closing the info"
+    }
+  ]
+}

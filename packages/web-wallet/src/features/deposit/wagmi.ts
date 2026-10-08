@@ -14,6 +14,7 @@ import {
 } from "@rainbow-me/rainbowkit/wallets"
 import { getConfig, l1ChainFor, l1Transport } from "../../config/env"
 import { isDemoMode } from "../../dev/demoFlag"
+import { rabbyWallet } from "./rabbyWallet"
 import { createConfig } from "wagmi"
 
 const base = darkTheme({
@@ -80,15 +81,28 @@ export function wagmiConfig() {
   }
   cached = getDefaultConfig({
     appName: "zk.money",
+    appDescription: "Private payments on Ethereum",
+    appUrl: window.location.origin,
+    appIcon: `${window.location.origin}/favicon.png`,
     projectId,
-    // Replaces RainbowKit's stock group, so Popular repeats its contents verbatim. safeWallet
-    // reports itself installed only inside a Safe App iframe, and is filtered out everywhere else.
-    // "More" holds wallets that pair over a scanned QR; injected-only ones (Phantom, Rabby, Brave)
-    // would render as install prompts, and EIP-6963 already surfaces them once installed.
+    // Replaces RainbowKit's stock Popular group with the same wallets plus Rabby, which people look
+    // for by name on phones as well as desktops: the extension when it is injected (deduped with
+    // its EIP-6963 announcement by rdns), the Rabby app over WalletConnect otherwise.
+    // safeWallet reports itself installed only inside a Safe App iframe, and is filtered out
+    // everywhere else. "More" holds wallets that pair over a scanned QR. Phantom and Brave stay
+    // unlisted: injected-only and rarely asked for, so EIP-6963 surfacing them once installed is
+    // enough, and a named entry would be an install prompt for everyone else.
     wallets: [
       {
         groupName: "Popular",
-        wallets: [safeWallet, rainbowWallet, baseWallet, metaMaskWallet, walletConnectWallet],
+        wallets: [
+          safeWallet,
+          rainbowWallet,
+          baseWallet,
+          metaMaskWallet,
+          rabbyWallet,
+          walletConnectWallet,
+        ],
       },
       {
         groupName: "More",
@@ -111,7 +125,5 @@ export function wagmiConfig() {
     // rk-recent key, so nothing about reconnecting gets harder.
     storage: null,
   })
-  // Sweep up the store earlier builds persisted, so a returning browser carries no stale connection.
-  if (typeof window !== "undefined") window.localStorage.removeItem("wagmi.store")
   return cached
 }

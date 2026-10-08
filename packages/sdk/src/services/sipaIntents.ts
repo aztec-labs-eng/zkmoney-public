@@ -18,7 +18,10 @@ import type { Fr } from "@aztec/aztec.js/fields"
 import {
   encodeDepositIntentData,
   buildSipaDeployAndSweepOperation,
+  buildSipaSweepOperation,
   depositPayoutTokenFor,
+  DepositSubsidyAbi,
+  predictSIPA,
   type SipaDeployArgs,
   encodeRegistrationIntentData,
   encodeRegistrationProofs,
@@ -197,17 +200,83 @@ export {
   predictAccountAddress,
   encodeAccountInitCode,
   depositPayoutTokenFor,
+  SipaIntent as OxideSipaIntent,
 } from "@oxide/l1-contracts"
 export { L1OperationCondition } from "@oxide/oxide-lib/l1_operation_calldata.js"
 export { predictLegacySIPA } from "@oxide/l1-contracts/legacy_sipa.js"
 
-/** Publish a SIPA with one deploy-and-sweep operation per funding token. */
+const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
+
+/**
+ * `DepositSubsidy.deployAndSweepForSubsidy` deploys the SIPA it derives from its own portal, factory
+ * and rollup version, not from the broadcast's deploy args. Refuse to publish unless that SIPA is
+ * `sipa`: otherwise a funded address is never swept. A SIPA that has code is swept as is.
+ */
+export async function assertSubsidySweepsSipa(
+  publicClient: PublicClient,
+  params: {
+    depositSubsidy: Address
+    portal: Address
+    sipaFactory: Address
+    intent: OxideSipaIntent
+    deployArgs: SipaDeployArgs
+    intentData: Hex
+    sipa: Address
+  },
+): Promise<void> {
+  const { depositSubsidy, deployArgs } = params
+  const [portal, sipaFactory, rollupVersion] = await Promise.all([
+    publicClient.readContract({ address: depositSubsidy, abi: DepositSubsidyAbi, functionName: "PORTAL" }),
+    publicClient.readContract({
+      address: depositSubsidy,
+      abi: DepositSubsidyAbi,
+      functionName: "SIPA_FACTORY",
+    }),
+    publicClient.readContract({
+      address: depositSubsidy,
+      abi: DepositSubsidyAbi,
+      functionName: "ROLLUP_VERSION",
+    }),
+  ])
+  const refuse = (reason: string) => {
+    throw new Error(`Deposit subsidy ${depositSubsidy} would not sweep SIPA ${params.sipa}: ${reason}`)
+  }
+  if (!sameAddress(portal, params.portal)) refuse(`it serves portal ${portal}`)
+  if (!sameAddress(sipaFactory, params.sipaFactory)) refuse(`it deploys through ${sipaFactory}`)
+  const intentHash = keccak256(params.intentData)
+  if (intentHash.toLowerCase() !== deployArgs.intentHash.toLowerCase()) {
+    refuse(`the intent data hashes to ${intentHash}, not ${deployArgs.intentHash}`)
+  }
+  const implementation = await readSIPAImplementation(
+    publicClient,
+    sipaFactory,
+    portal,
+    params.intent,
+  )
+  if (!sameAddress(implementation, deployArgs.implementation)) {
+    refuse(`the portal's implementation is ${implementation}`)
+  }
+  const predicted = await predictSIPA(
+    publicClient,
+    sipaFactory,
+    implementation,
+    intentHash,
+    deployArgs.recoveryCommitment,
+    rollupVersion,
+    deployArgs.resweepable,
+  )
+  if (!sameAddress(predicted, params.sipa)) refuse(`it would deploy ${predicted}`)
+}
+
+/** Publish a SIPA with one sweep operation per funding token, deploying it first when it has no code. */
 export function buildSipaSweepBroadcasts(
   token: SipaNotifier,
   broadcaster: L1OperationBroadcaster,
   params: SipaNotification & {
     sipa: Address
+    deployed: boolean
     sipaFactory: Address
+    intent: OxideSipaIntent
     deployArgs: SipaDeployArgs | LegacySipaDeployArgs
     intentData: Hex
     proofs: Hex
@@ -223,11 +292,9 @@ export function buildSipaSweepBroadcasts(
     token,
     broadcaster,
     params,
-    tokens.map((token) =>
-      buildSipaDeployAndSweepOperation({
+    tokens.map((token) => {
+      const sweep = {
         sipa: params.sipa,
-        sipaFactory: params.sipaFactory,
-        deployArgs: params.deployArgs,
         sweepArgs: {
           token,
           relayer: params.operationExecutor,
@@ -243,7 +310,15 @@ export function buildSipaSweepBroadcasts(
           EthAddress.fromString(token),
           EthAddress.fromString(params.sipa),
         ),
-      }),
-    ),
+      }
+      return params.deployed
+        ? buildSipaSweepOperation(sweep)
+        : buildSipaDeployAndSweepOperation({
+            ...sweep,
+            sipaFactory: params.sipaFactory,
+            intent: params.intent,
+            deployArgs: params.deployArgs,
+          })
+    }),
   )
 }

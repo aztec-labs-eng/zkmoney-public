@@ -8,14 +8,14 @@ import {
 import { ContactRow, GradientText, Icon, avatarColors } from "@obsidion/web-ds"
 import { SharePaylinkModal } from "../requests/SharePaylinkModal"
 import { loadWalletIdentity } from "../identity/walletIdentity"
-import { useAwaitingDepositRecord } from "../onboarding/RegistrationDepositPrompt"
+import { useRegistrationDepositOwed } from "../onboarding/openRegistration"
 import { openActivationPrompt } from "../onboarding/activationPrompt"
 import { RequestContactModal } from "./RequestContactModal"
 import { RequestPaylinkModal } from "./RequestPaylinkModal"
 import { recentContacts } from "./receiveView"
 
 /**
- * Receive entry page (ULT-671), routed at /receive: request via paylink, or pick a contact to
+ * Receive entry page (ULT-671), routed at /receive: a request link, or pick a contact to
  * request from. The flow's steps open as modals over this page.
  */
 export function ReceiveScreen() {
@@ -27,7 +27,7 @@ export function ReceiveScreen() {
   const [minted, setMinted] = useState<MintedRequestLink>()
   const [requesting, setRequesting] = useState<ContactRowData>()
   // A request names the tag as payee, so until the name is activated the way on is the deposit.
-  const awaitingActivation = useAwaitingDepositRecord() !== null
+  const awaitingActivation = useRegistrationDepositOwed()
 
   return (
     <div className="ww-panel ww-panel--entry">
@@ -47,8 +47,8 @@ export function ReceiveScreen() {
               <Icon name="link" size={24} color="#fff" />
             </span>
             <span className="ww-send-option__text">
-              <span>Request via paylink</span>
-              <span>Generate a shareable paylink. Anyone can pay you, no account needed.</span>
+              <span>Request link</span>
+              <span>Generate a shareable request link. Anyone can pay you, no account needed.</span>
             </span>
           </span>
           <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
@@ -77,7 +77,7 @@ export function ReceiveScreen() {
           ) : (
             <span className="ww-contacts__label ww-contacts__empty">
               No contacts inside of zk.money yet. Direct requests can only go to a @tag, or use a
-              paylink above.
+              request link above.
             </span>
           )}
           <button

@@ -7,7 +7,7 @@ import {
   broadcastL1Operation,
   broadcastL1OperationPair,
 } from "@oxide/oxide-client/broadcaster_calls.js"
-import { buildSwapOnWithdraw } from "@oxide/oxide-client/swap_on_withdraw.js"
+import { buildSwapOnWithdraw } from "@oxide/oxide-client/withdraw_escrows/swap.js"
 import {
   L1OperationCondition,
   type BroadcastL1Operation,
@@ -29,7 +29,7 @@ import type {
   WithdrawOperation,
 } from "../oxide/plainWithdrawal.js"
 import { swapOutputForRoute, type SwapOnWithdrawPlan } from "../oxide/swapOnWithdraw.js"
-import { buildWithdrawMeta } from "./withdrawMeta.js"
+import { buildWithdrawMeta, type WithdrawGroupMeta } from "./withdrawMeta.js"
 
 export type WithdrawalDeployment = Pick<
   OxideEnvTuple,
@@ -43,6 +43,8 @@ export interface WithdrawalOptions {
   portal: PortalWithdrawalState
   /** Swap-on-withdraw: the burn pays this escrow, and the escrow's swap broadcast rides the burn tx. */
   swap?: Pick<SwapOnWithdrawPlan, "escrowArgs" | "recovery">
+  /** Fresh-address withdrawal: which leg this burn is, stamped in its meta so a rescan pairs the legs. */
+  group?: WithdrawGroupMeta
 }
 
 /** Where a burn settles and what rides its tx; the burn itself is a direct withdraw or a nested one. */
@@ -108,7 +110,10 @@ export async function planPayout(
     return {
       plainWithdrawal,
       userPayload: plainUserPayload(burn.recipient),
-      meta: buildWithdrawMeta({ recipient: getAddress(burn.recipient.toString()) }),
+      meta: buildWithdrawMeta({
+        recipient: getAddress(burn.recipient.toString()),
+        group: options.group,
+      }),
       broadcasts: [broadcastL1Operation(broadcaster, release)],
     }
   }
@@ -126,6 +131,7 @@ export async function planPayout(
     amount: burn.amount,
     withdrawalRelayerTip: WITHDRAW_RELAYER_TIP,
     proverTip: burn.proverTip ?? 0n,
+    fpcFundingCut: options.portal.fpcFundingCut,
     route: swap.route,
     l1Recipient: EthAddress.fromString(swap.recipient),
     recoveryAccount: EthAddress.fromString(recovery.account),
@@ -150,6 +156,7 @@ export async function planPayout(
         relayerTip: swap.relayerTip,
         nonce: swap.nonce,
       },
+      group: options.group,
     }),
     broadcasts: [broadcastL1OperationPair(broadcaster, [release, built.l1Operation])],
   }

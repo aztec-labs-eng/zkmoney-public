@@ -3,8 +3,8 @@
  * card whose Status row names the leg the tracker is on and flips to Paid when the L1 release
  * lands. The sheet stays open on the live store row, so the status updates as phases advance.
  *
- * The re-check, the manual finalize and the swap exit it offers are the row's own, handed back so
- * one owner drives the chain watcher and the exit handoff.
+ * The re-check and the exit it offers are the row's own, handed back so one owner drives the chain
+ * watcher and the exit handoff.
  */
 import {
   swapWithdrawalAmounts,
@@ -16,8 +16,13 @@ import { GradientText, Icon, PrimaryGradientButton, type StatusBadgeStyle } from
 import ethIcon from "../../assets/deposit/ethereum.webp"
 import { getConfig } from "../../config/env"
 import { migrationAmounts } from "../../features/migration/migrationFee"
+import { TabLine } from "../../features/operations/TabLine"
 import { waitingNote } from "../../features/withdraw/waitingNote"
-import { withdrawalReceiveAsset } from "../../features/withdraw/withdrawAssets"
+import {
+  WITHDRAWAL_RECEIVE_ASSETS,
+  withdrawalNetworkLabel,
+  withdrawalReceiveAsset,
+} from "../../features/withdraw/withdrawAssets"
 import { l2TxUrl } from "../../lib/explorer"
 import { l1AddressUrl, l1TxUrl, whenLabel } from "../detailRows"
 import { shortAddr, tokenAmount, usdFigure } from "../format"
@@ -41,7 +46,7 @@ const PHASE_BADGE: Record<WithdrawalRecord["phase"], StatusBadgeStyle> = {
 export function withdrawalStatus(
   record: Pick<
     WithdrawalRecord,
-    "phase" | "finalizeTxHash" | "swapExecuteTxHash" | "recoveryTxHash"
+    "phase" | "l2TxHash" | "finalizeTxHash" | "swapExecuteTxHash" | "recoveryTxHash"
   >,
 ): {
   label: string
@@ -50,6 +55,9 @@ export function withdrawalStatus(
   const status = {
     label: WITHDRAWAL_PHASE_COPY[record.phase].status,
     badge: PHASE_BADGE[record.phase],
+  }
+  if (record.phase === "submitting" && !record.l2TxHash) {
+    return { ...status, label: WITHDRAWAL_PHASE_COPY.submitting.proving ?? status.label }
   }
   if (record.phase === "finalizing_l1" && record.finalizeTxHash) {
     return { ...status, label: "Waiting for your finalization" }
@@ -63,25 +71,16 @@ export function withdrawalStatus(
   return status
 }
 
-/**
- * Detail-sheet hero. A swap withdrawal leads with the dollar figure — its Token row names the
- * output asset. A migration moves the wallet's dollars between versions, so it reads in dollars
- * like its rows.
- */
-export function withdrawalHeroAmount(
-  record: Pick<WithdrawalRecord, "amount" | "tokenSymbol" | "swapOutput" | "intent">,
-): string {
-  return record.swapOutput || record.intent === "migration"
-    ? `-${usdFigure(record.amount)}`
-    : `-${record.amount} ${record.tokenSymbol}`
+/** Detail-sheet hero: the burn in dollars, the unit the balance and the Sent/Fee rows are in. */
+export function withdrawalHeroAmount(record: Pick<WithdrawalRecord, "amount">): string {
+  return `-${usdFigure(record.amount)}`
 }
 
 export function WithdrawalDetailModal({
   record,
   amount,
   onCheckAgain,
-  onFinalize,
-  swapExit,
+  exit,
   notice,
   onClose,
 }: {
@@ -92,10 +91,8 @@ export function WithdrawalDetailModal({
   amount: string
   /** The re-check the row offers, if any. */
   onCheckAgain?: () => void
-  /** The manual-finalize exit the row offers, if any. */
-  onFinalize?: () => void
-  /** The swap exit the row offers, if any: run the swap yourself, or recover the DAI. */
-  swapExit?: { title: string; onStart: () => void }
+  /** The exit the row offers, if any: finalize manually, run the swap yourself, or recover. */
+  exit?: { title: string; onStart: () => void }
   onClose: () => void
 }) {
   const config = getConfig()
@@ -103,22 +100,40 @@ export function WithdrawalDetailModal({
   const amounts = withdrawalAmounts(record)
   const swap = swapWithdrawalAmounts(record)
   const swapOption = record.swapOutput ? withdrawalReceiveAsset(record.swapOutput) : undefined
+  const tokenOption =
+    swapOption ?? WITHDRAWAL_RECEIVE_ASSETS.find((o) => o.symbol === record.tokenSymbol)
   // A failed exit released nothing, and a recovered one swapped nothing, so neither names a fee or
   // an output figure.
   const unpaid = record.phase === "failed" || record.phase === "recovered"
   // A migration's recipient is the new balance, which also pays the arrival's fee.
   const migration = record.intent === "migration" ? migrationAmounts(record) : undefined
+  // A registration's burn has no recipient to receive a net: the address it pays is swept for the
+  // name, so the sheet states what was sent and leaves the withdrawal arithmetic out.
   const showBreakdown =
-    !swap && record.intent !== "migration" && amounts.feeKnown && amounts.netAtomic > 0n && !unpaid
+    !swap &&
+    record.intent !== "migration" &&
+    record.intent !== "registration" &&
+    amounts.feeKnown &&
+    amounts.netAtomic > 0n &&
+    !unpaid
   const showMigration = migration && migration.netAtomic > 0n && !unpaid
   const showSwapFee = swap && swap.feeKnown && swap.swapInputAtomic > 0n && !unpaid
   const estimate = !unpaid ? swap?.estimate : undefined
   const recipientUrl = l1AddressUrl(record.recipient)
+  // A registration's burn pays this wallet's own registration address, not a recipient.
+  const registration = record.intent === "registration"
+  const recipientAlias = registration ? "Registration address" : record.recipientAlias
 
   return (
     <Modal
       variant="create"
-      label={record.source === "paylink" ? "Paylink withdrawal details" : "Withdrawal details"}
+      label={
+        registration
+          ? "Registration details"
+          : record.source === "paylink"
+          ? "Paylink withdrawal details"
+          : "Withdrawal details"
+      }
       className="ww-sheet ww-sheet--detail"
       onClose={onClose}
     >
@@ -144,7 +159,7 @@ export function WithdrawalDetailModal({
             <b>{record.recipientAlias}</b>
           ) : (
             <b>
-              {record.recipientAlias && `${record.recipientAlias} · `}
+              {recipientAlias && `${recipientAlias} · `}
               {recipientUrl ? (
                 <a href={recipientUrl} target="_blank" rel="noreferrer">
                   {shortAddr(record.recipient)}
@@ -173,14 +188,14 @@ export function WithdrawalDetailModal({
         )}
         <DepositFact label="Token">
           <b>
-            {swapOption && <img src={swapOption.icon} alt="" width={16} height={16} />}
-            {swapOption ? swapOption.symbol : record.tokenSymbol}
+            {tokenOption && <img src={tokenOption.icon} alt="" width={16} height={16} />}
+            {tokenOption?.symbol ?? record.tokenSymbol}
           </b>
         </DepositFact>
         <DepositFact label="Network">
           <b>
             <img src={ethIcon} alt="" width={16} height={16} />
-            Ethereum (ERC20)
+            {withdrawalNetworkLabel(record.swapOutput)}
           </b>
         </DepositFact>
         <DepositFact label="Sent">
@@ -244,7 +259,9 @@ export function WithdrawalDetailModal({
           <>
             <hr className="ww-divider" />
             <DepositFact label="Recipient receives">
-              <b>{usdFigure(amounts.netDisplay)}</b>
+              <b>
+                {tokenAmount(amounts.netDisplay)} {record.tokenSymbol}
+              </b>
             </DepositFact>
           </>
         )}
@@ -272,15 +289,15 @@ export function WithdrawalDetailModal({
       </div>
 
       {note && <p className="ww-sheet__note">{note}</p>}
+      <TabLine operationId={record.operationId} />
       {onCheckAgain && (
         <PrimaryGradientButton
           title="Check again"
-          buttonStyle={onFinalize ? "dark" : undefined}
+          buttonStyle={exit ? "dark" : undefined}
           onClick={onCheckAgain}
         />
       )}
-      {onFinalize && <PrimaryGradientButton title="Finalize manually" onClick={onFinalize} />}
-      {swapExit && <PrimaryGradientButton title={swapExit.title} onClick={swapExit.onStart} />}
+      {exit && <PrimaryGradientButton title={exit.title} onClick={exit.onStart} />}
     </Modal>
   )
 }

@@ -40,6 +40,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => {
     useAccountContext: () => h.account,
     useAssetContext: () => h.asset.current,
     useContractServiceContext: () => h.contracts,
+    bootPriority: { whenBalanceSettled: async () => {} },
     checkSpentViaPaylinkService: () => async () => new Map(),
     AppNotificationStore: { get: () => notes.store },
   }

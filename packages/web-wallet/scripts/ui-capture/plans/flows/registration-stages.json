@@ -1,0 +1,195 @@
+{
+  "scenario": "activity",
+  "path": "/?flowFixture=success&registrationFixture=awaiting&identityFixture=pending",
+  "ready": {
+    "selector": ".ww-reg-sheet__card"
+  },
+  "steps": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Close",
+      "exact": true,
+      "first": true
+    },
+    {
+      "action": "goto",
+      "path": "/?flowFixture=success&registrationFixture=awaiting&identityFixture=pending"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-banner--activate"
+    },
+    {
+      "action": "wait",
+      "ms": 800
+    },
+    {
+      "action": "screenshot",
+      "file": "01-banner-awaiting.png",
+      "state": "Home banner: deposit owed, 7-day hold date"
+    },
+    {
+      "action": "click",
+      "selector": ".ww-banner--activate"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "02-prompt-awaiting.png",
+      "state": "Deposit prompt: Reserved until is the 7-day hold"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Close",
+      "exact": true,
+      "first": true
+    },
+    {
+      "action": "goto",
+      "path": "/?flowFixture=success&registrationFixture=expired&identityFixture=pending"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-banner--activate"
+    },
+    {
+      "action": "wait",
+      "ms": 800
+    },
+    {
+      "action": "screenshot",
+      "file": "03-banner-expired.png",
+      "state": "Home banner: reservation over, quote needs a refresh"
+    },
+    {
+      "action": "click",
+      "selector": ".ww-banner--activate"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "04-prompt-expired.png",
+      "state": "Deposit prompt: reservation over"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Close",
+      "exact": true,
+      "first": true
+    },
+    {
+      "action": "goto",
+      "path": "/?flowFixture=success&registrationFixture=funded&identityFixture=pending"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-banner--activate"
+    },
+    {
+      "action": "wait",
+      "ms": 800
+    },
+    {
+      "action": "screenshot",
+      "file": "05-banner-funded.png",
+      "state": "Home banner: Claiming, funds in"
+    },
+    {
+      "action": "click",
+      "selector": ".ww-banner--activate"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "06-prompt-funded.png",
+      "state": "Deposit prompt: funds in"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Close",
+      "exact": true,
+      "first": true
+    },
+    {
+      "action": "goto",
+      "path": "/?flowFixture=success&registrationFixture=swept&identityFixture=pending"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-banner--activate"
+    },
+    {
+      "action": "wait",
+      "ms": 800
+    },
+    {
+      "action": "screenshot",
+      "file": "07-banner-swept.png",
+      "state": "Home banner: swept before a funded stamp reads as claiming"
+    },
+    {
+      "action": "click",
+      "selector": ".ww-banner--activate"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-reg-sheet__card"
+    },
+    {
+      "action": "screenshot",
+      "file": "08-prompt-swept.png",
+      "state": "Deposit prompt: swept"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Close",
+      "exact": true,
+      "first": true
+    },
+    {
+      "action": "goto",
+      "path": "/?flowFixture=success&registrationFixture=awaiting&identityFixture=pending"
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-banner--activate"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Open menu",
+      "exact": true
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Share @tag",
+      "exact": true,
+      "first": true
+    },
+    {
+      "action": "waitFor",
+      "selector": ".ww-qr-card__code"
+    },
+    {
+      "action": "screenshot",
+      "file": "09-share-inactive.png",
+      "state": "Share @tag: own tag not active yet"
+    }
+  ],
+  "finalScreenshot": false
+}

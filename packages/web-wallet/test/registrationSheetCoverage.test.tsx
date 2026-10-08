@@ -19,18 +19,55 @@ vi.mock("@obsidion/web-ds", () => ({
 vi.mock("../src/features/onboarding/OnboardingCard", () => ({
   OnboardingCard: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
 }))
-vi.mock("../src/features/onboarding/steps/DepositAddress", () => ({
-  DepositAddressRow: () => null,
-  DepositPayBlock: ({ total, note }: { total: bigint; note?: React.ReactNode }) => (
-    <div data-testid="pay-block" data-total={String(total)}>
+vi.mock("../src/features/onboarding/steps/DepositAddress", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/onboarding/steps/DepositAddress")>()),
+  DepositAddressRow: ({ overLimit }: { overLimit?: string }) => (
+    <div data-testid="address-row" data-over-limit={overLimit ?? ""} />
+  ),
+  DepositPayBlock: ({
+    total,
+    note,
+    overLimit,
+  }: {
+    total: bigint
+    note?: React.ReactNode
+    overLimit?: string
+  }) => (
+    <div data-testid="pay-block" data-total={String(total)} data-over-limit={overLimit ?? ""}>
       {note}
     </div>
   ),
 }))
 
+// The sheet's own content is covered elsewhere; this suite checks which context the terms open it in.
+vi.mock("../src/features/limits/AboutLimitsSheet", () => ({
+  WalletAboutLimitsSheet: ({
+    topic,
+    account = true,
+    capacity,
+  }: {
+    topic?: string
+    account?: boolean
+    capacity?: { kind: string }
+  }) => (
+    <div
+      data-testid="about-limits-sheet"
+      data-topic={topic}
+      data-account={String(account)}
+      data-capacity={capacity?.kind}
+    />
+  ),
+}))
+
 const { RegistrationSheet } = await import("../src/features/onboarding/RegistrationSheet")
-const { DEPOSIT_TERMS_PENDING, formatDepositAmount, formatDepositDue, formatDepositSeen } =
-  await import("../src/features/onboarding/steps/DepositTermsRows")
+const {
+  DEPOSIT_TERMS_PENDING,
+  formatDepositAmount,
+  formatDepositDue,
+  formatDepositSeen,
+  swapAssetsLabel,
+} = await import("../src/features/onboarding/steps/DepositTermsRows")
+const { Network } = await import("@obsidion/core/types")
 
 const dai = (n: number) => BigInt(Math.round(n * 100)) * 10n ** 16n
 /** Figures are built from the formatters the sheet prices with, never from its sentences. */
@@ -51,7 +88,7 @@ const payment = {
   floor: dai(14.5) as bigint | undefined,
   kind: "standard" as RegistrationKind,
   tokenSymbol: "DAI",
-  fundingAssets: "DAI, USDC or USDT",
+  network: Network.MAINNET,
   tokenDecimals: 18,
 }
 
@@ -65,7 +102,11 @@ const summary = () =>
   container.querySelector('[data-testid="registration-sheet-summary"]')?.textContent ?? ""
 
 const render = (
-  over: Partial<typeof payment> & { received?: bigint; scheduleUnavailable?: boolean },
+  over: Partial<typeof payment> & {
+    received?: bigint
+    scheduleUnavailable?: boolean
+    swapAssets?: string
+  },
 ) =>
   act(() => {
     root.render(
@@ -248,12 +289,100 @@ describe("the sheet asks the quoted deposit and settles on the floor", () => {
     expect(payBlock()).toBeNull()
   })
 
+  it("names what to send and where, with logos, right under the ask", async () => {
+    await render({})
+    const funding = container.querySelector('[data-testid="registration-sheet-funding"]')
+    expect(funding?.textContent).toContain("DAI, USDC or USDT")
+    expect(funding?.textContent).toMatch(/on\s+Sepolia/)
+    expect(funding?.textContent).toContain("Other tokens or networks can't be recovered.")
+    // One logo per funding token, plus the network's.
+    expect(funding?.querySelectorAll("img").length).toBe(4)
+  })
+
   it("adds a line about the arrival for a deposit sent in another stablecoin", async () => {
     const notes = () => container.querySelectorAll(".ww-reg-sheet__warn").length
     await render({})
-    expect(notes()).toBe(1)
+    expect(notes()).toBe(0)
     await render({ tokenSymbol: "USDC" })
-    expect(notes()).toBe(2)
+    expect(notes()).toBe(1)
     expect(container.textContent).toContain("USDC")
+  })
+})
+
+describe("the sheet's per-deposit limit", () => {
+  const overLimit = (id: string) =>
+    container.querySelector(`[data-testid="${id}"]`)?.getAttribute("data-over-limit")
+
+  it("states the limit on one line, with its details a tap away", async () => {
+    await render({})
+    const line = container.querySelector('[data-testid="deposit-terms-maximum"]')!
+    expect(line.textContent).toBe("Deposit limit: $2,500 incl. fees")
+    const info = line.querySelector('[data-testid="about-limits-link"]')!
+    expect(info.getAttribute("aria-label")).toBe("About the deposit limit")
+  })
+
+  const openLimit = () =>
+    act(() =>
+      container
+        .querySelector<HTMLButtonElement>(
+          '[data-testid="deposit-terms-maximum"] [data-testid="about-limits-link"]',
+        )!
+        .click(),
+    )
+  const sheet = () => container.querySelector<HTMLElement>('[data-testid="about-limits-sheet"]')
+
+  it("states the limit before the address exists, and explains it without an account", async () => {
+    await render({ address: undefined, token: undefined, chainId: undefined })
+    expect(container.querySelector('[data-testid="deposit-terms-maximum"]')?.textContent).toBe(
+      "Deposit limit: $2,500 incl. fees",
+    )
+    await openLimit()
+    // No claim yet: no account to read an allowance for, and the address will come from the active
+    // deployment.
+    expect(sheet()?.dataset).toMatchObject({ topic: "limit", account: "false", capacity: "active" })
+  })
+
+  it("explains the limit on the address's own bucket once the address exists", async () => {
+    await render({})
+    await openLimit()
+    expect(sheet()?.dataset.account).toBe("true")
+    expect(sheet()?.dataset.capacity).not.toBe("active")
+  })
+
+  it("offers an ask of exactly $2,500", async () => {
+    await render({ total: dai(2500) })
+    expect(overLimit("address-row")).toBe("")
+    expect(overLimit("pay-block")).toBe("")
+  })
+
+  it("holds copy and payment for an ask over $2,500, the whole ask counted", async () => {
+    // Part has arrived, so the pay block asks only the rest; the limit still counts the whole ask.
+    await render({ total: dai(2500) + 1n, floor: dai(2500), received: dai(1000) })
+    expect(overLimit("address-row")).toBe("public")
+    expect(overLimit("pay-block")).toBe("public")
+    expect(payBlock()?.getAttribute("data-total")).toBe(String(dai(1500) + 1n))
+  })
+})
+
+describe("an opening balance for a deposit that may be swapped", () => {
+  const note = () =>
+    container.querySelector('[data-testid="deposit-terms-swap-note"]')?.textContent ?? undefined
+
+  it("names the swapped tokens on mainnet and none elsewhere", () => {
+    expect(swapAssetsLabel(Network.MAINNET)).toBe("USDC or USDT")
+    expect(swapAssetsLabel(Network.TESTNET)).toBeUndefined()
+  })
+
+  it("states the balance only for the settlement token, never 1:1 for a swapped one", async () => {
+    await render({ swapAssets: "USDC or USDT" })
+    expect(note()).toBe(
+      "The opening balance assumes you send DAI. USDC or USDT is swapped to DAI at the market rate, so the balance can differ.",
+    )
+    expect(termsValue("opening-balance")).toBe(usd(dai(9.75)))
+  })
+
+  it("adds nothing where no token is swapped", async () => {
+    await render({})
+    expect(note()).toBeUndefined()
   })
 })

@@ -5,6 +5,7 @@ import { Fr } from "@aztec/aztec.js/fields"
 
 const {
   build,
+  constructed,
   create,
   createBackend,
   fetchInboxStates,
@@ -12,6 +13,7 @@ const {
   revokeInstallations,
 } = vi.hoisted(() => ({
   build: vi.fn(),
+  constructed: [] as { close: () => void }[],
   create: vi.fn(),
   createBackend: vi.fn(),
   fetchInboxStates: vi.fn(),
@@ -19,8 +21,23 @@ const {
   revokeInstallations: vi.fn(),
 }))
 
+/**
+ * A warm start constructs a client and initializes it. `build` stands for that pair: once it
+ * resolves, the constructed client takes on the fake it returned.
+ */
+function FakeClient(options: unknown) {
+  const client = {
+    close: vi.fn(),
+    async init(identifier: unknown) {
+      Object.assign(client, await build(identifier, options))
+    },
+  }
+  constructed.push(client)
+  return client
+}
+
 vi.mock("@xmtp/browser-sdk", () => ({
-  Client: { build, create, fetchInboxStates, revokeInstallations },
+  Client: Object.assign(FakeClient, { create, fetchInboxStates, revokeInstallations }),
   createBackend,
   getInboxIdForIdentifier,
   ConsentState: { Allowed: 0, Denied: 1, Unknown: 2 },
@@ -32,6 +49,7 @@ vi.mock("@xmtp/browser-sdk", () => ({
 
 import {
   WebXmtpClient,
+  XMTP_BUILD_RETRY_MS,
   XMTP_INBOX_ID_STORAGE_KEY,
   xmtpInboxIdStorageKey,
 } from "../src/platform/xmtp/WebXmtpClient"
@@ -132,6 +150,7 @@ beforeEach(() => {
   ]) {
     mock.mockReset()
   }
+  constructed.length = 0
   createBackend.mockResolvedValue(BACKEND)
   getInboxIdForIdentifier.mockResolvedValue(undefined)
   fetchInboxStates.mockResolvedValue([])
@@ -210,14 +229,28 @@ describe("WebXmtpClient warm-start registration guard", () => {
     expect(storage.map.get(CACHE_KEY)).toBe("inbox-new")
   })
 
-  it("falls back to Client.create when Client.build throws", async () => {
-    const storage = memoryStorage({ [CACHE_KEY]: "inbox-stale" })
-    build.mockRejectedValue(new Error("no local db"))
-    create.mockResolvedValue(fakeClient({ inboxId: "inbox-new" }))
-    const client = await createWith(storage)
+  it("retries a build that throws, closing the failed one, and warm-starts once it opens", async () => {
+    const storage = memoryStorage({ [CACHE_KEY]: "inbox-cached" })
+    const cached = fakeClient({ inboxId: "inbox-cached" })
+    build.mockRejectedValueOnce(new Error("database busy")).mockResolvedValue(cached)
+    const client = await createThroughBackoff(storage)
+    expect(build).toHaveBeenCalledTimes(2)
+    expect(constructed[0].close).toHaveBeenCalledTimes(1)
+    expect(create).not.toHaveBeenCalled()
+    expectNoCapCheck()
+    expect(client.isFirstInstallation).toBe(false)
+  })
+
+  it("cold-starts once every build throws, freeing a slot in a full inbox", async () => {
+    build.mockRejectedValue(CAP_ERROR)
+    create.mockResolvedValue(fakeClient({ inboxId: INBOX_ID }))
+    inboxWith(installations(10))
+    const client = await createThroughBackoff(memoryStorage({ [CACHE_KEY]: INBOX_ID }))
+    expect(build).toHaveBeenCalledTimes(XMTP_BUILD_RETRY_MS.length + 1)
+    for (const failed of constructed) expect(failed.close).toHaveBeenCalledTimes(1)
+    expect(revokeInstallations).toHaveBeenCalledTimes(1)
     expect(create).toHaveBeenCalledTimes(1)
     expect(client.isFirstInstallation).toBe(true)
-    expect(storage.map.get(CACHE_KEY)).toBe("inbox-new")
   })
 })
 

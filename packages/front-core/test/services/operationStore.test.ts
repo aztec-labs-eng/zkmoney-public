@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { TxStatus, TxExecutionResult } from "@aztec/stdlib/tx"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import { OperationStore } from "../../src/core/services/operations/OperationStore"
@@ -66,6 +66,13 @@ it("fails every local record from an earlier page, whatever its scope", async ()
   expect(store.get("old")?.error).toBeUndefined()
   expect(store.get("visitor")).toMatchObject({ state: "failed", cause: "interrupted", scope: null })
   expect(store.get("mine")?.state).toBe("local")
+})
+
+it("ends a record that started in the millisecond the tab became active", async () => {
+  await begin("same-ms", "acct", 2_000)
+  await store.markProving("same-ms", 2_000)
+  await store.failInterrupted(2_000, 6_000)
+  expect(store.get("same-ms")).toMatchObject({ state: "failed", cause: "interrupted" })
 })
 
 it("keeps the parent a child operation runs inside", async () => {
@@ -198,4 +205,48 @@ it("refuses to begin an operation it cannot record", async () => {
   writesFail = true
   await expect(begin("op")).rejects.toThrow("QuotaExceededError")
   expect(store.get("op")).toBeNull()
+})
+
+describe("a resumable record", () => {
+  const resumable = (operationId: string, startedAt = 1_000) =>
+    store.begin(
+      { operationId, flow: "deposit", summary: "Deposit address", scope: "acct", resumable: true },
+      startedAt,
+    )
+
+  it("waits for its owner at boot instead of failing, and runs again as a fresh attempt", async () => {
+    await resumable("op")
+    await store.markProving("op", 1_500)
+    store.release("op")
+    await store.failInterrupted(2_000, 6_000)
+    expect(store.get("op")).toMatchObject({ state: "local", provingStartedAt: 1_500 })
+    expect(store.get("op")?.endedAt).toBeUndefined()
+
+    await store.resume("op")
+    expect(store.isLive("op")).toBe(true)
+    expect(store.get("op")).toMatchObject({ state: "local", startedAt: 1_000 })
+    expect(store.get("op")?.provingStartedAt).toBeUndefined()
+  })
+
+  it("is not settled from the chain: its owner decides a dropped send", async () => {
+    await resumable("op")
+    await store.markSent("op", hash)
+    store.release("op")
+    const getTxReceipt = vi.fn(async () => ({ status: TxStatus.DROPPED }))
+    await store.resolveSent({ getTxReceipt } as never)
+    expect(getTxReceipt).not.toHaveBeenCalled()
+    expect(store.get("op")?.state).toBe("sent")
+
+    await store.resume("op")
+    expect(store.get("op")).toMatchObject({ state: "local" })
+    expect(store.get("op")?.txHash).toBeUndefined()
+  })
+
+  it("stays ended once ended", async () => {
+    await resumable("op")
+    await store.settle("op", hash, 2_000)
+    await store.resume("op")
+    expect(store.get("op")?.state).toBe("settled")
+    expect(store.isLive("op")).toBe(false)
+  })
 })

@@ -7,12 +7,14 @@
 //
 // The pinned entry carries the ATOMIC attestation triple `enclaveUrl` ↔ `portal` ↔ `pcr0`
 // (the enclave is verified against the on-chain portal binding), so consumers never mix that
-// triple across entries. Every other entry on the same rollup (migrationSources) identifies a
-// deployment a user may still hold funds on AND supplies the enclave the migration burn is
-// co-signed against.
+// triple across entries. Every other entry on the same rollup and underlying (migrationSources
+// plus the caller's UNDERLYING read) identifies a deployment a user may still hold funds on AND
+// supplies the enclave the migration burn is co-signed against.
 
 import { MAINNET_ENS_DOMAIN, MAINNET_ENTRY_POINT, Network } from "../constants/index.js"
 import type { OxideEnvProfile, OxideEnvTuple } from "../types/index.js"
+
+export { L1RpcSimulationUnsupportedError, assertL1RpcSimulates } from "./l1RpcSimulation.js"
 
 // L1 (EVM) addresses are 20 bytes; L2 (Aztec field) addresses are 32 bytes.
 const L1_ADDRESS = /^0x[0-9a-fA-F]{40}$/
@@ -311,8 +313,9 @@ function isCurrentProtocol(entry: Record<string, unknown>): boolean {
 }
 
 /**
- * Every other current-protocol entry on the pinned deployment's rollup: the deployments a user of the pin may still
- * hold funds on. A malformed entry throws.
+ * Every other current-protocol entry on the pinned deployment's rollup. Entries share the manifest's `token` even when
+ * their portal escrows another asset, so the caller must still drop portals whose UNDERLYING differs from the pin's.
+ * A malformed entry throws.
  */
 export function migrationSources(manifest: unknown, pinned: OxideEnvTuple): OxideEnvTuple[] {
   return requireDeployments(manifest)

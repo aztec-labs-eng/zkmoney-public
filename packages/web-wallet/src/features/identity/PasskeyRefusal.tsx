@@ -1,13 +1,20 @@
 import type { ReactNode } from "react"
 import {
   type DevicePosture,
+  IN_APP_BROWSER_ROWS,
+  isNoCredentialError,
+  isPasskeyCancelled,
+  LEFTOVER_PASSKEY_COPY,
   MISMATCH_COPY,
   type RefusalRow,
   type RefusalState,
   refusalFor as sharedRefusalFor,
 } from "@obsidion/passkey-web"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
+import { showReportableError } from "../../errors/errorModal"
+import { PASSKEYS_DOCS_URL } from "../../lib/links"
 import type { MismatchVerdict } from "../../platform/auth/WebAlphaAuthService"
+import { OpenInBrowser } from "./OpenInBrowser"
 
 export type { RefusalState }
 
@@ -15,6 +22,32 @@ export type { RefusalState }
 export type RouteRefusal = RefusalState & {
   /** A record mismatch's verdict, so the card picks the copy and whether "try again" is offered. */
   verdict?: MismatchVerdict
+  /** The browser's own error, sent when the user reports the refusal. */
+  cause?: unknown
+  /** The error said a passkey was written before it, so the card links the cleanup entry. */
+  leftover?: boolean
+}
+
+/** The line under a refusal that left a passkey behind: where it is and how to delete it. */
+function LeftoverPasskeyLine() {
+  return (
+    <p
+      className="ww-paylink-summary__caption ww-passkey-refusal__message"
+      data-testid="passkey-leftover"
+    >
+      {LEFTOVER_PASSKEY_COPY.line}
+      <br />{" "}
+      <a
+        className="ww-invite__link"
+        href={`${PASSKEYS_DOCS_URL}#${LEFTOVER_PASSKEY_COPY.anchor}`}
+        target="_blank"
+        rel="noreferrer"
+      >
+        {LEFTOVER_PASSKEY_COPY.link}
+      </a>
+      .
+    </p>
+  )
 }
 
 /** This browser holds the account's record and the passkey no longer reproduces it. */
@@ -51,6 +84,9 @@ export const ADMISSION_UNAVAILABLE = "AdmissionUnavailableError"
  */
 export const PASSKEY_NOT_OFFERED = "PasskeyNotOfferedError"
 
+export const isPasskeyNotOffered = (error: unknown): boolean =>
+  isPasskeyCancelled(error) || isNoCredentialError(error)
+
 /** The tag's account has no readable passkey credential on L1. */
 export const NO_PASSKEY_RECORDED = "NoPasskeyRecordedError"
 
@@ -74,7 +110,10 @@ export const INCONCLUSIVE = "InconclusiveError"
 
 /** The wallet's own refusals beside the shared rows: raised by onboarding, keyed by name like the rest. */
 const WALLET_ROWS: Record<string, RefusalRow> = {
+  ...IN_APP_BROWSER_ROWS,
   PasskeyMismatchError: { title: "This passkey opens a different account", retry: true },
+  // Reached only when the closed prompt followed a saved passkey; a closed first prompt is no card.
+  NotAllowedError: { title: "The passkey prompt was closed", retry: true },
   // The screen writes the messages of the by-tag rows: they name the tag and the device.
   [PASSKEY_NOT_OFFERED]: { title: "Your passkey wasn't offered", retry: true },
   [NO_PASSKEY_RECORDED]: { title: "No passkey recorded for this tag", retry: false },
@@ -138,11 +177,22 @@ export function promptCauses(posture: DevicePosture): PromptCause[] {
   ]
 }
 
+/** The refusal's own error for a report, as an `Error` so the report keeps its message and stack. */
+function reportableCause(error: RouteRefusal): Error {
+  if (error.cause instanceof Error) return error.cause
+  const { name, message, stack } = (error.cause ?? {}) as Record<string, unknown>
+  const reported = new Error(typeof message === "string" ? message : error.message)
+  reported.name = typeof name === "string" ? name : error.name
+  if (typeof stack === "string") reported.stack = stack
+  return reported
+}
+
 /**
- * A policy refusal, rendered in place: title, the reason in plain words, a retry where one can
+ * A passkey refusal, rendered in place: title, the reason in plain words, a retry where one can
  * help, and whatever exits the surface offers. `reason` is the error's name for tests and analytics.
  * `causes` are the likely reasons, under one heading, where the wallet cannot tell them apart.
- * `primary` takes the gradient button, and the retry becomes a pill beside the exits.
+ * `primary` takes the gradient button, and the retry becomes a pill beside the exits. A row whose
+ * way out is the phone's browser adds it, and a report link; `escapePath` names the page to open.
  */
 export function PasskeyRefusal({
   error,
@@ -152,10 +202,12 @@ export function PasskeyRefusal({
   primary,
   exits,
   verdict,
+  escapePath,
+  reportContext = "passkey",
   testId = "passkey-refused",
   retryTestId = "passkey-retry",
 }: {
-  error: RefusalState
+  error: RouteRefusal
   onRetry?: () => void
   busy?: boolean
   causes?: readonly PromptCause[]
@@ -163,17 +215,48 @@ export function PasskeyRefusal({
   exits?: ReactNode
   /** For a record mismatch, which verdict picks the copy and whether "try again" is offered. */
   verdict?: MismatchVerdict
+  escapePath?: string
+  reportContext?: string
   testId?: string
   retryTestId?: string
 }) {
   const row = refusalFor(error, verdict)
   const canRetry = !!(row.retry && onRetry)
+  if (row.openInBrowser) {
+    return (
+      <div className="ww-invite-spinner" data-testid={testId} data-reason={error.name}>
+        <h2 className="ww-passkey-refusal__title">{row.title}</h2>
+        <p role="alert" className="ww-paylink-summary__caption ww-passkey-refusal__message">
+          {row.message ?? error.message}
+        </p>
+        {error.leftover && <LeftoverPasskeyLine />}
+        <OpenInBrowser
+          path={escapePath}
+          retry={canRetry ? { onClick: onRetry!, busy, testId: retryTestId } : undefined}
+        />
+        {exits}
+        <button
+          type="button"
+          className="zkm-btn-reset ww-invite__link ww-escape__report"
+          data-testid="passkey-report"
+          onClick={() =>
+            showReportableError(reportableCause(error), reportContext, {
+              title: `Passkey refused: ${error.name}`,
+            })
+          }
+        >
+          Report this issue
+        </button>
+      </div>
+    )
+  }
   return (
     <div className="ww-invite-spinner" data-testid={testId} data-reason={error.name}>
       <h2 className="ww-passkey-refusal__title">{row.title}</h2>
-      <p role="alert" className="ww-paylink-summary__caption">
+      <p role="alert" className="ww-paylink-summary__caption ww-passkey-refusal__message">
         {row.message ?? error.message}
       </p>
+      {error.leftover && <LeftoverPasskeyLine />}
       {causes && (
         <section className="ww-passkey-causes" data-testid="passkey-causes">
           <h3 className="ww-passkey-causes__heading">What could have gone wrong?</h3>

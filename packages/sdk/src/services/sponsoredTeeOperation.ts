@@ -98,7 +98,8 @@ export interface SponsoredTeeOperationArgs {
   additionalScopes?: AztecAddress[]
   /** Class witnesses aligned with `operations` (undefined for ByAddress targets). */
   operationClassWitnesses: (ClassWitnessInput | undefined)[]
-  /** Account authorization riding the batch (authorize_intents), when the ops consume intents. */
+  /** Account authorization riding the batch (authorize_intents); absent when the ops consume
+   * intents an earlier batch authorized. */
   accountCall?: { call: FunctionCall; classWitness: ClassWitnessInput }
   /**
    * Non-token calls riding the batch that the TEE does not sign — oxide `submit`'s seam of the

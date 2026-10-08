@@ -41,7 +41,7 @@
     },
     {
       "action": "waitFor",
-      "text": "Claiming your tag...",
+      "text": "Claiming your tag…",
       "exact": true
     },
     {

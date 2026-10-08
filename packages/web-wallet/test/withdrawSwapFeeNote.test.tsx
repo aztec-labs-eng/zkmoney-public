@@ -7,10 +7,13 @@
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { formatUnits, parseUnits } from "viem"
+import { parseUnits } from "viem"
 import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
-import { SWAP_UNAVAILABLE_COPY } from "../src/features/withdraw/withdrawQuote"
+import {
+  SWAP_QUOTE_REFRESH_MS,
+  SWAP_UNAVAILABLE_COPY,
+} from "../src/features/withdraw/withdrawQuote"
 import type { FakeSwapControl } from "./fixtures/fakeSwapSimulator"
 
 const control = vi.hoisted<FakeSwapControl>(() => ({ relayerTip: 3n * 10n ** 18n, calls: [] }))
@@ -60,6 +63,10 @@ vi.mock("../src/lib/analytics", () => ({
   amountBucket: () => "under_50",
 }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
+vi.mock("../src/features/allowance/SponsoredActionNotice", () => ({
+  useSponsoredActionBlock: () => undefined,
+  SponsoredActionNotice: () => null,
+}))
 vi.mock("@obsidion/web-ds", () => ({
   GradientSpinner: () => null,
   GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
@@ -115,13 +122,21 @@ describe("WithdrawToWalletModal — swap fee note", () => {
     await settle()
   }
 
-  const mount = async () => {
+  const row = (label: string) =>
+    Array.from(container.querySelectorAll(".ww-sheet__fact"))
+      .find((f) => f.querySelector("span")?.textContent === label)
+      ?.querySelector("b")?.textContent
+
+  const mount = async (
+    props: { receiveAsset?: "USDC" | "ETH"; recipientIsContract?: boolean } = {},
+  ) => {
     await act(async () => {
       root.render(
         <ScreeningProvider screener={passThroughScreener}>
           <WithdrawToWalletModal
             recipient={RECIPIENT}
             receiveAsset="USDC"
+            {...props}
             onClose={vi.fn()}
             onDone={vi.fn()}
           />
@@ -153,7 +168,7 @@ describe("WithdrawToWalletModal — swap fee note", () => {
     // 3 DAI tip on a 12 DAI burn: 25%.
     await type("12")
     expect(container.textContent).toMatch(HIGH_TIP_WARNING)
-    expect(button("Withdraw funds")?.disabled).toBe(false)
+    expect(button("Review")?.disabled).toBe(false)
 
     await type("50")
     expect(container.textContent).not.toMatch(HIGH_TIP_WARNING)
@@ -165,32 +180,105 @@ describe("WithdrawToWalletModal — swap fee note", () => {
     await type("50")
     expect(container.textContent).toContain(SWAP_UNAVAILABLE_COPY)
     expect(container.textContent).toContain("Estimate unavailable")
-    const fee = Array.from(container.querySelectorAll(".ww-deposit__fact")).find(
-      (f) => f.querySelector("span")?.textContent === "Fee",
-    )
-    expect(fee?.querySelector("b")?.textContent).toBe("$--")
-    expect(button("Withdraw funds")?.disabled).toBe(true)
+    expect(row("Withdrawal fee")).toBe("$--")
+    expect(button("Review")?.disabled).toBe(true)
   })
 
   it("commits the simulated tip and estimate the confirm step showed", async () => {
     await mount()
     await type("50")
-    expect(container.textContent).toContain(`Includes ${formatUnits(3n * 10n ** 18n, 18)} DAI`)
-    await act(async () => button("Withdraw funds")!.click())
+    // The floor is learned from the first pass; the second prices the burn that carries it.
+    await settle()
+    expect(container.textContent).toContain("Includes $3 for L1 gas at 1 gwei.")
+    await act(async () => button("Review")!.click())
+    // The typed 50 reaches the escrow whole, and the fake pays 99% of it.
+    expect(row("Send")).toBe("$50 ≈ 49.5 USDC")
+    expect(row("Token")).toBe("USDC")
+    expect(row("Sending total")).toBe("$53.35")
     await act(async () => button("Confirm withdrawal")!.click())
 
     expect(submit).toHaveBeenCalledTimes(1)
     const [, recipient, charged, , , receiveAsset, swapCommit] = submit.mock.calls[0]!
     expect(recipient).toBe(RECIPIENT)
-    // The burn is what was typed; the tip comes out of it rather than on top.
-    expect(charged).toBe("50")
+    // The burn is what was typed plus the 3.35 floor on top.
+    expect(charged).toBe("53.35")
     expect(receiveAsset).toBe("USDC")
     // The fake pays (burn - withdrawal tip - portal cut - swap tip) * 0.99 in 6-dp USDC.
-    const swapInput = parseUnits("50", 18) - WITHDRAW_RELAYER_TIP - CUT - 3n * 10n ** 18n
+    const swapInput = parseUnits("53.35", 18) - WITHDRAW_RELAYER_TIP - CUT - 3n * 10n ** 18n
     expect(swapCommit).toEqual({
       relayerTip: 3n * 10n ** 18n,
       amountOut: (swapInput * 99n) / 100n / 10n ** 12n,
       decimals: 6,
     })
+  })
+
+  it("confirms on a swap tip that moves by an atomic unit between quotes: the burn does not chase it", async () => {
+    vi.useFakeTimers()
+    try {
+      const tick = (ms: number) =>
+        act(async () => {
+          await vi.advanceTimersByTimeAsync(ms)
+        })
+      await act(async () => {
+        root.render(
+          <ScreeningProvider screener={passThroughScreener}>
+            <WithdrawToWalletModal
+              recipient={RECIPIENT}
+              receiveAsset="USDC"
+              onClose={vi.fn()}
+              onDone={vi.fn()}
+            />
+          </ScreeningProvider>,
+        )
+      })
+      await tick(400)
+      await act(async () => {
+        const el = input()
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(el, "50")
+        el.dispatchEvent(new Event("input", { bubbles: true }))
+      })
+      // The first quote learns the floor, the second prices the burn that carries it.
+      await tick(400)
+      await tick(400)
+      const priced = control.calls.length
+      await act(async () => button("Review")!.click())
+      expect(button("Confirm withdrawal")!.disabled).toBe(false)
+
+      // Every refresh answers a tip one atomic unit away from the last.
+      for (let i = 0; i < 4; i++) {
+        control.relayerTip = 3n * 10n ** 18n + (i % 2 === 0 ? 1n : 0n)
+        await tick(SWAP_QUOTE_REFRESH_MS)
+        expect(button("Confirm withdrawal")!.disabled).toBe(false)
+      }
+      const burns = new Set(control.calls.slice(priced).map((c) => c.amount.toString()))
+      expect(burns.size).toBe(1)
+      expect(row("Sending total")).toBe("$53.35")
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("burns to the asset picked in the amount box", async () => {
+    await mount()
+    const press = (selector: string) =>
+      act(async () => container.querySelector<HTMLElement>(selector)!.click())
+    await press('button[aria-label="Receive as"]')
+    await press('[role="option"]:last-child')
+    await type("50")
+    await settle()
+    await act(async () => button("Review")!.click())
+    await act(async () => button("Confirm withdrawal")!.click())
+    expect(submit.mock.calls[0]![5]).toBe("ETH")
+  })
+
+  it.each([
+    { receiveAsset: "ETH" as const, recipientIsContract: true, warnings: 1 },
+    { receiveAsset: "USDC" as const, recipientIsContract: true, warnings: 0 },
+    { receiveAsset: "ETH" as const, recipientIsContract: false, warnings: 0 },
+  ])("warns of a contract recipient on the ETH route only: %o", async ({ warnings, ...props }) => {
+    await mount(props)
+    await type("50")
+    expect(container.querySelectorAll(".ww-withdraw__warning")).toHaveLength(warnings)
+    expect(button("Review")?.disabled).toBe(false)
   })
 })

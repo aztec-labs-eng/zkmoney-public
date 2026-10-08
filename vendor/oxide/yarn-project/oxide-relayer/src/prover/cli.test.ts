@@ -30,6 +30,14 @@ describe('epoch-proofs CLI', () => {
     expect(config.proverNodeUrl).toBe('https://prover.example');
   });
 
+  it('reads the prover node API key from the environment', async () => {
+    const config = await parseRunConfig([...REQUIRED_ARGS], {
+      OXIDE_RELAYER_PROVER_NODE_API_KEY: 'a-prover-key',
+    });
+
+    expect(config.proverNodeApiKey).toBe('a-prover-key');
+  });
+
   it('parses the early-proof profitability policy from CLI flags', async () => {
     const config = await parseRunConfig(
       [

@@ -44,6 +44,8 @@ export interface ChatMessage {
   /** Pre-formatted signed amount, e.g. "+$25.23" / "-$23.57". */
   amount: string
   role: ChatMessageRole
+  /** Note attached by whoever started it (transfer memo or request note), shown as the bubble's text. */
+  memo?: string
   /** Block-explorer URL for the message's tx hash. Unset when `id` isn't an
    * on-chain tx hash (requests, paylinks, SIPA deposits keyed by address). */
   explorerUrl?: string
@@ -188,6 +190,7 @@ export function buildChatMessages(
         timeLabel: transferTimeLabel(status, tx.timestamp),
         amount: `${sign}$${fiat.toFixed(2)}`,
         role,
+        memo: ("memo" in tx && tx.memo) || undefined,
         explorerUrl: tx.txHash && txUrl ? txUrl(tx.txHash) : undefined,
         _ts: tx.timestamp,
       })
@@ -246,6 +249,7 @@ export function buildChatMessages(
       timeLabel: formatTimeLabel(r.createdAt),
       amount,
       role,
+      memo: r.note || undefined,
       _ts: r.createdAt,
     })
   }

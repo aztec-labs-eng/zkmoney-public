@@ -61,12 +61,19 @@ describe("migration withdrawal source", () => {
         ),
       )
       const readContract = vi.fn(async ({ functionName }: { functionName: string }) =>
-        functionName === "FPC_FUNDING_CUT" ? 5n : false,
+        functionName === "ROLLUP_VERSION" ? 5n : functionName === "FPC_FUNDING_CUT" ? 5n : false,
       )
       const broadcastSipa = vi.fn(async () => {})
+      // The node reports a different rollup version than the destination tuple carries.
+      const getNodeInfo = vi.fn(async () => ({ rollupVersion: 1 }))
+      const resolveAddress = vi.fn(async () => ({
+        sipaAddress: recipient.toString(),
+        sipaArgs: {},
+        resolution: { nonce: 0, messageSecret: Fr.ONE },
+      }))
       const deps = {
         node: {
-          getNodeInfo: async () => ({ rollupVersion: 1 }),
+          getNodeInfo,
           getBlock: async () => ({ header: { globalVariables: { timestamp: 86400n } } }),
         },
         fromTokenService: {
@@ -84,14 +91,8 @@ describe("migration withdrawal source", () => {
           ) => exit(options),
         },
         from: source,
-        to: { portal: live.portal, sipaFactory: recipient.toString() },
-        selfResolver: {
-          resolveAddress: async () => ({
-            sipaAddress: recipient.toString(),
-            sipaArgs: {},
-            resolution: { nonce: 0, messageSecret: Fr.ONE },
-          }),
-        },
+        to: { portal: live.portal, sipaFactory: recipient.toString(), rollupVersion: "5" },
+        selfResolver: { resolveAddress },
         publicClient: { readContract },
       } as unknown as IntraRollupMigrationDeps
       const migration = new IntraRollupMigrationService(deps)
@@ -105,12 +106,16 @@ describe("migration withdrawal source", () => {
         }),
       ).rejects.toBe(accepted)
       expect(broadcastSipa).toHaveBeenCalledOnce()
+      // The SIPA is keyed by the destination tuple's rollup version; the node's is never read.
+      expect(resolveAddress).toHaveBeenCalledWith(expect.objectContaining({ rollupVersion: 5n }))
+      expect(getNodeInfo).not.toHaveBeenCalled()
       expect(exit).toHaveBeenCalledOnce()
       const { withdrawal } = exit.mock.calls[0]![0]
       expect(withdrawal.tuple).toBe(source)
-      // The relayer-tip check reads the source portal, not the destination.
+      // The destination portal confirms the version; the relayer-tip check reads the source.
       expect(withdrawal.portal).toEqual({ fpcFundingCut: 5n, frozen: false })
       expect(readContract.mock.calls.map(([call]) => (call as any).address)).toEqual([
+        live.portal,
         source.portal,
         source.portal,
       ])
@@ -119,4 +124,28 @@ describe("migration withdrawal source", () => {
       )
     },
   )
+
+  it("refuses before any broadcast or burn when the manifest's version is not the portal's", async () => {
+    const readContract = vi.fn(async () => 6n)
+    const broadcastSipa = vi.fn(async () => {})
+    const exit = vi.fn()
+    const deps = {
+      node: { getBlock: async () => ({ header: { globalVariables: { timestamp: 86400n } } }) },
+      fromTokenService: { tokenAddress: oldToken, exitToL1Private: exit },
+      from: source,
+      to: { portal: live.portal, sipaFactory: recipient.toString(), rollupVersion: "5" },
+      selfResolver: { resolveAddress: vi.fn() },
+      publicClient: { readContract },
+    } as unknown as IntraRollupMigrationDeps
+    await expect(
+      new IntraRollupMigrationService(deps).migrate({
+        account: { getAddress: () => AztecAddress.fromBigIntUnsafe(12n) } as never,
+        amount: 20n,
+        nonceForDay: () => 0,
+        broadcastSipa,
+      }),
+    ).rejects.toThrow(/manifest says rollupVersion 5.*says 6/)
+    expect(broadcastSipa).not.toHaveBeenCalled()
+    expect(exit).not.toHaveBeenCalled()
+  })
 })

@@ -8,6 +8,8 @@ import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { namehash } from "viem/ens"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { setActiveCredentialId } from "../src/platform/storage/activeStorage"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import {
   type HeldRequest,
   pageHide,
@@ -26,11 +28,15 @@ const h = vi.hoisted(() => ({
   navigate: vi.fn(),
   enterWithPasskey: vi.fn(),
   diagnoseMiss: vi.fn(),
+  /** The payment link waiting in this browser, if any. */
+  claimStash: undefined as string | undefined,
   showReportableError: vi.fn(),
   fireEvent: vi.fn(),
   saveWalletIdentity: vi.fn(),
   getConfig: vi.fn(),
   reservedNameHashes: vi.fn(),
+  nameGrantToken: vi.fn(),
+  boundNameGrantOwner: vi.fn(),
   confirmTag: vi.fn(),
   /** What the confirm modal stand-in submits; its seed when unset. */
   typedTag: undefined as string | undefined,
@@ -61,9 +67,12 @@ vi.mock("../src/features/onboarding/oxideOnboarding", async () => {
   const { matchWireNameHash } = await import("@obsidion/front-core")
   return {
     enterWithPasskey: h.enterWithPasskey,
+    nameGrantToken: h.nameGrantToken,
     confirmTag: h.confirmTag,
     isCommittedFailure: (err: unknown) =>
-      typeof err === "object" && err !== null && (err as { committed?: boolean }).committed === true,
+      typeof err === "object" &&
+      err !== null &&
+      (err as { committed?: boolean }).committed === true,
     // The real matching, without the module that drags the Aztec stack in.
     reservedTagMatch: (hashes: `0x${string}`[], ensDomain: string, handle: string) =>
       hashes.map((hash) => matchWireNameHash(handle, ensDomain, hash)).find(Boolean) ?? null,
@@ -85,6 +94,7 @@ vi.mock("../src/features/contacts/registryResolution", () => ({
 }))
 vi.mock("../src/features/onboarding/recoveryProbes", () => ({
   reservedNameHashes: h.reservedNameHashes,
+  boundNameGrantOwner: h.boundNameGrantOwner,
 }))
 vi.mock("../src/platform/auth/useAuthenticator", () => ({
   getAuthService: () => ({
@@ -101,7 +111,7 @@ vi.mock("../src/features/identity/walletIdentity", () => ({
 vi.mock("../src/features/onboarding/webRegistration", () => ({
   getPendingStore: () => ({ list: () => [] }),
 }))
-vi.mock("../src/features/paylink/claimStash", () => ({ peekClaimStash: () => undefined }))
+vi.mock("../src/features/paylink/claimStash", () => ({ peekClaimStash: () => h.claimStash }))
 vi.mock("../src/features/paylink/sponsoredPaylink", () => ({ decodeLink: vi.fn() }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: h.showReportableError }))
 vi.mock("../src/lib/analytics", () => ({
@@ -177,7 +187,11 @@ vi.mock("../src/features/onboarding/steps/ConfirmTagModal", () => ({
       )
     }
     return (
-      <div data-testid="confirm-tag" data-handle={initialHandle} data-title={submitTitle ?? "Login"}>
+      <div
+        data-testid="confirm-tag"
+        data-handle={initialHandle}
+        data-title={submitTitle ?? "Login"}
+      >
         {error && <p data-testid="confirm-tag-error">{error}</p>}
         <button data-testid="confirm-back" onClick={onBack} />
         <button data-testid="confirm-tag-close" onClick={onClose} />
@@ -246,6 +260,12 @@ const gatedEntry = (result: unknown) =>
 const byTestId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)
 
 const leaveAssign = vi.fn()
+/** The browser's address for `path`, as the screen and its refusal card read it. */
+const addressed = (path: string) => {
+  const url = new URL(path, "https://wallet.test")
+  const { origin, host, href, pathname, search, hash } = url
+  return { assign: leaveAssign, origin, host, href, pathname, search, hash }
+}
 /**
  * The screen exited to where signing in starts: the campaign when this build names one, which ends
  * its own session on arrival, else the wallet's own /claim.
@@ -298,8 +318,11 @@ beforeEach(() => {
   h.fireEvent.mockClear()
   h.saveWalletIdentity.mockClear()
   h.reservedNameHashes.mockReset().mockResolvedValue([])
+  h.nameGrantToken.mockReset().mockReturnValue(undefined)
+  h.boundNameGrantOwner.mockReset().mockResolvedValue(false)
   h.confirmTag.mockReset()
   h.typedTag = undefined
+  h.claimStash = undefined
   h.recordsStale = false
   h.reach = "unknown"
   h.getConfig.mockReturnValue({
@@ -310,7 +333,7 @@ beforeEach(() => {
   })
   fetchMock.mockReset()
   leaveAssign.mockClear()
-  vi.stubGlobal("location", { assign: leaveAssign, origin: "https://wallet.test" })
+  vi.stubGlobal("location", addressed("/enter"))
   vi.stubGlobal("fetch", fetchMock)
   localStorage.clear()
   container = document.createElement("div")
@@ -543,12 +566,16 @@ describe("EnterAppScreen refusals", () => {
     )
   })
 
-  it.each(["NotAllowedError", "AbortError"])(
+  it.each([
+    ["NotAllowedError", () => new DOMException("closed", "NotAllowedError")],
+    ["AbortError", () => new DOMException("closed", "AbortError")],
+    ["no credential", () => new Error("Passkey assertion returned no credential")],
+  ])(
     "a chooser closed with %s stays here with Back to the screen, nothing reported",
-    async (name) => {
+    async (_name, closed) => {
       needsCeremony()
       await render()
-      h.enterWithPasskey.mockRejectedValueOnce(new DOMException("closed", name))
+      h.enterWithPasskey.mockRejectedValueOnce(closed())
       await click("sign-in-show-passkeys")
       expect(h.showReportableError).not.toHaveBeenCalled()
       expect(refused()?.dataset.reason).toBe("PasskeyNotOfferedError")
@@ -887,12 +914,14 @@ describe("EnterAppScreen reservation", () => {
   })
 
   it.each([{ status: "granted" }, { status: "queued", queuePosition: 3 }])(
-    "a campaign that knows the key keeps its card and asks account-service nothing (%o)",
+    "a campaign that knows the key still checks the reservation, and keeps its card when the passkey names none (%o)",
     async (body) => {
       h.enterWithPasskey.mockResolvedValueOnce(nameless())
       answers(body)
       await render()
-      expect(h.reservedNameHashes).not.toHaveBeenCalled()
+      // The lookup runs so a passkey that already holds a reservation resumes in place; with none
+      // named the campaign's verdict stands and never asks the user to type.
+      expect(h.reservedNameHashes).toHaveBeenCalledTimes(1)
       expect(refused()?.dataset.reason).toMatch(/GrantedRegistrationError|QueuedRegistrationError/)
     },
   )
@@ -906,7 +935,7 @@ describe("EnterAppScreen reservation", () => {
     expect(confirmStep()).not.toBeNull()
   })
 
-  it("account-service test mode asks nothing and keeps today's outcome", async () => {
+  it("account-service test mode checks the reservation but never confirms, keeping today's outcome", async () => {
     h.getConfig.mockReturnValue({
       rpId: "localhost",
       campaignUrl: "",
@@ -916,7 +945,9 @@ describe("EnterAppScreen reservation", () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
     h.reservedNameHashes.mockRejectedValue(new Error("unreachable"))
     await render()
-    expect(h.reservedNameHashes).not.toHaveBeenCalled()
+    // Test mode files every claim under one shared keyId, so it names no one and never confirms a
+    // typed tag; a lookup it cannot answer yields to today's outcome rather than a network card.
+    expect(h.reservedNameHashes).toHaveBeenCalledTimes(1)
     expect(refused()?.dataset.reason).toBe("GrantedRegistrationError")
   })
 
@@ -1165,17 +1196,17 @@ describe("EnterAppScreen account switch", () => {
   /** A recovery that commits `id`; `stale` is what the auth service then reports. */
   const commits = (id: string, result: unknown = nameless(), stale = false) =>
     h.enterWithPasskey.mockImplementationOnce(async () => {
-      localStorage.setItem("webwallet.storageId", id)
+      await walletStorage.commitItem("webwallet.storageId", id)
       h.recordsStale = stale
       return result
     })
   /** A recovery that names its account, the one outcome that reaches the wallet. */
   const named = { entered: true, handle: "alice", address: L2, account: {} }
 
-  beforeEach(() => {
+  beforeEach(async () => {
     assign.mockClear()
     vi.stubGlobal("location", { assign, origin: "https://wallet.test" })
-    localStorage.setItem("webwallet.storageId", "storage-a")
+    await walletStorage.commitItem("webwallet.storageId", "storage-a")
   })
   afterEach(() => vi.unstubAllGlobals())
 
@@ -1204,7 +1235,7 @@ describe("EnterAppScreen account switch", () => {
     "%s that lands after a different account was committed still replaces the document",
     async (_label, error) => {
       h.enterWithPasskey.mockImplementationOnce(async () => {
-        localStorage.setItem("webwallet.storageId", "storage-b")
+        await walletStorage.commitItem("webwallet.storageId", "storage-b")
         throw error
       })
       await render()
@@ -1218,7 +1249,7 @@ describe("EnterAppScreen account switch", () => {
   )
 
   it("does not replace the document a second time once it has reloaded", async () => {
-    localStorage.setItem("webwallet.storageId", "storage-b")
+    await walletStorage.commitItem("webwallet.storageId", "storage-b")
     commits("storage-b", named)
     await render()
     expect(assign).not.toHaveBeenCalled()
@@ -1252,7 +1283,7 @@ describe("EnterAppScreen account switch", () => {
   })
 
   it("the reloaded document still finishes at the carried destination", async () => {
-    localStorage.setItem("webwallet.storageId", "storage-b")
+    await walletStorage.commitItem("webwallet.storageId", "storage-b")
     commits("storage-b", named)
     await render({ pathname: "/enter", search: "?next=%2Frequest%23gift" })
     expect(assign).not.toHaveBeenCalled()
@@ -1278,14 +1309,14 @@ describe("EnterAppScreen account switch", () => {
   })
 
   it("a carried destination that leaves this wallet is not followed", async () => {
-    localStorage.setItem("webwallet.storageId", "storage-b")
+    await walletStorage.commitItem("webwallet.storageId", "storage-b")
     commits("storage-b", named)
     await render({ pathname: "/enter", search: "?next=https%3A%2F%2Fevil.test%2Fsteal" })
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
   })
 
   describe("signed out, as after a logout", () => {
-    beforeEach(() => localStorage.removeItem("webwallet.storageId"))
+    beforeEach(() => walletStorage.commitRemove("webwallet.storageId"))
 
     it("replaces the document before asking the waitlist when the account's records are stale", async () => {
       commits("storage-b", nameless(), true)
@@ -1324,7 +1355,7 @@ describe("EnterAppScreen account switch", () => {
       let land!: () => void
       h.enterWithPasskey.mockImplementationOnce(async () => {
         await new Promise<void>((resolve) => (land = resolve))
-        localStorage.setItem("webwallet.storageId", "storage-b")
+        await walletStorage.commitItem("webwallet.storageId", "storage-b")
         h.recordsStale = true
         return named
       })
@@ -1356,7 +1387,7 @@ describe("EnterAppScreen account switch", () => {
     it("treats a page with no auth service as fresh", async () => {
       h.recordsStale = undefined
       h.enterWithPasskey.mockImplementationOnce(async () => {
-        localStorage.setItem("webwallet.storageId", "storage-b")
+        await walletStorage.commitItem("webwallet.storageId", "storage-b")
         return named
       })
       await render()
@@ -1367,11 +1398,265 @@ describe("EnterAppScreen account switch", () => {
 
   it("replaces the document when an earlier commit on this page left the records stale", async () => {
     // A remount after an attempt that committed and then failed: the same account, already active.
-    localStorage.setItem("webwallet.storageId", "storage-b")
+    await walletStorage.commitItem("webwallet.storageId", "storage-b")
     commits("storage-b", named, true)
     await render()
     expect(assign).toHaveBeenCalledWith("/enter")
     expect(h.saveWalletIdentity).not.toHaveBeenCalled()
+  })
+})
+
+/** A browser that can't run passkeys, most often an app's own: the card and its way out. */
+describe("EnterAppScreen in an app's built-in browser", () => {
+  const UA = {
+    android:
+      "Mozilla/5.0 (Linux; Android 16; Pixel 9 Build/BP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/154.0.0.0 Mobile Safari/537.36",
+    // Chrome itself: a browser the in-app rule misses, so a request runs and can fail there.
+    androidChrome:
+      "Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36",
+    iosX: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Twitter for iPhone/10.80",
+    iosInstagram:
+      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 370.0.0.0.0 (iPhone15,2; iOS 18_5; en_US; en; scale=3.00; 1179x2556; 000000000)",
+  }
+  const unsupported = () =>
+    new DOMException("Error connecting to Web Authentication service", "NotSupportedError")
+  const closed = () => new DOMException("closed", "NotAllowedError")
+  const failures = () =>
+    h.fireEvent.mock.calls.filter(([event]) => event === "action_failed").map(([, props]) => props)
+
+  const notice = () => byTestId("enter-in-app-notice")
+  const MAP_KEY = "obsidion.obsidion_web_passkey_identity_map"
+  /** This browser's root passkey record for an account, with the tag it claimed if any. */
+  const remember = (credentialId: string, usertag?: string) => {
+    const raw = walletStorage.getItem(MAP_KEY)
+    const map = raw ? JSON.parse(raw) : { version: 1, entries: {} }
+    map.entries[credentialId] = {
+      credentialId,
+      rpId: "localhost",
+      l2Address: L2,
+      pubkey: `0x${"AB".repeat(64)}`,
+      isMskRoot: true,
+      createdAt: 1,
+      ...(usertag ? { usertag } : {}),
+    }
+    walletStorage.setItem(MAP_KEY, JSON.stringify(map))
+  }
+
+  let ua: { mockRestore: () => void } | undefined
+  /** The page at `path`, in a browser with this user agent, once the arrival probe has settled. */
+  const open = async (userAgent: string, path = "/enter?handle=alice") => {
+    ua?.mockRestore()
+    ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent)
+    vi.stubGlobal("location", addressed(path))
+    needsCeremony()
+    await render(path)
+    h.fireEvent.mockClear()
+  }
+  /**
+   * The sign-in screen at `path`. In an app's browser with no passkey record here the card is the
+   * end, so those cases record one.
+   */
+  const arrive = async (userAgent: string, path = "/enter?handle=alice") => {
+    await open(userAgent, path)
+    expect(screen()).not.toBeNull()
+    h.fireEvent.mockClear()
+  }
+  /** The same, with @alice's passkey read off L1 so Login is the pinned sign-in. */
+  const arriveFound = async (userAgent: string) => {
+    h.lookup.mockResolvedValue({
+      kind: "resolved",
+      tag: "alice",
+      candidate: { credentialId: "cred-alice", pubkeyHex: "ab" },
+      l2Address: L2,
+      moreKeys: false,
+    })
+    await arrive(userAgent)
+    expect(byTestId("sign-in-login")!.hasAttribute("disabled")).toBe(false)
+  }
+
+  afterEach(() => {
+    ua?.mockRestore()
+    ua = undefined
+  })
+
+  it("with no passkey record here, an iPhone app's browser gets the card instead of the screen", async () => {
+    await open(UA.iosInstagram)
+    expect(container.textContent).toContain("Passkeys don't work in this app's browser")
+    expect(screen()).toBeNull()
+    expect(byTestId("sign-in-show-passkeys")).toBeNull()
+    // The way out keeps the arrival tag; only the cache-only probe asked anything.
+    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toBe(
+      "x-safari-https://wallet.test/enter?handle=alice",
+    )
+    expect(h.enterWithPasskey).toHaveBeenCalledTimes(1)
+    expect(byTestId("enter-cancel")).not.toBeNull()
+    expect(byTestId("passkey-report")).not.toBeNull()
+  })
+
+  it("Cancel sign-in on the card leaves as it does from the screen", async () => {
+    await open(UA.iosInstagram)
+    await click("enter-cancel")
+    expect(leftForSignInStart()).toBe(true)
+  })
+
+  it("with no passkey record here, an Android web view gets the card instead of the screen too", async () => {
+    await open(UA.android)
+    expect(notice()).not.toBeNull()
+    expect(container.textContent).toContain("Passkeys don't work in this app's browser")
+    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toContain("intent://")
+    expect(screen()).toBeNull()
+    expect(byTestId("sign-in-show-passkeys")).toBeNull()
+  })
+
+  it("a payment link waiting in this browser gives the reopen line on the card, and no link", async () => {
+    h.claimStash = "paylink-frag"
+    await open(UA.iosInstagram)
+    expect(notice()).not.toBeNull()
+    expect(byTestId("open-in-browser")?.dataset.escape).toBe("reopen")
+    expect(byTestId("open-in-browser-link")).toBeNull()
+  })
+
+  it.each([
+    ["a remembered account", () => remember("cred-bob", "bob")],
+    ["a nameless account", () => remember("cred-nameless")],
+    ["the credential the session was entered with", () => setActiveCredentialId("cred-held")],
+  ])("%s means a passkey worked here: the screen, with no card", async (_name, seed) => {
+    seed()
+    await open(UA.iosInstagram)
+    expect(notice()).toBeNull()
+    expect(screen()).not.toBeNull()
+  })
+
+  it("a remembered account the screen hides still counts", async () => {
+    remember("cred-avoid", "bob")
+    await open(UA.iosInstagram, "/enter?choose=1&avoid=cred-avoid")
+    expect(notice()).toBeNull()
+    expect(screen()).not.toBeNull()
+  })
+
+  it("?choose=1 skips the arrival probe and meets the same gate", async () => {
+    await open(UA.iosInstagram, "/enter?choose=1")
+    expect(notice()).not.toBeNull()
+    expect(h.enterWithPasskey).not.toHaveBeenCalled()
+
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    setActiveCredentialId("cred-held")
+    await open(UA.iosInstagram, "/enter?choose=1")
+    expect(notice()).toBeNull()
+    expect(screen()).not.toBeNull()
+  })
+
+  it("Show passkeys refused as not supported shows the card with Chrome, a retry and the exits", async () => {
+    await arrive(UA.androidChrome)
+    const error = unsupported()
+    h.enterWithPasskey.mockRejectedValueOnce(error)
+    await click("sign-in-show-passkeys")
+    expect(refused()?.dataset.reason).toBe("NotSupportedError")
+    expect(container.textContent).toContain("open it in your phone's browser")
+    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toBe(
+      "intent://wallet.test/enter?handle=alice#Intent;scheme=https;package=com.android.chrome;end",
+    )
+    expect(retry().className).toContain("ww-invite-pill")
+    expect(byTestId("enter-back")).not.toBeNull()
+    expect(byTestId("enter-cancel")).not.toBeNull()
+    expect(h.showReportableError).not.toHaveBeenCalled()
+    expect(failures()).toEqual([
+      { action: "enter", code: error instanceof Error ? error.name : "err" },
+    ])
+
+    h.enterWithPasskey.mockRejectedValueOnce(unsupported())
+    await click("enter-retry")
+    expect(h.enterWithPasskey).toHaveBeenCalledTimes(3)
+  })
+
+  it("with a root record here, Show passkeys in an iPhone app browser, which closes at once, shows the card without a retry", async () => {
+    remember("cred-bob", "bob")
+    await arrive(UA.iosInstagram)
+    h.enterWithPasskey.mockRejectedValueOnce(closed())
+    await click("sign-in-show-passkeys")
+    expect(refused()?.dataset.reason).toBe("InAppBrowser")
+    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toBe(
+      "x-safari-https://wallet.test/enter?handle=alice",
+    )
+    expect(container.querySelector('[data-testid="enter-retry"]')).toBeNull()
+    expect(byTestId("passkey-causes")).toBeNull()
+    expect(byTestId("enter-back")).not.toBeNull()
+    expect(byTestId("enter-cancel")).not.toBeNull()
+    expect(failures()).toEqual([{ action: "enter", code: "passkey_prompt_closed" }])
+  })
+
+  it("the pinned sign-in shows the same cards, with its own events", async () => {
+    await arriveFound(UA.androidChrome)
+    const error = unsupported()
+    h.enterWithPasskey.mockRejectedValueOnce(error)
+    await click("sign-in-login")
+    expect(refused()?.dataset.reason).toBe("NotSupportedError")
+    expect(h.showReportableError).not.toHaveBeenCalled()
+    expect(failures()).toEqual([
+      { action: "enter:by-tag", code: error instanceof Error ? error.name : "err" },
+    ])
+
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    remember("cred-bob", "bob")
+    await arriveFound(UA.iosX)
+    h.enterWithPasskey.mockRejectedValueOnce(closed())
+    await click("sign-in-login")
+    expect(refused()?.dataset.reason).toBe("InAppBrowser")
+    expect(failures()).toEqual([{ action: "enter:by-tag", code: "passkey_not_on_device" }])
+  })
+
+  it("a payment link waiting in this browser asks for the link again instead of a button", async () => {
+    h.claimStash = "paylink-frag"
+    await arrive(UA.androidChrome)
+    h.enterWithPasskey.mockRejectedValueOnce(unsupported())
+    await click("sign-in-show-passkeys")
+    expect(byTestId("open-in-browser")?.dataset.escape).toBe("reopen")
+    expect(byTestId("open-in-browser-link")).toBeNull()
+  })
+
+  it("a closed prompt in a Home Screen web app is the ordinary closed prompt, with Back", async () => {
+    // The web app sends a bare web view's user agent; `standalone` is what sets it apart.
+    Object.defineProperty(navigator, "standalone", { value: true, configurable: true })
+    try {
+      await arrive(
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+      )
+      h.enterWithPasskey.mockRejectedValueOnce(closed())
+      await click("sign-in-show-passkeys")
+      expect(refused()?.dataset.reason).toBe("PasskeyNotOfferedError")
+      expect(container.textContent).toContain("Your passkey wasn't offered")
+      expect(byTestId("open-in-browser")).toBeNull()
+      expect(byTestId("enter-back")).not.toBeNull()
+    } finally {
+      delete (navigator as { standalone?: boolean }).standalone
+    }
+  })
+
+  it("an abort in an iPhone app browser is still the closed prompt", async () => {
+    remember("cred-bob", "bob")
+    await arrive(UA.iosX)
+    h.enterWithPasskey.mockRejectedValueOnce(new DOMException("aborted", "AbortError"))
+    await click("sign-in-show-passkeys")
+    expect(refused()?.dataset.reason).toBe("PasskeyNotOfferedError")
+  })
+
+  it("a not-supported failure after the passkey committed keeps the re-probe card", async () => {
+    await arrive(UA.androidChrome)
+    h.enterWithPasskey.mockRejectedValueOnce(Object.assign(unsupported(), { committed: true }))
+    await click("sign-in-show-passkeys")
+    expect(refused()?.dataset.reason).toBe("error")
+    expect(byTestId("open-in-browser")).toBeNull()
+    expect(h.showReportableError).toHaveBeenCalledTimes(1)
+  })
+
+  it("any other failure still shows the network card and the report", async () => {
+    await arrive(UA.androidChrome)
+    h.enterWithPasskey.mockRejectedValueOnce(new Error("boom"))
+    await click("sign-in-show-passkeys")
+    expect(refused()?.dataset.reason).toBe("error")
+    expect(h.showReportableError).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -1583,11 +1868,11 @@ describe("EnterAppScreen passkey telemetry", () => {
   it("a sign-in that replaces the document has reported before it does", async () => {
     const assign = vi.fn()
     vi.stubGlobal("location", { assign, origin: "https://wallet.test" })
-    localStorage.setItem("webwallet.storageId", "storage-a")
+    await walletStorage.commitItem("webwallet.storageId", "storage-a")
     try {
       await toScreen()
-      answeredEntry(() => {
-        localStorage.setItem("webwallet.storageId", "storage-b")
+      answeredEntry(async () => {
+        await walletStorage.commitItem("webwallet.storageId", "storage-b")
         return ENTERED
       })
       await click("sign-in-show-passkeys")

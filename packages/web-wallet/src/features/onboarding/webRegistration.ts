@@ -1,6 +1,6 @@
 /**
- * Web glue for the optimistic-registration machine: the durable pending store over plain
- * localStorage, the credential-free boot detection tick, the foreground poll loop that keeps
+ * Web glue for the optimistic-registration machine: the durable pending store over wallet
+ * storage, the credential-free boot detection tick, the foreground poll loop that keeps
  * ticking while a record is open, the presentation gate that keeps an unconfirmed tag rendering as
  * claiming-in-progress until a confirmation write settles the identity, and the one-shot notice a
  * lost name owes the user. Detection needs no PXE, no unlock, and no credential — a read-only
@@ -9,7 +9,6 @@
 import { useSyncExternalStore } from "react"
 import {
   NameClaimStore,
-  PENDING_REGISTRATION_STORAGE_KEY,
   PendingRegistrationStore,
   matchWireNameHash,
   createOxideL1Reader,
@@ -39,6 +38,8 @@ import {
 import { getConfig, type WebWalletConfig } from "../../config/env"
 import { fireEvent } from "../../lib/analytics"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { walletStorage } from "../../platform/storage/walletStorage"
+import { oweCampaignClaimNotice } from "../identity/campaignClaimNotice"
 import {
   confirmWalletIdentity,
   loadWalletIdentity,
@@ -46,6 +47,8 @@ import {
   type WalletIdentity,
 } from "../identity/walletIdentity"
 import { syncRegistrationRail } from "./registrationRailSync"
+import { oweRegistrationBroadcast } from "../broadcasts/broadcasts"
+import { sipaFundingTokens } from "../deposit/loadDepositFacts"
 
 export function getPendingStore(): PendingRegistrationStore {
   return PendingRegistrationStore.get(webStorage)
@@ -56,15 +59,6 @@ export function watchRegistrationRail(): () => void {
   const store = getPendingStore()
   return store.onListChanged(() => {
     void syncRegistrationRail(store.list()).catch(warnRailSync)
-  })
-}
-
-/** Keeps this tab's pending store current with claims another tab starts or settles. */
-export function syncPendingStoreAcrossTabs(): () => void {
-  return webStorage.watch(PENDING_REGISTRATION_STORAGE_KEY, () => {
-    void getPendingStore()
-      .reload()
-      .catch(() => {})
   })
 }
 
@@ -109,7 +103,7 @@ const REPLACED_KEY = "webwallet.registration.replaced"
  * that record is kept here, closed: its claim cannot be re-issued at the fee its address commits
  * to, so no sweep registers it.
  */
-export function archiveReplacedRegistration(record: PendingRegistrationRecord): void {
+export function archiveReplacedRegistration(record: PendingRegistrationRecord): Promise<void> {
   const key = record.sipaAddress.toLowerCase()
   const kept = replacedRegistrations().filter((r) => r.sipaAddress.toLowerCase() !== key)
   const closed: PendingRegistrationRecord = {
@@ -117,19 +111,19 @@ export function archiveReplacedRegistration(record: PendingRegistrationRecord): 
     phase: "failed_terminal",
     endTime: Date.now(),
   }
-  localStorage.setItem(REPLACED_KEY, JSON.stringify([closed, ...kept]))
+  return walletStorage.commitItem(REPLACED_KEY, JSON.stringify([closed, ...kept]))
 }
 
 /** An address the session re-entered is live again; its archived copy has nothing left to serve. */
 export function forgetReplacedRegistration(sipaAddress: string): void {
   const key = sipaAddress.toLowerCase()
   const kept = replacedRegistrations().filter((r) => r.sipaAddress.toLowerCase() !== key)
-  localStorage.setItem(REPLACED_KEY, JSON.stringify(kept))
+  walletStorage.setItem(REPLACED_KEY, JSON.stringify(kept))
 }
 
 function replacedRegistrations(): PendingRegistrationRecord[] {
   try {
-    const raw = localStorage.getItem(REPLACED_KEY)
+    const raw = walletStorage.getItem(REPLACED_KEY)
     return raw ? (JSON.parse(raw) as PendingRegistrationRecord[]) : []
   } catch {
     return []
@@ -159,7 +153,7 @@ function getNameClaimStore(): NameClaimStore {
 
 // ── Detection settle signal ────────────────────────────────────────────────────
 //
-// Detection's identity writes land in localStorage, which emits nothing in the tab that wrote it.
+// Detection's identity writes notify nothing.
 // Every path out of the boot tick — including a failed one — signals here so the presentation gate
 // re-reads the identity instead of holding a render from before the tick.
 
@@ -196,7 +190,7 @@ export interface WebDetectionDeps extends OxideResumeDeps {
 
 export async function buildWebDetectionDeps(
   config: WebWalletConfig,
-  extras: Pick<OxideResumeDeps, "getSignDeps" | "broadcastSeen"> = {},
+  extras: Pick<OxideResumeDeps, "getSignDeps"> = {},
 ): Promise<WebDetectionDeps> {
   const { tuple, env, publicClient } = await oxideEnvFor(config)
   return {
@@ -215,6 +209,7 @@ export async function buildWebDetectionDeps(
       // Resolved from the registry, not the manifest: an absent or stale pin makes front-core
       // fall back to the registry, whose controller-era build has no schedule immutables.
       registrationController: await scheduleSource(config, publicClient as never),
+      fundingTokens: sipaFundingTokens(config.network, env.feeToken),
       // The record holds no bearer material; the saved terms carry the signed amounts. The record
       // names the tag those terms priced, which one device's shared account cannot.
       termsFor: (account: string) => {
@@ -229,9 +224,10 @@ export async function buildWebDetectionDeps(
     }),
     pendingStore: getPendingStore(),
     resolveLocalTag: (nameHash) => resolveLocalTag(nameHash, config),
-    // The boot tick passes no extras and stays unlock-free (registry + deposit reads only); the
-    // wallet-bound loop and the pending step's forced retry supply the sign deps and the note read
-    // the re-broadcast branch needs.
+    // Owing is a ledger write; the ledger proves it once the wallet is up.
+    oweBroadcast: (record, owed) => oweRegistrationBroadcast(record, owed),
+    // The boot tick passes no extras and stays unlock-free; the wallet-bound loop and the pending
+    // step's forced retry supply the sign deps a spent-rail renewal needs.
     ...extras,
   }
 }
@@ -278,9 +274,10 @@ function warnRailSync(err: unknown): void {
 }
 
 /**
- * What a confirmation owes beyond settling the identity: the funnel event, and the NameClaim cache
- * the first sponsored batch subscribes with. Both are best-effort — identity settlement is
- * authoritative, and a missing cache entry costs only a recovery log scan at subscribe time.
+ * What a confirmation owes beyond settling the identity: the funnel event, the NameClaim cache the
+ * first sponsored batch subscribes with, and the campaign's claim notice. All are best-effort —
+ * identity settlement is authoritative, a missing cache entry costs only a recovery log scan at
+ * subscribe time, and the notice is durable once owed.
  */
 function applyConfirmedSideEffects(
   deps: WebDetectionDeps,
@@ -292,6 +289,7 @@ function applyConfirmedSideEffects(
     fireEvent("onboarding_tag_claimed", { custody_to_confirmed_ms: Date.now() - record.fundedAt })
   }
   void cacheNameClaimFromLog(deps.publicClient, deps.env.registry, record).catch(warnCacheFailure)
+  void oweCampaignClaimNotice(record)
 }
 
 /** The subject of a cache write: which account to read the log from, and who to file it under. */
@@ -372,7 +370,7 @@ function reconcilePendingIdentity(store: PendingRegistrationStore): void {
   // A live record belongs to the tick; deciding it from an older closed one would settle the
   // wrong registration.
   if (store.current()) return
-  if (localStorage.getItem(RECOVERY_NOTICE_KEY) === identity.handle) {
+  if (walletStorage.getItem(RECOVERY_NOTICE_KEY) === identity.handle) {
     retractPendingWalletIdentity()
     return
   }
@@ -578,6 +576,14 @@ export function useRegistrationPublishStalled(record: PendingRegistrationRecord 
   return record !== null && !record.broadcast && escalated
 }
 
+/**
+ * Whether a surface may show the record's address. Until its broadcast lands nothing sweeps a deposit
+ * there. A record whose predecessor spent the rail is never broadcast; only a manual sweep registers it.
+ */
+export function registrationAddressPublished(record: PendingRegistrationRecord): boolean {
+  return record.broadcast || record.replaced?.broadcastSpent === true
+}
+
 // ── Logout gate ────────────────────────────────────────────────────────────────
 
 /**
@@ -627,8 +633,8 @@ const NOTICE_ACK_KEY = "webwallet.registration.noticeAck"
  * outcome is the one that lost the name.
  */
 function markRecoveryNotice(tag: string): void {
-  if (localStorage.getItem(RECOVERY_NOTICE_KEY)) return
-  localStorage.setItem(RECOVERY_NOTICE_KEY, tag)
+  if (walletStorage.getItem(RECOVERY_NOTICE_KEY)) return
+  walletStorage.setItem(RECOVERY_NOTICE_KEY, tag)
 }
 
 /**
@@ -645,10 +651,10 @@ function noticeEventId(record: PendingRegistrationRecord): string {
  * the steer survives the reload that a lost race otherwise sends the user through as a stranger.
  */
 export function lostRegistrationNotice(): LostRegistrationNotice | null {
-  const recoveryTag = localStorage.getItem(RECOVERY_NOTICE_KEY)
+  const recoveryTag = walletStorage.getItem(RECOVERY_NOTICE_KEY)
   if (recoveryTag) return { kind: "recovery", tag: recoveryTag }
   const failed = getPendingStore().latestFailed()
-  if (!failed || noticeEventId(failed) === localStorage.getItem(NOTICE_ACK_KEY)) return null
+  if (!failed || noticeEventId(failed) === walletStorage.getItem(NOTICE_ACK_KEY)) return null
   return { kind: failed.phase === "failed_taken" ? "taken" : "failed", tag: failed.tag }
 }
 
@@ -658,12 +664,12 @@ export function lostRegistrationNotice(): LostRegistrationNotice | null {
  * unrelated failed record. A later loss is a different event and surfaces its own.
  */
 export function acknowledgeLostRegistration(): void {
-  if (localStorage.getItem(RECOVERY_NOTICE_KEY)) {
-    localStorage.removeItem(RECOVERY_NOTICE_KEY)
+  if (walletStorage.getItem(RECOVERY_NOTICE_KEY)) {
+    walletStorage.removeItem(RECOVERY_NOTICE_KEY)
     return
   }
   const failed = getPendingStore().latestFailed()
-  if (failed) localStorage.setItem(NOTICE_ACK_KEY, noticeEventId(failed))
+  if (failed) walletStorage.setItem(NOTICE_ACK_KEY, noticeEventId(failed))
 }
 
 /**
@@ -688,6 +694,6 @@ export async function abandonPendingRegistration(account?: string): Promise<bool
   )
     retractPendingWalletIdentity()
   // The user chose this exit, so it is not also reported back to them as a loss.
-  localStorage.setItem(NOTICE_ACK_KEY, noticeEventId(closed))
+  walletStorage.setItem(NOTICE_ACK_KEY, noticeEventId(closed))
   return true
 }

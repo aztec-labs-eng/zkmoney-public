@@ -33,6 +33,7 @@ vi.mock("../src/config/env", async (importOriginal) => ({
 const {
   campaignSlotProbe,
   anchorTiers,
+  boundGrantCandidateProbe,
   enterTiers,
   requireResolved,
   reservationCandidateProbe,
@@ -91,6 +92,12 @@ describe("enterTiers", () => {
     expect(
       enterTiers({ accountServiceTestMode: true } as never, GENERATIONS).map((t) => t.name),
     ).toEqual(["registry"])
+    expect(
+      enterTiers({ accountServiceTestMode: false } as never, GENERATIONS, {
+        nameHash: `0x${"ab".repeat(32)}`,
+        token: "grant-token",
+      }).map((t) => t.name),
+    ).toEqual(["registry", "name-grant", "reservation"])
   })
 
   it("sends nothing while the tiers are built", async () => {
@@ -98,6 +105,39 @@ describe("enterTiers", () => {
     vi.stubGlobal("fetch", fetchMock)
     await enterTiers({ campaignUrl: "", accountServiceTestMode: false } as never, GENERATIONS)
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe("boundGrantCandidateProbe", () => {
+  it("anchors only the bootstrap key that owns the bound grant", async () => {
+    const nameHash = `0x${"ab".repeat(32)}` as Hex
+    const owner = Fr.random()
+    const other = Fr.random()
+    const address = deriveBootstrapKey(owner).address
+    const lookup = vi.fn(
+      async (_hash: Hex, _token: string, bootstrap: PrivateKeyAccount) =>
+        bootstrap.address === address,
+    )
+    const probe = boundGrantCandidateProbe(nameHash, "grant-token", lookup)
+
+    expect(await probe(owner, "0xignored")).toBe("anchored")
+    expect(await probe(other, "0xignored")).toBe("absent")
+    expect(lookup).toHaveBeenCalledWith(
+      nameHash,
+      "grant-token",
+      expect.objectContaining({ address }),
+    )
+    expect(
+      await resolveRecoveredMsk(
+        { candidates: { first: other, second: owner }, preferredSlot: "first" } as never,
+        async (msk) => msk.toString(),
+        [
+          { name: "registry", probes: [async () => "absent"] },
+          { name: "name-grant", probes: [probe] },
+          { name: "reservation", probes: [async () => "absent"] },
+        ],
+      ),
+    ).toMatchObject({ kind: "resolved", slot: "second", tier: "name-grant" })
   })
 })
 

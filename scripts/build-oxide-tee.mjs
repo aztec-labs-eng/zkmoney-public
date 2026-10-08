@@ -235,7 +235,7 @@ if (!tsc) {
 // generated @oxide/noir-contracts.js bindings, and the barrel index.ts
 // re-exports them, so all three drop out. Consumers import oxide-client's
 // bindings-free subpaths (broadcaster_calls.js, sipa_event_calls.js,
-// swap_on_withdraw.js, …), never the barrel.
+// withdraw_escrows/swap.js, …), never the barrel.
 //
 // tee-enclave's src/testing/ holds worker entrypoints that only its own *.test.ts
 // spawn, by URL, for Node to run under native type stripping — so they import with

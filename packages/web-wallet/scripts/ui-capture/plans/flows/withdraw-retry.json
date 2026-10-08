@@ -2,9 +2,25 @@
   "scenario": "activity",
   "steps": [
     {
+      "action": "waitFor",
+      "selector": ".ww-deposit-disclaimer"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
+      "exact": false
+    },
+    {
       "action": "fill",
-      "placeholder": "Enter or paste address",
+      "placeholder": "Search or paste an address",
       "value": "0x7777777777777777777777777777777777777777"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "New address",
+      "exact": false
     },
     {
       "action": "fill",
@@ -12,9 +28,27 @@
       "value": "Weekend savings wallet"
     },
     {
+      "action": "reachable",
+      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "address.png",
+      "state": "address"
+    },
+    {
+      "action": "click",
+      "selector": "[role=\"dialog\"][aria-label=\"Withdraw\"] button:has-text(\"Continue\")"
+    },
+    {
+      "action": "screenshot",
+      "file": "privacy.png",
+      "state": "privacy"
+    },
+    {
       "action": "click",
       "role": "button",
-      "name": "Continue",
+      "name": "Continue without privacy",
       "exact": true
     },
     {
@@ -34,7 +68,7 @@
     {
       "action": "click",
       "role": "button",
-      "name": "Withdraw funds",
+      "name": "Review",
       "exact": true
     },
     {
@@ -88,6 +122,6 @@
     }
   ],
   "finalScreenshot": false,
-  "path": "/withdraw?flowFixture=retry",
+  "path": "/withdraw/existing?flowFixture=retry",
   "recordHoldMs": 0
 }

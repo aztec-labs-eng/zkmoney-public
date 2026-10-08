@@ -6,14 +6,29 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 import { TxStatus } from "@aztec/stdlib/tx"
-import { OPERATIONS_STORAGE_KEY, type OperationRecord } from "@obsidion/front-core"
+import { provingProgress } from "@obsidion/proving-progress"
+import {
+  AppNotificationStore,
+  INTERRUPTED_ERRORS,
+  OPERATIONS_STORAGE_KEY,
+  WithdrawalStorage,
+  type OperationRecord,
+} from "@obsidion/front-core"
 import { clearActiveStorage, setActiveStorageId } from "../src/platform/storage/activeStorage"
+import { webStorage } from "../src/platform/storage/WebStorageAdapter"
 import { PAYLINK_NOT_CLAIMABLE_YET_MESSAGE } from "../src/features/paylink/claimWindow"
 import { getOperationStore } from "../src/features/operations/operations"
 import { operationEntry } from "../src/features/operations/operationEntries"
 import { NotificationsPanel, useNotificationList } from "../src/ui/NotificationsPanel"
+
+const legGroups = vi.hoisted(() => new Map<string, string>())
+vi.mock("../src/features/withdraw/freshAddressGateway", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  groupOfOperation: (operationId: string) => legGroups.get(operationId),
+}))
 
 const hash = `0x${"ab".repeat(32)}`
 
@@ -62,8 +77,7 @@ const renderPanel = () =>
   )
 const items = () => [...container.querySelectorAll(".ww-notifications__item")]
 const itemText = (text: string) => items().find((i) => i.textContent?.includes(text))
-const click = (el: Element | null | undefined) =>
-  act(async () => (el as HTMLButtonElement).click())
+const click = (el: Element | null | undefined) => act(async () => (el as HTMLButtonElement).click())
 
 describe("the panel", () => {
   // First, before anything loads the store: the records an earlier page left behind.
@@ -78,7 +92,7 @@ describe("the panel", () => {
       endedAt: 2,
       txHash: hash,
     }
-    localStorage.setItem(
+    walletStorage.setItem(
       `obsidion.${OPERATIONS_STORAGE_KEY}`,
       JSON.stringify({ [ended.operationId]: ended }),
     )
@@ -93,7 +107,13 @@ describe("the panel", () => {
     await renderPanel()
     const running = container.querySelector('.ww-notifications__item[role="status"]')
     expect(running?.textContent).toContain("Receiving")
+    expect(running?.textContent).toContain("Keep this tab open until it's sent")
     expect(running?.querySelector('[role="note"]')).toBeNull()
+    await act(async () => {
+      provingProgress.emitTxHashSaved("op-panel", hash)
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    expect(running?.textContent).toContain("Sent · You can close this tab")
     await act(async () => getOperationStore().settle("op-panel", hash))
     expect(container.querySelector('.ww-notifications__item[role="status"]')).toBeNull()
     expect(itemText("$25 to @alice")?.textContent).toContain("Received")
@@ -109,7 +129,7 @@ describe("the panel", () => {
     await act(async () => store.failInterrupted(2))
     const row = itemText("$3 to @bob")?.textContent
     expect(row).toContain("Send failed")
-    expect(row).toContain("The tab closed before it was sent. The amount is still in your balance.")
+    expect(row).toContain(INTERRUPTED_ERRORS.send)
   })
 
   it("hides an ended operation once dismissed, and marks it read once opened", async () => {
@@ -162,6 +182,70 @@ describe("the panel", () => {
     await act(async () => getOperationStore().fail("op-burn", "boom"))
     expect(items()).toHaveLength(0)
   })
+
+  it("shows a grouped withdrawal's running leg in place of its group's live row", async () => {
+    const bell = AppNotificationStore.get(webStorage)
+    const withdrawals = WithdrawalStorage.get(webStorage)
+    const row = (group: string, entry: "inflight" | "remaining") => {
+      const id = `bridge:withdrawal-group:${group}:${entry}`
+      return bell.upsert({
+        id,
+        sourceId: id,
+        producer: "bridge",
+        domain: "bridge",
+        title: "Withdrawal",
+        description: `${group} ${entry}`,
+        timestampMs: 1,
+        systemIcon: "arrow.up.right",
+        severity: "info",
+        pending: entry === "inflight",
+        target: { type: "bridge.txDetail", bridgeKind: "withdrawal", sourceId: group },
+      })
+    }
+    await row("0xa1", "inflight")
+    await row("0xa1", "remaining")
+    await row("0xb2", "inflight")
+    legGroups.set("op-leg", "0xA1")
+    await begin("op-leg", "withdraw")
+    await renderPanel()
+    const listed = () =>
+      ["0xa1 inflight", "0xa1 remaining", "0xb2 inflight", "$25 to @alice"].map(
+        (text) => !!itemText(text),
+      )
+    expect(listed()).toEqual([false, true, true, true])
+    expect(unread).toBe(2)
+
+    // A sent leg leaves the list, so its group's live row is the one row.
+    await act(async () => getOperationStore().markSent("op-leg", hash))
+    expect(listed()).toEqual([true, true, true, false])
+    expect(unread).toBe(3)
+
+    // A leg an earlier page started: only its record names the group.
+    legGroups.clear()
+    await act(async () => {
+      await withdrawals.create({
+        localId: "w-leg",
+        operationId: "op-earlier-leg",
+        groupId: "0xA1",
+        groupLeg: "funds",
+        recipient: `0x${"11".repeat(20)}`,
+        recipientProvenance: "saved-recipient",
+        amount: "25",
+        tokenSymbol: "DAI",
+        phase: "submitting",
+        startTime: 1,
+      })
+    })
+    await begin("op-earlier-leg", "withdraw")
+    expect(listed()).toEqual([false, true, true, true])
+
+    await act(async () => {
+      await getOperationStore().remove("op-leg")
+      await getOperationStore().remove("op-earlier-leg")
+      await withdrawals.clearAll()
+      await bell.dismissAll()
+    })
+  })
 })
 
 describe("an ended operation's entry", () => {
@@ -188,15 +272,35 @@ describe("an ended operation's entry", () => {
     expect(operationEntry(record({ state: "local", endedAt: undefined }))).toBeNull()
   })
 
-  it("carries the flow's message, else the cause worded by flow", () => {
-    const claim = { flow: "paylink-claim", state: "failed" as const }
-    expect(operationEntry(record({ ...claim, error: "Note already spent" }))).toMatchObject({
-      title: "Claim failed",
-      description: "Note already spent",
+  it("words a thrown failure by flow, never with its raw message", () => {
+    const failed = { state: "failed" as const, error: "Assertion failed: Balance too low" }
+    expect(operationEntry(record(failed))).toMatchObject({
+      title: "Send failed",
+      description: "$25 to @alice. It didn't go through. The amount is still in your balance.",
       severity: "error",
     })
-    const lost = record({ ...claim, summary: "$4 paylink", cause: "interrupted" })
-    expect(operationEntry(lost)?.description).toBe("$4 paylink. The tab closed before it was sent.")
+    const claim = record({ ...failed, flow: "paylink-claim", summary: "$4 paylink" })
+    expect(operationEntry(claim)).toMatchObject({
+      title: "Claim failed",
+      description: "$4 paylink. It didn't go through.",
+    })
+    // A thrown failure the store also ended keeps its cause's words.
+    const dropped = record({ ...failed, cause: "dropped" })
+    expect(operationEntry(dropped)?.description).toBe(
+      "$25 to @alice. The network turned it down. The amount is still in your balance.",
+    )
+  })
+
+  it("words the cause by flow, a tab close as the activity row does", () => {
+    const lost = (flow: string) =>
+      operationEntry(record({ flow, state: "failed", summary: "$4 paylink", cause: "interrupted" }))
+    expect(lost("send")?.description).toBe(`$4 paylink. ${INTERRUPTED_ERRORS.send}`)
+    expect(lost("paylink-create")?.description).toBe(
+      `$4 paylink. ${INTERRUPTED_ERRORS.paylinkCreate}`,
+    )
+    expect(lost("paylink-claim")?.description).toBe(
+      `$4 paylink. ${INTERRUPTED_ERRORS.paylinkClaim}`,
+    )
     const dropped = record({ flow: "paylink-reclaim", state: "failed", cause: "dropped" })
     expect(operationEntry(dropped)).toMatchObject({
       title: "Recovery failed",
@@ -220,7 +324,7 @@ describe("an ended operation's entry", () => {
     // A field element, as a tx hash is.
     await store.markSent("op-dropped", `0x${"0a".repeat(32)}`)
     store.release("op-dropped")
-    await store.resolveSent({ getTxReceipt: async () => ({ status: TxStatus.DROPPED }) as never })
+    await store.resolveSent({ getTxReceipt: async () => ({ status: TxStatus.DROPPED } as never) })
     expect(operationEntry(store.get("op-dropped")!)).toMatchObject({
       title: "Recovery failed",
       description: "$25 to @alice. The network turned it down.",
@@ -234,7 +338,7 @@ describe("an ended operation's entry", () => {
     expect(operationEntry(record({ ...arrival, cause: "dropped" }))).toBeNull()
     expect(operationEntry(record({ ...arrival, error: "node down" }))).toMatchObject({
       title: "Couldn't publish your new address",
-      description: "node down",
+      description: "Nothing moved. You can try again.",
     })
   })
 })

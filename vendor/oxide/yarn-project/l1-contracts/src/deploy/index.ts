@@ -25,10 +25,12 @@ export { deploySIPAFactory } from './deploy_sipa_factory.js';
 export {
   DEPOSIT_SWEEP_FEE,
   REGISTRATION_SWEEP_FEE,
+  METADATA_UPDATE_SWEEP_FEE,
   type SIPAImplementations,
   blessSIPAImplementation,
   deployDepositSIPA,
   deployRegistrationSIPA,
+  deployUpdateMetadataSIPA,
   deploySIPAImplementations,
 } from './deploy_sipa_implementations.js';
 export { deploySIPAResolver } from './deploy_sipa_resolver.js';

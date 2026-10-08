@@ -5,10 +5,15 @@ export * from "@obsidion/contracts"
 export * from "./oxide/publishDaLogs.js"
 export * from "./oxide/publishedWithdrawal.js"
 export * from "./oxide/withdrawalFinalization.js"
+export * from "./oxide/portalIdentity.js"
 export * from "./oxide/withdrawFinalizationCall.js"
 export * from "./oxide/swapOnWithdrawSimulator.js"
 export * from "./oxide/swapOnWithdraw.js"
 export * from "./oxide/swapEscrowReader.js"
+export * from "./oxide/portalCapacity.js"
+export * from "./oxide/portalCapError.js"
+export * from "./oxide/sipaPortalTerms.js"
+export * from "./oxide/proverTipQuote.js"
 export {
   readPortalWithdrawalState,
   type PortalWithdrawalState,

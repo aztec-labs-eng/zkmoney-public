@@ -64,6 +64,8 @@ export interface RegistrationMessageTarget {
   nameHash: Buffer
   /** Rollup version the message is bound to; a migration re-emits against the new one. */
   rollupVersion: number
+  /** L1 chain the portal sent from; the caller's pinned identity, never the node's answer. */
+  l1ChainId: number
 }
 
 /**
@@ -84,7 +86,6 @@ export interface RegistrationMessage {
 
 export type RegistrationMessageNode = Pick<
   AztecNode,
-  | "getChainId"
   | "getBlockData"
   | "getL1ToL2MessageCheckpoint"
   | "getL1ToL2MessageMembershipWitness"
@@ -127,8 +128,7 @@ export async function findRegistrationMessage(
   target: RegistrationMessageTarget,
   opts: FindRegistrationMessageOptions = {},
 ): Promise<RegistrationMessage | undefined> {
-  const chainId = await node.getChainId()
-  const sender = new L1Actor(target.namePortal, chainId)
+  const sender = new L1Actor(target.namePortal, target.l1ChainId)
   const recipient = new L2Actor(target.fpc, target.rollupVersion)
   const content = nameOwnershipMessageContent(target.owner, target.nameHash)
   const secretHash = await computeSecretHash(REGISTRATION_MESSAGE_SECRET)

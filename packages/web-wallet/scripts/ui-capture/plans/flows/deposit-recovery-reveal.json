@@ -1,0 +1,89 @@
+{
+  "scenario": "activity",
+  "bootstrap": "/?demo=activity&flowFixture=success&capacityFixture=clears",
+  "path": "/activity",
+  "ready": {
+    "text": "Waiting for capacity",
+    "first": true
+  },
+  "finalScreenshot": false,
+  "steps": [
+    {
+      "action": "click",
+      "text": "+$17.65",
+      "exact": true
+    },
+    {
+      "action": "waitFor",
+      "testId": "deposit-pending-reason"
+    },
+    {
+      "action": "scroll",
+      "selector": "dialog:modal .ww-modal",
+      "top": "end"
+    },
+    {
+      "action": "click",
+      "selector": "dialog:modal >> role=button[name=\"Recover\"]"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal >> text=\"Recover deposit\""
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal >> role=button[name=\"Sweep now\"]",
+      "state": "detached"
+    },
+    {
+      "action": "screenshot",
+      "file": "recovery-only.png",
+      "state": "Recover against an empty bucket opens the recovery-only sheet: no sweep offered"
+    },
+    {
+      "action": "click",
+      "selector": "dialog:modal [data-testid=\"deposit-pending-reason\"] > button"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal >> role=button[name=\"Sweep now\"]"
+    },
+    {
+      "action": "screenshot",
+      "file": "sweep-offered.png",
+      "state": "Check again reads capacity: the open sheet now offers Sweep now beside recovery"
+    },
+    {
+      "action": "press",
+      "selector": "dialog:modal",
+      "key": "Escape"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal",
+      "state": "detached"
+    },
+    {
+      "action": "click",
+      "selector": "role=button[name=\"Recover\" s] >> nth=0"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal >> text=\"Recover deposit\""
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal:has-text(\"larger than the network can process in one deposit\"):has-text(\"Waiting won't change this.\")"
+    },
+    {
+      "action": "waitFor",
+      "selector": "dialog:modal >> role=button[name=\"Sweep now\"]",
+      "state": "detached"
+    },
+    {
+      "action": "screenshot",
+      "file": "permanent-recovery-only.png",
+      "state": "A deposit larger than the network can process in one deposit stays recovery-only with capacity available"
+    }
+  ]
+}

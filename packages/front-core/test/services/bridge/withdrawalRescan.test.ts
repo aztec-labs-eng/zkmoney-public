@@ -173,6 +173,35 @@ describe("rebuildWithdrawals", () => {
     })
   })
 
+  it("regroups the legs of a fresh-address withdrawal", async () => {
+    const store = await newStore()
+    const GROUP_ID = `0x${"c1".repeat(16)}` as Hex
+    const GAS_TX = `0x${"55".repeat(32)}` as Hash
+    const source = makeSource([
+      { ...EVENTS[0]!, group: { id: GROUP_ID, leg: "funds" } },
+      {
+        txHash: GAS_TX,
+        blockNumber: 18,
+        l1Recipient: RECIPIENT,
+        amount: 10n ** 18n,
+        group: { id: GROUP_ID, leg: "gas" },
+      },
+      EVENTS[1]!,
+    ])
+
+    await rebuildWithdrawals({ source, store, tokenSymbol: "DAI" })
+
+    expect(store.getByL2TxHash(GAS_TX)).toMatchObject({ groupId: GROUP_ID, groupLeg: "gas" })
+    expect(store.getByL2TxHash(SWAP_TX)).toMatchObject({
+      groupId: GROUP_ID,
+      groupLeg: "funds",
+      swapEscrow: plan.escrow,
+    })
+    const direct = store.getByL2TxHash(DIRECT_TX)!
+    expect(direct.groupId).toBeUndefined()
+    expect(direct.groupLeg).toBeUndefined()
+  })
+
   it("skips a burn whose meta names no L1 address", async () => {
     const store = await newStore()
     const NO_RECIPIENT_TX = `0x${"44".repeat(32)}` as Hash

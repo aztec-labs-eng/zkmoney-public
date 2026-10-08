@@ -88,9 +88,42 @@ export function reservationCandidateProbe(lookup = reservedNameHashes): Candidat
   return async (msk) => ((await lookup(deriveBootstrapKey(msk))).length > 0 ? "anchored" : "absent")
 }
 
-/** A sign-in's anchors: the outside records alone, with no campaign material to speak for the key. */
-export function enterTiers(config: WebWalletConfig, generations: OxideIdentityDeps): AnchorTier[] {
-  return anchorTiers(config, generations)
+/** A bound grant names only the bootstrap key that first used it. */
+export async function boundNameGrantOwner(
+  nameHash: Hex,
+  token: string,
+  bootstrap: PrivateKeyAccount,
+  config: WebWalletConfig = getConfig(),
+): Promise<boolean> {
+  const details = await new AccountServiceClient(config.accountServiceUrl, {
+    readOnly: true,
+    timeoutMs: RESERVATION_TIMEOUT_MS,
+  }).availableNameDetails(nameHash, token, bootstrap.address)
+  return details.grantBound === true && details.grantValid === true
+}
+
+export function boundGrantCandidateProbe(
+  nameHash: Hex,
+  token: string,
+  lookup = boundNameGrantOwner,
+): CandidateProbe {
+  return async (msk) =>
+    (await lookup(nameHash, token, deriveBootstrapKey(msk))) ? "anchored" : "absent"
+}
+
+/** A sign-in's outside anchors, with a presented bound grant before the claim ledger. */
+export function enterTiers(
+  config: WebWalletConfig,
+  generations: OxideIdentityDeps,
+  grant?: { nameHash: Hex; token: string },
+): AnchorTier[] {
+  const tiers = anchorTiers(config, generations)
+  if (grant && !config.accountServiceTestMode)
+    tiers.splice(1, 0, {
+      name: "name-grant",
+      probes: [boundGrantCandidateProbe(grant.nameHash, grant.token)],
+    })
+  return tiers
 }
 
 /** The resolver's non-answers as the errors the screens show. */

@@ -74,7 +74,11 @@ function scannerOver(
   storage: IStorageAdapter,
 ): TransferEventScanner {
   return new TransferEventScanner({
-    source: { headBlock: async () => 10, listIncoming: async () => events },
+    source: {
+      headBlock: async () => 10,
+      listIncoming: async () => events,
+      blockTimestampMs: async (b) => b * 1000,
+    },
     storage,
     transactionStore: txStorage,
     tags,

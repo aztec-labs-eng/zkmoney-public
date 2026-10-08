@@ -7,13 +7,18 @@
  * Every "refresh now" in the app funnels into `tickNow`: pull-to-refresh and `loadAssets` through
  * the static `refresh()`, a send or withdrawal terminalising through the store watches below. The
  * watches diff terminal keys so pending-row progress writes never trigger a sync, and skip receive
- * rows because those are written by the tick itself.
+ * rows because those are written by the tick itself. A write that moves the balance but no
+ * `Transfer` event (a claimed deposit) uses `refreshBalance()` instead, which never waits behind a
+ * scan pass.
+ *
+ * Its first published balance settles `bootPriority`'s notes stage.
  */
 
 import { type WalletSyncSource, TokenActionEnum } from "@obsidion/sdk"
 import type { Transaction } from "../../../types/transactions"
 import type { WithdrawalRecord } from "../bridge/types"
 import { globalEventEmitter } from "../GlobalEventEmitter"
+import { bootPriority, type BootPriority } from "./bootPriority"
 import {
   TransferEventScanner,
   type TransferEventScannerOptions,
@@ -26,6 +31,8 @@ const LOG_PREFIX = "[WalletSyncCoordinator]"
 const REFRESH_DEBOUNCE_MS = 500
 /** Longest a `refresh()` issued before any coordinator started will wait for one. */
 const REFRESH_WAIT_MS = 60_000
+/** Balance-only reads before falling back to a full pass; a concurrent sync can move the anchor. */
+const BALANCE_READ_ATTEMPTS = 3
 
 export interface WalletSyncCoordinatorOptions
   extends Omit<TransferEventScannerOptions, "onSynced"> {
@@ -44,6 +51,7 @@ export interface WalletSyncCoordinatorOptions
     list(): readonly WithdrawalRecord[]
     onListChanged(listener: (records: readonly WithdrawalRecord[]) => void): () => void
   }
+  boot?: Pick<BootPriority, "notesSynced">
 }
 
 export class WalletSyncCoordinator {
@@ -73,6 +81,13 @@ export class WalletSyncCoordinator {
     return WalletSyncCoordinator.pending.promise
   }
 
+  /** The balance alone at a fresh anchor; without a running coordinator, same as `refresh()`. */
+  static refreshBalance(): Promise<void> {
+    const active = WalletSyncCoordinator.active
+    if (!active) return WalletSyncCoordinator.refresh()
+    return active.readBalanceCoalesced().catch(() => active.tickNow())
+  }
+
   private static settlePending(): void {
     const pending = WalletSyncCoordinator.pending
     WalletSyncCoordinator.pending = null
@@ -86,15 +101,20 @@ export class WalletSyncCoordinator {
   private debounce: ReturnType<typeof setTimeout> | null = null
   private unsubscribe: (() => void)[] = []
   private generation = 0
+  private balanceRead: Promise<void> | null = null
+  private balanceReadQueued: Promise<void> | null = null
+  private readonly boot: Pick<BootPriority, "notesSynced">
 
   constructor(options: WalletSyncCoordinatorOptions) {
-    const { balance, transactions, withdrawals, ...scannerOptions } = options
+    const { balance, transactions, withdrawals, boot, ...scannerOptions } = options
     this.opts = options
+    this.boot = boot ?? bootPriority
     this.scanner = new TransferEventScanner({
       ...scannerOptions,
       onSynced: async (anchor, value) => {
         if (value === undefined) throw new Error("Wallet snapshot omitted its balance")
         await balance.store.updateBalance(balance.scope, balance.tokenAddress, value, anchor)
+        this.boot.notesSynced()
       },
     })
   }
@@ -139,6 +159,38 @@ export class WalletSyncCoordinator {
 
   tickNow(): Promise<void> {
     return this.scanner.tickNow()
+  }
+
+  /** One read in flight plus one trailing, so a burst of claims costs at most two reads. */
+  private readBalanceCoalesced(): Promise<void> {
+    if (this.balanceReadQueued) return this.balanceReadQueued
+    if (!this.balanceRead) return (this.balanceRead = this.runBalanceRead())
+    this.balanceReadQueued = this.balanceRead
+      .catch(() => {})
+      .then(() => {
+        this.balanceReadQueued = null
+        return (this.balanceRead = this.runBalanceRead())
+      })
+    return this.balanceReadQueued
+  }
+
+  private runBalanceRead(): Promise<void> {
+    return this.readBalanceNow().finally(() => {
+      this.balanceRead = null
+    })
+  }
+
+  private async readBalanceNow(): Promise<void> {
+    const { store, scope, tokenAddress } = this.opts.balance
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const { balance, anchorBlock } = await this.opts.source.readBalanceSnapshot()
+        await store.updateBalance(scope, tokenAddress, balance, anchorBlock)
+        return
+      } catch (err) {
+        if (attempt >= BALANCE_READ_ATTEMPTS) throw err
+      }
+    }
   }
 
   private async checkTransactions(): Promise<void> {

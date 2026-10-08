@@ -2,12 +2,13 @@ import { useEffect, useMemo, useRef } from "react"
 import {
   SIPADepositStore,
   RequestStorage,
+  bootPriority,
   reconcileSipaRequestFulfillments,
   useAssetContext,
   useAztecContext,
   useCachedRecords,
 } from "@obsidion/front-core"
-import type { SIPADepositRecord } from "@obsidion/front-core"
+import type { SIPADepositRecord, SipaDepositSyncResult } from "@obsidion/front-core"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { fireEvent } from "../../lib/analytics"
 import { getSipaDepositGateway } from "./sipaGateway"
@@ -68,6 +69,14 @@ export function createSyncFailureReporter(): (failed: number) => boolean {
 }
 
 /**
+ * Whether a pass settles the boot balance: it ran unlocked and claimed every note it found. A failed
+ * or locked pass leaves that to a later pass or the backstop.
+ */
+export function settlesBootBalance(result: SipaDepositSyncResult | null): boolean {
+  return !!result && result.failed === 0
+}
+
+/**
  * Drives the browser SIPA deposit loop: discovery (once) + a claim sync pass
  * on an interval. Records render cache-first — the persisted store hydrates
  * immediately and the sync pass overwrites it as fresh chain state lands.
@@ -76,7 +85,8 @@ export function createSyncFailureReporter(): (failed: number) => boolean {
  * the result.
  * Sync is a no-op while the wallet is locked (the claim path needs the
  * unlocked key), so a refreshed session starts crediting deposits as soon as
- * it unlocks.
+ * it unlocks. The first pass runs right after the boot balance's note sync, and
+ * the first pass that runs clean settles the boot balance.
  */
 export function useSipaDeposits(): void {
   const { obsidionWallet } = useAztecContext()
@@ -118,8 +128,13 @@ export function useSipaDeposits(): void {
       // Fast unless a pass reports nothing in flight. A locked or failed pass reports
       // nothing at all, so it stays fast.
       let nextDelay = SYNC_INTERVAL_MS
+      let clean = false
       try {
-        const result = await gateway.sync(obsidionWallet, tokenService)
+        await bootPriority.whenNotesSynced()
+        if (cancelled) return
+        const result = await gateway.sync(obsidionWallet, tokenService, {
+          onProgress: (done, total) => bootPriority.depositProgress(done, total),
+        })
         // Locked sessions return null; a healthy tick logs its counts so
         // silence always means "not running", never "ran and found nothing".
         if (result) console.debug("[sipaDeposits] sync:", result)
@@ -132,11 +147,13 @@ export function useSipaDeposits(): void {
             fireEvent("action_failed", { action: "deposit:sync", code: "note_sync_failed" })
         }
         if (result && result.active === 0) nextDelay = IDLE_SYNC_INTERVAL_MS
+        clean = settlesBootBalance(result)
       } catch (e) {
         console.warn("[sipaDeposits] sync failed (will retry):", e)
         nextDelay = SYNC_INTERVAL_MS
       } finally {
         if (!cancelled) {
+          if (clean) bootPriority.depositsReplayed()
           timer = setTimeout(runOnce, nextDelay)
         }
       }

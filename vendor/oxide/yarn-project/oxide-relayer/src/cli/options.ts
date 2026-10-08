@@ -1,24 +1,23 @@
 import { type EnvVar, enumConfigHelper, getValueFromEnvWithFallback } from '@aztec/foundation/config';
 import { schemas } from '@aztec/foundation/schemas';
 
+import { DEFAULT_MAX_FEE_HEADROOM_PERCENT } from '@oxide/oxide-client/l1_operation_quote.js';
 import { OFAC_SDN_LIST_URL } from '@oxide/watcher-lib/sanctions';
 
-import { type Command, InvalidArgumentError } from 'commander';
+import { type Command, InvalidArgumentError, Option } from 'commander';
 
 import { DEFAULT_FPC_FUNDING_POLL_INTERVAL_MS } from '../fpc_funding/fpc_funder_caller.js';
+import { DEFAULT_FLASHBOTS_BLOCK_RANGE } from '../l1/flashbots_protect.js';
 import {
   DEFAULT_L1_OPERATIONS_POLL_INTERVAL_MS,
   DEFAULT_LOG_SCAN_WINDOW,
 } from '../l1_operations/l1_operation_relayer.js';
-import { DEFAULT_FLASHBOTS_BLOCK_RANGE } from '../l1_submission_rpc.js';
-import { DEFAULT_L1_MIN_PRIORITY_FEE_GWEI } from '../l1_tx_utils_config.js';
 import { PROVER_ENV_VARS, PROVER_RUN_OPTIONS } from '../prover/cli.js';
-import { SIGNER_BACKENDS } from './config.js';
+import { SIGNER_BACKENDS, urlOrigin } from './config.js';
 
 const DEFAULT_SQLITE_PATH = '/data/oxide-relayer-{portal}.sqlite3';
-const DEFAULT_LEASE_TTL_MS = 60_000;
 const DEFAULT_L1_OPERATIONS_RETRY_BACKOFF_MS = 30_000;
-const DEFAULT_L1_OPERATIONS_MAX_RETRIES = 10;
+const DEFAULT_L1_OPERATIONS_MAX_PENDING_AGE_SECONDS = 72 * 60 * 60;
 
 export const RELAYER_ENV_VARS = [
   'OXIDE_DEPLOYMENT_ENV_MANIFEST_URL',
@@ -27,7 +26,7 @@ export const RELAYER_ENV_VARS = [
   'L1_RPC_URL',
   'ETHEREUM_HOST',
   'OXIDE_RELAYER_FLASHBOTS_BLOCK_RANGE',
-  'OXIDE_RELAYER_L1_MIN_PRIORITY_FEE_GWEI',
+  'OXIDE_RELAYER_L1_MAX_FEE_PER_GAS_GWEI',
   'AZTEC_NODE_URL',
   'OXIDE_AZTEC_NODE_URL',
   'AZTEC_NODE_API_KEY',
@@ -41,22 +40,19 @@ export const RELAYER_ENV_VARS = [
   'OXIDE_RELAYER_KEYSTORE_PASSWORD_FILE',
   'OXIDE_RELAYER_STATE_BACKEND',
   'OXIDE_RELAYER_STATE_PATH',
-  'OXIDE_RELAYER_SQLITE_PATH',
-  'OXIDE_RELAYER_WORKER_ID',
-  'OXIDE_RELAYER_LEASE_TTL_MS',
   'OXIDE_RELAYER_SDN_URL',
   'OXIDE_RELAYER_LOG_SCAN_WINDOW',
   'DISABLE_SUBMISSION',
   'OXIDE_RELAYER_L1_OPERATIONS_POLL_INTERVAL_MS',
   'OXIDE_RELAYER_FPC_FUNDING_POLL_INTERVAL_MS',
   'OXIDE_RELAYER_L1_OPERATIONS_RETRY_BACKOFF_MS',
-  'OXIDE_RELAYER_L1_OPERATIONS_MAX_RETRIES',
+  'OXIDE_RELAYER_L1_OPERATIONS_MAX_PENDING_AGE_SECONDS',
+  'OXIDE_RELAYER_L1_OPERATIONS_MAX_FEE_HEADROOM_PERCENT',
+  'OXIDE_RELAYER_L1_OPERATIONS_PAYOUT_TOKENS',
   'OXIDE_RELAYER_ALLOW_UNPROFITABLE',
   'OXIDE_RELAYER_PREDICATE_API_KEY',
   'OXIDE_RELAYER_PREDICATE_VERIFICATION_HASH',
   'OXIDE_RELAYER_PREDICATE_CHAIN',
-  'OXIDE_RELAYER_PREDICATE_BASE_URL',
-  'OXIDE_RELAYER_PREDICATE_TIMEOUT_MS',
 ] as const;
 
 export type RelayerEnvVar = (typeof RELAYER_ENV_VARS)[number];
@@ -68,6 +64,12 @@ export interface CliOptionSpec {
   fallback?: RelayerEnvVar[];
   defaultValue?: unknown;
   parseVal?: (value: string | boolean) => unknown;
+  /** Accepted, but not shown in `--help`. */
+  hidden?: boolean;
+  /** `--help` shows `<redacted>` instead of the value that the environment sets. */
+  secret?: boolean;
+  /** `--help` shows only the origin of the URL that the environment sets; RPC providers put API keys in the path. */
+  url?: boolean;
 }
 
 export const RUN_OPTIONS: readonly CliOptionSpec[] = [
@@ -79,29 +81,30 @@ export const RUN_OPTIONS: readonly CliOptionSpec[] = [
   { flags: '--portal <address>', description: 'portal of the manifest deployment to run', env: 'OXIDE_PORTAL' },
   {
     flags: '--read-l1-rpc <url>',
-    description: 'L1 RPC URL used for every read; must not be a Flashbots Protect endpoint',
+    description: 'L1 read RPC; L1 operations require eth_simulateV1; Sepolia also submits here; must not be Protect',
     env: 'READ_L1_RPC_URL',
     fallback: ['L1_RPC_URL', 'ETHEREUM_HOST'],
+    url: true,
   },
   {
     flags: '--flashbots-block-range <blocks>',
-    description: 'Protect drop window in blocks of 12s; the local tx expiry derives from it on mainnet and Sepolia',
+    description: 'block window of an L1 tx on every chain: the Flashbots Protect drop window, and the relayer expiry',
     env: 'OXIDE_RELAYER_FLASHBOTS_BLOCK_RANGE',
     defaultValue: DEFAULT_FLASHBOTS_BLOCK_RANGE,
     parseVal: value => parsePositiveInteger(value, 'Flashbots block range'),
   },
   {
-    flags: '--l1-min-priority-fee-gwei <gwei>',
-    description: 'floor for the L1 priority fee; a market tip above it still wins',
-    env: 'OXIDE_RELAYER_L1_MIN_PRIORITY_FEE_GWEI',
-    defaultValue: DEFAULT_L1_MIN_PRIORITY_FEE_GWEI,
-    parseVal: value => parsePositiveGwei(value, 'L1 priority fee'),
+    flags: '--l1-max-fee-per-gas-gwei <gwei>',
+    description: 'cap on the L1 max fee per gas; a tx whose fee ceiling is above it is deferred, not sent',
+    env: 'OXIDE_RELAYER_L1_MAX_FEE_PER_GAS_GWEI',
+    parseVal: value => parsePositiveGwei(value, 'L1 max fee per gas'),
   },
   {
     flags: '--aztec-node <url>',
     description: 'Aztec node URL',
     env: 'AZTEC_NODE_URL',
     fallback: ['OXIDE_AZTEC_NODE_URL'],
+    url: true,
   },
   ...PROVER_RUN_OPTIONS,
   {
@@ -127,6 +130,7 @@ export const RUN_OPTIONS: readonly CliOptionSpec[] = [
     flags: '--keystore-password <password>',
     description: 'JSON keystore password',
     env: 'OXIDE_RELAYER_KEYSTORE_PASSWORD',
+    secret: true,
   },
   {
     flags: '--keystore-password-file <path>',
@@ -135,25 +139,18 @@ export const RUN_OPTIONS: readonly CliOptionSpec[] = [
   },
   {
     flags: '--state-backend <backend>',
-    description: 'state backend',
+    description: 'state backend (currently sqlite)',
     env: 'OXIDE_RELAYER_STATE_BACKEND',
     defaultValue: 'sqlite',
     parseVal: parseEnum(['sqlite'] as const, 'state backend'),
+    // Hidden while SQLite is the only backend.
+    hidden: true,
   },
   {
     flags: '--state <path>',
-    description: "state path; {portal} expands to the pinned deployment's portal",
+    description: "SQLite state path; {portal} expands to each worker's portal",
     env: 'OXIDE_RELAYER_STATE_PATH',
     defaultValue: DEFAULT_SQLITE_PATH,
-  },
-  { flags: '--sqlite-path <path>', description: 'SQLite database path', env: 'OXIDE_RELAYER_SQLITE_PATH' },
-  { flags: '--worker-id <id>', description: 'worker id for state-store leases', env: 'OXIDE_RELAYER_WORKER_ID' },
-  {
-    flags: '--lease-ttl-ms <ms>',
-    description: 'work lease TTL in milliseconds',
-    env: 'OXIDE_RELAYER_LEASE_TTL_MS',
-    defaultValue: DEFAULT_LEASE_TTL_MS,
-    parseVal: value => parsePositiveInteger(value, 'lease TTL'),
   },
   {
     flags: '--sdn-url <url>',
@@ -170,7 +167,7 @@ export const RUN_OPTIONS: readonly CliOptionSpec[] = [
   },
   {
     flags: '--disable-submission [value]',
-    description: 'disable L1 signing and broadcasting',
+    description: 'run all checks but skip each L1 tx send, and continue as if it was mined',
     env: 'DISABLE_SUBMISSION',
     defaultValue: false,
     parseVal: value => parseBoolean(value, 'DISABLE_SUBMISSION'),
@@ -191,29 +188,44 @@ export const RUN_OPTIONS: readonly CliOptionSpec[] = [
   },
   {
     flags: '--l1-operations-retry-backoff-ms <ms>',
-    description: 'backoff before re-checking a deferred L1 operation',
+    description:
+      'backoff before re-checking a deferred L1 operation; doubles on each reverting simulation, up to 15 min',
     env: 'OXIDE_RELAYER_L1_OPERATIONS_RETRY_BACKOFF_MS',
     defaultValue: DEFAULT_L1_OPERATIONS_RETRY_BACKOFF_MS,
     parseVal: value => parsePositiveInteger(value, 'L1 operations retry backoff'),
   },
   {
-    flags: '--l1-operations-max-retries <n>',
-    description: 'failed executor simulations before an L1 operation is dropped',
-    env: 'OXIDE_RELAYER_L1_OPERATIONS_MAX_RETRIES',
-    defaultValue: DEFAULT_L1_OPERATIONS_MAX_RETRIES,
-    parseVal: value => parsePositiveInteger(value, 'L1 operations max retries'),
+    flags: '--l1-operations-max-pending-age-seconds <seconds>',
+    description: 'age after which a deferred L1 operation is dropped, whatever the defer cause',
+    env: 'OXIDE_RELAYER_L1_OPERATIONS_MAX_PENDING_AGE_SECONDS',
+    defaultValue: DEFAULT_L1_OPERATIONS_MAX_PENDING_AGE_SECONDS,
+    parseVal: value => parsePositiveInteger(value, 'L1 operations max pending age'),
+  },
+  {
+    flags: '--l1-operations-max-fee-headroom-percent <percent>',
+    description: 'percentage by which the L1 operation max fee allows the base fee to increase; minPayout covers it',
+    env: 'OXIDE_RELAYER_L1_OPERATIONS_MAX_FEE_HEADROOM_PERCENT',
+    defaultValue: DEFAULT_MAX_FEE_HEADROOM_PERCENT,
+    parseVal: value => parsePercent(value, 'L1 operations max fee headroom'),
+  },
+  {
+    flags: '--l1-operations-payout-tokens <addresses>',
+    description:
+      "comma-separated 18-decimal USD tokens that L1 operations can pay out in; default: the manifest entry's token",
+    env: 'OXIDE_RELAYER_L1_OPERATIONS_PAYOUT_TOKENS',
   },
   {
     flags: '--allow-unprofitable [value]',
-    description: 'submit even when unprofitable',
+    description: 'submit L1 operations and FPC funding even when unprofitable; does not apply to epoch proofs',
     env: 'OXIDE_RELAYER_ALLOW_UNPROFITABLE',
     defaultValue: false,
     parseVal: value => parseBoolean(value, 'OXIDE_RELAYER_ALLOW_UNPROFITABLE'),
   },
   {
     flags: '--predicate-api-key <key>',
-    description: 'Predicate API key; setting it (with verification hash and chain) enables sanctions screening',
+    description: 'Predicate API key; with verification hash and chain, adds screening to the OFAC checks',
     env: 'OXIDE_RELAYER_PREDICATE_API_KEY',
+    secret: true,
   },
   {
     flags: '--predicate-verification-hash <hash>',
@@ -225,31 +237,31 @@ export const RUN_OPTIONS: readonly CliOptionSpec[] = [
     description: 'Predicate chain name, e.g. ethereum-mainnet',
     env: 'OXIDE_RELAYER_PREDICATE_CHAIN',
   },
-  {
-    flags: '--predicate-base-url <url>',
-    description: 'Predicate API base URL (defaults to the public endpoint)',
-    env: 'OXIDE_RELAYER_PREDICATE_BASE_URL',
-  },
-  {
-    flags: '--predicate-timeout-ms <ms>',
-    description: 'per-request timeout for Predicate screening',
-    env: 'OXIDE_RELAYER_PREDICATE_TIMEOUT_MS',
-    parseVal: value => parsePositiveInteger(value, 'predicate timeout'),
-  },
 ];
 
 /** Apply the relayer's declarative option table to a Commander command. */
 export function addOptions(command: Command, options: readonly CliOptionSpec[]): void {
   for (const opt of options) {
-    const defaultValue = getDefaultOrEnvValue(opt);
+    const value = getDefaultOrEnvValue(opt);
+    const option = new Option(opt.flags, optionDescription(opt)).default(value, helpDefault(opt, value));
     if (opt.parseVal) {
-      command.option(opt.flags, optionDescription(opt), opt.parseVal, defaultValue);
-    } else if (defaultValue !== undefined) {
-      command.option(opt.flags, optionDescription(opt), defaultValue as string | boolean | string[]);
-    } else {
-      command.option(opt.flags, optionDescription(opt));
+      option.argParser(opt.parseVal);
     }
+    if (opt.hidden) {
+      option.hideHelp();
+    }
+    command.addOption(option);
   }
+}
+
+function helpDefault(opt: CliOptionSpec, value: unknown): string | undefined {
+  if (opt.secret) {
+    return '<redacted>';
+  }
+  if (opt.url && typeof value === 'string') {
+    return JSON.stringify(urlOrigin(value));
+  }
+  return undefined;
 }
 
 function getDefaultOrEnvValue(opt: CliOptionSpec): unknown {
@@ -282,6 +294,14 @@ function parsePositiveInteger(value: string | boolean, label: string): number {
     throw new InvalidArgumentError(`${label} must be a positive integer.`);
   }
   return result.data;
+}
+
+/** A non-negative percentage, to basis-point precision. */
+function parsePercent(value: string | boolean, label: string): number {
+  if (typeof value !== 'string' || !/^\d+(\.\d{1,2})?$/.test(value.trim())) {
+    throw new InvalidArgumentError(`${label} must be a non-negative percentage with at most two decimal places.`);
+  }
+  return Number(value.trim());
 }
 
 function parsePositiveGwei(value: string | boolean, label: string): number {

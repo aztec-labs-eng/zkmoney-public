@@ -21,6 +21,11 @@ export interface OperationHandOffProps {
    * operation the root runs, in place of the preparing text.
    */
   renderWorking?: (beat: PayWorkingBeat, label?: string) => ReactNode
+  /**
+   * `sent` holds the beat through the proof, for a flow whose next screen would compete with it:
+   * it leaves once the operation is sent.
+   */
+  until?: "handoff" | "sent"
 }
 
 /** Settled, or `sent` and released: the chain has it, and nothing is left for this page to show. */
@@ -28,7 +33,12 @@ function leftPage(root: OperationRecord, live: boolean): boolean {
   return !live && (root.state === "settled" || root.state === "sent")
 }
 
-export function OperationHandOff({ onLeave, onCancel, renderWorking }: OperationHandOffProps) {
+export function OperationHandOff({
+  onLeave,
+  onCancel,
+  renderWorking,
+  until = "handoff",
+}: OperationHandOffProps) {
   const [beat, setBeat] = useState<PayWorkingBeat>("preparing")
   const [, refresh] = useReducer((n: number) => n + 1, 0)
   const rootId = useRef<string | undefined>(undefined)
@@ -47,6 +57,11 @@ export function OperationHandOff({ onLeave, onCancel, renderWorking }: Operation
     const check = () => {
       rootId.current ??= currentOperation(store.list())?.operationId
       const root = rootId.current ? store.get(rootId.current) : null
+      if (until === "sent") {
+        if (root?.state === "sent" || root?.state === "settled") return leave()
+        if (root?.provingStartedAt !== undefined) setBeat("proving")
+        return refresh()
+      }
       if (root?.provingStartedAt !== undefined) leave()
       else if (root && leftPage(root, store.isLive(root.operationId))) leave()
       else refresh()
@@ -58,18 +73,22 @@ export function OperationHandOff({ onLeave, onCancel, renderWorking }: Operation
       offLive()
       offList()
     }
-  }, [leave])
+  }, [leave, until])
 
   useEffect(() => {
     const onStart = () => setBeat("signing")
-    const onEnd = (e: { failed?: boolean }) => !e.failed && leave()
+    const onEnd = (e: { failed?: boolean }) => {
+      if (e.failed) return
+      if (until === "sent") setBeat("proving")
+      else leave()
+    }
     provingProgress.on("signing-start", onStart)
     provingProgress.on("signing-end", onEnd)
     return () => {
       provingProgress.off("signing-start", onStart)
       provingProgress.off("signing-end", onEnd)
     }
-  }, [leave])
+  }, [leave, until])
 
   const store = getOperationStore()
   const root = rootId.current

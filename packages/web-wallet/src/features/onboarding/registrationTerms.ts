@@ -1,12 +1,13 @@
 import { useEffect, useState, useSyncExternalStore } from "react"
 import { parseAbi, zeroAddress, type Address, type PublicClient } from "viem"
 import { Network } from "@obsidion/core/constants"
+import { walletStorage } from "../../platform/storage/walletStorage"
 import type { WebWalletConfig } from "../../config/env"
 import { readDepositFee } from "@obsidion/sdk"
-import { registrationSipaImplementation, type NameClaimResponse } from "@obsidion/front-core"
+import { registrationSipaImplementation } from "@obsidion/front-core"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { fpcFundingCut } from "../fees/fpcFundingCut"
-import type { RegistrationSchedule } from "@obsidion/core/types"
+import type { NameClaimResponse, RegistrationSchedule } from "@obsidion/core/types"
 
 export {
   askedTotal,
@@ -44,7 +45,8 @@ export interface RegistrationTerms {
   /** The registration's L1 account (the pending-record key). */
   account: string
   tag: string
-  /** NameClaim deadline, unix seconds. */
+  /** End of the reservation, unix seconds: the claim server's hold. Past it, the deposit needs a
+   *  fresh quote. The NameClaim itself stays valid longer; the wallet holds the user to the hold. */
   deadline: number
   /** Signed-terms amounts (decimal wei); absent when the claim carried none and the contract's
    *  immutable schedule prices the floor. */
@@ -63,11 +65,48 @@ export interface RegistrationTerms {
    *  and nothing claims it, until a re-sign quotes a ticket again or the registration is
    *  abandoned. */
   paylinkBlocked?: boolean
+  /** The prover tip the link's burn carries, base units, as the review committed it. */
+  proverTip?: string
+  /** The speed the review committed; a later review starts from it. */
+  speed?: "standard" | "faster"
   /** Campaign expectation, distinct from the signer's authoritative waiver. Survives reopening. */
   earnedExpected?: boolean
   /** The deposit seen at the SIPA, base units as a decimal string; the sweep empties the address
    *  so the feed keeps the number from here. */
   depositAmount?: string
+}
+
+/** What a NameClaim states about its registration: the reservation's end and, when signed, its schedule. */
+export function claimTerms(
+  claim: Pick<NameClaimResponse, "hold" | "terms">,
+): Pick<RegistrationTerms, "deadline" | "fee" | "minDeposit" | "feeWaived"> {
+  return {
+    deadline: Number(claim.hold.deadline),
+    ...(claim.terms
+      ? {
+          fee: claim.terms.fee,
+          minDeposit: claim.terms.minDeposit,
+          feeWaived: claim.terms.reduced,
+        }
+      : {}),
+  }
+}
+
+/** The reservation ended, so the deposit needs a re-signed quote. A 0 deadline is unknown, never lapsed. */
+export function quoteExpired(
+  terms: Pick<RegistrationTerms, "deadline"> | null | undefined,
+  nowMs: number,
+): boolean {
+  return !!terms && terms.deadline > 0 && nowMs > terms.deadline * 1000
+}
+
+/** When the reservation ends, unix ms; undefined when unknown or already over. */
+export function reservedUntil(
+  terms: Pick<RegistrationTerms, "deadline"> | null | undefined,
+  nowMs: number,
+): number | undefined {
+  const endsMs = (terms?.deadline ?? 0) * 1000
+  return endsMs > nowMs ? endsMs : undefined
 }
 
 /** Prefix of every per-registration terms key; the account and tag follow. */
@@ -82,7 +121,7 @@ function termsKey(account: string, tag: string): string {
 }
 
 function readTerms(key: string): RegistrationTerms | null {
-  const raw = localStorage.getItem(key)
+  const raw = walletStorage.getItem(key)
   if (!raw) return null
   try {
     return JSON.parse(raw) as RegistrationTerms
@@ -107,34 +146,48 @@ function legacyTerms(account: string, tag?: string): RegistrationTerms | null {
 function ticketBinding(
   previous: RegistrationTerms | null,
   terms: RegistrationTerms,
-): Pick<RegistrationTerms, "paylinkFunded" | "paylinkId" | "paylinkBlocked"> {
+): Pick<
+  RegistrationTerms,
+  "paylinkFunded" | "paylinkId" | "paylinkBlocked" | "proverTip" | "speed"
+> {
   if (terms.paylinkFunded === false) return {}
   const funded = terms.paylinkFunded === true || previous?.paylinkFunded === true
   if (!funded) return {}
   const blocked = terms.paylinkBlocked ?? previous?.paylinkBlocked
+  const proverTip = terms.proverTip ?? previous?.proverTip
+  const speed = terms.speed ?? previous?.speed
   return {
     paylinkFunded: true,
     paylinkId: terms.paylinkId ?? previous?.paylinkId,
     ...(blocked === true ? { paylinkBlocked: true } : {}),
+    ...(proverTip !== undefined ? { proverTip } : {}),
+    ...(speed !== undefined ? { speed } : {}),
   }
 }
 
-export function saveRegistrationTerms(terms: RegistrationTerms): void {
+/** Readable at once; resolves once saved, for a caller that must not move on before then. */
+export function saveRegistrationTerms(terms: RegistrationTerms): Promise<void> {
   const previous = loadRegistrationTerms(terms.account, terms.tag)
-  const { paylinkFunded, paylinkId, paylinkBlocked, ...rest } = terms
+  const { paylinkFunded, paylinkId, paylinkBlocked, proverTip, speed, ...rest } = terms
   void paylinkFunded
   void paylinkId
   void paylinkBlocked
-  localStorage.setItem(
-    termsKey(terms.account, terms.tag),
-    JSON.stringify({
-      ...rest,
-      ...(previous?.earnedExpected || terms.earnedExpected ? { earnedExpected: true } : {}),
-      ...ticketBinding(previous, terms),
-    }),
-  )
-  if (legacyTerms(terms.account, terms.tag)) localStorage.removeItem(LEGACY_TERMS_KEY)
+  void proverTip
+  void speed
+  const saved = walletStorage.batch(() => {
+    walletStorage.setItem(
+      termsKey(terms.account, terms.tag),
+      JSON.stringify({
+        ...rest,
+        ...(previous?.earnedExpected || terms.earnedExpected ? { earnedExpected: true } : {}),
+        ...ticketBinding(previous, terms),
+      }),
+    )
+    if (legacyTerms(terms.account, terms.tag)) walletStorage.removeItem(LEGACY_TERMS_KEY)
+  })
+  saved.catch((e: unknown) => console.error("[registrationTerms] save failed:", e))
   listeners.forEach((fn) => fn())
+  return saved
 }
 
 /**
@@ -155,9 +208,8 @@ export function loadRegistrationTerms(
     return readTerms(termsKey(account, tag)) ?? legacyTerms(account, tag)
   }
   const prefix = `${TERMS_KEY_PREFIX}:${account.toLowerCase()}:`
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i)
-    if (key?.startsWith(prefix)) return readTerms(key)
+  for (const key of walletStorage.keys()) {
+    if (key.startsWith(prefix)) return readTerms(key)
   }
   return legacyTerms(account)
 }
@@ -174,7 +226,7 @@ export function loadRegistrationTerms(
  */
 export function rememberReissuedClaim(
   record: { account: string; tag: string; fee?: string },
-  claim: Pick<NameClaimResponse, "deadline" | "terms">,
+  claim: Pick<NameClaimResponse, "hold" | "terms">,
 ): { ticketRefused: boolean } {
   const stored = loadRegistrationTerms(record.account, record.tag)
   const funded = registrationOffer(stored).funding === "paylink"
@@ -187,22 +239,34 @@ export function rememberReissuedClaim(
     }
     return { ticketRefused: funded }
   }
-  const schedule = claim.terms
-    ? {
-        fee: claim.terms.fee,
-        minDeposit: claim.terms.minDeposit,
-        feeWaived: claim.terms.reduced === true,
-      }
-    : { fee: stored?.fee, minDeposit: stored?.minDeposit, feeWaived: stored?.feeWaived }
   saveRegistrationTerms({
     account: record.account,
     tag: record.tag,
-    deadline: Number(claim.deadline),
-    ...schedule,
+    ...(claim.terms
+      ? {}
+      : { fee: stored?.fee, minDeposit: stored?.minDeposit, feeWaived: stored?.feeWaived }),
+    ...claimTerms(claim),
     depositAmount: stored?.depositAmount,
     ...(funded && claim.terms ? { paylinkBlocked: !fundable } : {}),
   })
   return { ticketRefused: funded && claim.terms !== undefined && !fundable }
+}
+
+/** The prover tip a ticket registration's burn carries: the committed one, else none. */
+export function committedProverTip(terms: RegistrationTerms | null | undefined): bigint {
+  return terms?.proverTip === undefined ? 0n : BigInt(terms.proverTip)
+}
+
+/** Commits the speed and prover tip a review showed to the registration's stored terms. */
+export function commitRegistrationProverTip(
+  account: string,
+  tag: string,
+  tip: bigint,
+  speed: "standard" | "faster",
+): void {
+  const terms = loadRegistrationTerms(account, tag)
+  if (!terms || (terms.proverTip === tip.toString() && terms.speed === speed)) return
+  void saveRegistrationTerms({ ...terms, proverTip: tip.toString(), speed })
 }
 
 /** Stamp the deposit the L1 watcher saw onto the account's terms (a missing terms record gets a bare one). */
@@ -214,8 +278,8 @@ export function recordRegistrationDeposit(account: string, tag: string, amount: 
 
 /** Drops one registration's stored quote, the legacy entry it may still live under included. */
 export function clearRegistrationTerms(account: string, tag: string): void {
-  localStorage.removeItem(termsKey(account, tag))
-  if (legacyTerms(account, tag)) localStorage.removeItem(LEGACY_TERMS_KEY)
+  walletStorage.removeItem(termsKey(account, tag))
+  if (legacyTerms(account, tag)) walletStorage.removeItem(LEGACY_TERMS_KEY)
   listeners.forEach((fn) => fn())
 }
 

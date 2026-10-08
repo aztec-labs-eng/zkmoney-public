@@ -48,6 +48,7 @@ function buildReceiveTx(overrides: Partial<TokenTransaction> = {}): TokenTransac
 function buildProducer(opts?: {
   txs?: TokenTransaction[]
   txsThrows?: boolean
+  joined?: () => Promise<{ block: number; ms: number } | undefined>
   now?: () => number
 }) {
   const storage = new InMemoryStorage()
@@ -58,6 +59,7 @@ function buildProducer(opts?: {
       if (opts?.txsThrows) throw new Error("read boom")
       return opts?.txs ?? null
     },
+    joined: opts?.joined,
     now: opts?.now,
   })
   return { storage, notificationStore, producer }
@@ -95,6 +97,59 @@ describe("TransferReceiveNotificationProducer", () => {
       expect(e.target).toEqual({ type: "transfer.txDetail", txHash: "0xtx-receive-1" })
       expect(e.producer).toBe("transferReceive")
       expect(e.domain).toBe("transfer")
+    })
+
+    it("a receive from before the device joined is recorded dismissed, and stays so after replay", async () => {
+      const joinedMs = 1_700_000_500_000
+      const old = buildReceiveTx({ blockNumber: 50, timestamp: joinedMs - 1 })
+      const fresh = buildReceiveTx({
+        txHash: "0xtx-receive-2",
+        blockNumber: 51,
+        timestamp: joinedMs + 1,
+      })
+      // A reorg replaced a block at or below the joined head after the join: its stamp says news.
+      const replaced = buildReceiveTx({
+        txHash: "0xtx-receive-3",
+        blockNumber: 49,
+        timestamp: joinedMs + 1,
+      })
+      const txs: TokenTransaction[] = []
+      const { producer, notificationStore } = buildProducer({
+        txs,
+        joined: async () => ({ block: 50, ms: joinedMs }),
+        now: () => joinedMs + 1000,
+      })
+      producer.start()
+      await producer.flush()
+
+      globalEventEmitter.emitIncomingTransfer(old)
+      globalEventEmitter.emitIncomingTransfer(fresh)
+      globalEventEmitter.emitIncomingTransfer(replaced)
+      await producer.flush()
+
+      const byId = new Map(notificationStore.list().map((e) => [e.id, e]))
+      expect(byId.get("transfer:receive:0xtx-receive-1")?.dismissedAt).toBeDefined()
+      expect(byId.get("transfer:receive:0xtx-receive-2")?.dismissedAt).toBeUndefined()
+      expect(byId.get("transfer:receive:0xtx-receive-3")?.dismissedAt).toBeUndefined()
+
+      // Restart replays the last 24h: the hidden row dedups instead of resurfacing.
+      txs.push(old, fresh, replaced)
+      producer.stop()
+      producer.start()
+      await producer.flush()
+      expect(notificationStore.list()).toHaveLength(3)
+      expect(notificationStore.get("transfer:receive:0xtx-receive-1")?.dismissedAt).toBeDefined()
+    })
+
+    it("hides nothing without a joined record or a row block number", async () => {
+      const { producer, notificationStore } = buildProducer({ joined: async () => undefined })
+      producer.start()
+      await producer.flush()
+      globalEventEmitter.emitIncomingTransfer(buildReceiveTx({ blockNumber: 1 }))
+      globalEventEmitter.emitIncomingTransfer(buildReceiveTx({ txHash: "0xtx-receive-2" }))
+      await producer.flush()
+      expect(notificationStore.list().every((e) => e.dismissedAt === undefined)).toBe(true)
+      expect(notificationStore.list()).toHaveLength(2)
     })
 
     it("ignores non-receive transactions if emitted (defensive)", async () => {

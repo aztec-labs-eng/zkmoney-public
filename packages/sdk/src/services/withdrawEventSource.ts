@@ -12,7 +12,11 @@ import type { Address } from "viem"
 import { OxideTokenContract, type Withdraw as WithdrawEvent } from "@obsidion/contracts"
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
 import { swapRouteForOutput } from "../oxide/swapOnWithdraw.js"
-import { decodeWithdrawMeta, type SwapWithdrawMeta } from "./withdrawMeta.js"
+import {
+  decodeWithdrawMeta,
+  type SwapWithdrawMeta,
+  type WithdrawGroupMeta,
+} from "./withdrawMeta.js"
 
 /** One decoded `Withdraw` event of the scanned account. */
 export interface ScannedWithdrawEvent {
@@ -25,6 +29,8 @@ export interface ScannedWithdrawEvent {
   amount: bigint
   /** The swap the burn funds. Present only when the meta's escrow args reproduce `l1Recipient`. */
   swap?: SwapWithdrawMeta
+  /** The fresh-address withdrawal the burn belongs to, as its meta labels it. */
+  group?: WithdrawGroupMeta
 }
 
 export interface WithdrawEventSource {
@@ -81,6 +87,7 @@ export function createWithdrawEventSource(deps: {
           l1Recipient: meta.recipient,
           amount: BigInt(event.amount),
           swap: meta.recipient ? swapMetaForEscrow(meta.swap, meta.recipient) : undefined,
+          group: meta.group,
         }
       })
     },

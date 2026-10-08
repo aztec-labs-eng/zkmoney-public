@@ -15,7 +15,7 @@ export const resolveAccountlessRequest: typeof actual.resolveAccountlessRequest 
   const feeAtomic = 1_000_000_000_000_000_000n
   const grossAtomic = packet.amountAtomic > 0n ? packet.amountAtomic + feeAtomic : 0n
   const uri = { token: DEMO_L1_TOKEN, chainId: deps.chainId, to: SIPA }
-  return { sipaAddress: SIPA, feeAtomic, grossAtomic,
+  return { sipaAddress: SIPA, token: DEMO_L1_TOKEN, decimals: 18, feeAtomic, grossAtomic,
     paymentUri: grossAtomic > 0n ? buildErc20TransferUri({ ...uri, rawAmount: grossAtomic }) : buildErc20TransferUriWithoutAmount(uri),
     ...(state === "warning" ? { tagWarning: "@ada no longer matches the address on this request" } : {}),
   }

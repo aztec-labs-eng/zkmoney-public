@@ -1,13 +1,14 @@
 /**
- * The wallet-bound half of a detection tick: what lets the background loop re-broadcast a
- * registration SIPA whose broadcast never mined, and tell that case from a slow relayer.
- * Detection itself stays credential-free; these arm only once the wallet is unlocked.
+ * The wallet-bound half of a detection tick, and what tells whether a registration's broadcast
+ * mined. Detection itself stays credential-free; these arm only once the wallet is unlocked.
  */
 import { AztecAddress } from "@aztec/aztec.js/addresses"
 import type { Address } from "viem"
 import { fetchSipaEvents, type ObsidionWallet } from "@obsidion/sdk"
 import {
   SIPADepositStore,
+  deriveBootstrapKey,
+  type CampaignClaimSigner,
   type OxideResumeDeps,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
@@ -34,6 +35,18 @@ export async function unlockedSessionKeys(
   }
 }
 
+/** The campaign claim notice's signer: the unlocked session's bootstrap key, for its own account. */
+export function campaignClaimSigner(
+  wallet: ObsidionWallet,
+): (l2Address: string) => Promise<CampaignClaimSigner | null> {
+  return async (l2Address) => {
+    const keys = await unlockedSessionKeys(wallet)
+    if (!keys) return null
+    const owned = keys.account.getAddress().toString().toLowerCase() === l2Address.toLowerCase()
+    return owned ? deriveBootstrapKey(keys.secretKey) : null
+  }
+}
+
 /**
  * Whether the record's broadcast mined: the `SIPA` event it sends this wallet is in the PXE,
  * matched by the salt the deposit rail seeded. Throws when it cannot tell (an unseeded record, a
@@ -56,19 +69,18 @@ export async function registrationBroadcastSeen(
   return events.some((event) => event.sharedSecretSalt.toString().toLowerCase() === wanted)
 }
 
-/** Resume deps that reach the re-broadcast branch, for a record this session's wallet owns. */
+/** Resume deps that renew a spent-rail record's claim, for a record this session's wallet owns. */
 export function walletResumeExtras(
   config: WebWalletConfig,
   wallet: ObsidionWallet,
-): Pick<OxideResumeDeps, "getSignDeps" | "broadcastSeen"> {
+): Pick<OxideResumeDeps, "getSignDeps"> {
   return {
-    broadcastSeen: (record) => registrationBroadcastSeen(record, config, wallet),
     getSignDeps: async (record) => {
       const keys = await unlockedSessionKeys(wallet)
       if (!keys) return null
       const owned =
         keys.account.getAddress().toString().toLowerCase() === record.l2Address.toLowerCase()
-      return owned ? buildRetrySignDeps(record.tag, keys, config, wallet) : null
+      return owned ? buildRetrySignDeps(record.tag, keys, config) : null
     },
   }
 }
