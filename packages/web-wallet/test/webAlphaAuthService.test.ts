@@ -548,6 +548,203 @@ describe("WebAlphaAuthService learns transports from sign-in", () => {
   })
 })
 
+describe("WebAlphaAuthService learns where a synced passkey answered", () => {
+  const answered = async (storage: MemoryStorage, credentialId: string) =>
+    (await storedEntry(storage, credentialId))?.answered
+
+  /** A service holding a record for a passkey a phone made over QR. */
+  async function recorded(opts: ServiceOptions = {}) {
+    const made = makeService({
+      posture: "laptop",
+      route: "cross-device",
+      trustsAttachmentLabel: true,
+      ...opts,
+    })
+    const created = await made.service.createPasskey("@alice")
+    await record(made.service, created, "0xacct")
+    return { ...made, created }
+  }
+
+  it("each signature records where it answered from: QR records remote, this computer records local", async () => {
+    const { ceremony, storage, created } = await recorded()
+    expect(await answered(storage, created.credentialId)).toBeUndefined()
+
+    await signWith(created.authProvider)
+    await flush()
+    expect(await answered(storage, created.credentialId)).toBe("remote")
+
+    ceremony.opts.route = "local"
+    await signWith(created.authProvider)
+    await flush()
+    expect(await answered(storage, created.credentialId)).toBe("local")
+
+    ceremony.opts.route = "cross-device"
+    await signWith(created.authProvider)
+    await flush()
+    expect(await answered(storage, created.credentialId)).toBe("remote")
+  })
+
+  it("a hardware key records nothing", async () => {
+    const { storage, created } = await recorded(KEY)
+    await signWith(created.authProvider)
+    await flush()
+    expect(await answered(storage, created.credentialId)).toBeUndefined()
+  })
+
+  it("a local answer is recorded only where the browser's label is believed", async () => {
+    for (const opts of [{ trustsAttachmentLabel: false }, { misreportsCrossDevice: true }]) {
+      const { ceremony, storage, created } = await recorded(opts)
+      ceremony.opts.route = "local"
+      await signWith(created.authProvider)
+      await flush()
+      expect(await answered(storage, created.credentialId)).toBeUndefined()
+    }
+  })
+
+  it("a phone records nothing", async () => {
+    const { storage, created } = await recorded({ posture: "phone", route: "local" })
+    await signWith(created.authProvider)
+    await flush()
+    expect(await answered(storage, created.credentialId)).toBeUndefined()
+  })
+
+  it("an unlock over QR records remote", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const { service, storage, created } = await recorded()
+      await service.commitSecret({
+        secretKey: created.secretKey,
+        authProvider: created.authProvider,
+      })
+      service.clear()
+      await service.unlock(deriveFor(created, "0xacct"), {})
+      await flush()
+      expect(await answered(storage, created.credentialId)).toBe("remote")
+    } finally {
+      restore()
+    }
+  })
+
+  it("a cancelled sign-in records nothing, then or when the record is next written", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const { withWebLock } = await import("../src/platform/storage/webLock")
+      const { service, storage, created } = await recorded()
+      let release!: () => void
+      const held = new Promise<void>((resolve) => (release = resolve))
+      const holding = withWebLock("webwallet.passkey-identity-map", () => held)
+      const ctrl = new AbortController()
+      await service.recoverPasskey({ credentialId: created.credentialId, signal: ctrl.signal })
+      ctrl.abort()
+      release()
+      await holding
+      await flush()
+      expect(await answered(storage, created.credentialId)).toBeUndefined()
+
+      await record(service, created, "0xacct")
+      expect(await answered(storage, created.credentialId)).toBeUndefined()
+    } finally {
+      restore()
+    }
+  })
+
+  it("an answer seen by an attempt cancelled afterwards never reaches a later record", async () => {
+    const { ceremony, created } = await recorded()
+    const storage = new MemoryStorage()
+    const fresh = new WebAlphaAuthService({
+      storage,
+      rpId: "localhost",
+      ceremony,
+      posture: () => "laptop",
+      trustsAttachmentLabel: () => true,
+      misreportsCrossDevice: () => false,
+    })
+    ceremony.opts.route = "local"
+    const ctrl = new AbortController()
+    await fresh.recoverPasskey({ credentialId: created.credentialId, signal: ctrl.signal })
+    await flush()
+    ctrl.abort()
+
+    ceremony.opts.route = "cross-device"
+    await fresh.recoverPasskey({ credentialId: created.credentialId })
+    await flush()
+    await fresh.recordRecoveryMetadata({
+      credentialId: created.credentialId,
+      l2Address: "0xacct",
+      pubkey: created.pubkey,
+      isMskRoot: true,
+    })
+    expect(await answered(storage, created.credentialId)).toBe("remote")
+  })
+
+  it("the key-settling second assertion teaches too", async () => {
+    const { ceremony, created } = await recorded()
+    const storage = new MemoryStorage()
+    const fresh = new WebAlphaAuthService({
+      storage,
+      rpId: "localhost",
+      ceremony,
+      posture: () => "laptop",
+      trustsAttachmentLabel: () => true,
+      misreportsCrossDevice: () => false,
+    })
+    const begun = await fresh.beginRecovery({ credentialId: created.credentialId })
+    if (!isUnsettled(begun)) throw new Error("expected an unsettled recovery")
+    ceremony.opts.route = "local"
+    await begun.settle()
+    await flush()
+    await fresh.recordRecoveryMetadata({
+      credentialId: created.credentialId,
+      l2Address: "0xacct",
+      pubkey: created.pubkey,
+      isMskRoot: true,
+    })
+    expect(await answered(storage, created.credentialId)).toBe("local")
+  })
+
+  it("a sign-in on a browser with no record yet reaches the record once it is written", async () => {
+    const { ceremony, created } = await recorded()
+    const storage = new MemoryStorage()
+    const fresh = new WebAlphaAuthService({
+      storage,
+      rpId: "localhost",
+      ceremony,
+      posture: () => "laptop",
+      trustsAttachmentLabel: () => true,
+      misreportsCrossDevice: () => false,
+    })
+    ceremony.opts.route = "local"
+    await fresh.recoverPasskey({ credentialId: created.credentialId })
+    await flush()
+    expect(await storedEntry(storage, created.credentialId)).toBeUndefined()
+    await fresh.recordRecoveryMetadata({
+      credentialId: created.credentialId,
+      l2Address: "0xacct",
+      pubkey: created.pubkey,
+      isMskRoot: true,
+    })
+    expect(await answered(storage, created.credentialId)).toBe("local")
+  })
+
+  it("a write the store refuses never fails the signature", async () => {
+    const { ceremony, created } = await recorded()
+    const storage = new GatedStorage()
+    const fresh = freshOver(ceremony, storage)
+    await fresh.recordRecoveryMetadata({
+      credentialId: created.credentialId,
+      l2Address: "0xacct",
+      pubkey: created.pubkey,
+      isMskRoot: true,
+    })
+    storage.gate = () => Promise.reject(new Error("QuotaExceededError"))
+    await signWith(
+      fresh.providerFor({ credentialId: created.credentialId, pubkeyHex: created.pubkey }),
+    )
+    await flush()
+    expect(await answered(storage, created.credentialId)).toBeUndefined()
+  })
+})
+
 describe("WebAlphaAuthService.createPasskey", () => {
   it("laptop: asks a phone for the passkey and binds the account to slot first", async () => {
     const { service, ceremony } = laptop()
@@ -568,6 +765,14 @@ describe("WebAlphaAuthService.createPasskey", () => {
     const { service, ceremony } = laptop()
     await service.createPasskey("@alice", undefined, { route: "security-key" })
     expect(ceremony.creates[0]!.hints).toEqual(["security-key"])
+  })
+
+  it("laptop: waits five minutes, under the signal its caller can end", async () => {
+    const { service, ceremony } = laptop()
+    const controller = new AbortController()
+    await service.createPasskey("@alice", undefined, { signal: controller.signal })
+    expect(ceremony.creates[0]!.timeoutMs).toBe(300_000)
+    expect(ceremony.creates[0]!.signal).toBe(controller.signal)
   })
 
   it("laptop: the phone route also names a security key, so a manager's extension stands aside", async () => {

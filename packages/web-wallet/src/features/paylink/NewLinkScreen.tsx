@@ -38,6 +38,7 @@ import { amountError, decimalInput, floorToCents, parseAmount, usd } from "../..
 import { emailLockedLinksEnabled } from "../../config/features"
 import { useBusyLabel } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
+import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { SponsoredActionNotice, useSponsoredActionBlock } from "../allowance/SponsoredActionNotice"
 
 type Phase = "amount" | "options" | "confirm" | "working"
@@ -378,6 +379,7 @@ export function NewLinkScreen() {
                 {/* Reachable when the balance lands after Next — the CTA is dead without this. */}
                 {overspent && <span className="ww-pay__error">Balance not enough</span>}
                 <SponsoredActionNotice reason={unsponsored} />
+                <LocalPasskeyHint />
                 <PrimaryGradientButton
                   testId="paylink-create"
                   title={

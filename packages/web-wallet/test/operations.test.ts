@@ -19,6 +19,7 @@ import {
 import { userFlowActive } from "../src/features/provingGate"
 import { recoverInterrupted } from "../src/features/operations/OperationsMount"
 import { getWithdrawalStore } from "../src/features/withdraw/withdrawGateway"
+import { operationEntry } from "../src/features/operations/operationEntries"
 
 const hash = `0x${"ab".repeat(32)}`
 const flush = () => new Promise((r) => setTimeout(r, 0))
@@ -85,6 +86,28 @@ describe("runOperation", () => {
     await expect(failed).rejects.toThrow("no longer registered")
     expect(getOperationStore().get("op-r")).toBeNull()
   })
+
+  it.each([
+    ["Assertion failed: Gas settings exceed whitelist max_fee", /network fees are too high/],
+    ["Assertion failed: allowance exhausted", /no sponsored transactions left/],
+  ])(
+    "fails, not drops, a send whose screen handed off before proving began: %s",
+    async (refusal, copy) => {
+      const failed = runOperation(
+        { operationId: "op-h", flow: "send", summary: "$1" },
+        async () => {
+          await getOperationStore().markHandedOff("op-h")
+          throw new Error(refusal)
+        },
+      )
+      await expect(failed).rejects.toThrow(refusal)
+      const record = getOperationStore().get("op-h")
+      expect(record).toMatchObject({ state: "failed", error: refusal })
+      const description = operationEntry(record!)?.description
+      expect(description).toMatch(/^\$1\. This transaction was not sent/)
+      expect(description).toMatch(copy)
+    },
+  )
 
   it("fails a local operation with the flow's error once proving began", async () => {
     const failed = runOperation({ operationId: "op-f", flow: "send", summary: "$1" }, async () => {

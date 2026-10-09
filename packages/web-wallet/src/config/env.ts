@@ -104,9 +104,7 @@ export type WebWalletConfig = {
   enclaveUrl: string
   /** Real WASM proving in the browser (overrides the per-network default). */
   proverEnabled: boolean
-  /**
-   * XMTP network. Every build defaults to `"dev"`; `VITE_XMTP_ENV` overrides.
-   */
+  /** XMTP network from the selected config profile. */
   xmtpEnv: "local" | "dev" | "production"
   /**
    * Google OAuth web client id for email-locked paylink claims (OIDC id_token popup). Unset means
@@ -119,19 +117,6 @@ export type WebWalletConfig = {
    * policy oxide's relayer enforces, or the client verdict and the relayer's disagree.
    */
   predicate?: PredicateScreeningConfig
-}
-
-const XMTP_ENVS = ["local", "dev", "production"] as const
-
-function resolveXmtpEnv(
-  env: Record<string, string | undefined>,
-  network: Network,
-): WebWalletConfig["xmtpEnv"] {
-  const raw = env.VITE_XMTP_ENV ?? (network === Network.MAINNET ? "production" : "dev")
-  if (!(XMTP_ENVS as readonly string[]).includes(raw)) {
-    throw new Error(`Unknown VITE_XMTP_ENV "${raw}" (expected ${XMTP_ENVS.join("|")})`)
-  }
-  return raw as WebWalletConfig["xmtpEnv"]
 }
 
 /** Viem chain for an L1 chain id; unknown ids get a generic local-chain shape. */
@@ -287,7 +272,7 @@ export function resolveNetwork(env: Record<string, string | undefined>): Network
  */
 export type BaseWebWalletConfig = Omit<
   WebWalletConfig,
-  "oxideProfile" | "endpoints" | "nodeEndpointDigest" | "profileRollupVersion"
+  "oxideProfile" | "endpoints" | "nodeEndpointDigest" | "profileRollupVersion" | "xmtpEnv"
 >
 
 /** The campaign URL as baked, once its origin has passed the hand-off's rule (see campaignOrigin.ts). */
@@ -319,13 +304,12 @@ export function loadConfig(
       : DEFAULT_FPC_REFUEL_THRESHOLD,
     // Same-origin dev-server proxy (vite.config.ts) — browsers refuse the raw
     // 5060 port (SIP, restricted).
-    accountServiceUrl: env.VITE_ACCOUNT_SERVICE_URL ?? "/svc/account",
+    accountServiceUrl: "/svc/account",
     campaignUrl: resolveCampaignUrl(env),
     admissionGate: false,
     accountServiceTestMode: resolveAccountServiceTestMode(env, network),
     enclaveUrl: defaultEnclaveUrl(env, network),
     proverEnabled: env.VITE_PROVER_ENABLED !== "false",
-    xmtpEnv: resolveXmtpEnv(env, network),
     googleClientId: env.VITE_GOOGLE_CLIENT_ID || undefined,
     predicate: resolvePredicateConfig(env, network),
   }
@@ -339,6 +323,7 @@ type LiveProfileRequest = Pick<
 > & { network: Network }
 
 let liveProfileRequest: LiveProfileRequest | undefined
+let liveProfileFetchImpl: typeof fetch | undefined
 
 /**
  * The process-wide config, seeded by `resolveBootConfig` once the profile has supplied the oxide
@@ -397,9 +382,8 @@ export interface WebBootConfig {
 }
 
 /**
- * Profile values fill the fields whose `VITE_*` override is unset; localhost defaults sit below
- * both. The analytics endpoint is deliberately absent — read at module scope, a profile value
- * could never reach what the bundle actually posts to.
+ * Saved and build overrides take precedence for node and L1 RPC. The account service comes from
+ * the profile. The analytics endpoint is read at module scope, outside this config.
  */
 function mergeProfileConfig(
   env: Record<string, string | undefined>,
@@ -432,8 +416,8 @@ function mergeProfileConfig(
     profileRollupVersion: boot.profile.shared.rollupVersion,
     // A loopback origin keeps `loadConfig`'s value — sandbox's browser-restricted port needs the
     // same-origin proxy, which a document (absolute URLs only) cannot express.
-    accountServiceUrl: env.VITE_ACCOUNT_SERVICE_URL || accountServiceFrom(boot, base),
-    xmtpEnv: env.VITE_XMTP_ENV ? base.xmtpEnv : boot.profile.shared.xmtpEnv,
+    accountServiceUrl: accountServiceFrom(boot),
+    xmtpEnv: boot.profile.shared.xmtpEnv,
     oxideProfile,
     claimFpcAddress: boot.snapshot.contracts.claimFpc?.address,
   }
@@ -459,13 +443,12 @@ function resolveEndpoint(
   return { url, provenance: { source, isDefault } }
 }
 
-const LOOPBACK = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/
-
-function accountServiceFrom(boot: WalletProfileBoot, base: BaseWebWalletConfig): string {
+/** Browser-restricted SIP ports reach the profile's local service through the app proxy. */
+function accountServiceFrom(boot: WalletProfileBoot): string {
   const served = boot.version.accountServiceUrl
-  // `|| "/svc/account"` because a deployed bundle's unset var arrives as "" and `loadConfig`
-  // coalesces only on undefined — the proxy path is the default this is falling back to.
-  return LOOPBACK.test(served) ? base.accountServiceUrl || "/svc/account" : served
+  const url = new URL(served)
+  const local = url.hostname === "localhost" || url.hostname === "127.0.0.1"
+  return local && (url.port === "5060" || url.port === "5061") ? "/svc/account" : served
 }
 
 /**
@@ -565,7 +548,7 @@ export async function resolveBootConfig(
     input.fetchImpl,
   )
   setWebClassArtifactResolver(resolveClassArtifact)
-  return seed(request, {
+  return seed(request, input.fetchImpl, {
     config: merged,
     contractServiceOptions: {
       source: "profile",
@@ -582,9 +565,14 @@ export async function resolveBootConfig(
   })
 }
 
-function seed(request: LiveProfileRequest, boot: WebBootConfig): WebBootConfig {
+function seed(
+  request: LiveProfileRequest,
+  fetchImpl: typeof fetch | undefined,
+  boot: WebBootConfig,
+): WebBootConfig {
   cached = boot.config
   liveProfileRequest = request
+  liveProfileFetchImpl = fetchImpl
   return boot
 }
 
@@ -595,7 +583,10 @@ export async function fetchLiveProfilePortal(fetchImpl?: typeof fetch): Promise<
         "wallet has booted from one.",
     )
   }
-  const live = await resolveWalletProfile({ ...liveProfileRequest, fetchImpl })
+  const live = await resolveWalletProfile({
+    ...liveProfileRequest,
+    fetchImpl: fetchImpl ?? liveProfileFetchImpl,
+  })
   return assertProfilePolicy(live, liveProfileRequest.network).portal
 }
 

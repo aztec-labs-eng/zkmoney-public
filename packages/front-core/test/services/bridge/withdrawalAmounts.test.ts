@@ -195,6 +195,26 @@ describe("swapWithdrawalAmounts", () => {
     expect(s.estimate?.rate).toBeCloseTo(0.005, 10)
   })
 
+  it("takes the gas share out of the route's input, and reports it with its ETH quote", () => {
+    const s = swapWithdrawalAmounts({
+      ...swapRecord,
+      swapOutput: "USDC",
+      swapDaiForGas: parseUnits("5", 18).toString(),
+      swapEstimatedGasOut: parseUnits("0.0016", 18).toString(),
+      swapEstimatedOut: "94000000",
+      swapOutputDecimals: 6,
+    })!
+
+    expect(s.swapInputAtomic).toBe(parseUnits("95", 18))
+    expect(s.gas).toEqual({
+      daiAtomic: parseUnits("5", 18),
+      daiDisplay: "5",
+      ethOutDisplay: "0.0016",
+    })
+    expect(s.estimate?.rate).toBeCloseTo(94 / 95, 10)
+    expect(swapWithdrawalAmounts(swapRecord)!.gas).toBeUndefined()
+  })
+
   it("carries no estimate when the record has no quote", () => {
     const s = swapWithdrawalAmounts({ ...swapRecord, swapEstimatedOut: undefined })!
 

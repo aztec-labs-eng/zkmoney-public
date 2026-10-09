@@ -23,6 +23,8 @@ export type ErrorModalPayload = {
   context?: string
   /** Device and passkey provider when the modal was raised; a report sends it. */
   env?: PasskeyReportEnv
+  /** A docs page that explains the error. */
+  link?: { label: string; href: string }
   /** A way to try the failed step again, offered as a button that closes the modal first. */
   retry?: { label: string; run: () => void }
 }

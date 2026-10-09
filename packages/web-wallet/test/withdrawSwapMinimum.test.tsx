@@ -51,7 +51,7 @@ vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   getOxideTuple: async () => ({
     portal: `0x${"70".repeat(20)}`,
     token: `0x${"da".repeat(20)}`,
-    swapEscrowFactory: `0x${"fa".repeat(20)}`,
+    swapEscrowFactoryV2: `0x${"fa".repeat(20)}`,
     operationExecutor: `0x${"e0".repeat(20)}`,
   }),
   l1PublicClient: () => ({ readContract: async () => CUT }),

@@ -10,7 +10,7 @@ import {
 import { useBalance } from "@obsidion/front-core"
 import { useNavigate } from "react-router-dom"
 import { DepositArt } from "../DepositArt"
-import { HighGasNotice } from "../HighGasNotice"
+import { HighGasNotice, HighL2FeeNotice } from "../HighGasNotice"
 import { PhoneIcon, type PhoneIconName } from "../PhoneIcon"
 import { usePhoneLayout } from "../usePhoneLayout"
 import gift from "../../assets/home/gift.webp"
@@ -33,6 +33,7 @@ import { peekClaimStash } from "../../features/paylink/claimStash"
 import { takeClaimPromptRequest, useClaimPromptRequest } from "../../features/paylink/claimPrompt"
 import { useClaimLinkFlow } from "../../features/paylink/useClaimLinkFlow"
 import { useFreshAddressAvailable } from "../../features/withdraw/freshAddressAvailability"
+import { RequestsUnavailableNotice } from "../../features/requests/RequestsUnavailableNotice"
 import { usdBalance } from "../format"
 import { useHideBalances } from "../prefs"
 import { useCopy, useLinkSharing } from "../hooks"
@@ -237,7 +238,7 @@ export function HomeScreen() {
     },
     claimAsked,
   )
-  const { entries, hydrated, detailModals } = useActivityEntries()
+  const { entries, hydrated, requestsUnavailable, detailModals } = useActivityEntries()
   const customEndpoints = customEndpointsLabel(getConfig().endpoints)
   const requestEntries = entries.filter((entry) => entry.incomingRequest)
   const feedEntries = entries.filter((entry) => !entry.incomingRequest)
@@ -250,6 +251,7 @@ export function HomeScreen() {
 
   return (
     <>
+      <HighL2FeeNotice />
       <HighGasNotice />
       <LostRegistrationNoticeCard />
       <SecureNameNoticeCard onActivate={openActivationPrompt} />
@@ -350,6 +352,7 @@ export function HomeScreen() {
               ]}
             />
           )}
+          {hydrated && requestsUnavailable && <RequestsUnavailableNotice />}
           {hydrated &&
             requestEntries.map((e) => (
               <div key={e.id} className="ww-home__request">

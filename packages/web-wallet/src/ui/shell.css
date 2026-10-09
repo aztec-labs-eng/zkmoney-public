@@ -1917,10 +1917,103 @@
   border-radius: 24px;
   box-shadow: 0 0 40px 33px rgba(0, 0, 0, 0.15);
 }
+.ww-modal-overlay.ww-modal-overlay--page {
+  align-items: center;
+  justify-content: center;
+}
+.ww-modal.ww-modal--page {
+  display: flex;
+  flex-direction: column;
+  width: min(1080px, calc(100vw - 24px));
+  height: 80dvh;
+  max-height: 80dvh;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 44px;
+  border-radius: var(--radius-32);
+  animation: ww-modal-in 0.22s ease;
+}
+.ww-modal.ww-modal--page-fit {
+  height: auto;
+}
+.ww-modal--page-fit .ww-page-modal__content,
+.ww-modal--page-fit .ww-page-modal__surface,
+.ww-modal--page-fit .ww-page-modal__scroll {
+  flex: 0 1 auto;
+}
+.ww-modal--page .ww-modal__head {
+  flex: none;
+  margin-bottom: 12px;
+}
+.ww-page-modal__content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.ww-page-modal__surface {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  margin-bottom: 10px;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 20px 2px 20px 20px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.ww-page-modal__scroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 8px;
+  background: transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+.ww-page-modal__scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.ww-page-modal__scroll::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.28);
+}
+.ww-page-modal__scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.ww-page-modal__panel {
+  min-width: 0;
+}
+.ww-page-modal__surface--fixed .ww-page-modal__scroll {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.ww-page-modal__surface--fixed .ww-page-modal__panel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.ww-page-modal__footer {
+  flex: none;
+}
 @media (max-width: 640px) {
   .ww-modal--create {
     --modal-pad-y: 32px;
     --modal-pad-x: 24px;
+  }
+  .ww-modal.ww-modal--page {
+    padding: 20px;
+    padding-bottom: calc(20px + var(--ww-safe-area-bottom));
   }
   /* Reserve a separate close row so registration text cannot scroll beneath the button. */
   .ww-modal.ww-reg-sheet > .ww-modal__close {
@@ -2713,6 +2806,225 @@
   font-size: 14px;
   line-height: 1.3;
   color: var(--text-secondary);
+}
+
+/* Requests from non-contacts: the Contacts entry and the inbox page. */
+.ww-shell .ww-noncontacts-entry {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  text-align: left;
+}
+/* Above the empty state, which has no scroll container to inset it. */
+.ww-shell .ww-noncontacts-entry.ww-contacts__requests-entry {
+  width: auto;
+  margin: 24px 40px 0;
+}
+.ww-noncontacts-entry__avatars {
+  display: flex;
+  flex: none;
+}
+.ww-noncontacts-entry__avatars > * {
+  flex: none;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.1);
+}
+.ww-noncontacts-entry__avatars > * + * {
+  margin-left: -12px;
+}
+.ww-noncontacts-entry__text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  line-height: 1.3;
+}
+.ww-noncontacts-entry__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-noncontacts-entry__summary {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.ww-noncontacts-entry__count {
+  flex: none;
+  padding: 2px 10px;
+  border-radius: 9999px;
+  background: var(--gradient-brand);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.ww-noncontacts-entry > svg {
+  flex: none;
+}
+.ww-noncontacts__head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 24px 40px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+.ww-noncontacts__head > :first-child {
+  flex: none;
+}
+.ww-noncontacts__title {
+  flex: 1;
+  min-width: 0;
+}
+/* Wraps before "non-contacts", never at its hyphen. */
+.ww-noncontacts__title > span {
+  white-space: nowrap;
+}
+.ww-shell .ww-noncontacts__decline-all {
+  flex: none;
+  padding: 8px 24px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.ww-noncontacts__decline-all:disabled {
+  opacity: 0.5;
+}
+.ww-noncontacts__explainer,
+.ww-shell .ww-noncontacts__settings {
+  display: flex;
+  gap: 12px;
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 12px;
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px var(--border-hairline);
+  font-size: 14px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+}
+.ww-noncontacts__explainer {
+  align-items: flex-start;
+}
+.ww-noncontacts__explainer > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.ww-shell .ww-noncontacts__settings {
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  font-weight: 500;
+  text-align: left;
+}
+.ww-noncontacts__settings > svg {
+  flex: none;
+}
+.ww-requests-unavailable {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(245, 213, 71, 0.35);
+  font-size: 13px;
+  line-height: 1.45;
+  color: #f5d547;
+}
+.ww-requests-unavailable > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.ww-noncontacts__empty {
+  margin: 0;
+  padding: 24px 0;
+  font-size: 14px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+/* The 560 panel has no room for the actions beside the amount, so they go on a second line. */
+.ww-noncontacts__row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "avatar who amount"
+    ". actions actions";
+  column-gap: 14px;
+  row-gap: 12px;
+  align-items: center;
+}
+.ww-noncontacts__row > :first-child {
+  grid-area: avatar;
+}
+.ww-noncontacts__who {
+  grid-area: who;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  line-height: 1.3;
+}
+.ww-noncontacts__name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.ww-noncontacts__tag {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-noncontacts__pill {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.ww-noncontacts__meta {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.ww-noncontacts__amount {
+  grid-area: amount;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.ww-noncontacts__actions {
+  grid-area: actions;
+  justify-self: end;
+  display: flex;
+  gap: 12px;
+}
+.ww-shell .ww-noncontacts__action {
+  padding: 8px 24px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.ww-shell .ww-noncontacts__action--primary {
+  background: var(--gradient-brand);
 }
 
 /* Contact chat panel: header / scrolling bubbles / action footer. */
@@ -3827,6 +4139,17 @@
     overflow-wrap: normal;
   }
 }
+/* Phone: the card is the sheets' fact card; the address is one row, shortened in the middle. */
+.ww-sheet__fact .ww-deposit-sheet__addr--row {
+  width: auto;
+  font-size: 13px;
+  text-align: right;
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+.ww-deposit-sheet__rows .ww-send-to__note {
+  margin-top: 0;
+}
 /* ── Accountless payment request (/request with no account) ───────────────── */
 
 /* Pay-method rows, on the deposit connect row. Both selectors carry .ww-deposit__connect so the
@@ -4887,6 +5210,20 @@ details[open] .ww-withdraw__warning-chevron {
   visibility: visible;
   transition-delay: 0s;
 }
+/* A sentence to act on in the browser's prompt: plain text, so it reads without hover or focus. */
+.ww-phone-steps__note {
+  margin: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--text-secondary);
+}
+.ww-phone-steps__note > svg {
+  flex: none;
+  margin-top: 1px;
+}
 /* The gold box on a sign-up step: what losing the passkey, or the key, means. */
 .ww-passkey-warn {
   box-sizing: border-box;
@@ -5313,6 +5650,26 @@ details[open] .ww-withdraw__warning-chevron {
   line-height: 1.4;
   color: #f5d547;
 }
+/* Advice for the passkey prompt, on a working beat and above a review step's button. */
+.ww-pay__hint {
+  display: block;
+  max-width: 320px;
+  margin-inline: auto;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  text-align: center;
+}
+.zkm-btn-reset.ww-pay__hint-dismiss {
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  white-space: nowrap;
+}
+.zkm-btn-reset.ww-pay__hint-dismiss:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
 
 /* Transaction detail modal. */
 .ww-txd {
@@ -5383,6 +5740,15 @@ details[open] .ww-withdraw__warning-chevron {
 }
 .ww-txd__actions > :only-child {
   grid-column: 1 / -1;
+}
+.ww-txd__footnote {
+  max-width: 240px;
+  margin: 0 auto;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--text-secondary);
 }
 .ww-txd__all {
   align-self: center;
@@ -5471,6 +5837,28 @@ details[open] .ww-withdraw__warning-chevron {
   color: var(--text-secondary);
   font-size: 12px;
   font-weight: 400;
+}
+.ww-settings__label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ww-settings__described .zkm-settings-row__description {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+}
+.ww-shell .ww-settings__pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 /* Notifications: bell unread dot + dropdown panel anchored under the bell. */
@@ -5705,6 +6093,278 @@ details[open] .ww-withdraw__warning-chevron {
   color: var(--text-primary);
 }
 
+/* Preview config profile. */
+.ww-config-profile__body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.ww-config-profile__body--editing {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.ww-config-profile__editor-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ww-config-profile__body--editing .ww-config-profile__editor-section {
+  flex: 1;
+  min-height: 0;
+}
+.ww-config-profile__note {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.ww-config-profile__badge {
+  align-self: flex-start;
+  border-radius: 999px;
+  background: rgba(166, 91, 255, 0.2);
+  color: var(--text-primary);
+  padding: 6px 10px;
+  font-size: 12px;
+}
+.ww-config-profile__summary {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  font-size: 14px;
+}
+.ww-config-profile__identity {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: none;
+  margin-bottom: 20px;
+  padding: 0 20px;
+}
+.ww-config-profile__identity-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ww-config-profile__identity-field span {
+  overflow-wrap: anywhere;
+}
+.ww-config-profile__summary > .ww-config-profile__row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.ww-config-profile__json-panel textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--surface-sheet);
+  color: var(--text-primary);
+  font: inherit;
+}
+.ww-config-profile__row {
+  display: grid;
+  grid-template-columns: minmax(100px, 1fr) minmax(0, 2fr);
+  gap: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 10px;
+}
+.ww-config-profile__row span:first-child {
+  color: var(--text-secondary);
+}
+.ww-config-profile__row span:last-child {
+  overflow-wrap: anywhere;
+}
+.ww-config-profile__view {
+  align-self: flex-end;
+  margin-top: 4px;
+  border: 0;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.ww-config-profile__json-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+}
+.ww-config-profile__body--editing .ww-config-profile__json-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.ww-config-profile__url-row {
+  display: flex;
+  gap: 8px;
+  min-width: 0;
+}
+.ww-config-profile__url-row input {
+  flex: 1;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface-sheet);
+  color: var(--text-primary);
+  font: 500 14px/1.4 var(--font-body);
+}
+.ww-config-profile__url-row input:focus-visible,
+.ww-config-profile__url-row button:focus-visible {
+  outline: 2px solid var(--purple-400);
+  outline-offset: 2px;
+}
+.ww-config-profile__url-row input[aria-invalid="true"] {
+  border-color: var(--accent-pink);
+}
+.ww-config-profile__url-row button {
+  flex: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  padding: 10px 14px;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  font: 600 14px/1.4 var(--font-body);
+  cursor: pointer;
+}
+.ww-config-profile__url-row button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ww-config-profile__json-panel textarea {
+  flex: 1;
+  min-height: 0;
+  resize: none;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/18px monospace;
+}
+.ww-config-profile__json-panel textarea:focus {
+  outline: none;
+}
+.ww-config-profile__error {
+  margin: 0;
+  color: var(--accent-pink);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.ww-config-profile__issue-notice {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: none;
+  color: var(--accent-pink);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.ww-config-profile__issue-notice button {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.ww-modal-overlay:has(> .ww-config-profile__errors-modal) {
+  align-items: center;
+}
+.ww-modal.ww-config-profile__errors-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: min(440px, calc(100vw - 32px));
+  max-height: 80dvh;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: var(--radius-32);
+  padding: 24px;
+  animation: ww-modal-in 0.22s ease;
+}
+.ww-config-profile__errors-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+}
+.ww-config-profile__errors-surface {
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+  padding: 16px 2px 16px 16px;
+  background: rgba(255, 255, 255, 0.04);
+}
+.ww-config-profile__errors-scroll {
+  min-height: 0;
+  max-height: min(400px, calc(80dvh - 148px));
+  overflow-y: auto;
+  padding-right: 8px;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.28) transparent;
+}
+.ww-config-profile__errors-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.ww-config-profile__errors-scroll::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.28);
+}
+.ww-config-profile__issue-list {
+  color: var(--text-secondary);
+  font: 400 14px/1.4 var(--font-body);
+}
+.ww-config-profile__issue {
+  margin: 0;
+  padding: 12px 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.ww-config-profile__issue + .ww-config-profile__issue {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.ww-config-profile__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 8px;
+}
+.ww-config-profile__actions > * {
+  flex: 1;
+  max-width: 240px;
+}
+@media (max-width: 640px) {
+  .ww-config-profile__issue-notice {
+    gap: 5px;
+    font-size: 11px;
+  }
+  .ww-config-profile__url-row {
+    flex-direction: column;
+  }
+  .ww-config-profile__url-row input {
+    font-size: 16px;
+  }
+  .ww-config-profile__actions {
+    flex-direction: column;
+  }
+  .ww-config-profile__actions > * {
+    flex: none;
+    max-width: none;
+  }
+}
 /* Feedback / bug report sheets. */
 .ww-feedback {
   display: flex;

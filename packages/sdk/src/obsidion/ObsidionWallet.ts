@@ -61,6 +61,7 @@ import type { ChainInfo } from "@aztec/entrypoints/interfaces"
 import { ContractArtifact, FunctionCall, type EventMetadataDefinition } from "@aztec/stdlib/abi"
 import { FEE_MULTIPLIER, getBlockBaseMaxFees } from "../utils/index.js"
 import { DEFAULT_WAIT_OPTS } from "../utils/constants.js"
+import { claimFpcOpenBatchWithinCap } from "../feePaymentMethod/claimFpcBatchGas.js"
 import {
   AccountFeePaymentMethodOptions,
   type DefaultAccountEntrypointOptions,
@@ -191,6 +192,12 @@ export class ObsidionWallet extends BaseWallet {
       chainId: new Fr(this.pinnedChainInfo.l1ChainId),
       version: new Fr(this.pinnedChainInfo.rollupVersion),
     }
+  }
+
+  /** Whether network fees are above what the ClaimFPC sponsors, so every sponsored tx would fail now.
+   * Prices the same fee-per-gas `completeFeeOptions` declares for a sponsored send. */
+  async sponsoredFeesAboveCap(): Promise<boolean> {
+    return !claimFpcOpenBatchWithinCap((await this.getMinFees()).mul(1 + this.minFeePadding))
   }
 
   /** The pinned identity as numbers, else the node's; for account builds and link stamps. */

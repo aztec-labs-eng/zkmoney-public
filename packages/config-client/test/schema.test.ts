@@ -231,6 +231,71 @@ describe("versions", () => {
     expect(() => parseConfigProfile(stagingDoc())).not.toThrow()
   })
 
+  describe("assets", () => {
+    const oxide = stagingDoc().versions["0.0.2"].oxide
+    const DAI = { symbol: "DAI", portal: oxide.portal, expectedGitSha: oxide.expectedGitSha }
+    const sUSDS = {
+      symbol: "sUSDS",
+      portal: "0x22208cE04e2416f20b03e941a14F9238C3603334",
+      expectedGitSha: "d".repeat(40),
+    }
+    const withAssets = (assets: object[], network = "testnet") => {
+      const doc = stagingDoc()
+      doc.network = network
+      doc.shared.l1ChainId = network === "mainnet" ? 1 : 11155111
+      doc.versions["0.0.1"].oxide.expectedGitSha = "c".repeat(40)
+      doc.versions["0.0.2"].assets = assets
+      return doc
+    }
+
+    it("lists every asset, oxide's own deployment among them", () => {
+      expect(parseConfigProfile(withAssets([DAI, sUSDS])).versions["0.0.2"]).toMatchObject({
+        assets: [DAI, sUSDS],
+      })
+    })
+
+    it.each([
+      ["leaves out the wallet token", [sUSDS], /no DAI asset at oxide's own deployment/],
+      [
+        "swap the wallet token's deployment for another asset's",
+        [
+          { ...DAI, portal: sUSDS.portal },
+          { ...sUSDS, portal: DAI.portal },
+        ],
+        /no DAI asset at oxide's own deployment/,
+      ],
+      [
+        "put another asset at oxide's deployment too",
+        [DAI, { ...sUSDS, portal: DAI.portal }],
+        /puts sUSDS at oxide's own deployment, which is DAI's/,
+      ],
+      [
+        "list a symbol twice",
+        [DAI, sUSDS, { ...sUSDS, portal: `0x${"ab".repeat(20)}` }],
+        /sUSDS asset twice/,
+      ],
+      [
+        "pins oxide's deployment at another cut",
+        [{ ...DAI, expectedGitSha: "e".repeat(40) }, sUSDS],
+        /pins DAI to oxide's deployment at another oxide cut/,
+      ],
+      [
+        "find an asset in a manifest of its own",
+        [DAI, { ...sUSDS, manifestUrl: "https://manifest.example/relayed-bridges.json" }],
+        /assets/,
+      ],
+      ["has a malformed portal", [DAI, { ...sUSDS, portal: "0x1234" }], /assets/],
+    ])("refuses a version whose assets %s", (_, assets, error) => {
+      expect(() => parseConfigProfile(withAssets(assets))).toThrow(error)
+    })
+
+    it("requires each asset's oxide cut on mainnet", () => {
+      const unpinned = withAssets([DAI, { symbol: "sUSDS", portal: sUSDS.portal }], "mainnet")
+      expect(() => parseConfigProfile(unpinned)).toThrow(/0\.0\.2.*no expectedGitSha for sUSDS/)
+      expect(() => parseConfigProfile(withAssets([DAI, sUSDS], "mainnet"))).not.toThrow()
+    })
+  })
+
   it("validates a vkey hash when present, and a version may omit the block entirely", () => {
     const doc = stagingDoc()
     for (const version of Object.values<any>(doc.versions)) {

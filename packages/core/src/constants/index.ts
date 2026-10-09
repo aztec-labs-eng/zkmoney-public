@@ -454,6 +454,9 @@ export const SANDBOX_FPC_PASSWORD = "sandbox-password-fpc-pw"
  */
 export const CLAIM_FPC_MAX_BATCH_DA_GAS = 16_000
 export const CLAIM_FPC_MAX_BATCH_L2_GAS = 2_250_000
+/** The fee-per-gas the deployed ClaimFPC sponsors at, in both dimensions. Above it every sponsored tx
+ * fails the FPC's fee cap. */
+export const CLAIM_FPC_MAX_FEE_PER_GAS = 10n ** 13n
 
 // Every network runs an 18-dec stablecoin (TestERC20 on sandbox/testnet, DAI on
 // mainnet). The resolver + fail-loud guard are retained so a future token with
@@ -553,12 +556,15 @@ export interface LocalConfig {
   analyticsConsent: boolean
   /** Whether the consent prompt has been answered — a decline is a persisted `false` consent. */
   analyticsAsked: boolean
+  /** Off: payment requests from people outside the contact book are dropped on receive and hidden. */
+  allowNonContactRequests: boolean
 }
 
 export const LOCAL_CONFIG_DEFAULTS: LocalConfig = {
   devMode: false,
   analyticsConsent: false,
   analyticsAsked: false,
+  allowNonContactRequests: true,
 }
 
 /** Every setting persists under its own storage key: `obsidion_config:<key>`. */

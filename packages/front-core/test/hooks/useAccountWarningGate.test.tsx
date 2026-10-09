@@ -133,6 +133,25 @@ describe("useAccount — no-backup warning gate", () => {
     expect(onSecurityKeyDetected).not.toHaveBeenCalled()
     expect(createObsidionAccountMock).toHaveBeenCalledTimes(1)
   })
+
+  it("hands the caller's signal to the passkey creation, so abandoning it closes the prompt", async () => {
+    const authService = makeAuthService("platform")
+    const { result } = renderCreate(authService)
+    const controller = new AbortController()
+
+    await act(async () => {
+      await result.current.createAccount(false, AUTH_TYPE.WEB_AUTHN, () => {}, "@x", undefined, {
+        signal: controller.signal,
+      })
+    })
+
+    const { createPasskey } = authService as unknown as { createPasskey: ReturnType<typeof vi.fn> }
+    expect(createPasskey).toHaveBeenCalledWith(
+      "@x",
+      expect.any(Function),
+      expect.objectContaining({ signal: controller.signal }),
+    )
+  })
 })
 
 describe("useAccount — caller recovery checkpoint", () => {

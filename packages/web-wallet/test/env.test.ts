@@ -208,10 +208,6 @@ describe("loadConfig", () => {
       expect(loadConfig({ VITE_NETWORK: "mainnet", ...screened }).rpId).toBe("localhost")
     })
 
-    it("defaults xmtpEnv to production on mainnet, dev elsewhere", () => {
-      expect(loadConfig({ ...mainnetEnv, ...screened }).xmtpEnv).toBe("production")
-      expect(loadConfig(testnetEnv).xmtpEnv).toBe("dev")
-    })
   })
 
   describe("predicate screening config", () => {

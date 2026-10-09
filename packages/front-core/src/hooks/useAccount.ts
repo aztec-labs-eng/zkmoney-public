@@ -191,6 +191,8 @@ export const useAccount = (useAuthenticator: UseAuthenticator) => {
       mode?: "combined" | "platform" | "security-key"
       /** The device the user picked on the laptop steps, so the browser opens on it. */
       route?: SignInRoute
+      /** Ends the passkey prompt when the caller abandons the attempt. */
+      signal?: AbortSignal
       replaceCurrentWallet?: boolean
       /** Post-detect/pre-deploy hook: when a fresh CREATE resolves to a security
        * key, await acknowledgement of the no-backup warning before any on-chain
@@ -275,6 +277,7 @@ export const useAccount = (useAuthenticator: UseAuthenticator) => {
         } = await authService.createPasskey(accountName, updateStatus, {
           mode: opts?.mode,
           route: opts?.route,
+          signal: opts?.signal,
         })
 
         // No-backup acknowledgement gate: a security-key wallet has no iCloud

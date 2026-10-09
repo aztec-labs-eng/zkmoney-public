@@ -10,6 +10,8 @@ export interface SettingsRowProps {
   leading?: ReactNode
   label: string
   labelSize?: number
+  /** Secondary content under the label; the leading icon then aligns to the top. */
+  description?: ReactNode
   disabled?: boolean
   onClick?: () => void
   /** Trailing view: RowChevron, GradientToggle, value text, pill… */
@@ -23,32 +25,57 @@ export function SettingsRow({
   leading,
   label,
   labelSize = 16,
+  description,
   disabled = false,
   onClick,
   trailing,
   className,
 }: SettingsRowProps) {
-  const content = (
+  const labelNode = (
+    <span
+      className="zkm-settings-row__label"
+      style={{
+        fontSize: labelSize,
+        color: disabled ? "rgba(255,255,255,0.4)" : "var(--text-primary)",
+      }}
+    >
+      {label}
+    </span>
+  )
+  const leadingNode = leading ?? (icon ? <IconCircle name={icon} /> : null)
+  // The described row is a grid; its slots are wrapped so a stylesheet can place them.
+  const content = description ? (
     <>
-      {leading ?? (icon ? <IconCircle name={icon} /> : null)}
-      <span
-        className="zkm-settings-row__label"
-        style={{ fontSize: labelSize, color: disabled ? "rgba(255,255,255,0.4)" : "var(--text-primary)" }}
-      >
-        {label}
-      </span>
+      {leadingNode && <span className="zkm-settings-row__leading">{leadingNode}</span>}
+      {labelNode}
+      <span className="zkm-settings-row__description">{description}</span>
+      {trailing && <span className="zkm-settings-row__trailing">{trailing}</span>}
+    </>
+  ) : (
+    <>
+      {leadingNode}
+      {labelNode}
       <span className="zkm-row-spacer" />
       {trailing}
     </>
   )
+  const classes = [
+    "zkm-settings-row",
+    description ? "zkm-settings-row--described" : undefined,
+    className,
+  ]
   if (onClick && !disabled) {
     return (
-      <button type="button" className={["zkm-btn-reset zkm-settings-row", className].filter(Boolean).join(" ")} onClick={onClick}>
+      <button
+        type="button"
+        className={["zkm-btn-reset", ...classes].filter(Boolean).join(" ")}
+        onClick={onClick}
+      >
         {content}
       </button>
     )
   }
-  return <div className={["zkm-settings-row", className].filter(Boolean).join(" ")}>{content}</div>
+  return <div className={classes.filter(Boolean).join(" ")}>{content}</div>
 }
 
 export interface ContactRowProps {

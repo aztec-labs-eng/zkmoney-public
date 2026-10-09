@@ -198,6 +198,31 @@ describe("createOxideTeeSignerSource", () => {
     })
   })
 
+  it("connects to the caller's deployment and ignores the contract service's rolls", async () => {
+    const VAULT_PORTAL = "0x20c20f5ec11aa51de97edd0cfb01bfcb11e8fbf4"
+    const client = makeFakeClient(makeTuple())
+    oxideClientHolder.current = client
+    loadTeeSignerMock.mockResolvedValue(FAKE_SIGNER)
+    const source = createOxideTeeSignerSource({
+      ...L1_OPTS,
+      getTuple: () => makeTuple({ portal: VAULT_PORTAL, enclaveUrl: "http://vault/rpc" }),
+    })
+
+    await source.load()
+    const onChange = vi.fn()
+    source.subscribe!(onChange)
+    client.apply(makeTuple({ enclaveUrl: "http://enclave-B/rpc" }))
+    source.refresh!()
+
+    expect(loadTeeSignerMock).toHaveBeenCalledWith(
+      "http://vault/rpc",
+      VAULT_PORTAL,
+      expect.any(Object),
+    )
+    expect(onChange).not.toHaveBeenCalled()
+    expect(client.refresh).not.toHaveBeenCalled()
+  })
+
   it("reads a fresh tuple on each load (atomicity across rolls)", async () => {
     const client = makeFakeClient(makeTuple())
     oxideClientHolder.current = client

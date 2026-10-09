@@ -6,7 +6,7 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { walletStorage } from "../src/platform/storage/walletStorage"
 import { TxStatus } from "@aztec/stdlib/tx"
 import { provingProgress } from "@obsidion/proving-progress"
@@ -23,12 +23,6 @@ import { PAYLINK_NOT_CLAIMABLE_YET_MESSAGE } from "../src/features/paylink/claim
 import { getOperationStore } from "../src/features/operations/operations"
 import { operationEntry } from "../src/features/operations/operationEntries"
 import { NotificationsPanel, useNotificationList } from "../src/ui/NotificationsPanel"
-
-const legGroups = vi.hoisted(() => new Map<string, string>())
-vi.mock("../src/features/withdraw/freshAddressGateway", async (importOriginal) => ({
-  ...(await importOriginal<object>()),
-  groupOfOperation: (operationId: string) => legGroups.get(operationId),
-}))
 
 const hash = `0x${"ab".repeat(32)}`
 
@@ -183,7 +177,7 @@ describe("the panel", () => {
     expect(items()).toHaveLength(0)
   })
 
-  it("shows a grouped withdrawal's running leg in place of its group's live row", async () => {
+  it("shows a legacy grouped withdrawal's running leg in place of its group's live row", async () => {
     const bell = AppNotificationStore.get(webStorage)
     const withdrawals = WithdrawalStorage.get(webStorage)
     const row = (group: string, entry: "inflight" | "remaining") => {
@@ -205,23 +199,14 @@ describe("the panel", () => {
     await row("0xa1", "inflight")
     await row("0xa1", "remaining")
     await row("0xb2", "inflight")
-    legGroups.set("op-leg", "0xA1")
-    await begin("op-leg", "withdraw")
     await renderPanel()
     const listed = () =>
       ["0xa1 inflight", "0xa1 remaining", "0xb2 inflight", "$25 to @alice"].map(
         (text) => !!itemText(text),
       )
-    expect(listed()).toEqual([false, true, true, true])
-    expect(unread).toBe(2)
-
-    // A sent leg leaves the list, so its group's live row is the one row.
-    await act(async () => getOperationStore().markSent("op-leg", hash))
     expect(listed()).toEqual([true, true, true, false])
-    expect(unread).toBe(3)
 
-    // A leg an earlier page started: only its record names the group.
-    legGroups.clear()
+    // The running leg's record names the group.
     await act(async () => {
       await withdrawals.create({
         localId: "w-leg",
@@ -239,8 +224,11 @@ describe("the panel", () => {
     await begin("op-earlier-leg", "withdraw")
     expect(listed()).toEqual([false, true, true, true])
 
+    // A sent leg leaves the list, so its group's live row is the one row.
+    await act(async () => getOperationStore().markSent("op-earlier-leg", hash))
+    expect(listed()).toEqual([true, true, true, false])
+
     await act(async () => {
-      await getOperationStore().remove("op-leg")
       await getOperationStore().remove("op-earlier-leg")
       await withdrawals.clearAll()
       await bell.dismissAll()

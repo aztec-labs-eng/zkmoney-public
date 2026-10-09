@@ -6,6 +6,9 @@ import {
   YUBIKEY_5_USB_A_AAGUID,
   ZERO_AAGUID,
 } from "@obsidion/core/constants"
+import { readdirSync, readFileSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { bytesToHex } from "../src/ceremony/bytes.js"
 import type { DevicePosture } from "../src/policy/devicePosture.js"
@@ -43,6 +46,7 @@ function create(
     observe?: (event: ObservedCeremony) => void | Promise<void>
     misreportsCrossDevice?: boolean
     attachmentLabelTrusted?: boolean
+    signal?: AbortSignal
   } = {},
 ) {
   const ceremony = new FakePasskeyCeremony(fake)
@@ -84,6 +88,32 @@ describe("runPasskeyCreation", () => {
     // No class demanded, so the sheet can offer a key; the hints name the two it may answer with.
     expect(ceremony.creates[0]!.authenticatorAttachment).toBeUndefined()
     expect(ceremony.creates[0]!.hints).toEqual(["client-device", "security-key"])
+  })
+
+  it("gives a laptop's phone five minutes to answer, and names no timeout on a phone", async () => {
+    const laptop = create("laptop", { route: "cross-device" })
+    await laptop.run
+    expect(laptop.ceremony.creates[0]!.timeoutMs).toBe(300_000)
+    const phone = create("phone", { route: "local" })
+    await phone.run
+    expect(phone.ceremony.creates[0]!.timeoutMs).toBeUndefined()
+  })
+
+  it("hands the caller's signal to the creation and to its follow-up prompt", async () => {
+    const controller = new AbortController()
+    const { ceremony, run } = create(
+      "laptop",
+      { route: "cross-device", prfAtCreate: false },
+      { signal: controller.signal },
+    )
+    await run
+    expect(ceremony.creates[0]!.signal).toBe(controller.signal)
+    expect(ceremony.assertRequests[0]!.signal).toBe(controller.signal)
+    // Without one, neither request carries a signal.
+    const plain = create("laptop", { route: "cross-device", prfAtCreate: false })
+    await plain.run
+    expect(plain.ceremony.creates[0]!.signal).toBeUndefined()
+    expect(plain.ceremony.assertRequests[0]!.signal).toBeUndefined()
   })
 
   it("phone: a provider answering first only is a single-salt refusal", async () => {
@@ -698,7 +728,7 @@ describe("security keys at creation", () => {
     await expect(unreadable.run).rejects.toThrow(named("DeviceBoundPasskeyError"))
   })
 
-  describe("asking the authenticator to take back a credential it cannot use", () => {
+  describe("asking the authenticator to take back the credential a failed creation wrote", () => {
     let signalled: { rpId: string; credentialId: string }[]
     let original: unknown
 
@@ -717,21 +747,16 @@ describe("security keys at creation", () => {
       ;(globalThis as Record<string, unknown>).PublicKeyCredential = original
     })
 
-    it("asks once, with exactly the id of the credential that creation just wrote", async () => {
-      const { ceremony, run } = create("phone", key({ prfAtCreate: false, prfAtAssert: false }))
-      await expect(run).rejects.toThrow(named("SecurityKeyNoPrfError"))
-      // The id the ceremony actually minted, not merely some string.
-      const minted = ceremony.assertRequests[0]!.credentialIds![0]!
-      expect(signalled).toEqual([{ rpId: "localhost", credentialId: minted }])
-    })
+    /** One ask, for the id the ceremony actually minted, not merely some string. */
+    const askedFor = (ceremony: FakePasskeyCeremony) => [
+      { rpId: "localhost", credentialId: [...ceremony.creds.keys()][0]! },
+    ]
 
-    it("asks for nothing on any other outcome, including the key-shaped ones", async () => {
-      // Deleting is irreversible, so every path but the one above must stay silent. Each refusal
-      // is named, so a case that starts failing for a new reason cannot pass by accident.
-      await create("phone", key()).run
-      await create("phone", { route: "local" }).run
-      await create("laptop", key({ prfAtCreate: false })).run
+    it("asks once on every refusal, with exactly the id that creation just wrote", async () => {
+      // Deleting is irreversible. Each refusal is named, so a case that starts failing for a new
+      // reason cannot pass by accident.
       const refused: [FakeCeremonyOptions, DevicePosture, string][] = [
+        [key({ prfAtCreate: false, prfAtAssert: false }), "phone", "SecurityKeyNoPrfError"],
         [{ route: "local", prfAtCreate: false, prfAtAssert: false }, "phone", "NoPrfError"],
         [{ route: "local", secondSlot: false }, "phone", "SingleSaltProviderError"],
         [
@@ -748,11 +773,110 @@ describe("security keys at creation", () => {
           "phone",
           "SecurityKeyRequiredError",
         ],
+        [{ route: "local" }, "laptop", "PhoneRequiredError"],
       ]
       // Built and awaited one at a time: a batch started up front leaves rejections unhandled.
       for (const [fake, posture, name] of refused) {
-        await expect(create(posture, fake).run).rejects.toThrow(named(name))
+        signalled = []
+        const { ceremony, run } = create(posture, fake)
+        await expect(run).rejects.toThrow(named(name))
+        expect(signalled, name).toEqual(askedFor(ceremony))
       }
+    })
+
+    it("asks when the follow-up prompt fails, and throws that prompt's own error", async () => {
+      const thrown = new DOMException("Dismissed", "NotAllowedError")
+      const { ceremony, run } = create("laptop", {
+        route: "cross-device",
+        prfAtCreate: false,
+        assertOverride: () => {
+          throw thrown
+        },
+      })
+      await expect(run).rejects.toBe(thrown)
+      expect(passkeyWritten(thrown)).toBe(true)
+      expect(signalled).toEqual(askedFor(ceremony))
+    })
+
+    it("asks when the caller's own code fails after the credential was written", async () => {
+      const boom = new Error("observer")
+      const onCreated = create(
+        "laptop",
+        { route: "cross-device" },
+        {
+          observe: ({ phase }) => {
+            if (phase === "created") throw boom
+          },
+        },
+      )
+      await expect(onCreated.run).rejects.toBe(boom)
+      expect(signalled).toEqual(askedFor(onCreated.ceremony))
+
+      signalled = []
+      const onChained = create(
+        "laptop",
+        { route: "cross-device", prfAtCreate: false },
+        {
+          observe: ({ phase }) => {
+            if (phase === "chained") throw boom
+          },
+        },
+      )
+      await expect(onChained.run).rejects.toBe(boom)
+      expect(signalled).toEqual(askedFor(onChained.ceremony))
+
+      // A challenge that rejects with a bare string: nothing to mark, and still one ask.
+      signalled = []
+      const ceremony = new FakePasskeyCeremony({ route: "cross-device", prfAtCreate: false })
+      await expect(
+        runPasskeyCreation(ceremony, {
+          posture: "laptop",
+          rpId: "localhost",
+          rpName: "zk.money",
+          userName: "@alice",
+          challengeForChained: () => Promise.reject("offline"),
+        }),
+      ).rejects.toBe("offline")
+      expect(signalled).toEqual(askedFor(ceremony))
+    })
+
+    it("asks, and returns no keys, when the caller ended a creation the browser still answered", async () => {
+      // The fake answers whatever its signal says, as a browser that ignores an abort does.
+      const before = new AbortController()
+      before.abort()
+      const late = create("laptop", { route: "cross-device" }, { signal: before.signal })
+      await expect(late.run).rejects.toBe(before.signal.reason)
+      expect(signalled).toEqual(askedFor(late.ceremony))
+
+      signalled = []
+      const during = new AbortController()
+      const observed = create(
+        "laptop",
+        { route: "cross-device" },
+        { signal: during.signal, observe: () => during.abort() },
+      )
+      await expect(observed.run).rejects.toThrow(named("AbortError"))
+      expect(signalled).toEqual(askedFor(observed.ceremony))
+    })
+
+    it("asks for nothing when a creation succeeds, never answered, or on a sign-in", async () => {
+      await create("phone", key()).run
+      await create("phone", { route: "local" }).run
+      await create("laptop", key({ prfAtCreate: false })).run
+      // The browser gave no credential back, so there is no id to name.
+      const unanswered = new FakePasskeyCeremony({ route: "cross-device" })
+      unanswered.create = async () => {
+        throw new DOMException("Dismissed", "NotAllowedError")
+      }
+      await expect(
+        runPasskeyCreation(unanswered, {
+          posture: "laptop",
+          rpId: "localhost",
+          rpName: "zk.money",
+          userName: "@alice",
+          challengeForChained: () => CHALLENGE,
+        }),
+      ).rejects.toThrow(named("NotAllowedError"))
       // And a sign-in that fails its own route check never reaches this code at all.
       const signIn = create("laptop", { route: "cross-device" })
       const made = await signIn.run
@@ -781,6 +905,27 @@ describe("security keys at creation", () => {
       const { run } = create("phone", key({ prfAtCreate: false, prfAtAssert: false }))
       await expect(run).rejects.toThrow(named("SecurityKeyNoPrfError"))
     })
+
+    it("is made from one place in the package, with one caller", () => {
+      const src = join(dirname(fileURLToPath(import.meta.url)), "../src")
+      const read = (file: string) => readFileSync(join(src, file), "utf8")
+      const files = (readdirSync(src, { recursive: true }) as string[]).filter((file) =>
+        file.endsWith(".ts"),
+      )
+      expect(files.filter((file) => read(file).includes("signalUnknownCredential"))).toEqual([
+        join("policy", "drivers.ts"),
+      ])
+      const drivers = read(join("policy", "drivers.ts"))
+      expect(drivers.match(/signalUnknownCredential\(/g)).toHaveLength(1)
+      // The definition and its one call, in the creation's catch.
+      expect(drivers.match(/forgetCredential\(/g)).toHaveLength(2)
+    })
+  })
+
+  it("gives a laptop's key five minutes to answer too", async () => {
+    const { ceremony, run } = create("laptop", key())
+    await run
+    expect(ceremony.creates[0]!.timeoutMs).toBe(300_000)
   })
 
   it("a phone accepts a key, binding first through the chained assertion a key needs", async () => {

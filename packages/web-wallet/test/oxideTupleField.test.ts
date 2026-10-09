@@ -16,8 +16,8 @@ describe("requireTupleField", () => {
   })
 
   it("names the missing field, so a thin manifest is diagnosable", () => {
-    expect(() => requireTupleField(tuple({}), "swapEscrowFactory")).toThrow(
-      /lacks swapEscrowFactory/,
+    expect(() => requireTupleField(tuple({}), "swapEscrowFactoryV2")).toThrow(
+      /lacks swapEscrowFactoryV2/,
     )
   })
 

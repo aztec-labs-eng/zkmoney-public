@@ -370,6 +370,130 @@ describe("ContactStorage (flat single-network shape)", () => {
     })
   })
 
+  describe("autoAdded (sender added from a transfer)", () => {
+    const fromTransfer: Contact = {
+      name: "jo",
+      address: ADDR_A,
+      addressKind: "aztec-l2",
+      tag: "jo",
+      verified: true,
+      autoAdded: true,
+    }
+
+    it("survives a reload, and a non-boolean value drops the row", async () => {
+      const { adapter, contactStorage } = setup()
+      await contactStorage.addOrMergeContact(fromTransfer)
+      adapter.seed(
+        CONTACT_STORAGE_KEY,
+        JSON.stringify([
+          ...JSON.parse(adapter.raw(CONTACT_STORAGE_KEY)!),
+          {
+            name: "Bad",
+            address: ADDR_B,
+            autoAdded: "yes",
+          },
+        ]),
+      )
+      resetSingletons()
+      expect(await ContactStorage.get(adapter).getEntries()).toEqual([fromTransfer])
+    })
+
+    it("addEntry at the same address approves the row instead of throwing", async () => {
+      const { contactStorage } = setup()
+      await contactStorage.addOrMergeContact({ ...fromTransfer, name: "Jo from work" })
+      await contactStorage.addEntry({ name: "jo", address: ADDR_A, verified: true, tag: "jo" })
+      const entries = await contactStorage.getEntries()
+      expect(entries).toHaveLength(1)
+      expect(entries[0]).toEqual({ ...fromTransfer, name: "Jo from work", autoAdded: undefined })
+      expect("autoAdded" in entries[0]!).toBe(false)
+    })
+
+    it("addEntry still rejects a duplicate tag at another address", async () => {
+      const { contactStorage } = setup()
+      await contactStorage.addOrMergeContact(fromTransfer)
+      await expect(
+        contactStorage.addEntry({ name: "jo2", address: ADDR_B, tag: "jo" }),
+      ).rejects.toThrow("Duplicate entry - tag")
+      expect((await contactStorage.getEntries())[0]?.autoAdded).toBe(true)
+    })
+
+    it("addOrMergeContact approves the row only for an entry the wallet did not add", async () => {
+      const { contactStorage } = setup()
+      await contactStorage.addOrMergeContact(fromTransfer)
+      await contactStorage.addOrMergeContact({ ...fromTransfer, name: "jo again" })
+      expect((await contactStorage.getEntries())[0]?.autoAdded).toBe(true)
+
+      const result = await contactStorage.addOrMergeContact({
+        name: "jo",
+        address: ADDR_A,
+        tag: "jo",
+        provenance: "qr-scan",
+      })
+      expect(result.autoAdded).toBeUndefined()
+      expect(await contactStorage.getEntries()).toEqual([result])
+    })
+
+    it("approves on a tag that differs only in case", async () => {
+      const { contactStorage } = setup()
+      await contactStorage.addOrMergeContact(fromTransfer)
+      await contactStorage.addEntry({ name: "jo", address: ADDR_A, tag: "Jo" })
+      expect((await contactStorage.getEntries())[0]?.autoAdded).toBeUndefined()
+    })
+
+    it("addEntry with another tag at that address replaces the row with the user's entry", async () => {
+      const { contactStorage } = setup()
+      await contactStorage.addOrMergeContact(fromTransfer)
+      const selected = { name: "selected", address: ADDR_A, verified: true, tag: "selected" }
+      await contactStorage.addEntry(selected)
+      expect(await contactStorage.getEntries()).toEqual([selected])
+    })
+
+    it("addEntry with another tag at that address still rejects a tag another row holds", async () => {
+      const { contactStorage } = setup()
+      await contactStorage.addOrMergeContact(fromTransfer)
+      await contactStorage.addEntry({ name: "Sam", address: ADDR_B, tag: "sam" })
+      await expect(
+        contactStorage.addEntry({ name: "sam2", address: ADDR_A, tag: "sam" }),
+      ).rejects.toThrow("Duplicate entry - tag")
+      expect((await contactStorage.getEntries())[0]).toEqual(fromTransfer)
+    })
+
+    it("addOrMergeContact with another tag at that address leaves the row unapproved", async () => {
+      const { contactStorage } = setup()
+      await contactStorage.addOrMergeContact(fromTransfer)
+      const result = await contactStorage.addOrMergeContact({
+        name: "selected",
+        address: ADDR_A,
+        tag: "selected",
+        provenance: "qr-scan",
+      })
+      expect(result).toEqual(fromTransfer)
+      expect(await contactStorage.getEntries()).toEqual([fromTransfer])
+    })
+
+    it("an entry the wallet adds never approves the row", async () => {
+      const { contactStorage } = setup()
+      await contactStorage.addOrMergeContact(fromTransfer)
+      await expect(contactStorage.addEntry({ ...fromTransfer, name: "jo2" })).rejects.toThrow(
+        "Duplicate entry - address",
+      )
+      expect(await contactStorage.getEntries()).toEqual([fromTransfer])
+    })
+
+    it("leaves a contact the user added at that address as it was", async () => {
+      const { contactStorage } = setup()
+      const saved = { name: "jo", address: ADDR_A, tag: "jo" }
+      await contactStorage.addEntry(saved)
+      await expect(
+        contactStorage.addEntry({ name: "other", address: ADDR_A, tag: "other" }),
+      ).rejects.toThrow("Duplicate entry - address")
+      expect(
+        await contactStorage.addOrMergeContact({ name: "other", address: ADDR_A, tag: "other" }),
+      ).toEqual(saved)
+      expect(await contactStorage.getEntries()).toEqual([saved])
+    })
+  })
+
   describe("clear", () => {
     it("removes CONTACT_STORAGE_KEY", async () => {
       const { adapter, contactStorage } = setup()

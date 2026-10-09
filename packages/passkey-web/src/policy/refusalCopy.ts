@@ -178,6 +178,33 @@ export const PHONE_STEPS_COPY = {
         "share one passkey's secret: lose the key, lose the wallet.",
     ],
   },
+  /**
+   * A gold label in the card, shown where something on this computer can answer a sign-up that
+   * needs the phone: a password manager's extension, or Windows Hello. Its tooltip says what to
+   * pick instead; `extension` is the part for a browser where an extension answers.
+   */
+  thisComputer: {
+    label: "Don't save the passkey on this computer",
+    title: "Use your phone or security key",
+    extension: [
+      "Password manager extensions such as Bitwarden, Proton Pass or Dashlane can pop up and " +
+        "offer to save your passkey on this computer. Don't save it there: choose the " +
+        "extension's option to use another device or hardware key, and your browser's prompt " +
+        "takes over.",
+      "Closing the pop-up can cancel the sign-up. If your browser's prompt doesn't appear, leave " +
+        "full screen and try again.",
+    ],
+    refused: "A passkey saved on this computer is refused.",
+  },
+  /**
+   * The one-sentence form, where there is no card: the security-key sheet and the campaign's help
+   * card. A manager on the phone is accepted, so it names this computer's. Closing a manager's
+   * window can end the sign-up and managers word their way past differently, so it says what not
+   * to do and leaves the rest conditional.
+   */
+  extension:
+    "If a password manager pops up on this computer, don't save the passkey there. Choose " +
+    "another device or hardware key if it offers one.",
   routes: [
     { hint: "hybrid", label: "Show QR Code" },
     { hint: "security-key", label: SECURITY_KEY_INSTEAD },
@@ -245,6 +272,8 @@ export const PHONE_HELP_COPY = {
   windows:
     'If Windows offers Windows Hello or "This Windows device", choose "iPhone, iPad or Android ' +
     'device" instead.',
+  /** The title where an extension answers passkeys: its window, not the phone, may have ended it. */
+  extensionTitle: "That didn't finish",
   tryAgain: "Try again",
   phoneLink: "Sign up on your phone instead",
   securityKey: SECURITY_KEY_INSTEAD,

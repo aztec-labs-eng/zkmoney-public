@@ -5,7 +5,7 @@ import {
   SwapOnWithdrawSimulator,
   SwapTipExceedsInputError,
   type RelayerTipEstimate,
-  type SwapOnWithdrawOutput,
+  type SwapEscrowOutput,
 } from "@obsidion/sdk"
 import { formatUnits, type Address, type PublicClient } from "viem"
 import { Warning } from "../../ui/Warning"
@@ -40,6 +40,8 @@ export interface SwapEstimate {
   amountOut: bigint
   /** Decimal exponent for formatting `amountOut`. */
   decimals: number
+  /** ETH the escrow's gas swap pays, wei. Absent without one. */
+  gasOut?: bigint
 }
 
 /**
@@ -62,12 +64,14 @@ export interface SwapQuote {
 }
 
 export type SimulateSwap = (args: {
-  output: SwapOnWithdrawOutput
+  output: SwapEscrowOutput
   /** Absent prices the route alone, on a reference amount. */
   amountAtomic?: bigint
   /** Absent prices against a placeholder recipient. */
   recipient?: Address
   proverTip?: bigint
+  /** DAI the escrow swaps to ETH for the recipient before its route. */
+  daiForGas?: bigint
 }) => Promise<SwapQuote>
 
 /** How often a priced route is re-simulated: the relayer's own re-quote cadence. */
@@ -105,7 +109,7 @@ let simulatorCache: { key: string; simulator: SwapOnWithdrawSimulator } | undefi
 
 function swapSimulator(client: PublicClient, tuple: OxideEnvTuple): SwapOnWithdrawSimulator {
   const addresses = {
-    swapEscrowFactory: requireTupleField(tuple, "swapEscrowFactory") as Address,
+    swapEscrowFactoryV2: requireTupleField(tuple, "swapEscrowFactoryV2") as Address,
     operationExecutor: requireTupleField(tuple, "operationExecutor") as Address,
     token: requireTupleField(tuple, "token") as Address,
   }
@@ -145,10 +149,13 @@ export async function simulateSwapForTuple(
   const cut = await fpcFundingCut(client, requireTupleField(tuple, "portal") as Address)
   const simulator = swapSimulator(client, tuple)
   const proverTip = args.proverTip ?? 0n
+  const daiForGas = args.daiForGas ?? 0n
   const fee = (tip: RelayerTipEstimate): WithdrawalFee => routeFee(cut, proverTip, tip)
-  // An amount the portal's own deductions consume cannot be simulated; price the route instead.
+  // An amount the portal's own deductions and the gas swap consume cannot be simulated; price the
+  // route instead.
   const exact =
-    args.amountAtomic !== undefined && args.amountAtomic > WITHDRAW_RELAYER_TIP + cut + proverTip
+    args.amountAtomic !== undefined &&
+    args.amountAtomic > WITHDRAW_RELAYER_TIP + cut + proverTip + daiForGas
       ? args.amountAtomic
       : undefined
   try {
@@ -157,13 +164,18 @@ export async function simulateSwapForTuple(
       amount: exact ?? REFERENCE_AMOUNT,
       deductions: { withdrawalRelayerTip: WITHDRAW_RELAYER_TIP, proverTip, fpcFundingCut: cut },
       recipient: args.recipient ?? REFERENCE_RECIPIENT,
+      daiForGas,
     })
     return {
       fee: fee(simulation),
       estimate:
         exact === undefined
           ? undefined
-          : { amountOut: simulation.amountOut, decimals: simulation.decimals },
+          : {
+              amountOut: simulation.amountOut,
+              decimals: simulation.decimals,
+              ...(daiForGas > 0n ? { gasOut: simulation.gasOut } : {}),
+            },
     }
   } catch (err) {
     if (err instanceof SwapTipExceedsInputError) return { fee: fee(err.tip) }
@@ -173,10 +185,10 @@ export async function simulateSwapForTuple(
 
 /**
  * Live pricing for one receive asset: the route's fee and, for an amount, its output estimate. The
- * direct route needs only the portal's cut, so it is priced off that one read. A swap route runs the
- * simulator on the debounced amount and re-runs it every {@link SWAP_QUOTE_REFRESH_MS} while it stays
- * selected. A simulation that fails leaves the route unavailable — there is no fallback tip to offer
- * the relayer.
+ * direct route needs only the portal's cut, so it is priced off that one read. A swap route, and DAI
+ * with a gas swap, runs the simulator on the debounced amount and re-runs it every
+ * {@link SWAP_QUOTE_REFRESH_MS} while it stays selected. A simulation that fails leaves the route
+ * unavailable — there is no fallback tip to offer the relayer.
  */
 export function useSwapSimulation({
   receiveAsset,
@@ -187,6 +199,7 @@ export function useSwapSimulation({
   simulate = simulateSwap,
   readCut = currentFpcFundingCut,
   proverTip = 0n,
+  daiForGas = 0n,
   debounceMs = 300,
   refreshMs = SWAP_QUOTE_REFRESH_MS,
 }: {
@@ -201,15 +214,21 @@ export function useSwapSimulation({
   readCut?: () => Promise<bigint>
   /** Offered on the burn; every route's fee includes it. */
   proverTip?: bigint
+  /** DAI the escrow swaps to ETH for the recipient; the route then always rides an escrow. */
+  daiForGas?: bigint
   debounceMs?: number
   refreshMs?: number
 }): WithdrawalQuoteState {
   const scope = JSON.stringify([network, sourceKey])
+  const direct = receiveAsset === "DAI" && daiForGas === 0n
+  // The route a fee belongs to: DAI with a gas swap is an escrow, priced apart from direct DAI.
+  const route = `${receiveAsset}:${daiForGas > 0n ? "gas" : "plain"}`
   const requestKey = JSON.stringify([
     receiveAsset,
     amountAtomic?.toString(),
     recipient,
     proverTip.toString(),
+    daiForGas.toString(),
     scope,
   ])
   // A fee and a tip belong to the asset that priced them: another asset's route never inherits
@@ -217,21 +236,17 @@ export function useSwapSimulation({
   const [snapshot, setSnapshot] = useState<{
     key: string
     scope: string
-    asset: WithdrawalReceiveAsset
+    route: string
     state: WithdrawalQuoteState
-  }>({ key: requestKey, scope, asset: receiveAsset, state: { status: "idle" } })
+  }>({ key: requestKey, scope, route, state: { status: "idle" } })
 
   useEffect(() => {
     const setState = (state: WithdrawalQuoteState) =>
-      setSnapshot({ key: requestKey, scope, asset: receiveAsset, state })
-    const carriedFee = (current: {
-      scope: string
-      asset: WithdrawalReceiveAsset
-      state: WithdrawalQuoteState
-    }) =>
-      current.scope === scope && current.asset === receiveAsset ? current.state.fee : undefined
+      setSnapshot({ key: requestKey, scope, route, state })
+    const carriedFee = (current: { scope: string; route: string; state: WithdrawalQuoteState }) =>
+      current.scope === scope && current.route === route ? current.state.fee : undefined
     const amount = amountAtomic !== undefined && amountAtomic > 0n ? amountAtomic : undefined
-    if (receiveAsset === "DAI") {
+    if (direct) {
       let live = true
       const estimate = echoEstimate(amount)
       // The typed amount is what lands, so the estimate is answered outright and only the fee waits
@@ -239,7 +254,7 @@ export function useSwapSimulation({
       setSnapshot((current) => ({
         key: requestKey,
         scope,
-        asset: receiveAsset,
+        route,
         state: { status: "ready", fee: carriedFee(current), estimate },
       }))
       void readCut().then(
@@ -266,7 +281,7 @@ export function useSwapSimulation({
     setSnapshot((current) => ({
       key: requestKey,
       scope,
-      asset: receiveAsset,
+      route,
       state: { status: "loading", fee: carriedFee(current) },
     }))
     const run = async () => {
@@ -278,6 +293,7 @@ export function useSwapSimulation({
           amountAtomic: amount,
           recipient,
           proverTip,
+          ...(daiForGas > 0n ? { daiForGas } : {}),
         })
         if (!active) return
         setState({ status: "ready", ...quote })
@@ -296,13 +312,16 @@ export function useSwapSimulation({
     }
   }, [
     amountAtomic,
+    daiForGas,
     debounceMs,
+    direct,
     network,
     proverTip,
     readCut,
     receiveAsset,
     recipient,
     refreshMs,
+    route,
     simulate,
     requestKey,
     scope,
@@ -312,9 +331,8 @@ export function useSwapSimulation({
   // quote from the previous inputs during that render, even if its simulation already finished.
   // The direct route's estimate is the new amount itself, so it answers without waiting.
   if (snapshot.key === requestKey) return snapshot.state
-  const fee =
-    snapshot.scope === scope && snapshot.asset === receiveAsset ? snapshot.state.fee : undefined
-  return receiveAsset === "DAI"
+  const fee = snapshot.scope === scope && snapshot.route === route ? snapshot.state.fee : undefined
+  return direct
     ? { status: "ready", fee, estimate: echoEstimate(amountAtomic) }
     : { status: "loading", fee }
 }

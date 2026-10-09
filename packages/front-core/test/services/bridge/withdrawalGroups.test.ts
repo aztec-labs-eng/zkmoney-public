@@ -64,7 +64,7 @@ describe("isWithdrawalGroupTerminal", () => {
     ["done", "l2_mined", false],
     ["done", "failed", true],
     ["recoverable", undefined, false],
-    ["done", undefined, false],
+    ["done", undefined, true],
     ["recovered", undefined, true],
     ["failed", undefined, true],
   ])("gas %s with funds %s -> %s", (gasPhase, fundsPhase, terminal) => {

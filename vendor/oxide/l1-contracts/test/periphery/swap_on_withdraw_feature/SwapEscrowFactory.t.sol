@@ -11,18 +11,21 @@ import {SwapEscrowTestBase} from "./SwapEscrowTestBase.sol";
 
 contract SwapEscrowFactoryTest is SwapEscrowTestBase {
   function test_PredictionMatchesDeployAndGettersReturnCommittedArgs() external {
-    SwapEscrow.Args memory args = _args(1);
+    SwapEscrow.Args memory args = _gasArgs(1, 7e18);
+    args.minEthForGas = 1;
     address predicted = factory.predictEscrowAddress(args);
 
     address escrow = _fundAndDeploy(args, AMOUNT);
 
     assertEq(escrow, predicted);
     assertGt(escrow.code.length, 0);
-    assertEq(SwapEscrow(escrow).route(), 1);
-    assertEq(SwapEscrow(escrow).recipient(), alice);
-    assertEq(SwapEscrow(escrow).recoveryCommitment(), _args(0).recoveryCommitment);
-    assertEq(SwapEscrow(escrow).relayerTip(), TIP);
-    assertEq(SwapEscrow(escrow).nonce(), NONCE);
+    assertEq(SwapEscrow(payable(escrow)).route(), 1);
+    assertEq(SwapEscrow(payable(escrow)).recipient(), alice);
+    assertEq(SwapEscrow(payable(escrow)).daiForGas(), 7e18);
+    assertEq(SwapEscrow(payable(escrow)).minEthForGas(), 1);
+    assertEq(SwapEscrow(payable(escrow)).recoveryCommitment(), _args(0).recoveryCommitment);
+    assertEq(SwapEscrow(payable(escrow)).relayerTip(), TIP);
+    assertEq(SwapEscrow(payable(escrow)).nonce(), NONCE);
   }
 
   function test_EveryArgsFieldChangesTheAddress() external {
@@ -36,6 +39,14 @@ contract SwapEscrowFactoryTest is SwapEscrowTestBase {
     changed = base;
     changed.recipient = makeAddr("other");
     address recipientEscrow = factory.predictEscrowAddress(changed);
+
+    changed = base;
+    changed.daiForGas = 1;
+    address daiForGasEscrow = factory.predictEscrowAddress(changed);
+
+    changed = base;
+    changed.minEthForGas = 1;
+    address minEthForGasEscrow = factory.predictEscrowAddress(changed);
 
     changed = base;
     changed.recoveryCommitment =
@@ -52,6 +63,8 @@ contract SwapEscrowFactoryTest is SwapEscrowTestBase {
 
     assertNotEq(routeEscrow, baseEscrow);
     assertNotEq(recipientEscrow, baseEscrow);
+    assertNotEq(daiForGasEscrow, baseEscrow);
+    assertNotEq(minEthForGasEscrow, baseEscrow);
     assertNotEq(recoveryEscrow, baseEscrow);
     assertNotEq(tipEscrow, baseEscrow);
     assertNotEq(nonceEscrow, baseEscrow);
@@ -85,7 +98,7 @@ contract SwapEscrowFactoryTest is SwapEscrowTestBase {
     address escrow = _fundAndDeploy(_args(0), AMOUNT);
 
     vm.expectRevert(EscrowBase.EscrowBase__NotFactory.selector);
-    SwapEscrow(escrow).execute(address(this));
+    SwapEscrow(payable(escrow)).execute(address(this));
   }
 
   function test_ImplementationRevertsAsNotClone() external {

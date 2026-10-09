@@ -7,6 +7,7 @@ import { Fr } from "@aztec/aztec.js/fields"
 import {
   deriveBootstrapKey,
   deriveStealthKey,
+  deriveSkyEscrowSalts,
   deriveSwapEscrowRecoverySalt,
   type FieldLike,
 } from "../../src/oxide/oxideAccountKeys"
@@ -97,5 +98,22 @@ describe("oxideAccountKeys — deriveSwapEscrowRecoverySalt", () => {
     for (const bad of ["0x1234", `0x${"ab".repeat(33)}`, "ab".repeat(32)]) {
       expect(() => deriveSwapEscrowRecoverySalt(SECRET, bad as `0x${string}`)).toThrow(/32-byte/)
     }
+  })
+})
+
+describe("oxideAccountKeys — deriveSkyEscrowSalts", () => {
+  const NONCE = `0x${"ab".repeat(32)}` as const
+
+  it("derives a recipient and a recovery salt, each separated from the other and from the swap's", () => {
+    const { recipient, recovery } = deriveSkyEscrowSalts(SECRET, NONCE)
+    expect(recipient.toBigInt()).toBe(
+      oxideScalar(SECRET.toString(), `oxide:sky-escrow-recipient-salt:${NONCE}`, Fr.MODULUS),
+    )
+    expect(recovery.toBigInt()).toBe(
+      oxideScalar(SECRET.toString(), `oxide:sky-escrow-recovery-salt:${NONCE}`, Fr.MODULUS),
+    )
+    expect(recipient.equals(recovery)).toBe(false)
+    expect(recovery.equals(deriveSwapEscrowRecoverySalt(SECRET, NONCE))).toBe(false)
+    expect(() => deriveSkyEscrowSalts(SECRET, "0x1234")).toThrow(/32-byte/)
   })
 })

@@ -57,6 +57,7 @@
     "@obsidion/contracts": "workspace:*",
     "@obsidion/core": "workspace:*",
     "@obsidion/proving-progress": "workspace:*",
+    "@oxide/experiments": "workspace:*",
     "@oxide/l1-contracts": "workspace:*",
     "@oxide/oxide-client": "workspace:*",
     "@oxide/oxide-lib": "workspace:*",

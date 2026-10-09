@@ -76,8 +76,10 @@ export interface SwapWithdrawalAmounts {
   feeAtomic: bigint
   /** False until every deduction is on the record — hide the fee/estimate breakdown before that. */
   feeKnown: boolean
-  /** `gross - fee`, clamped at zero — the escrow's swap input. */
+  /** `gross - fee - gas`, clamped at zero — the escrow's input to its route. */
   swapInputAtomic: bigint
+  /** The DAI the escrow swaps to ETH for gas, and the ETH quoted for it. Absent without a gas swap. */
+  gas?: { daiAtomic: bigint; daiDisplay: string; ethOutDisplay?: string }
   grossDisplay: string
   feeDisplay: string
   /** Absent when the record carries no quote, the fee is unknown, or nothing is left to swap. */
@@ -93,7 +95,12 @@ export interface SwapWithdrawalAmounts {
 type SwapWithdrawalAmountFields = WithdrawalAmountFields &
   Pick<
     WithdrawalRecord,
-    "swapOutput" | "swapRelayerTip" | "swapEstimatedOut" | "swapOutputDecimals"
+    | "swapOutput"
+    | "swapRelayerTip"
+    | "swapEstimatedOut"
+    | "swapOutputDecimals"
+    | "swapDaiForGas"
+    | "swapEstimatedGasOut"
   >
 
 /** Undefined for a direct withdrawal — `withdrawalAmounts` is the whole story there. */
@@ -106,8 +113,19 @@ export function swapWithdrawalAmounts(
   const feeAtomic =
     directFeeAtomic + (record.swapRelayerTip != null ? BigInt(record.swapRelayerTip) : 0n)
   const feeKnown = record.relayerTip != null && record.fpcFundingCut != null
-  const diff = grossAtomic - feeAtomic
+  const gasAtomic = record.swapDaiForGas != null ? BigInt(record.swapDaiForGas) : 0n
+  const diff = grossAtomic - feeAtomic - gasAtomic
   const swapInputAtomic = diff > 0n ? diff : 0n
+  const gas =
+    gasAtomic > 0n
+      ? {
+          daiAtomic: gasAtomic,
+          daiDisplay: formatUnits(gasAtomic, DEFAULT_DECIMALS),
+          ...(record.swapEstimatedGasOut != null
+            ? { ethOutDisplay: formatUnits(BigInt(record.swapEstimatedGasOut), 18) }
+            : {}),
+        }
+      : undefined
 
   let estimate: SwapWithdrawalAmounts["estimate"]
   if (
@@ -131,6 +149,7 @@ export function swapWithdrawalAmounts(
     feeAtomic,
     feeKnown,
     swapInputAtomic,
+    ...(gas ? { gas } : {}),
     grossDisplay: formatUnits(grossAtomic, DEFAULT_DECIMALS),
     feeDisplay: formatUnits(feeAtomic, DEFAULT_DECIMALS),
     estimate,

@@ -4,7 +4,7 @@ import { EthAddress } from '@aztec/foundation/eth-address';
 import { OperationExecutorAbi } from '@oxide/l1-contracts';
 import { MAX_PRIORITY_FEE_WEI } from '@oxide/oxide-lib/oxide_constants.gen.js';
 
-import { type Address, type FeeValuesEIP1559, type Hex, type PublicClient, type StateOverride, maxUint256 } from 'viem';
+import type { Address, FeeValuesEIP1559, Hex, PublicClient, StateOverride } from 'viem';
 
 import { readUsdPerEth, weiToUSD } from './eth_usd_price_feed.js';
 
@@ -19,6 +19,12 @@ export const EXECUTOR_MIN_PAYOUT_CALLDATA_GAS = 384n;
  * The break-even payout is priced at this ceiling.
  */
 export const DEFAULT_MAX_FEE_HEADROOM_PERCENT = 6.25;
+
+/**
+ * The ETH balance a simulation gives its sender. It covers any gas charge, and it stays far below `maxUint256` so ETH
+ * that the operation pays to the sender cannot overflow it: revm clients (Reth, anvil) revert such a transfer.
+ */
+export const SIMULATED_SENDER_BALANCE = 2n ** 128n;
 
 /**
  * The fees the relayer signs an L1 operation with. `maxFeePerGas` is the latest base fee increased by
@@ -43,7 +49,7 @@ export async function estimateL1OperationFeeValues(
 export interface SimulateL1OperationArgs {
   /** The `OperationExecutor` that the operation goes through. */
   executor: Address;
-  /** The account that sends the transaction. The simulation gives it an unlimited ETH balance. */
+  /** The account that sends the transaction. The simulation gives it `SIMULATED_SENDER_BALANCE`. */
   sender: Address;
   operation: { target: Address; calldata: Hex; payoutToken: Address };
   feeValues: FeeValuesEIP1559;
@@ -73,7 +79,7 @@ export async function simulateL1Operation(
       {
         // Keep the base fee consistent with gas estimation.
         blockOverrides: { baseFeePerGas },
-        stateOverrides: [{ address: sender, balance: maxUint256 }, ...stateOverrides],
+        stateOverrides: [{ address: sender, balance: SIMULATED_SENDER_BALANCE }, ...stateOverrides],
         calls: [
           {
             to: executor,

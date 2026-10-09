@@ -16,6 +16,7 @@ const h = vi.hoisted(() => ({
   updateTransaction: vi.fn(async (..._args: unknown[]) => true),
   removeTransaction: vi.fn(async (..._args: unknown[]) => true),
   addEntry: vi.fn(async (_entry: object) => {}),
+  addOrMergeContact: vi.fn(async (entry: object) => entry),
   /** Set to a hash to stand for a send the node has already been handed. */
   survivingHash: undefined as string | undefined,
   TxInFlightError: class TxInFlightError extends Error {
@@ -43,7 +44,9 @@ vi.mock("@obsidion/front-core", () => ({
       removeTransaction: h.removeTransaction,
     }),
   },
-  ContactStorage: { get: () => ({ addEntry: h.addEntry }) },
+  ContactStorage: {
+    get: () => ({ addEntry: h.addEntry, addOrMergeContact: h.addOrMergeContact }),
+  },
   getActiveNetworkId: () => "0xrollup",
   resolveAssetConstants: () => ({ DAI: { logo: "", price: 1 } }),
   trackSubmission: () => ({
@@ -184,14 +187,22 @@ describe("contact pay note", () => {
     expect(row.requestId).toBe(REQ)
   })
 
-  it("saves an unsaved requester as a contact before the send row is written", async () => {
+  it("saves an unsaved requester before the send row is written, and approves them once it lands", async () => {
     vi.clearAllMocks()
     const order: string[] = []
-    h.addEntry.mockImplementationOnce(async () => {
+    h.addOrMergeContact.mockImplementationOnce(async (entry) => {
       order.push("contact")
+      return entry
     })
     h.addTokenTransaction.mockImplementationOnce(async () => {
       order.push("row")
+    })
+    h.sendTokenSponsored.mockImplementationOnce(async () => {
+      order.push("send")
+      return { txHash: "0xhash", amount: 5n }
+    })
+    h.addEntry.mockImplementationOnce(async () => {
+      order.push("approval")
     })
     await runContactPay(
       {
@@ -210,13 +221,75 @@ describe("contact pay note", () => {
       },
       () => {},
     )
-    expect(h.addEntry).toHaveBeenCalledWith({
-      name: "alice",
-      address: "0xabc",
-      verified: true,
-      tag: "alice",
-    })
-    expect(order).toEqual(["contact", "row"])
+    const contact = { name: "alice", address: "0xabc", verified: true, tag: "alice" }
+    expect(h.addOrMergeContact).toHaveBeenCalledWith({ ...contact, autoAdded: true })
+    expect(h.addEntry).toHaveBeenCalledWith(contact)
+    expect(order).toEqual(["contact", "row", "send", "approval"])
+  })
+})
+
+describe("approving an unsaved requester", () => {
+  const send = {
+    mode: "send" as const,
+    deps: {
+      tokenService: token as never,
+      account: { makeSpendMetadataResolver: async () => () => {} } as never,
+      wallet: {} as never,
+      contractService: {} as never,
+    },
+    tag: "alice",
+    senderTag: "bob",
+    amountDisplay: "5",
+    request: { id: "req-1" },
+    saveUnsavedRequester: true,
+  }
+
+  it("does not approve them when the send is cancelled before proving", async () => {
+    vi.clearAllMocks()
+    const cancelled = new Error("Cancelled")
+    await expect(
+      runContactPay(send, (stage) => {
+        if (stage === "proving") throw cancelled
+      }),
+    ).rejects.toBe(cancelled)
+    expect(h.addOrMergeContact).toHaveBeenCalledWith(expect.objectContaining({ autoAdded: true }))
+    expect(h.sendTokenSponsored).not.toHaveBeenCalled()
+    expect(h.addEntry).not.toHaveBeenCalled()
+    expect(h.markRequestPaidById).not.toHaveBeenCalled()
+  })
+
+  it("does not approve them when the send fails", async () => {
+    vi.clearAllMocks()
+    const rejection = new Error("rejected")
+    h.sendTokenSponsored.mockRejectedValueOnce(rejection)
+    await expect(runContactPay(send, () => {})).rejects.toBe(rejection)
+    expect(h.addEntry).not.toHaveBeenCalled()
+  })
+
+  it("does not approve them while the send is unconfirmed", async () => {
+    vi.clearAllMocks()
+    h.survivingHash = "0xsubmitted"
+    try {
+      h.sendTokenSponsored.mockRejectedValueOnce(new Error("socket closed"))
+      await expect(runContactPay(send, () => {})).rejects.toBeInstanceOf(h.TxInFlightError)
+      expect(h.addEntry).not.toHaveBeenCalled()
+    } finally {
+      h.survivingHash = undefined
+    }
+  })
+
+  it("still marks the request paid when saving the contact fails", async () => {
+    vi.clearAllMocks()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      h.addOrMergeContact.mockRejectedValueOnce(new Error("contacts unavailable"))
+      h.addEntry.mockRejectedValueOnce(new Error("contacts unavailable"))
+      await expect(runContactPay(send, () => {})).resolves.toEqual({ txHash: "0xhash" })
+      expect(h.addEntry).toHaveBeenCalledOnce()
+      expect(h.markRequestPaidById).toHaveBeenCalledWith("req-1", "0xhash")
+    } finally {
+      warn.mockRestore()
+    }
   })
 })
 

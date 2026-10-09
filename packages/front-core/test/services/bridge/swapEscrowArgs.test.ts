@@ -20,10 +20,11 @@ const base: WithdrawalRecord = {
 }
 
 describe("swapEscrowTarget", () => {
-  it("rebuilds the committed args in struct order from the record", () => {
+  it("reads a record without a layout as a legacy escrow, in the legacy struct order", () => {
     expect(swapEscrowTarget(base)).toEqual({
       factory: base.swapEscrowFactory,
       escrow: base.swapEscrow,
+      layout: "legacy",
       args: {
         route: 2,
         recipient: base.recipient,
@@ -32,6 +33,17 @@ describe("swapEscrowTarget", () => {
         nonce: base.swapNonce,
       },
     })
+  })
+
+  it("rebuilds a v2 escrow with its gas swap, 0 where the record has none", () => {
+    const v2 = { ...base, swapOutput: "USDC" as const, swapEscrowLayout: "v2" as const }
+    expect(swapEscrowTarget(v2)).toMatchObject({
+      layout: "v2",
+      args: { route: 0, daiForGas: 0n, minEthForGas: 0n },
+    })
+    expect(
+      swapEscrowTarget({ ...v2, swapDaiForGas: "5000000000000000000", swapMinEthForGas: "7" }),
+    ).toMatchObject({ layout: "v2", args: { daiForGas: 5n * 10n ** 18n, minEthForGas: 7n } })
   })
 
   it("is undefined for a direct withdrawal and for any missing committed value", () => {

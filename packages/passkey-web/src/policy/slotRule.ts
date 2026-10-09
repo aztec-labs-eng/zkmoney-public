@@ -116,6 +116,16 @@ export function checkAssertionRoute(
 export const requestedAttachment = (posture: DevicePosture): PasskeyAttachment | undefined =>
   posture === "laptop" ? "cross-platform" : undefined
 
+const LAPTOP_CREATION_WAIT_MS = 300_000
+
+/**
+ * The timeout a creation request names. A laptop gets five minutes: fetching a phone, scanning the
+ * QR code and unlocking it outlasts the ceremony's default. A phone names none and keeps that
+ * default.
+ */
+export const creationTimeoutMs = (posture: DevicePosture): number | undefined =>
+  posture === "laptop" ? LAPTOP_CREATION_WAIT_MS : undefined
+
 /** The device's own authenticator, as a transport list names it. */
 const LOCAL_TRANSPORT = "internal"
 

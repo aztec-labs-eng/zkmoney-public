@@ -3,8 +3,11 @@ import type { ContactRow } from "../../src/hooks/useContactsDirectory"
 import type { PaymentRequest } from "../../src/core/storages/RequestStorage"
 import type { Transaction } from "../../src/types/transactions"
 import {
+  approvedContactTags,
   buildPaidLinkRows,
   buildRequestRows,
+  isFromNonContact,
+  nonContactInbox,
   payerForPaidLink,
   withoutAnsweredRequests,
   withoutPaidLinkReceives,
@@ -320,6 +323,58 @@ describe("withoutPaidLinkReceives", () => {
     const txs = [receive("alice")]
     expect(withoutPaidLinkReceives(txs, [])).toEqual(txs)
   })
+})
+
+describe("requests from non-contacts", () => {
+  const row = (tag: string, addressKind: ContactRow["addressKind"] = "aztec-l2"): ContactRow => ({
+    id: tag,
+    name: tag,
+    tag,
+    address: "0x01",
+    addressKind,
+  })
+
+  it("counts only L2 contacts the user added, by lowercased tag", () => {
+    const fromTransfer = { ...row("jo"), autoAdded: true }
+    expect(
+      approvedContactTags([row("Ada"), row("0x5a7e…71a1", "ethereum-l1"), fromTransfer]),
+    ).toEqual(new Set(["ada"]))
+  })
+
+  it("flags incoming requests from outside the contact book only", () => {
+    const tags = new Set(["ada"])
+    expect(isFromNonContact(req({ contactTag: "Ada" }), tags)).toBe(false)
+    expect(isFromNonContact(req({ contactTag: "mina" }), tags)).toBe(true)
+    expect(isFromNonContact(req({ contactTag: "mina", direction: "outgoing" }), tags)).toBe(false)
+  })
+
+  it("lists pending, unexpired non-contact requests, newest first", () => {
+    const rows = nonContactInbox(
+      [
+        req({ id: "old", contactTag: "mina", createdAt: NOW - 3_000 }),
+        req({ id: "new", contactTag: "paul", createdAt: NOW - 1_000 }),
+        req({ id: "contact", contactTag: "ada" }),
+        req({ id: "declined", contactTag: "mina", status: "declined" }),
+        req({ id: "expired", contactTag: "mina", expiresAt: NOW - 1 }),
+      ],
+      [],
+      new Set(["ada"]),
+      NOW,
+    )
+    expect(rows.map((r) => r.id)).toEqual(["new", "old"])
+  })
+
+  it.each(["pending", "success"] as const)(
+    "leaves out a request a %s send answered, and offers it again once the send failed",
+    (status) => {
+      const request = req({ contactTag: "mina" })
+      const answer = { action: "send", requestId: "req-a" } as const
+      expect(nonContactInbox([request], [{ ...answer, status }], new Set(), NOW)).toEqual([])
+      expect(nonContactInbox([request], [{ ...answer, status: "failed" }], new Set(), NOW)).toEqual(
+        [request],
+      )
+    },
+  )
 })
 
 describe("withoutAnsweredRequests", () => {

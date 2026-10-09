@@ -118,7 +118,7 @@ export function WithdrawScreen() {
   // Past the pick step the read follows the fixed destination, not the live one.
   const checked = step === "pick" ? target : chosen?.recipient ?? null
   const onchain = useFreshAddressVerdict(checked, VERDICT_WAIT_MS).kind
-  // The wallet's own records answer at once. The contract copy is about the fresh flow's ETH leg.
+  // The wallet's own records answer at once. The contract copy is about the fresh flow's ETH for gas.
   const kind = (target && tie(target)) || (onchain === "contract" ? "history" : onchain)
   const screened = useScreenedAddress(target, "withdraw", { debounceMs: 300 })
 

@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, type KeyboardEvent, type MouseEvent, type ReactNode, type SyntheticEvent } from "react"
 import { GradientText, TopNavIconButton } from "@obsidion/web-ds"
 import { extensionAnswersPasskeys, onPasskeyRequest } from "@obsidion/passkey-web"
+import { revealFocusedField, useKeyboardInset } from "./keyboardInset"
 
 type ModalLifecycle = { suspend: () => void; resume: () => void }
 const SuspensionContext = createContext<{
@@ -60,14 +61,35 @@ const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
 
 /** React autofocus runs while the native dialog is hidden; explicit targets are focused after show. */
-function focusDialog(dialog: HTMLDialogElement) {
+function focusDialog(dialog: HTMLDialogElement, options?: FocusOptions) {
   const requested = dialog.querySelector<HTMLElement>("[data-autofocus], .ww-autofocus input")
   if (requested && requested.closest("dialog") === dialog && !requested.matches(":disabled")) {
-    requested.focus()
+    requested.focus(options)
     if (document.activeElement === requested) return
   }
   const card = dialog.querySelector<HTMLElement>(":scope > .ww-modal")
-  ;(card ?? dialog).focus()
+  ;(card ?? dialog).focus(options)
+}
+
+/**
+ * The field is focused at once, so iOS still opens its keyboard, without scrolling; once the open
+ * animation has ended it is scrolled into view where the sheet landed.
+ */
+function focusDialogAfterOpen(dialog: HTMLDialogElement) {
+  const card = dialog.querySelector<HTMLElement>(":scope > .ww-modal")
+  const animations = card?.getAnimations?.() ?? []
+  if (animations.length === 0) return focusDialog(dialog)
+  focusDialog(dialog, { preventScroll: true })
+  let pending = true
+  const settle = () => {
+    if (!pending) return
+    pending = false
+    const active = document.activeElement
+    if (dialog.open && active instanceof HTMLElement && active !== card && dialog.contains(active))
+      active.scrollIntoView?.({ block: "nearest" })
+  }
+  void Promise.all(animations.map((animation) => animation.finished)).then(settle, settle)
+  setTimeout(settle, 1000)
 }
 
 /** Native modal dialogs make the background inert and keep nested sheets in focus order. */
@@ -122,7 +144,7 @@ function useDialogFocus() {
         if (!dialog.isConnected || closing.current || dialog.open) return
         present(dialog)
         if (returnFocus?.isConnected && dialog.contains(returnFocus)) returnFocus.focus({ preventScroll: true })
-        if (!returnFocus || !dialog.contains(document.activeElement)) focusDialog(dialog)
+        if (!returnFocus || !dialog.contains(document.activeElement)) focusDialogAfterOpen(dialog)
         returnFocus = null
       },
     }
@@ -152,13 +174,15 @@ const FrameContext = createContext(false)
 export const useModalFrame = () => useContext(FrameContext)
 
 /** A persistent overlay for sequences that replace their card between steps. */
-export function ModalFrame({ label, role = "dialog", onClose, children }: {
+export function ModalFrame({ label, role = "dialog", onClose, overlayClassName, children }: {
   label?: string
   role?: "dialog" | "alertdialog"
   onClose?: () => void
+  overlayClassName?: string
   children: ReactNode
 }) {
   const { overlay, closing, opened, paused, cleanupCloseEvents, suspended } = useDialogFocus()
+  useKeyboardInset(overlay)
   useLayoutEffect(() => {
     const dialog = overlay.current
     // Native dismissal may change the step while keeping this frame mounted.
@@ -208,8 +232,12 @@ export function ModalFrame({ label, role = "dialog", onClose, children }: {
       role={role}
       aria-modal="true"
       aria-label={label}
-      className="ww-modal-overlay"
+      className={["ww-modal-overlay", overlayClassName].filter(Boolean).join(" ")}
       onKeyDown={onKeyDown}
+      onFocus={(e) => {
+        const field = e.target
+        if (field instanceof HTMLElement && field.matches("input, textarea, select")) void revealFocusedField(field)
+      }}
       onClose={(e) => {
         e.stopPropagation()
         if (e.target !== e.currentTarget) return
@@ -259,23 +287,33 @@ export function Modal({
   onBack?: () => void
   onClose?: () => void
   className?: string
-  variant?: "create" | "bare"
+  variant?: "create" | "bare" | "page"
   role?: "dialog" | "alertdialog"
   children: ReactNode
 }) {
   return (
-    <ModalFrame label={label ?? title} role={role} onClose={onClose}>
+    <ModalFrame
+      label={label ?? title}
+      role={role}
+      onClose={onClose}
+      overlayClassName={variant === "page" ? "ww-modal-overlay--page" : undefined}
+    >
       <div
         tabIndex={-1}
         onClick={(e: MouseEvent) => e.stopPropagation()}
-        className={["ww-modal", variant === "create" && "ww-modal--create", className].filter(Boolean).join(" ")}
+        className={[
+          "ww-modal",
+          variant === "create" && "ww-modal--create",
+          variant === "page" && "ww-modal--page",
+          className,
+        ].filter(Boolean).join(" ")}
       >
         {variant === "create" && onClose && (
           <div className="ww-modal__close">
             <TopNavIconButton icon="x" ariaLabel="Close" onClick={onClose} />
           </div>
         )}
-        {!variant && (title || onBack || onClose) && (
+        {(variant === undefined || variant === "page") && (title || onBack || onClose) && (
           <div className="ww-modal__head">
             <span className="ww-modal__head-slot">
               {onBack && <TopNavIconButton icon="chevron-left" ariaLabel="Back" onClick={onBack} />}
@@ -291,5 +329,45 @@ export function Modal({
         {children}
       </div>
     </ModalFrame>
+  )
+}
+
+/** Large centered modal with a fixed header and footer. */
+export function PageModal({ title, onClose, footer, children, fitContent = false }: {
+  title: string
+  onClose: () => void
+  footer?: ReactNode
+  children: ReactNode
+  fitContent?: boolean
+}) {
+  return (
+    <Modal title={title} onClose={onClose} variant="page" className={fitContent ? "ww-modal--page-fit" : undefined}>
+      <div className="ww-page-modal__content">{children}</div>
+      {footer && <div className="ww-page-modal__footer">{footer}</div>}
+    </Modal>
+  )
+}
+
+export function PageModalPanel({
+  children,
+  className,
+  scrollable = true,
+}: {
+  children: ReactNode
+  className?: string
+  scrollable?: boolean
+}) {
+  return (
+    <div
+      className={
+        scrollable
+          ? "ww-page-modal__surface"
+          : "ww-page-modal__surface ww-page-modal__surface--fixed"
+      }
+    >
+      <div className="ww-page-modal__scroll">
+        <div className={["ww-page-modal__panel", className].filter(Boolean).join(" ")}>{children}</div>
+      </div>
+    </div>
   )
 }

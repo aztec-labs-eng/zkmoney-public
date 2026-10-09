@@ -34,7 +34,10 @@ export function recentPeople(
     if (tx.action === "send" && "toTag" in tx) add(tx.toTag, tx.to)
     if (tx.action === "receive" && "from" in tx) add(tx.from, tx.senderL2Address)
   }
-  for (const request of sources.requests ?? []) if (request.kind !== "link") add(request.contactTag)
+  // An unsaved requester stays in the non-contact inbox, not among the people to pay.
+  for (const request of sources.requests ?? []) {
+    if (request.kind !== "link" && request.direction !== "incoming") add(request.contactTag)
+  }
 
   const recent = recentContacts([...contacts, ...unsaved.values()], sources, limit)
   const listed = new Set(recent.map((row) => row.id))

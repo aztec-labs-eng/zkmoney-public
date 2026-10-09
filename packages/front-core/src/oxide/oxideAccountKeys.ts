@@ -99,3 +99,27 @@ export function deriveSwapEscrowRecoverySalt(masterSecret: FieldLike, swapNonce:
     ),
   )
 }
+
+/**
+ * The two salts a Sky savings escrow commits to. The recipient salt is the secret of the deposit the
+ * escrow makes into the destination portal, which this account claims; the recovery salt hides the
+ * recovery account. Both come from the master secret and the escrow nonce, so a wallet restored from
+ * its secret can still claim or recover its moves.
+ */
+export function deriveSkyEscrowSalts(
+  masterSecret: FieldLike,
+  nonce: Hex,
+): { recipient: Fr; recovery: Fr } {
+  if (!/^0x[0-9a-fA-F]{64}$/.test(nonce)) {
+    throw new Error("deriveSkyEscrowSalts: nonce must be 0x-prefixed 32-byte hex")
+  }
+  const salt = (purpose: string) =>
+    new Fr(
+      deriveScalar(
+        masterSecret,
+        `oxide:sky-escrow-${purpose}-salt:${nonce.toLowerCase()}`,
+        Fr.MODULUS,
+      ),
+    )
+  return { recipient: salt("recipient"), recovery: salt("recovery") }
+}

@@ -15,10 +15,11 @@ import {
 } from "viem"
 import {
   LegacySwapEscrowEventsAbi,
+  LegacySwapEscrowFactoryAbi,
   SwapEscrowAbi,
   SwapEscrowFactoryAbi,
-  type SwapEscrowArgs,
 } from "@oxide/l1-contracts"
+import type { SwapEscrowCommitment } from "./swapOnWithdraw.js"
 
 export interface SwapEscrowReader {
   /** DAI held at the escrow. Zero once the swap ran or the DAI was recovered. */
@@ -29,7 +30,7 @@ export interface SwapEscrowReader {
    * Whether `factory.deployAndExecute(args)` would succeed now. False only on a contract revert (a min-out
    * miss, an ETH recipient that rejects ETH); an RPC failure throws so the caller retries.
    */
-  deploySimulates(factory: Address, args: SwapEscrowArgs): Promise<boolean>
+  deploySimulates(factory: Address, commitment: SwapEscrowCommitment): Promise<boolean>
   /**
    * Tx of the factory's execution log for `escrow`. Undefined when none is in the lookback window; an
    * RPC failure throws so the caller retries rather than reading it as "no swap".
@@ -84,16 +85,16 @@ export class L1SwapEscrowReader implements SwapEscrowReader {
     return code !== undefined && code !== "0x"
   }
 
-  async deploySimulates(factory: Address, args: SwapEscrowArgs): Promise<boolean> {
+  async deploySimulates(factory: Address, commitment: SwapEscrowCommitment): Promise<boolean> {
     try {
       await this.client.simulateContract({
         address: factory,
-        abi: SwapEscrowFactoryAbi,
+        abi: commitment.layout === "v2" ? SwapEscrowFactoryAbi : LegacySwapEscrowFactoryAbi,
         functionName: "deployAndExecute",
-        args: [args] as never,
+        args: [commitment.args] as never,
         // `deployAndExecute` pays its caller the tip, and an ERC20 refuses the zero address, so the simulation
         // needs a real payee. The recipient is one the escrow already commits to.
-        account: args.recipient,
+        account: commitment.args.recipient,
       })
       return true
     } catch (err) {

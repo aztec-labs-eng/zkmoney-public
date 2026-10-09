@@ -209,7 +209,7 @@ export function ClaimProvingModal({
     <Modal variant="create" label="Claiming payment">
       <OperationHandOff
         onLeave={onLeave}
-        renderWorking={(passkey, child) => (
+        renderWorking={(passkey, child, hint) => (
           <div className="ww-create-modal__body ww-claim-proving">
             <div className="ww-claim-proving__status">
               <GradientSpinner size={48} />
@@ -220,6 +220,7 @@ export function ClaimProvingModal({
                   ? child
                   : BEAT_LABEL[beat ?? "building"]}
               </span>
+              {hint}
             </div>
             {/* Cancel is offered only while nothing has moved; the warning takes over after. */}
             {onCancel ? (

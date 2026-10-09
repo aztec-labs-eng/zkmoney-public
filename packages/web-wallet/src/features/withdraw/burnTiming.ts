@@ -44,13 +44,3 @@ export async function burnLanding(storage: IStorageAdapter = webStorage): Promis
     latest: seconds[seconds.length - 1]! * 1.5,
   }
 }
-
-/** When the last of `legs` burns lands, each sent once the one before is mined. */
-export function sequentialLanding(single: BurnLanding, legs: number): BurnLanding {
-  if (legs <= 1) return single
-  return {
-    earliest: single.earliest * legs,
-    expected: single.expected * legs,
-    latest: single.latest * legs,
-  }
-}

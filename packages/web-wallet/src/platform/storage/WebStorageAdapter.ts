@@ -6,15 +6,10 @@ import {
 } from "@obsidion/front-core"
 import { CONFIG_STORAGE_KEY_PREFIX } from "@obsidion/core/constants"
 import { getActiveStorageId } from "./activeStorage"
+import { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX } from "./storageKeys"
 import { walletStorage } from "./walletStorage"
 
-/**
- * Every adapter key lives under this prefix so `clear()` can wipe front-core's
- * state without touching keys other modules own directly (the claimed
- * identity, the passkey breadcrumbs, the active storage id).
- */
-export const WEB_STORAGE_PREFIX = "obsidion."
-export const PASSKEY_IDENTITY_MAP_KEY = "obsidion_web_passkey_identity_map"
+export { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX }
 
 /**
  * Per-device keys: written before any account exists (the consent prompt answers on the claim

@@ -5,6 +5,7 @@ import { RequestReceiver, fulfillmentSatisfiesRequest } from "../../src/xmtp/Req
 import type { TokenTransaction } from "../../src/types/transactions"
 import type {
   IncomingRequestInput,
+  RequestSenderPolicy,
   RequestStoreWrites,
   RequestTagBindingResolver,
   RequestTerminalStatus,
@@ -203,6 +204,66 @@ describe("RequestReceiver", () => {
       expect(result).toEqual({ status: "ignored", reason: "no-matching-request" })
       expect(resolved).toBe(0)
       expect(store.applies).toHaveLength(0)
+    })
+  })
+
+  describe("sender policy", () => {
+    const policyOf = (admitted: string[]): RequestSenderPolicy => ({
+      admitsRequester: async (tag) => admitted.includes(tag),
+    })
+
+    it("skips a refused requester before the binding is resolved", async () => {
+      const store = new FakeStore()
+      let resolved = 0
+      const binding: RequestTagBindingResolver = {
+        resolveXmtpBinding: async () => {
+          resolved += 1
+          return "0xalice"
+        },
+      }
+      const receiver = new RequestReceiver(store, undefined, binding, policyOf([]))
+      const result = await receiver.process({
+        content: requestContent,
+        senderXmtpAddresses: ["0xalice"],
+      })
+      expect(result).toEqual({ status: "ignored", reason: "sender-not-admitted" })
+      expect(resolved).toBe(0)
+      expect(store.added).toHaveLength(0)
+    })
+
+    it("stores an admitted requester", async () => {
+      const store = new FakeStore()
+      const receiver = new RequestReceiver(store, undefined, undefined, policyOf(["alice"]))
+      const result = await receiver.process({ content: requestContent })
+      expect(result).toEqual({ status: "accepted", kind: "request" })
+      expect(store.added).toHaveLength(1)
+    })
+
+    it("admits when the policy throws, so a broken contact read never holds the inbox", async () => {
+      const store = new FakeStore()
+      const warnings: string[] = []
+      const receiver = new RequestReceiver(
+        store,
+        { warn: (message) => warnings.push(message) },
+        undefined,
+        {
+          admitsRequester: async () => {
+            throw new Error("contacts unreadable")
+          },
+        },
+      )
+      const result = await receiver.process({ content: requestContent })
+      expect(result).toEqual({ status: "accepted", kind: "request" })
+      expect(warnings).toHaveLength(1)
+    })
+
+    it("does not gate a declined signal", async () => {
+      const store = new FakeStore()
+      const receiver = new RequestReceiver(store, undefined, undefined, policyOf([]))
+      const result = await receiver.process({
+        content: { kind: "request-declined", requestId: "req-1", networkId: "aztec-sandbox" },
+      })
+      expect(result).toEqual({ status: "accepted", kind: "request-declined" })
     })
   })
 

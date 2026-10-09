@@ -1,10 +1,13 @@
 import {
   APPROVE_AGAIN_COPY,
+  PHONE_HELP_COPY,
   PHONE_STEPS_COPY,
   SIGN_IN_SHEET_COPY,
   type PasskeyHint,
   type PhoneReach,
   type StepsHero,
+  currentUserAgentInfoSync,
+  extensionAnswersPasskeys,
   stepsCopyFor,
 } from "@obsidion/passkey-web"
 import { useEffect, useId, useRef, useState, type ReactNode } from "react"
@@ -18,17 +21,19 @@ function TipRow({
   mark,
   label,
   gold,
+  testId,
   children,
 }: {
   mark: ReactNode
   label: string
-  /** The loss row: gold, as the warn box is. */
+  /** A warning row: gold, as the warn box is. */
   gold?: boolean
+  testId?: string
   children: ReactNode
 }) {
   const id = useId()
   return (
-    <div className="ww-phone-steps__tiprow">
+    <div className="ww-phone-steps__tiprow" data-testid={testId}>
       <button
         type="button"
         className={
@@ -74,6 +79,34 @@ function PasskeyLoss() {
         <p key={line}>{line}</p>
       ))}
     </TipRow>
+  )
+}
+
+/** What to pick when this computer offers to save the passkey: an extension's pop-up, Windows Hello. */
+function ThisComputer({ extension, windows }: { extension: boolean; windows: boolean }) {
+  const { label, title, extension: lines, refused } = PHONE_STEPS_COPY.thisComputer
+  return (
+    <TipRow
+      gold
+      testId="phone-steps-this-computer"
+      mark={<Icon name="alert-triangle" size={14} />}
+      label={label}
+    >
+      <strong>{title}</strong>
+      {extension && lines.map((line) => <p key={line}>{line}</p>)}
+      {windows && <p>{PHONE_HELP_COPY.windows}</p>}
+      <p>{refused}</p>
+    </TipRow>
+  )
+}
+
+/** One sentence the user acts on in the browser's prompt, shown only where it applies. */
+function StepsNote({ testId, children }: { testId: string; children: string }) {
+  return (
+    <p className="ww-phone-steps__note" data-testid={testId}>
+      <Icon name="info-circle" size={14} />
+      {children}
+    </p>
   )
 }
 
@@ -196,6 +229,8 @@ export function PhoneSteps({
   const copy = keyPicked ? PHONE_STEPS_COPY.noPhone : reachCopy
   const [route, alt] = copy.routes
   const phone = route.hint === "hybrid"
+  const extension = extensionAnswersPasskeys("create")
+  const windows = currentUserAgentInfoSync().osFamily === "windows"
   return (
     <div
       ref={root}
@@ -227,6 +262,12 @@ export function PhoneSteps({
                 <span className="ww-phone-steps__pill">{route.label}</span>
               </button>
             </div>
+            {/* The Windows line shows twice: under the button here, and in the card's tooltip below. */}
+            {windows && (
+              <StepsNote testId="phone-steps-windows-under-button">
+                {PHONE_HELP_COPY.windows}
+              </StepsNote>
+            )}
             <div className="ww-phone-steps__why">
               <p className="ww-phone-steps__why-title">
                 <Icon name="shield-check" size={16} color="var(--accent-green)" />
@@ -241,6 +282,7 @@ export function PhoneSteps({
               </p>
               <SupportedPasskeys />
               <PasskeyLoss />
+              {(extension || windows) && <ThisComputer extension={extension} windows={windows} />}
             </div>
           </div>
         </>
@@ -250,6 +292,9 @@ export function PhoneSteps({
             <p>{PHONE_STEPS_COPY.noPhone.note}</p>
             <p>{PHONE_STEPS_COPY.noPhone.models}</p>
           </PasskeyWarn>
+          {extension && (
+            <StepsNote testId="phone-steps-extension">{PHONE_STEPS_COPY.extension}</StepsNote>
+          )}
           {details}
           <PrimaryGradientButton
             title={route.label}

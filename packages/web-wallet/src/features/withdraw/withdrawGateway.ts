@@ -30,8 +30,8 @@ import {
   readPortalWithdrawalState,
   type ObsidionAccount,
   type ObsidionWallet,
-  type SponsoredExitAuthorization,
-  type SwapOnWithdrawOutput,
+  type SwapEscrowArgs,
+  type SwapEscrowOutput,
   type SwapOnWithdrawPlan,
   type SwapSimulation,
   type TokenService,
@@ -65,12 +65,14 @@ import { RAIL_REGISTERED } from "../onboarding/rails"
 import { slowWhenHidden } from "../../platform/visibilityScheduler"
 import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
 import type { WithdrawalReceiveAsset } from "./withdrawAssets"
+import { sponsorshipErrorCopy } from "../allowance/sponsorshipError"
 
 /** Progress stages the modal's proving view renders. */
 export type WithdrawStage = "building" | "proving" | "submitting"
 
 /** What a swap route commits to at confirm: the tip the escrow pays, and the estimate the record keeps. */
-export type SwapCommit = Pick<SwapSimulation, "relayerTip" | "amountOut" | "decimals">
+export type SwapCommit = Pick<SwapSimulation, "relayerTip" | "amountOut" | "decimals"> &
+  Partial<Pick<SwapSimulation, "gasOut">>
 
 export function getWithdrawalStore(): WithdrawalStorage {
   return WithdrawalStorage.get(webStorage)
@@ -256,6 +258,8 @@ export interface BurnInput<R extends BurnResult> {
   burn: (record: WithdrawalRecord) => Promise<R>
   /** The mined amount and tip; the seeded record's figures stand in when absent or rejected. */
   minedFigures?: (result: R) => Promise<{ amount: string; relayerTip: string } | undefined>
+  /** The context the failure copy is worded for; "withdraw:submit" when absent. */
+  reportContext?: string
 }
 
 /**
@@ -290,7 +294,9 @@ export async function runBurn<R extends BurnResult>(
     if (isFlowCancelled(err)) {
       await store.remove(localId).catch(() => {})
     } else {
-      const message = err instanceof Error ? err.message : "Withdrawal failed"
+      const message =
+        sponsorshipErrorCopy(err, input.reportContext ?? "withdraw:submit")?.message ??
+        (err instanceof Error ? err.message : "Withdrawal failed")
       await store.patch(localId, { phase: "failed", error: message }).catch(() => {})
     }
     throw err
@@ -327,7 +333,7 @@ export async function runBurn<R extends BurnResult>(
 /** The swap leg, fully built during planning: the plan the record persists and the burn pays. */
 export interface SwapLeg {
   source: { portal: string; l2Token: string }
-  output: SwapOnWithdrawOutput
+  output: SwapEscrowOutput
   plan: SwapOnWithdrawPlan
   /** The factory the escrow address was derived from; stored so a later exit targets the same one. */
   factory: Address
@@ -343,12 +349,12 @@ export interface SwapRecoverer {
 }
 
 /**
- * Plan the swap leg of a burn. A non-DAI output burns to oxide's counterfactual SwapEscrow instead
- * of the recipient; the sdk pairs the escrow's swap with the release in the Broadcaster call riding
- * the burn tx, so a mined burn implies a mined broadcast. Call it before the record exists, so a
+ * Plan the swap leg of a burn. A non-DAI output, or any output with a gas swap, burns to oxide's
+ * counterfactual SwapEscrow instead of the recipient; the sdk pairs the escrow's swap with the
+ * release in the Broadcaster call riding the burn tx, so a mined burn implies a mined broadcast. Call it before the record exists, so a
  * bad manifest aborts with nothing persisted and the escrow args land on the record before the
  * burn is sent.
- * Undefined for DAI.
+ * Undefined for DAI without a gas swap.
  */
 export async function planSwapLeg(
   _wallet: ObsidionWallet,
@@ -360,17 +366,19 @@ export async function planSwapLeg(
   source?: OxideEnvTuple,
   /** Must match the burn's, which the escrow's funding is net of. */
   proverTip = 0n,
+  /** DAI the escrow swaps to ETH for the recipient: with it, even DAI rides an escrow. */
+  daiForGas = 0n,
 ): Promise<SwapLeg | undefined> {
-  if (receiveAsset === "DAI") return undefined
+  if (receiveAsset === "DAI" && daiForGas === 0n) return undefined
   if (!commit) throw new Error("Swap fee unavailable. Withdraw DAI instead.")
   const tuple = source ?? (await getOxideTuple(getConfig()))
   requireTupleField(tuple, "l2Broadcaster")
-  const swapEscrowFactory = requireTupleField(tuple, "swapEscrowFactory") as Address
+  const swapEscrowFactoryV2 = requireTupleField(tuple, "swapEscrowFactoryV2") as Address
   const cut = await fpcFundingCut(l1PublicClient(getConfig()), tuple.portal as Address)
   const nonce = Fr.random().toString() as Hex
   const { account, secret } = recoverer ?? (await ownSwapRecoverer(tuple))
   const plan = planSwapOnWithdraw({
-    swapEscrowFactory,
+    swapEscrowFactoryV2,
     output: receiveAsset,
     l1Recipient: recipient,
     amount,
@@ -378,6 +386,7 @@ export async function planSwapLeg(
     proverTip,
     fpcFundingCut: cut,
     relayerTip: commit.relayerTip,
+    daiForGas,
     recovery: { account, salt: deriveSwapEscrowRecoverySalt(secret, nonce) },
     nonce,
   })
@@ -386,7 +395,7 @@ export async function planSwapLeg(
     output: receiveAsset,
     source: { portal: tuple.portal, l2Token: tuple.l2Token },
     plan,
-    factory: swapEscrowFactory,
+    factory: swapEscrowFactoryV2,
   }
 }
 
@@ -399,11 +408,9 @@ export async function withdrawalOptions(
   tuple: OxideEnvTuple,
   swap?: SwapLeg,
 ): Promise<WithdrawalOptions> {
-  const portal = await readPortalWithdrawalState(
-    l1PublicClient(getConfig()),
-    requireTupleField(tuple, "portal") as Address,
-  )
-  return { tuple, portal, ...(swap ? { swap: swap.plan } : {}) }
+  const l1 = l1PublicClient(getConfig())
+  const portal = await readPortalWithdrawalState(l1, requireTupleField(tuple, "portal") as Address)
+  return { tuple, portal, ...(swap ? { swap: { ...swap.plan, l1 } } : {}) }
 }
 
 /** What a swap leg writes on the record before its burn is sent, plus the confirm-time quote for the detail sheet. */
@@ -416,11 +423,21 @@ export function swapRecordFields(
     swapOutput: swap.output,
     swapEscrow: swap.plan.escrow,
     swapEscrowFactory: swap.factory,
+    swapEscrowLayout: "v2",
     swapRecoveryCommitment: swap.plan.escrowArgs.recoveryCommitment,
     swapNonce: swap.plan.escrowArgs.nonce,
     swapRelayerTip: swap.plan.escrowArgs.relayerTip.toString(),
+    ...gasRecordFields(swap.plan.escrowArgs),
     swapEstimatedOut: quote?.amountOut.toString(),
     swapOutputDecimals: quote?.decimals,
+    ...(quote?.gasOut ? { swapEstimatedGasOut: quote.gasOut.toString() } : {}),
+  }
+}
+
+function gasRecordFields(args: SwapEscrowArgs): Partial<WithdrawalRecord> {
+  return {
+    ...(args.daiForGas > 0n ? { swapDaiForGas: args.daiForGas.toString() } : {}),
+    ...(args.minEthForGas > 0n ? { swapMinEthForGas: args.minEthForGas.toString() } : {}),
   }
 }
 
@@ -486,25 +503,18 @@ export interface SponsoredBurnInput {
   recipientAlias?: string
   /** Atomic units of the wallet asset the burn removes. */
   amount: bigint
-  /** The planned swap leg and the quote it was confirmed on; both absent for DAI. */
+  /** The planned swap leg and the quote it was confirmed on; both absent for a direct DAI burn. */
   swap?: SwapLeg
   swapCommit?: SwapCommit
   /** Laid over the record and the sdk options every sponsored burn shares. */
   record?: Partial<WithdrawalRecord>
   options?: Partial<WithdrawalOptions>
-  /** This burn's share of a signature taken over several; absent, the burn signs for itself. */
-  authorization?: SponsoredExitAuthorization
-  /** The exit that signature covered; absent, the burn reads its own. */
-  exit?: Awaited<ReturnType<typeof sponsoredExit>>
   /** Paid to the first prover of the burn's checkpoint, out of the burn. */
   proverTip?: bigint
 }
 
-/**
- * What a sponsored burn hands the sdk, off the fields its record is seeded with. Read before the
- * record exists, so a signature taken over an exit covers the very one the burn runs.
- */
-export async function sponsoredExit(tuple: OxideEnvTuple, input: SponsoredBurnInput) {
+/** What a sponsored burn hands the sdk, off the fields its record is seeded with. */
+async function sponsoredExit(tuple: OxideEnvTuple, input: SponsoredBurnInput) {
   const { recipient, amount, swap } = input
   const seed = { recipient, ...swapRecordFields(swap), ...input.record }
   return {
@@ -528,7 +538,7 @@ export async function runSponsoredBurn(
 ): Promise<{ record: WithdrawalRecord; mined: boolean }> {
   const { recipient, recipientAlias, amount, swap, swapCommit } = input
   const fpcFundingCut = await currentFpcFundingCut()
-  const exit = input.exit ?? (await sponsoredExit(tuple, input))
+  const exit = await sponsoredExit(tuple, input)
 
   const { record, result } = await runBurn({
     op,
@@ -556,7 +566,6 @@ export async function runSponsoredBurn(
         userAccount: deps.account,
         useRawAmount: true,
         withdrawal: exit.withdrawal,
-        authorization: input.authorization,
         proverTip: exit.proverTip,
       })
     },

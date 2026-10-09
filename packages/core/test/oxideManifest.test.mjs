@@ -53,6 +53,18 @@ test("loadOxideManifestTuple returns the manifest values unchanged off mainnet",
   assert.equal(tuple.entryPoint, RAW_ENTRY_POINT)
 })
 
+test("loadOxideManifestTuple reads the deployment's Sky escrow factory", async () => {
+  const factory = "0x00000000000000000000000000000000000000f5"
+  const tuple = await loadOxideManifestTuple({
+    manifestUrl: MANIFEST_URL,
+    portal: PORTAL,
+    network: Network.TESTNET,
+    fetchImpl: jsonFetch(manifest({ skyEscrowFactory: factory })),
+  })
+
+  assert.equal(tuple.skyEscrowFactory, factory)
+})
+
 test("loadOxideManifestTuple gates and overlays the pinned mainnet entry", async () => {
   const tuple = await loadOxideManifestTuple({
     manifestUrl: MANIFEST_URL,

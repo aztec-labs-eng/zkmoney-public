@@ -259,7 +259,9 @@ describe("confirmConnect", () => {
 
     await confirmConnect(
       preview,
-      confirmDeps({ sendConnectBack: async () => ({ ok: false, reason: "recipient-not-reachable" }) }),
+      confirmDeps({
+        sendConnectBack: async () => ({ ok: false, reason: "recipient-not-reachable" }),
+      }),
     )
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(await queue.list()).toMatchObject([{ uuid: UUID }])
@@ -283,6 +285,17 @@ describe("confirmConnect", () => {
       }),
     )
     expect(result).toEqual({ kind: "error", message: ERR_INVALID })
+    expect(await queue.list()).toEqual([])
+  })
+
+  it("a stored contact under another tag is a conflict: nothing added, nothing queued", async () => {
+    const preview = await previewOf(stashToPayload({ hash: `#${packet()}` }))
+    const existing: Contact = { name: "old-tag", tag: "old-tag", address: PEER_L2, autoAdded: true }
+    const result = await confirmConnect(
+      preview,
+      confirmDeps({ addOrMergeContact: async () => existing }),
+    )
+    expect(result).toEqual({ kind: "conflict", contact: existing })
     expect(await queue.list()).toEqual([])
   })
 

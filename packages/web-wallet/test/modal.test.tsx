@@ -414,4 +414,65 @@ describe("Modal", () => {
       expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalledTimes(1)
     })
   })
+
+  describe("under an on-screen keyboard that overlays the page", () => {
+    class FakeViewport extends EventTarget {
+      height = 800
+      offsetTop = 0
+    }
+    let viewport: FakeViewport
+    beforeEach(() => {
+      viewport = new FakeViewport()
+      Object.defineProperty(window, "visualViewport", { value: viewport, configurable: true })
+      Object.defineProperty(window, "innerHeight", { value: 800, configurable: true })
+    })
+    afterEach(() => {
+      Object.defineProperty(window, "visualViewport", { value: undefined, configurable: true })
+      vi.useRealTimers()
+    })
+
+    it("carries the keyboard's inset and the visible height on the sheet's root", async () => {
+      await render(
+        <Modal title="Amount">
+          <input aria-label="Amount" />
+        </Modal>,
+      )
+      expect(dialog().style.getPropertyValue("--ww-keyboard-inset")).toBe("0px")
+      viewport.height = 520
+      act(() => viewport.dispatchEvent(new Event("resize")))
+      expect(dialog().style.getPropertyValue("--ww-keyboard-inset")).toBe("280px")
+      expect(dialog().style.getPropertyValue("--ww-visible-height")).toBe("520px")
+    })
+
+    it("focuses the field at once, so iOS opens the keyboard, and scrolls it into view once the sheet has landed", async () => {
+      let finish!: () => void
+      const finished = new Promise<void>((resolve) => (finish = resolve))
+      const proto = HTMLElement.prototype as unknown as { getAnimations?: () => unknown[] }
+      proto.getAnimations = () => [{ finished }]
+      const scrolled = vi.fn()
+      const focus = vi.spyOn(HTMLElement.prototype, "focus")
+      Object.assign(HTMLElement.prototype, { scrollIntoView: scrolled })
+      try {
+        await render(
+          <Modal title="Amount">
+            <input aria-label="Amount" data-autofocus />
+          </Modal>,
+        )
+        const input = container.querySelector("input")!
+        expect(document.activeElement).toBe(input)
+        expect(focus.mock.contexts.indexOf(input)).toBeGreaterThanOrEqual(0)
+        expect(focus.mock.calls[focus.mock.contexts.indexOf(input)][0]).toEqual({ preventScroll: true })
+        expect(scrolled).not.toHaveBeenCalled()
+        finish()
+        await act(async () => {
+          await finished
+        })
+        expect(scrolled).toHaveBeenCalledWith({ block: "nearest" })
+      } finally {
+        focus.mockRestore()
+        delete (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView
+        delete proto.getAnimations
+      }
+    })
+  })
 })

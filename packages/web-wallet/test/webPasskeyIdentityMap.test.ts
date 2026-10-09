@@ -254,3 +254,49 @@ describe("the remembered accounts a sign-in screen lists", () => {
     expect(listUsertagCandidates(RP)).toEqual([])
   })
 })
+
+describe("WebPasskeyIdentityMap answered", () => {
+  beforeEach(() => localStorage.clear())
+
+  it("the latest answer wins: remote, then local, then remote again", async () => {
+    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    await map.upsert(entry("a"))
+    const before = stored("a")
+
+    await map.setAnswered("a", "remote")
+    expect(stored("a")).toEqual({ ...before, answered: "remote" })
+    await map.setAnswered("a", "local")
+    expect(stored("a")).toEqual({ ...before, answered: "local" })
+    await map.setAnswered("a", "remote")
+    expect(stored("a")).toEqual({ ...before, answered: "remote" })
+  })
+
+  it("no entry, another RP's entry, or an attempt that ended: nothing is written", async () => {
+    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    await map.setAnswered("missing", "remote")
+    expect(await map.get("missing")).toBeUndefined()
+
+    await new WebPasskeyIdentityMap(new WebStorageAdapter(), "other.example").upsert(entry("b"))
+    await map.setAnswered("b", "remote")
+    expect(stored("b")).not.toHaveProperty("answered")
+
+    await map.upsert(entry("c"))
+    await map.setAnswered("c", "remote", () => false)
+    expect(stored("c")).not.toHaveProperty("answered")
+  })
+
+  it("a re-record, a tag hint and a cleared inference all keep it", async () => {
+    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    await map.upsert(entry("a"))
+    await map.setAnswered("a", "remote")
+    await map.setInferredTransports("a", ["usb"])
+    await map.setInferredTransports("a", undefined)
+    await rememberUsertag(RP, "a", "alice")
+    await map.upsert({ ...entry("a"), l2Address: "0xmoved" })
+    expect(stored("a")).toMatchObject({
+      answered: "remote",
+      usertag: "alice",
+      l2Address: "0xmoved",
+    })
+  })
+})

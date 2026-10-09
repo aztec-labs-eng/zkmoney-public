@@ -5,6 +5,7 @@ import { getConfig } from "../config/env"
 import { reloadPage } from "../platform/storage/walletStorage"
 import { EndpointsModal, PreWalletEndpointsModal } from "./EndpointsModal"
 import type { BootError } from "./PxeBoot"
+import { PreviewDraftRecovery } from "../dev/PreviewDraftRecovery"
 
 /**
  * A boot that stopped: why, a retry, and the ways out the endpoints allow. `walletOpen` is false for
@@ -49,6 +50,7 @@ export function BootErrorScreen({
       )}
       <PrimaryGradientButton title="Retry" onClick={onRetry} />
       <BootRecovery walletOpen={walletOpen} />
+      {import.meta.env.VITE_CONFIG_EDITOR === "true" && <PreviewDraftRecovery />}
     </div>
   )
 }

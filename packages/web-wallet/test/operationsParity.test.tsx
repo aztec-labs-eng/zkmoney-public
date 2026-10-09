@@ -14,7 +14,8 @@ const fake = fakeOperationsModule()
 const hash = `0x${"0a".repeat(32)}`
 
 type Handle = { operationId: string; leaveToChain(txHash: string | undefined): void }
-type Scenario = (op: Handle) => Promise<unknown>
+type Store = { markHandedOff(operationId: string): Promise<void> }
+type Scenario = (op: Handle, store: Store) => Promise<unknown>
 
 const proving = (op: Handle) => provingProgress.emitStageStart("proving", op.operationId)
 
@@ -25,6 +26,10 @@ const scenarios: Record<string, Scenario> = {
   },
   "a failure before proving goes": async () => {
     throw new Error("read failed")
+  },
+  "a failure after the hand-off, before proving, fails with its message": async (op, store) => {
+    await store.markHandedOff(op.operationId)
+    throw new Error("Gas settings exceed whitelist max_fee")
   },
   "a failure while proving fails with its message": async (op) => {
     proving(op)
@@ -69,7 +74,7 @@ async function outcome(mod: typeof fake | typeof real, name: string, scenario: S
     input,
     async (op) => {
       busy = await busyLabel(mod)
-      return scenario(op as unknown as Handle)
+      return scenario(op as unknown as Handle, mod.getOperationStore())
     },
     (r) => (r as { txHash?: string }).txHash,
   ).catch(() => {})

@@ -196,6 +196,34 @@ describe("copy", () => {
     expect(PHONE_STEPS_COPY.noPhone.models).not.toMatch(/manager|iCloud|Google|1Password/i)
   })
 
+  it("tells a laptop with a password manager's extension not to save there, on this computer only", () => {
+    const { extension } = PHONE_STEPS_COPY
+    expect(extension).toBe(
+      "If a password manager pops up on this computer, don't save the passkey there. Choose " +
+        "another device or hardware key if it offers one.",
+    )
+    // A password manager on the phone is accepted, so the line names this computer's.
+    expect(extension).toMatch(/password manager.*this computer/)
+    // "If": a manager that leaves the request to the browser shows nothing.
+    expect(extension).toMatch(/^If /)
+    // Closing a manager's window can end the whole sign-up.
+    expect(extension).not.toMatch(/close/i)
+    expect(PHONE_HELP_COPY.extensionTitle).not.toMatch(/phone|bluetooth/i)
+  })
+
+  it("the card's row says where not to save, and its tooltip names what offers to", () => {
+    const { label, extension, refused } = PHONE_STEPS_COPY.thisComputer
+    expect(label).toBe("Don't save the passkey on this computer")
+    expect(extension[0]).toMatch(/Bitwarden/)
+    // A password manager on the phone is accepted, so every one named is this computer's.
+    for (const line of extension) {
+      if (/password manager/i.test(line)) expect(line).toMatch(/this computer/)
+    }
+    // Closing a manager's window can end the whole sign-up, so the tooltip never asks for it.
+    expect(extension.join(" ")).not.toMatch(/\bclose (it|the pop-up)\b/i)
+    expect(refused).toMatch(/this computer/)
+  })
+
   it("the up-front in-app card names the problem and names no step", () => {
     const { title, line } = IN_APP_UP_FRONT_COPY
     expect(title).toBe("Passkeys don't work in this app's browser")

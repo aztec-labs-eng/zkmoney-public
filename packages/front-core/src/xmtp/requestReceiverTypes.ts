@@ -37,6 +37,11 @@ export interface RequestTagBindingResolver {
   resolveXmtpBinding(tag: string): Promise<string | null>
 }
 
+/** Who may send new requests. A throw admits: the UI filters by sender again. */
+export interface RequestSenderPolicy {
+  admitsRequester(tag: string): Promise<boolean>
+}
+
 export type RequestTerminalStatus = "fulfilled" | "declined"
 
 /** Fields for an incoming request row. */
@@ -75,6 +80,8 @@ export type RequestIgnoreReason =
   | "no-matching-request"
   /** The claimed tag's bootstrap address is not on the peer's inbox. */
   | "sender-binding-mismatch"
+  /** The sender policy refused the requester. */
+  | "sender-not-admitted"
 
 export type RequestDeferReason =
   | "store-write-failure"

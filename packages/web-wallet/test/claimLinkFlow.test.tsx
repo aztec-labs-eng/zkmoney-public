@@ -1136,4 +1136,28 @@ describe("ClaimProvingModal", () => {
     expect(container.textContent).toContain("Keep this tab open")
     act(() => root.unmount())
   })
+
+  it("shows the local-passkey line up to the prompt, for a passkey that answered remotely", async () => {
+    const { ClaimProvingModal } = await import("../src/features/paylink/ClaimLinkModal")
+    const { walletStorage } = await import("../src/platform/storage/walletStorage")
+    const { setActiveCredentialId } = await import("../src/platform/storage/activeStorage")
+    localStorage.removeItem("webwallet.local-passkey-hint-shown")
+    const entry = { credentialId: "cred", rpId: "localhost", createdAt: 1, answered: "remote" }
+    await walletStorage.batch(() => {
+      walletStorage.setItem(
+        "obsidion.obsidion_web_passkey_identity_map",
+        JSON.stringify({ version: 1, entries: { cred: entry } }),
+      )
+      setActiveCredentialId("cred")
+    })
+    const container = document.createElement("div")
+    const root = createRoot(container)
+    await act(async () => root.render(<ClaimProvingModal onLeave={vi.fn()} />))
+    expect(container.textContent).toContain("If your passkey has synced to this computer")
+    await act(async () => provingProgress.emitSigningStart())
+    expect(container.textContent).toContain("If your passkey has synced to this computer")
+    expect(localStorage.getItem("webwallet.local-passkey-hint-shown")).toBe("1")
+    act(() => root.unmount())
+    localStorage.removeItem("webwallet.local-passkey-hint-shown")
+  })
 })

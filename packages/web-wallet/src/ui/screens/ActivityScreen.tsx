@@ -1,6 +1,7 @@
 import { useState } from "react"
 import { formatDateLabel } from "@obsidion/front-core"
 import { GradientText } from "@obsidion/web-ds"
+import { RequestsUnavailableNotice } from "../../features/requests/RequestsUnavailableNotice"
 import { ActivityListSkeleton } from "../Skeletons"
 import { useActivityEntries, type ActivityEntry } from "./useActivityEntries"
 
@@ -26,7 +27,7 @@ function groupByDay(entries: ActivityEntry[]): [string, ActivityEntry[]][] {
 
 /** Activity panel: the unified feed with direction/pending filter chips, grouped by day. */
 export function ActivityScreen() {
-  const { entries, hydrated, detailModals } = useActivityEntries()
+  const { entries, hydrated, requestsUnavailable, detailModals } = useActivityEntries()
   const [filter, setFilter] = useState<Filter>("All")
   const visible = entries.filter((e) => matches(e, filter))
 
@@ -54,6 +55,7 @@ export function ActivityScreen() {
             )
           })}
         </div>
+        {hydrated && requestsUnavailable && <RequestsUnavailableNotice />}
         {!hydrated && <ActivityListSkeleton rows={5} />}
         {hydrated && visible.length > 0 && (
           <div className="ww-activity__list">

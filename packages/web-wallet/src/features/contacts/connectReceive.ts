@@ -123,6 +123,8 @@ export async function previewConnect(
 
 export type ConnectConfirmResult =
   | { kind: "added"; contact: Contact; navigateId: string; pending: boolean }
+  /** Nothing was added: `contact`, a stored row under another tag, matched the scan. */
+  | { kind: "conflict"; contact: Contact }
   | { kind: "error"; message: string }
 
 export interface ConnectConfirmDeps {
@@ -158,7 +160,7 @@ export async function confirmConnect(
     enqueueFailedConnectBack: (entry) =>
       deps.queueConnectBack({ uuid: entry.content.uuid, ...entry }),
   })
-  if (result.kind === "error") return result
+  if (result.kind === "error" || result.kind === "conflict") return result
   return {
     kind: "added",
     contact: result.contact,

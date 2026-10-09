@@ -55,6 +55,12 @@ describe("recentPeople", () => {
     expect(rows.map((r) => r.id)).toEqual(["ada"])
   })
 
+  it("leaves out an unsaved person who requested funds", () => {
+    const incoming = { ...request("mina", 500), direction: "incoming" } as PaymentRequest
+    const rows = recentPeople([ada], { requests: [incoming] }, 3)
+    expect(rows.map((r) => r.tag)).toEqual(["ada"])
+  })
+
   it("keeps to the limit", () => {
     const rows = recentPeople([ada, bob], { requests: [request("grace", 1), request("hal", 2)] }, 2)
     expect(rows.map((r) => r.tag)).toEqual(["hal", "grace"])

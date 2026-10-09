@@ -6,7 +6,7 @@ vi.mock("../src/lib/analytics", () => ({ fireEvent: vi.fn(), failureCode: vi.fn(
 
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
 vi.mock("../src/config/oxideTuple", () => ({
-  getOxideTuple: async () => ({ swapEscrowFactory: `0x${"11".repeat(20)}` }),
+  getOxideTuple: async () => ({ swapEscrowFactoryV2: `0x${"11".repeat(20)}` }),
   requireTupleField: (tuple: Record<string, string>, field: string) => tuple[field],
 }))
 const { EXECUTOR } = vi.hoisted(() => ({ EXECUTOR: `0x${"e8".repeat(20)}` }))

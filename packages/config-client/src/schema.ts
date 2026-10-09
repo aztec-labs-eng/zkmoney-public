@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 
 /**
  * The store serves one document per published version at `profiles/<generation>/<x.y.z>.json` — this
@@ -49,6 +50,8 @@ export function isConfigVersionId(value: unknown): value is string {
 const contractName = z
   .string()
   .regex(/^[a-zA-Z][a-zA-Z0-9]{0,63}$/, "contract name: camelCase identifier")
+
+const assetSymbol = z.string().regex(/^[A-Za-z][A-Za-z0-9]{0,15}$/, "asset: a token symbol")
 
 /**
  * L2 requires `classId` (`address` optional — a class can exist with no instance); L1 is
@@ -118,6 +121,20 @@ const versionSchema = z.strictObject({
     portal: l1Address,
     expectedGitSha: fullGitSha.optional(),
   }),
+  /**
+   * Every asset the wallet holds: its token symbol and its deployment, found by portal in `oxide`'s
+   * manifest. The wallet token (DAI) is `oxide`'s own deployment, where names and registration
+   * live, and no other asset is; `oxide` stays for clients that predate this field.
+   */
+  assets: z
+    .array(
+      z.strictObject({
+        symbol: assetSymbol,
+        portal: l1Address,
+        expectedGitSha: fullGitSha.optional(),
+      }),
+    )
+    .optional(),
   /**
    * Exact bytes at `artifacts/<generation>/<version>.json`; absent on profiles predating catalogs.
    * Pre-field clients prune this as an additive version key in their served-profile wire parser;
@@ -273,6 +290,46 @@ export const configProfileSchema = baseSchema.check((ctx) => {
         path: ["versions", id, "oxide", "expectedGitSha"],
       })
     }
+    const assets = version.assets ?? []
+    const isOxides = (portal: string) => portal.toLowerCase() === version.oxide.portal.toLowerCase()
+    const walletToken = assets.find((asset) => asset.symbol === WALLET_TOKEN_SYMBOL)
+    if (version.assets && !(walletToken && isOxides(walletToken.portal))) {
+      ctx.issues.push({
+        code: "custom",
+        message: `version "${id}" lists no ${WALLET_TOKEN_SYMBOL} asset at oxide's own deployment (${version.oxide.portal})`,
+        input: version.assets,
+        path: ["versions", id, "assets"],
+      })
+    }
+    const symbols = new Set<string>()
+    const portals = new Set<string>()
+    assets.forEach((asset, index) => {
+      const at = (field: string) => ["versions", id, "assets", index, field]
+      const issue = (message: string, field: string) =>
+        ctx.issues.push({
+          code: "custom",
+          message: `version "${id}" ${message}`,
+          input: asset,
+          path: at(field),
+        })
+      if (symbols.has(asset.symbol)) issue(`lists the ${asset.symbol} asset twice`, "symbol")
+      if (portals.has(asset.portal.toLowerCase()))
+        issue(`lists the portal ${asset.portal} for two assets`, "portal")
+      symbols.add(asset.symbol)
+      portals.add(asset.portal.toLowerCase())
+      if (asset.symbol !== WALLET_TOKEN_SYMBOL && isOxides(asset.portal))
+        issue(
+          `puts ${asset.symbol} at oxide's own deployment, which is ${WALLET_TOKEN_SYMBOL}'s`,
+          "portal",
+        )
+      if (p.network === "mainnet" && !asset.expectedGitSha)
+        issue(
+          `has no expectedGitSha for ${asset.symbol} — a mainnet document must pin the oxide cut`,
+          "expectedGitSha",
+        )
+      if (isOxides(asset.portal) && asset.expectedGitSha !== version.oxide.expectedGitSha)
+        issue(`pins ${asset.symbol} to oxide's deployment at another oxide cut`, "expectedGitSha")
+    })
   }
 
   // Every network but sandbox serves real users, so every endpoint must be https — keyed on

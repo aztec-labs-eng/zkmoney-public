@@ -21,7 +21,7 @@ export const seedDemo: typeof actual = async (scenario) => {
   if (!seeded || !isDemoMode() || !fixtureState()) return seeded
   const config = getConfig()
   if (scenario === "onboarding") installL1RpcStub(config.l1RpcUrl, installFakeEthereum(config.l1ChainId))
-  primeOxideTuple(getConfig(), { ...DEMO_OXIDE_TUPLE, l2Token: TOKEN, swapEscrowFactory: SIPA })
+  primeOxideTuple(getConfig(), { ...DEMO_OXIDE_TUPLE, l2Token: TOKEN, swapEscrowFactoryV2: SIPA })
   const query = new URLSearchParams(location.search)
   const registration = query.get("registrationFixture")
   if (registration) await seedRegistration(registration)

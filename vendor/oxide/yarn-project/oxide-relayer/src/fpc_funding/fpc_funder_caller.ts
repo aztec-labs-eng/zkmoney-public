@@ -3,9 +3,9 @@ import { type Logger, createLogger } from '@aztec/foundation/log';
 import { RunningPromise } from '@aztec/foundation/running-promise';
 
 import { ErrorsAbi, IFPCFunderAbi, OperationExecutorAbi } from '@oxide/l1-contracts';
-import { EXECUTOR_MIN_PAYOUT_CALLDATA_GAS } from '@oxide/oxide-client/l1_operation_quote.js';
+import { EXECUTOR_MIN_PAYOUT_CALLDATA_GAS, SIMULATED_SENDER_BALANCE } from '@oxide/oxide-client/l1_operation_quote.js';
 
-import { type Hex, type PublicClient, encodeFunctionData, maxUint256 } from 'viem';
+import { type Hex, type PublicClient, encodeFunctionData } from 'viem';
 
 import { CauseTransitions } from '../cause_transitions.js';
 import { type L1TxQueue, type SendL1Tx, type SentL1Tx, isAboveMaxFeePerGas } from '../l1/l1_tx_queue.js';
@@ -120,7 +120,7 @@ export class FpcFunderCaller {
       data: this.executeCalldata(inputToken, 0n),
       blockTag: 'latest',
       // A random key, used when submission is disabled, holds no ETH.
-      stateOverride: [{ address: account, balance: maxUint256 }],
+      stateOverride: [{ address: account, balance: SIMULATED_SENDER_BALANCE }],
     });
     // Non-zero `minPayout` costs extra calldata gas, so add it here.
     const gasLimit = estimatedGas + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS;
@@ -202,7 +202,7 @@ export class FpcFunderCaller {
       ],
       account: sender,
       // A random key, used when submission is disabled, holds no ETH.
-      stateOverride: [{ address: sender, balance: maxUint256 }],
+      stateOverride: [{ address: sender, balance: SIMULATED_SENDER_BALANCE }],
     });
     return result;
   }

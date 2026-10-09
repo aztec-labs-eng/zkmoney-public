@@ -6,6 +6,7 @@ import {IUniversalRouter} from "@uniswap/universal-router/contracts/interfaces/I
 import {EscrowFactoryBase} from "@periphery/EscrowFactoryBase.sol";
 import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
 import {ICurve3Pool} from "@periphery/interfaces/ICurve3Pool.sol";
+import {IUniswapV2Pair} from "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
 import {SwapEscrow} from "./SwapEscrow.sol";
 
 contract SwapEscrowFactory is EscrowFactoryBase {
@@ -16,8 +17,13 @@ contract SwapEscrowFactory is EscrowFactoryBase {
     address _weth,
     IUniversalRouter _router,
     ICurve3Pool _threePool,
-    AggregatorV3Interface _ethUsdFeed
-  ) EscrowFactoryBase(_dai, address(new SwapEscrow(_dai, _usdc, _usdt, _weth, _router, _threePool, _ethUsdFeed))) {}
+    AggregatorV3Interface _ethUsdFeed,
+    IUniswapV2Pair _daiWethPair
+  )
+    EscrowFactoryBase(
+      _dai, address(new SwapEscrow(_dai, _usdc, _usdt, _weth, _router, _threePool, _ethUsdFeed, _daiWethPair))
+    )
+  {}
 
   function deployAndExecute(SwapEscrow.Args calldata _args) external returns (address escrow) {
     return _deployAndExecute(abi.encode(_args), _args.relayerTip);

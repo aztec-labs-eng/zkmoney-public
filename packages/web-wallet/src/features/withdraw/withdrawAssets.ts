@@ -1,11 +1,11 @@
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import type { SwapOnWithdrawOutput } from "@obsidion/sdk"
+import type { SwapEscrowOutput } from "@obsidion/sdk"
 import daiIcon from "../../assets/deposit/dai.svg"
 import usdcIcon from "../../assets/deposit/USDCToken.svg"
 import usdtIcon from "../../assets/deposit/USDTToken.svg"
 import ethIcon from "../../assets/deposit/ethereum.webp"
 
-export type WithdrawalReceiveAsset = "DAI" | SwapOnWithdrawOutput
+export type WithdrawalReceiveAsset = SwapEscrowOutput
 
 export interface WithdrawalReceiveAssetOption {
   id: WithdrawalReceiveAsset
@@ -34,9 +34,9 @@ export function withdrawalNetworkLabel(asset: WithdrawalReceiveAsset | undefined
  * Fail closed instead — DAI always works.
  */
 export function withdrawalReceiveAssets(
-  tuple: Pick<OxideEnvTuple, "swapEscrowFactory">,
+  tuple: Pick<OxideEnvTuple, "swapEscrowFactoryV2">,
 ): readonly WithdrawalReceiveAssetOption[] {
-  const swapReady = tuple.swapEscrowFactory != null
+  const swapReady = tuple.swapEscrowFactoryV2 != null
   return swapReady ? WITHDRAWAL_RECEIVE_ASSETS : WITHDRAWAL_RECEIVE_ASSETS.filter((o) => o.direct)
 }
 

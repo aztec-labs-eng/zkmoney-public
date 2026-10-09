@@ -15,7 +15,7 @@ const SHOWCASE = import.meta.env.VITE_FRESH_ADDRESS_SHOWCASE === "true"
 
 /** The optional manifest fields a fresh-address quote or burn reads. */
 const REQUIRED: readonly (keyof OxideEnvTuple)[] = [
-  "swapEscrowFactory",
+  "swapEscrowFactoryV2",
   "operationExecutor",
   "accountFactory",
   "l2Broadcaster",
@@ -23,9 +23,9 @@ const REQUIRED: readonly (keyof OxideEnvTuple)[] = [
 ]
 
 /**
- * Whether this deployment can run a fresh-address withdrawal: the gas leg rides a swap escrow
- * route, so the network must carry a swap stack and the manifest must name every contract the
- * quotes and burns read. `undefined` until the manifest answers; one that cannot be read fails
+ * Whether this deployment can run a fresh-address withdrawal: the gas share rides a swap escrow, so
+ * the network must carry a swap stack and the manifest must name every contract the quotes and
+ * burns read. `undefined` until the manifest answers; one that cannot be read fails
  * closed.
  */
 export function useFreshAddressAvailable(): boolean | undefined {

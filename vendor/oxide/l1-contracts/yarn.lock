@@ -946,6 +946,7 @@ __metadata:
     "@aztec/l1-artifacts": "npm:5.2.0"
     "@openzeppelin/contracts": "npm:5.6.1"
     "@uniswap/universal-router": "npm:^2.1.0"
+    "@uniswap/v2-core": "npm:1.0.1"
     "@uniswap/v4-core": "npm:^1.0.2"
     "@uniswap/v4-periphery": "npm:^1.0.3"
     solhint: "npm:^6.2.4"

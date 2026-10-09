@@ -13,11 +13,11 @@ const ids = (tuple: Parameters<typeof withdrawalReceiveAssets>[0]) =>
 
 describe("withdrawalReceiveAssets", () => {
   it("offers every route when the manifest publishes the factory", () => {
-    expect(ids({ swapEscrowFactory: FACTORY })).toEqual(["DAI", "USDC", "USDT", "ETH"])
+    expect(ids({ swapEscrowFactoryV2: FACTORY })).toEqual(["DAI", "USDC", "USDT", "ETH"])
   })
 
   it("offers DAI only without a factory", () => {
     expect(ids({})).toEqual(["DAI"])
-    expect(ids({ swapEscrowFactory: undefined })).toEqual(["DAI"])
+    expect(ids({ swapEscrowFactoryV2: undefined })).toEqual(["DAI"])
   })
 })

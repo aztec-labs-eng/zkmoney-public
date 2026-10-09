@@ -1,5 +1,6 @@
 import { ConfirmationSheetDetailRow, PrimaryGradientButton } from "@obsidion/web-ds"
 import { usd } from "../../ui/format"
+import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { useBusyLabel } from "../operations/operations"
 import { SponsoredActionNotice, useSponsoredActionBlock } from "../allowance/SponsoredActionNotice"
 
@@ -35,6 +36,8 @@ export function PayConfirmForm({
       {/* Reachable when the balance lands after Continue — the CTA is dead without this. */}
       {overspent && <span className="ww-pay__error">Balance not enough</span>}
       <SponsoredActionNotice reason={unsponsored} />
+      {/* A request is not signed with the passkey. */}
+      {isSend && <LocalPasskeyHint />}
       <PrimaryGradientButton
         title={
           busy ? busyLabel : ready ? `Confirm & ${isSend ? "send" : "request"}` : "Connecting…"

@@ -1,9 +1,6 @@
 import type { IStorageAdapter } from "@obsidion/front-core"
 import type { RecoveryMetadata } from "@obsidion/sdk"
-import {
-  PASSKEY_IDENTITY_MAP_KEY as STORAGE_KEY,
-  WEB_STORAGE_PREFIX,
-} from "../storage/WebStorageAdapter"
+import { PASSKEY_IDENTITY_MAP_KEY as STORAGE_KEY, WEB_STORAGE_PREFIX } from "../storage/storageKeys"
 import { walletStorage } from "../storage/walletStorage"
 import { withWebLock } from "../storage/webLock"
 const MAP_VERSION = 1
@@ -15,8 +12,16 @@ const withMapLock = <T>(fn: () => Promise<T>) => withWebLock(LOCK_NAME, fn)
 /** The record as a reader sees it. */
 export type StoredRecoveryMetadata = RecoveryMetadata
 
+/** Where a synced passkey answered a laptop's prompt from: a phone over QR, or this computer. */
+export type PasskeyAnswer = "remote" | "local"
+
 /** `usertag` is the claimed tag in the exact form that hashes to the on-chain nameHash. */
-type StoredEntry = StoredRecoveryMetadata & { rpId: string; createdAt: number; usertag?: string }
+type StoredEntry = StoredRecoveryMetadata & {
+  rpId: string
+  createdAt: number
+  usertag?: string
+  answered?: PasskeyAnswer
+}
 type StoredMap = { version: number; entries: Record<string, StoredEntry> }
 
 function readMap(): StoredMap | undefined {
@@ -45,6 +50,21 @@ export function hasMskRootBreadcrumb(rpId: string): boolean {
 export function hasRecordFor(rpId: string, credentialId: string): boolean {
   const entry = readMap()?.entries[credentialId]
   return entry?.rpId === rpId && Boolean(entry.l2Address)
+}
+
+/** What the payment screen's passkey advice reads from a record. */
+export type AnswerRecord = Pick<
+  StoredEntry,
+  "answered" | "prfAaguid" | "transports" | "inferredTransports"
+>
+
+/**
+ * Sync probe: where this credential's passkey answered from, and what is known of its
+ * authenticator. Takes no RP: it is asked about the session's own credential, and `answered` is
+ * only ever written under the entry's RP.
+ */
+export function answerRecordFor(credentialId: string): AnswerRecord | undefined {
+  return readMap()?.entries[credentialId]
 }
 
 /**
@@ -189,6 +209,27 @@ export class WebPasskeyIdentityMap {
         const { inferredTransports: _, ...rest } = entry
         map.entries[credentialId] = rest
       }
+      await this.storage.setItem(STORAGE_KEY, JSON.stringify(map))
+    })
+  }
+
+  /**
+   * Record where the passkey last answered from, on an entry that exists for this RP. `stillOwns`
+   * is asked under the lock, as in `setInferredTransports`.
+   */
+  async setAnswered(
+    credentialId: string,
+    where: PasskeyAnswer,
+    stillOwns?: () => boolean,
+  ): Promise<void> {
+    await withMapLock(async () => {
+      if (stillOwns && !stillOwns()) return
+      const map = await this.load()
+      if (stillOwns && !stillOwns()) return
+      const entry = map.entries[credentialId]
+      if (entry?.rpId !== this.rpId) return
+      if (entry.answered === where) return
+      map.entries[credentialId] = { ...entry, answered: where }
       await this.storage.setItem(STORAGE_KEY, JSON.stringify(map))
     })
   }

@@ -118,7 +118,7 @@ const { planSwapOnWithdraw } = await import("@obsidion/sdk")
 /** The escrow a burn by `account`, salted from `secret`, commits to. */
 const planFor = (account: Address, secret = SECRET) =>
   planSwapOnWithdraw({
-    swapEscrowFactory: FACTORY,
+    swapEscrowFactoryV2: FACTORY,
     output: "USDC",
     l1Recipient: RECIPIENT,
     recovery: { account, salt: deriveSwapEscrowRecoverySalt(secret, NONCE) },

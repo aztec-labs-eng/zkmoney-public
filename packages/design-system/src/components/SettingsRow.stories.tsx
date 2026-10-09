@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/react-vite"
-import { GlassRowCard, RowChevron, SettingsRow } from "@obsidion/web-ds"
+import { GlassRowCard, GradientToggle, RowChevron, SettingsRow } from "@obsidion/web-ds"
 
 const meta = {
   title: "Rows & Lists/SettingsRow",
@@ -30,4 +30,14 @@ export const ValueRow: Story = {
 
 export const DisabledRow: Story = {
   args: { icon: "fingerprint", label: "Face ID unlock", disabled: true, trailing: <RowChevron /> },
+}
+
+export const DescribedRow: Story = {
+  args: {
+    icon: "contacts-line",
+    label: "Allow requests from people not in your contacts",
+    description:
+      "Anyone who knows your tag can ask you for funds. Their requests go to a separate inbox in Contacts.",
+    trailing: <GradientToggle isOn onChange={() => {}} />,
+  },
 }

@@ -14,6 +14,7 @@ import { TagSearchBar } from "./TagSearchBar"
 import { useContactActivity } from "./useContactActivity"
 import emptyArt from "../../assets/contacts/empty-contacts.webp"
 import { MessagingBanner } from "../../platform/xmtp/MessagingBanner"
+import { NonContactRequestsEntry } from "../requests/NonContactRequestsScreen"
 
 function ContactGroup({ label, contacts, phone }: {
   label: string
@@ -90,15 +91,19 @@ export function ContactsScreen() {
       )}
       <MessagingBanner />
       {contacts.length === 0 ? (
-        <div className="ww-empty">
-          <img src={emptyArt} alt="" width={88} height={86} />
-          <GradientText size={18} weight={700}>
-            No contacts yet
-          </GradientText>
-          <span>Add contacts by searching for your friends @tags</span>
-        </div>
+        <>
+          <NonContactRequestsEntry className="ww-contacts__requests-entry" />
+          <div className="ww-empty">
+            <img src={emptyArt} alt="" width={88} height={86} />
+            <GradientText size={18} weight={700}>
+              No contacts yet
+            </GradientText>
+            <span>Add contacts by searching for your friends @tags</span>
+          </div>
+        </>
       ) : (
         <div className="ww-panel__scroll">
+          <NonContactRequestsEntry />
           {phone && recent.length > 0 && <ContactGroup label="Recent contacts" contacts={recent} phone={phone} />}
           <ContactGroup label="All contacts" contacts={contacts} phone={phone} />
         </div>

@@ -3,6 +3,10 @@ import { act, renderHook, waitFor } from "@testing-library/react"
 import type { Contact } from "../../src/core"
 
 const mockEntries: { current: Contact[] } = { current: [] }
+/** Reads left to reject. */
+const mockFailures = { current: 0 }
+/** Replaces the read when set. */
+const mockRead: { current?: () => Promise<Contact[]> } = {}
 const mockListeners = new Set<() => void>()
 
 vi.mock("../../src/core", async (importOriginal) => {
@@ -12,7 +16,11 @@ vi.mock("../../src/core", async (importOriginal) => {
     ContactStorage: {
       get: () => ({
         initialize: vi.fn().mockResolvedValue(undefined),
-        getEntries: () => Promise.resolve(mockEntries.current),
+        getEntries: () =>
+          mockRead.current?.() ??
+          (mockFailures.current-- > 0
+            ? Promise.reject(new Error("read failed"))
+            : Promise.resolve(mockEntries.current)),
         onChange: (listener: () => void) => {
           mockListeners.add(listener)
           return () => mockListeners.delete(listener)
@@ -75,6 +83,12 @@ describe("isPaymentContactEntry", () => {
 })
 
 describe("contactRowFromEntry", () => {
+  it("carries the autoAdded flag of a sender added from a transfer", () => {
+    const entry = { name: "jo", address: `0x${"0a".repeat(32)}`, tag: "jo" }
+    expect(contactRowFromEntry({ ...entry, autoAdded: true }).autoAdded).toBe(true)
+    expect("autoAdded" in contactRowFromEntry(entry)).toBe(false)
+  })
+
   it("maps L1 wallet contacts with address metadata", () => {
     expect(
       contactRowFromEntry({
@@ -126,7 +140,79 @@ describe("contactRowFromEntry", () => {
 describe("useContactsDirectory", () => {
   beforeEach(() => {
     mockEntries.current = []
+    mockFailures.current = 0
+    mockRead.current = undefined
     mockListeners.clear()
+  })
+
+  it("reports hydrated only once the first read lands", async () => {
+    const { result } = renderHook(() => useContactsDirectory())
+    expect(result.current.hydrated).toBe(false)
+    await waitFor(() => expect(result.current.hydrated).toBe(true))
+  })
+
+  it("reports a failed first read, then retries until a read lands", async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      mockFailures.current = 2
+      mockEntries.current = [{ name: "Theo", address: L2_ADDRESS, tag: "theo" }]
+      const { result } = renderHook(() => useContactsDirectory())
+      await act(async () => {})
+      expect(result.current).toMatchObject({ hydrated: false, failed: true, contacts: [] })
+      await act(() => vi.advanceTimersByTimeAsync(5_000))
+      expect(result.current).toMatchObject({ hydrated: false, failed: true })
+      await act(() => vi.advanceTimersByTimeAsync(5_000))
+      expect(result.current).toMatchObject({ hydrated: true, failed: false })
+      expect(result.current.contacts[0]?.tag).toBe("theo")
+    } finally {
+      warn.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it("stops retrying once unmounted, even when a read fails after the unmount", async () => {
+    vi.useFakeTimers()
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      let reject!: (error: Error) => void
+      const read = vi.fn(() => new Promise<Contact[]>((_, rejectRead) => (reject = rejectRead)))
+      mockRead.current = read
+      const { unmount } = renderHook(() => useContactsDirectory())
+      unmount()
+      await act(async () => reject(new Error("read failed")))
+      await act(() => vi.advanceTimersByTimeAsync(20_000))
+      expect(read).toHaveBeenCalledOnce()
+    } finally {
+      warn.mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
+  it("does not apply a read that a later read overtook", async () => {
+    const reads: Array<(entries: Contact[]) => void> = []
+    mockRead.current = () => new Promise<Contact[]>((resolve) => reads.push(resolve))
+    const { result } = renderHook(() => useContactsDirectory())
+    act(() => mockListeners.forEach((listener) => listener()))
+    expect(reads).toHaveLength(2)
+    await act(async () => reads[1]!([{ name: "Theo", address: L2_ADDRESS, tag: "theo" }]))
+    await act(async () => reads[0]!([]))
+    expect(result.current.contacts.map((c) => c.tag)).toEqual(["theo"])
+  })
+
+  it("keeps the last good contacts when a later read fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    try {
+      mockEntries.current = [{ name: "Theo", address: L2_ADDRESS, tag: "theo" }]
+      const { result } = renderHook(() => useContactsDirectory())
+      await waitFor(() => expect(result.current.hydrated).toBe(true))
+      mockFailures.current = 1
+      act(() => mockListeners.forEach((listener) => listener()))
+      await waitFor(() => expect(result.current.failed).toBe(true))
+      expect(result.current).toMatchObject({ hydrated: true, contacts: [{ tag: "theo" }] })
+    } finally {
+      warn.mockRestore()
+    }
   })
 
   it("picks up a contact written by a background writer", async () => {

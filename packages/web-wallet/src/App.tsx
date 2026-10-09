@@ -57,6 +57,8 @@ import { ClaimRoute } from "./features/paylink/PaylinkOnboardingScreen"
 import { NewLinkScreen } from "./features/paylink/NewLinkScreen"
 import { NewRequestLinkScreen } from "./features/requests/NewRequestLinkScreen"
 import { RequestLandingScreen } from "./features/requests/RequestLandingScreen"
+import { NonContactRequestsScreen } from "./features/requests/NonContactRequestsScreen"
+import { NON_CONTACT_REQUESTS_PATH } from "./features/requests/nonContactView"
 import { DepositScreen } from "./features/deposit/DepositScreen"
 import { ReceiveScreen } from "./features/receive/ReceiveScreen"
 import { ContactsScreen } from "./features/contacts/ContactsScreen"
@@ -525,6 +527,10 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                                         <Route path="receive" element={<ReceiveScreen />} />
                                         <Route path="contacts" element={<ContactsScreen />} />
                                         <Route path="connect" element={<ConnectReceiveScreen />} />
+                                        <Route
+                                          path={NON_CONTACT_REQUESTS_PATH}
+                                          element={<NonContactRequestsScreen />}
+                                        />
                                         <Route path="contacts/:idOrTag" element={<ContactRoute />}>
                                           <Route
                                             path="send"

@@ -1,30 +1,76 @@
 import type { Fr } from "@aztec/foundation/curves/bn254"
 import { EthAddress } from "@aztec/foundation/eth-address"
 import {
+  LegacySwapEscrowFactoryAbi,
+  MAX_DAI_FOR_GAS,
   OxidePortalAbi,
   SwapEscrowFactoryAbi,
   SwapRoute,
   encodeEscrowRecoverERC20,
+  encodeLegacySwapEscrowDeploy,
   encodeSwapEscrowDeploy,
+  predictLegacySwapEscrowAddressLocally,
   predictSwapEscrowAddressLocally,
+  type LegacySwapEscrowArgs,
   type SwapEscrowArgs,
 } from "@oxide/l1-contracts"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { encodeFunctionData, multicall3Abi } from "viem"
 import type { Address, Hex, PublicClient } from "viem"
-import type { SwapOnWithdrawOutput } from "@obsidion/core/types"
+import type { SwapEscrowOutput } from "@obsidion/core/types"
 import { MULTICALL3_ADDRESS } from "../services/sipaClaim.js"
 
-/** The escrow's committed values, re-exported so consumers name the vendored type directly. */
-export type { SwapEscrowArgs } from "@oxide/l1-contracts"
+/** The escrow's committed values, re-exported so consumers name the vendored types directly. */
+export type { LegacySwapEscrowArgs, SwapEscrowArgs } from "@oxide/l1-contracts"
 export { SWAP_ON_WITHDRAW_OUTPUTS } from "@obsidion/core/constants"
-export type { SwapOnWithdrawOutput } from "@obsidion/core/types"
+export type { SwapEscrowOutput, SwapOnWithdrawOutput } from "@obsidion/core/types"
+/** The most DAI one escrow swaps to ETH for gas. */
+export { MAX_DAI_FOR_GAS }
+
+/**
+ * The values an escrow address commits to, in the layout of the factory that derives it. Every new
+ * withdrawal is `v2`. A `legacy` escrow comes from a factory without `daiForGas`; it can still need
+ * its swap run or its DAI recovered.
+ */
+export type SwapEscrowCommitment =
+  | { layout: "v2"; args: SwapEscrowArgs }
+  | { layout: "legacy"; args: LegacySwapEscrowArgs }
+
+export type SwapEscrowLayout = SwapEscrowCommitment["layout"]
+
+export function predictSwapEscrow(factory: Address, commitment: SwapEscrowCommitment): Address {
+  return commitment.layout === "v2"
+    ? predictSwapEscrowAddressLocally(factory, commitment.args)
+    : predictLegacySwapEscrowAddressLocally(factory, commitment.args)
+}
+
+/** `factory.deployAndExecute(args)` calldata in the escrow's layout. */
+export function encodeSwapEscrowExecute(commitment: SwapEscrowCommitment): Hex {
+  return commitment.layout === "v2"
+    ? encodeSwapEscrowDeploy(commitment.args)
+    : encodeLegacySwapEscrowDeploy(commitment.args)
+}
+
+/** `factory.deploy(args)` calldata in the escrow's layout: the clone without the swap. */
+function encodeSwapEscrowDeployOnly(commitment: SwapEscrowCommitment): Hex {
+  return commitment.layout === "v2"
+    ? encodeFunctionData({
+        abi: SwapEscrowFactoryAbi,
+        functionName: "deploy",
+        args: [commitment.args],
+      })
+    : encodeFunctionData({
+        abi: LegacySwapEscrowFactoryAbi,
+        functionName: "deploy",
+        args: [commitment.args],
+      })
+}
 
 /**
  * A swap-on-withdraw, planned before the burn: the withdrawal pays a counterfactual `SwapEscrow`
- * whose CREATE2 address commits to `(route, recipient, recoveryCommitment, relayerTip, nonce)`. The
- * burn and the broadcast that tells relayers to run the swap are built from `escrowArgs` by
- * `planWithdrawal`, through oxide-client's `buildSwapOnWithdraw`, and ride one L2 tx.
+ * whose CREATE2 address commits to `escrowArgs`. The burn and the broadcast that tells relayers to
+ * run the swap are built from `escrowArgs` by `planWithdrawal`, through oxide-client's
+ * `buildSwapOnWithdraw`, and ride one L2 tx.
  */
 export interface SwapOnWithdrawPlan {
   /** The counterfactual escrow the withdrawal must burn to. */
@@ -47,19 +93,20 @@ export interface SwapRecovery {
   salt: Fr
 }
 
-const ROUTE_BY_OUTPUT: Record<SwapOnWithdrawOutput, SwapRoute> = {
+const ROUTE_BY_OUTPUT: Record<SwapEscrowOutput, SwapRoute> = {
   USDC: SwapRoute.USDC,
   USDT: SwapRoute.USDT,
   ETH: SwapRoute.ETH,
+  DAI: SwapRoute.DAI,
 }
 
-export function swapRouteForOutput(output: SwapOnWithdrawOutput): SwapRoute {
+export function swapRouteForOutput(output: SwapEscrowOutput): SwapRoute {
   return ROUTE_BY_OUTPUT[output]
 }
 
 /** Inverse of `swapRouteForOutput`; undefined for a route id no output maps to. */
-export function swapOutputForRoute(route: number): SwapOnWithdrawOutput | undefined {
-  return (Object.keys(ROUTE_BY_OUTPUT) as SwapOnWithdrawOutput[]).find(
+export function swapOutputForRoute(route: number): SwapEscrowOutput | undefined {
+  return (Object.keys(ROUTE_BY_OUTPUT) as SwapEscrowOutput[]).find(
     (output) => ROUTE_BY_OUTPUT[output] === route,
   )
 }
@@ -96,10 +143,13 @@ export function swapInputAmount(amount: bigint, deductions: SwapDeductions): big
 }
 
 export function planSwapOnWithdraw(args: {
-  swapEscrowFactory: Address
-  output: SwapOnWithdrawOutput
-  /** Final L1 recipient of the swap output (must accept ETH on the ETH route). */
+  /** The manifest's `swapEscrowFactoryV2`: the factory whose `Args` carry `daiForGas`. */
+  swapEscrowFactoryV2: Address
+  output: SwapEscrowOutput
+  /** Final L1 recipient of the swap output. It must accept ETH on the ETH route and with `daiForGas`. */
   l1Recipient: Address
+  /** DAI of the escrow's balance it swaps to ETH for `l1Recipient` before the route. Defaults to 0. */
+  daiForGas?: bigint
   recovery: SwapRecovery
   /** The gross burn amount, raw token units. */
   amount: bigint
@@ -116,12 +166,13 @@ export function planSwapOnWithdraw(args: {
 }): SwapOnWithdrawPlan {
   // The factory executes only once the escrow balance EXCEEDS the tip, so a swap input at or below
   // zero leaves the operation deferring forever.
+  const { daiForGas = 0n } = args
   const swapInput = swapInputAmount(args.amount, args)
-  if (swapInput <= 0n) {
+  if (swapInput <= daiForGas) {
     throw new Error(
       `planSwapOnWithdraw: nothing left to swap — amount ${args.amount} minus withdrawalRelayerTip ` +
         `${args.withdrawalRelayerTip}, proverTip ${args.proverTip}, fpcFundingCut ${args.fpcFundingCut} ` +
-        `and relayerTip ${args.relayerTip} leaves ${swapInput}`,
+        `and relayerTip ${args.relayerTip} leaves ${swapInput}, with ${daiForGas} of it for gas`,
     )
   }
   // No key signs for the zero address, so the escrow could never be recovered.
@@ -131,6 +182,10 @@ export function planSwapOnWithdraw(args: {
   const escrowArgs: SwapEscrowArgs = {
     route: swapRouteForOutput(args.output),
     recipient: args.l1Recipient,
+    daiForGas,
+    // 0: the gas swap is at most MAX_DAI_FOR_GAS, too small to sandwich at a profit, and a floor it
+    // missed would revert the whole escrow, funds included.
+    minEthForGas: 0n,
     recoveryCommitment: deriveRecoveryCommitment(
       args.recovery.salt,
       EthAddress.fromString(args.recovery.account),
@@ -139,7 +194,7 @@ export function planSwapOnWithdraw(args: {
     nonce: args.nonce,
   }
   return {
-    escrow: predictSwapEscrowAddressLocally(args.swapEscrowFactory, escrowArgs),
+    escrow: predictSwapEscrowAddressLocally(args.swapEscrowFactoryV2, escrowArgs),
     escrowArgs,
     deployCalldata: encodeSwapEscrowDeploy(escrowArgs),
     recovery: args.recovery,
@@ -153,8 +208,11 @@ export interface SwapEscrowCall {
 }
 
 /** `SwapEscrowFactory.deployAndExecute(args)`: run the swap and keep the tip — the permissionless self-execution path. */
-export function buildSwapEscrowExecuteCall(factory: Address, args: SwapEscrowArgs): SwapEscrowCall {
-  return { to: factory, data: encodeSwapEscrowDeploy(args) }
+export function buildSwapEscrowExecuteCall(
+  factory: Address,
+  commitment: SwapEscrowCommitment,
+): SwapEscrowCall {
+  return { to: factory, data: encodeSwapEscrowExecute(commitment) }
 }
 
 /**
@@ -170,7 +228,7 @@ export function buildSwapEscrowRecoverCall(params: {
   deployed: boolean
   factory: Address
   escrow: Address
-  args: SwapEscrowArgs
+  commitment: SwapEscrowCommitment
   recovery: SwapRecovery
   signature: Hex
   target: Address
@@ -196,11 +254,7 @@ export function buildSwapEscrowRecoverCall(params: {
     {
       target: params.factory,
       allowFailure: false,
-      callData: encodeFunctionData({
-        abi: SwapEscrowFactoryAbi,
-        functionName: "deploy",
-        args: [params.args],
-      }),
+      callData: encodeSwapEscrowDeployOnly(params.commitment),
     },
     { target: params.escrow, allowFailure: false, callData: recoverData },
   ]

@@ -216,6 +216,33 @@ describe("NewLinkScreen", () => {
     expect(createSponsoredLink).not.toHaveBeenCalled()
   })
 
+  it("the review step tells a passkey that answered from another device about the local copy", async () => {
+    const LINE = "If your passkey has synced to this computer"
+    await reachCreate()
+    expect(container.textContent).not.toContain(LINE)
+
+    const { walletStorage } = await import("../src/platform/storage/walletStorage")
+    const { setActiveCredentialId } = await import("../src/platform/storage/activeStorage")
+    localStorage.removeItem("webwallet.local-passkey-hint-shown")
+    const entry = { credentialId: "cred", rpId: "localhost", createdAt: 1, answered: "remote" }
+    await walletStorage.batch(() => {
+      walletStorage.setItem(
+        "obsidion.obsidion_web_passkey_identity_map",
+        JSON.stringify({ version: 1, entries: { cred: entry } }),
+      )
+      setActiveCredentialId("cred")
+    })
+    await remount()
+    await reachCreate()
+    expect(container.textContent).toContain(LINE)
+    expect(button("Create paylink")).toBeDefined()
+
+    await act(async () => button("Don't show again")?.click())
+    expect(container.textContent).not.toContain(LINE)
+    expect(localStorage.getItem("webwallet.local-passkey-hint-shown")).toBe("3")
+    localStorage.removeItem("webwallet.local-passkey-hint-shown")
+  })
+
   it("leaves for the link's sheet when the passkey ceremony ends, with the deposit still proving", async () => {
     let resolveCreate!: (v: unknown) => void
     createSponsoredLink.mockImplementation(

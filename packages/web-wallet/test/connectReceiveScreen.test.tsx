@@ -131,3 +131,13 @@ it("leaves the consumed route after an add error", async () => {
   expect(container.textContent).toBe("Contacts destination")
   expect(mocks.report).toHaveBeenCalledTimes(1)
 })
+
+it("names the stored contact on a conflict instead of opening it", async () => {
+  mocks.preview.mockResolvedValue(preview)
+  mocks.confirm.mockResolvedValue({ kind: "conflict", contact: { tag: "old-tag", name: "old-tag" } })
+  await render()
+  await act(async () => [...container.querySelectorAll("button")].find((button) => button.textContent === "Add contact")!.click())
+  expect(container.textContent).toContain("@alice wasn't added. @old-tag in your contacts has the same address or name.")
+  expect(container.textContent).not.toContain("Contacts destination")
+  expect(mocks.report).not.toHaveBeenCalled()
+})

@@ -19,6 +19,7 @@ export const DEVICE_KEYS: ReadonlySet<string> = new Set([
   "webwallet.hide-one-time-address-warning",
   "webwallet.hide-paylink-info",
   "webwallet.hide-withdraw-privacy-disclaimer",
+  "webwallet.local-passkey-hint-shown",
   "webwallet.passkeyEnv",
   "webwallet.handoff",
   // Read before the profile names a rollup, and a user's node choice outlives a roll.

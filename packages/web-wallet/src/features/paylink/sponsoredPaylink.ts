@@ -122,6 +122,7 @@ import {
   type WithdrawStage,
 } from "../withdraw/withdrawGateway"
 import type { CreateStage, LinkFlavor, PaymentLink } from "./types"
+import { sponsorshipErrorCopy } from "../allowance/sponsorshipError"
 
 /** How long a fresh link stays claimable when the creator picks no expiry. */
 export const DEFAULT_CLAIM_WINDOW_DAYS = 30
@@ -1051,7 +1052,9 @@ async function seedRegistrationBurn(
           await arm(pending)
           return broadcast
         }
-        const message = err instanceof Error ? err.message : "Withdrawal failed"
+        const message =
+          sponsorshipErrorCopy(err, "registration:burn")?.message ??
+          (err instanceof Error ? err.message : "Withdrawal failed")
         if (isFlowCancelled(err)) {
           await store.remove(localId).catch(() => {})
         } else {

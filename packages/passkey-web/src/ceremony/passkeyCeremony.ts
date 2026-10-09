@@ -43,6 +43,10 @@ export type PasskeyCreateRequest = {
   prfFirstSalt: Uint8Array
   /** PRF `eval.second` salt, evaluated in the same ceremony. */
   prfSecondSalt?: Uint8Array
+  /** How long the browser may wait for an answer; absent takes the ceremony's default. */
+  timeoutMs?: number
+  /** Ends the ceremony: the browser's sheet closes, and no queued or retried request follows. */
+  signal?: AbortSignal
 }
 
 export type PasskeyCreateResult = {
@@ -188,11 +192,12 @@ export function onPasskeyRequest(listener: (active: boolean) => void): () => voi
 
 /**
  * An extension (1Password, Bitwarden, …) answers WebAuthn inside the page when it has swapped
- * `navigator.credentials.get` for its own script. Browser and OS prompts leave it native.
+ * `navigator.credentials.get`, or `.create` for a creation, for its own script. Browser and OS
+ * prompts leave both native.
  */
-export function extensionAnswersPasskeys(): boolean {
+export function extensionAnswersPasskeys(call: "get" | "create" = "get"): boolean {
   try {
-    return !Function.prototype.toString.call(navigator.credentials.get).includes("[native code]")
+    return !Function.prototype.toString.call(navigator.credentials[call]).includes("[native code]")
   } catch {
     return false
   }
@@ -273,16 +278,18 @@ export type CeremonyTiming = {
   /** Backoff for re-issuing while the browser still reports a pending request. */
   pendingRetryDelaysMs: readonly number[]
   /**
-   * How long a creation may wait for an authenticator to answer. Without it the browser waits
-   * without end when nothing it may offer exists — a phone asked for its own passkey where only a
-   * roaming key is present never sees a sheet, and never sees a refusal either.
+   * How long a creation may wait for an authenticator to answer when its request names no timeout.
+   * Without it the browser waits without end when nothing it may offer exists — a phone asked for
+   * its own passkey where only a roaming key is present never sees a sheet, and never sees a
+   * refusal either.
    */
   createTimeoutMs: number
 }
 
 export const DEFAULT_CEREMONY_TIMING: CeremonyTiming = {
   // A real ceremony is a human at a Touch ID sensor or a security key — minutes are plausible, so
-  // eviction is deliberately slow. It only ever fires on a request that is already broken.
+  // eviction is deliberately slow. A caller ends a ceremony it abandons through that ceremony's
+  // signal, so a holder a later one has waited this long behind is already broken.
   handoffWaitMs: 90_000,
   teardownWaitMs: 1_500,
   focusWaitMs: 10_000,
@@ -635,13 +642,17 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
       },
       ...(request.hints ? { hints: request.hints } : {}),
       attestation: "none",
-      timeout: this.timing.createTimeoutMs,
+      timeout: request.timeoutMs ?? this.timing.createTimeoutMs,
       extensions: prfInputs(request.prfFirstSalt, request.prfSecondSalt),
     }
-    const credential = (await withTabSlot((signal) => {
-      notify(this.onRequest, () => ({ phase: "issued", kind: "create", request }))
-      return withRpError(request.rpId, () => navigator.credentials.create({ signal, publicKey }))
-    }, this.timing)) as PublicKeyCredential | null
+    const credential = (await withTabSlot(
+      (signal) => {
+        notify(this.onRequest, () => ({ phase: "issued", kind: "create", request }))
+        return withRpError(request.rpId, () => navigator.credentials.create({ signal, publicKey }))
+      },
+      this.timing,
+      request.signal,
+    )) as PublicKeyCredential | null
     if (!credential) throw new Error(NO_CREATED_CREDENTIAL_MESSAGE)
     // The authenticator has saved the passkey: anything thrown from here leaves it behind.
     try {

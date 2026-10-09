@@ -26,6 +26,7 @@ import { useNotificationsPanelOpen } from "./NotificationsPanel"
 import { NotificationsBell } from "./NotificationsBell"
 import { ContactStorage, useAccountContext, useAztecContext } from "@obsidion/front-core"
 import { isDemoMode } from "../dev/demoFlag"
+import { NON_CONTACT_REQUESTS_PATH } from "../features/requests/nonContactView"
 import { createContext, useContext, useMemo } from "react"
 import "./shell.css"
 
@@ -72,7 +73,13 @@ const NAV_TABS: NavItem[] = NAV_PHONE.filter(
 const ACTIVATION_GATED = new Set(["/deposit", "/send", "/receive", "/withdraw"])
 
 function activePath(pathname: string): string {
-  if (pathname.startsWith("/contacts") || pathname.startsWith("/connect")) return "/contacts"
+  if (
+    pathname.startsWith("/contacts") ||
+    pathname.startsWith("/connect") ||
+    pathname === NON_CONTACT_REQUESTS_PATH
+  ) {
+    return "/contacts"
+  }
   for (const p of [
     "/activity",
     "/settings",

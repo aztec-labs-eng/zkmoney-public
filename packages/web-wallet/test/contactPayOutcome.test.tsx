@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 const m = vi.hoisted(() => ({
   pay: vi.fn(),
   fireEvent: vi.fn(),
+  entry: undefined as import("@obsidion/front-core").Contact | undefined,
 }))
 vi.mock("../src/features/operations/operations", async () =>
   (await import("./support/fakeOperations")).fakeOperationsModule(),
@@ -35,7 +36,7 @@ vi.mock("../src/platform/xmtp/MessagingBanner", () => ({ MessagingBanner: () => 
 vi.mock("../src/features/identity/walletIdentity", () => ({
   loadWalletIdentity: () => ({ handle: "me" }),
 }))
-vi.mock("../src/features/contacts/contactsView", () => ({ findContactEntry: () => undefined }))
+vi.mock("../src/features/contacts/contactsView", () => ({ findContactEntry: () => m.entry }))
 vi.mock("../src/features/contacts/unsavedContact", () => ({
   lookUpUnsavedContact: async () => null,
 }))
@@ -60,13 +61,8 @@ const click = async (label: string) => {
   await act(async () => button.click())
 }
 
-beforeEach(async () => {
-  vi.clearAllMocks()
-  m.pay.mockReset()
-  container = document.createElement("div")
-  document.body.appendChild(container)
-  root = createRoot(container)
-  await act(async () =>
+const renderPay = () =>
+  act(async () =>
     root.render(
       <MemoryRouter
         initialEntries={[
@@ -83,6 +79,15 @@ beforeEach(async () => {
       </MemoryRouter>,
     ),
   )
+
+beforeEach(async () => {
+  vi.clearAllMocks()
+  m.pay.mockReset()
+  m.entry = undefined
+  container = document.createElement("div")
+  document.body.appendChild(container)
+  root = createRoot(container)
+  await renderPay()
 })
 afterEach(() => {
   act(() => root.unmount())
@@ -162,5 +167,22 @@ describe("send outcome tracking", () => {
     expect(m.fireEvent).toHaveBeenCalledWith("action_failed", expect.anything())
     await act(async () => root.render(null))
     expect(m.fireEvent).not.toHaveBeenCalledWith("proving_cancelled", expect.anything())
+  })
+})
+
+describe("saving the requester on a fulfilling send", () => {
+  const alice = { name: "alice", address: "0xa11ce", tag: "alice" }
+  it.each([
+    ["an unsaved requester", undefined, true],
+    ["a sender added from a transfer", { ...alice, autoAdded: true }, true],
+    ["a contact", alice, false],
+  ])("%s", async (_who, entry, save) => {
+    m.entry = entry
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    await renderPay()
+    m.pay.mockResolvedValue({ txHash: "0xsend" })
+    await click("Send")
+    expect(m.pay.mock.calls[0]![0]).toMatchObject({ saveUnsavedRequester: save })
   })
 })

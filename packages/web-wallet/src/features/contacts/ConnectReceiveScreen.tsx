@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react"
 import { Navigate, useNavigate } from "react-router-dom"
 import { CONNECT_BACK_VERSION } from "@obsidion/sdk"
-import { ContactStorage, PendingConnectBackStorage, decodeInline } from "@obsidion/front-core"
+import {
+  ContactStorage,
+  PendingConnectBackStorage,
+  decodeInline,
+  type Contact,
+} from "@obsidion/front-core"
 import {
   GradientInitialAvatar,
   GradientText,
@@ -28,7 +33,10 @@ type ViewState =
   | { kind: "loading" }
   | { kind: "confirm"; preview: ConnectPreview }
   | { kind: "self-scan" }
+  | { kind: "conflict"; scanned: Contact; existing: Contact }
   | { kind: "error"; message: string }
+
+const handleOf = (contact: Contact) => (contact.tag ? `@${contact.tag}` : contact.name)
 
 /** Post-unlock landing for an inbound connect link: decode + verify the stashed packet, then
  *  require an explicit "Add contact" before anything is written or queued (AE10). Rendered as a
@@ -95,6 +103,8 @@ export function ConnectReceiveScreen() {
     setAdding(false)
     if (result.kind === "added") {
       navigate(`/contacts/${encodeURIComponent(result.navigateId)}`, { replace: true })
+    } else if (result.kind === "conflict") {
+      setState({ kind: "conflict", scanned: preview.contact, existing: result.contact })
     } else {
       showReportableError(new Error(result.message), "contacts:connect-confirm")
       setState(result)
@@ -118,12 +128,21 @@ export function ConnectReceiveScreen() {
             <div className="ww-connect__status">This is your own code.</div>
           </Modal>
         )
+      case "conflict":
+        return (
+          <Modal variant="create" label="Add contact" onClose={dismiss}>
+            <div className="ww-connect__status">
+              {handleOf(state.scanned)} wasn't added. {handleOf(state.existing)} in your contacts
+              has the same address or name.
+            </div>
+          </Modal>
+        )
       case "error":
         // The reportable-error sheet already carries the message.
         return <Navigate to="/contacts" replace />
       case "confirm": {
         const { contact } = state.preview
-        const handle = contact.tag ? `@${contact.tag}` : contact.name
+        const handle = handleOf(contact)
         const avatarKey = contact.tag ?? contact.name
         return (
           <Modal variant="create" label="Add contact" onClose={adding ? undefined : dismiss}>

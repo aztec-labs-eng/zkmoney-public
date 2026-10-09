@@ -22,6 +22,7 @@ import { useProvingOutcome } from "../../ui/hooks"
 import { useUserFlowActive } from "../provingGate"
 import { useBusyLabel } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
+import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { SponsoredActionNotice, useSponsoredActionBlock } from "../allowance/SponsoredActionNotice"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
 import { TeeSignerNotice } from "../../ui/TeeSignerNotice"
@@ -424,6 +425,7 @@ export function WithdrawToWalletModal({
             {overspent && <span className="ww-pay__error">Balance not enough</span>}
           </div>
           <SponsoredActionNotice reason={unsponsored} />
+          <LocalPasskeyHint />
           <PrimaryGradientButton
             title={busy ? busyLabel : ready ? "Confirm withdrawal" : "Connecting…"}
             isDisabled={!ready || !valid || overspent || !confirmable || busy || !!unsponsored}

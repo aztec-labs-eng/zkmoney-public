@@ -6,12 +6,17 @@
 
 import { beforeEach, describe, expect, it } from "vitest"
 import {
+  ContactStorage,
   RequestReceiver,
   RequestStorage,
   TagValidationError,
   TransactionStorage,
   TransferEventScanner,
   XmtpInboxReceiverDriver,
+  approvedContactTags,
+  contactRowFromEntry,
+  isFromNonContact,
+  isPaymentContactEntry,
   type Contact,
   type IStorageAdapter,
   type InboxConversation,
@@ -20,7 +25,11 @@ import {
   type XmtpClientManagerLike,
   createTagForwardResolver,
 } from "@obsidion/front-core"
-import { createContactsByL2, createRequestStoreWrites } from "../src/platform/xmtp/adapters"
+import {
+  createContactsByL2,
+  createRequestSenderPolicy,
+  createRequestStoreWrites,
+} from "../src/platform/xmtp/adapters"
 
 const TX_HASH = `0x${"ab".repeat(32)}`
 const SENDER_L2 = `0x${"11".repeat(32)}`
@@ -150,7 +159,14 @@ describe("web chain-native transfer ingest", () => {
     expect(row!.from).toBe("alice")
     expect(row!.senderL2Address).toBe(SENDER_L2)
     expect(contacts.writes).toEqual([
-      { name: "alice", address: SENDER_L2, addressKind: "aztec-l2", tag: "alice", verified: true },
+      {
+        name: "alice",
+        address: SENDER_L2,
+        addressKind: "aztec-l2",
+        tag: "alice",
+        verified: true,
+        autoAdded: true,
+      },
     ])
   })
 
@@ -176,7 +192,14 @@ describe("createContactsByL2", () => {
     const fake = contactStoreFake([])
     await createContactsByL2(fake).registerL2!({ tag: "alice", l2Address: SENDER_L2 })
     expect(fake.writes).toEqual([
-      { name: "alice", address: SENDER_L2, addressKind: "aztec-l2", tag: "alice", verified: true },
+      {
+        name: "alice",
+        address: SENDER_L2,
+        addressKind: "aztec-l2",
+        tag: "alice",
+        verified: true,
+        autoAdded: true,
+      },
     ])
   })
 
@@ -281,6 +304,93 @@ describe("createRequestStoreWrites", () => {
     })
     await driver.pollOnce()
     expect(await requests.findById("req-2")).toMatchObject({ id: "req-2", contactTag: "alice" })
+  })
+})
+
+describe("createRequestSenderPolicy", () => {
+  const contacts = (entries: Contact[]) => ({ getEntries: async () => entries })
+  const ada: Contact = { name: "Ada", address: SENDER_L2, tag: "ada" }
+
+  it("admits anyone while requests from non-contacts are allowed", async () => {
+    const policy = createRequestSenderPolicy(contacts([]), () => true)
+    expect(await policy.admitsRequester("mina")).toBe(true)
+  })
+
+  it("admits only tagged L2 contacts once they are blocked", async () => {
+    const pending: Contact = {
+      name: "kai",
+      address: "xmtp-handle",
+      addressKind: "pending-handshake",
+      tag: "kai",
+    }
+    const policy = createRequestSenderPolicy(contacts([ada, pending]), () => false)
+    expect(await policy.admitsRequester("ADA")).toBe(true)
+    expect(await policy.admitsRequester("kai")).toBe(false)
+    expect(await policy.admitsRequester("mina")).toBe(false)
+  })
+
+  it("refuses a sender the wallet added from a transfer", async () => {
+    const policy = createRequestSenderPolicy(contacts([{ ...ada, autoAdded: true }]), () => false)
+    expect(await policy.admitsRequester("ada")).toBe(false)
+  })
+})
+
+describe("requests from a sender added from a transfer", () => {
+  const announce = {
+    kind: "request" as const,
+    requestId: "req-alice",
+    requesterTag: "alice",
+    amountAtomic: "5000000",
+    decimals: 6,
+    token: TOKEN,
+    networkId: "aztec-dev",
+  }
+  const packet = { content: announce, senderXmtpAddresses: ["0xpeer"] }
+
+  /** Contact book, request store and receiver over one storage, after alice sent 0.01 unasked. */
+  async function afterTransfer(allowNonContacts: boolean) {
+    ContactStorage.resetForTests()
+    const storage = memStorage()
+    const contacts = ContactStorage.get(storage)
+    const requests = new RequestStorage(storage)
+    const receiver = new RequestReceiver(
+      createRequestStoreWrites(requests),
+      undefined,
+      { resolveXmtpBinding: async () => "0xpeer" },
+      createRequestSenderPolicy(contacts, () => allowNonContacts),
+    )
+    const txStorage = await freshTxStorage(storage)
+    const events = [scannedEvent({ amount: "10000" })]
+    const scanner = scannerOver(txStorage, createContactsByL2(contacts), events, storage)
+    await scanner.start(scanContext)
+    scanner.stop()
+    expect(await contacts.findByTag("alice")).toMatchObject({ autoAdded: true })
+    /** Whether Activity and the inbox read the stored request as from a non-contact. */
+    const listedAsNonContact = async () => {
+      const rows = (await contacts.getEntries()).filter(isPaymentContactEntry)
+      const request = (await requests.findById(announce.requestId))!
+      return isFromNonContact(request, approvedContactTags(rows.map(contactRowFromEntry)))
+    }
+    return { contacts, receiver, listedAsNonContact }
+  }
+
+  it("are refused while blocked, and admitted once paying a request saves the sender", async () => {
+    const { contacts, receiver, listedAsNonContact } = await afterTransfer(false)
+    expect(await receiver.process(packet)).toEqual({
+      status: "ignored",
+      reason: "sender-not-admitted",
+    })
+
+    // The save contactPay makes when the user pays a request from this sender.
+    await contacts.addEntry({ name: "alice", address: SENDER_L2, verified: true, tag: "alice" })
+    expect(await receiver.process(packet)).toEqual({ status: "accepted", kind: "request" })
+    expect(await listedAsNonContact()).toBe(false)
+  })
+
+  it("are listed as from a non-contact while allowed", async () => {
+    const { receiver, listedAsNonContact } = await afterTransfer(true)
+    expect(await receiver.process(packet)).toEqual({ status: "accepted", kind: "request" })
+    expect(await listedAsNonContact()).toBe(true)
   })
 })
 

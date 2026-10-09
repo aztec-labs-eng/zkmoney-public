@@ -4,6 +4,7 @@ import type { WebBootConfig } from "./config/env"
 import { GOOGLE_CALLBACK_PATH, GoogleCallbackScreen } from "./features/paylink/googleAuth"
 import { getDesktopSettingsPath } from "./platform/desktopBridge"
 import { BootSplash } from "./ui/PxeBoot"
+import { PreviewDraftRecovery } from "./dev/PreviewDraftRecovery"
 
 export function BootGate({ resolveBoot }: { resolveBoot: () => Promise<WebBootConfig> }) {
   const [boot, setBoot] = React.useState<WebBootConfig>()
@@ -48,6 +49,7 @@ export function BootGate({ resolveBoot }: { resolveBoot: () => Promise<WebBootCo
           </p>
         )}
         {retryButton}
+        {import.meta.env.VITE_CONFIG_EDITOR === "true" && <PreviewDraftRecovery />}
       </div>
     )
   }

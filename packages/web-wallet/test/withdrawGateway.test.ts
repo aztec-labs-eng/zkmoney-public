@@ -25,7 +25,7 @@ const RECIPIENT = `0x${"dd".repeat(20)}` as Address
 // The wallet's Oxide account, as the stubbed account factory predicts it.
 const ACCOUNT = getAddress(`0x${"ac".repeat(20)}`)
 const SWAP_TUPLE = {
-  swapEscrowFactory: `0x${"fa".repeat(20)}`,
+  swapEscrowFactoryV2: `0x${"fa".repeat(20)}`,
   accountFactory: `0x${"af".repeat(20)}`,
   portal: `0x${"70".repeat(20)}`,
   token: `0x${"da".repeat(20)}`,
@@ -342,7 +342,8 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
       }),
     )
     expect(record.swapRecoveryCommitment).toMatch(/^0x[0-9a-f]{64}$/i)
-    expect(record.swapEscrowFactory).toBe(SWAP_TUPLE.swapEscrowFactory)
+    expect(record.swapEscrowFactory).toBe(SWAP_TUPLE.swapEscrowFactoryV2)
+    expect(record.swapEscrowLayout).toBe("v2")
 
     // The sdk pairs the escrow's swap with the release, and writes the escrow args into the meta
     // a rescan rebuilds this record from.
@@ -354,10 +355,14 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
         escrowArgs: {
           route: expect.any(Number),
           recipient: RECIPIENT,
+          daiForGas: 0n,
+          minEthForGas: 0n,
           recoveryCommitment: record.swapRecoveryCommitment,
           relayerTip: RELAYER_TIP,
           nonce: record.swapNonce,
         },
+        // The sdk asks the factory to confirm the escrow through this client before the burn.
+        l1: expect.objectContaining({ readContract: expect.any(Function) }),
         recovery: {
           account: ACCOUNT,
           salt: deriveSwapEscrowRecoverySalt(MASTER_SECRET, record.swapNonce!),
@@ -434,10 +439,13 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
         swap: {
           output: "USDC",
           recipient: RECIPIENT,
-          factory: getAddress(SWAP_TUPLE.swapEscrowFactory),
+          factory: getAddress(SWAP_TUPLE.swapEscrowFactoryV2),
           recoveryCommitment: known.swapRecoveryCommitment!,
           relayerTip: RELAYER_TIP,
           nonce: known.swapNonce!,
+          daiForGas: 0n,
+          minEthForGas: 0n,
+          layout: "v2",
         },
       },
     ])
@@ -490,7 +498,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
     mockTuple.mockReturnValue({ l2Broadcaster: SWAP_TUPLE.l2Broadcaster })
     await expect(
       submitSponsoredWithdrawal(deps(), RECIPIENT, "120", vi.fn(), undefined, "ETH", SWAP_COMMIT),
-    ).rejects.toThrow(/swapEscrowFactory/)
+    ).rejects.toThrow(/swapEscrowFactoryV2/)
     expect(getWithdrawalStore().list()).toHaveLength(0)
   })
 

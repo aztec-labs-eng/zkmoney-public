@@ -50,6 +50,8 @@ describe("OperationHandOff", () => {
     expect(onLeave).not.toHaveBeenCalled()
     await act(async () => provingProgress.emitSigningEnd())
     expect(onLeave).toHaveBeenCalledOnce()
+    // Its record now reports a failure before proving, since the screen is gone.
+    expect(store().get("op-a")?.handedOffAt).toBeDefined()
     await act(async () => store().markSent("op-a", hash))
     await act(async () => store().settle("op-a", hash))
     expect(onLeave).toHaveBeenCalledOnce()

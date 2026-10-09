@@ -11,6 +11,7 @@ import { StyledQr } from "../../ui/StyledQr"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { useTabBoundOperation } from "../operations/operations"
 import { BroadcastStatusRow } from "../broadcasts/BroadcastStatusRow"
+import { DepositFact } from "../../ui/screens/DepositFact"
 import { tokenAmountLabel } from "./AddressLimits"
 import type { DepositTokenOption } from "./loadDepositFacts"
 import { WaitingBlock } from "./WaitingBlock"
@@ -71,6 +72,16 @@ function AddressText({ address }: { address: string }) {
       {address.slice(6, -6)}
       <em>{address.slice(-6, -4)}</em>
       <b>{address.slice(-4)}</b>
+    </>
+  )
+}
+
+/** The address shortened in the middle, `0x7b3E…d9F0`, for a phone's one-line row. */
+function ShortAddress({ address }: { address: string }) {
+  if (address.length <= 10) return <>{address}</>
+  return (
+    <>
+      <b>{address.slice(0, 6)}</b>…<b>{address.slice(-4)}</b>
     </>
   )
 }
@@ -184,18 +195,57 @@ export function DepositAddressSheet({
       : `Your funds are on their way to your private balance and should arrive in about ${arrivalPhrase}.`
 
   const showQr = !phone && !!paymentUri
-  /** The address card; while waiting it also carries the live status, one card for one address. */
-  const card = (live?: ReactNode) => (
-    <div className={`ww-deposit-sheet__card${live ? " ww-deposit-sheet__card--live" : ""}`}>
-      <span className="ww-deposit-sheet__pill">
-        <span>Network</span>
-        <b>{chainName}</b>
-      </span>
-      {phase === "creating"
-        ? !phone && (
-            <div className="ww-deposit-sheet__qr ww-deposit-sheet__qr--pulse" aria-hidden="true" />
-          )
-        : showQr && (
+  const copyButton = (className: string, children: ReactNode) =>
+    address ? (
+      <button
+        type="button"
+        className={className}
+        data-testid="deposit-address"
+        title={address}
+        aria-label={copied ? "Address copied" : "Copy address"}
+        disabled={!canCopy}
+        onClick={onCopy}
+      >
+        {children}
+      </button>
+    ) : (
+      <span className="ww-deposit-sheet__hint">Waiting for address...</span>
+    )
+  /**
+   * The address card; while waiting it also carries the live status, one card for one address. A
+   * phone has no code, so its card is the sheets' fact card: Network, the address on one row
+   * shortened in the middle, and the broadcast as a Status row. Desktop keeps the compact card with
+   * the code and the full address under it.
+   */
+  const card = (live?: ReactNode) =>
+    phone ? (
+      <div className="ww-sheet__facts ww-deposit-sheet__rows">
+        <DepositFact label="Network">
+          <b>{chainName}</b>
+        </DepositFact>
+        <DepositFact label="Address">
+          {copyButton(
+            "zkm-btn-reset ww-deposit-sheet__addr ww-deposit-sheet__addr--row",
+            address && <ShortAddress address={address} />,
+          )}
+        </DepositFact>
+        {publishing && address && (
+          <DepositFact label="Status">
+            <BroadcastStatusRow address={address} />
+          </DepositFact>
+        )}
+        {live}
+      </div>
+    ) : (
+      <div className={`ww-deposit-sheet__card${live ? " ww-deposit-sheet__card--live" : ""}`}>
+        <span className="ww-deposit-sheet__pill">
+          <span>Network</span>
+          <b>{chainName}</b>
+        </span>
+        {phase === "creating" ? (
+          <div className="ww-deposit-sheet__qr ww-deposit-sheet__qr--pulse" aria-hidden="true" />
+        ) : (
+          showQr && (
             <div className="ww-deposit-sheet__qr-wrap">
               <div
                 className={`ww-deposit-sheet__qr${
@@ -214,26 +264,16 @@ export function DepositAddressSheet({
                 </span>
               )}
             </div>
-          )}
-      {address ? (
-        <button
-          type="button"
-          className="zkm-btn-reset ww-deposit-sheet__addr"
-          data-testid="deposit-address"
-          title={address}
-          aria-label={copied ? "Address copied" : "Copy address"}
-          disabled={!canCopy}
-          onClick={onCopy}
-        >
-          <AddressText address={address} />
-        </button>
-      ) : (
-        <span className="ww-deposit-sheet__hint">Waiting for address...</span>
-      )}
-      {publishing && address && <BroadcastStatusRow address={address} />}
-      {live}
-    </div>
-  )
+          )
+        )}
+        {copyButton(
+          "zkm-btn-reset ww-deposit-sheet__addr",
+          address && <AddressText address={address} />,
+        )}
+        {publishing && address && <BroadcastStatusRow address={address} />}
+        {live}
+      </div>
+    )
 
   return (
     <Modal
