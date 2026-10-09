@@ -292,6 +292,39 @@ describe("signup create step — passkey telemetry", () => {
     ])
   })
 
+  it("Cancel during the create's request ends the signal that request runs under", async () => {
+    let signal: AbortSignal | undefined
+    h.createAccount.mockImplementationOnce(async (...args: unknown[]) => {
+      signal = (args[5] as { signal?: AbortSignal }).signal
+      await harness.request("create").settled
+      return fakeAccount
+    })
+    await pressLabel("landing-signin")
+    await deposit()
+    await continueAtSteps()
+    expect(signal?.aborted).toBe(false)
+    await pressLabel("Cancel")
+    expect(signal?.aborted).toBe(true)
+  })
+
+  it("leaving while the create's request is open reports no failed create, whatever it then throws", async () => {
+    // Not the abort itself: a browser that answers anyway can fail in its own way.
+    h.createAccount.mockImplementationOnce(
+      (...args: unknown[]) =>
+        new Promise((_, reject) => {
+          const { signal } = args[5] as { signal: AbortSignal }
+          signal.addEventListener("abort", () => reject(new Error("unreadable answer")))
+        }),
+    )
+    await pressLabel("landing-signin")
+    await deposit()
+    await continueAtSteps()
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    await flush()
+    expect(h.fireEvent.mock.calls.filter(([e]) => e === "action_failed")).toEqual([])
+  })
+
   it("Cancel during the create's request, then leaving at once, sends one cancel", async () => {
     await toCreateRequest()
     act(() => {

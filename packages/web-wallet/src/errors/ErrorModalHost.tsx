@@ -116,6 +116,16 @@ export function ErrorModalHost() {
         >
           {payload.message}
         </span>
+        {payload.link && (
+          <a
+            href={payload.link.href}
+            target="_blank"
+            rel="noreferrer"
+            style={{ color: "var(--text-primary)", fontFamily: "var(--font-body)", fontSize: 15 }}
+          >
+            {payload.link.label}
+          </a>
+        )}
         {payload.detail && (
           <span
             style={{

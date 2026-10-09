@@ -41,6 +41,20 @@ describe("sponsorshipErrorCopy", () => {
     },
   )
 
+  it.each(["contact:send", "withdraw:submit", "paylink:claim"])(
+    "explains a %s batch priced above the FPC's fee cap",
+    (context) => {
+      const overCap = new Error(
+        "Assertion failed: Gas settings exceed whitelist max_fee 'assert(max_possible_fee <= max_fee, " +
+          '"Gas settings exceed whitelist max_fee")\'',
+      )
+      const copy = sponsorshipErrorCopy(overCap, context)
+      expect(copy?.title).toBe("Network fees are too high")
+      expect(copy?.message).toMatch(/was not sent/)
+      expect(copy?.link?.href).toBe("https://docs.zk.money/docs/limits")
+    },
+  )
+
   it("leaves every other failure to the generic report", () => {
     expect(
       sponsorshipErrorCopy(new Error("No active subscription for this rail"), "contact:send"),

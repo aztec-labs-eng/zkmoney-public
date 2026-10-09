@@ -9,7 +9,6 @@ import {
   decodeFunctionData,
   encodeAbiParameters,
   encodeFunctionResult,
-  maxUint256,
   multicall3Abi,
   parseGwei,
   type Address,
@@ -25,6 +24,7 @@ import {
 import { weiToUSD } from "@oxide/oxide-client/eth_usd_price_feed.js"
 import {
   EXECUTOR_MIN_PAYOUT_CALLDATA_GAS,
+  SIMULATED_SENDER_BALANCE,
   estimateL1OperationFeeValues,
 } from "@oxide/oxide-client/l1_operation_quote.js"
 import { L1_OPERATION_TIP_MARGIN_BPS } from "@obsidion/core/constants"
@@ -115,11 +115,20 @@ describe("SwapOnWithdrawSimulator", () => {
   function fakeClient(
     opts: {
       payout?: bigint
+      /** ETH the gas swap pays; set, the payout reads the route and the ETH balance. */
+      gasPayout?: bigint
       feedUpdatedAt?: bigint
       callFailure?: Error
     } = {},
   ) {
     const payout = opts.payout ?? 99_000_000n
+    const balances = (offset: bigint) =>
+      opts.gasPayout === undefined
+        ? [{ success: true, returnData: uint(1_000n + offset * payout) }]
+        : [
+            { success: true, returnData: uint(1_000n + offset * payout) },
+            { success: true, returnData: uint(5_000n + offset * opts.gasPayout) },
+          ]
     const readContract = vi.fn(
       async ({
         address,
@@ -174,11 +183,7 @@ describe("SwapOnWithdrawSimulator", () => {
         data: encodeFunctionResult({
           abi: multicall3Abi,
           functionName: "aggregate3",
-          result: [
-            { success: true, returnData: uint(1_000n) },
-            { success: true, returnData: "0x" },
-            { success: true, returnData: uint(1_000n + payout) },
-          ],
+          result: [...balances(0n), { success: true, returnData: "0x" }, ...balances(1n)],
         }),
       })),
     }
@@ -194,7 +199,7 @@ describe("SwapOnWithdrawSimulator", () => {
 
   const simulator = (client: ReturnType<typeof fakeClient>) =>
     new SwapOnWithdrawSimulator(client as unknown as PublicClient, {
-      swapEscrowFactory: FACTORY,
+      swapEscrowFactoryV2: FACTORY,
       operationExecutor: OPERATION_EXECUTOR,
       token: DAI,
     })
@@ -258,7 +263,7 @@ describe("SwapOnWithdrawSimulator", () => {
       recipient: RECIPIENT,
     })
 
-    expect(simulation).toEqual({ ...expectedTip, amountOut: 99_000_000n, decimals: 6 })
+    expect(simulation).toEqual({ ...expectedTip, amountOut: 99_000_000n, decimals: 6, gasOut: 0n })
 
     // The simulation is the relayer's transaction: to the operation executor, paying DAI.
     const simulated = simulatedCall(client)
@@ -274,7 +279,7 @@ describe("SwapOnWithdrawSimulator", () => {
     // The counterfactual escrow holds exactly what the portal will release to it.
     const escrow = predictSwapEscrowAddressLocally(FACTORY, simulatedArgs)
     expect(simulated.stateOverride).toEqual([
-      { address: simulated.from, balance: maxUint256 },
+      { address: simulated.from, balance: SIMULATED_SENDER_BALANCE },
       {
         address: DAI,
         stateDiff: [
@@ -334,6 +339,57 @@ describe("SwapOnWithdrawSimulator", () => {
     const [balanceCall] = multicallCalls((client.call.mock.calls[0]![0] as { data: Hex }).data)
     expect(balanceCall!.target.toLowerCase()).toBe(MULTICALL3_ADDRESS.toLowerCase())
     expect(balanceCall!.callData.startsWith("0x4d2301cc")).toBe(true) // getEthBalance(address)
+  })
+
+  it("swaps the gas share on the DAI route and measures it on the recipient's ETH balance", async () => {
+    const daiForGas = 5n * 10n ** 18n
+    const client = fakeClient({ payout: 90n * 10n ** 18n, gasPayout: 1_600_000_000_000_000n })
+    const simulation = await simulator(client).simulate({
+      output: "DAI",
+      amount: AMOUNT,
+      deductions,
+      recipient: RECIPIENT,
+      daiForGas,
+    })
+    expect(simulation).toMatchObject({
+      amountOut: 90n * 10n ** 18n,
+      decimals: 18,
+      gasOut: 1_600_000_000_000_000n,
+    })
+    // The tip is priced on the exact escrow the burn commits to: the gas swap included.
+    expect(simulatedCall(client).escrowArgs).toMatchObject({ route: SwapRoute.DAI, daiForGas })
+    const [routeBefore, ethBefore, deploy, routeAfter, ethAfter] = multicallCalls(
+      (client.call.mock.calls[0]![0] as { data: Hex }).data,
+    )
+    expect(routeBefore!.target.toLowerCase()).toBe(DAI)
+    expect(ethBefore!.callData.startsWith("0x4d2301cc")).toBe(true) // getEthBalance(address)
+    expect([routeAfter, ethAfter]).toEqual([routeBefore, ethBefore])
+    expect(
+      decodeFunctionData({ abi: SwapEscrowFactoryAbi, data: deploy!.callData }).args[0],
+    ).toMatchObject({ daiForGas, minEthForGas: 0n })
+  })
+
+  it("refuses a gas share the escrow funding cannot cover, before and after the tip", async () => {
+    const daiForGas = 5n * 10n ** 18n
+    const fees = deductions.withdrawalRelayerTip + deductions.fpcFundingCut
+    await expect(
+      simulator(fakeClient()).simulate({
+        output: "USDC",
+        amount: fees + daiForGas,
+        deductions,
+        recipient: RECIPIENT,
+        daiForGas,
+      }),
+    ).rejects.toThrow(/does not cover the withdrawal fees and the gas swap/)
+    await expect(
+      simulator(fakeClient()).simulate({
+        output: "USDC",
+        amount: fees + daiForGas + expectedTip.relayerTip,
+        deductions,
+        recipient: RECIPIENT,
+        daiForGas,
+      }),
+    ).rejects.toBeInstanceOf(SwapTipExceedsInputError)
   })
 
   it("throws when the simulated execute fails", async () => {

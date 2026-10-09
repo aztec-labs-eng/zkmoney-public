@@ -18,6 +18,7 @@
     "test:wallet-modal": "node --test test/browser/rainbowkitModal.browser.mjs",
     "test:modal-badges": "node --test --test-concurrency=1 test/browser/modalBadges.browser.mjs",
     "test:qr-sheets": "node --test --test-concurrency=1 test/browser/qrSheets.browser.mjs",
+    "test:phone-sheets": "node --test --test-concurrency=1 test/browser/phoneSheets.browser.mjs",
     "test:active-tab": "node --test --test-concurrency=1 test/browser/activeTab.browser.mjs",
     "test:qr": "vitest run --config vitest.qr.config.ts",
     "test:passkey-rp-browser": "node test/browser/passkeyRp.browser.mjs",

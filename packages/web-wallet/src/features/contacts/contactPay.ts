@@ -92,7 +92,10 @@ export function sendToContact(
     note?: string
     /** Payment request this send fulfills; rides the on-chain `Transfer.meta`. */
     requestId?: string
-    /** Save the resolved tag as a contact before the row is written, so the send shows its name. */
+    /**
+     * Save the resolved tag as a contact. It is saved as `autoAdded` before the row is written, so
+     * the send shows its name, and becomes a contact for requests only once the send lands.
+     */
     saveContact?: boolean
   },
   onStage: (stage: PayStage) => void,
@@ -132,9 +135,10 @@ async function sendToContactFlow(
   ) {
     throw new Error(`@${args.tag} no longer matches this payment request — payment cancelled`)
   }
+  const contact = { name: args.tag, address: resolved.l2Address, verified: true, tag: args.tag }
   if (args.saveContact) {
     await ContactStorage.get()
-      .addEntry({ name: args.tag, address: resolved.l2Address, verified: true, tag: args.tag })
+      .addOrMergeContact({ ...contact, autoAdded: true })
       .catch(console.warn)
   }
   const [sponsor, token, resolveSpendMetadata] = await Promise.all([
@@ -233,6 +237,7 @@ async function sendToContactFlow(
     tx.txHash = txHash
     tx.detailedStatus = QueueStatus.SUCCESS
   }).catch(console.warn)
+  if (args.saveContact) void ContactStorage.get().addEntry(contact).catch(console.warn)
   return { txHash }
 }
 

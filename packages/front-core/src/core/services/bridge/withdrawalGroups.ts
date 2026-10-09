@@ -1,7 +1,8 @@
 /**
- * A fresh-address withdrawal is two burns to one recipient, the ETH gas leg and the funds leg,
- * sharing a `groupId`. Every surface that shows the pair as one withdrawal (the activity row, the
- * detail sheet, the bell) derives its phase, time and figure here.
+ * A legacy fresh-address withdrawal is two burns to one recipient, the ETH gas leg and the funds
+ * leg, sharing a `groupId`. The wallet no longer writes groups; every surface that shows a stored
+ * pair as one withdrawal (the activity row, the detail sheet, the bell) derives its phase, time and
+ * figure here.
  */
 import { formatUnits, parseUnits, type Hex } from "viem"
 import { decimalPlaces } from "src/utils/validate"
@@ -65,11 +66,8 @@ export function withdrawalGroupsOf(records: readonly WithdrawalRecord[]): Withdr
   return [...byId.values()]
 }
 
-/** Every present leg is in a terminal phase. */
+/** Every present leg is in a terminal phase. No funds leg follows a gas leg any more. */
 export function isWithdrawalGroupTerminal(group: WithdrawalGroup): boolean {
-  const { gas, funds } = group.legs
-  // A funds leg never sent keeps the group open while its gas leg can still carry it.
-  if (gas && !funds) return gas.phase === "failed" || gas.phase === "recovered"
   return legRecords(group).every((r) => WITHDRAWAL_TERMINAL_PHASES.has(r.phase))
 }
 

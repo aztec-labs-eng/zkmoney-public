@@ -14,16 +14,15 @@ import { buildSponsoredTeeOperation } from "./sponsoredTeeOperation.js"
 import {
   type ClaimSponsorContext,
   authorizeSponsoredBatch,
-  buildAccountBatchCall,
   chainInfoFields,
   registerSponsorFpc,
 } from "./claimSponsor.js"
-import { computeIntentsOnlyAuthWitHash } from "../feePaymentMethod/sponsoredCall.js"
 import { ObsidionAccount } from "../obsidion/alpha/account/ObsidionAccount.js"
 import {
   DEFAULT_CONTRACTS,
   OxideTokenContract,
   OxideTupleUnresolvedError,
+  ensureContractRegisteredInPXE,
   type Transfer as TransferEvent,
 } from "@obsidion/contracts"
 import {
@@ -49,16 +48,6 @@ export interface SponsoredExitPlanOptions {
   withdrawal: WithdrawalOptions
   /** Paid to the first prover of the burn's checkpoint, out of `amount`. */
   proverTip?: bigint
-}
-
-/** One exit's share of a signature taken over several ({@link TokenService.authorizeSponsoredExits}). */
-export interface SponsoredExitAuthorization {
-  /** Salts this exit's authwit; its intent was computed with it. */
-  authwitNonce: Fr
-  /** Every intent the signature covers, in the signed order. */
-  intentHashes: Fr[]
-  /** On the exit that writes the account's intents note; the others read that note. */
-  combinedAuthWitness?: AuthWitness
 }
 
 export type Token = {
@@ -148,6 +137,13 @@ export class TokenService extends ServiceContractBase {
     await service.ensureContractsRegistered()
 
     if (contractAddress) {
+      // Another asset's token, or a retired deployment's, can be new to this PXE.
+      await ensureContractRegisteredInPXE(wallet.pxe, wallet.node, contractAddress, () =>
+        service.contractService.getArtifactForContract(
+          DEFAULT_CONTRACTS.oxideToken,
+          contractAddress,
+        ),
+      )
       service.contractAddress = contractAddress
     } else {
       // Try to resolve existing address
@@ -871,9 +867,8 @@ export class TokenService extends ServiceContractBase {
    * user via a delegated authwit (`withdraw` is `#[authorize_once]`; msg_sender is the FPC), so
    * an `authorize_intents` account call rides the batch:
    * `[authorize_intents, withdraw, broadcast, publish_da]`, where the broadcast releases the burn
-   * on L1 (paired with the swap on a swap-on-withdraw). An exit whose `authorization` carries no
-   * signature leaves the account call out and reads the intents note an earlier exit wrote. The
-   * calls match the FPC's policy (the shipped `ByAny` entry matches any non-FPC private call).
+   * on L1 (paired with the swap on a swap-on-withdraw). The calls match the FPC's policy (the
+   * shipped `ByAny` entry matches any non-FPC private call).
    *
    * The published withdrawal log and downstream finalization (oxide relayer, the client's
    * `WithdrawalTrackingService` watcher) are identical to the self-paid path.
@@ -888,8 +883,6 @@ export class TokenService extends ServiceContractBase {
       resolveSpendMetadata?: SpendMetadataResolver
       resolveDepositSpendMetadata?: DepositSpendMetadataResolver
       withdrawal: WithdrawalOptions
-      /** A signature taken earlier over this exit's intent; the exit asks for none of its own. */
-      authorization?: SponsoredExitAuthorization
       /** See {@link exitToL1Private}. */
       proverTip?: bigint
     }>,
@@ -900,7 +893,6 @@ export class TokenService extends ServiceContractBase {
     humanReadableAmount: string
     l1Recipient: string
   }> {
-    const { authorization } = options
     const {
       userAccount,
       user,
@@ -910,16 +902,7 @@ export class TokenService extends ServiceContractBase {
       chainInfo,
       planned,
       intentHash,
-    } = await this.planSponsoredExit(
-      l1Recipient,
-      amount,
-      sponsor,
-      options,
-      authorization?.authwitNonce ?? Fr.random(),
-    )
-    if (authorization && !authorization.intentHashes.some((hash) => hash.equals(intentHash))) {
-      throw new Error("this exit is not among the authorized intents")
-    }
+    } = await this.planSponsoredExit(l1Recipient, amount, sponsor, options, Fr.random())
 
     this.emitInit()
     const humanReadableAmount = await this.formatAmount(rawAmount)
@@ -932,29 +915,15 @@ export class TokenService extends ServiceContractBase {
     )
 
     const withdrawOp: Operation = planned.operation
-    const authorized = authorization
-      ? {
-          intentHashes: authorization.intentHashes,
-          combinedAuthWitness: authorization.combinedAuthWitness,
-          // The batch carrying the signature writes the account's intents note; one without reads it.
-          accountCall: authorization.combinedAuthWitness
-            ? await buildAccountBatchCall(
-                this.wallet,
-                this.contractService,
-                user,
-                authorization.intentHashes,
-              )
-            : undefined,
-        }
-      : await authorizeSponsoredBatch(
-          this.wallet,
-          this.contractService,
-          sponsor,
-          user,
-          userAccount.getAuthProvider(),
-          [intentHash],
-          chainInfo,
-        )
+    const authorized = await authorizeSponsoredBatch(
+      this.wallet,
+      this.contractService,
+      sponsor,
+      user,
+      userAccount.getAuthProvider(),
+      [intentHash],
+      chainInfo,
+    )
 
     const op = await buildSponsoredTeeOperation(
       {
@@ -1006,47 +975,6 @@ export class TokenService extends ServiceContractBase {
       humanReadableAmount,
       l1Recipient: l1Recipient.toString(),
     }
-  }
-
-  /**
-   * One signature over several sponsored exits, run in the order given: the first carries the
-   * signature and writes the account's intents note, the rest read it. Pass each result to its
-   * exit as `authorization`.
-   */
-  public async authorizeSponsoredExits(
-    exits: {
-      l1Recipient: EthAddress
-      amount: string
-      withdrawal: WithdrawalOptions
-      proverTip?: bigint
-    }[],
-    sponsor: ClaimSponsorContext,
-    options: Omit<SponsoredExitPlanOptions, "withdrawal" | "proverTip"> = {},
-  ): Promise<SponsoredExitAuthorization[]> {
-    const nonces = exits.map(() => Fr.random())
-    const plans = []
-    for (const [i, exit] of exits.entries()) {
-      const planOptions = { ...options, withdrawal: exit.withdrawal, proverTip: exit.proverTip }
-      plans.push(
-        await this.planSponsoredExit(
-          exit.l1Recipient,
-          exit.amount,
-          sponsor,
-          planOptions,
-          nonces[i]!,
-        ),
-      )
-    }
-    const intentHashes = plans.map((plan) => plan.intentHash)
-    const { userAccount, user, chainInfo } = plans[0]!
-    const combinedAuthWitness = await userAccount
-      .getAuthProvider()
-      .createAuthWit(await computeIntentsOnlyAuthWitHash(user, chainInfo, intentHashes))
-    return nonces.map((authwitNonce, i) => ({
-      authwitNonce,
-      intentHashes,
-      combinedAuthWitness: i === 0 ? combinedAuthWitness : undefined,
-    }))
   }
 
   /**

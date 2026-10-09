@@ -26,6 +26,7 @@ interface FakeRecord {
   state: "local" | "sent" | "settled" | "failed"
   startedAt: number
   provingStartedAt?: number
+  handedOffAt?: number
   txHash?: string
   error?: string
   endedAt?: number
@@ -62,6 +63,11 @@ export function fakeOperationsModule() {
       const record = get(operationId)
       if (record?.state === "local" && record.provingStartedAt === undefined)
         patch(operationId, { provingStartedAt: Date.now() })
+    },
+    markHandedOff: async (operationId: string) => {
+      const record = get(operationId)
+      if (record?.state === "local" && record.handedOffAt === undefined)
+        patch(operationId, { handedOffAt: Date.now() })
     },
     markSent: async (operationId: string, txHash: string) => {
       if (get(operationId)?.state === "local") patch(operationId, { state: "sent", txHash })
@@ -169,7 +175,10 @@ export function fakeOperationsModule() {
         } else if (record?.state === "sent") {
           await store.fail(operationId, message)
         } else if (record?.state === "local") {
-          if (isFlowCancelled(err) || record.provingStartedAt === undefined) {
+          if (
+            isFlowCancelled(err) ||
+            (record.provingStartedAt === undefined && record.handedOffAt === undefined)
+          ) {
             await store.remove(operationId)
           } else {
             await store.fail(operationId, message)

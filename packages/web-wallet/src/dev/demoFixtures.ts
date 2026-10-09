@@ -633,9 +633,10 @@ export function demoWithdrawals(now: number): WithdrawalRecord[] {
 }
 
 /**
- * Every request row the list draws: contact requests in both directions plus a shareable link
- * request. The token trio and `networkId` come with every row: the announce (and the receiver's
- * ingest on the incoming one) carries them alongside the display amount.
+ * Every request row the wallet draws: contact requests in both directions, requests from people
+ * outside the contact book, and a shareable link request. The token trio and `networkId` come with
+ * every row: the announce (and the receiver's ingest on the incoming one) carries them alongside the
+ * display amount.
  */
 export function demoRequests(now: number, networkId: string): PaymentRequest[] {
   const token = { tokenAddress: DEMO_L2_TOKEN, tokenDecimals: 18, networkId }
@@ -742,6 +743,45 @@ export function demoRequests(now: number, networkId: string): PaymentRequest[] {
       direction: "outgoing",
       status: "declined",
       createdAt: now - 3 * DAY - HOUR,
+      kind: "contact",
+    },
+    // Requesters outside the contact book: the separate inbox's rows, never in Activity.
+    {
+      ...token,
+      id: "req_demo_stranger_mina",
+      contactTag: "mina",
+      amount: 42,
+      amountAtomic: atomic("42"),
+      asset: WALLET_TOKEN_SYMBOL,
+      direction: "incoming",
+      status: "pending",
+      createdAt: now - 2 * HOUR,
+      kind: "contact",
+      note: "Dinner split",
+    },
+    {
+      ...token,
+      id: "req_demo_stranger_paul",
+      contactTag: "paul_c",
+      amount: 1250,
+      amountAtomic: atomic("1250"),
+      asset: WALLET_TOKEN_SYMBOL,
+      direction: "incoming",
+      status: "pending",
+      createdAt: now - 26 * HOUR,
+      kind: "contact",
+      note: "Invoice #204",
+    },
+    {
+      ...token,
+      id: "req_demo_stranger_jj",
+      contactTag: "jj_8",
+      amount: 5,
+      amountAtomic: atomic("5"),
+      asset: WALLET_TOKEN_SYMBOL,
+      direction: "incoming",
+      status: "pending",
+      createdAt: now - 3 * DAY,
       kind: "contact",
     },
     {

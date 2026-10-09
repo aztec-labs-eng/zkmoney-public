@@ -97,6 +97,7 @@ const SENTINELS = {
 // resolver-lib mirrors resolver_circuit/content_hash.nr (SIPA-resolution parity) and depends on oxide-lib.
 // tee-enclave hosts LocalTeeSigner (the sandbox in-process signer) and depends on oxide-lib.
 // refund-proof bundles the frozen/unprocessed refund circuits oxide-client re-exports.
+// experiments holds the experiments' clients and depends on l1-contracts and oxide-client.
 const PACKAGES = [
   "oxide-lib",
   "resolver-lib",
@@ -104,6 +105,7 @@ const PACKAGES = [
   "l1-contracts",
   "refund-proof",
   "oxide-client",
+  "experiments",
 ]
 
 const BUILD_RELAYER = process.argv.includes("--relayer")
@@ -136,8 +138,10 @@ function run(cmd, args, cwd) {
 // "nothing to invalidate", not a build failure. `OXIDE_VENDOR_SHA` supplies it
 // where git is unavailable but the stamp is still wanted.
 const VENDOR_SHA_STAMP = resolve(L1_CONTRACTS, "out/.vendor-sha")
+const exportManifest = resolve(REPO_ROOT, "EXPORT-MANIFEST.json")
 const vendorSha =
   process.env.OXIDE_VENDOR_SHA?.trim() ||
+  (existsSync(exportManifest) ? JSON.parse(readFileSync(exportManifest, "utf8")).oxidePin : "") ||
   (() => {
     try {
       return execFileSync("git", ["-C", VENDOR_ROOT, "rev-parse", "HEAD"], {

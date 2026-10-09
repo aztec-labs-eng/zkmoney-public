@@ -26,13 +26,18 @@ import {
   importHistory,
   startArchivePublisher,
   startHistoryImporter,
+  useLocalConfigStore,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { resolveTagForCommit } from "../../features/contacts/registryResolution"
 import { loadWalletIdentity } from "../../features/identity/walletIdentity"
 import { getAuthService } from "../auth/useAuthenticator"
 import { webStorage, type WebStorageAdapter } from "../storage/WebStorageAdapter"
-import { createRequestBindingResolver, createRequestStoreWrites } from "./adapters"
+import {
+  createRequestBindingResolver,
+  createRequestSenderPolicy,
+  createRequestStoreWrites,
+} from "./adapters"
 import { WebXmtpClient } from "./WebXmtpClient"
 import {
   XmtpLifecycle,
@@ -51,6 +56,7 @@ const XMTP_CATCH_UP_TIMEOUT_MS = 120_000
 async function createLeaderClient(
   dbEncryptionKey: Uint8Array,
   signal: AbortSignal,
+  allowNonContactRequests: () => boolean,
 ): Promise<XmtpClientHandle> {
   const config = getConfig()
   const msk = await getAuthService().getSecretKey()
@@ -72,7 +78,7 @@ async function createLeaderClient(
   setXmtpSender(client)
 
   try {
-    return await mountReceivePipeline(client, storage, signal)
+    return await mountReceivePipeline(client, storage, signal, allowNonContactRequests)
   } catch (err) {
     setXmtpSender(null)
     client.close()
@@ -85,6 +91,7 @@ async function mountReceivePipeline(
   client: WebXmtpClient,
   storage: WebStorageAdapter,
   signal: AbortSignal,
+  allowNonContactRequests: () => boolean,
 ): Promise<XmtpClientHandle> {
   // KTD-10: a fresh installation pulls history from the account's other installations. Must
   // finish before the driver starts so its cursors still sit at zero. No history server on `local`.
@@ -123,11 +130,12 @@ async function mountReceivePipeline(
     receiverLogger,
   )
 
-  // Binding-gated — see RequestReceiver.
+  // Sender- and binding-gated — see RequestReceiver.
   const requestReceiver = new RequestReceiver(
     createRequestStoreWrites(RequestStorage.get()),
     receiverLogger,
     createRequestBindingResolver(),
+    createRequestSenderPolicy(contactStorage, allowNonContactRequests),
   )
 
   const driver = XmtpInboxReceiverDriver.getOrCreate({
@@ -197,6 +205,7 @@ async function mountReceivePipeline(
 }
 
 export function XmtpMount(): null {
+  const config = useLocalConfigStore()
   useEffect(() => {
     if (messagingCapability() !== "ok") {
       setXmtpUiState("unsupported")
@@ -210,12 +219,13 @@ export function XmtpMount(): null {
         return () => document.removeEventListener("visibilitychange", listener)
       },
       deriveDbKey: () => getAuthService().getDerivedKey("xmtp-store"),
-      createClient: (key, signal) => createLeaderClient(key, signal),
+      createClient: (key, signal) =>
+        createLeaderClient(key, signal, () => config.get("allowNonContactRequests")),
       onState: setXmtpUiState,
       log: (message, ...args) => console.warn(message, ...args),
     })
     lifecycle.start()
     return () => lifecycle.stop()
-  }, [])
+  }, [config])
   return null
 }

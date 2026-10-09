@@ -3,7 +3,7 @@ import { TimeoutError } from '@aztec/foundation/error';
 import { type DateProvider, TestDateProvider } from '@aztec/foundation/timer';
 
 import { OperationExecutorAbi } from '@oxide/l1-contracts';
-import { EXECUTOR_MIN_PAYOUT_CALLDATA_GAS } from '@oxide/oxide-client/l1_operation_quote.js';
+import { EXECUTOR_MIN_PAYOUT_CALLDATA_GAS, SIMULATED_SENDER_BALANCE } from '@oxide/oxide-client/l1_operation_quote.js';
 import { L1OperationCondition } from '@oxide/oxide-lib/l1_operation_calldata.js';
 
 import { describe, expect, it, jest } from '@jest/globals';
@@ -18,7 +18,6 @@ import {
   type TransactionReceipt,
   type TransactionRequestEIP1559,
   decodeFunctionData,
-  maxUint256,
   pad,
   toEventSelector,
 } from 'viem';
@@ -335,7 +334,7 @@ describe('L1OperationSubmitter', () => {
         blocks: [
           {
             blockOverrides: { baseFeePerGas: 0n },
-            stateOverrides: [{ address: SENDER.toString(), balance: maxUint256 }],
+            stateOverrides: [{ address: SENDER.toString(), balance: SIMULATED_SENDER_BALANCE }],
             calls: [
               expect.objectContaining({ to: EXECUTOR.toString(), functionName: 'execute', from: SENDER.toString() }),
             ],
@@ -609,7 +608,7 @@ describe('L1OperationSubmitter', () => {
       // `minPayout` follows it.
       expect(request).toMatchObject({ account: SENDER.toString(), maxFeePerGas: 19n, maxPriorityFeePerGas: 2n });
       // The balance override is what lets each priced call run without being capped by what the sender holds.
-      expect(request.stateOverride).toEqual([{ address: SENDER.toString(), balance: maxUint256 }]);
+      expect(request.stateOverride).toEqual([{ address: SENDER.toString(), balance: SIMULATED_SENDER_BALANCE }]);
     });
   });
 

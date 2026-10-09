@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+  ContactStorage,
   runQRHandshakeScan,
   withReentrancyGuard,
   buildScannedContact,
@@ -284,6 +285,27 @@ describe("runQRHandshakeScan (serverless scanner flow)", () => {
     expect(result.kind).toBe("handshake")
   })
 
+  it.each([
+    ["another tag", { name: "Alice", tag: "alice2", address: SHARER_L2 }],
+    ["no tag", { name: "alice", address: SHARER_L2 }],
+  ])(
+    "conflict: the stored row that matched has %s → conflict, no connect-back, nothing queued",
+    async (_, existing) => {
+      const enqueueFailedConnectBack = vi.fn(async () => {})
+      const { deps, sendConnectBack } = makeDeps({
+        addOrMergeContact: (async () => existing) as QRHandshakeScanDeps["addOrMergeContact"],
+        enqueueFailedConnectBack,
+      })
+
+      const result = await runQRHandshakeScan(CONNECT_LINK, deps)
+      await flush()
+
+      expect(result).toEqual({ kind: "conflict", contact: existing })
+      expect(sendConnectBack).not.toHaveBeenCalled()
+      expect(enqueueFailedConnectBack).not.toHaveBeenCalled()
+    },
+  )
+
   it("edge: self-scan (own xmtp handle) → ignored (no add, no connect-back)", async () => {
     const { deps, addOrMergeContact, sendConnectBack } = makeDeps({
       decodeInline: (() =>
@@ -560,4 +582,54 @@ describe("buildScannedContact / navigateIdFor", () => {
     expect(c.tag).toBeUndefined()
     expect(navigateIdFor(c)).toBe(SHARER_L2)
   })
+})
+
+describe("runQRHandshakeScan over ContactStorage: a sender the wallet added from a transfer", () => {
+  const store = () => {
+    ContactStorage.resetForTests()
+    const data = new Map<string, string>()
+    return ContactStorage.get({
+      getItem: async (k) => data.get(k) ?? null,
+      setItem: async (k, v) => {
+        data.set(k, v)
+      },
+      removeItem: async (k) => {
+        data.delete(k)
+      },
+      clear: async () => data.clear(),
+    })
+  }
+
+  it("is approved by scanning their QR", async () => {
+    const contacts = store()
+    await contacts.addEntry({ name: "alice", tag: "alice", address: SHARER_L2, autoAdded: true })
+    const { deps } = makeDeps({ addOrMergeContact: (entry) => contacts.addOrMergeContact(entry) })
+    expect((await runQRHandshakeScan(CONNECT_LINK, deps)).kind).toBe("handshake")
+    expect(await contacts.getEntries()).toEqual([
+      { name: "alice", tag: "alice", address: SHARER_L2 },
+    ])
+  })
+
+  it.each([
+    ["an unverified", null],
+    ["a verified", { l2Address: SHARER_L2, xmtpAddress: SHARER_XMTP }],
+  ])(
+    "stays unapproved, and the scan reports a conflict, when %s QR at their address carries another tag",
+    async (_, record) => {
+      const contacts = store()
+      const fromTransfer = { name: "old-tag", tag: "old-tag", address: SHARER_L2, autoAdded: true }
+      await contacts.addEntry(fromTransfer)
+      const { deps, sendConnectBack } = makeDeps({
+        verifyTag: async () => record,
+        addOrMergeContact: (entry) => contacts.addOrMergeContact(entry),
+      })
+      expect(await runQRHandshakeScan(CONNECT_LINK, deps)).toEqual({
+        kind: "conflict",
+        contact: fromTransfer,
+      })
+      await flush()
+      expect(sendConnectBack).not.toHaveBeenCalled()
+      expect(await contacts.getEntries()).toEqual([fromTransfer])
+    },
+  )
 })

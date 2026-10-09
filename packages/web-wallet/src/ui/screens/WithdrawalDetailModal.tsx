@@ -12,6 +12,8 @@ import {
   withdrawalAmounts,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
+import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
+import { formatUnits } from "viem"
 import { GradientText, Icon, PrimaryGradientButton, type StatusBadgeStyle } from "@obsidion/web-ds"
 import ethIcon from "../../assets/deposit/ethereum.webp"
 import { getConfig } from "../../config/env"
@@ -119,6 +121,10 @@ export function WithdrawalDetailModal({
   const showMigration = migration && migration.netAtomic > 0n && !unpaid
   const showSwapFee = swap && swap.feeKnown && swap.swapInputAtomic > 0n && !unpaid
   const estimate = !unpaid ? swap?.estimate : undefined
+  // The burn less the gas share, which the escrow swaps to ETH apart from the route.
+  const routeGross = swap
+    ? formatUnits(swap.grossAtomic - (swap.gas?.daiAtomic ?? 0n), DEFAULT_DECIMALS)
+    : "0"
   const recipientUrl = l1AddressUrl(record.recipient)
   // A registration's burn pays this wallet's own registration address, not a recipient.
   const registration = record.intent === "registration"
@@ -206,6 +212,14 @@ export function WithdrawalDetailModal({
             <b>$1 = {tokenAmount(String(estimate.rate))}</b>
           </DepositFact>
         )}
+        {swap?.gas && !unpaid && (
+          <DepositFact label="Arrives as gas">
+            <b>
+              {usdFigure(swap.gas.daiDisplay)}
+              {swap.gas.ethOutDisplay && ` ≈ ${tokenAmount(swap.gas.ethOutDisplay)} ETH`}
+            </b>
+          </DepositFact>
+        )}
         {showBreakdown && (
           <DepositFact label="Fee">
             <b>-{usdFigure(amounts.feeDisplay)}</b>
@@ -276,11 +290,11 @@ export function WithdrawalDetailModal({
         {estimate && swapOption && (
           <>
             <hr className="ww-divider" />
-            {/* The whole burn at the quote rate — the fee gap to the row above is the fee in output units. */}
+            {/* What the route got of the burn at the quote rate — the fee gap to the row above is the fee
+                in output units. */}
             <DepositFact label="Sent">
               <b>
-                {usdFigure(swap!.grossDisplay)} ={" "}
-                {tokenAmount(String(Number(swap!.grossDisplay) * estimate.rate))}{" "}
+                {usdFigure(routeGross)} = {tokenAmount(String(Number(routeGross) * estimate.rate))}{" "}
                 {swapOption.symbol}
               </b>
             </DepositFact>

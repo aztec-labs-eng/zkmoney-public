@@ -92,7 +92,7 @@ describe("parseDeployment", () => {
       unprocessedDepositRefundVerifier: V1.unprocessedDepositRefundVerifier,
       frozenNotesRefundVkSha256: V1.frozenNotesRefundVkSha256,
       frozenDepositRefundVkSha256: V1.frozenDepositRefundVkSha256,
-      swapEscrowFactory: V1.swapEscrowFactory,
+      swapEscrowFactoryV2: V1.swapEscrowFactoryV2,
       operationExecutor: V1.operationExecutor,
       fpcFunder: V1.fpcFunder,
       fpcBeneficiary: V1.fpcBeneficiary,

@@ -108,11 +108,14 @@ const TARGETS = {
   // Abstract: only the ABI is used.
   EscrowBase: { root: FOUNDRY_OUT, rel: 'EscrowBase.sol/EscrowBase.json' },
   // Swap-on-withdraw feature (disposable — purge these with `src/swap_on_withdraw.ts`). MockUniversalRouter is the
-  // feature's route-honoring test router; MockCurve3Pool stands in for the 3pool the DAI hops go through.
+  // feature's route-honoring test router; MockCurve3Pool stands in for the 3pool the DAI hops go through;
+  // MockUniswapV2Pair and MockWETH9 stand in for the DAI/WETH pair and WETH of the DAI-for-gas swap.
   SwapEscrow: { root: FOUNDRY_OUT, rel: 'SwapEscrow.sol/SwapEscrow.json' },
   SwapEscrowFactory: { root: FOUNDRY_OUT, rel: 'SwapEscrowFactory.sol/SwapEscrowFactory.json' },
   MockUniversalRouter: { root: FOUNDRY_OUT, rel: 'MockUniversalRouter.sol/MockUniversalRouter.json' },
   MockCurve3Pool: { root: FOUNDRY_OUT, rel: 'MockCurve3Pool.sol/MockCurve3Pool.json' },
+  MockUniswapV2Pair: { root: FOUNDRY_OUT, rel: 'MockUniswapV2Pair.sol/MockUniswapV2Pair.json' },
+  MockWETH9: { root: FOUNDRY_OUT, rel: 'MockWETH9.sol/MockWETH9.json' },
   // CCTP bridge-on-withdraw feature (disposable — purge these with `src/cctp_bridge_on_withdraw.ts`).
   CCTPBridgeEscrow: { root: FOUNDRY_OUT, rel: 'CCTPBridgeEscrow.sol/CCTPBridgeEscrow.json' },
   CCTPBridgeEscrowFactory: { root: FOUNDRY_OUT, rel: 'CCTPBridgeEscrowFactory.sol/CCTPBridgeEscrowFactory.json' },

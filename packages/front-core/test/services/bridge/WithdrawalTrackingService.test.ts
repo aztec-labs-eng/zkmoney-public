@@ -809,7 +809,14 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
       expect(store.get("w1")?.phaseEnteredAt).toBeGreaterThan(0)
       expect(reader.deploySimulates).toHaveBeenCalledWith(
         FACTORY,
-        expect.objectContaining({ route: 0, recipient: RECIPIENT, nonce: swapFields().swapNonce }),
+        expect.objectContaining({
+          layout: "legacy",
+          args: expect.objectContaining({
+            route: 0,
+            recipient: RECIPIENT,
+            nonce: swapFields().swapNonce,
+          }),
+        }),
       )
       await tracker.syncOnce()
       expect(store.get("w1")?.phase).toBe("swapping")

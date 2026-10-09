@@ -203,7 +203,9 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
               amountDisplay: amount,
               note: note.trim() || undefined,
               request,
-              saveUnsavedRequester: routerState?.contact ? !routerState.saved : !entry,
+              // A sender the wallet added from a transfer is approved by paying their request.
+              saveUnsavedRequester:
+                (routerState?.contact ? !routerState.saved : !entry) || !!entry?.autoAdded,
             }
           : {
               mode: "request",

@@ -220,6 +220,8 @@ async function cashOutLinkFlow(
   const { record, result } = await runBurn({
     op,
     wallet: deps.wallet,
+    // The voucher's one-use allowance never renews, so the account-allowance copy does not apply.
+    reportContext: "paylink:claim",
     record: {
       recipient,
       // Whoever held the link typed this address; no contact in this browser stands behind it.

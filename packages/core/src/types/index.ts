@@ -28,6 +28,9 @@ export type NetworkMap<T> = Record<Network, Record<string, T>>
 /** What a swap-on-withdraw delivers on L1 in place of the withdrawn DAI. */
 export type SwapOnWithdrawOutput = (typeof SWAP_ON_WITHDRAW_OUTPUTS)[number]
 
+/** What a swap escrow's route pays: a swap output, or the DAI itself when the escrow only swaps some DAI for gas. */
+export type SwapEscrowOutput = "DAI" | SwapOnWithdrawOutput
+
 // ── Contracts ────────────────────────────────────────────────────────
 
 export type ContractName = (typeof DEFAULT_CONTRACTS_NAME)[number]
@@ -212,9 +215,12 @@ export interface OxideEnvTuple {
   unprocessedDepositRefundVerifier?: string
   frozenNotesRefundVkSha256?: string
   frozenDepositRefundVkSha256?: string
-  /** L1 SwapEscrowFactory for swap-on-withdraw. Deployment-coupled (`current` only); a swap
-   *  withdrawal fails loudly at submit where the manifest hasn't published one yet. */
-  swapEscrowFactory?: string
+  /** L1 SwapEscrowFactory for swap-on-withdraw: the factory whose `Args` carry `daiForGas`. The manifest's older
+   *  `swapEscrowFactory` key names a factory with another layout and is never read. Without this key the wallet offers
+   *  no swap routes. */
+  swapEscrowFactoryV2?: string
+  /** L1 SkyEscrowFactory that moves funds between this deployment and its Sky savings deployment. */
+  skyEscrowFactory?: string
   /** L1 OperationExecutor oxide's relayers run broadcast L1 operations through. The swap-on-withdraw
    *  tip is priced by simulating the relayer's exact `execute` call against it. */
   operationExecutor?: string
@@ -523,7 +529,7 @@ export type WithdrawalPhase =
   | "done" // L1 payout observed (the release on a direct withdrawal, the swap on a swap). Never demotable.
   | "failed" // Terminal — pre-mine local error, or a reorg-dropped burn.
 
-/** The two burns of a fresh-address withdrawal: ETH for gas, then the funds. */
+/** The two burns of a legacy fresh-address withdrawal: ETH for gas, then the funds. */
 export type WithdrawalGroupLeg = "gas" | "funds"
 
 /** SIPA deposit lifecycle (L1→L2). */

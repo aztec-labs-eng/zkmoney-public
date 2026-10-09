@@ -1,6 +1,7 @@
 import { createPublicClient, fallback, http, type Chain, type Hex } from "viem"
 import type { AztecNode } from "@aztec/aztec.js/node"
 import type { AztecAddress } from "@aztec/stdlib/aztec-address"
+import type { OxideEnvTuple } from "@obsidion/core/types"
 import { ContractService, loadTeeSigner, type TeeSigner } from "@obsidion/sdk"
 import { logger } from "src/utils/logger"
 
@@ -44,6 +45,12 @@ export interface OxideTeeSignerSourceOptions {
   getNode?(): AztecNode | undefined
   /** Active OxideToken the approval is read on; `undefined` until the contract service resolves it. */
   getTokenAddress?(): Promise<AztecAddress | undefined>
+  /**
+   * The deployment whose enclave to connect to, for a wallet that holds more than one. Without it
+   * the source follows the contract service's manifest tuple and its rolls; with it the source is
+   * static, and its owner builds a new one when that deployment changes.
+   */
+  getTuple?(): Pick<OxideEnvTuple, "portal" | "enclaveUrl"> | undefined
 }
 
 /**
@@ -60,7 +67,7 @@ export interface OxideTeeSignerSourceOptions {
  * so the source can be built before `ContractService` has its singleton.
  */
 export function createOxideTeeSignerSource(options: OxideTeeSignerSourceOptions): TeeSignerSource {
-  const { l1RpcUrl, l1Chain, transformEnclaveUrl, getNode, getTokenAddress } = options
+  const { l1RpcUrl, l1Chain, transformEnclaveUrl, getNode, getTokenAddress, getTuple } = options
   if (!!getNode !== !!getTokenAddress) {
     throw new Error("[teeSignerSource] getNode and getTokenAddress must be supplied together")
   }
@@ -77,7 +84,7 @@ export function createOxideTeeSignerSource(options: OxideTeeSignerSourceOptions)
   return {
     label: `remote:${l1Chain.id}`,
     async load() {
-      const tuple = getClient()?.getCurrentTuple()
+      const tuple = getTuple ? getTuple() : getClient()?.getCurrentTuple()
       if (!tuple) return undefined // degraded boot — no manifest tuple yet
       const { portal, enclaveUrl } = tuple
       // Defend against a malformed portal. The client validates the manifest,
@@ -117,11 +124,12 @@ export function createOxideTeeSignerSource(options: OxideTeeSignerSourceOptions)
         : await loadTeeSigner(resolvedEnclaveUrl, portal as Hex, viemClient)
     },
     subscribe(onChange) {
-      const client = getClient()
+      const client = getTuple ? undefined : getClient()
       if (!client) return () => {}
       return client.subscribe(() => onChange())
     },
     refresh() {
+      if (getTuple) return
       try {
         void getClient()?.refresh()
       } catch {

@@ -18,6 +18,8 @@
       "enclaveUrl": "https://v1.tee.example.test/rpc",
       "rollupVersion": "1821665230",
       "relayerAddress": "0xC17e5D8C3115612ADA1d5C0f33BF6B7cC5c3129a",
+      "swapEscrowFactory": "0x03b21bba8e75a1bd0354c5ecbec078cf59c85343",
+      "swapEscrowFactoryV2": "0x5a1e0c0ffee0c0ffee0c0ffee0c0ffee0c0ffee5",
       "operationExecutor": "0x685A590c0BE44Da90062C603070eB75C2E03e200",
       "firstProverProofSubmitter": "0x0599F97e005627D1259A27328cd76a0D6df577C9",
       "fpcFunder": "0x7af4DAD1A6BEFF5A909dDaB22BDDed254f27d52a",

@@ -177,6 +177,9 @@ importers:
       '@obsidion/sdk':
         specifier: workspace:*
         version: link:../sdk
+      '@oxide/experiments':
+        specifier: workspace:*
+        version: link:../../vendor/oxide/yarn-project/experiments
       '@oxide/l1-contracts':
         specifier: workspace:*
         version: link:../../vendor/oxide/yarn-project/l1-contracts
@@ -418,6 +421,9 @@ importers:
       '@obsidion/proving-progress':
         specifier: workspace:*
         version: link:../proving-progress
+      '@oxide/experiments':
+        specifier: workspace:*
+        version: link:../../vendor/oxide/yarn-project/experiments
       '@oxide/l1-contracts':
         specifier: workspace:*
         version: link:../../vendor/oxide/yarn-project/l1-contracts
@@ -655,6 +661,49 @@ importers:
         specifier: ^0.16.1
         version: 0.16.2
 
+  vendor/oxide/yarn-project/experiments:
+    dependencies:
+      '@aztec/foundation':
+        specifier: 5.2.0
+        version: 5.2.0
+      '@oxide/l1-contracts':
+        specifier: workspace:^
+        version: link:../l1-contracts
+      '@oxide/oxide-client':
+        specifier: workspace:^
+        version: link:../oxide-client
+      viem:
+        specifier: npm:@aztec/viem@2.38.2
+        version: '@aztec/viem@2.38.2(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)'
+    devDependencies:
+      '@aztec/aztec.js':
+        specifier: 5.2.0
+        version: 5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
+      '@jest/globals':
+        specifier: ^30.0.0
+        version: 30.4.1
+      '@oxide/oxide-lib':
+        specifier: workspace:^
+        version: link:../oxide-lib
+      '@swc/core':
+        specifier: ^1.10.12
+        version: 1.15.40
+      '@swc/jest':
+        specifier: ^0.2.36
+        version: 0.2.39(@swc/core@1.15.40)
+      '@types/jest':
+        specifier: ^30.0.0
+        version: 30.0.0
+      '@types/node':
+        specifier: ^22.15.17
+        version: 22.19.20
+      jest:
+        specifier: ^30.0.0
+        version: 30.4.2(@types/node@22.19.20)(esbuild-register@3.6.0(esbuild@0.28.2))(ts-node@10.9.2(@swc/core@1.15.40)(@types/node@22.19.20)(typescript@5.7.3))
+      typescript:
+        specifier: ^5.3.3
+        version: 5.7.3
+
   vendor/oxide/yarn-project/l1-contracts:
     dependencies:
       '@aztec/ethereum':
@@ -705,7 +754,7 @@ importers:
     dependencies:
       '@aztec/aztec.js':
         specifier: 5.2.0
-        version: 5.2.0(typescript@5.7.3)
+        version: 5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
     devDependencies:
       '@types/node':
         specifier: ^22.15.17
@@ -9759,16 +9808,16 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@aztec/aztec.js@5.2.0(typescript@5.7.3)':
+  '@aztec/aztec.js@5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)':
     dependencies:
       '@aztec/constants': 5.2.0
-      '@aztec/entrypoints': 5.2.0(typescript@5.7.3)
+      '@aztec/entrypoints': 5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
       '@aztec/ethereum': 5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
       '@aztec/foundation': 5.2.0
       '@aztec/l1-artifacts': 5.2.0
-      '@aztec/protocol-contracts': 5.2.0(typescript@5.7.3)
-      '@aztec/standard-contracts': 5.2.0(typescript@5.7.3)
-      '@aztec/stdlib': 5.2.0(typescript@5.7.3)
+      '@aztec/protocol-contracts': 5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
+      '@aztec/standard-contracts': 5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
+      '@aztec/stdlib': 5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
       axios: 1.17.0
       tslib: 2.8.1
       viem: '@aztec/viem@2.38.2(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)'
@@ -9862,13 +9911,13 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@aztec/entrypoints@5.2.0(typescript@5.7.3)':
+  '@aztec/entrypoints@5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)':
     dependencies:
       '@aztec/constants': 5.2.0
       '@aztec/foundation': 5.2.0
-      '@aztec/protocol-contracts': 5.2.0(typescript@5.7.3)
-      '@aztec/standard-contracts': 5.2.0(typescript@5.7.3)
-      '@aztec/stdlib': 5.2.0(typescript@5.7.3)
+      '@aztec/protocol-contracts': 5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
+      '@aztec/standard-contracts': 5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
+      '@aztec/stdlib': 5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
       tslib: 2.8.1
       zod: 4.4.3
     transitivePeerDependencies:
@@ -10041,11 +10090,11 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@aztec/protocol-contracts@5.2.0(typescript@5.7.3)':
+  '@aztec/protocol-contracts@5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)':
     dependencies:
       '@aztec/constants': 5.2.0
       '@aztec/foundation': 5.2.0
-      '@aztec/stdlib': 5.2.0(typescript@5.7.3)
+      '@aztec/stdlib': 5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
       lodash.chunk: 4.2.0
       lodash.omit: 4.18.0
       tslib: 2.8.1
@@ -10129,10 +10178,10 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@aztec/standard-contracts@5.2.0(typescript@5.7.3)':
+  '@aztec/standard-contracts@5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)':
     dependencies:
       '@aztec/foundation': 5.2.0
-      '@aztec/stdlib': 5.2.0(typescript@5.7.3)
+      '@aztec/stdlib': 5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)
       tslib: 2.8.1
     transitivePeerDependencies:
       - bufferutil
@@ -10172,7 +10221,7 @@ snapshots:
       - typescript
       - utf-8-validate
 
-  '@aztec/stdlib@5.2.0(typescript@5.7.3)':
+  '@aztec/stdlib@5.2.0(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)':
     dependencies:
       '@aws-sdk/client-s3': 3.1063.0
       '@aztec/bb.js': 5.2.0

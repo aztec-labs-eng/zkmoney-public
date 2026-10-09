@@ -1,9 +1,9 @@
 /**
  * Routes one decoded payment-request message (`request` / `request-declined`) into
- * `RequestStoreWrites`. The optional tag-binding gate skips peer mismatches and defers transport
- * failures. Fulfillment never arrives here — `requestFulfillmentReconciler` joins it from the
- * on-chain `Transfer.meta`. `process` never throws — store errors become `deferred` for retry.
- * Idempotency lives in the store.
+ * `RequestStoreWrites`. The optional sender policy skips refused requesters; the optional
+ * tag-binding gate skips peer mismatches and defers transport failures. Fulfillment never arrives
+ * here — `requestFulfillmentReconciler` joins it from the on-chain `Transfer.meta`. `process` never
+ * throws — store errors become `deferred` for retry. Idempotency lives in the store.
  */
 
 import type { TokenTransaction } from "../types/transactions.js"
@@ -11,6 +11,7 @@ import { hasAddress } from "./tagForwardResolver.js"
 import type {
   RequestReceiveInput,
   RequestReceiveStatus,
+  RequestSenderPolicy,
   RequestStoreWrites,
   RequestTagBindingResolver,
   StoredRequestView,
@@ -58,6 +59,8 @@ export class RequestReceiver {
     private readonly logger: RequestReceiverLogger = noopLogger,
     /** Optional: accept only if the claimed tag's bootstrap address is on the DM peer's inbox. */
     private readonly binding?: RequestTagBindingResolver,
+    /** Optional: checked before the binding, so a refused requester costs no Registry read. */
+    private readonly senders?: RequestSenderPolicy,
   ) {}
 
   async process(input: RequestReceiveInput): Promise<RequestReceiveStatus> {
@@ -75,6 +78,9 @@ export class RequestReceiver {
   }: RequestReceiveInput): Promise<RequestReceiveStatus> {
     switch (content.kind) {
       case "request": {
+        if (!(await this.admits(content.requesterTag))) {
+          return { status: "ignored", reason: "sender-not-admitted" }
+        }
         if (this.binding) {
           const gate = await this.bindingGate(content.requesterTag, senderXmtpAddresses)
           if (gate) return gate
@@ -100,6 +106,19 @@ export class RequestReceiver {
           ? { status: "accepted", kind: "request-declined" }
           : { status: "ignored", reason: "no-matching-request" }
       }
+    }
+  }
+
+  private async admits(tag: string): Promise<boolean> {
+    if (!this.senders) return true
+    try {
+      return await this.senders.admitsRequester(tag)
+    } catch (cause) {
+      this.logger.warn("[RequestReceiver] sender policy threw — request admitted", {
+        tag,
+        cause: describeCause(cause),
+      })
+      return true
     }
   }
 

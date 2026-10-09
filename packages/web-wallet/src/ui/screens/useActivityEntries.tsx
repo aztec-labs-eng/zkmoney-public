@@ -22,10 +22,12 @@ import {
   SIPADepositStore,
   TransactionStorage,
   RequestStorage,
+  approvedContactTags,
   buildPaidLinkRows,
   buildRequestRows,
   canSelfFinalizeWithdrawal,
   globalEventEmitter,
+  isFromNonContact,
   isSettledSipaPhase,
   isUnfundedSipaDeposit,
   sipaSweepAllowed,
@@ -52,7 +54,6 @@ import {
   type SIPADepositRecord,
   type SipaProcessingState,
   type Transaction,
-  type WithdrawalGroup,
   type WithdrawalRecord,
   useSyncCatchingUp,
   WITHDRAWAL_PHASE_COPY,
@@ -88,8 +89,6 @@ import { useWithdrawals } from "../../features/withdraw/useWithdrawals"
 import { SwapExitModal } from "../../features/withdraw/SwapExitModal"
 import { swapExitReasonFor, type SwapExitReason } from "../../features/withdraw/swapRecovery"
 import { WithdrawalExitModal } from "../../features/withdraw/WithdrawalExitModal"
-import { remainingFundsRefusal } from "../../features/withdraw/freshAddressGateway"
-import { WithdrawFreshModal } from "../../features/withdraw/WithdrawFreshModal"
 import { migrationAmounts } from "../../features/migration/migrationFee"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { rowTimestamp, shortAddr, usdFigure } from "../format"
@@ -243,9 +242,6 @@ function WithdrawalRow({
     />
   )
 }
-
-/** Whether the funds leg is offered again under this group: the gateway's own rule at commit. */
-const canSendRemainingFunds = (group: WithdrawalGroup): boolean => !remainingFundsRefusal(group)
 
 function DepositRow({
   row,
@@ -434,6 +430,8 @@ export interface ActivityEntriesState {
   entries: ActivityEntry[]
   /** True once every source has served its last-known state from storage. */
   hydrated: boolean
+  /** The contacts could not be read, so incoming requests are hidden. The directory retries. */
+  requestsUnavailable: boolean
   detailModals: ReactNode
 }
 
@@ -516,12 +514,10 @@ export function useActivityEntries(): ActivityEntriesState {
   const [requestLinkDetail, setRequestLinkDetail] = useState<PaymentRequest | null>(null)
   const [cancelRequestId, setCancelRequestId] = useState<string | null>(null)
   const [removeLinkId, setRemoveLinkId] = useState<string | null>(null)
-  const [incomingDetail, setIncomingDetail] = useState<PaymentRequest | null>(null)
+  const [incomingDetailId, setIncomingDetailId] = useState<string | null>(null)
   // Held by value, unlike the details above: a submitted exit advances its record straight out of
   // the filtered list, and a sheet mid-submit must not go with it.
   const [exit, setExit] = useState<BridgeExit | null>(null)
-  // The group whose funds leg is being sent again, held by value: the rerun adds a record to it.
-  const [resume, setResume] = useState<WithdrawalGroup | null>(null)
   const [linkRecovery, setLinkRecovery] = useState<LinkRecovery | null>(null)
   // Rows offer Cancel link during grace and Reclaim funds after expiry; a mounted list must flip as chain
   // time crosses those boundaries, and offers neither until the tip has been read.
@@ -669,20 +665,32 @@ export function useActivityEntries(): ActivityEntriesState {
     () => items.flatMap((item) => (item.kind === "bridge.sipaDeposit" ? [item.record] : [])),
     [items],
   )
-  const requestRows = useMemo(
-    () =>
-      buildRequestRows(
-        withoutAnsweredRequests(requests, transactions),
-        Date.now(),
-        sipaRecords,
-      ).map((row) => {
-        const contact = row.contactTag ? directory.lookup(row.contactTag) : undefined
-        return contact ? { ...row, counterparty: contactDisplayName(contact) } : row
-      }),
+  // Requests from non-contacts are listed on their own page (NonContactRequestsScreen). Without a
+  // current read of the contacts, no incoming request can be shown as from a contact.
+  const contactsCurrent = directory.hydrated && !directory.failed
+  const requestRows = useMemo(() => {
+    const contactTags = approvedContactTags(directory.contacts)
+    return buildRequestRows(
+      withoutAnsweredRequests(requests, transactions).filter((r) =>
+        contactsCurrent ? !isFromNonContact(r, contactTags) : r.direction !== "incoming",
+      ),
+      Date.now(),
+      sipaRecords,
+    ).map((row) => {
+      const contact = row.contactTag ? directory.lookup(row.contactTag) : undefined
+      return contact ? { ...row, counterparty: contactDisplayName(contact) } : row
+    })
     // directory is a fresh object each render; contacts is the state that actually feeds lookup.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [requests, transactions, sipaRecords, directory.contacts],
-  )
+  }, [requests, transactions, sipaRecords, directory.contacts, contactsCurrent])
+  // The sheet closes when its row is hidden, so it offers no Send, and stays closed if the row returns.
+  const incomingDetailRow = incomingDetailId
+    ? requestRows.find((r) => r.kind === "incoming" && r.id === incomingDetailId)
+    : undefined
+  const incomingDetail = incomingDetailRow && requestsById.get(incomingDetailRow.id)
+  useEffect(() => {
+    if (incomingDetailId && !incomingDetailRow) setIncomingDetailId(null)
+  }, [incomingDetailId, incomingDetailRow])
   const paidLinkRows = useMemo(
     () => buildPaidLinkRows(requests, sipaRecords, transactions),
     [requests, sipaRecords, transactions],
@@ -750,11 +758,6 @@ export function useActivityEntries(): ActivityEntriesState {
     return offer ? { title: offer.title, onStart: () => openSwapExit(record) } : undefined
   }
 
-  const openResume = (group: WithdrawalGroup) => {
-    setWithdrawalDetailId(null)
-    setResume(group)
-  }
-
   // Records with a groupId show as their group, never as plain withdrawal rows.
   const withdrawalGroups = useMemo(() => withdrawalGroupsOf(withdrawalRecords), [withdrawalRecords])
   const groupDetail = withdrawalGroups.find((g) => g.groupId === withdrawalDetailId) ?? null
@@ -815,7 +818,7 @@ export function useActivityEntries(): ActivityEntriesState {
             row.kind === "outgoingLink"
               ? () => openLinkDetail(row.id)
               : row.kind === "incoming"
-              ? () => setIncomingDetail(requestsById.get(row.id) ?? null)
+              ? () => setIncomingDetailId(row.id)
               : row.contactTag
               ? () => navigate(`/contacts/${encodeURIComponent(row.contactTag!)}`)
               : undefined
@@ -900,7 +903,7 @@ export function useActivityEntries(): ActivityEntriesState {
         />
       ),
     })),
-    // One row for the two burns of a fresh-address withdrawal: worst leg's status, total burned.
+    // One row for the two burns of a legacy fresh-address withdrawal: worst leg's status, total burned.
     ...withdrawalGroups.map((group): ActivityEntry => {
       const head = group.legs.gas ?? group.records[0]
       const named = [group.legs.gas, group.legs.funds].flatMap((r) => r ?? [])
@@ -908,12 +911,7 @@ export function useActivityEntries(): ActivityEntriesState {
       const delayed = legs.find(
         (r) => isWithdrawalDelayed(r) || withdrawalExitOffer(r)?.reason === "stuck",
       )
-      const offers = [
-        ...(canSendRemainingFunds(group)
-          ? [{ title: "Send remaining funds", onStart: () => openResume(group) }]
-          : []),
-        ...legs.flatMap((r) => withdrawalExit(r) ?? []).slice(0, 1),
-      ]
+      const offers = legs.flatMap((r) => withdrawalExit(r) ?? []).slice(0, 1)
       return {
         id: group.groupId,
         ts: withdrawalGroupTime(group),
@@ -1042,7 +1040,9 @@ export function useActivityEntries(): ActivityEntriesState {
       withdrawalsHydrated &&
       transactionsHydrated &&
       requestsHydrated &&
+      (directory.hydrated || directory.failed) &&
       !catchingUp,
+    requestsUnavailable: directory.failed,
     detailModals: (
       <>
         {registrationDeposit?.modal}
@@ -1079,24 +1079,7 @@ export function useActivityEntries(): ActivityEntriesState {
               setNotice(undefined)
               setWithdrawalDetailId(record.localId)
             }}
-            onSendRemaining={
-              canSendRemainingFunds(groupDetail) ? () => openResume(groupDetail) : undefined
-            }
             onClose={() => setWithdrawalDetailId(null)}
-          />
-        )}
-        {resume && (
-          <WithdrawFreshModal
-            recipient={(resume.legs.gas ?? resume.records[0]).recipient}
-            walletName={resume.legs.gas?.recipientAlias}
-            // No amount prefill: a failed leg's `amount` holds the floor, which the sheet adds again.
-            resume={{
-              groupId: resume.groupId,
-              // A funds leg recorded without a swap is a DAI one.
-              fundsAsset: resume.legs.funds && (resume.legs.funds.swapOutput ?? "DAI"),
-            }}
-            onClose={() => setResume(null)}
-            onDone={() => setResume(null)}
           />
         )}
         {depositDetail && (
@@ -1147,18 +1130,17 @@ export function useActivityEntries(): ActivityEntriesState {
             onClose={() => setExit(null)}
           />
         )}
-        {incomingDetail && (
+        {incomingDetailRow && incomingDetail && (
           <IncomingRequestDetailModal
             request={incomingDetail}
-            onClose={() => setIncomingDetail(null)}
+            onClose={() => setIncomingDetailId(null)}
             onDecline={() => {
-              setIncomingDetail(null)
+              setIncomingDetailId(null)
               onDecline(incomingDetail.id)
             }}
             onSend={() => {
-              const row = requestRows.find((r) => r.id === incomingDetail.id)
-              setIncomingDetail(null)
-              if (row) onSend(row)
+              setIncomingDetailId(null)
+              onSend(incomingDetailRow)
             }}
           />
         )}

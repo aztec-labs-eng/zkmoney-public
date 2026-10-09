@@ -4,7 +4,6 @@ import {
   DEFAULT_BURN_LANDING,
   burnLanding,
   recordBurnDuration,
-  sequentialLanding,
 } from "../src/features/withdraw/burnTiming"
 
 function memoryStorage(): IStorageAdapter {
@@ -46,17 +45,5 @@ describe("burnLanding", () => {
     const storage = memoryStorage()
     await storage.setItem("burnDurations", "not json")
     expect(await burnLanding(storage)).toEqual(DEFAULT_BURN_LANDING)
-  })
-})
-
-describe("sequentialLanding", () => {
-  const single = { expected: 200, earliest: 60, latest: 500 }
-
-  it("is one burn's own window", () => {
-    expect(sequentialLanding(single, 1)).toBe(single)
-  })
-
-  it("lands the last of two burns after both have run", () => {
-    expect(sequentialLanding(single, 2)).toEqual({ expected: 400, earliest: 120, latest: 1_000 })
   })
 })

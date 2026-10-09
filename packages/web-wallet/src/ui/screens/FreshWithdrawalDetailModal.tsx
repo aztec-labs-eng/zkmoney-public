@@ -1,8 +1,7 @@
 /**
- * Fresh-address withdrawal detail: the two burns of one group as one sheet. The total over the
- * recipient, then a row per leg with its figure and status. A row opens the leg's own detail, where
- * its exit and its error live. The funds rerun is the feed row's own, handed back so one owner
- * drives it.
+ * Legacy fresh-address withdrawal detail: the two burns of one group as one sheet. The total over
+ * the recipient, then a row per leg with its figure and status. A row opens the leg's own detail,
+ * where its exit and its error live.
  */
 import { Fragment } from "react"
 import {
@@ -16,7 +15,7 @@ import {
   type WithdrawalGroup,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
-import { GradientText, Icon, PrimaryGradientButton } from "@obsidion/web-ds"
+import { GradientText, Icon } from "@obsidion/web-ds"
 import ethIcon from "../../assets/deposit/ethereum.webp"
 import { l1AddressUrl, whenLabel } from "../detailRows"
 import { shortAddr, tokenAmount, usdFigure } from "../format"
@@ -26,11 +25,13 @@ import { DepositStatusValue } from "./DepositStatusValue"
 import { withdrawalHeroAmount, withdrawalStatus } from "./WithdrawalDetailModal"
 import { waitingNote } from "../../features/withdraw/waitingNote"
 
+export const FUNDS_UNSENT_NOTE =
+  "Only the gas reached this address. The funds stayed in your balance, so you can withdraw them again."
+
 export function FreshWithdrawalDetailModal({
   group,
   notice,
   onViewLeg,
-  onSendRemaining,
   onClose,
 }: {
   group: WithdrawalGroup
@@ -38,8 +39,6 @@ export function FreshWithdrawalDetailModal({
   notice?: string
   /** Opens the leg's own detail sheet in place of this one. */
   onViewLeg: (record: WithdrawalRecord) => void
-  /** Set when the funds leg may be sent again under this group. */
-  onSendRemaining?: () => void
   onClose: () => void
 }) {
   const head = group.legs.gas ?? group.records[0]
@@ -48,8 +47,9 @@ export function FreshWithdrawalDetailModal({
   // The wait the group is in is the leg that sets its status.
   const worst = worstWithdrawalPhase(group)
   const note = waitingNote(legs.find((record) => record.phase === worst) ?? legs[0]!)
-  // Only the gas reached the address: the group waits on the funds leg, not on a phase of its own.
-  const status = isFundsLegUnsent(group)
+  // Only the gas reached the address: the funds never left the balance.
+  const unsent = isFundsLegUnsent(group)
+  const status = unsent
     ? { label: WITHDRAWAL_FUNDS_UNSENT, badge: "failed" as const }
     : withdrawalStatus({ phase: worst })
 
@@ -137,9 +137,10 @@ export function FreshWithdrawalDetailModal({
         </div>
       )}
 
-      {note && <p className="ww-sheet__note">{note}</p>}
-      {onSendRemaining && (
-        <PrimaryGradientButton title="Send remaining funds" onClick={onSendRemaining} />
+      {unsent ? (
+        <p className="ww-sheet__note">{FUNDS_UNSENT_NOTE}</p>
+      ) : (
+        note && <p className="ww-sheet__note">{note}</p>
       )}
     </Modal>
   )

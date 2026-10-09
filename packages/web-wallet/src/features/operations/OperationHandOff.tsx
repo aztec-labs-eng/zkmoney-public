@@ -8,6 +8,7 @@ import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } 
 import { provingProgress } from "@obsidion/proving-progress"
 import type { OperationRecord } from "@obsidion/front-core"
 import { PayWorking, type PayWorkingBeat } from "../contacts/PayWorking"
+import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { flowCopy } from "./operationCopy"
 import { currentOperation, getOperationStore } from "./operations"
 
@@ -18,9 +19,10 @@ export interface OperationHandOffProps {
   onCancel?: () => void
   /**
    * The working beat, for a flow that draws its own; `PayWorking` otherwise. `label` names a child
-   * operation the root runs, in place of the preparing text.
+   * operation the root runs, in place of the preparing text. `hint` is the passkey advice to place
+   * under the stage; absent once the prompt is over.
    */
-  renderWorking?: (beat: PayWorkingBeat, label?: string) => ReactNode
+  renderWorking?: (beat: PayWorkingBeat, label?: string, hint?: ReactNode) => ReactNode
   /**
    * `sent` holds the beat through the proof, for a flow whose next screen would compete with it:
    * it leaves once the operation is sent.
@@ -48,6 +50,8 @@ export function OperationHandOff({
   const leave = useCallback(() => {
     if (left.current) return
     left.current = true
+    const store = getOperationStore()
+    if (rootId.current) void store.markHandedOff(rootId.current).catch(() => {})
     leaveRef.current()
   }, [])
 
@@ -96,9 +100,11 @@ export function OperationHandOff({
     ? store.list().find((r) => r.parent === root && store.isLive(r.operationId))
     : undefined
   const label = child ? flowCopy(child.flow).live : undefined
+  // Up from the first beat: the browser's sheet is modal, so the line should be up before it.
+  const hint = beat === "proving" ? undefined : <LocalPasskeyHint />
   return renderWorking ? (
-    renderWorking(beat, label)
+    renderWorking(beat, label, hint)
   ) : (
-    <PayWorking beat={beat} label={label} onCancel={onCancel} />
+    <PayWorking beat={beat} label={label} onCancel={onCancel} hint={hint} />
   )
 }

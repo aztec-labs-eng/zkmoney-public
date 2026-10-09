@@ -7,13 +7,16 @@ import {IUniversalRouter} from "@uniswap/universal-router/contracts/interfaces/I
 
 import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
 import {ICurve3Pool} from "@periphery/interfaces/ICurve3Pool.sol";
+import {IUniswapV2Pair} from "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
 import {RecoveryCommitmentLib} from "@periphery/RecoveryCommitmentLib.sol";
 import {SwapEscrow} from "@periphery/swap_on_withdraw_feature/SwapEscrow.sol";
 import {SwapEscrowFactory} from "@periphery/swap_on_withdraw_feature/SwapEscrowFactory.sol";
 import {EscrowRecoveryTestBase} from "@test/periphery/EscrowRecoveryTestBase.sol";
 import {MockCurve3Pool} from "@test/mocks/MockCurve3Pool.sol";
 import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
+import {MockUniswapV2Pair} from "./MockUniswapV2Pair.sol";
 import {MockUniversalRouter} from "./MockUniversalRouter.sol";
+import {MockWETH9} from "./MockWETH9.sol";
 
 abstract contract SwapEscrowTestBase is EscrowRecoveryTestBase {
   uint256 internal constant AMOUNT = 2500e18;
@@ -27,10 +30,15 @@ abstract contract SwapEscrowTestBase is EscrowRecoveryTestBase {
   uint8 internal constant FEED_DECIMALS = 8;
   int256 internal constant ETH_USD_ANSWER = 2500e8;
 
+  address internal constant WETH_ADDRESS = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+  uint256 internal constant PAIR_DAI_RESERVE = 4_000_000e18;
+  uint256 internal constant PAIR_WETH_RESERVE = 1600e18;
+
   TestERC20 internal dai;
   TestERC20 internal usdc;
   TestERC20 internal usdt;
-  address internal weth = makeAddr("weth");
+  address internal weth;
+  MockUniswapV2Pair internal pair;
   MockCurve3Pool internal threePool;
   MockUniversalRouter internal router;
   MockV3Aggregator internal ethUsdFeed;
@@ -47,6 +55,10 @@ abstract contract SwapEscrowTestBase is EscrowRecoveryTestBase {
     usdc = new TestERC20("USDC", "USDC", address(this));
     usdt = new TestERC20("USDT", "USDT", address(this));
 
+    weth = _deployWethAt(WETH_ADDRESS);
+    assertLt(uint160(address(dai)), uint160(weth), "DAI must be token0 of the pair, as on mainnet");
+    pair = _deployFundedPair(weth);
+
     threePool = new MockCurve3Pool();
     threePool.setCoins(address(dai), address(usdc), address(usdt));
     threePool.setRate(address(usdc), USDC_RATE);
@@ -60,30 +72,60 @@ abstract contract SwapEscrowTestBase is EscrowRecoveryTestBase {
 
     ethUsdFeed = new MockV3Aggregator(FEED_DECIMALS, ETH_USD_ANSWER);
 
-    factory = new SwapEscrowFactory(
+    factory = _deployFactory(weth, pair);
+    implementation = SwapEscrow(payable(factory.IMPLEMENTATION()));
+  }
+
+  function _deployWethAt(address _at) internal returns (address) {
+    vm.etch(_at, address(new MockWETH9()).code);
+    return _at;
+  }
+
+  function _deployFundedPair(address _weth) internal returns (MockUniswapV2Pair fundedPair) {
+    fundedPair = new MockUniswapV2Pair(address(dai), _weth);
+    dai.mint(address(fundedPair), PAIR_DAI_RESERVE);
+    MockWETH9(payable(_weth)).deposit{value: PAIR_WETH_RESERVE}();
+    MockWETH9(payable(_weth)).transfer(address(fundedPair), PAIR_WETH_RESERVE);
+    fundedPair.sync();
+  }
+
+  function _deployFactory(address _weth, MockUniswapV2Pair _pair) internal returns (SwapEscrowFactory) {
+    return new SwapEscrowFactory(
       IERC20(address(dai)),
       address(usdc),
       address(usdt),
-      weth,
+      _weth,
       IUniversalRouter(address(router)),
       ICurve3Pool(address(threePool)),
-      AggregatorV3Interface(address(ethUsdFeed))
+      AggregatorV3Interface(address(ethUsdFeed)),
+      IUniswapV2Pair(address(_pair))
     );
-    implementation = SwapEscrow(factory.IMPLEMENTATION());
   }
 
   function _ethOut(uint256 _daiIn) internal pure returns (uint256) {
     return (((_daiIn * USDC_RATE) / 1e18) * WETH_RATE) / 1e18;
   }
 
+  function _pairEthOut(uint256 _daiIn) internal pure returns (uint256) {
+    uint256 amountInAfterFee = _daiIn * 997;
+    return (amountInAfterFee * PAIR_WETH_RESERVE) / (PAIR_DAI_RESERVE * 1000 + amountInAfterFee);
+  }
+
   function _args(uint8 _route) internal view returns (SwapEscrow.Args memory) {
     return SwapEscrow.Args({
       route: _route,
       recipient: alice,
+      daiForGas: 0,
+      minEthForGas: 0,
       recoveryCommitment: RecoveryCommitmentLib.deriveRecoveryCommitment(RECOVERY_SALT, address(account)),
       relayerTip: TIP,
       nonce: NONCE
     });
+  }
+
+  function _gasArgs(uint8 _route, uint256 _daiForGas) internal view returns (SwapEscrow.Args memory args) {
+    args = _args(_route);
+    args.daiForGas = _daiForGas;
   }
 
   function _fundAndDeploy(SwapEscrow.Args memory _escrowArgs, uint256 _funding) internal returns (address escrow) {

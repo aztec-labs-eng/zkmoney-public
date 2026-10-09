@@ -1,14 +1,15 @@
 /**
  * Rebuild the withdrawal records a store lost from the account's own `Withdraw` events. Every
  * burn the account made delivered one to it, its `meta` names the L1 address the burn pays, and a
- * swap's also carries the escrow args, so a fresh device gets its history back — and with it a
- * stuck or unswappable escrow's exits — from chain alone. A burn whose meta names no address is
+ * swap's or a Sky move's also carries the escrow args, so a fresh device gets its history back —
+ * and with it a stuck escrow's exits — from chain alone. A burn whose meta names no address is
  * skipped. Records the store already holds (by burn tx hash) are left as they are; the rest
  * are created at `l2_mined` for the tracker to walk forward like any mined burn. Pure over
  * injected collaborators.
  */
 
 import { formatUnits, type Hash } from "viem"
+import { SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import type { ScannedWithdrawEvent, WithdrawEventSource } from "@obsidion/sdk"
 import { globalEventEmitter } from "../GlobalEventEmitter"
@@ -80,9 +81,24 @@ function rebuiltRecord(
           swapOutput: swap.output,
           swapEscrow: event.l1Recipient,
           swapEscrowFactory: swap.factory,
+          swapEscrowLayout: swap.layout,
           swapNonce: swap.nonce,
           swapRecoveryCommitment: swap.recoveryCommitment,
           swapRelayerTip: swap.relayerTip.toString(),
+          ...(swap.daiForGas > 0n ? { swapDaiForGas: swap.daiForGas.toString() } : {}),
+          ...(swap.minEthForGas > 0n ? { swapMinEthForGas: swap.minEthForGas.toString() } : {}),
+        }
+      : {}),
+    ...(event.sky
+      ? {
+          skyMove: {
+            direction: event.sky.route === SkyRoute.Stake ? "in" : "out",
+            factory: event.sky.factory,
+            recipientCommitment: event.sky.recipientCommitment,
+            recoveryCommitment: event.sky.recoveryCommitment,
+            relayerTip: event.sky.relayerTip.toString(),
+            nonce: event.sky.nonce,
+          },
         }
       : {}),
     ...(event.group ? { groupId: event.group.id, groupLeg: event.group.leg } : {}),

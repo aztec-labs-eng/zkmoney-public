@@ -29,11 +29,12 @@
  * declaration it is the whitelist ceiling's own refusal (the fee assert would reject the batch),
  * moved earlier and made explicit.
  */
-import { Gas } from "@aztec/stdlib/gas"
+import { Gas, type GasFees } from "@aztec/stdlib/gas"
 import type { FunctionCall } from "@aztec/stdlib/abi"
 import {
   CLAIM_FPC_MAX_BATCH_DA_GAS,
   CLAIM_FPC_MAX_BATCH_L2_GAS,
+  CLAIM_FPC_MAX_FEE_PER_GAS,
   PROOF_FIELD_COUNT,
   VKEY_FIELD_COUNT,
 } from "@obsidion/core/constants"
@@ -110,6 +111,22 @@ const isEmailClaim = (call: SponsorableCall): boolean => call.name === "claim" &
 /** Cached: the derivation runs every model-vs-measured cross-check, and the inputs are constants. */
 let cached: ReturnType<typeof deriveClaimFpcGasBudgets> | undefined
 const budgets = () => (cached ??= deriveClaimFpcGasBudgets())
+
+/**
+ * Whether a batch under the open policy, declaring the caps at `fees`, passes `_assert_fee_within_max`.
+ * The FPC's budget is the caps plus its own entrypoint overhead at the config's fee-per-gas, so the
+ * declared fee-per-gas may sit above that config value by the overhead's share.
+ */
+// ponytail: open policy only; under a per-call policy the overhead is on both sides and the limit is
+// exactly CLAIM_FPC_MAX_FEE_PER_GAS. Take the policy as an argument if prod moves to per-call.
+export function claimFpcOpenBatchWithinCap(fees: GasFees): boolean {
+  const { base } = budgets()
+  const caps = CLAIM_FPC_BATCH_CAPS
+  const declared = BigInt(caps.daGas) * fees.feePerDaGas + BigInt(caps.l2Gas) * fees.feePerL2Gas
+  const maxFee =
+    BigInt(caps.daGas + base.daGas + caps.l2Gas + base.l2Gas) * CLAIM_FPC_MAX_FEE_PER_GAS
+  return declared <= maxFee
+}
 
 /**
  * The inventory marginal of one batched call, by function name. Throws on anything a per-call

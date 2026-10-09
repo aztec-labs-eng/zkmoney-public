@@ -126,7 +126,12 @@ export interface AlphaAuthService {
   createPasskey(
     accountName: string,
     updateStatus?: (status: string) => void,
-    opts?: { mode?: "combined" | "platform" | "security-key"; route?: SignInRoute },
+    opts?: {
+      mode?: "combined" | "platform" | "security-key"
+      route?: SignInRoute
+      /** Ends the passkey prompt when the caller abandons the attempt. */
+      signal?: AbortSignal
+    },
   ): Promise<{
     authProvider: AlphaAuthProvider
     credentialId: string

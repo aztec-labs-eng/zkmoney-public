@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { Network } from "@obsidion/core/constants"
+import { useAztecContext } from "@obsidion/front-core"
 import { formatGwei, parseGwei } from "viem"
 import { getConfig } from "../config/env"
 import { l1PublicClient } from "../config/oxideTuple"
@@ -9,21 +10,18 @@ import { Warning } from "./Warning"
 const HIGH_GAS = parseGwei("1")
 const POLL_MS = 60_000
 
-/** Warns while L1 gas is high, since deposits, withdrawals and L2 fees all pay for it. */
-export function HighGasNotice() {
-  const [gasPrice, setGasPrice] = useState<bigint | null>(null)
+/** Polls `read` while the tab is visible; null before the first read and after a failed one. */
+function usePolled<T>(read: (() => Promise<T>) | undefined): T | null {
+  const [value, setValue] = useState<T | null>(null)
   useEffect(() => {
-    const config = getConfig()
-    // The sandbox L1's price says nothing about real fees.
-    if (config.network === Network.SANDBOX) return
-    const client = l1PublicClient(config)
+    if (!read) return
     // Only the latest read may land, so a slow reply never overwrites a newer one.
     let seq = 0
     const poll = () => {
       const n = ++seq
-      client.getGasPrice().then(
-        (price) => n === seq && setGasPrice(price),
-        () => n === seq && setGasPrice(null),
+      read().then(
+        (v) => n === seq && setValue(v),
+        () => n === seq && setValue(null),
       )
     }
     poll()
@@ -32,7 +30,20 @@ export function HighGasNotice() {
       seq++
       pauseWhenHidden.clearInterval(timer)
     }
+  }, [read])
+  return value
+}
+
+/** Warns while L1 gas is high, since deposits, withdrawals and L2 fees all pay for it. */
+export function HighGasNotice() {
+  const read = useMemo(() => {
+    const config = getConfig()
+    // The sandbox L1's price says nothing about real fees.
+    if (config.network === Network.SANDBOX) return undefined
+    const client = l1PublicClient(config)
+    return () => client.getGasPrice()
   }, [])
+  const gasPrice = usePolled(read)
 
   if (gasPrice === null || gasPrice <= HIGH_GAS) return null
   return (
@@ -41,6 +52,26 @@ export function HighGasNotice() {
       style={{ marginTop: -16, marginBottom: 24 }}
     >
       Deposits and withdrawals may take longer than usual, and fees may be higher.
+    </Warning>
+  )
+}
+
+/** Says the app is unavailable while Aztec fees are above what the ClaimFPC sponsors. */
+export function HighL2FeeNotice() {
+  const { obsidionWallet } = useAztecContext()
+  const read = useMemo(
+    () => obsidionWallet && (() => obsidionWallet.sponsoredFeesAboveCap()),
+    [obsidionWallet],
+  )
+  if (!usePolled(read)) return null
+  return (
+    <Warning
+      tone="error"
+      title="zk.money is unavailable while network fees are high"
+      style={{ marginTop: -16, marginBottom: 24 }}
+    >
+      Aztec network fees are too high for transactions to go through. Your funds are safe, and full
+      functionality will be available when network fees stabilize.
     </Warning>
   )
 }

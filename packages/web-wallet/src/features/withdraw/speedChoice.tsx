@@ -43,19 +43,16 @@ export function useSpeedChoice({
   answerWithinMs,
   load,
   held,
-  legs,
 }: {
   active: boolean
   node?: WithdrawalSpeedupNode
-  /** Burns sent one after another; the tip rides the last. */
-  legs?: number
   initialSpeed?: WithdrawalSpeed
   answerWithinMs?: number
   load?: LoadFasterWithdrawal
   held?: FasterWithdrawal
 }): SpeedChoice {
   const [speed, setSpeed] = useState<WithdrawalSpeed>(initialSpeed)
-  const live = useFasterWithdrawal({ active, node, legs, answerWithinMs, load })
+  const live = useFasterWithdrawal({ active, node, answerWithinMs, load })
   const offer = held ?? live.offer
   const settled = !held && !!offer && !fasterIsWorthIt(offer)
   const pricedTip = speed === "faster" && offer && !settled ? offer.proverTip : 0n

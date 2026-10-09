@@ -1,10 +1,15 @@
 import { MAX_PRIORITY_FEE_WEI } from '@oxide/oxide-lib/oxide_constants.gen.js';
 
 import { describe, expect, it, jest } from '@jest/globals';
-import { type Address, type PublicClient, maxUint256 } from 'viem';
+import type { Address, PublicClient } from 'viem';
 
 import { priceFeedForChainId } from './eth_usd_price_feed.js';
-import { estimateL1OperationFeeValues, quoteL1Operation, simulateL1Operation } from './l1_operation_quote.js';
+import {
+  SIMULATED_SENDER_BALANCE,
+  estimateL1OperationFeeValues,
+  quoteL1Operation,
+  simulateL1Operation,
+} from './l1_operation_quote.js';
 
 const EXECUTOR = '0x00000000000000000000000000000000000000e1' as Address;
 const SENDER = '0x00000000000000000000000000000000000000a1' as Address;
@@ -84,7 +89,7 @@ describe('simulateL1Operation', () => {
     expect(request.validation).toBe(true);
     const [block] = request.blocks;
     expect(block.blockOverrides).toEqual({ baseFeePerGas: BASE_FEE });
-    expect(block.stateOverrides).toEqual([{ address: SENDER, balance: maxUint256 }, ...extra]);
+    expect(block.stateOverrides).toEqual([{ address: SENDER, balance: SIMULATED_SENDER_BALANCE }, ...extra]);
     expect(block.calls[0]).toMatchObject({
       to: EXECUTOR,
       functionName: 'execute',

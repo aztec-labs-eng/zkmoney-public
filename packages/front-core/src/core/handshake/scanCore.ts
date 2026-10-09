@@ -67,6 +67,8 @@ export type QRHandshakeScanResult =
   | { kind: "self-scan" }
   | { kind: "handshake"; contact: Contact; navigateId: string }
   | { kind: "handshake-pending"; contact: Contact }
+  /** The scanned tag was not saved: `contact`, a stored row under another tag, matched the scan. */
+  | { kind: "conflict"; contact: Contact }
   | { kind: "error"; message: string }
 
 /** Collaborators the pure scan core needs — injected so the flow is testable. */
@@ -367,7 +369,7 @@ export async function previewQRHandshake(
 
 export type QRHandshakeCommitResult = Extract<
   QRHandshakeScanResult,
-  { kind: "handshake" | "handshake-pending" | "error" }
+  { kind: "handshake" | "handshake-pending" | "conflict" | "error" }
 >
 
 export interface QRHandshakeCommitDeps {
@@ -388,7 +390,7 @@ export interface QRHandshakeCommitDeps {
  * The write half: add the sharer, then connect back. With `sendConnectBack`
  * the send is fire-and-forget (it never gates the result; a failed send is
  * enqueued for retry). Without it the connect-back is enqueued directly; an
- * enqueue failure never blocks the add.
+ * enqueue failure never blocks the add. A conflict sends no connect-back.
  */
 export async function commitQRHandshake(
   preview: QRHandshakePreview,
@@ -408,6 +410,15 @@ export async function commitQRHandshake(
     // it as a generic error so no half-state navigation happens.
     log("[useQRHandshakeScan] addOrMergeContact failed", err)
     return { kind: "error", message: ERR_INVALID }
+  }
+
+  const scannedTag = preview.contact.tag?.toLowerCase()
+  if (scannedTag && contact.tag?.toLowerCase() !== scannedTag) {
+    log("[useQRHandshakeScan] scanned tag not saved: a contact under another tag matched", {
+      scannedTag,
+      existingTag: contact.tag,
+    })
+    return { kind: "conflict", contact }
   }
 
   log("[useQRHandshakeScan] added contact from QR scan", {

@@ -67,6 +67,8 @@ export { SwapEscrowAbi, SwapEscrowBytecode } from './abis/SwapEscrow.js';
 export { SwapEscrowFactoryAbi, SwapEscrowFactoryBytecode } from './abis/SwapEscrowFactory.js';
 export { MockUniversalRouterAbi, MockUniversalRouterBytecode } from './abis/MockUniversalRouter.js';
 export { MockCurve3PoolAbi, MockCurve3PoolBytecode } from './abis/MockCurve3Pool.js';
+export { MockUniswapV2PairAbi, MockUniswapV2PairBytecode } from './abis/MockUniswapV2Pair.js';
+export { MockWETH9Abi, MockWETH9Bytecode } from './abis/MockWETH9.js';
 // CCTP bridge-on-withdraw feature (disposable — purge these with `src/cctp_bridge_on_withdraw.ts`).
 export { CCTPBridgeEscrowAbi, CCTPBridgeEscrowBytecode } from './abis/CCTPBridgeEscrow.js';
 export { CCTPBridgeEscrowFactoryAbi, CCTPBridgeEscrowFactoryBytecode } from './abis/CCTPBridgeEscrowFactory.js';

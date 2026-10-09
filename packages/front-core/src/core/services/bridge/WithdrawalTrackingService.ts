@@ -620,7 +620,7 @@ export class WithdrawalTrackingService {
 
     // Funded. Without rebuildable args nothing can be simulated: the record waits on a relayer.
     if (!target) return
-    const fillable = await reader.deploySimulates(target.factory, target.args)
+    const fillable = await reader.deploySimulates(target.factory, target)
     if (!fillable && record.phase === "swapping") {
       await this.advancePhase(record, "recoverable")
     } else if (fillable && record.phase === "recoverable") {

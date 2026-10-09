@@ -1,6 +1,6 @@
 # zk.money wallet
 
-Source of the zk.money web wallet and the zk.money Desktop app. This tree builds the release that runs on mainnet today: config profile `prod-v5`, Oxide label v6 (Oxide commit `9d8858e4b`), Aztec `5.2.0`.
+Source of the zk.money web wallet and the zk.money Desktop app. This tree builds the release that runs on mainnet today: config profile `prod-v5`, Oxide label v6 (Oxide commit `37b9dac97`), Aztec `5.2.0`.
 
 ## Layout
 
@@ -11,7 +11,7 @@ Source of the zk.money web wallet and the zk.money Desktop app. This tree builds
 | `packages/core`, `contracts`, `sdk`, `front-core` | The wallet stack: shared types, Noir contracts, contract calls, and app logic. |
 | `packages/config-client`, `passkey-web`, `design-system`, `proving-progress`, `metrics-policy` | Libraries that the wallet imports. |
 | `packages/oxide-build` | Builds the vendored Oxide packages. |
-| `vendor/oxide` | The subset of Oxide that the wallet needs, the files for an enclave host, the relayer source, and the refund and resolver circuits, at commit `9d8858e4b`. |
+| `vendor/oxide` | The subset of Oxide that the wallet needs, the files for an enclave host, the relayer source, and the refund and resolver circuits, at commit `37b9dac97`. |
 
 ## Prerequisites
 
@@ -87,7 +87,7 @@ The wallet sends signature requests to the Oxide enclave at the `enclaveUrl` in 
 | `vendor/oxide/enclave/systemd/oxide-tee-enclave.service` | Starts the EIF with `nitro-cli`. |
 | `vendor/oxide/enclave/systemd/oxide-tee-proxy.service` | Starts the HTTP front end on port 8080. |
 
-This repository does not build the EIF. The EIF build is in the Oxide repository at commit `9d8858e4b`. The portal accepts an enclave only if the portal owner approved its PCR0. Each new enclave must also be registered: `OxidePortal.registerTee` on L1, then the L2 consume into the token's `approved_signers`. The Oxide repository does this in `yarn-project/deploy-lib/src/register_instance.ts`.
+This repository does not build the EIF. The EIF build is in the Oxide repository at commit `37b9dac97`. The portal accepts an enclave only if the portal owner approved its PCR0. Each new enclave must also be registered: `OxidePortal.registerTee` on L1, then the L2 consume into the token's `approved_signers`. The Oxide repository does this in `yarn-project/deploy-lib/src/register_instance.ts`.
 
 On a Nitro-capable EC2 instance with `nitro-cli`, `socat` and Node.js 24:
 
@@ -103,7 +103,7 @@ To make the wallet use this host, set the enclave URL in the endpoint editor on 
 
 ## Relayer
 
-`vendor/oxide/yarn-project/oxide-relayer` is the Oxide relayer. It completes L1 operations for users, so that users do not need ETH for gas. `vendor/oxide/yarn-project/telemetry` and `vendor/oxide/yarn-project/watcher-lib` are its Oxide dependencies. These packages are copies from Oxide commit `9d8858e4b`, without the relayer `Dockerfile`.
+`vendor/oxide/yarn-project/oxide-relayer` is the Oxide relayer. It completes L1 operations for users, so that users do not need ETH for gas. `vendor/oxide/yarn-project/telemetry` and `vendor/oxide/yarn-project/watcher-lib` are its Oxide dependencies. These packages are copies from Oxide commit `37b9dac97`, without the relayer `Dockerfile`.
 
 To build the relayer, clone the repository and run `pnpm install --frozen-lockfile` as in [Build](#build). Then run:
 

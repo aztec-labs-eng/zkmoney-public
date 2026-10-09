@@ -9,7 +9,7 @@
  */
 
 import type { WithdrawalGroupLeg, WithdrawalPhase } from "@obsidion/core/types"
-import type { QueueStatus, SwapOnWithdrawOutput } from "@obsidion/sdk"
+import type { QueueStatus, SwapEscrowLayout, SwapEscrowOutput } from "@obsidion/sdk"
 import type { Address, Hash, Hex } from "viem"
 
 /**
@@ -101,8 +101,9 @@ export interface WithdrawalRecord {
    */
   recipient: Address
 
-  /** Swap-on-withdraw output asset. Absent on direct withdrawals, where all `swap*` fields are unset. */
-  swapOutput?: SwapOnWithdrawOutput
+  /** Swap-on-withdraw output asset: DAI on an escrow that only swaps some DAI for gas. Absent on direct
+   *  withdrawals, where all `swap*` fields are unset. */
+  swapOutput?: SwapEscrowOutput
 
   /** The counterfactual SwapEscrow the burn pays into — the on-chain release recipient. */
   swapEscrow?: Address
@@ -128,6 +129,32 @@ export interface WithdrawalRecord {
   /** DAI tip the escrow pays the relayer that runs the swap (bigint serialized as string). */
   swapRelayerTip?: string
 
+  /**
+   * The `Args` layout of `swapEscrowFactory`. Absent on records written before the wallet used the
+   * `swapEscrowFactoryV2` factory: those escrows are `legacy`.
+   */
+  swapEscrowLayout?: SwapEscrowLayout
+
+  /** DAI the escrow swaps to ETH for gas (bigint as string). Absent when it swaps none. */
+  swapDaiForGas?: string
+
+  /** The least ETH the gas swap must pay (bigint as string). Absent when it is 0. */
+  swapMinEthForGas?: string
+
+  /**
+   * The Sky savings move a rebuilt burn funds: what its escrow, `recipient`, commits to, read off
+   * the burn's `Withdraw` event. `savingsMoveOfWithdrawal` turns it back into the move.
+   */
+  skyMove?: {
+    direction: "in" | "out"
+    factory: Address
+    recipientCommitment: Hex
+    recoveryCommitment: Hex
+    /** DAI tip the escrow pays whoever runs it (bigint serialized as string). */
+    relayerTip: string
+    nonce: Hex
+  }
+
   /** L1 tx of the escrow execution that paid the recipient (set at `done` on a swap). */
   swapExecuteTxHash?: Hex
 
@@ -151,6 +178,9 @@ export interface WithdrawalRecord {
 
   /** Decimal exponent for `swapEstimatedOut`. */
   swapOutputDecimals?: number
+
+  /** Submit-time quote for the ETH the gas swap pays, wei (bigint as string). Absent without a gas swap. */
+  swapEstimatedGasOut?: string
 
   /** Optional user-provided label; becomes the linked-wallet display name when set. */
   recipientAlias?: string

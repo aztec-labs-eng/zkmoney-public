@@ -1,6 +1,8 @@
 import { leavePage } from "../../platform/storage/walletStorage"
 import { useEffect, useState, type ReactNode } from "react"
+import { useNavigate } from "react-router-dom"
 import {
+  ComingSoonPill,
   GradientInitialAvatar,
   GradientText,
   GradientToggle,
@@ -21,8 +23,11 @@ import { useSponsoredAllowance } from "../../features/allowance/useSponsoredAllo
 import { WalletAboutLimitsSheet } from "../../features/limits/AboutLimitsSheet"
 import { EndpointsModal, customEndpointsLabel } from "../EndpointsModal"
 import { StrandedRecoveryModal } from "../../features/deposit/StrandedRecoveryModal"
+import { NON_CONTACT_REQUESTS_PATH } from "../../features/requests/nonContactView"
+import { useNonContactRequests } from "../../features/requests/useNonContactRequests"
 import { RESET_PATH } from "../ResetScreen"
 import { useHideBalances } from "../prefs"
+import { ConfigProfileModal } from "../../dev/ConfigProfileModal"
 
 // ponytail: hoist to config once a FAQ page exists.
 const FAQ_URL = "https://docs.zk.money/docs/faq"
@@ -46,7 +51,7 @@ function ExternalLink({ icon, label, href }: { icon: IconName; label: string; hr
   )
 }
 
-function Section({ label, children }: { label: string; children: ReactNode }) {
+function Section({ label, children }: { label: ReactNode; children: ReactNode }) {
   return (
     <div className="ww-contacts__section">
       <span className="ww-contacts__label">{label}</span>
@@ -57,12 +62,14 @@ function Section({ label, children }: { label: string; children: ReactNode }) {
 
 /** Settings card: identity, feedback banner, general/others/socials groups, version. */
 export function SettingsScreen() {
+  const navigate = useNavigate()
   const config = getConfig()
   const identity = loadWalletIdentity()
   const [hideBal, setHideBal] = useHideBalances()
   const { value: consent, setValue: setConsent } = useConfigValue("analyticsConsent")
+  const nonContact = useNonContactRequests()
   const [modal, setModal] = useState<
-    "feedback" | "bug" | "contracts" | "allowance" | "limits" | "endpoints" | "recover"
+    "feedback" | "bug" | "contracts" | "allowance" | "limits" | "endpoints" | "recover" | "config"
   >()
   const allowance = useSponsoredAllowance()
   useEffect(() => {
@@ -158,6 +165,46 @@ export function SettingsScreen() {
           />
         </Section>
 
+        <Section
+          label={
+            <span className="ww-settings__label">
+              Payment requests
+              <ComingSoonPill label="New" />
+            </span>
+          }
+        >
+          <SettingsRow
+            icon="contacts-line"
+            label="Allow requests from people not in your contacts"
+            className="ww-settings__described"
+            description={
+              <>
+                <span>
+                  Anyone who knows your tag can ask you for funds. Their requests go to a separate
+                  inbox in Contacts, never to Activity or notifications. Turn this off to block
+                  them.
+                </span>
+                {nonContact.requests.length > 0 && (
+                  <button
+                    type="button"
+                    className="zkm-btn-reset zkm-pressable ww-settings__pending"
+                    onClick={() => navigate(NON_CONTACT_REQUESTS_PATH)}
+                  >
+                    {nonContact.requests.length} pending
+                    <Icon name="arrow-right-s-line" size={11} />
+                  </button>
+                )}
+              </>
+            }
+            trailing={
+              <GradientToggle
+                isOn={nonContact.allowed}
+                onChange={(on) => void nonContact.setAllowed(on)}
+              />
+            }
+          />
+        </Section>
+
         <Section label="Others">
           <ExternalLink icon="info-circle" label="FAQs" href={FAQ_URL} />
         </Section>
@@ -167,6 +214,14 @@ export function SettingsScreen() {
         </Section>
 
         <Section label="Advanced">
+          {import.meta.env.VITE_CONFIG_EDITOR === "true" && (
+            <SettingsRow
+              icon="pencil"
+              label="Config profile"
+              onClick={() => setModal("config")}
+              trailing={<RowChevron />}
+            />
+          )}
           <SettingsRow
             icon="file-copy"
             label="Contract addresses"
@@ -209,6 +264,9 @@ export function SettingsScreen() {
       )}
       {modal === "limits" && <WalletAboutLimitsSheet onClose={() => setModal(undefined)} />}
       {modal === "endpoints" && <EndpointsModal onClose={() => setModal(undefined)} />}
+      {import.meta.env.VITE_CONFIG_EDITOR === "true" && modal === "config" && (
+        <ConfigProfileModal onClose={() => setModal(undefined)} />
+      )}
       {modal === "recover" && <StrandedRecoveryModal onClose={() => setModal(undefined)} />}
     </div>
   )

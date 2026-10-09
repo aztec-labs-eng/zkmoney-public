@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { ContactStorage } from "../core"
 import type { Contact } from "../core"
 import { isZeroAddress, shortenAddressSm } from "../utils"
@@ -11,6 +11,8 @@ export interface ContactRow {
   addressKind: "aztec-l2" | "ethereum-l1"
   provider?: string
   provenance?: "deposit-attested" | "saved-recipient"
+  /** See `Contact.autoAdded`. */
+  autoAdded?: boolean
 }
 
 export function isPaymentContactEntry(entry: Contact): boolean {
@@ -46,8 +48,11 @@ export function contactRowFromEntry(entry: Contact): ContactRow {
     addressKind,
     provider: entry.l1Wallet?.provider,
     provenance: entry.l1Wallet?.provenance,
+    ...(entry.autoAdded && { autoAdded: true }),
   }
 }
+
+const CONTACTS_RETRY_MS = 5_000
 
 /**
  * Contacts directory built on top of `ContactStorage`. ContactStorage exposes only async accessors; this hook adds a
@@ -56,22 +61,50 @@ export function contactRowFromEntry(entry: Contact): ContactRow {
  */
 export function useContactsDirectory() {
   const [contacts, setContacts] = useState<ContactRow[]>([])
+  /** Before the first read completes, an empty `contacts` does not mean there are no contacts. */
+  const [hydrated, setHydrated] = useState(false)
+  /** The last read failed. `contacts` keeps the last good read; the hook retries. */
+  const [failed, setFailed] = useState(false)
+  const mounted = useRef(false)
+  /** Numbers each read, so an older read that finishes after a newer one is not applied. */
+  const reads = useRef(0)
 
   const refresh = useCallback(async () => {
-    const entries = await ContactStorage.get().getEntries()
-    const rows: ContactRow[] = entries.filter(isPaymentContactEntry).map(contactRowFromEntry)
-    setContacts(rows)
+    const read = ++reads.current
+    const current = () => mounted.current && read === reads.current
+    try {
+      const entries = await ContactStorage.get().getEntries()
+      if (!current()) return
+      setContacts(entries.filter(isPaymentContactEntry).map(contactRowFromEntry))
+      setHydrated(true)
+      setFailed(false)
+    } catch (error) {
+      if (current()) setFailed(true)
+      throw error
+    }
   }, [])
 
   useEffect(() => {
+    mounted.current = true
+    let active = true
+    let retry: ReturnType<typeof setTimeout> | undefined
     const reload = () => {
-      refresh().catch(console.warn)
+      clearTimeout(retry)
+      const read = refresh()
+      const number = reads.current
+      read.catch((error) => {
+        console.warn(error)
+        if (active && number === reads.current) retry = setTimeout(reload, CONTACTS_RETRY_MS)
+      })
     }
-    ContactStorage.get()
-      .initialize()
-      .then(reload)
-      .catch(console.warn)
-    return ContactStorage.get().onChange(reload)
+    reload()
+    const unsubscribe = ContactStorage.get().onChange(reload)
+    return () => {
+      active = false
+      mounted.current = false
+      clearTimeout(retry)
+      unsubscribe()
+    }
   }, [refresh])
 
   const lookup = useCallback(
@@ -96,5 +129,5 @@ export function useContactsDirectory() {
     [contacts],
   )
 
-  return { contacts, refresh, lookup, lookupByAddress }
+  return { contacts, hydrated, failed, refresh, lookup, lookupByAddress }
 }

@@ -2,17 +2,21 @@ import { describe, expect, it, vi } from "vitest"
 import { Fr } from "@aztec/aztec.js/fields"
 import { EthAddress } from "@aztec/foundation/eth-address"
 import { getAddress, type Address, type Hex } from "viem"
+import { SkyRoute, predictSkyEscrowAddressLocally } from "@oxide/experiments/sky/sky_savings.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { WITHDRAW_META_LEN, emptyWithdrawMeta } from "@obsidion/core/constants"
-import { planSwapOnWithdraw } from "../src/oxide/swapOnWithdraw.js"
+import { SwapRoute } from "@oxide/l1-contracts"
+import { planSwapOnWithdraw, predictSwapEscrow } from "../src/oxide/swapOnWithdraw.js"
 import {
   buildWithdrawMeta,
   decodeWithdrawMeta,
+  type SkyWithdrawMeta,
   type SwapWithdrawMeta,
   type WithdrawGroupMeta,
 } from "../src/services/withdrawMeta.js"
 import {
   createWithdrawEventSource,
+  skyMetaForEscrow,
   swapMetaForEscrow,
 } from "../src/services/withdrawEventSource.js"
 import type { ObsidionWallet } from "../src/obsidion/ObsidionWallet.js"
@@ -42,9 +46,42 @@ const SWAP: SwapWithdrawMeta = {
   ).toString(),
   relayerTip: 5n * 10n ** 18n,
   nonce: `0x${"77".repeat(32)}` as Hex,
+  daiForGas: 0n,
+  minEthForGas: 0n,
 }
 
 const GROUP: WithdrawGroupMeta = { id: `0x${"c1".repeat(16)}` as Hex, leg: "funds" }
+
+const SKY: SkyWithdrawMeta = {
+  route: SkyRoute.Unstake,
+  factory: getAddress(`0x${"fb".repeat(20)}`),
+  recipientCommitment: `0x${"2c".repeat(32)}` as Hex,
+  recoveryCommitment: SWAP.recoveryCommitment,
+  relayerTip: 3n * 10n ** 18n,
+  nonce: `0x${"88".repeat(32)}` as Hex,
+}
+const SKY_ESCROW = predictSkyEscrowAddressLocally(SKY.factory, SKY)
+/** Byte length of the Sky entries: the route (2 + 1), the factory (2 + 20) and four words. */
+const SKY_ENTRIES_LEN = 3 + 22 + 34 * 4
+
+/** The stream `buildWithdrawMeta({ sky: SKY })` lays out, with `route` as the route byte. */
+function skyStream(route: number = SKY.route): Uint8Array {
+  const entries: [number, number[]][] = [
+    [0x0a, [route]],
+    [0x03, hex(SKY.factory)],
+    [0x0b, hex(SKY.recipientCommitment)],
+    [0x04, hex(SKY.recoveryCommitment)],
+    [0x05, hex(`0x${SKY.relayerTip.toString(16).padStart(64, "0")}`)],
+    [0x06, hex(SKY.nonce)],
+  ]
+  let stream = emptyStream()
+  let pos = 1
+  for (const [type, value] of entries) {
+    stream = withEntry(stream, type, value, pos)
+    pos += 2 + value.length
+  }
+  return stream
+}
 
 const hex = (s: string) => [...Buffer.from(s.slice(2), "hex")]
 
@@ -267,6 +304,39 @@ describe("withdrawMeta", () => {
     expect(decodeWithdrawMeta(packRaw(badLeg))).toEqual({ recipient: RECIPIENT, swap: SWAP })
   })
 
+  it("round-trips the gas swap in its fewest bytes, at most 194 of the 217", () => {
+    const gas = { ...SWAP, daiForGas: 15n * 10n ** 18n, minEthForGas: 4_000_000_000_000_000n }
+    const meta = buildWithdrawMeta({ recipient: RECIPIENT, swap: gas })
+    const daiBytes = hex(`0x${gas.daiForGas.toString(16).padStart(16, "0")}`)
+    const ethBytes = hex(`0x${gas.minEthForGas.toString(16).padStart(14, "0")}`)
+    const stream = withRecipient(
+      withEntry(
+        withEntry(swapStream(), 0x0c, daiBytes, 1 + SWAP_ENTRIES_LEN),
+        0x0d,
+        ethBytes,
+        1 + SWAP_ENTRIES_LEN + 2 + daiBytes.length,
+      ),
+      RECIPIENT,
+      1 + SWAP_ENTRIES_LEN + 4 + daiBytes.length + ethBytes.length,
+    )
+    expect(meta).toEqual(packRaw(stream))
+    expect(decodeWithdrawMeta(meta)).toEqual({ recipient: RECIPIENT, swap: gas })
+
+    const max = { ...SWAP, daiForGas: 50n * 10n ** 18n, minEthForGas: 50n * 10n ** 18n }
+    const maxMeta = buildWithdrawMeta({ recipient: RECIPIENT, swap: max })
+    expect(decodeWithdrawMeta(maxMeta)).toEqual({ recipient: RECIPIENT, swap: max })
+    const bytes = new Uint8Array(CAPACITY)
+    maxMeta.forEach((field, i) => bytes.set(field.toBuffer().subarray(1), i * 31))
+    expect(usedBytes(bytes)).toBe(194)
+  })
+
+  it("ignores a gas entry of no bytes or more than a word", () => {
+    for (const value of [[], Array(33).fill(1)]) {
+      const stream = withEntry(swapStream(), 0x0c, value, 1 + SWAP_ENTRIES_LEN)
+      expect(decodeWithdrawMeta(packRaw(stream))).toEqual({ swap: SWAP })
+    }
+  })
+
   it("refuses to encode a malformed value", () => {
     expect(() => buildWithdrawMeta({ swap: { ...SWAP, recipient: "0x12" as Address } })).toThrow(
       /recipient/,
@@ -275,15 +345,48 @@ describe("withdrawMeta", () => {
     expect(() =>
       buildWithdrawMeta({ swap: { ...SWAP, recoveryCommitment: RECOVERY.account } }),
     ).toThrow(/recoveryCommitment/)
-    expect(() => buildWithdrawMeta({ swap: { ...SWAP, relayerTip: -1n } })).toThrow(/tip/)
+    expect(() => buildWithdrawMeta({ swap: { ...SWAP, relayerTip: -1n } })).toThrow(/out of range/)
     expect(() => buildWithdrawMeta({ recipient: "0x12" as Address })).toThrow(/recipient/)
     expect(() => buildWithdrawMeta({ group: { ...GROUP, id: "0x77" as Hex } })).toThrow(/group id/)
+    expect(() => buildWithdrawMeta({ sky: { ...SKY, route: 7 as SkyRoute } })).toThrow(/Sky route/)
+    expect(() =>
+      buildWithdrawMeta({ sky: { ...SKY, recipientCommitment: "0x2c" as Hex } }),
+    ).toThrow(/recipientCommitment/)
+  })
+
+  it("round-trips a Sky move and its escrow, using 184 of the 217 bytes", () => {
+    const meta = buildWithdrawMeta({ recipient: SKY_ESCROW, sky: SKY })
+    const stream = withRecipient(skyStream(), SKY_ESCROW, 1 + SKY_ENTRIES_LEN)
+    expect(meta).toEqual(packRaw(stream))
+    expect(decodeWithdrawMeta(meta)).toEqual({ recipient: SKY_ESCROW, sky: SKY })
+    expect(usedBytes(stream)).toBe(184)
+    const stake = { ...SKY, route: SkyRoute.Stake }
+    expect(decodeWithdrawMeta(buildWithdrawMeta({ sky: stake }))).toEqual({ sky: stake })
+  })
+
+  it("decodes a Sky move only with a known route and every entry", () => {
+    expect(decodeWithdrawMeta(packRaw(skyStream(7)))).toEqual({})
+    const noCommitment = withEntry(skyStream(), 0x0c, hex(SKY.recipientCommitment), 1 + 3 + 22)
+    expect(decodeWithdrawMeta(packRaw(noCommitment))).toEqual({})
+    // A swap route beside it makes the stream a swap's, which this one is not.
+    const besideSwap = withEntry(skyStream(), 0x01, [0], 1 + SKY_ENTRIES_LEN)
+    expect(decodeWithdrawMeta(packRaw(besideSwap))).toEqual({})
+  })
+})
+
+describe("skyMetaForEscrow", () => {
+  it("keeps the meta whose args derive the escrow the burn paid, and drops any other", () => {
+    expect(skyMetaForEscrow(SKY, SKY_ESCROW)).toEqual(SKY)
+    expect(skyMetaForEscrow(SKY, SKY_ESCROW.toLowerCase() as Address)).toEqual(SKY)
+    expect(skyMetaForEscrow({ ...SKY, nonce: SWAP.nonce }, SKY_ESCROW)).toBe(undefined)
+    expect(skyMetaForEscrow({ ...SKY, route: SkyRoute.Stake }, SKY_ESCROW)).toBe(undefined)
+    expect(skyMetaForEscrow(undefined, SKY_ESCROW)).toBe(undefined)
   })
 })
 
 describe("swapMetaForEscrow", () => {
   const plan = planSwapOnWithdraw({
-    swapEscrowFactory: SWAP.factory,
+    swapEscrowFactoryV2: SWAP.factory,
     output: SWAP.output,
     l1Recipient: SWAP.recipient,
     recovery: RECOVERY,
@@ -296,8 +399,22 @@ describe("swapMetaForEscrow", () => {
   })
 
   it("keeps the meta whose args derive the escrow the burn paid", () => {
-    expect(swapMetaForEscrow(SWAP, plan.escrow)).toEqual(SWAP)
-    expect(swapMetaForEscrow(SWAP, plan.escrow.toLowerCase() as Address)).toEqual(SWAP)
+    expect(swapMetaForEscrow(SWAP, plan.escrow)).toEqual({ ...SWAP, layout: "v2" })
+    expect(swapMetaForEscrow(SWAP, plan.escrow.toLowerCase() as Address)).toEqual({
+      ...SWAP,
+      layout: "v2",
+    })
+  })
+
+  it("reads a burn to a legacy factory as the legacy layout", () => {
+    const { daiForGas: _, minEthForGas: __, output: ___, factory, ...rest } = SWAP
+    const legacyEscrow = predictSwapEscrow(factory, {
+      layout: "legacy",
+      args: { ...rest, route: SwapRoute.USDC },
+    })
+    expect(swapMetaForEscrow(SWAP, legacyEscrow)).toEqual({ ...SWAP, layout: "legacy" })
+    // A legacy escrow commits to no gas swap, so a meta that names one is not its meta.
+    expect(swapMetaForEscrow({ ...SWAP, daiForGas: 1n }, legacyEscrow)).toBe(undefined)
   })
 
   it("drops a meta that does not, and no meta at all", () => {
@@ -313,7 +430,7 @@ describe("swapMetaForEscrow", () => {
 
 describe("createWithdrawEventSource", () => {
   const plan = planSwapOnWithdraw({
-    swapEscrowFactory: SWAP.factory,
+    swapEscrowFactoryV2: SWAP.factory,
     output: SWAP.output,
     l1Recipient: SWAP.recipient,
     recovery: RECOVERY,
@@ -349,7 +466,10 @@ describe("createWithdrawEventSource", () => {
 
   it("keeps the swap only when its args derive the escrow the meta names", async () => {
     const [swap] = await listed(buildWithdrawMeta({ recipient: plan.escrow, swap: SWAP }))
-    expect(swap).toMatchObject({ l1Recipient: getAddress(plan.escrow), swap: SWAP })
+    expect(swap).toMatchObject({
+      l1Recipient: getAddress(plan.escrow),
+      swap: { ...SWAP, layout: "v2" },
+    })
 
     const [other] = await listed(buildWithdrawMeta({ recipient: RECIPIENT, swap: SWAP }))
     expect(other).toMatchObject({ l1Recipient: RECIPIENT, swap: undefined })

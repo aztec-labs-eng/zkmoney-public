@@ -3,6 +3,7 @@
  * written for it, so the list follows the store and the active scope with nothing to reconcile.
  */
 import type { AppNotificationEntry, OperationRecord } from "@obsidion/front-core"
+import { sponsorshipErrorCopy } from "../allowance/sponsorshipError"
 import { flowCopy } from "./operationCopy"
 
 const PREFIX = "operation:"
@@ -16,9 +17,22 @@ export function operationIdOf(entryId: string): string | undefined {
   return entryId.startsWith(PREFIX) ? entryId.slice(PREFIX.length) : undefined
 }
 
+/** The context each flow's screen reports its failures under, which the allowance copy keys on. */
+const REPORT_CONTEXT: Partial<Record<string, string>> = {
+  "send": "contact:send",
+  "withdraw": "withdraw:submit",
+  "paylink-create": "paylink:create",
+  "deposit": "deposit:resolve",
+  "request-link": "request-link:create",
+}
+
 function failureText(record: OperationRecord, copy: ReturnType<typeof flowCopy>): string {
-  const named = record.error !== undefined ? copy.describeError?.(record.error) : undefined
-  if (named) return named
+  if (record.error !== undefined) {
+    const named = copy.describeError?.(record.error)
+    if (named) return named
+    const refused = sponsorshipErrorCopy(record.error, REPORT_CONTEXT[record.flow] ?? record.flow)
+    if (refused) return `${record.summary}. ${refused.message}`
+  }
   return `${record.summary}. ${(record.cause && copy.causes[record.cause]) || copy.thrown}`
 }
 

@@ -18,6 +18,7 @@ packages:
   - vendor/oxide/yarn-project/refund-proof
   - vendor/oxide/yarn-project/noir-contracts.js
   - vendor/oxide/yarn-project/oxide-client
+  - vendor/oxide/yarn-project/experiments
   - vendor/oxide/yarn-project/resolver-lib
   - vendor/oxide/yarn-project/telemetry
   - vendor/oxide/yarn-project/watcher-lib

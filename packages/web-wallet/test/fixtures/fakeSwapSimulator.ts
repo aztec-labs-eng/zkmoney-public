@@ -28,11 +28,16 @@ export function fakeSwapSimulator(sdk: typeof import("@obsidion/sdk"), control: 
         baseFee: 10n ** 9n,
         priorityFee: 0n,
       }
-      if (funding <= control.relayerTip) throw new sdk.SwapTipExceedsInputError(tip, funding)
-      const swapInput = funding - control.relayerTip
-      return args.output === "ETH"
-        ? { ...tip, amountOut: swapInput / 3000n, decimals: 18 }
-        : { ...tip, amountOut: (swapInput * 99n) / 100n / 10n ** 12n, decimals: 6 }
+      const daiForGas = args.daiForGas ?? 0n
+      if (funding - control.relayerTip <= daiForGas) {
+        throw new sdk.SwapTipExceedsInputError(tip, funding)
+      }
+      const swapInput = funding - control.relayerTip - daiForGas
+      const gasOut = daiForGas / 3000n
+      if (args.output === "ETH")
+        return { ...tip, amountOut: swapInput / 3000n, decimals: 18, gasOut }
+      if (args.output === "DAI") return { ...tip, amountOut: swapInput, decimals: 18, gasOut }
+      return { ...tip, amountOut: (swapInput * 99n) / 100n / 10n ** 12n, decimals: 6, gasOut }
     }
   }
 }

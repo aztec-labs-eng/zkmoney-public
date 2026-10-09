@@ -8,6 +8,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IUniversalRouter} from "@uniswap/universal-router/contracts/interfaces/IUniversalRouter.sol";
 import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
 import {ICurve3Pool} from "@periphery/interfaces/ICurve3Pool.sol";
+import {IUniswapV2Pair} from "@uniswap/v2-core/contracts/interfaces/IUniswapV2Pair.sol";
 import {SwapEscrowFactory} from "@periphery/swap_on_withdraw_feature/SwapEscrowFactory.sol";
 
 contract DeploySwapOnWithdraw is Script {
@@ -20,10 +21,14 @@ contract DeploySwapOnWithdraw is Script {
   ICurve3Pool internal constant THREE_POOL = ICurve3Pool(0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7);
   AggregatorV3Interface internal constant ETH_USD_FEED =
     AggregatorV3Interface(0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419);
+  IUniswapV2Pair internal constant UNISWAP_V2_DAI_WETH_PAIR =
+    IUniswapV2Pair(0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11);
 
   function run() external returns (SwapEscrowFactory factory) {
     vm.startBroadcast();
-    factory = new SwapEscrowFactory(DAI, USDC, USDT, WETH, UNISWAP_UNIVERSAL_ROUTER, THREE_POOL, ETH_USD_FEED);
+    factory = new SwapEscrowFactory(
+      DAI, USDC, USDT, WETH, UNISWAP_UNIVERSAL_ROUTER, THREE_POOL, ETH_USD_FEED, UNISWAP_V2_DAI_WETH_PAIR
+    );
     vm.stopBroadcast();
 
     console.log("SwapEscrowFactory        ", address(factory));

@@ -43,6 +43,7 @@ import { closedLinkMessage } from "./claimWindow"
 import { emailL1Caller, obtainEmailL1Proof, type EmailClaimStage } from "./emailClaim"
 import { useBusyLabel } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
+import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { Warning } from "../../ui/Warning"
 import { LimitReason } from "../limits/publicLimit"
 import { withdrawalLimitProblem, withdrawalLimitRefusal } from "../limits/withdrawalLimit"
@@ -709,6 +710,7 @@ export function ClaimToL1Modal({
             <p role="alert">This link holds too little to cover the withdrawal fee.</p>
           )}
           {isEmail && zkProof && <p role="status">Email verified for this Ethereum address.</p>}
+          <LocalPasskeyHint />
           <PrimaryGradientButton
             title={confirmTitle}
             isDisabled={

@@ -70,6 +70,11 @@ export interface Contact {
   verified?: boolean
   /** How this L2 contact was added (e.g. `"qr-scan"`). Absent for legacy/manual adds. */
   provenance?: ContactProvenance
+  /**
+   * Added by the wallet, not the user: from an incoming transfer, or while a send that pays this
+   * person's request is in flight. Its requests count as from a non-contact until the user adds it.
+   */
+  autoAdded?: boolean
   // L1-only (present iff addressKind === "ethereum-l1")
   avatar?: ContactAvatar
   l1Wallet?: ContactL1Wallet
@@ -288,6 +293,15 @@ const sameAddressIdentity = (a: Contact, b: Contact): boolean => {
   return normalizeAddress(a.address) === normalizeAddress(b.address)
 }
 
+const sameTag = (a: Contact, b: Contact): boolean =>
+  !!a.tag && !!b.tag && a.tag.toLowerCase() === b.tag.toLowerCase()
+
+const withoutAutoAdded = (entry: Contact): Contact => {
+  const approved = { ...entry }
+  delete approved.autoAdded
+  return approved
+}
+
 /**
  * Loose collision check for the idempotent `addOrMergeContact` path: two
  * entries "are the same contact" if they match by address-identity OR share a
@@ -458,6 +472,7 @@ export class ContactStorage {
     if (v.email !== undefined && typeof v.email !== "string") return false
     if (v.verified !== undefined && typeof v.verified !== "boolean") return false
     if (v.provenance !== undefined && v.provenance !== "qr-scan") return false
+    if (v.autoAdded !== undefined && typeof v.autoAdded !== "boolean") return false
 
     const addressKind = v.addressKind
     if (
@@ -547,10 +562,23 @@ export class ContactStorage {
     return this.entries.find((entry) => entry.tag === tag)
   }
 
+  /**
+   * Adding a person the wallet added (`autoAdded`) approves the existing row instead. When that row
+   * has another tag at the same address (e.g. the tag changed since the wallet added it), the user's
+   * entry replaces it.
+   */
   public async addEntry(entry: Contact): Promise<void> {
     await this.mutate(async () => {
-      this.validateDuplicateEntry(entry)
-      this.entries.push(entry)
+      const index = this.autoAddedIndex(entry)
+      if (index === -1) {
+        this.validateDuplicateEntry(entry)
+        this.entries.push(entry)
+      } else if (sameTag(this.entries[index], entry)) {
+        this.entries[index] = withoutAutoAdded(this.entries[index])
+      } else {
+        this.validateDuplicateEntryExcluding(entry, this.entries[index])
+        this.entries[index] = entry
+      }
       await this.saveToStorage()
     })
   }
@@ -787,8 +815,9 @@ export class ContactStorage {
    *
    * Returns the resulting (existing, upgraded, or newly-added) contact. Pending
    * handshake rows are allowed to upgrade to real L2 rows when a later scan or
-   * connect-back brings the missing address. The throwing `addEntry` path is
-   * unchanged for its other (user-initiated) callers.
+   * connect-back brings the missing address. An entry without `autoAdded` approves an `autoAdded`
+   * row with the same address and tag; a row with another tag stays as it is. The throwing
+   * `addEntry` path is unchanged for its other (user-initiated) callers.
    */
   public addOrMergeContact(entry: Contact): Promise<Contact> {
     return this.mutate(async () => {
@@ -802,6 +831,13 @@ export class ContactStorage {
           this.entries[existingIndex] = entry
           await this.saveToStorage()
           return entry
+        }
+        const index = this.autoAddedIndex(entry)
+        if (index !== -1 && sameTag(this.entries[index], entry)) {
+          const approved = withoutAutoAdded(this.entries[index])
+          this.entries[index] = approved
+          await this.saveToStorage()
+          return approved
         }
         return existing
       }
@@ -878,6 +914,12 @@ export class ContactStorage {
       this.entries[entryIndex] = entry
       await this.saveToStorage()
     }
+  }
+
+  /** The `autoAdded` row at the address of an entry the user adds, or -1. */
+  private autoAddedIndex(entry: Contact): number {
+    if (entry.autoAdded) return -1
+    return this.entries.findIndex((e) => e.autoAdded && sameAddressIdentity(e, entry))
   }
 
   private validateDuplicateEntry(entry: Contact): void {

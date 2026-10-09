@@ -27,7 +27,7 @@ export async function liveSwapSandbox() {
     token: tuple.token as Address,
     broadcaster: tuple.l2Broadcaster,
   }
-  const factory = tuple.swapEscrowFactory as Address
+  const factory = tuple.swapEscrowFactoryV2 as Address
   if (!factory) throw new Error("Sandbox manifest has no swap escrow factory")
   const implementation = (await client.readContract({
     address: factory,

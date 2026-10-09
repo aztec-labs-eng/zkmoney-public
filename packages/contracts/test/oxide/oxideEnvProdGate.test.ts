@@ -37,7 +37,7 @@ describe("the mainnet gate on the pinned v4 entry", () => {
       ["plainWithdrawalExecutor", ZERO_L1],
       ["l2Broadcaster", "0x" + "0".repeat(64)],
       ["resolverGatewayUrl", "not a url"],
-      ["swapEscrowFactory", ZERO_L1],
+      ["swapEscrowFactoryV2", ZERO_L1],
     ] as const) {
       const bad = clone(fixture)
       entry(bad)[field] = value
@@ -57,10 +57,16 @@ describe("the mainnet gate on the pinned v4 entry", () => {
     expect(() => extractPinnedOxideEnvTuple(legacy, { portal: PORTAL })).not.toThrow()
   })
 
-  it("accepts an entry without swapEscrowFactory", () => {
+  it("accepts an entry without swapEscrowFactoryV2", () => {
     const noSwap = clone(fixture)
-    delete entry(noSwap).swapEscrowFactory
+    delete entry(noSwap).swapEscrowFactoryV2
     expect(() => extractPinnedOxideEnvTuple(noSwap, { portal: PORTAL }, gate)).not.toThrow()
+  })
+
+  it("ignores a zero legacy swapEscrowFactory, which the wallet never reads", () => {
+    const legacy = clone(fixture)
+    entry(legacy).swapEscrowFactory = ZERO_L1
+    expect(() => extractPinnedOxideEnvTuple(legacy, { portal: PORTAL }, gate)).not.toThrow()
   })
 
   it("rejects a gitSha mismatch", () => {

@@ -561,10 +561,10 @@ export function OnboardingScreen({
   const addressRef = useRef<string | undefined>(undefined)
   // The claim step runs after the account exists — thread the derived key material between them.
   const keysRef = useRef<OnboardingKeys | undefined>(undefined)
-  // "Cancel sign-in" on a spinner stops WATCHING the in-flight op (WebAuthn and the claim POST have
-  // no client-side abort): bumping the generation makes the settled op's UI routing a no-op. The
-  // scope beside it is what a passkey recovery runs under, so abandoning the op also ends any
-  // adoption still short of its keys, prompt or held key.
+  // "Cancel sign-in" on a spinner stops WATCHING the in-flight op (the account deploy and the claim
+  // POST have no client-side abort): bumping the generation makes the settled op's UI routing a
+  // no-op. The scope beside it is what a passkey creation or recovery runs under, so abandoning the
+  // op also closes an open passkey prompt and ends any adoption still short of its keys or held key.
   const opGen = useRef(0)
   const opScope = useRef<AbortController | undefined>(undefined)
   const startOp = () => {
@@ -577,8 +577,8 @@ export function OnboardingScreen({
     opGen.current++
     opScope.current?.abort()
   }
-  // Leaving the screen ends whatever was running: the recovery's scope and the gate's attempt behind
-  // any open prompt, so nothing commits for a screen that is gone.
+  // Leaving the screen ends whatever was running: the op's scope and the gate's attempt behind any
+  // open prompt, so nothing commits for a screen that is gone.
   const cancelGateRef = useRef(cancelGate)
   cancelGateRef.current = cancelGate
   useEffect(
@@ -864,6 +864,8 @@ export function OnboardingScreen({
       await applyClaimOutcome(await claimWithAnalytics(keys))
     } catch (err) {
       if (gen !== opGen.current || isGateCancelled(err)) return
+      // Its own scope ended it, as when the screen left: whatever it threw, nothing failed.
+      if (signal.aborted) return
       if (fromPaylink) {
         try {
           setTicketAttempt(readTicketAttempt())
@@ -1037,6 +1039,7 @@ export function OnboardingScreen({
         if (ticket) setTicketAttempt(ticket)
         return createAccount(false, AUTH_TYPE.WEB_AUTHN, statusForAttempt(own), handle, undefined, {
           route,
+          signal,
           ...(ticket && ticketId
             ? {
                 onAccountCreated: (created: { credentialId: string; l2Address: string }) =>

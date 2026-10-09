@@ -96,7 +96,10 @@ describe("runSwapEscrowExecute", () => {
   it("submits factory.deployAndExecute for the record's args and settles the record done", async () => {
     const { deps, store, channel } = makeDeps()
     await expect(runSwapEscrowExecute(deps)).resolves.toBe(HASH)
-    expect(mocks.buildSwapEscrowExecuteCall).toHaveBeenCalledWith(FACTORY, ARGS)
+    expect(mocks.buildSwapEscrowExecuteCall).toHaveBeenCalledWith(
+      FACTORY,
+      expect.objectContaining({ layout: "legacy", args: ARGS }),
+    )
     expect(channel.sendTransaction).toHaveBeenCalledWith(FACTORY, "0xdeadbeef")
     expect(store.patch).toHaveBeenCalledWith(L2TX, {
       phase: "done",
@@ -142,7 +145,7 @@ describe("runSwapEscrowRecovery", () => {
       deployed: false,
       factory: FACTORY,
       escrow: ESCROW,
-      args: ARGS,
+      commitment: expect.objectContaining({ layout: "legacy", args: ARGS }),
       recovery: RECOVERY,
       signature: SIGNATURE,
       target: TARGET,

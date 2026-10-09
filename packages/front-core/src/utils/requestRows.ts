@@ -178,6 +178,35 @@ export function withoutAnsweredRequests<
   )
 }
 
+/** Lowercased tags of the L2 contacts the user added, not of senders added from a transfer. */
+export function approvedContactTags(contacts: readonly ContactRow[]): Set<string> {
+  return new Set(
+    contacts.flatMap((c) =>
+      c.addressKind === "aztec-l2" && !c.autoAdded ? [c.tag.toLowerCase()] : [],
+    ),
+  )
+}
+
+/** An incoming request from someone outside the contact book: kept out of Activity and Home. */
+export function isFromNonContact(
+  request: Pick<PaymentRequest, "direction" | "contactTag">,
+  contactTags: ReadonlySet<string>,
+): boolean {
+  return request.direction === "incoming" && !contactTags.has(request.contactTag.toLowerCase())
+}
+
+/** The inbox for requests from non-contacts: pending, unexpired, unanswered, newest first. */
+export function nonContactInbox(
+  requests: readonly PaymentRequest[],
+  transactions: Parameters<typeof withoutAnsweredRequests>[1],
+  contactTags: ReadonlySet<string>,
+  now: number,
+): PaymentRequest[] {
+  return withoutAnsweredRequests(requests, transactions)
+    .filter((r) => r.status === "pending" && !isExpired(r, now) && isFromNonContact(r, contactTags))
+    .sort((a, b) => b.createdAt - a.createdAt)
+}
+
 /** Drop verified receives that fulfilled a paid request link — the paid-link row is the canonical entry. */
 export function withoutPaidLinkReceives<T extends { action?: string; txHash?: string }>(
   transactions: readonly T[],

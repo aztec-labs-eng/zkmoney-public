@@ -6,10 +6,14 @@
  */
 
 import {
+  approvedContactTags,
+  contactRowFromEntry,
   incomingRequestToRow,
+  isPaymentContactEntry,
   type Contact,
   type ContactsByL2,
   type IncomingRequestInput,
+  type RequestSenderPolicy,
   type RequestStorage,
   type RequestStoreWrites,
   type RequestTagBindingResolver,
@@ -22,7 +26,8 @@ import { verifyTag } from "../../features/contacts/registryResolution"
  * verified sender (tag registry-resolved and proven against the on-chain event) is added to the
  * contact book via the idempotent `addOrMergeContact` — an existing colliding row wins unchanged,
  * EXCEPT a `pending-handshake` row, which that method replaces outright. This path skips those, so
- * an unsolicited transfer can never finish a handshake the user is still waiting on.
+ * an unsolicited transfer can never finish a handshake the user is still waiting on. The row is
+ * `autoAdded`: a transfer does not make the sender a contact who may send requests.
  */
 export function createContactsByL2(contacts: {
   getEntries(): Promise<Contact[]>
@@ -61,6 +66,7 @@ export function createContactsByL2(contacts: {
         addressKind: "aztec-l2",
         tag,
         verified: true,
+        autoAdded: true,
       })
     },
   }
@@ -77,6 +83,22 @@ export function createRequestBindingResolver(
     async resolveXmtpBinding(tag: string): Promise<string | null> {
       const record = await verify(tag)
       return record?.xmtpAddress ?? null
+    },
+  }
+}
+
+/** With the Settings toggle off, only contacts the user added may send requests. */
+export function createRequestSenderPolicy(
+  contacts: { getEntries(): Promise<Contact[]> },
+  allowNonContacts: () => boolean,
+): RequestSenderPolicy {
+  return {
+    async admitsRequester(tag: string): Promise<boolean> {
+      if (allowNonContacts()) return true
+      const rows = (await contacts.getEntries())
+        .filter(isPaymentContactEntry)
+        .map(contactRowFromEntry)
+      return approvedContactTags(rows).has(tag.toLowerCase())
     },
   }
 }

@@ -10,7 +10,7 @@ import type { Address, PublicClient } from "viem"
 import { getConfig } from "../../config/env"
 import { getOxideTuple, l1PublicClient } from "../../config/oxideTuple"
 import { SWAP_QUOTE_REFRESH_MS } from "./withdrawQuote"
-import { burnLanding, sequentialLanding } from "./burnTiming"
+import { burnLanding } from "./burnTiming"
 
 /** A tip that saves less than this for certain is not worth paying. */
 export const FASTER_WITHDRAWAL_MIN_SPEEDUP_SECONDS = 60
@@ -28,10 +28,8 @@ export interface FasterWithdrawal {
 export const fasterIsWorthIt = (offer: FasterWithdrawal) =>
   offer.worstSpeedupSeconds >= FASTER_WITHDRAWAL_MIN_SPEEDUP_SECONDS
 
-/** For `legs` burns sent one after another the window is the last one's. */
 export type LoadFasterWithdrawal = (
   node: WithdrawalSpeedupNode,
-  legs?: number,
 ) => Promise<{ estimate: WithdrawalSpeedupEstimate; quote: ProverTipQuote }>
 
 /** The offer one load makes; none when the tip is zero. */
@@ -69,12 +67,12 @@ function speedupEstimator(
   return estimatorCache.estimator
 }
 
-export const loadFasterWithdrawal: LoadFasterWithdrawal = async (node, legs = 1) => {
+export const loadFasterWithdrawal: LoadFasterWithdrawal = async (node) => {
   const config = getConfig()
   const tuple = await getOxideTuple(config)
   const publicClient = l1PublicClient(config)
   const estimate = await speedupEstimator(config.network, node, publicClient).estimate(
-    sequentialLanding(await burnLanding(), legs),
+    await burnLanding(),
   )
   const quote = await quoteWithdrawalProverTip(publicClient, {
     chainId: BigInt(config.l1ChainId),
@@ -97,15 +95,12 @@ export interface FasterWithdrawalState {
 export function useFasterWithdrawal({
   active,
   node,
-  legs = 1,
   load = loadFasterWithdrawal,
   refreshMs = SWAP_QUOTE_REFRESH_MS,
   answerWithinMs,
 }: {
   active: boolean
   node?: WithdrawalSpeedupNode
-  /** Burns sent one after another; the tip rides the last. */
-  legs?: number
   load?: LoadFasterWithdrawal
   refreshMs?: number
   /** Stop loading after this long without a first answer; a later answer still lands. */
@@ -133,7 +128,7 @@ export function useFasterWithdrawal({
       }
       inFlight = true
       try {
-        const loaded = await load(node, legs)
+        const loaded = await load(node)
         if (!live) return
         loadedAt = Date.now()
         setOffer(fasterWithdrawalOffer(loaded))
@@ -155,7 +150,7 @@ export function useFasterWithdrawal({
       window.clearInterval(interval)
       window.clearTimeout(giveUp)
     }
-  }, [active, node, legs, load, refreshMs, answerWithinMs])
+  }, [active, node, load, refreshMs, answerWithinMs])
 
   return on ? { offer, loading: !answered } : { loading: false }
 }

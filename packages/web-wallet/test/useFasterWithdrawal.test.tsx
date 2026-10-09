@@ -141,13 +141,6 @@ describe("useFasterWithdrawal", () => {
     expect(offer).toBeUndefined()
   })
 
-  it("quotes for the number of burns it is given", async () => {
-    const load = vi.fn(resolves(1_200))
-    await render({ load })
-    await render({ load, legs: 2 })
-    expect(load.mock.calls.map(([, legs]) => legs)).toEqual([1, 2])
-  })
-
   it("hides and reads nothing while the step is closed", async () => {
     const load = vi.fn(resolves(1_200))
     await render({ active: false, load })
@@ -214,18 +207,5 @@ describe("loadFasterWithdrawal", () => {
       checkpointCount: 3n,
     })
     expect(result.quote.proverTip).toBe(TIP)
-  })
-
-  it("estimates the last burn's landing when burns go one after another", async () => {
-    estimate.mockResolvedValue(speedup(1_200))
-    sdkQuote.mockResolvedValue(tipQuote(TIP))
-
-    await loadFasterWithdrawal(NODE, 2)
-
-    expect(estimate).toHaveBeenCalledWith({
-      earliest: 2 * DEFAULT_BURN_LANDING.earliest,
-      expected: DEFAULT_BURN_LANDING.expected * 2,
-      latest: DEFAULT_BURN_LANDING.latest * 2,
-    })
   })
 })

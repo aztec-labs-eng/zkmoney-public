@@ -2,10 +2,10 @@ import { EthAddress } from '@aztec/foundation/eth-address';
 import type { Logger } from '@aztec/foundation/log';
 
 import { IFPCFunderAbi, OperationExecutorAbi } from '@oxide/l1-contracts';
-import { EXECUTOR_MIN_PAYOUT_CALLDATA_GAS } from '@oxide/oxide-client/l1_operation_quote.js';
+import { EXECUTOR_MIN_PAYOUT_CALLDATA_GAS, SIMULATED_SENDER_BALANCE } from '@oxide/oxide-client/l1_operation_quote.js';
 
 import { describe, expect, it, jest } from '@jest/globals';
-import { type Hex, type PublicClient, decodeFunctionData, maxUint256 } from 'viem';
+import { type Hex, type PublicClient, decodeFunctionData } from 'viem';
 
 import { LogRecorder } from '../log_recorder.js';
 import type { ChainlinkPriceOracle } from '../price_oracle/chainlink_price_oracle.js';
@@ -131,7 +131,7 @@ describe('FpcFunderCaller', () => {
 
     await caller.runOnce();
 
-    const override = { stateOverride: [{ address: SENDER.toString(), balance: maxUint256 }] };
+    const override = { stateOverride: [{ address: SENDER.toString(), balance: SIMULATED_SENDER_BALANCE }] };
     expect(simulateContract).toHaveBeenCalledWith(expect.objectContaining(override));
     expect(estimateGas).toHaveBeenCalledWith(expect.objectContaining(override));
   });

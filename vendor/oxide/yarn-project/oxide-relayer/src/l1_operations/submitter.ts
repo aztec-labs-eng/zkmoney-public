@@ -5,6 +5,7 @@ import { DateProvider } from '@aztec/foundation/timer';
 import { OperationExecutorAbi } from '@oxide/l1-contracts';
 import {
   EXECUTOR_MIN_PAYOUT_CALLDATA_GAS,
+  SIMULATED_SENDER_BALANCE,
   type SimulateL1OperationArgs,
   estimateL1OperationFeeValues,
   simulateL1Operation,
@@ -18,7 +19,6 @@ import {
   type TransactionReceipt,
   encodeFunctionData,
   erc20Abi,
-  maxUint256,
 } from 'viem';
 
 import { CauseTransitions } from '../cause_transitions.js';
@@ -237,7 +237,7 @@ export class L1OperationSubmitter {
       data: encodeExecute(quote.operation, payout),
       maxFeePerGas: quote.feeValues.maxFeePerGas,
       maxPriorityFeePerGas: quote.feeValues.maxPriorityFeePerGas,
-      stateOverride: [{ address: quote.sender, balance: maxUint256 }],
+      stateOverride: [{ address: quote.sender, balance: SIMULATED_SENDER_BALANCE }],
     });
     // The submitted minimum can have more non-zero bytes than the quoted payout.
     const gasLimit = estimatedGas + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS;

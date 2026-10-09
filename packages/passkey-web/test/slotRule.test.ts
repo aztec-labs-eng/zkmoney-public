@@ -4,6 +4,7 @@ import {
   checkAssertionRoute,
   checkCreationRoute,
   creationHintsFor,
+  creationTimeoutMs,
   offerableTransports,
   impliedKeyTransports,
   isPhysicalOnly,
@@ -24,6 +25,11 @@ describe("the slot rule", () => {
   it("asks a laptop for a phone's, and asks a phone for nothing so its sheet can offer a key", () => {
     expect(requestedAttachment("laptop")).toBe("cross-platform")
     expect(requestedAttachment("phone")).toBeUndefined()
+  })
+
+  it("gives a laptop creation five minutes, and names no timeout for a phone", () => {
+    expect(creationTimeoutMs("laptop")).toBe(300_000)
+    expect(creationTimeoutMs("phone")).toBeUndefined()
   })
 })
 

@@ -162,8 +162,11 @@ export function assertProdOxideTuple(
     // Optional — a manifest without the swap stack simply offers no swap routes. A PUBLISHED
     // placeholder is the dangerous case: the burn pays a CREATE2 escrow derived from this factory,
     // and nothing can ever deploy at an address derived from zero.
-    if (tuple.swapEscrowFactory !== undefined) {
-      requireNonZeroL1Address(tuple.swapEscrowFactory, "swapEscrowFactory")
+    if (tuple.swapEscrowFactoryV2 !== undefined) {
+      requireNonZeroL1Address(tuple.swapEscrowFactoryV2, "swapEscrowFactoryV2")
+    }
+    if (tuple.skyEscrowFactory !== undefined) {
+      requireNonZeroL1Address(tuple.skyEscrowFactory, "skyEscrowFactory")
     }
   }
   if (opts.expectedGitSha && tuple.gitSha !== opts.expectedGitSha) {
@@ -289,7 +292,8 @@ export function parseDeployment(entry: Record<string, unknown>): {
     unprocessedDepositRefundVerifier: optionalString(entry.unprocessedDepositRefundVerifier),
     frozenNotesRefundVkSha256: optionalString(entry.frozenNotesRefundVkSha256),
     frozenDepositRefundVkSha256: optionalString(entry.frozenDepositRefundVkSha256),
-    swapEscrowFactory: optionalString(entry.swapEscrowFactory),
+    swapEscrowFactoryV2: optionalString(entry.swapEscrowFactoryV2),
+    skyEscrowFactory: optionalString(entry.skyEscrowFactory),
     operationExecutor: optionalString(entry.operationExecutor),
     fpcFunder: optionalString(entry.fpcFunder),
     fpcBeneficiary: optionalString(entry.fpcBeneficiary),

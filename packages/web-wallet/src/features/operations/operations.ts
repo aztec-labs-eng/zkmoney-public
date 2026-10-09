@@ -92,8 +92,12 @@ export function runOperation<T>(
         await store.fail(operationId, message).catch(console.warn)
       } else if (record?.state === "local") {
         // Nothing was lost before the proof began (a closed passkey prompt, a failed read): the
-        // flow's screen reports it, and the record goes.
-        if (isFlowCancelled(err) || record.provingStartedAt === undefined) {
+        // flow's screen reports it, and the record goes. Once the screen has handed off, the
+        // record is the only report left.
+        if (
+          isFlowCancelled(err) ||
+          (record.provingStartedAt === undefined && record.handedOffAt === undefined)
+        ) {
           await store.remove(operationId).catch(console.warn)
         } else {
           await store.fail(operationId, message).catch(console.warn)

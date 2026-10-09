@@ -66,3 +66,15 @@ export function requestAmountLabel(amount: number): string {
 export function rowTimestamp(ms: number): string {
   return `${formatDateLabel(ms)}, ${formatTimeLabel(ms)}`
 }
+
+/** `Just now` / `5m ago` / `2h ago` / `Yesterday` / `3d ago`; older rows read as a date. */
+export function relativeTimeLabel(ms: number, now = Date.now()): string {
+  const minutes = Math.floor((now - ms) / 60_000)
+  if (minutes < 1) return "Just now"
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  if (days === 1) return "Yesterday"
+  return days < 7 ? `${days}d ago` : formatDateLabel(ms)
+}

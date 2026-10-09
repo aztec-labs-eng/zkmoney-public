@@ -55,6 +55,13 @@ it("drops, rather than fails, a record from an earlier page that never began pro
   expect(store.get("read-only")).toBeNull()
 })
 
+it("fails, rather than drops, a record its screen had handed off before proving began", async () => {
+  await begin("handed-off", "acct", 1_000)
+  await store.markHandedOff("handed-off", 1_100)
+  await store.failInterrupted(2_000, 6_000)
+  expect(store.get("handed-off")).toMatchObject({ state: "failed", cause: "interrupted" })
+})
+
 it("fails every local record from an earlier page, whatever its scope", async () => {
   await begin("old", "acct", 1_000)
   await begin("visitor", null, 1_500)

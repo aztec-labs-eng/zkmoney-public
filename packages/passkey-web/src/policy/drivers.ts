@@ -22,6 +22,7 @@ import {
   checkAssertionRoute,
   checkCreationRoute,
   creationHintsFor,
+  creationTimeoutMs,
   isSecurityKey,
   offerableTransports,
   requestedAttachment,
@@ -43,7 +44,9 @@ export type ObservedCeremony =
 
 /**
  * Awaited with every raw result before any check on it. A consumer's own lookups and records go
- * here; slow work must not be awaited, since it holds the ceremony.
+ * here; slow work must not be awaited, since it holds the ceremony. A created result's id must not
+ * be kept as account state from here: a creation that then fails asks the authenticator to remove
+ * that credential.
  */
 export type CeremonyObserver = (event: ObservedCeremony) => void | Promise<void>
 
@@ -63,6 +66,12 @@ export type PasskeyCreationOptions = {
   /** From `currentTrustsAttachmentLabel`; only then may a refusal name the provider that answered. */
   attachmentLabelTrusted?: boolean
   observe?: CeremonyObserver
+  /**
+   * Ends the creation wherever it is, its follow-up prompt included; see
+   * `PasskeyCreateRequest.signal`. A caller whose screen can abandon an attempt passes one: a laptop
+   * waits five minutes, and a late answer would otherwise finish an attempt the user had left.
+   */
+  signal?: AbortSignal
 }
 
 export type PasskeyCreation = {
@@ -105,6 +114,8 @@ export async function runPasskeyCreation(
   const { posture, rpId } = options
   const hints = creationHintsFor(posture, options.laptopHints)
   const requested = requestedAttachment(posture)
+  const timeoutMs = creationTimeoutMs(posture)
+  const ending = options.signal ? { signal: options.signal } : {}
   const salts = await prfSalts()
   const reported = await ceremony.create({
     rpId,
@@ -112,9 +123,11 @@ export async function runPasskeyCreation(
     userName: options.userName,
     authenticatorAttachment: requested,
     hints,
+    ...(timeoutMs === undefined ? {} : { timeoutMs }),
+    ...ending,
     ...salts,
   })
-  // The credential exists from here on: every refusal below leaves it behind.
+  // The credential exists from here on: every failure below leaves it behind.
   try {
     await options.observe?.({ phase: "created", result: reported })
     // Only the creation response carries the transports and the provider id; the chained assertion
@@ -146,10 +159,7 @@ export async function runPasskeyCreation(
     if (!isComplete(evidence, slot)) {
       // The follow-up names the credential but not the device, and a corrected answer's passkey may
       // already have synced to this one, so nothing can keep the follow-up on the phone.
-      if (corrected) {
-        forgetCredential(rpId, created.credentialId)
-        throw new IncompleteCreationError()
-      }
+      if (corrected) throw new IncompleteCreationError()
       // Some providers only return PRF on an assertion, some evaluate one salt at creation, and
       // some responses carry no readable flags. The assertion has to stand on its own: nothing
       // from the create result is kept.
@@ -168,6 +178,7 @@ export async function runPasskeyCreation(
         challenge,
         credentialIds: [created.credentialId],
         ...again,
+        ...ending,
         ...salts,
       })
       await options.observe?.({ phase: "chained", result: chained })
@@ -175,14 +186,17 @@ export async function runPasskeyCreation(
       evidence = evidenceOf(chained)
     }
 
+    // A browser can answer a request it was told to end; an ended creation still returns no keys.
+    options.signal?.throwIfAborted()
     return {
       created,
       chained,
       slot,
       securityKey,
-      prfOutput: readPrfOrRefuseKey(evidence, slot, securityKey, rpId, created.credentialId),
+      prfOutput: readPrfOrRefuseKey(evidence, slot, securityKey),
     }
   } catch (err) {
+    forgetCredential(rpId, reported.credentialId)
     throw markPasskeyWritten(err)
   }
 }
@@ -191,32 +205,22 @@ export async function runPasskeyCreation(
  * The key material, or a refusal a key holder can act on. Only a total absence is translated: an
  * unreadable backup flag and a value in the wrong slot keep their own refusals, and a platform
  * passkey keeps `NoPrfError`.
- *
- * A key that answered with nothing has still written a credential, so this also asks the
- * authenticator to take it back, as the corrected-but-incomplete branch above does. Deletion cannot
- * be undone and the browser asks the user nothing, so the id comes from the creation in hand and
- * from nowhere else.
  */
-function readPrfOrRefuseKey(
-  evidence: Evidence,
-  slot: PrfSlot,
-  securityKey: boolean,
-  rpId: string,
-  credentialId: string,
-): Uint8Array {
+function readPrfOrRefuseKey(evidence: Evidence, slot: PrfSlot, securityKey: boolean): Uint8Array {
   try {
     return prfOutputFor(evidence, slot, securityKey)
   } catch (err) {
     if (!securityKey || !(err instanceof NoPrfError)) throw err
-    forgetCredential(rpId, credentialId)
     throw new SecurityKeyNoPrfError()
   }
 }
 
 /**
  * Tell the authenticator this credential is not one of ours, which it is expected to answer by
- * deleting it. Best effort in both directions: browsers without the call do nothing, and whether a
- * key acts on it is unverified.
+ * deleting it. A failed creation returns nothing, so no account can name the credential it wrote.
+ * Deletion cannot be undone and the browser asks the user nothing, so the one caller passes the id
+ * of the creation in hand and nothing else may. Best effort in both directions: browsers without
+ * the call do nothing, and whether a key acts on it is unverified.
  */
 function forgetCredential(rpId: string, credentialId: string): void {
   // The lookup is inside the guard too: an accessor-shaped API could throw on the read itself,

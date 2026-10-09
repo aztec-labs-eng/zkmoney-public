@@ -71,7 +71,7 @@ import { PASSKEY_ENVIRONMENT_KEY } from "./passkeyEnvironmentKey"
 import { NoPasskeySessionError, SessionChangedError } from "./sessionErrors"
 import { UNASKED_PASSKEY_MESSAGE } from "./unaskedPasskey"
 import { type SigningSteering, makeWebauthnSignFn } from "./webauthnSigning"
-import { WebPasskeyIdentityMap } from "./WebPasskeyIdentityMap"
+import { type PasskeyAnswer, WebPasskeyIdentityMap } from "./WebPasskeyIdentityMap"
 
 /** The package's PRF candidates as the field elements the wallet's anchors compare. */
 const toFrCandidates = (prf: PrfCandidates): RecoverPasskeyResult["candidates"] => ({
@@ -263,10 +263,63 @@ export class WebAlphaAuthService implements AlphaAuthService {
    */
   private readonly implied = new Map<string, readonly string[] | "refused">()
 
+  /** Where each credential's passkey answered from this session, and the attempt that saw it. */
+  private readonly answers = new Map<string, { where: PasskeyAnswer; owns?: () => boolean }>()
+
+  /** The session's answer for a credential; one seen by an attempt that has since ended is dropped. */
+  private answerSeen(credentialId: string): PasskeyAnswer | undefined {
+    const seen = this.answers.get(credentialId)
+    if (seen?.owns && !seen.owns()) {
+      this.answers.delete(credentialId)
+      return undefined
+    }
+    return seen?.where
+  }
+
   /**
-   * Learn from any assertion this credential answered; a key's transports are offered to the
-   * record. Never awaited by a ceremony: a slow or refused write costs the hint, not the sign-in.
-   * `owns` is the assertion's ownership: a cancelled attempt teaches nothing, in session or on disk.
+   * Where a laptop's prompt was answered from: another device holding a passkey that can be backed
+   * up, or this computer where the browser's label can be believed.
+   */
+  private answerOf(evidence: {
+    authenticatorAttachment?: PasskeyAttachment
+    backupEligible?: boolean
+  }): PasskeyAnswer | undefined {
+    if (this.answeredLocally(evidence.authenticatorAttachment)) {
+      return this.trustsAttachmentLabel() && !this.misreportsCrossDevice() ? "local" : undefined
+    }
+    const elsewhere =
+      this.posture() === "laptop" &&
+      evidence.authenticatorAttachment === "cross-platform" &&
+      evidence.backupEligible === true
+    return elsewhere ? "remote" : undefined
+  }
+
+  /**
+   * Offer where a passkey last answered from to the record, and keep it for a record written
+   * later. A cancelled attempt leaves nothing behind.
+   */
+  private async learnAnswer(
+    evidence: {
+      credentialId: string
+      authenticatorAttachment?: PasskeyAttachment
+      backupEligible?: boolean
+    },
+    owns?: () => boolean,
+  ): Promise<void> {
+    const where = this.answerOf(evidence)
+    if (!where || (owns && !owns())) return
+    await this.identityMap
+      .setAnswered(evidence.credentialId, where, owns)
+      .catch((err) => console.warn("passkey answer not recorded", err))
+    if (owns && !owns()) return
+    this.answers.set(evidence.credentialId, { where, owns })
+  }
+
+  /**
+   * Learn from any assertion this credential answered: where a synced passkey answered from, and a
+   * key's transports, are offered to the record. Never awaited by a ceremony: a slow or refused
+   * write costs the hint, not the sign-in. `owns` is the assertion's ownership: a cancelled attempt
+   * teaches nothing, in session or on disk.
    */
   private async learn(
     evidence: {
@@ -276,6 +329,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     },
     owns?: () => boolean,
   ): Promise<void> {
+    await this.learnAnswer(evidence, owns)
     const transports = impliedKeyTransports(evidence)
     if (!transports) return
     if (owns && !owns()) return
@@ -590,7 +644,11 @@ export class WebAlphaAuthService implements AlphaAuthService {
   async createPasskey(
     accountName: string,
     updateStatus?: (status: string) => void,
-    opts?: { mode?: "combined" | "platform" | "security-key"; route?: SignInRoute },
+    opts?: {
+      mode?: "combined" | "platform" | "security-key"
+      route?: SignInRoute
+      signal?: AbortSignal
+    },
   ): Promise<{
     authProvider: AlphaAuthProvider
     credentialId: string
@@ -618,6 +676,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
       extraProviders: this.extraProviders,
       misreportsCrossDevice: this.misreportsCrossDevice(),
       attachmentLabelTrusted: this.trustsAttachmentLabel(),
+      ...(opts?.signal ? { signal: opts.signal } : {}),
       challengeForChained: async () => {
         updateStatus?.("Reading key material…")
         return new Uint8Array(randomChallenge())
@@ -667,6 +726,12 @@ export class WebAlphaAuthService implements AlphaAuthService {
   /** `stillOwns` is checked under the map's lock, so a cancel that landed while waiting writes nothing. */
   async recordRecoveryMetadata(meta: RecoveryMetadata, stillOwns?: () => boolean): Promise<void> {
     await this.identityMap.upsert(meta, stillOwns)
+    const where = this.answerSeen(meta.credentialId)
+    if (where) {
+      await this.identityMap
+        .setAnswered(meta.credentialId, where, stillOwns)
+        .catch((err) => console.warn("passkey answer not recorded", err))
+    }
     const implied = this.implied.get(meta.credentialId)
     if (!implied || implied === "refused") return
     await this.identityMap
@@ -946,6 +1011,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
           credentialIds: [assertion.credentialId],
           ...(attempt ? { signal: attempt } : {}),
         })
+        void this.learnAnswer(second, () => !attempt?.aborted)
         const recoveredKey = await recoverPubkeyFromAssertions(assertion, second)
         return this.recovered(assertion, candidates, recoveredKey, undefined)
       },

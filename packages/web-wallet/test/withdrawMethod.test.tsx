@@ -10,7 +10,7 @@ const env = vi.hoisted(() => ({
 }))
 /** Every contract a fresh-address quote or burn reads. */
 const STACK = {
-  swapEscrowFactory: "0x11",
+  swapEscrowFactoryV2: "0x11",
   operationExecutor: "0x12",
   accountFactory: "0x13",
   l2Broadcaster: "0x14",

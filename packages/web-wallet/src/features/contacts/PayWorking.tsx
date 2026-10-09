@@ -1,3 +1,4 @@
+import type { ReactNode } from "react"
 import { GradientSpinner } from "@obsidion/web-ds"
 
 /**
@@ -22,23 +23,26 @@ const LABEL: Record<PayWorkingBeat, string> = {
  * `onCancel` is offered only while the caller can still honor it — each flow checks its cancel flag
  * once, at its first stage boundary — so a caller withholds it once that gate has passed. `label`
  * names what the preparing beat waits on when it is more than the transaction. `warn` is off for a
- * beat with no transaction to lose.
+ * beat with no transaction to lose. `hint` is advice for the passkey prompt, under the stage.
  */
 export function PayWorking({
   beat,
   label,
   onCancel,
   warn = true,
+  hint,
 }: {
   beat: PayWorkingBeat
   label?: string
   onCancel?: () => void
   warn?: boolean
+  hint?: ReactNode
 }) {
   return (
     <div className="ww-pay__working">
       <GradientSpinner size={32} />
       <span className="ww-pay__stage">{beat === "preparing" && label ? label : LABEL[beat]}</span>
+      {hint}
       {/* Past the first beat the passkey sheet's own dismiss is the way out. */}
       {onCancel && beat === "preparing" && (
         <button type="button" className="zkm-btn-reset ww-pay__cancel" onClick={onCancel}>

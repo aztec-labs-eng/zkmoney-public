@@ -10,29 +10,37 @@ import {
   predictSwapEscrowAddressLocally,
   type SwapEscrowArgs,
 } from "@oxide/l1-contracts"
+import { SkyRoute, predictSkyEscrowAddressLocally } from "@oxide/experiments/sky/sky_savings.js"
 import { unpackFieldsToBytes } from "@oxide/oxide-lib/field_bytes.js"
-import { L1OperationConditionKind } from "@oxide/oxide-lib/l1_operation_calldata.js"
-import { decodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal.js"
+import {
+  L1OperationCondition,
+  L1OperationConditionKind,
+} from "@oxide/oxide-lib/l1_operation_calldata.js"
+import {
+  decodePlainWithdrawalPayload,
+  encodePlainWithdrawalPayload,
+} from "@oxide/oxide-lib/plain_withdrawal.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 
 // The broadcaster records each method call and returns it as the interaction, so a returned
 // broadcast is the exact call the burn tx carries.
-const f = vi.hoisted(() => ({ calls: [] as { method: string; args: any[] }[], register: vi.fn() }))
+type Call = { method: string; args: any[]; broadcaster: string }
+const f = vi.hoisted(() => ({ calls: [] as Call[], register: vi.fn() }))
 vi.mock("@obsidion/contracts", async () => ({
   ...(await vi.importActual<typeof import("@obsidion/contracts")>("@obsidion/contracts")),
   getBroadcasterArtifact: async () => ({}),
   ensureContractRegisteredInPXE: (...args: unknown[]) => f.register(...args),
   BroadcasterContract: {
-    at: () => ({
+    at: (address: AztecAddress) => ({
       methods: new Proxy(
         {},
         {
           get:
             (_target, method: string) =>
             (...args: any[]) => {
-              const call = { method, args }
+              const call = { method, args, broadcaster: address.toString() }
               f.calls.push(call)
               return call
             },
@@ -58,7 +66,7 @@ const tuple = {
   token: `0x${"33".repeat(20)}`,
   plainWithdrawalExecutor: `0x${"44".repeat(20)}`,
   l2Broadcaster: AztecAddress.fromBigIntUnsafe(11n).toString(),
-  swapEscrowFactory: `0x${"55".repeat(20)}`,
+  swapEscrowFactoryV2: `0x${"55".repeat(20)}`,
 } as OxideEnvTuple
 const portal = { fpcFundingCut: 7n, frozen: false }
 const options: WithdrawalOptions = { tuple, portal }
@@ -68,6 +76,8 @@ const recovery = { account: `0x${"88".repeat(20)}` as const, salt: new Fr(42n) }
 const escrowArgs: SwapEscrowArgs = {
   route: SwapRoute.USDT,
   recipient: `0x${"77".repeat(20)}`,
+  daiForGas: 0n,
+  minEthForGas: 0n,
   recoveryCommitment: deriveRecoveryCommitment(
     recovery.salt,
     EthAddress.fromString(recovery.account),
@@ -75,10 +85,14 @@ const escrowArgs: SwapEscrowArgs = {
   relayerTip: 1n,
   nonce: `0x${"99".repeat(32)}`,
 }
-const swap = { escrowArgs, recovery }
 const escrow = EthAddress.fromString(
-  predictSwapEscrowAddressLocally(tuple.swapEscrowFactory as `0x${string}`, escrowArgs),
+  predictSwapEscrowAddressLocally(tuple.swapEscrowFactoryV2 as `0x${string}`, escrowArgs),
 )
+const swap = {
+  escrowArgs,
+  recovery,
+  l1: { readContract: vi.fn(async () => escrow.toString()) } as never,
+}
 const burn = { from, recipient, amount: 1_000n * 10n ** 18n }
 
 const hex = (buf: Buffer) => `0x${buf.toString("hex")}`
@@ -137,10 +151,12 @@ describe("planPayout", () => {
       swap: {
         output: "USDT",
         recipient: getAddress(escrowArgs.recipient),
-        factory: getAddress(tuple.swapEscrowFactory!),
+        factory: getAddress(tuple.swapEscrowFactoryV2!),
         recoveryCommitment: escrowArgs.recoveryCommitment,
         relayerTip: escrowArgs.relayerTip,
         nonce: escrowArgs.nonce,
+        daiForGas: 0n,
+        minEthForGas: 0n,
       },
     })
 
@@ -148,7 +164,7 @@ describe("planPayout", () => {
     const pair = planned.broadcasts[0] as unknown as { method: string; args: any[] }
     expect(pair.method).toBe("broadcast_l1_operation_pair_2k")
     const [targets, payoutTokens, bytesLens, fields, conditions] = pair.args
-    expect(targets.map(String)).toEqual([tuple.portal, tuple.swapEscrowFactory])
+    expect(targets.map(String)).toEqual([tuple.portal, tuple.swapEscrowFactoryV2])
     expect(payoutTokens.map(String)).toEqual([tuple.token, tuple.token])
     expect(hex(unpackFieldsToBytes(bytesLens[0], fields[0]))).toBe(encodeWithdrawalBroadcast())
     expect(hex(unpackFieldsToBytes(bytesLens[1], fields[1]))).toBe(
@@ -160,6 +176,131 @@ describe("planPayout", () => {
     ])
     expect(conditions[1].token.toString()).toBe(tuple.token)
     expect(conditions[1].recipient.equals(escrow)).toBe(true)
+  })
+
+  it("pays an escrow oxide-client built and pairs the release with the escrow's own run", async () => {
+    const factory = EthAddress.fromString(`0x${"aa".repeat(20)}`)
+    const userPayload = encodePlainWithdrawalPayload({ recipient: escrow, relayerTip: 3n })
+    const run = {
+      target: factory,
+      payoutToken: EthAddress.fromString(tuple.token),
+      calldata: Buffer.from("c0ffee", "hex"),
+      condition: L1OperationCondition.balance(EthAddress.fromString(tuple.token), escrow),
+    }
+    const escrowRun = { escrow, userPayload, l1Operation: run }
+
+    const planned = await planPayout(
+      wallet,
+      service,
+      token,
+      { ...burn, recipient: escrow },
+      { ...options, escrow: escrowRun },
+    )
+
+    expect(planned.userPayload).toBe(userPayload)
+    expect(decodeWithdrawMeta(planned.meta)).toEqual({ recipient: getAddress(escrow.toString()) })
+    const pair = planned.broadcasts[0] as unknown as { method: string; args: any[] }
+    expect(pair.method).toBe("broadcast_l1_operation_pair_2k")
+    const [targets, , bytesLens, fields, conditions] = pair.args
+    expect(targets.map(String)).toEqual([tuple.portal, factory.toString()])
+    expect(hex(unpackFieldsToBytes(bytesLens[1], fields[1]))).toBe("0xc0ffee")
+    expect(conditions[1].kind).toBe(L1OperationConditionKind.Balance)
+
+    await expect(
+      planPayout(wallet, service, token, burn, { ...options, escrow: escrowRun }),
+    ).rejects.toThrow("escrow differs from the withdrawal destination")
+  })
+
+  it("keeps a Sky escrow's args in the burn's meta, and refuses args for another escrow", async () => {
+    const sky = {
+      route: SkyRoute.Stake,
+      factory: getAddress(`0x${"fb".repeat(20)}`),
+      recipientCommitment: `0x${"2c".repeat(32)}` as const,
+      recoveryCommitment: escrowArgs.recoveryCommitment as `0x${string}`,
+      relayerTip: 2n,
+      nonce: `0x${"88".repeat(32)}` as const,
+    }
+    const skyEscrow = EthAddress.fromString(predictSkyEscrowAddressLocally(sky.factory, sky))
+    const run = {
+      target: EthAddress.fromString(sky.factory),
+      payoutToken: EthAddress.fromString(tuple.token),
+      calldata: Buffer.from("c0ffee", "hex"),
+      condition: L1OperationCondition.balance(EthAddress.fromString(tuple.token), skyEscrow),
+    }
+    const escrowRun = { escrow: skyEscrow, userPayload: Buffer.alloc(0), l1Operation: run, sky }
+
+    const planned = await planPayout(
+      wallet,
+      service,
+      token,
+      { ...burn, recipient: skyEscrow },
+      { ...options, escrow: escrowRun },
+    )
+    expect(decodeWithdrawMeta(planned.meta)).toEqual({
+      recipient: getAddress(skyEscrow.toString()),
+      sky,
+    })
+
+    await expect(
+      planPayout(
+        wallet,
+        service,
+        token,
+        { ...burn, recipient: skyEscrow },
+        { ...options, escrow: { ...escrowRun, sky: { ...sky, relayerTip: 3n } } },
+      ),
+    ).rejects.toThrow("Sky escrow args do not derive the withdrawal destination")
+  })
+
+  it("broadcasts an escrow's run through the broadcaster it names", async () => {
+    const factory = EthAddress.fromString(`0x${"aa".repeat(20)}`)
+    const run = {
+      target: factory,
+      payoutToken: EthAddress.fromString(tuple.token),
+      calldata: Buffer.from("c0ffee", "hex"),
+      condition: L1OperationCondition.balance(EthAddress.fromString(tuple.token), escrow),
+    }
+    const runner = AztecAddress.fromBigIntUnsafe(12n).toString()
+    const escrowRun = {
+      escrow,
+      userPayload: Buffer.alloc(0),
+      l1Operation: run,
+      broadcaster: runner,
+    }
+
+    const planned = await planPayout(
+      wallet,
+      service,
+      token,
+      { ...burn, recipient: escrow },
+      { ...options, escrow: escrowRun },
+    )
+
+    const [release, escrowCall] = planned.broadcasts as unknown as Call[]
+    expect(planned.broadcasts).toHaveLength(2)
+    expect(release).toMatchObject({
+      method: "broadcast_l1_operation_2k",
+      broadcaster: tuple.l2Broadcaster,
+    })
+    expect(release!.args[0].toString()).toBe(tuple.portal)
+    expect(escrowCall).toMatchObject({ method: "broadcast_l1_operation_2k", broadcaster: runner })
+    expect(escrowCall!.args[0].toString()).toBe(factory.toString())
+    expect(f.register.mock.calls.map((call) => call[2].toString())).toEqual([
+      tuple.l2Broadcaster,
+      runner,
+    ])
+
+    const sameDeployment = await planPayout(
+      wallet,
+      service,
+      token,
+      { ...burn, recipient: escrow },
+      { ...options, escrow: { ...escrowRun, broadcaster: tuple.l2Broadcaster } },
+    )
+    expect(sameDeployment.broadcasts).toHaveLength(1)
+    expect((sameDeployment.broadcasts[0] as unknown as Call).method).toBe(
+      "broadcast_l1_operation_pair_2k",
+    )
   })
 
   it("reads the contract service's current deployment when no tuple is given", async () => {
@@ -212,7 +353,7 @@ describe("planPayout", () => {
           service,
           token,
           { ...burn, recipient: escrow },
-          { ...options, swap: { escrowArgs, recovery: other } },
+          { ...options, swap: { ...swap, recovery: other } },
         ),
       ).rejects.toThrow("swap escrow differs from the withdrawal destination")
     }
@@ -222,9 +363,47 @@ describe("planPayout", () => {
         service,
         token,
         { ...burn, recipient: escrow },
-        { ...options, swap, tuple: { ...tuple, swapEscrowFactory: undefined } },
+        { ...options, swap, tuple: { ...tuple, swapEscrowFactoryV2: undefined } },
       ),
     ).rejects.toThrow("no swap factory")
+  })
+
+  it("asks the factory to confirm the escrow before the burn is planned", async () => {
+    await planPayout(wallet, service, token, { ...burn, recipient: escrow }, { ...options, swap })
+
+    expect((swap.l1 as { readContract: unknown }).readContract).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: tuple.swapEscrowFactoryV2,
+        functionName: "predictEscrowAddress",
+        args: [escrowArgs],
+      }),
+    )
+  })
+
+  it("refuses a factory that cannot deploy the escrow, as one with the legacy layout", async () => {
+    const reverts = {
+      readContract: vi.fn(async () => Promise.reject(new Error("execution reverted"))),
+    }
+    const other = { readContract: vi.fn(async () => `0x${"ab".repeat(20)}`) }
+    for (const [l1, error] of [
+      [reverts, /did not confirm/],
+      [other, /predicts/],
+    ] as const) {
+      f.calls.length = 0
+      await expect(
+        planPayout(
+          wallet,
+          service,
+          token,
+          { ...burn, recipient: escrow },
+          {
+            ...options,
+            swap: { ...swap, l1: l1 as never },
+          },
+        ),
+      ).rejects.toThrow(error)
+      expect(f.calls.map((c) => c.method)).not.toContain("broadcast_l1_operation_pair_2k")
+    }
   })
 })
 

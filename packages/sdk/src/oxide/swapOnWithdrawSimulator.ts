@@ -4,7 +4,8 @@
  * escrow funded by a state override.
  *
  * The same simulation runs the swap, so the payout estimate is the executed route (3pool for the stables,
- * 3pool + Universal Router for ETH) on the live pools, exact to the wei at simulation time.
+ * 3pool + Universal Router for ETH, the DAI itself on the DAI route) and any gas swap on the live pools, exact to
+ * the wei at simulation time.
  */
 import {
   SwapEscrowAbi,
@@ -30,7 +31,7 @@ import {
   type StateOverride,
 } from "viem"
 import { L1_OPERATION_TIP_MARGIN_BPS } from "@obsidion/core/constants"
-import type { SwapOnWithdrawOutput } from "@obsidion/core/types"
+import type { SwapEscrowOutput } from "@obsidion/core/types"
 import { MULTICALL3_ADDRESS } from "../services/sipaClaim.js"
 import { swapRouteForOutput, type SwapDeductions } from "./swapOnWithdraw.js"
 
@@ -97,6 +98,8 @@ export interface SwapSimulation extends RelayerTipEstimate {
   amountOut: bigint
   /** Decimal exponent of `amountOut`. Read off the output token; ETH is 18. */
   decimals: number
+  /** ETH the gas swap pays the recipient, wei. 0 without `daiForGas`. */
+  gasOut: bigint
 }
 
 /** The tip is known but the amount leaves the escrow nothing to swap after paying it. */
@@ -145,30 +148,29 @@ export async function findBalanceOfSlot(
 }
 
 export interface SwapSimulationArgs {
-  output: SwapOnWithdrawOutput
+  output: SwapEscrowOutput
   /** The gross burn amount, raw token units. */
   amount: bigint
   /** What the portal takes out of the burn before the escrow sees it. */
   deductions: Omit<SwapDeductions, "relayerTip">
   /** Final L1 recipient of the swap output. The payout is measured on it. */
   recipient: Address
+  /** DAI the escrow swaps to ETH for the recipient before the route. */
+  daiForGas?: bigint
 }
 
 export class SwapOnWithdrawSimulator {
   private deployment?: Promise<{
     implementation: Address
     ethUsdFeed: Address
-    outputToken: Record<
-      Exclude<SwapOnWithdrawOutput, "ETH">,
-      { address: Address; decimals: number }
-    >
+    outputToken: Record<Exclude<SwapEscrowOutput, "ETH">, { address: Address; decimals: number }>
   }>
   private balanceOfSlot?: Promise<bigint>
 
   constructor(
     private readonly client: PublicClient,
     private readonly tuple: {
-      swapEscrowFactory: Address
+      swapEscrowFactoryV2: Address
       operationExecutor: Address
       token: Address
     },
@@ -176,9 +178,14 @@ export class SwapOnWithdrawSimulator {
 
   async simulate(args: SwapSimulationArgs): Promise<SwapSimulation> {
     const { withdrawalRelayerTip, proverTip, fpcFundingCut } = args.deductions
+    const daiForGas = args.daiForGas ?? 0n
     const escrowFunding = args.amount - withdrawalRelayerTip - proverTip - fpcFundingCut
-    if (escrowFunding <= 0n) {
-      throw new RangeError("swap-on-withdraw: the amount does not cover the withdrawal fees")
+    if (escrowFunding <= daiForGas) {
+      throw new RangeError(
+        `swap-on-withdraw: the amount does not cover the withdrawal fees${
+          daiForGas > 0n ? " and the gas swap" : ""
+        }`,
+      )
     }
 
     const [deployment, balanceOfSlot] = await Promise.all([
@@ -192,7 +199,7 @@ export class SwapOnWithdrawSimulator {
       ethUsdFeed: deployment.ethUsdFeed,
       payout: SIMULATION_TIP,
       operation: {
-        target: this.tuple.swapEscrowFactory,
+        target: this.tuple.swapEscrowFactoryV2,
         calldata: encodeSwapEscrowDeploy(simulatedArgs),
         payoutToken: this.tuple.token,
       },
@@ -207,23 +214,27 @@ export class SwapOnWithdrawSimulator {
       baseFee: quote.baseFeePerGas,
       priorityFee: quote.maxPriorityFeePerGas,
     }
-    if (escrowFunding <= tip.relayerTip) throw new SwapTipExceedsInputError(tip, escrowFunding)
+    if (escrowFunding - tip.relayerTip <= daiForGas) {
+      throw new SwapTipExceedsInputError(tip, escrowFunding)
+    }
 
     const finalArgs = this.escrowArgs(args, tip.relayerTip)
-    const amountOut = await this.payout(
+    const { amountOut, gasOut } = await this.payout(
       args,
       finalArgs,
       this.fundingOverride(finalArgs, escrowFunding, balanceOfSlot),
       deployment.outputToken,
     )
     const decimals = args.output === "ETH" ? 18 : deployment.outputToken[args.output].decimals
-    return { ...tip, amountOut, decimals }
+    return { ...tip, amountOut, decimals, gasOut }
   }
 
   private escrowArgs(args: SwapSimulationArgs, relayerTip: bigint): SwapEscrowArgs {
     return {
       route: swapRouteForOutput(args.output),
       recipient: args.recipient,
+      daiForGas: args.daiForGas ?? 0n,
+      minEthForGas: 0n,
       recoveryCommitment: SIMULATION_RECOVERY_COMMITMENT,
       relayerTip,
       nonce: SIMULATION_NONCE,
@@ -236,7 +247,7 @@ export class SwapOnWithdrawSimulator {
     escrowFunding: bigint,
     balanceOfSlot: bigint,
   ): StateOverride {
-    const escrow = predictSwapEscrowAddressLocally(this.tuple.swapEscrowFactory, escrowArgs)
+    const escrow = predictSwapEscrowAddressLocally(this.tuple.swapEscrowFactoryV2, escrowArgs)
     return [
       {
         address: this.tuple.token,
@@ -251,26 +262,27 @@ export class SwapOnWithdrawSimulator {
   }
 
   /**
-   * What the executed swap pays the recipient: their balance read before and after `deployAndExecute` in one
-   * Multicall3 `aggregate3`, all under the funding override.
+   * What the executed swap pays the recipient, on the route and in gas: their balances read before and after
+   * `deployAndExecute` in one Multicall3 `aggregate3`, all under the funding override.
    */
   private async payout(
     args: SwapSimulationArgs,
     escrowArgs: SwapEscrowArgs,
     stateOverride: StateOverride,
     outputToken: Awaited<NonNullable<SwapOnWithdrawSimulator["deployment"]>>["outputToken"],
-  ): Promise<bigint> {
-    const balanceCall: Multicall3Call =
+  ): Promise<{ amountOut: bigint; gasOut: bigint }> {
+    const ethBalance: Multicall3Call = {
+      target: MULTICALL3_ADDRESS,
+      allowFailure: false,
+      callData: encodeFunctionData({
+        abi: MULTICALL3_ETH_BALANCE_ABI,
+        functionName: "getEthBalance",
+        args: [args.recipient],
+      }),
+    }
+    const routeBalance: Multicall3Call =
       args.output === "ETH"
-        ? {
-            target: MULTICALL3_ADDRESS,
-            allowFailure: false,
-            callData: encodeFunctionData({
-              abi: MULTICALL3_ETH_BALANCE_ABI,
-              functionName: "getEthBalance",
-              args: [args.recipient],
-            }),
-          }
+        ? ethBalance
         : {
             target: outputToken[args.output].address,
             allowFailure: false,
@@ -280,14 +292,15 @@ export class SwapOnWithdrawSimulator {
               args: [args.recipient],
             }),
           }
+    const balances = escrowArgs.daiForGas > 0n ? [routeBalance, ethBalance] : [routeBalance]
     const calls: Multicall3Call[] = [
-      balanceCall,
+      ...balances,
       {
-        target: this.tuple.swapEscrowFactory,
+        target: this.tuple.swapEscrowFactoryV2,
         allowFailure: false,
         callData: encodeSwapEscrowDeploy(escrowArgs),
       },
-      balanceCall,
+      ...balances,
     ]
     const { data } = await this.client.call({
       to: MULTICALL3_ADDRESS,
@@ -299,13 +312,14 @@ export class SwapOnWithdrawSimulator {
     const results = decodeFunctionResult({ abi: multicall3Abi, functionName: "aggregate3", data })
     const balance = (index: number): bigint =>
       decodeAbiParameters([{ type: "uint256" }], results[index]!.returnData)[0]
-    return balance(2) - balance(0)
+    const delta = (index: number) => balance(balances.length + 1 + index) - balance(index)
+    return { amountOut: delta(0), gasOut: balances.length > 1 ? delta(1) : 0n }
   }
 
   private readDeployment() {
     this.deployment ??= (async () => {
       const implementation = await this.client.readContract({
-        address: this.tuple.swapEscrowFactory,
+        address: this.tuple.swapEscrowFactoryV2,
         abi: SwapEscrowFactoryAbi,
         functionName: "IMPLEMENTATION",
       })
@@ -318,9 +332,10 @@ export class SwapOnWithdrawSimulator {
       ])
       const readDecimals = (address: Address) =>
         this.client.readContract({ address, abi: erc20Abi, functionName: "decimals" })
-      const [usdcDecimals, usdtDecimals] = await Promise.all([
+      const [usdcDecimals, usdtDecimals, daiDecimals] = await Promise.all([
         readDecimals(usdc),
         readDecimals(usdt),
+        readDecimals(this.tuple.token),
       ])
       return {
         implementation,
@@ -328,6 +343,7 @@ export class SwapOnWithdrawSimulator {
         outputToken: {
           USDC: { address: usdc, decimals: usdcDecimals },
           USDT: { address: usdt, decimals: usdtDecimals },
+          DAI: { address: this.tuple.token, decimals: daiDecimals },
         },
       }
     })()

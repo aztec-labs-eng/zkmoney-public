@@ -2,7 +2,7 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { PHONE_STEPS_COPY } from "@obsidion/passkey-web"
+import { PHONE_HELP_COPY, PHONE_STEPS_COPY } from "@obsidion/passkey-web"
 import type { GateState } from "../src/features/identity/ceremonyGate"
 
 declare global {
@@ -281,6 +281,98 @@ describe("GateStep", () => {
     const button = byTestId("phone-steps-continue")!
     expect(warn.compareDocumentPosition(split) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(split.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+})
+
+describe("the creation sheet's lines before the prompt", () => {
+  const MAC =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+  const WINDOWS =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+  const LINUX =
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+  const THIS_COMPUTER = "phone-steps-this-computer"
+  const EXTENSION = "phone-steps-extension"
+  const WINDOWS_UNDER_BUTTON = "phone-steps-windows-under-button"
+  const LINES = [THIS_COMPUTER, EXTENSION, WINDOWS_UNDER_BUTTON]
+  const tip = () => byTestId(THIS_COMPUTER)?.querySelector('[role="tooltip"]')?.textContent ?? ""
+  const native = () => Promise.resolve.bind(Promise, null)
+
+  /** The sheet on `userAgent`: the browser's own passkey functions, or a manager's `create`. */
+  async function open(userAgent: string, extension: boolean) {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent)
+    Object.defineProperty(navigator, "credentials", {
+      value: { get: native(), create: extension ? async () => null : native() },
+      configurable: true,
+    })
+    await act(async () => root.render(<GateStep state={holding("phone-steps").state} />))
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    delete (navigator as { credentials?: unknown }).credentials
+  })
+
+  it("shows none of them on a Mac whose browser answers passkeys itself", async () => {
+    await open(MAC, false)
+    expect(byTestId("phone-steps")).not.toBeNull()
+    for (const id of LINES) expect(byTestId(id)).toBeNull()
+  })
+
+  it("warns a browser with a password manager's extension, in a row whose tooltip names it", async () => {
+    await open(MAC, true)
+    const row = byTestId(THIS_COMPUTER)!
+    expect(row.closest(".ww-phone-steps__why")).not.toBeNull()
+    expect(row.querySelector("button")!.textContent).toBe(PHONE_STEPS_COPY.thisComputer.label)
+    expect(row.querySelector("button")!.className).toContain("--gold")
+    for (const sentence of PHONE_STEPS_COPY.thisComputer.extension)
+      expect(tip()).toContain(sentence)
+    expect(tip()).not.toContain("Windows Hello")
+    expect(byTestId(WINDOWS_UNDER_BUTTON)).toBeNull()
+  })
+
+  it("tells Windows which device to choose, in the row's tooltip", async () => {
+    await open(WINDOWS, false)
+    expect(tip()).toContain(PHONE_HELP_COPY.windows)
+    expect(tip()).not.toContain("Bitwarden")
+  })
+
+  it("tells Windows which device to choose, under the QR button", async () => {
+    await open(WINDOWS, false)
+    const under = byTestId(WINDOWS_UNDER_BUTTON)!
+    expect(under.textContent).toBe(PHONE_HELP_COPY.windows)
+    expect(under.closest(".ww-phone-steps__why")).toBeNull()
+    expect(under.tagName).toBe("P")
+    expect(under.querySelector("button, a, [tabindex]")).toBeNull()
+    const shot = container.querySelector(".ww-phone-steps__shot")!
+    expect(shot.compareDocumentPosition(under) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it("keeps the row and the Windows line off a Linux browser that answers itself", async () => {
+    await open(LINUX, false)
+    for (const id of LINES) expect(byTestId(id)).toBeNull()
+  })
+
+  it("names the extension before Windows Hello in one tooltip, the card's third", async () => {
+    await open(WINDOWS, true)
+    const text = tip()
+    expect(text.indexOf("Bitwarden")).toBeGreaterThan(-1)
+    expect(text.indexOf(PHONE_HELP_COPY.windows)).toBeGreaterThan(text.indexOf("Bitwarden"))
+    expect(container.querySelectorAll('[role="tooltip"]')).toHaveLength(3)
+  })
+
+  it("says it in one line on the security-key variant, which a manager can answer too", async () => {
+    await open(WINDOWS, true)
+    await click("phone-steps-security-key")
+    expect(byTestId(EXTENSION)!.textContent).toBe(PHONE_STEPS_COPY.extension)
+    expect(byTestId(THIS_COMPUTER)).toBeNull()
+    expect(byTestId(WINDOWS_UNDER_BUTTON)).toBeNull()
+  })
+
+  it("shows none of them on the security-key variant of a browser that answers itself", async () => {
+    await open(WINDOWS, false)
+    await click("phone-steps-security-key")
+    for (const id of LINES) expect(byTestId(id)).toBeNull()
   })
 })
 

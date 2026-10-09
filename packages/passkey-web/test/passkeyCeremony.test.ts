@@ -82,21 +82,43 @@ describe("passkeysSupported", () => {
 })
 
 describe("extensionAnswersPasskeys", () => {
-  const install = (get: unknown) =>
-    Object.defineProperty(navigator, "credentials", { value: { get }, configurable: true })
+  const native = () => Promise.resolve.bind(Promise)
+  const script = () => async () => null
+  const install = (value: unknown) =>
+    Object.defineProperty(navigator, "credentials", { value, configurable: true })
 
-  it("reads a native get as the browser's own prompt", () => {
-    install(Promise.resolve.bind(Promise))
+  it("reads a native get and create as the browser's own prompt", () => {
+    install({ get: native(), create: native() })
     expect(extensionAnswersPasskeys()).toBe(false)
+    expect(extensionAnswersPasskeys("create")).toBe(false)
   })
 
-  it("reads a script get as an extension's", () => {
-    install(async () => null)
+  it("reads a script get as an extension's, for a sign-in only", () => {
+    install({ get: script(), create: native() })
     expect(extensionAnswersPasskeys()).toBe(true)
+    expect(extensionAnswersPasskeys("create")).toBe(false)
+  })
+
+  it("reads a script create as an extension's, for a creation only", () => {
+    install({ get: native(), create: script() })
+    expect(extensionAnswersPasskeys("create")).toBe(true)
+    expect(extensionAnswersPasskeys()).toBe(false)
   })
 
   it("reads no WebAuthn as no extension", () => {
     install(undefined)
+    expect(extensionAnswersPasskeys()).toBe(false)
+    install({})
+    expect(extensionAnswersPasskeys()).toBe(false)
+    expect(extensionAnswersPasskeys("create")).toBe(false)
+  })
+
+  it("reads a lookup that throws as no extension", () => {
+    install({
+      get get(): never {
+        throw new Error("blocked")
+      },
+    })
     expect(extensionAnswersPasskeys()).toBe(false)
   })
 })
@@ -611,6 +633,28 @@ describe("BrowserPasskeyCeremony create", () => {
     await stubCreate()
     const sent = create.mock.calls.at(-1)![0].publicKey
     expect(sent.pubKeyCredParams).toEqual([{ type: "public-key", alg: -7 }])
+  })
+
+  it("waits as long as the request says, and the default when it names no timeout", async () => {
+    await stubCreate()
+    expect(create.mock.calls.at(-1)![0].publicKey.timeout).toBe(timing.createTimeoutMs)
+    await stubCreate({}, { timeoutMs: 300_000 })
+    expect(create.mock.calls.at(-1)![0].publicKey.timeout).toBe(300_000)
+  })
+
+  it("the caller's signal closes an issued creation sheet", async () => {
+    const controller = new AbortController()
+    create.mockImplementation(wedged())
+    const creating = new BrowserPasskeyCeremony(timing).create({
+      rpId: "localhost",
+      rpName: "zk.money",
+      userName: "@alice",
+      prfFirstSalt: new Uint8Array(32),
+      signal: controller.signal,
+    })
+    await new Promise((r) => setTimeout(r, 5))
+    controller.abort(new DOMException("the user cancelled", "AbortError"))
+    await expect(creating).rejects.toThrow(/the user cancelled/)
   })
 
   it("takes the key from the SPKI, and the browser's algorithm report does not get a veto", async () => {

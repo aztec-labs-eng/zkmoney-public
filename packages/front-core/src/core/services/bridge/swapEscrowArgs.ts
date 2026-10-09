@@ -1,5 +1,5 @@
 import type { Address } from "viem"
-import { swapRouteForOutput, type SwapEscrowArgs } from "@obsidion/sdk"
+import { swapRouteForOutput, type SwapEscrowCommitment } from "@obsidion/sdk"
 import type { WithdrawalRecord } from "./types"
 
 type SwapEscrowFields = Pick<
@@ -8,21 +8,20 @@ type SwapEscrowFields = Pick<
   | "swapOutput"
   | "swapEscrow"
   | "swapEscrowFactory"
+  | "swapEscrowLayout"
   | "swapNonce"
   | "swapRecoveryCommitment"
   | "swapRelayerTip"
+  | "swapDaiForGas"
+  | "swapMinEthForGas"
 >
 
 /** Everything a self-run swap or a recovery targets: the factory, the escrow, and the args its address commits to. */
-export interface SwapEscrowTarget {
-  factory: Address
-  escrow: Address
-  args: SwapEscrowArgs
-}
+export type SwapEscrowTarget = { factory: Address; escrow: Address } & SwapEscrowCommitment
 
 /**
- * Rebuild the escrow args a swap record's burn committed to. Undefined for a direct withdrawal and
- * for a swap record missing any committed value.
+ * Rebuild the escrow args a swap record's burn committed to, in its factory's layout. Undefined for
+ * a direct withdrawal and for a swap record missing any committed value.
  */
 export function swapEscrowTarget(record: SwapEscrowFields): SwapEscrowTarget | undefined {
   if (
@@ -35,15 +34,22 @@ export function swapEscrowTarget(record: SwapEscrowFields): SwapEscrowTarget | u
   ) {
     return undefined
   }
+  const args = {
+    route: swapRouteForOutput(record.swapOutput),
+    recipient: record.recipient,
+    recoveryCommitment: record.swapRecoveryCommitment,
+    relayerTip: BigInt(record.swapRelayerTip),
+    nonce: record.swapNonce,
+  }
+  const escrow = { factory: record.swapEscrowFactory, escrow: record.swapEscrow }
+  if (record.swapEscrowLayout !== "v2") return { ...escrow, layout: "legacy", args }
   return {
-    factory: record.swapEscrowFactory,
-    escrow: record.swapEscrow,
+    ...escrow,
+    layout: "v2",
     args: {
-      route: swapRouteForOutput(record.swapOutput),
-      recipient: record.recipient,
-      recoveryCommitment: record.swapRecoveryCommitment,
-      relayerTip: BigInt(record.swapRelayerTip),
-      nonce: record.swapNonce,
+      ...args,
+      daiForGas: BigInt(record.swapDaiForGas ?? 0),
+      minEthForGas: BigInt(record.swapMinEthForGas ?? 0),
     },
   }
 }

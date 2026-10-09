@@ -573,6 +573,31 @@ describe("DepositScreen with the address sheet", () => {
     expect(button("Open Activity")).toBeUndefined()
   })
 
+  it("on a phone the card is the fact card: Network, the address on one row shortened in the middle, Status", async () => {
+    layout.phone = true
+    let land: (next: {
+      address: string
+      name: string
+      publish?: () => Promise<void>
+    }) => void = () => {}
+    depositAddress.mockReturnValueOnce(new Promise((resolve) => (land = resolve)))
+    await render()
+    await openCoin("USDC")
+    await act(async () =>
+      land({ address: ADDRESS, name: "alice.oxide.eth", publish: () => new Promise(() => {}) }),
+    )
+    const address = byTestId("deposit-address")!
+    expect(address.title).toBe(ADDRESS)
+    expect(address.textContent).toBe("0x7b3E…d9F0")
+    expect([...address.querySelectorAll("b")].map((b) => b.textContent)).toEqual(["0x7b3E", "d9F0"])
+    expect(address.querySelector("em")).toBeNull()
+    const rows = [...sheet()!.querySelectorAll(".ww-sheet__fact > span:first-child")].map(
+      (n) => n.textContent,
+    )
+    expect(rows).toEqual(["Network", "Address", "Status"])
+    expect(sheet()!.querySelector(".ww-deposit-sheet__pill")).toBeNull()
+  })
+
   it("renders no QR code on a phone", async () => {
     layout.phone = true
     await render()

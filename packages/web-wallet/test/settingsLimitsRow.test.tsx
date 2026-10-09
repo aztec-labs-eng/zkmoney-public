@@ -1,8 +1,10 @@
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
+import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@obsidion/web-ds", () => ({
+  ComingSoonPill: () => null,
   GradientInitialAvatar: () => null,
   GradientText: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
   GradientToggle: () => null,
@@ -34,6 +36,9 @@ vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) 
 vi.mock("../src/features/identity/walletIdentity", () => ({ loadWalletIdentity: () => undefined }))
 vi.mock("../src/lib/analytics", () => ({ appVersion: "0.0.0" }))
 vi.mock("../src/ui/prefs", () => ({ useHideBalances: () => [false, vi.fn()] }))
+vi.mock("../src/features/requests/useNonContactRequests", () => ({
+  useNonContactRequests: () => ({ requests: [], allowed: true, setAllowed: vi.fn() }),
+}))
 vi.mock("../src/ui/FeedbackModals", () => ({
   BugReportModal: () => null,
   FeedbackModal: () => null,
@@ -46,6 +51,7 @@ vi.mock("../src/features/allowance/useSponsoredAllowance", () => ({
   useSponsoredAllowance: () => ({ snapshot: allowance.snapshot, refresh: allowance.refresh }),
 }))
 vi.mock("../src/ui/ContractAddressesModal", () => ({ ContractAddressesModal: () => null }))
+vi.mock("../src/dev/ConfigProfileModal", () => ({ ConfigProfileModal: () => null }))
 vi.mock("../src/ui/EndpointsModal", () => ({
   EndpointsModal: () => null,
   customEndpointsLabel: () => undefined,
@@ -84,7 +90,13 @@ beforeEach(async () => {
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
-  await act(async () => root.render(<SettingsScreen />))
+  await act(async () =>
+    root.render(
+      <MemoryRouter>
+        <SettingsScreen />
+      </MemoryRouter>,
+    ),
+  )
 })
 
 afterEach(async () => {
@@ -125,7 +137,13 @@ describe("SettingsScreen Sponsored transactions row", () => {
   const value = () => container.querySelector('[data-row="Sponsored transactions"]')!.textContent
   const rerender = (snapshot: unknown) => {
     allowance.snapshot = snapshot
-    return act(async () => root.render(<SettingsScreen />))
+    return act(async () =>
+      root.render(
+        <MemoryRouter>
+          <SettingsScreen />
+        </MemoryRouter>,
+      ),
+    )
   }
 
   it("reads the allowance again on each visit", () => {

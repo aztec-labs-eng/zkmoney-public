@@ -19,7 +19,7 @@ export type FreshAddressVerdict =
   | { kind: "checking" }
   | { kind: "fresh" } // zero nonce, zero balance, no code, no local history
   | { kind: "history" } // nonce or balance on L1
-  | { kind: "contract" } // code present: the ETH leg pays with a plain call, so a contract that rejects ETH strands the swap
+  | { kind: "contract" } // code present: the escrow pays ETH with a plain call, so a contract that rejects ETH strands the swap
   | { kind: "withdrew-before" } // a withdrawal record already names it, or a saved-recipient L1 contact
   | { kind: "linked-deposit" } // a deposit-attested L1 contact: this address funded the account
   | { kind: "unknown" } // a read did not answer
@@ -49,7 +49,7 @@ export const FRESH_ADDRESS_VERDICT_COPY: Record<
   "contract": {
     title: "This address is a contract",
     body:
-      "The ETH leg pays it with a plain transfer. A contract that rejects ETH would leave the " +
+      "The ETH for gas arrives as a plain transfer. A contract that rejects ETH would leave the " +
       "funds stuck at the swap escrow.",
     tone: "error",
   },

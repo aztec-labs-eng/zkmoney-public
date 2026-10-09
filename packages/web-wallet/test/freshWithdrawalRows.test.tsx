@@ -1,7 +1,7 @@
 /**
- * A fresh-address withdrawal is two burns sharing a group id: one feed row, one detail sheet, and
- * an offer to send the funds again once the gas leg is on chain without a mined funds leg. A bell
- * alert opens the same sheets, and its failure text shows only while the withdrawal is failed.
+ * A legacy fresh-address withdrawal is two burns sharing a group id: one feed row and one detail
+ * sheet, which says the funds stayed in the balance when only the gas leg went out. A bell alert
+ * opens the same sheets, and its failure text shows only while the withdrawal is failed.
  */
 import { act, type ComponentProps } from "react"
 import { createRoot, type Root } from "react-dom/client"
@@ -47,8 +47,6 @@ vi.mock("@obsidion/web-ds", async (importOriginal) => ({
   ),
   TopNavIconButton: () => null,
 }))
-const freshModal = vi.hoisted(() => vi.fn((_props: { resume?: object }) => null))
-vi.mock("../src/features/withdraw/WithdrawFreshModal", () => ({ WithdrawFreshModal: freshModal }))
 vi.mock("../src/features/paylink/usePaylinkDeps", () => ({ usePaylinkDeps: () => undefined }))
 vi.mock("../src/features/paylink/chainTime", () => ({ usePolledChainSeconds: () => undefined }))
 vi.mock("../src/features/onboarding/useRegistrationDepositEntry", () => ({
@@ -61,6 +59,7 @@ vi.mock("../src/features/withdraw/withdrawFunnel", () => ({ reportWithdrawFunnel
 const { useActivityEntries } = await import("../src/ui/screens/useActivityEntries")
 const { notificationRoute } = await import("../src/ui/NotificationsPanel")
 const { getWithdrawalStore } = await import("../src/features/withdraw/withdrawGateway")
+const { FUNDS_UNSENT_NOTE } = await import("../src/ui/screens/FreshWithdrawalDetailModal")
 
 const RECIPIENT = `0x${"aa".repeat(20)}` as const
 const GROUP = `0x${"c1".repeat(16)}` as Hex
@@ -169,13 +168,7 @@ describe("fresh withdrawal rows", () => {
     ],
     ["a paid pair", [paidGas, leg("funds", "done", { endTime: 4_000 })], "-$105.85", false, []],
     ["a lone submitting leg", [leg("gas", "submitting")], "-$5.35 | Pending", true, []],
-    [
-      "a paid gas leg with no funds leg",
-      [paidGas],
-      "-$5.35 | Funds not sent",
-      true,
-      ["Send remaining funds"],
-    ],
+    ["a paid gas leg with no funds leg", [paidGas], "-$5.35 | Funds not sent", false, []],
     [
       "a dropped funds burn, not sent again while it may still land",
       [paidGas, leg("funds", "failed", { droppedBurn: true })],
@@ -189,43 +182,32 @@ describe("fresh withdrawal rows", () => {
     expect(texts("[data-testid=row-action]")).toEqual(actions)
   })
 
-  it("offers the funds leg once the gas leg is mined, and again after the funds leg fails", async () => {
+  it("offers a delayed gas leg's re-check, and never sends the funds leg again", async () => {
     await render(leg("gas", "l2_mined", { phaseEnteredAt: 0 }))
-    // A delayed leg's re-check comes first, and the subline says so.
-    expect(texts("[data-testid=row-action]")).toEqual(["Check again", "Send remaining funds"])
+    // A delayed leg's re-check, and the subline says so.
+    expect(texts("[data-testid=row-action]")).toEqual(["Check again"])
     expect(attrs("[data-testid=row-text]", "data-time")).toEqual(["Taking longer than usual"])
     await upsert(leg("funds", "failed", { error: "Proving failed", ...unsent }))
     expect(texts("[data-testid=row-text]")).toEqual(["Ghost | Fresh address | -$105.85 | Failed"])
-    await click("[title='Send remaining funds']")
-    const sheet = freshModal.mock.lastCall![0]
-    expect(sheet).toMatchObject({ recipient: RECIPIENT, walletName: "Ghost" })
-    expect(sheet.resume).toEqual({ groupId: GROUP, fundsAsset: "USDC" })
+    expect(texts("[data-testid=row-action]")).not.toContain("Send remaining funds")
   })
 
-  it("sends a failed DAI funds leg again as DAI, and names no asset without a funds record", async () => {
-    await render(leg("gas", "l2_mined"))
-    await click("[title='Send remaining funds']")
-    expect(freshModal.mock.lastCall![0].resume).toEqual({ groupId: GROUP })
-    await upsert(leg("funds", "failed", { swapOutput: undefined, ...unsent }))
-    await click("[title='Send remaining funds']")
-    expect(freshModal.mock.lastCall![0].resume).toEqual({ groupId: GROUP, fundsAsset: "DAI" })
-  })
-
-  it("lists a row per leg in the group detail, and the rerun after a failed funds leg", async () => {
+  it("lists a row per leg in the group detail", async () => {
     await render(leg("gas", "done", quoted), leg("funds", "failed", { ...quoted, ...unsent }))
     await click("[data-testid=row-text]")
     expect(texts("[data-leg]")).toEqual(["Gas~0.5\u00a0ETH-$5.35 Paid", "Funds-$100.50 Failed"])
     expect(attrs("[data-leg] [data-tone]", "data-tone")).toEqual(["done", "failed"])
     expect(texts("dialog .ww-sheet__fact")[0]).toBe("Status Failed")
-    expect(texts("dialog button:not([data-leg])")).toEqual(["Send remaining funds"])
+    expect(texts("dialog button:not([data-leg])")).toEqual([])
   })
 
-  it("names the missing funds leg in the group detail while the gas row stays paid", async () => {
+  it("names the missing funds leg in the group detail, and says the funds stayed in the balance", async () => {
     await render(paidGas)
     await click("[data-testid=row-text]")
     expect(texts("dialog .ww-sheet__fact")[0]).toBe("Status Funds not sent")
     expect(texts("[data-leg]")).toEqual(["Gas-$5.35 Paid"])
-    expect(texts("dialog button:not([data-leg])")).toEqual(["Send remaining funds"])
+    expect(texts("dialog .ww-sheet__note")).toEqual([FUNDS_UNSENT_NOTE])
+    expect(texts("dialog button:not([data-leg])")).toEqual([])
   })
 
   it("opens a leg's own detail from its row, where its exit lives", async () => {

@@ -4,8 +4,9 @@ import { Logger, createLogger } from '@aztec/foundation/log';
 import { RunningPromise } from '@aztec/foundation/running-promise';
 
 import { OxidePortalContract, ProverClaim, toProverTipClaim } from '@oxide/l1-contracts/oxide_portal.js';
+import { SIMULATED_SENDER_BALANCE } from '@oxide/oxide-client/l1_operation_quote.js';
 
-import { type FeeValuesEIP1559, maxUint256 } from 'viem';
+import type { FeeValuesEIP1559 } from 'viem';
 
 import { isAboveMaxFeePerGas } from '../../l1/l1_tx_queue.js';
 import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
@@ -255,7 +256,7 @@ export class ProfitableClaimBatchSubmitter {
       const { result } = await portalContract.simulate.claimProverTips(args, {
         account,
         gasPrice: maxFeePerGas,
-        stateOverride: [{ address: account, balance: maxUint256 }],
+        stateOverride: [{ address: account, balance: SIMULATED_SENDER_BALANCE }],
       });
       return { totalGas, subsidy: result };
     };

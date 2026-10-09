@@ -57,6 +57,11 @@ export interface OperationRecord {
    * so it is dropped rather than failed.
    */
   provingStartedAt?: number
+  /**
+   * When its screen handed the user off to the notifications panel. From then on the record, not the
+   * screen, reports a failure, so one that ends before proving is failed rather than dropped.
+   */
+  handedOffAt?: number
   txHash?: string
   /** The message a flow failed with. */
   error?: string
@@ -178,7 +183,13 @@ export class OperationStore {
   async resume(operationId: string): Promise<void> {
     await this.store.updateRecord(operationId, (r) =>
       r?.resumable && r.endedAt === undefined
-        ? { ...r, state: "local", provingStartedAt: undefined, txHash: undefined }
+        ? {
+            ...r,
+            state: "local",
+            provingStartedAt: undefined,
+            handedOffAt: undefined,
+            txHash: undefined,
+          }
         : null,
     )
     if (this.store.getByKey(operationId)?.state === "local") this.setLive(operationId, true)
@@ -201,6 +212,12 @@ export class OperationStore {
       r?.state === "local" && r.provingStartedAt === undefined
         ? { ...r, provingStartedAt: now }
         : null,
+    )
+  }
+
+  async markHandedOff(operationId: string, now: number = Date.now()): Promise<void> {
+    await this.store.updateRecord(operationId, (r) =>
+      r?.state === "local" && r.handedOffAt === undefined ? { ...r, handedOffAt: now } : null,
     )
   }
 
@@ -280,7 +297,7 @@ export class OperationStore {
           continue
         }
         if (record.state !== "local" || record.startedAt > activeSince || record.resumable) continue
-        if (record.provingStartedAt === undefined) {
+        if (record.provingStartedAt === undefined && record.handedOffAt === undefined) {
           await this.store.removeByKey(record.operationId)
           continue
         }

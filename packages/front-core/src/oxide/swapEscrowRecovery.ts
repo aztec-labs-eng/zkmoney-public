@@ -92,7 +92,7 @@ export async function runSwapEscrowExecute(deps: SwapEscrowExitDeps): Promise<He
   const { record } = deps
   const target = requireTarget(record)
   await requireFunded(deps, target.escrow)
-  const call = buildSwapEscrowExecuteCall(target.factory, target.args)
+  const call = buildSwapEscrowExecuteCall(target.factory, target)
 
   logger.log(`[swapEscrow] executing ${target.escrow.slice(0, 10)}… (awaiting wallet signature)`)
   const hash = await deps.channel.sendTransaction(call.to, call.data)
@@ -140,7 +140,7 @@ export async function runSwapEscrowRecovery(deps: SwapEscrowRecoveryDeps): Promi
     deployed: await deps.reader.isDeployed(target.escrow),
     factory: target.factory,
     escrow: target.escrow,
-    args: target.args,
+    commitment: target,
     recovery,
     signature: await deps.signAccount(recovery.account, digest),
     target: deps.target,

@@ -122,7 +122,7 @@ describe("profile mode", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
-  it("an explicitly-set VITE_* still wins over the profile", async () => {
+  it("build overrides win for RPCs, while the profile owns XMTP and account service", async () => {
     const result = await boot(
       {
         ...PROFILE_ENV,
@@ -136,8 +136,19 @@ describe("profile mode", () => {
 
     expect(result.config.nodeUrl).toBe("http://env-node.test")
     expect(result.config.l1RpcUrl).toBe("http://env-l1.test")
-    expect(result.config.accountServiceUrl).toBe("http://env-account.test")
-    expect(result.config.xmtpEnv).toBe("production")
+    expect(result.config.accountServiceUrl).toBe("http://profile-account.test")
+    expect(result.config.xmtpEnv).toBe("local")
+  })
+
+  it("routes only the browser-restricted local account-service port through the proxy", async () => {
+    const profile = sandboxProfile()
+    profile.versions["0.0.1"].accountServiceUrl = "http://localhost:5060"
+    const env = { ...PROFILE_ENV, VITE_ACCOUNT_SERVICE_URL: "http://env-account.test" }
+
+    expect((await boot(env, serve(profile))).config.accountServiceUrl).toBe("/svc/account")
+
+    profile.versions["0.0.1"].accountServiceUrl = "http://localhost:8060"
+    expect((await boot(env, serve(profile))).config.accountServiceUrl).toBe("http://localhost:8060")
   })
 
   it("leaves the analytics endpoint alone", async () => {
@@ -204,6 +215,24 @@ describe("boot failures are fatal — never a silent registry fallback", () => {
     expect(result.config.nodeUrl).toBe("https://node.example")
     expect(result.config.oxideProfile.expectedGitSha).toBe("a".repeat(40))
     expect(result.contractServiceOptions.source).toBe("profile")
+  })
+
+  it("a profile id can match the build independently of the mainnet network", async () => {
+    const doc = mainnetProfile()
+    doc.profileId = "sandbox"
+
+    const result = await boot({ ...MAINNET_ENV, ...PROFILE_ENV }, serve(doc))
+    expect(result.config.l1ChainId).toBe(1)
+    expect(result.config.network).toBe("mainnet")
+  })
+
+  it("a sandbox profile cannot declare mainnet's L1 chain id", async () => {
+    const doc = sandboxProfile()
+    doc.shared.l1ChainId = 1
+
+    await expect(boot(PROFILE_ENV, serve(doc))).rejects.toThrow(
+      /l1ChainId 1 does not match network "sandbox"/,
+    )
   })
 
   it("any rollupVersion boots — the profile id is what binds a build to a document", async () => {

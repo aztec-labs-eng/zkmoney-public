@@ -24,7 +24,6 @@ import {
   useEndedOperations,
   useOperationsInProgress,
 } from "../features/operations/operations"
-import { groupEntryId, groupOfOperation } from "../features/withdraw/freshAddressGateway"
 import { getWithdrawalStore } from "../features/withdraw/withdrawGateway"
 
 const panelOpen = createExternalState(false)
@@ -158,12 +157,11 @@ export function useNotificationList(scope?: NotificationScope) {
       (op.state !== "sent" || flowCopy(op.flow).outcome !== "record"),
   )
   const entries = useMemo(() => {
-    // A running leg stands for its group, in place of the live row the bridge producer mints. On a
-    // page that did not start the leg, its record names the group.
+    // A running leg of a legacy fresh-address withdrawal stands for its group, in place of the live
+    // row the bridge producer mints; its record names the group.
     const stoodFor = running.flatMap(({ operationId }) => {
-      const record = withdrawals.find((w) => w.operationId === operationId)
-      const group = groupOfOperation(operationId) ?? record?.groupId
-      return group ? groupEntryId(group, "inflight") : []
+      const group = withdrawals.find((w) => w.operationId === operationId)?.groupId
+      return group ? `bridge:withdrawal-group:${group.toLowerCase()}:inflight` : []
     })
     return [
       ...app.entries.filter((e) => !stoodFor.includes(e.id)),

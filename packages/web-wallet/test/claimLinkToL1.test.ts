@@ -19,7 +19,7 @@ const ACCOUNT = `0x${"ac".repeat(20)}` as Address
 const CUT = 250_000_000_000_000_000n
 const SWAP_TUPLE = {
   l2Token: `0x${"11".repeat(32)}`,
-  swapEscrowFactory: `0x${"fa".repeat(20)}`,
+  swapEscrowFactoryV2: `0x${"fa".repeat(20)}`,
   accountFactory: `0x${"af".repeat(20)}`,
   portal: `0x${"70".repeat(20)}`,
   token: `0x${"da".repeat(20)}`,
@@ -382,7 +382,7 @@ describe("claimLinkToL1", () => {
         },
         recovery: { account: ACCOUNT, salt: { toString: () => "0x5a" } },
       },
-      factory: SWAP_TUPLE.swapEscrowFactory,
+      factory: SWAP_TUPLE.swapEscrowFactoryV2,
     } as never
     // No factory in the tuple: planning here would throw, so the leg must be taken as given.
     const record = await claimLinkToL1(
@@ -465,7 +465,7 @@ describe("claimLinkToL1", () => {
         "ETH",
         SWAP_COMMIT,
       ),
-    ).rejects.toThrow(/swapEscrowFactory/)
+    ).rejects.toThrow(/swapEscrowFactoryV2/)
     expect(getWithdrawalStore().list()).toHaveLength(0)
   })
 })

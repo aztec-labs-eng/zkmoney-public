@@ -13,6 +13,7 @@ import {
 } from "viem"
 import {
   LegacySwapEscrowEventsAbi,
+  LegacySwapEscrowFactoryAbi,
   SwapEscrowAbi,
   SwapEscrowFactoryAbi,
 } from "@oxide/l1-contracts"
@@ -21,13 +22,15 @@ import { L1SwapEscrowReader } from "../../src/oxide/swapEscrowReader.js"
 const FACTORY = "0x00000000000000000000000000000000000fac70"
 const DAI = "0x6b175474e89094c44da98b954eedeac495271d0f"
 const ESCROW = "0x000000000000000000000000000000000000e5e5"
-const ARGS = {
+const LEGACY_ARGS = {
   route: 0,
   recipient: "0x0000000000000000000000000000000000000b0b",
   recoveryCommitment: `0x${"5a".repeat(32)}`,
   relayerTip: 5n * 10n ** 18n,
   nonce: `0x${"11".repeat(32)}`,
 } as const
+const ARGS = { ...LEGACY_ARGS, daiForGas: 0n, minEthForGas: 0n }
+const V2 = { layout: "v2", args: ARGS } as const
 
 const client = (
   simulate: () => Promise<unknown>,
@@ -49,12 +52,24 @@ describe("L1SwapEscrowReader.deploySimulates", () => {
   it("simulates as the committed recipient, never the zero address", async () => {
     const c = client(async () => ({}))
     const reader = new L1SwapEscrowReader(c, { dai: DAI })
-    await expect(reader.deploySimulates(FACTORY, ARGS)).resolves.toBe(true)
+    await expect(reader.deploySimulates(FACTORY, V2)).resolves.toBe(true)
     const call = (c as { simulateContract: ReturnType<typeof vi.fn> }).simulateContract.mock
       .calls[0]![0] as { account: string; address: string; functionName: string }
     expect(call.account).toBe(ARGS.recipient)
     expect(call.address).toBe(FACTORY)
     expect(call.functionName).toBe("deployAndExecute")
+  })
+
+  it("simulates a legacy escrow with the legacy factory layout", async () => {
+    const c = client(async () => ({}))
+    const reader = new L1SwapEscrowReader(c, { dai: DAI })
+    await expect(
+      reader.deploySimulates(FACTORY, { layout: "legacy", args: LEGACY_ARGS }),
+    ).resolves.toBe(true)
+    const call = (c as { simulateContract: ReturnType<typeof vi.fn> }).simulateContract.mock
+      .calls[0]![0] as { abi: unknown; args: unknown[] }
+    expect(call.abi).toBe(LegacySwapEscrowFactoryAbi)
+    expect(call.args).toEqual([LEGACY_ARGS])
   })
 
   it("reads a contract revert as unfillable", async () => {
@@ -67,7 +82,7 @@ describe("L1SwapEscrowReader.deploySimulates", () => {
       }),
       { dai: DAI },
     )
-    await expect(reader.deploySimulates(FACTORY, ARGS)).resolves.toBe(false)
+    await expect(reader.deploySimulates(FACTORY, V2)).resolves.toBe(false)
   })
 
   it("lets an RPC failure through, so the caller retries instead of parking the record", async () => {
@@ -77,7 +92,7 @@ describe("L1SwapEscrowReader.deploySimulates", () => {
       }),
       { dai: DAI },
     )
-    await expect(reader.deploySimulates(FACTORY, ARGS)).rejects.toThrow(/socket hang up/)
+    await expect(reader.deploySimulates(FACTORY, V2)).rejects.toThrow(/socket hang up/)
   })
 })
 

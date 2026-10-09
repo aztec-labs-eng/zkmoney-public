@@ -25,7 +25,7 @@ export function WithdrawReview({
   walletName?: string
   asset: WithdrawalReceiveAsset
   send: string
-  /** The fresh flow's gas leg, a withdrawal of its own. */
+  /** The fresh flow's gas share, which lands as ETH. */
   gas?: string
   fee: string
   total: string
@@ -70,7 +70,7 @@ export function WithdrawReview({
         <span>Network</span>
         <b style={{ fontSize: 14 }}>
           <img src={ethIcon} alt="" width={16} height={16} />
-          Ethereum · {gas ? "2 withdrawals" : "1 withdrawal"}
+          Ethereum · 1 withdrawal
         </b>
       </div>
       <p className="ww-sheet__note">
