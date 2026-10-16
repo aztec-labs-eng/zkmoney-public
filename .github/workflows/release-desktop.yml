@@ -93,7 +93,11 @@ jobs:
 
       - run: pnpm build-contracts
 
-      - run: pnpm build:web-deps
+      - name: Build the wallet dependencies
+        env:
+          # The wallet proves frozen-deployment refunds with these circuits and refuses a stub.
+          OXIDE_REFUND_CIRCUITS: required
+        run: pnpm build:web-deps
 
       - name: Build wallet bundle
         env:
