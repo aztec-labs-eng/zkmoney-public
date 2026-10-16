@@ -26,6 +26,12 @@ import {
 } from "./freshAddressCheck"
 import { VerdictCard, type VerdictKind } from "./WithdrawFreshScreen"
 import { useWithdrawals } from "./useWithdrawals"
+import {
+  ETHERFI_ASSETS_COPY,
+  ETHERFI_DEFAULT_ASSET,
+  ETHERFI_RECEIVE_ASSETS,
+  isEtherfiContact,
+} from "./etherfi"
 import walletIcon from "../../assets/deposit/wallet-line.svg"
 
 export interface SavedL1Wallet {
@@ -92,7 +98,13 @@ export function WithdrawScreen() {
   // A pressed row, waiting on the checks before it leaves the step.
   const [going, setGoing] = useState(false)
   // Fixed as the row leaves, so nothing that changes under a later step can move the destination.
-  const [chosen, setChosen] = useState<{ recipient: Address; name?: string; kind: VerdictKind }>()
+  const [chosen, setChosen] = useState<{
+    recipient: Address
+    name?: string
+    kind: VerdictKind
+    /** A saved ether.fi Cash address only takes what ether.fi credits. */
+    etherfi: boolean
+  }>()
 
   const saved = useSavedL1Wallets(Infinity)
   const { records } = useWithdrawals()
@@ -134,7 +146,12 @@ export function WithdrawScreen() {
   useEffect(() => {
     if (!going || !target || !screened.cleared || kind === "idle" || kind === "checking") return
     setGoing(false)
-    setChosen({ recipient: target, name: name || undefined, kind })
+    setChosen({
+      recipient: target,
+      name: name || undefined,
+      kind,
+      etherfi: !!match && isEtherfiContact(match.entry),
+    })
     setStep(kind === "fresh" ? "amount" : "privacy")
   }, [going, target, screened.cleared, kind, name])
 
@@ -166,6 +183,9 @@ export function WithdrawScreen() {
       <WithdrawToWalletModal
         recipient={chosen.recipient}
         walletName={chosen.name}
+        receiveAsset={chosen.etherfi ? ETHERFI_DEFAULT_ASSET : undefined}
+        receiveAssets={chosen.etherfi ? ETHERFI_RECEIVE_ASSETS : undefined}
+        assetNote={chosen.etherfi ? `ether.fi Cash credits ${ETHERFI_ASSETS_COPY}.` : undefined}
         recipientIsContract={onchain === "contract"}
         onClose={() => setStep("pick")}
         onDone={() => navigate("/")}
@@ -181,7 +201,7 @@ export function WithdrawScreen() {
       onClose={close}
     >
       {step === "privacy" && (
-        <div className="ww-fresh__back">
+        <div className="ww-deposit-warning__back">
           <TopNavIconButton icon="chevron-left" ariaLabel="Back" onClick={() => setStep("pick")} />
         </div>
       )}

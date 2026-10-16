@@ -12,6 +12,7 @@ import { Fr } from "@aztec/aztec.js/fields"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
 import { ContractArtifact } from "@aztec/stdlib/abi"
 import { ContractService, ContractName } from "@obsidion/contracts"
+import type { PXE } from "@aztec/pxe/client/lazy"
 import type {
   DepositSpendMetadata,
   DepositSpendMetadataResolver,
@@ -25,13 +26,15 @@ export const DEFAULT_ACCOUNT_SALT = new Fr(1n)
 export interface AlphaContractManagerOptions {
   artifact: ContractArtifact
   contractName: ContractName
+  /** The PXE of the wallet that runs the account; registration writes here. */
+  pxe: PXE
 }
 
 /**
  * Contract manager for ObsidionAccountAlpha.
  * Accepts an injected ContractArtifact and contractName, enabling the same
  * class to serve both production (WebAuthn) and test (K256) variants.
- * Uses ContractService for PXE registration.
+ * Uses ContractService to register into the wallet's PXE.
  *
  * The address is a function of the master secret key and the signing key: the key's commitment
  * is the instance's `immutables_hash`, so an account is bound to one key for its whole life.
@@ -45,6 +48,7 @@ export class ObsidionAccountContractManager {
   private readonly pubkeyHex: string
   private readonly artifact: ContractArtifact
   private readonly contractName: ContractName
+  private readonly pxe: PXE
 
   public static async create(
     secretKey: Fr,
@@ -101,6 +105,7 @@ export class ObsidionAccountContractManager {
     this.pubkeyHex = pubkeyHex
     this.artifact = options.artifact
     this.contractName = options.contractName
+    this.pxe = options.pxe
   }
 
   get address(): AztecAddress {
@@ -158,7 +163,12 @@ export class ObsidionAccountContractManager {
   /** Register the account and its contract in the PXE; a failure is the caller's, not logged away. */
   public async registerAccount(): Promise<void> {
     const instance = await this.getContractInstance()
-    await this.contractService.registerUserAccount(instance, this.secretKey, this.contractName)
+    await this.contractService.registerUserAccount(
+      instance,
+      this.secretKey,
+      this.contractName,
+      this.pxe,
+    )
   }
 
   /**

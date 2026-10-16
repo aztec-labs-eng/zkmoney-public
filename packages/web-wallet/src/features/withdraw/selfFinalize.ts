@@ -13,6 +13,7 @@
  * which is what a locked or still-connecting wallet looks like from here.
  */
 import type { AztecNode } from "@aztec/aztec.js/node"
+import type { OxideEnvTuple } from "@obsidion/core/types"
 import { createPublicClient, type Address, type Hex, type PublicClient } from "viem"
 import {
   buildWithdrawFinalizationCall,
@@ -160,6 +161,8 @@ function finalizationFailureMessage(err: unknown): string {
 export interface SelfFinalizeOptions {
   /** Injected-wallet mode: pins the submitting (and tipped) account to the app's selection. */
   from?: Hex
+  /** The deployment the burn was made on; Main's live one when absent. A Savings move out's is Savings'. */
+  tuple?: OxideEnvTuple
   onHelperOpened?: (submitUrl: string) => void
   onStage?: (stage: L1ExitStage) => void
 }
@@ -224,7 +227,10 @@ export async function selfFinalize(
 ): Promise<Hex> {
   const config = getConfig()
   const publicClient = createPublicClient({ transport: l1Transport(config) })
-  const wiring = resolveWithdrawalWiring(await getOxideTuple(config), BigInt(config.l1ChainId))
+  const wiring = resolveWithdrawalWiring(
+    opts.tuple ?? (await getOxideTuple(config)),
+    BigInt(config.l1ChainId),
+  )
   if (!wiring) {
     throw new Error("Finalizing by hand isn't available on this network.")
   }

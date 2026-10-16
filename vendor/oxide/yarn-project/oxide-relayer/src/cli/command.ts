@@ -15,6 +15,7 @@ import {
   type SignerBackend,
 } from './config.js';
 import { RUN_OPTIONS, addOptions } from './options.js';
+import { parseCsv, parseEthAddresses } from './parse.js';
 
 /**
  * Build the public `oxide-relayer` CLI.
@@ -145,7 +146,6 @@ function toL1OperationsSubmissionConfig(opts: CommanderRunOptions): L1Operations
   return {
     retryBackoffMs: opts.l1OperationsRetryBackoffMs!,
     maxPendingAgeMs: opts.l1OperationsMaxPendingAgeSeconds! * 1000,
-    maxFeeHeadroomPercent: opts.l1OperationsMaxFeeHeadroomPercent!,
   };
 }
 
@@ -160,31 +160,6 @@ function parseModes(value: string): RelayerMode[] {
     throw new Error('--modes must include at least one mode.');
   }
   return [...new Set(modes)];
-}
-
-/** Parse a comma-separated list of L1 addresses from CLI/env input. `label` names the option in errors. */
-function parseEthAddresses(value: string, label: string): EthAddress[] {
-  const addresses = parseCsv(value).map(address => {
-    if (!EthAddress.isAddress(address)) {
-      throw new Error(`${label} has an invalid address: ${address}.`);
-    }
-    return EthAddress.fromString(address);
-  });
-  if (addresses.length === 0) {
-    throw new Error(`${label} must include at least one address.`);
-  }
-  return addresses;
-}
-
-/** Parse comma-separated CLI/env list values. Empty segments are ignored so trailing commas are harmless. */
-function parseCsv(value: string | undefined): string[] {
-  if (!value) {
-    return [];
-  }
-  return value
-    .split(',')
-    .map(v => v.trim())
-    .filter(Boolean);
 }
 
 function parseEnumValue<const T extends readonly string[]>(value: string, allowed: T, label: string): T[number] {

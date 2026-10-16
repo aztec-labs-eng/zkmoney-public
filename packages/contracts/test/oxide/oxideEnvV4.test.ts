@@ -49,6 +49,14 @@ describe("selectDeployment", () => {
 })
 
 describe("parseDeployment", () => {
+  it("retains optional metadata-update discovery without changing a historic deployment", () => {
+    const implementation = "0x1111111111111111111111111111111111111111"
+    expect(parseDeployment(V1).tuple.updateMetadataSIPAImplementation).toBeUndefined()
+    const destination = parseDeployment({ ...V2, updateMetadataSIPAImplementation: implementation }).tuple
+    expect(destination.updateMetadataSIPAImplementation).toBe(implementation)
+    expect(parseDeployment(V1).tuple.portal).toBe(V1.portal)
+    expect(parseDeployment(V1).tuple.frozenNotesRefundVerifier).toBe(V1.frozenNotesRefundVerifier)
+  })
   it("maps an entry onto the tuple field for field", () => {
     const { tuple, timestampMs } = parseDeployment(V1)
     expect(timestampMs).toBe(Date.parse(V1.updatedAt))
@@ -165,6 +173,16 @@ describe("migrationSources", () => {
     const legacy = entry("v0")
     expect(legacy.rollupVersion).toBe(V2.rollupVersion)
     expect(migrationSources(fixture, pinned).map((t) => t.version)).not.toContain("v0")
+  })
+
+  it("adds an entry on another rollup only when its portal is reachable", () => {
+    const other = { ...clone(V1), rollupVersion: "999" }
+    const doc = { ...clone(fixture), deployments: [other, clone(V2)] }
+    const pinned = parseDeployment(V2).tuple
+    expect(migrationSources(doc, pinned)).toEqual([])
+    expect(
+      migrationSources(doc, pinned, new Set([V1.portal.toLowerCase()])).map((t) => t.portal),
+    ).toEqual([V1.portal])
   })
 
   it("throws on a malformed known-schema entry instead of dropping it", () => {

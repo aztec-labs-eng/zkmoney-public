@@ -2,12 +2,16 @@ import { Fr } from '@aztec/foundation/curves/bn254';
 import { EthAddress } from '@aztec/foundation/eth-address';
 
 import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
-import type { SubmitEpochProofGasModel } from '@oxide/oxide-client/partial_epoch_proof_profit.js';
+import type {
+  ClaimProverTipsGasModel,
+  SubmitEpochProofGasModel,
+} from '@oxide/oxide-client/partial_epoch_proof_profit.js';
 
 import type { PublicClient } from 'viem';
 
-import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
+import type { PriceOracle } from '../../price_oracle/price_oracle.js';
 import { ProverClaimDiscoverer } from '../prover_claim_lib/prover_claim_discoverer.js';
+import { PROVER_CLAIM__MIN_BATCH_PROFIT } from '../prover_claim_reward_collector/config.js';
 import { createRollupContract } from '../rollup.js';
 import { Binding } from '../types.js';
 import * as config from './config.js';
@@ -24,10 +28,12 @@ export interface ProfitablePartialEpochPolicyCreateOptions {
   portal?: OxidePortalContract;
   portalAddress?: EthAddress;
   portals: EarlySubmitPortalConfig[];
-  priceOracle: ChainlinkPriceOracle;
+  priceOracle: PriceOracle;
   l1Client?: PublicClient;
   earlySubmitPolicy?: Partial<EarlySubmitPolicy>;
   submitEpochProofGasModel?: SubmitEpochProofGasModel;
+  claimProverTipsGasModel?: ClaimProverTipsGasModel;
+  maxFeePerGasCap?: bigint;
 }
 
 export interface ProfitablePartialEpochPolicyOptions extends Omit<
@@ -54,12 +60,17 @@ export class ProfitablePartialEpochPolicy implements PartialProofPolicy {
       portals: options.portals,
       priceOracle: options.priceOracle,
       getEffectiveGasPriceWei: () => options.portal.client.getGasPrice(),
+      getClaimMaxFeePerGasWei: async () => (await options.portal.client.estimateFeesPerGas()).maxFeePerGas,
+      maxFeePerGasCap: options.maxFeePerGasCap,
+      minClaimBatchProfit: PROVER_CLAIM__MIN_BATCH_PROFIT,
       minEpochProfit: options.earlySubmitPolicy?.minEpochProfit ?? config.EARLY_SUBMIT_POLICY__MIN_EPOCH_PROFIT,
       minEpochProfitMarginBps:
         options.earlySubmitPolicy?.minEpochProfitMarginBps ?? config.EARLY_SUBMIT_POLICY__MIN_EPOCH_PROFIT_MARGIN_BPS,
       provingCostPerCheckpoint:
         options.earlySubmitPolicy?.provingCostPerCheckpoint ?? config.EARLY_SUBMIT_POLICY__PROVING_COST_PER_CHECKPOINT,
       submitEpochProofGasModel: options.submitEpochProofGasModel ?? config.ROLLUP__SUBMIT_EPOCH_PROOF_GAS_MODEL,
+      claimProverTipsGasModel: options.claimProverTipsGasModel ?? config.PORTAL__CLAIM_PROVER_TIPS_GAS_MODEL,
+      firstProverCaptureGas: config.PORTAL__FIRST_PROVER_CAPTURE_GAS,
     });
   }
 

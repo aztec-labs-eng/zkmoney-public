@@ -6,9 +6,11 @@ import { Fr } from "@aztec/aztec.js/fields"
 
 import {
   deriveBootstrapKey,
+  deriveSelfSipaKey,
   deriveStealthKey,
   deriveSkyEscrowSalts,
   deriveSwapEscrowRecoverySalt,
+  selfSipaResolverKeys,
   type FieldLike,
 } from "../../src/oxide/oxideAccountKeys"
 
@@ -66,6 +68,26 @@ describe("oxideAccountKeys — deriveStealthKey", () => {
     expect(deriveStealthKey(SECRET).publicKey.x).toBe(EXPECTED_STEALTH_X)
     expect(deriveStealthKey(SECRET).publicKey.y).toBe(EXPECTED_STEALTH_Y)
     expect(deriveStealthKey(SECRET).scalar).toBe(deriveStealthKey(SECRET).scalar)
+  })
+})
+
+describe("oxideAccountKeys — deriveSelfSipaKey", () => {
+  it("is the domain-separated field element under the self-sipa label", () => {
+    const key = deriveSelfSipaKey(SECRET)
+    expect(key).toBeInstanceOf(Fr)
+    expect(key.toBigInt()).toBe(oxideScalar(SECRET.toString(), "oxide:self-sipa", Fr.MODULUS))
+  })
+
+  it("is deterministic, secret-separated, and not the registry stealth scalar", () => {
+    expect(deriveSelfSipaKey(SECRET).equals(deriveSelfSipaKey(SECRET))).toBe(true)
+    expect(deriveSelfSipaKey(SECRET).equals(deriveSelfSipaKey(SECRET_2))).toBe(false)
+    expect(deriveSelfSipaKey(SECRET).toBigInt()).not.toBe(deriveStealthKey(SECRET).scalar)
+  })
+
+  it("selfSipaResolverKeys pairs the stealth scalar with the self key", () => {
+    const keys = selfSipaResolverKeys(SECRET)
+    expect(keys.stealthScalar).toBe(deriveStealthKey(SECRET).scalar)
+    expect(keys.selfSipaKey.equals(deriveSelfSipaKey(SECRET))).toBe(true)
   })
 })
 

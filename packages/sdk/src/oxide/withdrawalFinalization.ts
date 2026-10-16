@@ -12,7 +12,7 @@
 //                         never blocks `done` — a missing link is fine, a wrong
 //                         link is not.
 import { OxidePortalAbi } from "@oxide/l1-contracts"
-import type { Hex, PublicClient } from "viem"
+import { erc20Abi, parseEventLogs, type Address, type Hex, type PublicClient } from "viem"
 import { readBlockTimeMs } from "../services/sipaClaim.js"
 
 export interface ResolveL1TxHashOptions {
@@ -36,6 +36,8 @@ export interface WithdrawalFinalizationReader {
   /** Block time (ms) of a resolved release tx, so a record rebuilt on a new device settles at the
    *  release rather than at discovery. Undefined when unreadable. Never throws. */
   l1TxTimestampMs?(txHash: Hex): Promise<number | undefined>
+  /** Tokens `txHash` transferred to `recipient`, raw units. Undefined when unreadable. Never throws. */
+  receivedIn?(txHash: Hex, recipient: Address): Promise<bigint | undefined>
 }
 
 export interface WithdrawalFinalizationReaderConfig {
@@ -121,6 +123,18 @@ export class L1WithdrawalFinalizationReader implements WithdrawalFinalizationRea
     try {
       const { blockNumber } = await this.client.getTransactionReceipt({ hash: txHash })
       return await readBlockTimeMs(this.client, blockNumber)
+    } catch {
+      return undefined
+    }
+  }
+
+  async receivedIn(txHash: Hex, recipient: Address): Promise<bigint | undefined> {
+    try {
+      const { logs } = await this.client.getTransactionReceipt({ hash: txHash })
+      return parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs, args: { to: recipient } }).reduce(
+        (sum, log) => sum + log.args.value,
+        0n,
+      )
     } catch {
       return undefined
     }

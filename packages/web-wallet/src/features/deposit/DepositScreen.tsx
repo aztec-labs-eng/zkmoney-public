@@ -14,18 +14,34 @@ import {
   useContractServiceContext,
 } from "@obsidion/front-core"
 import { quotedDepositFee } from "@obsidion/core/constants"
-import { GradientText, Icon } from "@obsidion/web-ds"
+import { GradientText, Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
+import paylinkCoins from "../../assets/home/paylink-coins.webp"
 import { getConfig } from "../../config/env"
 import { useUserFlowActive } from "../provingGate"
 import { showReportableError } from "../../errors/errorModal"
-import { amountBucket, failureCode, fireEvent, lapTimer } from "../../lib/analytics"
+import {
+  amountBucket,
+  failureCode,
+  fireEvent,
+  fireOnboardingEvent,
+  lapTimer,
+} from "../../lib/analytics"
 import { useCopy } from "../../ui/hooks"
 import { shortAddr, usdFigure } from "../../ui/format"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { useRegistrationEscalated, useTagPresentationPending } from "../onboarding/webRegistration"
 import { RegistrationPendingError } from "../onboarding/registrationRail"
+import { useOwedRegistration } from "../onboarding/owedRegistration"
+import { registrationAddressPublished } from "../onboarding/webRegistration"
+import { noteRegistrationDepositSeen } from "../onboarding/registrationRailSync"
+import { OweRegistrationBroadcast } from "../broadcasts/useOweRegistrationBroadcast"
+import { RegistrationAskLine, useRegistrationAsk } from "../onboarding/RegistrationAskLine"
+import { formatDepositDue } from "../onboarding/steps/DepositTermsRows"
+import { ChooseNameSheet } from "../onboarding/ChooseNameSheet"
+import { confirmRegistrationTag, useRegistrationTagConfirmed } from "../onboarding/openRegistration"
 import { buildErc20TransferUriWithoutAmount } from "../requests/eip681"
 import { DepositFromWalletModal, type SentDeposit } from "./DepositFromWalletModal"
+import { DepositCoinModal } from "./DepositCoinModal"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { isDemoMode } from "../../dev/demoFlag"
 import { DepositDetailModal } from "../../ui/screens/DepositDetailModal"
@@ -92,6 +108,7 @@ const COIN_ORDER = ["USDC", "USDT", "DAI"]
 
 /** The coin row's subtitle. */
 const COIN_NAMES: Record<string, string> = { USDT: "Tether" }
+const coinName = (token: DepositTokenOption) => COIN_NAMES[token.symbol] ?? token.symbol
 
 const DEPOSIT_INFO_POINTS: OneTimeAddressPoint[] = [
   {
@@ -141,15 +158,32 @@ function coinOrder(tokens: DepositTokenOption[]): DepositTokenOption[] {
  * Deposit: pick a coin, then a sheet hands out a single-use SIPA address for THIS wallet's
  * `<tag>.<ensDomain>` to copy or scan, or funds it from a connected wallet. Anything sent there is
  * discovered and credited automatically by the SIPA sync loop mounted in WalletGate; the screen
- * watches the address itself so the sheet can say when funds are spotted.
+ * watches the address itself so the sheet can say when funds are spotted. With `onClose` it is a
+ * modal over Home instead of a page: the coin pick, then the same address sheet.
  */
-export function DepositScreen() {
+export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
   const navigate = useNavigate()
   const handle = loadWalletIdentity()?.handle
   // The gate is effectful, not cosmetic: while the registration is unconfirmed, deriving and
   // publishing a deposit address for a name that may be lost must not happen at all.
   const claiming = useTagPresentationPending()
   const escalated = useRegistrationEscalated()
+  const owedRegistration = useOwedRegistration()
+  const owed = owedRegistration !== null
+  const registration = owedRegistration?.needsCheck === false ? owedRegistration.record : null
+  const [choosingName, setChoosingName] = useState(false)
+  const tagConfirmed = useRegistrationTagConfirmed(registration)
+  const registrationAsk = useRegistrationAsk()
+  // The registration's funds landed: Home carries its progress, so this screen does not turn into
+  // a plain deposit (and its privacy disclaimer) under the user.
+  const wasOwed = useRef(owed)
+  useEffect(() => {
+    if (owed) wasOwed.current = true
+    else if (wasOwed.current) {
+      if (onClose) onClose()
+      else navigate("/", { replace: true })
+    }
+  }, [owed, navigate, onClose])
   const { obsidionWallet } = useAztecContext()
   const { contractService } = useContractServiceContext()
   const gateway = getSipaDepositGateway()
@@ -159,6 +193,16 @@ export function DepositScreen() {
   const chainName = l1ChainId === 1 ? "Ethereum Mainnet" : l1Chain.name
 
   const [deposit, setDeposit] = useState<ShownAddress>()
+  const registrationSipa = registration?.sipaAddress as DepositAddress["address"] | undefined
+  const registrationPublishing = !!registration && !registrationAddressPublished(registration)
+  const registrationAddress = useMemo<ShownAddress | undefined>(
+    () =>
+      registrationSipa && handle
+        ? { address: registrationSipa, name: handle, publishing: registrationPublishing }
+        : undefined,
+    [registrationSipa, handle, registrationPublishing],
+  )
+  const shown = registrationAddress ?? deposit
   const [generating, setGenerating] = useState(false)
   const [resolveFailed, setResolveFailed] = useState(false)
   const [capped, setCapped] = useState(false)
@@ -247,6 +291,12 @@ export function DepositScreen() {
   useEffect(() => {
     fireEvent("deposit_sheet_opened")
   }, [])
+  const reportedOwed = useRef(false)
+  useEffect(() => {
+    if (!owed || reportedOwed.current) return
+    reportedOwed.current = true
+    fireOnboardingEvent("registration_deposit_opened")
+  }, [owed])
 
   // Both halves of the quote are per-deployment immutables, so the read is redone only on Retry
   // and when the deployment behind it changes.
@@ -398,11 +448,11 @@ export function DepositScreen() {
 
   /** Open the funding sheet. Funding needs the address the user is shown, so derive one first. */
   const beginFunding = useCallback(() => {
-    if (fee == null || claiming) return
+    if (fee == null || (claiming && !registrationAddress)) return
     // The sheet moves the wallet's money, so it opens only for an address whose broadcast landed.
-    if (deposit) return void setFundOpen(true)
+    if (shown) return void setFundOpen(true)
     if (!generating) void resolveAddress().then((ok) => ok && setFundOpen(true))
-  }, [fee, deposit, generating, resolveAddress, claiming])
+  }, [fee, shown, generating, resolveAddress, claiming, registrationAddress])
 
   // `l1.connect` only opens the wallet picker; the account lands renders later, so the click that
   // asked to fund would otherwise stop at "Wallet connected" and need a second one. A picker that
@@ -419,7 +469,6 @@ export function DepositScreen() {
     }
   }, [fundOnConnect, canFund, l1.pickerOpen, beginFunding])
 
-  const shown = deposit
   const ready = !!shown && !generating && fee != null
   const qrToken = token.address ?? manifestToken
   // Tokens other than the manifest token are swapped into it before the portal credits them.
@@ -565,18 +614,30 @@ export function DepositScreen() {
       })
       setFunded(next)
       // The scanner moves the record on; back on its per-tick lane, the row shows within a tick.
-      if (deposit) void gateway.wakeDeposit(deposit.address)
+      if (registrationAddress)
+        void noteRegistrationDepositSeen(registrationAddress.address, next, token.decimals)
+      else if (deposit) void gateway.wakeDeposit(deposit.address)
     },
-    [token.decimals, deposit, gateway],
+    [token.decimals, deposit, gateway, registrationAddress],
   )
+  // The ask is priced in the settlement token; any stablecoin funds it one to one, in its own units.
+  const settledToToken = (settled: bigint) =>
+    (settled * 10n ** BigInt(token.decimals)) / 10n ** BigInt(settlement.decimals)
+  // A registration address short of its floor is not funded: the sweep refuses it, so it waits.
+  const registrationFloorRef = useRef<bigint | undefined>(undefined)
+  registrationFloorRef.current =
+    registrationAsk?.floor === undefined ? undefined : settledToToken(registrationAsk.floor)
   const recordRead = useCallback(
     (next: bigint) => {
       setReadError(false)
       setBalance(next)
       setLastReadAt(Date.now())
-      if (next !== 0n) markFunded(next)
+      if (next === 0n) return
+      const floor = registrationFloorRef.current
+      if (registrationAddress && (floor === undefined || next < floor)) return
+      markFunded(next)
     },
-    [markFunded],
+    [markFunded, registrationAddress],
   )
 
   // A third-party send leaves no local trace, and the sync loop's own funding read drops to a
@@ -623,8 +684,8 @@ export function DepositScreen() {
 
   // A sheet with nothing to show and nothing coming closes: the derivation failed or never started.
   useEffect(() => {
-    if (sheetOpen && !deposit && !generating && !capped) setSheetOpen(false)
-  }, [sheetOpen, deposit, generating])
+    if (sheetOpen && !shown && !generating && !capped) setSheetOpen(false)
+  }, [sheetOpen, shown, generating])
 
   const waitTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(waitTimer.current), [])
@@ -655,7 +716,7 @@ export function DepositScreen() {
       setLastReadAt(undefined)
     }
     setToken(next)
-    if (!deposit) void resolveAddress()
+    if (!shown) void resolveAddress()
   }
   /** The held address was spent or may be: the next sheet derives a fresh one. */
   const dropAddress = () => {
@@ -686,19 +747,61 @@ export function DepositScreen() {
       ? "capacity"
       : undefined
   // A swapped coin's credit is set by the swap rate, so no figure is promised for it.
-  const arriving =
-    !swap && funded != null && fee != null
-      ? usdFigureGrouped(
-          String(Math.max(0, Number(formatUnits(funded, token.decimals)) - Number(fee))),
+  // A registration's sweep takes its fee and the funding cut, not the plain deposit fee.
+  const registrationSpent = registrationAddress ? registrationAsk?.spent : undefined
+  // Priced in the settlement token, which a stablecoin matches one to one.
+  const depositFee = registrationAddress
+    ? registrationSpent !== undefined
+      ? formatUnits(registrationSpent, settlement.decimals)
+      : undefined
+    : fee
+  // The least the funding sheet may credit, in the picked coin: the floor less what the sweep
+  // takes (the sheet adds that fee to what it sends) and less what the address already holds in
+  // this very coin, since the sweep floors each coin on its own.
+  const registrationMinimum =
+    registrationAddress && registrationAsk?.floor !== undefined && registrationSpent !== undefined
+      ? formatUnits(
+          settledToToken(
+            (() => {
+              const held = token.symbol === settlement.symbol ? registrationAsk.seen : 0n
+              const owed = registrationAsk.floor - registrationSpent - held
+              return owed > 0n ? owed : 0n
+            })(),
+          ),
+          token.decimals,
         )
       : undefined
+  // The least to send, before the address: a registration's ask, less what its address holds in the
+  // picked coin, since the sweep floors each coin on its own.
+  const askLeft = registrationAddress
+    ? (token.symbol === settlement.symbol ? registrationAsk?.remaining : undefined) ??
+      registrationAsk?.total
+    : undefined
+  const depositMinimum = !registrationAddress
+    ? MINIMUM_DEPOSIT
+    : askLeft === undefined
+    ? QUOTE_PENDING
+    : formatDepositDue(askLeft, settlement.decimals).replace(/\.00$/, "")
+  const arriving =
+    !swap && funded != null && depositFee != null
+      ? usdFigureGrouped(
+          String(Math.max(0, Number(formatUnits(funded, token.decimals)) - Number(depositFee))),
+        )
+      : undefined
+  const tagLabel = handle ? `@${handle}` : "your @tag"
+  const walletLabel = l1.account
+    ? `Deposit from ${l1.walletName ?? "wallet"} · ${shortAddr(l1.account)}`
+    : bridgeMode
+    ? "Or deposit from your browser"
+    : "Or connect a wallet to fund"
   const connectLink = (
     <p className="ww-deposit__note">
       <button
         type="button"
         className="zkm-btn-reset ww-deposit__link"
         data-testid="deposit-connect-link"
-        disabled={fee == null || claiming}
+        // An unconfirmed tag has no broadcast queued to sweep what arrives, so nothing may be sent yet.
+        disabled={fee == null || (claiming && !registrationAddress) || (owed && !tagConfirmed)}
         onClick={() => {
           if (!canFund) {
             setFundOnConnect(true)
@@ -707,11 +810,7 @@ export function DepositScreen() {
           beginFunding()
         }}
       >
-        {l1.account
-          ? `Deposit from ${l1.walletName ?? "wallet"} · ${shortAddr(l1.account)}`
-          : bridgeMode
-          ? "Or deposit from your browser"
-          : "Or connect a wallet to fund"}
+        {walletLabel}
       </button>
       {l1.account && (
         <>
@@ -724,126 +823,92 @@ export function DepositScreen() {
     </p>
   )
 
-  return (
-    <div className="ww-panel ww-deposit">
-      <div className="ww-deposit__stealth ww-deposit__stealth--top">
-        <GradientText size={24} weight={700}>
-          Deposit funds
-        </GradientText>
-
-        {claiming ? (
-          <>
-            <div className="ww-deposit__note" style={{ width: "auto" }}>
-              Your @tag is still being claimed. Deposit addresses become available once it settles.{" "}
-              {escalated
-                ? "This is taking longer than usual."
-                : "This usually takes about a minute."}{" "}
-              {/* Web has no background re-sign; the claim page owns the status check. */}
-              <button
-                type="button"
-                className="zkm-btn-reset ww-deposit__link"
-                onClick={() => navigate(handle ? `/claim/${handle}` : "/claim")}
-              >
-                Check on your claim
-              </button>
-            </div>
-            {connectLink}
-          </>
-        ) : hold.status !== "none" ? (
-          <div
-            className="ww-deposit__unresolved"
-            role="status"
-            data-testid="deposit-send-unresolved"
-          >
-            {unresolved ? (
-              <>
-                <b>Waiting for your browser wallet</b>
-                <p>
-                  A transfer to {shortAddr(unresolved.address)} may still be sent from your browser
-                  wallet. If it is, the deposit appears in your activity.
-                </p>
-              </>
-            ) : (
-              <>
-                <b>Deposit state unavailable</b>
-                <p>This browser's saved deposit state can't be read.</p>
-              </>
-            )}
-            <p>New deposits are paused here so the same funds are not sent twice.</p>
-            {holdError && (
-              <p data-testid="deposit-send-unresolved-error">
-                This browser couldn't update its saved state. Try again.
-              </p>
-            )}
-            <div className="ww-deposit__unresolved-actions">
-              <button
-                type="button"
-                className="zkm-btn-reset ww-deposit__link"
-                onClick={() =>
-                  unresolved
-                    ? navigate("/activity")
-                    : setHold(readUnresolvedSend(network, unresolvedScope))
-                }
-              >
-                {unresolved ? "View activity" : "Check again"}
-              </button>
-              <button
-                type="button"
-                className="zkm-btn-reset ww-deposit__link"
-                data-testid="deposit-send-unresolved-restart"
-                onClick={startNewDeposit}
-              >
-                Start a new deposit
-              </button>
-            </div>
-          </div>
-        ) : (
-          <>
-            <div className="ww-deposit__fields">
-              <p className="ww-deposit__label">Which token are you sending?</p>
-              <div className="ww-deposit__coins">
-                {coins.map((t) => (
-                  <button
-                    key={t.symbol}
-                    type="button"
-                    className="zkm-btn-reset ww-deposit__coin"
-                    data-testid={`deposit-coin-${t.symbol}`}
-                    disabled={busy && !deposit}
-                    onClick={() => openSheet(t)}
-                  >
-                    <CoinIcon token={t} />
-                    <span className="ww-deposit__coin-name">
-                      {t.symbol}
-                      <small>{COIN_NAMES[t.symbol] ?? t.symbol}</small>
-                    </span>
-                  </button>
-                ))}
-              </div>
-              <div className="ww-deposit__network">
-                <span>
-                  Network
-                  <Icon name="lock" size={14} />
-                </span>
-                <b>{chainName}</b>
-              </div>
-            </div>
-            <section className="ww-deposit__info">
-              <button
-                type="button"
-                className="zkm-btn-reset ww-deposit__info-head"
-                aria-expanded={infoOpen}
-                onClick={() => setInfoOpen((o) => !o)}
-              >
-                Important information
-                <Icon name={infoOpen ? "chevron-up" : "chevron-down"} size={16} />
-              </button>
-              {infoOpen && <OneTimeAddressPoints points={DEPOSIT_INFO_POINTS} />}
-            </section>
-            {connectLink}
-          </>
-        )}
+  // Web has no background re-sign; the claim page owns the status check.
+  const claimingBlock = claiming && !registrationAddress && (
+    <>
+      <button
+        type="button"
+        className="zkm-btn-reset ww-banner ww-banner--activate ww-deposit__claiming"
+        data-testid="deposit-claiming"
+        onClick={() => navigate(handle ? `/claim/${handle}` : "/claim")}
+      >
+        <span className="ww-banner__text">
+          <span className="ww-banner__title">
+            {owed ? "Registration needs a check" : `Claiming ${tagLabel}`}
+          </span>
+          <span className="ww-banner__body">
+            {owed
+              ? `Check on ${tagLabel} before you deposit.`
+              : `Your tag is still being claimed. ${
+                  escalated
+                    ? "This is taking longer than usual. Check on it."
+                    : "This usually takes about a minute."
+                }`}
+          </span>
+        </span>
+        <img src={paylinkCoins} alt="" />
+        <span className="ww-banner__chevron">
+          {owed || escalated ? (
+            <Icon name="chevron-right" size={12} color="#fff" />
+          ) : (
+            <Spinner size={12} color="#fff" />
+          )}
+        </span>
+      </button>
+      <p className="ww-deposit__note">
+        Deposit addresses will be available here once {tagLabel} is successfully registered.
+      </p>
+    </>
+  )
+  const holdBlock = hold.status !== "none" && (
+    <div className="ww-deposit__unresolved" role="status" data-testid="deposit-send-unresolved">
+      {unresolved ? (
+        <>
+          <b>Waiting for your browser wallet</b>
+          <p>
+            A transfer to {shortAddr(unresolved.address)} may still be sent from your browser
+            wallet. If it is, the deposit appears in your activity.
+          </p>
+        </>
+      ) : (
+        <>
+          <b>Deposit state unavailable</b>
+          <p>This browser's saved deposit state can't be read.</p>
+        </>
+      )}
+      <p>New deposits are paused here so the same funds are not sent twice.</p>
+      {holdError && (
+        <p data-testid="deposit-send-unresolved-error">
+          This browser couldn't update its saved state. Try again.
+        </p>
+      )}
+      <div className="ww-deposit__unresolved-actions">
+        <button
+          type="button"
+          className="zkm-btn-reset ww-deposit__link"
+          onClick={() =>
+            unresolved
+              ? navigate("/activity")
+              : setHold(readUnresolvedSend(network, unresolvedScope))
+          }
+        >
+          {unresolved ? "View activity" : "Check again"}
+        </button>
+        <button
+          type="button"
+          className="zkm-btn-reset ww-deposit__link"
+          data-testid="deposit-send-unresolved-restart"
+          onClick={startNewDeposit}
+        >
+          Start a new deposit
+        </button>
       </div>
+    </div>
+  )
+  const shownCoin = (!owed || tagConfirmed) && !claimingBlock && !holdBlock
 
+  const sheets = (
+    <>
       {sheetOpen && (
         <DepositAddressSheet
           token={token}
@@ -875,17 +940,20 @@ export function DepositScreen() {
             }
             beginFunding()
           }}
-          walletLabel={bridgeMode ? "Pay from your browser" : "Pay with wallet"}
+          walletLabel={walletLabel}
           readError={readError}
           problem={spottedProblem}
           limitLabel={formatPublicLimit()}
           onOpenActivity={() => navigate("/activity")}
+          ask={owed && <RegistrationAskLine />}
           onClose={() => {
             setSheetOpen(false)
             // Funds spotted: the deposit carries on in Activity, so the screen is done.
-            if (phase === "spotted") return navigate("/")
+            if (phase === "spotted") return onClose ? onClose() : navigate("/")
             // A copy's pending hand-off is dropped; a sheet already waiting keeps waiting.
             clearTimeout(waitTimer.current)
+            // Over Home there is no page behind the sheet.
+            onClose?.()
           }}
         />
       )}
@@ -895,7 +963,9 @@ export function DepositScreen() {
           l1={l1}
           deposit={shown}
           token={token}
-          fee={fee}
+          fee={depositFee}
+          registration={!!registrationAddress}
+          minimum={registrationMinimum}
           valuation={manifestToken && depositValuation(token, manifestToken, l1ChainId)}
           onClose={() => setFundOpen(false)}
           onSent={(next) => {
@@ -951,10 +1021,6 @@ export function DepositScreen() {
 
       {sentRecord && <DepositDetailModal record={sentRecord} onClose={() => setSent(undefined)} />}
 
-      {disclaimer && (
-        <DepositPrivacyDisclaimer handle={handle} onClose={() => setDisclaimer(false)} />
-      )}
-
       {aboutLimits && (
         <WalletAboutLimitsSheet
           topic={aboutLimits}
@@ -963,6 +1029,160 @@ export function DepositScreen() {
           settlementSymbol={settlement.symbol}
           onClose={() => setAboutLimits(undefined)}
         />
+      )}
+    </>
+  )
+
+  if (onClose)
+    return (
+      <>
+        {registration && <OweRegistrationBroadcast record={registration} />}
+        {!sheetOpen && !fundOpen && !sentRecord && !discovered && (
+          <DepositCoinModal
+            title={owed ? "Deposit to activate your account" : "Deposit funds"}
+            coins={coins}
+            coinName={coinName}
+            token={token}
+            onPick={setToken}
+            rows={
+              <>
+                <LimitsRow
+                  label="Fee"
+                  value={
+                    depositFee != null
+                      ? usdFigure(depositFee)
+                      : quoteFailed
+                      ? "Unavailable"
+                      : QUOTE_PENDING
+                  }
+                  testId="deposit-fee"
+                  info={
+                    <InfoButton
+                      label="About the deposit fee"
+                      onClick={() => setAboutLimits("limit")}
+                    />
+                  }
+                />
+                <LimitsRow
+                  label="Minimum deposit"
+                  value={depositMinimum}
+                  testId="deposit-minimum"
+                  info={
+                    <InfoButton
+                      label="About the deposit limit"
+                      onClick={() => setAboutLimits("limit")}
+                    />
+                  }
+                />
+              </>
+            }
+            status={claimingBlock || holdBlock || undefined}
+            canContinue={shownCoin && !(busy && !shown)}
+            onContinue={() => openSheet(token)}
+            onClose={onClose}
+          />
+        )}
+        {sheets}
+      </>
+    )
+
+  return (
+    <div className="ww-panel ww-deposit">
+      {registration && <OweRegistrationBroadcast record={registration} />}
+      <div className="ww-deposit__stealth ww-deposit__stealth--top">
+        <GradientText size={24} weight={700}>
+          Deposit funds
+        </GradientText>
+
+        {claimingBlock || holdBlock || (
+          <>
+            <div className="ww-deposit__fields">
+              {owed && (
+                <div className="ww-deposit__tag" data-testid="deposit-tag-row">
+                  <span>Your name</span>
+                  <b>@{handle}</b>
+                  {tagConfirmed ? (
+                    <Icon name="lock" size={14} color="var(--text-secondary)" />
+                  ) : (
+                    <button
+                      type="button"
+                      className="zkm-btn-reset ww-deposit__link"
+                      onClick={() => setChoosingName(true)}
+                    >
+                      Choose your own
+                    </button>
+                  )}
+                </div>
+              )}
+              {owed && !tagConfirmed && registration && (
+                <div className="ww-deposit__confirm" data-testid="deposit-confirm-tag">
+                  <p>
+                    Keep @{handle} or choose your own. Once you confirm, your name can&apos;t change
+                    while it registers.
+                  </p>
+                  <PrimaryGradientButton
+                    title={`Keep @${handle}`}
+                    onClick={() => confirmRegistrationTag(registration)}
+                  />
+                </div>
+              )}
+              {owed && <RegistrationAskLine />}
+              {(!owed || tagConfirmed) && (
+                <>
+                  <p className="ww-deposit__label">Which token are you sending?</p>
+                  <div className="ww-deposit__coins">
+                    {coins.map((t) => (
+                      <button
+                        key={t.symbol}
+                        type="button"
+                        className="zkm-btn-reset ww-deposit__coin"
+                        data-testid={`deposit-coin-${t.symbol}`}
+                        disabled={busy && !shown}
+                        onClick={() => openSheet(t)}
+                      >
+                        <CoinIcon token={t} />
+                        <span className="ww-deposit__coin-name">
+                          {t.symbol}
+                          <small>{coinName(t)}</small>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="ww-deposit__network">
+                    <span>
+                      Network
+                      <Icon name="lock" size={14} />
+                    </span>
+                    <b>{chainName}</b>
+                  </div>
+                </>
+              )}
+            </div>
+            <section className="ww-deposit__info">
+              <button
+                type="button"
+                className="zkm-btn-reset ww-deposit__info-head"
+                aria-expanded={infoOpen}
+                onClick={() => setInfoOpen((o) => !o)}
+              >
+                Important information
+                <Icon name={infoOpen ? "chevron-up" : "chevron-down"} size={16} />
+              </button>
+              {infoOpen && <OneTimeAddressPoints points={DEPOSIT_INFO_POINTS} />}
+            </section>
+            {connectLink}
+          </>
+        )}
+      </div>
+
+      {sheets}
+      {choosingName && handle && (
+        <ChooseNameSheet tag={handle} onClose={() => setChoosingName(false)} />
+      )}
+
+      {/* The fresh-address model applies to deposits, not the registration address. */}
+      {disclaimer && !owed && (
+        <DepositPrivacyDisclaimer handle={handle} onClose={() => setDisclaimer(false)} />
       )}
     </div>
   )

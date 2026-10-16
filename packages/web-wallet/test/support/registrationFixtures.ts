@@ -8,6 +8,7 @@ import {
   type SIPADepositRecord,
 } from "@obsidion/front-core"
 import type { RegistrationTerms } from "../../src/features/onboarding/registrationTerms"
+import { RANDOM } from "./registrationPrices"
 import type { TicketSignupStash } from "../../src/features/paylink/claimStash"
 import { webStorage } from "../../src/platform/storage/WebStorageAdapter"
 
@@ -44,8 +45,8 @@ export const pendingRecord = (
 
 /** The earned schedule: the tag price waived, the relayer's 0.5 fee over a 4.5 minimum. */
 export const earnedTerms = (over: Partial<SignedTermsResponse> = {}): SignedTermsResponse => ({
-  fee: String(dai(0.5)),
-  minDeposit: String(dai(4.5)),
+  fee: String(RANDOM.fee),
+  minDeposit: String(RANDOM.min),
   nonce: "1",
   deadline: FAR_DEADLINE,
   signature: "0x00",

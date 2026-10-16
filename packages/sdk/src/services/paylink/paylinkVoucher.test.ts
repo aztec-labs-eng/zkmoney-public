@@ -100,7 +100,11 @@ planPayout.mockImplementation(async (_wallet, _service, _token, burn) => ({
 
 const params = { paylinkType: "paylinkDirect", classId: {}, chainId: 31337, rollupVersion: 1 }
 const getArtifactForContract = vi.fn(async () => ({}))
-const contractService = { getArtifactForContract }
+const contractService = {
+  getArtifactForContract,
+  getArtifactForClass: vi.fn(async () => ({})),
+  getKnownClassIds: vi.fn(async () => []),
+}
 const wallet = {
   registerSender: vi.fn(),
   node: {},

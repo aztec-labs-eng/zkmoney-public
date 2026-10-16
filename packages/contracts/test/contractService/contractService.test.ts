@@ -51,6 +51,7 @@ function buildService(opts: {
   pxe?: unknown
   node?: unknown
   resolveClassArtifact?: (classId: string) => Promise<ContractArtifact>
+  listClassIds?: (artifactName: string) => Promise<string[]>
 }) {
   const storage = new NodeContractServiceStorage(opts.network ?? Network.TESTNET)
   const service = ContractService.getInstance(
@@ -63,6 +64,7 @@ function buildService(opts: {
       source: "local-ledger",
       oxideEnvProfile: null,
       ...(opts.resolveClassArtifact ? { resolveClassArtifact: opts.resolveClassArtifact } : {}),
+      ...(opts.listClassIds ? { listClassIds: opts.listClassIds } : {}),
     },
   )
   return { service, storage }
@@ -264,6 +266,31 @@ describe("ContractService", () => {
         ),
       ).rejects.toThrow(/Historical contract instance is missing/)
     })
+
+    it("an anchored lookup reads the instance on the chain it is given, not the singleton's", async () => {
+      const { service: bundledOnly } = buildService({})
+      const bundled = await bundledOnly.getArtifactForContract(DEFAULT_CONTRACTS.oxideToken)
+      const classId = (await getContractClassFromArtifact(bundled)).id
+      ContractService.resetInstance()
+
+      const empty = {
+        getContractInstance: async () => undefined,
+        getContractArtifact: async () => undefined,
+      }
+      const { service } = buildService({
+        node: { getContract: async () => undefined },
+        pxe: empty,
+        resolveClassArtifact: unusedResolver,
+      })
+      const sourceNode = { getContract: async () => ({ currentContractClassId: classId }) }
+
+      const artifact = await service.getArtifactForContract(
+        DEFAULT_CONTRACTS.oxideToken,
+        await AztecAddress.random(),
+        { node: sourceNode as never, pxe: empty as never },
+      )
+      expect(artifact.name).toBe(bundled.name)
+    })
   })
 
   describe("registerUserAccount runs one registration per account at a time", () => {
@@ -305,8 +332,8 @@ describe("ContractService", () => {
       const instance = await alphaInstance(service, secretKey)
 
       await Promise.all([
-        service.registerUserAccount(instance, secretKey),
-        service.registerUserAccount(instance, secretKey),
+        service.registerUserAccount(instance, secretKey, undefined, pxe as never),
+        service.registerUserAccount(instance, secretKey, undefined, pxe as never),
       ])
 
       expect(calls.registerContract).toBe(1)
@@ -319,10 +346,10 @@ describe("ContractService", () => {
       const secretKey = Fr.random()
       const instance = await alphaInstance(service, secretKey)
 
-      await expect(service.registerUserAccount(instance, secretKey)).rejects.toThrow(
-        /keystore unavailable/,
-      )
-      await service.registerUserAccount(instance, secretKey)
+      await expect(
+        service.registerUserAccount(instance, secretKey, undefined, pxe as never),
+      ).rejects.toThrow(/keystore unavailable/)
+      await service.registerUserAccount(instance, secretKey, undefined, pxe as never)
 
       expect(calls.registerAccount).toBe(2)
     })
@@ -342,7 +369,7 @@ describe("ContractService", () => {
       })
       const { service } = buildService({ pxe, node, resolveClassArtifact: resolver })
 
-      await service.registerUserAccount(instance, secretKey)
+      await service.registerUserAccount(instance, secretKey, undefined, pxe as never)
 
       expect(calls.classes).toEqual([bundled.name])
       expect(calls.registerAccount).toBe(1)
@@ -370,30 +397,68 @@ describe("ContractService", () => {
         publicKeys: (await deriveKeys(secretKey)).publicKeys,
       })
 
-      await service.registerUserAccount(instance, secretKey)
+      await service.registerUserAccount(instance, secretKey, undefined, pxe as never)
 
       expect(resolver).toHaveBeenCalledWith(historicalClass)
       expect(calls.classes).toEqual([historical.name])
       expect(node.getContract).not.toHaveBeenCalled()
     })
 
-    it("a reset singleton over another PXE keeps its own in-flight set", async () => {
-      // The first instance's registration never settles; the reset one must not wait on it.
-      const stuck = emptyPxe()
-      stuck.pxe.getContractInstance = () => new Promise(() => {})
-      const first = buildService({ pxe: stuck.pxe })
+    it("registers into the PXE it is given, each PXE with its own in-flight set", async () => {
+      // The service's own PXE never settles; a registration into another PXE must not wait on it.
+      const own = emptyPxe()
+      own.pxe.getContractInstance = () => new Promise(() => {})
+      const { service } = buildService({ pxe: own.pxe })
       const secretKey = Fr.random()
-      const instance = await alphaInstance(first.service, secretKey)
-      void first.service.registerUserAccount(instance, secretKey)
+      const instance = await alphaInstance(service, secretKey)
+      void service.registerUserAccount(instance, secretKey, undefined, own.pxe as never)
 
-      ContractService.resetInstance()
-      const fresh = emptyPxe()
-      const second = buildService({ pxe: fresh.pxe })
-      await second.service.registerUserAccount(instance, secretKey)
+      const other = emptyPxe()
+      await service.registerUserAccount(instance, secretKey, undefined, other.pxe as never)
 
-      expect(fresh.calls.registerContract).toBe(1)
-      expect(fresh.calls.registerAccount).toBe(1)
-      expect(stuck.calls.registerContract).toBe(0)
+      expect(other.calls.registerContract).toBe(1)
+      expect(other.calls.registerAccount).toBe(1)
+      expect(own.calls.registerContract).toBe(0)
     })
+  })
+})
+
+describe("ContractService.getKnownClassIds", () => {
+  beforeEach(() => ContractService.resetInstance())
+  afterAll(() => ContractService.resetInstance())
+
+  it("lists the bundled class, then the manifest's classes under the artifact's name, once each", async () => {
+    const { service: bundledOnly } = buildService({})
+    const bundled = await bundledOnly.getArtifactForContract(DEFAULT_CONTRACTS.paylinkDirect)
+    const current = (await getContractClassFromArtifact(bundled)).id.toString()
+    ContractService.resetInstance()
+
+    const historical = `0x${"ab".repeat(32)}`
+    const listClassIds = vi.fn(async () => [historical, current])
+    const { service } = buildService({ listClassIds })
+
+    expect(await service.getKnownClassIds(DEFAULT_CONTRACTS.paylinkDirect)).toEqual([
+      current,
+      historical,
+    ])
+    expect(listClassIds).toHaveBeenCalledWith(bundled.name)
+  })
+
+  it("resolves and lists an override's class, so a link made under it reopens", async () => {
+    const { service: bundledOnly } = buildService({})
+    const email = await bundledOnly.getArtifactForContract(DEFAULT_CONTRACTS.paylinkEmail)
+    const overrideClass = (await getContractClassFromArtifact(email)).id.toString()
+    ContractService.resetInstance()
+
+    const { service } = buildService({})
+    expect(await service.getKnownClassIds(DEFAULT_CONTRACTS.paylinkDirect)).not.toContain(
+      overrideClass,
+    )
+    service.overrideArtifact(DEFAULT_CONTRACTS.paylinkDirect, email)
+
+    expect(await service.getArtifactForClass(overrideClass, DEFAULT_CONTRACTS.paylinkDirect)).toBe(
+      email,
+    )
+    expect(await service.getKnownClassIds(DEFAULT_CONTRACTS.paylinkDirect)).toContain(overrideClass)
   })
 })

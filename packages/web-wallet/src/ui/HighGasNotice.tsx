@@ -49,7 +49,7 @@ export function HighGasNotice() {
   return (
     <Warning
       title={`Ethereum gas is high (${Number(formatGwei(gasPrice)).toFixed(1)} gwei)`}
-      style={{ marginTop: -16, marginBottom: 24 }}
+      style={{ marginTop: -16, marginBottom: -16 }}
     >
       Deposits and withdrawals may take longer than usual, and fees may be higher.
     </Warning>

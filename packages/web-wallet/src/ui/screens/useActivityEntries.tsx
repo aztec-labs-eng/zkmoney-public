@@ -8,6 +8,8 @@ import {
   type ReactNode,
 } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
+import { formatUnits } from "viem"
+import { DEFAULT_DECIMALS, REGISTRATION_SCHEDULE_DEFAULTS } from "@obsidion/core/constants"
 import {
   ActivityListRow,
   GradientInitialAvatar,
@@ -26,6 +28,7 @@ import {
   buildPaidLinkRows,
   buildRequestRows,
   canSelfFinalizeWithdrawal,
+  canSelfRunSkyEscrow,
   globalEventEmitter,
   isFromNonContact,
   isSettledSipaPhase,
@@ -38,6 +41,7 @@ import {
   refundInFlightVersion,
   requestLinkedSipaAddresses,
   useAssetContext,
+  useAztecContext,
   useCachedRecords,
   useContactsDirectory,
   withdrawalGroupAmount,
@@ -47,6 +51,8 @@ import {
   withoutAnsweredRequests,
   worstWithdrawalPhase,
   WITHDRAWAL_TERMINAL_PHASES,
+  type ActivityCsvSources,
+  type SavingsCsvSources,
   type ActivityItem,
   type BridgeActivityItem,
   type PaymentRequest,
@@ -57,9 +63,17 @@ import {
   type WithdrawalRecord,
   useSyncCatchingUp,
   WITHDRAWAL_PHASE_COPY,
+  savingsLedger,
+  type SavingsLedger,
+  savingsMoveEta,
+  savingsMoveOfWithdrawal,
+  useSavingsPosition,
+  useSavingsSource,
+  type SavingsMoveRecord,
 } from "@obsidion/front-core"
 import { declineRequestById, remindRequestById } from "../../features/contacts/requestActions"
 import { RequestDetailModal } from "../../features/contacts/RequestDetailModal"
+import { unlistedCodeRequestIds } from "../../features/receive/receiveCode"
 import { DepositExitModal } from "../../features/deposit/DepositExitModal"
 import {
   isStuckSweep,
@@ -85,6 +99,15 @@ import { usePaylinkDeps } from "../../features/paylink/usePaylinkDeps"
 import { IncomingRequestDetailModal } from "../../features/requests/IncomingRequestDetailModal"
 import { SharePaylinkModal } from "../../features/requests/SharePaylinkModal"
 import { RemoveRequestLinkModal } from "../../features/requests/RemoveRequestLinkModal"
+import { SavingsMoveDetailModal } from "../../features/savings/SavingsMoveDetailModal"
+import { savingsFinalizeDeployment } from "../../features/savings/savingsGateway"
+import {
+  SavingsMoveRow,
+  isSavingsMoveSettled,
+  savingsMoveEntries,
+} from "../../features/savings/SavingsMoveRow"
+import { getSavingsMoveStore } from "../../features/savings/savingsMoveStore"
+import { useNowMs, useSavingsMoveTiming } from "../../features/savings/savingsMoveTiming"
 import { useWithdrawals } from "../../features/withdraw/useWithdrawals"
 import { SwapExitModal } from "../../features/withdraw/SwapExitModal"
 import { swapExitReasonFor, type SwapExitReason } from "../../features/withdraw/swapRecovery"
@@ -94,6 +117,7 @@ import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { rowTimestamp, shortAddr, usdFigure } from "../format"
 import { writeClipboard } from "../hooks"
 import { usePhoneLayout } from "../usePhoneLayout"
+import { arrivingFunds, type ArrivingFunds } from "./arrivingFunds"
 import { contactDisplayName } from "../../features/contacts/contactsView"
 import {
   buildActivityRows,
@@ -108,7 +132,7 @@ import {
   type ActivityRowView,
   type SipaDepositIntentRow,
 } from "./activityView"
-import { DepositDetailModal } from "./DepositDetailModal"
+import { DepositDetailModal, TagPurchaseModal } from "./DepositDetailModal"
 import { FreshWithdrawalDetailModal } from "./FreshWithdrawalDetailModal"
 import { TxDetailModal } from "./TxDetailModal"
 import { WithdrawalDetailModal, withdrawalHeroAmount } from "./WithdrawalDetailModal"
@@ -343,8 +367,10 @@ type BridgeExit =
       canSweep: boolean
       sweepable: boolean
     }
-  | { kind: "withdrawal"; record: WithdrawalRecord }
+  /** `savings`: a move out's burn, finalized on the Savings deployment and its co-signer. */
+  | { kind: "withdrawal"; record: WithdrawalRecord; savings?: boolean }
   | { kind: "swap"; record: WithdrawalRecord; reason: SwapExitReason }
+  | { kind: "skyEscrow"; move: SavingsMoveRecord; burn: WithdrawalRecord }
 
 /** Actionable pending-request row — Decline/Send incoming, Cancel/Remind to a contact, Remove/Share on
  *  a link. Remove only drops the local row: nothing can revoke a minted link. */
@@ -357,8 +383,11 @@ export function RequestRow({
   onRemind,
   onRemove,
   onOpen,
+  compact = false,
 }: {
   row: RequestRowView
+  /** No action buttons: the row opens its detail. */
+  compact?: boolean
   reminded: boolean
   onDecline: (id: string) => void
   onSend: (row: RequestRowView) => void
@@ -406,7 +435,7 @@ export function RequestRow({
           />
         ) : undefined
       }
-      actions={actions}
+      actions={compact ? [] : actions}
       onClick={onOpen}
       ariaLabel={onOpen ? "Open request details" : undefined}
     />
@@ -424,15 +453,29 @@ export interface ActivityEntry {
   /** A request nobody has paid yet: Pending only, never Sent or Received, until money moves. */
   unpaidRequest?: boolean
   node: ReactNode
+  /** An unpaid request as a plain row that opens its detail, for the Requests list. */
+  compactNode?: ReactNode
 }
 
 export interface ActivityEntriesState {
   entries: ActivityEntry[]
+  /** The Savings account's feed: its moves, as it sees them. */
+  savingsEntries: ActivityEntry[]
+  /** True once the move store has loaded, so an empty Savings feed is known to be empty. */
+  savingsHydrated: boolean
+  /** What the Savings moves put in and took out; undefined until the moves are read. */
+  savingsLedger: SavingsLedger | undefined
+  /** Funds on their way into Main and Savings, which their balances show before they land. */
+  arriving: ArrivingFunds
   /** True once every source has served its last-known state from storage. */
   hydrated: boolean
   /** The contacts could not be read, so incoming requests are hidden. The directory retries. */
   requestsUnavailable: boolean
   detailModals: ReactNode
+  /** The stored records behind the feed, for the accounting export. */
+  csvSources: ActivityCsvSources
+  /** The Savings feed's moves and their burns, for its export. */
+  savingsCsvSources: SavingsCsvSources
 }
 
 /**
@@ -488,15 +531,68 @@ export function findBridgeItem(
   )
 }
 
+/**
+ * The detail a routed bridge row opens: a Savings move's burn opens the Savings detail its row
+ * opens, a leg of a fresh withdrawal its group, a deposit its address.
+ */
+export function bridgeDetailTarget(
+  hit: BridgeActivityItem,
+): { savings: string } | { withdrawal: string } | { deposit: string } {
+  if (hit.kind === "bridge.sipaDeposit") return { deposit: hit.record.sipaAddress }
+  if (hit.record.skyMove) return { savings: hit.record.localId }
+  return { withdrawal: hit.record.groupId ?? hit.record.localId }
+}
+
+/**
+ * The exit a stalled move offers: `finalize` when no relayer has sent its release, `run` when the
+ * release paid its escrow and nobody has run it since; null while the move is on its way.
+ */
+export function savingsMoveExitOffer(
+  move: SavingsMoveRecord,
+  burn: WithdrawalRecord,
+  now?: number,
+): "finalize" | "run" | null {
+  if (canSelfFinalizeWithdrawal(burn, now)) return "finalize"
+  return canSelfRunSkyEscrow(move, burn, now) ? "run" : null
+}
+
+/** What a registration's signed fee charged for the tag itself: the part above the relayer's sweep fee. */
+function tagPriceOf(record: { registrationFee?: string }): bigint {
+  const fee = BigInt(record.registrationFee ?? 0)
+  const sweepFee = REGISTRATION_SCHEDULE_DEFAULTS.earned_tag.fee
+  return fee > sweepFee ? fee - sweepFee : 0n
+}
+
 export function useActivityEntries(): ActivityEntriesState {
   const navigate = useNavigate()
   const directory = useContactsDirectory()
   const { tokenService } = useAssetContext()
+  const { obsidionWallet } = useAztecContext()
   const { records: withdrawalRecords, checkAgain, hydrated: withdrawalsHydrated } = useWithdrawals()
+  const { records: savingsMoves, hydrated: savingsHydrated } = useCachedRecords(
+    useMemo(getSavingsMoveStore, []),
+  )
+  const savingsSource = useSavingsSource()
+  const savingsPosition = useSavingsPosition().position
+  const savingsSharePrice = savingsPosition?.sharePrice
+  const savingsTiming = useSavingsMoveTiming()
+  const nowMs = useNowMs()
+  const savingsEtaFor = useCallback(
+    (move: SavingsMoveRecord, burn?: WithdrawalRecord) =>
+      savingsTiming ? savingsMoveEta(move, burn, savingsTiming, nowMs) : undefined,
+    [savingsTiming, nowMs],
+  )
+  // A move's detail, by its burn's record id; held by id so the settle pass advances it in place.
+  const [savingsDetailId, setSavingsDetailId] = useState<string | null>(null)
+  const settleSavings = useCallback(
+    () =>
+      void savingsSource?.settle().catch((err) => console.warn("[savings] settle failed:", err)),
+    [savingsSource],
+  )
   const paylinkDeps = usePaylinkDeps()
   const feed = useMemo(getActivityFeed, [])
   const registrationDeposit = useRegistrationDepositEntry()
-  const { hydrated: depositsHydrated } = useCachedRecords(
+  const { records: depositRecords, hydrated: depositsHydrated } = useCachedRecords(
     useMemo(() => SIPADepositStore.get(webStorage), []),
   )
   const [items, setItems] = useState<ActivityItem[]>(() => feed.list())
@@ -511,6 +607,7 @@ export function useActivityEntries(): ActivityEntriesState {
   // value: the tracker advances the record while the sheet is open and the ladder has to follow it.
   const [withdrawalDetailId, setWithdrawalDetailId] = useState<string | null>(null)
   const [depositDetailId, setDepositDetailId] = useState<string | null>(null)
+  const [tagDetailId, setTagDetailId] = useState<string | null>(null)
   const [requestLinkDetail, setRequestLinkDetail] = useState<PaymentRequest | null>(null)
   const [cancelRequestId, setCancelRequestId] = useState<string | null>(null)
   const [removeLinkId, setRemoveLinkId] = useState<string | null>(null)
@@ -646,10 +743,10 @@ export function useActivityEntries(): ActivityEntriesState {
   useEffect(() => {
     const hit = findBridgeItem(items, { openWithdrawalId, openDepositAddress, openTxHash })
     if (!hit) return
-    // A leg of a fresh withdrawal opens as its group.
-    if (hit.kind === "bridge.withdrawal")
-      setWithdrawalDetailId(hit.record.groupId ?? hit.record.localId)
-    else if (hit.kind === "bridge.sipaDeposit") setDepositDetailId(hit.record.sipaAddress)
+    const target = bridgeDetailTarget(hit)
+    if ("savings" in target) setSavingsDetailId(target.savings)
+    else if ("withdrawal" in target) setWithdrawalDetailId(target.withdrawal)
+    else setDepositDetailId(target.deposit)
     setNotice(routerNotice ? { text: routerNotice, staleOn: routerNoticeStaleOn } : undefined)
     navigate(".", { replace: true, state: null })
   }, [
@@ -670,9 +767,12 @@ export function useActivityEntries(): ActivityEntriesState {
   const contactsCurrent = directory.hydrated && !directory.failed
   const requestRows = useMemo(() => {
     const contactTags = approvedContactTags(directory.contacts)
+    const unlisted = unlistedCodeRequestIds()
     return buildRequestRows(
-      withoutAnsweredRequests(requests, transactions).filter((r) =>
-        contactsCurrent ? !isFromNonContact(r, contactTags) : r.direction !== "incoming",
+      withoutAnsweredRequests(requests, transactions).filter(
+        (r) =>
+          !unlisted.has(r.id.toLowerCase()) &&
+          (contactsCurrent ? !isFromNonContact(r, contactTags) : r.direction !== "incoming"),
       ),
       Date.now(),
       sipaRecords,
@@ -750,6 +850,22 @@ export function useActivityEntries(): ActivityEntriesState {
     setExit({ kind: "swap", record, reason: offer.reason })
   }
 
+  const savingsMoveExit = (move: SavingsMoveRecord, burn: WithdrawalRecord | undefined) => {
+    const offer = burn && savingsMoveExitOffer(move, burn)
+    if (!burn || !offer) return undefined
+    const next: BridgeExit =
+      offer === "finalize"
+        ? { kind: "withdrawal", record: burn, savings: move.direction === "out" }
+        : { kind: "skyEscrow", move, burn }
+    return {
+      title: offer === "finalize" ? "Finalize manually" : "Run move manually",
+      onStart: () => {
+        setSavingsDetailId(null)
+        setExit(next)
+      },
+    }
+  }
+
   const withdrawalExit = (record: WithdrawalRecord) => {
     if (canSelfFinalizeWithdrawal(record)) {
       return { title: "Finalize manually", onStart: () => openWithdrawalExit(record) }
@@ -785,6 +901,12 @@ export function useActivityEntries(): ActivityEntriesState {
       item.record.sipaAddress.toLowerCase() === depositDetailId?.toLowerCase(),
   )
   const depositDetail = depositDetailItem?.record ?? null
+  const tagDetail = items.find(
+    (item): item is Extract<ActivityItem, { kind: "bridge.sipaDeposit" }> =>
+      item.kind === "bridge.sipaDeposit" &&
+      item.record.sipaAddress.toLowerCase() === tagDetailId?.toLowerCase(),
+  )?.record
+  const tagDetailTag = tagDetail && registrationTagForDeposit(tagDetail.sipaAddress)
   const depositDetailProcessing = depositDetailItem?.processing
   const depositDetailExit = depositDetail
     ? depositDetailOffer(depositDetail, depositDetailProcessing)
@@ -796,6 +918,29 @@ export function useActivityEntries(): ActivityEntriesState {
         item.kind === "bridge.withdrawal" && item.record.localId === withdrawalDetailId,
     )?.record ?? null
 
+  const requestRowNode = (row: RequestRowView, compact: boolean) => (
+    <RequestRow
+      key={row.id}
+      row={row}
+      compact={compact}
+      reminded={remindedIds.has(row.id)}
+      onDecline={onDecline}
+      onSend={onSend}
+      onCancel={onCancel}
+      onRemind={onRemind}
+      onRemove={row.kind === "outgoingLink" ? setRemoveLinkId : undefined}
+      onOpen={
+        row.kind === "outgoingLink"
+          ? () => openLinkDetail(row.id)
+          : row.kind === "incoming"
+          ? () => setIncomingDetailId(row.id)
+          : row.contactTag
+          ? () => navigate(`/contacts/${encodeURIComponent(row.contactTag!)}`)
+          : undefined
+      }
+    />
+  )
+
   const entries: ActivityEntry[] = [
     ...requestRows.map((row) => ({
       id: row.id,
@@ -804,27 +949,8 @@ export function useActivityEntries(): ActivityEntriesState {
       pending: true,
       unpaidRequest: true,
       incomingRequest: row.kind === "incoming",
-      node: (
-        <RequestRow
-          key={row.id}
-          row={row}
-          reminded={remindedIds.has(row.id)}
-          onDecline={onDecline}
-          onSend={onSend}
-          onCancel={onCancel}
-          onRemind={onRemind}
-          onRemove={row.kind === "outgoingLink" ? setRemoveLinkId : undefined}
-          onOpen={
-            row.kind === "outgoingLink"
-              ? () => openLinkDetail(row.id)
-              : row.kind === "incoming"
-              ? () => setIncomingDetailId(row.id)
-              : row.contactTag
-              ? () => navigate(`/contacts/${encodeURIComponent(row.contactTag!)}`)
-              : undefined
-          }
-        />
-      ),
+      node: requestRowNode(row, false),
+      compactNode: requestRowNode(row, true),
     })),
     ...paidLinkRows.map((row) => ({
       id: row.id,
@@ -952,6 +1078,34 @@ export function useActivityEntries(): ActivityEntriesState {
     ...items.flatMap((item): ActivityEntry[] => {
       if (item.kind === "bridge.withdrawal") {
         if (item.record.groupId) return []
+        // A Savings move's burn: one row for the move, as Main sees it.
+        if (item.record.skyMove) {
+          const move: SavingsMoveRecord = savingsMoves.find(
+            (candidate) => candidate.withdrawalLocalId === item.record.localId,
+          ) ?? { ...savingsMoveOfWithdrawal(item.record)!, startTime: item.record.startTime }
+          return [
+            {
+              id: item.record.localId,
+              ts: bridgeItemTime(item),
+              direction: move.direction === "in" ? "out" : "in",
+              pending: !isSavingsMoveSettled(move, item.record),
+              node: (
+                <SavingsMoveRow
+                  key={item.record.localId}
+                  move={move}
+                  burn={item.record}
+                  perspective="main"
+                  sharePrice={savingsSharePrice}
+                  eta={savingsEtaFor(move, item.record)}
+                  onOpen={() => {
+                    setNotice(undefined)
+                    setSavingsDetailId(item.record.localId)
+                  }}
+                />
+              ),
+            },
+          ]
+        }
         return [
           {
             id: item.record.localId,
@@ -988,7 +1142,41 @@ export function useActivityEntries(): ActivityEntriesState {
         const ts = burn
           ? Math.max(pending ? 0 : bridgeItemTime(item), (burn.endTime ?? burn.startTime) + 1)
           : bridgeItemTime(item)
+        const openDetail = () => {
+          setNotice(undefined)
+          setDepositDetailId(item.record.sipaAddress)
+        }
+        const tag = registrationTagForDeposit(item.record.sipaAddress)
+        // The tag's price came out of the deposit before it reached L2; its own row says where it went.
+        const tagPrice = tagPriceOf(item.record)
+        const tagPurchase =
+          tag && tagPrice && item.record.phase === "claimed"
+            ? [
+                {
+                  id: `${item.record.sipaAddress}:tag`,
+                  ts: ts - 1,
+                  direction: "out" as const,
+                  pending: false,
+                  node: (
+                    <ActivityListRow
+                      key={`${item.record.sipaAddress}:tag`}
+                      counterparty="Tag purchase"
+                      counterpartyBadge={`@${tag}`}
+                      timestamp={rowTimestamp(ts)}
+                      amount={`-${usdFigure(formatUnits(tagPrice, DEFAULT_DECIMALS))}`}
+                      avatarIcon="at"
+                      onClick={() => {
+                        setNotice(undefined)
+                        setTagDetailId(item.record.sipaAddress)
+                      }}
+                      ariaLabel="Open tag purchase details"
+                    />
+                  ),
+                },
+              ]
+            : []
         return [
+          ...tagPurchase,
           {
             id: item.record.sipaAddress,
             ts,
@@ -997,18 +1185,11 @@ export function useActivityEntries(): ActivityEntriesState {
             node: (
               <DepositRow
                 key={item.record.sipaAddress}
-                row={sipaDepositIntentRow(
-                  item.record,
-                  registrationTagForDeposit(item.record.sipaAddress),
-                  !!burn,
-                )}
+                row={sipaDepositIntentRow(item.record, tag, !!burn)}
                 processing={item.processing}
                 arriving={pending ? { net: migrationAmounts(burn)?.netDisplay } : undefined}
                 time={burn ? ts : undefined}
-                onOpen={() => {
-                  setNotice(undefined)
-                  setDepositDetailId(item.record.sipaAddress)
-                }}
+                onOpen={openDetail}
                 onExit={() => openDepositExit(item.record, item.processing)}
               />
             ),
@@ -1033,8 +1214,66 @@ export function useActivityEntries(): ActivityEntriesState {
       : []),
   ].sort((a, b) => b.ts - a.ts)
 
+  const burns = new Map(withdrawalRecords.map((record) => [record.localId, record] as const))
+  const ledger = savingsHydrated ? savingsLedger(savingsMoves, burns) : undefined
+  // The console says why the figure may be off: shares the records do not cover, moves left out.
+  const ledgerKey =
+    ledger && savingsPosition
+      ? `${ledger.shares}/${savingsPosition.shares}/${ledger.excluded
+          .map((e) => e.withdrawalLocalId)
+          .join(",")}`
+      : undefined
+  useEffect(() => {
+    if (!ledger || !savingsPosition || !ledgerKey) return
+    if (ledger.shares !== savingsPosition.shares || ledger.excluded.length > 0)
+      console.info(
+        `[savings] earnings: the counted moves add up to ${ledger.shares} shares, ${savingsPosition.shares} held` +
+          (ledger.excluded.length
+            ? `; left out: ${ledger.excluded
+                .map(
+                  (e) =>
+                    `${e.withdrawalLocalId} (${e.reason}${
+                      e.backfilling ? ", awaiting its escrow run's receipt" : ""
+                    })`,
+                )
+                .join(", ")}`
+            : ""),
+      )
+    // Keyed on what the line would say, so it prints once per change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ledgerKey])
+  const savingsEntries = savingsMoveEntries(
+    savingsMoves,
+    burns,
+    (localId) => {
+      setNotice(undefined)
+      setSavingsDetailId(localId)
+    },
+    savingsSharePrice,
+    savingsEtaFor,
+  )
+  const savingsDetail = savingsDetailId
+    ? savingsMoves.find((move) => move.withdrawalLocalId === savingsDetailId) ??
+      (() => {
+        const record = burns.get(savingsDetailId)
+        const move = record && savingsMoveOfWithdrawal(record)
+        return move ? { ...move, startTime: record.startTime } : null
+      })()
+    : null
+
   return {
     entries,
+    savingsEntries,
+    savingsHydrated,
+    savingsLedger: ledger,
+    arriving: arrivingFunds({
+      // The store, not the feed: the feed hides a deposit behind the burn from this wallet that paid it.
+      deposits: depositRecords,
+      burns: withdrawalRecords,
+      moves: savingsMoves,
+      sharePrice: savingsSharePrice,
+      transactions,
+    }),
     hydrated:
       depositsHydrated &&
       withdrawalsHydrated &&
@@ -1043,6 +1282,8 @@ export function useActivityEntries(): ActivityEntriesState {
       (directory.hydrated || directory.failed) &&
       !catchingUp,
     requestsUnavailable: directory.failed,
+    csvSources: { transactions, items, requests },
+    savingsCsvSources: { moves: savingsMoves, burns },
     detailModals: (
       <>
         {registrationDeposit?.modal}
@@ -1080,6 +1321,14 @@ export function useActivityEntries(): ActivityEntriesState {
               setWithdrawalDetailId(record.localId)
             }}
             onClose={() => setWithdrawalDetailId(null)}
+          />
+        )}
+        {tagDetail && tagDetailTag && (
+          <TagPurchaseModal
+            record={tagDetail}
+            tag={tagDetailTag}
+            price={formatUnits(tagPriceOf(tagDetail), DEFAULT_DECIMALS)}
+            onClose={() => setTagDetailId(null)}
           />
         )}
         {depositDetail && (
@@ -1121,7 +1370,26 @@ export function useActivityEntries(): ActivityEntriesState {
           />
         )}
         {exit?.kind === "withdrawal" && (
-          <WithdrawalExitModal record={exit.record} onClose={() => setExit(null)} />
+          <WithdrawalExitModal
+            record={exit.record}
+            deployment={
+              exit.savings && obsidionWallet
+                ? () => savingsFinalizeDeployment(obsidionWallet, exit.record)
+                : undefined
+            }
+            onClose={() => setExit(null)}
+          />
+        )}
+        {exit?.kind === "skyEscrow" && (
+          <SwapExitModal
+            record={withdrawalRecords.find((r) => r.localId === exit.burn.localId) ?? exit.burn}
+            move={
+              savingsMoves.find((m) => m.withdrawalLocalId === exit.move.withdrawalLocalId) ??
+              exit.move
+            }
+            reason="stuck"
+            onClose={() => setExit(null)}
+          />
         )}
         {exit?.kind === "swap" && (
           <SwapExitModal
@@ -1142,6 +1410,17 @@ export function useActivityEntries(): ActivityEntriesState {
               setIncomingDetailId(null)
               onSend(incomingDetailRow)
             }}
+          />
+        )}
+        {savingsDetail && (
+          <SavingsMoveDetailModal
+            move={savingsDetail}
+            burn={burns.get(savingsDetail.withdrawalLocalId)}
+            sharePrice={savingsSharePrice}
+            eta={savingsEtaFor(savingsDetail, burns.get(savingsDetail.withdrawalLocalId))}
+            onCheckAgain={savingsSource ? settleSavings : undefined}
+            exit={savingsMoveExit(savingsDetail, burns.get(savingsDetail.withdrawalLocalId))}
+            onClose={() => setSavingsDetailId(null)}
           />
         )}
         {removeLinkId && (

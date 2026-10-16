@@ -27,6 +27,7 @@ import {
 import { stashTicketSignup } from "../src/features/paylink/claimStash"
 import { linkIdentity } from "../src/features/paylink/linkIdentity"
 import { boundTicketSignup } from "../src/features/paylink/ticketContinuation"
+import { PAID, PAID_ASK, RANDOM, RANDOM_ASK } from "./support/registrationPrices"
 import { signOut } from "../src/features/identity/signOut"
 import { testWalletDbs } from "./support/fakeWalletDb"
 import {
@@ -378,9 +379,9 @@ describe("registrationDepositCredit", () => {
       dai(9.45),
     ],
     [
-      "staging's 15 DAI deposit, 5 DAI fee and 0.1 cut",
-      { gross: dai(15), floor: dai(15), feeOwed: dai(5), fpcCut: dai(0.1) },
-      dai(9.9),
+      "staging's 10 DAI deposit, 5.5 DAI fee and 0.1 cut",
+      { gross: dai(10), floor: dai(9.4), feeOwed: dai(5.5), fpcCut: dai(0.1) },
+      dai(4.4),
     ],
   ])("nets %s", (_, input, credit) => {
     expect(registrationDepositCredit(input)).toEqual({ credit, short: false })
@@ -578,27 +579,33 @@ it("preserves the campaign expectation when the same quote is refreshed, but nev
 })
 
 describe("what to ask for and what the chain takes are two figures", () => {
-  // Staging's v9 controller: a 14.5 floor under the 15 every registration is asked for.
-  const staging = { min: dai(9.5), fee: dai(5) }
-  // An earned schedule: the tag price waived down to the relayer's cut, its 4.9 floor under the 5
-  // an earned tag is asked for.
-  const earned = { min: dai(4.4), fee: dai(0.5) }
-  // Staging's portal funding cut, under both minimums.
+  // The default schedules; staging's portal funding cut sits under both minimums, so each floor is
+  // its fee plus its minimum.
+  const paid = PAID
+  const earned = RANDOM
   const CUT = dai(0.1)
+  // An earned schedule whose floor is over the earned ask.
+  const overAsk = { min: RANDOM_ASK, fee: RANDOM.fee }
 
   it.each([
     ["before any schedule is known, with no split", undefined, CUT, undefined, undefined],
-    ["once the schedule lands, with headroom over the floor", staging, CUT, dai(5), dai(14.5)],
-    ["on the schedule alone, the floor waiting for the cut", staging, undefined, dai(5), undefined],
+    [
+      "once the schedule lands, with headroom over the floor",
+      paid,
+      CUT,
+      paid.fee,
+      paid.fee + paid.min,
+    ],
+    ["on the schedule alone, the floor waiting for the cut", paid, undefined, paid.fee, undefined],
   ])("asks the constant standard total %s", (_, schedule, cut, fee, floor) => {
-    expect(registrationQuote(schedule, "standard", cut)).toEqual({ total: dai(15), fee, floor })
+    expect(registrationQuote(schedule, "standard", cut)).toEqual({ total: PAID_ASK, fee, floor })
   })
 
   it("asks the earned total for an earned schedule, with headroom over its floor", () => {
     const quote = registrationQuote(earned, "earned_tag", CUT)
-    expect(quote.total).toBe(dai(5))
-    expect(quote.floor).toBe(dai(4.9))
-    expect(registrationQuote(undefined, "earned_tag", CUT).total).toBe(dai(5))
+    expect(quote.total).toBe(RANDOM_ASK)
+    expect(quote.floor).toBe(earned.fee + earned.min)
+    expect(registrationQuote(undefined, "earned_tag", CUT).total).toBe(RANDOM_ASK)
   })
 
   it("prices the floor off the cut once it outranks the minimum", () => {
@@ -607,14 +614,14 @@ describe("what to ask for and what the chain takes are two figures", () => {
   })
 
   it("reads a signed earned floor under the ask as quotable, and one over it as not", () => {
-    expect(floorExceedsAsk({ min: dai(4.4), fee: dai(0.5) }, "earned_tag", CUT)).toBe(false)
-    expect(floorExceedsAsk({ min: dai(5), fee: dai(0.5) }, "earned_tag", CUT)).toBe(true)
-    // The standard ask leaves the same schedule far inside its own bar.
-    expect(floorExceedsAsk({ min: dai(5), fee: dai(0.5) }, "standard", CUT)).toBe(false)
+    expect(floorExceedsAsk(earned, "earned_tag", CUT)).toBe(false)
+    expect(floorExceedsAsk(overAsk, "earned_tag", CUT)).toBe(true)
+    // The standard ask leaves the same schedule inside its own bar.
+    expect(floorExceedsAsk(overAsk, "standard", CUT)).toBe(false)
     // A cut that outranks the minimum lifts the floor over the earned ask.
-    expect(floorExceedsAsk({ min: dai(4.4), fee: dai(0.5) }, "earned_tag", dai(4.5))).toBe(true)
+    expect(floorExceedsAsk(earned, "earned_tag", RANDOM_ASK)).toBe(true)
     // No cut, no verdict.
-    expect(floorExceedsAsk({ min: dai(5), fee: dai(0.5) }, "earned_tag", undefined)).toBeUndefined()
+    expect(floorExceedsAsk(overAsk, "earned_tag", undefined)).toBeUndefined()
   })
 
   it("names the schedule a stored waiver or a wire `reduced` flag stands for", () => {
@@ -650,7 +657,7 @@ describe("what to ask for and what the chain takes are two figures", () => {
     expect(quotedRegistrationKind(undefined, earned, CUT)).toBe("standard")
     expect(quotedRegistrationKind(true, earned, CUT)).toBe("earned_tag")
     // A waived schedule whose floor outgrew the earned ask is quoted on the standard one.
-    expect(quotedRegistrationKind(true, { min: dai(5), fee: dai(0.5) }, CUT)).toBe("standard")
+    expect(quotedRegistrationKind(true, overAsk, CUT)).toBe("standard")
     // Neither figure can be named without the schedule or the cut the floor is priced against.
     expect(quotedRegistrationKind(true, undefined, CUT)).toBe("earned_tag")
     expect(quotedRegistrationKind(true, earned, undefined)).toBeUndefined()

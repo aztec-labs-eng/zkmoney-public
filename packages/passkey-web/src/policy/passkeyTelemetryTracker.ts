@@ -13,14 +13,17 @@ import type {
   PasskeyRequestHook,
   PasskeyRequestSignal,
 } from "../ceremony/passkeyCeremony.js"
+import { decodeUserHandleProvenance } from "../ceremony/userHandle.js"
 import { currentDevicePosture } from "./devicePosture.js"
 import {
   type PhoneReach,
+  currentPlatformAuthenticator,
   mislabelledAssertion,
   mislabelledCreation,
   safariMislabelsCrossDevice,
 } from "./passkeyCapabilities.js"
 import { providerSlugFor } from "./passkeyProviders.js"
+import { madeOnFor } from "./provenance.js"
 import {
   type PasskeyClassification,
   type PasskeyEnvironmentProps,
@@ -32,6 +35,7 @@ import {
   classifyPasskeyError,
   elapsedBucketFor,
   passkeyEnvironmentPropsFor,
+  passkeyErrorNameFor,
   passkeyRouteFor,
   phoneReachFor,
   promptsBucketFor,
@@ -39,15 +43,19 @@ import {
 import {
   PASSKEY_CEREMONIES,
   PASSKEY_FLOWS,
+  PASSKEY_PLATFORM_AUTHENTICATORS,
   PASSKEY_PROVIDERS,
   type PasskeyAttempt,
   type PasskeyBackupEligible,
   type PasskeyCeremonyKind,
   type PasskeyCredentialCreated,
   type PasskeyElapsed,
+  type PasskeyErrorName,
   type PasskeyFlow,
+  type PasskeyMadeOn,
   type PasskeyOutcome,
   type PasskeyPhoneReach,
+  type PasskeyPlatformAuthenticator,
   type PasskeyPrompts,
   type PasskeyProvider,
   type PasskeyReason,
@@ -69,6 +77,12 @@ export type PasskeyCeremonyProps = {
   attempt?: PasskeyAttempt
   elapsed?: PasskeyElapsed
   phone_reach?: PasskeyPhoneReach
+  /** What the answering passkey's handle says about its creation; only on an assertion's row. */
+  made_on?: PasskeyMadeOn
+  /** On a failed row that ended on a thrown value: its name when listed, else `other`. */
+  error_name?: PasskeyErrorName
+  /** On a phone row once the probe has settled. */
+  platform_authenticator?: PasskeyPlatformAuthenticator
 } & PasskeyEnvironmentProps
 
 export type PasskeyTelemetryEnvironment = Pick<PasskeyTelemetrySnapshot, "posture" | "userAgent">
@@ -132,6 +146,11 @@ export type PasskeyTelemetryOptions = {
   environment?: () => Promise<PasskeyTelemetryEnvironment>
   /** What an event or snapshot uses until `environment` resolves. */
   syncEnvironment?: () => PasskeyTelemetryEnvironment
+  /**
+   * What a phone's platform-authenticator check answers. Started once, when the tracker is created
+   * on a phone; nothing waits on it, so a row sent before it settles carries no answer.
+   */
+  platformAuthenticator?: () => Promise<PasskeyPlatformAuthenticator>
   /** The provider a snapshot names before any request of this page load. */
   fallbackProvider?: () => PasskeyProvider
   pageHideTarget?: EventTarget
@@ -164,6 +183,8 @@ type Call = {
   evidence?: PasskeyAnswerEvidence
   /** Creation only: the class the request asked for, which the mislabel gate reads. */
   requested?: PasskeyAttachment
+  /** Assertion only: what the answering passkey's handle claims, read once the result is in. */
+  madeOn?: PasskeyMadeOn
   /** The run whose scope made this request. */
   listener?: PasskeyRequestListener
 }
@@ -189,7 +210,12 @@ type Attempt = {
 
 type Ending =
   | { kind: "succeeded" }
-  | { kind: "failed"; classification: () => PasskeyClassification | undefined }
+  | {
+      kind: "failed"
+      classification: () => PasskeyClassification | undefined
+      /** Set when a thrown value ended the attempt. */
+      errorName?: PasskeyErrorName
+    }
   | { kind: "pagehide" }
 
 const SUCCEEDED: Ending = { kind: "succeeded" }
@@ -261,6 +287,18 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
 
   const currentEnvironment = () => environment ?? quiet(syncEnvironment) ?? UNKNOWN_ENVIRONMENT
 
+  let platformAuthenticator: PasskeyPlatformAuthenticator | undefined
+  if (quiet(syncEnvironment)?.posture === "phone") {
+    quiet(() =>
+      Promise.resolve((options.platformAuthenticator ?? currentPlatformAuthenticator)()).then(
+        (value) => {
+          if (listed(PASSKEY_PLATFORM_AUTHENTICATORS, value)) platformAuthenticator = value
+        },
+        () => {},
+      ),
+    )
+  }
+
   const onPageHide = () => {
     for (const attempt of [...live]) quiet(() => finish(attempt, { kind: "pagehide" }))
   }
@@ -298,6 +336,7 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
         extraNames: options.extraNames,
         extraPredicates: options.extraPredicates,
       }),
+    errorName: passkeyErrorNameFor(error),
   })
 
   /** Closes the attempt and sends what its ending means, if anything. */
@@ -312,7 +351,9 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
     if (attempt.cause) return
     if (ending.kind === "pagehide") return emit(attempt, "abandoned")
     const classification = checkedPasskeyClassification(ending.classification())
-    if (classification) emit(attempt, classification.outcome, classification.reason)
+    if (classification) {
+      emit(attempt, classification.outcome, classification.reason, ending.errorName)
+    }
   }
 
   /**
@@ -339,7 +380,12 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
     return mislabelled ? { ...evidence, authenticatorAttachment: "cross-platform" } : evidence
   }
 
-  function emit(attempt: Attempt, outcome: PasskeyOutcome, reason?: PasskeyReason): void {
+  function emit(
+    attempt: Attempt,
+    outcome: PasskeyOutcome,
+    reason?: PasskeyReason,
+    errorName?: PasskeyErrorName,
+  ): void {
     const issued = issuedCalls(attempt)
     if (issued.length === 0) {
       const key = `${attempt.ceremony}:${attempt.flow ?? ""}:${outcome}:${reason ?? ""}`
@@ -372,6 +418,14 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
       ...(attempt.number === undefined ? {} : { attempt: attemptBucketFor(attempt.number) }),
       ...(last ? { elapsed: elapsedBucketFor((last.settledAt ?? now()) - last.issuedAt) } : {}),
       ...(attempt.phoneReach ? { phone_reach: attempt.phoneReach } : {}),
+      // A creation's row says what answered it; only an assertion's row says what its passkey claims.
+      ...(attempt.ceremony !== "create" && answered?.kind === "assert" && answered.madeOn
+        ? { made_on: answered.madeOn }
+        : {}),
+      ...(errorName && outcome === "failed" ? { error_name: errorName } : {}),
+      ...(platformAuthenticator && env.posture === "phone"
+        ? { platform_authenticator: platformAuthenticator }
+        : {}),
       ...passkeyEnvironmentPropsFor(env),
     }
     quiet(() => Promise.resolve(options.send(props)).catch(() => {}))
@@ -422,6 +476,11 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
     if ("result" in settled && call.kind === "create" && call.evidence) {
       const id = (settled.result as { credentialId?: unknown } | undefined)?.credentialId
       if (typeof id === "string") credentialAaguids.set(id, call.evidence.aaguid)
+    }
+    // The handle names the account, so only the enum it decodes to is kept.
+    if ("result" in settled && call.kind === "assert") {
+      const handle = (settled.result as { userHandle?: unknown } | undefined)?.userHandle
+      if (handle instanceof Uint8Array) call.madeOn = madeOnFor(decodeUserHandleProvenance(handle))
     }
     if (call.attempt.tracked) return
     finish(call.attempt, "result" in settled ? SUCCEEDED : failure(call.attempt, settled.error))

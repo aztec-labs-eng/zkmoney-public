@@ -7,6 +7,7 @@ import { GradientSpinner, Icon, TopNavIconButton } from "@obsidion/web-ds"
  */
 export function OnboardingCard({
   onClose,
+  onBack,
   banner,
   narrow = false,
   className,
@@ -14,6 +15,7 @@ export function OnboardingCard({
 }: {
   /** Renders the close X; omit for states that must resolve via their own buttons. */
   onClose?: () => void
+  onBack?: () => void
   banner?: string
   /** Compact spinner/success card instead of the full step card. */
   narrow?: boolean
@@ -27,6 +29,11 @@ export function OnboardingCard({
         <div className="ww-invite-banner" role="status">
           <Icon name="shield-check" size={24} color="var(--accent-green)" />
           <span>{banner}</span>
+        </div>
+      )}
+      {onBack && (
+        <div className="ww-modal__back">
+          <TopNavIconButton icon="chevron-left" ariaLabel="Back" onClick={onBack} />
         </div>
       )}
       {onClose && (

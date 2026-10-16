@@ -21,8 +21,14 @@ import {
 } from "./nonContactView"
 import { useNonContactRequests } from "./useNonContactRequests"
 
-/** Contacts-page link into the inbox; nothing while the inbox is empty or turned off. */
-export function NonContactRequestsEntry({ className }: { className?: string }) {
+/** Link into the non-contact requests inbox; nothing while it is empty or turned off. */
+export function NonContactRequestsEntry({
+  className,
+  title = "Requests",
+}: {
+  className?: string
+  title?: string
+}) {
   const navigate = useNavigate()
   const { requests } = useNonContactRequests()
   if (requests.length === 0) return null
@@ -41,9 +47,7 @@ export function NonContactRequestsEntry({ className }: { className?: string }) {
         ))}
       </span>
       <span className="ww-noncontacts-entry__text">
-        <span className="ww-noncontacts-entry__title">
-          Requests from people not in your contacts
-        </span>
+        <span className="ww-noncontacts-entry__title">{title}</span>
         <span className="ww-noncontacts-entry__summary">{requestersSummary(requests)}</span>
       </span>
       <span className="ww-noncontacts-entry__count">{requests.length}</span>
@@ -146,7 +150,7 @@ export function NonContactRequestsScreen() {
           />
         </GlassCircleButton>
         <GradientText size={18} weight={600} className="ww-noncontacts__title">
-          Requests from <span>non-contacts</span>
+          Requests
         </GradientText>
         {requests.length > 0 && (
           <button
@@ -162,8 +166,7 @@ export function NonContactRequestsScreen() {
       <div className="ww-panel__scroll">
         <p className="ww-noncontacts__explainer">
           <Icon name="information-line" size={16} />
-          These people are not in your contacts. Their requests stay here and never show in Activity
-          or notifications. Paying a request adds the person to your contacts.
+          These people are not in your contacts.
         </p>
         {unavailable ? (
           <RequestsUnavailableNotice />

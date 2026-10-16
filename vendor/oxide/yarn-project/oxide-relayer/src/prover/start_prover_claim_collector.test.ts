@@ -6,13 +6,15 @@ import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { PublicClient } from 'viem';
 
 import type { RunConfig } from '../cli/config.js';
-import type { DeploymentEnvManifestPublicConfig } from '../config/deployment_env_manifest.js';
+import type { ResolvedManifestDeployment } from '../config/deployment_env_manifest.js';
 import type { L1TxQueue } from '../l1/l1_tx_queue.js';
-import type { ChainlinkPriceOracle } from '../price_oracle/chainlink_price_oracle.js';
+import type { PriceOracle } from '../price_oracle/price_oracle.js';
 
-const connect = jest.fn(() => Promise.resolve({} as TeeSigner));
+const connect = jest.fn((_enclaveUrl: string, _portal: unknown) => Promise.resolve({} as TeeSigner));
 jest.unstable_mockModule('@oxide/oxide-client/fleet_signer.js', () => ({ FleetSigner: { connect } }));
-const create = jest.fn((_args: { signer: TeeSigner }) => Promise.resolve({ start: () => Promise.resolve() }));
+const create = jest.fn((_args: { portals: { signer: TeeSigner }[] }) =>
+  Promise.resolve({ start: () => Promise.resolve() }),
+);
 jest.unstable_mockModule('./prover_claim/oxide_prover_claim_reward_collector.js', () => ({
   OxideProverClaimRewardCollector: { create },
 }));
@@ -21,14 +23,13 @@ const { startProverClaimCollector } = await import('./start_prover_claim_collect
 const config = { aztecNodeUrl: 'http://node.example' } as unknown as RunConfig;
 const client = {} as PublicClient;
 const l1TxQueue = { address: EthAddress.random().toString() } as L1TxQueue;
-const priceOracle = {} as ChainlinkPriceOracle;
+const priceOracle = {} as PriceOracle;
 
-function publicConfig(enclaveUrl: string): DeploymentEnvManifestPublicConfig {
+function deployment(enclaveUrl: string): ResolvedManifestDeployment {
   return {
-    portal: EthAddress.random(),
-    proverSubsidy: EthAddress.random(),
-    enclaveUrl,
-  } as unknown as DeploymentEnvManifestPublicConfig;
+    label: 'v1',
+    publicConfig: { portal: EthAddress.random(), proverSubsidy: EthAddress.random(), enclaveUrl },
+  } as unknown as ResolvedManifestDeployment;
 }
 
 describe('startProverClaimCollector', () => {
@@ -40,20 +41,27 @@ describe('startProverClaimCollector', () => {
   it('finalizes claims with an injected signer and needs no enclave', async () => {
     const signer = {} as TeeSigner;
 
-    await startProverClaimCollector(config, publicConfig(''), client, l1TxQueue, priceOracle, signer);
+    await startProverClaimCollector(config, [deployment(''), deployment('')], client, l1TxQueue, priceOracle, signer);
 
     expect(connect).not.toHaveBeenCalled();
-    expect(create.mock.calls[0]![0].signer).toBe(signer);
+    expect(create.mock.calls[0]![0].portals.map(portal => portal.signer)).toEqual([signer, signer]);
   });
 
-  it('connects to the published enclave fleet when no signer is injected', async () => {
-    await startProverClaimCollector(config, publicConfig('https://enclave.example'), client, l1TxQueue, priceOracle);
+  it('connects to the enclave fleet that each entry publishes when no signer is injected', async () => {
+    const deployments = [deployment('https://a.enclave.example'), deployment('https://b.enclave.example')];
 
-    expect(connect).toHaveBeenCalledTimes(1);
+    await startProverClaimCollector(config, deployments, client, l1TxQueue, priceOracle);
+
+    expect(connect.mock.calls.map(([enclaveUrl]) => enclaveUrl)).toEqual([
+      'https://a.enclave.example',
+      'https://b.enclave.example',
+    ]);
   });
 
-  it('refuses to start with neither an injected signer nor a published enclave', async () => {
-    await expect(startProverClaimCollector(config, publicConfig(''), client, l1TxQueue, priceOracle)).rejects.toThrow(
+  it('refuses to start when an entry publishes no enclave and no signer is injected', async () => {
+    const deployments = [deployment('https://enclave.example'), deployment('')];
+
+    await expect(startProverClaimCollector(config, deployments, client, l1TxQueue, priceOracle)).rejects.toThrow(
       /requires enclaveUrl/,
     );
     expect(create).not.toHaveBeenCalled();

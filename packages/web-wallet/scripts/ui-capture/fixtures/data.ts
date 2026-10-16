@@ -32,6 +32,12 @@ export function entryPath(kind: string): string {
   // Frozen v1 vector built with the codec test map; the current encoder intentionally writes only v3.
   if (kind === "request-legacy") return "/request#2QEDpQEBAmpyZXEtbGVnYWN5A2NhZGEEUAAAAAAAAAAAAAAAAAFuNgAIeCwweDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwY2FmZQ"
   if (kind === "request-invalid") return "/request#unreadable-capture-packet"
+  // A pay page for a tag the demo registry resolves and no contact holds.
+  if (kind === "pay-standing") return "/pay/newfriend"
+  if (kind === "pay") {
+    const packet = { ...requestPacket(), requesterTag: "newfriend", requesterAddress: undefined, amountAtomic: parseUnits("12.5", 18), note: "Lunch" }
+    return `/pay/newfriend#${encodeRequestInline(packet)}`
+  }
   const kinds = ["request", "request-small", "request-any", "request-expired", "request-network", "request-token", "request-legacy"]
   if (!kinds.includes(kind)) throw new Error(`Unknown flow entry: ${kind}`)
   return `/request#${encodeRequestInline(requestPacket(kind))}`

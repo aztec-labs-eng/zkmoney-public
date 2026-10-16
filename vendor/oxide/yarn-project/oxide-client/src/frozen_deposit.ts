@@ -15,10 +15,6 @@ import type { Tuple } from '@aztec/foundation/serialize';
 import { MembershipWitness } from '@aztec/foundation/trees';
 
 import type { OxidePortalContract } from '@oxide/l1-contracts';
-import {
-  computeDepositMessageHash,
-  computeSiloedDepositMessageNullifier,
-} from '@oxide/oxide-lib/deposit_message_hashing.js';
 import { computeFrozenDepositRefundAuthMessage } from '@oxide/oxide-lib/refund_auth_message.js';
 import { type RefundOwner, deriveRefundOwnerAddress } from '@oxide/oxide-lib/refund_authorization.js';
 import type { FrozenDepositRefundFinalizationOutput, TeeSigner } from '@oxide/oxide-lib/types.js';
@@ -26,6 +22,7 @@ import { generateFrozenDepositRefundProof } from '@oxide/refund-proof/index.js';
 
 import type { ArchiveRef } from './archive_ref.js';
 import type { ChainDataSource } from './chain_data_source.js';
+import { computeDepositRefundNullifier, getFrozenDepositMessageSiblingPath } from './deposit_refund_eligibility.js';
 import { PermanentError } from './errors.js';
 import { buildRefundAuthorization } from './refund_signature.js';
 
@@ -64,16 +61,16 @@ export async function buildFrozenDepositRefundProof(
   );
 
   // 1. L1->L2 message membership witness at the frozen tip.
-  const msgWitness = await args.chain.getL1ToL2MessageMembershipWitness(frozenTipHash, args.messageKey);
-  if (!msgWitness) {
-    throw new Error(`No L1->L2 membership witness for deposit message ${args.messageKey} at ${frozenTipHash}`);
-  }
-  const [witnessLeafIndex, msgSiblingPath] = msgWitness;
-  if (witnessLeafIndex !== args.messageLeafIndex) {
-    throw new PermanentError(
-      `Deposit witness leaf index ${witnessLeafIndex} does not match event leaf index ${args.messageLeafIndex}`,
-    );
-  }
+  const deposit = {
+    messageKey: args.messageKey,
+    messageLeafIndex: args.messageLeafIndex,
+    sharedSecretSalt: args.sharedSecretSalt,
+    amount: args.amount,
+    recipient: args.l2Recipient,
+    recipientMasterNullifierHidingKey: args.l2RecipientMasterNullifierHidingKey,
+  };
+  const { messageHash, siloedNullifier } = await computeDepositRefundNullifier(portal, deposit);
+  const msgSiblingPath = await getFrozenDepositMessageSiblingPath(args.chain, frozenTip, deposit);
   const msgSiblingPathTuple = msgSiblingPath.toTuple() as Tuple<Fr, typeof L1_TO_L2_MSG_TREE_HEIGHT>;
   const messageMembershipWitness = new MembershipWitness<typeof L1_TO_L2_MSG_TREE_HEIGHT>(
     L1_TO_L2_MSG_TREE_HEIGHT,
@@ -81,26 +78,7 @@ export async function buildFrozenDepositRefundProof(
     msgSiblingPathTuple,
   );
 
-  const [l2Portal, rollupVersion] = await Promise.all([portal.getL2Portal(), portal.getRollupVersion()]);
-  const messageHash = await computeDepositMessageHash(
-    {
-      l1Portal: portal.address,
-      l1ChainId: portal.getChainId(),
-      l2Portal,
-      rollupVersion,
-    },
-    {
-      sharedSecretSalt: args.sharedSecretSalt,
-      recipient: l2Recipient,
-      amount: args.amount,
-      messageLeafIndex: new Fr(args.messageLeafIndex),
-    },
-  );
-  const siloedNullifier = await computeSiloedDepositMessageNullifier(
-    l2Portal,
-    messageHash,
-    args.l2RecipientMasterNullifierHidingKey,
-  );
+  // 2. The siloed deposit nullifier must not be in the nullifier tree at the frozen tip.
   const lowNullifierMembershipWitness = await args.chain.getLowNullifierMembershipWitness(
     frozenTipHash,
     siloedNullifier,

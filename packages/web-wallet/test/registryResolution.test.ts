@@ -20,6 +20,9 @@ const state = vi.hoisted(() => ({
   account: "0x00000000000000000000000000000000000000aa",
   recordRollupVersion: 4n,
   manifestRollupVersion: "4",
+  /** A retired sibling deployment's rollup version, listed beside the pinned one when set. */
+  retiredRollupVersion: undefined as string | undefined,
+  manifestDown: false,
   manifestFetches: 0,
 }))
 
@@ -49,6 +52,7 @@ vi.mock("viem", async (importOriginal) => {
 vi.stubGlobal("fetch", async (url: string) => {
   if (url !== MANIFEST_URL) throw new Error(`unexpected fetch: ${url}`)
   state.manifestFetches++
+  if (state.manifestDown) return { ok: false, status: 503, json: async () => ({}) }
   return {
     ok: true,
     json: async () => ({
@@ -69,6 +73,27 @@ vi.stubGlobal("fetch", async (url: string) => {
           accountMetadataRegistry: METADATA_REGISTRY,
           ensDomain: "oxidestaging.eth",
         },
+        ...(state.retiredRollupVersion
+          ? [
+              {
+                schemaVersion: "1",
+                label: "v3",
+                portal: `0x${"33".repeat(20)}`,
+                deployedAt: "2026-07-01T00:00:00Z",
+                updatedAt: "2026-07-01T00:00:00Z",
+                rollupVersion: state.retiredRollupVersion,
+                chainId: "31337",
+                token: REGISTRY,
+                l2Token: L2_ADDRESS,
+                enclaveUrl: "http://localhost:9999",
+                nameRegistry: REGISTRY,
+                accountMetadataRegistry: METADATA_REGISTRY,
+                ensDomain: "oxidestaging.eth",
+                accountFactory: `0x${"44".repeat(20)}`,
+                namePortal: `0x${"55".repeat(20)}`,
+              },
+            ]
+          : []),
       ],
     }),
   }
@@ -138,6 +163,8 @@ beforeEach(() => {
   state.account = ACCOUNT
   state.recordRollupVersion = 4n
   state.manifestRollupVersion = "4"
+  state.retiredRollupVersion = undefined
+  state.manifestDown = false
   state.manifestFetches = 0
 })
 
@@ -178,6 +205,43 @@ describe("web registry resolution binder", () => {
     state.account = ACCOUNT
     state.recordRollupVersion = 3n
     expect((await binder.resolveTagForCommit("olduser")).status).toBe("staleRollup")
+  }, 30_000)
+
+  it("sign-in resolves a tag on a retired rollup; contacts still refuse it", async () => {
+    const binder = await loadBinder()
+    state.recordRollupVersion = 3n
+    state.retiredRollupVersion = "3"
+
+    expect(await binder.resolveSignInTag("olduser")).toMatchObject({
+      status: "resolved",
+      rollupId: "3",
+    })
+    expect(await binder.resolveSignInTagForCommit("olduser")).toMatchObject({
+      status: "resolved",
+      rollupId: "3",
+    })
+    expect((await binder.resolveTagViaRegistry("olduser")).status).toBe("staleRollup")
+    expect((await binder.resolveTagForCommit("olduser")).status).toBe("staleRollup")
+    expect(await binder.verifyTag("olduser")).toBeNull()
+  }, 30_000)
+
+  it("sign-in still refuses a tag on a rollup the manifest does not list", async () => {
+    const binder = await loadBinder()
+    state.recordRollupVersion = 2n
+    state.retiredRollupVersion = "3"
+
+    expect((await binder.resolveSignInTag("olduser")).status).toBe("staleRollup")
+  }, 30_000)
+
+  it("a failed retired-list read fails sign-in only for a tag off the current rollup", async () => {
+    const binder = await loadBinder()
+    expect((await binder.resolveSignInTag("alice")).status).toBe("resolved")
+
+    state.manifestDown = true
+    expect((await binder.resolveSignInTag("alice")).status).toBe("resolved")
+
+    state.recordRollupVersion = 3n
+    await expect(binder.resolveSignInTag("olduser")).rejects.toThrow(/503/)
   }, 30_000)
 
   it("verifyTag maps non-discoverable to null and surfaces the identity when resolved", async () => {

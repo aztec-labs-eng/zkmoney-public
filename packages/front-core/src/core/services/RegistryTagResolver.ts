@@ -10,7 +10,8 @@
  * legacy resolver:
  *   - Rollup scoping — a record on a different `rollupVersion` points at a
  *     dead-rollup address, so a mismatch surfaces as `staleRollup` (the legacy
- *     server-side 404), never a live `resolved`.
+ *     server-side 404), never a live `resolved`. Sign-in alone admits a
+ *     retired rollup the profile names.
  *   - Transport vs absence — a confirmed zero-address read is `notFound`
  *     (permanent); an RPC/transport failure throws (retryable). Callers
  *     narrowing to the `ITagForwardResolver` `{ l2Address } | null` contract
@@ -66,7 +67,15 @@ export class TagValidationError extends Error {
 export class RegistryTagResolver {
   constructor(private readonly config: RegistryTagResolverConfig) {}
 
-  async resolveTag(tag: string, currentRollupVersion: bigint): Promise<RegistryTagResolution> {
+  /**
+   * `retiredRollupVersions` admits a record still bound to a rollup the profile has cut over from
+   * (sign-in only). It is read only for a record off the current rollup.
+   */
+  async resolveTag(
+    tag: string,
+    currentRollupVersion: bigint,
+    retiredRollupVersions?: () => Promise<readonly string[]>,
+  ): Promise<RegistryTagResolution> {
     const normalized = normalizeTag(tag)
     if (normalized === null) throw new TagValidationError(`Invalid tag: ${tag}`)
 
@@ -78,7 +87,12 @@ export class RegistryTagResolver {
       nameHash,
     )
     if (record === null) return { status: "notFound" }
-    if (record.rollupVersion !== currentRollupVersion) return { status: "staleRollup" }
+    if (
+      record.rollupVersion !== currentRollupVersion &&
+      !(await retiredRollupVersions?.())?.includes(record.rollupVersion.toString())
+    ) {
+      return { status: "staleRollup" }
+    }
 
     return {
       status: "resolved",

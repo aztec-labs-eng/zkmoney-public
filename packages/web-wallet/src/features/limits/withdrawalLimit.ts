@@ -3,7 +3,13 @@
  * fees included, at the nominal $1 valuation of the settlement token.
  */
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
-import { NOMINAL_USD_VALUATION, withdrawalLimits } from "@obsidion/front-core"
+import {
+  NOMINAL_USD_VALUATION,
+  checkProtocolCeiling,
+  withdrawalLimits,
+  withdrawalMax,
+} from "@obsidion/front-core"
+import { TX_AMOUNT_CAP } from "@obsidion/sdk"
 import { formatPublicLimit, type LimitProblem } from "./publicLimit"
 
 /** The first limit a burn of `debitAtomic` breaks; undefined when it fits. */
@@ -47,4 +53,29 @@ export function assertWithinWithdrawalLimit(
 ): void {
   const problem = withdrawalLimitProblem(debitAtomic, decimals)
   if (problem) throw new Error(withdrawalLimitRefusal(problem, subject))
+}
+
+/**
+ * A Savings move out's limit: the network's maximum per burn, on the shares it burns. The dollar
+ * limit is Main's withdrawals' and does not apply.
+ */
+export function sharesBurnLimitProblem(sharesAtomic: bigint): LimitProblem | undefined {
+  return checkProtocolCeiling(sharesAtomic) === "over" ? "protocol" : undefined
+}
+
+/** The most shares one move out burns. */
+export const sharesBurnMax = (shares: bigint): bigint =>
+  shares > TX_AMOUNT_CAP ? TX_AMOUNT_CAP : shares
+
+/**
+ * The most a withdrawal of `spendableAtomic` takes within Main's limits: the whole balance when it
+ * fits, else the limit, to the cent. Undefined when the token cannot be valued.
+ */
+export function withdrawalMaxAtomic(
+  spendableAtomic: bigint,
+  decimals = DEFAULT_DECIMALS,
+): bigint | undefined {
+  const max = withdrawalMax({ spendableAtomic, decimals, valuation: NOMINAL_USD_VALUATION })
+  if (max.status !== "available") return undefined
+  return max.bound === "balance" ? spendableAtomic : max.atomic
 }

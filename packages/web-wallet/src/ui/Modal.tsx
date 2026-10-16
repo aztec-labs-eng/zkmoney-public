@@ -130,7 +130,9 @@ function useDialogFocus() {
     opener.current = document.activeElement
     opened.current = true
     let returnFocus: HTMLElement | null = null
+    let lowered = false
     const lifecycle: ModalLifecycle = {
+      // Drops an open sheet out of the top layer but leaves it on screen under the body portal.
       suspend() {
         paused.current = true
         if (!dialog.open) return
@@ -138,10 +140,19 @@ function useDialogFocus() {
         returnFocus = focused instanceof HTMLElement && dialog.contains(focused) ? focused : null
         cleanupCloseEvents.current += 1
         dialog.close()
+        dialog.setAttribute("aria-modal", "false")
+        dialog.show()
+        lowered = true
       },
       resume() {
         paused.current = false
-        if (!dialog.isConnected || closing.current || dialog.open) return
+        const wasLowered = lowered
+        lowered = false
+        if (!dialog.isConnected || closing.current || (dialog.open && !wasLowered)) return
+        if (dialog.open) {
+          cleanupCloseEvents.current += 1
+          dialog.close()
+        }
         present(dialog)
         if (returnFocus?.isConnected && dialog.contains(returnFocus)) returnFocus.focus({ preventScroll: true })
         if (!returnFocus || !dialog.contains(document.activeElement)) focusDialogAfterOpen(dialog)

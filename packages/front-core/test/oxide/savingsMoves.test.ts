@@ -21,8 +21,6 @@ const move = (direction: "in" | "out", extra: Partial<SavingsMove> = {}): Saving
   nonce: `0x${"01".repeat(32)}` as Hex,
   recipientCommitment: `0x${"02".repeat(32)}` as Hex,
   amount: "10",
-  releaseTip: "1",
-  escrowTip: "1",
   ...extra,
 })
 
@@ -39,8 +37,15 @@ function deps(opts: { deposit?: boolean; claimFails?: boolean; head?: bigint } =
     opts.deposit === false ? [] : [{ args: { index: 12n, amount: 34n } }],
   )
   const getBlockNumber = vi.fn(async () => opts.head ?? 100n)
-  // A block is final 64 blocks behind the head.
-  const getBlock = vi.fn(async () => ({ number: (opts.head ?? 100n) - 64n }))
+  // A block is final 64 blocks behind the head; blocks are 12 s apart, the head at 1,000,000 s.
+  const getBlock = vi.fn(async (arg: { blockTag?: string; blockNumber?: bigint }) =>
+    arg.blockNumber !== undefined
+      ? {
+          number: arg.blockNumber,
+          timestamp: 1_000_000n - ((opts.head ?? 100n) - arg.blockNumber) * 12n,
+        }
+      : { number: (opts.head ?? 100n) - 64n },
+  )
   const settleDeps: SavingsMoveSettleDeps = {
     publicClient: { getContractEvents, getBlockNumber, getBlock } as never,
     masterSecret,
@@ -48,7 +53,7 @@ function deps(opts: { deposit?: boolean; claimFails?: boolean; head?: bigint } =
     main: { portal: MAIN, fromBlock: 3n, claimer: claimer("main") },
     savings: { portal: SAVINGS, fromBlock: 5n, claimer: claimer("savings") },
   }
-  return { settleDeps, claims, getContractEvents }
+  return { settleDeps, claims, getContractEvents, getBlock }
 }
 
 describe("settleSavingsMove", () => {
@@ -88,7 +93,7 @@ describe("settleSavingsMove", () => {
     const { settleDeps, claims } = deps({ deposit: false })
     const pending = move("in")
     expect(await settleSavingsMove(pending, settleDeps)).toEqual({
-      move: { ...pending, depositScanFrom: "37" },
+      move: { ...pending, depositScanFrom: "37", depositScanFloor: expect.any(String) },
     })
     expect(claims.savings).not.toHaveBeenCalled()
   })
@@ -96,7 +101,7 @@ describe("settleSavingsMove", () => {
   it("searches from the move's cursor a window at a time", async () => {
     const { settleDeps, getContractEvents } = deps({ deposit: false, head: 25_000n })
     const { move: settled } = await settleSavingsMove(
-      move("out", { depositScanFrom: "1000" }),
+      move("out", { depositScanFrom: "1000", depositScanFloor: "1000" }),
       settleDeps,
     )
     expect(
@@ -115,7 +120,7 @@ describe("settleSavingsMove", () => {
   it("resumes a long search on the next sync", async () => {
     const { settleDeps, getContractEvents } = deps({ deposit: false, head: 1_000_000n })
     const { move: settled } = await settleSavingsMove(
-      move("out", { depositScanFrom: "0" }),
+      move("out", { depositScanFrom: "0", depositScanFloor: "0" }),
       settleDeps,
     )
     expect(getContractEvents).toHaveBeenCalledTimes(20)
@@ -124,7 +129,7 @@ describe("settleSavingsMove", () => {
 
   it("keeps the same move when its cursor is already at the head", async () => {
     const { settleDeps } = deps({ deposit: false })
-    const atHead = move("in", { depositScanFrom: "100" })
+    const atHead = move("in", { depositScanFrom: "100", depositScanFloor: "100" })
     expect((await settleSavingsMove(atHead, settleDeps)).move).toBe(atHead)
   })
 
@@ -133,6 +138,78 @@ describe("settleSavingsMove", () => {
     const { move: settled, claimError } = await settleSavingsMove(move("in"), settleDeps)
     expect(settled.deposit).toEqual({ inboxIndex: "12", amount: "34", claimed: false })
     expect(claimError).toBeInstanceOf(Error)
+  })
+
+  it("reads a claim the token already stored as claimed, with no error", async () => {
+    const { settleDeps } = deps()
+    settleDeps.savings.claimer = async () => ({
+      claimSweptDeposit: async () => {
+        throw new Error("Assertion failed: deposit already stored")
+      },
+    })
+    const { move: settled, claimError } = await settleSavingsMove(move("in"), settleDeps)
+    expect(claimError).toBeUndefined()
+    expect(settled.deposit).toEqual({ inboxIndex: "12", amount: "34", claimed: true })
+  })
+
+  it("searches a move with no cursor from the block of its burn's start, never the chain's start", async () => {
+    const { settleDeps, getContractEvents, getBlock } = deps({ deposit: false, head: 100_000n })
+    // The burn began 6,000 s before the head: the last block at or before then, 500 blocks back.
+    await settleSavingsMove(
+      move("in"),
+      { ...settleDeps, savings: { ...settleDeps.savings, fromBlock: undefined } },
+      (1_000_000 - 6_000) * 1000,
+    )
+    expect(getContractEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ fromBlock: 100_000n - 500n }),
+    )
+    // Recent blocks came fast (1 s apart over the last 1,000): an average of them would land after
+    // the burn, the block found by its timestamp does not.
+    getBlock.mockImplementation(async (arg: { blockTag?: string; blockNumber?: bigint }) =>
+      arg.blockNumber === undefined
+        ? { number: 100_000n - 64n }
+        : {
+            number: arg.blockNumber,
+            timestamp:
+              arg.blockNumber >= 99_000n
+                ? 1_000_000n - (100_000n - arg.blockNumber)
+                : 1_000_000n - 1_000n - (99_000n - arg.blockNumber) * 12n,
+          },
+    )
+    getContractEvents.mockClear()
+    const burnAt = 1_000_000 - 1_000 - 600
+    await settleSavingsMove(
+      move("in"),
+      { ...settleDeps, savings: { ...settleDeps.savings, fromBlock: undefined } },
+      burnAt * 1000,
+    )
+    expect(getContractEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ fromBlock: 99_000n - 50n }),
+    )
+    // Never before the deployment's block, and the chain's start only without a start time.
+    getContractEvents.mockClear()
+    await settleSavingsMove(move("in"), settleDeps, (1_000_000 - 6_000_000) * 1000)
+    expect(getContractEvents).toHaveBeenCalledWith(expect.objectContaining({ fromBlock: 5n }))
+  })
+
+  it("rebuilds a move from its burn with the cursor the burn's meta carries", async () => {
+    const { savingsMoveOfWithdrawal } = await import("../../src/oxide/savingsMoves")
+    const record = {
+      localId: "w1",
+      recipient: "0x00000000000000000000000000000000000000ee",
+      amount: "10",
+      rawAmount: "10",
+      startTime: 1,
+      phase: "submitting",
+      skyMove: {
+        ...move("in"),
+        factory: "0xf",
+        recoveryCommitment: "0x03",
+        relayerTip: "1",
+        depositScanFrom: "11850000",
+      },
+    } as never
+    expect(savingsMoveOfWithdrawal(record)?.depositScanFrom).toBe("11850000")
   })
 
   it("leaves a claimed or recovered move alone", async () => {

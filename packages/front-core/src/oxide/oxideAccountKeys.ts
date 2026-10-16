@@ -7,8 +7,8 @@
  *
  * The R1 key is NOT derived here — it is the device's real persisted passkey public
  * key (a derived software R1 would fail OxideAccount validation when the passkey
- * later signs). Only the secp256k1 bootstrap and stealth keys and the swap-escrow recovery salt
- * are derived.
+ * later signs). Derived here: the secp256k1 bootstrap and stealth keys, the self-SIPA key the
+ * wallet's own deposit addresses hash from, and the escrow salts.
  */
 
 import {
@@ -23,7 +23,8 @@ import {
 import { privateKeyToAccount } from "viem/accounts"
 import { secp256k1 } from "@noble/curves/secp256k1"
 import { Fr } from "@aztec/aztec.js/fields"
-import { OXIDE_L1_BOOTSTRAP_KEY_LABEL } from "@obsidion/core/constants"
+import { OXIDE_L1_BOOTSTRAP_KEY_LABEL, OXIDE_SELF_SIPA_KEY_LABEL } from "@obsidion/core/constants"
+import type { SipaSelfResolverKeys } from "@obsidion/sdk"
 
 /** Aztec `Fr` (or any field element); only `.toString()` (0x-hex) is used, matching oxide. */
 export interface FieldLike {
@@ -79,6 +80,19 @@ export function deriveStealthKey(masterSecret: FieldLike): { scalar: bigint; pub
       x: BigInt(bytesToHex(uncompressed.subarray(1, 33))),
       y: BigInt(bytesToHex(uncompressed.subarray(33, 65))),
     },
+  }
+}
+
+/** The key the wallet's own SIPA salts hash from. Held by the wallet alone; the registry never sees it. */
+export function deriveSelfSipaKey(masterSecret: FieldLike): Fr {
+  return new Fr(deriveScalar(masterSecret, OXIDE_SELF_SIPA_KEY_LABEL, Fr.MODULUS))
+}
+
+/** Both keys a `SipaSelfResolver` takes, from the master secret. */
+export function selfSipaResolverKeys(masterSecret: FieldLike): SipaSelfResolverKeys {
+  return {
+    stealthScalar: deriveStealthKey(masterSecret).scalar,
+    selfSipaKey: deriveSelfSipaKey(masterSecret),
   }
 }
 

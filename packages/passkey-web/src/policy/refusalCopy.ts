@@ -1,4 +1,10 @@
 import type { PasskeyHint } from "../ceremony/passkeyCeremony.js"
+import {
+  type LaptopCreation,
+  type LocalCreation,
+  type LocalManager,
+  MAC_FLOORS_ADMITTED,
+} from "./laptopCreation.js"
 import { type PhoneReach, MAC_FIREFOX_FLOOR, MAC_SAFARI_FLOOR } from "./passkeyCapabilities.js"
 import { IOS_PASSKEY_FLOOR } from "./userAgentInfo.js"
 
@@ -31,6 +37,7 @@ export const REFUSAL_ROWS: Readonly<Record<string, RefusalRow>> = {
   SecurityKeyNoPrfError: { title: "This device can't use that security key", retry: true },
   SingleSaltProviderError: { title: "Try a different passkey manager", retry: true },
   UnsupportedProviderError: { title: "That passkey provider isn't supported", retry: true },
+  LaptopPasskeyRefusedError: { title: "Save the passkey somewhere else", retry: true },
   PhoneUnreachableError: { title: "Update this browser, or use Chrome", retry: false },
   NoWalletForPasskeyError: { title: "No wallet for this passkey", retry: true },
   RotatedCredentialError: { title: "This passkey's key changed", retry: false },
@@ -70,6 +77,27 @@ export const LEFTOVER_PASSKEY_COPY = {
 } as const
 
 /**
+ * The link under an Apple Passwords refusal (`belowMacFloor`), to the docs entry on where Apple
+ * Passwords is admitted. Each front builds the href from its passkeys docs URL and `anchor`.
+ */
+export const APPLE_FLOOR_COPY = {
+  link: "Why Apple Passwords is refused on this Mac",
+  anchor: "save-somewhere-else",
+} as const
+
+/** Which wording the Safari line takes: `chrome` adds where Chrome can save, while Chrome admits Apple. */
+export type SafariAdvice = "version" | "chrome"
+
+const SAFARI_VERSION_UNREAD =
+  "Safari doesn't report which macOS this Mac runs, so Apple Passwords can't be used here."
+
+/** Under an Apple Passwords refusal on Safari's row, where the refusal is not about this Mac. */
+export const SAFARI_REFUSAL_COPY: Readonly<Record<SafariAdvice, string>> = {
+  version: SAFARI_VERSION_UNREAD,
+  chrome: `${SAFARI_VERSION_UNREAD} Chrome can use it on ${MAC_FLOORS_ADMITTED}.`,
+}
+
+/**
  * The words around an Open in browser link. `hintAlone` stands where no link is shown. In X's app,
  * which drops the link, `xMenu` follows Copy link and `xMenuAlone` stands where no link is shown.
  */
@@ -95,6 +123,17 @@ export const IN_APP_UP_FRONT_COPY = {
   line: "zk.money uses a passkey to create and open your account.",
 } as const
 
+/**
+ * The line the in-app card adds for a phone's Chrome below the floor whose brands say nothing, so
+ * the page cannot tell a web view from Chrome: it suggests an update. In parts, so a front can link
+ * the store.
+ */
+export const UPDATE_CHROME_COPY = {
+  maybeBefore: "If you're already in Chrome, update it from the ",
+  maybeLink: "Play Store",
+  maybeAfter: " and open this page again, or use another browser.",
+} as const
+
 /** What a screen keeps of a refusal: the error's stable name and its own words. */
 export type RefusalState = { name: string; message: string }
 
@@ -111,14 +150,14 @@ export type StepsHero = { glyph: "phone" | "security-key"; title: string }
 
 /**
  * One control on the sign-up sheet: which authenticator the user says will answer, and the hint
- * that steers the browser towards it. The first route is the sheet's button and opens the browser's
- * prompt; a creation asks for a cross-device authenticator outright, so the prompt opens on the
- * route the hint names. A second route is the link under it: it opens the sheet's key variant,
- * whose own button opens the prompt.
+ * that steers the browser towards it. The first route is the variant's button and opens the
+ * browser's prompt on the device its hint names; the routes after it are the links under the
+ * button, each opening another variant whose own button opens the prompt.
  */
 export type StepsRoute = { hint: PasskeyHint; label: string }
 
-const SECURITY_KEY_INSTEAD = "Have a security key? Use it instead"
+const USE_SECURITY_KEY = "Use a security key"
+const USE_PHONE = "Use my phone"
 
 /**
  * The two things a laptop user does next, shown before every ceremony. The passkey may live on a
@@ -136,69 +175,29 @@ export const PHONE_STEPS_COPY = {
     "Choose one below, then follow your browser's prompts.",
   ],
   continueLabel: "Continue",
-  /** The laptop sign-up sheet: what to do with the browser's QR code, and why the phone. */
-  title: "Scan QR code to save the key on your phone",
-  subtitle: "This creates your account. One-time setup, about 20 seconds.",
-  why: {
-    title: "Why use the phone?",
-    body: "A passkey saved on your phone can sync across your devices.",
-    /** Follows the body as a link to the passkeys docs page; each front supplies the URL. */
-    link: "How passkeys work on zk.money",
-  },
+  /** The laptop sign-up sheet: what to do with the browser's QR code. */
+  title: "Scan QR code to create the passkey on your phone",
   /**
-   * The managers and keys a creation admits, opened from a label under the reason for the phone,
-   * and what it refuses, so the wrong manager is learnt of before the prompt rather than after it.
+   * Under a variant's button, beside the docs link: a label whose tooltip lists the managers and
+   * key a creation admits. A refused manager is named by its refusal, so the tooltip names none.
    */
   supported: {
     label: "Supported passkeys",
     title: "Works with",
     providers: [
-      "iCloud Keychain (Apple Passwords)",
+      "iCloud Keychain",
       "Google Password Manager",
       "1Password",
       "YubiKey 5 security key",
     ],
-    refused:
-      "Other managers, such as Bitwarden, Proton Pass, LastPass or Windows Hello, aren't " +
-      "supported yet.",
+    refused: "Other password managers aren't supported yet.",
   },
+  /** A link to the passkeys docs page; each front supplies the URL. */
+  docsLink: "How passkeys work on zk.money",
   /**
-   * Under the supported list on the laptop sheet: a label whose tooltip says why the passkey is the
-   * only way in, for a synced passkey and for a key. `line` is the one-sentence form beside a
-   * phone's own sign-up button; the key variant says it in `noPhone.note`.
-   */
-  loss: {
-    label: "Lose your passkey, lose the wallet.",
-    line: "There is no account recovery. Lose your passkey, lose the wallet.",
-    title: "Your passkey is the only way in",
-    body: [
-      "There is no account recovery. zk.money cannot restore a wallet whose passkey is gone.",
-      "A passkey in a password manager syncs to your other devices. That sync is your backup.",
-      "A security key keeps the only copy. A second key can't be a backup, because two keys can't " +
-        "share one passkey's secret: lose the key, lose the wallet.",
-    ],
-  },
-  /**
-   * A gold label in the card, shown where something on this computer can answer a sign-up that
-   * needs the phone: a password manager's extension, or Windows Hello. Its tooltip says what to
-   * pick instead; `extension` is the part for a browser where an extension answers.
-   */
-  thisComputer: {
-    label: "Don't save the passkey on this computer",
-    title: "Use your phone or security key",
-    extension: [
-      "Password manager extensions such as Bitwarden, Proton Pass or Dashlane can pop up and " +
-        "offer to save your passkey on this computer. Don't save it there: choose the " +
-        "extension's option to use another device or hardware key, and your browser's prompt " +
-        "takes over.",
-      "Closing the pop-up can cancel the sign-up. If your browser's prompt doesn't appear, leave " +
-        "full screen and try again.",
-    ],
-    refused: "A passkey saved on this computer is refused.",
-  },
-  /**
-   * The one-sentence form, where there is no card: the security-key sheet and the campaign's help
-   * card. A manager on the phone is accepted, so it names this computer's. Closing a manager's
+   * One sentence on the key variant where a password manager's extension answers passkeys, and on
+   * the campaign's help card. The phone variant says nothing: a manager's answer there is refused
+   * by name. A manager on the phone is accepted, so it names this computer's. Closing a manager's
    * window can end the sign-up and managers word their way past differently, so it says what not
    * to do and leaves the rest conditional.
    */
@@ -207,11 +206,8 @@ export const PHONE_STEPS_COPY = {
     "another device or hardware key if it offers one.",
   routes: [
     { hint: "hybrid", label: "Show QR Code" },
-    { hint: "security-key", label: SECURITY_KEY_INSTEAD },
+    { hint: "security-key", label: USE_SECURITY_KEY },
   ] as readonly StepsRoute[],
-  caption:
-    "Transactions are approved with your passkey: on this computer when it holds a synced copy, " +
-    "otherwise on the phone or security key that holds it.",
   cancelLabel: "Cancel",
   /**
    * The key variant: shown where the browser reports no route to a phone, and where the user picks
@@ -224,25 +220,140 @@ export const PHONE_STEPS_COPY = {
       "Tap below, then follow your browser's prompts.",
     ],
     title: "Create account with your security key",
-    subtitle: "One-time setup. About 20 seconds.",
+    /** Heads the collapsed note and models lines. */
+    detailsLabel: "About security keys",
     note:
       "Your security key keeps the only copy of your passkey. A second key can't be added as a " +
       "backup, and there is no account recovery: lose the key, lose the wallet.",
     /** The allowlist admits the Yubico family, but one model is verified end to end. */
-    models:
-      "YubiKey 5 series keys are supported today (tested with a YubiKey 5 NFC). Another key may " +
-      "fail only after it has saved a passkey, which you'd then need to remove yourself.",
+    models: "YubiKey 5 series keys are supported today",
     /** Back to the phone variant; offered only where a phone route exists. */
-    back: "Use my phone instead",
-    routes: [
-      { hint: "security-key", label: "Create account with my security key" },
-    ] as readonly StepsRoute[],
+    back: USE_PHONE,
+    routes: [{ hint: "security-key", label: "Use security key" }] as readonly StepsRoute[],
     caption:
       "This computer can't reach a phone, so a security key is the only passkey it can use, and a " +
       "key keeps the only copy of what it holds. If a phone holds your passkey, open zk.money on a " +
       "computer that can reach it.",
   },
+  /**
+   * The local variant: shown where `laptopCreationFor` lets this laptop create on its own password
+   * manager.
+   */
+  local: {
+    title: "Create your passkey",
+    routes: [
+      { hint: "client-device", label: "Continue" },
+      { hint: "hybrid", label: USE_PHONE },
+      { hint: "security-key", label: USE_SECURITY_KEY },
+    ] as readonly StepsRoute[],
+    /** Back from the phone or key variant to this one. */
+    back: "Back",
+    /** On the phone variant, where this laptop could have created on its own manager. */
+    switchToLocal: "Use this computer",
+    /** Every control leading to this computer on a row with 1Password alone. */
+    switchToOnePassword: "Have 1Password?",
+    /** Above this computer's button where no extension answers; see `localNoteFor`. */
+    pickOnePassword: "When your browser asks where to save the passkey, pick 1Password.",
+    installExtension: "To use 1Password, install its browser extension and reload this page.",
+    /** Shown when the sheet re-opens after the browser's prompt closed with nothing created. */
+    unfinished: "Setup didn't finish. Try again, or use your phone.",
+    /**
+     * Under the button where a password manager's extension answers passkeys; see
+     * `extensionLineFor`. The Supported passkeys tip beside it names what the browser's own prompt
+     * may save in.
+     */
+    extension: "If a password manager pops up, dismiss it and use your browser's own prompt.",
+    extensionOnePassword:
+      "If 1Password pops up, save the passkey there. Dismiss any other password manager.",
+    /** Added once a manager the row cannot use kept answering; see `repeatedRefusalLineFor`. */
+    refusedOften:
+      "A passkey zk.money can't use keeps being saved here. Pick one listed under Supported " +
+      "passkeys.",
+    /**
+     * Why the sheet opened on another variant: a manager this row cannot use kept answering on
+     * this computer. Keyed by the variant it opened on.
+     */
+    steered: {
+      phone: "A passkey zk.money can't use keeps being saved here, so the phone comes first.",
+      key: "A passkey zk.money can't use keeps being saved here, so the security key comes first.",
+    },
+  },
+  /**
+   * Where another browser keeps phone creation and Chrome would not: a label beside the supported
+   * passkeys, whose tip says why. `apple` is for Safari and Firefox on a Mac, which cannot say
+   * which macOS they run on; `gpm` for another browser on Windows or Linux, which has no Google
+   * Password Manager.
+   */
+  chromeTip: {
+    label: "Chrome recommended",
+    title: "Skip the QR code",
+    apple:
+      `On ${MAC_FLOORS_ADMITTED}, Chrome can save the passkey in Apple Passwords ` +
+      "with no QR code.",
+    gpm: "In Chrome, you can save the passkey in Google Password Manager with no QR code.",
+  },
 } as const
+
+/**
+ * Under a sign-up refused for saving on this computer, where Chrome could have saved it here
+ * (`chromeTip` of `gpm`).
+ */
+export const CHROME_REFUSAL_COPY = "Or sign up in Chrome and save it in Google Password Manager."
+
+/**
+ * The line above this computer's button where no extension answers. On a Mac either 1Password
+ * surface returns key material, so only a row with 1Password alone needs a word; on Windows and
+ * Linux the extension is the surface that does, so every row that lists 1Password says so.
+ */
+export function localNoteFor(creation: LocalCreation): string | undefined {
+  if (!creation.managers.includes("1password")) return undefined
+  if (creation.os !== "macos") return PHONE_STEPS_COPY.local.installExtension
+  return creation.managers.length === 1 ? PHONE_STEPS_COPY.local.pickOnePassword : undefined
+}
+
+/**
+ * The line under this computer's button where an extension answers. A row that lists 1Password
+ * saves in its pop-up; any other extension's passkey is refused, so its pop-up is dismissed.
+ */
+export function extensionLineFor(creation: LocalCreation): string {
+  const { extension, extensionOnePassword } = PHONE_STEPS_COPY.local
+  return creation.managers.includes("1password") ? extensionOnePassword : extension
+}
+
+/**
+ * Added under the local variant once a manager the row cannot use kept answering. None where
+ * 1Password is the row's only manager: the sheet opens on another variant instead.
+ */
+export function repeatedRefusalLineFor(creation: LocalCreation): string | undefined {
+  const alone = creation.managers.every((m) => m === "1password")
+  return alone ? undefined : PHONE_STEPS_COPY.local.refusedOften
+}
+
+const SUPPORTED_NAMES: Readonly<Record<LocalManager, string>> = {
+  "apple": "iCloud Keychain",
+  "gpm": "Google Password Manager",
+  "1password": "1Password",
+}
+
+/** The "Supported passkeys" tip: its label, heading, the names listed, and what is refused. */
+export type SupportedCopy = {
+  label: string
+  title: string
+  providers: readonly string[]
+  refused: string
+}
+
+/**
+ * The tip for a variant: the phone variant lists every manager a phone creation admits; the local
+ * variant lists only the managers this row admits, and the key.
+ */
+export function supportedFor(creation?: LaptopCreation): SupportedCopy {
+  if (!creation?.local) return PHONE_STEPS_COPY.supported
+  return {
+    ...PHONE_STEPS_COPY.supported,
+    providers: [...creation.managers.map((m) => SUPPORTED_NAMES[m]), "YubiKey 5 security key"],
+  }
+}
 
 /**
  * The card a laptop sign-up gets when the browser's sheet closed before a passkey came back, and the
@@ -269,14 +380,12 @@ export const PHONE_HELP_COPY = {
       "have one, open zk.money on your phone and sign up there.",
     retry: "Try again with my security key",
   },
-  windows:
-    'If Windows offers Windows Hello or "This Windows device", choose "iPhone, iPad or Android ' +
-    'device" instead.',
+  windows: 'In the next prompt, choose "iPhone, iPad or Android device", not Windows Hello.',
   /** The title where an extension answers passkeys: its window, not the phone, may have ended it. */
   extensionTitle: "That didn't finish",
   tryAgain: "Try again",
   phoneLink: "Sign up on your phone instead",
-  securityKey: SECURITY_KEY_INSTEAD,
+  securityKey: USE_SECURITY_KEY,
   link: {
     title: "Sign up on your phone",
     body: "Scan this code with your phone's camera to open zk.money there.",
@@ -347,12 +456,28 @@ export const APPROVE_AGAIN_COPY = {
   cancelLabel: "Cancel",
 } as const
 
+/** The phone variant, or the key-only one where no phone can be reached. */
+type PhoneStepsCopy = typeof PHONE_STEPS_COPY | typeof PHONE_STEPS_COPY.noPhone
+
 /**
- * The steps to show for what the browser said about reaching a phone. Both fronts call this rather
- * than matching on the reach themselves, so the two never drift.
+ * The steps to show for what the browser said about reaching a phone, and for whether this laptop
+ * may create on its own manager. Both fronts call this rather than matching on the reach
+ * themselves, so the two never drift. The local variant drops its phone route where no phone can
+ * be reached, keeping the key. A front that passes no creation never gets the local variant.
  */
-export const stepsCopyFor = (reach: PhoneReach) =>
-  reach === "no-hybrid" ? PHONE_STEPS_COPY.noPhone : PHONE_STEPS_COPY
+export function stepsCopyFor(reach: PhoneReach): PhoneStepsCopy
+export function stepsCopyFor(
+  reach: PhoneReach,
+  creation: LaptopCreation | undefined,
+): PhoneStepsCopy | typeof PHONE_STEPS_COPY.local
+export function stepsCopyFor(reach: PhoneReach, creation?: LaptopCreation) {
+  if (creation?.local) {
+    const local = PHONE_STEPS_COPY.local
+    if (reach !== "no-hybrid") return local
+    return { ...local, routes: local.routes.filter((r) => r.hint !== "hybrid") }
+  }
+  return reach === "no-hybrid" ? PHONE_STEPS_COPY.noPhone : PHONE_STEPS_COPY
+}
 
 /** Shown before a ceremony, and as its refusal, where the browser claims an iOS below the floor. */
 export const IOS_FLOOR_COPY =
@@ -364,3 +489,23 @@ export const MAC_BROWSER_FLOOR_COPY =
   `Signing up on a Mac needs Safari ${MAC_SAFARI_FLOOR} or later, or Firefox ${MAC_FIREFOX_FLOOR} ` +
   "or later. Update this browser, or sign up in Chrome or on your phone. Safari updates are in " +
   "System Settings > General > Software Update."
+
+/** Which wording the advice takes: `use` where an extension answers this page's passkeys. */
+export type ExtensionAdvice = "use" | "install"
+
+const WINDOWS_PASSKEY_WINDOW =
+  "If 1Password answered in the Windows passkey window, it can't give zk.money the key it needs " +
+  "there."
+
+/**
+ * Under a refusal for want of key material on Windows, where this computer answered. 1Password's
+ * Windows app, answering in the Windows passkey window, returns none; its browser extension does.
+ * A refusal cannot always name what answered, so this is advice beside it, never a refusal of its
+ * own.
+ */
+export const EXTENSION_ADVICE_COPY: Readonly<Record<ExtensionAdvice, string>> = {
+  use: `${WINDOWS_PASSKEY_WINDOW} Use the 1Password browser extension's pop-up instead.`,
+  install:
+    `${WINDOWS_PASSKEY_WINDOW} Install or turn on the 1Password browser extension, reload this ` +
+    "page, and use its pop-up.",
+}

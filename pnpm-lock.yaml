@@ -238,6 +238,9 @@ importers:
       '@oxide/oxide-client':
         specifier: workspace:*
         version: link:../../vendor/oxide/yarn-project/oxide-client
+      '@oxide/tee-enclave':
+        specifier: workspace:*
+        version: link:../../vendor/oxide/yarn-project/tee-enclave
       '@types/node':
         specifier: ^18.7.23
         version: 18.19.130
@@ -433,6 +436,9 @@ importers:
       '@oxide/oxide-lib':
         specifier: workspace:*
         version: link:../../vendor/oxide/yarn-project/oxide-lib
+      '@oxide/refund-proof':
+        specifier: workspace:*
+        version: link:../../vendor/oxide/yarn-project/refund-proof
       '@shield-labs/utils':
         specifier: 0.1.0
         version: 0.1.0(typescript@5.7.3)

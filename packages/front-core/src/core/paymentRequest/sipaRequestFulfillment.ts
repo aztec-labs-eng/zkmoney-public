@@ -43,6 +43,10 @@ export function requestLinkedSipaAddresses(
   return out
 }
 
+/**
+ * Each claimed deposit fulfills one request. Rows sharing its address are earlier requests the code
+ * replaced, so the live row wins, else the newest cancelled one.
+ */
 export async function reconcileSipaRequestFulfillments(
   store: Pick<RequestStorage, "list" | "applyStatus">,
   records: readonly SipaFulfillmentRecord[],
@@ -50,9 +54,21 @@ export async function reconcileSipaRequestFulfillments(
   const claimed = records.filter((record) => record.phase === "claimed")
   if (claimed.length === 0) return
   const all = await store.list()
-  for (const row of all) {
-    const match = claimed.find((record) => sipaDepositFulfillsRequest(record, row))
-    if (!match) continue
-    await store.applyStatus(row.id, "fulfilled", match.claimTxHash ?? match.sweepTxHash)
+  const used = new Set(all.flatMap((row) => (row.fulfillmentTxHash ? [row.fulfillmentTxHash] : [])))
+  const rank = (row: PaymentRequest) => (row.status === "cancelled" ? 0 : 1)
+  for (const record of claimed) {
+    const txHash = record.claimTxHash ?? record.sweepTxHash
+    const address = record.sipaAddress.toLowerCase()
+    const consumed = txHash
+      ? used.has(txHash)
+      : all.some((r) => r.status === "fulfilled" && r.sipaAddress?.toLowerCase() === address)
+    if (consumed) continue
+    const row = all
+      .filter((r) => sipaDepositFulfillsRequest(record, r))
+      .sort((a, b) => rank(b) - rank(a) || b.createdAt - a.createdAt)[0]
+    if (!row) continue
+    await store.applyStatus(row.id, "fulfilled", txHash)
+    row.status = "fulfilled"
+    if (txHash) used.add(txHash)
   }
 }

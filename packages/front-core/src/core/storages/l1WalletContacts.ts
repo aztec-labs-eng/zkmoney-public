@@ -54,6 +54,8 @@ export async function upsertDepositL1WalletContact({
 export interface UpsertSavedL1WalletContactParams {
   address: string
   name?: string | null
+  /** A real slug keeps the row apart from user-typed recipients; defaults to `"manual"`. */
+  provider?: string
   lastUsedAt?: number
 }
 
@@ -61,6 +63,7 @@ export interface UpsertSavedL1WalletContactParams {
 export async function upsertSavedL1WalletContact({
   address,
   name,
+  provider = "manual",
   lastUsedAt,
 }: UpsertSavedL1WalletContactParams): Promise<void> {
   if (!isAddress(address) || isZeroAddress(address)) return
@@ -72,7 +75,7 @@ export async function upsertSavedL1WalletContact({
     await ContactStorage.get().upsertL1WalletContact({
       name: displayName,
       address: address as Address,
-      provider: "manual",
+      provider,
       walletName: displayName,
       provenance: "saved-recipient",
       userLabeled: labeled || undefined,

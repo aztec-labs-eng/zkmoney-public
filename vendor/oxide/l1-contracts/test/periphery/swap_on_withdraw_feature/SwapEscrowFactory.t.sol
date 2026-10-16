@@ -118,7 +118,7 @@ contract SwapEscrowFactoryTest is SwapEscrowTestBase {
 
     vm.prank(relayer);
     uint256 payout = executor.execute(
-      address(factory), abi.encodeCall(SwapEscrowFactory.deployAndExecute, (args)), IERC20(address(dai)), TIP
+      address(factory), abi.encodeCall(SwapEscrowFactory.deployAndExecute, (args)), IERC20(address(dai)), TIP, 0, 0
     );
 
     assertEq(payout, TIP);

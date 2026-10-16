@@ -17,7 +17,6 @@ import { Contract } from "@aztec/aztec.js/contracts"
 import { NO_FROM } from "@aztec/aztec.js/account"
 import { NO_WAIT } from "@aztec/aztec.js/contracts"
 import type { AztecNode } from "@aztec/aztec.js/node"
-import { computeFeePayerBalanceStorageSlot } from "@aztec/protocol-contracts/fee-juice"
 import { computeFeeJuiceMessageNullifier } from "@aztec/stdlib/messaging"
 import { computeSecretHash, siloNullifier } from "@aztec/stdlib/hash"
 import { ExecutionPayload } from "@aztec/stdlib/tx"
@@ -134,6 +133,10 @@ export class FpcRefuelService {
 
   private async feeJuiceBalance(owner: AztecAddress): Promise<bigint> {
     const { feeJuice } = await this.node.getProtocolContractAddresses()
+    // Imported on use: the module parses the whole FeeJuice artifact when it loads.
+    const { computeFeePayerBalanceStorageSlot } = await import(
+      "@aztec/protocol-contracts/fee-juice"
+    )
     const slot = await computeFeePayerBalanceStorageSlot(owner)
     return (await this.node.getPublicStorageAt("latest", feeJuice, slot)).toBigInt()
   }

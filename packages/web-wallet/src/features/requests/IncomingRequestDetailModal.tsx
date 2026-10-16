@@ -75,9 +75,6 @@ export function IncomingRequestDetailModal({
         <PrimaryGradientButton title="Decline" buttonStyle="dark" onClick={onDecline} />
         <PrimaryGradientButton title="Send" onClick={onSend} />
       </div>
-      {fromNonContact && (
-        <p className="ww-txd__footnote">By accepting, you add {handle} to your contacts</p>
-      )}
     </Modal>
   )
 }

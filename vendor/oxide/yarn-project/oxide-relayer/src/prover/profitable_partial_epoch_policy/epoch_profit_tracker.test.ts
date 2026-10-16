@@ -4,7 +4,7 @@ import { Checkpoint } from '@aztec/stdlib/checkpoint';
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
-import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
+import type { PriceOracle, TokenPrice } from '../../price_oracle/price_oracle.js';
 import { portalId } from '../types.js';
 import { EpochProfitTracker, EpochProfitTrackerOptions } from './epoch_profit_tracker.js';
 import { DiscoveredClaim, EarlySubmitPortalConfig } from './types.js';
@@ -17,17 +17,36 @@ describe('EpochProfitTracker', () => {
   // reorgs and fresh captures.
   let covered: Map<number, bigint>;
 
-  // A single claim with a fixed tip; only `rewardContext.tip` is priced. Its checkpoint sits above the (zero)
-  // covered watermark so it survives filtering.
-  const claim = (tip: bigint): DiscoveredClaim =>
+  // A single claim on portal `p`; only `rewardContext.tip` is priced. Its checkpoint sits above the (zero) covered
+  // watermark so it survives filtering.
+  const claimFor = (p: EarlySubmitPortalConfig, tip = REWARD): DiscoveredClaim =>
     ({
-      portalId: portalId(l1Portal),
+      portalId: portalId(p.context.l1Portal),
       checkpointNumber: CheckpointNumber(1),
       rewardContext: { tip } as any,
       txRef: {} as any,
       withdrawalIndex: 0,
       leafId: 1n,
     }) as DiscoveredClaim;
+
+  // A claim on the shared portal.
+  const claim = (tip: bigint): DiscoveredClaim => claimFor(portal, tip);
+
+  // A portal of its own, for the cases with more than one portal.
+  const makePortal = (
+    quoteProverSubsidy: EarlySubmitPortalConfig['quoteProverSubsidy'] = () => Promise.resolve(0n),
+    portalToken = token,
+  ): EarlySubmitPortalConfig =>
+    ({
+      context: {
+        l1Portal: EthAddress.random(),
+        token: portalToken,
+        l2Portal: undefined,
+        proverSubsidy: EthAddress.random(),
+      },
+      adaptor: {},
+      quoteProverSubsidy,
+    }) as unknown as EarlySubmitPortalConfig;
 
   // `fork` distinguishes content: the same checkpoint numbers on a different fork carry different archive roots,
   // as after a reorg.
@@ -56,18 +75,39 @@ describe('EpochProfitTracker', () => {
   /** 18-decimal USD from dollars and cents, the scale of the Portal's USD-pegged underlying. */
   const usd = (dollars: bigint, cents = 0n): bigint => dollars * 10n ** 18n + cents * 10n ** 16n;
 
-  // 10^18 wei is one ETH, which is `ETH_USD_RATE` dollars, or `ETH_USD_RATE * 10^18` in the 18-decimal quote
-  // currency. The 10^18 cancels, so the rate alone converts wei to the quote scale.
-  const priceOracle = {
-    weiToUSD: (wei: bigint) => Promise.resolve(wei * ETH_USD_RATE),
-  } as unknown as ChainlinkPriceOracle;
+  /** How many times the tracker read the ETH price and a token price. */
+  let ethPriceReads: number;
+  let tokenPriceReads: number;
+
+  /** An oracle that prices ETH at `ETH_USD_RATE` and gives each token in `prices` its own price. */
+  const oracleWith = (prices: ReadonlyMap<string, TokenPrice> = new Map()): PriceOracle =>
+    ({
+      getEthPrice: () => {
+        ethPriceReads++;
+        return Promise.resolve(usd(ETH_USD_RATE));
+      },
+      // An 18-decimal token worth one USD, unless the test prices it otherwise.
+      getTokenPrice: (rewardToken: EthAddress) => {
+        tokenPriceReads++;
+        return Promise.resolve(prices.get(rewardToken.toString()) ?? { usdPerToken: usd(1n), decimals: 18 });
+      },
+    }) satisfies PriceOracle;
 
   const getEffectiveGasPriceWei = () => Promise.resolve(GAS_PRICE_WEI);
+  // The claim batch submitter prices a batch at a max fee per gas above the effective price.
+  const CLAIM_MAX_FEE_PER_GAS_WEI = 2n * GAS_PRICE_WEI;
+  const getClaimMaxFeePerGasWei = () => Promise.resolve(CLAIM_MAX_FEE_PER_GAS_WEI);
 
-  // The gas an epoch pays for is the proof submission alone; the claim batch's gas is not part of the cost. A flat
-  // model, so the prefix length changes nothing but the proving cost in these tests.
+  // A flat proof model, so the prefix length changes nothing but the proving cost in these tests.
   const EPOCH_GAS_MODEL = { baseGas: 640_000n, gasPerCheckpoint: 0n };
   const EPOCH_GAS = EPOCH_GAS_MODEL.baseGas;
+  // Most cases leave the claim transactions out, so their figures are the proof submission alone. The claim-gas
+  // cases set a model of their own.
+  const NO_CLAIM_GAS_MODEL = { baseGas: 0n, gasPerClaim: 0n };
+  // 10_000 gas for each claim transaction and 5_000 for each claim in it.
+  const CLAIM_GAS_MODEL = { baseGas: 10_000n, gasPerClaim: 5_000n };
+  // Most cases leave the extra first-prover captures out. The capture-gas case sets a figure of its own.
+  const NO_CAPTURE_GAS = 0n;
 
   // The same gas, priced through the rates above: 640_000 gas at 1 gwei is 0.00064 ETH, or 1.28 USD at 2_000 USD
   // per ETH.
@@ -92,22 +132,37 @@ describe('EpochProfitTracker', () => {
     },
   } as any;
 
-  const makeTracker = (provingCostPerCheckpoint: bigint, submitEpochProofGasModel = EPOCH_GAS_MODEL) =>
+  const makeTracker = (
+    provingCostPerCheckpoint: bigint,
+    submitEpochProofGasModel = EPOCH_GAS_MODEL,
+    claimProverTipsGasModel = NO_CLAIM_GAS_MODEL,
+    portals = [portal],
+    firstProverCaptureGas = NO_CAPTURE_GAS,
+    priceOracle = oracleWith(),
+    maxFeePerGasCap?: bigint,
+  ) =>
     new EpochProfitTracker({
       discoverer: { discover } as any,
       portal: portalContract,
-      portals: [portal],
+      portals,
       priceOracle,
       getEffectiveGasPriceWei,
+      getClaimMaxFeePerGasWei,
+      maxFeePerGasCap,
       submitEpochProofGasModel,
+      claimProverTipsGasModel,
+      firstProverCaptureGas,
       minEpochProfit: 0n,
       minEpochProfitMarginBps: 0n,
       provingCostPerCheckpoint,
+      minClaimBatchProfit: 0n,
     } satisfies EpochProfitTrackerOptions);
 
   beforeEach(() => {
     covered = new Map();
     quotedClaimCounts = [];
+    ethPriceReads = 0;
+    tokenPriceReads = 0;
     discover = jest.fn(() => Promise.resolve([claim(REWARD)]));
   });
 
@@ -120,10 +175,19 @@ describe('EpochProfitTracker', () => {
     expect(quotedClaimCounts).toEqual([1n]);
   });
 
-  it('charges the epoch for the proof submission gas only', async () => {
+  it('charges the epoch for the proof submission gas', async () => {
     const decision = await makeTracker(0n).evaluate(EpochNumber(1), checkpoints(1));
     expect(decision.details?.totalGas).toBe(EPOCH_GAS);
     expect(decision.details?.totalGasCostValue).toBe(EPOCH_GAS_COST);
+  });
+
+  it('charges the claim transaction that collects the tips', async () => {
+    discover.mockImplementation(() => Promise.resolve([claim(REWARD), claim(REWARD)]));
+    const decision = await makeTracker(0n, EPOCH_GAS_MODEL, CLAIM_GAS_MODEL).evaluate(EpochNumber(1), checkpoints(1));
+    // One transaction with two claims: 10_000 + 2 * 5_000 gas on top of the proof's 640_000.
+    expect(decision.details?.totalGas).toBe(EPOCH_GAS + 20_000n);
+    // 660_000 gas at 1 gwei and 2_000 USD per ETH.
+    expect(decision.details?.totalGasCostValue).toBe(usd(1n, 32n));
   });
 
   it('prices the proof submission for the length of the prefix', async () => {
@@ -214,42 +278,195 @@ describe('EpochProfitTracker', () => {
   });
 
   it('excludes a portal whose subsidy quote fails; the others still price and submit', async () => {
-    const makePortal = (quoteProverSubsidy: () => Promise<bigint>): EarlySubmitPortalConfig =>
-      ({
-        context: { l1Portal: EthAddress.random(), token, l2Portal: undefined, proverSubsidy: EthAddress.random() },
-        adaptor: {},
-        quoteProverSubsidy,
-      }) as unknown as EarlySubmitPortalConfig;
-
-    const claimFor = (p: EarlySubmitPortalConfig, tip: bigint): DiscoveredClaim =>
-      ({
-        portalId: portalId(p.context.l1Portal),
-        checkpointNumber: CheckpointNumber(1),
-        rewardContext: { tip } as any,
-        txRef: {} as any,
-        withdrawalIndex: 0,
-        leafId: 1n,
-      }) as DiscoveredClaim;
-
-    const healthy = makePortal(() => Promise.resolve(0n));
+    const healthy = makePortal();
     const broken = makePortal(() => Promise.reject(new Error('WrongPortal')));
-    const claims = [claimFor(healthy, REWARD), claimFor(broken, REWARD)];
+    discover.mockImplementation(() => Promise.resolve([claimFor(healthy), claimFor(broken)]));
 
-    const tracker = new EpochProfitTracker({
-      discoverer: { discover: () => Promise.resolve(claims) } as any,
-      portal: portalContract,
-      portals: [healthy, broken],
-      priceOracle,
-      getEffectiveGasPriceWei,
-      submitEpochProofGasModel: EPOCH_GAS_MODEL,
-      minEpochProfit: 0n,
-      minEpochProfitMarginBps: 0n,
-      provingCostPerCheckpoint: 0n,
-    } satisfies EpochProfitTrackerOptions);
-
+    const tracker = makeTracker(0n, EPOCH_GAS_MODEL, CLAIM_GAS_MODEL, [healthy, broken]);
     const decision = await tracker.evaluate(EpochNumber(1), checkpoints(2));
 
     expect(decision.submit).toBe(true);
     expect(decision.details?.claimCount).toBe(1);
+    // Only the healthy portal sends a claim transaction: 10_000 + 5_000 gas.
+    expect(decision.details?.totalGas).toBe(EPOCH_GAS + 15_000n);
+  });
+
+  it('values each portal reward in the token of that portal', async () => {
+    const vaultToken = EthAddress.random();
+    const stable = makePortal();
+    const vault = makePortal(undefined, vaultToken);
+    discover.mockImplementation(() => Promise.resolve([claimFor(stable), claimFor(vault)]));
+    // One share of the vault is worth 1.05 USD, as an sUSDS share is worth more than the USDS it converts to.
+    const prices = new Map([[vaultToken.toString(), { usdPerToken: usd(1n, 5n), decimals: 18 }]]);
+
+    const tracker = makeTracker(
+      0n,
+      EPOCH_GAS_MODEL,
+      NO_CLAIM_GAS_MODEL,
+      [stable, vault],
+      NO_CAPTURE_GAS,
+      oracleWith(prices),
+    );
+    const decision = await tracker.evaluate(EpochNumber(1), checkpoints(1));
+
+    // 100.00 of the stable token and 100 shares worth 105.00.
+    expect(decision.details?.totalRewardValue).toBe(usd(205n));
+  });
+
+  it('charges one claim transaction for each portal that has claims', async () => {
+    const first = makePortal();
+    const second = makePortal();
+    const idle = makePortal();
+    discover.mockImplementation(() => Promise.resolve([claimFor(first), claimFor(first), claimFor(second)]));
+
+    const tracker = makeTracker(0n, EPOCH_GAS_MODEL, CLAIM_GAS_MODEL, [first, second, idle]);
+    const decision = await tracker.evaluate(EpochNumber(1), checkpoints(1));
+
+    // Two claims on the first portal (10_000 + 2 * 5_000) and one on the second (10_000 + 5_000). The idle portal
+    // has no claims, so it sends no transaction.
+    expect(decision.details?.totalGas).toBe(EPOCH_GAS + 35_000n);
+    expect(decision.details?.claimCount).toBe(3);
+  });
+
+  it('charges a first-prover capture for each portal, with claims or not', async () => {
+    const first = makePortal();
+    discover.mockImplementation(() => Promise.resolve([claimFor(first)]));
+
+    const tracker = makeTracker(0n, EPOCH_GAS_MODEL, NO_CLAIM_GAS_MODEL, [first, makePortal(), makePortal()], 50_000n);
+    const decision = await tracker.evaluate(EpochNumber(1), checkpoints(1));
+
+    // The proof records a capture on each of the three portals.
+    expect(decision.details?.totalGas).toBe(EPOCH_GAS + 3n * 50_000n);
+  });
+
+  it('submits when the rewards of all portals together pay for the proof, but no portal alone does', async () => {
+    // Each portal quotes its own subsidy. Portal A pays 0.50 + 0.30 and portal B pays 0.40 + 0.20. Each is below
+    // the 1.28 gas cost of the proof, but together they pay 1.40.
+    const a = makePortal(() => Promise.resolve(usd(0n, 30n)));
+    const b = makePortal(() => Promise.resolve(usd(0n, 20n)));
+    const claimOnA = claimFor(a, usd(0n, 50n));
+    const claimOnB = claimFor(b, usd(0n, 40n));
+
+    const evaluate = (claims: DiscoveredClaim[]) => {
+      discover.mockImplementation(() => Promise.resolve(claims));
+      return makeTracker(0n, EPOCH_GAS_MODEL, NO_CLAIM_GAS_MODEL, [a, b]).evaluate(EpochNumber(1), checkpoints(1));
+    };
+
+    await expect(evaluate([claimOnA])).resolves.toMatchObject({ submit: false });
+    await expect(evaluate([claimOnB])).resolves.toMatchObject({ submit: false });
+
+    const decision = await evaluate([claimOnA, claimOnB]);
+    expect(decision.submit).toBe(true);
+    expect(decision.details?.totalRewardValue).toBe(usd(1n, 40n));
+    expect(decision.details?.profit).toBe(usd(0n, 12n));
+  });
+
+  describe('claims that the batch submitter will not send', () => {
+    // 1.5 cents. With CLAIM_GAS_MODEL, a claim costs 5_000 gas: 1 cent at the effective 1 gwei, 2 cents at the
+    // 2 gwei max fee. So the tip pays for the claim at the effective price, but the submitter leaves it out.
+    const LOW_TIP = 15n * 10n ** 15n;
+
+    it('leaves out a claim whose tip does not pay for its gas at the max fee per gas', async () => {
+      discover.mockImplementation(() => Promise.resolve([claim(LOW_TIP), claim(REWARD)]));
+      const decision = await makeTracker(0n, EPOCH_GAS_MODEL, CLAIM_GAS_MODEL).evaluate(EpochNumber(1), checkpoints(1));
+
+      expect(decision.details?.claimCount).toBe(1);
+      expect(decision.details?.totalRewardValue).toBe(REWARD);
+      // One transaction with the one claim: 10_000 + 5_000 gas on top of the proof's 640_000.
+      expect(decision.details?.totalGas).toBe(EPOCH_GAS + 15_000n);
+      // The tracker charges the gas of the claims it counts at the effective price, not at the max fee:
+      // 655_000 gas at 1 gwei and 2_000 USD per ETH.
+      expect(decision.details?.totalGasCostValue).toBe(usd(1n, 31n));
+    });
+
+    it('rejects a proof that only a claim the submitter will not send makes profitable', async () => {
+      discover.mockImplementation(() => Promise.resolve([claim(LOW_TIP), claim(REWARD)]));
+      // Without the low-tip claim: 100.00 reward − 1.31 gas − proving cost = −0.005. With it, the low tip adds
+      // 1.5 cents for 1 cent of gas, and the profit would be 0.
+      const provingCost = REWARD - usd(1n, 31n) + 5n * 10n ** 15n;
+      const decision = await makeTracker(provingCost, EPOCH_GAS_MODEL, CLAIM_GAS_MODEL).evaluate(
+        EpochNumber(1),
+        checkpoints(1),
+      );
+
+      expect(decision.submit).toBe(false);
+      expect(decision.details?.profit).toBe(-5n * 10n ** 15n);
+    });
+
+    it('keeps a claim whose subsidy pays for its gas at the max fee per gas', async () => {
+      // 5 cents of subsidy for each claim pays for the 2 cents of gas of a claim with no tip.
+      const subsidized = makePortal(numClaims => Promise.resolve(numClaims * usd(0n, 5n)));
+      discover.mockImplementation(() => Promise.resolve([claimFor(subsidized), claimFor(subsidized, 0n)]));
+
+      const tracker = makeTracker(0n, EPOCH_GAS_MODEL, CLAIM_GAS_MODEL, [subsidized]);
+      const decision = await tracker.evaluate(EpochNumber(1), checkpoints(1));
+
+      expect(decision.details?.claimCount).toBe(2);
+      expect(decision.details?.totalRewardValue).toBe(REWARD + usd(0n, 10n));
+    });
+
+    it('declines a proof when the submitter will send none of its claims', async () => {
+      // A 2-cent tip against 6 cents of claim gas at the max fee: 10_000 + 5_000 gas at 2 gwei.
+      discover.mockImplementation(() => Promise.resolve([claim(usd(0n, 2n))]));
+      const decision = await makeTracker(0n, EPOCH_GAS_MODEL, CLAIM_GAS_MODEL).evaluate(EpochNumber(1), checkpoints(1));
+
+      expect(decision.submit).toBe(false);
+      expect(decision.details?.claimCount).toBe(0);
+      expect(decision.details?.totalRewardValue).toBe(0n);
+    });
+
+    it('declines a proof without pricing it while the max fee per gas is above the cap', async () => {
+      const tracker = makeTracker(
+        0n,
+        EPOCH_GAS_MODEL,
+        CLAIM_GAS_MODEL,
+        [portal],
+        NO_CAPTURE_GAS,
+        oracleWith(),
+        CLAIM_MAX_FEE_PER_GAS_WEI - 1n,
+      );
+      const decision = await tracker.evaluate(EpochNumber(1), checkpoints(1));
+
+      expect(decision).toEqual({ submit: false, reason: 'max fee per gas above the cap' });
+      expect(quotedClaimCounts).toEqual([]);
+    });
+
+    it('submits a proof when the max fee per gas is at the cap', async () => {
+      const tracker = makeTracker(
+        0n,
+        EPOCH_GAS_MODEL,
+        CLAIM_GAS_MODEL,
+        [portal],
+        NO_CAPTURE_GAS,
+        oracleWith(),
+        CLAIM_MAX_FEE_PER_GAS_WEI,
+      );
+      const decision = await tracker.evaluate(EpochNumber(1), checkpoints(1));
+
+      expect(decision.submit).toBe(true);
+    });
+  });
+
+  it('counts only the claims of the first batch', async () => {
+    // Every claim pays for its gas, but a batch carries at most 100 claims (MAX_ITEMS_PER_BATCH).
+    discover.mockImplementation(() => Promise.resolve(Array.from({ length: 150 }, () => claim(usd(1n)))));
+
+    const tracker = makeTracker(0n, EPOCH_GAS_MODEL, CLAIM_GAS_MODEL);
+    const decision = await tracker.evaluate(EpochNumber(1), checkpoints(1));
+
+    expect(decision.details?.claimCount).toBe(100);
+    expect(decision.details?.totalRewardValue).toBe(usd(100n));
+  });
+
+  it('reads the ETH price and the token price once for each evaluation', async () => {
+    // No claim pays for its gas, so the selection prices every candidate batch from 100 claims down to 0.
+    discover.mockImplementation(() => Promise.resolve(Array.from({ length: 100 }, () => claim(0n))));
+
+    const tracker = makeTracker(0n, EPOCH_GAS_MODEL, CLAIM_GAS_MODEL);
+    const decision = await tracker.evaluate(EpochNumber(1), checkpoints(1));
+
+    expect(decision.details?.claimCount).toBe(0);
+    expect(ethPriceReads).toBe(1);
+    expect(tokenPriceReads).toBe(1);
   });
 });

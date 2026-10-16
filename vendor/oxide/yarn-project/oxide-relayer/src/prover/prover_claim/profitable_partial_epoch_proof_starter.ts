@@ -3,12 +3,15 @@ import { EthAddress } from '@aztec/foundation/eth-address';
 import { createProverNodeAdminClient } from '@aztec/stdlib/interfaces/server';
 
 import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
-import type { SubmitEpochProofGasModel } from '@oxide/oxide-client/partial_epoch_proof_profit.js';
+import type {
+  ClaimProverTipsGasModel,
+  SubmitEpochProofGasModel,
+} from '@oxide/oxide-client/partial_epoch_proof_profit.js';
 import { createNodeClient } from '@oxide/oxide-lib/aztec_node_client.js';
 
 import type { PublicClient } from 'viem';
 
-import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
+import type { PriceOracle } from '../../price_oracle/price_oracle.js';
 import { PartialEpochProofStarter } from '../partial_epoch_proof_starter/index.js';
 import { EarlySubmitPolicy, ProfitablePartialEpochPolicy } from '../profitable_partial_epoch_policy/index.js';
 import { ProverClaimDiscoveryAdaptor } from './adaptor.js';
@@ -21,13 +24,19 @@ export interface ProfitablePartialEpochProofStarterConfig {
   proverNodeUrl: string;
   /** API key of the prover node's admin API, sent as `x-api-key`. */
   proverNodeApiKey?: string;
-  portalAddress: EthAddress;
-  proverSubsidyAddress: EthAddress;
+  /**
+   * The portals whose claims make a proof profitable. They must all settle on the rollup that the prover node
+   * proves, and the prover node must submit through a submitter that records a first-prover capture on each of them.
+   * The first one tells which checkpoints are already proven.
+   */
+  portals: { portalAddress: EthAddress; proverSubsidyAddress: EthAddress }[];
   l1Client: PublicClient;
-  priceOracle: ChainlinkPriceOracle;
+  priceOracle: PriceOracle;
   /** Epoch-level early-submit thresholds for the whole partial epoch. */
   earlySubmitPolicy?: Partial<EarlySubmitPolicy>;
   submitEpochProofGasModel?: SubmitEpochProofGasModel;
+  claimProverTipsGasModel?: ClaimProverTipsGasModel;
+  maxFeePerGasCap?: bigint;
   fromBlock?: BlockNumber;
   pollingIntervalMS?: number;
   onError?: (error: unknown) => void | Promise<void>;
@@ -46,20 +55,24 @@ export class ProfitablePartialEpochProofStarter {
     // node's `node_*`.
     const proverNode = createProverNodeAdminClient(config.proverNodeUrl, {}, undefined, config.proverNodeApiKey);
 
-    const portals = [
-      await createPortalConfig({
-        portal: new OxidePortalContract(config.l1Client, config.portalAddress),
-        proverSubsidy: config.proverSubsidyAddress,
-      }),
-    ];
+    if (config.portals.length === 0) {
+      throw new Error('Early proof starter needs at least one portal');
+    }
+    const contracts = config.portals.map(entry => new OxidePortalContract(config.l1Client, entry.portalAddress));
+    const portals = await Promise.all(
+      config.portals.map((entry, i) =>
+        createPortalConfig({ portal: contracts[i], proverSubsidy: entry.proverSubsidyAddress }),
+      ),
+    );
 
     const policy = await ProfitablePartialEpochPolicy.create({
-      portalAddress: config.portalAddress,
-      l1Client: config.l1Client,
+      portal: contracts[0],
       portals,
       priceOracle: config.priceOracle,
       earlySubmitPolicy: config.earlySubmitPolicy,
       submitEpochProofGasModel: config.submitEpochProofGasModel,
+      claimProverTipsGasModel: config.claimProverTipsGasModel,
+      maxFeePerGasCap: config.maxFeePerGasCap,
     });
 
     const starter = await PartialEpochProofStarter.create({

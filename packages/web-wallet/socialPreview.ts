@@ -1,5 +1,4 @@
 import type { Plugin } from "vite"
-import { campaignOriginFrom } from "./src/config/campaignOrigin"
 
 /** The card a chat app renders from a page's Open Graph tags. */
 export interface PreviewCopy {
@@ -21,13 +20,24 @@ const LINK_PREVIEW: PreviewCopy = {
   description: "Receive or send crypto privately with pay links.",
 }
 
+// A payee's pay page, /pay/<tag>. The CDN serves one page for every tag, so the card cannot name it.
+const PAY_PREVIEW: PreviewCopy = {
+  title: "zk.money pay page",
+  description: "Pay privately with zk.money, or from any Ethereum wallet.",
+}
+
+/** Every pay page path, all served from pay.html. */
+export const PAY_PAGE_PATH = /^\/pay\/[A-Za-z0-9_-]+$/
+
 /**
- * Copies of index.html that differ only in their card. The CDN serves them at /link and /request
- * (iac/modules/app-tier/modules/web-wallet), and `vite preview` resolves /link to link.html itself.
+ * Copies of index.html that differ only in their card. The CDN serves them at /link, /request and
+ * /pay/<tag> (iac/modules/app-tier/modules/web-wallet), and `vite preview` resolves /link to
+ * link.html itself.
  */
 export const ROUTE_PAGES: Record<string, PreviewCopy> = {
   "link.html": LINK_PREVIEW,
   "request.html": LINK_PREVIEW,
+  "pay.html": PAY_PREVIEW,
 }
 
 const PLACEHOLDER = /__OG_[A-Z_]+__/
@@ -40,22 +50,19 @@ function withCopy(html: string, copy: PreviewCopy): string {
 
 function copyFor(url: string | undefined): PreviewCopy {
   const path = (url ?? "/").split(/[?#]/)[0]
-  return ROUTE_PAGES[`${path.slice(1)}.html`] ?? HOME_PREVIEW
+  if (PAY_PAGE_PATH.test(path)) return PAY_PREVIEW
+  return path === "/link" || path === "/request" ? LINK_PREVIEW : HOME_PREVIEW
 }
 
 /**
  * Fills index.html's card and emits the route pages, so a crawler reads the card from the HTML it
  * fetches. Chat apps need an absolute image URL, and the wallet host is not known at build time
- * everywhere (previews, local): the image is served from VITE_SITE_ORIGIN when set, else from the
- * paired campaign origin, which is public and ships the same og.png. With neither, a relative path:
- * the card degrades to text. Desktop builds emit no route pages: the launcher injects its globals
+ * everywhere (previews, local): the image is served from VITE_SITE_ORIGIN when set, else from a
+ * relative path, and the card degrades to text. Desktop builds emit no route pages: the launcher injects its globals
  * into index.html only.
  */
 export function socialPreview(env: Record<string, string>): Plugin {
-  const origin = (env.VITE_SITE_ORIGIN || campaignOriginFrom(env.VITE_CAMPAIGN_URL)).replace(
-    /\/$/,
-    "",
-  )
+  const origin = (env.VITE_SITE_ORIGIN ?? "").replace(/\/$/, "")
   const desktop = env.VITE_DESKTOP_BUILD === "true"
   return {
     name: "social-preview",

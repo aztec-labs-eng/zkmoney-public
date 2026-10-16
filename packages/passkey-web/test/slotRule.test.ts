@@ -237,6 +237,57 @@ describe("the assertion route rule", () => {
   })
 })
 
+describe("the laptop's own route", () => {
+  const managers = ["apple", "gpm"] as const
+
+  it("asks for this device, keeps the default timeout, and steers to it without a key", () => {
+    expect(requestedAttachment("laptop", true)).toBe("platform")
+    expect(requestedAttachment("laptop")).toBe("cross-platform")
+    expect(requestedAttachment("phone", true)).toBeUndefined()
+    expect(creationTimeoutMs("laptop", true)).toBeUndefined()
+    expect(creationTimeoutMs("laptop")).toBe(300_000)
+    expect(creationHintsFor("laptop", undefined, true)).toEqual(["client-device"])
+    expect(creationHintsFor("laptop", ["client-device"], true)).toEqual(["client-device"])
+    expect(creationHintsFor("laptop", null, true)).toBeUndefined()
+    // Off the local route the consumer's hints still gain the security key.
+    expect(creationHintsFor("laptop", ["hybrid"])).toEqual(["hybrid", "security-key"])
+  })
+
+  it("admits the laptop's own passkey, or a security key", () => {
+    expect(() => checkCreationRoute("laptop", "platform", false, undefined, managers)).not.toThrow()
+    expect(() =>
+      checkCreationRoute("laptop", "cross-platform", true, undefined, managers),
+    ).not.toThrow()
+  })
+
+  it("refuses another device's answer that is not a key, naming the managers", () => {
+    expect(() =>
+      checkCreationRoute("laptop", "cross-platform", false, undefined, managers),
+    ).toThrow(
+      expect.objectContaining({
+        name: "LaptopPasskeyRefusedError",
+        kind: "not-local",
+        message: expect.stringContaining("Apple Passwords or Google Password Manager"),
+      }),
+    )
+  })
+
+  it("refuses an unreported attachment with copy that names the managers, not the phone route", () => {
+    expect(() => checkCreationRoute("laptop", undefined, false, undefined, managers)).toThrow(
+      expect.objectContaining({
+        name: "PhoneRequiredError",
+        message: expect.stringContaining("Google Password Manager"),
+      }),
+    )
+    expect(() => checkCreationRoute("laptop", undefined, false, undefined, managers)).toThrow(
+      expect.objectContaining({ message: expect.not.stringContaining("skip any offer") }),
+    )
+    expect(() => checkCreationRoute("laptop", "platform", true, undefined, managers)).toThrow(
+      expect.objectContaining({ name: "SecurityKeyRequiredError" }),
+    )
+  })
+})
+
 describe("hints", () => {
   it("a phone creation names its two admitted classes, whatever the consumer asked for", () => {
     expect(creationHintsFor("phone")).toEqual(["client-device", "security-key"])

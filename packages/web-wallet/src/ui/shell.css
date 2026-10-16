@@ -321,6 +321,12 @@
   padding: 12px;
   border-radius: 12px;
 }
+/* Stays in view at the foot of the results while they scroll. */
+.ww-shell .ww-search__row--pinned {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface-sheet);
+}
 .ww-shell .ww-search__row:not(.ww-search__row--static):hover {
   background: rgba(255, 255, 255, 0.05);
 }
@@ -342,6 +348,7 @@
   flex: 0 1 346px;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 16px;
 }
 .ww-shell .ww-account {
@@ -402,6 +409,12 @@
   background: var(--surface-faint);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
 }
+.ww-home > .ww-activation {
+  flex: 1 1 434px;
+  /* .ww-home aligns to the start, and a size container has no content width to shrink to. */
+  align-self: stretch;
+  margin-bottom: 0;
+}
 .ww-home__rail {
   flex: 0 1 346px;
   display: flex;
@@ -422,23 +435,62 @@
   font-size: 16px;
   font-weight: 500;
 }
+/* The APY pill and the earned figure on one row under the Savings balance. */
+.ww-home__balance-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
 .ww-home__balance-value {
   color: var(--text-primary);
   font-size: 50px;
   font-weight: 600;
   line-height: normal;
 }
+/* The small digits that tick under the Savings figure between reads; count scales with the balance. */
+.ww-home__balance-value small,
+.ww-home__balance .ww-home__earned small,
+.ww-account-switcher__menu strong small,
+.ww-account-switcher__total b small {
+  margin-left: 2px;
+  font-size: 0.42em;
+  font-weight: 600;
+  color: inherit;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+}
+/* Earnings to date under the Savings balance (Harry's growth figure, #2198). */
+.ww-home__balance .ww-home__earned {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+.ww-home__balance .ww-home__earned b {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+.ww-home__balance .ww-home__earned b[data-positive] {
+  color: var(--accent-green);
+}
+.ww-home__balance .ww-home__earned small {
+  font-size: 0.85em;
+}
 /* The loading shimmer clipped to the glyphs, in step with the "Syncing deposits" pill: the figure
    is real but may still rise as replayed deposits land. */
 .ww-home__balance-value--syncing {
   width: fit-content;
   color: transparent;
-  background-image:
-    linear-gradient(90deg, transparent 0%, var(--text-primary) 50%, transparent 100%),
+  background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      var(--text-primary) 50%,
+      transparent 100%
+    ),
     linear-gradient(rgba(253, 253, 253, 0.55), rgba(253, 253, 253, 0.55));
-  background-size:
-    55% 100%,
-    100% 100%;
+  background-size: 55% 100%, 100% 100%;
   background-repeat: no-repeat;
   -webkit-background-clip: text;
   background-clip: text;
@@ -542,6 +594,11 @@
   background: rgba(255, 255, 255, 0.1);
   font-size: 6.31px;
   color: #fff;
+}
+/* The Savings empty state: the Earn coin, whole pixels only (no blur, no tilt). */
+.ww-home__cta .ww-savings-art__coin img {
+  width: 120px;
+  height: 120px;
 }
 .ww-home-txns {
   width: 100%;
@@ -694,6 +751,24 @@
   width: 169px;
   transform: rotate(-21.3deg);
 }
+.ww-quick__slide--savings {
+  background: linear-gradient(90deg, #7c3aed 0%, #2563eb 100%);
+}
+.ww-quick__slide--savings img {
+  top: 12px;
+  left: 226px;
+  width: 130px;
+}
+/* The coin starts at 226px; the text stops short of it, and the body's two lines stay even. */
+.ww-quick__slide--savings .ww-banner__text {
+  max-width: 196px;
+}
+.ww-quick__slide--savings .ww-banner__body {
+  text-wrap: balance;
+}
+.ww-shell .ww-quick__slide--savings .ww-banner__body {
+  color: rgba(255, 255, 255, 0.8);
+}
 .ww-quick__stepper {
   display: flex;
   align-items: center;
@@ -744,16 +819,6 @@
   right: 20px;
   z-index: 1;
   margin: 0;
-}
-/* Doubled class: plain `.ww-modal` declares the generic 440px later in this file and would
-   otherwise win on source order. */
-.ww-modal.ww-reg-sheet--wallet {
-  --modal-pad-y: 24px;
-  --modal-pad-x: 24px;
-  --sheet-pad-bottom: var(--modal-pad-y);
-  width: min(500px, calc(100vw - 32px));
-  border: 1px solid #303030;
-  border-radius: 24px;
 }
 .ww-reg-sheet__card {
   display: flex;
@@ -998,6 +1063,15 @@
   transform: translateY(-50%);
   z-index: 1;
 }
+/* The deposit panel is narrower than Home: a smaller coin lane. */
+.ww-shell .ww-banner--activate.ww-deposit__claiming {
+  padding-right: 200px;
+}
+.ww-shell .ww-deposit__claiming img {
+  right: 40px;
+  top: -24px;
+  width: 170px;
+}
 /* The art is decoration: below 640 the copy gets the width, up to the pinned chevron's lane. */
 @media (max-width: 640px) {
   .ww-shell .ww-banner--activate {
@@ -1005,6 +1079,717 @@
   }
   .ww-shell .ww-banner--activate img {
     display: none;
+  }
+}
+.ww-activation {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  /* A size container takes no width from its content: in a shrink-wrapping parent it must claim it. */
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  container-type: inline-size;
+  margin-bottom: 32px;
+  padding: 24px;
+  border-radius: 20px;
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+  animation: ww-activation-in 360ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+@keyframes ww-activation-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+.ww-activation__head {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+/* The font sits here so the chips' row can match the tag's line height. */
+.ww-activation__title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+  font-size: 28px;
+  line-height: 1.15;
+}
+.ww-activation__welcome {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: inherit;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.ww-activation__lede {
+  max-width: 440px;
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+/* Shuffle and own-tag chips beside the drawn tag. */
+.ww-activation__tag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  min-height: 1.15em;
+}
+.zkm-btn-reset.ww-activation__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 200ms ease;
+}
+.ww-activation__chip:disabled {
+  cursor: progress;
+}
+.ww-activation__chip:disabled svg {
+  animation: zkm-spin 0.8s linear infinite;
+}
+.ww-activation__chip:focus-visible {
+  outline: 2px solid var(--blue-400);
+  outline-offset: 3px;
+}
+@media (hover: hover) {
+  .ww-activation__chip:not(:disabled):hover {
+    background: rgba(255, 255, 255, 0.18);
+  }
+}
+.ww-activation__list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* A step beside the past-user banner; the hero takes the rest of the row. */
+.ww-activation__pair {
+  display: flex;
+  gap: 8px;
+}
+.ww-activation__pair > .ww-activation__hero,
+.ww-activation__pair > .ww-activation__step {
+  flex: 1;
+  min-width: 0;
+}
+@media (max-width: 720px) {
+  .ww-activation__pair {
+    flex-direction: column;
+  }
+}
+
+.ww-past-user {
+  position: relative;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: 252px;
+  min-height: 184px;
+  padding: 24px;
+  box-sizing: border-box;
+  overflow: hidden;
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px rgba(253, 253, 253, 0.12);
+  color: #fff;
+  transition: transform 200ms ease, box-shadow 200ms ease;
+}
+@media (max-width: 720px) {
+  .ww-past-user {
+    width: 100%;
+  }
+}
+.ww-past-user__art {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: right bottom;
+  pointer-events: none;
+}
+.ww-past-user > :not(.ww-past-user__art) {
+  position: relative;
+}
+.ww-past-user > b {
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.ww-past-user > span {
+  max-width: 170px;
+  font-size: 12px;
+  line-height: 1.3;
+  opacity: 0.75;
+}
+.zkm-btn-reset.ww-past-user__verify {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  margin-top: 8px;
+  padding: 0 28px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ww-activation__hero {
+  position: relative;
+  display: flex;
+  border-radius: 20px;
+  color: #fff;
+  box-shadow: 0 18px 40px -24px rgba(160, 0, 255, 0.7);
+  transition: transform 200ms ease, box-shadow 200ms ease;
+}
+.ww-activation__hero .zkm-hero-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-height: 188px;
+  border-radius: inherit;
+  background: radial-gradient(90% 120% at 0% 0%, rgba(160, 0, 255, 0.7) 0%, rgba(160, 0, 255, 0) 70%),
+    linear-gradient(135deg, #2a0b5c 0%, #1c1a5e 55%, #0a4a8f 100%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.12);
+}
+.ww-activation__hero .zkm-hero-card__body,
+.ww-activation__hero .zkm-hero-card__footer {
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 20px 136px 0 20px;
+  text-align: left;
+  background: none;
+}
+.ww-activation__hero .zkm-hero-card__title {
+  font-size: 22px;
+  letter-spacing: -0.01em;
+}
+.ww-activation__hero .zkm-hero-card__subtitle {
+  color: rgba(255, 255, 255, 0.75);
+}
+.ww-activation__hero .zkm-hero-card__footer {
+  margin-top: auto;
+  padding-bottom: 20px;
+}
+.ww-activation__eyebrow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.7);
+}
+.ww-activation__hero .ww-activation__cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, #9c04ff, #0693ff);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.ww-tag-swap {
+  display: inline-block;
+  animation: ww-tag-swap 400ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes ww-tag-swap {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+    filter: blur(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ww-tag-swap,
+  .ww-activation__chip svg {
+    animation: none;
+  }
+}
+.ww-activation__cta::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 20px;
+}
+.ww-activation__cta:focus-visible {
+  outline: 2px solid var(--blue-400);
+  outline-offset: 3px;
+}
+.ww-activation__cta {
+  transition: background 200ms ease, color 200ms ease;
+}
+.ww-activation__cta svg {
+  transition: transform 200ms ease, width 200ms ease, opacity 200ms ease, margin 200ms ease;
+}
+.ww-activation__note {
+  display: block;
+  margin-top: 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.6);
+}
+@media (hover: hover) {
+  .ww-activation__hero:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 24px 48px -20px rgba(160, 0, 255, 0.8);
+  }
+  .ww-past-user:not([data-verified]) {
+    cursor: pointer;
+  }
+  .ww-past-user:not([data-verified]):hover {
+    transform: translateY(-2px);
+    box-shadow: inset 0 0 0 1px rgba(253, 253, 253, 0.12), 0 24px 48px -20px rgba(160, 0, 255, 0.8);
+  }
+  .ww-activation__hero:hover .ww-activation__cta svg {
+    transform: translateX(3px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ww-activation__hero,
+  .ww-past-user,
+  .ww-activation__cta,
+  .ww-activation__cta svg {
+    transition: none;
+  }
+}
+.ww-activation__step {
+  display: flex;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius-12);
+  background: rgba(255, 255, 255, 0.04);
+}
+.ww-activation__step > svg {
+  flex: none;
+}
+.ww-activation__step > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-activation__step b {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-activation__step[data-step-done="false"] {
+  opacity: 0.7;
+}
+.ww-pick-tag__icon {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  margin-bottom: -12px;
+  border-radius: 50%;
+  background: var(--gradient-brand);
+}
+.ww-pick-tag__option > span:nth-child(2) {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.ww-pick-tag__option small {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.zkm-btn-reset.ww-pick-tag__option {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.zkm-btn-reset.ww-pick-tag__option[aria-checked="true"] {
+  background: var(--surface-card);
+  box-shadow: inset 0 0 0 1.5px var(--purple-500);
+}
+.ww-pick-tag__option > b {
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+}
+.ww-pick-tag__option[aria-checked="true"] > b {
+  background: var(--gradient-brand);
+}
+.ww-pick-tag__price {
+  flex: none;
+  margin-left: 8px;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+}
+.ww-pick-tag__price[data-free] {
+  background: var(--gradient-brand);
+}
+/* The foot belongs to the button above it, not another 40px row. */
+.ww-pick-tag .ww-invite-modal-foot {
+  margin-top: -24px;
+}
+.ww-pick-tag .ww-deposit__link {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+/* Past-user verification sheet and its results. */
+.ww-modal.ww-verify {
+  position: relative;
+  width: min(500px, calc(100vw - 32px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 0 24px 24px;
+  border-radius: 24px;
+  background: #212121;
+  box-shadow: inset 0 0 0 1px #303030, 0 0 40px 33px rgba(0, 0, 0, 0.15);
+  overflow-wrap: anywhere;
+}
+.ww-modal.ww-verify > * {
+  width: min(368px, 100%);
+}
+.ww-modal.ww-verify--result {
+  gap: 12px;
+  padding: 40px 24px;
+  text-align: center;
+}
+.ww-modal.ww-verify--result > * {
+  width: auto;
+}
+.ww-modal.ww-verify--result > .zkm-primary-btn {
+  width: min(368px, 100%);
+}
+.ww-modal.ww-verify--result > button {
+  margin-top: 12px;
+}
+.ww-modal.ww-verify > .ww-verify__close {
+  position: absolute;
+  top: 22px;
+  right: 22px;
+  z-index: 2;
+  width: auto;
+}
+.ww-modal.ww-verify > .ww-verify__privacy {
+  width: calc(100% + 48px);
+  min-height: 74px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 -24px 24px;
+  padding: 10px 66px;
+  box-sizing: border-box;
+  background: #29312d;
+}
+.ww-verify__privacy svg {
+  flex: none;
+}
+.ww-verify__privacy p {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  text-align: left;
+  color: var(--accent-green);
+}
+.ww-modal.ww-verify > .ww-verify__art {
+  width: 239px;
+  height: 168px;
+  margin-bottom: 12px;
+}
+.ww-modal.ww-verify > .ww-verify__badge {
+  width: 141px;
+  height: 141px;
+}
+.ww-verify__lede,
+.ww-verify__body {
+  margin: 8px 0 32px;
+  font-size: 14px;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.ww-modal.ww-verify--result > .ww-verify__body {
+  width: min(310px, 100%);
+  margin: 12px 0;
+  line-height: 1.5;
+}
+.ww-verify__connect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  box-sizing: border-box;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  transition: background-color 0.15s ease;
+}
+.ww-verify__connect:hover {
+  background-color: rgba(255, 255, 255, 0.09);
+}
+.zkm-btn-reset.ww-verify__connect-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  cursor: pointer;
+}
+.ww-verify__connect-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--gradient-brand);
+}
+.ww-verify__connect-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ww-verify__connect-text b {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-primary);
+}
+.ww-verify__connect-text span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-modal.ww-verify > .ww-verify__or {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  margin: 12px 0;
+}
+.ww-verify__or hr {
+  flex: 1;
+  margin: 0;
+  border: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.ww-verify__or span {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.ww-verify-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  text-align: left;
+}
+.ww-verify-field__label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.ww-verify-field__input {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.ww-verify-field__input[data-error] {
+  border-color: var(--accent-pink);
+  background: rgba(254, 112, 139, 0.05);
+}
+.ww-verify-field__input input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+}
+.ww-verify-field__input input::placeholder {
+  color: var(--text-secondary);
+  opacity: 0.5;
+}
+.zkm-btn-reset.ww-verify-field__edit {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  text-align: left;
+  cursor: text;
+}
+.ww-verify-addr {
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.ww-verify-addr > span {
+  color: var(--text-secondary);
+}
+.zkm-btn-reset.ww-verify-field__paste {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.05);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.zkm-btn-reset.ww-verify-field__paste:hover {
+  background-color: rgba(255, 255, 255, 0.12);
+}
+.zkm-btn-reset.ww-verify-field__clear {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  color: rgba(255, 255, 255, 0.8);
+  cursor: pointer;
+}
+.ww-verify-field__error {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--accent-pink);
+}
+.ww-verify-field__eligible {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+  padding: 12px 16px;
+  border: 1px solid #7de0b0;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.ww-verify-field__eligible b {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 22px;
+  color: var(--text-primary);
+}
+.ww-verify-field__eligible span {
+  font-size: 13px;
+  line-height: 18px;
+  color: #7de0b0;
+}
+.ww-modal.ww-verify > .ww-verify__sign {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 24px;
+}
+.ww-verify__note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 14px;
+  text-align: left;
+  color: var(--text-secondary);
+}
+.ww-verify__note svg {
+  flex: none;
+}
+.ww-modal.ww-verify .ww-invite__error {
+  margin: 12px 0 0;
+}
+.zkm-btn-reset.ww-verify__link {
+  width: auto;
+  margin-top: 24px;
+  padding: 4px 0;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.ww-modal.ww-verify--result > .ww-verify__link {
+  margin-top: 0;
+}
+.zkm-btn-reset.ww-verify__pill {
+  width: auto;
+  padding: 8px 24px;
+  border-radius: var(--radius-full);
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.zkm-btn-reset.ww-verify__pill:hover {
+  background-color: rgba(255, 255, 255, 0.16);
+}
+@media (max-width: 640px) {
+  .ww-activation__title {
+    font-size: 24px;
+  }
+}
+/* Sized by the column, not the viewport: beside the sidebar a wide window still leaves a narrow one. */
+@container (max-width: 560px) {
+  .ww-shell .ww-activation .ww-banner--activate {
+    min-height: 0;
+    padding-right: 48px;
+  }
+  .ww-shell .ww-activation .ww-banner--activate img {
+    display: none;
+  }
+}
+@container (max-width: 420px) {
+  .ww-shell .ww-activation .ww-banner--activate .ww-banner__title {
+    font-size: 18px;
+  }
+  .ww-shell .ww-activation .ww-banner--activate .ww-banner__body {
+    font-size: 13px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ww-activation {
+    animation: none;
   }
 }
 .ww-shell .ww-banner--row img {
@@ -1487,6 +2272,10 @@
     flex-direction: column;
     gap: 24px;
   }
+  /* In the column the desktop basis would be a height. */
+  .ww-home > .ww-activation {
+    flex: none;
+  }
   .ww-home__wallet {
     padding: 0;
     gap: 24px;
@@ -1498,6 +2287,11 @@
   }
   .ww-home__phone-actions .zkm-quick-action {
     min-width: 0;
+  }
+  /* "Add to Savings" and "Move to Main Account" run to two lines in a four-up row. */
+  .ww-home__phone-actions .zkm-quick-action__caption {
+    text-align: center;
+    line-height: 1.2;
   }
   .ww-home__phone-actions .zkm-quick-action__tile {
     width: 100%;
@@ -1660,6 +2454,17 @@
   pointer-events: none;
 }
 
+/* The landing frame's field: the group's blur bounds placed on the 1280×832 frame, at half opacity. */
+.ww-invite__gradient--landing {
+  position: absolute;
+  left: -39.5%;
+  top: 18.6%;
+  width: 185.5%;
+  height: 159%;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
 .ww-invite__topbar {
   position: relative;
   z-index: 1;
@@ -1671,6 +2476,7 @@
 
 .ww-invite__topbar-end {
   display: inline-flex;
+  margin-left: auto;
   align-items: center;
   gap: 12px;
 }
@@ -1817,10 +2623,172 @@
 }
 
 .ww-invite-cancel {
-  margin-top: 12px;
+  margin-top: 20px;
   padding: 10px 8px;
   color: var(--text-secondary);
   font-size: 13px;
+}
+
+/* ── Fresh-start landing: feature cards beside the form (desktop only) ───────── */
+
+.ww-landing {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  /* Keeps the pinned legal links clear of the form. */
+  padding-block: 40px;
+}
+.ww-landing-cards {
+  display: none;
+}
+
+@media (min-width: 960px) {
+  .ww-landing-cards {
+    display: block;
+    position: relative;
+    flex: none;
+    width: 489px;
+    height: 577px;
+    /* Room for the indicator, which sits outside the box. */
+    margin-left: 36px;
+  }
+  /* Two halves: the cards centered in the left, the form in the right. */
+  .ww-landing {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-items: center;
+    box-sizing: border-box;
+  }
+  .ww-landing__form {
+    width: 435px;
+    align-items: flex-start;
+    text-align: left;
+  }
+  .ww-landing__form .ww-invite__footer,
+  .ww-landing__form .ww-invite-cancel {
+    align-self: center;
+  }
+}
+
+/* Pinned to the page bottom, centered under the form. */
+.ww-landing__legal {
+  position: absolute;
+  bottom: 24px;
+  align-self: center;
+  display: flex;
+  gap: 26px;
+}
+.ww-landing__legal a {
+  color: #bfc2d7;
+  font-size: 11px;
+  font-weight: 500;
+  text-decoration: none;
+}
+.ww-landing__legal a:hover {
+  color: var(--text-primary);
+}
+
+.ww-landing-card {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 40px;
+  padding: 24px 50px;
+  box-sizing: border-box;
+  border: 1px solid rgba(253, 253, 253, 0.12);
+  border-radius: 32px;
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: 0 4px 12px -2px rgba(255, 255, 255, 0.1);
+  transition: transform 700ms cubic-bezier(0.65, 0, 0.35, 1);
+}
+.ww-landing-card img {
+  max-width: 100%;
+  height: auto;
+}
+.ww-landing-card__head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+.ww-landing-card__eyebrow {
+  color: #bfc2d7;
+  font-size: 15.4px;
+  font-weight: 700;
+  letter-spacing: 0.125em;
+}
+.ww-landing-card__title {
+  color: #fdfdfd;
+  font-family: var(--font-display);
+  font-size: 40px;
+  font-weight: 600;
+}
+.ww-landing-card__body {
+  max-width: 366px;
+  color: #bfc2d7;
+  font-size: 16.7px;
+  line-height: 1.3;
+}
+.ww-landing-cards__nav {
+  position: absolute;
+  right: calc(100% + 12px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+}
+.zkm-btn-reset.ww-landing-cards__arrow {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.25);
+  cursor: pointer;
+}
+.ww-landing-cards__seg {
+  position: relative;
+  width: 8px;
+  height: 24px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(253, 253, 253, 0.25);
+  transition: height 200ms ease-out;
+}
+.ww-landing-cards__seg.is-active {
+  height: 60px;
+}
+/* The fill is the hold timer: its animationend advances the card. */
+.ww-landing-cards__fill {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 0;
+  border-radius: 999px;
+  background: #fdfdfd;
+  animation: ww-landing-fill 5s linear forwards;
+}
+@keyframes ww-landing-fill {
+  to {
+    height: 100%;
+  }
+}
+
+/* No fill animation means no auto-advance; the arrows still work. */
+@media (prefers-reduced-motion: reduce) {
+  .ww-landing-card,
+  .ww-landing-cards__seg {
+    transition: none;
+  }
+  .ww-landing-cards__fill {
+    animation: none;
+  }
 }
 
 /* Educational header bleeding to the modal edges above a spinner. */
@@ -1871,6 +2839,10 @@
   font-weight: 500;
   line-height: 1.3;
 }
+.zkm-btn-reset.ww-sign-in__alt {
+  display: block;
+  margin: 12px auto 0;
+}
 
 .ww-modal__close {
   display: flex;
@@ -1901,6 +2873,12 @@
   top: 20px;
   right: 20px;
   margin: 0;
+}
+.ww-modal__back {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 1;
 }
 .ww-modal--narrow {
   width: min(320px, calc(100vw - 32px));
@@ -2350,16 +3328,6 @@
   text-align: center;
 }
 
-/* ── Hand-off setup spinner ────────────────────────────────────────────────── */
-
-.ww-entering {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  width: min(467px, 100%);
-  text-align: center;
-}
-
 @media (max-width: 640px) {
   .ww-invite__topbar {
     padding: 20px 16px;
@@ -2494,6 +3462,11 @@
 }
 .ww-contacts__head {
   position: relative;
+}
+.ww-contacts__back-desk {
+  position: absolute;
+  top: 36px;
+  left: 40px;
 }
 .ww-shell .ww-contacts__add {
   position: absolute;
@@ -2879,10 +3852,6 @@
   flex: 1;
   min-width: 0;
 }
-/* Wraps before "non-contacts", never at its hyphen. */
-.ww-noncontacts__title > span {
-  white-space: nowrap;
-}
 .ww-shell .ww-noncontacts__decline-all {
   flex: none;
   padding: 8px 24px;
@@ -3226,9 +4195,7 @@
 }
 /* Stacked request cards hold bare inputs, so the card carries the focus ring. */
 .ww-request-card:focus-within {
-  box-shadow:
-    inset 0 0 0 1px var(--purple-400),
-    0 0 22.4px rgba(0, 0, 0, 0.05);
+  box-shadow: inset 0 0 0 1px var(--purple-400), 0 0 22.4px rgba(0, 0, 0, 0.05);
 }
 .ww-chat__foot {
   display: flex;
@@ -3575,6 +4542,11 @@
   top: 24px;
   right: 24px;
 }
+.ww-deposit-warning__back {
+  position: absolute;
+  top: 24px;
+  left: 24px;
+}
 .ww-deposit-warning__icon {
   width: 64px;
   height: 64px;
@@ -3663,6 +4635,20 @@
   font-weight: 600;
   color: var(--text-primary);
 }
+.ww-deposit__ask {
+  align-self: flex-start;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.ww-deposit__ask strong {
+  color: var(--text-primary);
+}
+.ww-deposit-sheet__head .ww-deposit__ask {
+  align-self: center;
+  text-align: center;
+}
 .ww-deposit__coins {
   display: flex;
   flex-direction: column;
@@ -3701,6 +4687,150 @@
   font-size: 12px;
   font-weight: 400;
   color: var(--text-secondary);
+}
+.ww-deposit__tag {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: var(--surface-card);
+  box-shadow: inset 0 0 0 1px var(--accent-gold);
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.ww-deposit__tag b {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-deposit__tag .ww-deposit__link {
+  margin-left: auto;
+}
+.ww-choose-name__name {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.ww-choose-name__name > p {
+  margin: 0;
+  padding-left: 4px;
+}
+.ww-choose-name__field {
+  width: 100%;
+}
+.ww-choose-name__ok,
+.ww-choose-name__label {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.ww-choose-name__ok {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent-green);
+}
+.ww-choose-name__label {
+  color: var(--text-secondary);
+}
+.ww-deposit__confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+}
+.ww-deposit__confirm p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.ww-choose-name__routes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.ww-choose-name__routes .ww-choose-name__label {
+  margin-bottom: 4px;
+}
+/* Beats `.zkm-btn-reset { padding }`. */
+.zkm-btn-reset.ww-choose-name__route {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 52px;
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border-radius: var(--radius-12);
+  background: rgba(160, 0, 255, 0.08);
+  box-shadow: inset 0 0 0 1px var(--purple-500);
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+  color: var(--text-primary);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.ww-choose-name__route > b {
+  margin-left: auto;
+  font-size: 14px;
+}
+.ww-choose-name__dot {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 5px var(--purple-500);
+  transition: box-shadow 0.15s;
+}
+.ww-choose-name__steps {
+  display: flex;
+  flex-direction: column;
+  flex-basis: 100%;
+  gap: 10px;
+  padding-left: 30px;
+  font-size: 13px;
+  font-weight: 500;
+}
+.ww-choose-name__steps > span {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.ww-choose-name__steps > span > :first-child {
+  flex: none;
+}
+.zkm-btn-reset.ww-choose-name__connect {
+  flex: none;
+  margin-left: auto;
+  white-space: nowrap;
+  padding: 6px 8px 6px 12px;
+  font-size: 13px;
+}
+.ww-choose-name__connect:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.ww-choose-name__pending {
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1.5px var(--text-secondary);
+  opacity: 0.6;
+}
+.ww-choose-name__steps small {
+  color: var(--text-secondary);
+}
+.ww-choose-name__steps [role="alert"] {
+  color: var(--accent-pink);
 }
 .ww-deposit__network {
   display: flex;
@@ -3836,6 +4966,7 @@
 /* The tile breathes while the address is created or watched; the one spinner rings the coin. */
 .ww-deposit-sheet__qr--pulse {
   animation: ww-qr-pulse 1.8s ease-in-out infinite;
+  will-change: opacity;
 }
 @keyframes ww-qr-pulse {
   0%,
@@ -3905,6 +5036,7 @@
   border: 2px solid transparent;
   pointer-events: none;
   animation: ww-bell-ring-spin 1.2s linear infinite;
+  will-change: transform;
 }
 .ww-deposit-sheet__coin-ring.is-tab-bound {
   border-top-color: var(--accent-gold);
@@ -4014,7 +5146,8 @@
   background: var(--accent-green);
   box-shadow: 0 0 0 3px rgba(86, 231, 157, 0.25);
 }
-.ww-deposit-sheet__status--spotted .ww-deposit-sheet__dot {
+.ww-deposit-sheet__status--spotted .ww-deposit-sheet__dot,
+.ww-deposit-sheet__live .ww-deposit-sheet__dot {
   margin-top: 0;
 }
 .ww-deposit-sheet__status-text {
@@ -4034,6 +5167,21 @@
 }
 .ww-deposit-sheet__status--spotted .ww-deposit-sheet__status-text {
   font-size: 12px;
+}
+.zkm-btn-reset.ww-deposit-sheet__wallet {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  transition: color 200ms ease;
+}
+.ww-deposit-sheet__wallet:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+@media (hover: hover) {
+  .ww-deposit-sheet__wallet:not(:disabled):hover {
+    color: var(--text-primary);
+  }
 }
 .zkm-btn-reset.ww-deposit-sheet__check {
   display: inline-flex;
@@ -4089,6 +5237,63 @@
   padding: 12px 16px 16px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
+/* The coin step before the address: the pick, the fee and the minimum. */
+.ww-deposit-coin__icon {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--gradient-brand);
+  box-shadow: 0 0 17px 5px rgba(0, 0, 0, 0.1);
+}
+.ww-deposit-coin__fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+.ww-deposit-coin__field {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--text-primary);
+}
+.zkm-btn-reset.ww-deposit-coin__select {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  text-align: left;
+}
+.ww-deposit-coin__select .ww-deposit__coin-name {
+  flex: 1;
+}
+.ww-deposit-coin__select:focus-visible {
+  outline: 2px solid var(--blue-400);
+  outline-offset: 2px;
+}
+.ww-deposit__picker.ww-deposit-coin__list {
+  top: calc(100% + 4px);
+  left: 0;
+  width: 100%;
+}
+.ww-deposit-coin__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: #2c2c2c;
+}
 .ww-deposit-sheet__row {
   display: flex;
   align-items: center;
@@ -4119,6 +5324,23 @@
 }
 .ww-deposit-disclaimer .ww-deposit-warning__again {
   color: #fff;
+}
+/* A move into Savings: the terms, then the box that accepts them, above Confirm. */
+.ww-savings__terms {
+  display: grid;
+  gap: 10px;
+  padding-top: 4px;
+}
+.ww-savings__terms a {
+  color: var(--text-primary);
+  text-decoration: underline;
+}
+.ww-savings__terms-accept {
+  align-items: flex-start;
+  color: var(--text-primary);
+}
+.ww-savings__terms-accept input {
+  margin-top: 1px;
 }
 @media (max-width: 640px) {
   .ww-deposit-warning.ww-deposit-sheet {
@@ -4220,7 +5442,34 @@
 /* Pay sheet: the deposit sheet's stack, tightened. The sheet scrolls, so nothing in it may be
    shrunk to fit, and the cards the deposit screen stretches have to be widened here. */
 .ww-deposit-warning.ww-reqpay {
-  gap: 24px;
+  width: min(440px, calc(100vw - 32px));
+  gap: 16px;
+  padding: 32px 24px 24px;
+  border-radius: var(--radius-32);
+}
+/* Keep the sheet's scrollbar clear of its rounded corners. */
+.ww-reqpay::-webkit-scrollbar-track {
+  margin-block: var(--radius-32);
+}
+.ww-reqpay .ww-deposit-warning__close {
+  top: 16px;
+  right: 16px;
+}
+/* Clear of the close button. */
+.ww-reqpay__title {
+  padding-inline: 40px;
+}
+.ww-reqpay .ww-paylink-summary {
+  padding: 16px;
+}
+.ww-reqpay .ww-paylink-summary__amount {
+  font-size: 32px;
+}
+/* The sheet is the one scroller; the stack inside it does not scroll or inset again. */
+.ww-reqpay .ww-deposit__stealth {
+  overflow: visible;
+  padding: 0;
+  gap: 16px;
 }
 .ww-reqpay > * {
   flex: none;
@@ -4230,15 +5479,6 @@
 .ww-reqpay .ww-deposit__or {
   width: 100%;
   box-sizing: border-box;
-}
-.ww-reqpay__heading {
-  width: 100%;
-  margin: 0;
-  color: var(--text-primary);
-  font-family: var(--font-display);
-  font-size: 16px;
-  font-weight: 600;
-  text-align: left;
 }
 
 .ww-deposit-disclaimer__body,
@@ -4365,6 +5605,12 @@
   font-size: 13px;
   line-height: 1.5;
   color: var(--text-secondary);
+}
+/* A check or failure line under the facts: aligned with them, wrapping anywhere a long error needs. */
+.ww-sheet__note--check {
+  width: 100%;
+  text-align: left;
+  overflow-wrap: anywhere;
 }
 
 .ww-fund {
@@ -4710,6 +5956,25 @@
 .ww-withdraw__tag[data-tone="error"] {
   --tone-rgb: 254, 112, 139;
 }
+/* A quiet footnote: no box, centered, small. */
+.ww-withdraw__warning[data-tone="info"] {
+  --tone-rgb: 255, 255, 255;
+  padding: 0;
+  border: none;
+  background: none;
+  font-size: 11px;
+  text-align: center;
+}
+.ww-withdraw__warning[data-tone="info"] .ww-withdraw__warning-head {
+  justify-content: center;
+  gap: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.ww-withdraw__warning[data-tone="info"] .ww-withdraw__warning-chevron {
+  margin-left: 0;
+}
 .ww-withdraw__warning p {
   margin: 0;
 }
@@ -4878,11 +6143,6 @@ details[open] .ww-withdraw__warning-chevron {
   color: var(--text-secondary);
   word-break: break-all;
 }
-.ww-fresh__back {
-  position: absolute;
-  top: 24px;
-  left: 24px;
-}
 .ww-logout {
   display: flex;
   flex-direction: column;
@@ -4950,8 +6210,11 @@ details[open] .ww-withdraw__warning-chevron {
   margin-right: 7px;
 }
 
-/* The second route: a link under the card, so the common answer stays the obvious one. */
+/* The other routes: links under the card, so the common answer stays the obvious one. Padded to a
+   32px target, since a sheet with three routes stacks two of them. */
 .zkm-btn-reset.ww-phone-steps__alt {
+  min-height: 24px;
+  padding: 0 8px;
   font-size: 14px;
   font-weight: 500;
   line-height: normal;
@@ -4959,6 +6222,42 @@ details[open] .ww-withdraw__warning-chevron {
   text-decoration: underline;
   color: var(--text-primary);
   cursor: pointer;
+}
+.ww-phone-steps__alt + .ww-phone-steps__alt {
+  margin-top: -20px;
+}
+/* The local variant's alternatives: equal-weight outlined pills side by side, wrapping on a narrow
+   sheet, so Continue stays the one filled button. */
+.ww-phone-steps__alts {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+}
+.ww-phone-steps__alts .zkm-btn-reset.ww-phone-steps__alt {
+  flex: 1 1 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 0 16px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 999px;
+  font-size: 13px;
+  text-decoration: none;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  transition: color 0.15s, border-color 0.15s, background-color 0.15s;
+}
+.ww-phone-steps__alts .zkm-btn-reset.ww-phone-steps__alt:not(:disabled):hover {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+}
+.ww-phone-steps__alts .ww-phone-steps__alt + .ww-phone-steps__alt {
+  margin-top: 0;
 }
 .zkm-btn-reset.ww-phone-steps__alt:disabled {
   opacity: 0.4;
@@ -4983,13 +6282,15 @@ details[open] .ww-withdraw__warning-chevron {
 }
 
 /* The creation sheet mirrors the campaign's sign-up sheet: a key badge, the title and its promise,
-   the blurred QR preview that is the button and the reason for the phone on one card, the key
-   link, the terms. */
+   the variant's button (the blurred QR preview on the phone variant) with the supported-passkeys
+   label and docs link under it, the links to the other variants, the terms. */
 .ww-phone-steps--create {
   gap: 20px;
+  padding-top: 0;
 }
 .ww-phone-steps--create .ww-phone-steps__hero-title {
-  font-size: 20px;
+  font-size: 24px;
+  letter-spacing: 0.3px;
 }
 .ww-phone-steps__badge {
   display: flex;
@@ -5006,13 +6307,50 @@ details[open] .ww-withdraw__warning-chevron {
   align-items: center;
   gap: 12px;
 }
-.ww-phone-steps__sub {
-  margin: 0;
+.ww-tag-pill.ww-tag-pill--sm {
+  padding: 4px 12px;
   font-size: 14px;
-  line-height: normal;
+}
+/* The local variant: what to do with an extension's pop-up, under the button, and the reason box
+   below; the line wraps at phone width without pushing the button down. */
+.ww-phone-steps__managers {
+  margin: -8px 0 0;
+  width: 100%;
+  font-size: 12px;
+  line-height: 1.4;
   text-align: center;
-  text-wrap: balance;
   color: var(--text-secondary);
+}
+.ww-phone-steps__unfinished {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid rgba(238, 208, 78, 0.35);
+  border-radius: 12px;
+  background: rgba(238, 208, 78, 0.07);
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+/* Footnotes over the legal line, at its size. */
+.ww-phone-steps > .ww-phone-steps__facts {
+  justify-content: center;
+  margin-bottom: -8px;
+}
+.ww-phone-steps > .ww-phone-steps__facts,
+.ww-phone-steps > .ww-phone-steps__facts .zkm-btn-reset.ww-phone-steps__tiprow-label {
+  font-size: 11px;
+}
+/* Mirrors the close button in the opposite corner. */
+.ww-phone-steps__back {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 1;
+}
+.ww-phone-steps__back button:disabled {
+  opacity: 0.4;
 }
 .ww-phone-steps__preview {
   box-sizing: border-box;
@@ -5091,47 +6429,28 @@ details[open] .ww-withdraw__warning-chevron {
 .ww-phone-steps__show:disabled .ww-phone-steps__pill {
   opacity: 0.4;
 }
-.ww-phone-steps__why {
+/* Under a variant's button: the supported-passkeys label and the docs link, one row. The row is the
+   tip's anchor, so a press opens it above the row, over the blurred preview. */
+.ww-phone-steps__facts {
   position: relative;
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 12px 16px;
-  border: 1px solid rgba(86, 231, 157, 0.25);
-  border-radius: 12px;
-  background: rgba(86, 231, 157, 0.05);
-}
-.ww-phone-steps__why-title {
-  margin: 0;
-  display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 4px;
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.5;
-  color: var(--accent-green);
-}
-.ww-phone-steps__why-title > svg {
-  flex: none;
-}
-.ww-phone-steps__why-body {
-  margin: 0;
+  column-gap: 12px;
+  row-gap: 4px;
   font-size: 12px;
   line-height: 1.3;
+}
+.ww-phone-steps__docs {
+  color: var(--text-secondary);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.ww-phone-steps__docs:hover {
   color: var(--text-primary);
 }
-.ww-phone-steps__why-body a {
-  color: inherit;
-  text-decoration: underline;
-}
-/* The rows under the reason: which passkeys work, and what losing one means. Hover or keyboard focus
-   opens a row's tooltip above the card, over the blurred preview; a laptop's sheet, so touch is not
-   catered for. */
 .ww-phone-steps__tiprow {
-  align-self: flex-start;
-}
-.ww-phone-steps__why-body + .ww-phone-steps__tiprow {
-  margin-top: 6px;
+  display: inline-flex;
 }
 .zkm-btn-reset.ww-phone-steps__tiprow-label {
   display: inline-flex;
@@ -5144,19 +6463,15 @@ details[open] .ww-withdraw__warning-chevron {
   color: var(--text-secondary);
   text-decoration: underline dotted;
   text-underline-offset: 3px;
-  cursor: help;
+  cursor: pointer;
 }
 .ww-phone-steps__tiprow-label > svg {
   flex: none;
 }
 .ww-phone-steps__tiprow-label:hover,
-.ww-phone-steps__tiprow-label:focus-visible {
+.ww-phone-steps__tiprow-label:focus-visible,
+.ww-phone-steps__tiprow-label[aria-expanded="true"] {
   color: var(--text-primary);
-}
-.zkm-btn-reset.ww-phone-steps__tiprow-label--gold,
-.ww-phone-steps__tiprow-label--gold:hover,
-.ww-phone-steps__tiprow-label--gold:focus-visible {
-  color: var(--accent-gold);
 }
 .ww-phone-steps__tiprow-label:focus-visible {
   outline: 2px solid #fff;
@@ -5170,28 +6485,42 @@ details[open] .ww-withdraw__warning-chevron {
   width: 300px;
   /* Never wider than the card, which a narrow sheet would otherwise clip it against. */
   max-width: 100%;
-  padding: 10px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 10px;
-  background: #0d0d0d;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 12px 14px;
+  /* The card's green, darkened to an opaque surface, so the tip reads as part of the card. */
+  border: 1px solid rgba(86, 231, 157, 0.3);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #1c2621 0%, #141a17 100%);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
   font-size: 12px;
-  line-height: 1.4;
+  line-height: 1.45;
   color: var(--text-primary);
-  /* Hides with a delay, so the pointer can cross the card from the label to the popup; over the
-     popup the row still counts as hovered. */
   visibility: hidden;
-  transition: visibility 0s linear 350ms;
 }
 .ww-phone-steps__tip strong {
   display: block;
-  margin-bottom: 4px;
-  font-weight: 600;
-  color: #fff;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--accent-green);
 }
 .ww-phone-steps__tip ul {
-  margin: 0 0 6px;
-  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0 0 8px;
+  padding: 0;
+  list-style: none;
+}
+.ww-phone-steps__tip li {
+  position: relative;
+  padding-left: 18px;
+}
+.ww-phone-steps__tip li::before {
+  content: "✓";
+  position: absolute;
+  left: 1px;
+  font-weight: 700;
+  color: var(--accent-green);
 }
 .ww-phone-steps__tip p {
   margin: 0;
@@ -5200,17 +6529,22 @@ details[open] .ww-withdraw__warning-chevron {
 .ww-phone-steps__tip p + p {
   margin-top: 6px;
 }
-@media (hover: hover) {
-  .ww-phone-steps__tiprow:hover .ww-phone-steps__tip {
-    visibility: visible;
-    transition-delay: 0s;
+.ww-phone-steps__tiprow[data-open] .ww-phone-steps__tip {
+  visibility: visible;
+  animation: ww-phone-steps-tip-in 140ms ease-out;
+}
+@keyframes ww-phone-steps-tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
   }
 }
-.ww-phone-steps__tiprow-label:focus-visible + .ww-phone-steps__tip {
-  visibility: visible;
-  transition-delay: 0s;
+@media (prefers-reduced-motion: reduce) {
+  .ww-phone-steps__tiprow[data-open] .ww-phone-steps__tip {
+    animation: none;
+  }
 }
-/* A sentence to act on in the browser's prompt: plain text, so it reads without hover or focus. */
+/* A sentence to act on in the browser's prompt: plain text, so it reads without a press. */
 .ww-phone-steps__note {
   margin: 0;
   display: flex;
@@ -5223,34 +6557,6 @@ details[open] .ww-withdraw__warning-chevron {
 .ww-phone-steps__note > svg {
   flex: none;
   margin-top: 1px;
-}
-/* The gold box on a sign-up step: what losing the passkey, or the key, means. */
-.ww-passkey-warn {
-  box-sizing: border-box;
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 12px 16px;
-  border: 1px solid rgba(238, 208, 78, 0.35);
-  border-radius: 12px;
-  background: rgba(238, 208, 78, 0.07);
-  text-align: left;
-}
-.ww-passkey-warn > svg {
-  flex: none;
-  margin-top: 1px;
-}
-.ww-passkey-warn__body {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-.ww-passkey-warn__body p {
-  margin: 0;
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--text-primary);
 }
 .ww-phone-steps__legal {
   margin: 4px 0 0;
@@ -5425,6 +6731,23 @@ details[open] .ww-withdraw__warning-chevron {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.ww-activity__foot {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 40px 24px;
+}
+@media (max-width: 640px) {
+  .ww-activity__foot {
+    padding-inline: 16px;
+  }
+}
+.ww-activity__export {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
 /* Send panel: paylink option row + "or select a contact" divider. */
@@ -5741,15 +7064,6 @@ details[open] .ww-withdraw__warning-chevron {
 .ww-txd__actions > :only-child {
   grid-column: 1 / -1;
 }
-.ww-txd__footnote {
-  max-width: 240px;
-  margin: 0 auto;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.3;
-  text-align: center;
-  color: var(--text-secondary);
-}
 .ww-txd__all {
   align-self: center;
   padding: 8px 16px;
@@ -5873,6 +7187,7 @@ details[open] .ww-withdraw__warning-chevron {
   border: 2px solid transparent;
   pointer-events: none;
   animation: ww-bell-ring-spin 1.2s linear infinite;
+  will-change: transform;
 }
 :is(.ww-shell, .ww-invite) .ww-notifications__bell-ring.is-tab-bound {
   border-top-color: var(--accent-gold);
@@ -7003,6 +8318,302 @@ details[open] .ww-withdraw__warning-chevron {
 .ww-signup-step .ww-invite-facts {
   margin-top: 0;
 }
+.ww-ticket-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.ww-ticket-head__badge {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(238, 208, 78, 0.15);
+  color: var(--accent-gold);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+}
+.ww-ticket-head__title {
+  margin: 0;
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.ww-ticket-payment {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 16px;
+  border: 1px solid rgba(238, 208, 78, 0.35);
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(238, 208, 78, 0.16), rgba(238, 208, 78, 0.04));
+  text-align: left;
+}
+.ww-ticket-payment__label {
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+}
+.ww-ticket-payment__amount {
+  color: var(--text-primary);
+  font-family: var(--font-display);
+  font-size: 36px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.ww-ticket-payment__symbol {
+  color: var(--text-secondary);
+  font-weight: 400;
+}
+.ww-ticket-rows {
+  margin: 16px 0;
+}
+.ww-ticket-rows .ww-deposit-terms {
+  gap: 0;
+  overflow: hidden;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+}
+.ww-ticket-rows .ww-deposit-terms > * {
+  height: auto;
+  padding: 12px 16px;
+}
+.ww-ticket-rows .ww-deposit-terms > * + * {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.ww-ticket-step__art {
+  display: none;
+}
+@media (min-width: 960px) {
+  .ww-modal--create.ww-ticket-step {
+    width: min(960px, calc(100vw - 64px));
+  }
+  .ww-signup-step form.ww-ticket-step__layout {
+    display: grid;
+    grid-template-columns: minmax(0, 372px) minmax(0, 1fr);
+    gap: 48px;
+  }
+  /* The ticket on the right carries the payment. */
+  .ww-ticket-head .ww-ticket-payment,
+  .ww-ticket-head__badge {
+    display: none;
+  }
+  .ww-ticket-step__art {
+    display: grid;
+    place-items: center;
+    min-height: 480px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 24px;
+    background: radial-gradient(circle at 50% 45%, rgba(238, 208, 78, 0.18), transparent 60%),
+      rgba(255, 255, 255, 0.03);
+    perspective: 900px;
+  }
+}
+.ww-ticket-intro {
+  display: none;
+}
+@media (max-width: 959px) {
+  .ww-ticket-intro {
+    position: fixed;
+    inset: 0;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 28px;
+    background: radial-gradient(circle at 50% 45%, rgba(238, 208, 78, 0.22), transparent 60%),
+      rgba(10, 6, 20, 0.96);
+    perspective: 900px;
+    animation: ww-ticket-intro-in 300ms ease-out both;
+  }
+  .ww-ticket-intro[data-leaving] {
+    animation: ww-ticket-intro-out 450ms 150ms ease-in both;
+  }
+  .ww-ticket-intro[data-leaving] .ww-golden-ticket {
+    animation: ww-ticket-open 500ms cubic-bezier(0.5, 0, 0.75, 0) both;
+  }
+  .ww-ticket-intro .ww-golden-ticket::after {
+    animation: ww-ticket-shine 1400ms 500ms ease-out infinite;
+  }
+  .ww-ticket-intro__hint {
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 14px;
+    font-weight: 600;
+    animation: ww-ticket-hint 1600ms 900ms ease-in-out infinite both;
+  }
+}
+@keyframes ww-ticket-intro-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes ww-ticket-intro-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes ww-ticket-open {
+  to {
+    opacity: 0;
+    transform: translateY(-40px) scale(1.25) rotateY(25deg) rotateZ(-6deg);
+  }
+}
+@keyframes ww-ticket-hint {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* Notches at the tear line come from the mask, so the ticket shows whatever is behind it. */
+.ww-golden-ticket {
+  --cut: 292px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 288px;
+  height: 420px;
+  overflow: hidden;
+  border-radius: 20px;
+  color: #2b1d00;
+  background: radial-gradient(120% 60% at 20% 0%, rgba(255, 255, 255, 0.55), transparent 60%),
+    linear-gradient(155deg, #fbe58a 0%, #e9be4c 38%, #c9922a 62%, #f2d572 100%);
+  box-shadow: 0 30px 60px -20px rgba(238, 208, 78, 0.35), 0 12px 24px rgba(0, 0, 0, 0.45);
+  transform: rotateY(-8deg) rotateZ(2deg);
+  mask: radial-gradient(circle 14px at 0 var(--cut), transparent 98%, #000) left / 51% 100%
+      no-repeat,
+    radial-gradient(circle 14px at 100% var(--cut), transparent 98%, #000) right / 51% 100%
+      no-repeat;
+  animation: ww-ticket-in 700ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.ww-golden-ticket::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    105deg,
+    transparent 35%,
+    rgba(255, 255, 255, 0.55) 50%,
+    transparent 65%
+  );
+  transform: translateX(-100%);
+  animation: ww-ticket-shine 1400ms 500ms ease-out both;
+  pointer-events: none;
+}
+@keyframes ww-ticket-in {
+  from {
+    opacity: 0;
+    transform: translateY(24px) rotateX(12deg) rotateY(-18deg) rotateZ(-2deg);
+  }
+}
+@keyframes ww-ticket-shine {
+  to {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ww-golden-ticket,
+  .ww-golden-ticket::after,
+  .ww-ticket-intro,
+  .ww-ticket-intro .ww-golden-ticket::after,
+  .ww-ticket-intro__hint {
+    animation: none;
+  }
+}
+.ww-golden-ticket__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 22px 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+}
+.ww-golden-ticket__admit {
+  padding: 3px 8px;
+  border: 1px solid rgba(43, 29, 0, 0.45);
+  border-radius: 999px;
+  font-size: 9px;
+}
+.ww-golden-ticket__body {
+  display: flex;
+  flex: 0 0 calc(var(--cut) - 40px);
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 22px;
+}
+.ww-golden-ticket__label {
+  font-size: 12px;
+  font-weight: 600;
+  opacity: 0.7;
+}
+.ww-golden-ticket__amount {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--font-display);
+  font-size: 56px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: -1.5px;
+}
+.ww-golden-ticket__amount small {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0;
+  opacity: 0.65;
+}
+.ww-golden-ticket__stub {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 22px;
+  border-top: 2px dashed rgba(43, 29, 0, 0.35);
+}
+.ww-golden-ticket__tag {
+  overflow: hidden;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ww-golden-ticket__tag small {
+  font-size: 14px;
+  font-weight: 600;
+  opacity: 0.6;
+}
+.ww-golden-ticket__tag--empty {
+  opacity: 0.4;
+}
+.ww-golden-ticket__stamp {
+  position: absolute;
+  top: 16px;
+  right: 18px;
+  padding: 2px 10px;
+  border: 2px solid #1d7a4a;
+  border-radius: 6px;
+  color: #1d7a4a;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  transform: rotate(-8deg);
+}
 .ww-claim-review {
   display: flex;
   flex-direction: column;
@@ -7066,4 +8677,1142 @@ details[open] .ww-withdraw__warning-chevron {
   font-size: 13px;
   line-height: 1.5;
   color: var(--accent-pink);
+}
+
+/* The Savings slide in the Home rail. */
+.ww-shell /* The account pill on Home and its menu. */
+.ww-account-switcher {
+  position: relative;
+}
+.ww-shell .ww-account-switcher__trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--border-hairline);
+  background: rgba(111, 162, 255, 0.16);
+  color: var(--text-primary);
+  font-size: 16px;
+  font-weight: 500;
+}
+.ww-shell .ww-account-switcher__trigger[aria-expanded="true"] {
+  border-color: transparent;
+  background: linear-gradient(110deg, #a600ff, #009cff) border-box;
+}
+.ww-account-switcher__menu {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: 0;
+  z-index: 20;
+  width: min(374px, calc(100vw - 64px));
+  padding: 12px;
+  box-sizing: border-box;
+  border-radius: var(--radius-12);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: #141419;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  color: var(--text-primary);
+  font-size: 13px;
+  text-align: left;
+}
+.ww-account-switcher__menu > small {
+  display: block;
+  padding-bottom: 10px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-hairline);
+}
+.ww-shell .ww-account-switcher__menu > button {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 8px;
+  margin-top: 8px;
+  border-radius: 9px;
+  color: inherit;
+  text-align: left;
+}
+.ww-shell .ww-account-switcher__menu > button[aria-selected="true"],
+.ww-shell .ww-account-switcher__menu > button:hover {
+  background: var(--surface-card);
+}
+.ww-account-switcher__menu button > span:nth-child(2) {
+  display: grid;
+  gap: 2px;
+}
+.ww-account-switcher__menu small {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.ww-account-switcher__menu strong {
+  margin-left: auto;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.ww-account-switcher__check {
+  width: 14px;
+  color: var(--accent-green);
+}
+.ww-account-switcher__avatar {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(130deg, #a600ff, #009cff);
+  color: #fff;
+  font-weight: 600;
+}
+.ww-account-switcher__total {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding: 10px 8px 0;
+  border-top: 1px solid var(--border-hairline);
+  color: var(--text-secondary);
+}
+.ww-account-switcher__total b {
+  color: var(--text-primary);
+}
+
+/* Small labels: the rate, the token, a state. */
+.ww-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.ww-pill--green {
+  background: rgba(86, 231, 157, 0.12);
+  color: var(--accent-green);
+}
+.ww-pill--green::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* Home on the Savings account: the card over its own cards, in the card's place beside the rail. */
+.ww-savings__main {
+  flex: 1 1 434px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+@media (max-width: 1180px) {
+  .ww-savings__main {
+    flex: 1;
+    width: 100%;
+  }
+}
+.ww-savings__card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 24px;
+  box-sizing: border-box;
+  border-radius: var(--radius-16);
+  background: var(--surface-faint);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.07);
+}
+.ww-savings__card h3 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+/* The calculator as a card of its own under the token card: a row, pressable as one. */
+.ww-shell .ww-savings__calc {
+  width: 100%;
+  padding: 20px 24px;
+  background: var(--surface-faint);
+  text-align: left;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.ww-savings__glyph--calc {
+  background: var(--surface-strong);
+  color: var(--text-primary);
+}
+/* "From Main Account" wraps rather than clipping to "From Main A…" beside a wide status pill. */
+.ww-shell .ww-savings-move-row .zkm-activity-row__name {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.ww-savings__glyph {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: rgba(238, 208, 78, 0.14);
+  color: var(--accent-gold);
+  font-size: 18px;
+  font-weight: 600;
+}
+.ww-savings__token {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+.ww-savings__token > span:nth-child(2) {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+}
+.ww-savings__token b {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-savings__token small {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* The calculator sheet. */
+.ww-calc {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+}
+.ww-calc__fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 10px;
+}
+.ww-calc__field {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-calc__box {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 13px;
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+  box-shadow: inset 0 0 0 1px var(--border-hairline);
+}
+.ww-calc__box input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: none;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  outline: none;
+}
+.ww-calc__box small {
+  flex: none;
+  font-size: 12px;
+}
+.ww-calc__horizon {
+  display: flex;
+  padding: 3px;
+  border-radius: var(--radius-full);
+  background: var(--surface-card);
+}
+.ww-shell .ww-calc__horizon button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px;
+  border-radius: var(--radius-full);
+  font-size: 12px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+.ww-shell .ww-calc__horizon button[aria-pressed="true"] {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-primary);
+  font-weight: 600;
+}
+.ww-calc__result {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-calc__result b {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-calc__legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.ww-calc__legend i,
+.ww-calc i[data-kind] {
+  display: inline-block;
+  border-radius: var(--radius-4);
+  background: var(--surface-strong);
+}
+.ww-calc__legend i {
+  width: 10px;
+  height: 10px;
+}
+.ww-calc i[data-kind="earned"] {
+  background: var(--accent-green);
+}
+.ww-calc__bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  height: 190px;
+}
+.ww-calc__bar {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 48px;
+  font-size: 12px;
+  text-align: center;
+}
+.ww-calc__bar > span,
+.ww-calc__bar > small {
+  flex: none;
+  padding: 2px 0;
+  color: var(--text-secondary);
+}
+.ww-calc__bar > i {
+  display: block;
+  min-height: 2px;
+  border-radius: 0;
+}
+.ww-calc__bar > i[data-kind="earned"] {
+  border-radius: var(--radius-4) var(--radius-4) 0 0;
+}
+.ww-calc__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-calc__table th {
+  font-weight: 500;
+  text-align: right;
+}
+.ww-calc__table th:first-child,
+.ww-calc__table td:first-child {
+  text-align: left;
+}
+.ww-calc__table td {
+  padding: 8px 0;
+  border-top: 1px solid var(--border-hairline);
+  text-align: right;
+  color: var(--text-primary);
+}
+.ww-calc__table em {
+  font-style: normal;
+  color: var(--accent-green);
+}
+
+/* The calculator sheet. Phones keep the wallet's sheet shape; only the content alignment
+   is its own. On desktop the body scrolls inside the padding so the scrollbar clears the rounded edge. */
+.ww-modal.ww-savings-sheet {
+  align-items: stretch;
+  text-align: left;
+}
+.ww-savings-sheet__body {
+  display: contents;
+}
+@media (min-width: 641px) {
+  .ww-modal.ww-savings-sheet {
+    width: min(640px, calc(100vw - 32px));
+    max-height: calc(100dvh - 48px);
+    overflow: hidden;
+    padding: 32px 0 32px 32px;
+  }
+  .ww-savings-sheet__body {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    min-height: 0;
+    padding-right: 20px;
+    margin-right: 12px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.18) transparent;
+  }
+}
+
+/* The Move sheet's direction strip. */
+.ww-move__route {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: var(--radius-12);
+  background: var(--surface-card);
+}
+.ww-move__route > span {
+  flex: 1;
+  display: grid;
+  gap: 2px;
+  font-size: 15px;
+  color: var(--text-primary);
+}
+.ww-move__route small {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-shell .ww-move__swap {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-primary);
+}
+
+@media (max-width: 640px) {
+  .ww-calc__fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The calculator's rate field hands the live APY back: a small underlined text button in the box. */
+.ww-shell .zkm-btn-reset.ww-calc__reset {
+  flex: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-primary);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ww-shell .zkm-btn-reset.ww-calc__reset:hover,
+.ww-shell .zkm-btn-reset.ww-calc__reset:focus-visible {
+  color: var(--accent-green);
+  outline: none;
+}
+
+/* New request: no panel around it, one column the header and button share. */
+.ww-panel.ww-receive {
+  width: 480px;
+  max-width: 100%;
+  max-height: none;
+  background: transparent;
+  box-shadow: none;
+}
+.ww-receive .ww-panel__head {
+  padding: 0 0 var(--space-16);
+  text-align: left;
+}
+/* Desktop: back and title sit over the card's left edge. */
+.ww-receive .ww-panel__head.ww-modal__head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  margin-bottom: 0;
+}
+.ww-receive > .ww-panel__head .ww-modal__head-slot:empty {
+  display: none;
+}
+/* One column: the code, then requesting from a contact. */
+.ww-panel__scroll.ww-receive__body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-16);
+  padding: 0;
+  overflow: visible;
+}
+.ww-receive__code {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-12);
+}
+.ww-receive__card {
+  align-self: center;
+  width: 300px;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 18px 20px 16px;
+  border-radius: 26px;
+  background: #fff;
+  color: #141413;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+  text-align: center;
+}
+.ww-receive__eyebrow {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #6b5cff;
+}
+.ww-receive__amount {
+  font-size: 34px;
+  line-height: 1.1;
+}
+.ww-receive__error {
+  font-size: 12px;
+  color: var(--accent-pink);
+}
+.ww-receive__muted {
+  margin-top: -4px;
+  font-size: 14px;
+  color: #5f6472;
+}
+.zkm-btn-reset.ww-receive__qr {
+  width: 236px;
+  max-width: 100%;
+  aspect-ratio: 1;
+  color: #141413;
+  font-size: 14px;
+  cursor: zoom-in;
+}
+.ww-receive__qr svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.zkm-btn-reset.ww-receive__qr--empty {
+  padding: 32px;
+  border-radius: 16px;
+  background: #f2f2f4;
+  cursor: pointer;
+}
+.ww-receive__tag {
+  font-size: 21px;
+  line-height: 1.2;
+}
+.ww-receive__live {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  font-size: 14px;
+  color: #bfc2d7;
+}
+.ww-receive__dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #56e79d;
+  box-shadow: 0 0 0 4px rgba(86, 231, 157, 0.18);
+}
+.ww-receive__actions {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+}
+.ww-receive__actions .zkm-primary-btn {
+  box-sizing: border-box;
+  height: 50px;
+  padding: 0 var(--space-12);
+  font-size: 16px;
+}
+.ww-receive__actions .zkm-primary-btn__label {
+  gap: 6px;
+  white-space: nowrap;
+}
+.ww-receive__actions .zkm-primary-btn__label svg {
+  width: 18px;
+  height: 18px;
+}
+/* A tap leaves no focus ring; the keyboard still gets one. */
+.ww-receive .zkm-primary-btn:focus:not(:focus-visible) {
+  outline: none;
+}
+.zkm-btn-reset.ww-receive__full,
+.zkm-btn-reset.ww-receive__all {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #47b3ff;
+}
+.ww-receive__all {
+  align-self: flex-start;
+}
+.ww-receive .ww-contacts__section {
+  gap: var(--space-16);
+  padding-top: var(--space-8);
+}
+.ww-receive .ww-contacts__label {
+  font-size: 13px;
+}
+.ww-receive__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ww-receive__who {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+/* New request: the amount and note, then who from. */
+.ww-request-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: var(--space-8);
+}
+.zkm-field__box.ww-request-form__amount {
+  height: 60px;
+}
+.ww-request-form__amount .zkm-field__input,
+.ww-request-form__currency {
+  font-size: 26px;
+  font-weight: 700;
+}
+.ww-request-form__currency {
+  color: var(--text-secondary);
+}
+.ww-request-form__unit {
+  padding: 4px 10px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.ww-request-form__label {
+  display: flex;
+  justify-content: space-between;
+}
+.ww-request-form__label i {
+  font-style: normal;
+  color: var(--text-secondary);
+}
+/* A contact request with no amount shakes the amount. */
+.ww-request-form__amount[data-shake] {
+  animation: ww-request-shake 0.4s ease;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ww-request-form__amount[data-shake] {
+    animation: none;
+  }
+}
+@keyframes ww-request-shake {
+  20%,
+  60% {
+    transform: translateX(-8px);
+  }
+  40%,
+  80% {
+    transform: translateX(8px);
+  }
+}
+/* Who from: two tabs over a thumb that slides to the chosen one. */
+.ww-request-who {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 4px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+.ww-request-who::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  bottom: 4px;
+  left: 4px;
+  width: calc(50% - 4px);
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.12);
+  transition: transform 0.2s ease;
+  will-change: transform;
+}
+.ww-request-who[data-who="anyone"]::before {
+  transform: translateX(100%);
+}
+.zkm-btn-reset.ww-request-who__tab {
+  position: relative;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 9999px;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  transition: color 0.2s ease;
+}
+.ww-request-who__tab[aria-selected="true"] {
+  color: var(--text-primary);
+}
+@media (prefers-reduced-motion: reduce) {
+  .ww-request-who::before,
+  .zkm-btn-reset.ww-request-who__tab {
+    transition: none;
+  }
+}
+.ww-request-anyone,
+.ww-request-pick {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+}
+.ww-request-anyone__code {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 14px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+.zkm-btn-reset.ww-request-anyone__qr {
+  flex: none;
+  width: 176px;
+  height: 176px;
+  box-sizing: border-box;
+  padding: 10px;
+  border-radius: 14px;
+  background: #fff;
+  line-height: 0;
+}
+.ww-request-anyone__qr svg {
+  width: 100%;
+  height: 100%;
+}
+.ww-request-anyone__text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+.ww-request-anyone__text b {
+  font-size: 17px;
+  color: var(--text-primary);
+}
+.ww-request-pick .zkm-contact-row {
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border-radius: 14px;
+}
+.ww-request-pick__ask {
+  padding: 6px 14px;
+  border-radius: 9999px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--gradient-brand);
+}
+.ww-request-pick__ask[data-dimmed] {
+  opacity: 0.4;
+}
+.ww-receive__paid {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: var(--space-24) var(--space-16);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.04);
+  text-align: center;
+}
+.ww-receive__check {
+  display: grid;
+  place-items: center;
+  width: 92px;
+  height: 92px;
+  border-radius: 50%;
+  background: rgba(86, 231, 157, 0.14);
+  box-shadow: 0 0 0 10px rgba(86, 231, 157, 0.06);
+}
+.ww-receive__check--onchain {
+  background: rgba(238, 208, 78, 0.14);
+  box-shadow: 0 0 0 10px rgba(238, 208, 78, 0.06);
+}
+.ww-receive__big {
+  font-size: 46px;
+  line-height: 1.1;
+}
+.ww-receive__sub {
+  font-size: 15px;
+  color: #bfc2d7;
+}
+.ww-receive__ok {
+  color: #56e79d;
+}
+.ww-receive__facts {
+  align-self: stretch;
+  text-align: left;
+}
+.ww-receive__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 8px 8px;
+  border-radius: 9999px;
+  background: rgba(255, 255, 255, 0.07);
+  font-size: 14px;
+  font-weight: 600;
+}
+.ww-receive__mini {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.05);
+  text-align: left;
+}
+.ww-receive__mini > svg {
+  flex: none;
+  padding: 4px;
+  border-radius: 8px;
+  background: #fff;
+}
+@media (min-width: 641px) {
+  .zkm-btn-reset.ww-receive__qr {
+    width: 200px;
+  }
+}
+.ww-receive-full {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  box-sizing: border-box;
+  height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-16);
+  padding: var(--space-16);
+  background: radial-gradient(60% 45% at 50% 0%, rgba(120, 40, 200, 0.45), transparent 70%),
+    radial-gradient(40% 35% at 0% 30%, rgba(6, 147, 255, 0.18), transparent 70%), #070707;
+}
+.ww-receive-full__bar {
+  position: absolute;
+  top: calc(var(--space-16) + var(--ww-safe-area-top));
+  right: var(--space-16);
+  left: var(--space-16);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+/* Save and Print: under the code when wide, along the foot on a phone. */
+.ww-receive-full__print {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-8);
+}
+.ww-receive-full__print .ww-receive__actions {
+  grid-template-columns: auto auto;
+}
+.ww-receive-full__note {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+@media (max-width: 640px) {
+  .ww-receive-full__print {
+    position: absolute;
+    right: var(--space-16);
+    bottom: calc(var(--space-24) + env(safe-area-inset-bottom, 0px));
+    left: var(--space-16);
+    align-items: stretch;
+    text-align: center;
+  }
+  .ww-receive-full__print .ww-receive__actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.ww-receive-full .ww-receive__card {
+  width: auto;
+}
+/* The card's text and the bars take about 400px; the code gets the rest, so nothing scrolls. */
+.ww-receive-full .ww-receive__qr {
+  width: min(360px, calc(100dvh - 400px - var(--ww-safe-area-top)), calc(100vw - 72px));
+  cursor: default;
+}
+@media (max-width: 640px) {
+  .ww-panel.ww-receive {
+    width: 100%;
+  }
+  .ww-receive .ww-panel__head.ww-modal__head {
+    display: grid;
+  }
+  .ww-receive > .ww-panel__head .ww-modal__head-slot:empty {
+    display: flex;
+  }
+  .ww-panel__scroll.ww-receive__body {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-16);
+  }
+  .ww-receive__paid {
+    padding-top: var(--space-8);
+    background: transparent;
+  }
+  /* The rows sit at the foot of the screen, above the tab bar. */
+  .ww-receive__rows {
+    margin-top: auto;
+  }
+}
+
+/* Requests: a row for your code, the Sent and Received chips, then the unpaid requests. */
+@media (min-width: 641px) {
+  .ww-panel.ww-receive.ww-requests {
+    width: 600px;
+  }
+}
+.ww-panel__scroll.ww-requests__body {
+  gap: var(--space-24);
+  padding: 0;
+  overflow: visible;
+}
+.ww-requests .ww-chip-row {
+  margin-bottom: 0;
+}
+.ww-requests .ww-chip-row .ww-activity__chip {
+  padding: 8px 20px;
+  font-size: 15px;
+}
+.ww-requests__code {
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--surface-card);
+}
+.ww-requests__qr {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  flex: none;
+  border-radius: 10px;
+  background: #fff;
+}
+.ww-requests__code-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 16px;
+}
+.ww-chip-row.ww-requests__code-actions {
+  flex: none;
+}
+@media (max-width: 640px) {
+  .ww-requests__code {
+    flex-wrap: wrap;
+  }
+  .ww-chip-row.ww-requests__code-actions {
+    width: 100%;
+  }
+  .ww-requests__code-actions .ww-activity__chip {
+    flex: 1;
+    text-align: center;
+  }
+}
+.ww-requests__list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+.ww-requests__empty {
+  padding: var(--space-8);
+  font-size: 14px;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+/* Activity's Pending: the outside-contacts entry and the way to the full contacts list. */
+.zkm-btn-reset.ww-activity__contacts {
+  align-self: flex-start;
+  padding: 4px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #47b3ff;
+}
+@media (max-width: 640px) {
+  /* The summary takes its own full-width line under the avatars and count. */
+  .ww-shell .ww-noncontacts-entry.ww-activity__requests-entry {
+    flex-wrap: wrap;
+  }
+  .ww-activity__requests-entry .ww-noncontacts-entry__count {
+    margin-left: auto;
+  }
+  .ww-activity__requests-entry .ww-noncontacts-entry__text {
+    order: 1;
+    flex-basis: 100%;
+  }
+}
+
+/* Print your code: dark on white, the only thing on the printed page. */
+.ww-print-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px;
+  border-radius: 16px;
+  background: #fff;
+  color: #141413;
+  text-align: center;
+}
+.ww-print-card__brand {
+  font-weight: 700;
+}
+.ww-print-card__title,
+.ww-print-card__tag {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 700;
+}
+.ww-print-card__host {
+  color: #6b6b6b;
+}
+.ww-print-card p {
+  max-width: 260px;
+  margin: 0;
+  font-size: 13px;
+}
+/* Rendered for Save and Print only. */
+.ww-print-card--offscreen {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+}
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .ww-print-card,
+  .ww-print-card * {
+    visibility: visible;
+  }
+  .ww-print-card {
+    position: fixed;
+    inset: 0;
+    margin: auto;
+    width: fit-content;
+    height: fit-content;
+  }
+}
+
+/* Paying a request or a pay page: the amount over the rows, the free fee and the new-contact line. */
+.ww-pay__lead {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+.ww-pay__free {
+  color: var(--accent-green);
+}
+.ww-pay__notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: rgba(86, 231, 157, 0.06);
+  box-shadow: inset 0 0 0 1px rgba(86, 231, 157, 0.16);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+/* The pay page: the summary unboxed, a green "Free" pill, a blue log-in link, one card when wide. */
+.ww-invite__content--pay .ww-paylink-summary {
+  padding: 0;
+  background: none;
+}
+.ww-invite__content--pay .ww-paymethod--best {
+  overflow: visible;
+}
+.ww-invite__content--pay .ww-deposit__connect.ww-paymethod > svg:last-child {
+  margin-right: 0;
+}
+.ww-invite__content--pay .ww-paymethod__flag {
+  top: -10px;
+  right: 16px;
+  width: auto;
+  z-index: 1;
+  height: auto;
+  overflow: visible;
+}
+.ww-invite__content--pay .ww-paymethod__flag span {
+  position: static;
+  display: block;
+  width: auto;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  background: var(--accent-green);
+  color: var(--surface-dark);
+  font-size: 11px;
+  transform: none;
+}
+.ww-invite__content--pay {
+  position: relative;
+}
+.ww-invite__content--pay > .ww-invite__back {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: auto;
+}
+.ww-invite__content--pay .ww-invite__link {
+  color: var(--blue-400);
+  text-decoration: none;
+}
+@media (min-width: 641px) {
+  .ww-invite__content--pay {
+    width: min(560px, 100%);
+    padding: 40px 48px;
+    border-radius: 24px;
+    background: rgba(7, 7, 7, 0.72);
+    box-shadow: inset 0 0 0 1px var(--border-hairline);
+  }
+  .ww-invite__content--pay > .ww-invite__back {
+    top: 16px;
+    left: 16px;
+  }
 }

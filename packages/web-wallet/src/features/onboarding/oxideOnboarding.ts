@@ -21,9 +21,8 @@ import {
   reopenRefundedDeposit,
 } from "./registrationQuoteRecovery"
 import { Fr } from "@aztec/aztec.js/fields"
-import { keccak256, concatHex, toBytes, toHex, type Hex } from "viem"
+import { toBytes, toHex, type Hex } from "viem"
 import type { PrivateKeyAccount } from "viem/accounts"
-import { L2_BINDING_MESSAGE_PREFIX } from "@obsidion/core/constants"
 import {
   AccountServiceClient,
   AccountStorage,
@@ -33,6 +32,7 @@ import {
   resolveStoredCredentialId,
   createRegistrationSipaDeriver,
   deriveBootstrapKey,
+  metadataMigrationBinding,
   pubkeyToR1KeyArg,
   readInstalledPasskeyKey,
   requireVerifiedIdentity,
@@ -56,7 +56,7 @@ import {
 } from "@obsidion/front-core"
 import { SANDBOX_REGISTRATION_BENEFICIARY_ID } from "@obsidion/core/constants"
 import type { NameClaimResponse, RegistrationSchedule } from "@obsidion/core/types"
-import { makeRegistrationDepositSeeder } from "./registrationDepositSeed"
+import { makeRegistrationDepositSeeder, seededRegistrationSalt } from "./registrationDepositSeed"
 import {
   claimTerms,
   readRegistrationSchedule,
@@ -87,7 +87,6 @@ import {
 import { getOxideTuple, l1PublicClient, oxideEnvFor, requireTupleField } from "../../config/oxideTuple"
 import type { WebWalletConfig } from "../../config/env"
 import {
-  NoPrfError,
   PasskeyPolicyError,
   type PasskeyRequestScope,
   currentDevicePosture,
@@ -104,8 +103,7 @@ import {
   isUnsettled,
 } from "../../platform/auth/WebAlphaAuthService"
 import { usertagFor } from "../../platform/auth/WebPasskeyIdentityMap"
-import { takeHandoffMaterial } from "../../platform/storage/handoffMaterial"
-import { anchorTiers, bootstrapKeyProvider, enterTiers, requireResolved } from "./recoveryProbes"
+import { bootstrapKeyProvider, enterTiers, requireResolved } from "./recoveryProbes"
 import { generationFactories, loadOxideGenerations } from "./oxideGenerations"
 import { resolveTagForCommit } from "../contacts/registryResolution"
 
@@ -126,6 +124,8 @@ export type EnterResult =
       bootstrap: PrivateKeyAccount
       /** The wire domain a claimed tag hashes under, to name a reservation the caller finds. */
       ensDomain: string
+      /** The tag this credential claimed on this browser; tried before `userHandle`. */
+      usertag?: string
       /** The name the passkey carries, to name that reservation without asking. */
       userHandle?: string
     }
@@ -149,6 +149,8 @@ export type EnterResult =
       storedAddressMismatch?: boolean
       /** Present only when a record was mismatched: a certain wrong key here, or the weaker miss. */
       verdict?: MismatchVerdict
+      /** The retired-rollup list failed to load, so no account was ruled out. */
+      catalogIncomplete?: boolean
     }
 
 /** The recovered on-chain claim, pending a plaintext tag to name it. */
@@ -317,55 +319,35 @@ export class PasskeyMismatchError extends PasskeyPolicyError {
 }
 
 /**
- * What a hand-off can tell the wallet about an existing passkey so entering is a single prompt:
- * the credential to assert with, and its public key (raw 64-byte `x||y`, hex), which saves the
- * second assertion that would otherwise recover it. Both are checked against the signature; a
- * hint that does not match throws rather than selecting a key. `expectedL2Address` and
- * `policyVersion` come from a campaign that already follows this wallet's slot rule; the address
- * only orders and narrows the candidates, it never anchors one on its own. `discover` leaves the
- * browser's list open instead of naming a credential; `chooser` bypasses the cache and hand-off so
- * the user picking a different passkey is never answered by a saved key.
+ * Which existing passkey to enter with: the credential to assert with, and its public key (raw
+ * 64-byte `x||y`, hex), which saves the second assertion that would otherwise recover it. A hint
+ * that does not match the signature throws rather than selecting a key. `discover` leaves the
+ * browser's list open instead of naming a credential; `chooser` bypasses the cache so the user
+ * picking a different passkey is never answered by a saved key.
  */
 export interface PasskeyHints {
   credentialId?: string
   pubkeyHex?: string
-  expectedL2Address?: string
-  policyVersion?: string
   discover?: boolean
   chooser?: boolean
 }
 
-/** The hand-off contract version whose `expectedL2Address` was derived under this wallet's slot rule. */
-export const HANDOFF_POLICY_VERSION = "phone-v1"
-
 /**
- * Which passkey a ceremony asks for: a hinted hand-off, a known credential, or the open chooser.
- * `handoff` marks the hand-off navigation itself, the one place hand-off material may be taken.
- * `discover` runs a discoverable ceremony (no credential pinned); `chooser` bypasses the
- * ceremony-free sources (cache and hand-off) so no saved key answers.
+ * Which passkey a ceremony asks for: a known credential or the open chooser. `discover` runs a
+ * discoverable ceremony (no credential pinned); `chooser` bypasses the cache so no saved key answers.
  */
 export type CeremonyRequest = {
   credentialId?: string
   pubkeyHex?: string
   discover?: boolean
   chooser?: boolean
-  handoff?: boolean
 }
 
 /**
- * Where the key comes from, decided without a ceremony: material the campaign handed off on this
- * page load, the key this session already holds, or a ceremony described by `request`.
+ * Where the key comes from, decided without a ceremony: the key this session already holds, or a
+ * ceremony described by `request`.
  */
-/** The hand-off needs a passkey prompt, which only a user's tap may open. */
-export class CeremonyRequiredError extends Error {
-  constructor() {
-    super("a passkey prompt needs a tap")
-    this.name = "CeremonyRequiredError"
-  }
-}
-
 export type KeySource =
-  | { kind: "handoff"; result: RecoverPasskeyResult; slot?: PrfSlot }
   | { kind: "cache"; result: RecoverPasskeyResult }
   | { kind: "ceremony-required"; request: CeremonyRequest }
 
@@ -381,22 +363,6 @@ export async function resolveKeySource(
   // The chooser is the user asking for a different passkey: no cached source may answer for them.
   if (request.chooser) return { kind: "ceremony-required", request }
   const service = getAuthService()
-  if (request.handoff && request.credentialId) {
-    const material = takeHandoffMaterial(request.credentialId, service.rpId)
-    if (material) {
-      try {
-        return {
-          kind: "handoff",
-          result: await service.recoverFromHandoffMaterial(material),
-          ...(material.slot ? { slot: material.slot } : {}),
-        }
-      } catch (err) {
-        // Material with no usable candidate is spent, and what follows decides. A rotated
-        // credential is refused here as it would be after a ceremony.
-        if (!(err instanceof NoPrfError)) throw err
-      }
-    }
-  }
   const cached = await service.recoverFromCache(
     options?.restore === false ? { restore: false } : undefined,
   )
@@ -443,9 +409,7 @@ async function ceremonyPath(
   own?: PasskeyRequestScope,
 ) {
   if (cancel?.aborted) throw new GateCancelledError()
-  // A hand-off's prompt runs off no button of its own, so the gate holds a sheet even on a phone:
-  // the tap it waits for is the activation the assertion needs.
-  const { signal } = await gate(request.handoff ? { anchor: true } : undefined)
+  const { signal } = await gate()
   if (cancel?.aborted) throw new GateCancelledError()
   const attempt = attemptFrom(signal)
   try {
@@ -466,29 +430,11 @@ async function keyMaterial(
   hints: CeremonyRequest | undefined,
   gate: CeremonyGate,
   cancel?: AbortSignal,
-  silentOnly = false,
   own?: PasskeyRequestScope,
-): Promise<{
-  recovered: BeginRecoveryResult
-  source: KeySource["kind"]
-  /** The slot the campaign's material names as its account, when it names one. */
-  slot?: PrfSlot
-  attempt?: AbortSignal
-}> {
+): Promise<{ recovered: BeginRecoveryResult; attempt?: AbortSignal }> {
   const source = await resolveKeySource(hints)
-  if (source.kind !== "ceremony-required") {
-    return {
-      recovered: source.result,
-      source: source.kind,
-      attempt: cancel,
-      ...(source.kind === "handoff" && source.slot ? { slot: source.slot } : {}),
-    }
-  }
-  if (silentOnly) throw new CeremonyRequiredError()
-  return {
-    ...(await ceremonyPath(source.request, gate, cancel, own)),
-    source: "ceremony-required",
-  }
+  if (source.kind !== "ceremony-required") return { recovered: source.result, attempt: cancel }
+  return ceremonyPath(source.request, gate, cancel, own)
 }
 
 const throwIfCancelled = (attempt: AbortSignal) => {
@@ -700,7 +646,7 @@ export async function reusePasskeyAccount(
   signal?: AbortSignal,
   own?: PasskeyRequestScope,
 ): Promise<OnboardingKeys> {
-  const { recovered, attempt } = await keyMaterial(hints, gate, signal, false, own)
+  const { recovered, attempt } = await keyMaterial(hints, gate, signal, own)
   // The attempt owns the prompt; the caller's cancel owns everything after it.
   const owns = () => !attempt?.aborted && !signal?.aborted
   const settled = await settleRecovery(recovered, gate, attempt)
@@ -717,172 +663,6 @@ export async function reusePasskeyAccount(
     owns,
   )
   return keysFor(account, settled, picked.msk, owns)
-}
-
-/** A hand-off's key material and the candidate an anchor named. Nothing has been written yet. */
-export interface ResolvedHandoff {
-  recovered: RecoverPasskeyResult
-  msk: Fr
-  slot: PrfSlot
-  /** The ceremony's attempt, when the gate handed one out; a cancel on it stops the adoption. */
-  attempt?: AbortSignal
-  /** The caller's cancel; the adoption asks it beside the attempt before every write. */
-  cancel?: AbortSignal
-  /** Where the key in `recovered` came from, after any fallback from hand-off material. */
-  keySource: "handoff" | "cache" | "ceremony"
-}
-
-/**
- * Resolve a passkey this browser has no address for: a campaign hand-off, or a returning user
- * with no local record. The candidates go through the hand-off's anchor tiers (the Registry, the
- * slot the campaign's material names, then account-service's claim ledger); a hand-off address,
- * when it names one candidate, orders the candidates and narrows the probes to that one. No anchor → `NoWalletForPasskeyError`. Writes
- * nothing, so the caller can settle what else this origin holds before `adoptHandoff` switches
- * the session. `signal` is the caller's cancel; the attempt handed back carries it.
- */
-export async function resolveHandoff(
-  wallet: ObsidionWallet,
-  contractService: ContractService,
-  config: WebWalletConfig,
-  hints: PasskeyHints | undefined,
-  gate: CeremonyGate,
-  signal?: AbortSignal,
-  /** Take the hand-off material or refuse: no prompt, so this can run with no tap behind it. */
-  silentOnly = false,
-  own?: PasskeyRequestScope,
-): Promise<ResolvedHandoff> {
-  // Started, not awaited: these are chain and network reads, and awaiting them here would spend
-  // the tap's activation before the passkey is ever asked for. Nothing below needs them until the
-  // key is in hand.
-  const generationsPending = loadOxideGenerations(wallet, contractService, config)
-  generationsPending.catch(() => {})
-  let {
-    recovered: begun,
-    source,
-    attempt,
-    slot: campaignSlot,
-  } = await keyMaterial({ ...hints, handoff: true }, gate, signal, silentOnly, own)
-  let recovered = await settleRecovery(begun, gate, attempt)
-  const generations = await generationsPending
-  // The campaign's word holds for the keys its material carried; a ceremony's keys are the same
-  // passkey's, so the slot it named is still the one it signed up under.
-  const tiers = anchorTiers(
-    config,
-    generations,
-    campaignSlot ? { candidates: recovered.candidates, slot: campaignSlot } : undefined,
-  )
-  // The deriver is bound per recovery result: a fallback ceremony may recover a different key. It
-  // memoizes, so the identity read below reuses the address the probes already derived.
-  let deriveAddress!: (msk: Fr) => Promise<string>
-  const decide = async (recovered: RecoverPasskeyResult) => {
-    deriveAddress = collectingDeriver(deriveAddressWith(wallet, recovered.pubkey)).derive
-    const narrowed = await narrowToHint(recovered, hints, deriveAddress)
-    let result = await resolveRecoveredMsk(narrowed, deriveAddress, tiers)
-    // A hint naming the wrong sibling costs one more pass over both candidates, not the account.
-    if (result.kind === "unknown" && narrowed !== recovered) {
-      result = await resolveRecoveredMsk(recovered, deriveAddress, tiers)
-    }
-    return result
-  }
-  /** Whether any candidate in hand still derives the address this browser recorded for the passkey. */
-  const derivesRecorded = async (r: RecoverPasskeyResult) =>
-    !r.expectedAddress ||
-    (await candidateDeriving(r, r.expectedAddress, deriveAddressWith(wallet, r.pubkey))) !== undefined
-  /**
-   * A record naming an address no key in hand derives is either the campaign having evaluated the
-   * slot this browser did not record, or a record kept from a retired deployment whose addresses
-   * this key no longer makes. Only the first is worth a ceremony, and only when a ceremony could
-   * turn up a key this does not already hold: a passkey has two PRF slots, so material carrying
-   * both is every key there is, and a record neither derives is stale. Stale, not wrong — the
-   * address steps aside and the anchors decide, as they do for a browser holding no record at all.
-   * The rotated-credential refusal is unaffected: that is a key check, made before any of this.
-   */
-  const everySlot = recovered.candidates.first !== undefined && recovered.candidates.second !== undefined
-  if (source === "handoff" && everySlot && !(await derivesRecorded(recovered))) {
-    recovered = { ...recovered, expectedAddress: undefined }
-  }
-  // Hand-off material that does not derive this browser's own record for its passkey (the campaign
-  // evaluates one slot) is no candidate for that record: it is spent, and the ceremony decides.
-  const usable = source !== "handoff" || (await derivesRecorded(recovered))
-  let result: ResolvedMsk = usable ? await decide(recovered) : { kind: "unknown" }
-  // Hand-off material no anchor names was taken once and is gone; the ceremony decides as before.
-  if (result.kind === "unknown" && source === "handoff") {
-    if (silentOnly) throw new CeremonyRequiredError()
-    ;({ recovered: begun, attempt } = await ceremonyPath(
-      { credentialId: hints?.credentialId, pubkeyHex: hints?.pubkeyHex, discover: hints?.discover, handoff: true },
-      gate,
-      signal,
-      own,
-    ))
-    recovered = await settleRecovery(begun, gate, attempt)
-    source = "ceremony-required"
-    // The ceremony holds every slot this passkey has. A record none of them derives is stale by
-    // the same reasoning as above, and must not fail the sign-in closed.
-    if (!(await derivesRecorded(recovered))) {
-      recovered = { ...recovered, expectedAddress: undefined }
-    }
-    result = await decide(recovered)
-  }
-  const resolved = requireResolved(result)
-  // A stored address and the campaign's own record both name a key, not an account. The account
-  // this key owns is read the same way the ordinary sign-in reads it, so a name this device cannot
-  // attribute refuses here too. A key that owns no account is the campaign's nameless user.
-  requireVerifiedIdentity(
-    await resolveOxideIdentity(
-      generations,
-      deriveBootstrapKey(resolved.msk).address,
-      await deriveAddress(resolved.msk),
-    ),
-  )
-  throwIfCancelled(attemptFrom(attempt))
-  if (signal?.aborted) throw new GateCancelledError()
-  return {
-    recovered,
-    msk: resolved.msk,
-    slot: resolved.slot,
-    attempt,
-    cancel: signal,
-    keySource: source === "ceremony-required" ? "ceremony" : source,
-  }
-}
-
-/**
- * Adopt what `resolveHandoff` named: this is the step that switches the session. `beforeCommit`
- * runs after the account and its record exist, before storage moves to the new account. The
- * attempt owns the prompt that produced the material; the caller's cancel owns the adoption.
- */
-export async function adoptHandoff(
-  wallet: ObsidionWallet,
-  { recovered, msk, slot, attempt, cancel }: ResolvedHandoff,
-  beforeCommit?: () => Promise<void>,
-): Promise<OnboardingKeys> {
-  const owns = () => !attempt?.aborted && !cancel?.aborted
-  const account = await adoptRecoveredAccount(wallet, recovered, msk, slot, attemptFrom(attempt), beforeCommit, owns)
-  return keysFor(account, recovered, msk, owns)
-}
-
-/** A hand-off's `l2` in the one form the contract allows: a `0x`-prefixed 32-byte hex address. */
-const addressHint = (value: string | undefined) =>
-  value && /^0x[0-9a-fA-F]{64}$/.test(value) ? value.toLowerCase() : undefined
-
-/**
- * A hand-off address is a prefilter: when one candidate derives it, that candidate is probed first
- * and alone. A malformed hint, one matching neither candidate, or a browser holding its own record
- * for the passkey leaves the set whole. It never anchors, because both candidates come from the
- * user's own passkey and a stale or altered link could name the sibling.
- */
-async function narrowToHint<R extends BeginRecoveryResult>(
-  recovered: R,
-  hints: PasskeyHints | undefined,
-  deriveAddress: (msk: Fr) => Promise<string>,
-): Promise<R> {
-  const hint = addressHint(hints?.expectedL2Address)
-  if (!hint || hints?.policyVersion !== HANDOFF_POLICY_VERSION || recovered.expectedAddress) {
-    return recovered
-  }
-  const named = await candidateDeriving(recovered, hint, deriveAddress)
-  if (!named) return recovered
-  return { ...recovered, candidates: { [named.slot]: named.msk }, preferredSlot: named.slot }
 }
 
 /**
@@ -1242,6 +1022,7 @@ export async function buildRetrySignDeps(
       feeToken: env.feeToken,
       l1ChainId: env.l1ChainId,
     }),
+    seededSipaSalt: seededRegistrationSalt,
   }
 }
 
@@ -1254,22 +1035,11 @@ export async function buildOxideAccountBinding(
   keys: Pick<OnboardingKeys, "account" | "secretKey">,
   nameHash: Hex,
 ): Promise<OxideAccountBinding> {
-  const bootstrap = deriveBootstrapKey(keys.secretKey)
-  const bootstrapPub = toBytes(bootstrap.publicKey) // 0x04 || x || y
-  const bindingSig = await bootstrap.sign({
-    hash: keccak256(
-      concatHex([
-        toHex(new TextEncoder().encode(L2_BINDING_MESSAGE_PREFIX)),
-        keys.account.getAddress().toString() as Hex,
-      ]),
-    ),
-  })
-  return {
-    nameHash: toBytes(nameHash),
-    bootstrapPubKeyX: bootstrapPub.slice(1, 33),
-    bootstrapPubKeyY: bootstrapPub.slice(33, 65),
-    bindingSig: toBytes(bindingSig).slice(0, 64),
-  }
+  return metadataMigrationBinding(
+    keys.secretKey,
+    keys.account.getAddress().toString() as Hex,
+    nameHash,
+  )
 }
 
 /**
@@ -1403,6 +1173,7 @@ export async function enterWithPasskey(
       pubkey: recovered.pubkey,
       addresses: deriver.addresses,
       observed,
+      ...(generations.catalogIncomplete ? { catalogIncomplete: true } : {}),
     }
     if (!options.hints) return { entered: false, reason: "unknown", ...evidence }
     return { entered: false, reason: "unknown", ...evidence, storedAddressMismatch, verdict }
@@ -1430,6 +1201,7 @@ export async function enterWithPasskey(
       account: await adopt(),
       bootstrap: deriveBootstrapKey(msk),
       ensDomain,
+      ...(remembered ? { usertag: remembered } : {}),
       ...(recovered.userHandle ? { userHandle: recovered.userHandle } : {}),
     }
   }

@@ -5,6 +5,7 @@ import {
   parseServedProfile,
   pinnedProfileUrl,
   resolveVersion,
+  retiredRollupNodes,
 } from "../src/client.js"
 import { isSupportedVersion, parseConfigProfile } from "../src/schema.js"
 import { stagingDoc, withVersions } from "./fixture.js"
@@ -424,5 +425,20 @@ describe("pinnedProfileUrl", () => {
     expect(pinnedProfileUrl("https://cdn.example/profiles/v5/current.json")).toBe(
       "https://cdn.example/profiles/v5/current.json",
     )
+  })
+})
+
+describe("retiredRollupNodes", () => {
+  it("names the node of each portal a cutover moved off its rollup", () => {
+    const doc = withVersions("0.0.3", "0.0.2", "0.0.1")
+    doc.versions["0.0.2"].nodeUrl = "https://old.rpc.example"
+    doc.versions["0.0.2"].oxide.portal = "0x" + "AB".repeat(20)
+    doc.versions["0.0.1"].oxide.portal = "0x" + "cd".repeat(20)
+    const nodes = retiredRollupNodes(parseConfigProfile(doc))
+    expect([...nodes]).toEqual([["0x" + "ab".repeat(20), "https://old.rpc.example"]])
+  })
+
+  it("names nothing when every version shares the current node", () => {
+    expect(retiredRollupNodes(parseConfigProfile(withVersions("0.0.2", "0.0.1"))).size).toBe(0)
   })
 })

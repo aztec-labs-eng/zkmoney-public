@@ -1,9 +1,11 @@
 import {
   decodeInline,
+  decodeRequestInline,
   isPaymentContactEntry,
   navigateIdFor,
   normalizeTag,
   parseConnectLink,
+  parsePayLink,
   parseUserTagFromQRPayload,
   type Contact,
 } from "@obsidion/front-core"
@@ -42,6 +44,23 @@ export async function scanPayload(text: string, identity: ScanIdentity): Promise
     return error("This connect link is invalid. Use the complete wallet connect link.")
   }
 
+  // A pay link, or the tag host that redirects to one, opens the pay page, which hands off to Send.
+  const hostTag = /^https?:\/\//i.test(payload) ? parseUserTagFromQRPayload(payload) : null
+  const pay = parsePayLink(payload) ?? (hostTag ? { tag: hostTag } : null)
+  if (pay) {
+    const tag = normalizeTag(pay.tag)
+    if (!tag || (pay.fragment && !decodesAsRequest(pay.fragment))) {
+      return error("This pay link is invalid. Use the complete pay link.")
+    }
+    if (identity.ownTag && tag === normalizeTag(identity.ownTag)) {
+      return error("This is your own @tag.")
+    }
+    return route(`/pay/${tag}${pay.fragment ? `#${pay.fragment}` : ""}`)
+  }
+  if (/zk\.money\/pay(?:[\/#?]|$)/i.test(payload)) {
+    return error("This pay link is invalid. Use the complete pay link.")
+  }
+
   const contacts = identity.contacts.filter(isPaymentContactEntry)
   const link = pastedLinkRoute(payload)
   if (link) return route(link)
@@ -68,4 +87,13 @@ export async function scanPayload(text: string, identity: ScanIdentity): Promise
   return contact
     ? route(`/contacts/${encodeURIComponent(navigateIdFor(contact))}`)
     : route("/contacts", { searchTag: tag })
+}
+
+function decodesAsRequest(fragment: string): boolean {
+  try {
+    decodeRequestInline(fragment)
+    return true
+  } catch {
+    return false
+  }
 }

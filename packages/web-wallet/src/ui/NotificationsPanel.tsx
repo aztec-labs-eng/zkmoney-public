@@ -13,8 +13,8 @@ import { webStorage } from "../platform/storage/WebStorageAdapter"
 import { rowTimestamp } from "./format"
 import { Modal } from "./Modal"
 import { usePhoneLayout } from "./usePhoneLayout"
-import { openActivationPrompt } from "../features/onboarding/activationPrompt"
 import { flowCopy } from "../features/operations/operationCopy"
+import { openMigrationDialog } from "../features/migration/migrationDialog"
 import { operationEntry, operationIdOf } from "../features/operations/operationEntries"
 import { openTicketClaimReview } from "../features/paylink/claimPrompt"
 import { pendingTicketRegistration } from "../features/paylink/ticketContinuation"
@@ -45,17 +45,24 @@ const ICON: Record<string, string> = {
   "lock.shield": "lock-shield",
   "arrow.uturn.backward": "reply",
   "person.crop.circle.badge.plus": "user-follow",
+  "clock.arrow.circlepath": "history-clock",
 }
 
 export interface NotificationRoute {
-  to: string
+  /** Where the tap lands; unset when it opens something over the current screen. */
+  to?: string
   /** Router state the activity feed opens a detail modal from. */
   state?: Record<string, string>
-  /** Open the pending name's review on Home: the claim's step and status, or the activation sheet. */
+  /** Open the pending name's claim review on Home. */
   activate?: boolean
+  /** Open the migration dialog. */
+  migration?: boolean
 }
 
-/** Where a row tap lands: a mutual add opens the contact, everything else the matching activity detail. */
+/**
+ * Where a row tap lands: a mutual add opens the contact, funds on an old version the migration
+ * dialog, everything else the matching activity detail.
+ */
 export function notificationRoute(entry: AppNotificationEntry): NotificationRoute | null {
   const t = entry.target as {
     type: string
@@ -67,7 +74,7 @@ export function notificationRoute(entry: AppNotificationEntry): NotificationRout
   if (t.type === "contact.added") {
     return t.contactId ? { to: `/contacts/${encodeURIComponent(t.contactId)}` } : null
   }
-  if (t.type === "migration.residuals") return { to: "/activity" }
+  if (t.type === "migration.residuals") return { migration: true }
   if (t.type === "registration.pending") {
     // A payment link's registration is Home's: its claim runs there and its review reports it, so
     // the wizard's deposit ask is never the place to land.
@@ -107,8 +114,9 @@ export function useRouteOpener(): EntryOpener {
       const route = notificationRoute(entry)
       return route
         ? () => {
-            if (route.activate && !openTicketClaimReview()) openActivationPrompt()
-            navigate(route.to, route.state ? { state: route.state } : undefined)
+            if (route.migration) openMigrationDialog()
+            if (route.activate) openTicketClaimReview()
+            if (route.to) navigate(route.to, route.state ? { state: route.state } : undefined)
           }
         : null
     },
@@ -179,14 +187,18 @@ export function useNotificationList(scope?: NotificationScope) {
     },
     [dismissEntry],
   )
-  /** Opening an entry: an operation's is marked read, any other is cleared. */
+  /**
+   * Opening an entry: an operation's is marked read, and so is the old-version funds row, which
+   * stays while they do. Any other is cleared.
+   */
   const opened = useCallback(
     (entry: AppNotificationEntry) => {
       const operationId = operationIdOf(entry.id)
       if (operationId) void getOperationStore().markRead([operationId]).catch(console.warn)
+      else if (entry.target.type === "migration.residuals") void markRead(entry.id)
       else if (!entry.pending) void dismissEntry(entry.id)
     },
-    [dismissEntry],
+    [dismissEntry, markRead],
   )
   const markAllRead = useCallback(() => {
     if (scope) {

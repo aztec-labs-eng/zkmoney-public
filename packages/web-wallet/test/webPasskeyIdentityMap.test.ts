@@ -3,12 +3,19 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   WebPasskeyIdentityMap,
   hasRecordFor,
+  listRetiredUsertagCandidates,
   listUsertagCandidates,
   rememberUsertag,
   usertagFor,
 } from "../src/platform/auth/WebPasskeyIdentityMap"
 import { WebStorageAdapter } from "../src/platform/storage/WebStorageAdapter"
-import { walletStorage } from "../src/platform/storage/walletStorage"
+import {
+  closeWalletStore,
+  openWalletStore,
+  walletStorage,
+} from "../src/platform/storage/walletStorage"
+import { sandboxProfile } from "./fixtures/sandboxProfile"
+import { testWalletDbs } from "./support/fakeWalletDb"
 
 const RP = "localhost"
 const entry = (credentialId: string) => ({
@@ -298,5 +305,50 @@ describe("WebPasskeyIdentityMap answered", () => {
       usertag: "alice",
       l2Address: "0xmoved",
     })
+  })
+})
+
+describe("remembered accounts on earlier rollups", () => {
+  const MAP_KEY = "obsidion.obsidion_web_passkey_identity_map"
+  const remembered = (credentialId: string, usertag: unknown, createdAt: number) => ({
+    ...entry(credentialId),
+    rpId: RP,
+    createdAt,
+    usertag,
+  })
+
+  it("lists another rollup's tagged root records, skipping a malformed map or entry", async () => {
+    await closeWalletStore()
+    await openWalletStore(sandboxProfile().shared.rollupVersion, { persistent: true })
+    const dbs = testWalletDbs()
+    dbs.db("1000000001").state.set(
+      MAP_KEY,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          c: remembered("c", "carol", 1),
+          x: remembered("x", 7, 2),
+          t: { ...remembered("t", "tom", 3), createdAt: { toString: 0 } },
+        },
+      }),
+    )
+    dbs.db("1000000002").state.set(MAP_KEY, "{not json")
+    dbs.db("1000000003").state.set(MAP_KEY, JSON.stringify({ version: 1, entries: null }))
+    expect(await listRetiredUsertagCandidates(RP)).toEqual([
+      {
+        credentialId: "c",
+        usertag: "carol",
+        l2Address: entry("c").l2Address,
+        pubkeyHex: "ab".repeat(64),
+      },
+      // An unreadable creation time sorts last rather than failing the read.
+      {
+        credentialId: "t",
+        usertag: "tom",
+        l2Address: entry("t").l2Address,
+        pubkeyHex: "ab".repeat(64),
+      },
+    ])
+    expect(listUsertagCandidates(RP)).toEqual([])
   })
 })

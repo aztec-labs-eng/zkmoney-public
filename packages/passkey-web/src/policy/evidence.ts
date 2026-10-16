@@ -1,5 +1,6 @@
 import type { PrfSlot } from "@obsidion/core/types"
 import type { PasskeyAttachment } from "../ceremony/passkeyCeremony.js"
+import type { LocalManager } from "./laptopCreation.js"
 import { DeviceBoundPasskeyError, NoPrfError, SingleSaltProviderError } from "./passkeyErrors.js"
 import { slotForAttachment } from "./slotRule.js"
 
@@ -31,23 +32,33 @@ export const isComplete = (e: Evidence, slot: PrfSlot): boolean =>
  * it is exempt: a security key holds the only copy by design. A flag that could not be read is
  * never exempt, since nothing was attested to excuse.
  */
-function checkBackup(evidence: Evidence, exempt: boolean): void {
+function checkBackup(
+  evidence: Evidence,
+  exempt: boolean,
+  localManagers?: readonly LocalManager[],
+): void {
   if (evidence.backupEligible === true) return
   if (evidence.backupEligible === false && exempt) return
-  throw new DeviceBoundPasskeyError()
+  throw new DeviceBoundPasskeyError({ localManagers })
 }
 
 /**
  * The PRF output the account binds to: the backup gate first, then the slot. A value in the other
  * slot only is a provider that evaluated one salt, and it is not the one this route binds to.
  * `securityKey` exempts a hardware key from the backup gate; creation decides it from transports.
+ * `localManagers` marks a laptop's own route, so each refusal names the managers it admits.
  */
-export function prfOutputFor(evidence: Evidence, slot: PrfSlot, securityKey = false): Uint8Array {
-  checkBackup(evidence, securityKey)
+export function prfOutputFor(
+  evidence: Evidence,
+  slot: PrfSlot,
+  securityKey = false,
+  localManagers?: readonly LocalManager[],
+): Uint8Array {
+  checkBackup(evidence, securityKey, localManagers)
   const prfOutput = prfOf(evidence, slot)
   if (!prfOutput) {
     const other = slot === "first" ? evidence.prfSecond : evidence.prfFirst
-    throw other ? new SingleSaltProviderError() : new NoPrfError()
+    throw other ? new SingleSaltProviderError({ localManagers }) : new NoPrfError({ localManagers })
   }
   return prfOutput
 }

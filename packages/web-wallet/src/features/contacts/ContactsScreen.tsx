@@ -5,11 +5,12 @@ import {
   useContactsDirectory,
   type ContactRow as DirectoryRow,
 } from "@obsidion/front-core"
-import { ContactRow, GradientText, Icon, avatarColors } from "@obsidion/web-ds"
+import { ContactRow, GradientText, Icon, TopNavIconButton, avatarColors } from "@obsidion/web-ds"
 import { PhoneIcon } from "../../ui/PhoneIcon"
 import { useShellActions } from "../../ui/AppShell"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { useBack } from "../../ui/hooks"
+import { REQUESTS_PATH } from "../requests/nonContactView"
 import { TagSearchBar } from "./TagSearchBar"
 import { useContactActivity } from "./useContactActivity"
 import emptyArt from "../../assets/contacts/empty-contacts.webp"
@@ -50,19 +51,23 @@ export function ContactsScreen() {
   const { contacts } = useContactsDirectory()
   const phone = usePhoneLayout()
   const { openScanner, scannerAvailable } = useShellActions()
-  const back = useBack("/")
+  const back = useBack(REQUESTS_PATH)
   const sources = useContactActivity(phone)
   const recent = useMemo(() => recentContacts(contacts, sources), [contacts, sources])
 
   return (
     <div className="ww-panel ww-contacts">
       <div className="ww-panel__head ww-contacts__head">
-        {phone && (
+        {phone ? (
           <button type="button" className="zkm-btn-reset zkm-pressable ww-contacts__back" aria-label="Back" onClick={back}>
             <span className="zkm-glass-circle zkm-glass-circle--faint ww-contacts__back-disc">
               <PhoneIcon name="arrow-left" size={24} color="#fff" />
             </span>
           </button>
+        ) : (
+          <span className="ww-contacts__back-desk">
+            <TopNavIconButton icon="arrow-left" ariaLabel="Back" onClick={back} />
+          </span>
         )}
         <GradientText size={24} weight={700}>
           Contacts

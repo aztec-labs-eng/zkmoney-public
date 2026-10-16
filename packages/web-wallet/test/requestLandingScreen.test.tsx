@@ -9,6 +9,7 @@ import {
   type NavigateFunction,
 } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { ChainIdentity } from "@obsidion/core/types"
 import {
   encodeRequestInline,
   getActiveNetworkId,
@@ -38,13 +39,17 @@ function fragmentFor(over: Partial<RequestInlinePacket> = {}): string {
   })
 }
 
-const { resolve, identity, portal, nodeIsDefault } = vi.hoisted(() => ({
+const { resolve, tagLookup, identity, portal, nodeIsDefault } = vi.hoisted(() => ({
   resolve: vi.fn(),
+  tagLookup: vi.fn(),
   identity: { value: null as object | null },
   portal: vi.fn(),
   nodeIsDefault: { value: true },
 }))
 
+vi.mock("../src/features/contacts/registryResolution", () => ({
+  resolveTagForCommit: (tag: string) => tagLookup(tag),
+}))
 vi.mock("../src/features/identity/walletIdentity", () => ({
   loadOnboardedIdentity: () => identity.value,
 }))
@@ -95,6 +100,9 @@ vi.mock("@obsidion/web-ds", () => ({
   ),
   ScreenNavBar: ({ title }: { title: string }) => <div>{title}</div>,
   Spinner: () => <div>spinner</div>,
+  TopNavIconButton: ({ ariaLabel, onClick }: { ariaLabel: string; onClick: () => void }) => (
+    <button aria-label={ariaLabel} onClick={onClick} />
+  ),
 }))
 
 const { RequestLandingScreen } = await import("../src/features/requests/RequestLandingScreen")
@@ -124,6 +132,11 @@ describe("RequestLandingScreen accountless landing", () => {
     navigate = useNavigate()
     return null
   }
+  function SendProbe() {
+    const { state } = useLocation()
+    const request = (state as { request?: { amount: number; link?: string } } | null)?.request
+    return <div data-testid="send">{`send-sheet ${request?.amount} ${request?.link}`}</div>
+  }
   function EnterProbe() {
     const { state } = useLocation()
     return <div data-testid="enter-next">{(state as { next?: string } | null)?.next}</div>
@@ -132,6 +145,10 @@ describe("RequestLandingScreen accountless landing", () => {
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     resolve.mockReset()
+    tagLookup.mockReset()
+    tagLookup.mockImplementation(async (tag: string) => ({
+      status: tag === "nobody" ? "notFound" : "resolved",
+    }))
     portal.mockReset()
     portal.mockResolvedValue({
       l1ChainId: CHAIN_ID,
@@ -152,16 +169,28 @@ describe("RequestLandingScreen accountless landing", () => {
     container.remove()
   })
 
-  async function render(fragment: string, strict = false, state?: object) {
+  async function render(
+    fragment: string,
+    strict = false,
+    state?: object,
+    pathname = "/request",
+    chainIdentity?: ChainIdentity,
+  ) {
     await act(async () => {
       const tree = (
-        <MemoryRouter initialEntries={[{ pathname: "/request", hash: `#${fragment}`, state }]}>
+        <MemoryRouter initialEntries={[{ pathname, hash: fragment ? `#${fragment}` : "", state }]}>
           <RouterControls />
           <Routes>
-            <Route path="/request" element={<RequestLandingScreen node={node} />}>
-              <Route index element={<div>signup</div>} />
-            </Route>
-            <Route path="/contacts/:tag/send" element={<div>send-sheet</div>} />
+            {["/request", "/pay/:tag"].map((path) => (
+              <Route
+                key={path}
+                path={path}
+                element={<RequestLandingScreen node={node} chainIdentity={chainIdentity} />}
+              >
+                <Route index element={<div>signup</div>} />
+              </Route>
+            ))}
+            <Route path="/contacts/:tag/send" element={<SendProbe />} />
             <Route path="/enter" element={<EnterProbe />} />
           </Routes>
         </MemoryRouter>
@@ -195,7 +224,21 @@ describe("RequestLandingScreen accountless landing", () => {
     await render(fragmentFor())
 
     expect(portal).toHaveBeenCalledWith("l1-client", PORTAL, CHAIN_ID)
-    expect(container.textContent).toContain("Choose a method to pay")
+    expect(container.textContent).toContain("Choose how to pay")
+    expect(resolve).toHaveBeenCalledTimes(1)
+  })
+
+  it("takes the rollup the boot verified and reads no identity of its own", async () => {
+    resolve.mockReturnValue(new Promise(() => {}))
+    const verified = {
+      l1ChainId: CHAIN_ID,
+      rollupVersion: "1",
+      rollupAddress: ROLLUP,
+      inboxAddress: "0xb",
+    }
+    await render(fragmentFor(), false, undefined, "/request", verified)
+    expect(portal).not.toHaveBeenCalled()
+    expect(getNodeInfo).not.toHaveBeenCalled()
     expect(resolve).toHaveBeenCalledTimes(1)
   })
 
@@ -254,7 +297,7 @@ describe("RequestLandingScreen accountless landing", () => {
     resolve.mockReturnValue(new Promise(() => {}))
     await render(fragmentFor())
 
-    expect(container.textContent).toContain("Someone requested")
+    expect(container.textContent).toContain("Pay @alice")
     expect(container.textContent).toContain("$1")
     expect(container.textContent).toContain("Pizza dinner")
     // Signing up never waits on the L1 legs; quoting an onchain payment does.
@@ -426,7 +469,7 @@ describe("RequestLandingScreen accountless landing", () => {
     await click("Pay with zk.money")
     // Log in leads; the signup outlet is one more choice away.
     expect(button("Log in")).toBeDefined()
-    expect(container.textContent).not.toContain("Choose a method to pay")
+    expect(container.textContent).not.toContain("Choose how to pay")
     await click("Create account")
     expect(container.textContent).toContain("signup")
   })
@@ -452,9 +495,99 @@ describe("RequestLandingScreen accountless landing", () => {
 
     expect(container.textContent).toContain("Pay with an Ethereum wallet")
     expect(container.textContent).not.toContain("Log in")
-    expect(container.textContent).not.toContain("No fee and your balance stays private")
+    expect(container.textContent).not.toContain("Your payment stays private")
 
     await click("Pay with zk.money instead")
     expect(container.textContent).toContain("send-sheet")
+  })
+
+  describe("pay page", () => {
+    it("opens a request link minted at /pay/<tag>", async () => {
+      resolve.mockReturnValue(new Promise(() => {}))
+      await render(fragmentFor(), false, undefined, "/pay/alice")
+      expect(container.textContent).toContain("Pay @alice")
+      expect(container.textContent).toContain("$1")
+      expect(resolve.mock.calls[0][0].requestId).toBe(`0x${"0a".repeat(32)}`)
+    })
+
+    it("refuses a request whose payee is not the page's", async () => {
+      await render(fragmentFor(), false, undefined, "/pay/bob")
+      expect(container.textContent).toContain("could not be read")
+      expect(resolve).not.toHaveBeenCalled()
+    })
+
+    it("asks for any amount to the tag when the link carries no request", async () => {
+      resolve.mockReturnValue(new Promise(() => {}))
+      await render("", false, undefined, "/pay/River")
+      expect(container.textContent).toContain("Pay @river")
+      expect(container.textContent).toContain("Any amount")
+      const packet = resolve.mock.calls[0][0] as RequestInlinePacket
+      expect(packet).toMatchObject({ requesterTag: "river", amountAtomic: 0n })
+      expect(packet.sipaAddress).toBeUndefined()
+    })
+
+    it("drops the last payee's quote and sheet when the page moves to another tag", async () => {
+      resolve.mockResolvedValueOnce({
+        sipaAddress: SIPA,
+        decimals: 6,
+        feeAtomic: 500_000n,
+        grossAtomic: 1_500_000n,
+        paymentUri: "ethereum:alice",
+      })
+      await render("", false, undefined, "/pay/alice")
+      await click("Pay with an Ethereum wallet")
+      expect(container.textContent).toContain("pay-sheet")
+      resolve.mockReturnValue(new Promise(() => {}))
+      await act(async () => navigate("/pay/bob"))
+      expect(container.textContent).toContain("Pay @bob")
+      expect(container.textContent).not.toContain("pay-sheet")
+      expect(button("Pay with an Ethereum wallet").disabled).toBe(true)
+    })
+
+    it("carries the page through sign-in", async () => {
+      resolve.mockReturnValue(new Promise(() => {}))
+      await render("", false, undefined, "/pay/river")
+      await click("Log in")
+      expect(container.querySelector('[data-testid="enter-next"]')?.textContent).toBe("/pay/river")
+    })
+
+    it.each([
+      ["a visitor", null],
+      ["a signed-in payer", {}],
+    ])("tells %s when nobody holds the tag", async (_who, id) => {
+      identity.value = id
+      await render("", false, undefined, "/pay/nobody")
+      expect(container.textContent).toContain("no zk.money account with this name")
+      expect(container.textContent).not.toContain("send-sheet")
+      expect(container.textContent).not.toContain("Pay with an Ethereum wallet")
+    })
+
+    it("looks the payee up once, while the payment address resolves", async () => {
+      tagLookup.mockReturnValue(new Promise(() => {}))
+      resolve.mockReturnValue(new Promise(() => {}))
+      await render("", false, undefined, "/pay/river")
+      expect(resolve).toHaveBeenCalledTimes(1)
+      void resolve.mock.calls[0][1].resolveRequester("river")
+      expect(tagLookup).toHaveBeenCalledTimes(1)
+    })
+
+    it("shows the payee their own page as payers see it, with a share link", async () => {
+      identity.value = { handle: "River" }
+      await render("", false, undefined, "/pay/river")
+      expect(container.textContent).toContain("Choose how to pay")
+      expect(container.textContent).toContain("Share link")
+      expect(container.textContent).toContain("preview of your pay page")
+      expect(container.querySelector('[aria-label="Back"]')).not.toBeNull()
+      expect(container.textContent).not.toContain("send-sheet")
+      expect(container.textContent).not.toContain("Log in")
+    })
+
+    it("hands a signed-in payer to the send sheet with the page to come back to", async () => {
+      identity.value = {}
+      await render("", false, undefined, "/pay/river")
+      expect(container.querySelector('[data-testid="send"]')?.textContent).toBe(
+        "send-sheet 0 /pay/river",
+      )
+    })
   })
 })

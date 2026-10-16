@@ -22,8 +22,10 @@ import { L1_OPERATION_TIP_MARGIN_BPS } from "@obsidion/core/constants"
 import { MULTICALL3_ADDRESS } from "../../src/services/sipaClaim.js"
 import { ETH_USD_FEED_DECIMALS, weiToUSD } from "@oxide/oxide-client/eth_usd_price_feed.js"
 import {
-  EXECUTOR_MIN_PAYOUT_CALLDATA_GAS,
+  GAS_COST_ARGS_CALLDATA_GAS,
+  WEI_PER_ETH,
   estimateL1OperationFeeValues,
+  gasCostAtQuotePrice,
 } from "@oxide/oxide-client/l1_operation_quote.js"
 import {
   SKY_RELEASE_GAS,
@@ -60,7 +62,12 @@ const deployment = {
 
 /** The relayer's floor for `gas` at the fakes' fees, with the wallet's margin. */
 const floorFor = (gas: bigint) => {
-  const minPayout = weiToUSD((gas + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS) * FEES.maxFeePerGas, ETH_USD)
+  const minPayout = gasCostAtQuotePrice(
+    gas + GAS_COST_ARGS_CALLDATA_GAS,
+    { number: 7n, baseFeePerGas: BASE_FEE },
+    FEES,
+    weiToUSD(WEI_PER_ETH, ETH_USD),
+  )
   return { minPayout, tip: (minPayout * L1_OPERATION_TIP_MARGIN_BPS + 9_999n) / 10_000n }
 }
 
@@ -93,8 +100,15 @@ function fakeClient() {
     ),
     getBlock: vi.fn(async () => ({ number: 7n, baseFeePerGas: BASE_FEE, timestamp: NOW })),
     estimateMaxPriorityFeePerGas: vi.fn(async () => PRIORITY_FEE),
-    simulateBlocks: vi.fn(async (_request: unknown) => [
-      { calls: [{ status: "success", result: 0n, gasUsed: GAS_USED, data: "0x", logs: [] }] },
+    // The executor takes the six-argument `execute` only.
+    simulateBlocks: vi.fn(async ({ blocks }: { blocks: { calls: { args: unknown[] }[] }[] }) => [
+      {
+        calls: [
+          blocks[0]!.calls[0]!.args.length === 6
+            ? { status: "success", result: 0n, gasUsed: GAS_USED, data: "0x", logs: [] }
+            : { status: "failure", error: new Error("no data"), gasUsed: 0n },
+        ],
+      },
     ]),
   }
 }
@@ -123,7 +137,9 @@ describe("quoteSkyEscrowTip", () => {
       baseFee: BASE_FEE,
       priorityFee: FEES.maxPriorityFeePerGas,
     })
-    const { blocks } = client.simulateBlocks.mock.calls[0]![0] as {
+    const { blocks } = client.simulateBlocks.mock.calls
+      .map(([request]) => request)
+      .find((request) => request.blocks[0]!.calls[0]!.args.length === 6) as unknown as {
       blocks: {
         stateOverrides: StateOverride
         calls: { to: Address; functionName: string; args: readonly unknown[] }[]

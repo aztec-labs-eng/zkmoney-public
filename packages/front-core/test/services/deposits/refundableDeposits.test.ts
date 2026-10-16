@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 import {
   enumerateRefundableDeposits,
   scanRefundableDeposits,
+  scanSweptDeposits,
   type RefundableSipaSource,
   type RefundDepositL1Reads,
 } from "../../../src/core/services/deposits/refundableDeposits"
@@ -27,7 +28,10 @@ function makeRecord(patch: Partial<SIPADepositRecord>): SIPADepositRecord {
 
 /** Sweep/Deposit logs per SIPA address; messageKey per `${txHash}:${index}`. */
 function makeL1Reads(
-  sweeps: Record<string, Array<{ index: bigint; amount: bigint; txHash: string }>>,
+  sweeps: Record<
+    string,
+    Array<{ index: bigint; amount: bigint; txHash: string; blockNumber?: bigint }>
+  >,
   messageKeys: Record<string, string | null> = {},
 ): RefundDepositL1Reads<string> {
   return {
@@ -370,5 +374,53 @@ describe("enumerateRefundableDeposits", () => {
       recipientL2Address: RECIPIENT,
     })
     expect(out).toEqual([])
+  })
+})
+
+describe("scanSweptDeposits", () => {
+  const sipa = "0x1111111111111111111111111111111111111111"
+  const sources: RefundableSipaSource[] = [
+    {
+      sipaAddress: sipa,
+      recipientL2Address: RECIPIENT,
+      messageSecret: "0x0abc",
+      origin: "sipa-event",
+    },
+  ]
+
+  it("reads refund inputs and in-transit SIPAs from sources alone, claimed or not", async () => {
+    const scan = await scanSweptDeposits({
+      sources,
+      l1Reads: makeL1Reads({
+        [sipa]: [{ index: 7n, amount: 690n, txHash: "0xs", blockNumber: 12n }],
+      }),
+      readSipaBalance: async () => 5n,
+    })
+    expect(scan.descriptors).toEqual([
+      {
+        messageKey: "mk:7",
+        messageLeafIndex: "7",
+        l1BlockNumber: "12",
+        sharedSecretSalt: "0x0abc",
+        amount: "690",
+      },
+    ])
+    expect(scan.inTransit).toEqual([{ source: sources[0], balance: 5n }])
+  })
+
+  it("never reads a gap as empty: a read failure, a missing deposit or a missing block throws", async () => {
+    const swept = { [sipa]: [{ index: 7n, amount: 690n, txHash: "0xs", blockNumber: 12n }] }
+    const failing = makeL1Reads(swept)
+    vi.mocked(failing.readSweepEvents).mockRejectedValue(new Error("rpc down"))
+    await expect(scanSweptDeposits({ sources, l1Reads: failing })).rejects.toThrow("rpc down")
+    await expect(
+      scanSweptDeposits({ sources, l1Reads: makeL1Reads(swept, { "0xs:7": null }) }),
+    ).rejects.toThrow("No portal deposit matches")
+    await expect(
+      scanSweptDeposits({
+        sources,
+        l1Reads: makeL1Reads({ [sipa]: [{ index: 7n, amount: 690n, txHash: "0xs" }] }),
+      }),
+    ).rejects.toThrow("no L1 block")
   })
 })

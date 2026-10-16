@@ -25,12 +25,20 @@ contract MockDaiUsds is IDaiUsds, Ownable {
   function daiToUsds(address _usr, uint256 _wad) external override(IDaiUsds) {
     require(!broken, MockDaiUsds__Paused());
     DAI.transferFrom(msg.sender, address(this), _wad);
-    USDS.mint(_usr, _wad);
+    _pay(USDS, _usr, _wad);
   }
 
   function usdsToDai(address _usr, uint256 _wad) external override(IDaiUsds) {
     require(!broken, MockDaiUsds__Paused());
     USDS.transferFrom(msg.sender, address(this), _wad);
-    DAI.mint(_usr, _wad);
+    _pay(DAI, _usr, _wad);
+  }
+
+  function _pay(TestERC20 _token, address _to, uint256 _amount) private {
+    uint256 held = _token.balanceOf(address(this));
+    if (held < _amount) {
+      _token.mint(address(this), _amount - held);
+    }
+    _token.transfer(_to, _amount);
   }
 }

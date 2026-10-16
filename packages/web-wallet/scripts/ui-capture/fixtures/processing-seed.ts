@@ -60,7 +60,7 @@ export async function seedProcessing(kind: string) {
       { phase: "sweeping" },
       {
         ...base,
-        amount: "15",
+        amount: "10",
         tokenSymbol: "DAI",
         tokenAddress: DEMO_L1_TOKEN,
         tokenDecimals: 18,

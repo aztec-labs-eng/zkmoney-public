@@ -24,19 +24,18 @@ export function isRpDomainSuffix(hostname: string, rpId: string): boolean {
   return hostname === rpId || hostname.endsWith(`.${rpId}`)
 }
 
-/** Check both sides of a handoff before publishing either bundle. */
+/** Check a web front's baked origins against its passkey RP before publishing the bundle. */
 export function assertWebPasskeyBuild(
   env: WebPasskeyEnv & {
     VITE_SITE_ORIGIN?: string
     VITE_WALLET_URL?: string
-    VITE_CAMPAIGN_URL?: string
   },
 ): string {
   const rpId = selectWebPasskeyRpId(env)
   // A prod-backed preview signs in against the production API, so its site origin is production's;
-  // the handoff pair still has to sit under the preview RP.
+  // the wallet URL still has to sit under the preview RP.
   const prodBacked = env.VITE_PASSKEY_ENVIRONMENT === "prod-preview"
-  for (const key of ["VITE_SITE_ORIGIN", "VITE_WALLET_URL", "VITE_CAMPAIGN_URL"] as const) {
+  for (const key of ["VITE_SITE_ORIGIN", "VITE_WALLET_URL"] as const) {
     const value = env[key]
     if (!value) continue
     const url = new URL(value)

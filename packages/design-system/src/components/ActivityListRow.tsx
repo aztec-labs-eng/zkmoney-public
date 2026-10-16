@@ -52,6 +52,9 @@ export const STATUS_STYLE = {
   "Pending": "pending",
   // A withdrawal between the burn and the payout: still in flight, so the pending orange.
   "Releasing": "pending",
+  // A Savings move's burn, the same leg in the move's words.
+  "Moving to Savings": "pending",
+  "Moving to Main Account": "pending",
   "Swapping": "pending",
   // A deposit on its way in.
   "Awaiting funds": "pending",

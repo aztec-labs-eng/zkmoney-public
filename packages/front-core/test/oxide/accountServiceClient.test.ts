@@ -13,8 +13,10 @@ import {
   claimRefusalReason,
   DOMAIN_RESERVATION_PREIMAGE,
   DOMAIN_SIGN_PREIMAGE,
+  INVITE_PREIMAGE,
   ReadOnlyClientError,
   isClaimConflict,
+  PAST_USER_PREIMAGE,
   PAYMASTER_SPONSOR_PREIMAGE,
   withClaimRetry,
   sponsorRequestFingerprint,
@@ -382,6 +384,32 @@ describe("AccountServiceClient HTTP", () => {
     expect(init.headers["x-obsidion-bootstrap-signature"]).toBeUndefined()
   })
 
+  it("claims a past user with the bootstrap key signing the proof's nullifier and owner", async () => {
+    fetchMock.mockResolvedValueOnce(json({ status: "created" }))
+    const subject = "0x2222222222222222222222222222222222222222"
+    const signClientDataHash = vi.fn(async (_hash: Uint8Array) => "0xsig" as Hex)
+    const client = new AccountServiceClient("https://acct.test", {
+      bootstrapProvider: { subject, signClientDataHash },
+    })
+    const publicInputs = [
+      `0x${"11".repeat(32)}`,
+      `0x${"00".repeat(31)}01`,
+      `0x${"00".repeat(12)}${subject.slice(2)}`,
+      `0x${"33".repeat(32)}`,
+    ] as [Hex, Hex, Hex, Hex]
+
+    await expect(client.claimPastUser({ proof: "0xaa", publicInputs })).resolves.toEqual({
+      status: "created",
+    })
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe("https://acct.test/domain/eligibility/claim")
+    expect(JSON.parse(init.body)).toEqual({ keyId: subject, proof: "0xaa", publicInputs })
+    expect(init.headers[BOOTSTRAP_SIGNATURE_HEADER]).toBe("0xsig")
+    const preimage = PAST_USER_PREIMAGE(publicInputs[3], publicInputs[2])
+    expect(signClientDataHash).toHaveBeenCalledWith(sha256(Buffer.from(preimage, "utf-8")))
+  })
+
   it("refuses to redeem a golden ticket with no bootstrap subject", async () => {
     const client = new AccountServiceClient("https://acct.test", { testMode: true })
     await expect(
@@ -536,5 +564,82 @@ describe("AccountServiceClient.claimedNames", () => {
     const [, init] = fetchMock.mock.calls[0]
     expect(init.headers[BOOTSTRAP_SIGNATURE_HEADER]).toBeUndefined()
     expect(JSON.parse(init.body).keyId).toBe("k")
+  })
+})
+
+describe("AccountServiceClient invites", () => {
+  const SUBJECT = "0x7e5f4552091a69125d5dfcb7b8c2659029395bdf"
+  const SIG = `0x${"ee".repeat(65)}` as Hex
+  const fetchMock = vi.fn()
+  const signClientDataHash = vi.fn(async (_hash: Uint8Array) => SIG)
+  const client = () =>
+    new AccountServiceClient("https://as.example.com", {
+      bootstrapProvider: { subject: SUBJECT, signClientDataHash },
+    })
+  const json = (body: unknown) =>
+    new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } })
+
+  beforeEach(() => {
+    vi.stubGlobal("fetch", fetchMock)
+    vi.useFakeTimers({ now: 1_789_500_000_000, toFake: ["Date"] })
+    fetchMock.mockReset()
+    signClientDataHash.mockClear()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  const signed = (route: "CODE" | "ATTRIBUTE" | "STATUS", code?: string) =>
+    expect(signClientDataHash).toHaveBeenCalledWith(
+      sha256(Buffer.from(INVITE_PREIMAGE(route, SUBJECT, 1_789_500_000, code), "utf-8")),
+    )
+
+  it("builds the invite preimage", () => {
+    expect(INVITE_PREIMAGE("ATTRIBUTE", "0xAB", 7, "k7q2m9x")).toBe(
+      "OBSIDION_ACCT_AUTH_V1:INVITE_ATTRIBUTE:0xab:7:k7q2m9x",
+    )
+    expect(INVITE_PREIMAGE("CODE", "0xab", 7)).toBe("OBSIDION_ACCT_AUTH_V1:INVITE_CODE:0xab:7:")
+  })
+
+  it("reads the caller's code with a signed GET", async () => {
+    fetchMock.mockResolvedValueOnce(json({ code: "k7q2m9x" }))
+    expect(await client().inviteCode()).toBe("k7q2m9x")
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe(`https://as.example.com/domain/invite?keyId=${SUBJECT}&timestamp=1789500000`)
+    expect(init.headers[BOOTSTRAP_SIGNATURE_HEADER]).toBe(SIG)
+    signed("CODE")
+  })
+
+  it("rejects a reply without a code", async () => {
+    fetchMock.mockResolvedValueOnce(json({}))
+    await expect(client().inviteCode()).rejects.toThrow("malformed")
+  })
+
+  it("reads the referral status with a signed GET", async () => {
+    fetchMock.mockResolvedValueOnce(json({ pending: 1, credited: 0 }))
+    expect(await client().inviteStatus()).toEqual({ pending: 1, credited: 0 })
+    expect(fetchMock.mock.calls[0][0]).toContain("/domain/invite/status?")
+    signed("STATUS")
+  })
+
+  it("attributes a signup to a code with a signed POST", async () => {
+    fetchMock.mockResolvedValueOnce(json({}))
+    await client().attributeInvite("k7q2m9x")
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe("https://as.example.com/domain/invite/attribute")
+    expect(init.method).toBe("POST")
+    expect(JSON.parse(init.body)).toEqual({
+      keyId: SUBJECT,
+      timestamp: 1_789_500_000,
+      code: "k7q2m9x",
+    })
+    signed("ATTRIBUTE", "k7q2m9x")
+  })
+
+  it("refuses without a bootstrap key", async () => {
+    const unsigned = new AccountServiceClient("https://as.example.com", { assertionProvider })
+    await expect(unsigned.inviteStatus()).rejects.toThrow("needs a bootstrap provider")
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

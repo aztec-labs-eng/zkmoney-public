@@ -4,20 +4,28 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AztecNode } from "@aztec/aztec.js/node"
 import type { AztecSQLiteOPFSStore } from "@aztec/kv-store/sqlite-opfs"
-import type { PxeBootTarget } from "../src/ui/PxeBoot"
+import { BootSplash, type PxeBootTarget } from "../src/ui/PxeBoot"
 import { resetModulesAsActiveTab } from "./support/activeTab"
 
 const h = vi.hoisted(() => ({
   initializePXE: vi.fn(),
   showReportableError: vi.fn(),
   fireEvent: vi.fn(),
+  reloadPage: vi.fn(),
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<object>()),
   useAztecContext: () => ({ currentNetwork: "sandbox", initializePXE: h.initializePXE }),
 }))
-vi.mock("../src/errors/errorModal", () => ({ showReportableError: h.showReportableError }))
+vi.mock("../src/errors/errorModal", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  showReportableError: h.showReportableError,
+}))
 vi.mock("../src/lib/analytics", () => ({ fireEvent: h.fireEvent }))
+vi.mock("../src/platform/storage/walletStorage", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  reloadPage: h.reloadPage,
+}))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ proverEnabled: false }) }))
 
 function deferred() {
@@ -68,8 +76,11 @@ async function mount(
   await resetModulesAsActiveTab()
   const { PxeBootProvider, usePxeBoot } = await import("../src/ui/PxeBoot")
   const { revokeTab } = await import("../src/platform/storage/activeTab")
+  let bootError: ReturnType<typeof usePxeBoot>["bootError"]
   function Status() {
-    return <span>{usePxeBoot().bootStatus}</span>
+    const boot = usePxeBoot()
+    bootError = boot.bootError
+    return <span>{boot.bootStatus}</span>
   }
   await act(async () => {
     root.render(
@@ -78,7 +89,7 @@ async function mount(
       </PxeBootProvider>,
     )
   })
-  return { revokeTab, status: () => container.textContent }
+  return { revokeTab, status: () => container.textContent, bootError: () => bootError }
 }
 
 describe("PxeBootProvider", () => {
@@ -105,6 +116,29 @@ describe("PxeBootProvider", () => {
     )
   })
 
+  it("tells the person to reload when every start task ran out of memory", async () => {
+    const oom = () => new RangeError("Out of memory")
+    const error = new AggregateError([
+      new AggregateError([oom(), oom()]),
+      new AggregateError([oom()]),
+    ])
+    h.initializePXE.mockRejectedValue(error)
+    const { bootError } = await mount()
+    await flush()
+    expect(bootError()).toMatchObject({
+      kind: "other",
+      title: "Not enough memory",
+      message:
+        "The browser could not give zk.money the memory it needs. Wait a few seconds, then reload the page.",
+    })
+    expect(h.showReportableError).toHaveBeenCalledWith(error, "pxe:boot", {
+      title: "Not enough memory",
+      retry: { label: "Reload page", run: expect.any(Function) },
+    })
+    h.showReportableError.mock.calls[0][2].retry.run()
+    expect(h.reloadPage).toHaveBeenCalled()
+  })
+
   it("publishes ready in demo mode without booting a PXE", async () => {
     const page = await mount({ kind: "demo" })
     await flush()
@@ -127,4 +161,44 @@ describe("PxeBootProvider", () => {
       expect(h.fireEvent).not.toHaveBeenCalledWith("pxe_boot_failed", expect.anything())
     },
   )
+})
+
+describe("BootSplash", () => {
+  it("holds one boot screen through every hand-off and redirect", async () => {
+    // The page's own root, as index.html has it.
+    container.id = "root"
+    let added = 0
+    const observer = new MutationObserver((records) => {
+      added += records.filter((r) => r.oldValue === null).length
+    })
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["data-booting"],
+      attributeOldValue: true,
+    })
+    const wait = (ms: number) => act(() => new Promise((resolve) => setTimeout(resolve, ms)))
+
+    // A new key remounts, as a hand-off from one gate's splash to the next does.
+    act(() => root.render(<BootSplash key="config" />))
+    act(() => root.render(<BootSplash key="tab" />))
+    // A redirect shows nothing for a while; the screen stays up rather than uncovering it.
+    act(() => root.render(<span />))
+    await wait(50)
+    expect(document.body.dataset.bootLeaving).toBeUndefined()
+    // Before the first screen, a shell's wait is still the boot screen.
+    act(() => root.render(<BootSplash key="unlock" inShell />))
+    expect(document.body.dataset.booting).toBe("full")
+
+    act(() => root.render(<p>Home</p>))
+    await wait(50)
+    expect(document.body.dataset.bootLeaving).toBe("")
+    await wait(250)
+    expect(document.body.dataset.booting).toBeUndefined()
+    expect(added).toBe(1)
+
+    // After it, a wait inside the shell keeps the shell in view.
+    act(() => root.render(<BootSplash key="rail" inShell />))
+    expect(document.body.dataset.booting).toBe("shell")
+    observer.disconnect()
+  })
 })

@@ -60,6 +60,8 @@ import { SELF_SWEEP_PRIVACY } from "../deposit/DepositExitModal"
 import { useSipaProcessing } from "../deposit/sipaProcessing"
 import { depositTokensFor } from "../deposit/loadDepositFacts"
 import { useOweRegistrationBroadcast } from "../broadcasts/useOweRegistrationBroadcast"
+import { BroadcastStatusRow } from "../broadcasts/BroadcastStatusRow"
+import { registrationAddressPublished } from "./webRegistration"
 import {
   DepositAddressRow,
   DepositPayBlock,
@@ -177,6 +179,11 @@ export function RegistrationDepositDetailModal({
   // The detail shows the address, so it owes the address's broadcast; one whose deposit must be
   // recovered instead is not published.
   useOweRegistrationBroadcast(record, !needsRefund)
+  const publishing =
+    !needsRefund &&
+    !registrationAddressPublished(record) &&
+    !isTerminalRegistrationPhase(record.phase) &&
+    record.sweptAt === undefined
   const fundingTxHash = record.fundingTxHash ?? funding?.txHash
   const { shown: processing, capacityKey } = useSipaProcessing(record.sipaAddress)
   const sweepTxHash = useSweepTx(record)
@@ -274,6 +281,7 @@ export function RegistrationDepositDetailModal({
           )
         }
       />
+      {publishing && <BroadcastStatusRow address={record.sipaAddress} />}
       {/* Where the funds came from identifies the deposit, so both rows hold their place
           until the Transfer log read lands. */}
       {funding ? (
@@ -353,7 +361,6 @@ function PayAtAddress({
     <div style={{ marginTop: 16 }}>
       <DepositAddressRow
         address={address}
-        kind={pay.kind}
         overLimit={overLimit}
         capacityHold={hold}
         capacityWarning={capacityWarning}

@@ -31,7 +31,6 @@ vi.mock("../src/config/env", async (importOriginal) => ({
 }))
 
 const {
-  campaignSlotProbe,
   anchorTiers,
   boundGrantCandidateProbe,
   enterTiers,
@@ -52,32 +51,14 @@ const { sha256 } = await import("@aztec/foundation/crypto/sha256")
 const GENERATIONS = {} as never
 
 describe("anchorTiers", () => {
-  const live = { accountServiceTestMode: false } as never
-  const campaign = {
-    candidates: { first: Fr.random(), second: Fr.random() },
-    slot: "second" as const,
-  }
-
-  it("is the Registry, then the campaign's word when its material names a slot, then the claim ledger", async () => {
-    expect(anchorTiers(live, GENERATIONS, campaign).map((t) => t.name)).toEqual([
-      "registry",
-      "campaign",
-      "reservation",
-    ])
-  })
-
-  it("asks no campaign for keys a ceremony produced", async () => {
-    const tiers = anchorTiers(live, GENERATIONS)
+  it("is the Registry, then the claim ledger", async () => {
+    const tiers = anchorTiers({ accountServiceTestMode: false } as never, GENERATIONS)
     expect(tiers.map((t) => t.name)).toEqual(["registry", "reservation"])
     expect(tiers[0]!.probes).toHaveLength(1)
   })
 
   it("leaves the claim ledger out in account-service test mode", async () => {
     const testMode = { accountServiceTestMode: true } as never
-    expect(anchorTiers(testMode, GENERATIONS, campaign).map((t) => t.name)).toEqual([
-      "registry",
-      "campaign",
-    ])
     expect(anchorTiers(testMode, GENERATIONS).map((t) => t.name)).toEqual(["registry"])
   })
 })
@@ -231,27 +212,6 @@ describe("reservedNameHashes", () => {
       signature: (init.headers as Record<string, string>)[BOOTSTRAP_SIGNATURE_HEADER] as Hex,
     })
     expect(signer).toBe(bootstrap.address)
-  })
-})
-
-describe("campaignSlotProbe", () => {
-  const first = Fr.random()
-  const second = Fr.random()
-
-  it("anchors the candidate at the slot the campaign named and no other, with nothing sent", async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
-    const probe = campaignSlotProbe({ candidates: { first, second }, slot: "second" })
-    expect(await probe(second, "0xignored")).toBe("anchored")
-    expect(await probe(first, "0xignored")).toBe("absent")
-    expect(await probe(Fr.random(), "0xignored")).toBe("absent")
-    expect(fetchMock).not.toHaveBeenCalled()
-    vi.unstubAllGlobals()
-  })
-
-  it("names no one when the material never evaluated the slot it claims", async () => {
-    const probe = campaignSlotProbe({ candidates: { first }, slot: "second" })
-    expect(await probe(first, "0xignored")).toBe("absent")
   })
 })
 

@@ -3,6 +3,8 @@ import { getContractAddress, type Address, type Hex } from "viem"
 import { predictAccountAddressLocally } from "@oxide/l1-contracts"
 import {
   AmbiguousOxideIdentityError,
+  OxideIdentityUnavailableError,
+  requireVerifiedIdentity,
   resolveOxideIdentity,
   type IdentityGeneration,
 } from "../../src/oxide/oxideIdentityGeneration"
@@ -266,5 +268,97 @@ describe("resolveOxideIdentity", () => {
         L2,
       ),
     ).rejects.toThrow(/rpc down/)
+  })
+
+  describe("a retired rollup the deployment names as admissible", () => {
+    const RETIRED_ROLLUP = "6"
+
+    const RETIRED = generation({
+      fpcAddress: `0x${"ee".repeat(32)}`,
+      accountFactory: CURRENT.accountFactory,
+      namePortal: CURRENT.namePortal,
+      rollupVersion: RETIRED_ROLLUP,
+    })
+
+    const admitting = (chain: Chain, catalog: IdentityGeneration[], l2Address = L2) =>
+      resolveOxideIdentity(
+        {
+          reader: readerFor(chain),
+          registry: REGISTRY,
+          catalog,
+          rollupVersion: ROLLUP,
+          admissibleRollupVersions: new Set([ROLLUP, RETIRED_ROLLUP]),
+        },
+        BOOTSTRAP,
+        l2Address,
+      )
+
+    it("admits an account whose only record and generation are on the retired rollup", async () => {
+      const chain: Chain = {
+        names: { [NEW_ACCOUNT.toLowerCase()]: NAME_HASH },
+        records: {
+          [NEW_ACCOUNT.toLowerCase()]: { l2Address: L2, rollupVersion: BigInt(RETIRED_ROLLUP) },
+        },
+      }
+      const outcome = await admitting(chain, [RETIRED])
+      expect(outcome.kind).toBe("verified")
+      const identity = outcome.kind === "verified" ? outcome.identity : undefined
+      expect(identity?.account).toBe(NEW_ACCOUNT)
+      // Admitted, but never a live sponsorship target.
+      expect(identity?.generations).toEqual([])
+    })
+
+    it("keeps the retired generation out of the output when a current-rollup one also binds the account, in either catalog order", async () => {
+      const chain: Chain = {
+        names: { [NEW_ACCOUNT.toLowerCase()]: NAME_HASH },
+        records: { [NEW_ACCOUNT.toLowerCase()]: { l2Address: L2 } },
+      }
+      for (const catalog of [
+        [CURRENT, RETIRED],
+        [RETIRED, CURRENT],
+      ]) {
+        const outcome = await admitting(chain, catalog)
+        expect(outcome.kind).toBe("verified")
+        const identity = outcome.kind === "verified" ? outcome.identity : undefined
+        expect(identity?.generations.map((g) => g.fpcAddress)).toEqual([CURRENT.fpcAddress])
+      }
+    })
+  })
+
+  describe("a catalog missing one of its sources", () => {
+    const partial = (chain: Chain, catalog: IdentityGeneration[]) =>
+      resolveOxideIdentity(
+        {
+          reader: readerFor(chain),
+          registry: REGISTRY,
+          catalog,
+          rollupVersion: ROLLUP,
+          catalogIncomplete: true,
+        },
+        BOOTSTRAP,
+        L2,
+      )
+
+    it("refuses instead of offering a claim when the account's factory is in the missing source", async () => {
+      // The account sits under OLD, which only the missing source would have listed.
+      const outcome = await partial(registeredUnderOld, [CURRENT])
+      expect(outcome.kind).toBe("inconclusive")
+      expect(() => requireVerifiedIdentity(outcome)).toThrow(OxideIdentityUnavailableError)
+    })
+
+    it("still names no account, so a new user can claim, when the catalog is complete", async () => {
+      const outcome = await resolve(registeredUnderOld, [CURRENT])
+      expect(outcome.kind).toBe("none")
+      expect(requireVerifiedIdentity(outcome)).toBeUndefined()
+    })
+
+    it("still signs in an account the loaded part verifies", async () => {
+      const chain: Chain = {
+        names: { [NEW_ACCOUNT.toLowerCase()]: NAME_HASH },
+        records: { [NEW_ACCOUNT.toLowerCase()]: { l2Address: L2 } },
+      }
+      const outcome = await partial(chain, [CURRENT])
+      expect(requireVerifiedIdentity(outcome)?.account).toBe(NEW_ACCOUNT)
+    })
   })
 })

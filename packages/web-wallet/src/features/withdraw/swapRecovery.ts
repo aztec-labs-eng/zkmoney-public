@@ -13,11 +13,16 @@ import {
   canRecoverSwap,
   canSelfExecuteSwap,
   createOxideL1Reader,
+  deriveSkyEscrowSalts,
   deriveSwapEscrowRecoverySalt,
+  runSkyEscrow,
+  runSkyEscrowRecovery,
   runSwapEscrowExecute,
   runSwapEscrowRecovery,
   signAccountDigestWithPasskey,
+  skyEscrowTarget,
   swapEscrowTarget,
+  type SavingsMoveRecord,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
@@ -32,6 +37,7 @@ import {
   type L1ExitStage,
 } from "../deposit/sipaRecovery"
 import { getL1Clients } from "../deposit/l1Wallet"
+import { getSavingsMoveStore } from "../savings/savingsMoveStore"
 import { getWithdrawalStore, ownSwapRecoverer, type SwapRecoverer } from "./withdrawGateway"
 
 /** Why a swap record offers an exit: `unswappable` can never fill, `stuck` still can. */
@@ -152,6 +158,77 @@ export async function recoverSwapWithdrawal(
     chainId: config.l1ChainId,
     chainNow: async () => (await l1.getBlock()).timestamp,
   })
+}
+
+/** A Savings move's escrow, rebuilt from its burn's Sky meta. */
+function moveEscrow(move: SavingsMoveRecord, burn: WithdrawalRecord) {
+  const target = skyEscrowTarget(move, burn)
+  if (!target) {
+    throw new Error("This move's escrow details weren't stored, so this wallet can't act on it.")
+  }
+  return target
+}
+
+/** Run a Savings move's escrow yourself: its deposit lands and the tip comes back. Resolves to the L1 tx hash. */
+export async function runSkyEscrowMove(
+  move: SavingsMoveRecord,
+  burn: WithdrawalRecord,
+  opts: SwapExitOptions = {},
+): Promise<Hex> {
+  const target = moveEscrow(move, burn)
+  const { reader } = await escrowReader()
+  const channel = await swapExitChannel(
+    burn,
+    { label: "Escrow", address: target.escrow },
+    "Run your zk.money move",
+    opts,
+  )
+  return await runSkyEscrow({ target, channel, reader })
+}
+
+/**
+ * Send a Savings move's escrowed DAI to `opts.destination`, signed by the account's installed
+ * passkey, and mark the move recovered.
+ */
+export async function recoverSkyEscrowMove(
+  move: SavingsMoveRecord,
+  burn: WithdrawalRecord,
+  opts: SwapExitOptions = {},
+): Promise<Hex> {
+  const to = opts.destination
+  if (!to || !isAddress(to)) {
+    throw new Error("Enter the Ethereum address that should receive the recovered funds.")
+  }
+  const target = moveEscrow(move, burn)
+  const config = getConfig()
+  const l1 = l1PublicClient(config)
+  const { account, secret, signAccount } = await walletRecoverer(l1)
+  const { reader, dai } = await escrowReader()
+  const channel = await swapExitChannel(
+    burn,
+    { label: "Recovered to", address: to },
+    "Recover your zk.money move",
+    opts,
+  )
+  const hash = await runSkyEscrowRecovery(
+    {
+      target,
+      channel,
+      reader,
+      recovery: { account, salt: deriveSkyEscrowSalts(secret, move.nonce).recovery },
+      signAccount,
+      dai,
+      chainId: config.l1ChainId,
+      chainNow: async () => (await l1.getBlock()).timestamp,
+    },
+    to,
+  )
+  const moves = getSavingsMoveStore()
+  await moves.put({
+    ...(moves.get(move.withdrawalLocalId) ?? move),
+    recovered: { to, txHashes: [hash] },
+  })
+  return hash
 }
 
 type Recoverer = SwapRecoverer & { signAccount: (account: Address, digest: Hex) => Promise<Hex> }

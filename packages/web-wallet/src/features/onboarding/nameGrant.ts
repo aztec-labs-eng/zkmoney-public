@@ -56,6 +56,11 @@ export function stashInboundNameGrant(): void {
   window.history.replaceState(window.history.state, "", url)
 }
 
+/** The grant behind a tag the claim server drew for this signup; the claim spends it like a link's. */
+export function stashDrawnGrant(handle: string, token: string): void {
+  writeGrant({ token, handle })
+}
+
 export function nameGrantToken(handle?: string): string | undefined {
   const grant = storedGrant()
   if (grant && !grant.handle) {
@@ -85,4 +90,31 @@ export function clearNameGrant(handle?: string, token?: string): void {
   if (handle && !nameGrantToken(handle)) return
   if (token && nameGrantToken(handle) !== token) return
   writeGrant(undefined)
+}
+
+const DRAWN_OFFER_KEY = "obsidion.drawn-offer"
+const drawnOfferListeners = new Set<() => void>()
+
+/** The tag drawn for this tab's signup, waiting at Home for the visitor to keep or swap it. */
+export function drawnOfferTag(): string | undefined {
+  try {
+    return window.sessionStorage.getItem(DRAWN_OFFER_KEY) ?? undefined
+  } catch {
+    return undefined
+  }
+}
+
+export function setDrawnOfferTag(tag: string | undefined): void {
+  try {
+    if (tag) window.sessionStorage.setItem(DRAWN_OFFER_KEY, tag)
+    else window.sessionStorage.removeItem(DRAWN_OFFER_KEY)
+  } catch {
+    // The offer then lasts this page only.
+  }
+  drawnOfferListeners.forEach((listener) => listener())
+}
+
+export function subscribeDrawnOffer(listener: () => void): () => void {
+  drawnOfferListeners.add(listener)
+  return () => drawnOfferListeners.delete(listener)
 }

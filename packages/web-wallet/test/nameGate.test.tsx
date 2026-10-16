@@ -28,6 +28,9 @@ const sponsoredRailReadiness = await vi.importActual<
 >("../src/features/onboarding/sponsoredRailReadiness")
 
 const { NameGate, SponsoredRailGate } = await import("../src/App")
+const { setRegistrationMigrationNeeded, useMigrationDialogRequest } = await import(
+  "../src/features/migration/migrationDialog"
+)
 
 /**
  * Two gates front the wallet's flows. NameGate sends a nameless account to register one. Behind
@@ -118,6 +121,41 @@ describe("gates on the wallet's flows", () => {
       expect(host.querySelector('[data-testid="registration-pending"]')).toBeTruthy()
       expect(host.textContent).toContain("Finishing your registration")
       expect(host.textContent).not.toContain("send screen")
+    })
+
+    it("offers the registration update when the account must migrate to register here", () => {
+      loadWalletIdentity.mockReturnValue({ address: "0xabc", handle: "taga" })
+      useSponsoredRailPending.mockReturnValue(true)
+      setRegistrationMigrationNeeded(true)
+      let requests = 0
+      function Requests() {
+        requests = useMigrationDialogRequest()
+        return null
+      }
+      try {
+        act(() => {
+          root.render(
+            <MemoryRouter initialEntries={["/send"]}>
+              <Routes>
+                <Route element={<SponsoredRailGate />}>
+                  <Route path="send" element={<div>send screen</div>} />
+                </Route>
+              </Routes>
+              <Requests />
+            </MemoryRouter>,
+          )
+        })
+        expect(host.querySelector('[data-testid="registration-update"]')).toBeTruthy()
+        expect(host.textContent).not.toContain("Finishing your registration")
+        const before = requests
+        const update = [...host.querySelectorAll("button")].find(
+          (b) => b.textContent === "Update registration",
+        )!
+        act(() => update.click())
+        expect(requests).toBe(before + 1)
+      } finally {
+        act(() => setRegistrationMigrationNeeded(false))
+      }
     })
 
     it("shows a generic loading screen while the registration check has not answered", () => {

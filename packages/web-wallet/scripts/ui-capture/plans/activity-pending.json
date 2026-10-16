@@ -1,0 +1,11 @@
+{
+  "scenario": "activity",
+  "path": "/activity",
+  "ready": { "role": "button", "name": "Pending", "exact": true },
+  "steps": [
+    { "action": "click", "role": "button", "name": "Pending", "exact": true },
+    { "action": "wait", "ms": 400 },
+    { "action": "screenshot", "file": "pending.png", "state": "Pending requests" }
+  ],
+  "finalScreenshot": false
+}

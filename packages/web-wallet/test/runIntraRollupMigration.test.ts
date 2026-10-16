@@ -15,8 +15,6 @@ const h = vi.hoisted(() => ({
   publish: vi.fn(async () => {}),
   claimSponsorContext: vi.fn(),
   historicTokenContext: vi.fn(),
-  fetchSipaResolverOperators: vi.fn(),
-  selectManifestResolverOperator: vi.fn(),
   prepareExit: vi.fn(),
   burn: vi.fn(),
   migrate: vi.fn(),
@@ -28,9 +26,6 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
-  fetchSipaResolverOperators: h.fetchSipaResolverOperators,
-  selectManifestResolverOperator: h.selectManifestResolverOperator,
-  resolverSelectionPolicy: () => ({}),
   SipaSelfResolver: class {},
   IntraRollupMigrationService: class {
     constructor(deps: unknown) {
@@ -44,7 +39,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  deriveStealthKey: () => ({ scalar: 1n }),
+  selfSipaResolverKeys: () => ({ stealthScalar: 1n, selfSipaKey: {} }),
   deriveBootstrapKey: () => ({ address: "0x" + "11".repeat(20) }),
 }))
 vi.mock("../src/config/env", async (importOriginal) => ({
@@ -143,8 +138,6 @@ describe("runIntraRollupMigration", () => {
       tokenService: { getBalance: async () => 85n * 10n ** 18n },
       teeSigner: {},
     })
-    h.fetchSipaResolverOperators.mockResolvedValue([])
-    h.selectManifestResolverOperator.mockReturnValue({ resolverPublicKey: "0xpub" })
     h.claimSponsorContext.mockResolvedValue({ fpcAddress: {} })
     h.fee.mockResolvedValue({ relayerTip: "1", fpcFundingCut: "2", arrivalFee: "3" })
     // As the sdk does: the caller's publish runs before `prepareExit` returns.

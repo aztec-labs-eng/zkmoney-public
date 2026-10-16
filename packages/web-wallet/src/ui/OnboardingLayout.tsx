@@ -5,7 +5,7 @@ import "./shell.css"
 
 /**
  * Public landing: brand panel (aurora, wordmark) beside a centered sheet card hosting the
- * content — the 404, and `/link#…` once it has an account to act with. The panel hides under
+ * content (`/link#…` once it has an account to act with). The panel hides under
  * 960px; the pane keeps its own aurora so the card never sits on a flat black canvas.
  *
  * Usable as a route layout (children come from the Outlet) or wrapped around content directly.

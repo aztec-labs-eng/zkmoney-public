@@ -1,6 +1,8 @@
 import type { AztecNode } from '@aztec/aztec.js/node';
 
-import { type Chain, type PublicClient, type Transport, createPublicClient, defineChain, fallback, http } from 'viem';
+import { redactedHttp } from '@oxide/oxide-lib/redacted_http.js';
+
+import { type Chain, type PublicClient, type Transport, createPublicClient, defineChain, fallback } from 'viem';
 import { foundry, mainnet, sepolia } from 'viem/chains';
 
 /** Chains with a viem definition. A different chain id gets a minimal definition. */
@@ -24,10 +26,10 @@ export function chainFor(chainId: number | bigint): Chain {
 export function l1Transport(readUrl: string, submissionUrl?: string): Transport {
   const transport: Transport = submissionUrl
     ? fallback([
-        http(submissionUrl, { methods: { include: ['eth_sendRawTransaction'] } }),
-        http(readUrl, { methods: { exclude: ['eth_sendRawTransaction'] } }),
+        redactedHttp(submissionUrl, { methods: { include: ['eth_sendRawTransaction'] } }),
+        redactedHttp(readUrl, { methods: { exclude: ['eth_sendRawTransaction'] } }),
       ])
-    : http(readUrl);
+    : redactedHttp(readUrl);
   return params => {
     const inner = transport(params);
     const request: typeof inner.request = async args => {

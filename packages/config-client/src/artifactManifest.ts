@@ -87,7 +87,11 @@ export function parseArtifactManifest(data: unknown): ArtifactManifest {
 }
 
 /** The store URL every artifact address derives from: `/profiles/<generation>/<current|x.y.z>.json`. */
-function parseProfileUrl(profileUrl: string): { url: URL; generation: string; fileVersion: string } {
+function parseProfileUrl(profileUrl: string): {
+  url: URL
+  generation: string
+  fileVersion: string
+} {
   let url: URL
   try {
     url = new URL(profileUrl)
@@ -225,37 +229,52 @@ export interface ArtifactPinResolverInput {
   timeoutMs?: number
 }
 
-/** Lazily fetch one manifest and resolve its class pins; a failed fetch remains retryable. */
-export function createArtifactPinResolver(input: ArtifactPinResolverInput) {
+/**
+ * One manifest, fetched lazily and shared: its class pins, and the classes it holds under an
+ * artifact name. A failed fetch remains retryable. Without a manifest pin there are no reviewed
+ * classes, so `classIds` is empty and `resolvePin` refuses.
+ */
+export function createArtifactCatalog(input: ArtifactPinResolverInput) {
   let manifestPromise: Promise<ArtifactManifest> | undefined
-  return async (classId: string): Promise<ResolvedArtifactPin> => {
-    if (!LOWER_CLASS_ID.test(classId)) {
-      throw new ArtifactManifestError(`invalid historical class id: ${classId}`)
-    }
-    if (!input.expectedSha256) {
-      throw new ArtifactManifestError(
-        `profile "${input.profileId}" version ${input.versionId} has no artifact manifest pin`,
-      )
-    }
+  const manifest = (expectedSha256: string) => {
     if (!manifestPromise) {
-      manifestPromise = fetchArtifactManifest({
-        ...input,
-        expectedSha256: input.expectedSha256,
-      }).catch((error) => {
+      manifestPromise = fetchArtifactManifest({ ...input, expectedSha256 }).catch((error) => {
         manifestPromise = undefined
         throw error
       })
     }
-    const manifest = await manifestPromise
-    const entry = manifest.classes[classId]
-    if (!entry) throw new ArtifactManifestError(`No reviewed artifact for class ${classId}`)
-    const { sha256, url: named, encoding } = entry.artifact
-    const url = artifactBlobUrl(input.profileUrl, sha256)
-    if (named !== undefined && named !== url) {
-      throw new ArtifactManifestError(
-        `artifact for class ${classId} names ${named}, but the profile's store serves it at ${url}`,
-      )
-    }
-    return { url, sha256, ...(encoding && { encoding }) }
+    return manifestPromise
   }
+  return {
+    resolvePin: async (classId: string): Promise<ResolvedArtifactPin> => {
+      if (!LOWER_CLASS_ID.test(classId)) {
+        throw new ArtifactManifestError(`invalid historical class id: ${classId}`)
+      }
+      if (!input.expectedSha256) {
+        throw new ArtifactManifestError(
+          `profile "${input.profileId}" version ${input.versionId} has no artifact manifest pin`,
+        )
+      }
+      const entry = (await manifest(input.expectedSha256)).classes[classId]
+      if (!entry) throw new ArtifactManifestError(`No reviewed artifact for class ${classId}`)
+      const { sha256, url: named, encoding } = entry.artifact
+      const url = artifactBlobUrl(input.profileUrl, sha256)
+      if (named !== undefined && named !== url) {
+        throw new ArtifactManifestError(
+          `artifact for class ${classId} names ${named}, but the profile's store serves it at ${url}`,
+        )
+      }
+      return { url, sha256, ...(encoding && { encoding }) }
+    },
+    classIds: async (artifactName: string): Promise<string[]> => {
+      if (!input.expectedSha256) return []
+      const { classes } = await manifest(input.expectedSha256)
+      return Object.keys(classes).filter((classId) => classes[classId]!.name === artifactName)
+    },
+  }
+}
+
+/** Lazily fetch one manifest and resolve its class pins; a failed fetch remains retryable. */
+export function createArtifactPinResolver(input: ArtifactPinResolverInput) {
+  return createArtifactCatalog(input).resolvePin
 }

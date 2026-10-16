@@ -45,11 +45,13 @@ export interface BroadcastJob {
   /** The operation the job's attempts report through; none for a pool job. */
   operationId?: string
   landedAt?: number
+  /** Paid again after landing: only a broadcast mined at or after this L2 block lands it. */
+  republishSince?: number
 }
 
 export const BROADCASTS_STORAGE_KEY = "@obsidion/sipa-broadcasts"
 
-const RETRY_BACKOFF_MS = [30_000, 2 * 60_000, 10 * 60_000, 60 * 60_000]
+const RETRY_BACKOFF_MS = [30_000, 60_000, 2 * 60_000, 5 * 60_000]
 
 /** Wait before the next attempt after `failures` failed ones. A job never stops retrying. */
 export function retryDelay(failures: number): number {
@@ -210,6 +212,32 @@ export class BroadcastLedger {
       if (job.state !== "proving") continue
       await this.update(job.address, (j) => ({ ...j, state: j.txHash ? "sent" : "queued" }))
     }
+  }
+
+  /**
+   * The address was paid again after its broadcast landed. The relayer sweeps an address once per
+   * publish, so it is owed once more, ahead of other jobs. False when the job is not landed.
+   */
+  async republish(address: string, sinceBlock: number, now: number = Date.now()): Promise<boolean> {
+    await this.store.load()
+    let reopened = false
+    await this.store.updateRecord(keyOf(address), (job) => {
+      if (!job || job.state !== "landed") return null
+      reopened = true
+      return {
+        ...job,
+        state: "queued",
+        republishSince: sinceBlock,
+        fundedAt: now,
+        failures: 0,
+        retryAt: undefined,
+        txHash: undefined,
+        lastError: undefined,
+        operationId: undefined,
+        landedAt: undefined,
+      }
+    })
+    return reopened
   }
 
   /** The owner no longer needs it, e.g. a registration restarted at another address. */

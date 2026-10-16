@@ -49,17 +49,3 @@ export function ClaimTagModal({
     </OnboardingCard>
   )
 }
-
-/** The brief "All set!" success card between the claim and the wallet. */
-export function AllSetModal() {
-  return (
-    <OnboardingCard narrow>
-      <div className="ww-invite-spinner" data-testid="all-set">
-        <Icon name="check-circle" size={32} color="var(--accent-green)" />
-        <span className="zkm-type-body" style={{ color: "var(--text-primary)" }}>
-          All set!
-        </span>
-      </div>
-    </OnboardingCard>
-  )
-}

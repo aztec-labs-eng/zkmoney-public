@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   removeTransaction: vi.fn(async (..._args: unknown[]) => true),
   addEntry: vi.fn(async (_entry: object) => {}),
   addOrMergeContact: vi.fn(async (entry: object) => entry),
+  removeEntry: vi.fn(async (_identity: object) => {}),
   /** Set to a hash to stand for a send the node has already been handed. */
   survivingHash: undefined as string | undefined,
   TxInFlightError: class TxInFlightError extends Error {
@@ -45,7 +46,11 @@ vi.mock("@obsidion/front-core", () => ({
     }),
   },
   ContactStorage: {
-    get: () => ({ addEntry: h.addEntry, addOrMergeContact: h.addOrMergeContact }),
+    get: () => ({
+      addEntry: h.addEntry,
+      addOrMergeContact: h.addOrMergeContact,
+      removeEntry: h.removeEntry,
+    }),
   },
   getActiveNetworkId: () => "0xrollup",
   resolveAssetConstants: () => ({ DAI: { logo: "", price: 1 } }),
@@ -290,6 +295,67 @@ describe("approving an unsaved requester", () => {
     } finally {
       warn.mockRestore()
     }
+  })
+})
+
+describe("the row a failed send added", () => {
+  const send = {
+    mode: "send" as const,
+    deps: {
+      tokenService: token as never,
+      account: { makeSpendMetadataResolver: async () => () => {} } as never,
+      wallet: {} as never,
+      contractService: {} as never,
+    },
+    tag: "alice",
+    senderTag: "bob",
+    amountDisplay: "5",
+    request: { id: "req-1" },
+    saveUnsavedRequester: true,
+  }
+
+  it.each([
+    [
+      "the send fails",
+      () => h.sendTokenSponsored.mockRejectedValueOnce(new Error("rejected")),
+      true,
+    ],
+    [
+      "the send may still land",
+      () => {
+        h.survivingHash = "0xsubmitted"
+        h.sendTokenSponsored.mockRejectedValueOnce(new Error("socket closed"))
+      },
+      false,
+    ],
+    [
+      "the row was there before the send",
+      () => {
+        h.addOrMergeContact.mockImplementationOnce(async (entry) => ({ ...entry }))
+        h.sendTokenSponsored.mockRejectedValueOnce(new Error("rejected"))
+      },
+      false,
+    ],
+  ])("is removed when %s: %s", async (_case, arrange, removed) => {
+    vi.clearAllMocks()
+    arrange()
+    try {
+      await expect(runContactPay(send, () => {})).rejects.toBeDefined()
+    } finally {
+      h.survivingHash = undefined
+    }
+    if (removed) expect(h.removeEntry).toHaveBeenCalledWith({ address: "0xabc" })
+    else expect(h.removeEntry).not.toHaveBeenCalled()
+  })
+
+  it("is removed when the passkey prompt is closed before proving", async () => {
+    vi.clearAllMocks()
+    await expect(
+      runContactPay(send, (stage) => {
+        if (stage === "proving") throw new Error("Cancelled")
+      }),
+    ).rejects.toThrow("Cancelled")
+    expect(h.removeEntry).toHaveBeenCalledWith({ address: "0xabc" })
   })
 })
 

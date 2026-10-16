@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
+import {
+  useCallback,
+  useEffect,
+  useReducer,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react"
+import type { Address } from "viem"
 import { useNavigate } from "react-router-dom"
 import {
   SIPADepositStore,
@@ -14,6 +22,9 @@ import {
 } from "@obsidion/front-core"
 import { Card, Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
 import paylinkCoins from "../../assets/home/paylink-coins.webp"
+import { DepositDetailModal } from "../../ui/screens/DepositDetailModal"
+import { depositDetailOffer } from "../../ui/screens/useActivityEntries"
+import { DepositExitModal } from "../deposit/DepositExitModal"
 import { getConfig } from "../../config/env"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { loadWalletIdentity } from "../identity/walletIdentity"
@@ -22,7 +33,7 @@ import { peekClaimStash } from "../paylink/claimStash"
 import { useClaimRunning } from "../paylink/runningClaims"
 import { ticketActivation } from "../paylink/ticketContinuation"
 import { getWithdrawalStore } from "../withdraw/withdrawGateway"
-import { sipaProcessingObserver } from "../deposit/sipaProcessing"
+import { sipaProcessingObserver, useSipaProcessing } from "../deposit/sipaProcessing"
 import { useDepositAdmission } from "../identity/admission"
 import {
   getPendingStore,
@@ -91,13 +102,49 @@ function subscribeRailStage(onChange: () => void): () => void {
   }
 }
 
+/** The registration's deposit as the activity feed shows it, kept current while open. */
+function LiveDepositDetail(props: { sipaAddress: string; tag: string; onClose: () => void }) {
+  const store = SIPADepositStore.get(webStorage)
+  const [, rerender] = useReducer((n: number) => n + 1, 0)
+  useEffect(() => store.onListChanged(rerender), [store])
+  const { state: processing } = useSipaProcessing(props.sipaAddress)
+  const [exit, setExit] = useState<NonNullable<ReturnType<typeof depositDetailOffer>>>()
+  const deposit = store.get(props.sipaAddress as Address)
+  if (!deposit) return null
+  if (exit) {
+    return (
+      <DepositExitModal
+        record={deposit}
+        reason={exit.reason}
+        canSweep={exit.canSweep}
+        sweepable={exit.sweepable}
+        onClose={props.onClose}
+      />
+    )
+  }
+  const offer = depositDetailOffer(deposit, processing)
+  return (
+    <DepositDetailModal
+      record={deposit}
+      registrationTag={props.tag}
+      exit={
+        offer
+          ? { title: offer.title, sweep: offer.canSweep, onStart: () => setExit(offer) }
+          : undefined
+      }
+      onClose={props.onClose}
+    />
+  )
+}
+
 /**
  * The standing reminder for a name entered before its deposit (registration-fee.md Campaign:
  * Free names enter at once, and a waived reload may enter early): that a deposit is owed and how
- * long the reservation holds. The amount and address are in the deposit prompt (`onActivate`),
- * else the pending step. Once funds are in it reads as claiming until the name registers.
+ * long the reservation holds. The caller's `ask` renders the plain deposit ask with its hold and
+ * waiver note; a quote to refresh, paused registrations and an unpublished address are banners that
+ * lead to the pending step. Once funds are in it reads as claiming until the name registers.
  */
-export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void } = {}) {
+export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode }) {
   const navigate = useNavigate()
   const config = getConfig()
   const escalated = useRegistrationEscalated()
@@ -144,6 +191,7 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
     const timer = setInterval(() => setNowMs(Date.now()), CLOCK_MS)
     return () => clearInterval(timer)
   }, [record])
+  const [detailOpen, setDetailOpen] = useState(false)
 
   if (!open || !record) return null
   const { stage } = open
@@ -199,9 +247,7 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
         data-testid="secure-name-notice"
         data-ticket-state={ticket.state}
         aria-label={`Activate @${record.tag}`}
-        onClick={() =>
-          openTicketClaimReview() || (onActivate ? onActivate() : navigate(`/claim/${record.tag}`))
-        }
+        onClick={() => openTicketClaimReview() || navigate(`/claim/${record.tag}`)}
       >
         <span className="ww-banner__text">
           <span className="ww-banner__title">{title}</span>
@@ -268,35 +314,42 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
   if (fundsIn(stage) || stage === "funding") {
     const stuck = escalated && (stage === "received" || stage === "sweeping")
     return (
-      <button
-        type="button"
-        className="zkm-btn-reset ww-banner ww-banner--activate"
-        data-testid="claiming-notice"
-        aria-label={`Claiming @${record.tag}`}
-        // The sheet holds a registration only while it awaits its deposit; a promoted one is
-        // followed on its pending step.
-        onClick={() =>
-          openTicketClaimReview() ||
-          (onActivate && record.phase === "awaiting_deposit"
-            ? onActivate()
-            : navigate(`/claim/${record.tag}`))
-        }
-      >
-        <span className="ww-banner__text">
-          <span className="ww-banner__title">Claiming @{record.tag}</span>
-          <span className="ww-banner__body">
-            {stuck
-              ? "This is taking longer than expected. Check on it."
-              : `${
-                  rail ?? (stage === "funding" ? "Securing your tag" : "Deposit received")
-                }.${moment}`}
+      <>
+        <button
+          type="button"
+          className="zkm-btn-reset ww-banner ww-banner--activate"
+          data-testid="claiming-notice"
+          aria-label={`Claiming @${record.tag}`}
+          onClick={() =>
+            openTicketClaimReview() ||
+            (SIPADepositStore.get(webStorage).get(record.sipaAddress as Address)
+              ? setDetailOpen(true)
+              : navigate(`/claim/${record.tag}`))
+          }
+        >
+          <span className="ww-banner__text">
+            <span className="ww-banner__title">Claiming @{record.tag}</span>
+            <span className="ww-banner__body">
+              {stuck
+                ? "This is taking longer than expected. Check on it."
+                : `${
+                    rail ?? (stage === "funding" ? "Securing your tag" : "Deposit received")
+                  }.${moment}`}
+            </span>
           </span>
-        </span>
-        <img src={paylinkCoins} alt="" />
-        <span className="ww-banner__chevron" data-testid="deposit-detected">
-          <Spinner size={12} color="#fff" />
-        </span>
-      </button>
+          <img src={paylinkCoins} alt="" />
+          <span className="ww-banner__chevron" data-testid="deposit-detected">
+            <Spinner size={12} color="#fff" />
+          </span>
+        </button>
+        {detailOpen && (
+          <LiveDepositDetail
+            sipaAddress={record.sipaAddress}
+            tag={record.tag}
+            onClose={() => setDetailOpen(false)}
+          />
+        )}
+      </>
     )
   }
   if (!depositOwed(stage)) return null
@@ -313,7 +366,8 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
     held === undefined
       ? undefined
       : `Reserved until ${formatDateLabel(held)}, ${formatTimeLabel(held)}.`
-  const body = `Send a deposit to keep @${record.tag}.${feeWaived ? " The tag is free." : ""}`
+  if (!quoteStale && !paused && !stalled)
+    return ask([heldLine, feeWaived && "The tag is free."].filter(Boolean).join(" "))
 
   return (
     <button
@@ -321,11 +375,7 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
       className="zkm-btn-reset ww-banner ww-banner--activate"
       data-testid="secure-name-notice"
       aria-label={`Activate @${record.tag}`}
-      onClick={() =>
-        onActivate && !quoteStale && !paused && !stalled
-          ? onActivate()
-          : navigate(`/claim/${record.tag}`)
-      }
+      onClick={() => navigate(`/claim/${record.tag}`)}
     >
       <span className="ww-banner__text">
         <span className="ww-banner__title">
@@ -336,25 +386,13 @@ export function SecureNameNoticeCard({ onActivate }: { onActivate?: () => void }
             : "Activate account"}
         </span>
         <span className="ww-banner__body">
-          {quoteStale ? (
-            "The deposit amount needs a refresh. Open it to get the current amount."
-          ) : paused ? (
-            REGISTRATIONS_PAUSED_NOTICE
-          ) : stalled ? (
-            `${
-              heldLine ? `${heldLine} ` : ""
-            }Your deposit address was not published. Check on it to try again.`
-          ) : (
-            <>
-              {heldLine !== undefined && (
-                <>
-                  {heldLine}
-                  <br />
-                </>
-              )}
-              {body}
-            </>
-          )}
+          {quoteStale
+            ? "The deposit amount needs a refresh. Open it to get the current amount."
+            : paused
+            ? REGISTRATIONS_PAUSED_NOTICE
+            : `${
+                heldLine ? `${heldLine} ` : ""
+              }Your deposit address was not published. Check on it to try again.`}
         </span>
       </span>
       <img src={paylinkCoins} alt="" />

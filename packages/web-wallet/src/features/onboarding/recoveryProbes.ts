@@ -1,5 +1,3 @@
-import type { Fr } from "@aztec/aztec.js/fields"
-import type { PrfSlot } from "@obsidion/core/types"
 import type { Hex } from "viem"
 import type { PrivateKeyAccount } from "viem/accounts"
 import {
@@ -26,33 +24,14 @@ function registryTier(generations: OxideIdentityDeps): AnchorTier[] {
   return [{ name: "registry", probes: [registryCandidateProbe(generations)] }]
 }
 
-/** What the campaign's bridge material says of itself: the candidates it evaluated and the slot its account is. */
-export type CampaignSlot = { candidates: { first?: Fr; second?: Fr }; slot: PrfSlot }
-
 /**
- * The campaign's own word on the signup, for a hand-off whose deposit has not registered the name
- * yet: its bridge material names the slot it signed the user up under, and only the campaign
- * origin can post that material. The candidate at that slot is the account; the sibling is not.
+ * A sign-in's anchors, in trust order: the Registry, then account-service's claim ledger. A passkey
+ * that signed up and never paid has no Registry record; its tag was reserved through account-service
+ * under the same bootstrap key, so the ledger names it. The Registry decides first, so an anchor
+ * that cannot answer only ever reaches the keys it has never seen registered.
  */
-export function campaignSlotProbe(campaign: CampaignSlot): CandidateProbe {
-  const named = campaign.candidates[campaign.slot]?.toString()
-  return async (msk) => (named !== undefined && msk.toString() === named ? "anchored" : "absent")
-}
-
-/**
- * The hand-off's anchors, in trust order: the Registry, the campaign's word when its material
- * carries one, then account-service's claim ledger. A passkey that signed up and never paid has no
- * Registry record; the campaign reserved its tag through account-service under the same bootstrap
- * key, so the ledger names it wherever the material cannot. The Registry decides first, so an
- * anchor that cannot answer only ever reaches the keys it has never seen registered.
- */
-export function anchorTiers(
-  config: WebWalletConfig,
-  generations: OxideIdentityDeps,
-  campaign?: CampaignSlot,
-): AnchorTier[] {
+export function anchorTiers(config: WebWalletConfig, generations: OxideIdentityDeps): AnchorTier[] {
   const tiers = registryTier(generations)
-  if (campaign) tiers.push({ name: "campaign", probes: [campaignSlotProbe(campaign)] })
   if (!config.accountServiceTestMode) {
     tiers.push({ name: "reservation", probes: [reservationCandidateProbe()] })
   }

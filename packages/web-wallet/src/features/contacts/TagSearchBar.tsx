@@ -193,6 +193,24 @@ export function TagSearchBar({
               leading={<IconCircle name="user-unfollow" glyphSize={24} />}
             />
           )}
+          {location.pathname !== "/contacts" && (
+            <button
+              type="button"
+              className="zkm-btn-reset ww-search__row ww-search__row--pinned"
+              onClick={() => {
+                setQuery("")
+                setFocused(false)
+                navigate("/contacts")
+              }}
+            >
+              <ListRow
+                title="See all contacts"
+                subtitle="Your contacts list"
+                leading={<IconCircle name="person" glyphSize={24} />}
+                trailing={phone ? <PhoneIcon name="chevron-right" size={16} color="#bfc2d7" /> : <RowChevron />}
+              />
+            </button>
+          )}
         </div>
       )}
     </div>

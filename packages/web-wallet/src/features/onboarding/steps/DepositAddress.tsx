@@ -1,6 +1,5 @@
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react"
 import { erc20Abi, formatUnits, type Address, type Hex } from "viem"
-import type { RegistrationKind } from "@obsidion/core/types"
 import {
   addressShareDecision,
   depositTokenValuation,
@@ -167,15 +166,12 @@ export function registrationOverLimit(input: {
  */
 export function DepositAddressRow({
   address,
-  kind,
   note,
   overLimit,
   capacityHold: hold,
   capacityWarning,
 }: {
   address: Address
-  /** The schedule the deposit this row asks for was quoted on; rides the funnel event. */
-  kind?: RegistrationKind
   /** Under the row: the live check of the address. */
   note?: ReactNode
   /** The ask is over a per-deposit limit: the address stays visible but is not offered to copy. */
@@ -193,8 +189,8 @@ export function DepositAddressRow({
     if (held) setWarning(false)
   }, [held])
   useEffect(() => {
-    reportRegistrationDepositShown(address, kind)
-  }, [address, kind])
+    reportRegistrationDepositShown(address)
+  }, [address])
   return (
     <>
       <div className="ww-send-to">

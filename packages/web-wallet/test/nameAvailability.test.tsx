@@ -33,12 +33,31 @@ vi.mock("../src/features/onboarding/steps/SignupStepper", () => ({
   SignupStepper: () => null,
 }))
 
-const { probeNameAvailability } = await import("../src/features/onboarding/nameAvailability")
+const { drawTag, probeNameAvailability } = await import(
+  "../src/features/onboarding/nameAvailability"
+)
 const { InvitationStep } = await import("../src/features/onboarding/steps/InvitationStep")
 const { ChooseTagStep } = await import("../src/features/onboarding/steps/ChooseTagStep")
 
 const answering = (body: unknown, status = 200) =>
   vi.fn(async (_url: string) => new Response(JSON.stringify(body), { status }))
+
+describe("drawTag", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("draws under the wire domain and returns the tag with its grant", async () => {
+    const drawn = { tag: "brisk-otter", nameHash: "0x01", grantToken: "draw-token", expiresAt: 1 }
+    const fetchMock = vi.fn(
+      async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(drawn)),
+    )
+    vi.stubGlobal("fetch", fetchMock)
+
+    expect(await drawTag()).toEqual(drawn)
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe("https://account.test/domain/draw")
+    expect(JSON.parse(String(init?.body))).toEqual({ ensDomain: "oxidestaging.eth" })
+  })
+})
 
 describe("probeNameAvailability", () => {
   afterEach(() => vi.unstubAllGlobals())
@@ -414,6 +433,7 @@ describe("InvitationStep availability", () => {
     await act(async () => {
       root.render(
         <ChooseTagStep
+          ticket={{ tokenDecimals: 18, tokenSymbol: "DAI" }}
           initialHandle="alice"
           busy={false}
           onClaim={onClaim}
@@ -438,6 +458,7 @@ describe("InvitationStep availability", () => {
     await act(async () => {
       root.render(
         <ChooseTagStep
+          ticket={{ tokenDecimals: 18, tokenSymbol: "DAI" }}
           initialHandle="alice"
           busy={false}
           resuming
@@ -450,6 +471,33 @@ describe("InvitationStep availability", () => {
     })
     await settle()
     expect(container.textContent).toContain("is reserved")
+    expect(cta().disabled).toBe(true)
+  })
+
+  it("shows a golden ticket's split on the tag step and claims the name with the amount", async () => {
+    vi.stubGlobal("fetch", answering({ status: "available" }))
+    const step = (held: boolean) => (
+      <ChooseTagStep
+        ticket={{ amount: 25n * 10n ** 18n, tokenDecimals: 18, tokenSymbol: "DAI" }}
+        split={<p>Network fee</p>}
+        warning={<p>Keep this phone</p>}
+        held={held}
+        initialHandle="alice"
+        busy={false}
+        onClaim={vi.fn()}
+        onLogIn={vi.fn()}
+        onCancel={vi.fn()}
+        onClose={vi.fn()}
+      />
+    )
+    await act(async () => root.render(step(false)))
+    await settle()
+    expect(container.textContent).toContain("Network fee")
+    expect(container.textContent).toContain("Keep this phone")
+    expect(cta().textContent).toBe("Claim @alice and 25.00 DAI")
+    expect(container.querySelector('[data-testid="ticket-art"]')).not.toBeNull()
+    expect(cta().disabled).toBe(false)
+    await act(async () => root.render(step(true)))
     expect(cta().disabled).toBe(true)
   })
 })

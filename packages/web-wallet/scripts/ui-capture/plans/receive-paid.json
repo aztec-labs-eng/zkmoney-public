@@ -1,0 +1,6 @@
+{
+  "scenario": "activity",
+  "path": "/receive?mock=paid",
+  "ready": { "text": "Show code" },
+  "steps": [{ "action": "wait", "ms": 600 }]
+}

@@ -45,5 +45,6 @@ export async function createClaimPortalConfig(
   return {
     context: await buildContext(options),
     adaptor: await ProverClaimAdaptor.create(options.adaptorDeps),
+    contract: options.portal,
   };
 }

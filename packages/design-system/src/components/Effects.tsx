@@ -67,25 +67,28 @@ export function Spinner({
   const r = (size - strokeWidth) / 2
   const circumference = 2 * Math.PI * r
   return (
-    <svg
+    <span
       className="zkm-spinner-icon"
-      width={size}
-      height={size}
-      viewBox={`0 0 ${size} ${size}`}
-      fill="none"
-      style={{ animationDuration: `${period}s` }}
-      aria-label="Loading"
+      style={{ width: size, height: size, animationDuration: `${period}s` }}
     >
-      <circle
-        cx={size / 2}
-        cy={size / 2}
-        r={r}
-        stroke={color}
-        strokeWidth={strokeWidth}
-        strokeLinecap="round"
-        strokeDasharray={`${circumference * 0.8} ${circumference * 0.2}`}
-      />
-    </svg>
+      <svg
+        width={size}
+        height={size}
+        viewBox={`0 0 ${size} ${size}`}
+        fill="none"
+        aria-label="Loading"
+      >
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          stroke={color}
+          strokeWidth={strokeWidth}
+          strokeLinecap="round"
+          strokeDasharray={`${circumference * 0.8} ${circumference * 0.2}`}
+        />
+      </svg>
+    </span>
   )
 }
 
@@ -155,23 +158,20 @@ export interface GradientSpinnerProps {
 export function GradientSpinner({ size = 40, period = 1.4 }: GradientSpinnerProps) {
   const gradId = `zkm-spinner-grad-${useId().replace(/:/g, "")}`
   return (
-    <svg
+    <span
       className="zkm-spinner-icon"
-      width={size}
-      height={size}
-      viewBox="0 0 40 40"
-      fill="none"
-      style={{ animationDuration: `${period}s` }}
-      aria-label="Loading"
+      style={{ width: size, height: size, animationDuration: `${period}s` }}
     >
-      <defs>
-        <linearGradient id={gradId} x1="20" y1="0" x2="20" y2="40" gradientUnits="userSpaceOnUse">
-          <stop stopColor="#7C3AED" />
-          <stop offset="1" stopColor="#2D6BFF" />
-        </linearGradient>
-      </defs>
-      <path d={GRADIENT_SPINNER_ARC} fill={`url(#${gradId})`} />
-    </svg>
+      <svg width={size} height={size} viewBox="0 0 40 40" fill="none" aria-label="Loading">
+        <defs>
+          <linearGradient id={gradId} x1="20" y1="0" x2="20" y2="40" gradientUnits="userSpaceOnUse">
+            <stop stopColor="#7C3AED" />
+            <stop offset="1" stopColor="#2D6BFF" />
+          </linearGradient>
+        </defs>
+        <path d={GRADIENT_SPINNER_ARC} fill={`url(#${gradId})`} />
+      </svg>
+    </span>
   )
 }
 

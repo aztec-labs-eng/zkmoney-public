@@ -42,6 +42,7 @@ export type { WithdrawalStep } from "./withdrawalSteps"
 
 export {
   WithdrawalTrackingService,
+  revivePendingWithdrawal,
   trackWithdrawalSubmission,
   WITHDRAWAL_DELAYED_THRESHOLD_MS,
   SWAP_STUCK_THRESHOLD_MS,

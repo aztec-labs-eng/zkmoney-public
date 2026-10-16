@@ -138,13 +138,15 @@ function readPoint(m: Map<number, unknown>, key: number): Point {
   return Point.fromBuffer(Buffer.from(v))
 }
 
-/** Refuse a link whose escrow was derived against a class this build does not carry. */
+export const LINK_CLASS_REFUSAL = "This link was made with another version of the app"
+
+/** Refuse a link whose escrow was derived against a class other than the instance's. */
 export function assertLinkClass(
   params: Pick<PaylinkParams, "classId">,
   instance: { currentContractClassId: Fr },
 ): void {
   if (!instance.currentContractClassId.equals(params.classId)) {
-    throw new Error("This link was made with another version of the app")
+    throw new Error(LINK_CLASS_REFUSAL)
   }
 }
 

@@ -21,7 +21,7 @@ import {
 const KEY = "webwallet.sipa.address.sandbox.0xpool.0xacct.alice"
 const ADDR = `0x${"ab".repeat(20)}` as Address
 const OTHER = `0x${"cd".repeat(20)}` as Address
-const DAY = 20662
+const DAY = Math.floor(Date.now() / 86_400_000)
 
 const entry = (over: Partial<Parameters<typeof writeCachedSipa>[1]> = {}) => ({
   address: ADDR,
@@ -99,6 +99,12 @@ describe("sipa pool", () => {
     expect(readSipaPool(KEY)).toEqual([])
   })
 
+  it("drops an entry older than the relayer keeps its broadcast", () => {
+    appendToSipaPool(KEY, entry({ nonce: 1, day: DAY - 14, published: true }))
+    appendToSipaPool(KEY, entry({ nonce: 2, day: DAY - 13, address: OTHER, published: true }))
+    expect(readSipaPool(KEY).map((e) => e.nonce)).toEqual([2])
+  })
+
   it("take pops oldest-first into the slot and removes what it hands out", async () => {
     appendToSipaPool(KEY, entry({ nonce: 1, published: true }))
     appendToSipaPool(KEY, entry({ nonce: 2, address: OTHER, published: true }))
@@ -108,6 +114,14 @@ describe("sipa pool", () => {
     expect((await takeFromSipaPool(KEY))?.nonce).toBe(2)
     expect(readCachedSipa(KEY)?.nonce).toBe(2)
     expect(await takeFromSipaPool(KEY)).toBeNull()
+  })
+
+  it("take with an age bound skips older entries and leaves them pooled", async () => {
+    appendToSipaPool(KEY, entry({ nonce: 1, day: DAY - 5, published: true }))
+    appendToSipaPool(KEY, entry({ nonce: 2, address: OTHER, published: true }))
+    expect((await takeFromSipaPool(KEY, 2 * 86_400_000))?.nonce).toBe(2)
+    expect(await takeFromSipaPool(KEY, 2 * 86_400_000)).toBeNull()
+    expect(readSipaPool(KEY).map((e) => e.nonce)).toEqual([1])
   })
 
   it("hands out no address when its move from the pool to the slot is not saved", async () => {

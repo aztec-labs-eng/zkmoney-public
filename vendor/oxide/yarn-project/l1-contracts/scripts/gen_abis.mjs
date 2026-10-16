@@ -100,6 +100,8 @@ const TARGETS = {
   OperationExecutor: { root: FOUNDRY_OUT, rel: 'OperationExecutor.sol/OperationExecutor.json' },
   // Test-only operation target — pays a fixed reward to its caller; e2e drives the executor with it.
   MockOperation: { root: FOUNDRY_OUT, rel: 'MockOperation.sol/MockOperation.json' },
+  // Test-only operation target — runs its paid work in a try/catch; e2e checks the relayer's gas estimate with it.
+  MockCatchingOperation: { root: FOUNDRY_OUT, rel: 'MockCatchingOperation.sol/MockCatchingOperation.json' },
   MockPortal: { root: FOUNDRY_OUT, rel: 'MockPortal.sol/MockPortal.json' },
   FPCFunderTestnet: { root: FOUNDRY_OUT, rel: 'FPCFunderTestnet.sol/FPCFunderTestnet.json' },
   FPCFunderDAI: { root: FOUNDRY_OUT, rel: 'FPCFunderDAI.sol/FPCFunderDAI.json' },

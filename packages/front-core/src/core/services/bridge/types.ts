@@ -153,6 +153,10 @@ export interface WithdrawalRecord {
     /** DAI tip the escrow pays whoever runs it (bigint serialized as string). */
     relayerTip: string
     nonce: Hex
+    /** The L1 block the escrow's deposit is searched from: the head when the burn was built. */
+    depositScanFrom?: string
+    /** The quote's DAI value of what the move burns; a move out's shares are named by it. Absent on a rebuilt burn. */
+    value?: string
   }
 
   /** L1 tx of the escrow execution that paid the recipient (set at `done` on a swap). */
@@ -216,6 +220,8 @@ export interface WithdrawalRecord {
    * burn's block time.
    */
   rebuilt?: boolean
+  /** `startTime` is the rebuild's clock, not the burn's block time; no deposit search may start from it. */
+  startTimeEstimated?: boolean
 
   /** Whether this recipient is a previously-deposited-from wallet or a user-pasted one. */
   recipientProvenance: WithdrawalProvenance
@@ -255,6 +261,9 @@ export interface WithdrawalRecord {
   /** L1 tx hash of the release (set best-effort at `done`; omitted when ambiguous). */
   l1TxHash?: Hex
 
+  /** What `l1TxHash` transferred to `recipient`, raw token units: the amount that arrived. */
+  receivedAmount?: string
+
   /**
    * L1 tx hash of a self-finalize the user submitted themselves. The "already submitted" marker
    * that withdraws the manual-finalize affordance; the tracker's own `isSpent` pass is still what
@@ -285,6 +294,9 @@ export interface WithdrawalRecord {
    * failure. Unset pre-mine.
    */
   phaseEnteredAt?: number
+
+  /** ms epoch when the burn was first seen mined: when its shares left the balance. A rebuilt burn's `startTime` is its block's time. */
+  minedAt?: number
 
   /**
    * Provider slug for the destination linked wallet (e.g. "rainbow",

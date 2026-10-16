@@ -38,7 +38,6 @@ describe("deployment RP selection", () => {
           VITE_PASSKEY_ENVIRONMENT: environment,
           VITE_WALLET_URL: `https://${wallet}`,
           VITE_SITE_ORIGIN: `https://${campaign}`,
-          VITE_CAMPAIGN_URL: `https://${campaign}`,
         }),
       ).toBe("staging.zk.money")
     }
@@ -49,14 +48,9 @@ describe("deployment RP selection", () => {
       assertWebPasskeyBuild({
         VITE_PASSKEY_ENVIRONMENT: "prod-preview",
         VITE_WALLET_URL: "https://wallet-pr-123.preview.zk.money",
-        VITE_CAMPAIGN_URL: "https://launch-pr-123.preview.zk.money",
         VITE_SITE_ORIGIN: "https://launch.zk.money",
       }),
     ).toBe("preview.zk.money")
-    // Only the site origin may be production's; the handoff pair must stay under the preview RP.
-    expect(() =>
-      assertWebPasskeyBuild({ VITE_PASSKEY_ENVIRONMENT: "prod-preview", VITE_CAMPAIGN_URL: "https://launch.zk.money" }),
-    ).toThrow(/cannot use/)
   })
 
   it("accepts the dev wallet and campaign hosts", () => {
@@ -65,7 +59,6 @@ describe("deployment RP selection", () => {
         VITE_PASSKEY_ENVIRONMENT: "dev",
         VITE_SITE_ORIGIN: "https://launch-aws.dev.zk.money",
         VITE_WALLET_URL: "https://wallet.dev.zk.money",
-        VITE_CAMPAIGN_URL: "https://launch-aws.dev.zk.money",
       }),
     ).toBe("dev.zk.money")
   })

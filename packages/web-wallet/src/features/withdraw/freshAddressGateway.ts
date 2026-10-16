@@ -13,6 +13,7 @@ import type { Address } from "viem"
 import { parseUnits } from "viem"
 import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
 import { runOperation } from "../operations/operations"
+import { usdBalance } from "../../ui/format"
 import type { WithdrawalReceiveAsset } from "./withdrawAssets"
 import {
   burnContext,
@@ -69,7 +70,7 @@ export async function submitFreshAddressWithdrawal(
   const { recipient, recipientAlias, fundsAsset, quote } = input
   const amount = freshBurnAmount(input.fundsDisplay, input.gasDisplay, quote.floorAtomic)
   const daiForGas = freshDaiForGas(fundsAsset, parseUnits(input.gasDisplay, DEFAULT_DECIMALS))
-  const summary = `$${input.fundsDisplay} to ${recipientAlias?.trim() || "Ethereum"}`
+  const summary = `${usdBalance(input.fundsDisplay)} to ${recipientAlias?.trim() || "Ethereum"}`
   const operation = { operationId: nextOperationId("withdraw"), flow: "withdraw" as const, summary }
   const { record } = await runOperation(operation, async (op) => {
     onStage("building")

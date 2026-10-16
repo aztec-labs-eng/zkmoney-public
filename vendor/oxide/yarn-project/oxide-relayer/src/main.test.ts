@@ -2,7 +2,7 @@ import { EthAddress } from '@aztec/foundation/eth-address';
 
 import { describe, expect, it } from '@jest/globals';
 
-import { assertSimulateV1Supported, readUnderlyingToken, selectPayoutTokens } from './main.js';
+import { assertSimulateV1Supported, selectPayoutTokens } from './main.js';
 
 const READ_RPC_URL = 'https://eth-mainnet.example.com/v2/secret-api-key';
 
@@ -88,31 +88,6 @@ describe('selectPayoutTokens', () => {
     const decimalsOf = (token: EthAddress) => (token.equals(sUsds) ? 6 : 18);
     await expect(selectPayoutTokens(fakeClient([], decimalsOf), [dai, sUsds], { token: entryToken })).rejects.toThrow(
       `payout token ${sUsds.toString()} has 6 decimals`,
-    );
-  });
-});
-
-describe('readUnderlyingToken', () => {
-  const underlying = EthAddress.random();
-  const portal = { getUnderlying: () => Promise.resolve(underlying) };
-  const clientWithDecimals = (decimals: number) =>
-    ({ readContract: () => Promise.resolve(decimals) }) as unknown as Parameters<typeof readUnderlyingToken>[0];
-
-  it('returns an 18-decimal portal underlying and reads only that token', async () => {
-    const read: string[] = [];
-    const client = {
-      readContract: ({ address, functionName }: { address: string; functionName: string }) => {
-        read.push(`${functionName}@${EthAddress.fromString(address).toString()}`);
-        return Promise.resolve(18);
-      },
-    } as unknown as Parameters<typeof readUnderlyingToken>[0];
-    await expect(readUnderlyingToken(client, portal)).resolves.toEqual(underlying);
-    expect(read).toEqual([`decimals@${underlying.toString()}`]);
-  });
-
-  it('fails startup on a portal underlying with other decimals', async () => {
-    await expect(readUnderlyingToken(clientWithDecimals(6), portal)).rejects.toThrow(
-      `portal underlying ${underlying.toString()} has 6 decimals; the relayer prices payouts as 18-decimal USD`,
     );
   });
 });

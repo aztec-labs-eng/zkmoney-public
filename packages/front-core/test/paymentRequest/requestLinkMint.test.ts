@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { Network } from "@obsidion/core/constants"
 import {
   buildRequestShareUrl,
   decodeRequestInline,
   formatExpiryDuration,
   mintRequestLink,
-  paylinkLandingBaseUrl,
   RequestLinkMintError,
   type MintRequestLinkArgs,
   type PaymentRequest,
@@ -16,8 +14,9 @@ const FIELD_ID = `0x${"0a".repeat(32)}`
 const TOKEN_ADDRESS = `0x${"1b".repeat(32)}`
 const REQUESTER_ADDRESS = `0x${"2c".repeat(32)}`
 const SIPA_ADDRESS = `0x${"3d".repeat(20)}`
-const PROD_BASE = "https://paylink.zk.money"
-const TEST_BASE = "https://paylink.test.zk.money"
+const PREIMAGE = { intentHash: `0x${"4e".repeat(32)}`, recovery: `0x${"5f".repeat(32)}` }
+const PROD_BASE = "https://wallet.zk.money"
+const TEST_BASE = "https://wallet.staging.zk.money"
 
 function args(overrides: Partial<MintRequestLinkArgs> = {}): MintRequestLinkArgs {
   return {
@@ -37,18 +36,10 @@ function args(overrides: Partial<MintRequestLinkArgs> = {}): MintRequestLinkArgs
   }
 }
 
-describe("paylinkLandingBaseUrl", () => {
-  it("maps mainnet to prod and every other network to the test host", () => {
-    expect(paylinkLandingBaseUrl(Network.MAINNET)).toBe(PROD_BASE)
-    expect(paylinkLandingBaseUrl(Network.TESTNET)).toBe(TEST_BASE)
-    expect(paylinkLandingBaseUrl(Network.SANDBOX)).toBe(TEST_BASE)
-  })
-})
-
 describe("mintRequestLink", () => {
-  it("mints a decodable v3 /request# URL", () => {
+  it("mints the requester's pay page with a decodable v3 fragment", () => {
     const minted = mintRequestLink(args())
-    expect(minted.url).toMatch(/^https:\/\/paylink\.zk\.money\/request#/)
+    expect(minted.url).toMatch(/^https:\/\/wallet\.zk\.money\/pay\/alice#/)
     const packet = decodeRequestInline(minted.url.split("#")[1])
     expect(packet).toMatchObject({
       requestId: FIELD_ID,
@@ -71,9 +62,9 @@ describe("mintRequestLink", () => {
     expect(decodeRequestInline(minted.url.split("#")[1]).sipaAddress).toBe(SIPA_ADDRESS)
   })
 
-  it("uses the caller-supplied landing base URL", () => {
-    const minted = mintRequestLink(args({ baseUrl: TEST_BASE }))
-    expect(minted.url).toMatch(/^https:\/\/paylink\.test\.zk\.money\/request#/)
+  it("uses the caller-supplied wallet origin", () => {
+    const minted = mintRequestLink(args({ baseUrl: `${TEST_BASE}/` }))
+    expect(minted.url).toMatch(/^https:\/\/wallet\.staging\.zk\.money\/pay\/alice#/)
   })
 
   it("stamps the row with the join key, token, and mint-time identity", () => {
@@ -141,7 +132,7 @@ describe("buildRequestShareUrl", () => {
   it("rebuilds the original decodable request URL from its persisted row", () => {
     const url = buildRequestShareUrl(storedRow(), "renamed", PROD_BASE)
 
-    expect(url).toMatch(/^https:\/\/paylink\.zk\.money\/request#/)
+    expect(url).toMatch(/^https:\/\/wallet\.zk\.money\/pay\/alice#/)
     expect(decodeRequestInline(url!.split("#")[1])).toMatchObject({
       requestId: FIELD_ID,
       requesterTag: "alice",
@@ -155,13 +146,18 @@ describe("buildRequestShareUrl", () => {
     })
   })
 
-  it("rebuilds a v3 URL that still carries the SIPA", () => {
-    const url = buildRequestShareUrl(storedRow({ sipaAddress: SIPA_ADDRESS }), "alice", PROD_BASE)
-    expect(decodeRequestInline(url!.split("#")[1]).sipaAddress).toBe(SIPA_ADDRESS)
+  it("rebuilds a v3 URL that still carries the SIPA and its preimage", () => {
+    const row = mintRequestLink(args({ sipaAddress: SIPA_ADDRESS, sipaPreimage: PREIMAGE })).row
+    const url = buildRequestShareUrl(storedRow(row), "alice", PROD_BASE)
+    expect(decodeRequestInline(url!.split("#")[1])).toMatchObject({
+      sipaAddress: SIPA_ADDRESS,
+      sipaPreimage: PREIMAGE,
+    })
   })
 
   it("uses the current tag only as a fallback for legacy rows", () => {
     const url = buildRequestShareUrl(storedRow({ requesterTag: undefined }), "current", PROD_BASE)
+    expect(url).toMatch(/\/pay\/current#/)
     expect(decodeRequestInline(url!.split("#")[1]).requesterTag).toBe("current")
   })
 

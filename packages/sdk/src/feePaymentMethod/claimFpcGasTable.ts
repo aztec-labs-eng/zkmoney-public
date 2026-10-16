@@ -95,6 +95,10 @@ export const CLAIM_FPC_GAS_TABLE: Record<string, ClaimFpcMeasuredTx> = /* TABLE_
     daGas: 2336,
     l2Gas: 754951,
   },
+  "sponsor[paylink_direct.claim_with_withdrawal,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
+    daGas: 4128,
+    l2Gas: 815026,
+  },
   "sponsor[paylink_email.claim_to_l1,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]": {
     daGas: 2336,
     l2Gas: 789936,

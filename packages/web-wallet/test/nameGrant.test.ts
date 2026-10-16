@@ -3,6 +3,7 @@ import {
   clearNameGrant,
   nameGrantToken,
   pageNameGrantToken,
+  stashDrawnGrant,
   stashInboundNameGrant,
 } from "../src/features/onboarding/nameGrant"
 
@@ -20,6 +21,12 @@ describe("inbound name grant", () => {
     expect(nameGrantToken("taga")).toBe("grant-token")
     expect(nameGrantToken("tagb")).toBeUndefined()
     expect(sessionStorage.getItem("obsidion.name-grant-handle")).toBe("taga")
+  })
+
+  it("scopes a drawn tag's grant to that tag", () => {
+    stashDrawnGrant("brisk-otter", "draw-token")
+    expect(nameGrantToken("brisk-otter")).toBe("draw-token")
+    expect(nameGrantToken("tagb")).toBeUndefined()
   })
 
   it("keeps an unscoped grant from following a different signup", () => {

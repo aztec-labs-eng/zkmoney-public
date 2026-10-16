@@ -23,6 +23,12 @@ export interface RegistryTagResolutionOpts {
    * type-ahead). Omit on commit-path calls so the resolver reads a fresh manifest.
    */
   tuple?: OxideEnvTuple
+  /**
+   * Sign-in only: the profile's retired rollup versions, matched as decimal strings the way sign-in
+   * admission matches them. Recipient-side callers omit it, so a payment never resolves to a rollup
+   * the profile has left.
+   */
+  retiredRollupVersions?: () => Promise<readonly string[]>
 }
 
 /**
@@ -70,14 +76,14 @@ async function buildResolver(
 /**
  * Resolve a bare tag to its Registry record, scoped to the live rollup. Throws `TagValidationError`
  * on invalid input and rethrows RPC/transport failures; a confirmed unregistered name is `notFound`,
- * a record on another rollup is `staleRollup`.
+ * a record on another rollup is `staleRollup` unless `retiredRollupVersions` lists it.
  */
 export async function resolveTagViaRegistry(
   tag: string,
   opts: RegistryTagResolutionOpts,
 ): Promise<RegistryTagResolution> {
   const { resolver, currentRollupVersion } = await buildResolver(opts)
-  return resolver.resolveTag(tag, currentRollupVersion)
+  return resolver.resolveTag(tag, currentRollupVersion, opts.retiredRollupVersions)
 }
 
 /**

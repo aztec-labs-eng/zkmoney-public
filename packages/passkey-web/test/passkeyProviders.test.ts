@@ -10,6 +10,9 @@ import { describe, expect, it } from "vitest"
 import {
   CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID,
   PASSKEY_MANAGER_AAGUIDS,
+  localManagerFor,
+  localManagersClause,
+  localProviderVerdict,
   providerAllowed,
   providerNameFor,
   providerSlugFor,
@@ -17,9 +20,69 @@ import {
 } from "../src/policy/passkeyProviders.js"
 
 const BITWARDEN = "d548826e-79b4-db40-a3d8-11116f7e8349"
+const BRAVE = "b5397666-4885-aa6b-cebf-e52262a439a2"
 const WINDOWS_HELLO = "08987058-cadc-4b81-b6e1-30de50dcbe96"
 const UNMEASURED = "0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f"
 const A_KEY = [...SECURITY_KEY_AAGUIDS][0]!
+
+describe("localProviderVerdict", () => {
+  it("admits a manager on the row, by its id, whatever its case", () => {
+    expect(localProviderVerdict(GPM_AAGUID, ["gpm"])).toBe("admitted")
+    expect(localProviderVerdict(GPM_AAGUID.toUpperCase(), ["apple", "gpm"])).toBe("admitted")
+    expect(localProviderVerdict(ONEPASSWORD_AAGUID, ["1password"])).toBe("admitted")
+    expect(localProviderVerdict(APPLE_ICLOUD_AAGUID, ["apple", "gpm"])).toBe("admitted")
+  })
+
+  it("refuses a missing or all-zero id, unlike the provider gate", () => {
+    expect(localProviderVerdict(undefined, ["apple", "gpm"])).toBe("unnamed")
+    expect(localProviderVerdict(ZERO_AAGUID, ["apple", "gpm"])).toBe("unnamed")
+    expect(providerAllowed(ZERO_AAGUID, false)).toBe(true)
+  })
+
+  it("names Apple when the row leaves it out, and anything else as unsupported", () => {
+    expect(localProviderVerdict(APPLE_ICLOUD_AAGUID, ["gpm"])).toBe("apple")
+    expect(localProviderVerdict(GPM_AAGUID, ["apple"])).toBe("unsupported")
+    expect(localProviderVerdict(ONEPASSWORD_AAGUID, ["apple", "gpm"])).toBe("unsupported")
+    expect(localProviderVerdict(WINDOWS_HELLO, ["gpm"])).toBe("unsupported")
+    expect(localProviderVerdict(BITWARDEN, ["gpm"])).toBe("unsupported")
+  })
+
+  it("admits the browser-test id through the extra list", () => {
+    expect(localProviderVerdict(CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID, ["gpm"])).toBe("unsupported")
+    expect(
+      localProviderVerdict(
+        CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID,
+        ["gpm"],
+        [CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID],
+      ),
+    ).toBe("admitted")
+  })
+})
+
+describe("localManagerFor", () => {
+  it("names the manager an id belongs to, whatever its case, and none for any other id", () => {
+    expect(localManagerFor(ONEPASSWORD_AAGUID)).toBe("1password")
+    expect(localManagerFor(GPM_AAGUID.toUpperCase())).toBe("gpm")
+    expect(localManagerFor(APPLE_ICLOUD_AAGUID)).toBe("apple")
+    for (const id of [undefined, ZERO_AAGUID, WINDOWS_HELLO, BITWARDEN, A_KEY]) {
+      expect(localManagerFor(id)).toBeUndefined()
+    }
+  })
+})
+
+describe("localManagersClause", () => {
+  it("names the managers in order, with what Google Password Manager needs", () => {
+    expect(localManagersClause(["apple", "gpm"])).toBe(
+      "Apple Passwords or Google Password Manager (sign in to Chrome first)",
+    )
+    expect(localManagersClause(["apple", "gpm", "1password"])).toBe(
+      "Apple Passwords, Google Password Manager (sign in to Chrome first) or 1Password",
+    )
+    expect(localManagersClause(["1password"])).toBe("1Password")
+    expect(localManagersClause(["gpm"])).toBe("Google Password Manager (sign in to Chrome first)")
+    expect(localManagersClause([])).toBe("a supported password manager")
+  })
+})
 
 describe("providerAllowed", () => {
   it("admits every measured manager to a phone passkey", () => {
@@ -100,6 +163,7 @@ describe("providerNameFor", () => {
       Object.fromEntries(
         [
           "adce0002-35bc-c60a-648b-0b25f1f05503",
+          BRAVE,
           APPLE_ICLOUD_AAGUID,
           "dd4ec289-e01d-41c9-bb89-70fa845d4bf2",
           GPM_AAGUID,
@@ -115,6 +179,7 @@ describe("providerNameFor", () => {
       ),
     ).toEqual({
       "adce0002-35bc-c60a-648b-0b25f1f05503": "Chrome",
+      [BRAVE]: "Brave",
       [APPLE_ICLOUD_AAGUID]: "iCloud Keychain",
       "dd4ec289-e01d-41c9-bb89-70fa845d4bf2": "iCloud Keychain (managed)",
       [GPM_AAGUID]: "Google Password Manager",
@@ -159,5 +224,9 @@ describe("providerSlugFor", () => {
   it("counts an id it cannot name as another provider", () => {
     expect(providerSlugFor(UNMEASURED)).toBe("other")
     expect(providerSlugFor(CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID)).toBe("other")
+  })
+
+  it("counts a provider it names but has no slug for as another provider", () => {
+    expect(providerSlugFor(BRAVE)).toBe("other")
   })
 })

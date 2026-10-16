@@ -6,18 +6,29 @@ import type {
   PasskeyCreateResult,
   PasskeyHint,
 } from "../ceremony/passkeyCeremony.js"
+import { bytesToBase64Url } from "../ceremony/bytes.js"
 import { prfSalts } from "./derivation.js"
 import type { DevicePosture } from "./devicePosture.js"
+import type { UserAgentInfo } from "./userAgentInfo.js"
 import { type Evidence, evidenceOf, isComplete, prfOutputFor } from "./evidence.js"
+import type { LocalManager } from "./laptopCreation.js"
 import { mislabelledAssertion, mislabelledCreation } from "./passkeyCapabilities.js"
 import {
   IncompleteCreationError,
+  LaptopPasskeyRefusedError,
   NoPrfError,
   SecurityKeyNoPrfError,
   UnsupportedProviderError,
   markPasskeyWritten,
 } from "./passkeyErrors.js"
-import { providerAllowed, providerNameFor, refusalKindFor } from "./passkeyProviders.js"
+import {
+  localManagerFor,
+  localProviderVerdict,
+  providerAllowed,
+  providerNameFor,
+  refusalKindFor,
+} from "./passkeyProviders.js"
+import { creationProvenanceFor } from "./provenance.js"
 import {
   checkAssertionRoute,
   checkCreationRoute,
@@ -33,9 +44,10 @@ import {
 /**
  * The two ceremony sequences both web fronts run, written once. Every raw result reaches the
  * consumer's `observe` before any check, so a refused ceremony is still recorded; the checks then
- * run in one order: authenticator class, Safari's label correction, route, provider, slot, the
- * chained assertion when the evidence is incomplete, and the gates. The class is read first
- * because the route rule takes it.
+ * run in one order: authenticator class, Safari's label correction, route, provider, the local
+ * route's own provider rule, slot, the chained assertion when the evidence is incomplete (held to
+ * the credential just made and to the same route), and the gates. The class is read first because
+ * the route rule takes it.
  */
 
 export type ObservedCeremony =
@@ -57,6 +69,17 @@ export type PasskeyCreationOptions = {
   userName: string
   /** The route a laptop creation opens on; absent opens on the phone, `null` sends no hints. */
   laptopHints?: readonly PasskeyHint[] | null
+  /**
+   * The browser's claims about its OS and chip, written into the passkey's handle beside the route
+   * this request asks for; absent writes an unknown OS.
+   */
+  userAgent?: UserAgentInfo
+  /**
+   * Create on the laptop's own password manager: ask for this device and admit only a `platform`
+   * answer from one of `managers`. Absent, a laptop is sent to a phone or a key as always. The
+   * value comes from `laptopCreationFor`, probed once for the attempt the sheet showed.
+   */
+  localCreation?: { managers: readonly LocalManager[]; appleWithdrawn?: boolean }
   /** Provider ids admitted beyond the measured set; a test seam, and empty in production. */
   extraProviders?: readonly string[]
   /** The challenge the chained assertion signs; asked for only when creation left a gap. */
@@ -112,9 +135,11 @@ export async function runPasskeyCreation(
   options: PasskeyCreationOptions,
 ): Promise<PasskeyCreation> {
   const { posture, rpId } = options
-  const hints = creationHintsFor(posture, options.laptopHints)
-  const requested = requestedAttachment(posture)
-  const timeoutMs = creationTimeoutMs(posture)
+  const localManagers = options.localCreation?.managers
+  const local = localManagers !== undefined
+  const hints = creationHintsFor(posture, options.laptopHints, local)
+  const requested = requestedAttachment(posture, local)
+  const timeoutMs = creationTimeoutMs(posture, local)
   const ending = options.signal ? { signal: options.signal } : {}
   const salts = await prfSalts()
   const reported = await ceremony.create({
@@ -123,6 +148,12 @@ export async function runPasskeyCreation(
     userName: options.userName,
     authenticatorAttachment: requested,
     hints,
+    provenance: creationProvenanceFor({
+      posture,
+      userAgent: options.userAgent,
+      requested,
+      laptopHints: options.laptopHints,
+    }),
     ...(timeoutMs === undefined ? {} : { timeoutMs }),
     ...ending,
     ...salts,
@@ -144,12 +175,31 @@ export async function runPasskeyCreation(
       created.authenticatorAttachment,
       securityKey,
       answeringProvider(created, securityKey, options),
+      localManagers,
     )
     if (!providerAllowed(created.aaguid, securityKey, options.extraProviders)) {
       throw new UnsupportedProviderError(refusalKindFor(created.aaguid, securityKey), {
         providerName: providerNameFor(created.aaguid),
         keyOfferable: true,
+        localManagers,
       })
+    }
+    // A laptop's own passkey must come from a manager the row admits, by a name it reported: the
+    // provider gate lets a missing id through, and nothing else defends this binding.
+    if (localManagers && !securityKey) {
+      const verdict = localProviderVerdict(created.aaguid, localManagers, options.extraProviders)
+      if (verdict === "apple" || verdict === "unnamed") {
+        throw new LaptopPasskeyRefusedError(verdict, localManagers, {
+          appleWithdrawn: options.localCreation?.appleWithdrawn,
+        })
+      }
+      if (verdict === "unsupported") {
+        throw new UnsupportedProviderError("manager", {
+          providerName: providerNameFor(created.aaguid),
+          keyOfferable: true,
+          localManagers,
+        })
+      }
     }
     // Past the route check the attachment is set: reported and admitted, or corrected.
     const slot = slotForAttachment(created.authenticatorAttachment!)
@@ -182,7 +232,18 @@ export async function runPasskeyCreation(
         ...salts,
       })
       await options.observe?.({ phase: "chained", result: chained })
-      checkCreationRoute(posture, chained.authenticatorAttachment, securityKey)
+      // The request named one credential, but the browser returns whichever answered: a different
+      // passkey's key material must never be bound to the public key of the one just made.
+      if (chained.credentialId !== created.credentialId) {
+        throw new IncompleteCreationError("other-credential")
+      }
+      checkCreationRoute(
+        posture,
+        chained.authenticatorAttachment,
+        securityKey,
+        undefined,
+        localManagers,
+      )
       evidence = evidenceOf(chained)
     }
 
@@ -193,7 +254,7 @@ export async function runPasskeyCreation(
       chained,
       slot,
       securityKey,
-      prfOutput: readPrfOrRefuseKey(evidence, slot, securityKey),
+      prfOutput: readPrfOrRefuseKey(evidence, slot, securityKey, localManagers, created.aaguid),
     }
   } catch (err) {
     forgetCredential(rpId, reported.credentialId)
@@ -202,16 +263,23 @@ export async function runPasskeyCreation(
 }
 
 /**
- * The key material, or a refusal a key holder can act on. Only a total absence is translated: an
- * unreadable backup flag and a value in the wrong slot keep their own refusals, and a platform
- * passkey keeps `NoPrfError`.
+ * The key material, or a refusal the user can act on. Only a total absence is translated: an
+ * unreadable backup flag and a value in the wrong slot keep their own refusals. A key gets its own
+ * refusal; a platform passkey keeps `NoPrfError`, naming the laptop manager the creation reported.
  */
-function readPrfOrRefuseKey(evidence: Evidence, slot: PrfSlot, securityKey: boolean): Uint8Array {
+function readPrfOrRefuseKey(
+  evidence: Evidence,
+  slot: PrfSlot,
+  securityKey: boolean,
+  localManagers: readonly LocalManager[] | undefined,
+  createdAaguid: string | undefined,
+): Uint8Array {
   try {
-    return prfOutputFor(evidence, slot, securityKey)
+    return prfOutputFor(evidence, slot, securityKey, localManagers)
   } catch (err) {
-    if (!securityKey || !(err instanceof NoPrfError)) throw err
-    throw new SecurityKeyNoPrfError()
+    if (!(err instanceof NoPrfError)) throw err
+    if (securityKey) throw new SecurityKeyNoPrfError()
+    throw new NoPrfError({ localManagers, manager: localManagerFor(createdAaguid) })
   }
 }
 
@@ -237,6 +305,39 @@ function forgetCredential(rpId: string, credentialId: string): void {
     void Promise.resolve(api.signalUnknownCredential({ rpId, credentialId })).catch(() => {})
   } catch {
     // Nothing to do: the refusal stands on its own.
+  }
+}
+
+/**
+ * Ask the authenticator to show `name` on the passkey created under `userHandle`. WebAuthn cannot
+ * change the handle itself, so the name it carries stays the creation's. Best effort: browsers
+ * without the call keep the old label.
+ */
+export function renamePasskey(rpId: string, userHandle: Uint8Array, name: string): void {
+  try {
+    const api = (
+      globalThis as {
+        PublicKeyCredential?: {
+          signalCurrentUserDetails?: (o: {
+            rpId: string
+            userId: string
+            name: string
+            displayName: string
+          }) => Promise<void>
+        }
+      }
+    ).PublicKeyCredential
+    if (typeof api?.signalCurrentUserDetails !== "function") {
+      console.warn("[passkey] rename skipped: this browser has no signalCurrentUserDetails")
+      return
+    }
+    const userId = bytesToBase64Url(userHandle)
+    void Promise.resolve(api.signalCurrentUserDetails({ rpId, userId, name, displayName: name }))
+      .then(() => console.info("[passkey] rename signalled", { rpId, name }))
+      .catch((err: unknown) => console.warn("[passkey] rename refused", err))
+  } catch (err) {
+    // The label is cosmetic; nothing here may fail the caller.
+    console.warn("[passkey] rename failed", err)
   }
 }
 

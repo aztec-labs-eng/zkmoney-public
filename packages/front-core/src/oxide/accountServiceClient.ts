@@ -12,7 +12,11 @@
 
 import { sha256 } from "@aztec/foundation/crypto/sha256"
 import { BOOTSTRAP_SIGNATURE_HEADER } from "@obsidion/core/constants"
-import type { NameClaimResponse, SignedTermsResponse } from "@obsidion/core/types"
+import type {
+  DrawnNameResponse,
+  NameClaimResponse,
+  SignedTermsResponse,
+} from "@obsidion/core/types"
 import { type Hex, encodeAbiParameters, keccak256, parseAbiParameters } from "viem"
 import type { PackedUserOperation } from "@oxide/l1-contracts"
 
@@ -73,6 +77,14 @@ export interface GoldenTicketRedeemResponse {
   status: "created" | "repeat"
 }
 
+export interface PastUserClaimRequest {
+  proof: Hex
+  /** The circuit's public inputs in ABI order: merkle_root, category, owner, nullifier. */
+  publicInputs: [Hex, Hex, Hex, Hex]
+}
+
+export type PastUserClaimResponse = GoldenTicketRedeemResponse
+
 /**
  * Produces the bootstrap-key request-auth header for `/domain/sign` (backend `BootstrapKeyCredential`,
  * PR #1174). The wallet's own bootstrap key signs the request's `clientDataHash` directly — a RAW
@@ -125,8 +137,25 @@ export const DOMAIN_SIGN_PREIMAGE = (nameHash: string, userAddress: string): str
 export const DOMAIN_RESERVATION_PREIMAGE = (subject: string, timestamp: number): string =>
   `OBSIDION_ACCT_AUTH_V1:DOMAIN_RESERVATION:${subject.toLowerCase()}:${timestamp}`
 
+export type InviteRoute = "CODE" | "ATTRIBUTE" | "STATUS"
+
+export const INVITE_PREIMAGE = (
+  route: InviteRoute,
+  subject: string,
+  timestamp: number,
+  code = "",
+): string => `OBSIDION_ACCT_AUTH_V1:INVITE_${route}:${subject.toLowerCase()}:${timestamp}:${code}`
+
+export interface InviteStatus {
+  pending: number
+  credited: number
+}
+
 export const GOLDEN_TICKET_PREIMAGE = (nullifier: string, owner: string): string =>
   `OBSIDION_ACCT_AUTH_V1:GOLDEN_TICKET:${nullifier.toLowerCase()}:${owner.toLowerCase()}`
+
+export const PAST_USER_PREIMAGE = (nullifier: string, owner: string): string =>
+  `OBSIDION_ACCT_AUTH_V1:PAST_USER:${nullifier.toLowerCase()}:${owner.toLowerCase()}`
 
 export const PAYMASTER_SPONSOR_PREIMAGE = (fingerprint: string): string =>
   `OBSIDION_ACCT_AUTH_V1:SPONSOR:${fingerprint.toLowerCase()}`
@@ -410,12 +439,7 @@ export class AccountServiceClient {
         userAddress: req.userAddress,
         grantToken: this.grantToken,
       }
-      if (!this.testMode) {
-        const clientDataHash = sha256(Buffer.from(preimage, "utf-8"))
-        const signature = await this.bootstrapProvider.signClientDataHash(clientDataHash)
-        return this.post("/domain/sign", body, { [BOOTSTRAP_SIGNATURE_HEADER]: signature })
-      }
-      return this.postGated("/domain/sign", keyId, preimage, body)
+      return this.postBootstrapSigned("/domain/sign", keyId, preimage, body)
     }
 
     // testMode / legacy providers without a bootstrap key: the caller's synthetic id (or a placeholder).
@@ -450,12 +474,74 @@ export class AccountServiceClient {
       nullifier: req.nullifier,
     }
     const preimage = GOLDEN_TICKET_PREIMAGE(req.nullifier, owner)
+    return this.postBootstrapSigned("/domain/golden-ticket", owner, preimage, body)
+  }
+
+  /**
+   * POST /domain/eligibility/claim — spend a past-user proof for the earned schedule. The proof's
+   * public `owner` is this client's bootstrap subject, which also signs the request.
+   */
+  async claimPastUser(req: PastUserClaimRequest): Promise<PastUserClaimResponse> {
+    if (this.readOnly) throw new ReadOnlyClientError("/domain/eligibility/claim")
+    const keyId = this.bootstrapProvider?.subject.toLowerCase()
+    if (!keyId) throw new Error("claimPastUser: no bootstrap subject to bind the proof to")
+    const [, , owner, nullifier] = req.publicInputs
+    const body = { keyId, proof: req.proof, publicInputs: req.publicInputs }
+    return this.postBootstrapSigned(
+      "/domain/eligibility/claim",
+      keyId,
+      PAST_USER_PREIMAGE(nullifier, owner),
+      body,
+    )
+  }
+
+  private async postBootstrapSigned<T>(
+    path: string,
+    keyId: string,
+    preimage: string,
+    body: unknown,
+  ): Promise<T> {
     if (this.bootstrapProvider && !this.testMode) {
       const clientDataHash = sha256(Buffer.from(preimage, "utf-8"))
       const signature = await this.bootstrapProvider.signClientDataHash(clientDataHash)
-      return this.post("/domain/golden-ticket", body, { [BOOTSTRAP_SIGNATURE_HEADER]: signature })
+      return this.post(path, body, { [BOOTSTRAP_SIGNATURE_HEADER]: signature })
     }
-    return this.postGated("/domain/golden-ticket", owner, preimage, body)
+    return this.postGated(path, keyId, preimage, body)
+  }
+
+  /** GET /domain/invite — the caller's invite code, created on the first call. */
+  async inviteCode(): Promise<string> {
+    const { code } = await this.signedInvite<{ code?: unknown }>("/domain/invite", "CODE")
+    if (typeof code !== "string" || !code)
+      throw new Error("account-service /domain/invite answered with a malformed body")
+    return code
+  }
+
+  /** POST /domain/invite/attribute — names the code this signup came from. */
+  async attributeInvite(code: string): Promise<void> {
+    await this.signedInvite("/domain/invite/attribute", "ATTRIBUTE", code)
+  }
+
+  /** GET /domain/invite/status — the caller's referrals, by credit state. */
+  async inviteStatus(): Promise<InviteStatus> {
+    return this.signedInvite("/domain/invite/status", "STATUS")
+  }
+
+  private async signedInvite<T>(path: string, route: InviteRoute, code?: string): Promise<T> {
+    if (this.readOnly) throw new ReadOnlyClientError(path)
+    if (!this.bootstrapProvider)
+      throw new Error(`AccountServiceClient: ${path} needs a bootstrap provider`)
+    const keyId = this.bootstrapProvider.subject
+    const timestamp = Math.floor(Date.now() / 1000)
+    const preimage = INVITE_PREIMAGE(route, keyId, timestamp, code)
+    const headers = {
+      [BOOTSTRAP_SIGNATURE_HEADER]: await this.bootstrapProvider.signClientDataHash(
+        sha256(Buffer.from(preimage, "utf-8")),
+      ),
+    }
+    if (code !== undefined) return this.post(path, { keyId, timestamp, code }, headers)
+    const query = new URLSearchParams({ keyId, timestamp: String(timestamp) })
+    return this.parse(await this.fetchWithTimeout(`${this.baseUrl}${path}?${query}`, { headers }))
   }
 
   /**
@@ -543,6 +629,27 @@ export class AccountServiceClient {
       blocked: blocked ?? status === "blocked",
       ...(grantToken ? { grantValid, grantBound } : {}),
     }
+  }
+
+  /**
+   * POST /domain/draw — open: a random free name under `ensDomain`, with the grant the later sign
+   * spends. Read-plumbed on purpose: it needs no credential, and a draw retried over a dropped
+   * connection only leaves an unspent grant to expire.
+   */
+  async drawName(ensDomain: string): Promise<DrawnNameResponse> {
+    return this.postRead("/domain/draw", { ensDomain })
+  }
+
+  /**
+   * POST /domain/eligibility/grant — open; spends a past-user proof once for a grant on `nameHash`,
+   * before any passkey exists. The proof is the credential, its `owner` unused.
+   */
+  async pastUserGrant(req: {
+    proof: Hex
+    publicInputs: readonly [Hex, Hex, Hex, Hex]
+    nameHash: Hex
+  }): Promise<{ grantToken: string; expiresAt: number }> {
+    return this.postRead("/domain/eligibility/grant", req)
   }
 
   /** Existing status-only view for callers that do not need the simultaneous blocklist state. */

@@ -2,6 +2,7 @@
 import { APPLE_ICLOUD_AAGUID, GPM_AAGUID } from "@obsidion/core/constants"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { bytesToHex, hexToBytes } from "../src/ceremony/bytes.js"
+import { type UserHandleProvenance, encodeUserHandle } from "../src/ceremony/userHandle.js"
 import {
   BrowserPasskeyCeremony,
   type CeremonyTiming,
@@ -27,6 +28,7 @@ import {
   PASSKEY_CEREMONY_INTEGER_PROPS,
   PASSKEY_MAJOR_MAX,
   PASSKEY_MAJOR_MIN,
+  type PasskeyPlatformAuthenticator,
 } from "../src/policy/passkeyTelemetryVocabulary.js"
 import { parseUserAgent } from "../src/policy/userAgentInfo.js"
 import { FakePasskeyCeremony } from "./support/fakePasskeyCeremony.js"
@@ -91,6 +93,8 @@ type Step = {
   /** Thrown after the answer, or with no answer. */
   error?: unknown
   credentialId?: string
+  /** Returned with an assertion's result, as the passkey's user handle. */
+  userHandle?: Uint8Array
 }
 
 /** Each call signals `issued`, then plays the next step. */
@@ -104,7 +108,11 @@ function scripted(hook: PasskeyRequestHook, advance: (ms: number) => void, steps
       hook({ phase: "answered", kind, request, evidence: step.answer } as PasskeyRequestSignal)
     }
     if (step.error !== undefined) throw step.error
-    return { credentialId: step.credentialId ?? "cred-1", pubkey: new Uint8Array(64) } as never
+    return {
+      credentialId: step.credentialId ?? "cred-1",
+      pubkey: new Uint8Array(64),
+      ...(step.userHandle ? { userHandle: step.userHandle } : {}),
+    } as never
   }
   return {
     create: (request) => play("create", request),
@@ -569,6 +577,7 @@ describe("each run owns the requests it makes", () => {
     ])
     expect(h.sent[1]).not.toHaveProperty("attempt")
     expect(h.sent[1]).not.toHaveProperty("elapsed")
+    expect(h.sent[1]).not.toHaveProperty("made_on")
   })
 
   it("gives two attempts running at once their own requests", async () => {
@@ -1017,6 +1026,246 @@ describe("end causes", () => {
     expect(h.sent).toEqual([
       expect.objectContaining({ outcome: "cancelled", reason: "in_app_cancel" }),
     ])
+  })
+})
+
+describe("the browser's error name", () => {
+  const notReadable = () =>
+    new DOMException(
+      "An unknown error occurred while talking to the credential manager.",
+      "NotReadableError",
+    )
+
+  it("names a failed request's error, listed or other, after an issued or an answered request", async () => {
+    const h = harness()
+    const ceremony = scripted(h.telemetry.requestHook, h.advance, [
+      { error: notReadable() },
+      { answer: LOCAL_ASSERT, error: notReadable() },
+      { error: Object.assign(new Error("wrong key"), { name: "0x1234abcd@alice" }) },
+      { error: new TypeError("cannot read properties of undefined") },
+    ])
+    for (let i = 0; i < 4; i++) {
+      await caught(
+        h.telemetry.track({ ceremony: "sign_in" }, (own) => own(ceremony).assert(assertRequest())),
+      )
+    }
+    expect(h.sent.map((p) => [p.outcome, p.reason, p.error_name])).toEqual([
+      ["failed", "request_failed", "NotReadableError"],
+      ["failed", "after_prompt", "NotReadableError"],
+      ["failed", "request_failed", "other"],
+      ["failed", "request_failed", "TypeError"],
+    ])
+    expect(JSON.stringify(h.sent)).not.toContain("credential manager")
+    expect(JSON.stringify(h.sent)).not.toContain("0x1234")
+  })
+
+  it("names a front's own failure other", async () => {
+    class SessionChangedError extends Error {
+      override name = "SessionChangedError"
+    }
+    const h = harness({
+      extraNames: { SessionChangedError: { outcome: "failed", reason: "session_lost" } },
+    })
+    const ceremony = scripted(h.telemetry.requestHook, h.advance, [{ answer: LOCAL_ASSERT }])
+    await caught(
+      h.telemetry.track({ ceremony: "unlock" }, async (own) => {
+        await own(ceremony).assert(assertRequest())
+        throw new SessionChangedError()
+      }),
+    )
+    expect(h.sent).toEqual([
+      expect.objectContaining({ outcome: "failed", reason: "session_lost", error_name: "other" }),
+    ])
+  })
+
+  it("carries no name on a cancel, a refusal, the user's cancel, an explicit end or a classified result", async () => {
+    const h = harness()
+    const ceremony = scripted(h.telemetry.requestHook, h.advance, [
+      { error: new DOMException("closed", "NotAllowedError") },
+      { error: { name: "NoPrfError", message: "no prf" } },
+      { error: notReadable() },
+      { answer: LOCAL_ASSERT },
+    ])
+    const attempt = () =>
+      h.telemetry.track({ ceremony: "sign_in" }, (own) => own(ceremony).assert(assertRequest()))
+    await caught(attempt())
+    await caught(attempt())
+    const cancelled = h.telemetry.begin({ ceremony: "sign_in" })
+    cancelled.userCancelled()
+    await caught(cancelled.run((own) => own(ceremony).assert(assertRequest())))
+    h.telemetry.begin({ ceremony: "unlock" }).end({ outcome: "failed", reason: "session_lost" })
+    await h.telemetry.track(
+      { ceremony: "sign_in" },
+      (own) => own(ceremony).assert(assertRequest()),
+      () => ({ outcome: "failed", reason: "registry_unconfirmed" }),
+    )
+    expect(h.sent.map((p) => [p.outcome, p.reason])).toEqual([
+      ["cancelled", "prompt_closed"],
+      ["refused", "no_prf"],
+      ["cancelled", "in_app_cancel"],
+      ["failed", "session_lost"],
+      ["failed", "registry_unconfirmed"],
+    ])
+    for (const props of h.sent) expect(props).not.toHaveProperty("error_name")
+  })
+})
+
+describe("the phone's platform-authenticator answer", () => {
+  const PHONE: PasskeyTelemetryEnvironment = {
+    posture: "phone",
+    userAgent: parseUserAgent({ userAgent: SAFARI_IPHONE }),
+  }
+  const LAPTOP: PasskeyTelemetryEnvironment = {
+    posture: "laptop",
+    userAgent: parseUserAgent({ userAgent: CHROME_MAC }),
+  }
+  const phone = (options: Partial<PasskeyTelemetryOptions> = {}) =>
+    harness({
+      environment: () => Promise.resolve(PHONE),
+      syncEnvironment: () => PHONE,
+      ...options,
+    })
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+  const succeed = (h: ReturnType<typeof harness>) => {
+    const ceremony = scripted(h.telemetry.requestHook, h.advance, [{ answer: LOCAL_ASSERT }])
+    return h.telemetry.track({ ceremony: "sign_in" }, (own) =>
+      own(ceremony).assert(assertRequest()),
+    )
+  }
+
+  it("is read once and rides on every phone row once it has settled", async () => {
+    const probe = vi.fn(() => Promise.resolve("no" as const))
+    const h = phone({ platformAuthenticator: probe })
+    await settle()
+    const held = deferred<never>()
+    const ceremony = scripted(h.telemetry.requestHook, h.advance, [
+      { answer: QR_CREATE, credentialId: "c1" },
+      { error: { name: "NoPrfError" } },
+      { error: new DOMException("closed", "NotAllowedError") },
+      { error: new DOMException("x", "NotReadableError") },
+      { hold: held.promise },
+    ])
+    const create = () =>
+      h.telemetry.track({ ceremony: "create" }, (own) => own(ceremony).create(createRequest()))
+    const assert = () =>
+      h.telemetry.track({ ceremony: "sign_in" }, (own) => own(ceremony).assert(assertRequest()))
+    await create()
+    await caught(create())
+    await caught(assert())
+    await caught(assert())
+    const waiting = caught(assert())
+    await Promise.resolve()
+    h.pageHide()
+    held.resolve(undefined as never)
+    await waiting
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(h.sent.map((p) => [p.outcome, p.platform_authenticator])).toEqual([
+      ["succeeded", "no"],
+      ["refused", "no"],
+      ["cancelled", "no"],
+      ["failed", "no"],
+      ["abandoned", "no"],
+    ])
+  })
+
+  it("survives a read that throws before it returns a promise", async () => {
+    const h = phone({
+      platformAuthenticator: () => {
+        throw new Error("no static")
+      },
+    })
+    await settle()
+    await succeed(h)
+    expect(h.sent[0]).toMatchObject({ device_class: "phone" })
+    expect(h.sent[0]).not.toHaveProperty("platform_authenticator")
+  })
+
+  it("is never read on a laptop, and never reaches a laptop row", async () => {
+    const probe = vi.fn(() => Promise.resolve("yes" as const))
+    const h = harness({ platformAuthenticator: probe })
+    await settle()
+    await succeed(h)
+    expect(probe).not.toHaveBeenCalled()
+    expect(h.sent[0]).not.toHaveProperty("platform_authenticator")
+  })
+
+  it("is absent until the read settles, and absent when it never does, rejects or answers off the list", async () => {
+    const pending = deferred<PasskeyPlatformAuthenticator>()
+    const h = phone({ platformAuthenticator: () => pending.promise })
+    await succeed(h)
+    expect(h.sent[0]).not.toHaveProperty("platform_authenticator")
+    pending.resolve("yes")
+    await settle()
+    await succeed(h)
+    expect(h.sent[1]).toMatchObject({ platform_authenticator: "yes" })
+
+    for (const read of [
+      () => new Promise<PasskeyPlatformAuthenticator>(() => {}),
+      () => Promise.reject(new Error("x")),
+      () => Promise.resolve("maybe" as never),
+    ]) {
+      const other = phone({ platformAuthenticator: read })
+      await settle()
+      await succeed(other)
+      expect(other.sent[0]).toMatchObject({ device_class: "phone", os: "ios", os_major: 18 })
+      expect(other.sent[0]).not.toHaveProperty("platform_authenticator")
+    }
+  })
+
+  it("never holds the Client Hints environment back while it hangs", async () => {
+    // An Android phone: the user agent alone gives no OS major and reads Brave as Chrome; only the
+    // async Client Hints read does. A probe that never settles must not delay either.
+    const CHROME_ANDROID =
+      "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36"
+    const hinted: PasskeyTelemetryEnvironment = {
+      posture: "phone",
+      userAgent: parseUserAgent({
+        userAgent: CHROME_ANDROID,
+        userAgentData: {
+          platform: "Android",
+          platformVersion: "14.0.0",
+          brands: [{ brand: "Brave", version: "154" }],
+        },
+      }),
+    }
+    const h = harness({
+      syncEnvironment: () => ({
+        posture: "phone",
+        userAgent: parseUserAgent({ userAgent: CHROME_ANDROID }),
+      }),
+      environment: () => Promise.resolve(hinted),
+      platformAuthenticator: () => new Promise(() => {}),
+    })
+    await settle()
+    await succeed(h)
+    expect(h.sent[0]).toMatchObject({ os: "android", os_major: 14, browser: "brave" })
+    expect(h.sent[0]).not.toHaveProperty("platform_authenticator")
+  })
+
+  it("follows the row's own environment when the two postures disagree", async () => {
+    const probe = vi.fn(() => Promise.resolve("yes" as const))
+    const syncPhone = harness({
+      syncEnvironment: () => PHONE,
+      environment: () => Promise.resolve(HINTED_MAC),
+      platformAuthenticator: probe,
+    })
+    await settle()
+    await succeed(syncPhone)
+    expect(probe).toHaveBeenCalledTimes(1)
+    expect(syncPhone.sent[0]).toMatchObject(HINTED_MAC_PROPS)
+    expect(syncPhone.sent[0]).not.toHaveProperty("platform_authenticator")
+
+    const late = vi.fn(() => Promise.resolve("yes" as const))
+    const syncLaptop = harness({
+      syncEnvironment: () => LAPTOP,
+      environment: () => Promise.resolve(PHONE),
+      platformAuthenticator: late,
+    })
+    await settle()
+    await succeed(syncLaptop)
+    expect(late).not.toHaveBeenCalled()
+    expect(syncLaptop.sent[0]).toMatchObject({ device_class: "phone" })
+    expect(syncLaptop.sent[0]).not.toHaveProperty("platform_authenticator")
   })
 })
 
@@ -1779,5 +2028,171 @@ describe("a browser that labels another device's answer as this one's", () => {
     expect(h.sent).toEqual([
       expect.objectContaining({ route: "same_device", device_class: "phone" }),
     ])
+  })
+})
+
+describe("where the passkey was made", () => {
+  const MAC_QR: UserHandleProvenance = { context: "mac_qr", osVersion: {}, chip: "unknown" }
+  const WINDOWS_KEY: UserHandleProvenance = {
+    context: "windows_key",
+    osVersion: {},
+    chip: "unknown",
+  }
+  const handleMadeOn = (provenance?: UserHandleProvenance) => encodeUserHandle("@alice", provenance)
+  /** The shape the web wrote before provenance: the name, then sixteen random bytes. */
+  const LEGACY = new Uint8Array([
+    ...new TextEncoder().encode("@alice"),
+    0x00,
+    ...new Uint8Array(16).fill(0x5a),
+  ])
+
+  /** One tracked attempt asserting once per step, then everything the tracker sent. */
+  async function asserting(
+    steps: Step[],
+    context: PasskeyAttemptContext = { ceremony: "sign_in" },
+  ) {
+    const h = harness()
+    const calls = steps.length
+    const ceremony = h.telemetry.wrap(scripted(h.telemetry.requestHook, h.advance, steps))
+    await caught(
+      h.telemetry.track(context, async () => {
+        for (let i = 0; i < calls; i++) await ceremony.assert(assertRequest())
+      }),
+    )
+    return h.sent
+  }
+
+  it("names the context the answering passkey's handle claims", async () => {
+    for (const ceremony of ["sign_in", "unlock"] as const) {
+      const sent = await asserting([{ answer: LOCAL_ASSERT, userHandle: handleMadeOn(MAC_QR) }], {
+        ceremony,
+      })
+      expect(sent).toEqual([
+        expect.objectContaining({ ceremony, outcome: "succeeded", made_on: "mac_qr" }),
+      ])
+    }
+  })
+
+  it("says unknown for a handle written before provenance, or without any", async () => {
+    for (const userHandle of [LEGACY, handleMadeOn()]) {
+      const sent = await asserting([{ answer: LOCAL_ASSERT, userHandle }])
+      expect(sent).toEqual([expect.objectContaining({ made_on: "unknown" })])
+    }
+  })
+
+  it("says nothing when the assertion returns no handle", async () => {
+    const sent = await asserting([{ answer: LOCAL_ASSERT }])
+    expect(sent).toEqual([expect.objectContaining({ outcome: "succeeded" })])
+    expect(sent[0]).not.toHaveProperty("made_on")
+  })
+
+  it("reads the first answered assertion only", async () => {
+    const none = await asserting([
+      { answer: LOCAL_ASSERT },
+      { answer: LOCAL_ASSERT, userHandle: handleMadeOn(MAC_QR) },
+    ])
+    expect(none).toHaveLength(1)
+    expect(none[0]).not.toHaveProperty("made_on")
+    const first = await asserting([
+      { answer: LOCAL_ASSERT, userHandle: handleMadeOn(MAC_QR) },
+      { answer: LOCAL_ASSERT, userHandle: handleMadeOn(WINDOWS_KEY) },
+    ])
+    expect(first).toEqual([expect.objectContaining({ made_on: "mac_qr" })])
+  })
+
+  it("keeps a creation's row to what answered it", async () => {
+    const h = harness()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [
+        { answer: QR_CREATE },
+        { answer: LOCAL_ASSERT, userHandle: handleMadeOn(MAC_QR) },
+      ]),
+    )
+    await h.telemetry.track({ ceremony: "create" }, async () => {
+      await ceremony.create(createRequest())
+      await ceremony.assert(assertRequest())
+    })
+    const onlyAsserted = await asserting(
+      [{ answer: LOCAL_ASSERT, userHandle: handleMadeOn(MAC_QR) }],
+      {
+        ceremony: "create",
+      },
+    )
+    expect(h.sent).toEqual([
+      expect.objectContaining({ ceremony: "create", credential_created: "yes" }),
+    ])
+    expect(onlyAsserted).toEqual([expect.objectContaining({ ceremony: "create" })])
+    for (const row of [...h.sent, ...onlyAsserted]) expect(row).not.toHaveProperty("made_on")
+  })
+
+  it("carries it on an untracked assertion's row", async () => {
+    const h = harness()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [
+        { answer: LOCAL_ASSERT, userHandle: handleMadeOn(MAC_QR) },
+      ]),
+    )
+    await ceremony.assert(assertRequest())
+    expect(h.sent).toEqual([expect.objectContaining({ ceremony: "untracked", made_on: "mac_qr" })])
+  })
+
+  it("keeps it when the answer is refused afterwards, and has none when the call itself fails", async () => {
+    const h = harness()
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [
+        { answer: LOCAL_ASSERT, userHandle: handleMadeOn(MAC_QR) },
+        { answer: LOCAL_ASSERT, userHandle: handleMadeOn(MAC_QR), error: new TypeError("x") },
+      ]),
+    )
+    await caught(
+      h.telemetry.track({ ceremony: "sign_in" }, async () => {
+        await ceremony.assert(assertRequest())
+        throw new UnsupportedProviderError("manager")
+      }),
+    )
+    await caught(h.telemetry.track({ ceremony: "sign_in" }, () => ceremony.assert(assertRequest())))
+    expect(h.sent).toEqual([
+      expect.objectContaining({
+        outcome: "refused",
+        reason: "provider_not_supported",
+        made_on: "mac_qr",
+      }),
+      expect.objectContaining({ ceremony: "sign_in", prompts: "1" }),
+    ])
+    expect(h.sent[1]).not.toHaveProperty("made_on")
+  })
+
+  it("has none when the page closes between the answer and its result", async () => {
+    const h = harness()
+    const hook: PasskeyRequestHook = (signal) => {
+      h.telemetry.requestHook(signal)
+      if (signal.phase === "answered") h.pageHide()
+    }
+    const ceremony = h.telemetry.wrap(
+      scripted(hook, h.advance, [{ answer: LOCAL_ASSERT, userHandle: handleMadeOn(MAC_QR) }]),
+    )
+    await h.telemetry.track({ ceremony: "sign_in" }, () => ceremony.assert(assertRequest()))
+    expect(h.sent).toEqual([expect.objectContaining({ outcome: "abandoned", prompts: "1" })])
+    expect(h.sent[0]).not.toHaveProperty("made_on")
+  })
+
+  it("reads the handle a passkey was created with, and nothing when the assertion withholds it", async () => {
+    const h = harness()
+    const fake = new FakePasskeyCeremony({
+      onRequest: h.telemetry.requestHook,
+      aaguid: APPLE_ICLOUD_AAGUID,
+    })
+    const ceremony = h.telemetry.wrap(fake)
+    const created = await ceremony.create({ ...createRequest(), provenance: MAC_QR })
+    const request = () => assertRequest({ credentialIds: [created.credentialId] })
+    await h.telemetry.track({ ceremony: "sign_in" }, () => ceremony.assert(request()))
+    fake.opts.assertHandle = false
+    await h.telemetry.track({ ceremony: "sign_in" }, () => ceremony.assert(request()))
+    expect(h.sent.map((row) => [row.ceremony, row.made_on])).toEqual([
+      ["untracked", undefined],
+      ["sign_in", "mac_qr"],
+      ["sign_in", undefined],
+    ])
+    expect(h.sent[2]).not.toHaveProperty("made_on")
   })
 })

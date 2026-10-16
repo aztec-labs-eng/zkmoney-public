@@ -8,6 +8,7 @@
  */
 // @vitest-environment node
 import { Fr } from "@aztec/aztec.js/fields"
+import { GPM_AAGUID } from "@obsidion/core/constants"
 import { selectRecoveredMsk } from "@obsidion/front-core"
 import { MSK_PRF_SALT, contextualize } from "@obsidion/sdk"
 import { describe, expect, it } from "vitest"
@@ -141,6 +142,29 @@ describe("a security key: created on one device kind, recovered on the other", (
 describe("route × manager: refusals", () => {
   it("laptop posture answered locally refuses", async () => {
     const ceremony = new FakePasskeyCeremony({ manager: "icloud", route: "local" })
+    await expect(service(ceremony, "laptop").createPasskey("@a")).rejects.toMatchObject({
+      name: "PhoneRequiredError",
+    })
+  })
+
+  it("laptop posture answered locally by a named manager binds slot second only on this computer's route", async () => {
+    const ceremony = new FakePasskeyCeremony({ manager: "gpm", route: "local", aaguid: GPM_AAGUID })
+    const offered = service(ceremony, "laptop")
+    offered.useLaptopCreation({
+      local: true,
+      os: "windows",
+      row: "windowsChrome",
+      managers: ["gpm"],
+      withdrawn: [],
+    })
+    const created = await offered.createPasskey("@a", undefined, { route: "this-device" })
+    expect(created.prfSlot).toBe("second")
+    expect(created.secretKey.toString()).toBe(
+      Fr.fromBufferReduce(
+        Buffer.from(ceremony.prfFor(created.credentialId, "second", "local")),
+      ).toString(),
+    )
+    // The same answer with no route picked is still the phone's rule.
     await expect(service(ceremony, "laptop").createPasskey("@a")).rejects.toMatchObject({
       name: "PhoneRequiredError",
     })

@@ -105,6 +105,31 @@ export function trackWithdrawalSubmission(
   }
 }
 
+/**
+ * The withdrawal whose burn a node still holds, named by its refusal of a later burn of the same
+ * notes. Its record can read `failed`: a node answered its receipt as dropped while another kept
+ * it. Such a record goes back to `submitting` for the tracker. Null when no withdrawal sent it.
+ */
+export async function revivePendingWithdrawal(
+  store: WithdrawalStorage,
+  txHash: string,
+): Promise<WithdrawalRecord | null> {
+  await store.load()
+  const record = store.getByL2TxHash(txHash)
+  if (!record || record.phase !== "failed") return record
+  return store.patch(record.localId, {
+    phase: "submitting",
+    error: undefined,
+    endTime: undefined,
+    droppedBurn: undefined,
+    burnDroppedAt: undefined,
+    // The tracker derives these again from the burn's receipt, which moves it on to mined.
+    withdrawalId: undefined,
+    blockNumber: undefined,
+    reorgEpoch: record.reorgEpoch,
+  })
+}
+
 const DEFAULT_POLL_INTERVAL_MS = 20_000
 
 /**
@@ -233,6 +258,9 @@ export interface WithdrawalTrackingServiceOptions {
    * way a direct withdrawal does, and the swap leg goes unwatched.
    */
   swapEscrowReader?: SwapEscrowReader
+  /** The first L1 block at or after a time (ms). The release search starts at the burn's, not the
+   *  reader's default look-back, which misses an older release. */
+  l1BlockAt?: (ms: number) => Promise<bigint | undefined>
   /** Poll cadence (ms). Defaults to 20s. */
   pollIntervalMs?: number
   /** Interval scheduler override for tests. Defaults to global setInterval. */
@@ -262,6 +290,7 @@ export class WithdrawalTrackingService {
   private portalContext: WithdrawalPortalContext
   private readerForDeployment?: (deployment: WithdrawalDeployment) => WithdrawalFinalizationReader
   private swapEscrowReader?: SwapEscrowReader
+  private l1BlockAt?: (ms: number) => Promise<bigint | undefined>
   /** Per-portal readers built from `readerForDeployment`. */
   private deploymentReaders = new Map<string, WithdrawalFinalizationReader>()
   private pollIntervalMs: number
@@ -279,6 +308,7 @@ export class WithdrawalTrackingService {
     this.portalContext = options.portalContext
     this.readerForDeployment = options.readerForDeployment
     this.swapEscrowReader = options.swapEscrowReader
+    this.l1BlockAt = options.l1BlockAt
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS
     this.scheduler = options.scheduler ?? {
       setInterval: (cb, ms) =>
@@ -552,10 +582,22 @@ export class WithdrawalTrackingService {
       const withdrawalId = record.withdrawalId!
       const spent = await reader.isSpent(withdrawalId)
       if (!spent) return
-      // Best-effort explorer link — never blocks `done`, omitted when ambiguous.
-      const l1TxHash = await reader.resolveL1TxHash(withdrawalId).catch(() => undefined)
+      // Best-effort explorer link — never blocks `done`, omitted when ambiguous. The search starts
+      // at the burn's time, unless a rebuild stamped its own clock there: a release before that
+      // would be missed, so the reader's own look-back stands.
+      const fromBlock = record.startTimeEstimated
+        ? undefined
+        : await this.l1BlockAt?.(record.startTime).catch(() => undefined)
+      const l1TxHash = await (fromBlock === undefined
+        ? reader.resolveL1TxHash(withdrawalId)
+        : reader.resolveL1TxHash(withdrawalId, { fromBlock })
+      ).catch(() => undefined)
       const phase =
         withdrawalRecipients(record).viaEscrow && this.swapEscrowReader ? "swapping" : "done"
+      const received =
+        phase === "done" && l1TxHash
+          ? await reader.receivedIn?.(l1TxHash, record.recipient)
+          : undefined
       const endTime =
         phase === "done"
           ? (l1TxHash && (await reader.l1TxTimestampMs?.(l1TxHash))) || rebuiltSettledAt(record)
@@ -565,6 +607,7 @@ export class WithdrawalTrackingService {
         phaseEnteredAt: this.now(),
         l1TxHash,
         ...(endTime === undefined ? {} : { endTime }),
+        ...(received === undefined ? {} : { receivedAmount: received.toString() }),
         error: undefined,
         reorgEpoch: record.reorgEpoch,
       })

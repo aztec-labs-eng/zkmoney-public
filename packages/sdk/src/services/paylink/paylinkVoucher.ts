@@ -9,19 +9,14 @@ import { planPayout, type WithdrawalOptions } from "../plainWithdrawal.js"
 import { NO_FROM } from "@aztec/aztec.js/account"
 import type { EthAddress } from "@aztec/aztec.js/addresses"
 import { Contract, type ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import { Fr } from "@aztec/aztec.js/fields"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
 import type { ContractArtifact } from "@aztec/stdlib/abi"
-import {
-  getContractInstanceFromInstantiationParams,
-  type ContractInstanceWithAddress,
-} from "@aztec/stdlib/contract"
+import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
 import type { TeeSigner } from "@oxide/oxide-lib/types.js"
 import {
   ContractService,
   DEFAULT_CONTRACTS,
   ensureContractRegisteredInPXE,
-  type ContractName,
 } from "@obsidion/contracts"
 import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
 import {
@@ -33,10 +28,10 @@ import {
 import type { PaylinkParams } from "../PaylinkService.js"
 import { buildSponsoredTeeOperation } from "../sponsoredTeeOperation.js"
 import { buildOperationCall } from "./paylinkClaimSubmit.js"
-import { assertLinkChain, assertLinkClass } from "./paylinkInlineCodec.js"
+import { linkEscrow } from "./paylinkEscrow.js"
+import { assertLinkChain } from "./paylinkInlineCodec.js"
 import { paylinkL1ClaimArgs, type PaylinkL1Proof } from "./paylinkL1Claim.js"
 import {
-  derivePaylinkKeys,
   registerEscrowTagSecret,
   registerPaylinkContractWithKeys,
   type PaylinkKeyMaterial,
@@ -61,17 +56,7 @@ export async function registerEscrow(
   keys: PaylinkKeyMaterial
   artifact: ContractArtifact
 }> {
-  const paylinkType = params.paylinkType as ContractName
-  const artifact = await deps.contractService.getArtifactForContract(paylinkType)
-  const keys = await derivePaylinkKeys({
-    secretKey: params.secret,
-    fallbackKeyHash: params.fallbackKeyHash,
-  })
-  const instance = await getContractInstanceFromInstantiationParams(artifact, {
-    salt: new Fr(0n),
-    publicKeys: keys.publicKeys,
-  })
-  assertLinkClass(params, instance)
+  const { artifact, keys, instance } = await linkEscrow(deps.contractService, params)
   assertLinkChain(params, await linkChainInfo(deps.wallet))
   await registerPaylinkContractWithKeys({
     wallet: deps.wallet,

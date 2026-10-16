@@ -74,7 +74,7 @@ export const HANDSHAKE_LINK_HOST = "https://zk.money"
 /**
  * The canonical web wallet origin for a network. Unlike a paylink, a connect link goes straight to
  * the wallet: `/connect` has no iOS handler to hand off to, so the paylink landing page would only
- * bounce it onward. Mirrors `paylinkLandingBaseUrl`'s prod/non-prod split.
+ * bounce it onward.
  *
  * A deploy that knows its own origin should mint on that instead (see `mintableOrigin`) — a
  * staging or PR-preview build must hand out links back to ITSELF, and a preview host
@@ -124,4 +124,27 @@ export function parseConnectLink(payload: string): string | null {
 
   // Reject an out-of-charset fragment so the codec only ever sees plausible input.
   return CONNECT_TOKEN.test(match[1]) ? match[1] : null
+}
+
+/** A payee's pay page: the tag, and the request fragment when the link carries one. */
+export interface PayLink {
+  tag: string
+  fragment?: string
+}
+
+/**
+ * Parse `…zk.money/pay/<tag>` with an optional `#<request fragment>`, or `null`. Anchored on
+ * `zk.money` like `parseConnectLink`; a query, extra path segments or an out-of-charset fragment
+ * yield `null`. The fragment is not decoded here.
+ */
+export function parsePayLink(payload: string): PayLink | null {
+  if (!payload) return null
+  const match = payload
+    .trim()
+    .match(
+      /^(?:https?:\/\/)?(?:[a-z0-9_-]+\.)*zk\.money\/pay\/([a-z0-9_-]+)\/?(?:#([A-Za-z0-9_-]+))?$/i,
+    )
+  if (!match) return null
+  const tag = match[1].toLowerCase()
+  return match[2] ? { tag, fragment: match[2] } : { tag }
 }

@@ -20,8 +20,12 @@ export const DEVICE_KEYS: ReadonlySet<string> = new Set([
   "webwallet.hide-paylink-info",
   "webwallet.hide-withdraw-privacy-disclaimer",
   "webwallet.local-passkey-hint-shown",
+  "webwallet.local-refusals",
+  "webwallet.ticket-intro-seen",
   "webwallet.passkeyEnv",
   "webwallet.handoff",
+  // A payer with no account has no wallet database.
+  "webwallet.unresolved-payments",
   // Read before the profile names a rollup, and a user's node choice outlives a roll.
   "webwallet.endpoints",
 ])

@@ -64,14 +64,14 @@ function Holder({ active = true }: { active?: boolean }) {
   return null
 }
 
-const mount = (holders: boolean[] = [], topBar = true) =>
+const mount = (holders: boolean[] = []) =>
   act(async () =>
     root.render(
       <>
         {holders.map((active, i) => (
           <Holder key={i} active={active} />
         ))}
-        <InvitationChrome topBar={topBar}>content</InvitationChrome>
+        <InvitationChrome>content</InvitationChrome>
       </>,
     ),
   )
@@ -135,11 +135,6 @@ describe("InvitationChrome endpoints pill", () => {
     expect(pill()!.textContent).toBe("CUSTOM NODE")
     await act(async () => pill()!.click())
     expect(modal()).not.toBeNull()
-  })
-
-  it("has no pill without a top bar", async () => {
-    await mount([], false)
-    expect(pill()).toBeNull()
   })
 })
 

@@ -5,22 +5,32 @@
  * owns single-flight and retry. No wallet, no PXE.
  *
  * An embedded SIPA rides in an unsigned fragment, so a failed tag pin is reported as
- * `tagWarning` rather than thrown — the payee is the address, and the screen must say so.
+ * `tagWarning` rather than thrown — the payee is the address, and the screen must say so. An
+ * address takes one payment, so an embedded one that has already been paid or swept gives way to a
+ * resolved one.
  *
  * Fee model: a SIPA deposit costs the quoted deposit fee, so fulfilling a request
  * of X means sending X + fee. Amounts at or below it leave nothing to credit — the
  * screen must surface the floor for any-amount links.
  */
-import { erc20Abi, type Address, type PublicClient } from "viem"
+import { erc20Abi, type Address, type Hex, type PublicClient } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   depositSipaImplementation,
   type RegistryTagResolution,
   type RequestInlinePacket,
+  type SipaLinkPreimage,
 } from "@obsidion/front-core"
 import { quotedDepositFee } from "@obsidion/core/constants"
-import { readDepositFee, resolveSipaAddress } from "@obsidion/sdk"
+import {
+  Network,
+  readDepositFee,
+  resolveSipaAddress,
+  SELF_BROADCAST_RESWEEPABLE,
+} from "@obsidion/sdk"
 import { requireTupleField } from "../../config/oxideTuple"
+import { sipaFundingTokens } from "../deposit/loadDepositFacts"
+import { predictSipaCandidate } from "../deposit/sipaPredict"
 import { fpcFundingCut } from "../fees/fpcFundingCut"
 import { buildErc20TransferUri, buildErc20TransferUriWithoutAmount } from "./eip681"
 
@@ -35,6 +45,54 @@ export interface AccountlessResolveResult {
   paymentUri: string
   /** Tag pin failed or the @tag no longer matches — the SIPA is still the payee. */
   tagWarning?: string
+  deployment: LinkDeployment
+}
+
+/**
+ * `active`: the address is the active deployment's, re-predicted from the link's preimage or resolved
+ * just now. `expired`: the preimage predicts another address, so the link's deployment is gone.
+ * `unproven`: a link minted without a preimage.
+ */
+export type LinkDeployment = "active" | "expired" | "unproven"
+
+export async function linkDeployment(
+  packet: Pick<RequestInlinePacket, "sipaAddress" | "sipaPreimage">,
+  predict: (preimage: SipaLinkPreimage) => Promise<Address>,
+): Promise<LinkDeployment> {
+  if (!packet.sipaAddress || !packet.sipaPreimage) return "unproven"
+  const predicted = await predict(packet.sipaPreimage)
+  return predicted.toLowerCase() === packet.sipaAddress.toLowerCase() ? "active" : "expired"
+}
+
+/** The self-broadcast deposit SIPA `preimage` names under the active deployment. */
+function predictActiveSipa(
+  publicClient: PublicClient,
+  tuple: OxideEnvTuple,
+  implementation: Address,
+  preimage: SipaLinkPreimage,
+): Promise<Address> {
+  const sipaFactory = requireTupleField(tuple, "sipaFactory") as Address
+  const common = {
+    implementation,
+    intentHash: preimage.intentHash as Hex,
+    rollupVersion: BigInt(requireTupleField(tuple, "rollupVersion")),
+    resweepable: SELF_BROADCAST_RESWEEPABLE,
+  }
+  // A 20-byte recovery is a legacy-eoa address; 32 bytes an account commitment.
+  return predictSipaCandidate(
+    publicClient,
+    preimage.recovery.length === 42
+      ? {
+          protocol: "legacy-eoa",
+          sipaFactory,
+          args: { ...common, recoveryAddress: preimage.recovery as Address },
+        }
+      : {
+          protocol: "account",
+          sipaFactory,
+          args: { ...common, recoveryCommitment: preimage.recovery as Hex },
+        },
+  )
 }
 
 /** The link declares decimals that the token it is paid in does not have. */
@@ -51,6 +109,8 @@ export async function resolveAccountlessRequest(
     publicClient: PublicClient
     resolveRequester(tag: string): Promise<RegistryTagResolution>
     chainId: number
+    /** Picks the tokens a SIPA accepts, so a payment in any of them marks its address used. */
+    network: Network
     timeoutMs?: number
   },
 ): Promise<AccountlessResolveResult> {
@@ -67,22 +127,41 @@ export async function resolveAccountlessRequest(
     fpcFundingCut(deps.publicClient, requireTupleField(deps.tuple, "portal") as Address),
     deps.publicClient.readContract({ address: token, abi: erc20Abi, functionName: "decimals" }),
   ])
+  const fixed = packet.amountAtomic > 0n
   // The URI asks for the link's amount in this token's base units, so a link that scales it
   // differently would ask for a different amount than it shows. A link without decimals is read
-  // as 6, as the codec defines.
+  // as 6, as the codec defines. An any-amount URI carries no amount to scale.
   const declared = packet.tokenDecimals ?? 6
-  if (declared !== decimals) throw new RequestDecimalsMismatchError(declared, decimals)
+  if (fixed && declared !== decimals) throw new RequestDecimalsMismatchError(declared, decimals)
   const feeAtomic = quotedDepositFee(relayerFee, cut)
 
   const pin = await pinRequester(packet, deps)
   let sipaAddress = packet.sipaAddress as Address | undefined
+  // A failed check leaves the address as unproven as a link without a preimage.
+  let deployment = await linkDeployment(packet, (preimage) =>
+    predictActiveSipa(deps.publicClient, deps.tuple, implementation, preimage),
+  ).catch((err): LinkDeployment => {
+    console.warn("[request] could not check the link's deployment", err)
+    return "unproven"
+  })
+  // An expired link is shown as expired, never replaced.
+  if (
+    sipaAddress &&
+    deployment !== "expired" &&
+    !(await isUnpaid(
+      deps.publicClient,
+      sipaFundingTokens(deps.network, token).map((t) => t.address),
+      sipaAddress,
+    ))
+  )
+    sipaAddress = undefined
   if (!sipaAddress) {
     // A CCIP address is derived from the live tag, so an unresolvable tag has no payee at all.
     if (pin.error) throw new Error(pin.error)
     sipaAddress = await resolveSipaViaCcip(packet, deps)
+    deployment = "active"
   }
 
-  const fixed = packet.amountAtomic > 0n
   const grossAtomic = fixed ? packet.amountAtomic + feeAtomic : 0n
   const paymentUri = fixed
     ? buildErc20TransferUri({
@@ -100,8 +179,29 @@ export async function resolveAccountlessRequest(
     feeAtomic,
     grossAtomic,
     paymentUri,
+    deployment,
     ...(pin.error ? { tagWarning: pin.error } : {}),
   }
+}
+
+/** No balance in any accepted token and no code: a sweep deploys the SIPA, so a swept address has code. */
+async function isUnpaid(
+  publicClient: PublicClient,
+  tokens: Address[],
+  sipa: Address,
+): Promise<boolean> {
+  const [code, ...balances] = await Promise.all([
+    publicClient.getCode({ address: sipa }),
+    ...tokens.map((address) =>
+      publicClient.readContract({
+        address,
+        abi: erc20Abi,
+        functionName: "balanceOf",
+        args: [sipa],
+      }),
+    ),
+  ])
+  return !code && balances.every((b) => b === 0n)
 }
 
 async function resolveSipaViaCcip(

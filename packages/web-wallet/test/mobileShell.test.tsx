@@ -4,26 +4,31 @@ import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const state = vi.hoisted(() => ({
+  savings: false,
   unlocked: true,
   handle: "alice" as string | undefined,
   pending: false,
+  owed: false,
   blocked: false,
   onboarded: true,
-  admitted: true,
   launcher: false,
   phone: true,
   listeners: new Set<() => void>(),
   markAllRead: vi.fn(),
   logout: vi.fn(),
 }))
+// Savings reads the booted profile, which this suite never boots.
+vi.mock("../src/features/savings/savingsGateway", () => ({
+  useSavingsAvailable: () => state.savings,
+}))
 vi.mock("../src/features/operations/operations", async () =>
   (await import("./support/fakeOperations")).fakeOperationsModule(),
 )
-vi.mock("../src/features/onboarding/RegistrationDepositPrompt", () => ({
-  RegistrationDepositPrompt: () => null,
-}))
 vi.mock("../src/features/onboarding/openRegistration", () => ({
-  useRegistrationDepositOwed: () => false,
+  openRegistration: () => null,
+  useRegistrationTagChangeable: () => false,
+  useNameClaimPending: () => false,
+  useRegistrationDepositOwed: () => state.owed,
 }))
 vi.mock("@obsidion/front-core", () => ({
   INTERRUPTED_ERRORS: {},
@@ -36,6 +41,7 @@ vi.mock("@obsidion/front-core", () => ({
     markAllRead: state.markAllRead,
   }),
   useCachedRecords: () => ({ records: [] }),
+  useConfigValue: () => ({ value: true, setValue: async () => {} }),
   WithdrawalStorage: { get: () => null },
 }))
 vi.mock("@obsidion/web-ds", () => ({
@@ -59,7 +65,6 @@ vi.mock("../src/features/identity/walletIdentity", () => ({
   loadOnboardedIdentity: () =>
     state.onboarded ? { handle: state.handle, address: "0x123", pending: state.pending } : null,
 }))
-vi.mock("../src/features/identity/admission", () => ({ hasWalletEntry: () => state.admitted }))
 vi.mock("../src/platform/auth/useAuthenticator", () => ({
   getAuthService: () => ({ getSecretKey: async () => new Uint8Array([1]) }),
 }))
@@ -96,13 +101,6 @@ vi.mock("../src/features/contacts/TagSearchBar", () => ({
     />
   ),
 }))
-vi.mock("../src/features/contacts/ShareTagModal", () => ({
-  ShareTagModal: ({ onScan }: { onScan?: () => void }) => (
-    <div role="dialog" aria-label="Share @tag">
-      {onScan && <button onClick={onScan}>Scan instead</button>}
-    </div>
-  ),
-}))
 vi.mock("../src/ui/LogoutModal", () => ({
   LogoutModal: ({ onConfirm }: { onConfirm: () => void }) => (
     <div role="dialog" aria-label="Log out">
@@ -125,12 +123,12 @@ let host: HTMLDivElement
 let root: Root
 function Page() {
   const navigate = useNavigate()
-  const { openMenu, openShareTag, openScanner, scannerAvailable } = useShellActions()
+  const { openMenu, openReceive, openScanner, scannerAvailable } = useShellActions()
   return (
     <>
       <button onClick={() => navigate("/contacts")}>Go to contacts</button>
       <button onClick={openMenu}>Page menu</button>
-      <button onClick={openShareTag}>Page Share</button>
+      <button onClick={openReceive}>Page Receive</button>
       {scannerAvailable && <button onClick={openScanner}>Page Scan</button>}
     </>
   )
@@ -172,6 +170,16 @@ const render = (
                 </>
               }
             />
+            <Route
+              path="activity"
+              element={
+                <>
+                  {autoFocusContacts && <input aria-label="Activity search" autoFocus />}
+                  <Page />
+                </>
+              }
+            />
+            <Route path="receive" element={<p>Receive page</p>} />
             <Route path="*" element={<Page />} />
           </Route>
         </Routes>
@@ -179,13 +187,14 @@ const render = (
     )
   })
 beforeEach(() => {
+  state.savings = false
   state.phone = true
   state.unlocked = true
   state.handle = "alice"
   state.pending = false
+  state.owed = false
   state.blocked = false
   state.onboarded = true
-  state.admitted = true
   state.launcher = false
   state.listeners.clear()
   state.markAllRead.mockClear()
@@ -218,21 +227,38 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 describe("phone shell", () => {
-  it.each([true, false])("keeps the correct primary action order when phone=%s", (phone) => {
+  it.each([
+    [true, false],
+    [false, false],
+    [true, true],
+    [false, true],
+  ])("keeps the primary action order when phone=%s savings=%s", (phone, savings) => {
     state.phone = phone
+    state.savings = savings
     render()
     if (phone) click("Open menu")
+    // Savings sits second, right after Home, wherever a deployment offers it.
     expect(
       [...host.querySelectorAll(".ww-sidebar__menu .ww-nav-item")].map((b) => b.textContent),
     ).toEqual([
       "Home",
-      "Contacts",
+      ...(savings ? ["Savings"] : []),
       "Deposit",
-      ...(phone ? ["Receive", "Send"] : ["Send", "Receive"]),
+      ...(phone ? ["Requests", "Send"] : ["Send", "Requests"]),
       "Withdraw",
       "Activity",
       "Settings",
     ])
+  })
+  it.each([true, false])("highlights Savings, not Home, on /savings with phone=%s", (phone) => {
+    state.phone = phone
+    state.savings = true
+    render("/savings")
+    if (phone) click("Open menu")
+    const active = [...host.querySelectorAll(".ww-sidebar__menu .ww-nav-item--active")]
+    expect(active.map((b) => b.textContent)).toEqual(["Savings"])
+    expect(active[0].getAttribute("aria-current")).toBe("page")
+    if (phone) expect(host.querySelector('.ww-tabbar [aria-current="page"]')).toBeNull()
   })
   it("scopes the new Home composition to the exact phone Home route", () => {
     render("/send")
@@ -251,7 +277,7 @@ describe("phone shell", () => {
     expect(tabs.map((b) => b.textContent)).toEqual([
       "Home",
       "Deposit",
-      "Receive",
+      "Requests",
       "Send",
       "Withdraw",
     ])
@@ -259,6 +285,13 @@ describe("phone shell", () => {
     expect(host.querySelector(".ww-shell--tabbar")).not.toBeNull()
     act(() => tabs[3].click())
     expect(host.querySelector('.ww-tabbar [aria-current="page"]')?.textContent).toBe("Send")
+  })
+  it("sends a money route to Deposit while the name waits for its deposit", () => {
+    state.owed = true
+    render()
+    const tabs = [...host.querySelectorAll<HTMLButtonElement>(".ww-tabbar button")]
+    act(() => tabs[3].click())
+    expect(host.querySelector('.ww-tabbar [aria-current="page"]')?.textContent).toBe("Deposit")
   })
   it("keeps the tab bar off desktop", () => {
     state.phone = false
@@ -277,18 +310,18 @@ describe("phone shell", () => {
     expect(document.documentElement.style.overflow).toBe("clip")
     expect(document.activeElement).toBe(button("Open menu"))
   })
-  it("releases the menu before Share mounts", () => {
+  it("releases the menu before Receive opens", () => {
     render()
     click("Open menu")
-    click("Share @tag")
+    click("Receive code")
     expect(menu()).toBeNull()
     expect(document.documentElement.style.overflow).toBe("")
-    expect(host.querySelector('[role="dialog"][aria-label="Share @tag"]')).not.toBeNull()
+    expect(host.textContent).toContain("Receive page")
   })
-  it("keeps working Contacts navigation until its page header opts in", () => {
+  it("keeps working menu navigation until its page header opts in", () => {
     render()
     click("Open menu")
-    click("Contacts")
+    click("Activity")
     expect(menu()).toBeNull()
     expect(host.querySelector('input[aria-label="Search @tag"]')).not.toBeNull()
     click("Open menu")
@@ -313,8 +346,8 @@ describe("phone shell", () => {
   it("preserves focus requested by the destination page", () => {
     render("/", [], true)
     click("Open menu")
-    click("Contacts")
-    expect(document.activeElement).toBe(host.querySelector('[aria-label="Contacts search"]'))
+    click("Activity")
+    expect(document.activeElement).toBe(host.querySelector('[aria-label="Activity search"]'))
   })
   it("cleans up across the breakpoint and keeps desktop Contacts search", () => {
     render("/contacts", ["/contacts"])
@@ -366,7 +399,7 @@ describe("phone shell", () => {
     render()
     expect(host.querySelector('input[aria-label="Search @tag"]')).toBeNull()
   })
-  it.each(["Open menu", "Page Share"])(
+  it.each(["Open menu", "Page Receive"])(
     "marks notifications read when %s closes the panel",
     (action) => {
       render()
@@ -481,11 +514,8 @@ describe("phone scanner entry guards", () => {
     expect(host.querySelector('[role="dialog"][aria-label="Scan QR code"]')).not.toBeNull()
     click("Close scanner")
     expect(document.activeElement).toBe(button("Page Scan"))
-    click("Page Share")
-    click("Scan instead")
-    expect(host.querySelector('[role="dialog"][aria-label="Scan QR code"]')).not.toBeNull()
   })
-  it.each(["phone", "unlocked", "onboarded", "admitted", "handle", "pending", "launcher"] as const)(
+  it.each(["phone", "unlocked", "onboarded", "handle", "pending", "launcher"] as const)(
     "does not expose Scan when %s fails its gate",
     (gate) => {
       if (gate === "handle") state.handle = undefined
@@ -495,9 +525,8 @@ describe("phone scanner entry guards", () => {
       if (state.phone) click("Open menu")
       expect(button("Scan QR code")).toBeUndefined()
       expect(button("Page Scan")).toBeUndefined()
-      click("Page Share")
-      expect(host.querySelector('[role="dialog"][aria-label="Share @tag"]')).not.toBeNull()
-      expect(button("Scan instead")).toBeUndefined()
+      click("Page Receive")
+      expect(host.textContent).toContain("Receive page")
     },
   )
   it("closes an active scanner when the wallet locks", () => {

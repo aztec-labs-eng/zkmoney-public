@@ -26,6 +26,7 @@ export const stubSimulateTx = async () => ({
   },
   publicInputs: {
     constants: { anchorBlockHeader: { globalVariables: { timestamp: 0n } } },
+    gasUsed: Gas.empty(),
   },
   publicOutput: undefined,
   gasUsed: {

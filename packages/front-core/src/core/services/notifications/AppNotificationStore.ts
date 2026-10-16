@@ -50,7 +50,7 @@ export type ContactAddedNotificationTarget = {
   contactId: string
 }
 
-/** Funds on a retired deployment with nothing to do yet: the Activity screen, where they show. */
+/** Funds on a retired deployment that can't move now: the migration dialog lists them. */
 export type MigrationResidualsNotificationTarget = {
   type: "migration.residuals"
 }

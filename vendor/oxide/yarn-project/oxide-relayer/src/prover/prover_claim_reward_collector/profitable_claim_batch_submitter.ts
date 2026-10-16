@@ -3,13 +3,13 @@ import { EthAddress } from '@aztec/foundation/eth-address';
 import { Logger, createLogger } from '@aztec/foundation/log';
 import { RunningPromise } from '@aztec/foundation/running-promise';
 
-import { OxidePortalContract, ProverClaim, toProverTipClaim } from '@oxide/l1-contracts/oxide_portal.js';
+import { ProverClaim, toProverTipClaim } from '@oxide/l1-contracts/oxide_portal.js';
 import { SIMULATED_SENDER_BALANCE } from '@oxide/oxide-client/l1_operation_quote.js';
 
 import type { FeeValuesEIP1559 } from 'viem';
 
 import { isAboveMaxFeePerGas } from '../../l1/l1_tx_queue.js';
-import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
+import { type PriceOracle, tokenToUsd, weiToUsd } from '../../price_oracle/price_oracle.js';
 import { MAX_ITEMS_PER_BATCH, selectProfitableBatch, sortByTipDescending } from '../batch_selection.js';
 import { ProverClaimPortalConfig } from '../prover_claim_lib/index.js';
 import { portalId } from '../types.js';
@@ -17,11 +17,10 @@ import { BatchPublisher } from './batch_publisher.js';
 import { PendingProverClaim, ProverClaimBacklog } from './prover_claim_backlog.js';
 
 export interface ProfitableClaimBatchSubmitterOptions {
-  portal: OxidePortalContract;
   rollup: RollupContract;
   portals: ProverClaimPortalConfig[];
   backlog: ProverClaimBacklog;
-  priceOracle: ChainlinkPriceOracle;
+  priceOracle: PriceOracle;
   /** The fee values of the batch tx. The batch is priced at their `maxFeePerGas`, the most that the tx can pay per gas. */
   getFeeValues: () => Promise<FeeValuesEIP1559>;
   /** Operator cap on `maxFeePerGas`, in wei. The batch is deferred while its fee values are above it. */
@@ -33,7 +32,7 @@ export interface ProfitableClaimBatchSubmitterOptions {
    * `$firstProver` for the claim's checkpoint.
    */
   senderAddress: EthAddress;
-  /** Minimum batch profit in the oracle's common quote currency: a batch below it is not worth a tx. */
+  /** Minimum batch profit in USD, scaled to 18 decimals: a batch below it is not worth a tx. */
   minBatchProfit: bigint;
   intervalMs: number;
   onError?: (error: unknown) => void | Promise<void>;
@@ -99,12 +98,13 @@ export class ProfitableClaimBatchSubmitter {
         return;
       }
 
-      const unclaimed = await this.#dropAlreadyClaimed(live);
+      const portal = this.portals.get(id)!;
+      const unclaimed = await this.#dropAlreadyClaimed(portal, live);
       if (unclaimed.length === 0) {
         return;
       }
 
-      await this.#evaluatePortal(this.portals.get(id)!, unclaimed);
+      await this.#evaluatePortal(portal, unclaimed);
     } catch (error) {
       this.log.error(`Error polling portal ${id}: ${error}`);
       if (this.options.onError) {
@@ -136,11 +136,14 @@ export class ProfitableClaimBatchSubmitter {
    * claimable window on every start, so a batch that landed just before a restart comes back into the backlog.
    * `claimProverTips` reverts the whole tx on a repeated claim, so it must never reach a batch.
    */
-  async #dropAlreadyClaimed(claims: PendingProverClaim[]): Promise<PendingProverClaim[]> {
+  async #dropAlreadyClaimed(
+    portal: ProverClaimPortalConfig,
+    claims: PendingProverClaim[],
+  ): Promise<PendingProverClaim[]> {
     const checked = await Promise.all(
       claims.map(async claim => ({
         claim,
-        claimed: await this.options.portal.claimed(claim.claim.rewardContext.epochNumber, claim.claim.leafId),
+        claimed: await portal.contract.claimed(claim.claim.rewardContext.epochNumber, claim.claim.leafId),
       })),
     );
     const claimed = checked.filter(entry => entry.claimed).map(entry => entry.claim);
@@ -175,12 +178,20 @@ export class ProfitableClaimBatchSubmitter {
 
     const quote = this.#quoteFor(portal, feeValues.maxFeePerGas);
 
+    // One price per poll for the whole selection: every sub-batch is then valued against the same prices.
+    const [ethPrice, tokenPrice] = await Promise.all([
+      this.options.priceOracle.getEthPrice(),
+      this.options.priceOracle.getTokenPrice(portal.context.token),
+    ]);
+
     // A claim whose tip does not cover its own marginal gas is left for a cheaper block rather than riding
     // along on the fat tips beside it.
     const { batch } = await selectProfitableBatch(assembled, quote, {
       tipOf: claim => claim.claim.rewardContext.tip,
       minProfit: this.options.minBatchProfit,
-      profitOf: async (gas, reward) => reward - (await this.options.priceOracle.weiToUSD(gas * feeValues.maxFeePerGas)),
+      // The tips and the subsidy are both in the portal's own token.
+      rewardValueOf: reward => tokenToUsd(reward, tokenPrice),
+      gasCostOf: gas => weiToUsd(gas * feeValues.maxFeePerGas, ethPrice),
     });
 
     if (batch.length === 0) {
@@ -241,7 +252,7 @@ export class ProfitableClaimBatchSubmitter {
     portal: ProverClaimPortalConfig,
     maxFeePerGas: bigint,
   ): (subset: readonly PendingProverClaim[]) => Promise<{ totalGas: bigint; subsidy: bigint }> {
-    const portalContract = this.options.portal.getContract();
+    const portalContract = portal.contract.getContract();
     const account = this.options.senderAddress.toString();
     return async subset => {
       if (subset.length === 0) {

@@ -1,6 +1,7 @@
 import type { PasskeyAttachment } from "../ceremony/passkeyCeremony.js"
 import type { DevicePosture } from "./devicePosture.js"
 import { PASSKEY_MANAGER_AAGUIDS } from "./passkeyProviders.js"
+import type { PasskeyPlatformAuthenticator } from "./passkeyTelemetryVocabulary.js"
 import {
   type UserAgentInfo,
   UNKNOWN,
@@ -96,7 +97,11 @@ export function currentMisreportsCrossDevice(): boolean {
 const SAFARI_LABEL_FLOOR = "26.4"
 
 /** The Chromium browsers whose label is trusted; any other family is unmeasured. */
-const TRUSTED_CHROMIUM: readonly UserAgentInfo["browserFamily"][] = ["chrome", "edge", "brave"]
+export const TRUSTED_CHROMIUM: readonly UserAgentInfo["browserFamily"][] = [
+  "chrome",
+  "edge",
+  "brave",
+]
 
 /**
  * Whether the browser is known to report truthfully which device answered, so a refusal may name
@@ -180,6 +185,21 @@ async function clientCapabilities(): Promise<Record<string, boolean> | undefined
     return await read.call(PublicKeyCredential)
   } catch {
     return undefined
+  }
+}
+
+/** Whether the browser claims a built-in authenticator that verifies the user. */
+export async function currentPlatformAuthenticator(): Promise<PasskeyPlatformAuthenticator> {
+  try {
+    if (typeof PublicKeyCredential === "undefined") return "unknown"
+    // Widened: the static is typed, but a browser may still answer with something else.
+    const read: (() => Promise<unknown>) | undefined =
+      PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable
+    if (typeof read !== "function") return "unknown"
+    const answer = await read.call(PublicKeyCredential)
+    return answer === true ? "yes" : answer === false ? "no" : "unknown"
+  } catch {
+    return "unknown"
   }
 }
 

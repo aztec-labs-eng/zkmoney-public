@@ -106,7 +106,7 @@ describe("NonContactRequestsScreen", () => {
     await act(async () => buttons("View")[0].click())
     const sheet = document.querySelector("dialog")!
     expect(sheet.textContent).toContain("mina.zk.money is not in your contacts")
-    expect(sheet.textContent).toContain("By accepting, you add mina.zk.money to your contacts")
+    expect(sheet.textContent).not.toContain("add mina.zk.money")
 
     await act(async () => buttons("Send")[0].click())
     expect(where()).toBe(

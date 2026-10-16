@@ -5,6 +5,7 @@ import { TxHash } from '@aztec/stdlib/tx';
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
+import type { PriceOracle } from '../../price_oracle/price_oracle.js';
 import { DiscoveredClaim } from '../prover_claim_lib/index.js';
 import { portalId } from '../types.js';
 import {
@@ -18,7 +19,17 @@ import { ProverClaimBacklog, claimId } from './prover_claim_backlog.js';
 const FIXED_GAS = 50n;
 const PER_CLAIM_GAS = 100n;
 
+/** One whole USD at the 18 decimals every price is in. */
+const ONE_USD = 10n ** 18n;
+
+/** An oracle that prices one ETH and one whole 18-decimal token at `usd` each. */
+const oracleAt = (usd: bigint): PriceOracle => ({
+  getEthPrice: () => Promise.resolve(usd),
+  getTokenPrice: () => Promise.resolve({ usdPerToken: usd, decimals: 18 }),
+});
+
 const L1_PORTAL = EthAddress.random();
+const TOKEN = EthAddress.random();
 const PORTAL_ID = portalId(L1_PORTAL);
 const SENDER = EthAddress.random();
 
@@ -69,7 +80,7 @@ describe('ProfitableClaimBatchSubmitter', () => {
     backlog.add(
       claims.map(claim => ({
         id: claimId(claim),
-        portalId: PORTAL_ID,
+        portalId: claim.portalId,
         claim,
         proofLength: 3n,
         deadlinePending: CheckpointNumber(deadlinePending),
@@ -86,16 +97,16 @@ describe('ProfitableClaimBatchSubmitter', () => {
       }),
     } as any;
     const portal = {
-      context: { l1Portal: L1_PORTAL, proverSubsidy: EthAddress.random() },
+      context: { l1Portal: L1_PORTAL, token: TOKEN, proverSubsidy: EthAddress.random() },
       adaptor: { buildProverClaimData: (...args: any[]) => buildProverClaimData(...args) },
+      contract: portalContract,
     } as any;
     return new ProfitableClaimBatchSubmitter({
-      portal: portalContract,
       rollup: { getCheckpointNumber: () => Promise.resolve(CheckpointNumber(pendingCheckpoint)) } as any,
       portals: [portal],
       backlog,
-      // Identity oracle, so profit reduces to tips minus gas cost.
-      priceOracle: { weiToUSD: (wei: bigint) => Promise.resolve(wei) } as any,
+      // One USD per ETH and per token, so profit reduces to tips minus gas cost.
+      priceOracle: oracleAt(ONE_USD),
       getFeeValues: () => Promise.resolve({ maxFeePerGas: gasPriceWei, maxPriorityFeePerGas: 0n }),
       publisher: { publish: (...args: any[]) => publish(...args) } as any,
       senderAddress: SENDER,
@@ -140,6 +151,19 @@ describe('ProfitableClaimBatchSubmitter', () => {
     await submitter.pollPortal(PORTAL_ID);
     expect(publish).toHaveBeenCalledTimes(1);
     expect(backlog.getPortalClaims(PORTAL_ID)).toHaveLength(0);
+  });
+
+  it('values the reward in the portal token before it compares it with the gas', async () => {
+    // One claim tipping 200 against 150 gas at 2 wei: at one USD a token it loses 100, at two USD a share it wins 100.
+    seed([discovered(0, 200n)]);
+    gasPriceWei = 2n;
+    const getTokenPrice = jest.fn((_token: EthAddress) => Promise.resolve({ usdPerToken: 2n * ONE_USD, decimals: 18 }));
+
+    await build({ priceOracle: { ...oracleAt(ONE_USD), getTokenPrice } }).pollPortal(PORTAL_ID);
+
+    expect(publish).toHaveBeenCalledTimes(1);
+    // The reward is priced in the token of the portal being polled, not in some default token.
+    expect(getTokenPrice.mock.calls.every(([token]) => token.equals(TOKEN))).toBe(true);
   });
 
   it('keeps the claims backlogged while the max fee per gas is above the cap, and publishes once it falls', async () => {
@@ -254,5 +278,68 @@ describe('ProfitableClaimBatchSubmitter', () => {
     await build().pollPortal(PORTAL_ID);
 
     expect(estimateGas.mock.calls[0][1]).toEqual({ account: SENDER.toString() });
+  });
+
+  describe('with two portals', () => {
+    /** A portal with its own claimed leaves and its own subsidy quote. */
+    const makePortal = ({ claimed = new Set<string>(), subsidy = 0n } = {}) => {
+      const l1Portal = EthAddress.random();
+      const estimate = jest.fn((args: any, _opts: any) =>
+        Promise.resolve(FIXED_GAS + PER_CLAIM_GAS * BigInt(args[1].length)),
+      );
+      const config = {
+        context: { l1Portal, token: TOKEN, proverSubsidy: EthAddress.random() },
+        adaptor: { buildProverClaimData: (...args: any[]) => buildProverClaimData(...args) },
+        contract: {
+          address: l1Portal,
+          claimed: (_epoch: EpochNumber, leafId: bigint) => Promise.resolve(claimed.has(leafId.toString())),
+          getContract: () => ({
+            estimateGas: { claimProverTips: estimate },
+            simulate: { claimProverTips: () => Promise.resolve({ result: subsidy }) },
+          }),
+        },
+      } as any;
+      return { id: portalId(l1Portal), config, estimate };
+    };
+
+    /** The same withdrawal leaf and tx on each portal, so only the portal tells the claims apart. */
+    const sameClaimOn = (portals: { id: string }[], tip: bigint) => {
+      const claim = discovered(0, tip);
+      return portals.map(portal => ({ ...claim, portalId: portal.id }));
+    };
+
+    it('checks the claimed state on the portal that the claim belongs to', async () => {
+      const claim = discovered(0, 500n);
+      const a = makePortal({ claimed: new Set([claim.leafId.toString()]) });
+      const b = makePortal();
+      seed(sameClaimOn([a, b], 500n));
+      const submitter = build({ portals: [a.config, b.config] });
+
+      await submitter.pollPortal(a.id);
+      await submitter.pollPortal(b.id);
+
+      // Portal A already paid this leaf, so only portal B sends it, through its own contract.
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(publish.mock.calls[0][0]).toBe(b.config);
+      expect(a.estimate).not.toHaveBeenCalled();
+      expect(b.estimate).toHaveBeenCalled();
+      expect(backlog.getPortalClaims(a.id)).toHaveLength(0);
+    });
+
+    it('prices each portal with the subsidy that its own contract quotes', async () => {
+      // A tip of 100 against 150 gas at 1 wei loses 50. Portal B's subsidy of 100 makes it pay; portal A pays none.
+      const a = makePortal({ subsidy: 0n });
+      const b = makePortal({ subsidy: 100n });
+      seed(sameClaimOn([a, b], 100n));
+      const submitter = build({ portals: [a.config, b.config] });
+
+      await submitter.pollPortal(a.id);
+      await submitter.pollPortal(b.id);
+
+      expect(publish).toHaveBeenCalledTimes(1);
+      expect(publish.mock.calls[0][0]).toBe(b.config);
+      // Portal A's claim does not pay yet, so it stays backlogged.
+      expect(backlog.getPortalClaims(a.id)).toHaveLength(1);
+    });
   });
 });

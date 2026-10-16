@@ -1,27 +1,43 @@
 /**
- * `/request#<fragment>` — the payer's entry to a payment-request link.
+ * `/pay/<tag>[#<fragment>]` and the older `/request#<fragment>` — the payer's entry to a payee.
+ * A fragment is a request link; a bare `/pay/<tag>` is a standing any-amount request for the tag.
  *
  * With a local identity the packet validates (legacy links tolerated) and the flow hands off to the
  * existing contact send screen with the request in router state. Without one it renders the
  * invitation landing: the requested amount over a choice of how to pay — signing up, or an external
  * L1 wallet paying the requester's SIPA deposit address.
  *
- * The SIPA resolve runs on mount, outside AccountGate, so it overlaps the PXE boot the signup route
- * needs. An embedded `sipaAddress` is the payee directly; without one the tag CCIP-resolves to one.
+ * The SIPA resolve runs on mount, outside AccountGate. A signed-out visit boots no PXE until it
+ * picks zk.money. An embedded `sipaAddress` is the payee directly; without one the tag CCIP-resolves
+ * to one.
  * No XMTP signal is sent (no account) — the requester's wallet joins the claimed deposit to the
  * minted row by address instead.
  */
 import { useEffect, useMemo, useRef, useState } from "react"
-import { Outlet, useLocation, useNavigate } from "react-router-dom"
+import { Outlet, useLocation, useNavigate, useParams } from "react-router-dom"
 import { createPublicClient, formatUnits, type PublicClient } from "viem"
 import type { AztecNode } from "@aztec/aztec.js/node"
-import { decodeRequestInline, normalizeTag, type RequestInlinePacket } from "@obsidion/front-core"
-import { Card, Icon, PrimaryGradientButton, ScreenNavBar, Spinner } from "@obsidion/web-ds"
+import {
+  decodeRequestInline,
+  normalizeTag,
+  type RegistryTagResolution,
+  type RequestInlinePacket,
+} from "@obsidion/front-core"
+import type { ChainIdentity } from "@obsidion/core/types"
+import {
+  Card,
+  Icon,
+  PrimaryGradientButton,
+  ScreenNavBar,
+  Spinner,
+  TopNavIconButton,
+} from "@obsidion/web-ds"
 import { getConfig, l1Transport } from "../../config/env"
 import { getOxideTuple } from "../../config/oxideTuple"
 import { fireEvent, requestAmountBucket } from "../../lib/analytics"
 import { usdBalance, usdFigure } from "../../ui/format"
-import { verifiedIdentity } from "../../ui/PxeBoot"
+import { useBack, useLinkSharing } from "../../ui/hooks"
+import { usePxeBoot, verifiedIdentity } from "../../ui/PxeBoot"
 import { loadOnboardedIdentity } from "../identity/walletIdentity"
 import { resolveTagForCommit } from "../contacts/registryResolution"
 import { InvitationChrome } from "../onboarding/InvitationChrome"
@@ -33,7 +49,11 @@ import {
 import { ExternalWalletPayModal } from "./ExternalWalletPayModal"
 import { requestAmountDisplay, validateRequestPacket, type RequestLinkProblem } from "./requestLink"
 
-const PROBLEM_COPY: Record<RequestLinkProblem, string> = {
+/** `unknownPayee`: a pay page for a tag nobody holds, such as a mistyped `<tag>.zk.money`. */
+type PayProblem = RequestLinkProblem | "unknownPayee"
+
+const PROBLEM_COPY: Record<PayProblem, string> = {
+  unknownPayee: "There's no zk.money account with this name.",
   expired: "This payment request has expired.",
   wrongNetwork: "This payment request is for a different network.",
   wrongToken: "This payment request is for a token this wallet doesn't support.",
@@ -42,32 +62,62 @@ const PROBLEM_COPY: Record<RequestLinkProblem, string> = {
 }
 
 /**
- * This screen mounts outside AccountGate, before any identity is pinned, so it reads the identity
- * the boot would: L1's, with the default node standing in when L1 gives no answer.
+ * The rollup the active tab verified before the app mounted. Without one (demo mode) it reads the
+ * identity the boot would: L1's, with the default node standing in when L1 gives no answer.
  */
-async function fetchRollupAddress(node: AztecNode): Promise<string> {
-  return (await verifiedIdentity(getConfig(), node)).rollupAddress
+async function rollupAddressOf(node: AztecNode, identity?: ChainIdentity): Promise<string> {
+  return (identity ?? (await verifiedIdentity(getConfig(), node))).rollupAddress
 }
 
-export function RequestLandingScreen({ node }: { node: AztecNode }) {
+/** 31 random bytes: a valid field, so it can ride in the transfer's request reference. */
+function standingRequestId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(31))
+  return `0x00${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`
+}
+
+/** The request a bare `/pay/<tag>` stands for: any amount, to the tag, on this wallet's network. */
+function standingPacket(tag: string): RequestInlinePacket {
+  return { requestId: standingRequestId(), requesterTag: tag, amountAtomic: 0n, networkId: "" }
+}
+
+/** A standing packet is built here, so only its payee can be wrong. */
+async function standingProblem(payee: Promise<RegistryTagResolution>): Promise<PayProblem | null> {
+  return (await payee).status === "resolved" ? null : "unknownPayee"
+}
+
+export function RequestLandingScreen({
+  node,
+  chainIdentity,
+}: {
+  node: AztecNode
+  chainIdentity?: ChainIdentity
+}) {
   const location = useLocation()
+  const { tag: pathTag } = useParams()
   const fragment = location.hash.replace(/^#/, "")
   // A signed-in payer who chose the Ethereum route on the send sheet comes back here for it.
   const forceExternal = (location.state as { external?: boolean } | null)?.external === true
+  const standing = !fragment && pathTag !== undefined
   const packet = useMemo(() => {
+    // The link is untrusted input and its tag derives the payee's deposit address, which a
+    // different case resolves differently. Fold it once here so every consumer agrees; a tag
+    // that does not survive the fold is a link nothing can be paid to.
+    const payee = pathTag === undefined ? undefined : normalizeTag(pathTag)
+    if (payee === null) return null
+    if (!fragment) return payee ? standingPacket(payee) : null
     try {
       const decoded = decodeRequestInline(fragment)
-      // The link is untrusted input and its tag derives the payee's deposit address, which a
-      // different case resolves differently. Fold it once here so every consumer agrees; a tag
-      // that does not survive the fold is a link nothing can be paid to.
       const requesterTag = normalizeTag(decoded.requesterTag)
-      return requesterTag === null ? null : { ...decoded, requesterTag }
+      // A pay page names one payee; a fragment for another is not its request.
+      if (requesterTag === null || (payee && payee !== requesterTag)) return null
+      return { ...decoded, requesterTag }
     } catch {
       return null
     }
-  }, [fragment])
+  }, [fragment, pathTag])
   // Synchronous branch: stored identity + MSK breadcrumb, no gate needed.
-  const hasIdentity = !!loadOnboardedIdentity()
+  const identity = loadOnboardedIdentity()
+  const hasIdentity = !!identity
 
   if (!packet) {
     return (
@@ -81,34 +131,65 @@ export function RequestLandingScreen({ node }: { node: AztecNode }) {
       </div>
     )
   }
-  return hasIdentity && !forceExternal ? (
-    <SignedInRequest packet={packet} node={node} />
+  // The payee sees their own page as payers do, with a way to share it.
+  const own = !!identity?.handle && normalizeTag(identity.handle) === packet.requesterTag
+  return hasIdentity && !forceExternal && !own ? (
+    <SignedInRequest
+      packet={packet}
+      standing={standing}
+      node={node}
+      chainIdentity={chainIdentity}
+    />
   ) : (
-    <AccountlessRequest key={fragment} packet={packet} node={node} signedIn={hasIdentity} />
+    // Another payee starts afresh: no quote or open sheet carries over from the last one.
+    <AccountlessRequest
+      key={`${packet.requesterTag}#${fragment}`}
+      packet={packet}
+      standing={standing}
+      node={node}
+      chainIdentity={chainIdentity}
+      signedIn={hasIdentity && !own}
+      own={own}
+    />
   )
 }
 
-/** Validate, then hand off to the existing contact send flow with the request in router state. */
-function SignedInRequest({ packet, node }: { packet: RequestInlinePacket; node: AztecNode }) {
+/** Validate, then hand off to the existing contact send flow with the request in router state.
+ *  `standing`: the packet was built here, not read from a link, so only its payee is checked. */
+function SignedInRequest({
+  packet,
+  standing,
+  node,
+  chainIdentity,
+}: {
+  packet: RequestInlinePacket
+  standing: boolean
+  node: AztecNode
+  chainIdentity?: ChainIdentity
+}) {
   const navigate = useNavigate()
-  const { hash } = useLocation()
-  const [problem, setProblem] = useState<RequestLinkProblem | null>(null)
+  const { pathname, hash } = useLocation()
+  const [problem, setProblem] = useState<PayProblem | null>(null)
   const [error, setError] = useState<string>()
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
-        const [rollupAddress, tuple] = await Promise.all([
-          fetchRollupAddress(node),
+        const [rollupAddress, tuple, payeeProblem] = await Promise.all([
+          rollupAddressOf(node, chainIdentity),
           getOxideTuple(getConfig()),
+          standing ? standingProblem(resolveTagForCommit(packet.requesterTag)) : null,
         ])
         if (cancelled) return
-        const found = validateRequestPacket(packet, {
-          rollupAddress,
-          l2Token: tuple.l2Token,
-          requireTokenAddress: false,
-        })
+        const found = standing
+          ? payeeProblem
+          : validateRequestPacket(packet, {
+              rollupAddress,
+              l2Token: tuple.l2Token,
+              requireTokenAddress: false,
+            })
+        if (cancelled) return
         if (found) {
           setProblem(found)
           return
@@ -124,7 +205,7 @@ function SignedInRequest({ packet, node }: { packet: RequestInlinePacket; node: 
               source: "link",
               requesterAddress: packet.requesterAddress,
               note: packet.note,
-              hash,
+              link: `${pathname}${hash}`,
             },
           },
         })
@@ -135,7 +216,7 @@ function SignedInRequest({ packet, node }: { packet: RequestInlinePacket; node: 
     return () => {
       cancelled = true
     }
-  }, [packet, navigate])
+  }, [packet, standing, navigate])
 
   return (
     <div className="ww-flow">
@@ -157,28 +238,42 @@ function SignedInRequest({ packet, node }: { packet: RequestInlinePacket; node: 
 
 type PanelState =
   | { kind: "loading" }
-  | { kind: "problem"; problem: RequestLinkProblem }
+  | { kind: "problem"; problem: PayProblem }
   | { kind: "resolved"; result: AccountlessResolveResult }
   | { kind: "error"; message: string; retryable: boolean }
 
 /** No-account surface: the requested amount over the two ways to pay it. */
 /** `signedIn`: the payer has an account and picked the Ethereum route on the send sheet, so the
- *  signup option and the log-in foot make no sense; the foot offers the send sheet instead. */
+ *  signup option and the log-in foot make no sense; the foot offers the send sheet instead.
+ *  `own`: the payee on their own page; the foot shares it. */
 function AccountlessRequest({
   packet,
+  standing,
   node,
+  chainIdentity,
   signedIn = false,
+  own = false,
 }: {
   packet: RequestInlinePacket
+  standing: boolean
+  own?: boolean
   node: AztecNode
+  chainIdentity?: ChainIdentity
   signedIn?: boolean
 }) {
   const navigate = useNavigate()
-  const { hash } = useLocation()
+  const { pathname, hash } = useLocation()
+  const here = `${pathname}${hash}`
+  const back = useBack("/")
+  const { copied, share } = useLinkSharing(
+    `${window.location.origin}${here}`,
+    `Pay @${packet.requesterTag}`,
+  )
   const [signup, setSignup] = useState(false)
   // "Pay with zk.money" asks first whether an account exists: Log in leads, Create account follows.
   const [receiving, setReceiving] = useState(false)
   const [payOpen, setPayOpen] = useState(false)
+  const { demandBoot } = usePxeBoot()
   const [state, setState] = useState<PanelState>({ kind: "loading" })
   const [attempt, setAttempt] = useState(0)
   // Keep one resolution per packet/attempt, including development effect replay.
@@ -205,27 +300,40 @@ function AccountlessRequest({
       const result = (async (): Promise<PanelState> => {
         try {
           const config = getConfig()
-          const [rollupAddress, tuple] = await Promise.all([
-            fetchRollupAddress(node),
-            getOxideTuple(config),
-          ])
-          const problem = validateRequestPacket(packet, {
-            rollupAddress,
-            l2Token: tuple.l2Token,
-            requireTokenAddress: true,
-          })
-          if (problem) return { kind: "problem", problem }
           const publicClient = createPublicClient({
             chain: config.l1Chain,
             transport: l1Transport(config),
           }) as PublicClient
-          const resolved = await resolveAccountlessRequest(packet, {
-            tuple,
-            publicClient,
-            resolveRequester: resolveTagForCommit,
-            chainId: config.l1ChainId,
-          })
-          return { kind: "resolved", result: resolved }
+          const tupleRead = getOxideTuple(config)
+          // A standing packet's one check is its payee, which the resolve pins too, so both start at
+          // once. A link's checks come first: an expired link must not reach the CCIP resolver.
+          const payee = standing ? resolveTagForCommit(packet.requesterTag) : undefined
+          const resolve = () =>
+            tupleRead.then((tuple) =>
+              resolveAccountlessRequest(packet, {
+                tuple,
+                publicClient,
+                resolveRequester: payee ? () => payee : resolveTagForCommit,
+                chainId: config.l1ChainId,
+                network: config.network,
+              }),
+            )
+          const early = standing ? resolve() : undefined
+          early?.catch(() => {})
+          const [rollupAddress, tuple, payeeProblem] = await Promise.all([
+            rollupAddressOf(node, chainIdentity),
+            tupleRead,
+            payee ? standingProblem(payee) : null,
+          ])
+          const problem = standing
+            ? payeeProblem
+            : validateRequestPacket(packet, {
+                rollupAddress,
+                l2Token: tuple.l2Token,
+                requireTokenAddress: true,
+              })
+          if (problem) return { kind: "problem", problem }
+          return { kind: "resolved", result: await (early ?? resolve()) }
         } catch (e) {
           if (e instanceof RequestDecimalsMismatchError) {
             return { kind: "problem", problem: "wrongToken" }
@@ -239,20 +347,21 @@ function AccountlessRequest({
     }
     // Each effect run observes the shared operation through its own cancellable subscription.
     let cancelled = false
-    setState({ kind: "loading" })
+    // A requote keeps the last quote on screen, so an open pay sheet stays open.
+    setState((s) => (s.kind === "resolved" ? s : { kind: "loading" }))
     void inFlight.current.result.then((next) => {
       if (!cancelled) setState(next)
     })
     return () => {
       cancelled = true
     }
-  }, [packet, attempt])
+  }, [packet, standing, attempt])
 
   const result = state.kind === "resolved" ? state.result : undefined
   // Signup returns here, where the identity branch hands the request to the send flow.
   const startSignup = () => {
     setSignup(true)
-    navigate({ pathname: "/request", hash }, { replace: true, state: { next: `/request${hash}` } })
+    navigate({ pathname, hash }, { replace: true, state: { next: here } })
   }
 
   if (signup) {
@@ -266,12 +375,12 @@ function AccountlessRequest({
   if (receiving) {
     return (
       <InvitationChrome>
-        <div className="ww-invite__content ww-invite__content--landing">
+        <div className="ww-invite__content ww-invite__content--landing ww-invite__content--pay">
           <span className="ww-invite-modal-badge">
-            <Icon name="link" size={32} color="#fff" />
+            <Icon name="arrow-down" size={32} color="#fff" />
           </span>
           <div className="ww-paylink-summary">
-            <span className="ww-paylink-summary__label">Someone requested</span>
+            <span className="ww-paylink-summary__label">Pay @{packet.requesterTag}</span>
             <span className="ww-paylink-summary__amount">
               {amountDisplay ? usdBalance(amountDisplay) : "Any amount"}
             </span>
@@ -280,7 +389,7 @@ function AccountlessRequest({
           <div className="ww-claim-modal__actions">
             <PrimaryGradientButton
               title="Log in"
-              onClick={() => navigate("/enter", { state: { next: `/request${hash}` } })}
+              onClick={() => navigate("/enter", { state: { next: here } })}
             />
             <PrimaryGradientButton
               title="Create account"
@@ -305,6 +414,7 @@ function AccountlessRequest({
   const externalCaption = () => {
     if (state.kind === "error") return "Couldn't prepare a payment address."
     if (!result) return "Preparing a payment address…"
+    if (result.deployment === "expired") return "This link has expired."
     return packet.amountAtomic > 0n
       ? `Pay ${usdFigure(
           formatUnits(result.grossAtomic, result.decimals),
@@ -314,12 +424,17 @@ function AccountlessRequest({
 
   return (
     <InvitationChrome>
-      <div className="ww-invite__content ww-invite__content--landing">
+      <div className="ww-invite__content ww-invite__content--landing ww-invite__content--pay">
+        {own && (
+          <span className="ww-invite__back">
+            <TopNavIconButton icon="arrow-left" ariaLabel="Back" onClick={back} />
+          </span>
+        )}
         <span className="ww-invite-modal-badge">
-          <Icon name="link" size={32} color="#fff" />
+          <Icon name="arrow-down" size={32} color="#fff" />
         </span>
         <div className="ww-paylink-summary">
-          <span className="ww-paylink-summary__label">Someone requested</span>
+          <span className="ww-paylink-summary__label">Pay @{packet.requesterTag}</span>
           <span className="ww-paylink-summary__amount">
             {amountDisplay ? usdBalance(amountDisplay) : "Any amount"}
           </span>
@@ -338,14 +453,18 @@ function AccountlessRequest({
               </p>
             )}
             <p className="ww-paylink-summary__caption">
-              {signedIn ? "Pay with an Ethereum wallet" : "Choose a method to pay"}
+              {signedIn ? "Pay with an Ethereum wallet" : "Choose how to pay"}
             </p>
             <div className="ww-paymethods">
               {!signedIn && (
                 <button
                   type="button"
                   className="zkm-btn-reset zkm-pressable ww-deposit__connect ww-paymethod ww-paymethod--best"
-                  onClick={() => setReceiving(true)}
+                  onClick={() => {
+                    // Both ways on from here need the PXE.
+                    demandBoot()
+                    setReceiving(true)
+                  }}
                 >
                   <span className="ww-paymethod__flag">
                     <span>Free</span>
@@ -355,7 +474,7 @@ function AccountlessRequest({
                   </span>
                   <span className="ww-deposit__connect-text">
                     <b>Pay with zk.money</b>
-                    <span>No fee and your balance stays private.</span>
+                    <span>No fee. Your payment stays private.</span>
                   </span>
                   <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
                 </button>
@@ -398,25 +517,37 @@ function AccountlessRequest({
           </>
         )}
 
-        {signedIn ? (
+        {own ? (
+          <>
+            <p className="ww-invite-modal-foot">
+              This is a preview of your pay page. Share it to get paid.
+            </p>
+            <PrimaryGradientButton
+              title={copied ? "Copied" : "Share link"}
+              leadingIcon="share"
+              buttonStyle="dark"
+              onClick={() => void share()}
+            />
+          </>
+        ) : signedIn ? (
           <p className="ww-invite-modal-foot">
             {/* Dropping the route flag re-enters the identity branch, which hands the request back
                 to the send sheet with its state rebuilt from the packet. */}
             <button
               type="button"
               className="zkm-btn-reset ww-invite__link"
-              onClick={() => navigate({ pathname: "/request", hash }, { replace: true })}
+              onClick={() => navigate({ pathname, hash }, { replace: true })}
             >
               Pay with zk.money instead
             </button>
           </p>
         ) : (
           <p className="ww-invite-modal-foot">
-            Already have an account?{" "}
+            Already have zk.money?{" "}
             <button
               type="button"
               className="zkm-btn-reset ww-invite__link"
-              onClick={() => navigate("/enter", { state: { next: `/request${hash}` } })}
+              onClick={() => navigate("/enter", { state: { next: here } })}
             >
               Log in
             </button>
@@ -425,7 +556,12 @@ function AccountlessRequest({
       </div>
 
       {payOpen && result && (
-        <ExternalWalletPayModal packet={packet} result={result} onClose={() => setPayOpen(false)} />
+        <ExternalWalletPayModal
+          packet={packet}
+          result={result}
+          onClose={() => setPayOpen(false)}
+          onFeeChanged={() => setAttempt((n) => n + 1)}
+        />
       )}
     </InvitationChrome>
   )

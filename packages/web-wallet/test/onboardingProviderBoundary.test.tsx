@@ -47,7 +47,6 @@ vi.mock("../src/config/env", async (importOriginal) => ({
     l1RpcUrl: "http://127.0.0.1:8545",
     accountServiceUrl: "http://127.0.0.1:5060",
     accountServiceTestMode: false,
-    admissionGate: false,
     campaignUrl: "",
     rpId: "localhost",
     rpName: "zk.money",
@@ -79,6 +78,7 @@ vi.mock("../src/ui/screening", () => ({
 }))
 vi.mock("../src/lib/analytics", () => ({
   fireEvent: h.fireEvent,
+  fireOnboardingEvent: h.fireEvent,
   lapTimer: () => () => 0,
   failureCode: () => "err",
 }))
@@ -200,7 +200,10 @@ const render = (path: string, element: ReactNode) =>
     )
   })
 
-const wizardShown = () => container.querySelector("input[placeholder]") !== null
+/** The tag field, or the tag-less landing a fresh visitor gets. */
+const wizardShown = () =>
+  container.querySelector("input[placeholder]") !== null ||
+  (container.textContent ?? "").includes("Get started")
 const crash = () => container.querySelector('[data-testid="crash"]')?.textContent ?? null
 
 describe("the signup wizard outside the asset layer", () => {

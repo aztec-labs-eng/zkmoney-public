@@ -1,7 +1,9 @@
 import type { PrfSlot } from "@obsidion/core/types"
 import type { PasskeyAttachment, PasskeyHint } from "../ceremony/passkeyCeremony.js"
 import type { DevicePosture } from "./devicePosture.js"
+import type { LocalManager } from "./laptopCreation.js"
 import {
+  LaptopPasskeyRefusedError,
   LocalPasskeyRequiredError,
   PhoneRequiredError,
   SecurityKeyRequiredError,
@@ -58,12 +60,20 @@ export function impliedKeyTransports(evidence: {
 }
 
 /**
- * The class a creation must be answered by. A laptop is always sent to another device. A phone
- * keeps its own passkey, unless a security key answered — hardware held against the phone is not
- * the delegation to another phone the rule exists to prevent.
+ * The class a creation must be answered by. A laptop is sent to another device, unless the
+ * consumer opened the laptop's own route (`local`), where only its own passkey will do. A phone
+ * keeps its own passkey. A security key answering anywhere is held to what it is — hardware held
+ * against the phone is not the delegation to another phone the rule exists to prevent.
  */
-const expectedAtCreation = (posture: DevicePosture, securityKey: boolean): PasskeyAttachment =>
-  posture === "laptop" || securityKey ? "cross-platform" : "platform"
+const expectedAtCreation = (
+  posture: DevicePosture,
+  securityKey: boolean,
+  local: boolean,
+): PasskeyAttachment => {
+  if (securityKey) return "cross-platform"
+  if (posture !== "laptop") return "platform"
+  return local ? "platform" : "cross-platform"
+}
 
 /**
  * The route rule for a creation, applied to the create response and again to the chained assertion
@@ -76,18 +86,29 @@ const expectedAtCreation = (posture: DevicePosture, securityKey: boolean): Passk
  *
  * `providerName` is what answered, for a laptop refusal to name; it is dropped unless the browser
  * reported this device, since an unreported answer says nothing about where the passkey went.
+ * `localManagers` marks the laptop's own route and names the managers its refusals offer: there a
+ * `cross-platform` answer that is not a key can only be an extension relabelling an in-page
+ * answer, whose salts were never hashed by the browser.
  */
 export function checkCreationRoute(
   posture: DevicePosture,
   attachment: PasskeyAttachment | undefined,
   securityKey: boolean,
   providerName?: string,
+  localManagers?: readonly LocalManager[],
 ): void {
-  if (attachment === expectedAtCreation(posture, securityKey)) return
+  const local = localManagers !== undefined
+  if (attachment === expectedAtCreation(posture, securityKey, local)) return
   // Each refusal names the device this ceremony was already using: the key it started on, this
-  // phone's own passkey, or the phone a laptop is waiting for.
+  // phone's own passkey, the phone a laptop is waiting for, or the managers its own route admits.
   if (securityKey) throw new SecurityKeyRequiredError()
   if (posture === "phone") throw new LocalPasskeyRequiredError()
+  if (localManagers) {
+    if (attachment === "cross-platform") {
+      throw new LaptopPasskeyRefusedError("not-local", localManagers)
+    }
+    throw new PhoneRequiredError({ localManagers })
+  }
   throw new PhoneRequiredError({
     ceremony: "create",
     providerName: attachment === "platform" ? providerName : undefined,
@@ -109,22 +130,27 @@ export function checkAssertionRoute(
 }
 
 /**
- * The class a creation asks the browser for. A laptop asks for another device outright. A phone
- * asks for nothing, so its sheet can offer both its own passkey and a security key; the route
- * check above is what holds the answer to one of those two.
+ * The class a creation asks the browser for. A laptop asks for another device outright, or for
+ * its own on the local route. A phone asks for nothing, so its sheet can offer both its own
+ * passkey and a security key; the route check above is what holds the answer to one of those two.
  */
-export const requestedAttachment = (posture: DevicePosture): PasskeyAttachment | undefined =>
-  posture === "laptop" ? "cross-platform" : undefined
+export const requestedAttachment = (
+  posture: DevicePosture,
+  local = false,
+): PasskeyAttachment | undefined => {
+  if (posture !== "laptop") return undefined
+  return local ? "platform" : "cross-platform"
+}
 
 const LAPTOP_CREATION_WAIT_MS = 300_000
 
 /**
- * The timeout a creation request names. A laptop gets five minutes: fetching a phone, scanning the
- * QR code and unlocking it outlasts the ceremony's default. A phone names none and keeps that
- * default.
+ * The timeout a creation request names. A laptop sending the user to a phone gets five minutes:
+ * fetching it, scanning the QR code and unlocking it outlasts the ceremony's default. A phone, and
+ * a laptop creating on its own manager, name none and keep that default.
  */
-export const creationTimeoutMs = (posture: DevicePosture): number | undefined =>
-  posture === "laptop" ? LAPTOP_CREATION_WAIT_MS : undefined
+export const creationTimeoutMs = (posture: DevicePosture, local = false): number | undefined =>
+  posture === "laptop" && !local ? LAPTOP_CREATION_WAIT_MS : undefined
 
 /** The device's own authenticator, as a transport list names it. */
 const LOCAL_TRANSPORT = "internal"
@@ -171,29 +197,33 @@ const PHONE_CREATION_HINTS: readonly PasskeyHint[] = ["client-device", "security
 const LAPTOP_CREATION_HINTS: readonly PasskeyHint[] = ["hybrid", "security-key"]
 
 /**
+ * Steering when the device's own copy IS the route: open the sheet on this computer. No security
+ * key is named, so a password manager answers for its own passkey; a sign-in names one beside it
+ * only for a credential the consumer knows to be a hardware key.
+ */
+export const LAPTOP_LOCAL_HINTS: readonly PasskeyHint[] = ["client-device"]
+
+/**
  * Steering for a creation. A laptop leads with the route its consumer names, the phone when it
- * names none, and always names a security key; `null` sends nothing. A phone names its own passkey
+ * names none, and always names a security key; on its own route (`local`) it sends the consumer's
+ * hints as given, the local steering when it names none, and never a security key, which would
+ * hide the very manager the route asks for. `null` sends nothing. A phone names its own passkey
  * and a security key — the two classes the route rule admits — and never `hybrid`, which it would
  * refuse. Steering is advisory: the route rule is what enforces this.
  */
 export function creationHintsFor(
   posture: DevicePosture,
   laptopHints?: readonly PasskeyHint[] | null,
+  local = false,
 ): readonly PasskeyHint[] | undefined {
   if (posture !== "laptop") return PHONE_CREATION_HINTS
   if (laptopHints === null) return undefined
+  if (local) return laptopHints?.length ? laptopHints : LAPTOP_LOCAL_HINTS
   return laptopHints?.length ? namingSecurityKey(laptopHints) : LAPTOP_CREATION_HINTS
 }
 
 /** The two routes a laptop sign-in accepts when the device's own copy is not admitted. */
 const LAPTOP_SIGN_IN_HINTS: readonly PasskeyHint[] = ["hybrid", "security-key"]
-
-/**
- * Steering when the device's own copy IS admitted: open the sheet on this computer. No security key
- * is named, so a password manager's browser extension answers for a synced passkey; one is named
- * beside it only for a credential the consumer knows to be a hardware key.
- */
-const LAPTOP_LOCAL_HINTS: readonly PasskeyHint[] = ["client-device"]
 
 /**
  * Steering for a sign-in. Without `localAllowed` a laptop names the two cross-device routes it

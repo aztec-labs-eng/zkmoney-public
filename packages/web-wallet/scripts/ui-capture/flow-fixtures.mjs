@@ -29,9 +29,7 @@ export function flowFixturePlugin(walletDir) {
     "features/allowance/useSponsoredAllowance.ts",
     "features/contacts/ContactPayScreen.tsx",
     "features/onboarding/OnboardingScreen.tsx",
-    "features/receive/RequestContactModal.tsx",
-    "features/receive/RequestPaylinkModal.tsx",
-    "features/requests/NewRequestLinkScreen.tsx",
+    "features/receive/useReceiveCode.ts",
     "features/paylink/usePaylinkDeps.ts",
     "features/paylink/LinkViewScreen.tsx",
     "features/withdraw/WithdrawToWalletModal.tsx",
@@ -49,19 +47,16 @@ export function flowFixturePlugin(walletDir) {
       }
       const owner = importer.split("?")[0]
       if (source === "@obsidion/front-core" && contextConsumers.has(owner)) {
-        return path.join(fixtures, owner.endsWith("/features/requests/NewRequestLinkScreen.tsx") ? "request-readiness.ts" : "contexts.ts")
+        return path.join(fixtures, "contexts.ts")
       }
-      // The request landing reads its rollup through the node App builds.
       // The registration funding panel reads a recorded SIPA's terms from the processing observer's source.
       if (source === "@obsidion/sdk" && owner === path.join(walletDir, "src/features/deposit/addressCapacity.ts")) {
         return path.join(fixtures, "sipa-terms.ts")
       }
-      if (source === "@obsidion/sdk" && owner === path.join(walletDir, "src/App.tsx")) {
-        return path.join(fixtures, "request-node.ts")
-      }
       const resolved = await this.resolve(source, importer, { skipSelf: true })
-      if (owner.endsWith("/features/requests/NewRequestLinkScreen.tsx") && resolved?.id === path.join(walletDir, "src/features/onboarding/webRegistration.ts")) {
-        return path.join(fixtures, "request-readiness.ts")
+      // The pay page reads its rollup through the boot's identity check.
+      if (owner === path.join(walletDir, "src/features/requests/RequestLandingScreen.tsx") && resolved?.id === path.join(walletDir, "src/ui/PxeBoot.tsx")) {
+        return path.join(fixtures, "request-identity.ts")
       }
       return resolved ? modules.get(resolved.id.split("?")[0]) ?? null : null
     },

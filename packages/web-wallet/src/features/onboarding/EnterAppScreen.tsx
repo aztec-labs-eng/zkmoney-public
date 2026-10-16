@@ -19,6 +19,9 @@ import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
 import {
   NoWalletForPasskeyError,
   currentDevicePosture,
+  currentUserAgentInfoSync,
+  type ExtensionAdvice,
+  extensionAnswersPasskeys,
   inAppBrowserRefusal,
   isPasskeyPolicyError,
   type PasskeyAttemptHandle,
@@ -29,14 +32,11 @@ import { getActiveStorageId } from "../../platform/storage/activeStorage"
 import { EndpointsModal } from "../../ui/EndpointsModal"
 import { useHoldEndpoints } from "../../ui/endpointsHold"
 import { useAsyncAction, useNextRoute } from "../../ui/hooks"
-import { checkAdmission, type AdmissionCheck } from "../identity/admission"
-import { campaignSignedOutUrl } from "../identity/campaignReturn"
 import { type CeremonyGate, isGateCancelled, useCeremonyGate } from "../identity/ceremonyGate"
 import { InAppBrowserNotice } from "../identity/InAppBrowserNotice"
 import { walletInAppUpFront } from "../identity/inAppUpFront"
 import { IosFloorNotice } from "../identity/IosFloorNotice"
 import {
-  ADMISSION_UNAVAILABLE,
   DIFFERENT_PASSKEY,
   GRANTED_REGISTRATION,
   INCONCLUSIVE,
@@ -47,7 +47,6 @@ import {
   PASSKEY_NOT_ON_DEVICE,
   PasskeyRefusal,
   isPasskeyNotOffered,
-  QUEUED_REGISTRATION,
   REGISTRY_UNANCHORED,
   RESERVED_REGISTRATION,
   STORED_ADDRESS_MISMATCH,
@@ -55,16 +54,16 @@ import {
   type RouteRefusal,
 } from "../identity/PasskeyRefusal"
 import { GateStep } from "../identity/PhoneSteps"
-import { oweCampaignClaimNotice } from "../identity/campaignClaimNotice"
 import { saveWalletIdentity } from "../identity/walletIdentity"
-import { mismatchVerdictOf } from "../../platform/auth/WebAlphaAuthService"
+import { mismatchVerdictOf, type Observation } from "../../platform/auth/WebAlphaAuthService"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 import {
+  listRetiredUsertagCandidates,
   listUsertagCandidates,
   usertagFor,
   type RememberedAccount,
 } from "../../platform/auth/WebPasskeyIdentityMap"
-import { resolveTagViaRegistry } from "../contacts/registryResolution"
+import { resolveSignInTag } from "../contacts/registryResolution"
 import { peekClaimStash } from "../paylink/claimStash"
 import { hasConnectStash } from "../contacts/connectReceive"
 import {
@@ -88,14 +87,15 @@ import {
   type EnteredClaim,
   type EnterResult,
 } from "./oxideOnboarding"
-import { openActivationPrompt } from "./activationPrompt"
 import { boundNameGrantOwner, reservedNameHashes } from "./recoveryProbes"
+import { confirmRegistrationTag } from "./openRegistration"
+import { getPendingStore } from "./webRegistration"
 import { probeNameAvailability } from "./nameAvailability"
 import { saveRegistrationTerms } from "./registrationTerms"
 import { InvitationChrome } from "./InvitationChrome"
 import { OnboardingSpinnerBody } from "./OnboardingCard"
 import { ConfirmTagModal, type ByTagNotice } from "./steps/ConfirmTagModal"
-import { InvitationStep } from "./steps/InvitationStep"
+import { CreateWalletStep } from "./steps/CreateWalletStep"
 
 /** The tag's passkey as L1 or this browser's record names it, held until a tap pins it. */
 type Found = {
@@ -119,16 +119,13 @@ type Entry = {
   moreKeys?: boolean
 }
 
-/** The campaign's answer for a nameless account, once the caller's operation is still running. */
-type CampaignAnswer = Exclude<AdmissionCheck, { status: "cancelled" }>
-
 /** What the refusal card's retry re-runs: whichever action ran last. */
 type LastAction =
   | { kind: "probe" }
   | { kind: "enter" }
   | ({ kind: "pinned" } & Found)
   | { kind: "bound-grant"; result: Unclaimed; entry: Omit<Entry, "op"> }
-  | { kind: "nameless"; result: Unclaimed; entry: Omit<Entry, "op">; check: CampaignAnswer }
+  | { kind: "nameless"; result: Unclaimed; entry: Omit<Entry, "op"> }
 
 /**
  * `committed` marks a refusal raised after an account was committed and its signup may hold a tag,
@@ -160,6 +157,21 @@ const NO_RETRY = new Set<string>([
   INCONCLUSIVE,
   NO_PASSKEY_RECORDED,
 ])
+
+/**
+ * A Windows sign-in refused for want of key material, where this computer answered, gets the
+ * 1Password advice: its Windows app returns none, its browser extension does. A sign-in cannot
+ * name what answered, so the line is advice beside the refusal; its wording follows whether an
+ * extension answers the page's sign-ins.
+ */
+function extensionAdviceFor(e: {
+  name: string
+  observed?: Observation
+}): ExtensionAdvice | undefined {
+  if (e.name !== "NoPrfError" || e.observed?.attachment !== "platform") return undefined
+  if (currentUserAgentInfoSync().osFamily !== "windows") return undefined
+  return extensionAnswersPasskeys("get") ? "use" : "install"
+}
 
 /** The card each tag-diagnosis verdict shows. The chain marks no root, so it never asserts divergence. */
 function missDiagnosisCard(diagnosis: MissDiagnosis, tag: string): Refusal | undefined {
@@ -271,6 +283,8 @@ export function EnterAppScreen() {
   // inside the wallet counts: as a URL the destination is anyone's to write.
   const next = walletPath(useNextRoute() ?? params.get("next") ?? undefined)
   const handle = normalizeTag(params.get("handle") ?? "") ?? ""
+  /** The passkey's own name, carried over a reload; it names a reservation but never fills the field. */
+  const passkeyName = params.get("named") ?? undefined
   const boundGrantToken = handle && params.get("bound") === "1" ? nameGrantToken(handle) : undefined
   // `strict=1`: a by-tag entry reloaded after switching accounts; only the URL's tag names the claim.
   const strict = params.get("strict") === "1"
@@ -325,11 +339,29 @@ export function EnterAppScreen() {
   const prepareGen = useRef(0)
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
+  // The accounts this browser remembers on earlier rollups, read once the screen shows. They follow
+  // this rollup's own, which win a duplicate.
+  const [retired, setRetired] = useState<RememberedAccount[]>([])
+  useEffect(() => {
+    if (!start) return
+    let cancelled = false
+    void listRetiredUsertagCandidates(config.rpId)
+      .then((found) => !cancelled && setRetired(found))
+      .catch((error) => console.warn("[sign-in] earlier rollups' accounts unread:", error))
+    return () => {
+      cancelled = true
+    }
+  }, [config.rpId, start])
   // The accounts this browser remembers, re-read whenever the screen shows.
   const candidates = useMemo(
-    () => listUsertagCandidates(config.rpId).filter((c) => c.credentialId !== avoid),
+    () => {
+      const seen = new Set<string>()
+      return [...listUsertagCandidates(config.rpId), ...retired].filter(
+        (c) => c.credentialId !== avoid && !seen.has(c.credentialId) && !!seen.add(c.credentialId),
+      )
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [config.rpId, avoid, start],
+    [config.rpId, avoid, start, retired],
   )
 
   // The running action. Starting another aborts it; so do the user's cancel and unmount. Every
@@ -372,7 +404,7 @@ export function EnterAppScreen() {
   // A refusal is not an error to report, but it is a failed entry for the funnel.
   const refuse = (e: Error, action: Entry["action"] = "enter") => {
     fireEvent("action_failed", { action, code: failureCode(e) })
-    setRefusal({ name: e.name, message: e.message })
+    setRefusal({ name: e.name, message: e.message, extensionAdvice: extensionAdviceFor(e) })
   }
   const failByTag = (outcome: keyof typeof BY_TAG_FAILURE_CODES) =>
     fireEvent("action_failed", { action: "enter:by-tag", code: BY_TAG_FAILURE_CODES[outcome] })
@@ -388,12 +420,6 @@ export function EnterAppScreen() {
   // the event as the search string.
   const toClaim = () => claimRoute("")
 
-  // The waitlist reports a position when it has one, and the wording only names it then.
-  const queuedMessage = (position: number | null) =>
-    `This passkey signed up and your tag is held for you${
-      position === null ? "" : `. You're number ${position.toLocaleString()} in line`
-    }. Pick it back up below to deposit and skip the queue.`
-
   // The account active when this screen opened.
   const previousStorageId = useRef(getActiveStorageId())
   // The account changed while this screen was open, or a commit on this page (possibly before it
@@ -408,7 +434,7 @@ export function EnterAppScreen() {
    * does not, so the reloaded document opens from the cached key instead of asking for another
    * passkey.
    */
-  const enterAgain = (entry: { tag: string; strict: boolean }) => {
+  const enterAgain = (entry: { tag: string; strict: boolean; named?: string }) => {
     const carried = new URLSearchParams(params)
     carried.delete("choose")
     carried.delete("avoid")
@@ -417,6 +443,8 @@ export function EnterAppScreen() {
     else carried.delete("handle")
     if (entry.strict) carried.set("strict", "1")
     else carried.delete("strict")
+    if (entry.named) carried.set("named", entry.named)
+    else carried.delete("named")
     if (next) carried.set("next", next)
     const query = carried.toString()
     return query ? `/enter?${query}` : "/enter"
@@ -428,10 +456,10 @@ export function EnterAppScreen() {
    * that is known — before anything reads a record, and whether the attempt settled, was cancelled
    * or failed after the commit. True when the document is going.
    */
-  const reloadIfSwitched = (entry: Pick<Entry, "tag" | "action">): boolean => {
+  const reloadIfSwitched = (entry: Pick<Entry, "tag" | "action">, named?: string): boolean => {
     if (!storesStale()) return false
     const hinted = entry.action === "enter:by-tag"
-    void leavePage(enterAgain({ tag: entry.tag, strict: hinted || strict }))
+    void leavePage(enterAgain({ tag: entry.tag, strict: hinted || strict, named }))
     return true
   }
 
@@ -447,8 +475,6 @@ export function EnterAppScreen() {
     setObsidionAccount(account)
     await saveWalletIdentity({ ...entered, claimedAt: Date.now() }, live)
     if (!live()) return
-    // The name was read from the Registry, so the campaign may stop reminding it.
-    void oweCampaignClaimNotice({ l2Address: entered.address, tag: entered.handle })
     // Replace: onboarding panes must never be back targets once in the wallet (useBack pops history).
     // A stashed inbound paylink claims on Home (ClaimLinkModal), not back on /link's split layout.
     navigate(peekClaimStash() ? "/" : next ?? "/", { replace: true })
@@ -466,7 +492,7 @@ export function EnterAppScreen() {
   /**
    * The signup a reservation names, picked back up where the sign-in landed: the claim server
    * replays the claim and re-signs the same terms, so the record derives the address any deposit
-   * already went to, and the wallet opens on its activation sheet the way the signup would have. A
+   * already went to, and the wallet opens on the deposit screen the way the signup would have. A
    * claim that cannot be replayed leaves the card whose way on is the signup itself.
    */
   const resumeClaim = async (result: Unclaimed, tag: string, entry: Entry) => {
@@ -492,12 +518,13 @@ export function EnterAppScreen() {
         ticket: null,
       }),
     )
-    // The activation sheet this opens shows the address and owes its broadcast.
+    // The reservation is the tag the signup settled on; this browser just never saw it confirmed.
+    const record = getPendingStore().get(outcome.oxideAccount)
+    if (record) confirmRegistrationTag(record)
     if (!live()) return
     setObsidionAccount(result.account)
     await saveWalletIdentity({ handle: tag, address, claimedAt: Date.now(), pending: true }, live)
     if (!live()) return
-    openActivationPrompt()
     navigate(peekClaimStash() ? "/" : next ?? "/", { replace: true })
   }
 
@@ -506,40 +533,37 @@ export function EnterAppScreen() {
    * naming it — the attempt's own, the name the passkey carries, or the one the user confirms.
    * False when it holds none, for the caller's usual outcome.
    */
-  const resumeReservation = async (
-    result: Unclaimed,
-    entry: Entry,
-    check: CampaignAnswer,
-    mayConfirm: boolean,
-  ): Promise<boolean> => {
+  const resumeReservation = async (result: Unclaimed, entry: Entry): Promise<boolean> => {
+    // In test mode a key has its own way on, so only a reservation the attempt or passkey names resumes.
+    const mayConfirm = !config.accountServiceTestMode
     let nameHashes: Hex[]
     try {
       nameHashes = await reservedNameHashes(result.bootstrap)
     } catch (e) {
       if (entry.op.signal.aborted) return true
-      // Ungated, the lookup is the way in, so its failure is the committed error with a retry.
-      // Gated, the campaign's verdict stands, so a lookup that cannot answer yields to it.
+      // The lookup is the way in, so its failure is the committed error with a retry.
       if (!mayConfirm) return false
       const { tag, action, l2Address } = entry
-      lastAction.current = { kind: "nameless", result, entry: { tag, action, l2Address }, check }
+      lastAction.current = { kind: "nameless", result, entry: { tag, action, l2Address } }
       setRefusal({ name: "error", message: NETWORK_MESSAGE, committed: true })
       throw e
     }
     if (entry.op.signal.aborted) return true
     if (nameHashes.length === 0) return false
-    // The attempt's own tag, then the name the passkey carries: each names the reservation only
-    // where it hashes to one the ledger holds, so an attempt tag that hashes to none still yields
-    // to the passkey's own name rather than burying it.
+    // The attempt's own tag, the tag this browser remembers, then the name the passkey carries: each
+    // names the reservation only where it hashes to one the ledger holds, so a tag that hashes to
+    // none still yields to the next rather than burying it.
+    const carried = result.userHandle ?? passkeyName
     const matched =
       (entry.tag && reservedTagMatch(nameHashes, result.ensDomain, entry.tag)) ||
-      (result.userHandle && reservedTagMatch(nameHashes, result.ensDomain, result.userHandle)) ||
+      (result.usertag && reservedTagMatch(nameHashes, result.ensDomain, result.usertag)) ||
+      (carried && reservedTagMatch(nameHashes, result.ensDomain, carried)) ||
       null
     if (matched) {
       await resumeClaim(result, matched, entry)
       return true
     }
-    // A held reservation nothing named: only the ungated path asks the user to type it, where the
-    // lookup names exactly one account. Elsewhere the caller's verdict stands.
+    // A held reservation nothing named: the user types it, since the lookup names exactly one account.
     if (!mayConfirm) return false
     claimRef.current = undefined
     accountRef.current = undefined
@@ -554,29 +578,10 @@ export function EnterAppScreen() {
     return true
   }
 
-  /** A nameless account's way on, once the campaign has answered. */
-  const settleNameless = async (result: Unclaimed, entry: Entry, check: CampaignAnswer) => {
-    // A reservation the passkey's own name (or the attempt's tag) hashes to is this user's own
-    // signup: reopen the wallet on it, whatever the campaign or test mode would say. Only the
-    // typed-tag fallback stays gated to the ungated path, where the lookup names one account; a key
-    // the campaign or test mode admits has its own way on for a reservation nothing named.
-    const campaignDecides = config.admissionGate && check.status !== "unknown"
-    const mayConfirm = !campaignDecides && !config.accountServiceTestMode
-    if (await resumeReservation(result, entry, check, mayConfirm)) return
-    if (check.status === "unknown") {
-      // A key the waitlist has never seen: an ordinary signup, not a resumption.
-      toClaim()
-    } else if (check.status === "unavailable") {
-      setRefusal({ name: ADMISSION_UNAVAILABLE, message: "" })
-    } else {
-      // Through the queue or still in it: either way a tag is held, and the exit picks that
-      // reservation back up rather than starting a signup from nothing.
-      setRefusal(
-        check.status === "granted"
-          ? { name: GRANTED_REGISTRATION, message: "" }
-          : { name: QUEUED_REGISTRATION, message: queuedMessage(check.queuePosition) },
-      )
-    }
+  /** A nameless account's way on: its reservation, else the signup it continues. */
+  const settleNameless = async (result: Unclaimed, entry: Entry) => {
+    if (await resumeReservation(result, entry)) return
+    setRefusal({ name: GRANTED_REGISTRATION, message: "" })
   }
 
   /**
@@ -641,7 +646,7 @@ export function EnterAppScreen() {
     }
     const gen = resolveGen.current
     setResolving(true)
-    void lookupPasskeyByTag(tag, { resolveTag: resolveTagViaRegistry }).then(
+    void lookupPasskeyByTag(tag, { resolveTag: resolveSignInTag }).then(
       (read) => {
         if (gen !== resolveGen.current) return
         if (read.kind !== "notFound") setResolving(false)
@@ -732,13 +737,10 @@ export function EnterAppScreen() {
   /** The branches every sign-in result takes, whichever prompt produced it. */
   const settle = async (result: EnterResult, entry: Entry) => {
     // A reserved recovery commits and reloads to shed record stores this document already read
-    // stale; the passkey's own name rides that reload as the tag, so the re-entry (recovered from
-    // the cache, which carries no name) still names the held reservation.
-    const reloadEntry =
-      !result.entered && result.reason === "unclaimed" && !entry.tag && result.userHandle
-        ? { ...entry, tag: result.userHandle }
-        : entry
-    if (reloadIfSwitched(reloadEntry)) return
+    // stale; the passkey's own name rides that reload, so the re-entry (recovered from the cache,
+    // which carries no name) still names the held reservation.
+    const named = !result.entered && result.reason === "unclaimed" ? result.userHandle : undefined
+    if (reloadIfSwitched(entry, named)) return
     const live = () => !entry.op.signal.aborted
     // An entry is committed by the time it is reported; the identity save and the move into the
     // wallet are still the attempt's, and stop at its cancel.
@@ -784,6 +786,12 @@ export function EnterAppScreen() {
       // A cancel during the diagnosis ends here: neither card is the cancelled attempt's to show.
       const diagnosed = await diagnosedMiss(result, entry, live)
       if (diagnosed || !live()) return
+      // An incomplete catalog proves no account absent: a retry, never "no wallet".
+      if (result.catalogIncomplete) {
+        fireEvent("action_failed", { action: entry.action, code: "unknown" })
+        setRefusal({ name: "error", message: NETWORK_MESSAGE })
+        return
+      }
       refuse(new NoWalletForPasskeyError(), entry.action)
     } else if (result.reason === "confirm") {
       claimRef.current = result.claim
@@ -820,17 +828,8 @@ export function EnterAppScreen() {
         return
       }
       // A recovered account with no name has nothing to open — every route that moves money sits
-      // behind a registered name — so the way on is always the signup. The waitlist is asked to
-      // decide which of these is true, not whether to admit anyone, which is also why nothing
-      // here reads which probe recognized the key.
-      const check = await checkAdmission(
-        result.bootstrap,
-        result.account.getAddress().toString(),
-        "enter",
-        live,
-      )
-      if (!live() || check.status === "cancelled") return
-      await settleNameless(result, entry, check)
+      // behind a registered name — so the way on is always the signup.
+      await settleNameless(result, entry)
     }
   }
 
@@ -1045,16 +1044,12 @@ export function EnterAppScreen() {
 
   /**
    * A committed account's way on again, after its reservation lookup failed: no passkey prompt (the
-   * sign-in's chooser flag would ask again) and no second campaign verify.
+   * sign-in's chooser flag would ask again).
    */
   const settleNamelessAgain = (last: Extract<LastAction, { kind: "nameless" }>) => {
     const op = startOp()
     setRefusal(undefined)
-    void run(
-      () => settleNameless(last.result, { ...last.entry, op }, last.check),
-      last.entry.action,
-      "enter",
-    )
+    void run(() => settleNameless(last.result, { ...last.entry, op }), last.entry.action, "enter")
   }
 
   const retryBoundGrant = (last: Extract<LastAction, { kind: "bound-grant" }>) => {
@@ -1149,14 +1144,10 @@ export function EnterAppScreen() {
     abortOp()
     cancelGate()
     dropResolve()
-    // A visitor who came from a link goes back to it; otherwise back where the sign-in was opened
-    // from, signed out of the campaign too: a cancelled sign-in that leaves the campaign's own
-    // session standing is what strands people half in.
+    // A visitor who came from a link goes back to it; otherwise back where the sign-in was opened from.
     const stashed = peekClaimStash()
-    const leaving = campaignSignedOutUrl()
     if (stashed) navigate(`/link#${stashed}`, { replace: true })
     else if (next) navigate(next, { replace: true })
-    else if (leaving) void leavePage(leaving)
     else toClaim()
   }
   // The same for a committed account whose signup may hold a tag, where the signup picks it back up.
@@ -1193,7 +1184,7 @@ export function EnterAppScreen() {
 
   // These two cards leave for a signup already begun rather than a new one: the tag is reserved
   // under this account's own key, and the claim server settles that when it is submitted.
-  const resuming = refusal?.name === QUEUED_REGISTRATION || refusal?.name === GRANTED_REGISTRATION
+  const resuming = refusal?.name === GRANTED_REGISTRATION
 
   // The spinner and the security-key step: a sign-in is running.
   useHoldEndpoints(!confirming && !refusal && (gateState.kind === "awaiting-action" || !start))
@@ -1213,7 +1204,7 @@ export function EnterAppScreen() {
     // where the user tries again instead.
     const retryable = refusal.probeCommitted || refusal.committed || !NO_RETRY.has(refusal.name)
     return (
-      <InvitationChrome>
+      <InvitationChrome landing>
         <div className="ww-passkey-sheet">
           <IosFloorNotice />
           <PasskeyRefusal
@@ -1261,9 +1252,13 @@ export function EnterAppScreen() {
     )
   }
 
+  // The landing card the visitor came from stays behind the sign-in modals.
+  const backdrop = (
+    <CreateWalletStep busy={false} onCreate={() => {}} onLogIn={() => {}} onCancel={() => {}} />
+  )
   if (gateState.kind === "awaiting-action" && !confirming) {
     return (
-      <InvitationChrome>
+      <InvitationChrome landing>
         <div className="ww-passkey-sheet">
           <GateStep state={gateState} onCancel={cancelSignIn} cancelLabel="Cancel sign-in" />
         </div>
@@ -1273,11 +1268,13 @@ export function EnterAppScreen() {
   // An app's built-in browser is told before the first prompt, in place of the screen. The
   // remembered-account rows are not the test: a nameless account, or one the screen hides, is
   // still a passkey that worked here.
-  if (start && !confirming && walletInAppUpFront(config.rpId)) {
+  const inAppMode = start && !confirming ? walletInAppUpFront(config.rpId) : undefined
+  if (inAppMode) {
     return (
-      <InvitationChrome>
+      <InvitationChrome landing>
         <div className="ww-passkey-sheet">
           <InAppBrowserNotice
+            mode={inAppMode}
             reportContext="enter"
             testId="enter-in-app-notice"
             exits={pill("Cancel sign-in", "enter-cancel", cancelSignIn)}
@@ -1288,13 +1285,8 @@ export function EnterAppScreen() {
   }
   if (start && !confirming) {
     return (
-      <InvitationChrome>
-        <InvitationStep
-          initialHandle={selectedTag || undefined}
-          busy={busy}
-          onUnlock={() => {}}
-          onCancelSignIn={cancelSignIn}
-        />
+      <InvitationChrome bare landing>
+        {backdrop}
         <>
           <ConfirmTagModal
             start={{
@@ -1324,7 +1316,7 @@ export function EnterAppScreen() {
   }
   if (!confirming) {
     return (
-      <InvitationChrome>
+      <InvitationChrome landing>
         <div className="ww-passkey-sheet">
           <div className="ww-invite-spinner" data-testid="enter-passkey">
             <IosFloorNotice />
@@ -1347,13 +1339,8 @@ export function EnterAppScreen() {
     )
   }
   return (
-    <InvitationChrome>
-      <InvitationStep
-        initialHandle={selectedTag || undefined}
-        busy={busy}
-        onUnlock={() => {}}
-        onCancelSignIn={cancelSignIn}
-      />
+    <InvitationChrome bare landing>
+      {backdrop}
       <>
         <ConfirmTagModal
           key={reserved ? "reserved" : "claimed"}

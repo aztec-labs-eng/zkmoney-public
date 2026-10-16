@@ -25,6 +25,7 @@ import { buildTokenOperationCall } from "./tokenOperationCall.js"
 import type { Operation } from "../oxide/index.js"
 import { paylinkL1ClaimArgs, type PaylinkL1Proof } from "./paylink/paylinkL1Claim.js"
 import { makePaylinkSpendMetadataResolver } from "./paylink/paylinkSpendMetadata.js"
+import { getUserPayloadHash } from "@oxide/oxide-lib/content_hash.js"
 import { MethodOptions, ServiceBase } from "./ServiceBase.js"
 import { prepareDepositSubmit } from "./paylink/paylinkDepositSubmit.js"
 import { TokenService } from "./TokenService.js"
@@ -73,7 +74,6 @@ import {
 import { preparePaylinkClaimSubmit } from "./paylink/paylinkClaimSubmit.js"
 import {
   assertLinkChain,
-  assertLinkClass,
   encodePaylinkInline,
   decodePaylinkInline,
 } from "./paylink/paylinkInlineCodec.js"
@@ -87,13 +87,18 @@ import {
   registerEscrowTagSecret,
   registerPaylinkContractWithKeys,
   deriveDeterministicPaylinkKeys,
-  derivePaylinkKeys,
   findPaylinkKeysForDay,
   MAX_PAYLINK_NONCES_PER_DAY,
   type PaylinkKeyMaterial,
 } from "./paylink/paylinkKeys.js"
 import { buildPaylinkNoteView, type PaylinkNoteView } from "./paylink/paylinkNoteData.js"
-import { paylinkEscrowInstance, paylinkTypeOf } from "./paylink/paylinkEscrow.js"
+import {
+  escrowInstancesForClasses,
+  escrowInstancesForKnownClasses,
+  linkEscrow,
+  paylinkEscrowInstance,
+  paylinkTypeOf,
+} from "./paylink/paylinkEscrow.js"
 import {
   findDepositTxHash,
   findEscrowDepositTx,
@@ -399,8 +404,7 @@ export class PaylinkService extends ServiceBase {
    * is what a resync reads. The lane's secret and fallback key must derive the escrow the transfer
    * funded, and one of the lane's day's nonce slots under this master secret must derive that same
    * secret and key. So a stray or forged lane never yields a link, and only the creator gets the
-   * fallback secret back; an escrow of a retired class derives a different address and is left to
-   * the migration path.
+   * fallback secret back. The escrow may be of any class the flavor has had; the link carries it.
    */
   public async recoverPaylinkFromTransfer(
     event: ScannedTransferEvent,
@@ -409,13 +413,19 @@ export class PaylinkService extends ServiceBase {
     const lane = event.paylinkCreated
     if (!lane) return null
     const paylinkType = paylinkTypeOf(lane.flavor)
-    const instance = await paylinkEscrowInstance(
+    const funded = AztecAddress.fromStringUnsafe(event.to)
+    const current = await paylinkEscrowInstance(
       this.contractService,
       lane.flavor,
       lane.secret,
       lane.fallbackKeyHash,
     )
-    if (!instance.address.equals(AztecAddress.fromStringUnsafe(event.to))) return null
+    const instance = current.address.equals(funded)
+      ? current
+      : (await escrowInstancesForKnownClasses(this.contractService, paylinkType, current)).find(
+          (candidate) => candidate.address.equals(funded),
+        )
+    if (!instance) return null
     const keys = await findPaylinkKeysForDay(masterSecret, lane.day, lane.secret, paylinkType)
     if (!keys?.fallbackKeyHash.equals(lane.fallbackKeyHash)) return null
     return {
@@ -594,8 +604,9 @@ export class PaylinkService extends ServiceBase {
   }
 
   /**
-   * The link's escrow in this PXE: keys derived from the secret, the instance they address, its
-   * tag source and its funding tx. Refuses a link made against another class or chain. Idempotent.
+   * The link's escrow in this PXE: keys derived from the secret, the instance they address under
+   * the link's class, its tag source and its funding tx. Refuses a class this deployment never
+   * reviewed, or another chain. Idempotent.
    */
   public async reconstructPaylinkContract(params: PaylinkParams): Promise<{
     contract: ContractBase
@@ -604,17 +615,7 @@ export class PaylinkService extends ServiceBase {
     /** Undefined until the deposit is mined; the spend then anchors on the note's creation tx. */
     depositTxHash?: TxHash
   }> {
-    const paylinkType = params.paylinkType as ContractName
-    const artifact = await this.contractService.getArtifactForContract(paylinkType)
-    const keys = await derivePaylinkKeys({
-      secretKey: params.secret,
-      fallbackKeyHash: params.fallbackKeyHash,
-    })
-    const instance = await getContractInstanceFromInstantiationParams(artifact, {
-      salt: new Fr(0n),
-      publicKeys: keys.publicKeys,
-    })
-    assertLinkClass(params, instance)
+    const { artifact, keys, instance } = await linkEscrow(this.contractService, params)
     assertLinkChain(params, await linkChainInfo(this.wallet))
 
     await registerPaylinkContractWithKeys({
@@ -870,6 +871,7 @@ export class PaylinkService extends ServiceBase {
     masterSecret: Fr,
   ): Promise<PaylinkKeyMaterial> {
     const artifact = await this.contractService.getArtifactForContract(paylinkType)
+    const classIds = await this.contractService.getKnownClassIds(paylinkType)
     const day = epochDay(Math.floor(Date.now() / 1000))
     for (let n = 0; n < MAX_PAYLINK_NONCES_PER_DAY; n++) {
       const keys = await deriveDeterministicPaylinkKeys(masterSecret, day, n, paylinkType)
@@ -877,28 +879,33 @@ export class PaylinkService extends ServiceBase {
         salt: new Fr(0n),
         publicKeys: keys.publicKeys,
       })
-      if (await this.escrowSlotTaken(instance)) continue
+      if (await this.escrowSlotTaken(await escrowInstancesForClasses(instance, classIds))) continue
       return keys
     }
     throw new Error(`no free paylink nonce for day ${day} — daily creation cap reached`)
   }
 
   /**
-   * Whether a candidate escrow address is already used: registered in this PXE (a create pending or
-   * mined from this device) or initialized on chain (any device).
-   * This is a race so assumption is two devices will not allocate the same slot at the same time.
-   * If so ¯\_(ツ)_/¯.
+   * Whether a slot is already used under any class: one of its escrows is registered in this PXE (a
+   * create pending or mined from this device) or initialized on chain (any device). Keys ignore the
+   * class, so an escrow of another class at the same slot shares the new link's secret, and its
+   * holder could claim both. Two devices allocating one slot at the same moment is not covered.
    */
-  private async escrowSlotTaken(instance: ContractInstanceWithAddress): Promise<boolean> {
-    if (await this.wallet.pxe.getContractInstance(instance.address)) return true
-    const initNullifier = await computeSiloedPrivateInitializationNullifier(
-      instance.address,
-      instance.initializationHash,
+  private async escrowSlotTaken(escrows: ContractInstanceWithAddress[]): Promise<boolean> {
+    for (const escrow of escrows) {
+      if (await this.wallet.pxe.getContractInstance(escrow.address)) return true
+    }
+    const initNullifiers = await Promise.all(
+      escrows.map((escrow) =>
+        computeSiloedPrivateInitializationNullifier(escrow.address, escrow.initializationHash),
+      ),
     )
-    const [leaf] = await this.wallet.node.findLeavesIndexes("latest", MerkleTreeId.NULLIFIER_TREE, [
-      initNullifier,
-    ])
-    return leaf?.data !== undefined
+    const leaves = await this.wallet.node.findLeavesIndexes(
+      "latest",
+      MerkleTreeId.NULLIFIER_TREE,
+      initNullifiers,
+    )
+    return leaves.some((leaf) => leaf?.data !== undefined)
   }
 
   // For a paylink escrow contract, if we dont want to deploy the contract,
@@ -938,10 +945,8 @@ export class PaylinkService extends ServiceBase {
    * binary compiles. `getConfiguredClassId` throws when the document omits the entry — a profile
    * cannot skip the check by leaving it out; only a local-ledger service (the deploy tooling,
    * which states no class ids) skips.
-   * Every path that derives an escrow instance to fund must call this. A creation path that skips
-   * it can fund a counterfactual address of the old class after the deployment rolls, and the link
-   * carries no class id — so a recipient on a current build reconstructs a different address and
-   * the funds are unreachable.
+   * Every path that derives an escrow instance to fund must call this, so a new link never uses a
+   * class the deployment has moved off.
    */
   private assertEscrowClass(escrowtype: ContractName, instance: { currentContractClassId: Fr }) {
     const servedClassId = this.contractService.getConfiguredClassId(escrowtype)
@@ -953,21 +958,9 @@ export class PaylinkService extends ServiceBase {
     )
   }
 
-  /** The escrow a link addresses under this build's artifact. Nothing touches the PXE. */
+  /** The escrow a link addresses under the link's class. Nothing touches the PXE. */
   public async getContractAddress(params: PaylinkParams): Promise<AztecAddress> {
-    const artifact = await this.contractService.getArtifactForContract(
-      params.paylinkType as ContractName,
-    )
-    const keys = await derivePaylinkKeys({
-      secretKey: params.secret,
-      fallbackKeyHash: params.fallbackKeyHash,
-    })
-    const instance = await getContractInstanceFromInstantiationParams(artifact, {
-      salt: new Fr(0n),
-      publicKeys: keys.publicKeys,
-    })
-    assertLinkClass(params, instance)
-    return instance.address
+    return (await linkEscrow(this.contractService, params)).instance.address
   }
 
   /**
@@ -1048,6 +1041,7 @@ export class PaylinkService extends ServiceBase {
       const hits = await scanPaylinkEscrows({
         node: this.wallet.node,
         artifact,
+        classIds: await this.contractService.getKnownClassIds(paylinkType),
         flavor: paylinkType,
         masterSecret,
         fromDay,
@@ -1446,6 +1440,11 @@ export class PaylinkService extends ServiceBase {
     }
     const prepared = await this.prepareSponsoredEscrow(claimParams, sponsor)
     const { escrow, user, meta } = prepared
+    const voucherBurn = options?.voucher?.withdraw
+    if (!isEmail && voucherBurn && escrow.methods.claim_with_withdrawal) {
+      return (await this.claimWithWithdrawal(prepared, voucherBurn, sponsor, options?.operationId))
+        .txHash
+    }
 
     let claimInteraction
     if (isEmail) {
@@ -1531,6 +1530,62 @@ export class PaylinkService extends ServiceBase {
     })
   }
 
+  /**
+   * A voucher claim whose escrow burns the registration slice itself: `claim_with_withdrawal` pays
+   * `withdraw` to L1 and the rest to this account, so the batch has no account call and no passkey
+   * assertion. Only escrow classes carrying that function take this path.
+   */
+  private async claimWithWithdrawal(
+    prepared: Awaited<ReturnType<PaylinkService["prepareSponsoredEscrow"]>>,
+    withdraw: PaylinkClaimWithdraw,
+    sponsor: PaylinkSponsorContext,
+    operationId?: string,
+  ): Promise<{ txHash: string; blockNumber: number }> {
+    const { escrow, user, meta } = prepared
+    const payout = await planPayout(
+      this.wallet,
+      this.contractService,
+      (
+        await this.tokenService.getTokenContract()
+      ).address,
+      {
+        from: escrow.address,
+        recipient: withdraw.l1Recipient,
+        amount: withdraw.amount,
+        proverTip: withdraw.proverTip,
+      },
+      withdraw.withdrawal,
+    )
+    const interaction = escrow.methods.claim_with_withdrawal!(
+      user,
+      withdraw.amount,
+      payout.plainWithdrawal.executor,
+      getUserPayloadHash(payout.userPayload),
+      withdraw.proverTip,
+      meta,
+    )
+    return this.sendSponsoredEscrowCall(
+      prepared,
+      interaction,
+      sponsor,
+      { operationId, voucher: { railId: sponsor.railId } },
+      {
+        accountFree: true,
+        teeUnsignedInteractions: payout.broadcasts,
+        plainWithdrawal: payout.plainWithdrawal,
+        withdrawals: [
+          {
+            executor: payout.plainWithdrawal.executor,
+            userPayload: payout.userPayload,
+            amount: withdraw.amount,
+            proverTip: withdraw.proverTip,
+          },
+        ],
+        expectedWithdrawalAmount: withdraw.amount,
+      },
+    )
+  }
+
   /** Rebuild the escrow in this PXE and register what a sponsored call on it needs. */
   private async prepareSponsoredEscrow(claimParams: PaylinkParams, sponsor: PaylinkSponsorContext) {
     const account = this.asObsidionAccount()
@@ -1563,7 +1618,11 @@ export class PaylinkService extends ServiceBase {
     extra?: Pick<
       SponsoredTeeOperationArgs,
       "teeUnsignedInteractions" | "expectedWithdrawalAmount" | "plainWithdrawal"
-    > & { withdrawals?: PlainWithdrawalOperation[] },
+    > & {
+      withdrawals?: PlainWithdrawalOperation[]
+      /** The escrow pays and its call needs no authwit, so the account authorizes nothing. */
+      accountFree?: boolean
+    },
   ): Promise<{ txHash: string; blockNumber: number }> {
     const { account, user, instance, keys, depositTxHash, fpcArtifact } = prepared
     const { chainId, version } = await chainInfoFields(this.wallet)
@@ -1598,16 +1657,18 @@ export class PaylinkService extends ServiceBase {
         ),
       )
     }
-    const authorized = await authorizeSponsoredBatch(
-      this.wallet,
-      this.contractService,
-      sponsor,
-      user,
-      account.getAuthProvider(),
-      intentHashes,
-      { chainId, version },
-    )
-    // The voucher is the escrow's note, so the escrow pays; the account still authorizes.
+    const authorized = extra?.accountFree
+      ? undefined
+      : await authorizeSponsoredBatch(
+          this.wallet,
+          this.contractService,
+          sponsor,
+          user,
+          account.getAuthProvider(),
+          intentHashes,
+          { chainId, version },
+        )
+    // The voucher is the escrow's note, so the escrow pays; the account still authorizes its calls.
     const payer = options?.voucher ? instance.address : user
     const op = await buildSponsoredTeeOperation(
       {
@@ -1622,7 +1683,7 @@ export class PaylinkService extends ServiceBase {
         railId: sponsor.railId,
         policy: sponsor.policy,
         user: payer,
-        intentsAccount: user,
+        ...(authorized && { intentsAccount: user, ...authorized }),
         tokenContract: token,
         signer: this.getTeeSigner(),
         operations: [
@@ -1643,7 +1704,6 @@ export class PaylinkService extends ServiceBase {
           await contractClassWitness(instance),
           ...(withdrawOp ? [undefined] : []),
         ],
-        ...authorized,
         gate: sponsor.subscribe?.gate,
         teeUnsignedInteractions: [
           ...(extra?.teeUnsignedInteractions ?? []),

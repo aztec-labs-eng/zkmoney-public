@@ -1,5 +1,7 @@
+import { execFileSync } from "node:child_process"
 import { act } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { SIMD_PROBE } from "../src/browserSupport"
 
 const h = vi.hoisted(() => ({ walletBootLoaded: vi.fn() }))
 vi.mock("../src/walletBoot", () => {
@@ -8,9 +10,9 @@ vi.mock("../src/walletBoot", () => {
 })
 
 const FEATURES: [string, object, string, string, string][] = [
-  ["Promise.withResolvers", Promise, "withResolvers", "/#h=sealed", ""],
+  ["Promise.withResolvers", Promise, "withResolvers", "/", ""],
   ["Web Locks", navigator, "locks", "/link#secret", "#secret"],
-  ["Set.prototype.intersection", Set.prototype, "intersection", "/#h=sealed", ""],
+  ["Set.prototype.intersection", Set.prototype, "intersection", "/", ""],
 ]
 const originals = FEATURES.map(([, target, key]) => Object.getOwnPropertyDescriptor(target, key)!)
 const remove = (target: object, key: string) =>
@@ -35,6 +37,7 @@ afterEach(() => {
   history.replaceState(null, "", "/")
   FEATURES.forEach(([, target, key], i) => Object.defineProperty(target, key, originals[i]))
   vi.unstubAllGlobals()
+  vi.restoreAllMocks()
 })
 
 describe("the wallet start", () => {
@@ -45,7 +48,9 @@ describe("the wallet start", () => {
       history.replaceState(null, "", url)
       await start()
       const alert = root().querySelector('[role="alert"]')
-      expect(alert?.textContent).toMatch(/Browser not supported.*update iOS to 17\.4 or later/)
+      expect(alert?.textContent).toMatch(
+        /Browser not supported.*Update the browser or the operating system/,
+      )
       expect(alert?.textContent).toContain(feature)
       expect(root().querySelector("button")).toBeNull()
       expect(h.walletBootLoaded).not.toHaveBeenCalled()
@@ -53,6 +58,42 @@ describe("the wallet start", () => {
       expect(location.hash).toBe(hash)
     },
   )
+
+  it("refuses a device without WebAssembly SIMD before the wallet loads", async () => {
+    vi.spyOn(WebAssembly, "validate").mockReturnValue(false)
+    await start()
+    const alert = root().querySelector('[role="alert"]')
+    expect(alert?.textContent).toMatch(/Device not supported.*WebAssembly SIMD/)
+    expect(alert?.textContent).not.toContain("too old")
+    expect(root().querySelector("button")).toBeNull()
+    expect(h.walletBootLoaded).not.toHaveBeenCalled()
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it("refuses a browser without WebAssembly", async () => {
+    vi.stubGlobal("WebAssembly", undefined)
+    await start()
+    expect(root().querySelector('[role="alert"]')?.textContent).toContain("WebAssembly SIMD")
+    expect(h.walletBootLoaded).not.toHaveBeenCalled()
+  })
+
+  it("tells an old browser without WebAssembly SIMD to update", async () => {
+    remove(Promise, "withResolvers")
+    vi.spyOn(WebAssembly, "validate").mockReturnValue(false)
+    await start()
+    expect(root().querySelector('[role="alert"]')?.textContent).toMatch(
+      /Browser not supported.*too old.*Missing: Promise\.withResolvers, WebAssembly SIMD/,
+    )
+  })
+
+  it.runIf(process.arch === "x64")("uses a probe that an engine without SIMD rejects", () => {
+    const code = `process.stdout.write(String(WebAssembly.validate(new Uint8Array(${JSON.stringify([
+      ...SIMD_PROBE,
+    ])}))))`
+    const validate = (...flags: string[]) =>
+      execFileSync(process.execPath, [...flags, "-e", code]).toString()
+    expect([validate(), validate("--no-enable-sse4-1")]).toEqual(["true", "false"])
+  })
 
   it("still opens the reset page in a browser it refuses", async () => {
     remove(Promise, "withResolvers")

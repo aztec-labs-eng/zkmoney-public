@@ -12,6 +12,7 @@
   border-top-color: var(--purple-500);
   border-radius: 50%;
   animation: rk-wallet-option-busy 0.7s linear infinite;
+  will-change: transform;
 }
 
 @keyframes rk-wallet-option-busy {

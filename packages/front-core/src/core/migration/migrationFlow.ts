@@ -17,8 +17,6 @@
 //      returns a payload, and the driver reconciles after every submit attempt.
 //      Those checks save a fee; they are not what makes the flow safe.
 
-import type { DepositExitResidual } from "../services/deposits/depositExitCandidates"
-
 export type MigrationPhase =
   | "discovering" // detect the frozen balance; nothing submitted yet
   | "exiting" // build the escape-door proof (read-only until submit — safe to re-run)
@@ -37,7 +35,7 @@ export const MAX_DEPOSIT_ATTEMPTS = 3
 export interface MigrationResidual {
   sipaAddress: string
   /** Enumeration drops carry their own reason; `max-attempts` is the step layer giving up. */
-  reason: DepositExitResidual["reason"] | "max-attempts"
+  reason: "missing-message-secret" | "message-key-unreadable" | "max-attempts"
 }
 
 /**

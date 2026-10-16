@@ -49,12 +49,12 @@ document.addEventListener(
   true,
 )
 
-/** `?originCapacity=empty|short`: the original portal's amount, below a registration's 4.9 DAI credit; otherwise 700 DAI. */
+/** `?originCapacity=empty|short`: the original portal's amount, below a registration's 0.65 DAI credit; otherwise 700 DAI. */
 function originAvailable(): bigint {
   const value = new URLSearchParams(location.search).get("originCapacity")
   if (value === null) return 700n * DAI
   if (value === "empty") return 0n
-  if (value === "short") return 4n * DAI
+  if (value === "short") return DAI / 2n
   throw new Error(`Unknown origin capacity fixture: ${value}`)
 }
 

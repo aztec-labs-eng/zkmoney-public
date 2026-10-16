@@ -31,13 +31,27 @@ describe("ticket signup creation checkpoints", () => {
     )
   })
 
+  it("a refused attempt restarts by the id its refusal carried, so another passkey can begin", async () => {
+    const attempt = await beginTicketSignupAccount("rp", "link", "alice")
+    restartTicketSignupAccount("rp", "link", attempt.attemptId)
+    expect(loadTicketSignupAttempt("rp", "link")).toBeNull()
+    expect(loadTicketSignupAccount("rp", "link")).toBeNull()
+    await expect(beginTicketSignupAccount("rp", "link", "alice")).resolves.toMatchObject({
+      phase: "creating",
+      tag: "alice",
+    })
+    expect(() => restartTicketSignupAccount("rp", "link", "stale")).toThrow(
+      "restarted in another tab",
+    )
+  })
+
   it("a late completion cannot overwrite an explicitly restarted attempt", async () => {
     const first = await beginTicketSignupAccount("rp", "link", "alice")
     restartTicketSignupAccount("rp", "link", first.attemptId)
     const second = await beginTicketSignupAccount("rp", "link", "bob")
-    await expect(completeTicketSignupAccount("rp", "link", first.attemptId, account)).rejects.toThrow(
-      "no longer active",
-    )
+    await expect(
+      completeTicketSignupAccount("rp", "link", first.attemptId, account),
+    ).rejects.toThrow("no longer active")
     expect(loadTicketSignupAttempt("rp", "link")).toEqual(second)
   })
 

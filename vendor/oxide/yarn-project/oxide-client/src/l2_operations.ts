@@ -30,6 +30,7 @@ import {
   buildWithdrawalSignatureCapsule,
 } from './capsules.js';
 import type { ChainDataSource } from './chain_data_source.js';
+import { getDepositMessageSiblingPath } from './deposit_refund_eligibility.js';
 import {
   type DepositSpendMetadataResolver,
   type SpendMetadataResolver,
@@ -239,15 +240,12 @@ export async function submit(
     );
   }
   for (const spent of collected.deposits) {
-    const witness = await chain.getL1ToL2MessageMembershipWitness(anchorBlockHash, spent.messageHash);
-    if (!witness) {
+    const siblingPath = await getDepositMessageSiblingPath(chain, anchorBlockHash, {
+      messageKey: spent.messageHash,
+      messageLeafIndex: spent.inboxIndex,
+    });
+    if (!siblingPath) {
       throw new Error(`No L1->L2 membership witness for deposit message ${spent.messageHash}`);
-    }
-    const [witnessLeafIndex, siblingPath] = witness;
-    if (witnessLeafIndex !== spent.inboxIndex) {
-      throw new Error(
-        `Deposit witness leaf index ${witnessLeafIndex} does not match deposit effect leaf index ${spent.inboxIndex}`,
-      );
     }
     const metadata = await resolveDepositSpendMetadata!(spent.recipient);
     deposits.push({

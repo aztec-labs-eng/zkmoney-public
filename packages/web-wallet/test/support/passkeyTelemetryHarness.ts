@@ -39,6 +39,7 @@ const CREATED: PasskeyCreateResult = {
   credentialId: "held",
   pubkey: new Uint8Array(64),
   transports: undefined,
+  userHandle: new Uint8Array(0),
 }
 const ASSERTED: PasskeyAssertResult = {
   credentialId: "held",

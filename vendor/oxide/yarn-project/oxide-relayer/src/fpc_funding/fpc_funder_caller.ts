@@ -3,7 +3,7 @@ import { type Logger, createLogger } from '@aztec/foundation/log';
 import { RunningPromise } from '@aztec/foundation/running-promise';
 
 import { ErrorsAbi, IFPCFunderAbi, OperationExecutorAbi } from '@oxide/l1-contracts';
-import { EXECUTOR_MIN_PAYOUT_CALLDATA_GAS, SIMULATED_SENDER_BALANCE } from '@oxide/oxide-client/l1_operation_quote.js';
+import { SIMULATED_SENDER_BALANCE, UINT256_EXTRA_CALLDATA_GAS } from '@oxide/oxide-client/l1_operation_quote.js';
 
 import { type Hex, type PublicClient, encodeFunctionData } from 'viem';
 
@@ -123,7 +123,7 @@ export class FpcFunderCaller {
       stateOverride: [{ address: account, balance: SIMULATED_SENDER_BALANCE }],
     });
     // Non-zero `minPayout` costs extra calldata gas, so add it here.
-    const gasLimit = estimatedGas + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS;
+    const gasLimit = estimatedGas + UINT256_EXTRA_CALLDATA_GAS;
     const price = await client.estimateFeesPerGas();
     if (isAboveMaxFeePerGas(l1TxQueue, price.maxFeePerGas)) {
       const changed = this.deferrals.changed(this.deferralKey(), 'gas_price_above_max');
@@ -174,7 +174,7 @@ export class FpcFunderCaller {
     return this.config.fpcFunder.toString().toLowerCase();
   }
 
-  /** `executor.execute(funder, swapAndDepositAsFeeJuice, inputToken, minPayout)` calldata. */
+  /** `executor.execute(funder, swapAndDepositAsFeeJuice, inputToken, minPayout, 0, 0)` calldata: no gas cost. */
   private executeCalldata(inputToken: EthAddress, minPayout: bigint): Hex {
     return encodeFunctionData({
       abi: OperationExecutorAbi,
@@ -184,6 +184,8 @@ export class FpcFunderCaller {
         encodeFunctionData({ abi: IFPCFunderAbi, functionName: 'swapAndDepositAsFeeJuice' }),
         inputToken.toString(),
         minPayout,
+        0n,
+        0n,
       ],
     });
   }
@@ -198,6 +200,8 @@ export class FpcFunderCaller {
         this.config.fpcFunder.toString(),
         encodeFunctionData({ abi: IFPCFunderAbi, functionName: 'swapAndDepositAsFeeJuice' }),
         inputToken.toString(),
+        0n,
+        0n,
         0n,
       ],
       account: sender,

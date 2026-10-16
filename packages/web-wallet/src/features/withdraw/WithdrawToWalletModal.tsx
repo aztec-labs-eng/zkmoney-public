@@ -71,6 +71,8 @@ export function WithdrawToWalletModal({
   recipient,
   walletName,
   receiveAsset: initialAsset = "DAI",
+  receiveAssets,
+  assetNote,
   recipientIsContract,
   onClose,
   onDone,
@@ -81,6 +83,10 @@ export function WithdrawToWalletModal({
   /** The output the sheet opens on: DAI burns straight to the recipient; anything else routes
    *  through oxide's swap escrow (see `submitSponsoredWithdrawal`). */
   receiveAsset?: WithdrawalReceiveAsset
+  /** The outputs the destination accepts; the picker offers nothing else. */
+  receiveAssets?: readonly WithdrawalReceiveAsset[]
+  /** Why the outputs are narrowed, shown under the amount. */
+  assetNote?: string
   /** The ETH route pays with a plain transfer, which a contract can reject. */
   recipientIsContract?: boolean
   onClose: () => void
@@ -335,9 +341,15 @@ export function WithdrawToWalletModal({
                 >
                   MAX
                 </button>
-                <WithdrawalAssetPicker inline value={receiveAsset} onChange={setReceiveAsset} />
+                <WithdrawalAssetPicker
+                  inline
+                  value={receiveAsset}
+                  only={receiveAssets}
+                  onChange={setReceiveAsset}
+                />
               </span>
             </label>
+            {assetNote && <span className="ww-fund__label">{assetNote}</span>}
             <OperationLimits
               operation="withdrawal"
               minimum="$1"

@@ -54,6 +54,9 @@ vi.mock("../src/ui/usePhoneLayout", () => ({ usePhoneLayout: () => layout.phone 
 afterEach(() => {
   layout.phone = false
 })
+vi.mock("../src/features/requests/requestLinkCreation", () => ({
+  requestLinkOrigin: () => "https://wallet.zk.money",
+}))
 vi.mock("../src/errors/errorModal", () => ({
   showErrorModal: (...a: unknown[]) => showErrorModal(...a),
   showReportableError: vi.fn(),
@@ -157,7 +160,7 @@ describe("SharePaylinkModal", () => {
     await act(async () => copy?.click())
 
     expect(writeText).toHaveBeenCalledOnce()
-    expect(writeText.mock.calls[0][0].startsWith(`${location.origin}/request#`)).toBe(true)
+    expect(writeText.mock.calls[0][0].startsWith("https://wallet.zk.money/pay/alice#")).toBe(true)
     expect(container.textContent).toContain("Dinner")
     // The amount is the hero, the created date sits under the link, and the status matches the row.
     expect(container.textContent).toContain("$1,250.00")
@@ -193,7 +196,7 @@ describe("SharePaylinkModal", () => {
     expect(share).toHaveBeenCalledWith({
       title: "Payment request",
       text: "Requesting $1,250.00 on zk.money",
-      url: expect.stringContaining(`${location.origin}/request#`),
+      url: expect.stringContaining("https://wallet.zk.money/pay/alice#"),
     })
   })
 
@@ -235,7 +238,7 @@ describe("SharePaylinkModal", () => {
     await act(async () => shareButton?.click())
 
     expect(writeText).toHaveBeenCalledOnce()
-    expect(writeText.mock.calls[0][0].startsWith(`${location.origin}/request#`)).toBe(true)
+    expect(writeText.mock.calls[0][0].startsWith("https://wallet.zk.money/pay/alice#")).toBe(true)
   })
 
   it("opens link-request details from the activity row, with Share reusing the open path", async () => {

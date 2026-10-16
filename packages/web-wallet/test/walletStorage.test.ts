@@ -5,6 +5,8 @@ import {
   isWalletOpenElsewhere,
   leavePage,
   openWalletStore,
+  readFromOtherDatabases,
+  removeFromOtherDatabases,
   walletStorage,
   walletStoreIsPersistent,
 } from "../src/platform/storage/walletStorage"
@@ -220,6 +222,147 @@ describe("walletStorage writes", () => {
   it("refuses reads before the store opens", async () => {
     await closeWalletStore()
     expect(() => walletStorage.getItem("k")).toThrow(/wallet store is closed/)
+  })
+})
+
+describe("readFromOtherDatabases", () => {
+  it("reads another rollup's value, skipping a database held elsewhere and one without the key", async () => {
+    dbs.db("111").state.set("k", "one")
+    dbs.db("222")
+    dbs.db("333").state.set("k", "three")
+    await reopen()
+    const held = await dbs.open("333", true)
+    try {
+      expect(await readFromOtherDatabases("k")).toEqual(["one"])
+    } finally {
+      await held.close()
+    }
+    expect(await readFromOtherDatabases("k")).toEqual(["one", "three"])
+    expect(dbs.db(ROLLUP).held).toBe(true)
+  })
+
+  it("reads the one key without loading the rest of the database", async () => {
+    dbs.db("111").state.set("k", "one")
+    await reopen()
+    const open = dbs.open.bind(dbs)
+    dbs.open = async (version, persistent) => {
+      const db = await open(version, persistent)
+      return version === "111" ? { ...db, load: async () => Promise.reject(new Error("load")) } : db
+    }
+    try {
+      expect(await readFromOtherDatabases("k")).toEqual(["one"])
+    } finally {
+      delete (dbs as { open?: unknown }).open
+    }
+  })
+
+  it("closes a database whose read fails", async () => {
+    dbs.db("111").state.set("k", "one")
+    await reopen()
+    const open = dbs.open.bind(dbs)
+    dbs.open = async (version, persistent) => {
+      const db = await open(version, persistent)
+      return version === "111" ? { ...db, get: async () => Promise.reject(new Error("disk")) } : db
+    }
+    try {
+      expect(await readFromOtherDatabases("k")).toEqual([])
+    } finally {
+      delete (dbs as { open?: unknown }).open
+    }
+    expect(dbs.db("111").held).toBe(false)
+  })
+
+  it("reads nothing, and opens nothing, from a store that is not persistent", async () => {
+    dbs.db("111").state.set("k", "one")
+    await reopen(ROLLUP, false)
+    const opens = countOpens()
+    try {
+      expect(await readFromOtherDatabases("k")).toEqual([])
+      expect(opens.attempts()).toBe(0)
+    } finally {
+      opens.restore()
+    }
+  })
+
+  it("never hands a read begun before a reopen to a read after it", async () => {
+    dbs.db("111").state.set("k", "one")
+    await reopen()
+    const gate = deferred()
+    const open = dbs.open.bind(dbs)
+    dbs.open = async (version, persistent) => {
+      if (version === "111") await gate.promise
+      return open(version, persistent)
+    }
+    try {
+      const before = readFromOtherDatabases("k")
+      await reopen(ROLLUP, false)
+      const after = readFromOtherDatabases("k")
+      gate.resolve()
+      expect(await after).toEqual([])
+      expect(await before).toEqual(["one"])
+    } finally {
+      delete (dbs as { open?: unknown }).open
+    }
+  })
+
+  it("lets a removal wait out a read that holds the database", async () => {
+    dbs.db("111").state.set("k", "one")
+    await reopen()
+    const gate = deferred()
+    const open = dbs.open.bind(dbs)
+    dbs.open = async (version, persistent) => {
+      const db = await open(version, persistent)
+      return { ...db, get: async (key) => (await gate.promise, db.get(key)) }
+    }
+    try {
+      const read = readFromOtherDatabases("k")
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(dbs.db("111").held).toBe(true)
+      const removal = removeFromOtherDatabases(["k"])
+      gate.resolve()
+      await expect(removal).resolves.toBeUndefined()
+      expect(await read).toEqual(["one"])
+      expect(dbs.db("111").state.has("k")).toBe(false)
+    } finally {
+      delete (dbs as { open?: unknown }).open
+    }
+  })
+
+  it("starts a read behind a removal, never inside it", async () => {
+    dbs.db("111").state.set("k", "one")
+    await reopen()
+    const listed = deferred()
+    const got = deferred()
+    const list = dbs.list.bind(dbs)
+    const open = dbs.open.bind(dbs)
+    dbs.list = async () => {
+      await listed.promise
+      return list()
+    }
+    dbs.open = async (version, persistent) => {
+      const db = await open(version, persistent)
+      return { ...db, get: async (key) => (await got.promise, db.get(key)) }
+    }
+    try {
+      const removal = removeFromOtherDatabases(["k"])
+      const read = readFromOtherDatabases("k")
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      listed.resolve()
+      await expect(removal).resolves.toBeUndefined()
+      got.resolve()
+      expect(await read).toEqual([])
+    } finally {
+      delete (dbs as { list?: unknown }).list
+      delete (dbs as { open?: unknown }).open
+    }
+  })
+
+  it("gives two overlapping reads the same values, not a database the other holds", async () => {
+    dbs.db("111").state.set("k", "one")
+    await reopen()
+    const [a, b] = await Promise.all([readFromOtherDatabases("k"), readFromOtherDatabases("k")])
+    expect(a).toEqual(["one"])
+    expect(b).toEqual(["one"])
   })
 })
 

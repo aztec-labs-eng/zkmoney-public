@@ -74,7 +74,7 @@ const dai = (n: number) => BigInt(Math.round(n * 100)) * 10n ** 16n
 const usd = (amount: bigint) => formatDepositAmount(amount, 18)
 const due = (amount: bigint) => formatDepositDue(amount, 18)
 const seen = (amount: bigint) => formatDepositSeen(amount, 18)
-/** Staging's schedule under the asked deposit: a 14.5 floor, a 15 total. */
+/** A standard schedule under the asked deposit: a 14.5 floor, a 15 total. */
 const address = `0x${"ab".repeat(20)}` as const
 const payment = {
   chainLabel: "Sepolia",
@@ -214,15 +214,15 @@ describe("the sheet asks the quoted deposit and settles on the floor", () => {
   })
 
   it("prices the tag above the sweep fee on a standard schedule, the network's share in one row", async () => {
-    await render({ fee: dai(4.9), sweepFee: dai(0.5), fpcCut: dai(0.1), total: dai(15) })
-    expect(termsValue("tag-price")).toBe(usd(dai(4.4)))
+    await render({ fee: dai(5.5), sweepFee: dai(0.5), fpcCut: dai(0.1), total: dai(10) })
+    expect(termsValue("tag-price")).toBe(usd(dai(5)))
     expect(termsValue("network-fee")).toBeUndefined()
     expect(termsValue("network-funding")).toBe(usd(dai(0.6)))
-    expect(termsValue("opening-balance")).toBe(usd(dai(10)))
+    expect(termsValue("opening-balance")).toBe(usd(dai(4.4)))
   })
 
   it("quotes the same network funding on a free and a paid schedule", async () => {
-    await render({ fee: dai(4.9), sweepFee: dai(0.5), fpcCut: dai(0.1), total: dai(15) })
+    await render({ fee: dai(5.5), sweepFee: dai(0.5), fpcCut: dai(0.1), total: dai(10) })
     const paid = termsValue("network-funding")
     await render({
       kind: "earned_tag",
@@ -384,5 +384,28 @@ describe("an opening balance for a deposit that may be swapped", () => {
   it("adds nothing where no token is swapped", async () => {
     await render({})
     expect(note()).toBeUndefined()
+  })
+})
+
+describe("deposit amount formatters", () => {
+  it("what is due rounds up to the cent, what was seen rounds down, in the token's own units", () => {
+    const dai = (v: string) => BigInt(v.replace(".", "").padEnd(v.indexOf(".") + 18, "0"))
+    expect(formatDepositDue(dai("15.0"), 18)).toBe("$15.00")
+    expect(formatDepositDue(dai("0.001"), 18)).toBe("$0.01")
+    expect(formatDepositDue(1n, 18)).toBe("$0.01")
+    expect(formatDepositDue(dai("15.005"), 18)).toBe("$15.01")
+    expect(formatDepositDue(dai("1234.5"), 18)).toBe("$1,234.50")
+    expect(formatDepositDue(0n, 18)).toBe("$0.00")
+    expect(formatDepositSeen(dai("14.999"), 18)).toBe("$14.99")
+    expect(formatDepositSeen(dai("15.0"), 18)).toBe("$15.00")
+    expect(formatDepositSeen(1n, 18)).toBe("$0.00")
+    // A six-decimal token and a cent-precision one round the same way.
+    expect(formatDepositDue(14_999_001n, 6)).toBe("$15.00")
+    expect(formatDepositSeen(14_999_999n, 6)).toBe("$14.99")
+    expect(formatDepositDue(1501n, 2)).toBe("$15.01")
+    expect(formatDepositDue(15n, 0)).toBe("$15.00")
+    // The informational split keeps nearest rounding.
+    expect(formatDepositAmount(dai("15.005"), 18)).toBe("$15.01")
+    expect(formatDepositAmount(dai("15.004"), 18)).toBe("$15.00")
   })
 })

@@ -173,6 +173,7 @@ const { depositCapacityStore } = await import("../src/features/deposit/capacityS
 const { getBroadcastLedger, resetBroadcastsForTests } = await import(
   "../src/features/broadcasts/broadcasts"
 )
+const { confirmRegistrationTag } = await import("../src/features/onboarding/openRegistration")
 
 const record = (over: Partial<PendingRegistrationRecord> = {}) =>
   pendingRecord({ startTime: Date.now() - 60_000, ...over })
@@ -281,11 +282,27 @@ describe("RegistrationDepositDetailModal", () => {
     ...(earnedExpected ? { earnedExpected: true } : {}),
   })
 
-  it("owes the broadcast of the unpublished address it shows", async () => {
+  it("owes the broadcast of the unpublished address it shows once its tag is confirmed", async () => {
     resetBroadcastsForTests()
-    render(<RegistrationDepositDetailModal record={record({ broadcast: false })} {...base} />)
+    const unpublished = record({ broadcast: false })
+    render(<RegistrationDepositDetailModal record={unpublished} {...base} />)
+    for (let i = 0; i < 3; i++) await act(async () => {})
+    expect(getBroadcastLedger().get(SIPA)).toBeFalsy()
+    act(() => confirmRegistrationTag(unpublished))
     await vi.waitFor(() =>
       expect(getBroadcastLedger().get(SIPA)).toMatchObject({ kind: "registration" }),
+    )
+  })
+
+  it("offers a re-broadcast of the unpublished address it shows once its broadcast is held", async () => {
+    resetBroadcastsForTests()
+    const unpublished = record({ broadcast: false })
+    confirmRegistrationTag(unpublished)
+    render(<RegistrationDepositDetailModal record={unpublished} {...base} />)
+    await vi.waitFor(() => expect(getBroadcastLedger().get(SIPA)).not.toBeNull())
+    await act(async () => getBroadcastLedger().markFailed(SIPA, "offline"))
+    expect(container.querySelector('[data-testid="broadcast-retry"]')?.textContent).toBe(
+      "Re-broadcast",
     )
   })
 

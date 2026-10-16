@@ -36,10 +36,9 @@ import {
   requireTupleField,
 } from "../../config/oxideTuple"
 import { getConfig, type WebWalletConfig } from "../../config/env"
-import { fireEvent } from "../../lib/analytics"
+import { fireOnboardingEvent } from "../../lib/analytics"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { walletStorage } from "../../platform/storage/walletStorage"
-import { oweCampaignClaimNotice } from "../identity/campaignClaimNotice"
 import {
   confirmWalletIdentity,
   loadWalletIdentity,
@@ -274,10 +273,9 @@ function warnRailSync(err: unknown): void {
 }
 
 /**
- * What a confirmation owes beyond settling the identity: the funnel event, the NameClaim cache the
- * first sponsored batch subscribes with, and the campaign's claim notice. All are best-effort —
- * identity settlement is authoritative, a missing cache entry costs only a recovery log scan at
- * subscribe time, and the notice is durable once owed.
+ * What a confirmation owes beyond settling the identity: the funnel event and the NameClaim cache
+ * the first sponsored batch subscribes with. Both are best-effort — identity settlement is
+ * authoritative, and a missing cache entry costs only a recovery log scan at subscribe time.
  */
 function applyConfirmedSideEffects(
   deps: WebDetectionDeps,
@@ -286,10 +284,11 @@ function applyConfirmedSideEffects(
   // Deposit → confirmed comes from the durable record, so it survives the reload that a per-tab
   // analytics session does not. `fundedAt` is the closest custody marker in the deposit model.
   if (record.fundedAt !== undefined) {
-    fireEvent("onboarding_tag_claimed", { custody_to_confirmed_ms: Date.now() - record.fundedAt })
+    fireOnboardingEvent("onboarding_tag_claimed", {
+      custody_to_confirmed_ms: Date.now() - record.fundedAt,
+    })
   }
   void cacheNameClaimFromLog(deps.publicClient, deps.env.registry, record).catch(warnCacheFailure)
-  void oweCampaignClaimNotice(record)
 }
 
 /** The subject of a cache write: which account to read the log from, and who to file it under. */

@@ -22,7 +22,7 @@ contract ReentrantOperation {
 
   function run() external {
     executed = true;
-    EXECUTOR.execute(address(this), abi.encodeCall(this.noop, ()), TOKEN, 0);
+    EXECUTOR.execute(address(this), abi.encodeCall(this.noop, ()), TOKEN, 0, 0, 0);
   }
 
   function noop() external {}
@@ -44,8 +44,18 @@ contract OperationExecutorTest is Test {
   }
 
   function _executeCall(uint256 minPayout) internal returns (uint256) {
-    return
-      executor.execute(address(operation), abi.encodeCall(MockOperation.run, ()), IERC20(address(token)), minPayout);
+    return _executeCall(minPayout, 0, 0);
+  }
+
+  function _executeCall(uint256 minPayout, uint256 gasToCover, uint256 tokenWeiPerEth) internal returns (uint256) {
+    return executor.execute(
+      address(operation),
+      abi.encodeCall(MockOperation.run, ()),
+      IERC20(address(token)),
+      minPayout,
+      gasToCover,
+      tokenWeiPerEth
+    );
   }
 
   function test_executePaysPayoutToCaller() public {
@@ -80,7 +90,7 @@ contract OperationExecutorTest is Test {
 
     vm.prank(RELAYER);
     uint256 payout = executor.execute(
-      address(operation), abi.encodeCall(MockOperation.runAndPay, (recipient)), IERC20(address(token)), REWARD / 2
+      address(operation), abi.encodeCall(MockOperation.runAndPay, (recipient)), IERC20(address(token)), REWARD / 2, 0, 0
     );
 
     assertEq(payout, REWARD / 2);
@@ -98,12 +108,68 @@ contract OperationExecutorTest is Test {
     _executeCall(0);
   }
 
+  function test_executePaysWhenPayoutCoversTheGasAtTheInclusionPrice() public {
+    vm.txGasPrice(10);
+
+    vm.prank(RELAYER);
+    uint256 payout = _executeCall(0, REWARD / 10, 1e18);
+
+    assertEq(payout, REWARD);
+    assertEq(token.balanceOf(RELAYER), REWARD);
+  }
+
+  function test_executeRevertsWhenTheInclusionPriceRisesAboveThePayout() public {
+    vm.txGasPrice(11);
+
+    vm.expectRevert(
+      abi.encodeWithSelector(Errors.OperationExecutor__InsufficientPayout.selector, REWARD, REWARD * 11 / 10)
+    );
+    vm.prank(RELAYER);
+    _executeCall(0, REWARD / 10, 1e18);
+  }
+
+  function test_executePaysWhenTheInclusionPriceFalls() public {
+    vm.txGasPrice(1);
+
+    vm.prank(RELAYER);
+    uint256 payout = _executeCall(0, REWARD / 10, 1e18);
+
+    assertEq(payout, REWARD);
+  }
+
+  function test_executeRoundsTheGasCostUp() public {
+    vm.txGasPrice(10);
+
+    vm.expectRevert(abi.encodeWithSelector(Errors.OperationExecutor__InsufficientPayout.selector, REWARD, REWARD + 1));
+    vm.prank(RELAYER);
+    _executeCall(0, REWARD / 10, 1e18 + 1);
+  }
+
+  function test_executeKeepsTheHigherMinPayout() public {
+    vm.txGasPrice(1);
+
+    vm.expectRevert(abi.encodeWithSelector(Errors.OperationExecutor__InsufficientPayout.selector, REWARD, REWARD + 1));
+    vm.prank(RELAYER);
+    _executeCall(REWARD + 1, REWARD / 10, 1e18);
+  }
+
+  function test_executeWithoutGasToCoverChecksOnlyMinPayout() public {
+    vm.txGasPrice(1 ether);
+
+    vm.prank(RELAYER);
+    uint256 payout = _executeCall(REWARD, 0, 1e18);
+
+    assertEq(payout, REWARD);
+  }
+
   function test_executeRevertsOnNestedExecutionAndRollsBackOuterOperation() public {
     ReentrantOperation reentrantOperation = new ReentrantOperation(executor, IERC20(address(token)));
 
     vm.expectRevert(ReentrancyGuardTransient.ReentrancyGuardReentrantCall.selector);
     vm.prank(RELAYER);
-    executor.execute(address(reentrantOperation), abi.encodeCall(ReentrantOperation.run, ()), IERC20(address(token)), 0);
+    executor.execute(
+      address(reentrantOperation), abi.encodeCall(ReentrantOperation.run, ()), IERC20(address(token)), 0, 0, 0
+    );
 
     assertFalse(reentrantOperation.executed());
     assertEq(token.balanceOf(RELAYER), 0);

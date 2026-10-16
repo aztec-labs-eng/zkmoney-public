@@ -14,9 +14,9 @@ import {
 
 import { isDemoMode } from "../../dev/demoFlag"
 import { getConfig, type WebWalletConfig } from "../../config/env"
-import { getOxideTuple, l1PublicClient } from "../../config/oxideTuple"
+import { getOxideTuple, getRetiredRollupSources, l1PublicClient } from "../../config/oxideTuple"
 
-function resolutionOpts(config: WebWalletConfig, tuple?: OxideEnvTuple) {
+function resolutionOpts(config: WebWalletConfig, tuple?: OxideEnvTuple, signIn = false) {
   return {
     publicClient: l1PublicClient(config),
     manifestUrl: config.oxideProfile.manifestUrl,
@@ -24,6 +24,9 @@ function resolutionOpts(config: WebWalletConfig, tuple?: OxideEnvTuple) {
     network: config.network,
     expectedGitSha: config.oxideProfile.expectedGitSha,
     tuple,
+    retiredRollupVersions: signIn
+      ? async () => (await getRetiredRollupSources(config)).map((source) => source.rollupVersion)
+      : undefined,
   }
 }
 
@@ -42,6 +45,26 @@ export async function resolveTagForCommit(tag: string): Promise<RegistryTagResol
     return (await import("../../dev/contactDemo")).demoContactResolution(tag, true)
   }
   return resolveViaFrontCore(tag, resolutionOpts(getConfig()))
+}
+
+/**
+ * Sign-in's type-ahead resolution: a tag still bound to one of the profile's retired rollups also
+ * resolves, since sign-in admits its account until it migrates. Never for a payment.
+ */
+export async function resolveSignInTag(tag: string): Promise<RegistryTagResolution> {
+  if (import.meta.env.DEV && isDemoMode()) {
+    return (await import("../../dev/contactDemo")).demoContactResolution(tag, false)
+  }
+  const config = getConfig()
+  return resolveViaFrontCore(tag, resolutionOpts(config, await getOxideTuple(config), true))
+}
+
+/** {@link resolveSignInTag} over a fresh manifest. */
+export async function resolveSignInTagForCommit(tag: string): Promise<RegistryTagResolution> {
+  if (import.meta.env.DEV && isDemoMode()) {
+    return (await import("../../dev/contactDemo")).demoContactResolution(tag, true)
+  }
+  return resolveViaFrontCore(tag, resolutionOpts(getConfig(), undefined, true))
 }
 
 /**

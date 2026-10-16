@@ -4,7 +4,7 @@
     {
       "action": "waitFor",
       "role": "button",
-      "name": "Pay with an external wallet",
+      "name": "Pay with an Ethereum wallet",
       "exact": false
     },
     {
@@ -19,7 +19,7 @@
     {
       "action": "click",
       "role": "button",
-      "name": "Pay with an external wallet",
+      "name": "Pay with an Ethereum wallet",
       "exact": false
     },
     {
@@ -31,6 +31,12 @@
       "action": "click",
       "role": "button",
       "name": "Show",
+      "exact": true
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Got it!",
       "exact": true
     },
     {

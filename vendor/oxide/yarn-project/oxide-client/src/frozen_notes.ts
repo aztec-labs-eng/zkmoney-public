@@ -1,6 +1,6 @@
 import type { AztecAddress } from '@aztec/aztec.js/addresses';
 import type { Contract } from '@aztec/aztec.js/contracts';
-import { Fr } from '@aztec/aztec.js/fields';
+import type { Fr } from '@aztec/aztec.js/fields';
 import { ARCHIVE_HEIGHT, MAX_NOTE_HASH_READ_REQUESTS_PER_CALL } from '@aztec/constants';
 import type { EthAddress } from '@aztec/foundation/eth-address';
 import { createLogger } from '@aztec/foundation/log';
@@ -16,7 +16,7 @@ import type { FrozenNotesRefundFinalizationOutput, TeeSigner } from '@oxide/oxid
 import { MAX_FROZEN_NOTES_PER_REFUND } from '@oxide/refund-proof/frozen_notes_refund/types.js';
 import { RefundInputNote, generateFrozenNotesRefundProof } from '@oxide/refund-proof/index.js';
 
-import { type ArchiveRef, resolveArchive } from './archive_ref.js';
+import { type ArchiveRef, resolveFreezeArchive } from './archive_ref.js';
 import type { ChainDataSource } from './chain_data_source.js';
 import { PermanentError } from './errors.js';
 import { buildRefundAuthorization } from './refund_signature.js';
@@ -46,16 +46,7 @@ export async function getRefundableFrozenNotes(
   resolveSpendMetadata: SpendMetadataResolver,
   archive?: ArchiveRef,
 ): Promise<NullificationEffectData[]> {
-  let resolvedArchive = archive;
-  if (resolvedArchive === undefined) {
-    const freezeArchiveRoot = await portal.getFreezeArchive();
-    if (freezeArchiveRoot.equals(Fr.ZERO)) {
-      throw new Error(
-        'Cannot get refundable frozen notes: portal is not frozen (pass an explicit archive to run pre-freeze).',
-      );
-    }
-    resolvedArchive = await resolveArchive(chain, freezeArchiveRoot);
-  }
+  const resolvedArchive = archive ?? (await resolveFreezeArchive(portal, chain));
   const anchorBlockHash = await resolvedArchive.checkpointEndBlockHeader.hash();
 
   const refundable: NullificationEffectData[] = [];

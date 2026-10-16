@@ -7,7 +7,7 @@ import {
   ScreeningProvider,
   passThroughScreener,
 } from "@obsidion/front-core"
-import type { Hex } from "viem"
+import { formatUnits, type Hex } from "viem"
 import type { DepositAddress } from "../src/features/deposit/sipaGateway"
 
 const ACCOUNT = "0x00000000000000000000000000000000000000aa"
@@ -31,6 +31,8 @@ const contracts = { contractService: {} }
 const navigate = vi.hoisted(() => vi.fn())
 const readL1TokenBalance = vi.hoisted(() => vi.fn(async () => 0n))
 const fireEvent = vi.hoisted(() => vi.fn())
+/** Coins offered past the network's own. */
+const extraCoins = vi.hoisted(() => [] as { symbol: string; decimals: number; icon: string }[])
 // Plenty of shared capacity, read from a fake bucket instead of the network.
 const capacity = vi.hoisted(() => ({ availableAtomic: 40_000n * 10n ** 18n }))
 vi.mock("../src/features/deposit/capacityStore", async () =>
@@ -39,6 +41,7 @@ vi.mock("../src/features/deposit/capacityStore", async () =>
 vi.mock("../src/lib/analytics", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/analytics")>()),
   fireEvent,
+  fireOnboardingEvent: fireEvent,
 }))
 vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
@@ -59,19 +62,32 @@ vi.mock("../src/features/deposit/l1DepositTokenBalance", async (importOriginal) 
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAztecContext: () => aztec,
+  useAccountContext: () => ({ obsidionAccount: { getAddress: () => "0xaztec" } }),
   useContractServiceContext: () => contracts,
 }))
 // One instance, like the real singleton — the screen keys effects off the gateway identity.
 const gateway = { depositAddress, wakeDeposit: vi.fn(async () => {}) }
 vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
-vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/deposit/loadDepositFacts")>()),
-  loadDepositDisplayFacts: async () => ({
-    fee: "0.25",
-    token: MANIFEST_TOKEN,
-    sweepFeeAtomic: 150_000_000_000_000_000n,
-    fpcFundingCutAtomic: 100_000_000_000_000_000n,
-  }),
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/features/deposit/loadDepositFacts")>()
+  return {
+    ...actual,
+    depositTokensFor: (network: Parameters<typeof actual.depositTokensFor>[0]) => [
+      ...actual.depositTokensFor(network),
+      ...extraCoins,
+    ],
+    loadDepositDisplayFacts: async () => ({
+      fee: "0.25",
+      token: MANIFEST_TOKEN,
+      sweepFeeAtomic: 150_000_000_000_000_000n,
+      fpcFundingCutAtomic: 100_000_000_000_000_000n,
+    }),
+  }
+})
+// The portal's funding cut is a chain read; jsdom has no L1, and the floor needs it.
+vi.mock("../src/features/onboarding/registrationTerms", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/onboarding/registrationTerms")>()),
+  useSweepDeductions: () => ({ fpcCut: 100_000_000_000_000_000n }),
 }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
 // No WagmiProvider in the test tree; the gate under test never touches the L1 wallet. `connect`
@@ -128,7 +144,10 @@ const { getBroadcastLedger, resetBroadcastsForTests } = await import(
   "../src/features/broadcasts/broadcasts"
 )
 const { getConfig } = await import("../src/config/env")
+const { saveRegistrationTerms } = await import("../src/features/onboarding/registrationTerms")
 import { seedBootConfig } from "./seedBootConfig"
+import { usdFigure } from "../src/ui/format"
+import { PAID_ASK, RANDOM, RANDOM_ASK, usd } from "./support/registrationPrices"
 
 /**
  * The deposit gates are effectful, not cosmetic: no address may be derived or published while the
@@ -141,7 +160,9 @@ describe("DepositScreen — claiming gate", () => {
   let container: HTMLDivElement
   let root: Root
 
-  async function seedPendingClaim() {
+  async function seedPendingClaim(
+    over: { fundedAt?: number; l1ChainId?: number; broadcast?: boolean } = { fundedAt: Date.now() },
+  ) {
     ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
     const store = getPendingStore()
@@ -159,6 +180,7 @@ describe("DepositScreen — claiming gate", () => {
         phase: "awaiting_deposit",
         retries: 0,
         startTime: Date.now(),
+        ...over,
       },
     )
     saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1, pending: true })
@@ -168,7 +190,7 @@ describe("DepositScreen — claiming gate", () => {
   const render = () =>
     act(async () => {
       root.render(
-        <MemoryRouter>
+        <MemoryRouter initialEntries={["/deposit"]}>
           <ScreeningProvider screener={passThroughScreener}>
             <DepositScreen />
           </ScreeningProvider>
@@ -178,6 +200,7 @@ describe("DepositScreen — claiming gate", () => {
 
   const coinRow = () =>
     container.querySelector<HTMLButtonElement>("[data-testid='deposit-coin-TEST']")
+  const tagRow = () => container.querySelector("[data-testid='deposit-tag-row']")
   const fundSheet = () => document.querySelector("dialog[aria-label='Deposit from wallet']")
 
   /** First visit opens the privacy disclaimer in front of the coin list. */
@@ -209,6 +232,8 @@ describe("DepositScreen — claiming gate", () => {
     await render()
 
     expect(container.textContent).toContain("still being claimed")
+    expect(container.querySelector("[data-testid='deposit-registration-ask']")).toBeNull()
+    expect(tagRow()).toBeNull()
     expect(depositAddress).not.toHaveBeenCalled()
 
     // Confirmation as detection applies it: the identity write, then the record close whose
@@ -219,6 +244,7 @@ describe("DepositScreen — claiming gate", () => {
     })
 
     expect(container.textContent).not.toContain("still being claimed")
+    expect(tagRow()).toBeNull()
     // Settling reads the pool, which is empty, and derives nothing: generation waits for the coin row.
     expect(depositAddress).toHaveBeenCalledTimes(1)
     expect(depositAddress).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), "alice", {
@@ -338,18 +364,135 @@ describe("DepositScreen — claiming gate", () => {
     await seedPendingClaim()
     await render()
 
-    // The claim hold covers the connected-wallet rail too: the button opens no picker and resolves
-    // no address while the name is still landing.
+    // The claim hold covers the connected-wallet rail too: nothing opens a picker or resolves an
+    // address while the name is still landing.
     expect(container.textContent).toContain("still being claimed")
+    expect(container.querySelector("[data-testid='deposit-connect-link']")).toBeNull()
+    expect(l1.connect).not.toHaveBeenCalled()
+    expect(depositAddress).not.toHaveBeenCalled()
+  })
+
+  it("shows the registration's own address from the coins while the name is owed its deposit", async () => {
+    await seedPendingClaim({ l1ChainId: getConfig().l1ChainId, broadcast: false })
+    await render()
+    await dismissDisclaimer()
+
+    expect(container.textContent).not.toContain("still being claimed")
+    expect(container.querySelector("[data-testid='deposit-registration-ask']")?.textContent).toBe(
+      `Deposit at least ${usd(PAID_ASK)} to activate your account.`,
+    )
+    expect(tagRow()?.textContent).toBe("Your name@aliceChoose your own")
+    expect(fireEvent).toHaveBeenCalledWith("registration_deposit_opened")
+    await act(async () => tagRow()!.querySelector("button")!.click())
+    expect(document.querySelector("dialog[aria-label='Choose your name']")).not.toBeNull()
+    expect(fireEvent).toHaveBeenCalledWith("name_sheet_opened", { screen: "deposit" })
+
+    // No address, and no broadcast, until the drawn tag is kept; keeping it locks the tag.
+    expect(coinRow()).toBeNull()
+    const keep = [...container.querySelectorAll("button")].find(
+      (b) => b.textContent === "Keep @alice",
+    )
+    await act(async () => keep!.click())
+    expect(tagRow()?.textContent).toBe("Your name@alice")
+    await act(async () => coinRow()!.click())
+    expect(container.innerHTML).toContain(`0x${"5a".repeat(20)}`)
+    expect(container.querySelector("[data-testid='activation-sheet']")).toBeNull()
+
     const connect = container.querySelector<HTMLButtonElement>(
       "[data-testid='deposit-connect-link']",
     )
-    expect(connect).not.toBeNull()
-    expect(connect!.disabled).toBe(true)
-
+    expect(connect!.disabled).toBe(false)
     await act(async () => connect!.click())
-    expect(l1.connect).not.toHaveBeenCalled()
+    expect(l1.connect).toHaveBeenCalled()
     expect(depositAddress).not.toHaveBeenCalled()
+  })
+
+  it("goes Home when the registration's funds land, instead of turning into a plain deposit", async () => {
+    const store = await seedPendingClaim({ l1ChainId: getConfig().l1ChainId, broadcast: false })
+    await render()
+    expect(tagRow()).not.toBeNull()
+    expect(navigate).not.toHaveBeenCalledWith("/", { replace: true })
+
+    await act(async () => {
+      await store.upsert(ACCOUNT, { fundedAt: Date.now() })
+    })
+    expect(navigate).toHaveBeenCalledWith("/", { replace: true })
+  })
+
+  it("sends an owed registration the deposit screen cannot take to its pending step", async () => {
+    await seedPendingClaim({ l1ChainId: 1 })
+    await render()
+
+    expect(container.textContent).toContain("Registration needs a checkCheck on @alice")
+    expect(coinRow()).toBeNull()
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>("[data-testid='deposit-claiming']")!.click(),
+    )
+    expect(navigate).toHaveBeenCalledWith("/claim/alice")
+    expect(depositAddress).not.toHaveBeenCalled()
+  })
+
+  it("asks the earned price for a drawn tag", async () => {
+    await seedPendingClaim({ l1ChainId: getConfig().l1ChainId })
+    await saveRegistrationTerms({ account: ACCOUNT, tag: "alice", deadline: 0, feeWaived: true })
+    await render()
+    expect(container.querySelector("[data-testid='deposit-registration-ask']")?.textContent).toBe(
+      `Deposit at least ${usd(RANDOM_ASK)} to activate your account.`,
+    )
+  })
+
+  it("asks only for what is left once part of the deposit is at the address", async () => {
+    const seen = RANDOM_ASK / 2n
+    await seedPendingClaim({ l1ChainId: getConfig().l1ChainId })
+    await saveRegistrationTerms({
+      account: ACCOUNT,
+      tag: "alice",
+      deadline: 0,
+      feeWaived: true,
+      depositAmount: seen.toString(),
+    })
+    await render()
+    expect(container.querySelector("[data-testid='deposit-registration-ask']")?.textContent).toBe(
+      `${usd(seen)} of ${usd(RANDOM_ASK)} received. Deposit at least ${usd(
+        RANDOM_ASK - seen,
+      )} more to activate your account.`,
+    )
+  })
+
+  it("in the modal, takes what the address holds off the minimum only for the coin it holds", async () => {
+    extraCoins.push({ symbol: "USDC", decimals: 6, icon: "" })
+    try {
+      await seedPendingClaim({ l1ChainId: getConfig().l1ChainId })
+      await saveRegistrationTerms({
+        account: ACCOUNT,
+        tag: "alice",
+        deadline: 0,
+        feeWaived: true,
+        depositAmount: (RANDOM_ASK / 2n).toString(),
+      })
+      await act(async () => {
+        root.render(
+          <MemoryRouter initialEntries={["/"]}>
+            <ScreeningProvider screener={passThroughScreener}>
+              <DepositScreen onClose={() => {}} />
+            </ScreeningProvider>
+          </MemoryRouter>,
+        )
+      })
+      const minimum = () =>
+        document.querySelector("[data-testid='deposit-minimum']")?.textContent ?? ""
+      const dollars = (amount: bigint) => usdFigure(formatUnits(amount, 18))
+      expect(minimum()).toBe(dollars(RANDOM_ASK - RANDOM_ASK / 2n))
+      await act(async () =>
+        document.querySelector<HTMLButtonElement>("[data-testid='deposit-coin-select']")!.click(),
+      )
+      await act(async () =>
+        document.querySelector<HTMLButtonElement>("[data-testid='deposit-coin-USDC']")!.click(),
+      )
+      expect(minimum()).toBe(dollars(RANDOM_ASK))
+    } finally {
+      extraCoins.length = 0
+    }
   })
 
   it("stays shut after a boot that found no record to settle the pending identity", async () => {
@@ -437,6 +580,38 @@ describe("DepositScreen — claiming gate", () => {
     expect(qr?.innerHTML).toContain(
       `ethereum:${MANIFEST_TOKEN}@${getConfig().l1ChainId}/transfer?address=0xdeadbeef`,
     )
+  })
+
+  it("keeps a registration address short of its floor waiting instead of spotting it", async () => {
+    await seedPendingClaim({ l1ChainId: getConfig().l1ChainId })
+    // The earned schedule's minimum is above the 0.1 cut, so its floor is the fee plus the minimum.
+    const floor = RANDOM.fee + RANDOM.min
+    await saveRegistrationTerms({
+      account: ACCOUNT,
+      tag: "alice",
+      deadline: 0,
+      fee: String(RANDOM.fee),
+      minDeposit: String(RANDOM.min),
+      feeWaived: true,
+    })
+    vi.useFakeTimers()
+    try {
+      await render()
+      await dismissDisclaimer()
+      await act(async () => coinRow()!.click())
+      readL1TokenBalance.mockResolvedValue(floor - 1n)
+      await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
+      expect(readL1TokenBalance).toHaveBeenCalled()
+      expect(container.textContent).not.toContain("spotted")
+      expect(fireEvent).not.toHaveBeenCalledWith("deposit_funded", expect.anything())
+      // At the floor the sweep accepts it, so the screen spots it.
+      readL1TokenBalance.mockResolvedValue(floor)
+      await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
+      expect(fireEvent).toHaveBeenCalledWith("deposit_funded", expect.anything())
+    } finally {
+      readL1TokenBalance.mockResolvedValue(0n)
+      vi.useRealTimers()
+    }
   })
 
   it("reports the funds once the address it handed out is funded, and Close goes Home", async () => {

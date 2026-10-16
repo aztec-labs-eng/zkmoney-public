@@ -1,4 +1,5 @@
 import { parseUnits } from "viem"
+import { REGISTRATION_SCHEDULE_DEFAULTS } from "@obsidion/core/constants"
 
 /**
  * Dev-only `?mock=create|creating|claim|claiming|deposit|deposit-free|deposit-wrong-chain|deposit-expired|funded&handle=<tag>`
@@ -69,11 +70,12 @@ export function mockOnboarding(): {
   const token = (q.get("token") ?? "").toUpperCase()
   const received = q.get("received")
   const earned = "free" in mock && mock.free
+  const schedule = REGISTRATION_SCHEDULE_DEFAULTS[earned ? "earned_tag" : "standard"]
   return {
     ...mock,
     handle: q.get("handle") ?? "honktheg00se",
-    min: parseUnits(q.get("min") ?? (earned ? "4.4" : "9.5"), 18),
-    fee: parseUnits(q.get("fee") ?? (earned ? "0.5" : "4.9"), 18),
+    min: q.get("min") ? parseUnits(q.get("min")!, 18) : schedule.min,
+    fee: q.get("fee") ? parseUnits(q.get("fee")!, 18) : schedule.fee,
     cut: parseUnits(q.get("cut") ?? "0.1", 18),
     tokenSymbol: (TOKENS as readonly string[]).includes(token) ? token : "DAI",
     received: received === null ? undefined : parseUnits(received, 18),

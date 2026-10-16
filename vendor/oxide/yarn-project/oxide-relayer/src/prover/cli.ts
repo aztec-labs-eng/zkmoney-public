@@ -1,11 +1,15 @@
+import type { EthAddress } from '@aztec/foundation/eth-address';
+
 import { InvalidArgumentError } from 'commander';
 
+import { parseEthAddresses } from '../cli/parse.js';
 import type { EarlySubmitPolicy } from './profitable_partial_epoch_policy/types.js';
 
 /** Environment variables of the epoch-proofs mode. */
 export const PROVER_ENV_VARS = [
   'OXIDE_RELAYER_PROVER_NODE_URL',
   'OXIDE_RELAYER_PROVER_NODE_API_KEY',
+  'OXIDE_RELAYER_PROVER_PAYOUT_TOKENS',
   'OXIDE_RELAYER_EARLY_PROOF_MIN_PROFIT',
   'OXIDE_RELAYER_EARLY_PROOF_MIN_PROFIT_MARGIN_BPS',
   'OXIDE_RELAYER_EARLY_PROOF_PROVING_COST_PER_CHECKPOINT',
@@ -27,6 +31,13 @@ export const PROVER_RUN_OPTIONS: readonly ProverOptionSpec[] = [
     description: 'ProverNode RPC URL used to request early epoch proofs; required by the epoch-proofs mode',
     env: 'OXIDE_RELAYER_PROVER_NODE_URL',
     url: true,
+  },
+  {
+    flags: '--prover-payout-tokens <addresses>',
+    description:
+      'comma-separated tokens that the prover accepts tips in; the prover collects from every manifest entry of the ' +
+      "pinned rollup whose portal pays in one of them; default: the pinned portal's underlying only",
+    env: 'OXIDE_RELAYER_PROVER_PAYOUT_TOKENS',
   },
   {
     flags: '--early-proof-min-profit <amount>',
@@ -51,6 +62,7 @@ export const PROVER_RUN_OPTIONS: readonly ProverOptionSpec[] = [
 /** Raw Commander options of the epoch-proofs mode. */
 export interface ProverCommanderOptions {
   proverNodeUrl?: string;
+  proverPayoutTokens?: string;
   earlyProofMinProfit?: string;
   earlyProofMinProfitMarginBps?: string;
   earlyProofProvingCostPerCheckpoint?: string;
@@ -61,6 +73,11 @@ export interface ProverRunConfig {
   proverNodeUrl?: string;
   /** API key of the prover node's admin API, sent as `x-api-key`. */
   proverNodeApiKey?: string;
+  /**
+   * The tokens that the prover accepts tips in. When it is set, the prover collects from every manifest entry of the
+   * pinned rollup whose portal pays in one of them. When it is unset, the prover collects from the pinned portal only.
+   */
+  proverPayoutTokens?: EthAddress[];
   /** Early-proof profitability policy (min profit, profit margin, per-checkpoint proving cost). Unset fields
    *  use the defaults in `profitable_partial_epoch_policy/config.ts`. */
   earlyProofPolicy?: Partial<EarlySubmitPolicy>;
@@ -81,6 +98,10 @@ export function toProverRunConfig(opts: ProverCommanderOptions, modes: readonly 
   return {
     proverNodeUrl: opts.proverNodeUrl,
     proverNodeApiKey: process.env.OXIDE_RELAYER_PROVER_NODE_API_KEY?.trim() || undefined,
+    proverPayoutTokens:
+      opts.proverPayoutTokens === undefined
+        ? undefined
+        : parseEthAddresses(opts.proverPayoutTokens, '--prover-payout-tokens'),
     earlyProofPolicy: {
       minEpochProfit: earlyProofMinProfit === undefined ? undefined : BigInt(earlyProofMinProfit),
       minEpochProfitMarginBps:

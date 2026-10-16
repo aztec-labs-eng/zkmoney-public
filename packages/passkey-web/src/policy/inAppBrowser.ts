@@ -1,5 +1,11 @@
+import { currentDevicePosture } from "./devicePosture.js"
 import { IN_APP_BROWSER_REFUSAL, type RefusalState } from "./refusalCopy.js"
-import { currentUserAgentInfoSync, type OsFamily, type UserAgentInfo } from "./userAgentInfo.js"
+import {
+  currentUserAgentInfoSync,
+  type OsFamily,
+  type UserAgentInfo,
+  versionBelow,
+} from "./userAgentInfo.js"
 
 /**
  * An iOS browser that names no known family: an app's own web view (X, Instagram, ...), where
@@ -9,6 +15,68 @@ export function isIosInAppBrowser(
   info: Pick<UserAgentInfo, "osFamily" | "browserFamily">,
 ): boolean {
   return info.osFamily === "ios" && info.browserFamily === "unknown"
+}
+
+/**
+ * The Chrome major below which a phone's "Chrome" may be an app's web view: the Android System
+ * WebView lags stable, and some apps strip its `wv` marker, so a version that far behind is the
+ * trace left. A guess, not a passkey floor; raised by hand as stable moves, kept well behind it.
+ */
+export const ANDROID_CHROME_WEBVIEW_FLOOR = "141"
+
+/**
+ * Chrome's Play Store page, the https form: Chrome hands it to the Play Store app, and a web view
+ * may drop a `market://` link.
+ */
+export const PLAY_STORE_CHROME_URL =
+  "https://play.google.com/store/apps/details?id=com.android.chrome"
+
+/**
+ * A Chrome on Android below the floor. A user-agent tell only; `currentInAppUpFront` decides what
+ * a phone makes of it.
+ */
+export function isStaleAndroidChrome(
+  info: Pick<UserAgentInfo, "osFamily" | "browserFamily" | "browserVersionReported">,
+): boolean {
+  return (
+    info.osFamily === "android" &&
+    info.browserFamily === "chrome" &&
+    versionBelow(info.browserVersionReported, ANDROID_CHROME_WEBVIEW_FLOOR)
+  )
+}
+
+/** The names in a Client Hints brand list; an entry without a readable string name is skipped. */
+function brandNames(brands: unknown): string[] {
+  if (!Array.isArray(brands)) return []
+  const names: string[] = []
+  for (const entry of brands) {
+    try {
+      const brand = (entry as { brand?: unknown } | null)?.brand
+      if (typeof brand === "string") names.push(brand)
+    } catch {
+      // A brand that cannot be read is no evidence either way.
+    }
+  }
+  return names
+}
+
+/**
+ * What the Client Hints brands report, as reported: Chromium's WebView names itself, real Chrome
+ * names itself, another browser names itself, or the list says nothing (absent, empty, nameless).
+ * A host app can override the list, so this is evidence, not proof.
+ */
+export type BrandEvidence = "webview" | "chrome" | "other" | "none"
+
+export function brandEvidence(brands: unknown): BrandEvidence {
+  const names = brandNames(brands)
+  if (names.includes("Android WebView")) return "webview"
+  if (names.includes("Google Chrome")) return "chrome"
+  return names.length > 0 ? "other" : "none"
+}
+
+/** Chromium's WebView names itself in the Client Hints brands; no real browser does. */
+export function isAndroidWebViewBrand(brands: unknown): boolean {
+  return brandEvidence(brands) === "webview"
 }
 
 /**
@@ -50,26 +118,38 @@ export function currentIsIosInAppBrowser(): boolean {
   return inApp && !isHomeScreenWebApp()
 }
 
-/**
- * An app's own browser, as far as its user agent tells: an iOS app's web view, or Android's (`wv`).
- * Neither answers a passkey request, so a retry there can't help.
- */
-export function currentIsInAppBrowser(): boolean {
-  if (currentUserAgentInfoSync().osFamily === "android") {
-    return /;\s*wv\)/.test(globalThis.navigator?.userAgent ?? "")
-  }
-  return currentIsIosInAppBrowser()
+type NavigatorWithBrands = Navigator & {
+  userAgentData?: { brands?: readonly { brand: string; version: string }[] }
+}
+
+/** The low-entropy Client Hints brands, which need no permission and no await. */
+function currentBrands(): unknown {
+  return (globalThis.navigator as NavigatorWithBrands | undefined)?.userAgentData?.brands
 }
 
 /**
- * What an app's own browser is told before any passkey request: `leave`, on iOS and Android alike.
- * An Android app can turn passkeys on in its web view, but none that reaches the page does, so no
- * way to try is offered. Nothing in a real browser.
+ * What the card before any passkey request says. `leave`: an app's own browser, so open the page
+ * in the phone's browser. `leave-or-update`: a phone's Chrome below the floor whose brands say
+ * nothing, which may be a web view or a Chrome to update. A Chrome below the floor whose brands
+ * name Google Chrome gets no card: it is read as a real Chrome and runs the request.
  */
-export type InAppUpFront = "leave"
+export type InAppUpFront = "leave" | "leave-or-update"
 
+/** The up-front card's mode, or undefined when no rule matches. */
 export function currentInAppUpFront(): InAppUpFront | undefined {
-  return currentIsInAppBrowser() ? "leave" : undefined
+  const info = currentUserAgentInfoSync()
+  if (info.osFamily !== "android") return currentIsIosInAppBrowser() ? "leave" : undefined
+  if (/;\s*wv\)/.test(globalThis.navigator?.userAgent ?? "")) return "leave"
+  if (currentDevicePosture() !== "phone") return undefined
+  const brands = brandEvidence(currentBrands())
+  if (brands === "webview") return "leave"
+  if (!isStaleAndroidChrome(info) || brands === "chrome") return undefined
+  return brands === "none" ? "leave-or-update" : "leave"
+}
+
+/** Whether the live browser gets a card before any passkey request. */
+export function currentIsInAppBrowser(): boolean {
+  return currentInAppUpFront() !== undefined
 }
 
 /** The way out for this device: on Android, or in an iOS in-app browser; nothing elsewhere. */

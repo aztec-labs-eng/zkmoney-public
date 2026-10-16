@@ -41,8 +41,6 @@ import {
   type SipaFundingToken,
 } from "@obsidion/front-core"
 import {
-  predictSIPA,
-  predictLegacySIPA,
   predictAccountAddress,
   encodeAccountInitCode,
   IntraRollupMigrationService,
@@ -64,6 +62,7 @@ import { isDesktopL1SubmitActive, submitViaDesktopBridge } from "../../platform/
 import { WebStorageAdapter } from "../../platform/storage/WebStorageAdapter"
 import { getL1Clients } from "./l1Wallet"
 import { AlreadySweptError, readSipaDeployed, UNTRACKED_TOKEN_ZERO } from "./sipaSweep"
+import { predictSipaCandidate } from "./sipaPredict"
 import { sipaFundingTokens } from "./loadDepositFacts"
 
 /** The stuck-sweep clock the activity feed and both exits share. */
@@ -466,18 +465,7 @@ async function recoveryDeployment(
       ...sipaDeployArgCandidates(record, deployments),
       ...(registration ? [registration] : []),
     ],
-    predict: (candidate) =>
-      candidate.protocol === "legacy-eoa"
-        ? predictLegacySIPA(publicClient, candidate.sipaFactory, candidate.args)
-        : predictSIPA(
-            publicClient as never,
-            candidate.sipaFactory,
-            candidate.args.implementation,
-            candidate.args.intentHash,
-            candidate.args.recoveryCommitment,
-            candidate.args.rollupVersion,
-            candidate.args.resweepable,
-          ),
+    predict: (candidate) => predictSipaCandidate(publicClient, candidate),
   }
 }
 

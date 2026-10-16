@@ -716,6 +716,38 @@ describe("rebuildRegistrationBroadcast", () => {
     expect(store.get(OWNER)).toBeNull()
   })
 
+  it("rebuilds an address shown before the wallet's salt key from the salt seeded with it", async () => {
+    const shown = "0x00000000000000000000000000000000000000b9" as Address
+    const seeded = `0x${"03".repeat(32)}` as Hex
+    const { deps, store } = resumeDeps({ broadcast: false, sipaAddress: shown, fundedAt: 1 })
+    const seededSipaSalt = vi.fn(async () => seeded)
+    const sign = {
+      ...signDeps(),
+      seededSipaSalt,
+      deriveRegistrationSipa: vi.fn(async (input: { sharedSecretSalt?: Hex }) =>
+        input.sharedSecretSalt === seeded
+          ? { ...DERIVATION, sipaAddress: shown, sharedSecretSalt: seeded }
+          : DERIVATION,
+      ),
+    }
+    expect(await rebuildRegistrationBroadcast(deps, store.get(OWNER)!, sign)).toMatchObject({
+      kind: "payload",
+      payload: { sipaAddress: shown, sharedSecretSalt: seeded },
+    })
+    expect(seededSipaSalt).toHaveBeenCalledWith(shown)
+  })
+
+  it("holds a funded record whose seeded salt does not derive its address either", async () => {
+    const shown = "0x00000000000000000000000000000000000000b9" as Address
+    const { deps, store } = resumeDeps({ broadcast: false, sipaAddress: shown, fundedAt: 1 })
+    const sign = { ...signDeps(), seededSipaSalt: vi.fn(async () => `0x${"03".repeat(32)}` as Hex) }
+    expect(await rebuildRegistrationBroadcast(deps, store.get(OWNER)!, sign)).toMatchObject({
+      kind: "wait",
+      reason: "The address no longer derives",
+    })
+    expect(sign.accountService.signDomain).not.toHaveBeenCalled()
+  })
+
   it("has nothing to rebuild for a record that already ended", async () => {
     const { deps, store } = resumeDeps({ phase: "confirmed" })
     const sign = signDeps()

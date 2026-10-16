@@ -53,7 +53,7 @@ const spinnerCss =
   "@keyframes ww-reset-spin{to{transform:rotate(360deg)}}" +
   ".ww-reset-spinner{display:inline-block;width:16px;height:16px;margin-right:8px;vertical-align:-3px;" +
   "border:2px solid rgba(255,255,255,.4);border-top-color:#fff;border-radius:50%;" +
-  "animation:ww-reset-spin .8s linear infinite}"
+  "animation:ww-reset-spin .8s linear infinite;will-change:transform}"
 
 function Button({
   children,

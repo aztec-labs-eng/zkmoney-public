@@ -24,11 +24,6 @@ export interface L1OperationsSubmissionConfig {
   retryBackoffMs: number;
   /** Time from when an operation is recorded until a deferral drops it, whatever the defer cause. */
   maxPendingAgeMs: number;
-  /**
-   * Percentage by which the tx fee ceiling allows the latest base fee to increase. minPayout is priced at the ceiling,
-   * so more headroom keeps a tx valid through a larger base-fee increase but defers more operations as unprofitable.
-   */
-  maxFeeHeadroomPercent?: number;
 }
 
 /**
@@ -102,6 +97,7 @@ export function redactRunConfig(config: RunConfig): Record<string, unknown> {
     ...config,
     portal: config.portal.toString(),
     l1OperationsPayoutTokens: config.l1OperationsPayoutTokens?.map(token => token.toString()),
+    proverPayoutTokens: config.proverPayoutTokens?.map(token => token.toString()),
     deploymentEnvManifestUrl: urlOrigin(config.deploymentEnvManifestUrl),
     sdnUrl: config.sdnUrl && urlOrigin(config.sdnUrl),
     readL1RpcUrl: urlOrigin(config.readL1RpcUrl),
@@ -145,7 +141,6 @@ export interface CommanderRunOptions extends ProverCommanderOptions {
   fpcFundingPollIntervalMs?: number;
   l1OperationsRetryBackoffMs?: number;
   l1OperationsMaxPendingAgeSeconds?: number;
-  l1OperationsMaxFeeHeadroomPercent?: number;
   l1OperationsPayoutTokens?: string;
   allowUnprofitable?: boolean;
   predicateApiKey?: string;

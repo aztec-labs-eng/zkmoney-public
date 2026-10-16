@@ -15,21 +15,6 @@ export type AnalyticsEvent =
   | "profile_rollup_skew"
   // Per-tx phase timings (sync/sim/enclave/witgen/proving), from the sdk benchmark registry.
   | "tx_timing"
-  // ── Onboarding funnel ──
-  | "onboarding_started"
-  | "onboarding_handle_checked"
-  | "onboarding_account_created"
-  // `tag_claimed` means CONFIRMED on the Registry; `tag_custody` means the bundler holds the op
-  // (optimistic path). The confirmed event for a submitted op fires from the detection tick with
-  // custody_to_confirmed_ms from the durable record, so the pair never needs cross-session pairing.
-  | "onboarding_tag_claimed"
-  | "onboarding_tag_custody"
-  | "onboarding_oxide_stage"
-  // `named` separates tag-claiming completions from nameless wallets, which skip the tag events.
-  | "onboarding_completed"
-  // A finished signup leaving for the wallet with analytics on. Consent is asked at that exit, so for
-  // a first signup this is the first event the device sends; nothing before it is sent after.
-  | "wallet_entered"
   // Screen-action failures, reported by useAsyncAction for any named action.
   | "action_failed"
   // A Predicate verdict blocked a flow (`flow` prop only — never the address).
@@ -100,26 +85,56 @@ export type AnalyticsEvent =
   // ── Campaign crossing + admission gate (ULT-777) ── One emit per admission verify resolution
   // (`outcome`), tagged with the surface that asked (`gate` is the WalletGate bounce, which runs
   // no verify and reports `unknown`). The `entry` prop on onboarding_started and wallet_entered is
-  // the cohort crossing (Wallet entries by source reads wallet_entered): campaign hand-offs carry a
-  // constant src=campaign — a label, never a per-user id.
+  // the cohort crossing (Wallet entries by source reads wallet_entered).
   | "admission_checked"
-  // ── Registration deposit (deposit-to-skip, ULT-777) ── The paid admission path between
-  // onboarding_account_created and onboarding_tag_claimed. terms → shown → funded → swept, plus
-  // the lapse terminal for a quote that ran out unfunded. No event carries an address or an amount
-  // (the ask is a fixed figure per kind, nothing to bucket). `registration_terms_accepted` carries
-  // `fee_waived`, whether the hand-off hinted the campaign price; `registration_deposit_shown`
-  // carries `kind`, which schedule was signed.
+  // The registration terms the user accepted, and whether they chose to pay the deposit.
   | "registration_terms_accepted"
-  | "registration_deposit_shown"
-  | "registration_deposit_funded"
-  | "registration_deposit_swept"
-  | "registration_lapsed"
   // ── Find my passkey by tag ── The L1 read found the tag's credential (`more_keys`: the account
   // holds more than the one pinned). Every other by-tag outcome is an action_failed with its own
   // code under action `enter:by-tag`.
   | "passkey_by_tag_lookup_resolved"
   // ── Passkeys ── One per passkey attempt, in the closed vocabulary `@obsidion/passkey-web` owns.
   | "passkey_ceremony"
+
+/**
+ * The onboarding stream (docs/analytics/signup-funnel-events.md): sent on the signup platform
+ * whatever the consent answer, with no identifier. zkmoney-api's ONBOARDING_EVENT_PROPS holds
+ * each event's closed props.
+ */
+export type OnboardingEvent =
+  | "onboarding_started"
+  // Each "Get started" click (`attempt` 1 or 2+), and the claim server's drawn tag (`shuffle` on a
+  // re-roll).
+  | "onboarding_create_attempted"
+  | "onboarding_tag_drawn"
+  // A signup step (`step` draw, account or claim) ended without its result. Passkey failures are
+  // passkey_ceremony's.
+  | "onboarding_failed"
+  // The Choose your name sheet: opened (`screen`), and the route taken to claim a name (`route`).
+  // onboarding_handle_checked carries the sheet's availability verdict.
+  | "name_sheet_opened"
+  | "name_route_chosen"
+  | "onboarding_handle_checked"
+  // The passkey exists; `route` is how its tag was got.
+  | "onboarding_account_created"
+  // `tag_claimed` means CONFIRMED on the Registry; `tag_custody` means the bundler holds the op
+  // (optimistic path). The confirmed event for a submitted op fires from the detection tick with
+  // custody_to_confirmed_ms from the durable record, so the pair never needs cross-session pairing.
+  | "onboarding_tag_claimed"
+  | "onboarding_tag_custody"
+  | "onboarding_oxide_stage"
+  // `named` separates tag-claiming completions from nameless wallets, which skip the tag events.
+  | "onboarding_completed"
+  // A finished signup leaving for the wallet, once per account.
+  | "wallet_entered"
+  // The registration deposit: shown → funded → swept, plus the lapse of a quote that ran out
+  // unfunded. No event carries an address or an amount.
+  // The deposit screen opened while the registration is unpaid.
+  | "registration_deposit_opened"
+  | "registration_deposit_shown"
+  | "registration_deposit_funded"
+  | "registration_deposit_swept"
+  | "registration_lapsed"
 
 export type AnalyticsProps = Record<string, string | number | boolean | undefined>
 
@@ -135,9 +150,9 @@ export const appVersion = (import.meta.env.VITE_APP_VERSION as string | undefine
 /**
  * Opt-in consent gate. Fails closed: until App.tsx binds the config-backed getter AND the user has
  * granted consent (local config `analyticsConsent`), no event leaves the device. Three things do not
- * pass through it: a passkey result the signup flow opened and the campaign hand-off diagnostics,
- * which carry no identifier (see `fireSignupEvent`), and a report the user submits by hand, which
- * is its own consent.
+ * pass through it: an onboarding event and a passkey result the signup flow opened, which carry no
+ * identifier (see `fireSignupEvent`), and a report the user submits by hand, which is its own
+ * consent.
  */
 let consentGranted: () => boolean = () => false
 
@@ -151,16 +166,16 @@ export function analyticsEnabled(): boolean {
 }
 
 /**
- * Consent disclosure, shared by the onboarding modal and the Settings caption so the two can't
+ * Consent disclosure, shared by the consent prompt and the Settings caption so the two can't
  * drift. Paylink events carry amount ranges and a hashed link identifier (derived from the link's
  * tagging public key), so neither may promise that amounts are never sent — "anonymized link
- * identifier" is the honest phrasing.
+ * identifier" is the honest phrasing. Both name the onboarding counts, which no answer turns off.
  */
 export const ANALYTICS_CONSENT_COPY =
-  "Share anonymous data on usage events — like onboarding progress, timings, and paylink activity shown in amount ranges (e.g., “under $50”) linked to an anonymized ID. Exact amounts, addresses, or tags are never shared. You can update this anytime in settings."
+  "Share anonymous data on how you use the wallet — like timings and paylink activity shown in amount ranges (e.g., “under $50”) linked to an anonymized ID. Exact amounts, addresses, or tags are never shared. Signup steps are always counted, with no ID. You can update this anytime in settings."
 
 export const ANALYTICS_SETTINGS_COPY =
-  "Anonymous events only — onboarding progress, timings, and payment-link activity as amount ranges tied to an anonymized link identifier. Never exact amounts, addresses, or tags."
+  "Anonymous usage events only — timings and payment-link activity as amount ranges tied to an anonymized link identifier. Never exact amounts, addresses, or tags. Signup steps are always counted, with no identifier."
 
 const BASE_ID_KEY = "zkm_bid"
 /** Storage keys of the pre-base independent random ids; unread now, deleted when the base is minted. */
@@ -293,53 +308,10 @@ function postWithoutCookies(path: string, body: Record<string, unknown>): void {
 const SIGNUP_PLATFORM = "web-signup"
 
 /** The attempt flows the signup wizard opens. A result carrying one of these is a signup result. */
-const SIGNUP_FLOWS: ReadonlySet<string> = new Set(["onboarding", "handoff"])
-
-/**
- * The campaign hand-off diagnostics' closed vocabulary. zkmoney-api's HANDOFF_EVENT_PROPS mirrors
- * it; the export contract test fails when the two drift.
- */
-export const SIGNUP_HANDOFF_VOCABULARY = {
-  handoff_received: {
-    receipt: ["accepted", "rejected", "plain"],
-    rejection: [
-      "not_from_campaign",
-      "malformed",
-      "no_key",
-      "no_shared_domain",
-      "unreadable",
-      "invalid",
-      "error",
-    ],
-  },
-  handoff_adopted: {
-    key_source: ["handoff", "cache", "ceremony"],
-    material: ["accepted", "none"],
-  },
-} as const
-
-type Vocabulary = typeof SIGNUP_HANDOFF_VOCABULARY
-
-/** Why the wallet refused a sealed hand-off. */
-export type HandoffRejection = Vocabulary["handoff_received"]["rejection"][number]
-
-/** What a page load did with a hand-off: took its sealed material, refused it, or had none. */
-export type HandoffReceipt =
-  | { receipt: "accepted" }
-  | { receipt: "rejected"; rejection: HandoffRejection }
-  | { receipt: "plain" }
-
-/** Where the key of an adopted campaign account came from, and whether sealed material arrived. */
-export type HandoffAdoption = {
-  key_source: Vocabulary["handoff_adopted"]["key_source"][number]
-  material: Vocabulary["handoff_adopted"]["material"][number]
-}
+const SIGNUP_FLOWS: ReadonlySet<string> = new Set(["onboarding"])
 
 /** Events sent on the signup platform, whatever the consent answer. */
-export type SignupEvent =
-  | { event: "passkey_ceremony"; props: AnalyticsProps }
-  | { event: "handoff_received"; props: HandoffReceipt }
-  | { event: "handoff_adopted"; props: HandoffAdoption }
+export type SignupEvent = { event: "passkey_ceremony" | OnboardingEvent; props?: AnalyticsProps }
 
 /**
  * An event the signup flow sends before it can ask for consent, on the footing the campaign's
@@ -358,6 +330,10 @@ export function fireSignupEvent({ event, props }: SignupEvent): void {
   } catch {
     // Optional analytics must never break the wallet action that fired it.
   }
+}
+
+export function fireOnboardingEvent(event: OnboardingEvent, props?: AnalyticsProps): void {
+  fireSignupEvent({ event, props })
 }
 
 /**
@@ -555,6 +531,7 @@ const POLICY_REFUSAL_CODES: Record<string, FailureCode> = {
   SecurityKeyNoPrfError: "passkey_no_key_material",
   SingleSaltProviderError: "passkey_no_key_material",
   UnsupportedProviderError: "passkey_unsupported_provider",
+  LaptopPasskeyRefusedError: "passkey_unsupported_provider",
   PhoneUnreachableError: "passkey_phone_unreachable",
   RotatedCredentialError: "passkey_no_wallet",
   NoWalletForPasskeyError: "passkey_no_wallet",

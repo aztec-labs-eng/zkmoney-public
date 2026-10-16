@@ -105,6 +105,18 @@ describe("upsertSavedL1WalletContact", () => {
     })
   })
 
+  it("keeps a real provider, and a later manual save of the address merges into it", async () => {
+    await upsertSavedL1WalletContact({ address: ADDR, name: "ether.fi Cash", provider: "etherfi" })
+    await upsertSavedL1WalletContact({ address: ADDR, name: "ether.fi Cash" })
+
+    const entries = await ContactStorage.get().getEntries()
+    expect(entries).toHaveLength(1)
+    expect(entries[0]).toMatchObject({
+      name: "ether.fi Cash",
+      l1Wallet: { provider: "etherfi", provenance: "saved-recipient", userLabeled: true },
+    })
+  })
+
   it("skips the zero address", async () => {
     await upsertSavedL1WalletContact({ address: ZERO, name: "Faucet" })
     expect(await ContactStorage.get().getEntries()).toEqual([])

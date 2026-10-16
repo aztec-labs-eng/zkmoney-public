@@ -16,9 +16,11 @@ import {
   computeStealthRecipientHash,
   deriveRecoveryAddress,
   deriveRecoveryPrivateKey,
+  deriveSelfSipaSecret,
   deriveSharedSecret,
   type SipaK1Point,
 } from "../../src/services/sipaStealth.js"
+import { selfSipaNonce } from "../../src/services/sipaSelfResolve.js"
 
 const CURVE_ORDER = secp256k1.CURVE.n
 
@@ -109,6 +111,53 @@ describe("deriveSharedSecret", () => {
         deriveSharedSecret(fixture.userPublicKey, bad, fixture.day, fixture.nonce),
       ).toThrow(/not in field/)
     }
+  })
+})
+
+describe("deriveSelfSipaSecret", () => {
+  const selfKey = new Fr(0x5e1fn)
+
+  it("matches the pinned vector and is deterministic", () => {
+    const salt = deriveSelfSipaSecret(selfKey, fixture.day, fixture.nonce)
+    expect(salt.toString()).toBe(
+      "0x00e62ccd5bf6b8907a7be2014772e5987bffee07f3601275b2e7f755e429ecc1",
+    )
+    expect(deriveSelfSipaSecret(selfKey, fixture.day, fixture.nonce).equals(salt)).toBe(true)
+  })
+
+  it("differs across keys, days and nonces", () => {
+    const base = deriveSelfSipaSecret(selfKey, 123, 4)
+    expect(base.equals(deriveSelfSipaSecret(new Fr(0x5e20n), 123, 4))).toBe(false)
+    expect(base.equals(deriveSelfSipaSecret(selfKey, 124, 4))).toBe(false)
+    expect(base.equals(deriveSelfSipaSecret(selfKey, 123, 5))).toBe(false)
+  })
+
+  it("rejects a zero key and the circuit's nonce bound", () => {
+    expect(() => deriveSelfSipaSecret(new Fr(0n), 123, 4)).toThrow(/zero/)
+    expect(() => deriveSelfSipaSecret(selfKey, 123, MAX_NONCE)).toThrow(/nonce out of range/)
+    expect(() => deriveSelfSipaSecret(selfKey, -1, 4)).toThrow(/u32/)
+  })
+
+  it("is not what the resolver derives for the wallet's slots from the registry stealth key", () => {
+    for (const slot of [0, 1, 2]) {
+      const nonce = selfSipaNonce(slot)
+      const asResolver = deriveSharedSecret(
+        fixture.userPublicKey,
+        fixture.resolverPrivateKey,
+        fixture.day,
+        nonce,
+      )
+      expect(asResolver.equals(deriveSelfSipaSecret(selfKey, fixture.day, nonce))).toBe(false)
+    }
+  })
+
+  it("yields a recovery key pair like any other salt", () => {
+    const userPrivateKey = 0x5eedn
+    const salt = deriveSelfSipaSecret(selfKey, 123, 4)
+    const recoveryKey = deriveRecoveryPrivateKey(userPrivateKey, salt)
+    expect(deriveRecoveryAddress(pointOf(recoveryKey), new Fr(0n)).toString()).toBe(
+      deriveRecoveryAddress(pointOf(userPrivateKey), salt).toString(),
+    )
   })
 })
 

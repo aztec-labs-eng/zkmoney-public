@@ -10,6 +10,7 @@ import {
   YUBIKEY_5_USB_C_AAGUID,
   ZERO_AAGUID,
 } from "@obsidion/core/constants"
+import type { LocalManager } from "./laptopCreation.js"
 import type { PasskeyProvider } from "./passkeyTelemetryVocabulary.js"
 
 /**
@@ -44,6 +45,8 @@ export const WINDOWS_HELLO = "Windows Hello"
  */
 const PROVIDERS: Readonly<Record<string, { name: string; slug: PasskeyProvider }>> = {
   "adce0002-35bc-c60a-648b-0b25f1f05503": { name: "Chrome", slug: "chrome_profile" },
+  // Chromium's profile store on any build without Google branding, named for the commonest one.
+  "b5397666-4885-aa6b-cebf-e52262a439a2": { name: "Brave", slug: "other" },
   [APPLE_ICLOUD_AAGUID]: { name: "iCloud Keychain", slug: "icloud_keychain" },
   "dd4ec289-e01d-41c9-bb89-70fa845d4bf2": {
     name: "iCloud Keychain (managed)",
@@ -123,4 +126,55 @@ export function providerAllowed(
   const measured = securityKey ? SECURITY_KEY_AAGUIDS : PASSKEY_MANAGER_AAGUIDS
   if (measured.has(id)) return true
   return extra.some((allowed) => allowed.toLowerCase() === id)
+}
+
+/** The id each manager a laptop may create on reports. */
+export const LOCAL_MANAGER_AAGUIDS: Readonly<Record<LocalManager, string>> = {
+  "apple": APPLE_ICLOUD_AAGUID,
+  "gpm": GPM_AAGUID,
+  "1password": ONEPASSWORD_AAGUID,
+}
+
+/** What the copy calls each of them, with what Google Password Manager needs first. */
+export const LOCAL_MANAGER_NAMES: Readonly<Record<LocalManager, string>> = {
+  "apple": "Apple Passwords",
+  "gpm": "Google Password Manager (sign in to Chrome first)",
+  "1password": "1Password",
+}
+
+/** "Apple Passwords or Google Password Manager (sign in to Chrome first)", for a sentence. */
+export function localManagersClause(managers: readonly LocalManager[]): string {
+  const names = managers.map((m) => LOCAL_MANAGER_NAMES[m])
+  if (names.length <= 1) return names[0] ?? "a supported password manager"
+  return `${names.slice(0, -1).join(", ")} or ${names[names.length - 1]}`
+}
+
+/** The manager a laptop may create on that reports this id, when one does. */
+export function localManagerFor(aaguid: string | undefined): LocalManager | undefined {
+  const id = aaguid?.toLowerCase()
+  return (Object.keys(LOCAL_MANAGER_AAGUIDS) as LocalManager[]).find(
+    (m) => LOCAL_MANAGER_AAGUIDS[m] === id,
+  )
+}
+
+export type LocalProviderVerdict = "admitted" | "apple" | "unnamed" | "unsupported"
+
+/**
+ * Whether a laptop's own passkey may create a wallet, judged after `providerAllowed` admitted the
+ * id. Unlike the provider gate, this one is an allowlist and refuses a missing id: on this route
+ * a zero id can be a manager whose local cell no other device reproduces, and nothing else
+ * defends the binding. `managers` is the row's list; `extra` is the browser-test seam.
+ */
+export function localProviderVerdict(
+  aaguid: string | undefined,
+  managers: readonly LocalManager[],
+  extra: readonly string[] = [],
+): LocalProviderVerdict {
+  if (!aaguid) return "unnamed"
+  const id = aaguid.toLowerCase()
+  if (id === ZERO_AAGUID) return "unnamed"
+  if (extra.some((allowed) => allowed.toLowerCase() === id)) return "admitted"
+  const manager = localManagerFor(id)
+  if (manager && managers.includes(manager)) return "admitted"
+  return manager === "apple" ? "apple" : "unsupported"
 }

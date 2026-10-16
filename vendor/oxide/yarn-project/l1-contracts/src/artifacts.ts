@@ -58,6 +58,7 @@ export { SIPAFactoryAbi, SIPAFactoryBytecode } from './abis/SIPAFactory.js';
 export { SIPAResolverAbi, SIPAResolverBytecode } from './abis/SIPAResolver.js';
 export { OperationExecutorAbi, OperationExecutorBytecode } from './abis/OperationExecutor.js';
 export { MockOperationAbi, MockOperationBytecode } from './abis/MockOperation.js';
+export { MockCatchingOperationAbi, MockCatchingOperationBytecode } from './abis/MockCatchingOperation.js';
 export { FPCFunderTestnetAbi, FPCFunderTestnetBytecode } from './abis/FPCFunderTestnet.js';
 export { FPCFunderDAIAbi, FPCFunderDAIBytecode } from './abis/FPCFunderDAI.js';
 export { MockSwapRouterAbi, MockSwapRouterBytecode } from './abis/MockSwapRouter.js';

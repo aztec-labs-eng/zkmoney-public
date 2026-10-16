@@ -184,3 +184,26 @@ export function useLinkSharing(url?: string, title = "Payment request", text?: s
 
   return { copied, copy, share }
 }
+
+/** Keeps the screen on while `active`. The browser drops the lock when the page hides, so it is taken again on return. */
+export function useWakeLock(active: boolean): void {
+  useEffect(() => {
+    if (!active || typeof navigator === "undefined" || !("wakeLock" in navigator)) return
+    let lock: WakeLockSentinel | undefined
+    let done = false
+    const take = () => {
+      if (document.visibilityState !== "visible") return
+      navigator.wakeLock.request("screen").then(
+        (l) => (done ? void l.release().catch(() => {}) : (lock = l)),
+        () => {},
+      )
+    }
+    take()
+    document.addEventListener("visibilitychange", take)
+    return () => {
+      done = true
+      document.removeEventListener("visibilitychange", take)
+      void lock?.release().catch(() => {})
+    }
+  }, [active])
+}

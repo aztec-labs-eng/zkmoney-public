@@ -36,6 +36,26 @@ export type SipaOrigin = {
     }
 )
 
+/**
+ * One claimed sweep of a SIPA. The record's amount fields describe the latest; the ledger keeps
+ * every one, since a re-used address is swept again and the export reports each.
+ */
+export interface SIPASweep {
+  inboxIndex: string
+  sweepTxHash: Hash
+  /** ms epoch of the sweep's L1 block. */
+  settledAt?: number
+  /** Credited on L2, raw units of the credited token. */
+  netAmount: string
+  /**
+   * What the sweep took out of the SIPA, raw units of `fundingTokenDecimals`: every funding
+   * transfer it settled. Unset when the sweep tx moved more than one token out.
+   */
+  grossAmount?: string
+  fundingTokenSymbol?: string
+  fundingTokenDecimals?: number
+}
+
 export interface SIPADepositRecord {
   /** Counterfactual SIPA address (canonical key, lowercased on store). */
   sipaAddress: Address
@@ -85,11 +105,12 @@ export interface SIPADepositRecord {
   /** Sweep log values — the claim inputs. Strings for JSON-safe bigints. */
   inboxIndex?: string
   /**
-   * Inbox indexes already claimed off this SIPA. A re-used/topped-up SIPA is
-   * re-swept (never re-broadcast), so later `Sweep` events surface only via
-   * the known-SIPA scan and each claims independently — this is its dedup.
+   * Inbox indexes already claimed off this SIPA. A SIPA paid again is swept again once it is
+   * published again, and each sweep claims independently — this is its dedup.
    */
   claimedInboxIndexes?: string[]
+  /** Every claimed sweep, in inbox order. */
+  sweeps?: SIPASweep[]
   /** Net amount forwarded to the portal (gross − fee), raw token units. */
   netAmount?: string
   /** Deductions between the gross and L2 credit, raw token units. */
@@ -112,6 +133,8 @@ export interface SIPADepositRecord {
    * re-walking the whole look-back.
    */
   lastScannedBlock?: string
+  /** A scan from the account's history start has completed for this SIPA. */
+  historyScanned?: boolean
   /** ms epoch of the last `Sweep` scan — the slow lane's cadence check. */
   lastScanAt?: number
   /** Blocks (decimal strings) of sweeps a tick left unresolved; the next tick re-reads each one. */
@@ -286,9 +309,10 @@ export class SIPADepositStore {
         phase: toPhase,
         endTime: undefined,
         reorgEpoch: (existing.reorgEpoch ?? 0) + 1,
-        // The reorged-out claim is the record's latest (`inboxIndex`); drop it
-        // from the dedup set so the next scan re-attempts the claim.
+        // The reorged-out claim is the record's latest (`inboxIndex`); drop it from the dedup set
+        // and the ledger so the next scan re-attempts the claim.
         claimedInboxIndexes: existing.claimedInboxIndexes?.filter((i) => i !== existing.inboxIndex),
+        sweeps: existing.sweeps?.filter((s) => s.inboxIndex !== existing.inboxIndex),
       }
     })
   }

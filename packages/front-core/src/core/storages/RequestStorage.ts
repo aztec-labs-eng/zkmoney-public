@@ -1,5 +1,6 @@
 import type { IStorageAdapter, StorageLock } from "./adapter.js"
 import { REQUEST_STORAGE_KEY } from "./storage-constants.js"
+import type { SipaLinkPreimage } from "../paymentRequest/requestInlineCodec.js"
 
 export type RequestDirection = "outgoing" | "incoming"
 
@@ -47,6 +48,7 @@ export interface PaymentRequest {
   requesterAddress?: string
   /** Self-broadcast L1 SIPA at mint time — rebuilt into the share URL. */
   sipaAddress?: string
+  sipaPreimage?: SipaLinkPreimage
 }
 
 interface StoredShape {

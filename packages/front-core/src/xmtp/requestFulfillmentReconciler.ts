@@ -8,6 +8,9 @@
  * A contact request additionally requires the verified sender attribution to be that contact; a
  * link row (`contactTag: ""`) accepts any payer. A receive the network reverted pays nothing, and
  * a request it had already paid reopens. All paths are idempotent (`applyStatus` / `reopen` guard).
+ *
+ * The payer of a request becomes a full contact: only the payee's own request ids do this, so a
+ * payment to a printed code or a plain link leaves the payer auto-added.
  */
 
 import { globalEventEmitter } from "../core/services/GlobalEventEmitter.js"
@@ -19,6 +22,11 @@ import { fulfillmentSatisfiesRequest } from "./RequestReceiver.js"
 type RequestStore = Pick<RequestStorage, "list" | "applyStatus"> &
   Partial<Pick<RequestStorage, "subscribe" | "reopen">>
 
+/** Clears `autoAdded` on the payer's contact row, if there is one. */
+export type RequestPayerContacts = {
+  approveAutoAdded(l2Address: string): Promise<unknown>
+}
+
 /** Receives lookup for the reverse join. */
 export type ReceivesByRequestId = {
   findReceivesByRequestId(requestId: string): Promise<TokenTransaction[]>
@@ -26,9 +34,25 @@ export type ReceivesByRequestId = {
   findReceivesByRequestIds?(requestIds: readonly string[]): Promise<Map<string, TokenTransaction[]>>
 }
 
+/** Approve first, so the row turns paid with its payer already a contact. */
+async function fulfill(
+  store: RequestStore,
+  row: { id: string },
+  tx: TokenTransaction,
+  payers: RequestPayerContacts | undefined,
+): Promise<void> {
+  if (payers && tx.senderL2Address) {
+    await payers
+      .approveAutoAdded(tx.senderL2Address)
+      .catch((err) => console.warn("[requestFulfillmentReconciler] payer approval failed:", err))
+  }
+  await store.applyStatus(row.id, "fulfilled", tx.txHash)
+}
+
 export async function reconcileRequestFulfillments(
   store: RequestStore,
   tx: TokenTransaction,
+  payers?: RequestPayerContacts,
 ): Promise<void> {
   const requestId = tx.requestId?.toLowerCase()
   if (!requestId || !tx.txHash || tx.status === "failed") return
@@ -38,7 +62,7 @@ export async function reconcileRequestFulfillments(
     if (row.id.toLowerCase() !== requestId) continue
     if (row.contactTag && row.contactTag.toLowerCase() !== (tx.from ?? "").toLowerCase()) continue
     if (!fulfillmentSatisfiesRequest(row, tx)) continue
-    await store.applyStatus(row.id, "fulfilled", tx.txHash)
+    await fulfill(store, row, tx, payers)
   }
 }
 
@@ -46,7 +70,11 @@ export async function reconcileRequestFulfillments(
  * Reverse join: reopen each paid outgoing row whose paying receive the network reverted, then look
  * for an already-stored fulfilling receive for each pending one.
  */
-async function sweepRequests(store: RequestStore, receives: ReceivesByRequestId): Promise<void> {
+async function sweepRequests(
+  store: RequestStore,
+  receives: ReceivesByRequestId,
+  payers: RequestPayerContacts | undefined,
+): Promise<void> {
   const outgoing = (await store.list()).filter((row) => row.direction === "outgoing")
   const pending = outgoing.filter((row) => row.status === "pending")
   const paid = store.reopen
@@ -73,7 +101,7 @@ async function sweepRequests(store: RequestStore, receives: ReceivesByRequestId)
       if (!tx.txHash || tx.status === "failed") continue
       if (row.contactTag && row.contactTag.toLowerCase() !== (tx.from ?? "").toLowerCase()) continue
       if (!fulfillmentSatisfiesRequest(row, tx)) continue
-      await store.applyStatus(row.id, "fulfilled", tx.txHash)
+      await fulfill(store, row, tx, payers)
       break
     }
   }
@@ -86,9 +114,10 @@ async function sweepRequests(store: RequestStore, receives: ReceivesByRequestId)
 export function startRequestFulfillmentReconciler(
   store: RequestStore,
   receives?: ReceivesByRequestId,
+  payers?: RequestPayerContacts,
 ): () => void {
   const onTransfer = (tx: TokenTransaction): void => {
-    void reconcileRequestFulfillments(store, tx).catch((err) =>
+    void reconcileRequestFulfillments(store, tx, payers).catch((err) =>
       console.warn("[requestFulfillmentReconciler] reconcile failed:", err),
     )
   }
@@ -104,7 +133,7 @@ export function startRequestFulfillmentReconciler(
         return
       }
       sweeping = true
-      void sweepRequests(store, receives)
+      void sweepRequests(store, receives, payers)
         .catch((err) => console.warn("[requestFulfillmentReconciler] sweep failed:", err))
         .finally(() => {
           sweeping = false

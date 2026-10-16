@@ -254,12 +254,11 @@ describe("rebuildWithdrawals", () => {
       direction: "out",
       withdrawalLocalId: record.localId,
       escrow,
+      factory: FACTORY,
       nonce: NONCE,
       recipientCommitment: sky.recipientCommitment,
       amount: (6n * 10n ** 18n).toString(),
-      escrowTip: TIP.toString(),
     })
-    expect(savingsMoveOfWithdrawal(store.getByL2TxHash(SKY_TX)!)?.releaseTip).toBeUndefined()
   })
 
   it("rebuilds no move from a plain burn", async () => {
@@ -285,8 +284,18 @@ describe("rebuildWithdrawals", () => {
   it("stamps the fallback time on a burn whose block cannot be read, and creates nothing twice", async () => {
     const store = await newStore()
     const source = makeSource(EVENTS, {})
-    const first = await rebuildWithdrawals({ source, store, tokenSymbol: "DAI", now: () => 4_242 })
-    expect(first.every((r) => r.startTime === 4_242)).toBe(true)
+    const report = vi.fn()
+    const first = await rebuildWithdrawals({
+      source,
+      store,
+      tokenSymbol: "DAI",
+      now: () => 4_242,
+      report,
+    })
+    expect(first.every((r) => r.startTime === 4_242 && r.startTimeEstimated)).toBe(true)
+    expect(report).toHaveBeenCalledWith(
+      expect.objectContaining({ tokenSymbol: "DAI", unknown: first.length, created: first }),
+    )
 
     const again = await rebuildWithdrawals({ source, store, tokenSymbol: "DAI", now: () => 4_242 })
     expect(again).toEqual([])

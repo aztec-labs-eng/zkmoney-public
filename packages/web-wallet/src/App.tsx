@@ -1,7 +1,7 @@
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { ContractService, Network } from "@obsidion/sdk"
 import type { AztecNode } from "@aztec/aztec.js/node"
-import { lazy, Suspense, useEffect, useState } from "react"
+import { lazy, Suspense, useEffect, useState, useSyncExternalStore } from "react"
 import {
   AccountProvider,
   AssetProvider,
@@ -35,9 +35,7 @@ import { isDemoMode } from "./dev/demoFlag"
 import { ErrorModalHost } from "./errors/ErrorModalHost"
 import { bindAnalyticsConsent } from "./lib/analytics"
 import { wireTxTimingAnalytics } from "./lib/txTimingAnalytics"
-import { hasWalletEntry, reportGateBounce } from "./features/identity/admission"
 import { loadOnboardedIdentity, loadWalletIdentity } from "./features/identity/walletIdentity"
-import { leavePage } from "./platform/storage/walletStorage"
 import { NameRequiredScreen } from "./ui/screens/NameRequiredScreen"
 import {
   buildWebDetectionDeps,
@@ -45,20 +43,24 @@ import {
   startDetectionLoop,
   watchRegistrationRail,
 } from "./features/onboarding/webRegistration"
-import { campaignClaimSigner, walletResumeExtras } from "./features/onboarding/registrationResume"
-import { startCampaignClaimNoticeLoop } from "./features/identity/campaignClaimNotice"
-import { watchWalletPresence } from "./features/identity/walletPresence"
+import { walletResumeExtras } from "./features/onboarding/registrationResume"
 import { useSponsoredRailPending } from "./features/onboarding/sponsoredRailReadiness"
 import { UnlockGate } from "./features/identity/UnlockGate"
 import { EnterAppScreen } from "./features/onboarding/EnterAppScreen"
+import {
+  useNameClaimPending,
+  useRegistrationDepositOwed,
+} from "./features/onboarding/openRegistration"
 import { OnboardingScreen } from "./features/onboarding/OnboardingScreen"
+import { prefetchLiveSavingsApy } from "./features/savings/savingsGateway"
+import { drawnOfferTag, subscribeDrawnOffer } from "./features/onboarding/nameGrant"
 import { LinkViewScreen } from "./features/paylink/LinkViewScreen"
 import { ClaimRoute } from "./features/paylink/PaylinkOnboardingScreen"
 import { NewLinkScreen } from "./features/paylink/NewLinkScreen"
-import { NewRequestLinkScreen } from "./features/requests/NewRequestLinkScreen"
 import { RequestLandingScreen } from "./features/requests/RequestLandingScreen"
 import { NonContactRequestsScreen } from "./features/requests/NonContactRequestsScreen"
-import { NON_CONTACT_REQUESTS_PATH } from "./features/requests/nonContactView"
+import { RequestsScreen } from "./features/requests/RequestsScreen"
+import { NON_CONTACT_REQUESTS_PATH, REQUESTS_PATH } from "./features/requests/nonContactView"
 import { DepositScreen } from "./features/deposit/DepositScreen"
 import { ReceiveScreen } from "./features/receive/ReceiveScreen"
 import { ContactsScreen } from "./features/contacts/ContactsScreen"
@@ -68,6 +70,7 @@ import { ContactPayScreen, type ContactPayOutlet } from "./features/contacts/Con
 import { ConnectReceiveScreen } from "./features/contacts/ConnectReceiveScreen"
 import { hasConnectStash, stashInboundConnect } from "./features/contacts/connectReceive"
 import { WithdrawScreen } from "./features/withdraw/WithdrawScreen"
+import { WithdrawEtherfiScreen } from "./features/withdraw/WithdrawEtherfiScreen"
 import { WithdrawMethodScreen } from "./features/withdraw/WithdrawMethodScreen"
 import { WithdrawFreshScreen } from "./features/withdraw/WithdrawFreshScreen"
 import { useAuthenticator } from "./platform/auth/useAuthenticator"
@@ -84,8 +87,13 @@ import { getDesktopSettingsPath } from "./platform/desktopBridge"
 import { AppShell, SidebarLayout } from "./ui/AppShell"
 import { BakedProfileNotice, CustomProfileNotice } from "./ui/ConfigNotice"
 import { BootErrorScreen } from "./ui/BootErrorScreen"
-import { OnboardingLayout } from "./ui/OnboardingLayout"
-import { BootSplash, PxeBootProvider, usePxeBoot, type PxeBootTarget } from "./ui/PxeBoot"
+import {
+  BootDemand,
+  BootSplash,
+  PxeBootProvider,
+  usePxeBoot,
+  type PxeBootTarget,
+} from "./ui/PxeBoot"
 import { WagmiProvider } from "wagmi"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { RainbowKitProvider } from "@rainbow-me/rainbowkit"
@@ -104,6 +112,7 @@ const ProfilePanel =
   import.meta.env.VITE_PROFILER === "true"
     ? lazy(() => import("./profiling/ProfilePanel").then((m) => ({ default: m.ProfilePanel })))
     : null
+import { WebSavingsProvider } from "./features/savings/SavingsProvider"
 import { ActivityScreen } from "./ui/screens/ActivityScreen"
 import { HomeScreen } from "./ui/screens/HomeScreen"
 import { NotFoundScreen } from "./ui/screens/NotFoundScreen"
@@ -194,7 +203,6 @@ function RegistrationDetectionMount() {
     void runBootDetection(getConfig()).catch(() => {})
   }, [])
   useEffect(() => watchRegistrationRail(), [])
-  useEffect(() => watchWalletPresence(), [])
   useEffect(() => {
     const config = getConfig()
     return startDetectionLoop(
@@ -206,16 +214,6 @@ function RegistrationDetectionMount() {
           }
         : {},
     )
-  }, [obsidionWallet])
-  return null
-}
-
-/** Tells the campaign about confirmed names (campaignClaimNotice.ts), signing once unlocked. */
-function CampaignClaimNoticeMount() {
-  const { obsidionWallet } = useAztecContext()
-  useEffect(() => {
-    if (!obsidionWallet) return
-    return startCampaignClaimNoticeLoop(campaignClaimSigner(obsidionWallet))
   }, [obsidionWallet])
   return null
 }
@@ -240,10 +238,11 @@ function useBootReady(): boolean {
   return bootStatus === "ready" && (Boolean(contractService) || isDemoMode())
 }
 
-/** Holds a surface until the PXE and the contract service are up. */
+/** Holds a surface until the PXE and the contract service are up, starting a boot that waits. */
 export function BootHold() {
-  const { bootStatus, bootError, retryBoot } = usePxeBoot()
+  const { bootStatus, bootError, retryBoot, demandBoot } = usePxeBoot()
   const ready = useBootReady()
+  useEffect(demandBoot, [demandBoot])
   if (bootStatus === "error")
     return <BootErrorScreen error={bootError} onRetry={retryBoot} walletOpen />
   if (!ready) return <BootSplash />
@@ -291,44 +290,33 @@ function SipaDepositsMount() {
 }
 
 /**
- * A visitor with no identity reached a wallet route directly — the campaign hand-off lands on
- * /claim and a returning sign-in on /enter, so neither passes through here. Send them to the
- * campaign to sign up, rather than the wallet's own "you're in" invite. With no campaign URL
- * configured (local dev) it falls back to the invite so onboarding still works.
- */
-function CampaignBounce() {
-  const url = getConfig().campaignUrl
-  useEffect(() => {
-    if (url) void leavePage(url)
-  }, [url])
-  return url ? <BootSplash /> : <Navigate to="/claim" replace />
-}
-
-/**
  * Wallet routes require an entered identity (a name is NOT required — nameless accounts are
- * prompted to register from Home) and waitlist admission (granted, or a confirmed registration —
- * the paid queue-skip). Both are storage reads, so this sits above BootHold: a visitor who fails
- * them is routed without waiting on the PXE.
+ * prompted to register from Home). It is a storage read, so this sits above BootHold: a visitor
+ * without one is routed without waiting on the PXE. A tag drawn for this tab's signup lets the
+ * visitor in to Home, which hosts the signup until the passkey exists.
  */
 function WalletEntryGate() {
-  if (!loadOnboardedIdentity()) return <CampaignBounce />
-  // An onboarded identity refused entry is the queued-user bounce ULT-777 counts.
-  if (!hasWalletEntry()) {
-    reportGateBounce()
-    return <Navigate to="/claim" replace />
-  }
+  const draft = useSyncExternalStore(subscribeDrawnOffer, drawnOfferTag)
+  if (!loadOnboardedIdentity() && !draft) return <Navigate to="/claim" replace />
   return <Outlet />
 }
 
-/**
- * Wallet routes also require an unlocked MSK: a refresh reopens from the cached key, and UnlockGate
- * holds the surface behind a passkey re-assert when there is none.
- */
+/** Home before any passkey: the drawn tag waits for keep-or-choose, and the signup runs from it. */
+function DraftHome({ tag }: { tag: string }) {
+  const location = useLocation()
+  if (location.pathname !== "/") return <Navigate to="/" replace />
+  return <OnboardingScreen embedded draftTag={tag} />
+}
+
 function WalletGate() {
   const location = useLocation()
+  const draft = useSyncExternalStore(subscribeDrawnOffer, drawnOfferTag)
+  const claimPending = useNameClaimPending()
+  if (!loadOnboardedIdentity() && draft) return <DraftHome tag={draft} />
   // A stashed inbound connect replays once the gates pass — e.g. after onboarding routed
-  // away from /connect. The stash is consume-once, so this fires at most one redirect.
-  if (location.pathname !== "/connect" && hasConnectStash()) {
+  // away from /connect. The stash is consume-once, so this fires at most one redirect. While the
+  // name claim is pending, /connect goes back to Home, so the replay waits for the claim.
+  if (!claimPending && location.pathname !== "/connect" && hasConnectStash()) {
     return <Navigate to="/connect" replace />
   }
   return (
@@ -342,7 +330,9 @@ function WalletGate() {
       {!isDemoMode() && <TransferScannerMount />}
       {/* The SIPA sync loop runs on every wallet route, so an open deposit sheet advances anywhere. */}
       <SipaDepositsMount />
-      <Outlet />
+      <WebSavingsProvider>
+        <Outlet />
+      </WebSavingsProvider>
       {/* Funds-gated: pops "Migration detected" when a retired deployment still holds value.
           Last so it stacks above any route-level sheet (same z-index, later in DOM). */}
       <MigrationDetectionMount />
@@ -359,6 +349,18 @@ function WalletGate() {
 export function NameGate() {
   const identity = loadWalletIdentity()
   if (identity && !identity.handle) return <NameRequiredScreen />
+  return <Outlet />
+}
+
+/**
+ * Until the tag is claimed on L1 these routes go to Home, which shows the activation progress with
+ * its listeners mounted. `depositOpen` keeps the deposit screen reachable while the registration
+ * still owes its deposit.
+ */
+function ClaimPendingGate({ depositOpen = false }: { depositOpen?: boolean }) {
+  const pending = useNameClaimPending()
+  const owed = useRegistrationDepositOwed()
+  if (pending && !(depositOpen && owed)) return <Navigate to="/" replace />
   return <Outlet />
 }
 
@@ -419,10 +421,11 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
       // Bound before first render so even pre-route events (PXE boot) are consent-gated.
       bindAnalyticsConsent(() => services.configService.get("analyticsConsent"))
       wireTxTimingAnalytics()
+      prefetchLiveSavingsApy()
       setConfigReady(true)
     })
   }, [services])
-  if (!configReady) return null
+  if (!configReady) return <BootSplash />
   return (
     // No reconnect on load: a session reads no wallet until the user connects.
     <WagmiProvider config={wagmiConfig()} reconnectOnMount={false}>
@@ -446,7 +449,6 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
               >
                 <RegistrationDetectionMount />
                 <LeaveGuardMount />
-                <CampaignClaimNoticeMount />
                 {ProfilePanel && (
                   <Suspense fallback={null}>
                     <ProfilePanel />
@@ -456,6 +458,7 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                   <OperationsMount node={services.node} activeSince={activeTab.activeSince} />
                   <BroadcastsMount />
                   <BrowserRouter>
+                    <BootDemand />
                     {/* L1 address screening (withdraw recipient, deposit EOA, registration payer) on every route. */}
                     <ScanNavigationProvider>
                       <ScreeningProvider screener={services.screener}>
@@ -481,19 +484,31 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                               />
                             }
                           >
-                            {/* Payment-request link entry. The page itself sits outside AccountGate so
-                      the SIPA pay-QR paints before PXE is up; the accountless right pane
-                      nests AccountGate + the existing /claim wizard (OnboardingScreen). */}
-                            <Route
-                              path="request"
-                              element={<RequestLandingScreen node={services.node} />}
-                            >
-                              <Route element={<AccountGate />}>
-                                <Route element={<BootHold />}>
-                                  <Route index element={<OnboardingScreen embedded />} />
+                            {/* The pay page, and the older request-link entry. It sits outside
+                      AccountGate so the SIPA pay-QR paints before PXE is up; the accountless right
+                      pane nests AccountGate + the existing /claim wizard (OnboardingScreen). */}
+                            {["pay/:tag", "request"].map((path) => (
+                              <Route
+                                key={path}
+                                path={path}
+                                element={
+                                  <RequestLandingScreen
+                                    node={services.node}
+                                    chainIdentity={
+                                      activeTab.pxeBoot.kind === "pxe"
+                                        ? activeTab.pxeBoot.identity
+                                        : undefined
+                                    }
+                                  />
+                                }
+                              >
+                                <Route element={<AccountGate />}>
+                                  <Route element={<BootHold />}>
+                                    <Route index element={<OnboardingScreen embedded />} />
+                                  </Route>
                                 </Route>
                               </Route>
-                            </Route>
+                            ))}
                             {/* AccountProvider (useAccount) for every surface; BootHold PXE-gates each one. */}
                             <Route element={<AccountGate />}>
                               {/* Onboarding needs only useAccount — kept out of the asset layer, except the
@@ -522,42 +537,59 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                                     >
                                       <Route element={<WalletGate />}>
                                         <Route index element={<HomeScreen />} />
-                                        <Route path="activity" element={<ActivityScreen />} />
+                                        <Route path="savings" element={<HomeScreen />} />
                                         <Route path="settings" element={<SettingsScreen />} />
-                                        <Route path="receive" element={<ReceiveScreen />} />
-                                        <Route path="contacts" element={<ContactsScreen />} />
-                                        <Route path="connect" element={<ConnectReceiveScreen />} />
-                                        <Route
-                                          path={NON_CONTACT_REQUESTS_PATH}
-                                          element={<NonContactRequestsScreen />}
-                                        />
-                                        <Route path="contacts/:idOrTag" element={<ContactRoute />}>
+                                        <Route path="activity" element={<ActivityScreen />} />
+                                        <Route element={<ClaimPendingGate />}>
+                                          <Route path="receive" element={<ReceiveScreen />} />
+                                          <Route path="contacts" element={<ContactsScreen />} />
                                           <Route
-                                            path="send"
-                                            element={<ContactPayScreen mode="send" />}
+                                            path={REQUESTS_PATH}
+                                            element={<RequestsScreen />}
                                           />
+                                          <Route
+                                            path="connect"
+                                            element={<ConnectReceiveScreen />}
+                                          />
+                                          <Route
+                                            path={NON_CONTACT_REQUESTS_PATH}
+                                            element={<NonContactRequestsScreen />}
+                                          />
+                                          <Route
+                                            path="contacts/:idOrTag"
+                                            element={<ContactRoute />}
+                                          >
+                                            <Route
+                                              path="send"
+                                              element={<ContactPayScreen mode="send" />}
+                                            />
+                                          </Route>
                                         </Route>
                                         <Route element={<NameGate />}>
-                                          <Route path="deposit" element={<DepositScreen />} />
-                                          <Route element={<SponsoredRailGate />}>
-                                            <Route path="links/new" element={<NewLinkScreen />} />
-                                            <Route
-                                              path="requests/new"
-                                              element={<NewRequestLinkScreen />}
-                                            />
-                                            <Route path="send" element={<SendScreen />} />
-                                            <Route path="withdraw">
-                                              <Route element={<WithdrawMethodScreen />}>
-                                                <Route index element={null} />
+                                          <Route element={<ClaimPendingGate depositOpen />}>
+                                            <Route path="deposit" element={<DepositScreen />} />
+                                          </Route>
+                                          <Route element={<ClaimPendingGate />}>
+                                            <Route element={<SponsoredRailGate />}>
+                                              <Route path="links/new" element={<NewLinkScreen />} />
+                                              <Route path="send" element={<SendScreen />} />
+                                              <Route path="withdraw">
+                                                <Route element={<WithdrawMethodScreen />}>
+                                                  <Route index element={null} />
+                                                  <Route
+                                                    path="existing"
+                                                    element={<WithdrawScreen />}
+                                                  />
+                                                  <Route
+                                                    path="etherfi"
+                                                    element={<WithdrawEtherfiScreen />}
+                                                  />
+                                                </Route>
                                                 <Route
-                                                  path="existing"
-                                                  element={<WithdrawScreen />}
+                                                  path="fresh"
+                                                  element={<WithdrawFreshScreen />}
                                                 />
                                               </Route>
-                                              <Route
-                                                path="fresh"
-                                                element={<WithdrawFreshScreen />}
-                                              />
                                             </Route>
                                           </Route>
                                         </Route>
@@ -572,9 +604,7 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                               </Route>
                             </Route>
                             {/* Unknown routes: branded 404 outside the PXE gate — no boot splash for a dead URL. */}
-                            <Route element={<OnboardingLayout />}>
-                              <Route path="*" element={<NotFoundScreen />} />
-                            </Route>
+                            <Route path="*" element={<NotFoundScreen />} />
                           </Route>
                         </Routes>
                       </ScreeningProvider>

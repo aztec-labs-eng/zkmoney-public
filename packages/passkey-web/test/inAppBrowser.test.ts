@@ -1,16 +1,26 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
+  ANDROID_CHROME_WEBVIEW_FLOOR,
+  PLAY_STORE_CHROME_URL,
+  brandEvidence,
   currentIsIosInAppBrowser,
   currentAppDropsOpenLink,
   currentInAppUpFront,
   currentIsInAppBrowser,
   currentOpenInBrowserHref,
   inAppBrowserRefusal,
+  isAndroidWebViewBrand,
   isIosInAppBrowser,
+  isStaleAndroidChrome,
   openInBrowserHref,
 } from "../src/policy/inAppBrowser.js"
-import { parseUserAgent } from "../src/policy/userAgentInfo.js"
+import { parseUserAgent, versionBelow } from "../src/policy/userAgentInfo.js"
+
+const FLOOR = Number(ANDROID_CHROME_WEBVIEW_FLOOR)
+/** A phone's Chrome at `major`, as Chrome's own user agent reports it. */
+const androidChromeAt = (major: number) =>
+  `Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${major}.0.0.0 Mobile Safari/537.36`
 
 /** Shapes of published user agents, not device captures. */
 const UA = {
@@ -43,14 +53,55 @@ const UA = {
   ipadWebView:
     "Mozilla/5.0 (iPad; CPU OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
   androidChrome:
-    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.71 Mobile Safari/537.36",
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36",
+  androidChromeAtFloor: androidChromeAt(FLOOR),
+  // An app's web view on the System WebView, with `wv` stripped: only its Chrome major tells.
+  androidChromeStale: androidChromeAt(FLOOR - 3),
   androidWebView:
     "Mozilla/5.0 (Linux; Android 14; Pixel 8 Build/AP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/126.0.6478.71 Mobile Safari/537.36",
+  // Tablets send no `Mobile` token and run the laptop ceremony.
+  androidTablet:
+    "Mozilla/5.0 (Linux; Android 14; SM-X910) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
+  androidTabletWebView:
+    "Mozilla/5.0 (Linux; Android 14; SM-X910 Build/UP1A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/138.0.0.0 Safari/537.36",
+  // Chromium forks on Android read as Chrome at their Chromium major; Samsung and Firefox name themselves.
+  androidEdge:
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36 EdgA/154.0.0.0",
+  androidEdgeStale:
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36 EdgA/138.0.0.0",
+  androidOperaStale:
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36 OPR/89.0.0.0",
+  androidVivaldiStale:
+    "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36 Vivaldi/7.0",
+  androidMiBrowserStale:
+    "Mozilla/5.0 (Linux; Android 14; 2311DRK48G) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36 XiaoMi/MiuiBrowser/14.5.0",
+  androidSamsung:
+    "Mozilla/5.0 (Linux; Android 14; SAMSUNG SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/28.0 Chrome/130.0.0.0 Mobile Safari/537.36",
+  androidFirefox: "Mozilla/5.0 (Android 14; Mobile; rv:131.0) Gecko/131.0 Firefox/131.0",
   macSafari:
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Safari/605.1.15",
   windowsChrome:
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
 }
+
+/** Client Hints brands as Chromium's WebView and as Chrome report them. */
+const WEBVIEW_BRANDS = [
+  { brand: "Android WebView", version: "154" },
+  { brand: "Chromium", version: "154" },
+  { brand: "Not A Brand", version: "99" },
+]
+const CHROME_BRANDS = [
+  { brand: "Google Chrome", version: "154" },
+  { brand: "Chromium", version: "154" },
+  { brand: "Not A Brand", version: "99" },
+]
+const BRAVE_BRANDS = [
+  { brand: "Brave", version: "138" },
+  { brand: "Chromium", version: "138" },
+  { brand: "Not A Brand", version: "99" },
+]
+/** A list with nothing in it but the placeholder every Chromium sends. */
+const PLACEHOLDER_BRANDS = [{ brand: "Not A Brand", version: "99" }]
 
 const inApp = (userAgent: string) => isIosInAppBrowser(parseUserAgent({ userAgent }))
 
@@ -223,6 +274,128 @@ describe("the live browser", () => {
     expect(currentInAppUpFront()).toBeUndefined()
   })
 
+  it("reads a phone's Chrome far behind stable as an app's web view", () => {
+    vi.stubGlobal("navigator", { userAgent: UA.androidChromeStale })
+    expect(currentIsInAppBrowser()).toBe(true)
+    // Without brands the page cannot tell a web view from a real Chrome, so it says both.
+    expect(currentInAppUpFront()).toBe("leave-or-update")
+    expect(currentOpenInBrowserHref(page)).toBe(
+      "intent://launch.zk.money/#Intent;scheme=https;package=com.android.chrome;end",
+    )
+    for (const userAgent of [UA.androidChrome, UA.androidChromeAtFloor]) {
+      vi.stubGlobal("navigator", { userAgent })
+      expect(currentIsInAppBrowser()).toBe(false)
+      expect(currentInAppUpFront()).toBeUndefined()
+    }
+    // Client Hints decide the posture when present: a tablet by hints is left alone, a phone by
+    // hints is carded even when its user agent carries no Mobile token.
+    vi.stubGlobal("navigator", {
+      userAgent: UA.androidChromeStale,
+      userAgentData: { mobile: false },
+    })
+    expect(currentIsInAppBrowser()).toBe(false)
+    vi.stubGlobal("navigator", { userAgent: UA.androidTablet, userAgentData: { mobile: true } })
+    expect(currentIsInAppBrowser()).toBe(true)
+  })
+
+  it("reads a WebView brand in the Client Hints as an app's web view, on a phone", () => {
+    const withBrands = (brands: unknown, mobile?: boolean) =>
+      vi.stubGlobal("navigator", {
+        userAgent: UA.androidChrome,
+        userAgentData: { brands, ...(mobile === undefined ? {} : { mobile }) },
+      })
+    withBrands(WEBVIEW_BRANDS, true)
+    expect(currentIsInAppBrowser()).toBe(true)
+    expect(currentInAppUpFront()).toBe("leave")
+    withBrands(CHROME_BRANDS, true)
+    expect(currentIsInAppBrowser()).toBe(false)
+    withBrands(WEBVIEW_BRANDS, false)
+    expect(currentIsInAppBrowser()).toBe(false)
+    withBrands(undefined)
+    expect(currentIsInAppBrowser()).toBe(false)
+    withBrands("Android WebView", true)
+    expect(currentIsInAppBrowser()).toBe(false)
+  })
+
+  it("below the floor, lets a Chrome that names itself through and cards the rest by their brands", () => {
+    const stale = (userAgentData?: unknown) =>
+      vi.stubGlobal("navigator", {
+        userAgent: UA.androidChromeStale,
+        ...(userAgentData === undefined ? {} : { userAgentData }),
+      })
+    const cases: [string, unknown, ReturnType<typeof currentInAppUpFront>][] = [
+      ["Google Chrome brands", { brands: CHROME_BRANDS }, undefined],
+      ["no Client Hints", undefined, "leave-or-update"],
+      ["Client Hints without brands", {}, "leave-or-update"],
+      ["an empty list", { brands: [] }, "leave-or-update"],
+      ["a null list", { brands: null }, "leave-or-update"],
+      ["entries without a name", { brands: [{ version: "138" }, null] }, "leave-or-update"],
+      ["a WebView brand", { brands: WEBVIEW_BRANDS }, "leave"],
+      ["both brands", { brands: [...CHROME_BRANDS, ...WEBVIEW_BRANDS] }, "leave"],
+      ["Brave's brands", { brands: BRAVE_BRANDS }, "leave"],
+      ["the placeholder alone", { brands: PLACEHOLDER_BRANDS }, "leave"],
+    ]
+    for (const [name, userAgentData, mode] of cases) {
+      stale(userAgentData)
+      expect(currentInAppUpFront(), name).toBe(mode)
+      expect(currentIsInAppBrowser(), name).toBe(mode !== undefined)
+    }
+    // The marker wins over the brands, on a phone and on a tablet.
+    vi.stubGlobal("navigator", {
+      userAgent: `${UA.androidWebView} TwitterAndroid`,
+      userAgentData: { brands: CHROME_BRANDS },
+    })
+    expect(currentInAppUpFront()).toBe("leave")
+    vi.stubGlobal("navigator", {
+      userAgent: UA.androidTabletWebView,
+      userAgentData: { brands: CHROME_BRANDS },
+    })
+    expect(currentInAppUpFront()).toBe("leave")
+    // Brands that card a stale phone card nothing above the floor, on a tablet, or in a browser
+    // that names itself.
+    vi.stubGlobal("navigator", {
+      userAgent: UA.androidChromeAtFloor,
+      userAgentData: { brands: BRAVE_BRANDS },
+    })
+    expect(currentInAppUpFront()).toBeUndefined()
+    vi.stubGlobal("navigator", {
+      userAgent: UA.androidChromeStale,
+      userAgentData: { brands: BRAVE_BRANDS, mobile: false },
+    })
+    expect(currentInAppUpFront()).toBeUndefined()
+    for (const userAgent of [UA.androidTablet, UA.androidSamsung, UA.androidFirefox]) {
+      vi.stubGlobal("navigator", { userAgent, userAgentData: { brands: BRAVE_BRANDS } })
+      expect(currentInAppUpFront(), userAgent).toBeUndefined()
+      expect(currentIsInAppBrowser(), userAgent).toBe(false)
+    }
+  })
+
+  it("decides by the wv marker alone for tablets, browsers that name themselves and other systems", () => {
+    for (const userAgent of [
+      UA.androidTablet,
+      UA.androidSamsung,
+      UA.androidFirefox,
+      UA.androidEdge,
+      UA.iosChrome,
+      UA.windowsChrome,
+    ]) {
+      vi.stubGlobal("navigator", { userAgent })
+      expect(currentIsInAppBrowser()).toBe(false)
+    }
+    vi.stubGlobal("navigator", { userAgent: UA.androidTabletWebView })
+    expect(currentIsInAppBrowser()).toBe(true)
+    // Forks that only carry Chrome's token read as Chrome: far behind stable, they get the card too.
+    for (const userAgent of [
+      UA.androidEdgeStale,
+      UA.androidOperaStale,
+      UA.androidVivaldiStale,
+      UA.androidMiBrowserStale,
+    ]) {
+      vi.stubGlobal("navigator", { userAgent })
+      expect(currentIsInAppBrowser()).toBe(true)
+    }
+  })
+
   it("knows Telegram's browser, which sends Safari's user agent, by the bridge it injects", () => {
     vi.stubGlobal("navigator", { userAgent: UA.iosTelegram })
     expect(currentIsIosInAppBrowser()).toBe(false)
@@ -261,6 +434,77 @@ describe("the live browser", () => {
   })
 })
 
+describe("the Android web-view tells", () => {
+  const info = (userAgent: string) => parseUserAgent({ userAgent })
+
+  it("reads the floor as a boundary on Android Chrome only", () => {
+    expect(isStaleAndroidChrome(info(UA.androidChromeStale))).toBe(true)
+    expect(isStaleAndroidChrome(info(UA.androidChromeAtFloor))).toBe(false)
+    expect(isStaleAndroidChrome(info(UA.androidChrome))).toBe(false)
+    expect(isStaleAndroidChrome(info(UA.androidTablet))).toBe(true)
+    expect(isStaleAndroidChrome(info(UA.androidSamsung))).toBe(false)
+    expect(isStaleAndroidChrome(info(UA.androidFirefox))).toBe(false)
+    expect(isStaleAndroidChrome(info(UA.windowsChrome))).toBe(false)
+    expect(isStaleAndroidChrome(info(UA.iosChrome))).toBe(false)
+    expect(
+      isStaleAndroidChrome({
+        osFamily: "android",
+        browserFamily: "chrome",
+        browserVersionReported: "unknown",
+      }),
+    ).toBe(false)
+    expect(versionBelow("140.0.0.0", ANDROID_CHROME_WEBVIEW_FLOOR)).toBe(true)
+    expect(versionBelow(ANDROID_CHROME_WEBVIEW_FLOOR, ANDROID_CHROME_WEBVIEW_FLOOR)).toBe(false)
+  })
+
+  it("matches the WebView brand exactly, and nothing in a shape no browser sends", () => {
+    expect(isAndroidWebViewBrand(WEBVIEW_BRANDS)).toBe(true)
+    expect(isAndroidWebViewBrand([null, { brand: "Android WebView" }])).toBe(true)
+    expect(isAndroidWebViewBrand(CHROME_BRANDS)).toBe(false)
+    expect(isAndroidWebViewBrand([{ brand: "android webview" }])).toBe(false)
+    expect(isAndroidWebViewBrand([null, { version: "154" }])).toBe(false)
+    expect(isAndroidWebViewBrand([])).toBe(false)
+    expect(isAndroidWebViewBrand(undefined)).toBe(false)
+    expect(isAndroidWebViewBrand("Android WebView")).toBe(false)
+    expect(isAndroidWebViewBrand({ brand: "Android WebView" })).toBe(false)
+  })
+
+  it("reads the brands as reported: the WebView first, then Chrome, then anything named", () => {
+    expect(brandEvidence(WEBVIEW_BRANDS)).toBe("webview")
+    expect(brandEvidence([...CHROME_BRANDS, ...WEBVIEW_BRANDS])).toBe("webview")
+    expect(brandEvidence(CHROME_BRANDS)).toBe("chrome")
+    expect(brandEvidence([null, { brand: "Google Chrome" }])).toBe("chrome")
+    expect(brandEvidence(BRAVE_BRANDS)).toBe("other")
+    expect(brandEvidence(PLACEHOLDER_BRANDS)).toBe("other")
+    expect(brandEvidence([{ brand: "google chrome" }])).toBe("other")
+    for (const nothing of [
+      [],
+      [null, { version: "154" }, { brand: 154 }],
+      undefined,
+      null,
+      "Google Chrome",
+      { brand: "Google Chrome" },
+    ]) {
+      expect(brandEvidence(nothing)).toBe("none")
+    }
+    // An entry whose brand cannot be read is skipped, and the rest still count.
+    const throwing = {
+      get brand(): string {
+        throw new Error("bad brand")
+      },
+    }
+    expect(brandEvidence([{ brand: "Android WebView" }, throwing])).toBe("webview")
+    expect(brandEvidence([throwing, { brand: "Google Chrome" }])).toBe("chrome")
+    expect(brandEvidence([throwing])).toBe("none")
+  })
+
+  it("points the update at Chrome's Play Store page over https", () => {
+    expect(PLAY_STORE_CHROME_URL).toBe(
+      "https://play.google.com/store/apps/details?id=com.android.chrome",
+    )
+  })
+})
+
 describe("inAppBrowserRefusal", () => {
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -270,7 +514,13 @@ describe("inAppBrowserRefusal", () => {
   const closed = { name: "NotAllowedError", message: "The operation was not allowed." }
 
   it("refuses a browser that can't run passkeys on any device", () => {
-    for (const userAgent of [UA.androidWebView, UA.iosSafari, UA.macSafari]) {
+    for (const userAgent of [
+      UA.androidWebView,
+      UA.androidChromeStale,
+      UA.androidChrome,
+      UA.iosSafari,
+      UA.macSafari,
+    ]) {
       vi.stubGlobal("navigator", { userAgent })
       expect(inAppBrowserRefusal(unsupported)).toEqual(unsupported)
     }
@@ -281,7 +531,7 @@ describe("inAppBrowserRefusal", () => {
       vi.stubGlobal("navigator", { userAgent })
       expect(inAppBrowserRefusal(closed)).toEqual({ name: "InAppBrowser", message: closed.message })
     }
-    for (const userAgent of [UA.iosSafari, UA.androidChrome, UA.macSafari]) {
+    for (const userAgent of [UA.iosSafari, UA.androidChrome, UA.androidChromeStale, UA.macSafari]) {
       vi.stubGlobal("navigator", { userAgent })
       expect(inAppBrowserRefusal(closed)).toBeUndefined()
     }

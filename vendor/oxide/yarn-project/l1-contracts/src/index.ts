@@ -100,6 +100,8 @@ export {
   OperationExecutorBytecode,
   MockOperationAbi,
   MockOperationBytecode,
+  MockCatchingOperationAbi,
+  MockCatchingOperationBytecode,
   FPCFunderTestnetAbi,
   FPCFunderTestnetBytecode,
   MockSwapRouterAbi,

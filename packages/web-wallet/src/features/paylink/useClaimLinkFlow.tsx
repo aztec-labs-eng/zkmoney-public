@@ -467,6 +467,7 @@ export function useClaimLinkFlow(
   useOweRegistrationBroadcast(
     continuation?.record,
     continuation?.activation.state === "unpublished",
+    { confirmed: true },
   )
   const publishStalled = useRegistrationPublishStalled(continuation?.record ?? null)
   // The ledger publishes the address on its own; only a stalled publish needs the registration page.

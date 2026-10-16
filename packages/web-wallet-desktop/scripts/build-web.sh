@@ -98,7 +98,8 @@ if [[ -z "${SKIP_MONOREPO_BUILD:-}" ]]; then
     echo "Contract artifacts complete and current — skipping pnpm build-contracts"
   fi
 
-  (cd "$REPO_ROOT" && pnpm build:web-deps)
+  # A frozen-source migration proves with the refund circuits; the wallet refuses a stub.
+  (cd "$REPO_ROOT" && OXIDE_REFUND_CIRCUITS=required pnpm build:web-deps)
 fi
 
 # Bake the network target. Written (and removed again below) rather than passed as
@@ -106,7 +107,7 @@ fi
 BAKE_KEYS=("${REQUIRED_KEYS[@]}" VITE_APP_VERSION VITE_DESKTOP_BUILD)
 # Optional keys, baked only when set — mirrors deploy-web-wallet.yml's optional block.
 for optional in VITE_ACCOUNT_SERVICE_URL VITE_ZKMONEY_API_URL VITE_GOOGLE_CLIENT_ID \
-                VITE_NODE_API_KEY VITE_PASSKEY_RP_ID VITE_CAMPAIGN_URL \
+                VITE_NODE_API_KEY VITE_PASSKEY_RP_ID \
                 VITE_PREDICATE_VERIFICATION_HASH VITE_PREDICATE_CHAIN VITE_PREDICATE_DISABLED; do
   [[ -n "${!optional:-}" ]] && BAKE_KEYS+=("$optional")
 done

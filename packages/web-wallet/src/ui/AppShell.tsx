@@ -1,14 +1,12 @@
 import { GradientInitialAvatar, Icon, ZkMoneyRoot } from "@obsidion/web-ds"
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Outlet, useLocation, useNavigate } from "react-router-dom"
-import { ShareTagModal } from "../features/contacts/ShareTagModal"
-import { RegistrationDepositPrompt } from "../features/onboarding/RegistrationDepositPrompt"
+import { AnalyticsConsentPrompt } from "../features/onboarding/AnalyticsConsentModal"
 import { useRegistrationDepositOwed } from "../features/onboarding/openRegistration"
-import { openActivationPrompt } from "../features/onboarding/activationPrompt"
+import { useTagUnpicked } from "../features/onboarding/tagPick"
 import { TagSearchBar } from "../features/contacts/TagSearchBar"
 import { loadOnboardedIdentity, loadWalletIdentity } from "../features/identity/walletIdentity"
 import { logout } from "../features/identity/logout"
-import { hasWalletEntry } from "../features/identity/admission"
 import { isLogoutBlockedByRegistration } from "../features/onboarding/webRegistration"
 import { getAuthService } from "../platform/auth/useAuthenticator"
 import { getDesktopL1Bridge } from "../platform/desktopBridge"
@@ -26,7 +24,8 @@ import { useNotificationsPanelOpen } from "./NotificationsPanel"
 import { NotificationsBell } from "./NotificationsBell"
 import { ContactStorage, useAccountContext, useAztecContext } from "@obsidion/front-core"
 import { isDemoMode } from "../dev/demoFlag"
-import { NON_CONTACT_REQUESTS_PATH } from "../features/requests/nonContactView"
+import { REQUESTS_PATH } from "../features/requests/nonContactView"
+import { useSavingsAvailable } from "../features/savings/savingsGateway"
 import { createContext, useContext, useMemo } from "react"
 import "./shell.css"
 
@@ -48,18 +47,18 @@ type NavItem = { label: string; icon: PhoneIconName; path: string }
 
 const NAV_MAIN: NavItem[] = [
   { label: "Home", icon: "home", path: "/" },
-  { label: "Contacts", icon: "person", path: "/contacts" },
+  { label: "Savings", icon: "earn", path: "/savings" },
   { label: "Deposit", icon: "coins", path: "/deposit" },
   { label: "Send", icon: "send", path: "/send" },
-  { label: "Receive", icon: "arrow-down", path: "/receive" },
+  { label: "Requests", icon: "payments-arrows", path: REQUESTS_PATH },
   { label: "Withdraw", icon: "tray-withdraw", path: "/withdraw" },
   { label: "Activity", icon: "history-clock", path: "/activity" },
 ]
 const NAV_PHONE: NavItem[] = [
   { label: "Home", icon: "home", path: "/" },
-  { label: "Contacts", icon: "person", path: "/contacts" },
+  { label: "Savings", icon: "earn", path: "/savings" },
   { label: "Deposit", icon: "coins", path: "/deposit" },
-  { label: "Receive", icon: "arrow-down", path: "/receive" },
+  { label: "Requests", icon: "payments-arrows", path: REQUESTS_PATH },
   { label: "Send", icon: "send", path: "/send" },
   { label: "Withdraw", icon: "tray-withdraw", path: "/withdraw" },
   { label: "Activity", icon: "history-clock", path: "/activity" },
@@ -67,24 +66,29 @@ const NAV_PHONE: NavItem[] = [
 const NAV_SETTINGS: NavItem = { label: "Settings", icon: "settings", path: "/settings" }
 /** Phone tab bar: Home and the four payment actions, in the menu's order. */
 const NAV_TABS: NavItem[] = NAV_PHONE.filter(
-  ({ path }) => path !== "/contacts" && path !== "/activity",
+  ({ path }) => path !== "/activity" && path !== "/savings",
 )
-/** Routes that move money: with a name still waiting for its deposit they raise the activation sheet. */
-const ACTIVATION_GATED = new Set(["/deposit", "/send", "/receive", "/withdraw"])
+/** Savings shows only once its deployment is known. */
+const navItems = (items: NavItem[], savings: boolean) =>
+  items.filter((item) => item.path !== "/savings" || savings)
+/** Routes that move money: with a name still waiting for its deposit they lead to Deposit. */
+const ACTIVATION_GATED = new Set(["/deposit", "/send", REQUESTS_PATH, "/withdraw"])
 
 function activePath(pathname: string): string {
+  // Receive and Contacts have no nav item: Requests is the way in.
   if (
+    pathname.startsWith("/receive") ||
     pathname.startsWith("/contacts") ||
     pathname.startsWith("/connect") ||
-    pathname === NON_CONTACT_REQUESTS_PATH
+    pathname.startsWith(REQUESTS_PATH)
   ) {
-    return "/contacts"
+    return REQUESTS_PATH
   }
   for (const p of [
+    "/savings",
     "/activity",
     "/settings",
     "/deposit",
-    "/receive",
     "/withdraw",
     "/send",
     "/links",
@@ -97,13 +101,13 @@ function activePath(pathname: string): string {
 type ShellAction = (event?: { currentTarget: HTMLElement }) => void
 type ShellActions = {
   openMenu: ShellAction
-  openShareTag: ShellAction
+  openReceive: ShellAction
   openScanner: ShellAction
   scannerAvailable: boolean
 }
 const ShellActionsContext = createContext<ShellActions | null>(null)
 
-/** Page headers use the same menu and Share entry points as the shell. */
+/** Page headers use the same menu, Receive and Scan entry points as the shell. */
 export function useShellActions(): ShellActions {
   const actions = useContext(ShellActionsContext)
   if (!actions) throw new Error("Shell actions require SidebarLayout")
@@ -122,6 +126,8 @@ export function SidebarLayout({
   const location = useLocation()
   const identity = loadWalletIdentity()
   const awaitingActivation = useRegistrationDepositOwed()
+  // An unpicked drawn tag is never shown: no account button and no share.
+  const unpicked = useTagUnpicked()
   const active = activePath(location.pathname)
   const [open, setOpen] = useState(false)
   const phone = usePhoneLayout()
@@ -138,9 +144,16 @@ export function SidebarLayout({
   // Same unlock condition as UnlockGate: the bell must not surface stored notifications
   // above the locked pane.
   const unlocked = !!useAccountContext().obsidionAccount || isDemoMode()
+  const savings = useSavingsAvailable()
   const pageHeader = phone && unlocked && mobilePageHeaderPaths.includes(location.pathname)
-  const scannerAvailable = enablePhoneScan && phone && unlocked && !!identity?.handle && !identity.pending &&
-    !!loadOnboardedIdentity() && hasWalletEntry() && getDesktopL1Bridge() === null
+  const scannerAvailable =
+    enablePhoneScan &&
+    phone &&
+    unlocked &&
+    !!identity?.handle &&
+    !identity.pending &&
+    !!loadOnboardedIdentity() &&
+    getDesktopL1Bridge() === null
   const scanShare = useScanShare({
     routeKey: location.key,
     identityKey: identity?.address,
@@ -152,8 +165,13 @@ export function SidebarLayout({
     },
     resolve: async (payload) => {
       const currentIdentity = loadOnboardedIdentity()
-      if (!currentIdentity?.handle || currentIdentity.pending || currentIdentity.address !== identity?.address ||
-        currentIdentity.handle !== identity.handle || !hasWalletEntry() || !(await getAuthService().getSecretKey())) {
+      if (
+        !currentIdentity?.handle ||
+        currentIdentity.pending ||
+        currentIdentity.address !== identity?.address ||
+        currentIdentity.handle !== identity.handle ||
+        !(await getAuthService().getSecretKey())
+      ) {
         return { kind: "error", message: "Unlock your registered wallet to scan a code." }
       }
       return scanPayload(payload, {
@@ -165,29 +183,41 @@ export function SidebarLayout({
     onDestination: handoff,
   })
   const captureOpener = (source?: HTMLElement) => {
-    const focused = source ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null)
+    const focused =
+      source ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null)
     return focused?.closest("#wallet-menu") ? menuOpener.current : focused
   }
 
-  const openMenu = useCallback<ShellAction>((event) => {
-    menuOpener.current = event?.currentTarget ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null)
-    setNotificationsOpen(false)
-    setOpen(true)
-  }, [setNotificationsOpen])
-  const openShareTag = useCallback<ShellAction>((event) => {
-    const opener = captureOpener(event?.currentTarget)
+  const openMenu = useCallback<ShellAction>(
+    (event) => {
+      menuOpener.current =
+        event?.currentTarget ??
+        (document.activeElement instanceof HTMLElement ? document.activeElement : null)
+      setNotificationsOpen(false)
+      setOpen(true)
+    },
+    [setNotificationsOpen],
+  )
+  const openReceive = useCallback<ShellAction>(() => {
     setOpen(false)
     setNotificationsOpen(false)
-    scanShare.open("share", opener)
-  }, [setNotificationsOpen, scanShare.open])
-  const openScanner = useCallback<ShellAction>((event) => {
-    if (!scannerAvailable) return
-    const opener = captureOpener(event?.currentTarget)
-    setOpen(false)
-    setNotificationsOpen(false)
-    scanShare.open("scan", opener)
-  }, [scannerAvailable, setNotificationsOpen, scanShare.open])
-  const shellActions = useMemo(() => ({ openMenu, openShareTag, openScanner, scannerAvailable }), [openMenu, openShareTag, openScanner, scannerAvailable])
+    if (awaitingActivation) navigate("/deposit")
+    else navigate("/receive")
+  }, [awaitingActivation, navigate, setNotificationsOpen])
+  const openScanner = useCallback<ShellAction>(
+    (event) => {
+      if (!scannerAvailable) return
+      const opener = captureOpener(event?.currentTarget)
+      setOpen(false)
+      setNotificationsOpen(false)
+      scanShare.open("scan", opener)
+    },
+    [scannerAvailable, setNotificationsOpen, scanShare.open],
+  )
+  const shellActions = useMemo(
+    () => ({ openMenu, openReceive, openScanner, scannerAvailable }),
+    [openMenu, openReceive, openScanner, scannerAvailable],
+  )
 
   useEffect(() => {
     setOpen(false)
@@ -198,8 +228,7 @@ export function SidebarLayout({
 
   const go = (item: NavItem) => {
     setOpen(false)
-    if (awaitingActivation && ACTIVATION_GATED.has(item.path)) openActivationPrompt()
-    else navigate(item.path)
+    navigate(awaitingActivation && ACTIVATION_GATED.has(item.path) ? "/deposit" : item.path)
   }
 
   const navButton = (item: NavItem) => (
@@ -238,14 +267,14 @@ export function SidebarLayout({
     </span>
   )
 
-  // Phone menu head: the identity pill carries Share @tag and the one-tap way home.
-  const drawerAccount = phone && unlocked && identity && (
+  // Phone menu head: the identity pill carries Receive and the one-tap way home.
+  const drawerAccount = phone && unlocked && identity && !unpicked && (
     <div className="ww-sidebar__account">
       <button
         type="button"
         className="zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--brand"
-        aria-label="Share @tag"
-        onClick={openShareTag}
+        aria-label="Receive code"
+        onClick={openReceive}
       >
         <PhoneIcon name="qr-code" color="#fff" />
       </button>
@@ -268,12 +297,12 @@ export function SidebarLayout({
       <div className="ww-sidebar__head">
         {drawerAccount || <BrandLockup />}
         <div className="ww-sidebar__head-actions">
-          {!drawerAccount && (
+          {!drawerAccount && !unpicked && (
             <button
               type="button"
               className="zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--brand"
-              aria-label="Share @tag"
-              onClick={openShareTag}
+              aria-label="Receive code"
+              onClick={openReceive}
             >
               {phone ? (
                 <PhoneIcon name="qr-code" color="#fff" />
@@ -284,7 +313,11 @@ export function SidebarLayout({
           )}
           <button
             type="button"
-            className={phone ? "zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--lg" : "zkm-btn-reset zkm-pressable ww-iconbtn"}
+            className={
+              phone
+                ? "zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--lg"
+                : "zkm-btn-reset zkm-pressable ww-iconbtn"
+            }
             aria-label="Close menu"
             onClick={() => setOpen(false)}
           >
@@ -294,7 +327,7 @@ export function SidebarLayout({
       </div>
       <hr className="ww-divider" />
       <div className="ww-sidebar__menu">
-        {(phone ? NAV_PHONE : NAV_MAIN).map(navButton)}
+        {navItems(phone ? NAV_PHONE : NAV_MAIN, savings).map(navButton)}
         <hr className="ww-divider" />
         {navButton(NAV_SETTINGS)}
       </div>
@@ -313,7 +346,7 @@ export function SidebarLayout({
     </nav>
   )
 
-  const account = identity && !phone && (
+  const account = !unpicked && identity && !phone && (
     <button
       type="button"
       className="zkm-btn-reset ww-account"
@@ -359,7 +392,6 @@ export function SidebarLayout({
           .join(" ")}
       >
         <div className="ww-shell__glow" aria-hidden />
-        <RegistrationDepositPrompt />
         {phone
           ? open && <MobileMenu onClose={() => setOpen(false)}>{navigation}</MobileMenu>
           : navigation}
@@ -371,12 +403,12 @@ export function SidebarLayout({
                   {(!phone || unlocked) && <TagSearchBar placeholder={phone ? "tag" : undefined} />}
                   <div className="ww-topbar__actions">
                     {unlocked && <NotificationsBell />}
-                    {!phone && (
+                    {!phone && !unpicked && (
                       <button
                         type="button"
                         className="zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--lg"
-                        aria-label="Share @tag"
-                        onClick={openShareTag}
+                        aria-label="Receive code"
+                        onClick={openReceive}
                       >
                         <Icon name="qr-code" size={24} />
                       </button>
@@ -404,21 +436,26 @@ export function SidebarLayout({
           </div>
         </main>
         {tabBar}
+        {unlocked && <AnalyticsConsentPrompt />}
         {logoutPrompt === "blocked" && (
           <LogoutBlockedModal onClose={() => setLogoutPrompt(null)} onConfirm={finishLogout} />
         )}
         {logoutPrompt === "confirm" && (
           <LogoutModal onClose={() => setLogoutPrompt(null)} onConfirm={finishLogout} />
         )}
-        {scanShare.session?.surface === "share" && (
-          <ShareTagModal key={scanShare.session.id} onClose={() => scanShare.close(scanShare.session!.id)}
-            onScan={scannerAvailable ? () => scanShare.switchTo(scanShare.session!.id, "scan") : undefined} />
-        )}
         {scanShare.session?.surface === "scan" && (
-          <ScannerModal key={scanShare.session.id} onClose={() => scanShare.close(scanShare.session!.id)}
-            onShare={() => scanShare.switchTo(scanShare.session!.id, "share")}
+          <ScannerModal
+            key={scanShare.session.id}
+            onClose={() => scanShare.close(scanShare.session!.id)}
+            onShare={() => {
+              scanShare.close(scanShare.session!.id)
+              openReceive()
+            }}
             resolvePayload={(payload) => scanShare.resolve(scanShare.session!.id, payload)}
-            onDestination={(destination) => scanShare.destination(scanShare.session!.id, destination)} />
+            onDestination={(destination) =>
+              scanShare.destination(scanShare.session!.id, destination)
+            }
+          />
         )}
       </div>
     </ShellActionsContext.Provider>

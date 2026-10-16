@@ -1,9 +1,11 @@
 import { describe, expect, it, vi, beforeEach } from "vitest"
-import { quotedDepositFee } from "@obsidion/core/constants"
+import { Network, quotedDepositFee } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import type { RegistryTagResolution, RequestInlinePacket } from "@obsidion/front-core"
 import type { PublicClient } from "viem"
+import { depositTokensFor } from "../src/features/deposit/loadDepositFacts"
 import {
+  linkDeployment,
   RequestDecimalsMismatchError,
   resolveAccountlessRequest,
 } from "../src/features/requests/accountlessRequest"
@@ -73,13 +75,41 @@ function packet(over: Partial<RequestInlinePacket> = {}): RequestInlinePacket {
   }
 }
 
+/** An L1 where the token has `decimals` and each address holds what `chain` says. */
+function l1(
+  decimals = 6,
+  chain: Record<string, { balance?: bigint; code?: string; tokens?: Record<string, bigint> }> = {},
+  predict: (address: string, args: unknown[]) => string = () => SIPA,
+): PublicClient {
+  return {
+    readContract: async ({
+      address,
+      functionName,
+      args,
+    }: {
+      address: string
+      functionName: string
+      args?: string[]
+    }) =>
+      functionName === "decimals"
+        ? decimals
+        : functionName === "predictSIPA"
+        ? predict(address, args!)
+        : chain[args![0]]?.tokens?.[address] ??
+          (address === TOKEN ? chain[args![0]]?.balance : 0n) ??
+          0n,
+    getCode: async ({ address }: { address: string }) => chain[address]?.code,
+  } as unknown as PublicClient
+}
+
 function deps(resolveRequester: () => Promise<RegistryTagResolution> = async () => resolved) {
   return {
     tuple,
     // The token contract reports the decimals the packets below declare.
-    publicClient: { readContract: async () => 6 } as unknown as PublicClient,
+    publicClient: l1(),
     resolveRequester,
     chainId: 11155111,
+    network: Network.SANDBOX,
   }
 }
 
@@ -122,13 +152,42 @@ describe("resolveAccountlessRequest", () => {
   })
 
   it("refuses a link without decimals when the token does not have 6", async () => {
-    const client = { readContract: async () => 18 } as unknown as PublicClient
     await expect(
       resolveAccountlessRequest(packet({ sipaAddress: SIPA, tokenDecimals: undefined }), {
         ...deps(),
-        publicClient: client,
+        publicClient: l1(18),
       }),
     ).rejects.toBeInstanceOf(RequestDecimalsMismatchError)
+  })
+
+  it("ignores decimals on an any-amount request, whose URI carries no amount", async () => {
+    const result = await resolveAccountlessRequest(
+      packet({ sipaAddress: SIPA, amountAtomic: 0n, tokenDecimals: undefined }),
+      { ...deps(), publicClient: l1(18) },
+    )
+    expect(result.decimals).toBe(18)
+  })
+
+  it.each([
+    ["holds funds", { balance: 1n }],
+    ["was swept", { code: "0x60" }],
+  ])("asks the resolver when the embedded SIPA %s", async (_case, state) => {
+    const result = await resolveAccountlessRequest(packet({ sipaAddress: SIPA }), {
+      ...deps(),
+      publicClient: l1(6, { [SIPA]: state }),
+    })
+    expect(resolveSipaAddressMock).toHaveBeenCalledOnce()
+    expect(result.sipaAddress).toBe(CCIP_SIPA)
+  })
+
+  it("asks the resolver when the embedded SIPA holds another accepted token", async () => {
+    const usdc = depositTokensFor(Network.MAINNET)[1].address!
+    const result = await resolveAccountlessRequest(packet({ sipaAddress: SIPA }), {
+      ...deps(),
+      network: Network.MAINNET,
+      publicClient: l1(6, { [SIPA]: { tokens: { [usdc]: 1n } } }),
+    })
+    expect(result.sipaAddress).toBe(CCIP_SIPA)
   })
 
   it("omits uint256 for an any-amount request", async () => {
@@ -180,6 +239,76 @@ describe("resolveAccountlessRequest", () => {
       ),
     ).rejects.toThrow(/no longer registered/)
     expect(resolveSipaAddressMock).not.toHaveBeenCalled()
+  })
+})
+
+const PREIMAGE = { intentHash: `0x${"4e".repeat(32)}`, recovery: `0x${"5f".repeat(32)}` }
+
+describe("linkDeployment", () => {
+  it.each([
+    [
+      "the preimage predicts the address",
+      { sipaAddress: SIPA, sipaPreimage: PREIMAGE },
+      SIPA.toUpperCase().replace("0X", "0x"),
+      "active",
+    ],
+    [
+      "the preimage predicts another address",
+      { sipaAddress: SIPA, sipaPreimage: PREIMAGE },
+      CCIP_SIPA,
+      "expired",
+    ],
+    ["the link has no preimage", { sipaAddress: SIPA }, SIPA, "unproven"],
+  ] as const)("%s", async (_, link, predicted, verdict) => {
+    expect(await linkDeployment(link, async () => predicted as never)).toBe(verdict)
+  })
+})
+
+describe("resolveAccountlessRequest deployment", () => {
+  beforeEach(() => resolveSipaAddressMock.mockClear())
+
+  it("re-predicts the link's address from the active factory, implementation and rollup", async () => {
+    const calls: unknown[][] = []
+    const result = await resolveAccountlessRequest(
+      packet({ sipaAddress: SIPA, sipaPreimage: PREIMAGE }),
+      {
+        ...deps(),
+        publicClient: l1(6, {}, (factory, args) => {
+          calls.push([factory, ...args])
+          return SIPA
+        }),
+      },
+    )
+    expect(calls).toEqual([
+      [
+        tuple.sipaFactory,
+        IMPLEMENTATION,
+        PREIMAGE.intentHash,
+        PREIMAGE.recovery,
+        4127419662n,
+        true,
+      ],
+    ])
+    expect(result.deployment).toBe("active")
+  })
+
+  it("keeps an expired link's address, even once paid, and never resolves another", async () => {
+    const result = await resolveAccountlessRequest(
+      packet({ sipaAddress: SIPA, sipaPreimage: PREIMAGE }),
+      {
+        ...deps(),
+        publicClient: l1(6, { [SIPA]: { balance: 1n } }, () => CCIP_SIPA),
+      },
+    )
+    expect(result).toMatchObject({ deployment: "expired", sipaAddress: SIPA })
+    expect(resolveSipaAddressMock).not.toHaveBeenCalled()
+  })
+
+  it("leaves a link without a preimage unproven, and an address resolved now active", async () => {
+    expect(
+      (await resolveAccountlessRequest(packet({ sipaAddress: SIPA }), deps())).deployment,
+    ).toBe("unproven")
+    expect((await resolveAccountlessRequest(packet(), deps())).deployment).toBe("active")
   })
 })
 

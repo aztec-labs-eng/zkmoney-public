@@ -16,6 +16,7 @@ import {
 import { createPublicClient, fallback, http, type Hex } from "viem"
 import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
+import { openSourceRollupWallet, type SourceRollupWallet } from "../../platform/sourceRollupWallet"
 
 /** The retired deployment whose l2Token is `tokenAddress`, or null when none in the manifest has it. */
 export async function findHistoricTuple(tokenAddress: string): Promise<OxideEnvTuple | null> {
@@ -26,6 +27,19 @@ export async function findHistoricTuple(tokenAddress: string): Promise<OxideEnvT
     publicClient: l1PublicClient(config),
   })
   return historic.find((t) => t.l2Token.toLowerCase() === tokenAddress.toLowerCase()) ?? null
+}
+
+/** The account on a retired tuple's rollup when a cutover left it; on the active rollup, none. */
+export async function historicChain(
+  account: ObsidionAccount,
+  current: OxideEnvTuple,
+  historic: OxideEnvTuple,
+): Promise<SourceRollupWallet | undefined> {
+  if (historic.rollupVersion === current.rollupVersion) return undefined
+  const nodeUrl = getConfig().sourceRollupNodes?.get(historic.portal.toLowerCase())
+  if (!nodeUrl)
+    throw new Error(`No node is configured for the network of portal ${historic.portal}`)
+  return openSourceRollupWallet(nodeUrl, account)
 }
 
 /** Token service + TEE signer for a retired tuple, `config.enclaveUrl` override included. A dead

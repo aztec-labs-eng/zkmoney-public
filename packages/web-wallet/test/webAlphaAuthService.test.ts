@@ -1,20 +1,26 @@
 import { Fr } from "@aztec/aztec.js/fields"
 // @vitest-environment node
+import { APPLE_ICLOUD_AAGUID, GPM_AAGUID } from "@obsidion/core/constants"
 import { StoredAddressMismatchError, selectRecoveredMsk } from "@obsidion/front-core"
 import { deriveMskFromPrfOutput } from "@obsidion/sdk"
-import { describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { walletStorage } from "../src/platform/storage/walletStorage"
 import {
+  bytesToBase64Url,
   type DevicePosture,
+  type LaptopCreation,
   NoPrfError,
   PhoneRequiredError,
   type PasskeyAssertRequest,
   type PasskeyCeremony,
   type PasskeyRequestScope,
+  type UserAgentInfo,
+  parseUserAgent,
 } from "@obsidion/passkey-web"
+import { localRefusalCount, noteLocalRefusal } from "../src/platform/auth/localRefusals"
 import { statusForAttempt } from "../src/platform/auth/passkeyAttemptScope"
 import { WebAlphaAuthService, isUnsettled } from "../src/platform/auth/WebAlphaAuthService"
-import type { HandoffMaterial } from "../src/platform/storage/handoffMaterial"
+import { WebPasskeyIdentityMap } from "../src/platform/auth/WebPasskeyIdentityMap"
 import {
   clearActiveStorage,
   getActiveCredentialId,
@@ -36,12 +42,14 @@ type ServiceOptions = FakeCeremonyOptions & {
   posture?: DevicePosture
   misreportsCrossDevice?: boolean
   trustsAttachmentLabel?: boolean
+  userAgent?: () => Promise<UserAgentInfo>
 }
 
 function makeService({
   posture = "laptop",
   misreportsCrossDevice = false,
   trustsAttachmentLabel = false,
+  userAgent,
   ...fake
 }: ServiceOptions = {}) {
   const ceremony = new FakePasskeyCeremony(fake)
@@ -53,20 +61,25 @@ function makeService({
     posture: () => posture,
     misreportsCrossDevice: () => misreportsCrossDevice,
     trustsAttachmentLabel: () => trustsAttachmentLabel,
+    ...(userAgent ? { userAgent } : {}),
   })
   return { service, ceremony, storage }
 }
 
 /** A laptop whose ceremonies a phone answers over the cross-device route. */
-const laptop = (opts: FakeCeremonyOptions = {}) =>
+const laptop = (opts: ServiceOptions = {}) =>
   makeService({ posture: "laptop", route: "cross-device", ...opts })
 /** A phone using its own passkey. */
-const phone = (opts: FakeCeremonyOptions = {}) =>
+const phone = (opts: ServiceOptions = {}) =>
   makeService({ posture: "phone", route: "local", ...opts })
 
 const msk = (bytes: Uint8Array) => deriveMskFromPrfOutput(bytes).toString()
 
 const WINDOWS_HELLO_AAGUID = "08987058-cadc-4b81-b6e1-30de50dcbe96"
+const MAC_CHROME_UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+const IPHONE_SAFARI_UA =
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1"
 
 /** Address derivation that recognises exactly one master key under exactly one signing key. */
 const deriveFor =
@@ -77,6 +90,57 @@ const deriveFor =
       : "0xother"
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+describe("metadata consent challenge", () => {
+  it("passes the exact digest to the active credential without PRF or another signing prefix", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const { service, ceremony } = phone()
+      const created = await service.createPasskey("@alice")
+      await record(service, created, "0xabc")
+      await service.commitSecret({
+        secretKey: created.secretKey,
+        authProvider: created.authProvider,
+      })
+      const challenge = `0x${"42".repeat(32)}` as const
+      const result = await service.signMetadataChallenge(challenge)
+      const request = ceremony.assertRequests.at(-1)!
+      expect(Buffer.from(request.challenge).toString("hex")).toBe(challenge.slice(2))
+      expect(request.credentialIds).toEqual([created.credentialId])
+      expect(request.prfFirstSalt).toBeUndefined()
+      expect(result.webauthn.clientDataJSON.slice(result.webauthn.challengeIndex)).toMatch(
+        /^"challenge"/,
+      )
+      expect(result.webauthn.clientDataJSON.slice(result.webauthn.typeIndex)).toMatch(/^"type"/)
+    } finally {
+      restore()
+    }
+  })
+
+  it("discards consent when the account changes during the passkey prompt", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const { service, ceremony } = phone()
+      const created = await service.createPasskey("@alice")
+      await record(service, created, "0xabc")
+      await service.commitSecret({
+        secretKey: created.secretKey,
+        authProvider: created.authProvider,
+      })
+      const assert = ceremony.assert.bind(ceremony)
+      vi.spyOn(ceremony, "assert").mockImplementation(async (request) => {
+        const result = await assert(request)
+        setActiveStorageId("another-account")
+        return result
+      })
+      await expect(service.signMetadataChallenge(`0x${"42".repeat(32)}`)).rejects.toMatchObject({
+        name: "SessionChangedError",
+      })
+    } finally {
+      restore()
+    }
+  })
+})
 
 /**
  * `refuse` names the keys this store rejects writes for; everything else behaves normally. Entries
@@ -119,6 +183,17 @@ async function record(
     transports: created.transports,
   })
 }
+
+describe("WebAlphaAuthService user handle", () => {
+  it("records the handle the passkey was created under", async () => {
+    const { service, ceremony, storage } = phone()
+    const created = await service.createPasskey("alice")
+    await record(service, created, "0xabc")
+    const handle = bytesToBase64Url(ceremony.creds.get(created.credentialId)!.handle)
+    const map = new WebPasskeyIdentityMap(storage, "localhost")
+    expect((await map.get(created.credentialId))?.userHandle).toBe(handle)
+  })
+})
 
 describe("WebAlphaAuthService transports", () => {
   it("a laptop sign-in sends no transport restriction, so the copy synced to it can answer", async () => {
@@ -775,6 +850,47 @@ describe("WebAlphaAuthService.createPasskey", () => {
     expect(ceremony.creates[0]!.signal).toBe(controller.signal)
   })
 
+  it("writes where the passkey is being made into its handle, as the page claims it", async () => {
+    const mac = () =>
+      Promise.resolve(
+        parseUserAgent({
+          userAgent: MAC_CHROME_UA,
+          userAgentData: {
+            platform: "macOS",
+            platformVersion: "26.4.1",
+            architecture: "arm",
+            brands: [],
+          },
+        }),
+      )
+    const iphone = () => Promise.resolve(parseUserAgent({ userAgent: IPHONE_SAFARI_UA }))
+    // A laptop asking for another device claims the route only, so no version or chip.
+    const noClaims = { osVersion: {}, chip: "unknown" } as const
+    const qr = laptop({ userAgent: mac })
+    await qr.service.createPasskey("@alice")
+    expect(qr.ceremony.creates[0]!.provenance).toEqual({ context: "mac_qr", ...noClaims })
+    const key = laptop({ userAgent: mac })
+    await key.service.createPasskey("@alice", undefined, { route: "security-key" })
+    expect(key.ceremony.creates[0]!.provenance).toEqual({ context: "mac_key", ...noClaims })
+    const own = phone({ userAgent: iphone })
+    await own.service.createPasskey("@alice")
+    expect(own.ceremony.creates[0]!.provenance).toEqual({ context: "ios_browser", ...noClaims })
+  })
+
+  it("sends no request when its caller ends during the read of the page's claims", async () => {
+    let release!: () => void
+    const reading = new Promise<UserAgentInfo>((resolve) => {
+      release = () => resolve(parseUserAgent({ userAgent: MAC_CHROME_UA }))
+    })
+    const { service, ceremony } = laptop({ userAgent: () => reading })
+    const controller = new AbortController()
+    const creating = service.createPasskey("@alice", undefined, { signal: controller.signal })
+    controller.abort(new DOMException("the screen left", "AbortError"))
+    release()
+    await expect(creating).rejects.toMatchObject({ name: "AbortError" })
+    expect(ceremony.creates).toHaveLength(0)
+  })
+
   it("laptop: the phone route also names a security key, so a manager's extension stands aside", async () => {
     const { service, ceremony } = laptop({ prfAtCreate: false, createAuthData: false })
     await service.createPasskey("@alice", undefined, { route: "phone" })
@@ -868,21 +984,249 @@ describe("WebAlphaAuthService.createPasskey", () => {
     })
   })
 
-  it("phone: the chained assertion must come over the same route as creation", async () => {
-    const { service } = phone({ prfAtCreate: false, assertAttachment: "cross-platform" })
-    await expect(service.createPasskey("@alice")).rejects.toMatchObject({
-      name: "LocalPasskeyRequiredError",
-    })
-  })
+  describe("on this computer's route", () => {
+    const WINDOWS: LaptopCreation = {
+      local: true,
+      os: "windows",
+      row: "windowsChrome",
+      managers: ["gpm"],
+      withdrawn: [],
+    }
+    const held = (opts: FakeCeremonyOptions = {}) => {
+      const made = makeService({ posture: "laptop", route: "local", aaguid: GPM_AAGUID, ...opts })
+      made.service.useLaptopCreation(WINDOWS)
+      return made
+    }
 
-  it("refuses a device-bound passkey on either posture", async () => {
-    await expect(
-      laptop({ backupEligible: false }).service.createPasskey("@a"),
-    ).rejects.toMatchObject({ name: "DeviceBoundPasskeyError" })
-    await expect(
-      phone({ backupEligible: false }).service.createPasskey("@a"),
-    ).rejects.toMatchObject({
-      name: "DeviceBoundPasskeyError",
+    it("asks this device for its own managers, names no key, and binds slot second", async () => {
+      const { service, ceremony } = held()
+      const result = await service.createPasskey("@alice", undefined, { route: "this-device" })
+      expect(result.prfSlot).toBe("second")
+      expect(result.secretKey.toString()).toBe(msk(ceremony.prfFor(result.credentialId, "second")))
+      const request = ceremony.creates[0]!
+      expect(request.authenticatorAttachment).toBe("platform")
+      expect(request.hints).toEqual(["client-device"])
+      expect(request.timeoutMs).toBeUndefined()
+    })
+
+    it("the snapshot serves one creation: the next on this route is refused before any prompt", async () => {
+      const { service, ceremony } = held()
+      await service.createPasskey("@alice", undefined, { route: "this-device" })
+      await expect(
+        service.createPasskey("@alice", undefined, { route: "this-device" }),
+      ).rejects.toThrow("laptop creation was not offered")
+      expect(ceremony.creates).toHaveLength(1)
+    })
+
+    it("refuses this route with no snapshot, or one that offers only the phone", async () => {
+      const none = makeService({ posture: "laptop", route: "local", aaguid: GPM_AAGUID })
+      await expect(
+        none.service.createPasskey("@alice", undefined, { route: "this-device" }),
+      ).rejects.toThrow("laptop creation was not offered")
+      none.service.useLaptopCreation({ local: false, chromeTip: "apple" })
+      await expect(
+        none.service.createPasskey("@alice", undefined, { route: "this-device" }),
+      ).rejects.toThrow("laptop creation was not offered")
+      expect(none.ceremony.creates).toHaveLength(0)
+    })
+
+    it("a snapshot is consumed by whatever creation follows, whichever route it takes", async () => {
+      const { service, ceremony } = held({ route: "cross-device" })
+      await service.createPasskey("@alice", undefined, { route: "phone" })
+      expect(ceremony.creates[0]!.hints).toEqual(["hybrid", "security-key"])
+      await expect(
+        service.createPasskey("@alice", undefined, { route: "this-device" }),
+      ).rejects.toThrow("laptop creation was not offered")
+    })
+
+    it("refuses a manager the snapshot does not admit, naming the ones it does", async () => {
+      const { service } = held({ aaguid: APPLE_ICLOUD_AAGUID })
+      await expect(
+        service.createPasskey("@alice", undefined, { route: "this-device" }),
+      ).rejects.toMatchObject({
+        name: "LaptopPasskeyRefusedError",
+        kind: "apple",
+        message: expect.stringContaining("Google Password Manager (sign in to Chrome first)"),
+      })
+    })
+
+    it("says a withdrawn Apple Passwords is unavailable, not below the floor", async () => {
+      const { service } = makeService({
+        posture: "laptop",
+        route: "local",
+        aaguid: APPLE_ICLOUD_AAGUID,
+      })
+      service.useLaptopCreation({
+        local: true,
+        os: "macos",
+        row: "macChrome",
+        managers: ["gpm"],
+        withdrawn: ["apple"],
+      })
+      await expect(
+        service.createPasskey("@alice", undefined, { route: "this-device" }),
+      ).rejects.toMatchObject({
+        kind: "apple",
+        message: expect.not.stringMatching(/15\.7\.5|26\.4\.1/),
+      })
+    })
+
+    it("under the e2e seam the request still asks this device, with no hints", async () => {
+      const ceremony = new FakePasskeyCeremony({ route: "local", aaguid: GPM_AAGUID })
+      const service = new WebAlphaAuthService({
+        storage: new MemoryStorage(),
+        rpId: "localhost",
+        ceremony,
+        posture: () => "laptop",
+        misreportsCrossDevice: () => false,
+        trustsAttachmentLabel: () => false,
+        laptopHints: null,
+      })
+      service.useLaptopCreation(WINDOWS)
+      const result = await service.createPasskey("@alice", undefined, { route: "this-device" })
+      expect(result.prfSlot).toBe("second")
+      expect(ceremony.creates[0]!.authenticatorAttachment).toBe("platform")
+      expect(ceremony.creates[0]!.hints).toBeUndefined()
+    })
+
+    it("probes this laptop's creation through the seam it was given, leaving nothing behind", async () => {
+      const laptopCreation = vi.fn(async () => WINDOWS)
+      const ceremony = new FakePasskeyCeremony({ route: "local", aaguid: GPM_AAGUID })
+      const service = new WebAlphaAuthService({
+        storage: new MemoryStorage(),
+        rpId: "localhost",
+        ceremony,
+        posture: () => "laptop",
+        laptopCreation,
+      })
+      expect(await service.probeLaptopCreation()).toEqual(WINDOWS)
+      expect(laptopCreation).toHaveBeenCalledTimes(1)
+      // A probe is not a snapshot: the route is still refused until the gate hands one over.
+      await expect(
+        service.createPasskey("@alice", undefined, { route: "this-device" }),
+      ).rejects.toThrow("laptop creation was not offered")
+    })
+
+    describe("where a script answers the page's passkey creation", () => {
+      const WINDOWS_UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+      const browser = (brand: string, create: unknown) =>
+        vi.stubGlobal("navigator", {
+          userAgent: WINDOWS_UA,
+          userAgentData: {
+            platform: "Windows",
+            brands: [{ brand, version: "155" }],
+            getHighEntropyValues: async () => ({ platformVersion: "15.0.0" }),
+          },
+          credentials: { create },
+        })
+      // The count is kept about the browser, and this suite's environment has no localStorage.
+      beforeEach(() => void stubLocalStorage())
+      afterEach(() => vi.unstubAllGlobals())
+
+      it("offers another Chromium this computer whether or not a script answers the page", async () => {
+        const probe = () =>
+          new WebAlphaAuthService({
+            storage: new MemoryStorage(),
+            rpId: "localhost",
+            ceremony: new FakePasskeyCeremony({ route: "local", aaguid: GPM_AAGUID }),
+            posture: () => "laptop",
+          }).probeLaptopCreation()
+        const row = {
+          local: true,
+          os: "windows",
+          row: "windowsEdgeBrave",
+          managers: ["1password"],
+          withdrawn: [],
+          chromeTip: "gpm",
+        }
+        browser("Microsoft Edge", async () => null)
+        expect(await probe()).toEqual(row)
+        browser("Microsoft Edge", Promise.resolve.bind(Promise))
+        expect(await probe()).toEqual(row)
+      })
+
+      it("counts an answer from a manager the row does not admit, before the refusal reaches the caller", async () => {
+        browser("Google Chrome", async () => null)
+        const { service } = held({ aaguid: WINDOWS_HELLO_AAGUID })
+        await expect(
+          service.createPasskey("@alice", undefined, { route: "this-device" }),
+        ).rejects.toMatchObject({ name: "UnsupportedProviderError" })
+        expect(localRefusalCount()).toBe(1)
+      })
+
+      it("clears the count when the driver accepts the passkey", async () => {
+        browser("Google Chrome", async () => null)
+        noteLocalRefusal()
+        noteLocalRefusal()
+        noteLocalRefusal()
+        await held().service.createPasskey("@alice", undefined, { route: "this-device" })
+        expect(localRefusalCount()).toBe(0)
+      })
+
+      it("leaves the count alone for a missing key, for the phone route, and with no extension", async () => {
+        browser("Google Chrome", async () => null)
+        noteLocalRefusal()
+        const silent = held({ prfAtCreate: false, prfAtAssert: false })
+        await expect(
+          silent.service.createPasskey("@alice", undefined, { route: "this-device" }),
+        ).rejects.toMatchObject({ name: "NoPrfError", manager: "gpm" })
+        const byPhone = held({ route: "cross-device" })
+        await byPhone.service.createPasskey("@alice", undefined, { route: "phone" })
+        expect(localRefusalCount()).toBe(1)
+
+        browser("Google Chrome", Promise.resolve.bind(Promise))
+        const hello = held({ aaguid: WINDOWS_HELLO_AAGUID })
+        await expect(
+          hello.service.createPasskey("@alice", undefined, { route: "this-device" }),
+        ).rejects.toMatchObject({ name: "UnsupportedProviderError" })
+        expect(localRefusalCount()).toBe(1)
+      })
+    })
+
+    it("a browser that never answers a probe does not hold the sheet", async () => {
+      vi.useFakeTimers()
+      vi.stubGlobal("navigator", {
+        userAgent:
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+        userAgentData: {
+          platform: "Windows",
+          brands: [{ brand: "Google Chrome", version: "155" }],
+          getHighEntropyValues: () => new Promise(() => {}),
+        },
+      })
+      try {
+        const service = new WebAlphaAuthService({
+          storage: new MemoryStorage(),
+          rpId: "localhost",
+          ceremony: new FakePasskeyCeremony({ route: "local", aaguid: GPM_AAGUID }),
+          posture: () => "laptop",
+        })
+        const probes = Promise.all([service.probePhoneReach(), service.probeLaptopCreation()])
+        await vi.advanceTimersByTimeAsync(1000)
+        expect(await probes).toEqual(["unknown", { local: false, chromeTip: false }])
+      } finally {
+        vi.unstubAllGlobals()
+        vi.useRealTimers()
+      }
+    })
+
+    it("phone: the chained assertion must come over the same route as creation", async () => {
+      const { service } = phone({ prfAtCreate: false, assertAttachment: "cross-platform" })
+      await expect(service.createPasskey("@alice")).rejects.toMatchObject({
+        name: "LocalPasskeyRequiredError",
+      })
+    })
+
+    it("refuses a device-bound passkey on either posture", async () => {
+      await expect(
+        laptop({ backupEligible: false }).service.createPasskey("@a"),
+      ).rejects.toMatchObject({ name: "DeviceBoundPasskeyError" })
+      await expect(
+        phone({ backupEligible: false }).service.createPasskey("@a"),
+      ).rejects.toMatchObject({
+        name: "DeviceBoundPasskeyError",
+      })
     })
   })
 
@@ -1293,9 +1637,7 @@ describe("WebAlphaAuthService.beginRecovery", () => {
 
     const cancelled = new AbortController()
     cancelled.abort()
-    await expect(fresh.beginRecovery({ signal: cancelled.signal })).rejects.toThrow(
-      /abort/i,
-    )
+    await expect(fresh.beginRecovery({ signal: cancelled.signal })).rejects.toThrow(/abort/i)
     expect(ceremony.assertRequests).toHaveLength(1)
   })
 
@@ -1406,9 +1748,9 @@ describe("WebAlphaAuthService.beginRecovery", () => {
     })
     const answer = ceremony.assert.bind(ceremony)
     ceremony.assert = (request) => answer({ ...request, credentialIds: [other.credentialId] })
-    await expect(
-      service.beginRecovery({ credentialId: created.credentialId }),
-    ).rejects.toThrow(/not the one this browser asked for/)
+    await expect(service.beginRecovery({ credentialId: created.credentialId })).rejects.toThrow(
+      /not the one this browser asked for/,
+    )
   })
 
   it("a rotated credential is refused before anything unsettled exists", async () => {
@@ -1489,9 +1831,7 @@ describe("WebAlphaAuthService.unlock", () => {
         authProvider: created.authProvider,
       })
       service.clear()
-      await expect(
-        service.unlock(deriveFor(created, "0xacct"), {}),
-      ).rejects.toMatchObject({
+      await expect(service.unlock(deriveFor(created, "0xacct"), {})).rejects.toMatchObject({
         name: "RotatedCredentialError",
       })
       expect(await service.getSecretKey()).toBeUndefined()
@@ -1511,9 +1851,7 @@ describe("WebAlphaAuthService.unlock", () => {
         authProvider: created.authProvider,
       })
       service.clear()
-      await expect(service.unlock(async () => "0xnever", {})).rejects.toThrow(
-        /does not match/,
-      )
+      await expect(service.unlock(async () => "0xnever", {})).rejects.toThrow(/does not match/)
       expect(await service.getSecretKey()).toBeUndefined()
     } finally {
       restore()
@@ -1534,9 +1872,7 @@ describe("WebAlphaAuthService.unlock", () => {
       })
       service.clear()
       ceremony.opts.backupEligible = false
-      await expect(service.unlock(async () => "0xnever", {})).rejects.toThrow(
-        /does not match/,
-      )
+      await expect(service.unlock(async () => "0xnever", {})).rejects.toThrow(/does not match/)
       expect(await service.getSecretKey()).toBeUndefined()
       expect(service.isUnlocked()).toBe(false)
     } finally {
@@ -1549,9 +1885,7 @@ describe("WebAlphaAuthService.unlock", () => {
     try {
       const { service, ceremony } = laptop()
       setActiveCredentialId("unknown-credential")
-      await expect(service.unlock(async () => "0x", {})).rejects.toThrow(
-        /enter with your passkey/,
-      )
+      await expect(service.unlock(async () => "0x", {})).rejects.toThrow(/enter with your passkey/)
       expect(ceremony.assertRequests).toHaveLength(0)
     } finally {
       restore()
@@ -1567,9 +1901,7 @@ describe("WebAlphaAuthService.unlock", () => {
       const b = await service.createPasskey("@bob")
       await record(service, b, "0xb")
       setActiveStorageId("storage-of-a")
-      await expect(service.unlock(async () => "0xb", {})).rejects.toThrow(
-        /enter with your passkey/,
-      )
+      await expect(service.unlock(async () => "0xb", {})).rejects.toThrow(/enter with your passkey/)
       expect(ceremony.assertRequests).toHaveLength(0)
       expect(getActiveStorageId()).toBe("storage-of-a")
       expect(await service.getSecretKey()).toBeUndefined()
@@ -1822,7 +2154,10 @@ describe("WebAlphaAuthService — one prompt, no picker", () => {
     const created = await service.createPasskey("@alice")
     await record(service, created, "0xalice")
     service.clear()
-    await service.adoptKnownPasskey({ credentialId: created.credentialId, pubkeyHex: created.pubkey })
+    await service.adoptKnownPasskey({
+      credentialId: created.credentialId,
+      pubkeyHex: created.pubkey,
+    })
     expect(ceremony.assertRequests.at(-1)!.transports).toEqual(["usb"])
   })
 
@@ -1831,7 +2166,10 @@ describe("WebAlphaAuthService — one prompt, no picker", () => {
     const created = await service.createPasskey("@alice")
     await record(service, created, "0xalice")
     service.clear()
-    await service.adoptKnownPasskey({ credentialId: created.credentialId, pubkeyHex: created.pubkey })
+    await service.adoptKnownPasskey({
+      credentialId: created.credentialId,
+      pubkeyHex: created.pubkey,
+    })
     expect(ceremony.assertRequests.at(-1)!.transports).toBeUndefined()
   })
 
@@ -1839,7 +2177,10 @@ describe("WebAlphaAuthService — one prompt, no picker", () => {
     const { service, ceremony, storage } = laptop(KEY)
     const created = await service.createPasskey("@alice")
     service.clear()
-    await service.adoptKnownPasskey({ credentialId: created.credentialId, pubkeyHex: created.pubkey })
+    await service.adoptKnownPasskey({
+      credentialId: created.credentialId,
+      pubkeyHex: created.pubkey,
+    })
     expect(ceremony.assertRequests.at(-1)!.transports).toBeUndefined()
 
     await service.recordRecoveryMetadata({
@@ -1855,7 +2196,10 @@ describe("WebAlphaAuthService — one prompt, no picker", () => {
       ["usb"],
     )
     service.clear()
-    await service.adoptKnownPasskey({ credentialId: created.credentialId, pubkeyHex: created.pubkey })
+    await service.adoptKnownPasskey({
+      credentialId: created.credentialId,
+      pubkeyHex: created.pubkey,
+    })
     // The inference steers signatures (`steeringFor`); the recovery assertion sends only a creation list.
     expect(ceremony.assertRequests.at(-1)!.transports).toBeUndefined()
   })
@@ -1877,16 +2221,25 @@ describe("WebAlphaAuthService — one prompt, no picker", () => {
     const made = await synced.service.createPasskey("@alice")
     await record(synced.service, made, "0xalice")
     synced.service.clear()
-    await synced.service.adoptKnownPasskey({ credentialId: made.credentialId, pubkeyHex: made.pubkey })
+    await synced.service.adoptKnownPasskey({
+      credentialId: made.credentialId,
+      pubkeyHex: made.pubkey,
+    })
     expect(synced.ceremony.assertRequests.at(-1)!.hints).toEqual(["client-device"])
 
     // No record: not named either. The key that answers teaches the session, so the next request names one.
     const unseen = laptop(KEY)
     const fresh = await unseen.service.createPasskey("@alice")
     unseen.service.clear()
-    await unseen.service.adoptKnownPasskey({ credentialId: fresh.credentialId, pubkeyHex: fresh.pubkey })
+    await unseen.service.adoptKnownPasskey({
+      credentialId: fresh.credentialId,
+      pubkeyHex: fresh.pubkey,
+    })
     expect(unseen.ceremony.assertRequests.at(-1)!.hints).toEqual(["client-device"])
-    await unseen.service.adoptKnownPasskey({ credentialId: fresh.credentialId, pubkeyHex: fresh.pubkey })
+    await unseen.service.adoptKnownPasskey({
+      credentialId: fresh.credentialId,
+      pubkeyHex: fresh.pubkey,
+    })
     expect(unseen.ceremony.assertRequests.at(-1)!.hints).toEqual(["client-device", "security-key"])
   })
 
@@ -1895,7 +2248,10 @@ describe("WebAlphaAuthService — one prompt, no picker", () => {
     const created = await service.createPasskey("@alice")
     await record(service, created, "0xalice")
     service.clear()
-    await service.adoptKnownPasskey({ credentialId: created.credentialId, pubkeyHex: created.pubkey })
+    await service.adoptKnownPasskey({
+      credentialId: created.credentialId,
+      pubkeyHex: created.pubkey,
+    })
     expect(ceremony.assertRequests.at(-1)!.transports).toEqual(["hybrid", "internal"])
   })
 
@@ -2575,144 +2931,6 @@ describe("WebAlphaAuthService stale page records", () => {
 
 describe("WebAlphaAuthService ceremony-free sources", () => {
   const ADDR = `0x${"aa".repeat(32)}`
-  const material = (over: Partial<HandoffMaterial> = {}): HandoffMaterial => ({
-    v: 1,
-    derivedAt: Date.now(),
-    rpId: "localhost",
-    credentialId: "cred-camp",
-    pubkeyHex: `0x${"ab".repeat(64)}`,
-    candidates: { first: Fr.random().toString(), second: Fr.random().toString() },
-    ...over,
-  })
-
-  it("hand-off material on a fresh browser: both candidates, a provider for its passkey, no ceremony", async () => {
-    const { service, ceremony } = laptop()
-    const m = material()
-    const recovered = await service.recoverFromHandoffMaterial(m)
-    expect(ceremony.assertRequests).toHaveLength(0)
-    expect(recovered.credentialId).toBe("cred-camp")
-    expect(recovered.pubkey).toBe("ab".repeat(64))
-    expect(recovered.candidates.first?.toString()).toBe(m.candidates.first)
-    expect(recovered.candidates.second?.toString()).toBe(m.candidates.second)
-    expect(recovered.expectedAddress).toBeUndefined()
-    expect(recovered.preferredSlot).toBe("first")
-    expect(recovered.hasPersistedSlot).toBe(false)
-    expect(recovered.candidateSource).toBe("webauthn")
-    const [x, y] = await recovered.authProvider.getPubkeys()
-    expect(Buffer.concat([x, y]).toString("hex")).toBe("ab".repeat(64))
-  })
-
-  it("hand-off material for a passkey this browser recorded anchors on that record", async () => {
-    const restore = stubLocalStorage()
-    try {
-      const { service } = laptop()
-      await service.recordRecoveryMetadata({
-        credentialId: "cred-camp",
-        l2Address: ADDR,
-        pubkey: "ab".repeat(64),
-        prfSlot: "second",
-        isMskRoot: true,
-      })
-      const recovered = await service.recoverFromHandoffMaterial(material())
-      expect(recovered.expectedAddress).toBe(ADDR)
-      expect(recovered.preferredSlot).toBe("second")
-    } finally {
-      restore()
-    }
-  })
-
-  it("hand-off material naming another key than this browser's record is a rotated-credential refusal", async () => {
-    const { service } = laptop()
-    await service.recordRecoveryMetadata({
-      credentialId: "cred-camp",
-      l2Address: ADDR,
-      pubkey: "cd".repeat(64),
-      isMskRoot: true,
-    })
-    await expect(service.recoverFromHandoffMaterial(material())).rejects.toMatchObject({
-      name: "RotatedCredentialError",
-    })
-  })
-
-  it.each([
-    ["not hex", "0xnope"],
-    ["above the field modulus", `0x${"ff".repeat(32)}`],
-  ])("hand-off material with no usable candidate (%s) is refused", async (_name, first) => {
-    const { service } = laptop()
-    await expect(
-      service.recoverFromHandoffMaterial(material({ candidates: { first } })),
-    ).rejects.toMatchObject({ name: "NoPrfError" })
-  })
-
-  it("hand-off material's creation transports ride on the result, and only when carried", async () => {
-    const { service } = laptop()
-    expect((await service.recoverFromHandoffMaterial(material({ transports: ["usb"] }))).transports)
-      .toEqual(["usb"])
-    expect(await service.recoverFromHandoffMaterial(material())).not.toHaveProperty("transports")
-  })
-
-  it("a record written from hand-off material steers the next unlock like a wallet-created one", async () => {
-    const { service, ceremony } = laptop({ transports: ["hybrid", "internal"] })
-    const created = await service.createPasskey("@alice")
-    const storage = new MemoryStorage()
-    const fresh = freshOver(ceremony, storage)
-    const recovered = await fresh.recoverFromHandoffMaterial(
-      material({
-        credentialId: created.credentialId,
-        pubkeyHex: `0x${created.pubkey}`,
-        candidates: { first: created.secretKey.toString() },
-        transports: ["hybrid", "internal"],
-      }),
-    )
-    await fresh.recordRecoveryMetadata({
-      credentialId: recovered.credentialId,
-      l2Address: ADDR,
-      pubkey: recovered.pubkey,
-      prfSlot: "first",
-      isMskRoot: true,
-      transports: recovered.transports,
-    })
-    expect((await storedEntry(storage, created.credentialId)).transports).toEqual([
-      "hybrid",
-      "internal",
-    ])
-    await fresh.beginRecovery({ credentialId: created.credentialId })
-    // A laptop sends nothing for a synced list, as for a wallet-created record: it would hide the
-    // local copy the sign-in admits.
-    expect(ceremony.assertRequests.at(-1)!.transports).toBeUndefined()
-  })
-
-  it("a hand-off list the wallet does not name steers no signature and no laptop unlock, and blocks inference", async () => {
-    const { service, ceremony } = laptop(KEY)
-    const created = await service.createPasskey("@alice")
-    const storage = new MemoryStorage()
-    const fresh = freshOver(ceremony, storage)
-    const recovered = await fresh.recoverFromHandoffMaterial(
-      material({
-        credentialId: created.credentialId,
-        pubkeyHex: `0x${created.pubkey}`,
-        candidates: { first: created.secretKey.toString() },
-        transports: ["future-token"],
-      }),
-    )
-    await fresh.recordRecoveryMetadata({
-      credentialId: recovered.credentialId,
-      l2Address: ADDR,
-      pubkey: recovered.pubkey,
-      prfSlot: "first",
-      isMskRoot: true,
-      transports: recovered.transports,
-    })
-    await signWith(fresh.providerFor({ credentialId: created.credentialId, pubkeyHex: created.pubkey }))
-    expect(ceremony.assertRequests.at(-1)!).not.toHaveProperty("transports")
-    await fresh.beginRecovery({ credentialId: created.credentialId })
-    // Not physical-only, so a laptop unlock sends no restriction either.
-    expect(ceremony.assertRequests.at(-1)!.transports).toBeUndefined()
-    await flush()
-    const entry = await storedEntry(storage, created.credentialId)
-    expect(entry.transports).toEqual(["future-token"])
-    expect(entry.inferredTransports).toBeUndefined()
-  })
 
   it("the cache source is the held key under its record's slot and address, and nothing when locked", async () => {
     const restore = stubLocalStorage()
@@ -2976,6 +3194,25 @@ describe("WebAlphaAuthService early-refusal observation", () => {
     expect((err as { observed?: unknown }).observed).toEqual({
       credentialId: created.credentialId,
       attachment: "platform",
+    })
+  })
+
+  it("another device's answer with no PRF carries its own attachment", async () => {
+    const { service } = dualRoute({ prfAtAssert: false, assertAttachment: "cross-platform" })
+    const created = await service.createPasskey("@alice")
+    await service.recordRecoveryMetadata({
+      credentialId: created.credentialId,
+      l2Address: "0xa",
+      pubkey: created.pubkey,
+      prfSlot: created.prfSlot,
+      isMskRoot: true,
+    })
+    service.clear()
+    const err = await service.recoverPasskey({ credentialId: created.credentialId }).catch((e) => e)
+    expect(err).toBeInstanceOf(NoPrfError)
+    expect((err as { observed?: unknown }).observed).toEqual({
+      credentialId: created.credentialId,
+      attachment: "cross-platform",
     })
   })
 

@@ -4,16 +4,18 @@ import {
   EARNED_QUOTE_UNCONFIRMED_ERROR,
   assertEarnedQuote,
 } from "../src/features/onboarding/earnedQuote"
+import { PAID, RANDOM, RANDOM_ASK } from "./support/registrationPrices"
 
 describe("earned registration quote", () => {
   // The sandbox's portal funding cut; every minimum here clears it.
   const CUT = 0n
-  const EARNED = { reduced: true, fee: "500000000000000000", minDeposit: "4500000000000000000" }
+  const EARNED = { reduced: true, fee: String(RANDOM.fee), minDeposit: String(RANDOM.min) }
 
   it.each([
     undefined,
-    { reduced: false, fee: "5000000000000000000", minDeposit: "10000000000000000000" },
-    { reduced: true, fee: "500000000000000000", minDeposit: "5000000000000000000" },
+    { reduced: false, fee: String(PAID.fee), minDeposit: String(PAID.min) },
+    // Reduced, but its floor is over the earned ask.
+    { reduced: true, fee: String(RANDOM.fee), minDeposit: String(RANDOM_ASK) },
   ])("rejects missing, paid or stale higher quotes", (terms) => {
     expect(() => assertEarnedQuote(terms, CUT)).toThrow(EARNED_QUOTE_ERROR)
   })
@@ -29,7 +31,7 @@ describe("earned registration quote", () => {
   })
 
   it("refuses the same quote where the portal's cut outranks its minimum", () => {
-    expect(() => assertEarnedQuote(EARNED, 4_500_000_000_000_000_000n)).toThrow(EARNED_QUOTE_ERROR)
+    expect(() => assertEarnedQuote(EARNED, RANDOM_ASK)).toThrow(EARNED_QUOTE_ERROR)
   })
 
   it("fails closed on an unread cut, and says so as its own retryable refusal", () => {

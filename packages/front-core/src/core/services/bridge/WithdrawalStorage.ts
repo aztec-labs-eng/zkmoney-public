@@ -15,14 +15,9 @@
 
 import type { IStorageAdapter } from "../../storages/adapter"
 import { isHash } from "viem"
-import {
-  WITHDRAWAL_TERMINAL_PHASES,
-  type WithdrawalPhase,
-  type WithdrawalRecord,
-} from "./types"
+import { WITHDRAWAL_TERMINAL_PHASES, type WithdrawalPhase, type WithdrawalRecord } from "./types"
 import { RecordStorage } from "./RecordStorage"
 import { getActiveNetworkId } from "../../activeNetworkId"
-
 
 const KEY_WITHDRAWALS = "@obsidion/withdrawals/records"
 
@@ -82,6 +77,7 @@ function mergeWithdrawalRecords(
     fpcFundingCut: incoming.fpcFundingCut ?? existing.fpcFundingCut,
     withdrawalId: incoming.withdrawalId ?? existing.withdrawalId,
     l1TxHash: incoming.l1TxHash ?? existing.l1TxHash,
+    receivedAmount: incoming.receivedAmount ?? existing.receivedAmount,
     finalizeTxHash: incoming.finalizeTxHash ?? existing.finalizeTxHash,
     error: incoming.error ?? existing.error,
     endTime:
@@ -260,6 +256,7 @@ export class WithdrawalStorage {
         rawAmount,
         relayerTip: relayerTip ?? existing.relayerTip,
         phase: "l2_mined",
+        minedAt: existing.minedAt ?? Date.now(),
       }
     })
     this.indexReplace(previousHash, stored!)

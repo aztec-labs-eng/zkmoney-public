@@ -18,7 +18,7 @@ import { computeSecretHash } from "@aztec/stdlib/hash"
 import type {
   InboxMessageSentLog,
   InboxMessageSource,
-} from "../../src/services/inboxSiblingPath.js"
+} from "../../src/services/registrationMessage.js"
 import {
   REGISTRATION_MESSAGE_SECRET,
   findRegistrationMessage,

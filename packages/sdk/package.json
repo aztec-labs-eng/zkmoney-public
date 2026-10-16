@@ -77,7 +77,8 @@
     "vite-plugin-wasm": "^3.3.0",
     "vitest": "^2.1.5",
     "webauthn-p256": "^0.0.10",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@oxide/refund-proof": "workspace:*"
   },
   "devDependencies": {
     "@aztec/bb.js": "v5.2.0",

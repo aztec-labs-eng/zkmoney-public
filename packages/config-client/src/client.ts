@@ -225,6 +225,21 @@ export function resolveVersion(
 }
 
 /**
+ * The node of every portal that left its rollup: each other supported version on another node, keyed by the
+ * lowercase portals it names. A migration from such a portal reads its rollup through this node.
+ */
+export function retiredRollupNodes(profile: ConfigProfile): Map<string, string> {
+  const { nodeUrl } = resolveVersion(profile).version
+  const nodes = new Map<string, string>()
+  for (const [id, version] of Object.entries(profile.versions)) {
+    if (id === profile.current || !isSupportedVersion(version) || version.nodeUrl === nodeUrl) continue
+    for (const portal of [version.oxide.portal, ...(version.assets ?? []).map((a) => a.portal)])
+      nodes.set(portal.toLowerCase(), version.nodeUrl)
+  }
+  return nodes
+}
+
+/**
  * The store lays every version out beside `current.json` — `profiles/<generation>/<x.y.z>.json` — so a
  * pin is the sibling document, not a key inside the one `profileUrl` names. No pin, no change.
  */

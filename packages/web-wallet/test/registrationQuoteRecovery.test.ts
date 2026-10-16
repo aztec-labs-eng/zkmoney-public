@@ -11,6 +11,7 @@ import { walletStorage } from "../src/platform/storage/walletStorage"
 import { getPendingStore } from "../src/features/onboarding/webRegistration"
 import { hasDepositAdmission, recordDepositAdmission } from "../src/features/identity/admission"
 import { saveRegistrationTerms } from "../src/features/onboarding/registrationTerms"
+import { RANDOM_ASK } from "./support/registrationPrices"
 import {
   assertRegistrationRefunded,
   assertRegistrationUnfunded,
@@ -782,13 +783,16 @@ describe("a mainnet address funded in a swapped stable", () => {
     address: USDC,
     data: encodeAbiParameters([{ type: "uint256" }], [5_000_000n]),
   }
+  // Each part alone is short of the earned ask that buys entry; together they clear it.
+  const part = (RANDOM_ASK * 3n) / 5n
+  const usdcUnits = (amount: bigint) => amount / 10n ** 12n
   it("pools a deposit refunded one token at a time toward the entry it earned", async () => {
     h.config = mainnet
     const second = `0x${"99".repeat(32)}` as Hex
-    const daiPart = { ...transfer, data: encodeAbiParameters([{ type: "uint256" }], [3n * dai]) }
+    const daiPart = { ...transfer, data: encodeAbiParameters([{ type: "uint256" }], [part]) }
     const usdcPart = {
       ...usdcTransfer,
-      data: encodeAbiParameters([{ type: "uint256" }], [3_000_000n]),
+      data: encodeAbiParameters([{ type: "uint256" }], [usdcUnits(part)]),
     }
     await getPendingStore().upsert(account, { phase: "funded", fundedAt: 5 })
     await registrationRefundConfirmed(
@@ -798,7 +802,7 @@ describe("a mainnet address funded in a swapped stable", () => {
       hash,
       async () => ({ status: "success", logs: [daiPart] } as never),
     )
-    // 3 DAI alone buys no entry; the stamp stays for the stable still at the address.
+    // The DAI part alone buys no entry; the stamp stays for the stable still at the address.
     expect(getPendingStore().get(account)).toMatchObject({ phase: "funded", fundedAt: 5 })
     await registrationRefundConfirmed(
       sipa,
@@ -809,7 +813,7 @@ describe("a mainnet address funded in a swapped stable", () => {
     )
     expect(getPendingStore().get(account)).toMatchObject({
       phase: "awaiting_deposit",
-      refundedEntry: { sipaAddress: sipa, recoveryTxHash: second, amount: String(6n * dai) },
+      refundedEntry: { sipaAddress: sipa, recoveryTxHash: second, amount: String(2n * part) },
     })
     h.balance.mockResolvedValue(0n)
     h.receipt.mockImplementation(async ({ hash: wanted }: { hash: Hex }) => ({
@@ -817,7 +821,7 @@ describe("a mainnet address funded in a swapped stable", () => {
       logs: [wanted === second ? usdcPart : daiPart],
     }))
     await expect(assertRegistrationRefunded(record, mainnet)).resolves.toEqual({
-      amount: 6n * dai,
+      amount: 2n * part,
       txHash: second,
     })
     // The pool stands only on receipts read now: one reorganized into a smaller transfer shrinks
@@ -828,11 +832,11 @@ describe("a mainnet address funded in a swapped stable", () => {
       logs: [
         wanted === second
           ? usdcPart
-          : { ...transfer, data: encodeAbiParameters([{ type: "uint256" }], [dai]) },
+          : { ...transfer, data: encodeAbiParameters([{ type: "uint256" }], [part / 3n]) },
       ],
     }))
     await expect(assertRegistrationRefunded(record, mainnet)).resolves.toEqual({
-      amount: 4n * dai,
+      amount: part + part / 3n,
       txHash: second,
     })
     h.receipt.mockImplementation(async ({ hash: wanted }: { hash: Hex }) =>
@@ -841,7 +845,7 @@ describe("a mainnet address funded in a swapped stable", () => {
         : { status: "reverted", logs: [] },
     )
     await expect(assertRegistrationRefunded(record, mainnet)).resolves.toEqual({
-      amount: 3n * dai,
+      amount: part,
       txHash: second,
     })
     h.receipt.mockImplementation(async ({ hash: wanted }: { hash: Hex }) => {
@@ -853,10 +857,10 @@ describe("a mainnet address funded in a swapped stable", () => {
   it("sizes a refund remembered without an amount, so it pools with the next", async () => {
     h.config = mainnet
     const second = `0x${"99".repeat(32)}` as Hex
-    const daiPart = { ...transfer, data: encodeAbiParameters([{ type: "uint256" }], [3n * dai]) }
+    const daiPart = { ...transfer, data: encodeAbiParameters([{ type: "uint256" }], [part]) }
     const usdcPart = {
       ...usdcTransfer,
-      data: encodeAbiParameters([{ type: "uint256" }], [3_000_000n]),
+      data: encodeAbiParameters([{ type: "uint256" }], [usdcUnits(part)]),
     }
     await getPendingStore().upsert(account, { phase: "funded", fundedAt: 5 })
     walletStorage.setItem(
@@ -876,7 +880,7 @@ describe("a mainnet address funded in a swapped stable", () => {
     )
     expect(getPendingStore().get(account)).toMatchObject({
       phase: "awaiting_deposit",
-      refundedEntry: { sipaAddress: sipa, recoveryTxHash: second, amount: String(6n * dai) },
+      refundedEntry: { sipaAddress: sipa, recoveryTxHash: second, amount: String(2n * part) },
     })
   })
   it("refunds the stable that holds the funds and counts it in registration-token units", async () => {

@@ -111,6 +111,16 @@ export interface NameClaimResponse {
   terms?: SignedTermsResponse
 }
 
+/** `POST /domain/draw`: a random free name and the grant that prices it at the reduced schedule. */
+export interface DrawnNameResponse {
+  tag: string
+  nameHash: `0x${string}`
+  /** Spent by the later `/domain/sign` for this name. */
+  grantToken: string
+  /** Unix seconds; the grant no longer binds past it. */
+  expiresAt: number
+}
+
 /** `POST /domain/reservation`: the names a bootstrap key has claimed, and its live signed holds. */
 export interface NameReservationResponse {
   nameHashes: `0x${string}`[]

@@ -1,6 +1,30 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useRef, useSyncExternalStore } from "react"
+import { useConfigValue } from "@obsidion/front-core"
 import { Card, PrimaryGradientButton } from "@obsidion/web-ds"
+import { isDemoMode } from "../../dev/demoFlag"
 import { ANALYTICS_CONSENT_COPY } from "../../lib/analytics"
+import { walletStorage } from "../../platform/storage/walletStorage"
+import { loadWalletIdentity } from "../identity/walletIdentity"
+
+const onboardingEnded = () => {
+  const identity = loadWalletIdentity()
+  return !!identity && !identity.pending
+}
+
+/** Asks once, in the wallet, after onboarding ends: the identity holds no pending tag. */
+export function AnalyticsConsentPrompt() {
+  const { value: asked, setValue: setAsked } = useConfigValue("analyticsAsked")
+  const { setValue: setConsent } = useConfigValue("analyticsConsent")
+  const ended = useSyncExternalStore(walletStorage.onCommit, onboardingEnded)
+  if (asked || !ended || isDemoMode()) return null
+  return (
+    <AnalyticsConsentModal
+      onChoose={(granted) => {
+        void setConsent(granted).then(() => setAsked(true))
+      }}
+    />
+  )
+}
 
 /**
  * One-time opt-in prompt for anonymous usage analytics. Choice persists in local config.

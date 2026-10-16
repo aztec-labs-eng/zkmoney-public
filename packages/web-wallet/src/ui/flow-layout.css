@@ -215,8 +215,7 @@ body:has(dialog.ww-modal-overlay[open]) .ww-main {
   :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__body {
     flex-basis: 150px;
   }
-  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__title,
-  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__desc {
+  :is(.ww-shell, .ww-invite) .ww-modal.ww-notifications .ww-notifications__title {
     white-space: normal;
     overflow: visible;
     overflow-wrap: anywhere;

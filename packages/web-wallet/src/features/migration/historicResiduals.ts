@@ -1,25 +1,27 @@
 /**
- * Residual-funds probe over the retired oxide deployments (the other same-rollup entries of
- * `deployments[]`). A historic
+ * Residual-funds probe over the retired oxide deployments (the other entries of `deployments[]`
+ * the profile reaches). A historic
  * portal may still hold user value as a private balance on its l2Token, a SIPA deposit still in
  * transit or swept-but-unclaimed, or a paylink escrow that was never claimed/refunded. A paylink
  * still inside its claim window is reported separately: nothing can refund it until the window
  * closes, so the modal only announces it and the pending-migration store waits it out. The
  * migration-detected modal shows iff any historic deployment reports residuals — re-checked every
- * boot until drained, so there is no persisted "seen" state to go stale.
+ * boot until drained, so there is no persisted "seen" state to go stale. On a frozen portal the
+ * balance and the deposits are what is still refundable: a refund pays on L1 and leaves the L2
+ * notes in place, and a deposit claimed on L2 after the freeze still refunds.
  *
  * Each probe runs in its own try/catch: one failing deployment or probe must not hide residuals
- * the other probes found. A failed SIPA scan is reported as `incomplete`; it never opens the modal
- * on its own (a retired broadcaster class this build cannot simulate would nag every boot), but
- * when the modal is open for another reason it shows the failure and offers a retry.
+ * the other probes found. A failed balance read or SIPA scan is reported as `incomplete`, so an
+ * unread source never reads as an empty one.
  */
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { OxideEnvTuple } from "@obsidion/core/types"
+import type { FrozenDepositDescriptor, OxideEnvTuple } from "@obsidion/core/types"
 import { TokenService, type ObsidionWallet } from "@obsidion/sdk"
 import type { Account } from "@aztec/aztec.js/account"
 import {
-  createDepositExitL1Reads,
+  createRefundDepositL1Reads,
   scanRefundableDeposits,
+  scanSweptDeposits,
   paylinkRefundEligibility,
   type RefundableDeposit,
   type RefundableSipaSource,
@@ -36,12 +38,19 @@ export function countPendingWithdrawals(records: readonly WithdrawalRecord[]): n
 
 export interface HistoricResidualSummary {
   tuple: OxideEnvTuple
-  /** Private balance on the historic l2Token (raw units). */
+  /** Private balance on the historic l2Token (raw units); on a frozen portal, the refundable notes. */
   balance: bigint
-  /** Swept-but-unclaimed SIPA deposits attributable to the historic portal. */
+  frozen: boolean
+  /** Swept SIPA deposits still unclaimed on L2, or on a frozen portal still refundable. */
   sweptDeposits: number
   /** Broadcast SIPAs on the historic deployment that still hold L1 funds awaiting a sweep. */
   inTransitDeposits: number
+  /** What those SIPAs hold (raw units). */
+  inTransitAmount: bigint
+  /** Unprocessed deposits a frozen portal refunds once the old network closes their Inbox tree. */
+  waitingDeposits: number
+  /** What those deposits hold (raw units). */
+  waitingAmount: bigint
   /** Creator paylink escrows on the historic token the creator can refund now. */
   paylinkEscrows: number
   /** Creator paylinks on the historic token still inside their claim window — not refundable yet. */
@@ -59,6 +68,13 @@ export interface HistoricResidualDeps {
   current: OxideEnvTuple
   historic: OxideEnvTuple[]
   rows: Transaction[]
+  /** What a frozen portal can still refund, or `undefined` while it is live. */
+  frozenSource?(
+    tuple: OxideEnvTuple,
+    depositDescriptors: () => Promise<FrozenDepositDescriptor[]>,
+  ): Promise<
+    { notes: bigint; deposits: number; waiting: number; waitingAmount: bigint } | undefined
+  >
   /**
    * Chain/PXE-only SIPA discovery for one historic deployment. The caller binds note sync, the
    * retiring token balance, and the L2 nullifier check because those need the unlocked wallet/node.
@@ -99,29 +115,74 @@ export async function probeHistoricResiduals(
   return Promise.all(
     deps.historic.map(async (tuple) => {
       let balance = 0n
-      try {
-        // Explicit-address pin — a service created without one captures the live registry slot.
-        const tokenService = await TokenService.create(
-          deps.wallet,
-          deps.account,
-          AztecAddress.fromStringUnsafe(tuple.l2Token),
-        )
-        balance = await tokenService.getBalance(deps.account)
-      } catch (error) {
-        // Under-report; next boot retries.
-        console.warn(`[migration] balance probe failed for historic token ${tuple.l2Token}:`, error)
-      }
-
+      let frozen = false
+      let incomplete = false
       let sweptDeposits = 0
       let inTransitDeposits = 0
-      let incomplete = false
-      if (deps.sipaDiscovery) {
+      let inTransitAmount = 0n
+      let waitingDeposits = 0
+      let waitingAmount = 0n
+      // A frozen portal refunds a deposit whatever its L2 state, so its scan skips the claim check.
+      let swept: ReturnType<typeof scanSweptDeposits> | undefined
+      const sweptScan = () =>
+        (swept ??= (async () => {
+          const sources = (await deps.sipaDiscovery?.sources(tuple)) ?? []
+          if (!sources.length) return { descriptors: [], inTransit: [] }
+          return scanSweptDeposits({
+            sources,
+            l1Reads: createRefundDepositL1Reads(
+              deps.publicClient,
+              tuple.portal as Address,
+              await deps.sipaDiscovery!.scanRange(tuple),
+            ),
+            readSipaBalance: (address: string) => deps.sipaDiscovery!.balance(tuple, address),
+          })
+        })())
+      try {
+        const refundable = await deps.frozenSource?.(
+          tuple,
+          async () => (await sweptScan()).descriptors,
+        )
+        frozen = refundable !== undefined
+        if (refundable !== undefined) {
+          balance = refundable.notes
+          sweptDeposits = refundable.deposits
+          waitingDeposits = refundable.waiting
+          waitingAmount = refundable.waitingAmount
+          const { inTransit } = await sweptScan()
+          inTransitDeposits = inTransit.length
+          inTransitAmount = inTransit.reduce((sum, d) => sum + d.balance, 0n)
+        }
+      } catch (error) {
+        incomplete = true
+        console.warn(`[migration] frozen probe failed for historic portal ${tuple.portal}:`, error)
+      }
+      const live = !frozen && !incomplete
+      if (live) {
+        try {
+          // Explicit-address pin — a service created without one captures the live registry slot.
+          const tokenService = await TokenService.create(
+            deps.wallet,
+            deps.account,
+            AztecAddress.fromStringUnsafe(tuple.l2Token),
+          )
+          balance = await tokenService.getBalance(deps.account)
+        } catch (error) {
+          incomplete = true
+          console.warn(
+            `[migration] balance probe failed for historic token ${tuple.l2Token}:`,
+            error,
+          )
+        }
+      }
+
+      if (deps.sipaDiscovery && live) {
         try {
           const sources = await deps.sipaDiscovery.sources(tuple)
           if (sources.length > 0) {
             const scan = await scanRefundableDeposits({
               sources,
-              l1Reads: createDepositExitL1Reads(
+              l1Reads: createRefundDepositL1Reads(
                 deps.publicClient,
                 tuple.portal as Address,
                 await deps.sipaDiscovery.scanRange(tuple),
@@ -133,6 +194,7 @@ export async function probeHistoricResiduals(
             })
             sweptDeposits = scan.refundable.length
             inTransitDeposits = scan.inTransit.length
+            inTransitAmount = scan.inTransit.reduce((sum, d) => sum + d.balance, 0n)
           }
         } catch (error) {
           incomplete = true
@@ -171,8 +233,12 @@ export async function probeHistoricResiduals(
       return {
         tuple,
         balance,
+        frozen,
         sweptDeposits,
         inTransitDeposits,
+        inTransitAmount,
+        waitingDeposits,
+        waitingAmount,
         paylinkEscrows,
         lockedPaylinks,
         paylinkCandidates,
@@ -181,6 +247,7 @@ export async function probeHistoricResiduals(
           balance > 0n ||
           sweptDeposits > 0 ||
           inTransitDeposits > 0 ||
+          waitingDeposits > 0 ||
           paylinkEscrows > 0 ||
           paylinkCandidates.length > 0,
       }

@@ -1,37 +1,27 @@
-import { GradientText, Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import { useNavigate } from "react-router-dom"
+import { InvitationChrome } from "../../features/onboarding/InvitationChrome"
 
 /** Catch-all for unknown routes. Mounted outside AccountGate so it never waits on PXE boot. */
 export function NotFoundScreen() {
   const navigate = useNavigate()
   return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 16,
-        textAlign: "center",
-        padding: "24px 0",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <Icon name="lock-shield" size={18} color="#A000FF" />
-        <GradientText gradient="brand" size={18} weight={700}>
-          zk.money
-        </GradientText>
+    <InvitationChrome pill={false}>
+      <div className="ww-invite__content" data-testid="not-found">
+        <span className="ww-invite__pill">ERROR 404</span>
+        <h1 className="ww-invite__title" style={{ marginTop: 20 }}>
+          Page not found
+        </h1>
+        <p className="ww-invite__subtitle">
+          The page you&rsquo;re looking for doesn&rsquo;t exist or has moved.
+        </p>
+        <button
+          type="button"
+          className="ww-invite__unlock"
+          onClick={() => navigate("/", { replace: true })}
+        >
+          Go to wallet
+        </button>
       </div>
-      <GradientText gradient="title" size={28} weight={700}>
-        Page not found
-      </GradientText>
-      <span className="zkm-type-body" style={{ color: "var(--text-secondary)", maxWidth: 300 }}>
-        The page you&rsquo;re looking for doesn&rsquo;t exist or has moved.
-      </span>
-      <div style={{ width: "100%", maxWidth: 300, marginTop: 8 }}>
-        <PrimaryGradientButton title="Go to wallet" onClick={() => navigate("/", { replace: true })} />
-      </div>
-    </div>
+    </InvitationChrome>
   )
 }

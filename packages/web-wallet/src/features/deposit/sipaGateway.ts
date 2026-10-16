@@ -10,11 +10,11 @@ import { getWebBroadcasterArtifact, getWebOxideToken } from "../../config/classA
  * from the shared front-core contexts — the gateway never builds its own.
  *
  * Receiving: the recipient derives its own deposit address rather than asking the resolver for one.
- * ECDH is symmetric, so `SipaSelfResolver` reproduces exactly what the resolver would have derived
- * from the user's registry stealth key and the resolver's — no gateway, no CCIP read, no CORS. The
- * relayer still has to learn the address exists, which is what the SIPA broadcast does with no
- * user signature: the token sends this wallet a `SIPA` event and the `Broadcaster` publishes the
- * sweep's L1 operation. The calls are whitelisted members of a ClaimFPC batch like every other
+ * `SipaSelfResolver` hashes it from a key only this wallet holds — no gateway, no CCIP read, no
+ * CORS. The relayer still has to learn the address exists, which is what the SIPA broadcast does
+ * with no user signature: the token sends this wallet a `SIPA` event and the `Broadcaster`
+ * publishes the sweep's L1 operation. The calls are whitelisted members of a ClaimFPC batch like
+ * every other
  * sponsored call — the FPC only pays, and eligibility is the entrypoint's subscription — so a
  * first-ever Receive folds the deferred subscription into that same tx. From there the rail is
  * unchanged — a sender does a plain ERC-20 transfer, the relayer sweeps into the portal, this
@@ -23,7 +23,8 @@ import { getWebBroadcasterArtifact, getWebOxideToken } from "../../config/classA
  * asset layer's balance reflects the credit.
  */
 import { NO_FROM } from "@aztec/aztec.js/account"
-import type { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec/aztec.js/fields"
+import { BlockNumber } from "@aztec/foundation/branded-types"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
 import {
   getAddress,
@@ -42,10 +43,11 @@ import {
   assertSubsidySweepsSipa,
   buildClaimSponsorPayload,
   buildClaimSubscribePayload,
+  buildDepositIntent,
   buildSipaSweepBroadcasts,
   OxideSipaIntent,
   predictAccountAddress,
-  deriveSharedSecret,
+  deriveSelfSipaSecret,
   chainEpochDay,
   DEFAULT_CONTRACTS,
   claimFpcSponsoredFee,
@@ -53,16 +55,13 @@ import {
   ContractService,
   fetchSipaEvents,
   readSipaBroadcastTxHashes,
-  fetchSipaResolverOperators,
   type ObsidionAccount,
   type ObsidionWallet,
   readDepositFee,
-  resolverSelectionPolicy,
-  selectManifestResolverOperator,
   selfSipaNonce,
   type SelfResolvedSipa,
+  type SipaIntent,
   BroadcasterContract,
-  type SipaResolverOperatorRecord,
   SipaSelfResolver,
   type TokenService,
   TX_AMOUNT_CAP,
@@ -70,8 +69,12 @@ import {
 import {
   deploymentScanRange,
   depositSipaImplementation,
+  deriveSelfSipaKey,
   deriveStealthKey,
   deriveBootstrapKey,
+  selfSipaResolverKeys,
+  sipaDeployArgCandidates,
+  type SipaRecoverCandidate,
   BroadcastAbandoned,
   BroadcastDeferred,
   setupSipaDiscovery,
@@ -111,6 +114,7 @@ import { getL1Clients } from "./l1Wallet"
 import { InsufficientL1BalanceError, readL1DepositTokenBalance } from "./l1DepositTokenBalance"
 import { sipaFundingTokens } from "./loadDepositFacts"
 import { readSipaDeployed } from "./sipaSweep"
+import { predictSipaCandidate } from "./sipaPredict"
 
 /** TestERC20 mint is minter-gated (sandbox faucet convenience; a real sender already holds funds). */
 const TEST_ERC20_MINT_ABI = parseAbi(["function mint(address to, uint256 amount)"])
@@ -224,11 +228,18 @@ export function saveCachedSipa(key: string, entry: CachedSipa): Promise<void> {
 }
 
 /**
- * How many broadcast addresses the pool keeps ready. A landed broadcast never expires — its L1
- * operation is on-chain and the relayer watches it with no listen timeout — so pooled entries are
- * good until popped. Each fill burns one sponsored-broadcast slot of the daily quota.
+ * How many broadcast addresses the pool keeps ready. Each fill burns one sponsored-broadcast slot
+ * of the daily quota.
  */
 export const SIPA_POOL_TARGET = 1
+
+const DAY_MS = 24 * 60 * 60_000
+
+/**
+ * Oldest a pooled address may be. The relayer drops a broadcast operation still waiting for funds
+ * after its max pending age, so an older address would take funds nobody sweeps.
+ */
+export const SIPA_POOL_MAX_AGE_MS = 14 * DAY_MS
 
 const poolStorageKey = (cacheKey: string) => `${cacheKey}.pool`
 
@@ -236,15 +247,18 @@ const poolStorageKey = (cacheKey: string) => `${cacheKey}.pool`
  * The pool of never-handed-out addresses, scoped by the same cache key as the single slot — a
  * deployment roll or account change orphans the whole batch at once. POOL MEMBERSHIP MEANS
  * BROADCAST: an entry is appended only after its broadcast tx mined, and the read drops anything
- * else, so every pooled address is sweepable the moment it is shown. Malformed entries are dropped
- * rather than failing the read: losing a pooled entry costs a proof, not funds.
+ * else, so every pooled address is sweepable the moment it is shown. Malformed and expired entries
+ * are dropped rather than failing the read, and leave storage on the next write: losing a pooled
+ * entry costs a proof, not funds.
  */
-export function readSipaPool(cacheKey: string): CachedSipa[] {
+export function readSipaPool(cacheKey: string, now: number = Date.now()): CachedSipa[] {
   try {
     const raw = walletStorage.getItem(poolStorageKey(cacheKey))
     if (!raw) return []
     const parsed = JSON.parse(raw)
-    return Array.isArray(parsed) ? parsed.filter((e) => isCachedSipa(e) && e.published) : []
+    if (!Array.isArray(parsed)) return []
+    const oldestDay = (now - SIPA_POOL_MAX_AGE_MS) / DAY_MS
+    return parsed.filter((e) => isCachedSipa(e) && e.published && e.day > oldestDay)
   } catch {
     return []
   }
@@ -259,9 +273,15 @@ function writeSipaPool(cacheKey: string, entries: CachedSipa[]): void {
  * so it is never handed out twice and never lost between the two. Resolves once saved: an address
  * whose move failed must not be shown.
  */
-export async function takeFromSipaPool(cacheKey: string): Promise<CachedSipa | null> {
-  const [pick, ...rest] = readSipaPool(cacheKey)
+export async function takeFromSipaPool(
+  cacheKey: string,
+  maxAgeMs: number = SIPA_POOL_MAX_AGE_MS,
+  now: number = Date.now(),
+): Promise<CachedSipa | null> {
+  const pool = readSipaPool(cacheKey, now)
+  const pick = pool.find((e) => e.day > (now - maxAgeMs) / DAY_MS)
   if (!pick) return null
+  const rest = pool.filter((e) => e !== pick)
   await walletStorage.commitTransaction([
     [poolStorageKey(cacheKey), JSON.stringify(rest)],
     [cacheKey, JSON.stringify(pick)],
@@ -299,7 +319,7 @@ export function readUnpublishedSlots(prefix: string): Array<{ key: string; entry
  * counter covers what this device derived, `floor` is what the chain already shows broadcast today
  * (another device, or this one before its storage was cleared), and the higher of the two wins. One
  * key per scope, reset when the day rolls. Scope is the account, not the view: every view derives
- * from the same stealth key, so they share one nonce space.
+ * from the same keys, so they share one nonce space.
  */
 export async function nextSelfSipaNonce(scope: string, day: number, floor = 0): Promise<number> {
   const key = `${scope}.slot`
@@ -317,6 +337,55 @@ export async function nextSelfSipaNonce(scope: string, day: number, floor = 0): 
 
 export function selfSipaScope(network: string, account: string): string {
   return `webwallet.sipa.${network}.${account}`
+}
+
+/** How many of today's slots are already broadcast: slot k is used when its salt is among `salts`. */
+export function slotFloor(salts: ReadonlySet<string>, selfSipaKey: Fr, day: number): number {
+  let used = 0
+  while (salts.has(deriveSelfSipaSecret(selfSipaKey, day, selfSipaNonce(used)).toString())) used++
+  return used
+}
+
+/** What a broadcast publishes for one address. */
+export interface SipaPublishInputs {
+  address: Address
+  user: AztecAddress
+  messageSecret: Fr
+  intent: SipaIntent
+  sipaArgs: SipaRecoverCandidate["args"]
+}
+
+/** Publish inputs read back from a record, with the CREATE2 origin they came from. */
+export interface RecordedPublishInputs extends SipaPublishInputs {
+  candidate: SipaRecoverCandidate
+}
+
+/**
+ * The publish inputs an address's record holds, written when the address was derived. An address
+ * derived under an earlier key no longer re-derives from `(day, nonce)`, but the user may already
+ * have shared it, so it publishes from its record. Null when the record lacks its identity or its
+ * intent does not hash to what the address commits to.
+ */
+export function publishInputsFromRecord(
+  record: SIPADepositRecord | null | undefined,
+): RecordedPublishInputs | null {
+  if (!record?.origin || !record.messageSecret || !record.recipientHash) return null
+  if (!record.recipientL2Address) return null
+  const [candidate] = sipaDeployArgCandidates(record, [])
+  if (!candidate) return null
+  const intent = buildDepositIntent({
+    implementation: candidate.args.implementation,
+    recipientCommitment: record.recipientHash as Hex,
+  })
+  if (intent.intentHash.toLowerCase() !== candidate.args.intentHash.toLowerCase()) return null
+  return {
+    address: getAddress(record.sipaAddress),
+    user: AztecAddress.fromStringUnsafe(record.recipientL2Address),
+    messageSecret: Fr.fromHexString(record.messageSecret),
+    intent,
+    sipaArgs: candidate.args,
+    candidate,
+  }
 }
 
 /**
@@ -354,6 +423,15 @@ export interface SipaDepositGateway {
     opts?: { onStage?: (stage: DepositStage) => void; publishingLimit?: number },
   ): Promise<DepositAddress>
   /**
+   * A pooled address published within `maxAgeMs`, handed out as `depositAddress` hands out a pooled
+   * one, else null. Never derives, so never asks for the passkey; the pool refills behind it.
+   */
+  readyAddress(
+    wallet: ObsidionWallet,
+    contractService: ContractService,
+    tag: string,
+    maxAgeMs: number,
+  ): Promise<{ address: Address; day: number } | null>
   /** Puts an unfunded record back on the fresh scan lane, so funds just sent to it are seen soon. */
   wakeDeposit(address: string): Promise<void>
   /**
@@ -373,6 +451,8 @@ export interface SipaDepositGateway {
     /** ERC-20 to transfer instead of the manifest token (mainnet USDC/USDT, swapped by the sweep). */
     token?: { address: Address; decimals: number }
     mint?: boolean
+    /** False: a payer funding someone else's address. Nothing is recorded on this device. */
+    record?: boolean
     onStage?: (stage: DepositStage) => void
     /** Fires with the L1 hash once the wallet has broadcast the transfer, before confirmation. */
     onSubmitted?: (txHash: Hex) => void
@@ -461,7 +541,6 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   private broadcasters = new Map<string, BroadcasterContract>()
   // Wallet-independent caches (pure L1 reads).
   private meta?: { address: Address; symbol: string; decimals: number }
-  private resolverRecord?: SipaResolverOperatorRecord
   /** Funding hashes whose record event discovery has not created yet. Drained by `sync`. */
   private readonly pendingFundingTx = new Map<string, FundingStamp>()
 
@@ -529,26 +608,6 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   }
 
   /**
-   * The resolver record whose stealth key the ClaimFPC config pins. Selected with the shared
-   * anti-squatter policy, so this agrees with the deploy — derive against a different resolver and
-   * every proof fails the config check.
-   */
-  private async getResolverRecord(tuple: OxideEnvTuple): Promise<SipaResolverOperatorRecord> {
-    if (this.resolverRecord) return this.resolverRecord
-    const records = await fetchSipaResolverOperators(
-      this.publicClient,
-      requireTupleField(tuple, "accountMetadataRegistry") as Address,
-      await deploymentScanRange(this.publicClient, tuple),
-    )
-    this.resolverRecord = selectManifestResolverOperator(records, {
-      portal: requireTupleField(tuple, "portal"),
-      resolverGatewayUrl: tuple.resolverGatewayUrl,
-      ...resolverSelectionPolicy(this.config.network),
-    })
-    return this.resolverRecord
-  }
-
-  /**
    * Register the broadcaster contract + resolver and sponsor senders in this PXE. Required before
    * BROADCASTING, not just before syncing: the tagging pass needs the address preimages to derive
    * tags, and without them the event this wallet just sent itself is one it cannot discover
@@ -596,10 +655,9 @@ class RealSipaDepositGateway implements SipaDepositGateway {
 
   /**
    * The local counter alone would let a fresh device re-derive a slot another device already
-   * broadcast today, so the floor is read off the chain: this wallet's own `SIPA` events carry the
-   * shared secret, and slot k is used when its secret is among them. Pure derivation per slot,
-   * no L1 read. A broadcast still in flight elsewhere is invisible here — a duplicate broadcast of
-   * the same address, never lost funds.
+   * broadcast today, so the floor is read off the chain, from the salts this wallet's own `SIPA`
+   * events carry. Pure derivation per slot, no L1 read. A broadcast still in flight elsewhere is
+   * invisible here — a duplicate broadcast of the same address, never lost funds.
    */
   private async nextNonce(
     wallet: ObsidionWallet,
@@ -615,20 +673,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       user,
     )
     const salts = new Set(events.map((event) => event.sharedSecretSalt.toString()))
-    const resolver = await this.getResolverRecord(tuple)
-    let used = 0
-    while (
-      salts.has(
-        deriveSharedSecret(
-          resolver.resolverPublicKey,
-          deriveStealthKey(keys.msk).scalar,
-          day,
-          selfSipaNonce(used),
-        ).toString(),
-      )
-    ) {
-      used++
-    }
+    const used = slotFloor(salts, deriveSelfSipaKey(keys.msk), day)
     console.debug(`[sipaGateway] slot floor ${used} from ${events.length} events`)
     return nextSelfSipaNonce(selfSipaScope(this.config.network, user.toString()), day, used)
   }
@@ -740,6 +785,23 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     return { address, name, publish: publish(entry), owe: owe(entry) }
   }
 
+  async readyAddress(
+    wallet: ObsidionWallet,
+    contractService: ContractService,
+    tag: string,
+    maxAgeMs: number,
+  ): Promise<{ address: Address; day: number } | null> {
+    this.bind(wallet)
+    const tuple = await getOxideTuple(this.config)
+    const cacheKey = this.addressCacheKey(tuple, tag)
+    const pooled = await takeFromSipaPool(cacheKey, maxAgeMs)
+    void this.refillPool(wallet, contractService, tuple, cacheKey, maxAgeMs)
+    if (!pooled) return null
+    await this.wakeDeposit(pooled.address)
+    await getBroadcastLedger().markShown(pooled.address)
+    return { address: pooled.address, day: pooled.day }
+  }
+
   /**
    * Put an address back on the deposit scanner's per-tick lane and stamp the feed time as now: on
    * hand-out, and again when a screen sees funds at it. The record was created when the background
@@ -818,6 +880,8 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     contractService: ContractService,
     tuple: OxideEnvTuple,
     cacheKey: string,
+    /** Pooled entries older than this do not count toward the target. */
+    maxAgeMs: number = SIPA_POOL_MAX_AGE_MS,
   ): Promise<void> {
     void contractService
     if (this.refilling || Date.now() < this.refillBlockedUntil) return
@@ -837,7 +901,9 @@ class RealSipaDepositGateway implements SipaDepositGateway {
             j.source.type === "slot" &&
             j.source.cacheKey === cacheKey,
         ).length
-      if (readSipaPool(cacheKey).length + filling >= SIPA_POOL_TARGET) return
+      const now = Date.now()
+      const ready = readSipaPool(cacheKey, now).filter((e) => e.day > (now - maxAgeMs) / DAY_MS)
+      if (ready.length + filling >= SIPA_POOL_TARGET) return
       const day = await chainEpochDay(wallet)
       const { address, nonce } = await this.deriveSipa(
         wallet,
@@ -886,7 +952,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   }
 
   /**
-   * Everything the address depends on: the stealth ECDH against the resolver's registry key, and
+   * Everything the address depends on: the salt hashed from this wallet's self-SIPA key, and
    * the Registry's CREATE2 prediction over the resulting recipient hash. Deterministic in
    * `(day, nonce)`, so the publish step re-derives rather than threading state through.
    */
@@ -898,9 +964,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     nonce: number,
   ) {
     await this.ensureDiscovery(wallet, tuple)
-    const resolver = await this.getResolverRecord(tuple)
-    const stealth = deriveStealthKey(keys.msk)
-    const selfResolver = new SipaSelfResolver(stealth.scalar, resolver.resolverPublicKey)
+    const selfResolver = new SipaSelfResolver(selfSipaResolverKeys(keys.msk))
     const user = keys.account.getAddress()
     const {
       sipaAddress: address,
@@ -962,9 +1026,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       address,
       nonce: resolution.nonce,
       resolution,
-      resolver,
       selfResolver,
-      stealth,
       user,
       intent,
       implementation: sipaArgs.implementation,
@@ -1025,8 +1087,15 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     })
   }
 
-  /** Whether the address's broadcast mined: this wallet holds the `SIPA` event its salt names. */
-  private async broadcastLanded(wallet: ObsidionWallet, address: string): Promise<boolean> {
+  /**
+   * Whether the address's broadcast mined: this wallet holds the `SIPA` event its salt names, from
+   * `sinceBlock` on when the address is being published again.
+   */
+  private async broadcastLanded(
+    wallet: ObsidionWallet,
+    address: string,
+    sinceBlock?: number,
+  ): Promise<boolean> {
     await this.store.load()
     const salt = this.store.get(getAddress(address))?.messageSecret
     const keys = await this.unlockedKeys(wallet)
@@ -1037,6 +1106,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       wallet,
       AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Token")),
       keys.account.getAddress(),
+      sinceBlock === undefined ? undefined : { fromBlock: BlockNumber(sinceBlock) },
     )
     const wanted = salt.toLowerCase()
     return events.some((event) => event.sharedSecretSalt.toString().toLowerCase() === wanted)
@@ -1045,7 +1115,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   /** What the broadcast ledger runs for a derived deposit address. */
   slotExecutor(wallet: ObsidionWallet): BroadcastExecutor {
     return {
-      landed: (job) => this.broadcastLanded(wallet, job.address),
+      landed: (job) => this.broadcastLanded(wallet, job.address, job.republishSince),
       send: async (job, attempt) => {
         if (job.source.type !== "slot") throw new BroadcastAbandoned("Not a deposit address")
         this.bind(wallet)
@@ -1097,10 +1167,28 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   }
 
   /**
+   * What an address that no longer re-derives still publishes: its record, provided the record's
+   * args deploy exactly that address under this deployment's factory. An address of another factory
+   * is not this deployment's to publish; its record stays for recovery.
+   */
+  private async recordedPublishInputs(
+    address: Address,
+    tuple: OxideEnvTuple,
+  ): Promise<SipaPublishInputs | null> {
+    const recorded = publishInputsFromRecord(this.store.get(address))
+    if (!recorded) return null
+    const factory = requireTupleField(tuple, "sipaFactory") as Address
+    if (recorded.candidate.sipaFactory.toLowerCase() !== factory.toLowerCase()) return null
+    const predicted = await predictSipaCandidate(this.publicClient, recorded.candidate)
+    return predicted.toLowerCase() === address.toLowerCase() ? recorded : null
+  }
+
+  /**
    * Sponsor the L2 broadcast that tells the relayer the address exists, folding the deferred
    * first-tx subscription in when one is pending. Re-derives from the cached `(day, nonce)` rather
    * than being handed the first derivation's result: the second derivation is INDEPENDENT, which
-   * is what makes the equality check below a real check rather than a tautology.
+   * is what makes the equality check below a real check rather than a tautology. An address that
+   * no longer re-derives publishes from its record instead; nothing else is published under it.
    */
   private async broadcastSipa(
     wallet: ObsidionWallet,
@@ -1116,19 +1204,15 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     } = {},
   ): Promise<string> {
     const { onStage, sponsor: prebuiltSponsor, operationId, onTxHash } = opts
-    const { day } = entry
-    const { address, resolution, user, intent, sipaArgs } = await this.deriveSipa(
-      wallet,
-      tuple,
-      keys,
-      day,
-      entry.nonce,
-    )
+    const derived = await this.deriveSipa(wallet, tuple, keys, entry.day, entry.nonce)
     // The user already holds `entry.address` and may have shared it. Broadcasting anything else
-    // strands whatever they were sent, so refuse rather than publish the wrong one.
-    if (address.toLowerCase() !== entry.address.toLowerCase()) {
-      throw new Error("derived deposit address changed — refusing to broadcast a different one")
-    }
+    // strands whatever they were sent.
+    const inputs: SipaPublishInputs | null =
+      derived.address.toLowerCase() === entry.address.toLowerCase()
+        ? { ...derived, messageSecret: derived.resolution.messageSecret }
+        : await this.recordedPublishInputs(entry.address, tuple)
+    if (!inputs) throw new BroadcastAbandoned("The address no longer derives")
+    const { address, user, messageSecret, intent, sipaArgs } = inputs
     const deployed = await readSipaDeployed(this.publicClient, address)
     if (!deployed && !("recoveryAddress" in sipaArgs)) {
       await assertSubsidySweepsSipa(this.publicClient, {
@@ -1161,7 +1245,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     const broadcaster = await this.broadcasterFor(wallet, tuple)
     const interactions = buildSipaSweepBroadcasts(token, broadcaster, {
       recipient: user,
-      sharedSecretSalt: resolution.messageSecret,
+      sharedSecretSalt: messageSecret,
       resweepable: sipaArgs.resweepable,
       intentHash: intent.intentHash,
       sipa: address,
@@ -1328,11 +1412,12 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       onStage("confirming")
       params.onSubmitted?.(txHash)
       await confirmed(this.publicClient, txHash)
-      await this.stampFunding(address, {
-        fundingTxHash: txHash,
-        walletName: params.walletName,
-        tokenSymbol: params.tokenSymbol,
-      })
+      if (params.record !== false)
+        await this.stampFunding(address, {
+          fundingTxHash: txHash,
+          walletName: params.walletName,
+          tokenSymbol: params.tokenSymbol,
+        })
       onStage("done")
       return { txHash, address, name }
     }
@@ -1370,12 +1455,13 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     onStage("confirming")
     params.onSubmitted?.(txHash)
     await confirmed(this.publicClient, txHash)
-    await this.stampFunding(address, {
-      fundingTxHash: txHash,
-      walletName: params.walletName,
-      walletAddress: account,
-      tokenSymbol: params.tokenSymbol,
-    })
+    if (params.record !== false)
+      await this.stampFunding(address, {
+        fundingTxHash: txHash,
+        walletName: params.walletName,
+        walletAddress: account,
+        tokenSymbol: params.tokenSymbol,
+      })
     onStage("done")
     return { txHash, address, name }
   }
@@ -1438,6 +1524,18 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       l1ChainId: this.config.l1ChainId,
       registrationScheduleFor: registrationScheduleForSipa,
       onFundingWalletDetected: upsertDepositL1WalletContact,
+      onSweptAddressFunded: async (sipa) => {
+        const since = Number(await wallet.node.getBlockNumber())
+        if (!(await getBroadcastLedger().republish(sipa, since)))
+          console.warn(
+            `[sipaGateway] ${sipa} has no landed broadcast to repeat; stuck exits remain`,
+          )
+      },
+      // The account has no on-chain creation block, and no deposit to it predates the deployment.
+      historyStartBlock: async () =>
+        (
+          await deploymentScanRange(this.publicClient, tuple)
+        ).fromBlock,
     })
     // This pass is what creates the records the funding hashes were waiting on.
     await drainFundingTxStash(this.store, this.pendingFundingTx)

@@ -27,6 +27,7 @@ import { dirname, join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { Fr } from "@aztec/aztec.js/fields"
 import { claimFpcGateGas, claimFpcOverheadGas, claimFpcRefuelGas } from "@obsidion/contracts"
+import { CLAIM_FPC_MAX_FEE_PER_GAS } from "@obsidion/core/constants"
 import {
   CLAIM_FPC_BATCH_CAPS,
   claimFpcBatchGas,
@@ -55,13 +56,7 @@ const OXIDE_TOKEN_MAIN = join(
   "../../../../vendor/oxide/noir-projects/oxide_token_contract/src/main.nr",
 )
 
-/**
- * The fee-per-gas a deployed policy prices its ceilings at
- * (MAX_FEE_PER_{DA,L2}_GAS in packages/tooling/l2-contracts-deployer/src/claimFpcConfig.ts). A deploy that lowers it
- * without the declared-limits side following turns every sponsored tx into the assertion failure
- * these cases exist to prevent.
- */
-const CONFIG_FEE_PER_GAS = 10n ** 13n
+const CONFIG_FEE_PER_GAS = CLAIM_FPC_MAX_FEE_PER_GAS
 /** Testnet, 2026-08-06: worst predicted min fee 2.233e12 x the base wallet's 1.5 padding. */
 const TESTNET_DECLARED_FEE_PER_L2_GAS = 3349589516130n
 
@@ -298,7 +293,7 @@ describe("ClaimFPC flat batch caps", () => {
 describe("ClaimFPC refuel", () => {
   it("pins refuel's declared limits to the artifact global and the measured table", () => {
     // refuel is the FPC's own entrypoint tx (fixed shape), so declared == artifact == measured
-    // exactly; claimFpcRefuelFee throws on table drift, and the sandbox e2e pins the live send.
+    // exactly; claimFpcRefuelFee declares the table entry, and the sandbox e2e pins the live send.
     const measured = CLAIM_FPC_GAS_TABLE["refuel"]!
     expect(claimFpcRefuelGas()).toEqual({ daGas: measured.daGas, l2Gas: measured.l2Gas })
     const { gasSettings } = claimFpcRefuelFee()

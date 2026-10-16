@@ -149,4 +149,74 @@ describe("deriveRefundableSipaSources", () => {
       }),
     ).rejects.toThrow(/recovery account/)
   })
+
+  describe("a SIPA announced with another intent", () => {
+    const recoveryAccount = EthAddress.fromString("0x" + "cd".repeat(20))
+    const registration = EthAddress.fromString("0x" + "33".repeat(20))
+    const metadataUpdate = EthAddress.fromString("0x" + "44".repeat(20))
+    const secret = new Fr(7)
+    const intentHash = "0x" + "e1".repeat(32)
+    const derive = (events: object[], over: Record<string, unknown> = {}) =>
+      deriveRefundableSipaSources({
+        events: events as never,
+        recipientL2Address: RECIPIENT.toString(),
+        stealthPublicKey: STEALTH_KEY,
+        tuple: tuple({
+          sipaRecoveryProtocol: "account",
+          registrationSIPAImplementation: registration.toString(),
+          updateMetadataSIPAImplementation: metadataUpdate.toString(),
+          ...over,
+        }) as never,
+        recoveryAccount: recoveryAccount.toString(),
+      })
+    const address = (implementation: EthAddress, hash: Buffer, resweepable = false) =>
+      computeAccountSIPAAddress({
+        sipaFactory: SIPA_FACTORY,
+        implementation,
+        intentHash: hash,
+        recoveryCommitment: deriveRecoveryCommitment(secret, recoveryAccount),
+        rollupVersion: 5n,
+        resweepable,
+      }).toString()
+
+    it("derives a registration or metadata-update SIPA from the carried intent hash", async () => {
+      const sources = await derive([
+        { messageSecret: secret.toString(), resweepable: false, intentHash },
+      ])
+      const carried = Buffer.from(intentHash.slice(2), "hex")
+      expect(sources.map((s) => s.sipaAddress)).toEqual([
+        address(registration, carried),
+        address(metadataUpdate, carried),
+      ])
+    })
+
+    it("reads a zero intent hash as a deposit", async () => {
+      const deposit = keccak256((await computeStealthRecipientHash(secret, RECIPIENT)).toBuffer())
+      const sources = await derive([
+        { messageSecret: secret.toString(), resweepable: false, intentHash: "0x0" },
+      ])
+      expect(sources.map((s) => s.sipaAddress)).toEqual([address(IMPLEMENTATION, deposit)])
+    })
+
+    it("keeps one salt's SIPAs apart when their intent or resweepability differs", async () => {
+      const sources = await derive(
+        [
+          { messageSecret: secret.toString(), resweepable: false },
+          { messageSecret: secret.toString(), resweepable: true },
+          { messageSecret: secret.toString(), resweepable: false, intentHash },
+        ],
+        { updateMetadataSIPAImplementation: undefined },
+      )
+      expect(new Set(sources.map((s) => s.sipaAddress)).size).toBe(3)
+    })
+
+    it("fails closed when the tuple cannot derive that intent", async () => {
+      await expect(
+        derive([{ messageSecret: secret.toString(), resweepable: false, intentHash }], {
+          registrationSIPAImplementation: undefined,
+          updateMetadataSIPAImplementation: "0x" + "00".repeat(20),
+        }),
+      ).rejects.toThrow(/no registration or metadata-update/)
+    })
+  })
 })

@@ -58,7 +58,6 @@ export function saveWalletIdentity(
 
 export function clearWalletIdentity(): void {
   walletStorage.removeItem(STORAGE_KEY)
-  // The cached grant was proved for this identity; a successor proves its own.
   clearAdmission()
 }
 

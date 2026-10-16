@@ -45,8 +45,8 @@ export interface RegistrationCheck {
 export interface RegistrationSheetProps {
   /** Bare tag, rendered as the @tag pill. */
   tag: string
-  /** Sheet heading. "Activate account" wherever a reservation is waiting on its deposit. */
-  title: string
+  /** Sheet heading, with the wallet badge and tag. Absent where the body names the tag itself. */
+  title?: string
   /** When the name's hold ends, unix ms. */
   reservedUntil?: number
   /** State prose the design has no slot for: expired, wrong chain, queued. */
@@ -100,14 +100,13 @@ export interface RegistrationSheetProps {
   actions?: ReactNode
   /** Withheld while the gate is not dismissible: a queued user has nothing to close back to. */
   onClose?: () => void
-  /** The onboarding card's wide frame, or the wallet's standard sheet sizing. */
-  variant?: "onboarding" | "wallet"
+  onBack?: () => void
 }
 
 /**
  * The one registration sheet (Figma 10788:26927 / 10788:27111). Every surface that shows a
- * reservation opens this: the terms step before the address exists, the pending step after it
- * does, and the Home hero. A fixed sheet whose card scrolls, so the close button always sits in
+ * reservation opens this: the terms step before the address exists and the pending step after it
+ * does. A fixed sheet whose card scrolls, so the close button always sits in
  * the same corner.
  */
 export function RegistrationSheet({
@@ -120,31 +119,28 @@ export function RegistrationSheet({
   notices,
   actions,
   onClose,
-  variant = "onboarding",
+  onBack,
 }: RegistrationSheetProps) {
   return (
-    <OnboardingCard
-      className={
-        variant === "wallet" ? "ww-reg-sheet ww-reg-sheet--wallet" : "ww-modal--create ww-reg-sheet"
-      }
-      onClose={onClose}
-    >
+    <OnboardingCard className="ww-modal--create ww-reg-sheet" onClose={onClose} onBack={onBack}>
       <div className="ww-reg-sheet__card">
-        <div className="ww-reg-sheet__head">
-          <span className="ww-invite-modal-badge ww-invite-modal-badge--brand">
-            <Icon name="wallet" size={32} color="#fff" />
-          </span>
-          <h2 className="ww-invite-modal-title ww-invite-modal-title--lg">{title}</h2>
-          <span className="ww-tag-pill">
-            <strong>@{tag}</strong>
-            <span>.zk.money</span>
-          </span>
-          {reservedUntil !== undefined && (
-            <span className="ww-reserved-until">
-              Reserved until {formatDateLabel(reservedUntil)}, {formatTimeLabel(reservedUntil)}
+        {title && (
+          <div className="ww-reg-sheet__head">
+            <span className="ww-invite-modal-badge ww-invite-modal-badge--brand">
+              <Icon name="wallet" size={32} color="#fff" />
             </span>
-          )}
-        </div>
+            <h2 className="ww-invite-modal-title ww-invite-modal-title--lg">{title}</h2>
+            <span className="ww-tag-pill">
+              <strong>@{tag}</strong>
+              <span>.zk.money</span>
+            </span>
+            {reservedUntil !== undefined && (
+              <span className="ww-reserved-until">
+                Reserved until {formatDateLabel(reservedUntil)}, {formatTimeLabel(reservedUntil)}
+              </span>
+            )}
+          </div>
+        )}
 
         {note && <p className="ww-reg-sheet__note">{note}</p>}
 
@@ -297,7 +293,6 @@ function RegistrationSheetPayment({
           <>
             <DepositAddressRow
               address={address}
-              kind={kind}
               note={
                 check && (
                   <WaitingBlock

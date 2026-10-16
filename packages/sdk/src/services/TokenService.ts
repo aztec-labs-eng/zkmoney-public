@@ -9,6 +9,7 @@ import { type Contract, type ContractFunctionInteraction } from "@aztec/aztec.js
 import { Capsule, TxHash, type TxReceipt } from "@aztec/stdlib/tx"
 import { formatUnits, parseUnits } from "viem"
 import { MethodOptions, ServiceContractBase } from "./ServiceBase.js"
+import { isAlreadyClaimedDepositError } from "./depositReceipt.js"
 import { buildTeeOperation, requireSpendMetadataResolver } from "./teeOperation.js"
 import { buildSponsoredTeeOperation } from "./sponsoredTeeOperation.js"
 import {
@@ -142,6 +143,7 @@ export class TokenService extends ServiceContractBase {
         service.contractService.getArtifactForContract(
           DEFAULT_CONTRACTS.oxideToken,
           contractAddress,
+          wallet,
         ),
       )
       service.contractAddress = contractAddress
@@ -291,6 +293,17 @@ export class TokenService extends ServiceContractBase {
         params.sharedSecretSalt,
       )
       .simulate({ from: params.recipient })
+  }
+
+  /** Reconcile a chain-verified deposit after restart, including one already spent by this account. */
+  public async ensureSweptDeposit(
+    params: Parameters<TokenService["claimSweptDeposit"]>[0],
+  ): Promise<void> {
+    try {
+      await this.claimSweptDeposit(params)
+    } catch (error) {
+      if (!isAlreadyClaimedDepositError(error)) throw error
+    }
   }
 
   /**
@@ -885,6 +898,8 @@ export class TokenService extends ServiceContractBase {
       withdrawal: WithdrawalOptions
       /** See {@link exitToL1Private}. */
       proverTip?: bigint
+      /** Awaited with the proven tx's hash before the node takes it; a rejection sends nothing. */
+      onTxHash?: (txHash: string) => Promise<void>
     }>,
   ): Promise<{
     txHash: string
@@ -961,6 +976,7 @@ export class TokenService extends ServiceContractBase {
       fee: op.sendOpts.fee,
       operationId: options?.operationId,
       kind: "withdraw",
+      onTxHash: options?.onTxHash,
     })
     const receipt = (
       sent as { receipt?: { txHash?: { toString(): string }; blockNumber?: number } }

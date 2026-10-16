@@ -35,6 +35,11 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
 vi.mock("../src/features/identity/walletIdentity", () => ({ loadWalletIdentity: () => undefined }))
+vi.mock("../src/features/onboarding/openRegistration", () => ({
+  useNameClaimPending: () => false,
+  useRegistrationTagChangeable: () => false,
+}))
+vi.mock("../src/features/onboarding/ChooseNameSheet", () => ({ ChooseNameSheet: () => null }))
 vi.mock("../src/lib/analytics", () => ({ appVersion: "0.0.0" }))
 vi.mock("../src/ui/prefs", () => ({ useHideBalances: () => [false, vi.fn()] }))
 vi.mock("../src/ui/FeedbackModals", () => ({
@@ -52,6 +57,7 @@ vi.mock("../src/ui/EndpointsModal", () => ({
   customEndpointsLabel: () => undefined,
 }))
 vi.mock("../src/ui/ResetScreen", () => ({ RESET_PATH: "/reset" }))
+vi.mock("../src/dev/ConfigProfileModal", () => ({ ConfigProfileModal: () => null }))
 vi.mock("../src/features/deposit/StrandedRecoveryModal", () => ({
   StrandedRecoveryModal: () => null,
 }))

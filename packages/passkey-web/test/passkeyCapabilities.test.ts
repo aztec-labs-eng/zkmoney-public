@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   currentMisreportsCrossDevice,
   currentPhoneReach,
+  currentPlatformAuthenticator,
   currentTrustsAttachmentLabel,
   mayStartLaptopCeremony,
   safariMislabelsCrossDevice,
@@ -121,6 +122,41 @@ describe("currentPhoneReach", () => {
     })
     expect(await currentPhoneReach("laptop")).toBe("no-hybrid")
     expect(await currentPhoneReach("phone")).toBe("ok")
+  })
+})
+
+describe("currentPlatformAuthenticator", () => {
+  afterEach(() => vi.unstubAllGlobals())
+
+  it("reads the static through a cast, and is unknown when it is missing, odd or failing", async () => {
+    vi.stubGlobal("PublicKeyCredential", undefined)
+    expect(await currentPlatformAuthenticator()).toBe("unknown")
+    vi.stubGlobal("PublicKeyCredential", {})
+    expect(await currentPlatformAuthenticator()).toBe("unknown")
+    vi.stubGlobal("PublicKeyCredential", { isUserVerifyingPlatformAuthenticatorAvailable: 1 })
+    expect(await currentPlatformAuthenticator()).toBe("unknown")
+    vi.stubGlobal("PublicKeyCredential", {
+      get isUserVerifyingPlatformAuthenticatorAvailable() {
+        throw new Error("blocked")
+      },
+    })
+    expect(await currentPlatformAuthenticator()).toBe("unknown")
+    vi.stubGlobal("PublicKeyCredential", {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.reject(new Error("x")),
+    })
+    expect(await currentPlatformAuthenticator()).toBe("unknown")
+    vi.stubGlobal("PublicKeyCredential", {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve("yes"),
+    })
+    expect(await currentPlatformAuthenticator()).toBe("unknown")
+    vi.stubGlobal("PublicKeyCredential", {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(true),
+    })
+    expect(await currentPlatformAuthenticator()).toBe("yes")
+    vi.stubGlobal("PublicKeyCredential", {
+      isUserVerifyingPlatformAuthenticatorAvailable: () => Promise.resolve(false),
+    })
+    expect(await currentPlatformAuthenticator()).toBe("no")
   })
 })
 

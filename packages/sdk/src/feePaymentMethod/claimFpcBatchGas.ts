@@ -20,16 +20,16 @@
  *     inventory: the entrypoint overhead plus every call's marginal, mirroring
  *     `_entrypoint_preamble`'s `batch_max_fee` in gas terms.
  *
- * Either way the headroom against a rising base fee is exactly
- * `config.max_fee_per_l2_gas / declared fee-per-gas`, and sponsorship pauses when that reaches 1 —
- * the drain brake the immutable config is meant to have, not a bug.
+ * Either way the batch declares the config's own fee-per-gas, so the assert holds and sponsorship
+ * pauses only while the network fee itself is above the config's — the drain brake the immutable
+ * config is meant to have, not a bug.
  *
  * Declared limits also bound execution: a batch that meters above what it declared runs out of gas
  * instead of being sponsored. Under the caps that headroom is deliberate slack; under an inventory
  * declaration it is the whitelist ceiling's own refusal (the fee assert would reject the batch),
  * moved earlier and made explicit.
  */
-import { Gas, type GasFees } from "@aztec/stdlib/gas"
+import { Gas, GasFees } from "@aztec/stdlib/gas"
 import type { FunctionCall } from "@aztec/stdlib/abi"
 import {
   CLAIM_FPC_MAX_BATCH_DA_GAS,
@@ -58,6 +58,11 @@ export const CLAIM_FPC_BATCH_CAPS: ClaimFpcMeasuredTx = {
   l2Gas: CLAIM_FPC_MAX_BATCH_L2_GAS,
 }
 
+export const CLAIM_FPC_MAX_FEES_PER_GAS = new GasFees(
+  CLAIM_FPC_MAX_FEE_PER_GAS,
+  CLAIM_FPC_MAX_FEE_PER_GAS,
+)
+
 /** The sponsorable calls a per-call policy can commit, keyed by the function name it matches on. */
 const MARGINAL_BY_FUNCTION: Record<string, keyof ReturnType<typeof deriveClaimFpcGasBudgets>> = {
   authorize_intents: "mAuth",
@@ -75,6 +80,7 @@ const MARGINAL_BY_FUNCTION: Record<string, keyof ReturnType<typeof deriveClaimFp
   refund: "mPaylinkClaim",
   // The email flavor is selected from the proof-bearing arguments below.
   claim_to_l1: "mPaylinkClaimToL1",
+  claim_with_withdrawal: "mPaylinkClaimWithWithdrawal",
 }
 
 /**
@@ -111,22 +117,6 @@ const isEmailClaim = (call: SponsorableCall): boolean => call.name === "claim" &
 /** Cached: the derivation runs every model-vs-measured cross-check, and the inputs are constants. */
 let cached: ReturnType<typeof deriveClaimFpcGasBudgets> | undefined
 const budgets = () => (cached ??= deriveClaimFpcGasBudgets())
-
-/**
- * Whether a batch under the open policy, declaring the caps at `fees`, passes `_assert_fee_within_max`.
- * The FPC's budget is the caps plus its own entrypoint overhead at the config's fee-per-gas, so the
- * declared fee-per-gas may sit above that config value by the overhead's share.
- */
-// ponytail: open policy only; under a per-call policy the overhead is on both sides and the limit is
-// exactly CLAIM_FPC_MAX_FEE_PER_GAS. Take the policy as an argument if prod moves to per-call.
-export function claimFpcOpenBatchWithinCap(fees: GasFees): boolean {
-  const { base } = budgets()
-  const caps = CLAIM_FPC_BATCH_CAPS
-  const declared = BigInt(caps.daGas) * fees.feePerDaGas + BigInt(caps.l2Gas) * fees.feePerL2Gas
-  const maxFee =
-    BigInt(caps.daGas + base.daGas + caps.l2Gas + base.l2Gas) * CLAIM_FPC_MAX_FEE_PER_GAS
-  return declared <= maxFee
-}
 
 /**
  * The inventory marginal of one batched call, by function name. Throws on anything a per-call
@@ -184,9 +174,8 @@ export function claimFpcDeclaredGas(
  *
  * The budget is declared EXACTLY — no padding on top. A private tx is charged its METERED gas, not
  * its declared limits, so declaring the whole budget costs nothing, while padding it would eat the
- * ceiling's fee room: the only variable is the fee-per-gas the wallet declares
- * (`completeFeeOptions`: worst-case predicted min fee plus padding), and sponsorship pauses when
- * that climbs past the config's.
+ * ceiling's fee room. The fee-per-gas is the config's for the same reason: a tx pays the base fee,
+ * not its declared maximum.
  *
  * Teardown is zero: no sponsorable call registers a public teardown function, and the assert sums
  * both dimensions, so the whole allowance rides `gasLimits`.
@@ -198,13 +187,14 @@ export function claimFpcSponsoredFee(
   policy: ClaimFpcPolicy,
   calls: SponsorableCall[],
 ): {
-  gasSettings: { gasLimits: Gas; teardownGasLimits: Gas }
+  gasSettings: { gasLimits: Gas; teardownGasLimits: Gas; maxFeesPerGas: GasFees }
 } {
   const gas = claimFpcDeclaredGas(policy, calls)
   return {
     gasSettings: {
       gasLimits: new Gas(gas.daGas, gas.l2Gas),
       teardownGasLimits: Gas.empty(),
+      maxFeesPerGas: CLAIM_FPC_MAX_FEES_PER_GAS,
     },
   }
 }

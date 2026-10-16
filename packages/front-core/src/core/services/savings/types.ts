@@ -1,0 +1,71 @@
+import type { SavingsMove } from "../../../oxide/savingsMoves"
+import type { SavingsMoveStorage } from "./SavingsMoveStorage"
+
+export type SavingsDirection = "in" | "out"
+
+/** Same words as `WithdrawStage`; a sheet's stage line reads them unchanged. */
+export type SavingsMoveStage = "building" | "proving" | "submitting"
+
+export interface SavingsPosition {
+  /** zk-sUSDS held privately, 18 decimals. */
+  shares: bigint
+  /** DAI the shares redeem for at Sky's current price. */
+  value: bigint
+  /** DAI one `SHARE` redeems for; prices a deposit's shares before they are claimed. */
+  sharePrice: bigint
+  /** Yearly yield from Sky's savings rate; absent where the vault publishes none. */
+  apy?: number
+  readAt: number
+}
+
+/** What a move costs and leaves, priced on L1 before the burn. Base units throughout. */
+export interface SavingsQuote {
+  direction: SavingsDirection
+  /** What the source burns: DAI moving in, sUSDS shares moving out. */
+  amount: bigint
+  /** The DAI value of `amount`. */
+  value: bigint
+  /** The DAI the release pays the relayer. */
+  releaseTip: bigint
+  /** The source portal's cut, in the source token. */
+  sourceCut: bigint
+  /** The DAI the escrow pays whoever runs it. */
+  escrowTip: bigint
+  /** The destination portal's cut on the escrow's deposit, in DAI. */
+  arrivalCut: bigint
+  /** DAI the release leaves at the escrow. */
+  escrowFunding: bigint
+  /** DAI that lands, or the DAI value of the shares that do. */
+  net: bigint
+  /** Every deduction, in DAI: `value - net`. */
+  fee: bigint
+}
+
+/** A move this front made. `withdrawalLocalId` is its burn's record and this store's key. */
+export interface SavingsMoveRecord extends SavingsMove {
+  startTime: number
+  /** When the destination claimed the deposit. */
+  endTime?: number
+  /** The quote's DAI value and what it said would land; absent on a move adopted from a rescan. */
+  value?: string
+  net?: string
+  /** What a move adopted from a rescan should land, priced from its burn: it has no quote. */
+  expectedNet?: string
+  /** What the last settle pass found, for a row to show while the move is pending. */
+  lastCheck?: { at: number; message: string }
+}
+
+/** What a front composes over its deployments; `useSavings` reads it. */
+export interface SavingsSource {
+  moves: SavingsMoveStorage
+  read(): Promise<SavingsPosition>
+  quote(direction: SavingsDirection, amount: bigint): Promise<SavingsQuote>
+  /** Burns into a Sky escrow and records the move. The relayer runs the rest; `settle` claims it. */
+  move(
+    direction: SavingsDirection,
+    amount: bigint,
+    onStage: (stage: SavingsMoveStage) => void,
+  ): Promise<SavingsMoveRecord>
+  /** Claims the deposits of moves whose escrows have run. */
+  settle(): Promise<void>
+}

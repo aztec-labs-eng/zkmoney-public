@@ -1,0 +1,6 @@
+{
+  "scenario": "activity",
+  "path": "/receive?mock=onchain",
+  "ready": { "text": "Show code" },
+  "steps": [{ "action": "wait", "ms": 600 }]
+}

@@ -44,6 +44,9 @@ export const PASSKEY_REFUSAL_REASONS = [
   "ambiguous_passkey",
   "related_origin",
   "passkey_mismatch",
+  "apple_below_floor",
+  "provider_unnamed",
+  "local_route_mismatch",
 ] as const
 export type PasskeyRefusalReason = (typeof PASSKEY_REFUSAL_REASONS)[number]
 
@@ -113,6 +116,52 @@ export type PasskeyElapsed = (typeof PASSKEY_ELAPSED)[number]
 export const PASSKEY_PHONE_REACHES = ["ok", "no_hybrid", "unknown"] as const
 export type PasskeyPhoneReach = (typeof PASSKEY_PHONE_REACHES)[number]
 
+/**
+ * The name of the value a failed attempt threw, from this list only; the message never travels.
+ * `other` is any name outside it.
+ */
+export const PASSKEY_ERROR_NAMES = [
+  "AbortError",
+  "NotAllowedError",
+  "NotSupportedError",
+  "NotReadableError",
+  "SecurityError",
+  "InvalidStateError",
+  "ConstraintError",
+  "UnknownError",
+  "DataError",
+  "TypeError",
+  "other",
+] as const
+export type PasskeyErrorName = (typeof PASSKEY_ERROR_NAMES)[number]
+
+/** What a phone's platform-authenticator check answered; `unknown` when the API is absent or threw. */
+export const PASSKEY_PLATFORM_AUTHENTICATORS = ["yes", "no", "unknown"] as const
+export type PasskeyPlatformAuthenticator = (typeof PASSKEY_PLATFORM_AUTHENTICATORS)[number]
+
+/**
+ * Where the passkey an assertion answered with was made, as its user handle claims: the device
+ * class and the route the creating page asked for. `unknown` is a handle that carries no
+ * recognisable provenance.
+ */
+export const PASSKEY_MADE_ON = [
+  "unknown",
+  "ios_app",
+  "ios_browser",
+  "android_browser",
+  "phone_other",
+  "mac_local",
+  "mac_qr",
+  "mac_key",
+  "windows_local",
+  "windows_qr",
+  "windows_key",
+  "laptop_other_local",
+  "laptop_other_qr",
+  "laptop_other_key",
+] as const
+export type PasskeyMadeOn = (typeof PASSKEY_MADE_ON)[number]
+
 export const PASSKEY_DEVICE_CLASSES = ["phone", "laptop"] as const
 export type PasskeyDeviceClass = (typeof PASSKEY_DEVICE_CLASSES)[number]
 
@@ -169,6 +218,9 @@ export const PASSKEY_CEREMONY_ENUM_PROPS = {
   attempt: PASSKEY_ATTEMPTS,
   elapsed: PASSKEY_ELAPSED,
   phone_reach: PASSKEY_PHONE_REACHES,
+  error_name: PASSKEY_ERROR_NAMES,
+  platform_authenticator: PASSKEY_PLATFORM_AUTHENTICATORS,
+  made_on: PASSKEY_MADE_ON,
   device_class: PASSKEY_DEVICE_CLASSES,
   os: PASSKEY_OS_FAMILIES,
   browser: PASSKEY_BROWSER_FAMILIES,

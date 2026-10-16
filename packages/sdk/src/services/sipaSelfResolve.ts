@@ -1,11 +1,10 @@
 import { predictLegacySIPA, type LegacySipaDeployArgs } from "@oxide/l1-contracts/legacy_sipa.js"
 /**
- * SIPA self-resolution — the recipient plays resolver against the resolver's registry public
- * key using its own stealth private key (the ECDH is symmetric, so both sides derive the same
- * message secret). Pure derivation — no gateway, no RPC — except `resolveAddress`, which adds
- * the one Registry CREATE2-predict read on top. A self-resolved address is announced on L2 through
- * a ClaimFPC-sponsored `OxideToken.notify_sipa_recipient`, with no user signature and no resolver
- * involvement — eligibility is the sponsoring entrypoint's subscription.
+ * SIPA self-resolution — the recipient derives its own deposit address from a key only it holds
+ * (`deriveSelfSipaSecret`). Pure derivation — no gateway, no RPC — except `resolveAddress`, which
+ * adds the one Registry CREATE2-predict read on top. A self-resolved address is announced on L2
+ * through a ClaimFPC-sponsored `OxideToken.notify_sipa_recipient`, with no user signature and no
+ * resolver involvement — eligibility is the sponsoring entrypoint's subscription.
  */
 
 import type { Fr } from "@aztec/foundation/curves/bn254"
@@ -23,7 +22,7 @@ import {
 import {
   MAX_NONCE,
   computeStealthRecipientHash,
-  deriveSharedSecret,
+  deriveSelfSipaSecret,
   deriveRecoveryAddress,
   type SipaK1Point,
 } from "./sipaStealth.js"
@@ -38,7 +37,7 @@ export const SELF_BROADCAST_RESWEEPABLE = true
 export interface SipaSelfResolution {
   day: number
   nonce: number
-  /** The ECDH shared secret — the SIPA event's `shared_secret_salt`. */
+  /** The SIPA event's `shared_secret_salt`. */
   messageSecret: Fr
   recipientHash: Fr
   recoveryCommitment: Fr
@@ -47,9 +46,9 @@ export interface SipaSelfResolution {
 
 /**
  * The nonce for a wallet's `slot`-th self-resolution of a day, counting DOWN from `MAX_NONCE - 1`.
- * The resolver hands out nonces counting up from 0 per user-day, so the two never meet. Sequential
- * slots make a wallet's self-resolved SIPAs recoverable on any device: per day, derive from slot 0
- * down until the first slot with no on-chain SIPA.
+ * The resolver hands out nonces counting up from 0 per user-day, so a `(day, nonce)` names one
+ * address per side. Sequential slots make a wallet's self-resolved SIPAs recoverable on any device:
+ * per day, derive from slot 0 down until the first slot with no on-chain SIPA.
  */
 export function selfSipaNonce(slot: number): number {
   if (!Number.isInteger(slot) || slot < 0 || slot >= MAX_NONCE) {
@@ -58,27 +57,37 @@ export function selfSipaNonce(slot: number): number {
   return MAX_NONCE - 1 - slot
 }
 
+/** The two wallet keys a self-resolution needs. */
+export interface SipaSelfResolverKeys {
+  /** The registry stealth scalar. Its point is the base of a `legacy-eoa` recovery address. */
+  stealthScalar: bigint
+  /** The wallet-only key the salts hash from. */
+  selfSipaKey: Fr
+}
+
 export class SipaSelfResolver {
   readonly userPublicKey: SipaK1Point
+  private readonly stealthScalar: bigint
+  private readonly selfSipaKey: Fr
 
-  constructor(private readonly userPrivateKey: bigint, readonly resolverPublicKey: SipaK1Point) {
-    const point = secp256k1.ProjectivePoint.BASE.multiply(userPrivateKey).toAffine()
+  constructor(keys: SipaSelfResolverKeys) {
+    this.stealthScalar = keys.stealthScalar
+    this.selfSipaKey = keys.selfSipaKey
+    const point = secp256k1.ProjectivePoint.BASE.multiply(keys.stealthScalar).toAffine()
     this.userPublicKey = { x: point.x, y: point.y }
   }
 
-  /** Derive the SIPA parameters for `(day, nonce)` with `user` as the L2 recipient. */
+  /**
+   * Derive the SIPA parameters for `(day, nonce)` with `user` as the L2 recipient. `messageSecret`
+   * replays the salt of an address derived under an earlier key.
+   */
   async resolve(
     user: AztecAddress,
     day: number,
     nonce: number,
     recoveryAccount: EthAddress,
+    messageSecret: Fr = deriveSelfSipaSecret(this.selfSipaKey, day, nonce),
   ): Promise<SipaSelfResolution> {
-    const messageSecret = deriveSharedSecret(
-      this.resolverPublicKey,
-      this.userPrivateKey,
-      day,
-      nonce,
-    )
     return {
       day,
       nonce,

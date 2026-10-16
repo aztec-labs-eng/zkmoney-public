@@ -2,7 +2,7 @@ import { EthAddress } from '@aztec/foundation/eth-address';
 import type { Logger } from '@aztec/foundation/log';
 
 import { IFPCFunderAbi, OperationExecutorAbi } from '@oxide/l1-contracts';
-import { EXECUTOR_MIN_PAYOUT_CALLDATA_GAS, SIMULATED_SENDER_BALANCE } from '@oxide/oxide-client/l1_operation_quote.js';
+import { SIMULATED_SENDER_BALANCE, UINT256_EXTRA_CALLDATA_GAS } from '@oxide/oxide-client/l1_operation_quote.js';
 
 import { describe, expect, it, jest } from '@jest/globals';
 import { type Hex, type PublicClient, decodeFunctionData } from 'viem';
@@ -107,12 +107,13 @@ describe('FpcFunderCaller', () => {
     expect(request.to).toBe(EXECUTOR.toString());
     const decoded = decodeFunctionData({ abi: OperationExecutorAbi, data: request.data });
     expect(decoded.functionName).toBe('execute');
-    const [target, innerData, payoutToken, minPayout] = decoded.args as [string, Hex, string, bigint];
+    const [target, innerData, payoutToken, minPayout, gasToCover, tokenWeiPerEth] = decoded.args;
     expect(EthAddress.fromString(target).equals(FUNDER)).toBe(true);
     expect(decodeFunctionData({ abi: IFPCFunderAbi, data: innerData }).functionName).toBe('swapAndDepositAsFeeJuice');
     expect(EthAddress.fromString(payoutToken).equals(TOKEN)).toBe(true);
-    expect(minPayout).toBe(100_000n + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS);
-    expect(request.gas).toBe(100_000n + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS);
+    expect(minPayout).toBe(100_000n + UINT256_EXTRA_CALLDATA_GAS);
+    expect([gasToCover, tokenWeiPerEth]).toEqual([0n, 0n]);
+    expect(request.gas).toBe(100_000n + UINT256_EXTRA_CALLDATA_GAS);
   });
 
   it('estimates gas against a zero floor', async () => {
@@ -123,7 +124,7 @@ describe('FpcFunderCaller', () => {
     const estimateCalls = estimateGas.mock.calls as unknown as [{ data: Hex }][];
     expect(estimateCalls).toHaveLength(1);
     const decoded = decodeFunctionData({ abi: OperationExecutorAbi, data: estimateCalls[0][0].data });
-    expect((decoded.args as [string, Hex, string, bigint])[3]).toBe(0n);
+    expect(decoded.args[3]).toBe(0n);
   });
 
   it('gives the sender a balance in the quote and the gas estimate, so an unfunded key can simulate', async () => {
@@ -136,7 +137,7 @@ describe('FpcFunderCaller', () => {
     expect(estimateGas).toHaveBeenCalledWith(expect.objectContaining(override));
   });
 
-  it('defers when the bounty is below the gas floor', async () => {
+  it('defers when the bounty is below the gas cost', async () => {
     // A 50k-unit bounty is below the ~100k break-even of the 100k-gas tx.
     const { caller, sendTransaction } = buildCaller({
       quote: () => Promise.resolve({ result: 50_000n }),
@@ -262,6 +263,6 @@ describe('FpcFunderCaller', () => {
     expect(sendTransaction).toHaveBeenCalledTimes(1);
     const [request] = sendTransaction.mock.calls[0] as unknown as [{ to: string; data: Hex }];
     const decoded = decodeFunctionData({ abi: OperationExecutorAbi, data: request.data });
-    expect((decoded.args as [string, Hex, string, bigint])[3]).toBe(0n);
+    expect(decoded.args[3]).toBe(0n);
   });
 });

@@ -174,13 +174,13 @@ contract EscrowFactoryBaseTest is Test {
     bytes memory deployCalldata = abi.encodeCall(TestPayoutEscrowFactory.deployAndExecute, (args));
 
     vm.prank(relayer);
-    uint256 payout = executor.execute(address(factory), deployCalldata, IERC20(address(dai)), 0);
+    uint256 payout = executor.execute(address(factory), deployCalldata, IERC20(address(dai)), 0, 0, 0);
     assertEq(payout, 0);
     assertEq(factory.predictEscrowAddress(args).code.length, 0);
 
     vm.expectRevert(abi.encodeWithSelector(Errors.OperationExecutor__InsufficientPayout.selector, 0, TIP));
     vm.prank(relayer);
-    executor.execute(address(factory), deployCalldata, IERC20(address(dai)), TIP);
+    executor.execute(address(factory), deployCalldata, IERC20(address(dai)), TIP, 0, 0);
   }
 
   function _args() internal view returns (TestPayoutEscrow.Args memory) {

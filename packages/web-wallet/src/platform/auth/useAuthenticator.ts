@@ -9,14 +9,42 @@ import {
   BrowserPasskeyCeremony,
   CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID,
   DEFAULT_CEREMONY_TIMING,
+  type PasskeyCeremony,
 } from "@obsidion/passkey-web"
 import { AUTH_TYPE } from "@obsidion/sdk"
 import { getConfig } from "../../config/env"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
+import { walletStorage } from "../storage/walletStorage"
 import { webStorage } from "../storage/WebStorageAdapter"
 import { WebAlphaAuthService, type StoredAccountSnapshot } from "./WebAlphaAuthService"
 
 let singleton: WebAlphaAuthService | undefined
+
+/**
+ * The e2e build writes each create request's device ask, hints and timeout into the wallet
+ * database, where the specs read them: the browser's credential list only proves a credential
+ * exists, not what the wallet asked for.
+ */
+function recordingCreateRequests(ceremony: PasskeyCeremony): PasskeyCeremony {
+  return {
+    create: (request) => {
+      try {
+        walletStorage.setItem(
+          "webwallet.e2e.lastCreateRequest",
+          JSON.stringify({
+            authenticatorAttachment: request.authenticatorAttachment,
+            hints: request.hints,
+            timeoutMs: request.timeoutMs,
+          }),
+        )
+      } catch {
+        // A record the specs can't read fails there, not here.
+      }
+      return ceremony.create(request)
+    },
+    assert: (request) => ceremony.assert(request),
+  }
+}
 
 /** Process-wide auth-service singleton. */
 export function getAuthService(): WebAlphaAuthService {
@@ -33,13 +61,14 @@ export function getAuthService(): WebAlphaAuthService {
         "VITE_E2E_VIRTUAL_AUTHENTICATORS widens the passkey provider allowlist — not valid on mainnet",
       )
     }
+    const ceremony = passkeyTelemetry.wrap(
+      new BrowserPasskeyCeremony(DEFAULT_CEREMONY_TIMING, passkeyTelemetry.requestHook),
+    )
     singleton = new WebAlphaAuthService({
       storage: webStorage,
       rpId: config.rpId,
       rpName: config.rpName,
-      ceremony: passkeyTelemetry.wrap(
-        new BrowserPasskeyCeremony(DEFAULT_CEREMONY_TIMING, passkeyTelemetry.requestHook),
-      ),
+      ceremony: virtualAuthenticators ? recordingCreateRequests(ceremony) : ceremony,
       laptopHints: virtualAuthenticators ? null : undefined,
       extraProviders: virtualAuthenticators ? [CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID] : undefined,
     })

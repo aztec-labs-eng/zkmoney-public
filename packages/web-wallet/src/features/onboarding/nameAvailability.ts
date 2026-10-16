@@ -1,6 +1,7 @@
 /** Live name policy and grant status while a tag is typed. `/domain/sign` remains authoritative. */
 import { useEffect, useState } from "react"
 import { AccountServiceClient, composeWireNameHash, normalizeTag } from "@obsidion/front-core"
+import type { DrawnNameResponse } from "@obsidion/core/types"
 import { getConfig } from "../../config/env"
 import { getOxideTuple, requireTupleField } from "../../config/oxideTuple"
 
@@ -38,6 +39,16 @@ async function readAvailability(handle: string, grantToken?: string) {
   const tuple = await getOxideTuple(config)
   const nameHash = composeWireNameHash(bare, requireTupleField(tuple, "ensDomain"))
   return accountServiceReader(config).availableNameDetails(nameHash, grantToken)
+}
+
+/** A tag the claim server draws for a visitor with no passkey yet, with the grant its claim spends. */
+export function drawTag(): Promise<DrawnNameResponse> {
+  const config = getConfig()
+  return getOxideTuple(config).then((tuple) =>
+    new AccountServiceClient(config.accountServiceUrl, { readOnly: true }).drawName(
+      requireTupleField(tuple, "ensDomain"),
+    ),
+  )
 }
 
 /** A route grant is usable until revoked, including after it is bound to a passkey. */

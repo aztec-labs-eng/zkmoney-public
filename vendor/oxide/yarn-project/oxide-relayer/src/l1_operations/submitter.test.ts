@@ -3,8 +3,13 @@ import { TimeoutError } from '@aztec/foundation/error';
 import { type DateProvider, TestDateProvider } from '@aztec/foundation/timer';
 
 import { OperationExecutorAbi } from '@oxide/l1-contracts';
-import { EXECUTOR_MIN_PAYOUT_CALLDATA_GAS, SIMULATED_SENDER_BALANCE } from '@oxide/oxide-client/l1_operation_quote.js';
+import {
+  SIMULATED_SENDER_BALANCE,
+  UINT256_EXTRA_CALLDATA_GAS,
+  WEI_PER_ETH,
+} from '@oxide/oxide-client/l1_operation_quote.js';
 import { L1OperationCondition } from '@oxide/oxide-lib/l1_operation_calldata.js';
+import { MAX_PRIORITY_FEE_WEI } from '@oxide/oxide-lib/oxide_constants.gen.js';
 
 import { describe, expect, it, jest } from '@jest/globals';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -47,6 +52,8 @@ const OPERATION_ID = `0x${'ab'.repeat(32)}` as Hex;
 const PAYOUT = 500_000n;
 /** Gas a successful simulation uses unless the quote sets it; equal to the default gas estimate. */
 const SIMULATED_GAS_USED = 100_000n;
+/** The sent gas to cover for the default simulation: the gas used, plus the calldata gas of two nonzero arguments. */
+const GAS_TO_COVER = SIMULATED_GAS_USED + 2n * UINT256_EXTRA_CALLDATA_GAS;
 const RECIPIENT = EthAddress.random();
 const MAX_PENDING_AGE_MS = 48 * 60 * 60_000;
 const REVERT = () => Promise.resolve({ status: 'failure' as const, error: new Error('execution reverted') });
@@ -80,6 +87,8 @@ const OPERATION: PendingL1Operation = {
 interface FakeSenderOpts {
   /** The market fee values: the latest base fee plus the tip, and the tip. */
   feeValues?: FeeValuesEIP1559;
+  /** The block numbers that successive `getBlock` reads return; 10 when omitted. */
+  blockNumbers?: bigint[];
   maxFeePerGasCap?: bigint;
   /** Terminal outcome each send's `settled` monitor reports; a mined success when omitted. */
   outcome?: 'success' | 'reverted' | 'timeout';
@@ -102,9 +111,13 @@ function fakeSender(opts: FakeSenderOpts = {}) {
     return Promise.resolve({ txHash, nonce: id, settled });
   });
 
+  const blockNumbers = [...(opts.blockNumbers ?? [])];
   const client = {
     getBlock: jest.fn(() =>
-      Promise.resolve({ number: 10n, baseFeePerGas: feeValues.maxFeePerGas - feeValues.maxPriorityFeePerGas }),
+      Promise.resolve({
+        number: blockNumbers.shift() ?? 10n,
+        baseFeePerGas: feeValues.maxFeePerGas - feeValues.maxPriorityFeePerGas,
+      }),
     ),
     estimateMaxPriorityFeePerGas: jest.fn(() => Promise.resolve(feeValues.maxPriorityFeePerGas)),
   } as unknown as PublicClient;
@@ -121,6 +134,13 @@ const identityOracle = {
   weiToUSD: (wei: bigint) => Promise.resolve(wei),
 } as unknown as ChainlinkPriceOracle;
 
+/** The sent `execute` arguments past the operation: the minimum payout, the gas to cover and the price. */
+function sentPayoutArgs(data: Hex) {
+  const { args } = decodeFunctionData({ abi: OperationExecutorAbi, data });
+  const [, , , minPayout, gasToCover, tokenWeiPerEth] = args as readonly [string, Hex, string, bigint, bigint, bigint];
+  return { minPayout, gasToCover, tokenWeiPerEth };
+}
+
 function buildSubmitter(
   store: StateStore,
   overrides: {
@@ -131,6 +151,8 @@ function buildSubmitter(
     predicate?: { isCompliant: (address: EthAddress) => Promise<boolean> };
     config?: Partial<L1OperationsSubmissionConfig>;
     feeValues?: FeeValuesEIP1559;
+    blockNumbers?: bigint[];
+    priceOracle?: ChainlinkPriceOracle;
     maxFeePerGasCap?: bigint;
     outcome?: FakeSenderOpts['outcome'];
     allowUnprofitable?: boolean;
@@ -143,6 +165,7 @@ function buildSubmitter(
 ) {
   const l1 = fakeSender({
     feeValues: overrides.feeValues,
+    blockNumbers: overrides.blockNumbers,
     maxFeePerGasCap: overrides.maxFeePerGasCap,
     outcome: overrides.outcome,
   });
@@ -163,7 +186,7 @@ function buildSubmitter(
     client: l1.client,
     l1TxQueue: l1.l1TxQueue,
     store,
-    priceOracle: identityOracle,
+    priceOracle: overrides.priceOracle ?? identityOracle,
     screener,
     config: {
       retryBackoffMs: 0,
@@ -208,11 +231,11 @@ describe('L1OperationSubmitter', () => {
     });
   });
 
-  it('prices minPayout on the simulated gas used, not on the gas limit', async () => {
+  it('prices the gas cost on the simulated gas used, not on the gas limit', async () => {
     await withStore(async store => {
       const feeValues = { maxFeePerGas: 4n, maxPriorityFeePerGas: 1n };
       // Break-even on the gas used after refunds, below the break-even on the 130k gas limit.
-      const payout = (SIMULATED_GAS_USED + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS) * feeValues.maxFeePerGas;
+      const payout = GAS_TO_COVER * feeValues.maxFeePerGas;
       const { submitter, estimateGas, sendTransaction } = buildSubmitter(store, {
         feeValues,
         quote: () => Promise.resolve({ status: 'success' as const, result: payout }),
@@ -222,8 +245,12 @@ describe('L1OperationSubmitter', () => {
       await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, deferred: 0 });
       const [request] = sendTransaction.mock.calls[0];
       // The tx still carries the estimated gas limit.
-      expect(request.gas).toBe(130_000n + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS);
-      expect(decodeFunctionData({ abi: OperationExecutorAbi, data: request.data as Hex }).args[3]).toBe(payout);
+      expect(request.gas).toBe(130_000n + 2n * UINT256_EXTRA_CALLDATA_GAS);
+      expect(sentPayoutArgs(request.data as Hex)).toEqual({
+        minPayout: 0n,
+        gasToCover: GAS_TO_COVER,
+        tokenWeiPerEth: WEI_PER_ETH,
+      });
     });
   });
 
@@ -248,19 +275,21 @@ describe('L1OperationSubmitter', () => {
     });
   });
 
-  it('prices a subsidy-only payout before using it as the estimation floor', async () => {
+  it('prices a subsidy-only payout before using it as the estimation minPayout', async () => {
     await withStore(async store => {
       const feeValues = { maxFeePerGas: 2n, maxPriorityFeePerGas: 1n };
+      // The default 100% headroom doubles the base fee of 1, plus the tip of 1.
+      const feeCeiling = 3n;
       const quote = jest.fn((request: unknown) => {
         const args = request as { blocks: Array<{ calls: Array<FeeValuesEIP1559> }> };
         // A zero-tip refund earns only the gas-price-dependent withdrawal subsidy. An unpriced quote returns zero.
-        const payout = args.blocks[0].calls[0].maxFeePerGas === feeValues.maxFeePerGas ? PAYOUT : 0n;
+        const payout = args.blocks[0].calls[0].maxFeePerGas === feeCeiling ? PAYOUT : 0n;
         return Promise.resolve({ status: 'success' as const, result: payout });
       });
       const { submitter, estimateGas, sendTransaction } = buildSubmitter(store, { feeValues, quote });
       estimateGas.mockImplementation(request => {
         const { args } = decodeFunctionData({ abi: OperationExecutorAbi, data: (request as { data: Hex }).data });
-        // A zero floor permits the target to skip the inner call; the subsidy quote must make this floor nonzero.
+        // A zero minPayout permits the target to skip the inner call; the subsidy quote must make it nonzero.
         return Promise.resolve(args[3] === 0n ? 10_000n : 100_000n);
       });
 
@@ -274,7 +303,7 @@ describe('L1OperationSubmitter', () => {
     });
   });
 
-  it('does not inflate the estimation floor when the fee ceiling exceeds the effective price', async () => {
+  it('does not inflate the estimation minPayout when the fee ceiling exceeds the effective price', async () => {
     await withStore(async store => {
       // The latest base fee is 3 and the tip is 1. A 100% headroom puts the ceiling at 3 x 2 + 1 = 7, above the
       // effective 4.
@@ -298,7 +327,6 @@ describe('L1OperationSubmitter', () => {
         return Promise.resolve({ status: 'success' as const, result: tip + subsidyPerGasPrice * price });
       });
       const { submitter, estimateGas, sendTransaction } = buildSubmitter(store, {
-        config: { maxFeeHeadroomPercent: 100 },
         feeValues,
         quote,
       });
@@ -316,12 +344,17 @@ describe('L1OperationSubmitter', () => {
       expect(estimated.args[3]).toBe(payout);
       const sent = sendTransaction.mock.calls[0];
       expect(sent[0]).toMatchObject({ maxFeePerGas: 7n, maxPriorityFeePerGas: 1n });
-      const submitted = decodeFunctionData({ abi: OperationExecutorAbi, data: sent[0].data as Hex });
-      expect(submitted.args[3]).toBe((100_000n + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS) * 7n);
+      // The sent gas to cover is an amount of gas, which the executor prices at the gas price the tx pays, not at the
+      // ceiling.
+      expect(sentPayoutArgs(sent[0].data as Hex)).toEqual({
+        minPayout: 0n,
+        gasToCover: GAS_TO_COVER,
+        tokenWeiPerEth: WEI_PER_ETH,
+      });
     });
   });
 
-  it('submits with break-even pinned as minPayout', async () => {
+  it('submits a gas cost that breaks even at the quote price', async () => {
     await withStore(async store => {
       const { submitter, sendTransaction, simulateBlocks, estimateGas } = buildSubmitter(store);
       const summary = await submitter.runOnce();
@@ -336,7 +369,11 @@ describe('L1OperationSubmitter', () => {
             blockOverrides: { baseFeePerGas: 0n },
             stateOverrides: [{ address: SENDER.toString(), balance: SIMULATED_SENDER_BALANCE }],
             calls: [
-              expect.objectContaining({ to: EXECUTOR.toString(), functionName: 'execute', from: SENDER.toString() }),
+              expect.objectContaining({
+                to: EXECUTOR.toString(),
+                functionName: 'execute',
+                from: SENDER.toString(),
+              }),
             ],
           },
         ],
@@ -351,13 +388,15 @@ describe('L1OperationSubmitter', () => {
       const request = sendTransaction.mock.calls[0][0];
       expect(request.to).toBe(EXECUTOR.toString());
       const decoded = decodeFunctionData({ abi: OperationExecutorAbi, data: request.data as Hex });
-      // Identity oracle: break-even = gasLimit (the 100k estimate plus the `minPayout` calldata gas) x
-      // the fee ceiling (1), in token units.
+      // The gas used plus the calldata gas of two nonzero arguments, at the identity oracle's price of one token unit
+      // per wei.
       expect(decoded.args).toEqual([
         TARGET.toChecksumString(),
         `0x${CALLDATA.toString('hex')}`,
         PAYOUT_TOKEN.toChecksumString(),
-        100_000n + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS,
+        0n,
+        GAS_TO_COVER,
+        WEI_PER_ETH,
       ]);
     });
   });
@@ -564,18 +603,18 @@ describe('L1OperationSubmitter', () => {
     });
   });
 
-  it('submits with a zero minPayout when allowUnprofitable drops the floor', async () => {
+  it('submits with a zero minPayout when allowUnprofitable drops the gas cost', async () => {
     await withStore(async store => {
-      // The same break-even that defers the operation above, with the floor dropped.
+      // The same break-even that defers the operation above, with the gas cost dropped.
       const { submitter, sendTransaction } = buildSubmitter(store, {
         feeValues: { maxFeePerGas: 10n ** 13n, maxPriorityFeePerGas: 1n },
         allowUnprofitable: true,
       });
       await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, deferred: 0 });
       expect(sendTransaction).toHaveBeenCalledTimes(1);
-      // The sent transaction carries the same zero floor, so the executor cannot reject it on payout.
+      // The sent transaction carries zero payout arguments, so the executor cannot reject it on payout.
       const { data } = sendTransaction.mock.calls[0][0] as { data: Hex };
-      expect(decodeFunctionData({ abi: OperationExecutorAbi, data }).args?.[3]).toBe(0n);
+      expect(sentPayoutArgs(data)).toEqual({ minPayout: 0n, gasToCover: 0n, tokenWeiPerEth: 0n });
     });
   });
 
@@ -592,9 +631,9 @@ describe('L1OperationSubmitter', () => {
       const [simulation] = simulateBlocks.mock.calls[0] as [
         { blocks: [{ calls: [FeeValuesEIP1559 & { gasPrice?: bigint }] }] },
       ];
-      expect(simulation.blocks[0].calls[0]).toMatchObject({ maxFeePerGas: 19n, maxPriorityFeePerGas: 2n });
+      expect(simulation.blocks[0].calls[0]).toMatchObject({ maxFeePerGas: 34n, maxPriorityFeePerGas: 2n });
       expect(simulation.blocks[0].calls[0].gasPrice).toBeUndefined();
-      expect(sendTransaction.mock.calls[0][0]).toMatchObject({ maxFeePerGas: 19n, maxPriorityFeePerGas: 2n });
+      expect(sendTransaction.mock.calls[0][0]).toMatchObject({ maxFeePerGas: 34n, maxPriorityFeePerGas: 2n });
 
       const [request] = estimateGas.mock.calls[0] as [
         {
@@ -604,39 +643,39 @@ describe('L1OperationSubmitter', () => {
           stateOverride: Array<{ address: string; balance: bigint }>;
         },
       ];
-      // The ceiling the transaction carries is the base fee of 16 plus the default 6.25% headroom, plus the tip of 2;
-      // `minPayout` follows it.
-      expect(request).toMatchObject({ account: SENDER.toString(), maxFeePerGas: 19n, maxPriorityFeePerGas: 2n });
+      // The ceiling the transaction carries is the base fee of 16 plus the 100% headroom, plus the tip of 2.
+      expect(request).toMatchObject({ account: SENDER.toString(), maxFeePerGas: 34n, maxPriorityFeePerGas: 2n });
       // The balance override is what lets each priced call run without being capped by what the sender holds.
       expect(request.stateOverride).toEqual([{ address: SENDER.toString(), balance: SIMULATED_SENDER_BALANCE }]);
     });
   });
 
-  it('prices the fee ceiling and minPayout with the configured max fee headroom', async () => {
+  it('puts the max fee headroom on the fee ceiling only, not on the gas cost', async () => {
     await withStore(async store => {
-      const gasLimit = 100_000n + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS;
-      // Break-even at the ceiling of 11: the base fee of 6 plus a 50% headroom, plus the tip of 2.
-      const payout = gasLimit * 11n;
+      // Break-even at the quote price of 8, below the ceiling of 14: the base fee of 6 plus the 100% headroom, plus the
+      // tip of 2.
+      const payout = GAS_TO_COVER * 8n;
       const { submitter, sendTransaction } = buildSubmitter(store, {
-        config: { maxFeeHeadroomPercent: 50 },
         feeValues: { maxFeePerGas: 8n, maxPriorityFeePerGas: 2n },
         quote: () => Promise.resolve({ status: 'success' as const, result: payout }),
       });
 
       await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, deferred: 0 });
       const [request] = sendTransaction.mock.calls[0];
-      expect(request).toMatchObject({ maxFeePerGas: 11n, maxPriorityFeePerGas: 2n });
-      expect(decodeFunctionData({ abi: OperationExecutorAbi, data: request.data as Hex }).args[3]).toBe(payout);
+      expect(request).toMatchObject({ maxFeePerGas: 14n, maxPriorityFeePerGas: 2n });
+      expect(sentPayoutArgs(request.data as Hex)).toEqual({
+        minPayout: 0n,
+        gasToCover: GAS_TO_COVER,
+        tokenWeiPerEth: WEI_PER_ETH,
+      });
     });
   });
 
-  it('defers a payout below the break-even at the configured fee ceiling', async () => {
+  it('defers a payout below the break-even at the quote price', async () => {
     await withStore(async store => {
-      const gasLimit = 100_000n + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS;
       const { submitter, sendTransaction } = buildSubmitter(store, {
-        config: { maxFeeHeadroomPercent: 50 },
         feeValues: { maxFeePerGas: 8n, maxPriorityFeePerGas: 2n },
-        quote: () => Promise.resolve({ status: 'success' as const, result: gasLimit * 11n - 1n }),
+        quote: () => Promise.resolve({ status: 'success' as const, result: GAS_TO_COVER * 8n - 1n }),
       });
 
       await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 0, deferred: 1 });
@@ -647,11 +686,10 @@ describe('L1OperationSubmitter', () => {
   it('defers without simulating when the fee ceiling after headroom is above the max fee per gas', async () => {
     await withStore(async store => {
       const l1OperationOutcome = jest.fn();
-      // A 50% headroom on the base fee of 6, plus the tip of 2, puts the ceiling at 11; a cap of 10 is below it.
+      // The 100% headroom on the base fee of 6, plus the tip of 2, puts the ceiling at 14; a cap of 13 is below it.
       const { submitter, sendTransaction, simulateBlocks } = buildSubmitter(store, {
-        config: { maxFeeHeadroomPercent: 50 },
         feeValues: { maxFeePerGas: 8n, maxPriorityFeePerGas: 2n },
-        maxFeePerGasCap: 10n,
+        maxFeePerGasCap: 13n,
         telemetry: { l1OperationOutcome } as unknown as RelayerTelemetry,
       });
 
@@ -668,16 +706,84 @@ describe('L1OperationSubmitter', () => {
 
   it('submits when the fee ceiling equals the max fee per gas', async () => {
     await withStore(async store => {
-      const gasLimit = 100_000n + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS;
       const { submitter, sendTransaction } = buildSubmitter(store, {
-        config: { maxFeeHeadroomPercent: 50 },
         feeValues: { maxFeePerGas: 8n, maxPriorityFeePerGas: 2n },
-        maxFeePerGasCap: 11n,
-        quote: () => Promise.resolve({ status: 'success' as const, result: gasLimit * 11n }),
+        maxFeePerGasCap: 14n,
+        quote: () => Promise.resolve({ status: 'success' as const, result: GAS_TO_COVER * 8n }),
       });
 
       await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, deferred: 0 });
-      expect(sendTransaction.mock.calls[0][0]).toMatchObject({ maxFeePerGas: 11n, maxPriorityFeePerGas: 2n });
+      expect(sendTransaction.mock.calls[0][0]).toMatchObject({ maxFeePerGas: 14n, maxPriorityFeePerGas: 2n });
+    });
+  });
+
+  it('prices the gas cost at the capped tip when the suggested tip is above the priority fee the subsidies pay for', async () => {
+    await withStore(async store => {
+      const baseFee = 2n * 10n ** 9n;
+      const suggestedTip = 50n * MAX_PRIORITY_FEE_WEI;
+      const quotePrice = baseFee + MAX_PRIORITY_FEE_WEI;
+      const { submitter, simulateBlocks, sendTransaction } = buildSubmitter(store, {
+        feeValues: { maxFeePerGas: baseFee + suggestedTip, maxPriorityFeePerGas: suggestedTip },
+        // Break-even at the capped price, far below the price with the suggested tip.
+        quote: () => Promise.resolve({ status: 'success' as const, result: GAS_TO_COVER * quotePrice }),
+      });
+
+      await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, deferred: 0 });
+      const capped = { maxFeePerGas: 2n * baseFee + MAX_PRIORITY_FEE_WEI, maxPriorityFeePerGas: MAX_PRIORITY_FEE_WEI };
+      const [simulation] = simulateBlocks.mock.calls[0] as [{ blocks: [{ calls: [FeeValuesEIP1559] }] }];
+      expect(simulation.blocks[0].calls[0]).toMatchObject(capped);
+      expect(sendTransaction.mock.calls[0][0]).toMatchObject(capped);
+    });
+  });
+
+  it('prices the whole quote on one block', async () => {
+    await withStore(async store => {
+      // A later read of the latest block would see a newer one.
+      const { submitter, client, simulateBlocks, estimateGas } = buildSubmitter(store, {
+        blockNumbers: [10n, 11n, 12n],
+      });
+
+      await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1 });
+      expect(client.getBlock).toHaveBeenCalledTimes(1);
+      const simulatedBlocks = simulateBlocks.mock.calls.map(([args]) => (args as { blockNumber: bigint }).blockNumber);
+      expect(simulatedBlocks).toEqual([10n, 10n]);
+      expect((estimateGas.mock.calls[0][0] as { blockNumber: bigint }).blockNumber).toBe(10n);
+    });
+  });
+
+  it('sends the oracle price with the gas to cover', async () => {
+    await withStore(async store => {
+      const usdPerEth = 2_741n;
+      const priceOracle = {
+        weiToUSD: (wei: bigint) => Promise.resolve(wei * usdPerEth),
+      } as unknown as ChainlinkPriceOracle;
+      const { submitter, sendTransaction } = buildSubmitter(store, {
+        priceOracle,
+        quote: () => Promise.resolve({ status: 'success' as const, result: GAS_TO_COVER * usdPerEth }),
+      });
+
+      await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, deferred: 0 });
+      expect(sentPayoutArgs(sendTransaction.mock.calls[0][0].data as Hex)).toEqual({
+        minPayout: 0n,
+        gasToCover: GAS_TO_COVER,
+        tokenWeiPerEth: usdPerEth * WEI_PER_ETH,
+      });
+    });
+  });
+
+  it('defers a payout one unit below the break-even at the oracle price', async () => {
+    await withStore(async store => {
+      const usdPerEth = 2_741n;
+      const priceOracle = {
+        weiToUSD: (wei: bigint) => Promise.resolve(wei * usdPerEth),
+      } as unknown as ChainlinkPriceOracle;
+      const { submitter, sendTransaction } = buildSubmitter(store, {
+        priceOracle,
+        quote: () => Promise.resolve({ status: 'success' as const, result: GAS_TO_COVER * usdPerEth - 1n }),
+      });
+
+      await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 0, deferred: 1 });
+      expect(sendTransaction).not.toHaveBeenCalled();
     });
   });
 
@@ -786,7 +892,7 @@ describe('L1OperationSubmitter', () => {
 
   it('defers a zero-payout quote even below the retry budget (OX-905: no zero-floor bypass)', async () => {
     await withStore(async store => {
-      // A break-even floor above zero, from a nonzero gas price, always applies regardless of caller intent —
+      // A gas cost above zero, from a nonzero gas price, always applies regardless of caller intent —
       // there is no config knob that pins `minPayout` to 0 for this unauthenticated broadcast channel.
       const { submitter, sendTransaction } = buildSubmitter(store, {
         quote: () => Promise.resolve({ status: 'success', result: 0n }),

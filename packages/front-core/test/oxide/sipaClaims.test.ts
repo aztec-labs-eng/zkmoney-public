@@ -38,7 +38,9 @@ const perSipa =
 // The composition's collaborators are all unit-tested in their own modules
 // (sdk reads, front-core crypto); here they are mocked so the test pins the
 // ORCHESTRATION: sequencing, store patches, dedup, and failure isolation.
-vi.mock("@obsidion/sdk", () => ({
+vi.mock("@obsidion/sdk", async () => ({
+  isAlreadyClaimedDepositError: (await import("../../../sdk/src/services/depositReceipt.js"))
+    .isAlreadyClaimedDepositError,
   fetchSipaEvents: mocks.fetchSipaEvents,
   readSweepEvents: mocks.readSweepEvents,
   readSweepEventsMany: vi.fn((client: unknown, windows: ScanWindow[], toBlock: bigint) =>
@@ -102,6 +104,7 @@ vi.mock("@aztec/foundation/eth-address", () => ({
 import * as sdk from "@obsidion/sdk"
 import { syncSipaDeposits, type SipaDepositSyncDeps } from "../../src/oxide/sipaClaims"
 import { globalEventEmitter } from "../../src/core/services/GlobalEventEmitter"
+import { isStuckSweep, STUCK_SWEEP_MS } from "../../src/core/services/deposits/sipaStuck"
 
 const SIPA_A = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as Address
 const SIPA_B = "0xcccccccccccccccccccccccccccccccccccccccc" as Address
@@ -262,12 +265,135 @@ describe("syncSipaDeposits", () => {
       phase: "claimed",
       inboxIndex: "7",
       claimedInboxIndexes: ["7"],
+      sweeps: [{ inboxIndex: "7", sweepTxHash: TX_HASH, netAmount: "990000" }],
       netAmount: "990000",
       amount: "0.99",
       sweepTxHash: TX_HASH,
       messageSecret: SECRET_A.toString(),
       recipientL2Address: RECIPIENT_HEX,
     })
+  })
+
+  /** A receipt in which the sweep moved `value` of `token` off the SIPA. */
+  const sweepReceipt = (token: Address, value: bigint) => ({
+    logs: [
+      {
+        address: token,
+        topics: encodeEventTopics({
+          abi: erc20Abi,
+          eventName: "Transfer",
+          args: { from: SIPA_A, to: "0x000000000000000000000000000000000000dead" },
+        }),
+        data: pad(toHex(value)),
+      },
+    ],
+  })
+
+  it("ledgers a claimed sweep with what its receipt took off the SIPA, dated at its block", async () => {
+    const { deps, store } = makeDeps()
+    ;(deps.publicClient as { getTransactionReceipt: unknown }).getTransactionReceipt = vi.fn(
+      async () => sweepReceipt(deps.token.address, 1_000_140n),
+    )
+    mocks.readBlockTimeMs.mockResolvedValue(1_700_000_000_000)
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([
+      { index: 7n, amount: 1_000_000n, blockNumber: 1n, txHash: TX_HASH },
+    ])
+
+    await syncSipaDeposits(deps)
+
+    expect(store.records.get(SIPA_A)).toMatchObject({
+      phase: "claimed",
+      sweeps: [
+        {
+          inboxIndex: "7",
+          sweepTxHash: TX_HASH,
+          settledAt: 1_700_000_000_000,
+          netAmount: "1000000",
+          grossAmount: "1000140",
+          fundingTokenSymbol: "DAI",
+          fundingTokenDecimals: 6,
+        },
+      ],
+    })
+  })
+
+  it("a failed receipt read with one accepted token still claims, leaving the gross unknown", async () => {
+    const { deps, store } = makeDeps()
+    ;(deps.publicClient as { getTransactionReceipt: unknown }).getTransactionReceipt = vi.fn(
+      async () => {
+        throw new Error("rpc down")
+      },
+    )
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([
+      { index: 7n, amount: 1_000_000n, blockNumber: 1n, txHash: TX_HASH },
+    ])
+
+    expect(await syncSipaDeposits(deps)).toMatchObject({ claimed: 1, failed: 0 })
+    const [entry] = store.records.get(SIPA_A)!.sweeps as Record<string, unknown>[]
+    expect(entry).toMatchObject({ inboxIndex: "7", netAmount: "1000000" })
+    expect(entry!.grossAmount).toBeUndefined()
+  })
+
+  it("ledgers the sweeps of a record claimed before the ledger existed, scanning from the history start whatever earlier scans covered", async () => {
+    const START = HEAD - 400_000n
+    const store = makeStore()
+    store.records.set(SIPA_A, {
+      phase: "claimed",
+      inboxIndex: "9",
+      claimedInboxIndexes: ["7", "9"],
+      netAmount: "4000000",
+      sweepTxHash: "0xsweep9",
+      messageSecret: SECRET_A.toString(),
+      lastScannedBlock: (HEAD - 10n).toString(),
+      historyScanned: true,
+      lastScanAt: 0,
+    })
+    const { deps, tokenService } = makeDeps(store)
+    ;(deps.publicClient as { getTransactionReceipt: unknown }).getTransactionReceipt = vi.fn(
+      async ({ hash }: { hash: string }) =>
+        sweepReceipt(deps.token.address, hash === "0xsweep7" ? 1_000_140n : 4_000_140n),
+    )
+    mocks.readBlockTimeMs.mockImplementation(async (_client: unknown, block: bigint) =>
+      block === START + 5n ? 1_700_000_000_000 : 1_700_000_500_000,
+    )
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([
+      { index: 7n, amount: 1_000_000n, blockNumber: START + 5n, txHash: "0xsweep7" },
+      { index: 9n, amount: 4_000_000n, blockNumber: START + 50n, txHash: "0xsweep9" },
+    ])
+
+    await syncSipaDeposits({ ...deps, historyStartBlock: async () => START })
+
+    expect(mocks.readSweepEvents.mock.calls[0]![2]).toBe(START)
+    expect(tokenService.claimSweptDeposit).not.toHaveBeenCalled()
+    expect(store.records.get(SIPA_A)).toMatchObject({
+      phase: "claimed",
+      claimedInboxIndexes: ["7", "9"],
+      netAmount: "4000000",
+      sweeps: [
+        {
+          inboxIndex: "7",
+          sweepTxHash: "0xsweep7",
+          settledAt: 1_700_000_000_000,
+          netAmount: "1000000",
+          grossAmount: "1000140",
+        },
+        {
+          inboxIndex: "9",
+          sweepTxHash: "0xsweep9",
+          settledAt: 1_700_000_500_000,
+          netAmount: "4000000",
+          grossAmount: "4000140",
+        },
+      ],
+    })
+
+    // Ledgered: the next scan resumes at the cursor.
+    store.records.get(SIPA_A)!.lastScanAt = 0
+    await syncSipaDeposits({ ...deps, historyStartBlock: async () => START })
+    expect(mocks.readSweepEvents.mock.calls[1]![2]).toBeGreaterThan(START)
   })
 
   it("marks an unsettled sweep pendingClaim and does not claim yet", async () => {
@@ -2391,6 +2517,43 @@ describe("syncSipaDeposits balance refresh", () => {
     expect(globalEventEmitter.isSyncCatchingUp()).toBe(false)
   })
 
+  it.each([
+    ["claims", () => {}],
+    [
+      "reconciles",
+      (tokenService: ReturnType<typeof makeDeps>["tokenService"]) =>
+        tokenService.claimSweptDeposit.mockRejectedValueOnce(
+          new Error("Assertion failed: deposit already stored"),
+        ),
+    ],
+  ])(
+    "%s a deposit counted as arriving, and records it claimed only after the balance refresh",
+    async (_, claimOutcome) => {
+      const store = makeStore()
+      store.records.set(SIPA_A, {
+        phase: "pendingClaim",
+        startTime: Date.now(),
+        messageSecret: SECRET_A.toString(),
+        netAmount: "990000",
+        lastScanAt: Date.now(),
+      })
+      const { deps, tokenService } = makeDeps(store)
+      claimOutcome(tokenService)
+      sweptEvent()
+      let land: () => void = () => {}
+      const refreshBalance = vi.fn(() => new Promise<void>((resolve) => (land = resolve)))
+
+      const pass = syncSipaDeposits({ ...deps, refreshBalance })
+      await vi.waitFor(() => expect(refreshBalance).toHaveBeenCalledTimes(1))
+      expect(store.records.get(SIPA_A)?.phase).toBe("pendingClaim")
+
+      land()
+
+      await pass
+      expect(store.records.get(SIPA_A)?.phase).toBe("claimed")
+    },
+  )
+
   it("completes a pass whose refresh rejects", async () => {
     const { deps } = makeDeps()
     sweptEvent()
@@ -2425,5 +2588,213 @@ describe("syncSipaDeposits balance refresh", () => {
     } finally {
       begin.mockRestore()
     }
+  })
+})
+
+describe("syncSipaDeposits history start", () => {
+  const START = HEAD - 400_000n
+  const OLD_SWEEP = HEAD - 300_000n
+  /** A sweep reader with the real reader's finite default look-back. */
+  const lookBackSweeps =
+    (sweeps: { block: bigint; index: bigint }[]) =>
+    async (_client: unknown, _sipa: string, from: bigint | undefined, to: bigint) =>
+      sweeps
+        .filter((s) => s.block >= (from ?? to - 50_000n) && s.block <= to)
+        .map((s) => ({ index: s.index, amount: 990_000n, blockNumber: s.block, txHash: TX_HASH }))
+  const empty = {
+    balance: 0n,
+    scaledBalance: 0n,
+    fee: 100n,
+    fpcFundingCut: 40n,
+    sweepable: false,
+  }
+  const stuckReplay = () => {
+    const store = makeStore()
+    store.records.set(SIPA_A, {
+      phase: "broadcast",
+      amount: "0",
+      replayed: true,
+      startTime: Date.now(),
+      messageSecret: SECRET_A.toString(),
+      lastScannedBlock: (HEAD - 10n).toString(),
+      lastScanAt: 0,
+    })
+    return store
+  }
+
+  it("finds a deposit swept before the default look-back on a fresh device", async () => {
+    const { deps, store, tokenService } = makeDeps()
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockImplementation(lookBackSweeps([{ block: OLD_SWEEP, index: 7n }]))
+
+    await syncSipaDeposits({ ...deps, historyStartBlock: async () => START })
+
+    expect(tokenService.claimSweptDeposit).toHaveBeenCalledTimes(1)
+    expect(store.records.get(SIPA_A)).toMatchObject({
+      phase: "claimed",
+      amount: "0.99",
+      historyScanned: true,
+    })
+  })
+
+  it("misses that deposit without a history start", async () => {
+    const { deps, store } = makeDeps()
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockImplementation(lookBackSweeps([{ block: OLD_SWEEP, index: 7n }]))
+    mocks.readSipaFundingStatus.mockResolvedValue(empty)
+
+    await syncSipaDeposits(deps)
+
+    expect(store.records.get(SIPA_A)).toMatchObject({ phase: "broadcast", amount: "0" })
+    expect(store.records.get(SIPA_A)?.historyScanned).toBeUndefined()
+  })
+
+  it("catches up a replayed deposit a past look-back left unfunded", async () => {
+    const store = stuckReplay()
+    const { deps, tokenService } = makeDeps(store)
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockImplementation(lookBackSweeps([{ block: OLD_SWEEP, index: 7n }]))
+
+    await syncSipaDeposits({ ...deps, historyStartBlock: async () => START })
+
+    expect(mocks.readSweepEvents.mock.calls[0]![2]).toBe(START)
+    expect(tokenService.claimSweptDeposit).toHaveBeenCalledTimes(1)
+    expect(store.records.get(SIPA_A)).toMatchObject({ phase: "claimed", amount: "0.99" })
+  })
+
+  it("scans an unfunded replayed address from the start once, then resumes from its cursor", async () => {
+    const store = stuckReplay()
+    const { deps } = makeDeps(store)
+    const historyStartBlock = vi.fn(async () => START)
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([])
+    mocks.readSipaFundingStatus.mockResolvedValue(empty)
+
+    await syncSipaDeposits({ ...deps, historyStartBlock })
+    expect(store.records.get(SIPA_A)).toMatchObject({ historyScanned: true })
+    store.records.get(SIPA_A)!.lastScanAt = 0
+    await syncSipaDeposits({ ...deps, historyStartBlock })
+
+    expect(mocks.readSweepEvents.mock.calls.map((c) => c[2])).toEqual([START, HEAD - 128n])
+    expect(historyStartBlock).toHaveBeenCalledTimes(1)
+  })
+
+  it("falls back to the default look-back when the history start cannot be read", async () => {
+    const store = stuckReplay()
+    const { deps } = makeDeps(store)
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([])
+    mocks.readSipaFundingStatus.mockResolvedValue(empty)
+
+    await syncSipaDeposits({
+      ...deps,
+      historyStartBlock: async () => {
+        throw new Error("rpc down")
+      },
+    })
+
+    expect(mocks.readSweepEvents.mock.calls[0]![2]).toBe(HEAD - 10n - 128n)
+    expect(store.records.get(SIPA_A)?.historyScanned).toBeUndefined()
+  })
+})
+
+describe("syncSipaDeposits second payment to a claimed SIPA", () => {
+  const funded = { balance: 500n, scaledBalance: 500n, fee: 100n, sweepable: true }
+
+  /** Claims one sweep, then reads the same address with new funds and no new sweep. */
+  async function payAgain(resweepable: boolean) {
+    const { deps, store } = makeDeps()
+    const onSweptAddressFunded = vi.fn(async (_sipa: Address) => {})
+    const run = { ...deps, onSweptAddressFunded }
+    mocks.fetchSipaEvents.mockResolvedValue([{ ...sipaEvent(SECRET_A), resweepable }])
+    mocks.readSweepEvents.mockResolvedValue([
+      { index: 7n, amount: 990_000n, blockNumber: HEAD - 1_000n, txHash: TX_HASH },
+    ])
+    mocks.readSipaFundingStatus.mockResolvedValue({ ...funded, balance: 0n, sweepable: false })
+    await syncSipaDeposits(run)
+    expect(store.records.get(SIPA_A)).toMatchObject({ phase: "claimed", sweepTxHash: TX_HASH })
+
+    store.records.get(SIPA_A)!.lastScanAt = 0
+    mocks.readSweepEvents.mockResolvedValue([])
+    mocks.readSipaFundingStatus.mockResolvedValue(funded)
+    await syncSipaDeposits(run)
+    return { run, store, onSweptAddressFunded }
+  }
+
+  it("reopens a resweepable address on a fresh stuck clock and asks for one republish", async () => {
+    const before = Date.now()
+    const { run, store, onSweptAddressFunded } = await payAgain(true)
+    const record = store.records.get(SIPA_A)!
+    expect(record).toMatchObject({
+      phase: "sweeping",
+      amount: "0.0005",
+      claimedInboxIndexes: ["7"],
+    })
+    expect(record.sweepTxHash).toBeUndefined()
+    expect(record.netAmount).toBeUndefined()
+    expect(record.startTime as number).toBeGreaterThanOrEqual(before)
+    expect(onSweptAddressFunded.mock.calls).toEqual([[SIPA_A]])
+
+    await syncSipaDeposits(run)
+    expect(onSweptAddressFunded).toHaveBeenCalledOnce()
+  })
+
+  it("keeps the claim when the republish fails, and republishes on the next scan", async () => {
+    const { run, store, onSweptAddressFunded } = await payAgain(true)
+    onSweptAddressFunded.mockClear()
+    store.records.get(SIPA_A)!.phase = "claimed"
+    store.records.get(SIPA_A)!.sweepTxHash = TX_HASH
+    store.records.get(SIPA_A)!.lastScanAt = 0
+    onSweptAddressFunded.mockRejectedValueOnce(new Error("node down"))
+
+    await syncSipaDeposits(run)
+    expect(store.records.get(SIPA_A)).toMatchObject({ phase: "claimed", sweepTxHash: TX_HASH })
+
+    store.records.get(SIPA_A)!.lastScanAt = 0
+    await syncSipaDeposits(run)
+    expect(store.records.get(SIPA_A)).toMatchObject({ phase: "sweeping" })
+    expect(onSweptAddressFunded).toHaveBeenCalledTimes(2)
+  })
+
+  it("sends a second payment to an address that refuses a second sweep to recovery", async () => {
+    const { store, onSweptAddressFunded } = await payAgain(false)
+    expect(store.records.get(SIPA_A)).toMatchObject({ phase: "recoverable" })
+    expect(onSweptAddressFunded).not.toHaveBeenCalled()
+  })
+})
+
+describe("syncSipaDeposits second payment left without an exit", () => {
+  it("reopens a sweeping record still stamped with its claimed sweep", async () => {
+    const store = makeStore()
+    store.records.set(SIPA_A, {
+      phase: "sweeping",
+      startTime: 1,
+      endTime: 2,
+      inboxIndex: "7",
+      claimedInboxIndexes: ["7"],
+      sweepTxHash: TX_HASH,
+      messageSecret: SECRET_A.toString(),
+      recipientL2Address: RECIPIENT_HEX,
+      recipientHash: "0xset",
+      recoveryAddress: "0xset",
+    })
+    const { deps } = makeDeps(store)
+    const onSweptAddressFunded = vi.fn(async (_sipa: Address) => {})
+    mocks.fetchSipaEvents.mockResolvedValue([{ ...sipaEvent(SECRET_A), resweepable: true }])
+    mocks.readSweepEvents.mockResolvedValue([])
+    mocks.readSipaFundingStatus.mockResolvedValue({
+      balance: 500n,
+      scaledBalance: 500n,
+      fee: 100n,
+      sweepable: true,
+    })
+
+    await syncSipaDeposits({ ...deps, onSweptAddressFunded })
+
+    const record = store.records.get(SIPA_A)!
+    expect(record.sweepTxHash).toBeUndefined()
+    expect(record.endTime).toBeUndefined()
+    expect(isStuckSweep(record as never, (record.startTime as number) + STUCK_SWEEP_MS)).toBe(true)
+    expect(onSweptAddressFunded).toHaveBeenCalledOnce()
   })
 })

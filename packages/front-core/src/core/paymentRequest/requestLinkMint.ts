@@ -3,22 +3,18 @@
  * request-id generation, wallet/network lookups, persistence, sharing UI, and
  * amount/expiry display formatting from the returned row.
  */
-import { Network } from "@obsidion/core/constants"
 import { parseEscrowAmount } from "../../utils/escrowAmount"
 import type { PaymentRequest } from "../storages/RequestStorage"
-import { encodeRequestInline } from "./requestInlineCodec"
+import type { SipaOrigin } from "../services/deposits/SIPADepositStore"
+import { encodeRequestInline, type SipaLinkPreimage } from "./requestInlineCodec"
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 const MS_PER_HOUR = 60 * 60 * 1000
 const MS_PER_MIN = 60 * 1000
 
-/** Landing-page origin for shareable `/claim` and `/request` links (DESIGN §2.3). */
-export function paylinkLandingBaseUrl(network: Network): string {
-  return network === Network.MAINNET ? "https://paylink.zk.money" : "https://paylink.test.zk.money"
-}
-
-function requestLinkUrl(baseUrl: string, fragment: string): string {
-  return `${baseUrl.replace(/\/$/, "")}/request#${fragment}`
+/** The payee's pay page carrying this request: `<wallet origin>/pay/<tag>#<fragment>`. */
+function requestLinkUrl(baseUrl: string, tag: string, fragment: string): string {
+  return `${baseUrl.replace(/\/$/, "")}/pay/${encodeURIComponent(tag)}#${fragment}`
 }
 
 /** "3 days" / "5 hours" / "5 mins" — coarsest unit that fits, singular below 2. */
@@ -45,7 +41,7 @@ export interface MintRequestLinkArgs {
   tokenDecimals: number
   tokenSymbol: string
   networkId: string
-  /** Landing origin — `paylinkLandingBaseUrl(network)` (no trailing slash). */
+  /** Wallet origin — `mintableOrigin(origin, network)`. */
   baseUrl: string
   /** Blank or non-positive input mints an any-amount link. */
   amountInput: string
@@ -54,6 +50,15 @@ export interface MintRequestLinkArgs {
   now: number
   /** Self-broadcast L1 SIPA. Optional on the v3 fragment. */
   sipaAddress?: string
+  sipaPreimage?: SipaLinkPreimage
+}
+
+/** What a link carries so a payer can re-predict the SIPA that `origin` records. */
+export function sipaLinkPreimage(origin: SipaOrigin): SipaLinkPreimage {
+  return {
+    intentHash: origin.intentHash,
+    recovery: origin.protocol === "legacy-eoa" ? origin.recoveryAddress : origin.recoveryCommitment,
+  }
 }
 
 export interface MintedRequestLink {
@@ -80,10 +85,11 @@ export function buildRequestShareUrl(
   baseUrl: string,
 ): string | null {
   if (!request.networkId || !request.tokenAddress) return null
+  const requesterTag = request.requesterTag || currentRequesterTag
   try {
     const fragment = encodeRequestInline({
       requestId: request.id,
-      requesterTag: request.requesterTag || currentRequesterTag,
+      requesterTag,
       ...(request.requesterAddress !== undefined && {
         requesterAddress: request.requesterAddress,
       }),
@@ -96,8 +102,10 @@ export function buildRequestShareUrl(
       ...(request.expiresAt !== undefined && { expiresAt: request.expiresAt }),
       networkId: request.networkId,
       ...(request.sipaAddress !== undefined && { sipaAddress: request.sipaAddress }),
+      ...(request.sipaAddress !== undefined &&
+        request.sipaPreimage !== undefined && { sipaPreimage: request.sipaPreimage }),
     })
-    return requestLinkUrl(baseUrl, fragment)
+    return requestLinkUrl(baseUrl, requesterTag, fragment)
   } catch {
     return null
   }
@@ -133,6 +141,7 @@ export function mintRequestLink(args: MintRequestLinkArgs): MintedRequestLink {
     expiresAt,
     networkId: args.networkId,
     sipaAddress: args.sipaAddress,
+    sipaPreimage: args.sipaPreimage,
   })
 
   const row: PaymentRequest = {
@@ -153,10 +162,11 @@ export function mintRequestLink(args: MintRequestLinkArgs): MintedRequestLink {
     requesterTag: args.requesterTag,
     requesterAddress: args.requesterAddress,
     sipaAddress: args.sipaAddress,
+    sipaPreimage: args.sipaPreimage,
   }
 
   return {
-    url: requestLinkUrl(args.baseUrl, fragment),
+    url: requestLinkUrl(args.baseUrl, args.requesterTag, fragment),
     row,
     note,
   }

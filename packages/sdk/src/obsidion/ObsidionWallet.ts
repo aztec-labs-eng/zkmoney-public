@@ -61,7 +61,7 @@ import type { ChainInfo } from "@aztec/entrypoints/interfaces"
 import { ContractArtifact, FunctionCall, type EventMetadataDefinition } from "@aztec/stdlib/abi"
 import { FEE_MULTIPLIER, getBlockBaseMaxFees } from "../utils/index.js"
 import { DEFAULT_WAIT_OPTS } from "../utils/constants.js"
-import { claimFpcOpenBatchWithinCap } from "../feePaymentMethod/claimFpcBatchGas.js"
+import { CLAIM_FPC_MAX_FEES_PER_GAS } from "../feePaymentMethod/claimFpcBatchGas.js"
 import {
   AccountFeePaymentMethodOptions,
   type DefaultAccountEntrypointOptions,
@@ -194,10 +194,11 @@ export class ObsidionWallet extends BaseWallet {
     }
   }
 
-  /** Whether network fees are above what the ClaimFPC sponsors, so every sponsored tx would fail now.
-   * Prices the same fee-per-gas `completeFeeOptions` declares for a sponsored send. */
+  /** Whether network fees are above what the ClaimFPC sponsors, so every sponsored tx would fail now. */
   async sponsoredFeesAboveCap(): Promise<boolean> {
-    return !claimFpcOpenBatchWithinCap((await this.getMinFees()).mul(1 + this.minFeePadding))
+    const fees = await this.getMinFees()
+    const cap = CLAIM_FPC_MAX_FEES_PER_GAS
+    return fees.feePerDaGas > cap.feePerDaGas || fees.feePerL2Gas > cap.feePerL2Gas
   }
 
   /** The pinned identity as numbers, else the node's; for account builds and link stamps. */
@@ -220,10 +221,11 @@ export class ObsidionWallet extends BaseWallet {
       // seeds from `getPXEConfig()` carries `autoSync: true` and would otherwise win.
       autoSync: false,
     })
-    const l1Contracts = await node.getL1ContractAddresses()
-    const rollupAddress = l1Contracts.rollupAddress
     // Rollup-keyed default so restarts reuse the cache; tests pass their own for isolation.
-    pxeConfig.dataDirectory = pxeConfig.dataDirectory ?? `pxe-${rollupAddress}`
+    if (pxeConfig.dataDirectory === undefined) {
+      const { l1ContractAddresses } = await node.getNodeInfo()
+      pxeConfig.dataDirectory = `pxe-${l1ContractAddresses.rollupAddress}`
+    }
 
     const pxe = await createPXELazy(node, pxeConfig, options)
     return new ObsidionWallet(pxe, node, walletOpts)
@@ -262,6 +264,7 @@ export class ObsidionWallet extends BaseWallet {
     return {
       artifact: await this.getAccountArtifact(),
       contractName: this.getAccountContractName(),
+      pxe: this.pxe,
     }
   }
 

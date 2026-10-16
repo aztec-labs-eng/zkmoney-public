@@ -1,7 +1,6 @@
 import { type EnvVar, enumConfigHelper, getValueFromEnvWithFallback } from '@aztec/foundation/config';
 import { schemas } from '@aztec/foundation/schemas';
 
-import { DEFAULT_MAX_FEE_HEADROOM_PERCENT } from '@oxide/oxide-client/l1_operation_quote.js';
 import { OFAC_SDN_LIST_URL } from '@oxide/watcher-lib/sanctions';
 
 import { type Command, InvalidArgumentError, Option } from 'commander';
@@ -17,7 +16,7 @@ import { SIGNER_BACKENDS, urlOrigin } from './config.js';
 
 const DEFAULT_SQLITE_PATH = '/data/oxide-relayer-{portal}.sqlite3';
 const DEFAULT_L1_OPERATIONS_RETRY_BACKOFF_MS = 30_000;
-const DEFAULT_L1_OPERATIONS_MAX_PENDING_AGE_SECONDS = 72 * 60 * 60;
+const DEFAULT_L1_OPERATIONS_MAX_PENDING_AGE_SECONDS = 7 * 24 * 60 * 60;
 
 export const RELAYER_ENV_VARS = [
   'OXIDE_DEPLOYMENT_ENV_MANIFEST_URL',
@@ -47,7 +46,6 @@ export const RELAYER_ENV_VARS = [
   'OXIDE_RELAYER_FPC_FUNDING_POLL_INTERVAL_MS',
   'OXIDE_RELAYER_L1_OPERATIONS_RETRY_BACKOFF_MS',
   'OXIDE_RELAYER_L1_OPERATIONS_MAX_PENDING_AGE_SECONDS',
-  'OXIDE_RELAYER_L1_OPERATIONS_MAX_FEE_HEADROOM_PERCENT',
   'OXIDE_RELAYER_L1_OPERATIONS_PAYOUT_TOKENS',
   'OXIDE_RELAYER_ALLOW_UNPROFITABLE',
   'OXIDE_RELAYER_PREDICATE_API_KEY',
@@ -202,13 +200,6 @@ export const RUN_OPTIONS: readonly CliOptionSpec[] = [
     parseVal: value => parsePositiveInteger(value, 'L1 operations max pending age'),
   },
   {
-    flags: '--l1-operations-max-fee-headroom-percent <percent>',
-    description: 'percentage by which the L1 operation max fee allows the base fee to increase; minPayout covers it',
-    env: 'OXIDE_RELAYER_L1_OPERATIONS_MAX_FEE_HEADROOM_PERCENT',
-    defaultValue: DEFAULT_MAX_FEE_HEADROOM_PERCENT,
-    parseVal: value => parsePercent(value, 'L1 operations max fee headroom'),
-  },
-  {
     flags: '--l1-operations-payout-tokens <addresses>',
     description:
       "comma-separated 18-decimal USD tokens that L1 operations can pay out in; default: the manifest entry's token",
@@ -294,14 +285,6 @@ function parsePositiveInteger(value: string | boolean, label: string): number {
     throw new InvalidArgumentError(`${label} must be a positive integer.`);
   }
   return result.data;
-}
-
-/** A non-negative percentage, to basis-point precision. */
-function parsePercent(value: string | boolean, label: string): number {
-  if (typeof value !== 'string' || !/^\d+(\.\d{1,2})?$/.test(value.trim())) {
-    throw new InvalidArgumentError(`${label} must be a non-negative percentage with at most two decimal places.`);
-  }
-  return Number(value.trim());
 }
 
 function parsePositiveGwei(value: string | boolean, label: string): number {

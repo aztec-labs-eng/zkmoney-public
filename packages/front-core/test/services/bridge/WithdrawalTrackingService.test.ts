@@ -31,6 +31,7 @@ import {
   canSelfExecuteSwap,
   canSelfFinalizeWithdrawal,
   isWithdrawalDelayed,
+  revivePendingWithdrawal,
   type WithdrawalTrackerNode,
 } from "../../../src/core/services/bridge/WithdrawalTrackingService"
 import type { WithdrawalRecord } from "../../../src/core/services/bridge/types"
@@ -315,6 +316,60 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
 
       expect(store.get("w1")?.l1TxHash).toBe(L1TX)
       expect(reader.resolveL1TxHash).toHaveBeenCalledWith(WID_1)
+    })
+
+    it("searches for the release from the burn's time and records what arrived", async () => {
+      const store = await seedStore()
+      await store.create(submittingRecord("w1"))
+      await store.markMined("w1", L2TX_1, 100, "1000000")
+
+      const reader = makeReader({
+        isSpent: vi.fn(async () => true),
+        resolveL1TxHash: vi.fn(async () => L1TX),
+        receivedIn: vi.fn(async () => 925_000n),
+      })
+      const l1BlockAt = vi.fn(async () => 12_345n)
+      const tracker = WithdrawalTrackingService.get({
+        store,
+        node: makeNode(TxStatus.PROVEN),
+        finalizationReader: reader,
+        portalContext: PORTAL_CONTEXT,
+        scheduler: NOOP_SCHEDULER,
+        l1BlockAt,
+      })
+      await tracker.watch(store.get("w1")!)
+      await tracker.syncOnce()
+      await tracker.syncOnce()
+
+      expect(l1BlockAt).toHaveBeenCalledWith(store.get("w1")!.startTime)
+      expect(reader.resolveL1TxHash).toHaveBeenCalledWith(WID_1, { fromBlock: 12_345n })
+      expect(reader.receivedIn).toHaveBeenCalledWith(L1TX, RECIPIENT)
+      expect(store.get("w1")?.receivedAmount).toBe("925000")
+    })
+
+    it("keeps the reader's look-back for a rebuilt record whose start time is the rebuild's clock", async () => {
+      const store = await seedStore()
+      await store.create({ ...submittingRecord("w1"), rebuilt: true, startTimeEstimated: true })
+      await store.markMined("w1", L2TX_1, 100, "1000000")
+      const reader = makeReader({
+        isSpent: vi.fn(async () => true),
+        resolveL1TxHash: vi.fn(async () => L1TX),
+      })
+      const l1BlockAt = vi.fn(async () => 12_345n)
+      const tracker = WithdrawalTrackingService.get({
+        store,
+        node: makeNode(TxStatus.PROVEN),
+        finalizationReader: reader,
+        portalContext: PORTAL_CONTEXT,
+        scheduler: NOOP_SCHEDULER,
+        l1BlockAt,
+      })
+      await tracker.watch(store.get("w1")!)
+      await tracker.syncOnce()
+      await tracker.syncOnce()
+      expect(l1BlockAt).not.toHaveBeenCalled()
+      expect(reader.resolveL1TxHash).toHaveBeenCalledWith(WID_1)
+      expect(store.get("w1")).toMatchObject({ phase: "done", l1TxHash: L1TX })
     })
   })
 
@@ -1058,5 +1113,60 @@ describe("trackWithdrawalSubmission's hash stamp", () => {
     } finally {
       provingProgress.off("tx-hash-saved", heard)
     }
+  })
+})
+
+// A node that refuses a burn names the one it holds; that withdrawal is pending, whatever it read.
+describe("revivePendingWithdrawal", () => {
+  beforeEach(() => resetSingletons())
+
+  it("puts a failed withdrawal back to submitting, and leaves a live one as it is", async () => {
+    const store = await seedStore()
+    await store.create({ ...submittingRecord("w1"), l2TxHash: L2TX_1 })
+    await store.patch("w1", { phase: "failed", error: "dropped", droppedBurn: true })
+    const revived = await revivePendingWithdrawal(store, L2TX_1.toUpperCase().replace("0X", "0x"))
+    expect(revived).toMatchObject({ localId: "w1", phase: "submitting", l2TxHash: L2TX_1 })
+    expect(revived?.error).toBeUndefined()
+    expect(revived?.endTime).toBeUndefined()
+    expect(revived?.droppedBurn).toBeUndefined()
+
+    await store.create({ ...submittingRecord("w2"), l2TxHash: L2TX_2 })
+    await store.markMined("w2", L2TX_2, 7, "1", "0")
+    expect(await revivePendingWithdrawal(store, L2TX_2)).toMatchObject({ phase: "l2_mined" })
+  })
+
+  it("lets the tracker move a revived burn that had been mined back to mined", async () => {
+    const store = await seedStore()
+    await store.create(submittingRecord("w1"))
+    await store.markMined("w1", L2TX_1, 100, "1000000")
+    await store.patch("w1", { phase: "failed", withdrawalId: WID_1, droppedBurn: true })
+    await revivePendingWithdrawal(store, L2TX_1)
+    const node = makeNode(TxStatus.PENDING)
+    vi.mocked(node.getTxReceipt).mockResolvedValue({
+      status: TxStatus.PENDING,
+      blockNumber: 120,
+    } as never)
+    mockFetch.mockResolvedValueOnce({
+      withdrawals: [
+        { withdrawalId: { toString: () => WID_1 }, amount: 1000000n, relayerTip: 100n },
+      ],
+    })
+    const tracker = WithdrawalTrackingService.get({
+      store,
+      node,
+      finalizationReader: makeReader(),
+      portalContext: PORTAL_CONTEXT,
+      scheduler: NOOP_SCHEDULER,
+    })
+    await tracker.syncOnce()
+    expect(store.get("w1")).toMatchObject({
+      phase: "awaiting_proven",
+      blockNumber: 120,
+      withdrawalId: WID_1,
+    })
+  })
+
+  it("answers null for a transaction no withdrawal sent", async () => {
+    expect(await revivePendingWithdrawal(await seedStore(), L2TX_1)).toBeNull()
   })
 })

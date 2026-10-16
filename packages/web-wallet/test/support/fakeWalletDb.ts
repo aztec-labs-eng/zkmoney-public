@@ -40,6 +40,7 @@ export class FakeWalletDbs implements WalletDbBackend {
     return {
       persistent,
       load: async () => ({ state: new Map(entry.state) }),
+      get: async (key) => entry.state.get(key),
       apply: async (ops) => {
         if (closed) throw new Error(`wallet_${version} is closed`)
         await this.onApply?.(version, ops)

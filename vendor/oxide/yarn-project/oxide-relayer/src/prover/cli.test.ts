@@ -1,3 +1,5 @@
+import { EthAddress } from '@aztec/foundation/eth-address';
+
 import { describe, expect, it } from '@jest/globals';
 
 import { REQUIRED_ARGS, parseRunConfig } from '../cli/test_run_config.js';
@@ -63,5 +65,26 @@ describe('epoch-proofs CLI', () => {
     const config = await parseRunConfig([...REQUIRED_ARGS], {});
 
     expect(config.earlyProofPolicy).toEqual({});
+  });
+
+  it('leaves the prover payout tokens unset when none are given', async () => {
+    const config = await parseRunConfig([...REQUIRED_ARGS], {});
+
+    expect(config.proverPayoutTokens).toBeUndefined();
+  });
+
+  it('reads the prover payout tokens from the environment', async () => {
+    const [usds, susds] = [EthAddress.random(), EthAddress.random()];
+    const config = await parseRunConfig([...REQUIRED_ARGS], {
+      OXIDE_RELAYER_PROVER_PAYOUT_TOKENS: `${usds}, ${susds},`,
+    });
+
+    expect(config.proverPayoutTokens).toEqual([usds, susds]);
+  });
+
+  it('rejects an invalid prover payout token', async () => {
+    await expect(parseRunConfig([...REQUIRED_ARGS, '--prover-payout-tokens', '0x1234'], {})).rejects.toThrow(
+      /invalid address: 0x1234/,
+    );
   });
 });

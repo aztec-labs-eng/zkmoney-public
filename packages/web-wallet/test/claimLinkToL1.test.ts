@@ -309,6 +309,46 @@ describe("claimLinkToL1", () => {
     })
   })
 
+  it("puts back to pending an earlier withdrawal the node still holds, and keeps no refused burn", async () => {
+    const EARLIER = `0x${"0e".repeat(32)}` as Hex
+    await getWithdrawalStore().create({
+      localId: "earlier",
+      l2TxHash: EARLIER,
+      recipient: RECIPIENT,
+      recipientProvenance: "saved-recipient",
+      amount: "1",
+      tokenSymbol: "DAI",
+      phase: "failed",
+      error: "The withdrawal transaction was dropped or reverted. You can try again.",
+      startTime: 1,
+      endTime: 2,
+    })
+    claimToL1.mockImplementationOnce(async (...args: unknown[]) => {
+      const { operationId } = args[4] as { operationId: string }
+      provingProgress.emitStageStart(ProvingStage.Mining, operationId, L2_TX)
+      throw new Error(
+        `Nullifier conflict with existing tx ${EARLIER}. Minimum required fee: 1, got: 0`,
+      )
+    })
+    await expect(
+      claimLinkToL1(deps(), "frag-direct", RECIPIENT, screener, vi.fn()),
+    ).rejects.toThrow("An earlier withdrawal of these funds is still pending.")
+    expect(getWithdrawalStore().list()).toHaveLength(1)
+    const earlier = getWithdrawalStore().get("earlier")
+    expect(earlier).toMatchObject({ phase: "submitting", l2TxHash: EARLIER })
+    expect(earlier?.error).toBeUndefined()
+  })
+
+  it("says the funds are held when the node's pending transaction is no withdrawal", async () => {
+    claimToL1.mockImplementationOnce(async () => {
+      throw new Error(`Nullifier conflict with existing tx 0x${"0f".repeat(32)}`)
+    })
+    await expect(
+      claimLinkToL1(deps(), "frag-direct", RECIPIENT, screener, vi.fn()),
+    ).rejects.toThrow("These funds are held by a transaction that is still pending.")
+    expect(getWithdrawalStore().list()).toHaveLength(0)
+  })
+
   it("stores nothing owed when the burn published less than the fee", async () => {
     const published = parseUnits("0.2", 18)
     publishedBurn.mockResolvedValue({

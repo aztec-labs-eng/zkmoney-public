@@ -56,6 +56,27 @@ describe("BroadcastLedger", () => {
     expect(ledger.get(A)).toMatchObject({ state: "landed", landedAt: 5, failures: 0 })
   })
 
+  it("owes a landed job again once its address is paid again, and only a landed one", async () => {
+    const ledger = new BroadcastLedger(new InMemoryStorageAdapter())
+    await ledger.enqueue(slot(A), 1)
+    await ledger.enqueue(slot(B), 2)
+    await ledger.setOperation(A, "op-1")
+    await ledger.markSent(A, "0xfirst")
+    await ledger.markLanded(A, 5)
+
+    expect(await ledger.republish(B, 40, 50)).toBe(false)
+    expect(await ledger.republish(A, 40, 50)).toBe(true)
+    expect(ledger.get(A)).toMatchObject({
+      state: "queued",
+      republishSince: 40,
+      fundedAt: 50,
+      txHash: undefined,
+      operationId: undefined,
+      landedAt: undefined,
+    })
+    expect(await ledger.republish(A, 41, 60)).toBe(false)
+  })
+
   it("finds a job by address whatever its case", async () => {
     const ledger = new BroadcastLedger(new InMemoryStorageAdapter())
     await ledger.enqueue(slot(A), 1)

@@ -8,6 +8,8 @@ import {
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
 import { formatUnits, type Hex } from "viem"
+import { usdFigure } from "../src/ui/format"
+import { PAID, PAID_ASK, RANDOM } from "./support/registrationPrices"
 import {
   ACCOUNT,
   DAI as ONE,
@@ -66,6 +68,11 @@ vi.mock("../src/config/oxideTuple", () => ({
         : h.balance,
   }),
 }))
+vi.mock("@obsidion/front-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
+  useAccountContext: () => ({ obsidionAccount: null }),
+  useAztecContext: () => ({ obsidionWallet: null }),
+}))
 vi.mock("@obsidion/web-ds", () => ({
   ActivityListRow: ({ amount, onClick }: { amount?: string; onClick: () => void }) => (
     <button onClick={onClick}>
@@ -73,8 +80,21 @@ vi.mock("@obsidion/web-ds", () => ({
     </button>
   ),
   Card: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
+  GradientHeroCard: (
+    props: Record<"avatar" | "title" | "subtitle" | "footer", React.ReactNode>,
+  ) => (
+    <div>
+      {props.avatar}
+      {props.title}
+      {props.subtitle}
+      {props.footer}
+    </div>
+  ),
+  GradientText: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
+  TopNavIconButton: () => null,
   Icon: () => null,
   Spinner: () => null,
+  GradientSpinner: () => null,
   PrimaryGradientButton: ({ title, onClick }: { title: string; onClick?: () => void }) => (
     <button onClick={onClick}>{title}</button>
   ),
@@ -123,9 +143,15 @@ const { REGISTRATIONS_PAUSED_NOTICE } = await import(
 const { stashClaimLink, stashTicketSignup } = await import("../src/features/paylink/claimStash")
 const { takeClaimPromptRequest } = await import("../src/features/paylink/claimPrompt")
 const { startClaim, endClaim } = await import("../src/features/paylink/runningClaims")
+const { ActivationHome } = await import("../src/features/onboarding/ActivationHome")
+const { rememberRegistrationRoute } = await import("../src/features/onboarding/registrationFunnel")
+const { savePastUserVerified, clearPastUserVerified } = await import(
+  "../src/features/onboarding/pastUserCheck"
+)
 
-/** The ask, figure-free: the sheet the banner opens names the amount. */
-const ASK = "Send a deposit to keep @taga."
+/** The caller's card for the plain deposit ask, showing the note the notice hands it. */
+const ASK = "Deposit funds."
+const ask = (note: string) => <span data-testid="deposit-ask">{`${ASK} ${note}`}</span>
 const notice = (id: string) =>
   container.querySelector(`[data-testid="${id}"]`)?.textContent ?? undefined
 
@@ -138,7 +164,7 @@ const expectReported = () => {
   expect(container.textContent).toContain("Claiming @taga")
   expect(container.textContent).toContain("Deposit received. This only takes a moment.")
   expect(container.textContent).not.toContain("Activate account")
-  expect(container.textContent).not.toContain("Send a deposit")
+  expect(notice("deposit-ask")).toBeUndefined()
 }
 
 let container: HTMLDivElement
@@ -148,7 +174,7 @@ const render = () =>
   act(async () => {
     root.render(
       <MemoryRouter>
-        <SecureNameNoticeCard />
+        <SecureNameNoticeCard ask={ask} />
       </MemoryRouter>,
     )
   })
@@ -188,7 +214,7 @@ describe("SecureNameNoticeCard", () => {
     expect(container.textContent).toBe("")
   })
 
-  it("names the tag free without a figure, and leads to the address", async () => {
+  it("hands the ask its hold and the free tag, without a figure", async () => {
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
     saveRegistrationTerms(
@@ -205,15 +231,11 @@ describe("SecureNameNoticeCard", () => {
     await render()
     await settleReads()
 
-    const body = notice("secure-name-notice")!
-    expect(body).toContain("Activate account")
+    const body = notice("deposit-ask")!
     expect(body).toContain("Reserved until")
-    expect(body).toContain(ASK)
     expect(body).toContain("The tag is free.")
     // Every figure is the sheet's: the hero prices nothing.
     expect(body).not.toContain("$")
-    await act(async () => container.querySelector("button")!.click())
-    expect(h.navigate).toHaveBeenCalledWith("/claim/taga")
   })
 
   it("names no received figure while the total is still being priced", async () => {
@@ -237,7 +259,7 @@ describe("SecureNameNoticeCard", () => {
     await render()
     await settleReads()
 
-    const body = notice("secure-name-notice")!
+    const body = notice("deposit-ask")!
     expect(body).toContain(ASK)
     expect(body).toContain("The tag is free.")
     expect(body).not.toContain("received")
@@ -306,7 +328,7 @@ describe("SecureNameNoticeCard", () => {
     })
     await render()
     await settleReads()
-    const body = notice("secure-name-notice")!
+    const body = notice("deposit-ask")!
     expect(body).toContain(ASK)
     expect(body).not.toContain("The tag is free.")
     expect(body).not.toContain("$")
@@ -326,7 +348,7 @@ describe("SecureNameNoticeCard", () => {
     })
     await render()
     await settleReads()
-    expect(notice("secure-name-notice")).toContain(ASK)
+    expect(notice("deposit-ask")).toContain(ASK)
     expect(h.scheduleReads).toBe(0)
   })
 })
@@ -350,7 +372,7 @@ describe("SecureNameNoticeCard — deposit admission", () => {
       if (state === "mounted") {
         await render()
         await settleReads()
-        expect(notice("secure-name-notice")).toContain(ASK)
+        expect(notice("deposit-ask")).toContain(ASK)
       }
       await act(async () => {
         recordDepositAdmission(original, 5n * 10n ** 18n)
@@ -358,6 +380,7 @@ describe("SecureNameNoticeCard — deposit admission", () => {
       if (state !== "mounted") await render()
       expect(notice("registration-pending-notice")).toBeDefined()
       // Paid and admitted: neither the ask nor the past-deadline refresh replaces the pending hero.
+      expect(notice("deposit-ask")).toBeUndefined()
       expect(notice("secure-name-notice")).toBeUndefined()
       await act(async () => container.querySelector("button")!.click())
       expect(h.navigate).toHaveBeenCalledWith("/claim/taga?recovery=1")
@@ -380,15 +403,15 @@ describe("SecureNameNoticeCard — deposit admission", () => {
       account: ACCOUNT,
       tag: "taga",
       deadline: Math.floor((Date.now() + 3 * DAY) / 1000),
-      fee: "500000000000000000",
+      fee: String(RANDOM.fee),
       feeWaived: true,
       earnedExpected: true,
     }
     // The refund is history and the address wants its deposit.
-    saveRegistrationTerms({ ...terms, minDeposit: "4500000000000000000" })
+    saveRegistrationTerms({ ...terms, minDeposit: String(RANDOM.min) })
     await render()
     await settleReads()
-    const body = notice("secure-name-notice")!
+    const body = notice("deposit-ask")!
     expect(body).toContain(ASK)
     expect(body).toContain("The tag is free.")
     expect(body).not.toContain("Do not send another deposit")
@@ -428,7 +451,7 @@ describe("SecureNameNoticeCard — deposit admission", () => {
     )
     await render()
     await settleReads()
-    expect(notice("secure-name-notice")).toContain(ASK)
+    expect(notice("deposit-ask")).toContain(ASK)
     expect(notice("registration-pending-notice")).toBeUndefined()
   })
 })
@@ -441,18 +464,18 @@ describe("registration deposit entry — deposit admission", () => {
       saveRegistrationTerms(
         registrationTerms({
           deadline: Number(FAR_DEADLINE),
-          fee: "10000000000000000000",
-          minDeposit: "5000000000000000000",
+          fee: String(PAID.fee),
+          minDeposit: String(PAID.min),
           feeWaived: false,
-          depositAmount: "5000000000000000000",
+          depositAmount: String(PAID_ASK),
         }),
       )
-      await getPendingStore().upsert(ACCOUNT, {}, record({ fee: "10000000000000000000" }))
+      await getPendingStore().upsert(ACCOUNT, {}, record({ fee: String(PAID.fee) }))
       const original = getPendingStore().current()!
       const saved = loadRegistrationTerms(ACCOUNT)
       recordDepositAdmission(
         { ...original, ...(admitted ? {} : { sipaAddress: "0xother" }) },
-        5n * 10n ** 18n,
+        PAID_ASK,
       )
       await act(async () =>
         root.render(
@@ -482,13 +505,13 @@ describe("registration deposit entry — deposit admission", () => {
     saveRegistrationTerms(
       registrationTerms({
         deadline: Number(FAR_DEADLINE),
-        fee: over.fee ?? "10000000000000000000",
-        minDeposit: over.minDeposit ?? "5000000000000000000",
+        fee: over.fee ?? String(PAID.fee),
+        minDeposit: over.minDeposit ?? String(PAID.min),
         feeWaived: over.feeWaived ?? false,
         depositAmount: String(over.deposited),
       }),
     )
-    await getPendingStore().upsert(ACCOUNT, {}, record({ fee: over.fee ?? "10000000000000000000" }))
+    await getPendingStore().upsert(ACCOUNT, {}, record({ fee: over.fee ?? String(PAID.fee) }))
     await act(async () =>
       root.render(
         <MemoryRouter>
@@ -501,17 +524,18 @@ describe("registration deposit entry — deposit admission", () => {
   }
 
   it("projects the credit once the deposit clears the floor", async () => {
-    // The whole ask deposited, against a 10 DAI fee and the portal's cut: the sweep credits the rest.
+    // The whole ask deposited, against the paid fee and the portal's cut: the sweep credits the rest.
     const amount = await feedRow({ deposited: askedTotal("standard") })
-    const credit = askedTotal("standard") - 10n * 10n ** 18n - h.deductions!.fpcCut
+    const credit = askedTotal("standard") - PAID.fee - h.deductions!.fpcCut
     expect(amount).toContain(formatUnits(credit, 18))
   })
 
   it("shows the deposited gross unsigned for a deposit the chain would refuse", async () => {
     // Short of the floor, so nothing is credited — but every figure is known, and the row reads as
     // an incomplete deposit rather than a read still running.
-    const amount = await feedRow({ deposited: 5n * 10n ** 18n })
-    expect(amount).toBe("$5")
+    // The fee alone is under the floor, which adds the minimum.
+    const amount = await feedRow({ deposited: PAID.fee })
+    expect(amount).toBe(usdFigure(formatUnits(PAID.fee, 18)))
   })
 
   it("names no credit while the portal's cut is unread", async () => {
@@ -634,7 +658,40 @@ describe("SecureNameNoticeCard — a quote past its deadline", () => {
     await render()
     await settleReads()
     expect(notice("secure-name-notice")).toContain(REGISTRATIONS_PAUSED_NOTICE)
-    expect(notice("secure-name-notice")).not.toContain("Send a deposit")
+    expect(notice("deposit-ask")).toBeUndefined()
+  })
+})
+
+describe("ActivationHome", () => {
+  afterEach(() => clearPastUserVerified())
+
+  it("tells a past user their tag is free and names the verified wallet", async () => {
+    const oldWallet = `0x${"ab".repeat(20)}` as Hex
+    saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
+    saveRegistrationTerms(
+      registrationTerms({ deadline: Math.floor((Date.now() + 3 * DAY) / 1000) }),
+    )
+    rememberRegistrationRoute("taga", "past_user")
+    savePastUserVerified({
+      account: oldWallet,
+      tag: "taga",
+      proof: "0x",
+      publicInputs: ["0x", "0x", "0x", "0x"],
+    })
+    await act(async () => {
+      await getPendingStore().upsert(ACCOUNT, {}, record())
+    })
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <ActivationHome />
+        </MemoryRouter>,
+      )
+    })
+    await settleReads()
+    const lede = container.querySelector(".ww-activation__lede")?.textContent
+    expect(lede).toContain("Your own tag, free as a past zk.money user.")
+    expect(lede).toContain("Verified 0x")
   })
 })
 
@@ -659,7 +716,7 @@ describe("SecureNameNoticeCard — the lead line", () => {
     feeWaived: true,
   }
 
-  it("leads with how long the reservation holds while the quote is live", async () => {
+  it("hands the ask how long the reservation holds while the quote is live", async () => {
     const deadline = Math.floor((Date.now() + 3 * DAY) / 1000)
     h.amounts = { min: 45n * 10n ** 17n, fee: 5n * 10n ** 17n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
@@ -669,15 +726,14 @@ describe("SecureNameNoticeCard — the lead line", () => {
     })
     await render()
     await settleReads()
-    const body = notice("secure-name-notice")!
+    const body = notice("deposit-ask")!
     const held = `Reserved until ${formatDateLabel(deadline * 1000)}, ${formatTimeLabel(
       deadline * 1000,
     )}.`
     expect(body).toContain(held)
-    expect(body.indexOf(held)).toBeLessThan(body.indexOf(ASK))
   })
 
-  it("asks without a lead where no deadline holds the quote", async () => {
+  it("asks without a hold where no deadline holds the quote", async () => {
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
     saveRegistrationTerms(registrationTerms({ deadline: 0, feeWaived: false }))
@@ -686,7 +742,7 @@ describe("SecureNameNoticeCard — the lead line", () => {
     })
     await render()
     await settleReads()
-    const body = notice("secure-name-notice")!
+    const body = notice("deposit-ask")!
     expect(body).toContain(ASK)
     expect(body).not.toContain("Reserved until")
     expect(body).not.toContain("$")
@@ -703,11 +759,11 @@ describe("SecureNameNoticeCard — unpublished registration", () => {
         feeWaived: false,
       }),
     )
-  const renderHome = (onActivate: () => void) =>
+  const renderHome = () =>
     act(async () => {
       root.render(
         <MemoryRouter>
-          <SecureNameNoticeCard onActivate={onActivate} />
+          <SecureNameNoticeCard ask={ask} />
         </MemoryRouter>,
       )
     })
@@ -722,16 +778,14 @@ describe("SecureNameNoticeCard — unpublished registration", () => {
       saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
       liveTerms()
       await getPendingStore().upsert(ACCOUNT, {}, record({ broadcast: false, ...over }))
-      const onActivate = vi.fn()
-      await renderHome(onActivate)
+      await renderHome()
       await settleReads()
       const text = container.textContent!
       expect(text).toContain("Activate account")
       expect(text).toContain("Reserved until")
       expect(text).toContain("Your deposit address was not published. Check on it to try again.")
-      expect(text).not.toContain("Send a deposit")
+      expect(notice("deposit-ask")).toBeUndefined()
       await act(async () => container.querySelector("button")!.click())
-      expect(onActivate).not.toHaveBeenCalled()
       expect(h.navigate).toHaveBeenCalledWith("/claim/taga")
     },
   )
@@ -739,19 +793,15 @@ describe("SecureNameNoticeCard — unpublished registration", () => {
   it.each([
     ["published", { broadcast: true }],
     ["still being re-sent in the background", { broadcast: false, retries: 1 }],
-  ])("a registration %s opens the payment sheet", async (_, over) => {
+  ])("a registration %s gets the deposit ask", async (_, over) => {
     h.amounts = { min: 5n * 10n ** 18n, fee: 10n * 10n ** 18n }
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
     liveTerms()
     await getPendingStore().upsert(ACCOUNT, {}, record(over))
-    const onActivate = vi.fn()
-    await renderHome(onActivate)
+    await renderHome()
     await settleReads()
-    expect(container.textContent).toContain(ASK)
+    expect(notice("deposit-ask")).toContain(ASK)
     expect(container.textContent).not.toContain("was not published")
-    await act(async () => container.querySelector("button")!.click())
-    expect(onActivate).toHaveBeenCalledTimes(1)
-    expect(h.navigate).not.toHaveBeenCalled()
   })
 
   it("an unpublished registration past its quote asks for the refresh first", async () => {
@@ -763,12 +813,10 @@ describe("SecureNameNoticeCard — unpublished registration", () => {
       }),
     )
     await getPendingStore().upsert(ACCOUNT, {}, record({ broadcast: false, retries: 3 }))
-    const onActivate = vi.fn()
-    await renderHome(onActivate)
+    await renderHome()
     expect(container.textContent).toContain("Refresh your deposit")
     expect(container.textContent).not.toContain("was not published")
     await act(async () => container.querySelector("button")!.click())
-    expect(onActivate).not.toHaveBeenCalled()
     expect(h.navigate).toHaveBeenCalledWith("/claim/taga")
   })
 })
@@ -787,11 +835,11 @@ describe("SecureNameNoticeCard — swept deposit", () => {
       }),
     )
   }
-  const renderHome = (onActivate: () => void) =>
+  const renderHome = () =>
     act(async () => {
       root.render(
         <MemoryRouter>
-          <SecureNameNoticeCard onActivate={onActivate} />
+          <SecureNameNoticeCard ask={ask} />
         </MemoryRouter>,
       )
     })
@@ -815,43 +863,40 @@ describe("SecureNameNoticeCard — swept deposit", () => {
     },
   )
 
-  // Until a tick promotes the record the sheet confirms the deposit; after, its step follows it.
   it.each([
     // The L1 watcher stamped it; no detection tick has promoted the record yet.
-    ["a deposit the L1 watcher saw", { fundedAt: Date.now() }, "sheet"],
+    ["a deposit the L1 watcher saw", { fundedAt: Date.now() }],
     [
       "a funded claim whose address never published",
       { phase: "funded", fundedAt: Date.now(), broadcast: false },
-      "step",
     ],
-  ] as const)("%s is reported, not asked for again, and opens its %s", async (_, over, opens) => {
-    paidName()
-    await getPendingStore().upsert(ACCOUNT, {}, record(over))
-    const onActivate = vi.fn()
-    await renderHome(onActivate)
-    await settleReads()
-    expectReported()
-    await act(async () => container.querySelector("button")!.click())
-    expect(onActivate).toHaveBeenCalledTimes(opens === "sheet" ? 1 : 0)
-    expect(h.navigate.mock.calls).toEqual(opens === "sheet" ? [] : [["/claim/taga"]])
-  })
+  ] as const)(
+    "%s is reported, not asked for again, and opens its pending step",
+    async (_, over) => {
+      paidName()
+      await getPendingStore().upsert(ACCOUNT, {}, record(over))
+      await renderHome()
+      await settleReads()
+      expectReported()
+      await act(async () => container.querySelector("button")!.click())
+      expect(h.navigate.mock.calls).toEqual([["/claim/taga"]])
+    },
+  )
 
-  it("a swept deposit is neither stale nor unpublished, and still opens the sheet", async () => {
+  it("a swept deposit is neither stale nor unpublished, and opens its pending step", async () => {
     paidName(Math.floor(Date.now() / 1000) - 60)
     await getPendingStore().upsert(
       ACCOUNT,
       {},
       record({ broadcast: false, retries: 3, sweptAt: Date.now(), sweepTxHash: SWEEP }),
     )
-    const onActivate = vi.fn()
-    await renderHome(onActivate)
+    await renderHome()
     await settleReads()
     expectReported()
     expect(container.textContent).not.toContain("Refresh your deposit")
     expect(container.textContent).not.toContain("was not published")
     await act(async () => container.querySelector("button")!.click())
-    expect(onActivate).toHaveBeenCalledTimes(1)
-    expect(h.navigate).not.toHaveBeenCalled()
+    expect(h.navigate).toHaveBeenCalledWith("/claim/taga")
   })
 })
 
@@ -859,7 +904,7 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
   const pendingName = async (over: Partial<PendingRegistrationRecord> = {}) => {
     saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
     await act(async () => {
-      await getPendingStore().upsert(ACCOUNT, {}, record(over))
+      await getPendingStore().upsert(ACCOUNT, over, record(over))
     })
   }
   const ticketTerms = (over: Parameters<typeof ticketBoundTerms>[0] = {}) =>
@@ -879,14 +924,14 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
     await settleReads()
     expect(state()).toBe("missing_link")
     expect(container.textContent).toContain("Open your payment link")
-    expect(container.textContent).not.toContain("Send a deposit")
+    expect(notice("deposit-ask")).toBeUndefined()
 
     stash()
     await render()
     await settleReads()
     expect(state()).toBe("ready")
     expect(container.textContent).toContain("Claim your payment")
-    expect(container.textContent).not.toContain("Send a deposit")
+    expect(notice("deposit-ask")).toBeUndefined()
 
     // The link reopened on a tab that lost its marker is the same link.
     sessionStorage.clear()
@@ -981,15 +1026,14 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
     expect(container.textContent).toContain("was not published")
   })
 
-  it("opens the link's review when the link is on this tab, else the activation prompt", async () => {
+  it("opens the link's review when the link is on this tab, else the pending step", async () => {
     await pendingName()
     ticketTerms()
     stash()
-    const onActivate = vi.fn()
     await act(async () => {
       root.render(
         <MemoryRouter>
-          <SecureNameNoticeCard onActivate={onActivate} />
+          <SecureNameNoticeCard ask={ask} />
         </MemoryRouter>,
       )
     })
@@ -999,16 +1043,14 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
     })
     // The review with the claim's step and status, in the one place that owns the claim.
     expect(takeClaimPromptRequest()).toBe("paylink-frag")
-    expect(onActivate).not.toHaveBeenCalled()
     expect(h.navigate).not.toHaveBeenCalled()
 
-    // Without the link on this tab, the activation prompt says how to get it back.
+    // Without the link on this tab, the pending step says how to get it back.
     sessionStorage.clear()
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-testid="secure-name-notice"]')!.click()
     })
     expect(takeClaimPromptRequest()).toBeNull()
-    expect(onActivate).toHaveBeenCalledOnce()
-    expect(h.navigate).not.toHaveBeenCalled()
+    expect(h.navigate).toHaveBeenCalledWith("/claim/taga")
   })
 })

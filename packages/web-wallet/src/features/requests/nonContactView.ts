@@ -1,6 +1,7 @@
 import type { PaymentRequest } from "@obsidion/front-core"
 import { relativeTimeLabel } from "../../ui/format"
 
+export const REQUESTS_PATH = "/requests"
 /** Not under `/contacts/:idOrTag`: any tag could match that route. */
 export const NON_CONTACT_REQUESTS_PATH = "/requests/non-contacts"
 

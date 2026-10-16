@@ -77,10 +77,12 @@ function requireTarget(record: WithdrawalRecord) {
  * Guard against an escrow that has already been emptied: `deployAndExecute` would no-op and `recoverERC20`
  * would revert, either way costing the user a wallet prompt for nothing.
  */
-async function requireFunded(deps: SwapEscrowExitDeps, escrow: Address): Promise<void> {
-  if ((await deps.reader.daiBalance(escrow)) === 0n) {
-    throw new Error("This swap has already completed. The record will update shortly.")
-  }
+export async function requireFunded(
+  deps: Pick<SwapEscrowExitDeps, "reader">,
+  escrow: Address,
+  ran = "This swap has already completed. The record will update shortly.",
+): Promise<void> {
+  if ((await deps.reader.daiBalance(escrow)) === 0n) throw new Error(ran)
 }
 
 function recordKey(record: WithdrawalRecord): string {
@@ -109,44 +111,60 @@ export async function runSwapEscrowExecute(deps: SwapEscrowExitDeps): Promise<He
   return hash
 }
 
-/** Send the escrow's DAI to `target`, signed by the recovery account. */
-export async function runSwapEscrowRecovery(deps: SwapEscrowRecoveryDeps): Promise<Hex> {
-  const { record, recovery } = deps
-  const target = requireTarget(record)
+/** What an escrow recovery is signed with: everything in `SwapEscrowRecoveryDeps` but the record. */
+export type EscrowRecoverySigning = Omit<SwapEscrowRecoveryDeps, "record" | "store">
 
-  // Fail closed: an account or salt that does not open the commitment is a guaranteed
-  // recovery-commitment-mismatch revert.
+/**
+ * The recovery account's signature over the escrow's `recoverERC20` of its DAI to `deps.target`,
+ * with the nonce and deadline it covers. Fails closed when the account and salt do not open
+ * `recoveryCommitment` (a guaranteed revert) or the escrow holds nothing.
+ */
+export async function signEscrowRecovery(
+  deps: EscrowRecoverySigning,
+  escrow: Address,
+  recoveryCommitment: Hex,
+  /** What the escrow is for, as the refusals name it, and what is said once it has run. */
+  copy: { owner: string; ran?: string } = { owner: "withdrawal" },
+): Promise<{ signature: Hex; nonce: Hex; deadline: bigint }> {
+  const { recovery } = deps
   const commitment = deriveRecoveryCommitment(
     recovery.salt,
     EthAddress.fromString(recovery.account),
   )
-  if (commitment.toString().toLowerCase() !== target.args.recoveryCommitment.toLowerCase()) {
-    throw new Error("This wallet's account is not the recovery account of this withdrawal's escrow")
+  if (commitment.toString().toLowerCase() !== recoveryCommitment.toLowerCase()) {
+    throw new Error(
+      `This wallet's account is not the recovery account of this ${copy.owner}'s escrow`,
+    )
   }
-  await requireFunded(deps, target.escrow)
-
+  await requireFunded(deps, escrow, copy.ran)
   const nonceBytes = deps.makeNonce?.() ?? crypto.getRandomValues(new Uint8Array(32))
   const nonce = `0x${Buffer.from(nonceBytes).toString("hex")}` as Hex
   const deadline = (await deps.chainNow()) + SWAP_ESCROW_RECOVERY_DEADLINE_S
   const digest = escrowERC20RecoveryDigest(
-    target.escrow,
+    escrow,
     BigInt(deps.chainId),
     deps.target,
     deps.dai,
     nonce,
     deadline,
   )
+  return { signature: await deps.signAccount(recovery.account, digest), nonce, deadline }
+}
+
+/** Send the escrow's DAI to `target`, signed by the recovery account. */
+export async function runSwapEscrowRecovery(deps: SwapEscrowRecoveryDeps): Promise<Hex> {
+  const { record, recovery } = deps
+  const target = requireTarget(record)
+  const signed = await signEscrowRecovery(deps, target.escrow, target.args.recoveryCommitment)
   const call = buildSwapEscrowRecoverCall({
     deployed: await deps.reader.isDeployed(target.escrow),
     factory: target.factory,
     escrow: target.escrow,
     commitment: target,
     recovery,
-    signature: await deps.signAccount(recovery.account, digest),
     target: deps.target,
     token: deps.dai,
-    nonce,
-    deadline,
+    ...signed,
   })
 
   logger.log(

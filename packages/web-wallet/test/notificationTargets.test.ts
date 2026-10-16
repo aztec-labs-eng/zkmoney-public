@@ -20,7 +20,9 @@ vi.mock("../src/features/paylink/ticketContinuation", () => ({
 }))
 
 const { notificationRoute } = await import("../src/ui/NotificationsPanel")
-const { detailNoticeFor, findBridgeItem } = await import("../src/ui/screens/useActivityEntries")
+const { bridgeDetailTarget, detailNoticeFor, findBridgeItem, savingsMoveExitOffer } = await import(
+  "../src/ui/screens/useActivityEntries"
+)
 
 const SIPA = "0xAbCdEf0000000000000000000000000000000001"
 
@@ -92,8 +94,8 @@ describe("notification target -> activity detail", () => {
     expect(notificationRoute(entry({ type: "contact.added" }))).toBeNull()
   })
 
-  it("opens the Activity screen for funds left on an old version", () => {
-    expect(notificationRoute(entry({ type: "migration.residuals" }))).toEqual({ to: "/activity" })
+  it("opens the migration dialog, in place, for funds left on an old version", () => {
+    expect(notificationRoute(entry({ type: "migration.residuals" }))).toEqual({ migration: true })
   })
 
   it("opens the claim screen for a registration in flight", () => {
@@ -123,10 +125,70 @@ describe("notification target -> activity detail", () => {
     expect(findBridgeItem(items, { openWithdrawalId: "nope" })).toBeUndefined()
   })
 
+  it("opens a Savings move's burn in the Savings detail its row opens, and a fresh leg as its group", () => {
+    const withdrawal = (record: object) => ({ kind: "bridge.withdrawal", record } as never)
+    expect(
+      bridgeDetailTarget(withdrawal({ localId: "m1", skyMove: { direction: "out" } })),
+    ).toEqual({
+      savings: "m1",
+    })
+    expect(bridgeDetailTarget(withdrawal({ localId: "w2", groupId: "g1" }))).toEqual({
+      withdrawal: "g1",
+    })
+    expect(bridgeDetailTarget(withdrawal({ localId: "w3" }))).toEqual({ withdrawal: "w3" })
+    expect(bridgeDetailTarget(items[1] as never)).toEqual({ deposit: SIPA })
+  })
+
   it("resolves a reorg notice's tx hash to the bridge row it was taken from", () => {
     expect(findBridgeItem(items, { openTxHash: "0xburn" })?.kind).toBe("bridge.withdrawal")
     expect(findBridgeItem(items, { openTxHash: "0xclaim" })?.kind).toBe("bridge.sipaDeposit")
     expect(findBridgeItem(items, { openTxHash: "0xt" })).toBeUndefined()
     expect(findBridgeItem(items, {})).toBeUndefined()
+  })
+})
+
+describe("savingsMoveExitOffer", () => {
+  it("offers a stalled move's finalize in either direction, then the escrow's run once it is funded", () => {
+    const later = Date.now() + 365 * 24 * 3_600_000
+    const sky = {
+      direction: "out",
+      factory: "0x00000000000000000000000000000000000000fa",
+      recipientCommitment: `0x${"02".repeat(32)}`,
+      recoveryCommitment: `0x${"03".repeat(32)}`,
+      relayerTip: "1",
+      nonce: `0x${"01".repeat(32)}`,
+    }
+    const burn = (extra: object) =>
+      ({
+        localId: "w1",
+        l2TxHash: "0xburn",
+        startTime: 0,
+        phaseEnteredAt: 0,
+        skyMove: sky,
+        ...extra,
+      } as never)
+    const move = (direction: "in" | "out", extra: object = {}) =>
+      ({
+        direction,
+        withdrawalLocalId: "w1",
+        escrow: "0x00000000000000000000000000000000000000ee",
+        nonce: sky.nonce,
+        ...extra,
+      } as never)
+    for (const direction of ["in", "out"] as const)
+      expect(savingsMoveExitOffer(move(direction), burn({ phase: "finalizing_l1" }), later)).toBe(
+        "finalize",
+      )
+    expect(savingsMoveExitOffer(move("out"), burn({ phase: "done", endTime: 0 }), later)).toBe(
+      "run",
+    )
+    expect(
+      savingsMoveExitOffer(
+        move("out", { deposit: { inboxIndex: "1", amount: "1", claimed: false } }),
+        burn({ phase: "done", endTime: 0 }),
+        later,
+      ),
+    ).toBeNull()
+    expect(savingsMoveExitOffer(move("in"), burn({ phase: "finalizing_l1" }), 1)).toBeNull()
   })
 })

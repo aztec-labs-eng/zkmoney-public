@@ -57,7 +57,28 @@ describe("scanPayload", () => {
       expect(identity.contacts).toEqual([])
     },
   )
-  it.each(["@ALICE", "alice.zk.money", "https://alice.zk.money", "zkmoney/pay/me/alice"])(
+  it.each([
+    ["https://wallet.zk.money/pay/alice", "/pay/alice"],
+    ["https://wallet.staging.zk.money/pay/Alice/", "/pay/alice"],
+    [`https://wallet.zk.money/pay/alice#${REQUEST_FRAGMENT}`, `/pay/alice#${REQUEST_FRAGMENT}`],
+    ["https://alice.zk.money", "/pay/alice"],
+    ["https://alice.zk.money/", "/pay/alice"],
+  ])("opens the pay page for %s", async (payload, route) => {
+    expect(await scanPayload(payload, identity)).toEqual(destination(route))
+  })
+  it.each([
+    "https://wallet.zk.money/pay/",
+    "https://wallet.zk.money/pay/alice/x",
+    "https://wallet.zk.money/pay/alice?amount=5",
+    `https://wallet.zk.money/pay/alice#${PAYLINK_FRAGMENT}`,
+    "https://wallet.zk.money/pay/-alice",
+  ])("refuses a malformed pay link: %s", async (payload) => {
+    expect(await scanPayload(payload, identity)).toMatchObject({
+      kind: "error",
+      message: expect.stringContaining("pay link"),
+    })
+  })
+  it.each(["@ALICE", "alice.zk.money", "zkmoney/pay/me/alice"])(
     "seeds existing search for an unsaved tag without writing: %s",
     async (payload) => {
       expect(await scanPayload(payload, identity)).toEqual(
@@ -100,7 +121,13 @@ describe("scanPayload", () => {
       expect(await scanPayload(`@${contact.tag}`, { ...identity, contacts: [contact] })).toEqual(destination("/contacts", { searchTag: contact.tag }))
     }
   })
-  it.each(["@bob", identity.ownL2Address, CONNECT_LINK])("rejects self scans", async (payload) => {
+  it.each([
+    "@bob",
+    identity.ownL2Address,
+    CONNECT_LINK,
+    "https://wallet.zk.money/pay/bob",
+    "https://bob.zk.money",
+  ])("rejects self scans", async (payload) => {
     expect(
       await scanPayload(payload, {
         ...identity,
