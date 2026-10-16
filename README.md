@@ -1,6 +1,6 @@
 # zk.money wallet
 
-Source of the zk.money web wallet and the zk.money Desktop app. This tree builds the release that runs on mainnet today: config profile `prod-v5`, Oxide label v6 (Oxide commit `37b9dac97`), Aztec `5.2.0`.
+Source of the zk.money web wallet and the zk.money Desktop app. This tree builds the release that runs on mainnet today: config profile `prod-v5`, Oxide label v6 (Oxide commit `18def5023`), Aztec `5.2.0`.
 
 ## Layout
 
@@ -11,7 +11,7 @@ Source of the zk.money web wallet and the zk.money Desktop app. This tree builds
 | `packages/core`, `contracts`, `sdk`, `front-core` | The wallet stack: shared types, Noir contracts, contract calls, and app logic. |
 | `packages/config-client`, `passkey-web`, `design-system`, `proving-progress`, `metrics-policy` | Libraries that the wallet imports. |
 | `packages/oxide-build` | Builds the vendored Oxide packages. |
-| `vendor/oxide` | The subset of Oxide that the wallet needs, the files for an enclave host, the relayer source, and the refund and resolver circuits, at commit `37b9dac97`. |
+| `vendor/oxide` | The subset of Oxide that the wallet needs, the files for an enclave host, the relayer source, and the refund and resolver circuits, at commit `18def5023`. |
 
 ## Prerequisites
 
@@ -21,7 +21,8 @@ Source of the zk.money web wallet and the zk.money Desktop app. This tree builds
 | pnpm | 9.14.4 (`corepack enable`) |
 | Yarn | 4 (`corepack` supplies it for `vendor/oxide/l1-contracts`) |
 | Foundry (`forge`) | 1.4 or later |
-| Aztec toolchain | 5.2.0 (`aztec`, `aztec-nargo`) |
+| Aztec toolchain | 5.2.0 (`aztec`, `aztec-nargo`, `aztec-bb`) |
+| jq | any |
 | rsync, bash | any; macOS and Linux have them |
 | Google Chrome | any; the desktop app opens the installed Chrome (or set `CHROME_PATH`) |
 
@@ -34,8 +35,10 @@ git clone --recursive <this repo>
 cd zkmoney-public
 pnpm install --frozen-lockfile
 pnpm build-contracts        # Noir contracts, Oxide build, then the contracts package
-pnpm build:web-deps
+OXIDE_REFUND_CIRCUITS=required pnpm build:web-deps
 ```
+
+`OXIDE_REFUND_CIRCUITS=required` compiles the three Oxide refund circuits. The wallet uses them to move funds out of a frozen deployment, and it refuses a stub. Without the variable, the dependency build writes stubs. The tests can use the stubs.
 
 You must supply three values yourself: an Aztec mainnet node URL (`VITE_NODE_URL`), its API key if the node needs one (`VITE_NODE_API_KEY`), and an Ethereum mainnet RPC URL (`VITE_L1_RPC_URL`). The example files hold all other mainnet values.
 
@@ -87,7 +90,7 @@ The wallet sends signature requests to the Oxide enclave at the `enclaveUrl` in 
 | `vendor/oxide/enclave/systemd/oxide-tee-enclave.service` | Starts the EIF with `nitro-cli`. |
 | `vendor/oxide/enclave/systemd/oxide-tee-proxy.service` | Starts the HTTP front end on port 8080. |
 
-This repository does not build the EIF. The EIF build is in the Oxide repository at commit `37b9dac97`. The portal accepts an enclave only if the portal owner approved its PCR0. Each new enclave must also be registered: `OxidePortal.registerTee` on L1, then the L2 consume into the token's `approved_signers`. The Oxide repository does this in `yarn-project/deploy-lib/src/register_instance.ts`.
+This repository does not build the EIF. The EIF build is in the Oxide repository at commit `18def5023`. The portal accepts an enclave only if the portal owner approved its PCR0. Each new enclave must also be registered: `OxidePortal.registerTee` on L1, then the L2 consume into the token's `approved_signers`. The Oxide repository does this in `yarn-project/deploy-lib/src/register_instance.ts`.
 
 On a Nitro-capable EC2 instance with `nitro-cli`, `socat` and Node.js 24:
 
@@ -103,7 +106,7 @@ To make the wallet use this host, set the enclave URL in the endpoint editor on 
 
 ## Relayer
 
-`vendor/oxide/yarn-project/oxide-relayer` is the Oxide relayer. It completes L1 operations for users, so that users do not need ETH for gas. `vendor/oxide/yarn-project/telemetry` and `vendor/oxide/yarn-project/watcher-lib` are its Oxide dependencies. These packages are copies from Oxide commit `37b9dac97`, without the relayer `Dockerfile`.
+`vendor/oxide/yarn-project/oxide-relayer` is the Oxide relayer. It completes L1 operations for users, so that users do not need ETH for gas. `vendor/oxide/yarn-project/telemetry` and `vendor/oxide/yarn-project/watcher-lib` are its Oxide dependencies. These packages are copies from Oxide commit `18def5023`, without the relayer `Dockerfile`.
 
 To build the relayer, clone the repository and run `pnpm install --frozen-lockfile` as in [Build](#build). Then run:
 
@@ -134,7 +137,7 @@ To compile the circuits and check them against the verifiers, run [Build](#build
 pnpm build:oxide-circuits
 ```
 
-For each circuit, the script writes `target/<circuit>.json` and the vk in `target/keys/vk`. It then generates a Solidity verifier from the vk. The script fails if this verifier is not the same as the verifier in the table. `@oxide/refund-proof` reads the compiled refund circuits from `target/`.
+For each circuit, the script writes `target/<circuit>.json` and the vk in `target/keys/vk`. It then generates a Solidity verifier from the vk. The script fails if this verifier is not the same as the verifier in the table. `@oxide/refund-proof` reads the compiled refund circuits from `target/`. `OXIDE_REFUND_CIRCUITS=required pnpm build:web-deps` also compiles the refund circuits, but it does not compare them with the verifiers.
 
 ## Tests
 
