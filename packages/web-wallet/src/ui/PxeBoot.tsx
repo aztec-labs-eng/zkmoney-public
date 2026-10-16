@@ -12,21 +12,23 @@ import {
 import { readPortalChainIdentity } from "@obsidion/sdk"
 import { L1RpcSimulationUnsupportedError, assertL1RpcSimulates } from "@obsidion/core/oxide"
 import type { ChainIdentity } from "@obsidion/core/types"
-import { Spinner } from "@obsidion/web-ds"
 import type { ReactNode } from "react"
 import type { AztecNode } from "@aztec/aztec.js/node"
-import type { AztecSQLiteOPFSStore } from "@aztec/kv-store/sqlite-opfs"
+import { SqliteCorruptionError, type AztecSQLiteOPFSStore } from "@aztec/kv-store/sqlite-opfs"
 import type { Hex } from "viem"
-import { createContext, useCallback, useContext, useEffect, useState } from "react"
+import { useLocation } from "react-router-dom"
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useState } from "react"
 import { getConfig, type WebWalletConfig } from "../config/env"
 import { l1PublicClient } from "../config/oxideTuple"
-import { showReportableError } from "../errors/errorModal"
+import { outOfMemoryCopy, showReportableError } from "../errors/errorModal"
+import { loadWalletIdentity } from "../features/identity/walletIdentity"
 import { networkHasSwapStack } from "../features/withdraw/freshAddressAvailability"
 import { fireEvent } from "../lib/analytics"
 import { isActiveTab } from "../platform/storage/activeTab"
 import { reloadPage } from "../platform/storage/walletStorage"
 
-type BootStatus = "booting" | "ready" | "error"
+/** `idle`: the boot waits for a screen that needs it (`bootWaitsForDemand`). */
+type BootStatus = "idle" | "booting" | "ready" | "error"
 
 export type BootErrorKind =
   | "mismatch"
@@ -34,6 +36,7 @@ export type BootErrorKind =
   | "l1-unavailable"
   | "l1-rpc-no-simulate"
   | "unreachable"
+  | "corrupt"
   | "other"
 
 /** Why the boot stopped, worded for the persistent error screen. */
@@ -50,11 +53,14 @@ interface PxeBootState {
   bootError?: BootError
   /** Retry a failed boot, by reloading the page. */
   retryBoot: () => void
+  /** Start an idle boot. */
+  demandBoot: () => void
 }
 
 const PxeBootContext = createContext<PxeBootState>({
   bootStatus: "booting",
   retryBoot: () => {},
+  demandBoot: () => {},
 })
 
 export function usePxeBoot() {
@@ -83,12 +89,22 @@ function assertProfileAgrees(config: WebWalletConfig, identity: ChainIdentity): 
   throw new ProfileRollupSkewError(skew.profile, skew.l1)
 }
 
-/** The node did not answer `getNodeInfo()`; the transport error rides as `cause`. */
+/** The node did not answer a request; the transport error rides as `cause`. */
 class NodeUnreachableError extends Error {
   constructor(cause: unknown) {
-    super("node did not answer getNodeInfo", { cause })
+    super("node did not answer", { cause })
     this.name = "NodeUnreachableError"
   }
+}
+
+function isNodeFetchFailure(e: unknown): boolean {
+  const rpcError = e instanceof Error ? e.cause : undefined
+  return (
+    typeof rpcError === "object" &&
+    rpcError !== null &&
+    "data" in rpcError &&
+    rpcError.data instanceof Error
+  )
 }
 
 function identityFromNode(info: NodeIdentityInfo): ChainIdentity {
@@ -115,6 +131,21 @@ function withinDeadline<T>(read: Promise<T>, what: string): Promise<T> {
 }
 
 /**
+ * The L1 and node reads `verifiedIdentity` judges. They fire no events, so a boot can start them
+ * before consent is bound.
+ */
+export function identityReads(config: WebWalletConfig, node: AztecNode) {
+  return Promise.allSettled([
+    readPortalChainIdentity(
+      l1PublicClient(config),
+      config.oxideProfile.portal as Hex,
+      config.l1ChainId,
+    ),
+    withinDeadline(node.getNodeInfo(), "getNodeInfo"),
+  ])
+}
+
+/**
  * The identity the wallet boots on. L1 is the source and the node must agree with it. Only the
  * default node may boot on its own answers, and only when L1 yields no identity at all and the
  * node names this network's chain: a wrong-chain RPC or a disagreeing node refuses whichever node
@@ -123,15 +154,9 @@ function withinDeadline<T>(read: Promise<T>, what: string): Promise<T> {
 export async function verifiedIdentity(
   config: WebWalletConfig,
   node: AztecNode,
+  reads = identityReads(config, node),
 ): Promise<ChainIdentity> {
-  const [l1, info] = await Promise.allSettled([
-    readPortalChainIdentity(
-      l1PublicClient(config),
-      config.oxideProfile.portal as Hex,
-      config.l1ChainId,
-    ),
-    withinDeadline(node.getNodeInfo(), "getNodeInfo"),
-  ])
+  const [l1, info] = await reads
   // A wrong-chain RPC is the more specific finding, whatever the node did.
   if (l1.status === "rejected" && l1.reason instanceof PortalIdentityMismatchError) throw l1.reason
   if (info.status === "rejected") throw new NodeUnreachableError(info.reason)
@@ -179,6 +204,8 @@ function bootOnce(
       proverEnabled: getConfig().proverEnabled,
       store,
       chainIdentity: identity,
+    }).catch((e: unknown) => {
+      throw isNodeFetchFailure(e) ? new NodeUnreachableError(e) : e
     })
     fireEvent("pxe_boot_completed", {
       duration_ms: Math.round(performance.now() - bootStartedAt),
@@ -198,7 +225,10 @@ function shownL1Rpc(config: WebWalletConfig): string {
   }
 }
 
-/** Titles name the endpoint at fault — the node, or the L1 RPC — so the user knows which to change. */
+const isCorrupt = (e: unknown): boolean =>
+  e instanceof SqliteCorruptionError || (e instanceof AggregateError && e.errors.some(isCorrupt))
+
+/** A title names the endpoint at fault, when the boot knows it, so the user knows which to change. */
 export function describeBootError(e: unknown): BootError {
   if (e instanceof NodeIdentityMismatchError) {
     // The chain id is the network's constant, which L1 need not have answered.
@@ -255,10 +285,20 @@ export function describeBootError(e: unknown): BootError {
   if (e instanceof NodeUnreachableError) {
     return {
       kind: "unreachable",
-      title: `The node at ${getConfig().nodeUrl} did not answer`,
-      message: "Check the URL and your connection, then retry.",
+      title: "zk.money cannot reach the network",
+      message: "Check your internet connection, then retry.",
     }
   }
+  if (isCorrupt(e)) {
+    return {
+      kind: "corrupt",
+      title: "zk.money's data on this browser is damaged",
+      message:
+        "The wallet cannot read its database here, and retrying does not repair it. To use zk.money on this browser again, clear its wallet data.",
+    }
+  }
+  const outOfMemory = outOfMemoryCopy(e)
+  if (outOfMemory) return { kind: "other", title: outOfMemory.title, message: outOfMemory.message }
   return {
     kind: "other",
     title: "zk.money failed to start",
@@ -284,7 +324,11 @@ export function reportBootFailure(
   // The inline copy names no cause; devtools keeps the transport error.
   if (e instanceof NodeUnreachableError) console.error(e.message, e.cause)
   // The identity refusals render in place with their exits.
-  if (kind === "other") showReportableError(e, "pxe:boot", { title })
+  if (kind === "other")
+    showReportableError(e, "pxe:boot", {
+      title,
+      retry: { label: "Reload page", run: () => void reloadPage() },
+    })
 }
 
 /** The store the active tab opened for the PXE, or none in demo mode, which boots no PXE. */
@@ -300,6 +344,18 @@ export type PxeBootTarget =
       /** Opens of the store it took. */
       attempts: number
     }
+
+/** The pay page, and the older request-link entry. */
+export const isPayPath = (pathname: string): boolean =>
+  /^\/(?:pay\/[^/]+|request)\/?$/.test(pathname)
+
+/**
+ * A signed-out visitor on a pay page shows nothing the PXE serves, so the boot waits until a screen
+ * needs it. Reads the wallet database, so only once it is open.
+ */
+export function bootWaitsForDemand(pathname = location.pathname): boolean {
+  return isPayPath(pathname) && !loadWalletIdentity()
+}
 
 /**
  * Kicks off PXE init on the store the active tab opened. MUST sit inside ObsidionCoreProvider but
@@ -317,7 +373,10 @@ export function PxeBootProvider({
   children: ReactNode
 }) {
   const { currentNetwork, initializePXE } = useAztecContext()
-  const [state, setState] = useState<Omit<PxeBootState, "retryBoot">>({ bootStatus: "booting" })
+  const [demanded, setDemanded] = useState(() => pxeBoot.kind === "demo" || !bootWaitsForDemand())
+  const [state, setState] = useState<Omit<PxeBootState, "retryBoot" | "demandBoot">>({
+    bootStatus: demanded ? "booting" : "idle",
+  })
 
   useEffect(() => {
     // Demo mode opens no store and boots no PXE — its fixtures are already in storage.
@@ -327,7 +386,8 @@ export function PxeBootProvider({
     }
     // initializePXE silently no-ops until AztecProvider has loaded the network
     // from storage — wait for it or the boot "succeeds" with no wallet.
-    if (!currentNetwork) return
+    if (!currentNetwork || !demanded) return
+    setState((s) => (s.bootStatus === "idle" ? { bootStatus: "booting" } : s))
     let cancelled = false
     bootOnce(initializePXE, node, pxeBoot)
       // A tab another tab took over while this one booted publishes nothing: it is reloading, and
@@ -342,42 +402,96 @@ export function PxeBootProvider({
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- boot once the network is known
-  }, [currentNetwork])
+  }, [currentNetwork, demanded])
 
   // A failed boot may have half-built the wallet's services, which live for the page.
   const retryBoot = useCallback(() => void reloadPage(), [])
+  const demandBoot = useCallback(() => setDemanded(true), [])
 
   return (
-    <PxeBootContext.Provider value={{ ...state, retryBoot }}>{children}</PxeBootContext.Provider>
+    <PxeBootContext.Provider value={{ ...state, retryBoot, demandBoot }}>
+      {children}
+    </PxeBootContext.Provider>
   )
 }
 
+/** Inside the router: demands the boot on any route where it does not wait. */
+export function BootDemand() {
+  const { pathname } = useLocation()
+  const { bootStatus, demandBoot } = usePxeBoot()
+  useEffect(() => {
+    if (bootStatus === "idle" && !bootWaitsForDemand(pathname)) demandBoot()
+  }, [bootStatus, pathname, demandBoot])
+  return null
+}
+
+const mountedSplashes: { inShell: boolean }[] = []
+let bootScreenShown = false
+let splashWatch: number | undefined
+let splashLeaving: ReturnType<typeof setTimeout> | undefined
+
+/** The splash's fade in index.html. */
+const SPLASH_FADE_MS = 200
+/** Longest the splash waits, with no copy mounted, for the next screen to show anything. */
+const SPLASH_MAX_WAIT_MS = 3_000
+
+const VISUALLY_HIDDEN = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  overflow: "hidden",
+  clipPath: "inset(50%)",
+  whiteSpace: "nowrap",
+} as const
+
+function showSplash(): void {
+  cancelAnimationFrame(splashWatch ?? 0)
+  clearTimeout(splashLeaving)
+  delete document.body.dataset.bootLeaving
+  // Until the first screen, every wait is the boot screen; after it, a shell's wait keeps the shell.
+  const full = !bootScreenShown || mountedSplashes.some((copy) => !copy.inShell)
+  document.body.dataset.booting = full ? "full" : "shell"
+}
+
 /**
- * The wait before any screen exists. Several gates can show it in turn on one cold load, so it
- * owns its surface and fills the viewport itself: identical in each, on the same background the
- * document already paints, which is what makes the hand-offs read as one spinner rather than
- * several on moving ground. `inShell` is the same wait inside a mounted shell, whose canvas is
- * already on screen: it fills the content column and paints no surface of its own.
+ * The last copy has gone, but the next stage may still be a render or a redirect away from showing
+ * anything. The splash stays until the page has text to show, then fades.
+ */
+function releaseSplash(): void {
+  const since = performance.now()
+  const watch = () => {
+    const root = document.getElementById("root")
+    const shown = (root?.innerText ?? root?.textContent ?? "").trim() !== ""
+    if (!shown && performance.now() - since < SPLASH_MAX_WAIT_MS) {
+      splashWatch = requestAnimationFrame(watch)
+      return
+    }
+    bootScreenShown = true
+    document.body.dataset.bootLeaving = ""
+    splashLeaving = setTimeout(() => {
+      delete document.body.dataset.booting
+      delete document.body.dataset.bootLeaving
+    }, SPLASH_FADE_MS)
+  }
+  splashWatch = requestAnimationFrame(watch)
+}
+
+/**
+ * The wait before any screen exists. It draws nothing itself: while any copy is mounted, the document
+ * keeps up the boot screen index.html paints before any script runs. That one element spins from
+ * first paint to the first screen, so a hand-off between gates never restarts or moves it.
+ * `inShell` is a wait inside a mounted shell, which after the first screen keeps the shell in view.
  */
 export function BootSplash({ inShell = false }: { inShell?: boolean }) {
-  return (
-    <div
-      style={{
-        flex: 1,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 16,
-        // In the shell the outlet is a plain block, so `flex: 1` gives no height: pin the spinner to
-        // the viewport centre instead, where the full-page splash before it sat.
-        ...(inShell
-          ? { position: "fixed", inset: 0, pointerEvents: "none" }
-          : { minHeight: "100dvh", background: "var(--surface-dark)" }),
-      }}
-    >
-      <Spinner size={28} />
-      <span style={{ color: "var(--text-secondary)" }}>Loading zk.money…</span>
-    </div>
-  )
+  useLayoutEffect(() => {
+    const copy = { inShell }
+    mountedSplashes.push(copy)
+    showSplash()
+    return () => {
+      mountedSplashes.splice(mountedSplashes.indexOf(copy), 1)
+      if (mountedSplashes.length > 0) showSplash()
+      else releaseSplash()
+    }
+  }, [inShell])
+  return <span style={VISUALLY_HIDDEN}>Loading zk.money…</span>
 }

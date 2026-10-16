@@ -11,6 +11,7 @@ import { computeSiloedPrivateInitializationNullifier } from "@aztec/stdlib/hash"
 import { MerkleTreeId } from "@aztec/stdlib/trees"
 import { TxHash } from "@aztec/stdlib/tx"
 import type { ContractName } from "@obsidion/contracts"
+import { escrowInstancesForClasses } from "./paylinkEscrow.js"
 import {
   deriveDeterministicPaylinkKeys,
   MAX_PAYLINK_NONCES_PER_DAY,
@@ -36,15 +37,17 @@ export interface RecoveredPaylinkEscrow {
 
 /**
  * Enumerate every escrow a creator ever made from the master secret alone: derive the
- * `(day, n, flavor)` key grid, compute each candidate's counterfactual address (zero `initHash`,
- * keys as the only variable input) and probe its private initialization nullifier — public tree
- * data, no notes, no logs, no local state.
+ * `(day, n, flavor)` key grid, compute each candidate's counterfactual address under the artifact's
+ * class and each of `classIds` (zero `initHash`, keys and class as the only variable inputs) and
+ * probe its private initialization nullifier — public tree data, no notes, no logs, no local state.
  */
 // ponytail: cost is linear in days scanned (~64 derivations + 1 batched RPC per day, empty or not);
 // narrow the window with a per-account start day before this matters.
 export async function scanPaylinkEscrows(args: {
   node: PaylinkScanNode
   artifact: ContractArtifact
+  /** Other classes the flavor has had; their escrows at the same slots are found too. */
+  classIds?: string[]
   flavor: ContractName
   masterSecret: Fr
   fromDay: number
@@ -56,16 +59,18 @@ export async function scanPaylinkEscrows(args: {
   const hits: RecoveredPaylinkEscrow[] = []
 
   for (let day = fromDay; day <= toDay; day++) {
-    const candidates = await Promise.all(
+    const slots = await Promise.all(
       Array.from({ length: noncesPerDay }, async (_, n) => {
         const keys = await deriveDeterministicPaylinkKeys(masterSecret, day, n, flavor)
         const instance = await getContractInstanceFromInstantiationParams(artifact, {
           salt: new Fr(0n),
           publicKeys: keys.publicKeys,
         })
-        return { n, keys, instance }
+        const instances = await escrowInstancesForClasses(instance, args.classIds ?? [])
+        return instances.map((escrow) => ({ n, keys, instance: escrow }))
       }),
     )
+    const candidates = slots.flat()
 
     const nullifiers = await Promise.all(
       candidates.map(({ instance }) =>
@@ -125,8 +130,14 @@ export async function findEscrowDepositTx(
     instance.address,
     instance.initializationHash,
   )
-  const [leaf] = await node.findLeavesIndexes("latest", MerkleTreeId.NULLIFIER_TREE, [initNullifier])
+  const [leaf] = await node.findLeavesIndexes("latest", MerkleTreeId.NULLIFIER_TREE, [
+    initNullifier,
+  ])
   if (leaf?.data === undefined) return undefined
-  const escrow = { address: instance.address, initHash: instance.initializationHash, l2BlockNumber: leaf.l2BlockNumber }
+  const escrow = {
+    address: instance.address,
+    initHash: instance.initializationHash,
+    l2BlockNumber: leaf.l2BlockNumber,
+  }
   return { txHash: await findDepositTxHash(node, escrow), l2BlockNumber: leaf.l2BlockNumber }
 }

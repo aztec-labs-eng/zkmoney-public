@@ -45,8 +45,16 @@ vi.mock("../src/features/contacts/SendScreen", () => ({ SendScreen: () => null }
 vi.mock("../src/features/contacts/ContactDetailScreen", () => ({ ContactDetailScreen: () => null }))
 vi.mock("../src/features/contacts/PayAmountForm", () => ({ PayAmountForm: () => null }))
 vi.mock("../src/features/contacts/PayConfirmForm", () => ({
-  PayConfirmForm: ({ onConfirm }: { onConfirm: () => void }) => (
-    <button onClick={onConfirm}>Send</button>
+  PayConfirmForm: ({
+    onConfirm,
+    payee,
+  }: {
+    onConfirm: () => void
+    payee?: { savesContact: boolean }
+  }) => (
+    <button data-saves={String(payee?.savesContact)} onClick={onConfirm}>
+      Send
+    </button>
   ),
 }))
 
@@ -181,6 +189,8 @@ describe("saving the requester on a fulfilling send", () => {
     await act(async () => root.unmount())
     root = createRoot(container)
     await renderPay()
+    // The confirm step says so before the send.
+    expect(container.querySelector("button")?.dataset.saves).toBe(String(save))
     m.pay.mockResolvedValue({ txHash: "0xsend" })
     await click("Send")
     expect(m.pay.mock.calls[0]![0]).toMatchObject({ saveUnsavedRequester: save })

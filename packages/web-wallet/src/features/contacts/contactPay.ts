@@ -136,11 +136,29 @@ async function sendToContactFlow(
     throw new Error(`@${args.tag} no longer matches this payment request — payment cancelled`)
   }
   const contact = { name: args.tag, address: resolved.l2Address, verified: true, tag: args.tag }
+  let added = false
   if (args.saveContact) {
-    await ContactStorage.get()
-      .addOrMergeContact({ ...contact, autoAdded: true })
-      .catch(console.warn)
+    const unapproved = { ...contact, autoAdded: true }
+    added =
+      (await ContactStorage.get().addOrMergeContact(unapproved).catch(console.warn)) === unapproved
   }
+  return sendResolved(operationId, deps, args, resolved.l2Address, onStage).catch(async (err) => {
+    // A send that may still land keeps the row; one that cannot takes back the row it added.
+    if (added && !(err instanceof TxInFlightError)) {
+      await ContactStorage.get().removeEntry({ address: contact.address }).catch(console.warn)
+    }
+    throw err
+  })
+}
+
+async function sendResolved(
+  operationId: string,
+  deps: ContactPayDeps,
+  args: Parameters<typeof sendToContactFlow>[2],
+  l2Address: string,
+  onStage: (stage: PayStage) => void,
+): Promise<{ txHash: string }> {
+  const contact = { name: args.tag, address: l2Address, verified: true, tag: args.tag }
   const [sponsor, token, resolveSpendMetadata] = await Promise.all([
     claimSponsorContext(deps, RAIL_REGISTERED),
     deps.tokenService.fetchTokenInformation(),
@@ -167,7 +185,7 @@ async function sendToContactFlow(
     rowToken,
     "pending",
     undefined,
-    resolved.l2Address,
+    l2Address,
     operationId,
     undefined,
     args.note,
@@ -194,7 +212,7 @@ async function sendToContactFlow(
   let result
   try {
     result = await deps.tokenService.sendTokenSponsored(
-      AztecAddress.fromStringUnsafe(resolved.l2Address),
+      AztecAddress.fromStringUnsafe(l2Address),
       args.amountDisplay,
       sponsor,
       {

@@ -2,7 +2,6 @@
 import { Network } from "@obsidion/sdk"
 import { DEFAULT_FPC_REFUEL_THRESHOLD, MAINNET_CLAIM_FPC_FLOAT } from "@obsidion/core/constants"
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { assertCampaignEnv, campaignOriginFrom } from "../src/config/campaignOrigin"
 import { getConfig, loadConfig } from "../src/config/env"
 
 afterEach(() => {
@@ -66,6 +65,19 @@ describe("loadConfig", () => {
       expect(loadConfig(sandboxEnv).enclaveUrl).toBe("/svc/enclave")
     })
 
+    it("gives Savings its own enclave: its sandbox proxy, or the manifest's URL off sandbox", () => {
+      expect(loadConfig(sandboxEnv).savingsEnclaveUrl).toBe("/svc/enclave-sky")
+      expect(loadConfig(testnetEnv).savingsEnclaveUrl).toBe("")
+      expect(
+        loadConfig({ ...testnetEnv, VITE_SAVINGS_ENCLAVE_URL: "/svc/enclave-sky" })
+          .savingsEnclaveUrl,
+      ).toBe("/svc/enclave-sky")
+      // Main's override does not move Savings.
+      expect(loadConfig({ ...sandboxEnv, VITE_ENCLAVE_URL: "/x" }).savingsEnclaveUrl).toBe(
+        "/svc/enclave-sky",
+      )
+    })
+
     it("honors an explicit proxy override for a CORS-free tier", () => {
       expect(loadConfig({ ...testnetEnv, VITE_ENCLAVE_URL: "/svc/enclave" }).enclaveUrl).toBe(
         "/svc/enclave",
@@ -95,59 +107,14 @@ describe("loadConfig", () => {
     })
   })
 
-  describe("the campaign and its admission gate", () => {
-    it("no campaign: gate off", () => {
-      const config = loadConfig(testnetEnv)
-      expect(config.campaignUrl).toBe("")
-      expect(config.admissionGate).toBe(false)
-    })
-
-    it("a campaign URL arms nothing by itself", () => {
+  describe("the campaign", () => {
+    it("names no campaign, whatever the env bakes", () => {
       const config = loadConfig({
         ...testnetEnv,
-        VITE_CAMPAIGN_URL: "https://launch.staging.zk.money/some/path/",
+        VITE_CAMPAIGN_URL: "http://launch.staging.zk.money",
+        VITE_ADMISSION_GATE: "true",
       })
-      expect(config.campaignUrl).toBe("https://launch.staging.zk.money/some/path/")
-      expect(config.admissionGate).toBe(false)
-    })
-
-    it("the flag arms nothing: entry asks no waitlist even with a campaign", () => {
-      expect(
-        loadConfig({
-          ...testnetEnv,
-          VITE_CAMPAIGN_URL: "https://launch.staging.zk.money",
-          VITE_ADMISSION_GATE: "true",
-        }).admissionGate,
-      ).toBe(false)
-      expect(
-        loadConfig({ VITE_CAMPAIGN_URL: "http://localhost:3000", VITE_ADMISSION_GATE: "true" })
-          .admissionGate,
-      ).toBe(false)
-    })
-
-    it("a plain-http campaign refuses to load", () => {
-      expect(() =>
-        loadConfig({ ...testnetEnv, VITE_CAMPAIGN_URL: "http://launch.staging.zk.money" }),
-      ).toThrow(/https/)
-    })
-
-    it("only an https campaign, or a local one, is an origin the bridge may trust", () => {
-      expect(campaignOriginFrom(undefined)).toBe("")
-      expect(campaignOriginFrom("https://launch.staging.zk.money/path/")).toBe(
-        "https://launch.staging.zk.money",
-      )
-      expect(campaignOriginFrom("http://localhost:3000/")).toBe("http://localhost:3000")
-      for (const bad of [
-        "http://launch.staging.zk.money",
-        "http://127.0.0.1:3000",
-        "data:text/html,hi",
-        "file:///tmp/x.html",
-        "about:blank",
-      ]) {
-        expect(() => campaignOriginFrom(bad), bad).toThrow(/https/)
-      }
-      expect(() => campaignOriginFrom("launch.staging.zk.money")).toThrow(/not a URL/)
-      expect(() => assertCampaignEnv({ VITE_CAMPAIGN_URL: "http://evil.example" })).toThrow(/https/)
+      expect(config.campaignUrl).toBe("")
     })
   })
 
@@ -207,7 +174,6 @@ describe("loadConfig", () => {
       )
       expect(loadConfig({ VITE_NETWORK: "mainnet", ...screened }).rpId).toBe("localhost")
     })
-
   })
 
   describe("predicate screening config", () => {

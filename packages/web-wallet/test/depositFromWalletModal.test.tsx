@@ -33,6 +33,7 @@ type DepositParams = {
   onStage?: (stage: string) => void
   preflight: (fresh: { feeDisplay: string }) => Promise<void>
   beforeApprove?: (submission: string) => Promise<void>
+  record?: boolean
 }
 const deposit = vi.fn(async (_params: DepositParams) => ({
   txHash: "0x01",
@@ -177,6 +178,7 @@ async function render(
   pick = token,
   /** `null`: no valuation for this token. */
   valuation: UsdValuation | null = NOMINAL_USD_VALUATION,
+  paying: { payee?: string; fixedAmount?: string } = {},
 ) {
   await act(async () => {
     root.render(
@@ -193,6 +195,7 @@ async function render(
         onFeeChanged={onFeeChanged}
         onApproving={onApproving}
         onNotApproved={onNotApproved}
+        {...paying}
       />,
     )
   })
@@ -267,6 +270,45 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount())
   container.remove()
+})
+
+describe("DepositFromWalletModal paying someone else", () => {
+  const confirm = async () => {
+    await act(async () => button("Continue").click())
+    await act(async () => button("Confirm payment").click())
+    await settleReads()
+  }
+
+  it("sends exactly a fixed request's amount plus the fee, which the payer cannot change", async () => {
+    checkedDeposit()
+    await render("0.5", token, NOMINAL_USD_VALUATION, { payee: "river", fixedAmount: "2.25" })
+    const input = container.querySelector("input")!
+    expect(input.value).toBe("2.25")
+    expect(input.readOnly).toBe(true)
+    await confirm()
+    expect(transfer).toHaveBeenCalledWith("2.75")
+    expect(deposit.mock.calls[0][0].record).toBe(false)
+  })
+
+  it("lets the payer type an open request's amount", async () => {
+    checkedDeposit()
+    await render("0.5", token, NOMINAL_USD_VALUATION, { payee: "river" })
+    expect(container.querySelector("input")!.readOnly).toBe(false)
+    await type("3")
+    await confirm()
+    expect(transfer).toHaveBeenCalledWith("3.5")
+    expect(deposit.mock.calls[0][0].record).toBe(false)
+  })
+
+  it("records the wallet's own deposit", async () => {
+    checkedDeposit()
+    await render("0.5")
+    await type("3")
+    await act(async () => button("Deposit funds").click())
+    await act(async () => button("Confirm deposit").click())
+    await settleReads()
+    expect(deposit.mock.calls[0][0].record).toBe(true)
+  })
 })
 
 describe("DepositFromWalletModal", () => {

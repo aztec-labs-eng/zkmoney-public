@@ -39,13 +39,22 @@ export function TopNavIconButton({
   icon,
   onClick,
   ariaLabel,
+  disabled,
+  testId,
 }: {
   icon: string
   onClick?: () => void
   ariaLabel?: string
+  disabled?: boolean
+  testId?: string
 }) {
   return (
-    <GlassCircleButton onClick={onClick ?? (() => {})} ariaLabel={ariaLabel ?? icon}>
+    <GlassCircleButton
+      onClick={onClick ?? (() => {})}
+      ariaLabel={ariaLabel ?? icon}
+      disabled={disabled}
+      testId={testId}
+    >
       <Icon name={icon} size={16} color="#fff" />
     </GlassCircleButton>
   )

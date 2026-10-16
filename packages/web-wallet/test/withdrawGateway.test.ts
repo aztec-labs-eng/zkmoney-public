@@ -450,7 +450,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
       },
     ])
 
-    const rebuilt = await rescanWithdrawals(d.wallet, d.tokenService)
+    const rebuilt = await rescanWithdrawals(d.wallet, [{ tokenService: d.tokenService }])
 
     expect(rebuilt).toHaveLength(1)
     expect(rebuilt[0]).toMatchObject({
@@ -465,8 +465,22 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
       rebuilt: true,
     })
     expect(getWithdrawalStore().list()).toHaveLength(2)
-    // Memoized per page load: a second call is the same pass.
-    expect(await rescanWithdrawals(d.wallet, d.tokenService)).toBe(rebuilt)
+    // Memoized per page load and token: a second call is the same pass, and a token a later call
+    // adds is scanned then.
+    const scans = scannedEvents.mock.calls.length
+    scannedEvents.mockReturnValue([])
+    const savings = {
+      fetchTokenInformation: async () => ({
+        ...(await d.tokenService.fetchTokenInformation()),
+        symbol: "sUSDS",
+      }),
+    }
+    const again = await rescanWithdrawals(d.wallet, [
+      { tokenService: d.tokenService },
+      { tokenService: savings, tuple: { ...SWAP_TUPLE, l2Token: `0x${"5a".repeat(32)}` } as never },
+    ])
+    expect(again).toEqual(rebuilt)
+    expect(scannedEvents.mock.calls.length).toBe(scans + 1)
   })
 
   it("persists the FPC cut and the confirm-time simulation for the detail sheet", async () => {

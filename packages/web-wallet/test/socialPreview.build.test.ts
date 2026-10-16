@@ -11,8 +11,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { HOME_PREVIEW, ROUTE_PAGES, socialPreview } from "../socialPreview"
 
 const INDEX_HTML = readFileSync(join(__dirname, "../index.html"), "utf8")
-const ENV = { VITE_CAMPAIGN_URL: "https://launch.example/join" }
+const ENV = { VITE_SITE_ORIGIN: "https://wallet.example/" }
 const LINK = ROUTE_PAGES["link.html"]
+const PAY = ROUTE_PAGES["pay.html"]
 
 let root: string
 
@@ -58,9 +59,14 @@ function card(html: string) {
 describe("socialPreview", () => {
   it("fills the home card into index.html and emits the link pages with the payment-link card", async () => {
     const pages = await buildPages(ENV)
-    expect([...pages.keys()].sort()).toEqual(["index.html", "link.html", "request.html"])
+    expect([...pages.keys()].sort()).toEqual([
+      "index.html",
+      "link.html",
+      "pay.html",
+      "request.html",
+    ])
 
-    const image = "https://launch.example/og.png"
+    const image = "https://wallet.example/og.png"
     expect(card(pages.get("index.html")!)).toEqual({
       title: "zk.money",
       description:
@@ -83,26 +89,29 @@ describe("socialPreview", () => {
         documentTitle: "zk.money",
       })
     }
+    expect(card(pages.get("pay.html")!)).toMatchObject({
+      title: "zk.money pay page",
+      description: "Pay privately with zk.money, or from any Ethereum wallet.",
+    })
   })
 
   it("keeps the route pages the same document as index.html apart from the card", async () => {
     const pages = await buildPages(ENV)
     const index = pages.get("index.html")!
     expect(index).toMatch(/<script type="module" crossorigin src="\/assets\/[^"]+\.js"><\/script>/)
-    for (const page of ["link.html", "request.html"]) {
+    for (const [page, copy] of Object.entries(ROUTE_PAGES)) {
       const asHome = pages
         .get(page)!
-        .replaceAll(LINK.title, HOME_PREVIEW.title)
-        .replaceAll(LINK.description, HOME_PREVIEW.description)
+        .replaceAll(copy.title, HOME_PREVIEW.title)
+        .replaceAll(copy.description, HOME_PREVIEW.description)
       expect(asHome).toBe(index)
     }
     for (const html of pages.values()) expect(html).not.toMatch(/__OG_[A-Z_]+__/)
   })
 
-  it("prefers VITE_SITE_ORIGIN for the image", async () => {
-    const pages = await buildPages({ ...ENV, VITE_SITE_ORIGIN: "https://wallet.example/" })
-    for (const html of pages.values())
-      expect(card(html).image).toBe("https://wallet.example/og.png")
+  it("serves the image from a relative path without VITE_SITE_ORIGIN", async () => {
+    const pages = await buildPages({})
+    for (const html of pages.values()) expect(card(html).image).toBe("/og.png")
   })
 
   it("emits no route pages in a desktop build", async () => {
@@ -126,6 +135,9 @@ describe("socialPreview", () => {
       expect((await at("/link")).title).toBe(LINK.title)
       expect((await at("/request?x=1")).description).toBe(LINK.description)
       expect((await at("/link/")).title).toBe("zk.money")
+      expect((await at("/pay/river")).title).toBe(PAY.title)
+      expect((await at("/pay")).title).toBe("zk.money")
+      expect((await at("/pay/river/x")).title).toBe("zk.money")
     } finally {
       await server.close()
     }

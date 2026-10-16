@@ -44,6 +44,17 @@ export async function resolveArchive(chain: ChainDataSource, archiveRoot: Fr): P
   };
 }
 
+export async function resolveFreezeArchive(
+  portal: { getFreezeArchive(): Promise<Fr> },
+  chain: ChainDataSource,
+): Promise<ArchiveRef> {
+  const freezeArchiveRoot = await portal.getFreezeArchive();
+  if (freezeArchiveRoot.equals(Fr.ZERO)) {
+    throw new Error('Portal is not frozen, so it has no freeze archive (pass an explicit archive to run pre-freeze).');
+  }
+  return await resolveArchive(chain, freezeArchiveRoot);
+}
+
 /** True when `blockNumber` falls in `[startBlock, startBlock + blockCount)` of the checkpoint. */
 export function checkpointContainsBlock(
   checkpoint: { startBlock: BlockNumber; blockCount: number },

@@ -21,6 +21,7 @@ export type WalletOp = readonly [key: string, value: string | null]
 export interface WalletDb {
   readonly persistent: boolean
   load(): Promise<{ state: Map<string, string> }>
+  get(key: string): Promise<string | undefined>
   /** Applies `ops` as one transaction. */
   apply(ops: readonly WalletOp[]): Promise<void>
   close(): Promise<void>
@@ -49,6 +50,7 @@ const opfsBackend: WalletDbBackend = {
         for await (const [key, value] of state.entriesAsync()) entries.set(key, value)
         return { state: entries }
       },
+      get: (key) => state.getAsync(key),
       apply(ops) {
         return store.transactionAsync(async () => {
           for (const [key, value] of ops) {
@@ -393,22 +395,71 @@ export const walletStorage = {
   },
 }
 
+/** Reads of other databases in flight, by store generation and key. */
+const otherReads = new Map<string, Promise<string[]>>()
+/** Work on other databases runs one at a time, since each holds the databases it opens. */
+let otherWork: Promise<unknown> = Promise.resolve()
+
+function onOtherDatabases<T>(work: () => Promise<T>): Promise<T> {
+  const run = otherWork.then(work, work)
+  otherWork = run.catch(() => {})
+  return run
+}
+
 /**
  * Removes `keys` from every other rollup's database. Opens all of them before touching any, so a
  * failed open removes nothing. A failure after that keeps the removals already committed; a retry
  * finishes the rest.
  */
-export async function removeFromOtherDatabases(keys: readonly string[]): Promise<void> {
-  if (!walletStoreIsPersistent()) return
-  const others = (await store.backend.list()).filter((version) => version !== store.version)
-  const opened: WalletDb[] = []
-  try {
-    for (const version of others) opened.push(await store.backend.open(version, true))
-    const ops = keys.map((key): WalletOp => [key, null])
-    for (const db of opened) await db.apply(ops)
-  } finally {
-    await Promise.all(opened.map((db) => db.close().catch(() => {})))
+export function removeFromOtherDatabases(keys: readonly string[]): Promise<void> {
+  return onOtherDatabases(async () => {
+    if (!walletStoreIsPersistent()) return
+    const others = (await store.backend.list()).filter((version) => version !== store.version)
+    const opened: WalletDb[] = []
+    try {
+      for (const version of others) opened.push(await store.backend.open(version, true))
+      const ops = keys.map((key): WalletOp => [key, null])
+      for (const db of opened) await db.apply(ops)
+    } finally {
+      await Promise.all(opened.map((db) => db.close().catch(() => {})))
+    }
+  })
+}
+
+/**
+ * Reads `key` from every other rollup's database: what this browser kept before the wallet moved to
+ * another rollup. A database another document holds, one that fails to read, or one without the key
+ * is skipped. A store that is not persistent has no other databases to read. Overlapping reads of
+ * one key share a result, so neither finds a database the other holds.
+ */
+export function readFromOtherDatabases(key: string): Promise<string[]> {
+  const id = `${store.generation}:${key}`
+  let read = otherReads.get(id)
+  if (!read) {
+    read = onOtherDatabases(() => readOtherDatabases(key)).finally(() => otherReads.delete(id))
+    otherReads.set(id, read)
   }
+  return read
+}
+
+async function readOtherDatabases(key: string): Promise<string[]> {
+  if (!walletStoreIsPersistent()) return []
+  const others = (await store.backend.list()).filter((version) => version !== store.version)
+  const values: string[] = []
+  for (const version of others) {
+    let db: WalletDb | undefined
+    try {
+      db = await store.backend.open(version, true)
+      const value = await db.get(key)
+      if (value !== undefined) values.push(value)
+    } catch (error) {
+      if (!isWalletOpenElsewhere(error))
+        console.warn(`[wallet-store] could not read wallet_${version}:`, error)
+    } finally {
+      await db?.close().catch(() => {})
+    }
+  }
+  return values
 }
 
 /** Navigates once every queued write has committed. A lost background write is reported, not fatal. */

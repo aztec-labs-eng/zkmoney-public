@@ -23,6 +23,7 @@ export type OperationFlow =
   | "request-link"
   | "migration"
   | "migration-arrival"
+  | "savings"
 
 /** The user stopped the flow before anything was sent: a closed passkey prompt, or a cancel. */
 export function isFlowCancelled(err: unknown): boolean {

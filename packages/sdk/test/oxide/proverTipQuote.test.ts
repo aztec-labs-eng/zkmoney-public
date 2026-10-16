@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest"
 import { ProverSubsidyAbi } from "@oxide/l1-contracts"
 import { priceFeedForChainId } from "@oxide/oxide-client/eth_usd_price_feed.js"
-import { submitEpochProofGas } from "@oxide/oxide-client/partial_epoch_proof_profit.js"
+import {
+  PORTAL__FIRST_PROVER_CAPTURE_GAS,
+  claimProverTipsGas,
+  submitEpochProofGas,
+} from "@oxide/oxide-client/partial_epoch_proof_profit.js"
 import type { PublicClient } from "viem"
 
 import { PROVER_TIP_STEP, quoteWithdrawalProverTip } from "../../src/oxide/proverTipQuote.js"
@@ -30,9 +34,12 @@ function client({
 const quote = (c: ReturnType<typeof client>, proverSubsidy?: `0x${string}`) =>
   quoteWithdrawalProverTip(c as unknown as PublicClient, { chainId: 1n, proverSubsidy })
 
-// USD-18 of the proof's gas at 1.5x the read price, rounded up the way oxide's `weiToUSD` does.
+// USD-18 of the proof's gas, its capture and one claim at 1.5x the read price, rounded up the way oxide's `weiToUSD`
+// does.
 const gasCost = (gasPrice: bigint, checkpointCount = 1n) => {
-  const wei = submitEpochProofGas(checkpointCount) * ((gasPrice * 15_000n) / 10_000n)
+  const gas =
+    submitEpochProofGas(checkpointCount) + PORTAL__FIRST_PROVER_CAPTURE_GAS + claimProverTipsGas(1n)
+  const wei = gas * ((gasPrice * 15_000n) / 10_000n)
   return (wei * USD_PER_ETH + 10n ** 8n - 1n) / 10n ** 8n
 }
 const toCents = (value: bigint) =>

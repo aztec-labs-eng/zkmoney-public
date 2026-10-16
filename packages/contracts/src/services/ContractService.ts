@@ -53,12 +53,19 @@ function cloneMeta(contract: string, meta: Record<string, unknown>): Record<stri
  */
 export class OxideTupleUnresolvedError extends Error {}
 
+/** Where an address-anchored lookup reads the instance: a wallet on another rollup passes its own. */
+export interface ContractChain {
+  node: AztecNode
+  pxe?: PXE
+}
+
 /**
  * Simplified service for managing contract artifacts and instances
  */
 export class ContractService {
   /** Test-injected artifact substitutions (overrideArtifact); consulted on every resolution path. */
   private artifactOverrides = new Map<ContractName, ContractArtifact>()
+  private knownClassIds = new Map<ContractName, Promise<string[]>>()
   private node: AztecNode
   private pxe: PXE
   private network: Network
@@ -78,8 +85,8 @@ export class ContractService {
   private oxideClient: OxideEnvRegistryClient | null = null
   // Singleton instance
   private static instance: ContractService | null = null
-  /** One registration per account at a time: a second caller for the same address awaits the first. */
-  private readonly accountRegistrations = new Map<string, Promise<void>>()
+  /** One registration per account and PXE at a time: a second caller awaits the first. */
+  private readonly accountRegistrations = new WeakMap<PXE, Map<string, Promise<void>>>()
 
   /**
    * Get or create the singleton instance.
@@ -502,9 +509,10 @@ export class ContractService {
 
   private async getContractInstanceFromPXE(
     address: AztecAddress,
+    pxe: PXE = this.pxe,
   ): Promise<ContractInstancePreimageWithAddress | undefined> {
     try {
-      const contractInstance = await this.pxe.getContractInstance(address)
+      const contractInstance = await pxe.getContractInstance(address)
       if (contractInstance) {
         return contractInstance
       }
@@ -516,9 +524,10 @@ export class ContractService {
 
   private async getContractInstanceFromNode(
     address: AztecAddress,
+    node: AztecNode = this.node,
   ): Promise<ContractInstanceWithAddress | undefined> {
     try {
-      const contractInstance = await this.node.getContract(address)
+      const contractInstance = await node.getContract(address)
       if (contractInstance) {
         return contractInstance
       }
@@ -534,11 +543,14 @@ export class ContractService {
    * upgrades; a privately deployed instance (a user account) exists only in the PXE, which
    * stores the original class — the wallet never upgrades those.
    */
-  private async instanceClassId(address: AztecAddress): Promise<string | undefined> {
-    const published = await this.getContractInstanceFromNode(address)
+  private async instanceClassId(
+    address: AztecAddress,
+    chain: ContractChain,
+  ): Promise<string | undefined> {
+    const published = await this.getContractInstanceFromNode(address, chain.node)
     if (published) return published.currentContractClassId.toString()
-    if (!this.pxe) return undefined
-    const local = await this.getContractInstanceFromPXE(address)
+    if (!chain.pxe) return undefined
+    const local = await this.getContractInstanceFromPXE(address, chain.pxe)
     return local?.originalContractClassId.toString()
   }
 
@@ -550,12 +562,13 @@ export class ContractService {
    */
   private async tryGetArtifactFromPXE(
     address: AztecAddress,
+    pxe: PXE | undefined = this.pxe,
   ): Promise<ContractArtifact | undefined> {
     // No PXE reads as "PXE does not know the instance".
-    if (!this.pxe) return undefined
-    const contractInstance = await this.getContractInstanceFromPXE(address)
+    if (!pxe) return undefined
+    const contractInstance = await this.getContractInstanceFromPXE(address, pxe)
     if (!contractInstance) return undefined
-    return this.pxe.getContractArtifact(contractInstance.originalContractClassId)
+    return pxe.getContractArtifact(contractInstance.originalContractClassId)
   }
 
   /**
@@ -567,8 +580,10 @@ export class ContractService {
   private async fetchArtifact(options: {
     contractName?: ContractName
     address?: AztecAddress
+    chain?: ContractChain
   }): Promise<ContractArtifact> {
     const { contractName, address } = options
+    const chain = options.chain ?? { node: this.node, pxe: this.pxe }
 
     // 1. Try to resolve contract name from address (if not provided)
     let resolvedName = contractName
@@ -593,19 +608,19 @@ export class ContractService {
     // 3. An explicit address asks for the INSTANCE's artifact, so the PXE probe outranks the
     //    bundle — mid-transition the bundle is already the incoming class.
     if (address && !this.options.resolveClassArtifact) {
-      const pxeArtifact = await this.tryGetArtifactFromPXE(address)
+      const pxeArtifact = await this.tryGetArtifactFromPXE(address, chain.pxe)
       if (pxeArtifact) return pxeArtifact
     }
 
     if (this.options.resolveClassArtifact) {
-      const instanceClassId = address ? await this.instanceClassId(address) : undefined
+      const instanceClassId = address ? await this.instanceClassId(address, chain) : undefined
       if (address && !instanceClassId) throw new Error("Historical contract instance is missing")
       const classId =
         instanceClassId ??
         (resolvedName ? this.config?.contracts[resolvedName]?.classId : undefined)
       if (!classId) throw new Error("Historical artifact lookup requires a pinned contract class")
       if (address) {
-        const cached = await this.tryGetArtifactFromPXE(address)
+        const cached = await this.tryGetArtifactFromPXE(address, chain.pxe)
         if (cached && (await getContractClassFromArtifact(cached)).id.toString() === classId)
           return cached
       }
@@ -634,6 +649,9 @@ export class ContractService {
     contractName?: ContractName,
   ): Promise<ContractArtifact> {
     if (contractName) {
+      const override = this.artifactOverrides.get(contractName)
+      if (override && (await getContractClassFromArtifact(override)).id.toString() === classId)
+        return override
       const bundled = await getHardcodedArtifact(contractName, this.options)
       if ((await getContractClassFromArtifact(bundled)).id.toString() === classId) return bundled
     }
@@ -644,6 +662,41 @@ export class ContractService {
     if ((await getContractClassFromArtifact(artifact)).id.toString() !== classId)
       throw new Error(`Historical artifact differs from class ${classId}`)
     return artifact
+  }
+
+  /** {@link artifactForClass}, for an instance this service holds nothing for, such as a paylink escrow. */
+  public getArtifactForClass(
+    classId: string,
+    contractName: ContractName,
+  ): Promise<ContractArtifact> {
+    return this.artifactForClass(classId, contractName)
+  }
+
+  /**
+   * Every class `contractName` has had here, lowercased: the bundled class, the configured one, and
+   * each class the reviewed artifact manifest holds under the artifact's name. Addresses that differ
+   * only by class, like paylink escrows, need all of them.
+   */
+  public getKnownClassIds(contractName: ContractName): Promise<string[]> {
+    let known = this.knownClassIds.get(contractName)
+    if (!known) {
+      known = this.listKnownClassIds(contractName)
+      this.knownClassIds.set(contractName, known)
+      known.catch(() => this.knownClassIds.delete(contractName))
+    }
+    return known
+  }
+
+  private async listKnownClassIds(contractName: ContractName): Promise<string[]> {
+    const override = this.artifactOverrides.get(contractName)
+    const bundled = await getHardcodedArtifact(contractName, this.options)
+    const ids = [
+      ...(override ? [(await getContractClassFromArtifact(override)).id.toString()] : []),
+      (await getContractClassFromArtifact(bundled)).id.toString(),
+      this.config?.contracts[contractName]?.classId,
+      ...((await this.options.listClassIds?.(bundled.name)) ?? []),
+    ]
+    return [...new Set(ids.filter((id): id is string => !!id).map((id) => id.toLowerCase()))]
   }
 
   /**
@@ -660,9 +713,10 @@ export class ContractService {
   public async getArtifactForContract(
     contract: ContractName,
     knownAddress?: AztecAddress,
+    chain?: ContractChain,
   ): Promise<ContractArtifact> {
     if (knownAddress) {
-      return this.fetchArtifact({ contractName: contract, address: knownAddress })
+      return this.fetchArtifact({ contractName: contract, address: knownAddress, chain })
     }
 
     // Check if already cached
@@ -688,6 +742,7 @@ export class ContractService {
    */
   public overrideArtifact(contract: ContractName, artifact: ContractArtifact): void {
     this.artifactOverrides.set(contract, artifact)
+    this.knownClassIds.delete(contract)
     this.storage.setArtifactCache(contract, Promise.resolve(artifact))
   }
 
@@ -749,35 +804,38 @@ export class ContractService {
     }
   }
 
-  /**
-   * Register a user account contract
-   */
+  /** Register a user account contract in `pxe`, the PXE of the wallet that runs the account. */
   public registerUserAccount(
     instance: ContractInstanceWithAddress,
     secretKey: Fr,
-    contractName?: ContractName,
+    contractName: ContractName | undefined,
+    pxe: PXE,
   ): Promise<void> {
+    let registrations = this.accountRegistrations.get(pxe)
+    if (!registrations) this.accountRegistrations.set(pxe, (registrations = new Map()))
+    const pending = registrations
     const key = instance.address.toString()
-    const inFlight = this.accountRegistrations.get(key)
+    const inFlight = pending.get(key)
     if (inFlight) return inFlight
-    const run = this.doRegisterUserAccount(instance, secretKey, contractName).finally(() => {
-      if (this.accountRegistrations.get(key) === run) this.accountRegistrations.delete(key)
+    const run = this.doRegisterUserAccount(instance, secretKey, contractName, pxe).finally(() => {
+      if (pending.get(key) === run) pending.delete(key)
     })
-    this.accountRegistrations.set(key, run)
+    pending.set(key, run)
     return run
   }
 
   private async doRegisterUserAccount(
     instance: ContractInstanceWithAddress,
     secretKey: Fr,
-    contractName?: ContractName,
+    contractName: ContractName | undefined,
+    pxe: PXE,
   ): Promise<void> {
     console.log("registerUserAccount...")
     try {
       const address = instance.address
 
       // Check if contract instance is already registered in PXE
-      const existingInstance = await this.getContractInstanceFromPXE(address)
+      const existingInstance = await pxe.getContractInstance(address)
 
       if (!existingInstance) {
         // The instance in hand is the anchor. A user account is deployed privately, so the node
@@ -787,7 +845,7 @@ export class ContractService {
           contractName ?? DEFAULT_CONTRACTS.obsidionAccountAlpha,
         )
 
-        await registerContractInPXE(this.pxe, instance, artifact)
+        await registerContractInPXE(pxe, instance, artifact)
 
         console.log(
           `Successfully registered obsidion account contract at ${address
@@ -796,7 +854,7 @@ export class ContractService {
         )
       }
 
-      const registeredAccounts = await this.pxe.getRegisteredAccounts()
+      const registeredAccounts = await pxe.getRegisteredAccounts()
       if (!registeredAccounts.some((acc: CompleteAddress) => acc.address.equals(address))) {
         // Register the account with the private key
         const partialAddress = await computePartialAddress(instance)
@@ -812,7 +870,7 @@ export class ContractService {
         }
 
         const keys = await deriveKeys(secretKey)
-        await this.pxe.registerAccount(
+        await pxe.registerAccount(
           {
             masterNullifierHidingSecretKey: keys.masterNullifierHidingSecretKey,
             masterIncomingViewingSecretKey: keys.masterIncomingViewingSecretKey,

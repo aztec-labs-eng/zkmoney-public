@@ -13,6 +13,7 @@ export function PayAmountForm({
   onAmount,
   onNote,
   onContinue,
+  submitLabel,
 }: {
   amount: string
   note: string
@@ -26,6 +27,7 @@ export function PayAmountForm({
   onAmount: (value: string) => void
   onNote: (value: string) => void
   onContinue: () => void
+  submitLabel?: string
 }) {
   const go = () => validAmount && !overspent && onContinue()
   return (
@@ -65,7 +67,7 @@ export function PayAmountForm({
         onSubmit={go}
       />
       <PrimaryGradientButton
-        title={isSend ? "Send funds" : "Request funds"}
+        title={submitLabel ?? (isSend ? "Send funds" : "Request funds")}
         isDisabled={!validAmount || overspent}
         onClick={onContinue}
       />

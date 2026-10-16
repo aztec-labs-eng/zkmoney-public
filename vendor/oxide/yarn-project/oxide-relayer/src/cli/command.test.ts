@@ -56,7 +56,7 @@ describe('createCliProgram', () => {
   it('starts with the removed max retries env var of an older configuration, and uses the max pending age', async () => {
     const config = await parseRunConfig(REQUIRED_ARGS, { OXIDE_RELAYER_L1_OPERATIONS_MAX_RETRIES: '10' });
 
-    expect(config.l1OperationsSubmission).toEqual(expect.objectContaining({ maxPendingAgeMs: 72 * 60 * 60_000 }));
+    expect(config.l1OperationsSubmission).toEqual(expect.objectContaining({ maxPendingAgeMs: 7 * 24 * 60 * 60_000 }));
     expect(config.l1OperationsSubmission).not.toHaveProperty('maxRetries');
   });
 
@@ -386,25 +386,6 @@ describe('createCliProgram', () => {
     await expect(parseRunConfig([...REQUIRED_ARGS, '--l1-max-fee-per-gas-gwei', '0'], {})).rejects.toThrow(
       /positive decimal gwei/,
     );
-  });
-
-  it('defaults the L1 operations max fee headroom and accepts CLI/env overrides', async () => {
-    const defaults = await parseRunConfig([...REQUIRED_ARGS], {});
-    expect(defaults.l1OperationsSubmission?.maxFeeHeadroomPercent).toBe(6.25);
-
-    const fromFlag = await parseRunConfig([...REQUIRED_ARGS, '--l1-operations-max-fee-headroom-percent', '12.5'], {});
-    expect(fromFlag.l1OperationsSubmission?.maxFeeHeadroomPercent).toBe(12.5);
-
-    const fromEnv = await parseRunConfig([...REQUIRED_ARGS], {
-      OXIDE_RELAYER_L1_OPERATIONS_MAX_FEE_HEADROOM_PERCENT: '0',
-    });
-    expect(fromEnv.l1OperationsSubmission?.maxFeeHeadroomPercent).toBe(0);
-  });
-
-  it.each(['-1', 'fast', '6.255'])('rejects L1 operations max fee headroom %s', async value => {
-    await expect(
-      parseRunConfig([...REQUIRED_ARGS, '--l1-operations-max-fee-headroom-percent', value], {}),
-    ).rejects.toThrow(/non-negative percentage/);
   });
 
   it('leaves the L1 operation payout tokens unset by default and parses a CLI/env list', async () => {

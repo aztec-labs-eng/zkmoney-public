@@ -78,6 +78,8 @@ export type FakeCeremonyOptions = {
   attachment?: PasskeyAttachment | null
   /** Overrides the attachment reported on assertions only. */
   assertAttachment?: PasskeyAttachment | null
+  /** When false, assertions return no user handle, as an allow-list assertion may. */
+  assertHandle?: boolean
   /** `"unknown"` makes the flags unreadable on every response. */
   backupEligible?: boolean | "unknown"
   /** When false the provider returns only `first`, as a one-salt provider would. */
@@ -214,10 +216,11 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
     this.notify({ phase: "issued", kind: "create", request })
     const priv = p256.utils.randomPrivateKey()
     const credentialId = bytesToBase64Url(crypto.getRandomValues(new Uint8Array(16)))
+    const handle = encodeUserHandle(request.userName, request.provenance)
     this.creds.set(credentialId, {
       priv,
       secret: crypto.getRandomValues(new Uint8Array(32)),
-      handle: encodeUserHandle(request.userName),
+      handle,
     })
     const result: PasskeyCreateResult = {
       credentialId,
@@ -227,6 +230,7 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
       backupEligible: this.opts.createAuthData ?? true ? this.backupEligible() : undefined,
       ...(this.opts.aaguid ? { aaguid: this.opts.aaguid } : {}),
       transports: this.opts.transports,
+      userHandle: handle,
     }
     this.notify({
       phase: "answered",
@@ -274,7 +278,7 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
       signatureDer: signature.toDERRawBytes(),
       authenticatorData,
       clientDataJSON,
-      userHandle: cred.handle,
+      ...(this.opts.assertHandle ?? true ? { userHandle: cred.handle } : {}),
     }
     this.notify({
       phase: "answered",

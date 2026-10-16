@@ -23,9 +23,11 @@ import {
 } from "@oxide/l1-contracts"
 import { weiToUSD } from "@oxide/oxide-client/eth_usd_price_feed.js"
 import {
-  EXECUTOR_MIN_PAYOUT_CALLDATA_GAS,
+  GAS_COST_ARGS_CALLDATA_GAS,
   SIMULATED_SENDER_BALANCE,
+  WEI_PER_ETH,
   estimateL1OperationFeeValues,
+  gasCostAtQuotePrice,
 } from "@oxide/oxide-client/l1_operation_quote.js"
 import { L1_OPERATION_TIP_MARGIN_BPS } from "@obsidion/core/constants"
 import { MULTICALL3_ADDRESS } from "../../src/services/sipaClaim.js"
@@ -119,6 +121,8 @@ describe("SwapOnWithdrawSimulator", () => {
       gasPayout?: bigint
       feedUpdatedAt?: bigint
       callFailure?: Error
+      /** The executor takes the four-argument `execute`. */
+      legacyExecutor?: boolean
     } = {},
   ) {
     const payout = opts.payout ?? 99_000_000n
@@ -168,7 +172,12 @@ describe("SwapOnWithdrawSimulator", () => {
       readContract,
       getBlock: vi.fn(async () => ({ number: 7n, baseFeePerGas: BASE_FEE, timestamp: NOW })),
       estimateMaxPriorityFeePerGas: vi.fn(async () => PRIORITY_FEE),
-      simulateBlocks: vi.fn(async () => {
+      simulateBlocks: vi.fn(async ({ blocks }: { blocks: { calls: { args: unknown[] }[] }[] }) => {
+        // The executor dispatches only its own `execute`, and the other shape fails first.
+        if (blocks[0]!.calls[0]!.args.length !== (opts.legacyExecutor ? 4 : 6)) {
+          return [{ calls: [{ status: "failure", error: new Error("no data"), gasUsed: 0n }] }]
+        }
+        await new Promise((resolve) => setTimeout(resolve))
         return [
           {
             calls: [
@@ -212,9 +221,11 @@ describe("SwapOnWithdrawSimulator", () => {
   const AMOUNT = 100n * 10n ** 18n
   const FUNDING = AMOUNT - deductions.withdrawalRelayerTip - deductions.fpcFundingCut
 
-  const minPayout = weiToUSD(
-    (GAS_USED + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS) * FEES.maxFeePerGas,
-    ETH_USD,
+  const minPayout = gasCostAtQuotePrice(
+    GAS_USED + GAS_COST_ARGS_CALLDATA_GAS,
+    { number: 7n, baseFeePerGas: BASE_FEE },
+    FEES,
+    weiToUSD(WEI_PER_ETH, ETH_USD),
   )
   const expectedTip = {
     relayerTip: ceilDiv(minPayout * L1_OPERATION_TIP_MARGIN_BPS, 10_000n),
@@ -226,9 +237,11 @@ describe("SwapOnWithdrawSimulator", () => {
     priorityFee: FEES.maxPriorityFeePerGas,
   }
 
-  /** The single call of the single block `eth_simulateV1` ran, and the escrow args it deploys. */
-  const simulatedCall = (client: ReturnType<typeof fakeClient>) => {
-    const { blocks } = client.simulateBlocks.mock.calls[0]![0] as unknown as {
+  /** The single call of the single block `eth_simulateV1` ran with `argCount` arguments, and its escrow args. */
+  const simulatedCall = (client: ReturnType<typeof fakeClient>, argCount = 6) => {
+    const { blocks } = client.simulateBlocks.mock.calls
+      .map(([request]) => request)
+      .find((request) => request.blocks[0]!.calls[0]!.args.length === argCount) as unknown as {
       blocks: {
         stateOverrides: StateOverride
         calls: { from: Address; to: Address; functionName: string; args: readonly unknown[] }[]
@@ -392,6 +405,18 @@ describe("SwapOnWithdrawSimulator", () => {
     ).rejects.toBeInstanceOf(SwapTipExceedsInputError)
   })
 
+  it("quotes through an executor that takes the four-argument execute", async () => {
+    const client = fakeClient({ legacyExecutor: true })
+    const simulation = await simulator(client).simulate({
+      output: "USDC",
+      amount: AMOUNT,
+      deductions,
+      recipient: RECIPIENT,
+    })
+    expect(simulation).toEqual({ ...expectedTip, amountOut: 99_000_000n, decimals: 6, gasOut: 0n })
+    expect(simulatedCall(client, 4).to).toBe(OPERATION_EXECUTOR)
+  })
+
   it("throws when the simulated execute fails", async () => {
     const client = fakeClient({ callFailure: new Error("SwapEscrow: swap reverted") })
     await expect(
@@ -457,6 +482,7 @@ describe("SwapOnWithdrawSimulator", () => {
     )
     expect(reads.filter((name) => name === "IMPLEMENTATION")).toHaveLength(1)
     expect(reads.filter((name) => name === "balanceOf")).toHaveLength(1)
-    expect(reads.filter((name) => name === "latestRoundData")).toHaveLength(2)
+    // Each simulation quotes both `execute` shapes, and each quote reads the feed.
+    expect(reads.filter((name) => name === "latestRoundData")).toHaveLength(4)
   })
 })

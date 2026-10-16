@@ -23,6 +23,7 @@
  */
 import { beforeAll, describe, expect, it } from "vitest"
 import { secp256k1 } from "@noble/curves/secp256k1"
+import { Fr } from "@aztec/aztec.js/fields"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
 import { createAztecNodeClient } from "@aztec/aztec.js/node"
 import { getInitialTestAccountsData } from "@aztec/accounts/testing"
@@ -76,8 +77,8 @@ const TOKEN_OWNER_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784
 const DOMAIN_OWNER_KEY = (process.env.OXIDE_SANDBOX_DOMAIN_OWNER_KEY ??
   "0x47e179ec197488593b187f80a00eb0da91f1b9d0b13f8733639f19c30a34926a") as Hex
 const STEALTH_SCALAR = BigInt(`0x${"4a".repeat(31)}01`)
-const RESOLVER_SCALAR = BigInt(`0x${"5a".repeat(31)}01`)
-const REG_FEE = BigInt(process.env.OXIDE_SANDBOX_REGISTRATION_FEE ?? String(49n * 10n ** 17n))
+const SELF_SIPA_KEY = new Fr(BigInt(`0x${"5a".repeat(31)}01`) % Fr.MODULUS)
+const REG_FEE = BigInt(process.env.OXIDE_SANDBOX_REGISTRATION_FEE ?? String(55n * 10n ** 17n))
 const DEPOSIT_AMOUNT = 50n * 10n ** 18n
 const NONCE = 4242
 const SWEEP_TIMEOUT_MS = 4 * 60_000
@@ -174,10 +175,9 @@ describe.skipIf(!LIVE)("registration by deposit through a running relayer (live)
 
       try {
         const stealth = secp256k1.ProjectivePoint.BASE.multiply(STEALTH_SCALAR).toAffine()
-        const resolverPoint = secp256k1.ProjectivePoint.BASE.multiply(RESOLVER_SCALAR).toAffine()
-        const selfResolver = new SipaSelfResolver(STEALTH_SCALAR, {
-          x: resolverPoint.x,
-          y: resolverPoint.y,
+        const selfResolver = new SipaSelfResolver({
+          stealthScalar: STEALTH_SCALAR,
+          selfSipaKey: SELF_SIPA_KEY,
         })
 
         const nameHash = keccak256(toBytes(`relay-e2e-${Date.now()}`))

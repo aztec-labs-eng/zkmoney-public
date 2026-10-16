@@ -410,6 +410,13 @@ export function worstPaylinkClaimToL1Marginal(): ClaimFpcMeasuredTx {
   return publicSideEffectGas(paylinkExitWorstEffects())
 }
 
+/** Worst-case paylink_direct.claim_with_withdrawal marginal: an exit's burn and a claim's payout in
+ * one call. Counting both legs whole double-counts the replay nullifier and a recipient authwit the
+ * call never consumes, which only loosens the bound. */
+export function worstPaylinkClaimWithWithdrawalMarginal(): ClaimFpcMeasuredTx {
+  return publicSideEffectGas(mergeEffects(paylinkExitWorstEffects(), worstClaimEffects()))
+}
+
 /** Worst-case paylink_email.claim_to_l1 marginal: the exit plus the registry view it enqueues,
  * whose execution is read off the measured email claim. */
 export function worstPaylinkEmailClaimToL1Marginal(

@@ -13,7 +13,7 @@ export type BroadcastStatus =
   | { kind: "proving"; stage: ProvingStage | null }
   | { kind: "unlock" }
   | { kind: "registration" }
-  /** An attempt failed; the ledger tries again. */
+  /** An attempt failed or had to wait; the ledger tries again at its retry time. */
   | { kind: "retrying" }
 
 function statusOf(address: string): BroadcastStatus | undefined {
@@ -28,7 +28,7 @@ function statusOf(address: string): BroadcastStatus | undefined {
   }
   if (job.lastError === WAITING_FOR_UNLOCK) return { kind: "unlock" }
   if (job.lastError === WAITING_FOR_REGISTRATION) return { kind: "registration" }
-  if (job.failures > 0) return { kind: "retrying" }
+  if (job.failures > 0 || (job.retryAt ?? 0) > Date.now()) return { kind: "retrying" }
   return { kind: "waiting" }
 }
 

@@ -7,7 +7,21 @@ import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { APPLE_ICLOUD_AAGUID, GPM_AAGUID, ONEPASSWORD_AAGUID } from "@obsidion/core/constants"
+import {
+  CHROME_REFUSAL_COPY,
+  SAFARI_REFUSAL_COPY,
+  EXTENSION_ADVICE_COPY,
+  LaptopPasskeyRefusedError,
+  NoPrfError,
+  PHONE_STEPS_COPY,
+  PhoneRequiredError,
+  UnsupportedProviderError,
+  markPasskeyWritten,
+  type LaptopCreation,
+} from "@obsidion/passkey-web"
 import { OnboardingScreen } from "../src/features/onboarding/OnboardingScreen"
+import { LOCAL_REFUSAL_LIMIT, noteLocalRefusal } from "../src/platform/auth/localRefusals"
 import { scopeOfStatus } from "../src/platform/auth/passkeyAttemptScope"
 import { getPendingStore } from "../src/features/onboarding/webRegistration"
 import { __resetPasskeyTelemetryForTests } from "../src/lib/passkeyTelemetry"
@@ -31,11 +45,10 @@ const h = vi.hoisted(() => ({
   claimTag: vi.fn(),
   createAccount: vi.fn(),
   collectOnboardingKeys: vi.fn(),
-  resolveHandoff: vi.fn(),
-  adoptHandoff: vi.fn(),
   probePhoneReach: vi.fn(),
+  probeLaptopCreation: vi.fn(),
+  useLaptopCreation: vi.fn(),
   setObsidionAccount: vi.fn(),
-  reportHandoffAdopted: vi.fn(),
   hasRootBreadcrumb: true,
 }))
 
@@ -66,10 +79,10 @@ vi.mock("../src/config/env", async (importOriginal) => ({
 }))
 vi.mock("../src/lib/analytics", () => ({
   fireEvent: h.fireEvent,
+  fireOnboardingEvent: h.fireEvent,
   lapTimer: () => () => 0,
   failureCode: () => "err",
 }))
-vi.mock("../src/lib/handoffHealth", () => ({ reportHandoffAdopted: h.reportHandoffAdopted }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
 // A saved identity only counts as onboarded beside this browser's root-passkey breadcrumb, and an
 // app's browser is told before any request only where there is none.
@@ -88,7 +101,8 @@ vi.mock("../src/ui/screening", () => ({
 vi.mock("../src/platform/auth/useAuthenticator", () => {
   const auth = () => ({
     probePhoneReach: h.probePhoneReach,
-    useLaptopRoute: () => {},
+    probeLaptopCreation: h.probeLaptopCreation,
+    useLaptopCreation: h.useLaptopCreation,
     recoverFromCache: async () => undefined,
     clear: () => {},
     lockOut: () => {},
@@ -122,14 +136,21 @@ vi.mock("@obsidion/web-ds", () => ({
   Icon: () => null,
   NumberedStepRow: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   Spinner: () => null,
-  TopNavIconButton: ({ onClick, ariaLabel }: { onClick?: () => void; ariaLabel?: string }) => (
-    <button aria-label={ariaLabel} onClick={onClick}>
+  TopNavIconButton: ({
+    onClick,
+    ariaLabel,
+    testId,
+    disabled,
+  }: {
+    onClick?: () => void
+    ariaLabel?: string
+    testId?: string
+    disabled?: boolean
+  }) => (
+    <button aria-label={ariaLabel} data-testid={testId} disabled={disabled} onClick={onClick}>
       x
     </button>
   ),
-}))
-vi.mock("../src/features/onboarding/AnalyticsConsentModal", () => ({
-  AnalyticsConsentModal: () => null,
 }))
 vi.mock("../src/features/onboarding/InvitationChrome", () => ({
   InvitationChrome: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
@@ -154,8 +175,6 @@ vi.mock("../src/features/onboarding/oxideOnboarding", async (importOriginal) => 
   getClaimStatus: h.getClaimStatus,
   claimTag: h.claimTag,
   collectOnboardingKeys: h.collectOnboardingKeys,
-  resolveHandoff: h.resolveHandoff,
-  adoptHandoff: h.adoptHandoff,
 }))
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
@@ -192,13 +211,32 @@ const press = async (find: () => HTMLElement | undefined | null) => {
 const pressLabel = (label: string) => press(() => buttons().find((b) => b.textContent === label))
 const deposit = () => press(() => buttons().find((b) => b.textContent?.startsWith("Deposit")))
 const continueAtSteps = () => press(() => byTestId("phone-steps-continue"))
+/** The sheet's X, its only way out: there is no Cancel. */
+const closeButton = () => container.querySelector<HTMLButtonElement>('button[aria-label="Close"]')
+const closeSheet = () => press(closeButton)
 
-const HANDOFF = "/claim/taga?entry=passkey&rp=localhost&cred=cred-1&pk=ab12"
-const RESOLVED = { recovered: {}, msk: fakeKeys.secretKey, slot: "first" }
-/** Inside the window where this browser calls another device's answer the laptop's own. */
-const MAC_SAFARI_18_6 =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
-  "(KHTML, like Gecko) Version/18.6 Safari/605.1.15"
+const PHONE_ONLY: LaptopCreation = { local: false, chromeTip: false }
+const MAC: LaptopCreation = {
+  local: true,
+  os: "macos",
+  row: "macChrome",
+  managers: ["apple", "gpm"],
+  withdrawn: [],
+}
+const WINDOWS: LaptopCreation = {
+  local: true,
+  os: "windows",
+  row: "windowsChrome",
+  managers: ["gpm", "1password"],
+  withdrawn: [],
+}
+const GPM_ANSWER = {
+  authenticatorAttachment: "platform",
+  backupEligible: true,
+  aaguid: GPM_AAGUID,
+} as const
+const APPLE_ANSWER = { ...GPM_ANSWER, aaguid: APPLE_ICLOUD_AAGUID } as const
+const ONEPASSWORD_ANSWER = { ...GPM_ANSWER, aaguid: ONEPASSWORD_AAGUID } as const
 
 async function render(path = "/claim/taga") {
   await act(async () => {
@@ -246,6 +284,7 @@ beforeEach(async () => {
   h.collectOnboardingKeys.mockResolvedValue(fakeKeys)
   h.claimTag.mockResolvedValue(CUSTODY)
   h.probePhoneReach.mockResolvedValue("unknown")
+  h.probeLaptopCreation.mockResolvedValue(PHONE_ONLY)
   h.hasRootBreadcrumb = true
   container = document.createElement("div")
   document.body.appendChild(container)
@@ -263,14 +302,14 @@ afterEach(async () => {
 describe("signup create step — passkey telemetry", () => {
   it("a create cancelled mid-request stays the user's cancel when the next create finishes first", async () => {
     const first = await toCreateRequest()
-    await pressLabel("Cancel")
+    await closeSheet()
 
     const second = heldCreate()
+    await pressLabel("landing-signin")
     await deposit()
     await continueAtSteps()
     await act(async () => second.request!.answer())
     await flush()
-    expect(container.textContent).toContain("all-set")
 
     await act(async () => first.reject(new DOMException("closed", "NotAllowedError")))
     await flush()
@@ -292,7 +331,7 @@ describe("signup create step — passkey telemetry", () => {
     ])
   })
 
-  it("Cancel during the create's request ends the signal that request runs under", async () => {
+  it("closing during the create's request ends the signal that request runs under", async () => {
     let signal: AbortSignal | undefined
     h.createAccount.mockImplementationOnce(async (...args: unknown[]) => {
       signal = (args[5] as { signal?: AbortSignal }).signal
@@ -303,7 +342,7 @@ describe("signup create step — passkey telemetry", () => {
     await deposit()
     await continueAtSteps()
     expect(signal?.aborted).toBe(false)
-    await pressLabel("Cancel")
+    await closeSheet()
     expect(signal?.aborted).toBe(true)
   })
 
@@ -325,12 +364,10 @@ describe("signup create step — passkey telemetry", () => {
     expect(h.fireEvent.mock.calls.filter(([e]) => e === "action_failed")).toEqual([])
   })
 
-  it("Cancel during the create's request, then leaving at once, sends one cancel", async () => {
+  it("closing during the create's request, then leaving at once, sends one cancel", async () => {
     await toCreateRequest()
     act(() => {
-      buttons()
-        .find((b) => b.textContent === "Cancel")!
-        .click()
+      closeButton()!.click()
       root.unmount()
       pageHide()
     })
@@ -387,7 +424,7 @@ describe("signup create step — passkey telemetry", () => {
     await pressLabel("landing-signin")
     await deposit()
     await continueAtSteps()
-    await pressLabel("Cancel")
+    await closeSheet()
 
     // The retry holds at its phone steps and asks the browser for nothing.
     await pressLabel("landing-signin")
@@ -461,7 +498,7 @@ describe("signup create step — passkey telemetry", () => {
     expect(events()).toEqual([])
 
     act(() => {
-      byTestId("phone-steps-cancel")!.click()
+      closeButton()!.click()
       root.unmount()
       pageHide()
     })
@@ -477,11 +514,11 @@ describe("signup create step — passkey telemetry", () => {
     ])
   })
 
-  it("Cancel at the phone steps, then leaving at once, sends one in-app cancel that asked nothing", async () => {
+  it("closing at the phone steps, then leaving at once, sends one in-app cancel that asked nothing", async () => {
     await pressLabel("landing-signin")
     await deposit()
     act(() => {
-      byTestId("phone-steps-cancel")!.click()
+      closeButton()!.click()
       root.unmount()
       pageHide()
     })
@@ -520,394 +557,426 @@ describe("signup create step — passkey telemetry", () => {
 })
 
 /**
+ * A laptop allowed to create on its own password manager: the sheet opens on this computer, the
+ * answer names the manager, and every way back from a refusal or a closed prompt is the sheet.
+ */
+describe("signup create on this computer — passkey telemetry", () => {
+  const variant = () => byTestId("phone-steps")?.dataset.variant
+  const createRoute = (call: number) =>
+    (h.createAccount.mock.calls[call]?.[5] as { route?: string } | undefined)?.route
+  /** The next create asks once, is answered as `evidence` says, then fails as `error` says. */
+  const refusedCreate = (evidence: object, error: () => unknown) =>
+    h.createAccount.mockImplementationOnce(async () => {
+      const request = harness.request("create")
+      request.answer(evidence as never)
+      await request.settled
+      throw error()
+    })
+  /** The next create's prompt closes with nothing made. */
+  const closedCreate = () =>
+    h.createAccount.mockImplementationOnce(async () => {
+      const request = harness.request("create")
+      request.reject(new DOMException("closed", "NotAllowedError"))
+      await request.settled
+    })
+  const toLocalSheet = async () => {
+    await pressLabel("landing-signin")
+    await deposit()
+    expect(variant()).toBe("local")
+  }
+
+  beforeEach(() => {
+    // A create a failed test never reached must not answer the next test's.
+    h.createAccount.mockReset()
+    h.probePhoneReach.mockResolvedValue("ok")
+    h.probeLaptopCreation.mockResolvedValue(MAC)
+  })
+
+  it("creates on this computer and reports the manager that answered", async () => {
+    const held = heldCreate()
+    await toLocalSheet()
+    await press(() => byTestId("phone-steps-local"))
+    expect(h.useLaptopCreation).toHaveBeenCalledWith(MAC)
+    expect(createRoute(0)).toBe("this-device")
+    await act(async () => held.request!.answer(GPM_ANSWER))
+    await flush()
+    expect(events()).toEqual([
+      expect.objectContaining({
+        ceremony: "create",
+        outcome: "succeeded",
+        route: "same_device",
+        provider: "google_password_manager",
+        phone_reach: "ok",
+        credential_created: "yes",
+      }),
+    ])
+  })
+
+  it("a passkey saved on this computer is pointed at Chrome where the sheet said Chrome could keep it", async () => {
+    h.probeLaptopCreation.mockResolvedValue({ local: false, chromeTip: "gpm" })
+    refusedCreate(GPM_ANSWER, () =>
+      markPasskeyWritten(
+        new PhoneRequiredError({ providerName: "Windows Hello", ceremony: "create" }),
+      ),
+    )
+    await pressLabel("landing-signin")
+    await deposit()
+    expect(variant()).toBe("phone")
+    await press(() => byTestId("phone-steps-continue"))
+    expect(byTestId("create-refused")!.dataset.reason).toBe("PhoneRequiredError")
+    expect(byTestId("passkey-chrome-advice")!.textContent).toBe(CHROME_REFUSAL_COPY)
+  })
+
+  it.each([
+    ["Google Password Manager", "windowsEdgeBrave", "windows", "gpm", true],
+    ["Apple Passwords", "macSafari", "macos", "apple", false],
+  ] as const)(
+    "a row with 1Password alone that opened on the phone points at Chrome only where Chrome has %s",
+    async (_, row, os, chromeTip, named) => {
+      h.probeLaptopCreation.mockResolvedValue({
+        local: true,
+        os,
+        row,
+        managers: ["1password"],
+        withdrawn: [],
+        chromeTip,
+      })
+      refusedCreate(GPM_ANSWER, () =>
+        markPasskeyWritten(
+          new PhoneRequiredError({ providerName: "Windows Hello", ceremony: "create" }),
+        ),
+      )
+      await pressLabel("landing-signin")
+      await deposit()
+      expect(variant()).toBe("phone")
+      await press(() => byTestId("phone-steps-continue"))
+      expect(byTestId("create-refused")!.dataset.reason).toBe("PhoneRequiredError")
+      expect(byTestId("passkey-chrome-advice")?.textContent ?? null).toBe(
+        named ? CHROME_REFUSAL_COPY : null,
+      )
+    },
+  )
+
+  it("an Apple answer below the floor is refused on a card that leads back to the sheet", async () => {
+    refusedCreate(APPLE_ANSWER, () =>
+      markPasskeyWritten(new LaptopPasskeyRefusedError("apple", ["gpm"])),
+    )
+    await toLocalSheet()
+    await press(() => byTestId("phone-steps-local"))
+    expect(events()).toEqual([
+      expect.objectContaining({
+        ceremony: "create",
+        outcome: "refused",
+        reason: "apple_below_floor",
+        provider: "icloud_keychain",
+        credential_created: "yes",
+      }),
+    ])
+    const card = byTestId("create-refused")!
+    expect(card.dataset.reason).toBe("LaptopPasskeyRefusedError")
+    expect(byTestId("passkey-apple-floor")).not.toBeNull()
+    expect(byTestId("passkey-safari-advice")).toBeNull()
+    expect(byTestId("passkey-chrome-advice")).toBeNull()
+    expect(byTestId("passkey-leftover")).not.toBeNull()
+    expect(byTestId("passkey-phone")!.className).not.toContain("ww-invite-pill")
+    expect(byTestId("create-retry")!.className).toContain("ww-invite-pill")
+    // Try again: the sheet, on this computer, not the browser's prompt.
+    const next = heldCreate()
+    await press(() => byTestId("create-retry"))
+    expect(byTestId("create-refused")).toBeNull()
+    expect(variant()).toBe("local")
+    expect(byTestId("phone-steps-unfinished")).toBeNull()
+    expect(h.createAccount).toHaveBeenCalledTimes(1)
+    await press(() => byTestId("phone-steps-local"))
+    expect(createRoute(1)).toBe("this-device")
+    await act(async () => next.request!.answer(GPM_ANSWER))
+    await flush()
+    expect(events()).toContainEqual(
+      expect.objectContaining({ ceremony: "create", outcome: "succeeded" }),
+    )
+  })
+
+  it.each([
+    ["names Chrome while Mac Chrome admits Apple", "apple", "chrome"],
+    ["names only the unread version once Apple is withdrawn from Mac Chrome", undefined, "version"],
+  ] as const)(
+    "an Apple answer on Safari's row gets the Safari line, which %s",
+    async (_, chromeTip, wording) => {
+      h.probeLaptopCreation.mockResolvedValue({
+        local: true,
+        os: "macos",
+        row: "macSafari",
+        managers: ["1password"],
+        withdrawn: [],
+        ...(chromeTip ? { chromeTip } : {}),
+      })
+      refusedCreate(APPLE_ANSWER, () =>
+        markPasskeyWritten(new LaptopPasskeyRefusedError("apple", ["1password"])),
+      )
+      await pressLabel("landing-signin")
+      await deposit()
+      expect(variant()).toBe("phone")
+      await press(() => byTestId("phone-steps-switch-local"))
+      await press(() => byTestId("phone-steps-local"))
+      expect(byTestId("create-refused")!.dataset.reason).toBe("LaptopPasskeyRefusedError")
+      expect(byTestId("passkey-apple-floor")).not.toBeNull()
+      expect(byTestId("passkey-safari-advice")!.textContent).toBe(SAFARI_REFUSAL_COPY[wording])
+      // Try again asks for this computer, which the sheet honours whatever the count.
+      await press(() => byTestId("create-retry"))
+      expect(variant()).toBe("local")
+    },
+  )
+
+  describe("the 1Password advice", () => {
+    const credentials = Object.getOwnPropertyDescriptor(navigator, "credentials")
+    const install = (value: unknown) =>
+      Object.defineProperty(navigator, "credentials", { value, configurable: true })
+    const advice = () => byTestId("passkey-extension-advice")
+    /** The refusal as the creation driver raises it: naming the manager that answered. */
+    const noKey = (manager: "1password" | "gpm" = "1password") =>
+      markPasskeyWritten(new NoPrfError({ localManagers: ["gpm", "1password"], manager }))
+    afterEach(() => {
+      if (credentials) Object.defineProperty(navigator, "credentials", credentials)
+      else delete (navigator as { credentials?: unknown }).credentials
+    })
+
+    it.each([
+      ["names the extension's pop-up where a script answers", { create: async () => null }, "use"],
+      [
+        "says to install the extension where the browser's own prompt answers",
+        { create: Promise.resolve.bind(Promise) },
+        "install",
+      ],
+    ] as const)("on a Windows row that admits 1Password, %s", async (_n, calls, wording) => {
+      h.probeLaptopCreation.mockResolvedValue(WINDOWS)
+      install(calls)
+      refusedCreate(ONEPASSWORD_ANSWER, () => noKey())
+      await toLocalSheet()
+      await press(() => byTestId("phone-steps-local"))
+      expect(byTestId("create-refused")!.dataset.reason).toBe("NoPrfError")
+      expect(advice()?.textContent).toBe(EXTENSION_ADVICE_COPY[wording])
+      expect(byTestId("passkey-leftover")).not.toBeNull()
+      expect(byTestId("passkey-phone")).not.toBeNull()
+    })
+
+    it("stays off when another manager answered without key material, and for another refusal", async () => {
+      h.probeLaptopCreation.mockResolvedValue(WINDOWS)
+      install({ create: async () => null })
+      refusedCreate(GPM_ANSWER, () => noKey("gpm"))
+      await toLocalSheet()
+      await press(() => byTestId("phone-steps-local"))
+      expect(byTestId("create-refused")!.dataset.reason).toBe("NoPrfError")
+      expect(advice()).toBeNull()
+
+      refusedCreate(ONEPASSWORD_ANSWER, () =>
+        markPasskeyWritten(new LaptopPasskeyRefusedError("unnamed", ["gpm", "1password"])),
+      )
+      await press(() => byTestId("create-retry"))
+      await press(() => byTestId("phone-steps-local"))
+      expect(byTestId("create-refused")!.dataset.reason).toBe("LaptopPasskeyRefusedError")
+      expect(advice()).toBeNull()
+    })
+
+    it("stays off on a Mac row, and on a Windows row that does not admit 1Password", async () => {
+      install({ create: async () => null })
+      refusedCreate(ONEPASSWORD_ANSWER, () => noKey())
+      await toLocalSheet()
+      await press(() => byTestId("phone-steps-local"))
+      expect(byTestId("create-refused")!.dataset.reason).toBe("NoPrfError")
+      expect(advice()).toBeNull()
+
+      h.probeLaptopCreation.mockResolvedValue({
+        ...WINDOWS,
+        managers: ["gpm"],
+        withdrawn: ["1password"],
+      })
+      refusedCreate(ONEPASSWORD_ANSWER, () => noKey())
+      await press(() => byTestId("create-retry"))
+      await press(() => byTestId("phone-steps-local"))
+      expect(byTestId("create-refused")!.dataset.reason).toBe("NoPrfError")
+      expect(advice()).toBeNull()
+    })
+
+    it("stays off on the phone route", async () => {
+      h.probeLaptopCreation.mockResolvedValue(WINDOWS)
+      install({ create: async () => null })
+      refusedCreate(ONEPASSWORD_ANSWER, () => noKey())
+      await toLocalSheet()
+      await press(() => byTestId("phone-steps-phone"))
+      await press(() => byTestId("phone-steps-continue"))
+      expect(createRoute(0)).toBe("phone")
+      expect(byTestId("create-refused")!.dataset.reason).toBe("NoPrfError")
+      expect(advice()).toBeNull()
+    })
+  })
+
+  describe("once a manager the row cannot use kept answering", () => {
+    const credentials = Object.getOwnPropertyDescriptor(navigator, "credentials")
+    const ONEPASSWORD_ONLY: LaptopCreation = {
+      local: true,
+      os: "windows",
+      row: "windowsEdgeBrave",
+      managers: ["1password"],
+      withdrawn: [],
+      chromeTip: "gpm",
+    }
+    const otherManager = () =>
+      markPasskeyWritten(
+        new UnsupportedProviderError("manager", {
+          providerName: "Bitwarden",
+          localManagers: ["1password"],
+        }),
+      )
+    beforeEach(() => {
+      h.probeLaptopCreation.mockResolvedValue(ONEPASSWORD_ONLY)
+      Object.defineProperty(navigator, "credentials", {
+        value: { create: async () => null },
+        configurable: true,
+      })
+    })
+    afterEach(() => {
+      if (credentials) Object.defineProperty(navigator, "credentials", credentials)
+      else delete (navigator as { credentials?: unknown }).credentials
+    })
+
+    it("on a row with 1Password alone, the card's Try again opens the sheet on the phone", async () => {
+      refusedCreate({ ...GPM_ANSWER, aaguid: undefined }, otherManager)
+      await toLocalSheet()
+      await press(() => byTestId("phone-steps-local"))
+      expect(byTestId("create-refused")!.dataset.reason).toBe("UnsupportedProviderError")
+      for (let i = 0; i <= LOCAL_REFUSAL_LIMIT; i++) noteLocalRefusal()
+      const next = heldCreate()
+      await press(() => byTestId("create-retry"))
+      expect(variant()).toBe("phone")
+      expect(byTestId("phone-steps-steered")!.textContent).toBe(
+        PHONE_STEPS_COPY.local.steered.phone,
+      )
+      expect(byTestId("phone-steps-switch-local")).not.toBeNull()
+      await continueAtSteps()
+      expect(createRoute(1)).toBe("phone")
+      await act(async () => next.request!.answer())
+      await flush()
+    })
+
+    it("at the limit, Try again still opens on this computer", async () => {
+      refusedCreate({ ...GPM_ANSWER, aaguid: undefined }, otherManager)
+      await toLocalSheet()
+      await press(() => byTestId("phone-steps-local"))
+      for (let i = 0; i < LOCAL_REFUSAL_LIMIT; i++) noteLocalRefusal()
+      await press(() => byTestId("create-retry"))
+      expect(variant()).toBe("local")
+      expect(byTestId("phone-steps-steered")).toBeNull()
+    })
+  })
+
+  it("the refusal's phone exit re-opens the sheet on the phone, with Back to this computer", async () => {
+    refusedCreate(APPLE_ANSWER, () =>
+      markPasskeyWritten(new LaptopPasskeyRefusedError("apple", ["gpm"])),
+    )
+    await toLocalSheet()
+    await press(() => byTestId("phone-steps-local"))
+    const next = heldCreate()
+    await press(() => byTestId("passkey-phone"))
+    expect(variant()).toBe("phone")
+    expect(byTestId("phone-steps-back")).not.toBeNull()
+    await continueAtSteps()
+    expect(createRoute(1)).toBe("phone")
+    await act(async () => next.request!.answer())
+    await flush()
+    expect(events()).toHaveLength(2)
+  })
+
+  it("no phone exit where the browser reaches none", async () => {
+    h.probePhoneReach.mockResolvedValue("no-hybrid")
+    refusedCreate(APPLE_ANSWER, () =>
+      markPasskeyWritten(new LaptopPasskeyRefusedError("apple", ["gpm"])),
+    )
+    await toLocalSheet()
+    expect(byTestId("phone-steps-phone")).toBeNull()
+    await press(() => byTestId("phone-steps-local"))
+    expect(byTestId("create-refused")).not.toBeNull()
+    expect(byTestId("passkey-phone")).toBeNull()
+  })
+
+  it("a prompt closed on this computer with nothing made re-opens the sheet, saying so", async () => {
+    closedCreate()
+    await toLocalSheet()
+    await press(() => byTestId("phone-steps-local"))
+    // No card, no error line: the sheet again, on this computer, with the unfinished line.
+    expect(byTestId("create-refused")).toBeNull()
+    expect(container.textContent).not.toContain("Nothing was created")
+    expect(variant()).toBe("local")
+    expect(byTestId("phone-steps-unfinished")).not.toBeNull()
+    expect(events()).toEqual([
+      expect.objectContaining({ ceremony: "create", reason: "prompt_closed", prompts: "1" }),
+    ])
+    // The next pick is a new attempt.
+    const next = heldCreate()
+    await press(() => byTestId("phone-steps-local"))
+    expect(h.createAccount).toHaveBeenCalledTimes(2)
+    await act(async () => next.request!.answer(GPM_ANSWER))
+    await flush()
+    expect(events()).toHaveLength(2)
+    expect(events()[1]).toMatchObject({ outcome: "succeeded", attempt: "2" })
+  })
+
+  it("a closed prompt on the phone route goes back to the phone variant, with no error", async () => {
+    closedCreate()
+    await toLocalSheet()
+    await press(() => byTestId("phone-steps-phone"))
+    await continueAtSteps()
+    expect(container.querySelector(".ww-invite-modal-error")).toBeNull()
+    expect(variant()).toBe("phone")
+    expect(byTestId("create-refused")).toBeNull()
+  })
+
+  it("a follow-up prompt closed after the passkey was made lands on the card, with the phone exit", async () => {
+    refusedCreate(GPM_ANSWER, () =>
+      markPasskeyWritten(new DOMException("closed", "NotAllowedError")),
+    )
+    await toLocalSheet()
+    await press(() => byTestId("phone-steps-local"))
+    // A passkey exists, so the sheet's unfinished line would mislead: the card says where it is.
+    expect(byTestId("phone-steps")).toBeNull()
+    const card = byTestId("create-refused")!
+    expect(card.dataset.reason).toBe("NotAllowedError")
+    expect(byTestId("passkey-leftover")).not.toBeNull()
+    expect(byTestId("passkey-phone")).not.toBeNull()
+    await press(() => byTestId("create-retry"))
+    expect(variant()).toBe("local")
+    expect(byTestId("phone-steps-unfinished")).toBeNull()
+  })
+
+  it.each(["ok", "no-hybrid"] as const)(
+    "a refused key attempt's Try again re-opens the key variant, whose Back returns where it came from (reach %s)",
+    async (reach) => {
+      h.probePhoneReach.mockResolvedValue(reach)
+      refusedCreate({ authenticatorAttachment: "cross-platform", backupEligible: false }, () =>
+        markPasskeyWritten(new NoPrfError()),
+      )
+      await toLocalSheet()
+      await press(() => byTestId("phone-steps-security-key"))
+      expect(variant()).toBe("key")
+      await continueAtSteps()
+      expect(createRoute(0)).toBe("security-key")
+      expect(byTestId("create-refused")).not.toBeNull()
+      expect(byTestId("passkey-phone")).toBeNull()
+      await press(() => byTestId("create-retry"))
+      expect(variant()).toBe("key")
+      expect(byTestId("phone-steps-back")!.getAttribute("aria-label")).toBe("Back")
+      await press(() => byTestId("phone-steps-back"))
+      expect(variant()).toBe("local")
+    },
+  )
+})
+
+/**
  * The campaign hand-off as it ships: a silent attempt on mount, and the terms sheet's Deposit
  * spending a prompt when the bridge material was not enough. A run that asks nothing reports
  * nothing — a prompt-free success is no ceremony.
  */
-describe("signup hand-off — passkey telemetry", () => {
-  /** A fresh page for a hand-off URL, since the silent attempt fires on mount. */
-  const openHandoff = async () => {
-    await act(async () => root.unmount())
-    root = createRoot(container)
-    await render(HANDOFF)
-  }
-  /** The next hand-off asks the browser once and settles it. */
-  const handoffAsks = (settle: () => unknown = () => RESOLVED) =>
-    h.resolveHandoff.mockImplementationOnce(async (...args: unknown[]) => {
-      await harness.answered("assert", args[7] as never)
-      return settle()
-    })
-  const silentRefuses = async () => {
-    const { CeremonyRequiredError } = await import("../src/features/onboarding/oxideOnboarding")
-    h.resolveHandoff.mockRejectedValueOnce(new CeremonyRequiredError())
-  }
-
-  beforeEach(() => {
-    h.adoptHandoff.mockResolvedValue(fakeKeys)
-  })
-
-  it("the silent attempt takes the bridge material without asking, and reports nothing", async () => {
-    h.resolveHandoff.mockResolvedValueOnce(RESOLVED)
-    await openHandoff()
-    expect(h.resolveHandoff).toHaveBeenCalledTimes(1)
-    // Silent: the call itself refuses rather than prompting.
-    expect(h.resolveHandoff.mock.calls[0][6]).toBe(true)
-    expect(h.claimTag).toHaveBeenCalledTimes(1)
-    expect(events()).toEqual([])
-  })
-
-  it("a silent attempt that needs a prompt reports nothing: nothing was asked", async () => {
-    await silentRefuses()
-    await openHandoff()
-    expect(h.resolveHandoff).toHaveBeenCalledTimes(1)
-    expect(h.claimTag).not.toHaveBeenCalled()
-    expect(events()).toEqual([])
-  })
-
-  it("the terms sheet's Deposit spends the hand-off's one prompt and reports it", async () => {
-    await silentRefuses()
-    await openHandoff()
-    handoffAsks()
-    await deposit()
-    expect(h.resolveHandoff).toHaveBeenCalledTimes(2)
-    expect(h.resolveHandoff.mock.calls[1][6]).toBeFalsy()
-    expect(events()).toEqual([
-      expect.objectContaining({
-        ceremony: "sign_in",
-        flow: "handoff",
-        outcome: "succeeded",
-        prompts: "1",
-        attempt: "1",
-      }),
-    ])
-  })
-
-  it("entering the wallet on a claim the silent attempt won sends no passkey event at all", async () => {
-    h.resolveHandoff.mockResolvedValueOnce(RESOLVED)
-    await openHandoff()
-    // The identity the claim saved is what the wallet's gate reads: the spinner enters on it.
-    expect(h.navigate).toHaveBeenCalled()
-    expect(events()).toEqual([])
-  })
-
-  it("a prompt the user closes is reported as the browser's close, once", async () => {
-    await silentRefuses()
-    await openHandoff()
-    handoffAsks(() => {
-      throw new DOMException("closed", "NotAllowedError")
-    })
-    await deposit()
-    expect(events()).toEqual([
-      expect.objectContaining({
-        ceremony: "sign_in",
-        flow: "handoff",
-        outcome: "cancelled",
-        reason: "prompt_closed",
-        prompts: "1",
-      }),
-    ])
-  })
-
-  it("Cancel at the hand-off's sheet is the user's cancel, and asked nothing", async () => {
-    await silentRefuses()
-    await openHandoff()
-    h.resolveHandoff.mockImplementationOnce(async (...args: unknown[]) => {
-      await (args[4] as () => Promise<unknown>)()
-      return RESOLVED
-    })
-    await deposit()
-    expect(byTestId("sign-in-cancel")).not.toBeNull()
-    act(() => {
-      byTestId("sign-in-cancel")!.click()
-      root.unmount()
-      pageHide()
-    })
-    root = createRoot(container)
-    await flush()
-    expect(events()).toEqual([
-      expect.objectContaining({
-        ceremony: "sign_in",
-        flow: "handoff",
-        outcome: "cancelled",
-        reason: "in_app_cancel",
-        prompts: "0",
-      }),
-    ])
-  })
-
-  /**
-   * The route correction lives in the tracker, so it has to reach the events this screen sends:
-   * the wallet's own tracker reads the live browser, not an injected environment.
-   */
-  it("reports a laptop answer this browser mislabels as the phone that gave it", async () => {
-    const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(MAC_SAFARI_18_6)
-    try {
-      // The tracker reads the browser once, when it is built.
-      __resetPasskeyTelemetryForTests()
-      harness = await passkeyTelemetryHarness()
-      await silentRefuses()
-      await openHandoff()
-      handoffAsks()
-      await deposit()
-      expect(events()).toEqual([
-        expect.objectContaining({
-          ceremony: "sign_in",
-          flow: "handoff",
-          outcome: "succeeded",
-          prompts: "1",
-          // The answer says `platform`; inside the window that is the phone, not this laptop.
-          route: "phone_qr",
-          device_class: "laptop",
-          browser: "safari",
-        }),
-      ])
-    } finally {
-      ua.mockRestore()
-    }
-  })
-
-  it("leaving while the hand-off's prompt is still asking sends nothing", async () => {
-    await silentRefuses()
-    await openHandoff()
-    const held: { request?: HeldRequest } = {}
-    h.resolveHandoff.mockImplementationOnce(async (...args: unknown[]) => {
-      held.request = harness.request("assert", undefined, args[7] as never)
-      await held.request.settled
-      return RESOLVED
-    })
-    await deposit()
-    expect(held.request).toBeDefined()
-    act(() => {
-      root.unmount()
-      pageHide()
-    })
-    root = createRoot(container)
-    await flush()
-    expect(events()).toEqual([])
-  })
-})
-
-describe("signup hand-off — health report", () => {
-  const CAMPAIGN_HANDOFF = `${HANDOFF}&src=campaign`
-  const resolvedFrom = (keySource: string) => ({ ...RESOLVED, keySource })
-  const open = async (path = CAMPAIGN_HANDOFF) => {
-    await act(async () => root.unmount())
-    root = createRoot(container)
-    await render(path)
-  }
-
-  beforeEach(() => {
-    h.adoptHandoff.mockResolvedValue(fakeKeys)
-  })
-
-  it("reports the key source of a campaign hand-off's adoption, once", async () => {
-    h.resolveHandoff.mockResolvedValueOnce(resolvedFrom("handoff"))
-    await open()
-    expect(h.reportHandoffAdopted.mock.calls).toEqual([["handoff"]])
-  })
-
-  it("reports nothing for a passkey link the campaign did not send", async () => {
-    h.resolveHandoff.mockResolvedValueOnce(resolvedFrom("handoff"))
-    await open(HANDOFF)
-    expect(h.adoptHandoff).toHaveBeenCalledTimes(1)
-    expect(h.reportHandoffAdopted).not.toHaveBeenCalled()
-  })
-
-  it("reports nothing for a silent run that needs a prompt, then once for the Deposit's ceremony", async () => {
-    const { CeremonyRequiredError } = await import("../src/features/onboarding/oxideOnboarding")
-    h.resolveHandoff.mockRejectedValueOnce(new CeremonyRequiredError())
-    await open()
-    expect(h.reportHandoffAdopted).not.toHaveBeenCalled()
-    h.resolveHandoff.mockResolvedValueOnce(resolvedFrom("ceremony"))
-    await deposit()
-    expect(h.reportHandoffAdopted.mock.calls).toEqual([["ceremony"]])
-  })
-
-  it("an adoption that lands after its screen left still adopts, and reports nothing", async () => {
-    h.resolveHandoff.mockResolvedValueOnce(resolvedFrom("handoff"))
-    let land!: (keys: typeof fakeKeys) => void
-    h.adoptHandoff.mockImplementationOnce(
-      () => new Promise<typeof fakeKeys>((resolve) => (land = resolve)),
-    )
-    await open()
-    expect(h.adoptHandoff).toHaveBeenCalledTimes(1)
-    // The op goes stale while the adoption is past its point of no return.
-    await act(async () => root.unmount())
-    root = createRoot(container)
-    await act(async () => land(fakeKeys))
-    await flush()
-    expect(h.setObsidionAccount).toHaveBeenCalledWith(fakeKeys.account)
-    expect(h.reportHandoffAdopted).not.toHaveBeenCalled()
-  })
-
-  it("reports nothing for the op StrictMode's repeated effects ended, however it lands", async () => {
-    h.resolveHandoff.mockResolvedValue(resolvedFrom("cache"))
-    await act(async () => root.unmount())
-    root = createRoot(container)
-    await act(async () => {
-      root.render(
-        <React.StrictMode>
-          <MemoryRouter initialEntries={[CAMPAIGN_HANDOFF]}>
-            <Routes>
-              <Route path="/claim/:handle?" element={<OnboardingScreen />} />
-            </Routes>
-          </MemoryRouter>
-        </React.StrictMode>,
-      )
-    })
-    await flush()
-    // The simulated unmount runs the screen's cleanup, which ends the silent op's scope; its
-    // adoption still lands, but for an op that is no longer the screen's.
-    expect(h.adoptHandoff).toHaveBeenCalledTimes(1)
-    expect(h.reportHandoffAdopted).not.toHaveBeenCalled()
-  })
-})
-
-/** A reminder-email hand-off opened inside an app: its passkey fails, the card follows it. */
-describe("signup hand-off in an app's built-in browser", () => {
-  const REMINDER = "/claim/taga?entry=passkey&rp=localhost&choose=1"
-  const UA = {
-    android:
-      "Mozilla/5.0 (Linux; Android 16; Pixel 9 Build/BP2A; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/154.0.0.0 Mobile Safari/537.36",
-    iosX: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Twitter for iPhone/10.80",
-    iosInstagram:
-      "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 370.0.0.0.0 (iPhone15,2; iOS 18_5; en_US; en; scale=3.00; 1179x2556; 000000000)",
-  }
-  const startUrl = window.location.href
-  let ua: { mockRestore: () => void } | undefined
-  const refused = () => byTestId("create-refused")
-  const failures = () =>
-    h.fireEvent.mock.calls.filter(([event]) => event === "action_failed").map(([, props]) => props)
-
-  type Gate = (options: { anchor: boolean }) => Promise<{ signal: AbortSignal }>
-  /**
-   * The silent attempt finds no material; the Deposit's attempt waits at the gate's sheet, then asks
-   * `asks` times, each request held for the test.
-   */
-  const handoffAsks = (asks = 1) => {
-    const requests: HeldRequest[] = []
-    h.resolveHandoff.mockImplementation(async (...args: unknown[]) => {
-      const { CeremonyRequiredError } = await import("../src/features/onboarding/oxideOnboarding")
-      if (args[6]) throw new CeremonyRequiredError()
-      const { signal } = await (args[4] as Gate)({ anchor: true })
-      for (let i = 0; i < asks; i++) {
-        const request = harness.request("assert", signal, args[7] as never)
-        requests.push(request)
-        await request.settled
-      }
-      return RESOLVED
-    })
-    return requests
-  }
-  const open = async (userAgent: string, strict = false) => {
-    ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent)
-    window.history.replaceState(null, "", REMINDER)
-    await act(async () => root.unmount())
-    root = createRoot(container)
-    const tree = (
-      <MemoryRouter initialEntries={[REMINDER]}>
-        <Routes>
-          <Route path="/claim/:handle?" element={<OnboardingScreen />} />
-        </Routes>
-      </MemoryRouter>
-    )
-    await act(async () => root.render(strict ? <React.StrictMode>{tree}</React.StrictMode> : tree))
-    await flush()
-  }
-  /** The terms sheet's Deposit, then Continue on the gate's sheet: the request is now in the browser. */
-  const tapThroughSheet = async () => {
-    await deposit()
-    expect(byTestId("sign-in-continue")).not.toBeNull()
-    await press(() => byTestId("sign-in-continue"))
-  }
-
-  beforeEach(() => {
-    h.adoptHandoff.mockResolvedValue(fakeKeys)
-  })
-  afterEach(() => {
-    ua?.mockRestore()
-    ua = undefined
-    window.history.replaceState(null, "", startUrl)
-    h.resolveHandoff.mockReset()
-  })
-
-  it("with no passkey record here, an iPhone app's browser is told before any request, and nothing is reported", async () => {
-    h.hasRootBreadcrumb = false
-    const requests = handoffAsks()
-    await open(UA.iosInstagram, true)
-    // The silent attempt found no material; the sheet now shows the card, not the terms.
-    expect(byTestId("create-in-app-notice")).not.toBeNull()
-    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toBe(
-      `x-safari-http://${window.location.host}${REMINDER}`,
-    )
-    expect(buttons().some((b) => b.textContent?.startsWith("Deposit"))).toBe(false)
-    expect(requests).toHaveLength(0)
-    expect(failures()).toEqual([])
-    expect(events()).toEqual([])
-  })
-
-  // The cases below hold a root passkey record: a passkey worked here once, so the sheet asks,
-  // and the card follows the failure.
-  it.each([false, true])(
-    "an iPhone app browser's instant close lands on the card, not the terms (strict: %s)",
-    async (strict) => {
-      const requests = handoffAsks()
-      await open(UA.iosInstagram, strict)
-      await tapThroughSheet()
-      await act(async () => requests.at(-1)!.reject(new DOMException("closed", "NotAllowedError")))
-      await flush()
-      expect(refused()?.dataset.reason).toBe("InAppBrowser")
-      expect(byTestId("open-in-browser-link")!.getAttribute("href")).toBe(
-        `x-safari-http://${window.location.host}${REMINDER}`,
-      )
-      expect(byTestId("create-start-over")).not.toBeNull()
-      expect(buttons().some((b) => b.textContent?.startsWith("Deposit"))).toBe(false)
-      expect(failures()).toEqual([{ action: "enter_passkey", code: "err" }])
-      expect(events()).toEqual([
-        expect.objectContaining({ flow: "handoff", outcome: "cancelled", reason: "prompt_closed" }),
-      ])
-    },
-  )
-
-  it("a not-supported second approval lands on the card with its retry on the sheet", async () => {
-    const requests = handoffAsks(2)
-    await open(UA.android)
-    await tapThroughSheet()
-    await act(async () => requests[0]!.answer())
-    await flush()
-    await act(async () =>
-      requests[1]!.reject(
-        new DOMException("Error connecting to Web Authentication service", "NotSupportedError"),
-      ),
-    )
-    await flush()
-    expect(refused()?.dataset.reason).toBe("NotSupportedError")
-    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toContain("intent://")
-    expect(buttons().some((b) => b.textContent?.startsWith("Deposit"))).toBe(true)
-    expect(events()).toEqual([
-      expect.objectContaining({ flow: "handoff", outcome: "failed", reason: "not_supported" }),
-    ])
-
-    // The sheet's button runs the hand-off again, never a create, and lands on the same card.
-    const calls = h.resolveHandoff.mock.calls.length
-    h.fireEvent.mockClear()
-    await deposit()
-    expect(byTestId("sign-in-continue")).not.toBeNull()
-    await press(() => byTestId("sign-in-continue"))
-    expect(h.resolveHandoff).toHaveBeenCalledTimes(calls + 1)
-    await act(async () => requests.at(-1)!.reject(new DOMException("again", "NotSupportedError")))
-    await flush()
-    expect(h.createAccount).not.toHaveBeenCalled()
-    expect(refused()?.dataset.reason).toBe("NotSupportedError")
-    expect(
-      h.fireEvent.mock.calls.filter(([e]) => e === "registration_terms_accepted"),
-    ).toHaveLength(1)
-    expect(failures()).toEqual([{ action: "enter_passkey", code: "err" }])
-  })
-})
-
 describe("signup create in an app's built-in browser", () => {
-  it("a create Cancel ended shows nothing when it then fails as not supported", async () => {
+  it("a create the user closed shows nothing when it then fails as not supported", async () => {
     const ua = vi
       .spyOn(navigator, "userAgent", "get")
       .mockReturnValue(
@@ -919,7 +988,7 @@ describe("signup create in an app's built-in browser", () => {
       // A phone has no steps to pass: Deposit asks the browser.
       await deposit()
       expect(held.request).toBeDefined()
-      await pressLabel("Cancel")
+      await closeSheet()
       await act(async () => held.request!.reject(new DOMException("late", "NotSupportedError")))
       await flush()
       expect(byTestId("create-refused")).toBeNull()

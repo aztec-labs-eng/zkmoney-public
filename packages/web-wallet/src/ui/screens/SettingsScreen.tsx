@@ -28,6 +28,8 @@ import { useNonContactRequests } from "../../features/requests/useNonContactRequ
 import { RESET_PATH } from "../ResetScreen"
 import { useHideBalances } from "../prefs"
 import { ConfigProfileModal } from "../../dev/ConfigProfileModal"
+import { useRegistrationTagChangeable } from "../../features/onboarding/openRegistration"
+import { ChooseNameSheet } from "../../features/onboarding/ChooseNameSheet"
 
 // ponytail: hoist to config once a FAQ page exists.
 const FAQ_URL = "https://docs.zk.money/docs/faq"
@@ -69,8 +71,17 @@ export function SettingsScreen() {
   const { value: consent, setValue: setConsent } = useConfigValue("analyticsConsent")
   const nonContact = useNonContactRequests()
   const [modal, setModal] = useState<
-    "feedback" | "bug" | "contracts" | "allowance" | "limits" | "endpoints" | "recover" | "config"
+    | "feedback"
+    | "bug"
+    | "contracts"
+    | "allowance"
+    | "limits"
+    | "endpoints"
+    | "recover"
+    | "config"
+    | "name"
   >()
+  const tagChangeable = useRegistrationTagChangeable()
   const allowance = useSponsoredAllowance()
   useEffect(() => {
     // Uses change with every sponsored batch, so each visit reads again.
@@ -137,7 +148,17 @@ export function SettingsScreen() {
             trailing={
               <>
                 <Trailing>{identity ? `@${identity.handle}` : "—"}</Trailing>
-                <Icon name="lock" size={16} color="var(--text-secondary)" />
+                {tagChangeable ? (
+                  <button
+                    type="button"
+                    className="zkm-btn-reset ww-deposit__link"
+                    onClick={() => setModal("name")}
+                  >
+                    Change
+                  </button>
+                ) : (
+                  <Icon name="lock" size={16} color="var(--text-secondary)" />
+                )}
               </>
             }
           />
@@ -268,6 +289,9 @@ export function SettingsScreen() {
         <ConfigProfileModal onClose={() => setModal(undefined)} />
       )}
       {modal === "recover" && <StrandedRecoveryModal onClose={() => setModal(undefined)} />}
+      {modal === "name" && identity?.handle && (
+        <ChooseNameSheet tag={identity.handle} onClose={() => setModal(undefined)} />
+      )}
     </div>
   )
 }

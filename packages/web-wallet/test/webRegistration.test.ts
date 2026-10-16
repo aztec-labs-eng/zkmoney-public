@@ -19,7 +19,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   readNameClaimLog,
 }))
-vi.mock("../src/lib/analytics", () => ({ fireEvent }))
+vi.mock("../src/lib/analytics", () => ({ fireOnboardingEvent: fireEvent }))
 // The logout-gate reader is the only path here that touches config; boot-failure cases pass their own.
 vi.mock("../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/env")>()),

@@ -2,12 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { walletStorage } from "../src/platform/storage/walletStorage"
 import { testWalletDbs } from "./support/fakeWalletDb"
 
-const h = vi.hoisted(() => ({ showReportableError: vi.fn(), campaignUrl: "" }))
+const h = vi.hoisted(() => ({ showReportableError: vi.fn() }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: h.showReportableError }))
 vi.mock("../src/platform/auth/useAuthenticator", () => ({ peekAuthService: () => undefined }))
-vi.mock("../src/config/env", () => ({
-  getConfig: () => ({ rpId: "localhost", campaignUrl: h.campaignUrl }),
-}))
+vi.mock("../src/config/env", () => ({ getConfig: () => ({ rpId: "localhost" }) }))
 vi.mock("../src/platform/auth/WebPasskeyIdentityMap", () => ({
   hasMskRootBreadcrumb: () => false,
   rememberUsertag: () => Promise.resolve(),
@@ -33,7 +31,6 @@ describe("logout", () => {
     assign.mockClear()
     stopPxe.mockClear()
     h.showReportableError.mockClear()
-    h.campaignUrl = ""
     Object.defineProperty(window, "location", { value: { assign }, writable: true })
   })
 
@@ -50,26 +47,8 @@ describe("logout", () => {
     expect(readCachedMsk()).toBeNull()
     expect(walletStorage.getItem("obsidion.aaa.obsidion_contacts")).toBe("keep")
     expect(stopPxe).toHaveBeenCalledOnce()
-    // No campaign in this build: the wallet's own route is all there is.
     expect(assign).toHaveBeenCalledWith("/claim")
     expect(stopPxe.mock.invocationCallOrder[0]).toBeLessThan(assign.mock.invocationCallOrder[0])
-  })
-
-  it("lands on the campaign signed out of it too, where signing back in starts", async () => {
-    h.campaignUrl = "https://launch.test.invalid"
-    saveWalletIdentity({ handle: "@alice", address: "0xa", claimedAt: 1 })
-    setActiveStorageId("aaa")
-    await logout(stopPxe)
-    expect(loadWalletIdentity()).toBeNull()
-    // The campaign's session is a cookie only that origin can clear, so the URL asks it to.
-    expect(assign).toHaveBeenCalledWith("https://launch.test.invalid/?signedout=1")
-  })
-
-  it("asks once for a campaign URL that already ends in a slash", async () => {
-    h.campaignUrl = "https://launch.test.invalid/"
-    setActiveStorageId("aaa")
-    await logout(stopPxe)
-    expect(assign).toHaveBeenCalledWith("https://launch.test.invalid/?signedout=1")
   })
 
   it("a store that refuses the removal is reported and nothing reloads", async () => {

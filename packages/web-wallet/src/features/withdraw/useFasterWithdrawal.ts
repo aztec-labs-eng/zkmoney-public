@@ -32,12 +32,12 @@ export type LoadFasterWithdrawal = (
   node: WithdrawalSpeedupNode,
 ) => Promise<{ estimate: WithdrawalSpeedupEstimate; quote: ProverTipQuote }>
 
-/** The offer one load makes; none when the tip is zero. */
+/** The offer one load makes; none when the tip is zero or the burn may land past the tip cutoff. */
 export function fasterWithdrawalOffer({
   estimate,
   quote,
 }: Awaited<ReturnType<LoadFasterWithdrawal>>): FasterWithdrawal | undefined {
-  return quote.proverTip > 0n
+  return quote.proverTip > 0n && !estimate.pastTipCutoff
     ? {
         proverTip: quote.proverTip,
         standardEtaSeconds: estimate.standardEtaSeconds,
@@ -52,7 +52,8 @@ let estimatorCache:
   | { network: Network; node: WithdrawalSpeedupNode; estimator: WithdrawalSpeedupEstimator }
   | undefined
 
-function speedupEstimator(
+/** One estimator per node, so the proof-latency calibration is shared across flows. */
+export function speedupEstimator(
   network: Network,
   node: WithdrawalSpeedupNode,
   publicClient: PublicClient,

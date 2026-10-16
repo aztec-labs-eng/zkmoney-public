@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import type { SignInRoute } from "@obsidion/core/types"
 import {
   type DevicePosture,
+  type LaptopCreation,
   type PasskeyHint,
   type PhoneReach,
   PhoneUnreachableError,
@@ -14,13 +15,11 @@ import { getAuthService } from "../../platform/auth/useAuthenticator"
 /**
  * The moment before a passkey ceremony. Every flow that can end in one awaits the gate its screen
  * owns. On a laptop the gate holds the screen in an "awaiting action" state and resolves once the
- * user taps Continue; a creation additionally checks the browser can reach a phone and hands back
- * the route the user picked (a phone or a key). A sign-in picks no device — the browser's own
- * account chooser lists whatever holds the passkey — so it just shows a "Sign in" sheet and
- * resolves with no route. A phone resolves at once: its own passkey is the only route the policy
- * accepts there. The exception is an `anchor`ed sign-in (the hand-off), whose assertion runs off the
- * intro rather than a button of its own: the phone holds its "Sign in" sheet too, so the sheet's tap
- * carries the user activation the passkey prompt needs.
+ * user taps Continue; a creation additionally checks the browser can reach a phone and whether
+ * this laptop may create on its own password manager, and hands back the route the user picked
+ * (this device, a phone or a key). A sign-in picks no device — the browser's own account chooser
+ * lists whatever holds the passkey — so it just shows a "Sign in" sheet and resolves with no
+ * route. A phone resolves at once: its own passkey is the only route the policy accepts there.
  *
  * A sign-in that needs a second prompt calls the gate again with that signal: every device holds
  * for one tap on a sheet that says why a second approval is needed.
@@ -30,8 +29,21 @@ import { getAuthService } from "../../platform/auth/useAuthenticator"
  */
 export type CeremonyPurpose = "create" | "sign-in"
 
-/** What the gate resolves with: the attempt signal, the route a creation picked, and the reach it probed. */
-export type GateResult = { signal: AbortSignal; route?: SignInRoute; reach: PhoneReach }
+/** The creation sheet's variants: this computer's managers, the phone over QR, a security key. */
+export type SheetVariant = "local" | "phone" | "key"
+
+/**
+ * What the gate resolves with: the attempt signal, the route a creation picked, the variant it was
+ * picked from (for a key, the one its Back returned to), and what the probes said. Only a creation
+ * carries `creation`.
+ */
+export type GateResult = {
+  signal: AbortSignal
+  route?: SignInRoute
+  from?: SheetVariant
+  reach: PhoneReach
+  creation?: LaptopCreation
+}
 
 export type GatePrompt = "phone-steps" | "sign-in" | "approve-again"
 
@@ -40,14 +52,21 @@ export type GateState =
   | { kind: "probing" }
   /**
    * `prompt` is what the screen renders: the "Sign in" sheet, the creation steps, or the tap before
-   * a second prompt. `reach` is what the browser said about reaching another device, so the creation
-   * steps can name a device. `proceed` takes the route a creation picked (a sign-in passes none).
+   * a second prompt. `reach` and `creation` are what the browser said, so the creation steps can
+   * name a device and offer this computer. `openOn` is the variant the sheet opens on when the
+   * screen asks for one, with `from` the variant a key variant's Back returns to; `unfinished`
+   * marks a sheet re-opened after the browser's prompt closed with nothing made. `proceed` takes
+   * the route a creation picked and the variant it was picked from (a sign-in passes none).
    */
   | {
       kind: "awaiting-action"
       prompt: GatePrompt
       reach: PhoneReach
-      proceed: (route?: SignInRoute) => void
+      creation: LaptopCreation
+      openOn?: SheetVariant
+      from?: SheetVariant
+      unfinished?: boolean
+      proceed: (route?: SignInRoute, from?: SheetVariant) => void
     }
 
 export type GateOptions = {
@@ -56,17 +75,18 @@ export type GateOptions = {
   /** The attempt whose second passkey prompt this gate precedes. */
   again?: AbortSignal
   /**
-   * Hold the sheet on a phone too, for a ceremony driven off no button of its own (the hand-off).
-   * The tap the sheet waits for is the user activation the passkey prompt
-   * needs; without it the phone browser refuses the assertion.
-   */
-  anchor?: boolean
-  /**
    * The route the screen's own creation sheet picked with its tap: the gate still probes (a
-   * below-floor laptop is refused) but holds no sheet of its own. A security key is kept; a phone
+   * below-floor laptop is refused) but holds no sheet of its own. A security key is kept; this
+   * device is kept while the probe allows it, else the sheet is held on the phone variant; a phone
    * pick opens on the route the probed reach allows.
    */
   unheld?: SignInRoute
+  /** Hold the creation sheet on this variant: a refusal's way back, or a closed prompt's. */
+  openOn?: SheetVariant
+  /** The variant `unheld` was picked from, or the one `openOn`'s Back returns to. */
+  from?: SheetVariant
+  /** The sheet re-opens after the browser's prompt closed with nothing made. */
+  unfinished?: boolean
 }
 
 /** The route a creation opens on without a pick: the phone where one is reachable, else the key. */
@@ -76,7 +96,11 @@ function routeFor(reach: PhoneReach): SignInRoute {
 
 /** The route a creation sheet's control opens on, from the hints it passes. */
 export const routeForHints = (hints: readonly PasskeyHint[]): SignInRoute =>
-  hints.includes("hybrid") ? "phone" : "security-key"
+  hints.includes("client-device")
+    ? "this-device"
+    : hints.includes("hybrid")
+    ? "phone"
+    : "security-key"
 
 export type CeremonyGate = (options?: GateOptions) => Promise<GateResult>
 
@@ -93,15 +117,34 @@ export function isGateCancelled(err: unknown): boolean {
 
 const IDLE: GateState = { kind: "idle" }
 
+/** What a sign-in, a phone, or a failed probe says about this laptop creating: it doesn't. */
+export const PHONE_CREATION: LaptopCreation = { local: false, chromeTip: false }
+
 /** One gate() call; `reject` points at whatever the call is currently waiting on. */
 type Attempt = { reject: (err: Error) => void }
 
-async function probe(): Promise<PhoneReach> {
+async function probeReach(): Promise<PhoneReach> {
   try {
     return (await getAuthService().probePhoneReach()) ?? "unknown"
   } catch {
     return "unknown"
   }
+}
+
+async function probeCreation(): Promise<LaptopCreation> {
+  try {
+    return (await getAuthService().probeLaptopCreation?.()) ?? PHONE_CREATION
+  } catch {
+    return PHONE_CREATION
+  }
+}
+
+type Probed = { reach: PhoneReach; creation: LaptopCreation }
+
+/** Both probes for one attempt, so a creation sheet never opens on half an answer. */
+async function probe(): Promise<Probed> {
+  const [reach, creation] = await Promise.all([probeReach(), probeCreation()])
+  return { reach, creation }
 }
 
 /**
@@ -146,7 +189,8 @@ export function useCeremonyGate(
 
   /**
    * Hold in `awaiting-action` until the user proceeds; `probeFirst` (a creation only) asks the
-   * browser about a phone first, so the steps can name a device and a below-floor laptop is refused.
+   * browser about a phone and this computer first, so the steps can name a device and a below-floor
+   * laptop is refused.
    */
   const hold = useCallback(
     async (params: {
@@ -155,48 +199,67 @@ export function useCeremonyGate(
       probeFirst: boolean
       /** The screen's own sheet already took the tap: resolve straight after the probe, no sheet. */
       unheld?: SignInRoute
-    }): Promise<{ route?: SignInRoute; reach: PhoneReach }> => {
+      openOn?: SheetVariant
+      from?: SheetVariant
+      unfinished?: boolean
+    }): Promise<Probed & { route?: SignInRoute; from?: SheetVariant }> => {
       // The waiter is registered before any async work, so a cancel during a probe that never settles
       // still ends the call at once.
       const waiter: Attempt = { reject: () => {} }
       const cancelled = new Promise<never>((_, reject) => (waiter.reject = reject))
       pending.current = waiter
-      let reach: PhoneReach = "unknown"
+      let probed: Probed = { reach: "unknown", creation: PHONE_CREATION }
+      let openOn = params.openOn
+      let from = params.from
       if (params.probeFirst) {
         setState({ kind: "probing" })
-        reach = await Promise.race([probe(), cancelled])
+        probed = await Promise.race([probe(), cancelled])
         if (pending.current !== waiter) throw new GateCancelledError()
-        if (params.purpose === "create" && !mayStartLaptopCeremony(reach)) {
+        if (params.purpose === "create" && !mayStartLaptopCeremony(probed.reach)) {
           pending.current = undefined
           setState(IDLE)
           throw new PhoneUnreachableError()
         }
-        if (params.unheld) {
-          pending.current = undefined
-          setState(IDLE)
-          if (!mounted.current) throw new GateCancelledError()
-          const route = params.unheld === "security-key" ? params.unheld : routeFor(reach)
-          return { route, reach }
-        }
-      }
-      const route = await new Promise<SignInRoute | undefined>((resolve, reject) => {
-        waiter.reject = reject
-        setState({
-          kind: "awaiting-action",
-          prompt: params.prompt,
-          reach,
-          proceed: (picked) => {
-            // A button from an earlier render must not release a later call's waiter.
-            if (pending.current !== waiter) return
+        if (params.unheld && !openOn) {
+          const kept =
+            params.unheld === "security-key" ||
+            (params.unheld === "this-device" && probed.creation.local)
+          if (kept || params.unheld === "phone") {
             pending.current = undefined
             setState(IDLE)
-            resolve(picked)
-          },
-        })
-      })
+            if (!mounted.current) throw new GateCancelledError()
+            const route = kept ? params.unheld : routeFor(probed.reach)
+            return { ...probed, route, from: params.from }
+          }
+          // This device was picked but the probe no longer allows it: the user sees the sheet,
+          // never a silent QR code, with no way back to a variant that is gone.
+          openOn = "phone"
+          from = undefined
+        }
+      }
+      const picked = await new Promise<{ route?: SignInRoute; from?: SheetVariant }>(
+        (resolve, reject) => {
+          waiter.reject = reject
+          setState({
+            kind: "awaiting-action",
+            prompt: params.prompt,
+            ...probed,
+            openOn,
+            from,
+            unfinished: params.unfinished,
+            proceed: (route, from) => {
+              // A button from an earlier render must not release a later call's waiter.
+              if (pending.current !== waiter) return
+              pending.current = undefined
+              setState(IDLE)
+              resolve({ route, from })
+            },
+          })
+        },
+      )
       // The screen may have gone between the tap and this continuation; its prompt goes with it.
       if (!mounted.current) throw new GateCancelledError()
-      return { route, reach }
+      return { ...probed, ...picked }
     },
     [],
   )
@@ -215,21 +278,23 @@ export function useCeremonyGate(
       attempt.current = controller
       // A sign-in that owns its own screen's tap (EnterAppScreen, `holdsSignIn: false`) asks nothing
       // here; a phone otherwise resolves at once, its own passkey the only route the policy accepts.
-      // The exception is an anchored ceremony: a hand-off's assertion runs off no button of its own,
-      // so it asks the gate to hold its "Sign in" sheet on the phone too — the sheet's tap is the
-      // fresh user activation the passkey prompt needs, without which the phone browser refuses it.
       const signIn = purpose === "sign-in"
       if (signIn && !holdsSignIn) return { signal: controller.signal, reach: "unknown" }
-      if (posture() !== "laptop" && !(signIn && options?.anchor)) {
-        return { signal: controller.signal, reach: "unknown" }
-      }
-      const { route, reach } = await hold({
+      if (posture() !== "laptop") return { signal: controller.signal, reach: "unknown" }
+      const { route, from, reach, creation } = await hold({
         prompt: signIn ? "sign-in" : "phone-steps",
         purpose,
         probeFirst: !signIn,
-        unheld: signIn ? undefined : options?.unheld,
+        ...(signIn
+          ? {}
+          : {
+              unheld: options?.unheld,
+              openOn: options?.openOn,
+              from: options?.from,
+              unfinished: options?.unfinished,
+            }),
       })
-      return { signal: controller.signal, route, reach }
+      return { signal: controller.signal, route, from, reach, ...(signIn ? {} : { creation }) }
     },
     [cancel, hold, holdsSignIn, posture],
   )

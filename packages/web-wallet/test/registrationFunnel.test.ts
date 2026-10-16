@@ -2,9 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { walletStorage } from "../src/platform/storage/walletStorage"
 
 const fireEvent = vi.fn()
-vi.mock("../src/lib/analytics", () => ({ fireEvent }))
+vi.mock("../src/lib/analytics", () => ({ fireOnboardingEvent: fireEvent }))
+const pending = vi.hoisted(() => ({ record: null as { tag: string; sipaAddress: string } | null }))
+vi.mock("../src/features/onboarding/webRegistration", () => ({
+  getPendingStore: () => ({ current: () => pending.record }),
+}))
 
 const {
+  rememberRegistrationRoute,
   reportRegistrationDepositFunded,
   reportRegistrationDepositShown,
   reportRegistrationDepositSwept,
@@ -19,22 +24,33 @@ describe("registration funnel reporters", () => {
   })
 
   it("each lap emits once per key, across surfaces and durations rounded non-negative", () => {
-    reportRegistrationDepositShown(ADDR, "earned_tag")
-    reportRegistrationDepositShown(ADDR, "earned_tag")
+    reportRegistrationDepositShown(ADDR)
+    reportRegistrationDepositShown(ADDR)
     reportRegistrationDepositFunded(ADDR, 45_000.6)
     reportRegistrationDepositFunded(ADDR, 90_000)
     reportRegistrationDepositSwept("acct", -5)
     reportRegistrationDepositSwept("acct", 10)
     expect(fireEvent.mock.calls).toEqual([
-      ["registration_deposit_shown", { kind: "earned_tag" }],
+      ["registration_deposit_shown"],
       ["registration_deposit_funded", { duration_ms: 45_001 }],
       ["registration_deposit_swept", { duration_ms: 0 }],
     ])
   })
 
-  it("names no kind while the schedule that settles it is unread", () => {
-    reportRegistrationDepositShown(`0x${"f7".repeat(20)}`)
-    expect(fireEvent.mock.calls).toEqual([["registration_deposit_shown", undefined]])
+  it("reports the current registration's route, and none for another tag or address", () => {
+    const current = `0x${"c2".repeat(20)}`
+    pending.record = { tag: "river", sipaAddress: current }
+    rememberRegistrationRoute("otter", "random")
+    reportRegistrationDepositShown(`0x${"c1".repeat(20)}`)
+    rememberRegistrationRoute("river", "past_user")
+    reportRegistrationDepositShown(`0x${"c3".repeat(20)}`)
+    reportRegistrationDepositShown(current.toUpperCase().replace("0X", "0x"))
+    expect(fireEvent.mock.calls).toEqual([
+      ["registration_deposit_shown"],
+      ["registration_deposit_shown"],
+      ["registration_deposit_shown", { route: "past_user" }],
+    ])
+    pending.record = null
   })
 
   it("the latch persists in localStorage so a reload (fresh module memory) stays deduped", () => {

@@ -14,6 +14,7 @@ import {
 } from "@obsidion/front-core"
 import { NotificationsPanel, freshToasts, toastKey } from "../src/ui/NotificationsPanel"
 import { NotificationsBell } from "../src/ui/NotificationsBell"
+import { useMigrationDialogRequest } from "../src/features/migration/migrationDialog"
 
 const layout = vi.hoisted(() => ({ phone: false }))
 vi.mock("../src/ui/usePhoneLayout", () => ({ usePhoneLayout: () => layout.phone }))
@@ -91,6 +92,51 @@ describe("NotificationsPanel", () => {
     })
     expect(AppNotificationStore.get().unreadCount()).toBe(0)
     expect(AppNotificationStore.get().get("transfer:receive:0xabc")?.dismissedAt).toBeTruthy()
+  })
+
+  it("opens the migration dialog from the old-version funds row, which stays until dismissed", async () => {
+    const store = AppNotificationStore.get()
+    await store.upsert({
+      id: "migration:residuals",
+      producer: "migration",
+      domain: "migration",
+      sourceId: "migration:residuals",
+      title: "Funds on an old version",
+      description: "1 deposit(s) waiting on the old network",
+      timestampMs: 1_700_000_002_000,
+      systemIcon: "clock.arrow.circlepath",
+      severity: "info",
+      target: { type: "migration.residuals" },
+    })
+    let requests = 0
+    function Requests() {
+      requests = useMigrationDialogRequest()
+      return null
+    }
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/"]}>
+          <Routes>
+            <Route path="/" element={<NotificationsPanel onClose={() => {}} />} />
+            <Route path="/activity" element={<Activity />} />
+          </Routes>
+          <Requests />
+        </MemoryRouter>,
+      )
+    })
+    const row = () =>
+      Array.from(container.querySelectorAll<HTMLElement>(".ww-notifications__row")).find((r) =>
+        r.textContent?.includes("waiting on the old network"),
+      )
+    const before = requests
+    await act(async () => row()!.click())
+    expect(requests).toBe(before + 1)
+    expect(container.textContent).not.toContain("activity")
+    expect(store.get("migration:residuals")).toMatchObject({ read: true })
+    expect(store.get("migration:residuals")?.dismissedAt).toBeUndefined()
+
+    await act(async () => store.dismiss("migration:residuals"))
+    expect(row()).toBeUndefined()
   })
 
   it("spins on a live row and leaves it for its producer to retire", async () => {

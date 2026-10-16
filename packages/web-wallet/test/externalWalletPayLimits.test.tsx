@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { parseUnits } from "viem"
 import type { RequestInlinePacket } from "@obsidion/front-core"
+import type { LinkDeployment } from "../src/features/requests/accountlessRequest"
 
 const SIPA = `0x${"aa".repeat(20)}`
 const L1_TOKEN = `0x${"22".repeat(20)}` as const
@@ -39,12 +40,34 @@ vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
 vi.mock("@obsidion/web-ds", () => ({
   GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
   Icon: () => null,
-  PrimaryGradientButton: ({ title, onClick }: { title: string; onClick?: () => void }) => (
-    <button type="button" onClick={onClick}>
+  PrimaryGradientButton: ({
+    title,
+    onClick,
+    isDisabled,
+  }: {
+    title: string
+    onClick?: () => void
+    isDisabled?: boolean
+  }) => (
+    <button type="button" onClick={onClick} disabled={isDisabled}>
       {title}
     </button>
   ),
   TopNavIconButton: () => null,
+}))
+
+const l1 = vi.hoisted(() => ({
+  account: null as string | null,
+  pickerOpen: false,
+  connect: undefined as unknown as () => Promise<void>,
+}))
+vi.mock("../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => l1 }))
+const walletSend = vi.hoisted(() => ({ props: undefined as Record<string, any> | undefined }))
+vi.mock("../src/features/deposit/DepositFromWalletModal", () => ({
+  DepositFromWalletModal: (props: Record<string, any>) => {
+    walletSend.props = props
+    return <div data-testid="wallet-send" />
+  },
 }))
 
 const { ExternalWalletPayModal } = await import("../src/features/requests/ExternalWalletPayModal")
@@ -73,8 +96,9 @@ function packet(amount: string, embedded = true): RequestInlinePacket {
   } as RequestInlinePacket
 }
 
-function result(p: RequestInlinePacket) {
+function result(p: RequestInlinePacket, deployment?: LinkDeployment) {
   return {
+    deployment: deployment ?? (p.sipaAddress ? "unproven" : "active"),
     sipaAddress: SIPA,
     token: L1_TOKEN,
     decimals: 18,
@@ -88,6 +112,11 @@ let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
+  localStorage.clear()
+  l1.account = null
+  l1.pickerOpen = false
+  l1.connect = vi.fn(async () => {})
+  walletSend.props = undefined
   capacity.availableAtomic = 40_000n * 10n ** 18n
   capacity.readFails = false
   capacity.globalLimitAtomic = undefined
@@ -104,9 +133,16 @@ afterEach(() => {
   container.remove()
 })
 
-const render = async (p: RequestInlinePacket) => {
+const render = async (p: RequestInlinePacket, deployment?: LinkDeployment) => {
   await act(async () => {
-    root.render(<ExternalWalletPayModal packet={p} result={result(p)} onClose={() => {}} />)
+    root.render(
+      <ExternalWalletPayModal
+        packet={p}
+        result={result(p, deployment)}
+        onClose={() => {}}
+        onFeeChanged={() => {}}
+      />,
+    )
   })
   // The capacity key, then the bucket's first read.
   for (let i = 0; i < 5; i++) await act(async () => {})
@@ -171,7 +207,10 @@ describe("ExternalWalletPayModal limits", () => {
     expect(buttonNamed("Show")?.disabled).toBe(false)
     expect(buttonNamed("Copy")?.disabled).toBe(false)
     expect(document.querySelector("[data-testid='request-over-limit']")).toBeNull()
-    expect(document.body.textContent).toContain("the requested amount plus the deposit fee")
+    expect(document.querySelector(".ww-paylink-summary__amount")?.textContent).toBe("$2,500.00")
+    expect(document.querySelector("[data-testid='request-fee']")?.textContent).toBe(
+      "Includes a $0.35 deposit fee",
+    )
   })
 
   it("holds copy and scan for a request over the limit, and keeps its address and amount", async () => {
@@ -186,9 +225,8 @@ describe("ExternalWalletPayModal limits", () => {
     expect(notice).not.toMatch(
       /send (it )?again|separate|another transfer|one transfer|split|more than one/i,
     )
-    // The requested amount is shown as asked, never reduced to fit.
-    expect(document.body.textContent).toContain("$2,500.00")
-    expect(document.body.textContent).not.toContain("the requested amount plus the deposit fee")
+    // The amount is shown as asked plus the fee, never reduced to fit.
+    expect(document.querySelector(".ww-paylink-summary__amount")?.textContent).toBe("$2,500.35")
   })
 
   it("shows the limits for an open request and leaves sharing to the payer", async () => {
@@ -202,6 +240,91 @@ describe("ExternalWalletPayModal limits", () => {
     vi.restoreAllMocks()
     expect(buttonNamed("Copy")?.disabled).toBe(false)
     expect(buttonNamed("Show")?.disabled).toBe(false)
+  })
+
+  describe("link deployment", () => {
+    it("checks a link's address proven on the active deployment against the active bucket", async () => {
+      await render(packet("100"), "active")
+      expect(capacity.keys.length).toBeGreaterThan(0)
+      expect(panel()?.className).toContain("ww-capacity--quiet")
+    })
+
+    it("says an expired link has expired and offers nothing to pay it", async () => {
+      await render(packet("100"), "expired")
+      expect(document.querySelector("[data-testid='request-expired']")?.textContent).toContain(
+        "@alice",
+      )
+      expect(addressButton()).toBeNull()
+      expect(buttonNamed("Show")).toBeUndefined()
+      expect(buttonNamed("Copy")).toBeUndefined()
+      expect(buttonNamed("Pay with wallet")).toBeUndefined()
+      expect(document.body.textContent).not.toContain(SIPA)
+      expect(capacity.keys).toEqual([])
+    })
+  })
+
+  describe("pay with wallet", () => {
+    const sendOpen = () => document.querySelector("[data-testid='wallet-send']")
+
+    it("sends a fixed request from the connected wallet to the payee's address", async () => {
+      l1.account = `0x${"ee".repeat(20)}`
+      await render(packet("100"))
+      await click(buttonNamed("Pay with wallet")!)
+      expect(walletSend.props).toMatchObject({
+        deposit: { address: SIPA },
+        payee: "alice",
+        fixedAmount: "100",
+        fee: "0.35",
+      })
+      await act(async () =>
+        walletSend.props!.onSent({
+          address: SIPA,
+          txHash: `0x${"ab".repeat(32)}`,
+          amount: "100.35",
+          tokenSymbol: "USDC",
+        }),
+      )
+      expect(sendOpen()).toBeNull()
+      expect(document.querySelector("[data-testid='request-sent']")?.textContent).toContain(
+        "@alice",
+      )
+      expect(buttonNamed("Copy")).toBeUndefined()
+      // Reopened before the transfer settles: no second payment until the payer asks for one.
+      await act(async () => root.render(<></>))
+      await render(packet("100"))
+      expect(document.querySelector("[data-testid='request-unresolved']")).not.toBeNull()
+      expect(buttonNamed("Pay with wallet")).toBeUndefined()
+      await click(buttonNamed("Pay again")!)
+      expect(buttonNamed("Pay with wallet")).toBeDefined()
+    })
+
+    it("leaves an open request's amount to the payer", async () => {
+      l1.account = `0x${"ee".repeat(20)}`
+      await render(packet("0"))
+      await click(buttonNamed("Pay with wallet")!)
+      expect(walletSend.props?.fixedAmount).toBeUndefined()
+    })
+
+    it("connects a wallet first, then opens the send", async () => {
+      l1.connect = vi.fn(async () => {
+        l1.pickerOpen = true
+      })
+      await render(packet("100"))
+      await click(buttonNamed("Pay with wallet")!)
+      expect(l1.connect).toHaveBeenCalledOnce()
+      expect(sendOpen()).toBeNull()
+      l1.account = `0x${"ee".repeat(20)}`
+      await render(packet("100"))
+      expect(sendOpen()).not.toBeNull()
+    })
+
+    it("is held with Copy and Show when the request is over the limit", async () => {
+      l1.account = `0x${"ee".repeat(20)}`
+      await render(packet("2500"))
+      expect(buttonNamed("Pay with wallet")?.disabled).toBe(true)
+      await click(buttonNamed("Pay with wallet")!)
+      expect(sendOpen()).toBeNull()
+    })
   })
 
   describe("shared capacity", () => {
@@ -278,7 +401,7 @@ describe("ExternalWalletPayModal limits", () => {
       expect(document.querySelector("[data-testid='request-over-limit']")?.textContent).toBe(
         "Copy and scan are paused until this payment fits current capacity.",
       )
-      expect(document.body.textContent).toContain("$100.00")
+      expect(document.body.textContent).toContain("$100.35")
     })
 
     it("warns before sharing an open request's address while capacity is zero", async () => {
@@ -306,7 +429,7 @@ describe("ExternalWalletPayModal limits", () => {
       expect(buttonNamed("Copy")?.disabled).toBe(true)
       expect(buttonNamed("Show")?.disabled).toBe(true)
       expect(navigator.clipboard.writeText).not.toHaveBeenCalled()
-      expect(document.body.textContent).toContain("$100.00")
+      expect(document.body.textContent).toContain("$100.35")
     })
 
     it("asks again on each copy inside the QR while capacity is unconfirmed", async () => {

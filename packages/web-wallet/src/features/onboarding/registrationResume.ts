@@ -7,8 +7,6 @@ import type { Address } from "viem"
 import { fetchSipaEvents, type ObsidionWallet } from "@obsidion/sdk"
 import {
   SIPADepositStore,
-  deriveBootstrapKey,
-  type CampaignClaimSigner,
   type OxideResumeDeps,
   type PendingRegistrationRecord,
 } from "@obsidion/front-core"
@@ -32,18 +30,6 @@ export async function unlockedSessionKeys(
     secretKey,
     authProvider,
     pubkeyHex: `0x${Buffer.concat([x, y]).toString("hex")}`,
-  }
-}
-
-/** The campaign claim notice's signer: the unlocked session's bootstrap key, for its own account. */
-export function campaignClaimSigner(
-  wallet: ObsidionWallet,
-): (l2Address: string) => Promise<CampaignClaimSigner | null> {
-  return async (l2Address) => {
-    const keys = await unlockedSessionKeys(wallet)
-    if (!keys) return null
-    const owned = keys.account.getAddress().toString().toLowerCase() === l2Address.toLowerCase()
-    return owned ? deriveBootstrapKey(keys.secretKey) : null
   }
 }
 

@@ -5,6 +5,9 @@
  * L1 `Sweep` + portal `Deposit` events supply refundable deposits. It requires no wallet records.
  * The record input remains as a compatibility surface for existing record-based callers.
  */
+import type { Address, Hex, PublicClient } from "viem"
+import type { FrozenDepositDescriptor } from "@obsidion/core/types"
+import { readDepositMessageKey, readSweepEvents } from "@obsidion/sdk"
 import type { SIPADepositPhase, SIPADepositRecord } from "./SIPADepositStore"
 
 /** The minimum secret-bearing identity needed to find refundable value on L1. */
@@ -23,6 +26,8 @@ export interface RefundableSipaEvent {
   /** The event's `shared_secret_salt`, as Fr hex. */
   messageSecret: string
   resweepable: boolean
+  /** The announced intent hash, hex. Absent or zero on events that predate intent hashes: a deposit. */
+  intentHash?: string
 }
 
 /** L1 readers pre-bound to the relevant portal and, for migration, an explicit scan range. */
@@ -31,6 +36,20 @@ export interface RefundDepositL1Reads<TFr> {
     sipaAddress: string,
   ): Promise<ReadonlyArray<{ index: bigint; amount: bigint; txHash: string; blockNumber?: bigint }>>
   readDepositMessageKey(sweepTxHash: string, inboxIndex: bigint): Promise<TFr | null>
+}
+
+/** `RefundDepositL1Reads` over a viem client and the relevant portal, within an optional scan range. */
+export function createRefundDepositL1Reads(
+  publicClient: PublicClient,
+  portal: Address,
+  range?: { fromBlock: bigint; toBlock: bigint },
+): RefundDepositL1Reads<{ toString(): string }> {
+  return {
+    readSweepEvents: (sipaAddress) =>
+      readSweepEvents(publicClient, sipaAddress as Address, range?.fromBlock, range?.toBlock),
+    readDepositMessageKey: (sweepTxHash, inboxIndex) =>
+      readDepositMessageKey(publicClient, portal, sweepTxHash as Hex, inboxIndex),
+  }
 }
 
 export interface RefundableDeposit<TFr> {
@@ -177,4 +196,37 @@ export async function scanRefundableDeposits<TFr>(args: {
     }
   }
   return { refundable: out, inTransit }
+}
+
+/**
+ * Every swept deposit of `sources` as refund inputs, plus the SIPAs still holding L1 funds. For a
+ * frozen source: no local records and no L2 claim check, since its refund classifier decides a
+ * deposit's state at the freeze. Any gap throws, so a scan never reads as empty.
+ */
+export async function scanSweptDeposits(args: {
+  sources: readonly RefundableSipaSource[]
+  l1Reads: RefundDepositL1Reads<{ toString(): string }>
+  readSipaBalance?: (sipaAddress: string) => Promise<bigint>
+}): Promise<{ descriptors: FrozenDepositDescriptor[]; inTransit: InTransitSipaDeposit[] }> {
+  const unreadable: string[] = []
+  const scan = await scanRefundableDeposits({
+    ...args,
+    readErrorsThrow: true,
+    onUnreadableMessageKey: (sipaAddress) => unreadable.push(sipaAddress),
+  })
+  if (unreadable.length)
+    throw new Error(`No portal deposit matches a sweep of ${unreadable.length} SIPA(s)`)
+  return {
+    descriptors: scan.refundable.map((deposit) => {
+      if (deposit.sweepBlockNumber === undefined) throw new Error("A sweep has no L1 block")
+      return {
+        messageKey: deposit.messageKey.toString(),
+        messageLeafIndex: String(deposit.messageLeafIndex),
+        l1BlockNumber: String(deposit.sweepBlockNumber),
+        sharedSecretSalt: deposit.messageSecret,
+        amount: String(deposit.amount),
+      }
+    }),
+    inTransit: scan.inTransit,
+  }
 }

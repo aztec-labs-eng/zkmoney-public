@@ -1,0 +1,15 @@
+{
+  "scenario": "activity",
+  "bootstrap": "/pay/newfriend?demo=activity&flowFixture=success&flowEntry=pay",
+  "ready": { "selector": ".ww-pay__form" },
+  "steps": [
+    { "action": "waitFor", "role": "button", "name": "Pay $12.50", "exact": true },
+    { "action": "wait", "ms": 800 },
+    { "action": "screenshot", "file": "3-pay-signedin-fragment.png", "state": "pay confirm" },
+    { "action": "goto", "path": "/pay/newfriend?demo=activity&flowFixture=success&flowEntry=pay-standing" },
+    { "action": "waitFor", "role": "button", "name": "Pay @newfriend", "exact": true },
+    { "action": "wait", "ms": 800 },
+    { "action": "screenshot", "file": "3-pay-signedin-standing.png", "state": "pay amount" }
+  ],
+  "finalScreenshot": false
+}

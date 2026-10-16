@@ -12,7 +12,6 @@ import { desktopSettingsGuard } from "./desktopSettingsGuard.js"
 import { l1RpcCapability } from "./l1RpcCapability.js"
 import { socialPreview } from "./socialPreview.js"
 import { metricsBuildPlugin } from "@obsidion/metrics-policy/build"
-import { assertCampaignEnv } from "./src/config/campaignOrigin"
 
 const require = createRequire(import.meta.url)
 
@@ -35,6 +34,12 @@ function backendProxies(fileEnv: Record<string, string>) {
       target: target("ACCOUNT_SERVICE_TARGET", "http://localhost:8060"),
       changeOrigin: true,
       rewrite: (path: string) => path.replace(/^\/svc\/account/, ""),
+    },
+    // Listed before /svc/enclave, which it would otherwise match as a prefix.
+    "/svc/enclave-sky": {
+      target: target("SKY_ENCLAVE_TARGET", "http://localhost:5072"),
+      changeOrigin: true,
+      rewrite: (path: string) => path.replace(/^\/svc\/enclave-sky/, "") || "/",
     },
     "/svc/enclave": {
       target: target("ENCLAVE_TARGET", "http://localhost:5071"),
@@ -178,13 +183,10 @@ function gateServer(server: { middlewares: Connect.Server }) {
 const buildTarget = process.env.VITE_PROFILER === "true" ? "chrome54" : undefined
 
 export default defineConfig(({ mode }) => {
-  // The campaign facts are checked before anything is baked: a malformed URL, or an armed
-  // admission gate with no campaign, fails here rather than at a user's first entry.
   const env = loadEnv(mode, process.cwd(), "VITE_")
   // Unprefixed keys (ACCOUNT_SERVICE_TARGET, ENCLAVE_TARGET, …) live in `.env.local` for local
   // sandbox; `process.env` still wins so a shell export can override.
   const local = loadEnv(mode, process.cwd(), "")
-  assertCampaignEnv(env)
   return {
     // Aztec reads process.env.LOG_LEVEL at module init; PXE_LOG_LEVEL=debug
     // builds emit circuit/oracle traces.

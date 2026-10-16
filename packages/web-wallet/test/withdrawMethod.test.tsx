@@ -66,10 +66,19 @@ describe("WithdrawMethodScreen", () => {
     container.remove()
   })
 
-  it("offers both methods, fresh framed, with the how-to when the manifest names the stack", async () => {
+  it("offers every method, fresh framed, with the how-to when the manifest names the stack", async () => {
     await render()
-    expect(titles()).toEqual(["Withdraw to a fresh address", "Withdraw to an existing address"])
-    expect(options().map((o) => o.classList.contains("ww-paymethod--best"))).toEqual([true, false])
+    expect(titles()).toEqual([
+      "Withdraw to a fresh address",
+      "Withdraw to an existing address",
+      "Withdraw to ether.fi",
+    ])
+    expect(options().map((o) => o.classList.contains("ww-paymethod--best"))).toEqual([
+      true,
+      false,
+      false,
+    ])
+    expect(options()[2]!.textContent).toContain("USDC or USDT on Ethereum only")
 
     expect(text()).not.toContain("Open MetaMask")
     await click(button("Need a fresh address? See how to create one."))
@@ -98,9 +107,15 @@ describe("WithdrawMethodScreen", () => {
     expect(location()).toBe("/withdraw/existing")
   })
 
+  it("offers ether.fi with the existing address when only the swap factory and executor are named", async () => {
+    env.tuple = () => Promise.resolve({ swapEscrowFactoryV2: "0x11", operationExecutor: "0x12" })
+    await render()
+    expect(titles()).toEqual(["Withdraw to an existing address", "Withdraw to ether.fi"])
+  })
+
   it("keeps the cards under the sheet on /withdraw/existing", async () => {
     await render("/withdraw/existing")
-    expect(titles()).toHaveLength(2)
+    expect(titles()).toHaveLength(3)
     expect(container.querySelector("[data-sheet]")).not.toBeNull()
   })
 
@@ -114,6 +129,7 @@ describe("WithdrawMethodScreen", () => {
   it.each([
     ["fresh address", "/withdraw/fresh"],
     ["existing address", "/withdraw/existing"],
+    ["ether.fi", "/withdraw/etherfi"],
   ])("opens the %s branch from its card", async (name, route) => {
     await render()
     await click(options().find((o) => o.textContent!.includes(name))!)

@@ -57,14 +57,24 @@ const OUT_OF_MEMORY = {
   retry: { label: "Reload page", run: () => void reloadPage() },
 }
 
+export function outOfMemoryCopy(e: unknown): typeof OUT_OF_MEMORY | undefined {
+  return isOutOfMemory(e) ? OUT_OF_MEMORY : undefined
+}
+
+function isOutOfMemory(e: unknown): boolean {
+  if (e instanceof AggregateError) return e.errors.length > 0 && e.errors.every(isOutOfMemory)
+  return e instanceof Error && e.message === "Out of memory"
+}
+
 /** Normalize a caught value into the reportable modal used for unexpected failures. */
 export function showReportableError(
   raw: unknown,
   context: string,
   options: { title?: string; message?: string; retry?: ErrorModalPayload["retry"] } = {},
 ): void {
-  if (raw instanceof Error && raw.message === "Out of memory") {
-    showErrorModal({ ...OUT_OF_MEMORY, detail: raw.stack, showReport: true, context })
+  const outOfMemory = outOfMemoryCopy(raw)
+  if (outOfMemory) {
+    showErrorModal({ ...outOfMemory, detail: (raw as Error).stack, showReport: true, context })
     return
   }
   const sponsorship = sponsorshipErrorCopy(raw, context)

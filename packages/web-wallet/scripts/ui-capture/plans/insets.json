@@ -165,7 +165,7 @@
     {
       "action": "reachable",
       "role": "button",
-      "name": "Deposit 15 DAI",
+      "name": "Deposit $10.00",
       "exact": true
     }
   ],

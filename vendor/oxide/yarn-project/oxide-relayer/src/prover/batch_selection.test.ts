@@ -23,10 +23,10 @@ describe('selectProfitableBatch', () => {
   const gasQuote = (batch: readonly Job[]) =>
     Promise.resolve({ totalGas: BASE_GAS + PER_ITEM_GAS * BigInt(batch.length), subsidy: 0n });
 
-  // Price gas at 1 per unit, so profit is just tips minus gas.
-  const profitOf = (gas: bigint, reward: bigint) => Promise.resolve(reward - gas);
+  // Price the reward one for one and the gas at 1 per unit, so profit is just tips minus gas.
+  const priced = { rewardValueOf: (reward: bigint) => reward, gasCostOf: (gas: bigint) => gas };
   // Profit is not modelled: nothing is ever trimmed for profitability, only for gas.
-  const unpriced = () => Promise.resolve(0n);
+  const unpriced = { rewardValueOf: () => 0n, gasCostOf: () => 0n };
 
   it('never selects a batch whose total gas exceeds the tx gas cap', async () => {
     // Items dear enough that the gas cap bites well before the item cap does.
@@ -36,7 +36,7 @@ describe('selectProfitableBatch', () => {
 
     const { batch, quote } = await selectProfitableBatch(jobs(500), expensive, {
       tipOf,
-      profitOf: unpriced,
+      ...unpriced,
       minProfit: 0n,
     });
 
@@ -52,7 +52,7 @@ describe('selectProfitableBatch', () => {
 
     const { batch, quote } = await selectProfitableBatch(jobs(500), cheap, {
       tipOf,
-      profitOf: unpriced,
+      ...unpriced,
       minProfit: 0n,
     });
 
@@ -66,7 +66,7 @@ describe('selectProfitableBatch', () => {
 
     const { batch } = await selectProfitableBatch(jobs(MAX_ITEMS_PER_BATCH - 1), cheap, {
       tipOf,
-      profitOf: unpriced,
+      ...unpriced,
       minProfit: 0n,
     });
 
@@ -80,7 +80,7 @@ describe('selectProfitableBatch', () => {
 
     const { batch } = await selectProfitableBatch(fatPlusDust, gasQuote, {
       tipOf,
-      profitOf,
+      ...priced,
       minProfit: 0n,
     });
 
@@ -91,7 +91,7 @@ describe('selectProfitableBatch', () => {
     const { batch } = await selectProfitableBatch(
       jobs(4, () => 200_000n),
       gasQuote,
-      { tipOf, profitOf, minProfit: 0n },
+      { tipOf, ...priced, minProfit: 0n },
     );
 
     expect(batch).toHaveLength(4);
@@ -101,7 +101,7 @@ describe('selectProfitableBatch', () => {
     const { batch, quote } = await selectProfitableBatch(
       jobs(4, () => 1n),
       gasQuote,
-      { tipOf, profitOf, minProfit: 0n },
+      { tipOf, ...priced, minProfit: 0n },
     );
 
     expect(batch).toEqual([]);
@@ -112,13 +112,36 @@ describe('selectProfitableBatch', () => {
     // Four equal tips: the full batch profits 3.2M on a 4M reward, an 8000bps margin. Nothing reaches 9000bps,
     // since dropping items only amortizes the base gas over fewer of them.
     const equalTips = jobs(4, () => 1_000_000n);
-    const opts = { tipOf, profitOf, minProfit: 0n };
+    const opts = { tipOf, ...priced, minProfit: 0n };
 
     const withoutMargin = await selectProfitableBatch(equalTips, gasQuote, opts);
     expect(withoutMargin.batch).toHaveLength(4);
 
     const withMargin = await selectProfitableBatch(equalTips, gasQuote, { ...opts, minProfitMarginBps: 9_000n });
     expect(withMargin.batch).toEqual([]);
+  });
+
+  it('measures the margin against the valued reward, not against the raw token amount', async () => {
+    // Four tips of 1M in a token worth two USD a unit: the batch costs 800k of gas and is worth 8M, a 90% margin.
+    // Measuring the 7.2M profit against the 4M of tokens would read as 180% and pass a floor the batch misses.
+    const equalTips = jobs(4, () => 1_000_000n);
+    const inTokensWorthTwo = { rewardValueOf: (reward: bigint) => 2n * reward, gasCostOf: (gas: bigint) => gas };
+
+    const atTheMargin = await selectProfitableBatch(equalTips, gasQuote, {
+      tipOf,
+      ...inTokensWorthTwo,
+      minProfit: 0n,
+      minProfitMarginBps: 9_000n,
+    });
+    expect(atTheMargin.batch).toHaveLength(4);
+
+    const aboveTheMargin = await selectProfitableBatch(equalTips, gasQuote, {
+      tipOf,
+      ...inTokensWorthTwo,
+      minProfit: 0n,
+      minProfitMarginBps: 9_001n,
+    });
+    expect(aboveTheMargin.batch).toEqual([]);
   });
 
   it('keeps equal-tip jobs in submission order (stable sort), so an earlier submission processes first', async () => {
@@ -133,7 +156,7 @@ describe('selectProfitableBatch', () => {
 
     const { batch } = await selectProfitableBatch(candidates, gasQuote, {
       tipOf,
-      profitOf: unpriced,
+      ...unpriced,
       minProfit: 0n,
     });
 
@@ -145,7 +168,7 @@ describe('selectProfitableBatch', () => {
   it('returns the selected batch alongside its final quote, so callers need not re-quote', async () => {
     const { batch, quote } = await selectProfitableBatch(jobs(3), gasQuote, {
       tipOf,
-      profitOf: unpriced,
+      ...unpriced,
       minProfit: 0n,
     });
 

@@ -32,7 +32,7 @@ vi.mock("../src/config/env", async (importOriginal) => ({
 }))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
-  chainEpochDay: async () => 7,
+  chainEpochDay: async () => Math.floor(Date.now() / 86_400_000),
   ContractService: { getInstance: () => ({}) },
 }))
 vi.mock("../src/features/onboarding/claimSponsorship", () => ({
@@ -72,8 +72,10 @@ function gateway() {
     h.derived.push(address(nonce))
     return { address: address(nonce), nonce } as never
   })
+  // A broadcast publishing an address again lands only through its own send.
   vi.spyOn(gw, "broadcastLanded").mockImplementation(
-    async (...args: never[]) => h.landed.has(String(args[1]).toLowerCase()) as never,
+    async (...args: never[]) =>
+      (h.landed.has(String(args[1]).toLowerCase()) && args[2] === undefined) as never,
   )
   vi.spyOn(gw, "broadcastSipa").mockImplementation(async (...args: never[]) => {
     const entry = args[4] as unknown as { address: string }
@@ -256,6 +258,18 @@ describe("deposit addresses on the broadcast ledger", () => {
     await fresh.publish!()
     expect(h.sent).toEqual([])
     expect(readCachedSipa(CACHE_KEY)?.published).toBe(true)
+  })
+
+  it("proves an address again when it is paid after its broadcast landed", async () => {
+    const gw = gateway()
+    const fresh = await gw.depositAddress(wallet, {} as never, "alice")
+    const key = fresh.address.toLowerCase()
+    run(gw)
+    await fresh.publish!()
+    h.landed.add(key)
+    expect(await getBroadcastLedger().republish(fresh.address, 40)).toBe(true)
+    await vi.waitFor(() => expect(getBroadcastLedger().get(key)?.state).toBe("landed"))
+    expect(h.sent).toEqual([key, key])
   })
 
   it("proves an address someone already paid before an older unpaid one", async () => {

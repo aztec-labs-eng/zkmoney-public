@@ -155,6 +155,8 @@ export interface RegistrationDerivationInput {
   /** The allowlisted funder the fee goes to. Committed into the SIPA address. */
   beneficiary: Address
   masterSecret: FieldLike
+  /** A salt seeded with an address shown before the wallet's salt key, replayed in its place. */
+  sharedSecretSalt?: Hex
 }
 
 /** The derived registration SIPA and the record it commits to. */
@@ -173,7 +175,7 @@ export interface RegistrationDerivation {
   stealthScalar: bigint
   /** The L2 recipient the broadcast `SIPA` event is delivered to (`UserRecord.l2Address`). */
   recipient: Hex
-  /** The `SIPA` event's `shared_secret_salt` (ECDH secret) the recipient commitment binds to. */
+  /** The `SIPA` event's `shared_secret_salt` the recipient commitment binds to. */
   sharedSecretSalt: Hex
   /** The stealth recipient commitment the post-fee remainder bridges to (the intent's `recipientCommitment`). */
   recipientCommitment: Hex
@@ -418,6 +420,8 @@ export interface OxideSignDeps {
   persistStealthScalar?: (scalar: bigint) => Promise<void>
   /** Records the deposit's claim inputs for the SIPA rail (self-initiated intent tracking). */
   seedSipaDeposit?: (seed: RegistrationSipaSeed) => Promise<void>
+  /** The salt `seedSipaDeposit` recorded for an address on this device. */
+  seededSipaSalt?: (sipaAddress: Address) => Promise<Hex | undefined>
 }
 
 export interface OxideRegistrationDeps {
@@ -893,6 +897,24 @@ export type RegistrationRebuild =
   | { kind: "closed"; outcome: "failed" | "taken" }
 
 /**
+ * The derivation that lands at `sipaAddress`: the wallet key's, else one replaying the salt seeded
+ * with an address shown before that key. The key's when neither lands, for the caller to refuse.
+ */
+export async function deriveRecordedRegistrationSipa(
+  derive: RegistrationSipaDeriver,
+  input: RegistrationDerivationInput,
+  sipaAddress: Address,
+  seededSalt?: (sipaAddress: Address) => Promise<Hex | undefined>,
+): Promise<RegistrationDerivation> {
+  const derivation = await derive(input)
+  if (eqAddr(derivation.sipaAddress, sipaAddress)) return derivation
+  const salt = await seededSalt?.(sipaAddress).catch(() => undefined)
+  if (!salt) return derivation
+  const replayed = await derive({ ...input, sharedSecretSalt: salt })
+  return eqAddr(replayed.sipaAddress, sipaAddress) ? replayed : derivation
+}
+
+/**
  * The broadcast for a record whose session payload is gone: its committed address is re-derived,
  * the claim re-requested and the consent re-signed. Serialized with sessions and ticks, which also
  * request claims.
@@ -941,14 +963,19 @@ async function rebuildBody(
       ? { fee: BigInt(record.fee), beneficiary: record.beneficiary as Address }
       : null
   const derivation = committed
-    ? await signDeps.deriveRegistrationSipa({
-        owner: account,
-        nameHash,
-        l2Address: record.l2Address,
-        fee: committed.fee,
-        beneficiary: committed.beneficiary,
-        masterSecret: signDeps.masterSecret,
-      })
+    ? await deriveRecordedRegistrationSipa(
+        signDeps.deriveRegistrationSipa,
+        {
+          owner: account,
+          nameHash,
+          l2Address: record.l2Address,
+          fee: committed.fee,
+          beneficiary: committed.beneficiary,
+          masterSecret: signDeps.masterSecret,
+        },
+        record.sipaAddress as Address,
+        signDeps.seededSipaSalt,
+      )
     : null
   // A derivation that no longer lands at the recorded SIPA means the system iterated under the
   // record (new derivation scheme, redeployed stack). No backwards compatibility for a CLEAN

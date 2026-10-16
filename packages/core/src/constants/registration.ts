@@ -7,23 +7,28 @@
  * floor so a deposit swapped from another token still clears it, and a depositor of the ask is
  * credited `ask - fee - fpcFundingCut`.
  *
- * Places that restate these figures by hand:
+ * Code and tests read both from here. Places that restate them by hand:
  *
- * - `iac/docs/{staging,prod}-deploy-runbook.md` schedule snippets
- * - `iac/secrets/manifest.json` schedule defaults
- * - `packages/backend/account-service/.env.example`
- * - `packages/tooling/sandbox-env/scripts/sandboxRegistration.ts` sandbox constants
- * - `packages/launch-campaign-web/src/registration/registrationFee.ts` tag price default
+ * - `iac/secrets/manifest.json` schedule defaults (pinned by account-service's registrationAskDrift test)
+ * - `iac/docs/services.md` and `packages/backend/account-service/.env.example`
  * - `packages/desktop-download-web/content/{get-started.md,limits.md,faq.json}`
- * - `packages/web-wallet/scripts/ui-capture/plans/{registration-terms,insets}.json` step names
+ * - `packages/web-wallet/scripts/ui-capture/plans/flows/limits-registration-origin.json` amounts
+ * - `docs/paylink/golden-ticket.md` and `docs/limits-validation.md`
  */
 
 import type { RegistrationKind, RegistrationSchedule } from "../types/registration.js"
 
 /** The deposit each kind is asked for, 18-dp DAI. */
 export const REGISTRATION_ASK_DEPOSIT_TOTAL: Record<RegistrationKind, bigint> = {
-  standard: 15n * 10n ** 18n,
-  earned_tag: 5n * 10n ** 18n,
+  standard: 5n * 10n ** 18n,
+  earned_tag: 1n * 10n ** 18n,
+}
+
+/** The schedule each kind is signed when the account service runs on its defaults, 18-dp DAI. */
+export const REGISTRATION_SCHEDULE_DEFAULTS: Record<RegistrationKind, RegistrationSchedule> = {
+  standard: { fee: 425n * 10n ** 16n, min: 15n * 10n ** 16n },
+  // The fee is the registration sweep fee: a random tag pays only the relayer.
+  earned_tag: { fee: 5n * 10n ** 17n, min: 15n * 10n ** 16n },
 }
 
 /**

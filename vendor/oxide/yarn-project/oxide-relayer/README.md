@@ -33,7 +33,7 @@ Use `--state` or `OXIDE_RELAYER_STATE_PATH` to select the SQLite path. Keep `{po
 
 These options have been removed: `--worker-id`, `--lease-ttl-ms`, `--sqlite-path`, `--predicate-base-url`, and `--predicate-timeout-ms`. The relayer ignores their environment variables. If you used `--sqlite-path` or `OXIDE_RELAYER_SQLITE_PATH`, move the same path to `--state` or `OXIDE_RELAYER_STATE_PATH`, or the relayer opens a new database.
 
-Mainnet submissions use Flashbots Protect. Sepolia submissions use the public mempool through the configured read RPC, which must accept transaction submission. Give `--read-l1-rpc` a normal RPC that supports `eth_simulateV1` for L1 operations. `--flashbots-block-range` defaults to 5: it controls the Protect drop window on mainnet and the local transaction expiry on Sepolia. Expiry on Sepolia does not cancel a transaction or release its nonce.
+Mainnet submissions use Flashbots Protect. Sepolia submissions use the public mempool through the configured read RPC, which must accept transaction submission. Give `--read-l1-rpc` a normal RPC that supports `eth_simulateV1` with validation for L1 operations. `--flashbots-block-range` defaults to 5: it controls the Protect drop window on mainnet and the local transaction expiry on Sepolia. Expiry on Sepolia does not cancel a transaction or release its nonce.
 
 `--disable-submission` (`DISABLE_SUBMISSION=1`) runs all checks and simulations, but does not send L1 transactions. The relayer treats each transaction as mined, so it records metrics as a real relayer does. We use it to observe prod. If you do not configure a signer key, the relayer uses a random key. This setting does not support `epoch-proofs`. Restart the process to apply environment changes; this setting does not cancel transactions already submitted.
 
@@ -74,9 +74,9 @@ In this mode, the relayer does not prove. It runs next to a prover node, which d
 The relayer then claims the prover tips. The Portal records the prover id of the proof as the first prover, and pays a claim only to that address. Thus the prover id must be the relayer signer address. Set these prover node settings:
 
 - `PROVER_ID`: the relayer signer address. If you do not set it, the prover id is the address that publishes the proofs, and the relayer cannot claim the tips.
-- `PROVER_NODE_PROOF_SUBMISSION_TARGET_ADDRESS`: the `firstProverProofSubmitter` of the pinned manifest entry. A proof sent directly to the rollup records no first prover.
+- `PROVER_NODE_PROOF_SUBMISSION_TARGET_ADDRESS`: the `firstProverProofSubmitter` of the manifest entry that you want to collect tips from. A proof records a first prover only on the portals that its submitter lists. To collect tips only from the pinned portal, use the submitter of the pinned entry. To also collect tips from another portal, use the submitter of that entry. Every submitter lists the pinned portal, because the relayer uses that portal to track proven range.
 
-This mode also requires `--prover-node-url`, a nonzero `proverSubsidy`, and an enclave URL in the pinned manifest entry. If the prover node's admin API requires an API key, which `aztec start` enables by default, set `OXIDE_RELAYER_PROVER_NODE_API_KEY` to it.
+This mode also requires `--prover-node-url`, a nonzero `proverSubsidy`, and an enclave URL in each selected manifest entry. If the prover node's admin API requires an API key, which `aztec start` enables by default, set `OXIDE_RELAYER_PROVER_NODE_API_KEY` to it.
 
 This mode is temporary. When the Aztec protocol enshrines early epoch proofs, we remove the mode. All of its code is in `src/prover/`.
 
@@ -88,13 +88,13 @@ The relayer:
 
 1. Watches the small `L1Operation` public logs of the L2 Broadcaster through the _pending_ L2 head,
 2. fetches `(target, payoutToken, l1Calldata)` from the broadcasting transaction, which the node only holds until the transaction finalizes,
-3. screens, simulates the call with `eth_simulateV1`, screens the addresses its logs expose, and executes it through the `OperationExecutor` with its break-even point as `minPayout`.
+3. screens, simulates the call with `eth_simulateV1`, screens the addresses its logs expose, and executes it through the `OperationExecutor`, which requires a payout that covers the gas cost.
 
-The `OperationExecutor` transfers the whole resulting `payoutToken` balance to the relayer and reverts when the payout is below `minPayout`. Mainnet uses Protect to avoid including reverting transactions. Sepolia uses the public mempool, where an included revert consumes gas.
+The `OperationExecutor` transfers the whole resulting `payoutToken` balance to the relayer and reverts when the payout is below the gas cost. Mainnet uses Protect to avoid including reverting transactions. Sepolia uses the public mempool, where an included revert consumes gas.
 
 The caller of `broadcast` chooses the `payoutToken` of each operation. Thus the relayer accepts only operations whose `payoutToken` is in its list of payout tokens, and does not store other operations. `--l1-operations-payout-tokens` (`OXIDE_RELAYER_L1_OPERATIONS_PAYOUT_TOKENS`) sets the list, as comma-separated addresses. When it is not set, a deployment accepts only the `token` of its manifest entry.
 
-The read RPC must answer `eth_simulateV1`; the mode probes it at startup. The screen sees only what the simulation logs: a contract that emits nothing, a non-standard token, or a recipient that state changes before inclusion is not seen.
+The read RPC must answer `eth_simulateV1` with validation on; the mode probes `eth_simulateV1` at startup. Without validation, the simulated block can run at a base fee of 0, and the subsidies, which price the base fee and the gas price, then quote less than they pay on chain. The screen sees only what the simulation logs: a contract that emits nothing, a non-standard token, or a recipient that state changes before inclusion is not seen.
 
 See [Relayer](../../engineering-design-docs/relayer.md).
 
@@ -113,18 +113,13 @@ The relayer pays for gas in ETH and gets paid in DAI, a USD-pegged 18-decimal to
 
 ### L1 Operations
 
+The payout model and its formulas are in [the relayer design doc](../../engineering-design-docs/relayer.md#payout-and-profit).
+
 The gas limit is estimated using `eth_estimateGas`.
 The gas limit is more than the gas the transaction pays for: it includes gas that is refunded at the end of the transaction, and gas that a call must hold but does not use (EIP-150).
 In prod transactions, the gas limit is 7% to 26% more than the gas used, by operation type.
-The relayer therefore simulates the transaction with `eth_simulateV1` and computes the minimum USD payout as `minPayout = weiToUSD(simulatedGasUsed * maxFeePerGas)` (Chainlink ETH/USD feed is used for this conversion).
-The transaction costs more than `minPayout` only if it uses more gas at inclusion than in the simulation, and it can never cost more than `gasLimit * maxFeePerGas`.
-
-`maxFeePerGas` is the market fee plus a headroom that keeps the transaction valid if the base fee increases before inclusion. One block can increase the base fee by at most 12.5%. The default headroom is 6.25%. Set it with `--l1-operations-max-fee-headroom-percent` (`OXIDE_RELAYER_L1_OPERATIONS_MAX_FEE_HEADROOM_PERCENT`). More headroom makes `minPayout` higher, so the relayer defers more operations as unprofitable.
-
-`maxFeePerGas` is the market fee plus a headroom that keeps the transaction valid if the base fee increases before inclusion. One block can increase the base fee by at most 12.5%. The default headroom is 6.25%. Set it with `--l1-operations-max-fee-headroom-percent` (`OXIDE_RELAYER_L1_OPERATIONS_MAX_FEE_HEADROOM_PERCENT`). More headroom makes `minPayout` higher, so the relayer defers more operations as unprofitable.
-
-We use the `OperationExecutor` contract, which gurantees that the tx reverts if the min payout is not obtained.
-On mainnet this is then used along with Flashbots Protect, which the relayer submits through, and which drops reverting transactions to guarantee that a relayer doesn't turn a loss.
+Thus the gas cost uses the gas that an `eth_simulateV1` run uses, not the gas limit.
+The transaction can never cost more than `gasLimit * maxFeePerGas`.
 
 We don't have the guarantee of knowing the payout ahead of time, because the operation may have already been executed by another relayer, in which case we receive no tip from it.
 
@@ -134,14 +129,19 @@ We don't have the guarantee of knowing the payout ahead of time, because the ope
 
 In the case of early epoch proofs the spend happens before the relayer can be paid.
 A partial epoch proof costs off-chain compute, and the prover claim that pays for it is a later, separate transaction.
-There is no on-chain `minPayout` that can make that spend conditional, so the relayer starts a partial epoch proof only when the accumulated prover tips plus the subsidy cover the gas of the proof submission, which grows with the checkpoints the prefix covers, the modelled proving cost per checkpoint (`--early-proof-proving-cost-per-checkpoint`), `--early-proof-min-profit`, and a profit margin (`--early-proof-min-profit-margin-bps`).
+There is no on-chain `minPayout` that can make that spend conditional, so the relayer starts a partial epoch proof only when the accumulated prover tips plus the subsidy cover the gas of the proof submission, which grows with the checkpoints the prefix covers, the gas of the claim transactions, the modelled proving cost per checkpoint (`--early-proof-proving-cost-per-checkpoint`), `--early-proof-min-profit`, and a profit margin (`--early-proof-min-profit-margin-bps`).
+The relayer counts one claim transaction for each portal with claims, and its gas grows with the number of claims. A claim must land while the rollup still holds the checkpoint log that the claim verifies against, so the relayer cannot wait long for cheaper gas, and it prices the claims at the same gas price as the proof submission.
 The margin covers what can change after that decision: L1 gas can get more expensive before the claim transaction is sent, and another prover can advance the proven tip to those checkpoints first, in which case the relayer paid for compute it will never be recorded as first prover for.
+
+By default, the relayer collects prover tips from the pinned portal only. Set `--prover-payout-tokens` (`OXIDE_RELAYER_PROVER_PAYOUT_TOKENS`) to a comma-separated list of tokens to collect from more portals. The relayer then selects each entry whose portal underlying is in the list, from the pinned entry and the other `l1-operation` entries of the same `rollupVersion`. The list applies to the pinned entry too: if its underlying is not in the list, the relayer does not collect from the pinned portal. The relayer selects the entries at startup only, so restart it to add an entry that the manifest publishes later. The prover can prove only the rollup that the Aztec node follows, so the relayer does not start when the `rollupVersion` of the pinned entry is not the version of that rollup. The relayer reads the first-prover captures of the first selected portal, and uses them as the proven range of every selected portal.
+
+The prover tips and the subsidy are paid in the underlying of each portal, and the relayer values them in USD before it compares them with the gas. It reads no market price. A USD token, for example DAI, counts one whole token as one USD. An ERC-4626 vault share whose asset is a USD token, for example sUSDS over USDS, is valued at the assets that the vault converts it to, and each whole asset counts as one USD. The relayer decides which of the two the underlying is at startup: a token that answers `asset()` is a vault share. So a prover that is paid in sUSDS runs with `--prover-payout-tokens` set to sUSDS, or with `--portal` set to the sUSDS portal.
 
 The prover claim batch itself is priced the same way as every other batch: tips plus subsidy against `gasLimit * maxFeePerGas`, quoted with one gas price for the whole selection, with the lowest-tip claim dropped until the batch clears the floor.
 
 ## L1 operations across deployments
 
-In `l1-operations` mode, the relayer watches the pinned portal and other entries in the same schema-4 manifest with the same `rollupVersion` and `withdrawalProtocol: "l1-operation"`. Historical entries with a missing or different protocol are ignored because older broadcasters can use incompatible condition values. The relayer reads only the pinned entry and these historical entries. If a historical entry does not have a field that the relayer uses, the relayer logs a warning and does not watch that entry. Labels are names; their spelling and order do not select deployments. A separate worker uses each deployment's broadcaster, token, portal, executor, and enclave. All workers share the node, L1 clients, L1 tx queue, price oracle, and operating policy. Epoch-proof and FPC-funding services remain attached to the pinned deployment. The relayer refreshes the manifest every 5 minutes in this mode to add compatible workers and keeps existing workers active.
+In `l1-operations` mode, the relayer watches the pinned portal and other entries in the same schema-4 manifest with the same `rollupVersion` and `withdrawalProtocol: "l1-operation"`. Historical entries with a missing or different protocol are ignored because older broadcasters can use incompatible condition values. The relayer reads only the pinned entry and these historical entries. If a historical entry does not have a field that the relayer uses, the relayer logs a warning and does not watch that entry. Labels are names; their spelling and order do not select deployments. A separate worker uses each deployment's broadcaster, token, portal, executor, and enclave. All workers share the node, L1 clients, L1 tx queue, price oracle, and operating policy. FPC-funding services remain attached to the pinned deployment. Epoch-proof services use the pinned deployment unless `--prover-payout-tokens` selects more entries. The relayer refreshes the manifest every 5 minutes in this mode to add compatible workers and keeps existing workers active.
 
 Use a state path with `{portal}` when multiple workers need state, for example `/data/oxide-relayer-{portal}.sqlite3`. A single deployment can use a literal path, but adding workers requires `{portal}`. Each worker retains the existing operation cursors, screening, retries, and submission behavior. A fresh database starts discovery at the proven tip, since broadcast payloads have a limited lifetime. Preserve the databases across restarts to resume stored work. Completed operations are not submitted again.
 

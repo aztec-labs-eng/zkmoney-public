@@ -114,12 +114,22 @@ export function AssetPicker<A extends WithdrawalReceiveAsset>({
   )
 }
 
-/** The web withdrawal's picker: what the manifest can deliver, DAI-only until it answers. */
-export function WithdrawalAssetPicker(props: {
+/**
+ * The web withdrawal's picker: what the manifest can deliver, DAI-only until it answers. `only`
+ * narrows that to what the destination accepts.
+ */
+export function WithdrawalAssetPicker({
+  only,
+  ...props
+}: {
   value: WithdrawalReceiveAsset
   onChange: (asset: WithdrawalReceiveAsset) => void
   label?: string
   inline?: boolean
+  only?: readonly WithdrawalReceiveAsset[]
 }) {
-  return <AssetPicker {...props} options={withdrawalReceiveAssets(useOxideTuple() ?? {})} />
+  const options = withdrawalReceiveAssets(useOxideTuple() ?? {})
+  return (
+    <AssetPicker {...props} options={only ? options.filter((o) => only.includes(o.id)) : options} />
+  )
 }

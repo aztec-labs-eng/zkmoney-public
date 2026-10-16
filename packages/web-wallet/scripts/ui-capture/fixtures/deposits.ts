@@ -26,6 +26,7 @@ export const getSipaDepositGateway: typeof actual.getSipaDepositGateway = () => 
       await operation("deposit-address")
       return address
     },
+    readyAddress: async () => ({ address: SIPA, day: Math.floor(Date.now() / 86_400_000) }),
     wakeDeposit: async () => {},
     deposit: async (params) => {
       if (desktopState()) {

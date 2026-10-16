@@ -26,6 +26,19 @@ export interface WithdrawalRescanDeps {
   fromBlock?: number
   /** Stands in for a burn whose block time cannot be read. Defaults to Date.now. */
   now?: () => number
+  /** Told what the scan found, for the console of a device whose history is being rebuilt. */
+  report?: (summary: WithdrawalRescanSummary) => void
+}
+
+export interface WithdrawalRescanSummary {
+  tokenSymbol: string
+  /** `Withdraw` events the account's PXE holds for the token. */
+  events: number
+  /** Events no stored record covers. */
+  unknown: number
+  created: WithdrawalRecord[]
+  /** Created records that fund a Savings move. */
+  savingsMoves: number
 }
 
 /** The records created, oldest burn first. */
@@ -47,13 +60,22 @@ export async function rebuildWithdrawals(deps: WithdrawalRescanDeps): Promise<Wi
   const created: WithdrawalRecord[] = []
   try {
     for (const event of missing) {
-      const startTime =
-        (await deps.source.blockTimestampMs(event.blockNumber)) ?? (deps.now ?? Date.now)()
-      created.push(await deps.store.create(rebuiltRecord(event, startTime, deps)))
+      const blockTime = await deps.source.blockTimestampMs(event.blockNumber)
+      const startTime = blockTime ?? (deps.now ?? Date.now)()
+      created.push(
+        await deps.store.create(rebuiltRecord(event, startTime, deps, blockTime === undefined)),
+      )
     }
   } finally {
     end?.()
   }
+  deps.report?.({
+    tokenSymbol: deps.tokenSymbol,
+    events: events.length,
+    unknown: missing.length,
+    created,
+    savingsMoves: created.filter((record) => record.skyMove).length,
+  })
   return created
 }
 
@@ -61,6 +83,7 @@ function rebuiltRecord(
   event: ScannedWithdrawEvent & { l1Recipient: Hash },
   startTime: number,
   deps: WithdrawalRescanDeps,
+  startTimeEstimated: boolean,
 ): WithdrawalRecord {
   const { swap } = event
   return {
@@ -76,6 +99,7 @@ function rebuiltRecord(
     startTime,
     deployment: deps.deployment,
     rebuilt: true,
+    ...(startTimeEstimated ? { startTimeEstimated: true } : {}),
     ...(swap
       ? {
           swapOutput: swap.output,

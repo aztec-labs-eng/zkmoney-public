@@ -33,7 +33,7 @@ async function inDemoMode(run: () => void | Promise<void>): Promise<void> {
 
 describe("fireEvent", () => {
   it("is a no-op without VITE_ZKMONEY_API_URL", () => {
-    expect(() => fireEvent("onboarding_started", { has_claim_link: true })).not.toThrow()
+    expect(() => fireEvent("pxe_boot_completed")).not.toThrow()
   })
 })
 
@@ -294,11 +294,17 @@ describe("failureCode", () => {
     const err = new Error("Fixture Vault passkeys can't protect a wallet yet.")
     err.name = "UnsupportedProviderError"
     expect(failureCode(err)).toBe("passkey_unsupported_provider")
+    // A laptop's own manager the row leaves out is the same class of refusal.
+    const laptop = new Error("Apple Passwords on this Mac can't be used for a wallet yet.")
+    laptop.name = "LaptopPasskeyRefusedError"
+    expect(failureCode(laptop)).toBe("passkey_unsupported_provider")
   })
 
   it("maps a security key that returned no key material alongside the other empty-material cases", () => {
     // Without its own row this reads as "unknown", and the failures it explains stop being countable.
-    const err = new Error("Your security key answered, but this device couldn't get the key material")
+    const err = new Error(
+      "Your security key answered, but this device couldn't get the key material",
+    )
     err.name = "SecurityKeyNoPrfError"
     expect(failureCode(err)).toBe("passkey_no_key_material")
   })

@@ -2,7 +2,7 @@ import { CheckpointNumber, EpochNumber } from '@aztec/foundation/branded-types';
 import { Fr } from '@aztec/foundation/curves/bn254';
 import { EthAddress } from '@aztec/foundation/eth-address';
 
-import { ProverClaim } from '@oxide/l1-contracts/oxide_portal.js';
+import { OxidePortalContract, ProverClaim } from '@oxide/l1-contracts/oxide_portal.js';
 
 import { ObservedTx, PortalContext, TxRef } from '../types.js';
 
@@ -59,6 +59,8 @@ export interface ProverPortalConfig {
  *  subsidy comes from simulating `claimProverTips`, so no subsidy quote is carried here. */
 export interface ProverClaimPortalConfig extends ProverPortalConfig {
   adaptor: ProverClaimPortalAdaptor;
+  /** The portal contract that the claims are submitted to. */
+  contract: OxidePortalContract;
 }
 
 export interface DiscoveredClaim {

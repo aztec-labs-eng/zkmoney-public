@@ -5,6 +5,7 @@ import type { PublicClient } from "viem"
 
 import {
   DEFAULT_PROOF_LATENCY,
+  LAST_TIPPED_CHECKPOINT_INDEX,
   WithdrawalSpeedupEstimator,
   estimateWithdrawalSpeedup,
   type ProofCalibration,
@@ -114,6 +115,21 @@ describe("estimateWithdrawalSpeedup", () => {
     expect(estimate.epoch).toBe(10)
     expect(now + 20 + estimate.tippedEtaSeconds).toBe(start(11) - 10 + 180)
     expect(estimate.speedupSeconds).toBe(900 - 170)
+  })
+
+  it("flags a landing window that reaches past the last tipped checkpoint", () => {
+    const estimate = (now: number, latest: number) =>
+      estimateWithdrawalSpeedup({
+        constants,
+        now,
+        landing: { expected: 0, earliest: 0, latest },
+        calibration: fallback,
+      }).pastTipCutoff
+    const lastTipped = start(10) + (LAST_TIPPED_CHECKPOINT_INDEX - 1) * SLOT
+    expect(estimate(lastTipped, SLOT - 1)).toBe(false)
+    expect(estimate(lastTipped, SLOT)).toBe(true)
+    // Crossing into the next epoch passes through the cutoff on the way.
+    expect(estimate(start(10) + EPOCH - SLOT, 2 * SLOT)).toBe(true)
   })
 
   it("treats a burn landing after the epoch ends as early in the next one", () => {

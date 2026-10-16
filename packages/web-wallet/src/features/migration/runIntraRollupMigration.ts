@@ -6,17 +6,13 @@
  */
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
-  deploymentScanRange,
   deriveBootstrapKey,
-  deriveStealthKey,
+  selfSipaResolverKeys,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
 import {
-  fetchSipaResolverOperators,
   IntraRollupMigrationService,
   predictAccountAddress,
-  resolverSelectionPolicy,
-  selectManifestResolverOperator,
   SipaSelfResolver,
   type ContractService,
   type ObsidionAccount,
@@ -71,20 +67,7 @@ async function migrateFlow(
   const msk = await getAuthService().getSecretKey()
   if (!msk) throw new Error("wallet is locked")
 
-  const records = await fetchSipaResolverOperators(
-    publicClient,
-    requireTupleField(params.current, "accountMetadataRegistry") as Hex,
-    await deploymentScanRange(publicClient, params.current),
-  )
-  const resolver = selectManifestResolverOperator(records, {
-    portal: requireTupleField(params.current, "portal"),
-    resolverGatewayUrl: params.current.resolverGatewayUrl,
-    ...resolverSelectionPolicy(config.network),
-  })
-  const selfResolver = new SipaSelfResolver(
-    deriveStealthKey(msk).scalar,
-    resolver.resolverPublicKey,
-  )
+  const selfResolver = new SipaSelfResolver(selfSipaResolverKeys(msk))
 
   const { tokenService: fromTokenService } = await historicTokenContext(
     params.wallet,

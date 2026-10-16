@@ -1,0 +1,56 @@
+{
+  "scenario": "activity",
+  "path": "/receive",
+  "ready": {
+    "text": "Waiting for a payment"
+  },
+  "steps": [
+    {
+      "action": "wait",
+      "ms": 600
+    },
+    {
+      "action": "screenshot",
+      "file": "code.png",
+      "state": "Receive code"
+    },
+    {
+      "action": "fill",
+      "label": "Amount",
+      "value": "52"
+    },
+    {
+      "action": "fill",
+      "label": "Note",
+      "value": "Lunch"
+    },
+    {
+      "action": "waitFor",
+      "text": "Waiting for $52.00"
+    },
+    {
+      "action": "wait",
+      "ms": 600
+    },
+    {
+      "action": "screenshot",
+      "file": "amount.png",
+      "state": "Code with amount"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "Fill the screen with your code"
+    },
+    {
+      "action": "wait",
+      "ms": 400
+    },
+    {
+      "action": "screenshot",
+      "file": "full.png",
+      "state": "Full screen"
+    }
+  ],
+  "finalScreenshot": false
+}

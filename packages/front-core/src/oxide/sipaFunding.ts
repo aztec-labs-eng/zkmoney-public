@@ -172,24 +172,32 @@ export function firstFunding(
   return first
 }
 
+/** What a sweep took out of a SIPA: the token, and every funding transfer of it the sweep settled. */
+export interface SweptFunding {
+  token: SipaFundingToken
+  gross: bigint
+}
+
 /**
- * Which of `fundingTokens` the sweep `txHash` moved out of `sipa`: what its funder had sent.
- * Undefined when the tx moved more than one of them out, since a batched tx can carry several
- * sweeps of one SIPA and the receipt does not say which token each took.
+ * Which of `fundingTokens` the sweep `txHash` moved out of `sipa`, and how much: what its funder
+ * had sent. Undefined when the tx moved more than one of them out, since a batched tx can carry
+ * several sweeps of one SIPA and the receipt does not say which token each took.
  */
-export async function readSweptToken(
+export async function readSweptFunding(
   publicClient: PublicClient,
   txHash: Hash,
   sipa: Address,
   fundingTokens: readonly SipaFundingToken[],
-): Promise<SipaFundingToken | undefined> {
+): Promise<SweptFunding | undefined> {
   const { logs } = await publicClient.getTransactionReceipt({ hash: txHash })
   const transfers = parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs })
-  const out = new Set(
-    transfers
-      .filter((log) => log.args.from.toLowerCase() === sipa.toLowerCase())
-      .map((log) => log.address.toLowerCase()),
-  )
+  const out = new Map<string, bigint>()
+  for (const log of transfers) {
+    if (log.args.from.toLowerCase() !== sipa.toLowerCase()) continue
+    const token = log.address.toLowerCase()
+    out.set(token, (out.get(token) ?? 0n) + log.args.value)
+  }
   const swept = fundingTokens.filter((t) => out.has(t.address.toLowerCase()))
-  return swept.length === 1 ? swept[0] : undefined
+  const token = swept.length === 1 ? swept[0] : undefined
+  return token ? { token, gross: out.get(token.address.toLowerCase())! } : undefined
 }

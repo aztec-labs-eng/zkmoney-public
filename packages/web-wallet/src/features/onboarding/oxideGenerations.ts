@@ -4,31 +4,51 @@ import {
   type ContractService,
   type ObsidionWallet,
 } from "@obsidion/sdk"
-import { createOxideL1Reader, type OxideIdentityDeps } from "@obsidion/front-core"
+import {
+  createOxideL1Reader,
+  retiredIdentityGenerations,
+  type OxideIdentityDeps,
+} from "@obsidion/front-core"
 import type { WebWalletConfig } from "../../config/env"
-import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import {
+  getOxideTuple,
+  getRetiredRollupSources,
+  l1PublicClient,
+  requireTupleField,
+} from "../../config/oxideTuple"
 
 export async function loadOxideGenerations(
   wallet: ObsidionWallet,
   contractService: ContractService,
   config: WebWalletConfig,
 ): Promise<OxideIdentityDeps> {
-  const [tuple, identity, bindings] = await Promise.all([
+  const [tuple, identity, bindings, retired] = await Promise.all([
     getOxideTuple(config),
     wallet.getNodeIdentity(),
     readClaimFpcIdentityCatalog(wallet, contractService),
+    getRetiredRollupSources(config).catch(() => undefined),
   ])
   const rollupVersion = String(identity.rollupVersion)
+  const retiredSources = retired ?? []
   return {
     reader: createOxideL1Reader(l1PublicClient(config)),
     registry: requireTupleField(tuple, "registry") as Address,
     rollupVersion,
-    catalog: bindings.map((binding) => ({
-      fpcAddress: binding.fpcAddress,
-      accountFactory: binding.accountFactory as Address,
-      namePortal: binding.namePortal as Address,
+    admissibleRollupVersions: new Set([
       rollupVersion,
-    })),
+      ...retiredSources.map((entry) => entry.rollupVersion),
+    ]),
+    catalog: [
+      ...bindings.map((binding) => ({
+        fpcAddress: binding.fpcAddress,
+        accountFactory: binding.accountFactory as Address,
+        namePortal: binding.namePortal as Address,
+        rollupVersion,
+      })),
+      ...retiredIdentityGenerations(retiredSources),
+    ],
+    // An account the current rollup verifies still signs in, but no account can be ruled out.
+    catalogIncomplete: retired === undefined,
   }
 }
 

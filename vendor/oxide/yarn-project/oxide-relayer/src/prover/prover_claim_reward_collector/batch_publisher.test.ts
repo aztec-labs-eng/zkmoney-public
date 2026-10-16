@@ -7,7 +7,7 @@ import { ProverClaim } from '@oxide/l1-contracts/oxide_portal.js';
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
-import { ProverPortalConfig } from '../prover_claim_lib/index.js';
+import { ProverClaimPortalConfig } from '../prover_claim_lib/index.js';
 import { BatchPublisher, BatchPublisherOptions } from './batch_publisher.js';
 
 const POLL_MS = 5;
@@ -26,9 +26,14 @@ const claim: ProverClaim = {
   checkpointNumber: CheckpointNumber(1),
 };
 
+const l1Portal = EthAddress.random();
 const portal = {
-  context: { l1Portal: EthAddress.random(), proverSubsidy: EthAddress.random() },
-} as ProverPortalConfig;
+  context: { l1Portal, proverSubsidy: EthAddress.random() },
+  contract: {
+    address: l1Portal,
+    getContract: () => ({ simulate: { claimProverTips: () => Promise.resolve() } }),
+  },
+} as unknown as ProverClaimPortalConfig;
 
 const FEES = { maxFeePerGas: 2_000_000_000n, maxPriorityFeePerGas: 100_000_000n };
 const GAS = 250_000n;
@@ -46,10 +51,6 @@ describe('BatchPublisher', () => {
   const minedReceipt: MinedReceipt = { blockNumber: 100n, transactionHash: '0xabc', status: 'success' };
 
   const build = (overrides: Partial<BatchPublisherOptions> = {}) => {
-    const portal = {
-      address: EthAddress.random(),
-      getContract: () => ({ simulate: { claimProverTips: () => Promise.resolve() } }),
-    } as any;
     // The queue monitors its own sends, so `settled` is the mined receipt.
     const l1TxQueue = {
       address: EthAddress.random().toString(),
@@ -61,7 +62,6 @@ describe('BatchPublisher', () => {
       getTransactionReceipt: (arg: any) => getTransactionReceipt(arg),
     } as any;
     const publisher = new BatchPublisher({
-      portal,
       client,
       l1TxQueue,
       confirmations: 3n,
@@ -97,7 +97,32 @@ describe('BatchPublisher', () => {
 
     await publisher.publish(portal, [claim], FEES);
 
-    expect(send).toHaveBeenCalledWith(expect.objectContaining({ gas: GAS, ...FEES }));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ to: l1Portal.toString(), gas: GAS, ...FEES }));
+  });
+
+  it('simulates and sends each batch on its own portal, with that portal subsidy', async () => {
+    const makePortal = () => {
+      const address = EthAddress.random();
+      const proverSubsidy = EthAddress.random();
+      const simulate = jest.fn((_args: any, _opts: any) => Promise.resolve());
+      const config = {
+        context: { l1Portal: address, proverSubsidy },
+        contract: { address, getContract: () => ({ simulate: { claimProverTips: simulate } }) },
+      } as unknown as ProverClaimPortalConfig;
+      return { address, proverSubsidy, simulate, config };
+    };
+    const a = makePortal();
+    const b = makePortal();
+    const publisher = build({ confirmations: 0n });
+
+    await publisher.publish(a.config, [claim], FEES);
+    await publisher.publish(b.config, [claim], FEES);
+
+    expect(send.mock.calls.map(([request]) => request.to)).toEqual([a.address.toString(), b.address.toString()]);
+    for (const { simulate, proverSubsidy } of [a, b]) {
+      expect(simulate).toHaveBeenCalledTimes(1);
+      expect(simulate.mock.calls[0][0][0]).toBe(proverSubsidy.toString());
+    }
   });
 
   it('publish resolves at mined; confirmed resolves only once the tx is confirmations blocks deep', async () => {

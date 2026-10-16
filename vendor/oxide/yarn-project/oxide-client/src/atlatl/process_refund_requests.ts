@@ -10,6 +10,7 @@ import { type Hex, encodeFunctionData } from 'viem';
 import { resolveArchive } from '../archive_ref.js';
 import { buildFrozenDepositRefundProof } from '../frozen_deposit.js';
 import { buildFrozenNotesRefundProof } from '../frozen_notes.js';
+import { type InboxMessageSource, buildInboxSiblingPath } from '../inbox_sibling_path.js';
 import type { NullificationEffectData, SpendMetadataResolver } from '../token_operations_collector.js';
 import type { L1SubmitContext } from '../types.js';
 import { buildUnprocessedDepositRefundProof } from '../unprocessed_deposit.js';
@@ -87,6 +88,7 @@ export async function buildRefundFrozenDepositPortalCalldata(
   return encodeFunctionData({ abi: OxidePortalAbi, functionName: 'refundFrozenDeposit', args: [callArgs] });
 }
 
+/** A new Inbox message or an L1 reorg can make the Inbox path in the calldata stale. Build the calldata again to retry. */
 export async function buildRefundUnprocessedDepositPortalCalldata(
   ctx: L1SubmitContext,
   args: {
@@ -96,7 +98,9 @@ export async function buildRefundUnprocessedDepositPortalCalldata(
     l2Recipient: RefundOwner;
     l2RecipientMasterNullifierHidingKey: GrumpkinScalar;
     messageLeafIndex: bigint;
-    inboxSiblingPath: Fr[];
+    /** The L1 block of the `Deposit` event. */
+    l1BlockNumber: bigint;
+    inbox: InboxMessageSource;
   },
 ): Promise<Hex> {
   const archiveRoot = await ctx.portal.getFreezeArchive();
@@ -114,6 +118,8 @@ export async function buildRefundUnprocessedDepositPortalCalldata(
     l2RecipientMasterNullifierHidingKey: args.l2RecipientMasterNullifierHidingKey,
     messageLeafIndex: args.messageLeafIndex,
   });
+  // Built after the proof, so that the path has the Inbox messages that arrived while the proof was built.
+  const inboxSiblingPath = await buildInboxSiblingPath(args.inbox, args);
 
   const callArgs = {
     ...encodeExecutorCall(args.executorCall),
@@ -121,7 +127,7 @@ export async function buildRefundUnprocessedDepositPortalCalldata(
     siloedNullifier: finalization.siloedNullifier.toString() as Hex,
     messageHash: finalization.messageHash.toString() as Hex,
     messageLeafIndex: args.messageLeafIndex,
-    inboxSiblingPath: args.inboxSiblingPath.map(s => s.toString() as Hex),
+    inboxSiblingPath: inboxSiblingPath.map(s => s.toString() as Hex),
     proof: `0x${proof.toString('hex')}` as Hex,
     teeSignature: finalization.signature.toString() as Hex,
   };

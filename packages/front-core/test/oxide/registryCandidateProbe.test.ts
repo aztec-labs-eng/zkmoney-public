@@ -143,3 +143,30 @@ describe("a registry that names no usable generation stops recovery", () => {
     expect(weaker).not.toHaveBeenCalled()
   })
 })
+
+describe("a catalog missing one of its sources", () => {
+  it("reads a key it can't place as absent, so the key that anchors still resolves", async () => {
+    const other = Fr.random()
+    const probe = registryCandidateProbe({
+      reader: {
+        readNameOf: async (_registry, account) =>
+          (account === ACCOUNT ? NAME_HASH : ZERO_HASH) as `0x${string}`,
+        readAccountMetadataRegistry: async () => METADATA,
+        readUserRecord: async () => ({ l2Address: L2, rollupVersion: BigInt(ROLLUP) } as never),
+        readNamePortalRegistry: async () => REGISTRY,
+        readFactoryImplementation: async () => IMPLEMENTATION,
+      },
+      catalog: [...CATALOG],
+      registry: REGISTRY,
+      rollupVersion: ROLLUP,
+      catalogIncomplete: true,
+    })
+
+    const resolved = await resolveRecoveredMsk(
+      { candidates: { first: other, second: msk }, preferredSlot: "first" } as never,
+      async () => L2,
+      [{ name: "registry", probes: [probe] }],
+    )
+    expect(resolved).toMatchObject({ kind: "resolved", slot: "second" })
+  })
+})

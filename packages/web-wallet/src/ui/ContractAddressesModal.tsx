@@ -54,6 +54,7 @@ const OXIDE_CHAIN = {
   withdrawalSubsidy: "L1",
   proverSubsidy: "L1",
   plainWithdrawalExecutor: "L1",
+  updateMetadataSIPAImplementation: "L1",
   swapEscrowFactoryV2: "L1",
   skyEscrowFactory: "L1",
   operationExecutor: "L1",

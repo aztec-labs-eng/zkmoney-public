@@ -6,6 +6,7 @@ import { predictLegacySIPA, type LegacySipaDeployArgs } from "@oxide/l1-contract
  */
 
 import { type Address, type Hex, type PublicClient } from "viem"
+import { Fr } from "@aztec/foundation/curves/bn254"
 import { EthAddress } from "@aztec/foundation/eth-address"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
 import {
@@ -55,7 +56,7 @@ import type {
   RegistrationDepositReader,
   RegistrationSipaDeriver,
 } from "./oxideRegistration"
-import { deriveStealthKey } from "./oxideAccountKeys"
+import { deriveStealthKey, selfSipaResolverKeys } from "./oxideAccountKeys"
 import {
   encodeRegistrationData,
   encodeUserRecord,
@@ -172,9 +173,9 @@ function registrationDayNonce(nameHash: Hex): { day: number; nonce: number } {
 }
 
 /**
- * The registration SIPA deriver: it self-resolves against the manifest resolver's registry key (so
- * the deposit event is discoverable) and commits the SIPA to `keccak256(registrationData)`, deriving
- * non-resweepable (a registration is one-shot). The resolver record is fetched once and cached.
+ * The registration SIPA deriver: it self-resolves from the wallet's own keys and commits the SIPA to
+ * `keccak256(registrationData)`, deriving non-resweepable (a registration is one-shot). The manifest
+ * resolver's record names the user record's operator; it is fetched once and cached.
  */
 export function createRegistrationSipaDeriver(deps: {
   publicClient: PublicClient
@@ -209,12 +210,13 @@ export function createRegistrationSipaDeriver(deps: {
     const operator = await getResolverOperator()
     const stealth = deriveStealthKey(input.masterSecret)
     const { day, nonce } = registrationDayNonce(input.nameHash)
-    const selfResolver = new SipaSelfResolver(stealth.scalar, operator.resolverPublicKey)
+    const selfResolver = new SipaSelfResolver(selfSipaResolverKeys(input.masterSecret))
     const resolution = await selfResolver.resolve(
       AztecAddress.fromStringUnsafe(input.l2Address),
       day,
       nonce,
       EthAddress.fromString(input.owner),
+      input.sharedSecretSalt === undefined ? undefined : Fr.fromHexString(input.sharedSecretSalt),
     )
     const intent: RegistrationIntent = {
       owner: input.owner,

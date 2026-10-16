@@ -1,10 +1,11 @@
 import { selectWebPasskeyRpId } from "@obsidion/passkey-web"
 import { Network, createClassArtifactResolver } from "@obsidion/sdk"
-import { campaignOriginFrom } from "./campaignOrigin"
 import {
-  createArtifactPinResolver,
+  createArtifactCatalog,
   resolveWalletProfile,
+  retiredRollupNodes,
   type ConfigProfileErrorCode,
+  type ConfigVersion,
   type WalletProfileBoot,
   type ResolveWalletProfileInput,
 } from "@obsidion/config-client"
@@ -33,6 +34,9 @@ import { http } from "viem"
 import { foundry, mainnet, sepolia, type Chain } from "viem/chains"
 
 export type EndpointSource = "settings" | "default"
+
+/** An asset the profile lists: an oxide deployment in the same manifest as the wallet token's. */
+export type ProfileAsset = NonNullable<ConfigVersion["assets"]>[number]
 
 /** Who chose an endpoint's URL, and whether it normalizes to the build/profile default's. */
 export interface EndpointProvenance {
@@ -66,6 +70,8 @@ export type WebWalletConfig = {
    * Resolved once here so no call site re-derives a manifest URL.
    */
   oxideProfile: OxideEnvProfile
+  /** Node of each lowercase portal that a cutover moved off this rollup; absent means none. */
+  sourceRollupNodes?: ReadonlyMap<string, string>
   /** L1 chain the accounts and the Registry live on. */
   l1ChainId: number
   /** Viem chain for `l1ChainId` (TEE signer source, injected-wallet clients). */
@@ -82,14 +88,8 @@ export type WebWalletConfig = {
    */
   claimFpcAddress?: string
   accountServiceUrl: string
-  /**
-   * Launch-campaign API base: the admission verify call, the hand-off anchor tier, and (as an
-   * origin) the one referrer the sealed hand-off accepts material from. Empty means no campaign, for
-   * sandbox and self-hosted setups.
-   */
+  /** Always empty: the wallet names no campaign. */
   campaignUrl: string
-  /** Always false: wallet entry asks no waitlist. `VITE_ADMISSION_GATE` is accepted and arms nothing. */
-  admissionGate: boolean
   /**
    * Skip the account-service attestation gate. Only valid against an
    * `IS_TEST_MODE=true` instance: the browser has no App Attest, so a client
@@ -102,6 +102,8 @@ export type WebWalletConfig = {
    * appended. Empty means "use the manifest's own enclaveUrl verbatim".
    */
   enclaveUrl: string
+  /** The Savings deployment's enclave base URL, the same way; it has its own TEE. */
+  savingsEnclaveUrl: string
   /** Real WASM proving in the browser (overrides the per-network default). */
   proverEnabled: boolean
   /** XMTP network from the selected config profile. */
@@ -117,6 +119,8 @@ export type WebWalletConfig = {
    * policy oxide's relayer enforces, or the client verdict and the relayer's disagree.
    */
   predicate?: PredicateScreeningConfig
+  /** The version's assets, the wallet token among them. Empty where the profile lists none. */
+  assets: ProfileAsset[]
 }
 
 /** Viem chain for an L1 chain id; unknown ids get a generic local-chain shape. */
@@ -162,6 +166,14 @@ function resolveAccountServiceTestMode(
  */
 function defaultEnclaveUrl(env: Record<string, string | undefined>, network: Network): string {
   return env.VITE_ENCLAVE_URL ?? (network === Network.SANDBOX ? "/svc/enclave" : "")
+}
+
+/** Savings' enclave, by the same rule: sandbox's mock Sky TEE rides its own `/svc/enclave-sky` proxy. */
+function defaultSavingsEnclaveUrl(
+  env: Record<string, string | undefined>,
+  network: Network,
+): string {
+  return env.VITE_SAVINGS_ENCLAVE_URL ?? (network === Network.SANDBOX ? "/svc/enclave-sky" : "")
 }
 
 /**
@@ -272,15 +284,13 @@ export function resolveNetwork(env: Record<string, string | undefined>): Network
  */
 export type BaseWebWalletConfig = Omit<
   WebWalletConfig,
-  "oxideProfile" | "endpoints" | "nodeEndpointDigest" | "profileRollupVersion" | "xmtpEnv"
+  | "oxideProfile"
+  | "endpoints"
+  | "nodeEndpointDigest"
+  | "profileRollupVersion"
+  | "assets"
+  | "xmtpEnv"
 >
-
-/** The campaign URL as baked, once its origin has passed the hand-off's rule (see campaignOrigin.ts). */
-function resolveCampaignUrl(env: { VITE_CAMPAIGN_URL?: string }): string {
-  const url = env.VITE_CAMPAIGN_URL ?? ""
-  campaignOriginFrom(url)
-  return url
-}
 
 export function loadConfig(
   env: Record<string, string | undefined> = import.meta.env,
@@ -305,10 +315,10 @@ export function loadConfig(
     // Same-origin dev-server proxy (vite.config.ts) — browsers refuse the raw
     // 5060 port (SIP, restricted).
     accountServiceUrl: "/svc/account",
-    campaignUrl: resolveCampaignUrl(env),
-    admissionGate: false,
+    campaignUrl: "",
     accountServiceTestMode: resolveAccountServiceTestMode(env, network),
     enclaveUrl: defaultEnclaveUrl(env, network),
+    savingsEnclaveUrl: defaultSavingsEnclaveUrl(env, network),
     proverEnabled: env.VITE_PROVER_ENABLED !== "false",
     googleClientId: env.VITE_GOOGLE_CLIENT_ID || undefined,
     predicate: resolvePredicateConfig(env, network),
@@ -419,7 +429,9 @@ function mergeProfileConfig(
     accountServiceUrl: accountServiceFrom(boot),
     xmtpEnv: boot.profile.shared.xmtpEnv,
     oxideProfile,
+    sourceRollupNodes: retiredRollupNodes(boot.profile),
     claimFpcAddress: boot.snapshot.contracts.claimFpc?.address,
+    assets: boot.version.assets ?? [],
   }
 }
 
@@ -537,16 +549,14 @@ export async function resolveBootConfig(
     boot,
     input.readEndpointOverrides ?? readEndpointOverrides,
   )
-  const resolveClassArtifact = createClassArtifactResolver(
-    createArtifactPinResolver({
-      profileUrl,
-      profileId: boot.profile.profileId,
-      versionId: boot.versionId,
-      expectedSha256: boot.version.artifactManifestSha256,
-      fetchImpl: input.fetchImpl,
-    }),
-    input.fetchImpl,
-  )
+  const artifacts = createArtifactCatalog({
+    profileUrl,
+    profileId: boot.profile.profileId,
+    versionId: boot.versionId,
+    expectedSha256: boot.version.artifactManifestSha256,
+    fetchImpl: input.fetchImpl,
+  })
+  const resolveClassArtifact = createClassArtifactResolver(artifacts.resolvePin, input.fetchImpl)
   setWebClassArtifactResolver(resolveClassArtifact)
   return seed(request, input.fetchImpl, {
     config: merged,
@@ -554,6 +564,7 @@ export async function resolveBootConfig(
       source: "profile",
       config: boot.snapshot,
       resolveClassArtifact,
+      listClassIds: artifacts.classIds,
       // The same pointer `getConfig()` now serves, so ContractService and every other oxide
       // consumer read one value.
       oxideEnvProfile: merged.oxideProfile,

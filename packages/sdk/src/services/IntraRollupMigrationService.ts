@@ -45,8 +45,8 @@ export interface IntraRollupMigrationDeps {
   /** Retiring deployment for the withdrawal and value-continuity checks. */
   from: WithdrawalDeployment
   /**
-   * Self-resolution for the deployment-B SIPA: the account's stealth key × deployment B's
-   * resolver public key (same construction as the receive flow's deposit-address derivation).
+   * Self-resolution for the deployment-B SIPA: the account's stealth scalar plus its self-SIPA key
+   * (same construction as the receive flow's deposit-address derivation).
    * `(day, nonce)` regenerate everything, and the derived address is broadcastable for the
    * standard deposit-tracking rail.
    */
@@ -72,7 +72,7 @@ export interface IntraRollupMigrationResult {
   /** Self-resolution coordinates — regenerate the message secret and recovery key. */
   day: number
   nonce: number
-  /** The ECDH shared secret (the claim's `sharedSecretSalt`). Re-derivable from `(day, nonce)`. */
+  /** The salt (the claim's `sharedSecretSalt`). Re-derivable from `(day, nonce)`. */
   messageSecret: Fr
   burnTxHash: string
   grossAmount: bigint
@@ -226,7 +226,11 @@ export class IntraRollupMigrationService {
    * {@link detectMigration}, presence of other deployments is a manifest fact, not a diff.
    */
   static async detectHistoricDeployments(
-    args: PinnedManifestArgs & { publicClient: PublicClient },
+    args: PinnedManifestArgs & {
+      publicClient: PublicClient
+      /** Lowercase portals on other rollups that the caller has a node for. */
+      reachable?: ReadonlySet<string>
+    },
   ): Promise<{ current: OxideEnvTuple; historic: OxideEnvTuple[] }> {
     const fetchImpl = args.fetchImpl ?? fetch
     const res = await fetchImpl(args.manifestUrl)
@@ -237,7 +241,7 @@ export class IntraRollupMigrationService {
     }
     const manifest = await res.json()
     const current = extractPinnedOxideEnvTuple(manifest, args, pinnedEntryPolicy(args)).tuple
-    const candidates = migrationSources(manifest, current)
+    const candidates = migrationSources(manifest, current, args.reachable)
     if (candidates.length === 0) return { current, historic: [] }
     const [pinned, ...others] = await Promise.all(
       [current, ...candidates].map((tuple) =>

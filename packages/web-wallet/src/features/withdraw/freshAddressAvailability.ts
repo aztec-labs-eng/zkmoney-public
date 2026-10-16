@@ -8,10 +8,10 @@ export const networkHasSwapStack = (network: Network) =>
   network === Network.MAINNET || network === Network.SANDBOX
 
 /**
- * Preview builds set this so the fresh-address screens can be viewed on a network without a swap
- * stack. The sheet's quotes stay unavailable there, so nothing can be confirmed.
+ * Preview builds set this so the swap-backed withdrawal screens can be viewed on a network without
+ * a swap stack. Their quotes stay unavailable there, so nothing can be confirmed.
  */
-const SHOWCASE = import.meta.env.VITE_FRESH_ADDRESS_SHOWCASE === "true"
+export const SWAP_ROUTE_SHOWCASE = import.meta.env.VITE_FRESH_ADDRESS_SHOWCASE === "true"
 
 /** The optional manifest fields a fresh-address quote or burn reads. */
 const REQUIRED: readonly (keyof OxideEnvTuple)[] = [
@@ -30,8 +30,8 @@ const REQUIRED: readonly (keyof OxideEnvTuple)[] = [
  */
 export function useFreshAddressAvailable(): boolean | undefined {
   const swapStack = networkHasSwapStack(getConfig().network)
-  const tuple = useOxideTuple(!SHOWCASE && swapStack)
-  if (SHOWCASE) return true
+  const tuple = useOxideTuple(!SWAP_ROUTE_SHOWCASE && swapStack)
+  if (SWAP_ROUTE_SHOWCASE) return true
   if (!swapStack) return false
   return tuple === undefined ? undefined : REQUIRED.every((field) => !!tuple?.[field]?.trim())
 }

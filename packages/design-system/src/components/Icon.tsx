@@ -8,6 +8,8 @@ export type IconName =
   | "arrow-up"
   | "arrow-down-circle"
   | "arrow-up-circle"
+  | "download"
+  | "print"
   | "arrowshape-right"
   | "arrowshape-left"
   | "reply"
@@ -30,6 +32,9 @@ export type IconName =
   | "clock"
   | "clock-outline"
   | "history-clock"
+  | "refresh"
+  | "earn"
+  | "calculator"
   | "copy"
   | "file-copy"
   | "diamond"
@@ -55,6 +60,7 @@ export type IconName =
   | "message"
   | "minus"
   | "payments-arrows"
+  | "payments-arrows-horizontal"
   | "pencil"
   | "person"
   | "person-circle"
@@ -152,6 +158,8 @@ const SF_ALIASES: Record<string, IconName> = {
   "magnifyingglass": "search",
   "paperplane.fill": "send",
   "square.and.arrow.up": "share",
+  "square.and.arrow.down": "download",
+  "printer": "print",
   "share": "share",
   "trash.fill": "trash",
   "tray.and.arrow.down.fill": "tray-deposit",
@@ -216,6 +224,13 @@ const ICONS: Record<IconName, IconDef> = {
   },
   "arrow-down": { stroke: true, content: <path d="M12 5v14M6 13l6 6 6-6" /> },
   "arrow-up": { stroke: true, content: <path d="M12 19V5M6 11l6-6 6 6" /> },
+  "download": { stroke: true, content: <path d="M12 4v11M7 10l5 5 5-5M5 19h14" /> },
+  "print": {
+    stroke: true,
+    content: (
+      <path d="M7 9V4h10v5M7 14h10v6H7zM7 17H5a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1h14a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-2" />
+    ),
+  },
   "arrow-down-circle": {
     content: (
       <path
@@ -343,6 +358,23 @@ const ICONS: Record<IconName, IconDef> = {
         fillRule="evenodd"
         d="M10.5 0C16.299 0 21 4.701 21 10.5C21 16.299 16.299 21 10.5 21C4.701 21 0 16.299 0 10.5C0 4.701 4.701 0 10.5 0ZM10.5 3C9.879 3 9.375 3.504 9.375 4.125L9.375 10.5C9.375 11.121 9.879 11.625 10.5 11.625L15.375 11.625C15.996 11.625 16.5 11.121 16.5 10.5C16.5 9.879 15.996 9.375 15.375 9.375L11.625 9.375L11.625 4.125C11.625 3.504 11.121 3 10.5 3Z"
       />
+    ),
+  },
+  // Remix "calculator-fill": the Calculator tile.
+  "calculator": {
+    content: (
+      <path d="M4 2H20C20.5523 2 21 2.44772 21 3V21C21 21.5523 20.5523 22 20 22H4C3.44772 22 3 21.5523 3 21V3C3 2.44772 3.44772 2 4 2ZM7 12V14H9V12H7ZM7 16V18H9V16H7ZM11 12V14H13V12H11ZM11 16V18H13V16H11ZM15 12V18H17V12H15ZM7 6V10H17V6H7Z" />
+    ),
+  },
+  // Remix "funds-fill": the Savings glyph.
+  "earn": {
+    content: (
+      <path d="M3.90145 17.8636L7.81249 13.9526L10.6409 16.781L15.212 12.2099L17.0049 14.0028V9.00281H12.0049L13.7978 10.7957L10.6409 13.9526L7.81249 11.1241L2.86662 16.07C2.31276 14.8274 2.00488 13.4511 2.00488 12.0028C2.00488 6.47996 6.48204 2.00281 12.0049 2.00281C17.5277 2.00281 22.0049 6.47996 22.0049 12.0028C22.0049 17.5257 17.5277 22.0028 12.0049 22.0028C8.67116 22.0028 5.71844 20.3715 3.90145 17.8636Z" />
+    ),
+  },
+  "refresh": {
+    content: (
+      <path d="M5.46257 4.43262C7.21556 2.91688 9.5007 2 12 2C17.5228 2 22 6.47715 22 12C22 14.1361 21.3302 16.1158 20.1892 17.7406L17 12H20C20 7.58172 16.4183 4 12 4C9.84982 4 7.89777 4.84827 6.46023 6.22842L5.46257 4.43262ZM18.5374 19.5674C16.7844 21.0831 14.4993 22 12 22C6.47715 22 2 17.5228 2 12C2 9.86386 2.66979 7.88416 3.8108 6.25944L7 12H4C4 16.4183 7.58172 20 12 20C14.1502 20 16.1022 19.1517 17.5398 17.7716L18.5374 19.5674Z" />
     ),
   },
   "history-clock": {
@@ -528,6 +560,16 @@ const ICONS: Record<IconName, IconDef> = {
         <path d="M10 5L6.001 5L6 17L4 17L4 5L0 5L5 0L10 5Z" />
         <path d="M20 13L15 18L10 13L14 13L14 1L16 1L16 13L20 13Z" />
       </>
+    ),
+  },
+  // The same pair turned to point across, for a swap between two things side by side.
+  "payments-arrows-horizontal": {
+    viewBox: "1 -1 18 20",
+    content: (
+      <g transform="rotate(90 10 9)">
+        <path d="M10 5L6.001 5L6 17L4 17L4 5L0 5L5 0L10 5Z" />
+        <path d="M20 13L15 18L10 13L14 13L14 1L16 1L16 13L20 13Z" />
+      </g>
     ),
   },
   "pencil": {

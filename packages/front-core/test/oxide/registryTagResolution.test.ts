@@ -126,6 +126,25 @@ describe("resolveTagViaRegistry manifest sourcing", () => {
   })
 })
 
+describe("resolveTagViaRegistry retired rollups", () => {
+  it("resolves a record on a listed retired rollup", async () => {
+    const result = await resolveTagViaRegistry("alice", {
+      ...baseOpts(),
+      tuple: { ...TUPLE, rollupVersion: "5" },
+      retiredRollupVersions: async () => ["4"],
+    })
+    expect(result).toMatchObject({ status: "resolved", rollupId: "4" })
+  })
+
+  it("without the list a record on another rollup stays staleRollup", async () => {
+    const result = await resolveTagViaRegistry("alice", {
+      ...baseOpts(),
+      tuple: { ...TUPLE, rollupVersion: "5" },
+    })
+    expect(result).toEqual({ status: "staleRollup" })
+  })
+})
+
 describe("resolveTagViaRegistry with a portal pin", () => {
   it("selects the entry by portal and reads its own registry", async () => {
     const fetchSpy = vi.fn(async () => ({ ok: true, json: async () => manifest() }))

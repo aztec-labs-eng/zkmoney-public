@@ -39,6 +39,11 @@ vi.mock("../src/config/env", () => ({
   getConfig: () => ({ network: "sandbox", endpoints: state.endpoints }),
 }))
 vi.mock("../src/features/identity/walletIdentity", () => ({ loadWalletIdentity: () => undefined }))
+vi.mock("../src/features/onboarding/openRegistration", () => ({
+  useNameClaimPending: () => false,
+  useRegistrationTagChangeable: () => false,
+}))
+vi.mock("../src/features/onboarding/ChooseNameSheet", () => ({ ChooseNameSheet: () => null }))
 vi.mock("../src/lib/analytics", () => ({ appVersion: "0.0.0" }))
 vi.mock("../src/ui/prefs", () => ({ useHideBalances: () => [false, vi.fn()] }))
 vi.mock("../src/features/requests/useNonContactRequests", () => ({

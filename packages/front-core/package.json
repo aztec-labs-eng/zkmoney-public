@@ -54,6 +54,7 @@
   "devDependencies": {
     "@eslint/js": "^9.21.0",
     "@oxide/oxide-client": "workspace:*",
+    "@oxide/tee-enclave": "workspace:*",
     "@types/node": "^18.7.23",
     "@types/react": "~19.1.0",
     "@types/react-dom": "~19.1.0",

@@ -139,10 +139,12 @@ export interface DeploymentResultWithNitro {
   namePortal?: Address
   /** Every withdrawal settles into it; it pays the relayer tip and forwards the rest. */
   plainWithdrawalExecutor: Address
+  registrationController?: Address
   /** Blessed on `sipaFactory` and served under this stack's rollup version. Each pins its own
    *  `depositFee()`; the harness gives the registration one the heavier fee. */
   depositSIPAImplementation: Address
   registrationSIPAImplementation: Address
+  updateMetadataSIPAImplementation: Address
   portal: OxidePortalContract
   nitroValidatorAddress: Address
   certManagerAddress: Address
@@ -234,6 +236,7 @@ export async function deploySandboxOxidePortalStack(
   const { nameRegistry, accountMetadataRegistry, sipaFactory, sipaResolver } =
     await deployNameRegistryStack(walletClient, publicClient, account.address, account.address)
   let namePortal: Address | undefined
+  let registrationController: Address | undefined
   if (reg) {
     // Bound to the NameRegistry and the Aztec Registry it resolves a rollup version's Inbox
     // through; the controller binds it immutably, so it is deployed first.
@@ -243,7 +246,7 @@ export async function deploySandboxOxidePortalStack(
       nameRegistry,
       aztec.registry.toString() as Address,
     )
-    const registrationController = await deployRegistrationController(
+    registrationController = await deployRegistrationController(
       walletClient,
       publicClient,
       nameRegistry,
@@ -289,14 +292,17 @@ export async function deploySandboxOxidePortalStack(
     globalLimit: options.caps?.globalLimit ?? CAPS_GLOBAL_LIMIT,
   })
 
-  const { depositSIPAImplementation, registrationSIPAImplementation } =
-    await deploySIPAImplementations(walletClient, publicClient, {
-      sipaFactory,
-      portal: portal.address.toString() as Address,
-      nameRegistry,
-      depositFee: HARNESS_DEPOSIT_FEE,
-      registrationFee: HARNESS_REGISTRATION_FEE,
-    })
+  const {
+    depositSIPAImplementation,
+    registrationSIPAImplementation,
+    updateMetadataSIPAImplementation,
+  } = await deploySIPAImplementations(walletClient, publicClient, {
+    sipaFactory,
+    portal: portal.address.toString() as Address,
+    nameRegistry,
+    depositFee: HARNESS_DEPOSIT_FEE,
+    registrationFee: HARNESS_REGISTRATION_FEE,
+  })
   const plainWithdrawalExecutor = await deployPlainWithdrawalExecutor(
     extendedClient,
     portal.address,
@@ -312,9 +318,11 @@ export async function deploySandboxOxidePortalStack(
     sipaResolver,
     accountFactory,
     namePortal,
+    registrationController,
     plainWithdrawalExecutor: plainWithdrawalExecutor.toString() as Address,
     depositSIPAImplementation,
     registrationSIPAImplementation,
+    updateMetadataSIPAImplementation,
     portal,
     nitroValidatorAddress: nitroValidatorEth.toString() as Address,
     certManagerAddress: certManagerEth.toString() as Address,

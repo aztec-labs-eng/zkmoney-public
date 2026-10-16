@@ -8,7 +8,7 @@ import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { CeremonyGate, GateResult, GateState } from "../src/features/identity/ceremonyGate"
-import type { DevicePosture } from "@obsidion/passkey-web"
+import type { DevicePosture, LaptopCreation } from "@obsidion/passkey-web"
 
 declare global {
   // eslint-disable-next-line no-var
@@ -16,14 +16,25 @@ declare global {
 }
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
+const PHONE: LaptopCreation = { local: false, chromeTip: false }
+const MAC: LaptopCreation = {
+  local: true,
+  os: "macos",
+  row: "macChrome",
+  managers: ["apple", "gpm"],
+  withdrawn: [],
+}
+
 const h = vi.hoisted(() => ({
   probePhoneReach: vi.fn(async () => "unknown"),
+  probeLaptopCreation: vi.fn(async (): Promise<unknown> => ({ local: false, chromeTip: false })),
   rootCredentialId: vi.fn(async () => undefined),
   suggestedRoute: vi.fn(async () => "this-device"),
 }))
 vi.mock("../src/platform/auth/useAuthenticator", () => ({
   getAuthService: () => ({
     probePhoneReach: h.probePhoneReach,
+    probeLaptopCreation: h.probeLaptopCreation,
     rootCredentialId: h.rootCredentialId,
     suggestedRoute: h.suggestedRoute,
   }),
@@ -46,6 +57,7 @@ const mount = (posture: DevicePosture, holdsSignIn?: boolean) =>
 
 beforeEach(() => {
   h.probePhoneReach.mockReset().mockResolvedValue("unknown")
+  h.probeLaptopCreation.mockReset().mockResolvedValue(PHONE)
   h.rootCredentialId.mockReset().mockResolvedValue(undefined)
   h.suggestedRoute.mockReset().mockResolvedValue("this-device")
   container = document.createElement("div")
@@ -70,41 +82,6 @@ describe("useCeremonyGate", () => {
     expect(result.route).toBeUndefined()
   })
 
-  it("an anchored sign-in (the hand-off) holds the sheet on a phone, so its assertion runs from a tap", async () => {
-    await mount("phone")
-    let settled = false
-    let promise!: Promise<GateResult>
-    await act(async () => {
-      promise = handle.gate({ anchor: true }).then((r) => {
-        settled = true
-        return r
-      })
-    })
-    await flush()
-    // No route to pick, so it never probes; it holds the sheet only for the tap that anchors it.
-    expect(h.probePhoneReach).not.toHaveBeenCalled()
-    expect(container.textContent).toBe("awaiting-action")
-    expect(settled).toBe(false)
-    const state = handle.state
-    if (state.kind !== "awaiting-action") throw new Error("expected the sheet")
-    expect(state.prompt).toBe("sign-in")
-    await act(async () => state.proceed())
-    const result = await promise
-    expect(settled).toBe(true)
-    expect(result.route).toBeUndefined()
-    expect(container.textContent).toBe("idle")
-  })
-
-  it("an anchor is ignored when the screen owns the tap: a holdsSignIn-false phone sign-in still passes", async () => {
-    await mount("phone", false)
-    let result!: GateResult
-    await act(async () => {
-      result = await handle.gate({ anchor: true })
-    })
-    expect(container.textContent).toBe("idle")
-    expect(result.route).toBeUndefined()
-  })
-
   it("a laptop sign-in holds the Sign in sheet without probing, and resolves on proceed", async () => {
     await mount("laptop")
     let settled = false
@@ -118,6 +95,7 @@ describe("useCeremonyGate", () => {
     await flush()
     // A sign-in picks no device — the browser's own chooser does — so it never probes.
     expect(h.probePhoneReach).not.toHaveBeenCalled()
+    expect(h.probeLaptopCreation).not.toHaveBeenCalled()
     expect(container.textContent).toBe("awaiting-action")
     expect(settled).toBe(false)
 
@@ -196,9 +174,132 @@ describe("useCeremonyGate", () => {
     await flush()
     const state = handle.state
     if (state.kind !== "awaiting-action") throw new Error("expected the steps")
-    await act(async () => state.proceed("security-key"))
+    // A sign-in never asks whether this laptop may create; a creation always does.
+    expect(h.probeLaptopCreation).toHaveBeenCalledTimes(1)
+    expect(state.creation).toEqual(PHONE)
+    await act(async () => state.proceed("security-key", "phone"))
     const result = await promise
     expect(result.route).toBe("security-key")
+    expect(result.from).toBe("phone")
+    expect(result.creation).toEqual(PHONE)
+  })
+
+  it("a creation holds the steps with both probes in hand, and resolves on this computer", async () => {
+    h.probePhoneReach.mockResolvedValue("ok")
+    h.probeLaptopCreation.mockResolvedValue(MAC)
+    await mount("laptop")
+    let promise!: Promise<GateResult>
+    await act(async () => {
+      promise = handle.gate({ purpose: "create" })
+    })
+    await flush()
+    const state = handle.state
+    if (state.kind !== "awaiting-action") throw new Error("expected the steps")
+    expect(state.reach).toBe("ok")
+    expect(state.creation).toEqual(MAC)
+    expect(state.openOn).toBeUndefined()
+    await act(async () => state.proceed("this-device", "local"))
+    const result = await promise
+    expect(result).toMatchObject({
+      route: "this-device",
+      from: "local",
+      reach: "ok",
+      creation: MAC,
+    })
+  })
+
+  it("keeps the sheet's this-device pick while the probe allows it", async () => {
+    h.probePhoneReach.mockResolvedValue("ok")
+    h.probeLaptopCreation.mockResolvedValue(MAC)
+    await mount("laptop")
+    const result = await act(() =>
+      handle.gate({ purpose: "create", unheld: "this-device", from: "local" }),
+    )
+    expect(result).toMatchObject({ route: "this-device", from: "local", creation: MAC })
+    expect(container.textContent).toBe("idle")
+  })
+
+  it("a this-device pick the probe no longer allows holds the sheet on the phone variant", async () => {
+    h.probePhoneReach.mockResolvedValue("ok")
+    await mount("laptop")
+    let settled: GateResult | undefined
+    await act(async () => {
+      void handle.gate({ purpose: "create", unheld: "this-device" }).then((r) => (settled = r))
+    })
+    await flush()
+    expect(settled).toBeUndefined()
+    const state = handle.state
+    if (state.kind !== "awaiting-action") throw new Error("expected the sheet, never a silent QR")
+    expect(state.prompt).toBe("phone-steps")
+    expect(state.openOn).toBe("phone")
+    expect(state.creation).toEqual(PHONE)
+    await act(async () => state.proceed("phone", "phone"))
+    await flush()
+    expect(settled).toMatchObject({ route: "phone" })
+  })
+
+  it("holds on the variant a screen asks for, with the variant its Back returns to", async () => {
+    h.probePhoneReach.mockResolvedValue("ok")
+    h.probeLaptopCreation.mockResolvedValue(MAC)
+    await mount("laptop")
+    await act(async () => {
+      void handle
+        .gate({
+          purpose: "create",
+          unheld: "this-device",
+          openOn: "key",
+          from: "local",
+          unfinished: true,
+        })
+        .catch(() => {})
+    })
+    await flush()
+    const state = handle.state
+    if (state.kind !== "awaiting-action") throw new Error("expected the sheet")
+    // A way back to the sheet wins over the pick that was made before it.
+    expect(state.openOn).toBe("key")
+    expect(state.from).toBe("local")
+    expect(state.unfinished).toBe(true)
+    await act(async () => handle.cancel())
+  })
+
+  it("a late creation probe after cancel reaches no state", async () => {
+    let resolveCreation!: (creation: LaptopCreation) => void
+    h.probeLaptopCreation.mockImplementation(() => new Promise((r) => (resolveCreation = r)))
+    await mount("laptop")
+    let error: unknown
+    await act(async () => {
+      void handle.gate({ purpose: "create" }).catch((e) => (error = e))
+    })
+    expect(container.textContent).toBe("probing")
+    await act(async () => handle.cancel())
+    await act(async () => resolveCreation(MAC))
+    await flush()
+    expect(isGateCancelled(error)).toBe(true)
+    expect(container.textContent).toBe("idle")
+  })
+
+  it("a creation probe that throws or answers nothing counts as phone creation", async () => {
+    h.probeLaptopCreation.mockRejectedValue(new Error("no hints"))
+    await mount("laptop")
+    await act(async () => {
+      void handle.gate({ purpose: "create" }).catch(() => {})
+    })
+    await flush()
+    let state = handle.state
+    if (state.kind !== "awaiting-action") throw new Error("expected the steps")
+    expect(state.creation).toEqual(PHONE)
+    await act(async () => handle.cancel())
+
+    h.probeLaptopCreation.mockResolvedValue(undefined as never)
+    await act(async () => {
+      void handle.gate({ purpose: "create" }).catch(() => {})
+    })
+    await flush()
+    state = handle.state
+    if (state.kind !== "awaiting-action") throw new Error("expected the steps")
+    expect(state.creation).toEqual(PHONE)
+    await act(async () => handle.cancel())
   })
 
   it("a below-floor creation refuses", async () => {

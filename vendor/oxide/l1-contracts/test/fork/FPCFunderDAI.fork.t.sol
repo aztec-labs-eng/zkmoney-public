@@ -72,7 +72,7 @@ contract FPCFunderDAIForkTest is MainnetForkFixture {
     (, uint256 bounty) = funder.quoteBalanceAndBounty();
 
     uint256 payout = executor.execute(
-      address(funder), abi.encodeCall(IFPCFunder.swapAndDepositAsFeeJuice, ()), OzIERC20(address(DAI)), bounty
+      address(funder), abi.encodeCall(IFPCFunder.swapAndDepositAsFeeJuice, ()), OzIERC20(address(DAI)), bounty, 0, 0
     );
 
     assertEq(payout, bounty);
@@ -87,7 +87,7 @@ contract FPCFunderDAIForkTest is MainnetForkFixture {
 
   function test_MeasureFundGasViaExecutor() external {
     executor.execute(
-      address(funder), abi.encodeCall(IFPCFunder.swapAndDepositAsFeeJuice, ()), OzIERC20(address(DAI)), 0
+      address(funder), abi.encodeCall(IFPCFunder.swapAndDepositAsFeeJuice, ()), OzIERC20(address(DAI)), 0, 0, 0
     );
     console2.log("swapAndDepositAsFeeJuice via executor, cold net gas", _lastCallNetGas());
   }

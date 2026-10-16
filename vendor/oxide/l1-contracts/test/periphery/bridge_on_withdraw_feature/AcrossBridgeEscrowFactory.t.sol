@@ -95,7 +95,12 @@ contract AcrossBridgeEscrowFactoryTest is AcrossBridgeEscrowTestBase {
 
     vm.prank(relayer);
     uint256 payout = executor.execute(
-      address(factory), abi.encodeCall(AcrossBridgeEscrowFactory.deployAndExecute, (args)), IERC20(address(dai)), TIP
+      address(factory),
+      abi.encodeCall(AcrossBridgeEscrowFactory.deployAndExecute, (args)),
+      IERC20(address(dai)),
+      TIP,
+      0,
+      0
     );
 
     assertEq(payout, TIP);

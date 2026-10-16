@@ -72,7 +72,8 @@ export interface Contact {
   provenance?: ContactProvenance
   /**
    * Added by the wallet, not the user: from an incoming transfer, or while a send that pays this
-   * person's request is in flight. Its requests count as from a non-contact until the user adds it.
+   * person's request is in flight. Its requests count as from a non-contact until the user adds it,
+   * or it pays one of the user's own requests.
    */
   autoAdded?: boolean
   // L1-only (present iff addressKind === "ethereum-l1")
@@ -845,6 +846,22 @@ export class ContactStorage {
       this.entries.push(entry)
       await this.saveToStorage()
       return entry
+    })
+  }
+
+  /** Makes the wallet-added L2 row at `l2Address` a full contact. Undefined when there is none. */
+  public approveAutoAdded(l2Address: string): Promise<Contact | undefined> {
+    return this.mutate(async () => {
+      const needle = normalizeAddress(l2Address)
+      const index = this.entries.findIndex(
+        (e) =>
+          e.autoAdded && addressKindOf(e) === "aztec-l2" && normalizeAddress(e.address) === needle,
+      )
+      if (index === -1) return undefined
+      const approved = withoutAutoAdded(this.entries[index])
+      this.entries[index] = approved
+      await this.saveToStorage()
+      return approved
     })
   }
 

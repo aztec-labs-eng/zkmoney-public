@@ -74,6 +74,37 @@ describe("probeHistoricResiduals", () => {
     expect(createMock.mock.calls[0]![2].toString()).toBe(HISTORIC_L2_TOKEN)
   })
 
+  it("reports a frozen portal's refundable notes instead of its token balance", async () => {
+    createMock.mockClear()
+    const [summary] = await probeHistoricResiduals(
+      deps({
+        frozenSource: async () => ({ notes: 7n, deposits: 0, waiting: 0, waitingAmount: 0n }),
+      }),
+    )
+    expect(summary).toMatchObject({
+      balance: 7n,
+      frozen: true,
+      incomplete: false,
+      hasResiduals: true,
+    })
+    expect(createMock).not.toHaveBeenCalled()
+  })
+
+  it("reads the token balance while the portal is live", async () => {
+    createMock.mockResolvedValueOnce({ getBalance: async () => 5n })
+    const [summary] = await probeHistoricResiduals(deps({ frozenSource: async () => undefined }))
+    expect(summary).toMatchObject({ balance: 5n, frozen: false })
+  })
+
+  it("marks a failed frozen-source read incomplete instead of empty", async () => {
+    createMock.mockClear()
+    const [summary] = await probeHistoricResiduals(
+      deps({ frozenSource: async () => Promise.reject(new Error("node down")) }),
+    )
+    expect(summary).toMatchObject({ balance: 0n, incomplete: true, hasResiduals: false })
+    expect(createMock).not.toHaveBeenCalled()
+  })
+
   it("attributes paylink rows by tokenAddress, with timestamp fallback for legacy rows", async () => {
     createMock.mockResolvedValue({ getBalance: async () => 0n })
     const rows = [
@@ -88,11 +119,12 @@ describe("probeHistoricResiduals", () => {
     expect(summary!.hasResiduals).toBe(true)
   })
 
-  it("a failing balance probe never hides the paylink residuals", async () => {
+  it("reads a failing balance probe as incomplete, never hiding the paylink residuals", async () => {
     createMock.mockRejectedValue(new Error("pxe down"))
     const rows = [payRow({ tokenAddress: HISTORIC_L2_TOKEN })]
     const [summary] = await probeHistoricResiduals(deps({ rows }))
     expect(summary!.balance).toBe(0n)
+    expect(summary!.incomplete).toBe(true)
     expect(summary!.paylinkEscrows).toBe(1)
     expect(summary!.hasResiduals).toBe(true)
   })
@@ -120,10 +152,64 @@ describe("probeHistoricResiduals", () => {
       }),
     )
 
-    expect(summary).toMatchObject({ sweptDeposits: 0, inTransitDeposits: 1, hasResiduals: true })
+    expect(summary).toMatchObject({
+      sweptDeposits: 0,
+      inTransitDeposits: 1,
+      inTransitAmount: 55n,
+      hasResiduals: true,
+    })
     expect(getContractEvents).toHaveBeenCalledWith(
       expect.objectContaining({ fromBlock: 10n, toBlock: 20n }),
     )
+  })
+
+  it("counts a frozen portal's refundable deposits without the L2 claim check", async () => {
+    const claimed = vi.fn(async () => true)
+    const frozenSource = vi.fn(async (_tuple: unknown, descriptors: () => Promise<unknown[]>) => ({
+      notes: 0n,
+      deposits: (await descriptors()).length + 2,
+      waiting: 1,
+      waitingAmount: 9n,
+    }))
+    const [summary] = await probeHistoricResiduals(
+      deps({
+        publicClient: { getContractEvents: async () => [] } as never,
+        frozenSource,
+        sipaDiscovery: {
+          scanRange: async () => ({ fromBlock: 0n, toBlock: 20n }),
+          sources: async () => [
+            {
+              sipaAddress: "0x" + "77".repeat(20),
+              recipientL2Address: account.getAddress().toString(),
+              messageSecret: "0x01",
+              origin: "sipa-event",
+            },
+          ],
+          balance: async () => 55n,
+          claimed,
+        },
+      }),
+    )
+    expect(summary).toMatchObject({
+      frozen: true,
+      sweptDeposits: 2,
+      inTransitDeposits: 1,
+      inTransitAmount: 55n,
+      waitingDeposits: 1,
+      waitingAmount: 9n,
+      incomplete: false,
+      hasResiduals: true,
+    })
+    expect(claimed).not.toHaveBeenCalled()
+  })
+
+  it("keeps a source whose only funds wait on an open Inbox tree as a residual", async () => {
+    const [summary] = await probeHistoricResiduals(
+      deps({
+        frozenSource: async () => ({ notes: 0n, deposits: 0, waiting: 1, waitingAmount: 9n }),
+      }),
+    )
+    expect(summary).toMatchObject({ frozen: true, waitingDeposits: 1, hasResiduals: true })
   })
 
   it("reports an incomplete probe when the SIPA scan fails without counting it as a residual", async () => {

@@ -9,13 +9,24 @@ export interface GlassCircleButtonProps {
   ariaLabel?: string
   className?: string
   style?: CSSProperties
+  disabled?: boolean
+  testId?: string
 }
 
 /**
  * 40x40 liquid-glass circle icon button used in nav bars and trailing slots.
  * Without `onClick` it renders as decorative chrome.
  */
-export function GlassCircleButton({ onClick, size = 40, children, ariaLabel, className, style }: GlassCircleButtonProps) {
+export function GlassCircleButton({
+  onClick,
+  size = 40,
+  children,
+  ariaLabel,
+  className,
+  style,
+  disabled,
+  testId,
+}: GlassCircleButtonProps) {
   const cls = ["zkm-glass-circle zkm-glass-circle--faint", className].filter(Boolean).join(" ")
   const dim = { width: size, height: size, ...style }
   if (!onClick) {
@@ -26,7 +37,15 @@ export function GlassCircleButton({ onClick, size = 40, children, ariaLabel, cla
     )
   }
   return (
-    <button type="button" className={`zkm-btn-reset ${cls}`} style={dim} onClick={onClick} aria-label={ariaLabel}>
+    <button
+      type="button"
+      className={`zkm-btn-reset ${cls}`}
+      style={dim}
+      onClick={onClick}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      data-testid={testId}
+    >
       {children}
     </button>
   )

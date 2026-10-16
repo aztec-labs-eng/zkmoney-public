@@ -21,6 +21,8 @@ export type OxideIdentityOutcome =
   | { kind: "unverified"; accounts: Address[] }
   | { kind: "no-generation" }
   | { kind: "none" }
+  /** No account found, but the catalog was incomplete, so none may still exist. */
+  | { kind: "inconclusive" }
 
 export class AmbiguousOxideIdentityError extends Error {
   constructor(readonly accounts: readonly Address[]) {
@@ -58,7 +60,13 @@ export interface OxideIdentityDeps {
   reader: IdentityGenerationReads
   registry: Address
   catalog: readonly IdentityGeneration[]
+  /** The rollup this device is connected to; the only one a verified identity's `generations` ever names. */
   rollupVersion: string
+  /** Rollups a generation or L1 record may admit under, besides `rollupVersion` — e.g. retired
+   *  rollups the oxide manifest still names. Defaults to `{rollupVersion}` alone. */
+  admissibleRollupVersions?: ReadonlySet<string>
+  /** A source of `catalog` failed to load, so finding no account proves nothing. */
+  catalogIncomplete?: boolean
 }
 
 const sameAddress = (left: string, right: string) => left.toLowerCase() === right.toLowerCase()
@@ -87,6 +95,7 @@ export async function resolveOxideIdentity(
   bootstrap: Address,
   l2Address: string,
 ): Promise<OxideIdentityOutcome> {
+  const admissibleRollupVersions = deps.admissibleRollupVersions ?? new Set([deps.rollupVersion])
   const metadataRegistry = readOnce(() => deps.reader.readAccountMetadataRegistry(deps.registry))
   const registryBehind = readOncePerAddress((portal: Address) =>
     deps.reader.readNamePortalRegistry(portal),
@@ -98,7 +107,7 @@ export async function resolveOxideIdentity(
   // Admission, not authentication: the portal's registry answer proves nothing, and the local prediction
   // assumes the factory clones its nonce-1 deployment. Only the name read below trusts anything.
   const bindsThisRegistry = async (generation: IdentityGeneration) => {
-    if (generation.rollupVersion !== deps.rollupVersion) return false
+    if (!admissibleRollupVersions.has(generation.rollupVersion)) return false
     if (!sameAddress(await registryBehind(generation.namePortal), deps.registry)) return false
     return sameAddress(
       await cloneTargetOf(generation.accountFactory),
@@ -116,7 +125,9 @@ export async function resolveOxideIdentity(
     const key = account.toLowerCase()
     const verified = verifiedByAccount.get(key)
     if (verified) {
-      verified.generations.push(generation)
+      // Admission accepts any admissible rollup, but a sponsorship consumer must never see a
+      // retired rollup's ClaimFPC as a live target on this one.
+      if (generation.rollupVersion === deps.rollupVersion) verified.generations.push(generation)
       continue
     }
     if (named.has(key)) continue
@@ -125,8 +136,9 @@ export async function resolveOxideIdentity(
     named.set(key, account)
     const record = await deps.reader.readUserRecord(await metadataRegistry(), account)
     if (!record || !sameAddress(record.l2Address, l2Address)) continue
-    if (record.rollupVersion.toString() !== deps.rollupVersion) continue
-    verifiedByAccount.set(key, { account, nameHash, generations: [generation] })
+    if (!admissibleRollupVersions.has(record.rollupVersion.toString())) continue
+    const onCurrentRollup = generation.rollupVersion === deps.rollupVersion
+    verifiedByAccount.set(key, { account, nameHash, generations: onCurrentRollup ? [generation] : [] })
   }
 
   if (admitted === 0) return { kind: "no-generation" }
@@ -134,7 +146,8 @@ export async function resolveOxideIdentity(
   if (accounts.length > 1) throw new AmbiguousOxideIdentityError(accounts)
   const identity = [...verifiedByAccount.values()][0]
   if (identity) return { kind: "verified", identity }
-  return accounts.length > 0 ? { kind: "unverified", accounts } : { kind: "none" }
+  if (accounts.length > 0) return { kind: "unverified", accounts }
+  return deps.catalogIncomplete ? { kind: "inconclusive" } : { kind: "none" }
 }
 
 export function requireVerifiedIdentity(
@@ -146,5 +159,10 @@ export function requireVerifiedIdentity(
     )
   }
   if (outcome.kind === "unverified") throw new UnverifiedOxideIdentityError(outcome.accounts)
+  // `undefined` sends the caller to a name claim. After a partial read, that would give the
+  // account the read missed a second name.
+  if (outcome.kind === "inconclusive") {
+    throw new OxideIdentityUnavailableError("part of the identity catalog failed to load")
+  }
   return outcome.kind === "verified" ? outcome.identity : undefined
 }

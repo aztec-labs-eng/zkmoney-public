@@ -1,8 +1,8 @@
 import type { PublicClient } from 'viem';
 
 import type { RunConfig } from '../cli/config.js';
-import type { DeploymentEnvManifestPublicConfig } from '../config/deployment_env_manifest.js';
-import type { ChainlinkPriceOracle } from '../price_oracle/chainlink_price_oracle.js';
+import type { ResolvedManifestDeployment } from '../config/deployment_env_manifest.js';
+import type { PriceOracle } from '../price_oracle/price_oracle.js';
 import { ProfitablePartialEpochProofStarter } from './prover_claim/profitable_partial_epoch_proof_starter.js';
 
 /**
@@ -11,15 +11,14 @@ import { ProfitablePartialEpochProofStarter } from './prover_claim/profitable_pa
  */
 export async function startEarlyProofStarter(
   config: RunConfig,
-  publicConfig: DeploymentEnvManifestPublicConfig,
+  deployments: ResolvedManifestDeployment[],
   client: PublicClient,
-  priceOracle: ChainlinkPriceOracle,
+  priceOracle: PriceOracle,
+  maxFeePerGasCap: bigint | undefined,
 ): Promise<ProfitablePartialEpochProofStarter> {
   if (!config.proverNodeUrl) {
     throw new Error('early proof starter requires --prover-node-url or OXIDE_RELAYER_PROVER_NODE_URL.');
   }
-
-  const proverSubsidy = publicConfig.proverSubsidy;
 
   const starter = await ProfitablePartialEpochProofStarter.create({
     nodeUrl: config.aztecNodeUrl,
@@ -27,10 +26,13 @@ export async function startEarlyProofStarter(
     proverNodeUrl: config.proverNodeUrl,
     proverNodeApiKey: config.proverNodeApiKey,
     l1Client: client,
-    portalAddress: publicConfig.portal,
-    proverSubsidyAddress: proverSubsidy,
+    portals: deployments.map(({ publicConfig }) => ({
+      portalAddress: publicConfig.portal,
+      proverSubsidyAddress: publicConfig.proverSubsidy,
+    })),
     priceOracle,
     earlySubmitPolicy: config.earlyProofPolicy,
+    maxFeePerGasCap,
     onError: error => {
       console.error(`early proof starter error: ${error}`);
     },

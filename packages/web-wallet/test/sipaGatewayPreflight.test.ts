@@ -92,6 +92,26 @@ const send = (
     beforeApprove,
   })
 
+describe("sipaGateway deposit record", () => {
+  it.each([
+    ["records the wallet's own deposit", undefined, 1],
+    ["records nothing for a payer funding someone else's address", false, 0],
+  ] as const)("%s", async (_, record, stamps) => {
+    const stamp = vi.fn(async () => {})
+    gateway.stampFunding = stamp
+    await gateway.deposit({
+      target: { address: SIPA, name: "river" },
+      amountDisplay: "2.5",
+      from: `0x${"aa".repeat(20)}`,
+      tokenSymbol: "DAI",
+      preflight: async () => {},
+      record,
+    })
+    expect(stamp).toHaveBeenCalledTimes(stamps)
+    gateway.stampFunding = async () => {}
+  })
+})
+
 describe("sipaGateway deposit preflight", () => {
   it("checks right before the wallet transfer, with the fee read for this send", async () => {
     const preflight = vi.fn(async (fresh: { feeDisplay: string }) => {

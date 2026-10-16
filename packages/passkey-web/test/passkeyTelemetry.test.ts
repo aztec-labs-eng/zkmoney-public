@@ -20,6 +20,7 @@ import {
   classifyPasskeyError,
   elapsedBucketFor,
   passkeyEnvironmentPropsFor,
+  passkeyErrorNameFor,
   passkeyReportEnvFor,
   passkeyRouteFor,
   phoneReachFor,
@@ -28,6 +29,7 @@ import {
 import {
   PASSKEY_CANCEL_REASONS,
   PASSKEY_CEREMONY_ENUM_PROPS,
+  PASSKEY_ERROR_NAMES,
   PASSKEY_FAILURE_REASONS,
   PASSKEY_MAJOR_MAX,
   PASSKEY_MAJOR_MIN,
@@ -310,6 +312,8 @@ describe("classifyPasskeyError", () => {
       RotatedCredentialError: "rotated_credential",
       AmbiguousPasskeyError: "ambiguous_passkey",
       RelatedOriginPasskeyError: "related_origin",
+      // Built with an unknown kind here; its own kinds are checked below.
+      LaptopPasskeyRefusedError: "provider_unnamed",
     }
     // Every refusal class the policy exports, so a new one without a reason fails here.
     const refusals = (Object.values(policyErrors) as unknown[]).filter(
@@ -328,6 +332,27 @@ describe("classifyPasskeyError", () => {
         })
       }
     }
+  })
+
+  it("reads a laptop refusal's reason from its kind", () => {
+    const reasons = {
+      "apple": "apple_below_floor",
+      "unnamed": "provider_unnamed",
+      "not-local": "local_route_mismatch",
+    } as const
+    for (const [kind, reason] of Object.entries(reasons)) {
+      const error = new policyErrors.LaptopPasskeyRefusedError(kind as keyof typeof reasons, [
+        "gpm",
+      ])
+      expect(classifyPasskeyError(error, answered)).toEqual({ outcome: "refused", reason })
+    }
+    // A kind the vocabulary does not know still counts as a refusal.
+    const odd = new policyErrors.LaptopPasskeyRefusedError("apple", ["gpm"])
+    Object.assign(odd, { kind: "something-new" })
+    expect(classifyPasskeyError(odd, answered)).toEqual({
+      outcome: "refused",
+      reason: "provider_unnamed",
+    })
   })
 
   it("takes the front's own names and tests", () => {
@@ -467,6 +492,40 @@ describe("classifyPasskeyError", () => {
       outcome: "cancelled",
       reason: "prompt_closed",
     })
+  })
+})
+
+describe("passkeyErrorNameFor", () => {
+  it("names a thrown object by its listed name, and everything else other", () => {
+    for (const name of PASSKEY_ERROR_NAMES) {
+      if (name === "other") continue
+      expect(passkeyErrorNameFor(new DOMException("some text", name))).toBe(name)
+      expect(passkeyErrorNameFor({ name })).toBe(name)
+    }
+    expect(passkeyErrorNameFor(new TypeError("x"))).toBe("TypeError")
+    for (const value of [
+      { name: "FooError" },
+      { name: "constructor" },
+      { name: "__proto__" },
+      { name: "0x1234abcd@alice" },
+      { name: 7 },
+      {},
+      new Error("nameless"),
+      "NotAllowedError",
+      TypeError,
+      null,
+      undefined,
+      42,
+    ]) {
+      expect(passkeyErrorNameFor(value)).toBe("other")
+    }
+    expect(
+      passkeyErrorNameFor({
+        get name() {
+          throw new Error("no")
+        },
+      }),
+    ).toBe("other")
   })
 })
 
@@ -611,6 +670,16 @@ describe("every mapped value is in the vocabulary", () => {
     }
     expect(phoneReachFor("below-floor")).toBeUndefined()
     expect(phoneReachFor("__proto__" as never)).toBeUndefined()
+    for (const error of [
+      new DOMException("x", "NotReadableError"),
+      { name: "FooError" },
+      { name: "constructor" },
+      "NotAllowedError",
+      TypeError,
+      null,
+    ]) {
+      listed("error_name", passkeyErrorNameFor(error))
+    }
   })
 
   it("classification", () => {

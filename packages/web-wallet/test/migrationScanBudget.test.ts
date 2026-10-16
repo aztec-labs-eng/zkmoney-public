@@ -247,9 +247,9 @@ describe("migration sweep-scan budget of one wallet boot", () => {
     expect(l1.calls).toEqual({})
   })
 
-  it("one historic entry, 0 sources: the head read only, no block search", async () => {
+  it("one historic entry, 0 sources: the freeze check and the head read only, no block search", async () => {
     const { l1 } = await boot("historic-1-sources-0", [tuple(1)], 0)
-    expect(l1.calls).toEqual({ eth_blockNumber: 1 })
+    expect(l1.calls).toEqual({ eth_blockNumber: 1, eth_call: 1 })
   })
 
   it("scans from the deployment's deployedAt, never from its later updatedAt", async () => {
@@ -262,7 +262,8 @@ describe("migration sweep-scan budget of one wallet boot", () => {
     async (sources) => {
       const { l1 } = await boot(`historic-1-sources-${sources}`, [tuple(1)], sources)
       expect(l1.calls.eth_getLogs).toBe(sources * chunksFrom(12_000n))
-      expect(l1.calls.eth_call).toBe(sources)
+      // One balanceOf per source, plus the portal's freeze check.
+      expect(l1.calls.eth_call).toBe(sources + 1)
       expect(l1.calls.eth_getCode).toBeUndefined()
       expect(l1.calls.eth_getBlockByNumber).toBeLessThanOrEqual(HEADER_READ_BUDGET_PER_TUPLE)
       expect(l1.getLogs[0]).toMatchObject({ fromBlock: toHex(12_000n), toBlock: toHex(21_999n) })
@@ -320,12 +321,12 @@ describe("migration sweep-scan budget of one wallet boot", () => {
     expect(residuals[0]).toMatchObject({ sweptDeposits: 1, incomplete: false })
   })
 
-  it("block search fails at zero balance: no sweep scan runs and no row is reported", async () => {
+  it("block search fails at zero balance: no sweep scan runs and the row stays incomplete", async () => {
     const { l1, residuals } = await boot("getblock-fails-sources-5", [tuple(1)], 5, {
       rejectGetBlock: true,
     })
     expect(l1.calls.eth_getLogs).toBeUndefined()
-    expect(residuals).toEqual([])
+    expect(residuals).toEqual([expect.objectContaining({ incomplete: true, balance: 0n, hasResiduals: false })])
   })
 
   it("block search fails on a funded deployment: the row is reported as incomplete", async () => {
@@ -340,13 +341,13 @@ describe("migration sweep-scan budget of one wallet boot", () => {
     expect(residuals[0]).toMatchObject({ incomplete: true, balance: 9n })
   })
 
-  it("source discovery fails at zero balance: no L1 scan runs and no row is reported", async () => {
+  it("source discovery fails at zero balance: no L1 scan runs and the row stays incomplete", async () => {
     const { l1, residuals } = await boot("sources-fail-sources-5", [tuple(1)], 5, {
       rejectSources: true,
     })
     expect(l1.calls.eth_getLogs).toBeUndefined()
     expect(l1.calls.eth_getCode).toBeUndefined()
-    expect(residuals).toEqual([])
+    expect(residuals).toEqual([expect.objectContaining({ incomplete: true, balance: 0n, hasResiduals: false })])
   })
 
   it("writes the budget artifact once every condition has run", () => {
@@ -357,7 +358,7 @@ describe("migration sweep-scan budget of one wallet boot", () => {
       JSON.stringify(
         {
           scope:
-            "probeAccountResiduals sweep scan: eth_blockNumber, eth_getBlockByNumber deployment-block search, balanceOf eth_call, Sweep eth_getLogs",
+            "probeAccountResiduals sweep scan: the portal's isFrozen eth_call, eth_blockNumber, eth_getBlockByNumber deployment-block search, balanceOf eth_call, Sweep eth_getLogs",
           outside: [
             "setupSipaDiscovery: the AccountMetadataRegistry log scan, chunked over the same range as the sweep scan, plus one eth_call per operator, per historic tuple",
             "readDepositSIPAImplementation: one eth_call per SIPA factory",

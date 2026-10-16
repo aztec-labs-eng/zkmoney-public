@@ -14,9 +14,10 @@ import {
 import { WithdrawalSubsidyAbi, encodeEscrowRecoverERC20 } from "@oxide/l1-contracts"
 import { readUsdPerEth, weiToUSD } from "@oxide/oxide-client/eth_usd_price_feed.js"
 import {
-  EXECUTOR_MIN_PAYOUT_CALLDATA_GAS,
+  GAS_COST_ARGS_CALLDATA_GAS,
+  WEI_PER_ETH,
   estimateL1OperationFeeValues,
-  quoteL1Operation,
+  gasCostAtQuotePrice,
 } from "@oxide/oxide-client/l1_operation_quote.js"
 import {
   decodeFunctionResult,
@@ -30,6 +31,7 @@ import {
 } from "viem"
 import { L1_OPERATION_TIP_MARGIN_BPS } from "@obsidion/core/constants"
 import { MULTICALL3_ADDRESS } from "../services/sipaClaim.js"
+import { quoteEitherExecutor } from "./l1OperationQuote.js"
 import type { SwapEscrowCall, SwapRecovery } from "./swapOnWithdraw.js"
 import {
   findBalanceOfSlot,
@@ -99,7 +101,7 @@ export async function quoteSkyEscrowTip(
       functionName: "PRICE_FEED",
     }),
   ])
-  const quote = await quoteL1Operation(client, {
+  const quote = await quoteEitherExecutor(client, {
     executor: deployment.operationExecutor,
     sender: args.sender,
     ethUsdFeed,
@@ -191,9 +193,11 @@ export async function quoteSkyReleaseTip(
       })
     : 0n
   const gasUsed = SKY_RELEASE_GAS[route]
-  const minPayout = weiToUSD(
-    (gasUsed + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS) * feeValues.maxFeePerGas,
-    usdPerEth,
+  const minPayout = gasCostAtQuotePrice(
+    gasUsed + GAS_COST_ARGS_CALLDATA_GAS,
+    block,
+    feeValues,
+    weiToUSD(WEI_PER_ETH, usdPerEth),
   )
   // The margin covers the whole release: the subsidy is capped and can drain, so it need not rise with gas.
   const floor = withTipMargin(minPayout)

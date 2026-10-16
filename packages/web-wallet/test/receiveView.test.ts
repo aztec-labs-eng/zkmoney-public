@@ -1,32 +1,6 @@
 import { describe, expect, it } from "vitest"
-import type { ContactRow } from "@obsidion/front-core"
 import { decimalInput } from "../src/ui/format"
-import { parseRequestAmount, recentContacts } from "../src/features/receive/receiveView"
-
-const row = (tag: string, addressKind: ContactRow["addressKind"] = "aztec-l2"): ContactRow => ({
-  id: tag,
-  name: tag,
-  tag,
-  address: `0x${tag}`,
-  addressKind,
-})
-
-describe("recentContacts", () => {
-  it("keeps only zk.money contacts", () => {
-    const rows = [row("ada"), row("rainbow", "ethereum-l1"), row("bo")]
-    expect(recentContacts(rows).map((c) => c.tag)).toEqual(["ada", "bo"])
-  })
-
-  it("caps at the limit, in list order", () => {
-    const rows = ["a", "b", "c", "d", "e"].map((t) => row(t))
-    expect(recentContacts(rows).map((c) => c.tag)).toEqual(["a", "b", "c", "d"])
-    expect(recentContacts(rows, 2).map((c) => c.tag)).toEqual(["a", "b"])
-  })
-
-  it("returns empty for an all-L1 directory", () => {
-    expect(recentContacts([row("x", "ethereum-l1")])).toEqual([])
-  })
-})
+import { parseRequestAmount } from "../src/features/receive/receiveView"
 
 describe("parseRequestAmount", () => {
   it("accepts positive amounts, with or without a $ prefix", () => {

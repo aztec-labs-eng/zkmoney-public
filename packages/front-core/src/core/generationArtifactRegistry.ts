@@ -3,7 +3,7 @@
 // layer can reach but front-core (and web) cannot import directly. The platform
 // registers those inert blobs here at boot; front-core's loaders read them by
 // (stack, name) and fall back to the canonical/v5 artifact when none is
-// registered. Mirrors registerGenerationStack — data instead of adapters.
+// registered.
 
 import type { NoirCompiledContract } from "@aztec/stdlib/noir"
 

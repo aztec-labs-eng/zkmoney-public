@@ -163,6 +163,19 @@ describe("WithdrawalStorage", () => {
       expect(byHash?.rawAmount).toBe("1000000")
     })
 
+    it("stamps when the burn was first seen mined, and keeps that time on a later mark", async () => {
+      const store = await newStore()
+      await store.create(makeRecord())
+      const now = vi.spyOn(Date, "now").mockReturnValue(5_000)
+      try {
+        expect((await store.markMined("local-1", VALID_TX, 100, "1000000")).minedAt).toBe(5_000)
+        now.mockReturnValue(9_000)
+        expect((await store.markMined("local-1", VALID_TX, 101, "1000000")).minedAt).toBe(5_000)
+      } finally {
+        now.mockRestore()
+      }
+    })
+
     it("records the tip the burn offered alongside the amount it burned", async () => {
       const store = await newStore()
       await store.create(makeRecord())

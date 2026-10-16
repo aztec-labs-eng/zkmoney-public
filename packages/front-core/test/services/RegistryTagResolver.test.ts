@@ -5,7 +5,7 @@
  * the throw-vs-null contract, and the bootstrap-owner read that is the messaging address).
  */
 
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import type { Address, Hex, PublicClient } from "viem"
 import {
   RegistryTagResolver,
@@ -89,6 +89,43 @@ describe("RegistryTagResolver.resolveTag", () => {
   it("returns staleRollup when the record is scoped to a different rollup", async () => {
     const { client } = stubClient({ account: ACCOUNT, user: userRecord({ rollupVersion: 3n }) })
     expect(await resolver(client).resolveTag("alice", 4n)).toEqual({ status: "staleRollup" })
+  })
+
+  it("resolves a record on an admitted retired rollup under that rollup's id", async () => {
+    const { client } = stubClient({ account: ACCOUNT, user: userRecord({ rollupVersion: 3n }) })
+    const result = await resolver(client).resolveTag("alice", 4n, async () => ["3"])
+    expect(result).toMatchObject({ status: "resolved", account: ACCOUNT, rollupId: "3" })
+  })
+
+  it("matches retired versions as sign-in admission does, so a padded version does not match", async () => {
+    const { client } = stubClient({ account: ACCOUNT, user: userRecord({ rollupVersion: 3n }) })
+    expect(await resolver(client).resolveTag("alice", 4n, async () => ["03"])).toEqual({
+      status: "staleRollup",
+    })
+  })
+
+  it("returns staleRollup for a record on a rollup the retired list does not name", async () => {
+    const { client } = stubClient({ account: ACCOUNT, user: userRecord({ rollupVersion: 2n }) })
+    expect(await resolver(client).resolveTag("alice", 4n, async () => ["3"])).toEqual({
+      status: "staleRollup",
+    })
+  })
+
+  it("reads the retired list only for a record off the current rollup", async () => {
+    const { client } = stubClient({ account: ACCOUNT, user: userRecord() })
+    const retired = vi.fn(async () => ["3"])
+    expect(await resolver(client).resolveTag("alice", 4n, retired)).toMatchObject({
+      status: "resolved",
+    })
+    expect(retired).not.toHaveBeenCalled()
+  })
+
+  it("propagates a failed retired-list read for a record off the current rollup", async () => {
+    const { client } = stubClient({ account: ACCOUNT, user: userRecord({ rollupVersion: 3n }) })
+    const failing = async (): Promise<string[]> => {
+      throw new Error("manifest down")
+    }
+    await expect(resolver(client).resolveTag("alice", 4n, failing)).rejects.toThrow(/manifest down/)
   })
 
   it("propagates a transport failure as a throw (deferred-retry contract)", async () => {

@@ -3,17 +3,16 @@ import { SerialQueue } from '@aztec/foundation/queue';
 import { sleep } from '@aztec/foundation/sleep';
 
 import { OxidePortalAbi } from '@oxide/l1-contracts';
-import { OxidePortalContract, ProverClaim, toProverTipClaim } from '@oxide/l1-contracts/oxide_portal.js';
+import { ProverClaim, toProverTipClaim } from '@oxide/l1-contracts/oxide_portal.js';
 
 import { type FeeValuesEIP1559, type Hex, type PublicClient, encodeFunctionData } from 'viem';
 
 import type { L1TxQueue, SendL1Tx } from '../../l1/l1_tx_queue.js';
-import { ProverPortalConfig } from '../prover_claim_lib/index.js';
+import { ProverClaimPortalConfig } from '../prover_claim_lib/index.js';
 
 const DEFAULT_CONFIRMATION_POLL_INTERVAL_MS = 2_000;
 
 export interface BatchPublisherOptions {
-  portal: OxidePortalContract;
   client: Pick<PublicClient, 'estimateGas' | 'getBlockNumber' | 'getTransactionReceipt'>;
   // Must sign with the prover's key: `claimProverTips` credits `msg.sender`, and `ProverClaimLib` requires it
   // to be the address captured in `$firstProver`.
@@ -50,7 +49,7 @@ export class BatchPublisher {
   // The returned `confirmed` resolves once the tx is `confirmations` deep. The tx carries `feeValues`, the fee values
   // that the batch was priced at.
   async publish(
-    portal: ProverPortalConfig,
+    portal: ProverClaimPortalConfig,
     claims: ProverClaim[],
     feeValues: FeeValuesEIP1559,
   ): Promise<{ confirmed: Promise<void> }> {
@@ -62,7 +61,7 @@ export class BatchPublisher {
   }
 
   private async submit(
-    portal: ProverPortalConfig,
+    portal: ProverClaimPortalConfig,
     claims: ProverClaim[],
     feeValues: FeeValuesEIP1559,
   ): Promise<MinedReceipt> {
@@ -87,20 +86,20 @@ export class BatchPublisher {
   }
 
   private async prepareAndSubmit(
-    portal: ProverPortalConfig,
+    portal: ProverClaimPortalConfig,
     claims: ProverClaim[],
     feeValues: FeeValuesEIP1559,
     send: SendL1Tx,
   ) {
     const args = [portal.context.proverSubsidy.toString(), claims.map(toProverTipClaim)] as const;
 
-    const contract = this.options.portal.getContract();
+    const contract = portal.contract.getContract();
     const account = this.options.l1TxQueue.address;
 
     // Simulate first so a batch that would revert fails before we spend gas.
     await contract.simulate.claimProverTips(args, { account });
     const data: Hex = encodeFunctionData({ abi: OxidePortalAbi, functionName: 'claimProverTips', args });
-    const to = this.options.portal.address.toString();
+    const to = portal.contract.address.toString();
     const gas = await this.options.client.estimateGas({ account, to, data });
 
     this.log.info(`Submitting ${claims.length} prover claim(s) for portal ${portal.context.l1Portal}`);

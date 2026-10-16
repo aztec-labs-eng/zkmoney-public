@@ -49,6 +49,11 @@ export function requireNonZeroL1Address(value: unknown, field: string): string {
   return v
 }
 
+/** Non-throwing form of {@link requireNonZeroL1Address}, for a field a caller skips rather than rejects. */
+function isWellFormedNonZeroL1Address(value: unknown): value is string {
+  return typeof value === "string" && L1_ADDRESS.test(value) && !isAllZeroHex(value)
+}
+
 /** L2 address that is well-formed AND not the zero address. */
 export function requireNonZeroL2Address(value: unknown, field: string): string {
   const v = requirePattern(value, L2_ADDRESS, field)
@@ -287,6 +292,7 @@ export function parseDeployment(entry: Record<string, unknown>): {
     proverSubsidy: optionalString(entry.proverSubsidy),
     plainWithdrawalExecutor: optionalString(entry.plainWithdrawalExecutor),
     l2Broadcaster: optionalString(entry.l2Broadcaster),
+    updateMetadataSIPAImplementation: optionalString(entry.updateMetadataSIPAImplementation),
     frozenNotesRefundVerifier: optionalString(entry.frozenNotesRefundVerifier),
     frozenDepositRefundVerifier: optionalString(entry.frozenDepositRefundVerifier),
     unprocessedDepositRefundVerifier: optionalString(entry.unprocessedDepositRefundVerifier),
@@ -317,15 +323,52 @@ function isCurrentProtocol(entry: Record<string, unknown>): boolean {
 }
 
 /**
- * Every other current-protocol entry on the pinned deployment's rollup. Entries share the manifest's `token` even when
+ * Every other current-protocol entry on the pinned deployment's rollup, plus each entry on another rollup whose
+ * lowercase portal is in `reachable` (the caller has a node for it). Entries share the manifest's `token` even when
  * their portal escrows another asset, so the caller must still drop portals whose UNDERLYING differs from the pin's.
  * A malformed entry throws.
  */
-export function migrationSources(manifest: unknown, pinned: OxideEnvTuple): OxideEnvTuple[] {
+export function migrationSources(
+  manifest: unknown,
+  pinned: OxideEnvTuple,
+  reachable: ReadonlySet<string> = new Set(),
+): OxideEnvTuple[] {
   return requireDeployments(manifest)
     .filter((entry) => !samePortal(entry, pinned.portal) && isCurrentProtocol(entry))
     .map((entry) => parseDeployment(entry).tuple)
-    .filter((tuple) => tuple.rollupVersion === pinned.rollupVersion)
+    .filter(
+      (tuple) =>
+        tuple.rollupVersion === pinned.rollupVersion || reachable.has(tuple.portal.toLowerCase()),
+    )
+}
+
+/**
+ * Every other rollup's entry sharing the pinned deployment's L1 chain and name registry — an
+ * earlier rollup generation of the same identity lineage (what a rollup cutover leaves behind),
+ * not an unrelated deployment that merely differs in rollupVersion. The lineage is matched on raw
+ * fields before parsing, so an entry outside it never has to be schema-valid. Skips an entry whose
+ * `accountFactory`/`namePortal` aren't well-formed, non-zero addresses, rather than returning an
+ * incomplete entry as if it were a complete deployment.
+ */
+export function retiredRollupSources(manifest: unknown, pinned: OxideEnvTuple): OxideEnvTuple[] {
+  return requireDeployments(manifest)
+    .filter((entry) => sameLineage(entry, pinned))
+    .map((entry) => parseDeployment(entry).tuple)
+    .filter(
+      (tuple) =>
+        tuple.rollupVersion !== pinned.rollupVersion &&
+        isWellFormedNonZeroL1Address(tuple.accountFactory) &&
+        isWellFormedNonZeroL1Address(tuple.namePortal),
+    )
+}
+
+function sameLineage(entry: Record<string, unknown>, pinned: OxideEnvTuple): boolean {
+  return (
+    entry.chainId === pinned.chainId &&
+    typeof pinned.registry === "string" &&
+    typeof entry.nameRegistry === "string" &&
+    entry.nameRegistry.toLowerCase() === pinned.registry.toLowerCase()
+  )
 }
 
 /** The pinned entry as a tuple, with the mainnet gate applied when `opts` says so. */
@@ -366,4 +409,22 @@ export async function loadOxideManifestTuple(opts: LoadOxideManifestOpts): Promi
     })
   }
   return tuple
+}
+
+/**
+ * Fetch and validate the oxide manifest's retired-rollup siblings of the pinned entry. A separate
+ * fetch from {@link loadOxideManifestTuple} (not its cached result): callers that need both pay
+ * two small requests rather than entangle this with the pinned-tuple cache every other consumer
+ * shares.
+ */
+export async function loadRetiredRollupSources(
+  opts: LoadOxideManifestOpts,
+): Promise<OxideEnvTuple[]> {
+  const response = await (opts.fetchImpl ?? fetch)(opts.manifestUrl)
+  if (!response.ok) {
+    throw new Error(`oxide manifest HTTP ${response.status} (${opts.manifestUrl})`)
+  }
+  const manifest = await response.json()
+  const { tuple: pinned } = extractPinnedOxideEnvTuple(manifest, opts, pinnedEntryPolicy(opts))
+  return retiredRollupSources(manifest, pinned)
 }

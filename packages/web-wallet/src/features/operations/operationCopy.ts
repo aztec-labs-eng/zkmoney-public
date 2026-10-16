@@ -57,6 +57,14 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     outcome: "record",
     ...failures(true),
   },
+  "savings": {
+    live: "Moving funds",
+    failed: "Move failed",
+    busy: "Waiting for your move to finish",
+    icon: "arrow.up.right",
+    outcome: "record",
+    ...failures(true),
+  },
   "paylink-create": {
     live: "Creating",
     settled: "Paylink created",

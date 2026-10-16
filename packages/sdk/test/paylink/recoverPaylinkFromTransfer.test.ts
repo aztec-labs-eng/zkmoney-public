@@ -10,7 +10,11 @@ import { resolve } from "path"
 import { Fr } from "@aztec/aztec.js/fields"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
 import { loadContractArtifact } from "@aztec/stdlib/abi"
-import { CompleteAddress, getContractInstanceFromInstantiationParams } from "@aztec/stdlib/contract"
+import {
+  CompleteAddress,
+  getContractClassFromArtifact,
+  getContractInstanceFromInstantiationParams,
+} from "@aztec/stdlib/contract"
 import type { NoirCompiledContract } from "@aztec/stdlib/noir"
 import { DEFAULT_CONTRACTS } from "@obsidion/contracts"
 import { PaylinkService } from "../../src/services/PaylinkService.js"
@@ -21,17 +25,17 @@ import {
 import { buildTransferMeta, buildTransferMetaForSend, decodeTransferMeta } from "../../src/services/transferMeta.js"
 import type { ScannedTransferEvent } from "../../src/services/transferEventSource.js"
 
-const ARTIFACT = loadContractArtifact(
-  JSON.parse(
-    readFileSync(
-      resolve(
-        __dirname,
-        "../../../contracts/src/artifacts/target/paylink_direct/paylink_direct-PaylinkDirect.json",
-      ),
-      "utf-8",
-    ),
-  ) as NoirCompiledContract,
-)
+const target = (path: string) =>
+  loadContractArtifact(
+    JSON.parse(
+      readFileSync(resolve(__dirname, "../../../contracts/src/artifacts/target", path), "utf-8"),
+    ) as NoirCompiledContract,
+  )
+const ARTIFACT = target("paylink_direct/paylink_direct-PaylinkDirect.json")
+// Another escrow class with the same derivation, standing in for an earlier PaylinkDirect class.
+const EARLIER = target("paylink_email/paylink_email-PaylinkEmail.json")
+const classIdOf = async (artifact: typeof ARTIFACT) =>
+  (await getContractClassFromArtifact(artifact)).id
 
 describe("PaylinkService.recoverPaylinkFromTransfer", () => {
   it("rebuilds the link for the creator only, and refuses a stray or foreign lane", async () => {
@@ -41,7 +45,10 @@ describe("PaylinkService.recoverPaylinkFromTransfer", () => {
       { getNodeIdentity: async () => ({ l1ChainId: 31337, rollupVersion: 1 }) } as any,
       { getAddress: () => creator } as any,
       null as any,
-      { getArtifactForContract: async () => ARTIFACT } as any,
+      {
+        getArtifactForContract: async () => ARTIFACT,
+        getKnownClassIds: async () => [(await classIdOf(ARTIFACT)).toString()],
+      } as any,
     )
     const masterSecret = Fr.random()
     const day = 20_000
@@ -124,5 +131,44 @@ describe("PaylinkService.recoverPaylinkFromTransfer", () => {
       masterSecret,
     )
     expect(withEmail?.email).toBe("a@b.c")
+  })
+
+  it("rebuilds the link of an escrow funded under an earlier class, carrying that class", async () => {
+    const creator = (await CompleteAddress.fromSecretKeyAndPartialAddress(Fr.random(), Fr.random()))
+      .address
+    const service = new PaylinkService(
+      { getNodeIdentity: async () => ({ l1ChainId: 31337, rollupVersion: 1 }) } as any,
+      { getAddress: () => creator } as any,
+      null as any,
+      {
+        getArtifactForContract: async () => ARTIFACT,
+        getKnownClassIds: async () =>
+          [await classIdOf(ARTIFACT), await classIdOf(EARLIER)].map(String),
+      } as any,
+    )
+    const masterSecret = Fr.random()
+    const keys = await deriveDeterministicPaylinkKeys(
+      masterSecret,
+      20_000,
+      0,
+      DEFAULT_CONTRACTS.paylinkDirect,
+    )
+    const earlier = await getContractInstanceFromInstantiationParams(EARLIER, {
+      salt: new Fr(0n),
+      publicKeys: keys.publicKeys,
+    })
+    const event: ScannedTransferEvent = {
+      txHash: "0xabc",
+      from: creator.toString(),
+      to: earlier.address.toString(),
+      amount: "1000000",
+      blockNumber: 7,
+      ...decodeTransferMeta(
+        service.depositMeta(DEFAULT_CONTRACTS.paylinkDirect, { paylinkKeys: keys }),
+      ),
+    }
+
+    const params = await service.recoverPaylinkFromTransfer(event, masterSecret)
+    expect(params!.classId.equals(earlier.currentContractClassId)).toBe(true)
   })
 })

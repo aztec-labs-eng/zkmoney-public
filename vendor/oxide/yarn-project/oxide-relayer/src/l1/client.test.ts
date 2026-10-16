@@ -104,8 +104,10 @@ describe('l1Transport', () => {
       );
       expect(error).toBeInstanceOf(Error);
       expect((error as Error).message).not.toContain('secret-api-key');
-      // The failure from viem, with the URL, stays in the cause chain for debugging.
-      expect(String((error as Error).cause)).toContain('secret-api-key');
+      // The failure from viem stays in the cause chain for debugging, without the key.
+      expect(String((error as Error).cause)).toContain('the method does not exist');
+      expect(String((error as Error).cause)).not.toContain('secret-api-key');
+      expect(((error as Error).cause as Error).stack).not.toContain('secret-api-key');
     }
   });
 

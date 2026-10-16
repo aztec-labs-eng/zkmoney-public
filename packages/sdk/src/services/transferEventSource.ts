@@ -9,6 +9,7 @@
  */
 
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
 import { BlockNumber } from "@aztec/foundation/branded-types"
 import { OxideTokenContract, type Transfer as TransferEvent } from "@obsidion/contracts"
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
@@ -19,7 +20,11 @@ import {
   type PaylinkPayoutMeta,
 } from "./transferMeta.js"
 import type { ContractService } from "@obsidion/contracts"
-import { paylinkEscrowInstance } from "./paylink/paylinkEscrow.js"
+import {
+  escrowInstancesForKnownClasses,
+  paylinkEscrowInstance,
+  paylinkTypeOf,
+} from "./paylink/paylinkEscrow.js"
 
 /** One decoded `Transfer` event addressed to the scanned account. */
 export interface ScannedTransferEvent {
@@ -39,7 +44,9 @@ export interface ScannedTransferEvent {
   paylinkPayout?: PaylinkPayoutMeta
 }
 
-type EscrowVerifier = Pick<ContractService, "getArtifactForContract"> | undefined
+type EscrowVerifier =
+  | Pick<ContractService, "getArtifactForContract" | "getKnownClassIds">
+  | undefined
 
 export interface WalletSyncSnapshot {
   events: ScannedTransferEvent[]
@@ -163,7 +170,7 @@ async function decodeEvents(
   return Promise.all(events.map(decodeEvent).map((e) => verifyPayout(e, contractService)))
 }
 
-/** Keeps the payout lane only when its keys derive the event's `from`. */
+/** Keeps the payout lane only when its keys derive the event's `from`, under any known class. */
 async function verifyPayout(
   event: ScannedTransferEvent,
   contractService: EscrowVerifier,
@@ -172,17 +179,27 @@ async function verifyPayout(
   if (!lane) return event
   const { paylinkPayout: _, ...plain } = event
   if (!contractService) return plain
+  let current: ContractInstanceWithAddress
   try {
-    const escrow = await paylinkEscrowInstance(
+    current = await paylinkEscrowInstance(
       contractService,
       lane.flavor,
       lane.secret,
       lane.fallbackKeyHash,
     )
-    return escrow.address.equals(AztecAddress.fromStringUnsafe(event.from)) ? event : plain
   } catch {
     return plain
   }
+  const payer = AztecAddress.fromStringUnsafe(event.from)
+  if (current.address.equals(payer)) return event
+  // Only an earlier class needs the catalog. Failing to read it fails the tick: dropping the lane
+  // would store a plain receive the cursor then moves past.
+  const escrows = await escrowInstancesForKnownClasses(
+    contractService,
+    paylinkTypeOf(lane.flavor),
+    current,
+  )
+  return escrows.some((escrow) => escrow.address.equals(payer)) ? event : plain
 }
 
 function decodeEvent({ event, metadata }: PrivateEvent<TransferEvent>): ScannedTransferEvent {

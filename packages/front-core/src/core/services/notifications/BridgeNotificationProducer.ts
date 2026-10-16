@@ -11,8 +11,11 @@ import {
   type WithdrawalGroup,
   type WithdrawalRecord,
 } from "../bridge"
+import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
+import { formatUnits } from "viem"
 import { depositAmounts } from "../deposits/depositAmounts"
 import { WITHDRAWAL_PHASE_COPY } from "../bridge/withdrawalCopy"
+import { savingsMoveLabel } from "../savings/savingsMoveCopy"
 import { depositPhaseCopy } from "../deposits/depositCopy"
 import type { SIPADepositRecord } from "../deposits/SIPADepositStore"
 import { SIPA_PROCESSING_COPY, sipaReasonShown } from "../deposits/sipaProcessing"
@@ -167,6 +170,10 @@ function inflightSourceId(item: BridgeActivityItem): string {
     : `bridge:sipaDeposit:${item.record.sipaAddress.toLowerCase()}:inflight`
 }
 
+/** The burn of a Savings move, whose words are the move's rather than a withdrawal's. */
+const savingsMoveOf = (item: BridgeActivityItem) =>
+  item.kind === "bridge.withdrawal" ? item.record.skyMove : undefined
+
 function inflightInput(
   item: BridgeActivityItem,
   label: string,
@@ -174,6 +181,7 @@ function inflightInput(
 ): CreateAppNotificationInput {
   const id = inflightSourceId(item)
   const withdrawal = item.kind === "bridge.withdrawal"
+  const savings = savingsMoveOf(item)
   return {
     id,
     producer: "bridge",
@@ -181,12 +189,14 @@ function inflightInput(
     sourceId: id,
     title: migration
       ? "Moving funds"
+      : savings
+      ? savingsMoveLabel(savings.direction)
       : withdrawal
       ? item.record.source === "paylink"
         ? "Paylink withdrawal in progress"
         : "Withdrawal in progress"
       : "Deposit in progress",
-    description: `${amountLabel(item)} · ${label}`,
+    description: savings ? amountLabel(item) : `${amountLabel(item)} · ${label}`,
     timestampMs: item.record.startTime,
     systemIcon: withdrawal ? "arrow.up.right" : "arrow.down.left",
     severity: "info",
@@ -219,6 +229,12 @@ function notificationTimestamp(item: BridgeActivityItem): number | undefined {
  * named in ETH.
  */
 function amountLabel(item: BridgeActivityItem): string {
+  const savings = savingsMoveOf(item)
+  // A move out burns sUSDS shares, never named as a count: their dollar value, else the route.
+  if (savings?.direction === "out")
+    return savings.value === undefined
+      ? "From Savings"
+      : dollars(Number(formatUnits(BigInt(savings.value), DEFAULT_DECIMALS)))
   if (item.kind === "bridge.withdrawal") return dollars(Number(item.record.amount))
   const figure = depositFigure(item.record)
   return isNativeEth(item.record.tokenAddress)
@@ -258,6 +274,8 @@ function titleForItem(
   migration: boolean,
 ): string {
   if (migration) return phase === "done" ? "Migration complete" : "Migration failed"
+  const savings = savingsMoveOf(item)
+  if (savings) return phase === "done" ? savingsMoveLabel(savings.direction) : "Move failed"
   if (item.kind === "bridge.withdrawal") {
     const what = item.record.source === "paylink" ? "Paylink withdrawal" : "Withdrawal"
     if (item.record.phase === "recovered") return `${what} recovered`
@@ -277,6 +295,8 @@ function descriptionForItem(
     if (item.record.phase === "recovered") {
       return `${amountDisplay} returned to your wallet`
     }
+    // The move's release is in; the move itself finishes when the destination claims the deposit.
+    if (savingsMoveOf(item)) return amountDisplay
     return item.kind === "bridge.withdrawal"
       ? `${amountDisplay} sent to Ethereum`
       : `${amountDisplay} arrived`

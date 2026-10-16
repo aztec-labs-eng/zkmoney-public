@@ -8,7 +8,7 @@
     {
       "action": "click",
       "role": "button",
-      "name": "Pay with an external wallet",
+      "name": "Pay with an Ethereum wallet",
       "exact": false
     },
     {

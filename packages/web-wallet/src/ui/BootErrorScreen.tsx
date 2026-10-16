@@ -2,10 +2,24 @@ import { useState } from "react"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
 import { clearAllEndpointOverrides } from "../config/endpointOverrides"
 import { getConfig } from "../config/env"
-import { reloadPage } from "../platform/storage/walletStorage"
+import { leavePage, reloadPage } from "../platform/storage/walletStorage"
 import { EndpointsModal, PreWalletEndpointsModal } from "./EndpointsModal"
 import type { BootError } from "./PxeBoot"
+import { RESET_PATH } from "./ResetScreen"
 import { PreviewDraftRecovery } from "../dev/PreviewDraftRecovery"
+
+/** Where the boot screen's spinner sat, so a boot that stops says so on the same screen. */
+export const BOOT_ERROR_LAYOUT = {
+  display: "flex",
+  flexDirection: "column",
+  justifyContent: "center",
+  gap: 16,
+  minHeight: "100dvh",
+  boxSizing: "border-box",
+  padding: "24px 16px",
+  maxWidth: 430,
+  margin: "0 auto",
+} as const
 
 /**
  * A boot that stopped: why, a retry, and the ways out the endpoints allow. `walletOpen` is false for
@@ -21,19 +35,7 @@ export function BootErrorScreen({
   walletOpen: boolean
 }) {
   return (
-    <div
-      role="alert"
-      data-testid="boot-error"
-      data-kind={error?.kind}
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 16,
-        padding: "24px 16px",
-        maxWidth: 430,
-        margin: "0 auto",
-      }}
-    >
+    <div role="alert" data-testid="boot-error" data-kind={error?.kind} style={BOOT_ERROR_LAYOUT}>
       {error && (
         <>
           {/* Both can carry a user's endpoint URL, which has no break point of its own. */}
@@ -48,8 +50,18 @@ export function BootErrorScreen({
           </span>
         </>
       )}
-      <PrimaryGradientButton title="Retry" onClick={onRetry} />
-      <BootRecovery walletOpen={walletOpen} />
+      {error?.kind === "corrupt" ? (
+        <PrimaryGradientButton
+          title="Clear wallet data"
+          testId="boot-clear-data"
+          onClick={() => void leavePage(RESET_PATH, true)}
+        />
+      ) : (
+        <>
+          <PrimaryGradientButton title="Retry" onClick={onRetry} />
+          <BootRecovery walletOpen={walletOpen} />
+        </>
+      )}
       {import.meta.env.VITE_CONFIG_EDITOR === "true" && <PreviewDraftRecovery />}
     </div>
   )

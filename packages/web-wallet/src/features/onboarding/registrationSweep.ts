@@ -20,6 +20,7 @@ import {
   buildRegistrationSelfSweepCall,
   createOxideL1Reader,
   createRegistrationSipaDeriver,
+  deriveRecordedRegistrationSipa,
   SIPADepositStore,
   signAccountDigest,
   deriveBootstrapKey,
@@ -56,6 +57,7 @@ import { getPendingStore } from "./webRegistration"
 import { sweptPhase } from "./registrationRailSync"
 import { readRegistrationSchedule } from "./registrationTerms"
 import { requireNameClaim } from "./nameClaim"
+import { seededRegistrationSalt } from "./registrationDepositSeed"
 import type { OnboardingKeys } from "./oxideOnboarding"
 import { reportRegistrationDepositSwept } from "./registrationFunnel"
 
@@ -135,14 +137,19 @@ export async function manualRegistrationSweep(
       "This claim predates the committed registration fee, so the sweep was stopped before signing.",
     )
   }
-  const derivation = await derive({
-    owner: record.account as Address,
-    nameHash: record.nameHash as Hex,
-    l2Address: record.l2Address as Hex,
-    fee: BigInt(record.fee),
-    beneficiary: record.beneficiary as Address,
-    masterSecret: opts.keys.secretKey,
-  })
+  const derivation = await deriveRecordedRegistrationSipa(
+    derive,
+    {
+      owner: record.account as Address,
+      nameHash: record.nameHash as Hex,
+      l2Address: record.l2Address as Hex,
+      fee: BigInt(record.fee),
+      beneficiary: record.beneficiary as Address,
+      masterSecret: opts.keys.secretKey,
+    },
+    record.sipaAddress as Address,
+    seededRegistrationSalt,
+  )
   if (derivation.sipaAddress.toLowerCase() !== record.sipaAddress.toLowerCase()) {
     throw new Error(
       "This claim's details point to a different deposit address, so the sweep was stopped before signing.",

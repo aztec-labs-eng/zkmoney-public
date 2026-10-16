@@ -433,6 +433,27 @@ describe("ContactStorage (flat single-network shape)", () => {
       expect(await contactStorage.getEntries()).toEqual([result])
     })
 
+    it("approveAutoAdded clears the flag on the row at that address, and only there", async () => {
+      const { contactStorage } = setup()
+      await contactStorage.addOrMergeContact(fromTransfer)
+      await contactStorage.addOrMergeContact({
+        ...fromTransfer,
+        name: "kim",
+        tag: "kim",
+        address: ADDR_B,
+      })
+      expect(await contactStorage.approveAutoAdded(ADDR_C)).toBeUndefined()
+      expect(await contactStorage.approveAutoAdded(ADDR_A.toUpperCase())).toEqual({
+        ...fromTransfer,
+        autoAdded: undefined,
+      })
+      const entries = await contactStorage.getEntries()
+      expect(entries.map((e) => [e.tag, !!e.autoAdded])).toEqual([
+        ["jo", false],
+        ["kim", true],
+      ])
+    })
+
     it("approves on a tag that differs only in case", async () => {
       const { contactStorage } = setup()
       await contactStorage.addOrMergeContact(fromTransfer)

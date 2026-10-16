@@ -20,6 +20,8 @@ import share_forward from "../assets/phone/share-forward.svg"
 import bell from "../assets/phone/bell.svg"
 import eye from "../assets/phone/eye.svg"
 import flashlight from "../assets/phone/flashlight.svg"
+import earn from "../assets/phone/earn.svg"
+import payments_arrows from "../assets/phone/payments-arrows.svg"
 
 const sources = {
   "home": home,
@@ -44,6 +46,8 @@ const sources = {
   "bell": bell,
   "eye": eye,
   "flashlight": flashlight,
+  "earn": earn,
+  "payments-arrows": payments_arrows,
 } as const
 
 export type PhoneIconName = keyof typeof sources

@@ -1,7 +1,7 @@
 import type { IStorageAdapter } from "@obsidion/front-core"
 import type { RecoveryMetadata } from "@obsidion/sdk"
 import { PASSKEY_IDENTITY_MAP_KEY as STORAGE_KEY, WEB_STORAGE_PREFIX } from "../storage/storageKeys"
-import { walletStorage } from "../storage/walletStorage"
+import { readFromOtherDatabases, walletStorage } from "../storage/walletStorage"
 import { withWebLock } from "../storage/webLock"
 const MAP_VERSION = 1
 const LOCK_NAME = "webwallet.passkey-identity-map"
@@ -9,8 +9,8 @@ const LOCK_NAME = "webwallet.passkey-identity-map"
 /** Every mutation of the map runs under one lock, so two tabs cannot erase each other's writes. */
 const withMapLock = <T>(fn: () => Promise<T>) => withWebLock(LOCK_NAME, fn)
 
-/** The record as a reader sees it. */
-export type StoredRecoveryMetadata = RecoveryMetadata
+/** The record as a reader sees it. `userHandle` is the passkey's `user.id`, base64url, from its creation. */
+export type StoredRecoveryMetadata = RecoveryMetadata & { userHandle?: string }
 
 /** Where a synced passkey answered a laptop's prompt from: a phone over QR, or this computer. */
 export type PasskeyAnswer = "remote" | "local"
@@ -24,15 +24,18 @@ type StoredEntry = StoredRecoveryMetadata & {
 }
 type StoredMap = { version: number; entries: Record<string, StoredEntry> }
 
-function readMap(): StoredMap | undefined {
+function parseMap(raw: string | null): StoredMap | undefined {
   try {
-    const raw = walletStorage.getItem(WEB_STORAGE_PREFIX + STORAGE_KEY)
     if (!raw) return undefined
     const parsed = JSON.parse(raw) as StoredMap
-    return parsed.entries ? parsed : undefined
+    return parsed?.entries && typeof parsed.entries === "object" ? parsed : undefined
   } catch {
     return undefined
   }
+}
+
+function readMap(): StoredMap | undefined {
+  return parseMap(walletStorage.getItem(WEB_STORAGE_PREFIX + STORAGE_KEY))
 }
 
 /**
@@ -79,6 +82,12 @@ export function usertagFor(rpId: string, credentialId: string): string | undefin
   return entry?.rpId === rpId ? entry.usertag : undefined
 }
 
+/** The handle this credential was created under on this browser; the key a rename needs. */
+export function userHandleFor(rpId: string, credentialId: string): string | undefined {
+  const entry = readMap()?.entries[credentialId]
+  return entry?.rpId === rpId ? entry.userHandle : undefined
+}
+
 /** A remembered account for the sign-in screen: a root record that names the tag it claimed. */
 export type RememberedAccount = {
   credentialId: string
@@ -94,16 +103,35 @@ export type RememberedAccount = {
  * frame. No cap — the screen shows five rows and scrolls the rest.
  */
 export function listUsertagCandidates(rpId: string): RememberedAccount[] {
-  return Object.values(readMap()?.entries ?? {})
+  return candidatesIn(readMap(), rpId)
+}
+
+/**
+ * The same rows from this browser's other rollups' databases. A move to a new rollup starts an empty
+ * database there, so its accounts are found in the ones before it. Hints only, as on the active
+ * rollup: nothing is copied over, and a malformed map lists nothing.
+ */
+export async function listRetiredUsertagCandidates(rpId: string): Promise<RememberedAccount[]> {
+  const maps = await readFromOtherDatabases(WEB_STORAGE_PREFIX + STORAGE_KEY)
+  return maps.flatMap((raw) => candidatesIn(parseMap(raw), rpId))
+}
+
+const createdAt = (e: StoredEntry) => (typeof e.createdAt === "number" ? e.createdAt : 0)
+
+function candidatesIn(map: StoredMap | undefined, rpId: string): RememberedAccount[] {
+  return Object.values(map?.entries ?? {})
     .filter(
       (e): e is StoredEntry & { usertag: string; l2Address: string } =>
         e?.rpId === rpId &&
         Boolean(e.isMskRoot) &&
+        typeof e.credentialId === "string" &&
+        typeof e.usertag === "string" &&
         Boolean(e.usertag) &&
+        typeof e.l2Address === "string" &&
         Boolean(e.l2Address) &&
         typeof e.pubkey === "string",
     )
-    .sort((a, b) => b.createdAt - a.createdAt)
+    .sort((a, b) => createdAt(b) - createdAt(a))
     .map((e) => ({
       credentialId: e.credentialId,
       pubkeyHex: e.pubkey.toLowerCase().replace(/^0x/, ""),
@@ -159,7 +187,7 @@ export class WebPasskeyIdentityMap {
   }
 
   /** `stillOwns` is asked under the lock, before the write: a caller whose operation ended writes nothing. */
-  async upsert(meta: RecoveryMetadata, stillOwns?: () => boolean): Promise<void> {
+  async upsert(meta: StoredRecoveryMetadata, stillOwns?: () => boolean): Promise<void> {
     await withMapLock(async () => {
       if (stillOwns && !stillOwns()) return
       const map = await this.load()

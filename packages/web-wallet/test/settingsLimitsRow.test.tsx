@@ -33,7 +33,17 @@ vi.mock("@obsidion/front-core", () => ({
   useConfigValue: () => ({ value: false, setValue: vi.fn() }),
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
-vi.mock("../src/features/identity/walletIdentity", () => ({ loadWalletIdentity: () => undefined }))
+const name = vi.hoisted(() => ({ owed: false }))
+vi.mock("../src/features/identity/walletIdentity", () => ({
+  loadWalletIdentity: () => ({ handle: "brave-otter-42" }),
+}))
+vi.mock("../src/features/onboarding/openRegistration", () => ({
+  useNameClaimPending: () => false,
+  useRegistrationTagChangeable: () => name.owed,
+}))
+vi.mock("../src/features/onboarding/ChooseNameSheet", () => ({
+  ChooseNameSheet: ({ tag }: { tag: string }) => <div data-testid="choose-name">{tag}</div>,
+}))
 vi.mock("../src/lib/analytics", () => ({ appVersion: "0.0.0" }))
 vi.mock("../src/ui/prefs", () => ({ useHideBalances: () => [false, vi.fn()] }))
 vi.mock("../src/features/requests/useNonContactRequests", () => ({
@@ -181,5 +191,35 @@ describe("SettingsScreen Sponsored transactions row", () => {
     expect(
       document.querySelector<HTMLElement>('[data-testid="about-limits-sheet"]')!.dataset.topic,
     ).toBe("all")
+  })
+})
+
+describe("SettingsScreen Tag row", () => {
+  const change = () =>
+    [...container.querySelectorAll("button")].find((b) => b.textContent === "Change")
+  const render = () =>
+    act(async () =>
+      root.render(
+        <MemoryRouter>
+          <SettingsScreen />
+        </MemoryRouter>,
+      ),
+    )
+  afterEach(() => {
+    name.owed = false
+  })
+
+  it("offers Change while the registration is owed its deposit, and it opens the name sheet", async () => {
+    name.owed = true
+    await render()
+    await act(async () => change()!.click())
+    expect(container.querySelector('[data-testid="choose-name"]')?.textContent).toBe(
+      "brave-otter-42",
+    )
+  })
+
+  it("keeps the tag locked once the first deposit has landed", () => {
+    expect(container.querySelector('[data-row="Tag"]')?.textContent).toBe("Tag@brave-otter-42")
+    expect(change()).toBeUndefined()
   })
 })

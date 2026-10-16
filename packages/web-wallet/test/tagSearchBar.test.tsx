@@ -110,6 +110,15 @@ describe.each([false, true])("TagSearchBar phone=%s", (phone) => {
       expect(state.navigate).toHaveBeenCalledWith("/contacts/grace")
       expect(state.save).not.toHaveBeenCalled()
     })
+    it("ends the results with See all contacts, only while results show", () => {
+      act(() => input().focus())
+      expect(results()).toBeNull()
+      fill("ada")
+      const rows = [...results()!.querySelectorAll("button")]
+      expect(rows.at(-1)!.textContent).toContain("See all contacts")
+      act(() => rows.at(-1)!.click())
+      expect(state.navigate).toHaveBeenCalledWith("/contacts")
+    })
     it("dismisses results when keyboard focus moves outside", () => {
       fill("ada")
       act(() => host.querySelector<HTMLButtonElement>("#outside")!.focus())

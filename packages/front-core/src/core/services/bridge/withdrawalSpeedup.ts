@@ -47,6 +47,12 @@ export interface ProofCalibration extends ProofLatency {
   confidence: SpeedupConfidence
 }
 
+/**
+ * The last 1-based checkpoint index in an epoch a tip is offered for. A partial proof proves the epoch's prefix from
+ * its first checkpoint, so a later burn is covered by the full epoch proof first and its tip buys nothing.
+ */
+export const LAST_TIPPED_CHECKPOINT_INDEX = 25
+
 export const DEFAULT_PROOF_LATENCY: ProofLatency = {
   fullProofSeconds: 900,
   partialProofSeconds: 180,
@@ -88,6 +94,8 @@ export interface WithdrawalSpeedupEstimate {
    */
   worstSpeedupSeconds: number
   confidence: SpeedupConfidence
+  /** The landing window reaches past {@link LAST_TIPPED_CHECKPOINT_INDEX}: no tip should be offered. */
+  pastTipCutoff: boolean
 }
 
 function epochEnd(epoch: number, constants: SpeedupRollupConstants): number {
@@ -149,6 +157,9 @@ export function estimateWithdrawalSpeedup(
     speedupSeconds: standard - tipped,
     worstSpeedupSeconds,
     confidence: input.calibration.confidence,
+    pastTipCutoff: ends.some(
+      (at) => burnPosition(constants, at).checkpointIndex > LAST_TIPPED_CHECKPOINT_INDEX,
+    ),
   }
 }
 

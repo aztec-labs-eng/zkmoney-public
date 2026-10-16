@@ -10,20 +10,38 @@ contract MockSUsds is ERC20, Ownable {
 
   TestERC20 public immutable USDS;
 
-  uint256 public pricePerShare = WAD;
+  uint256 public chi = WAD;
+
+  uint256 public rho;
+
+  uint256 public ratePerSecond;
 
   bool public broken;
 
   event Referral(uint16 indexed referral, address indexed owner, uint256 assets, uint256 shares);
 
   error MockSUsds__Paused();
+  error MockSUsds__PriceDecrease();
 
   constructor(TestERC20 _usds, address _owner) ERC20("Savings USDS", "sUSDS") Ownable(_owner) {
     USDS = _usds;
+    rho = block.timestamp;
+  }
+
+  function pricePerShare() public view returns (uint256) {
+    return chi + (chi * ratePerSecond * (block.timestamp - rho)) / WAD;
   }
 
   function setPricePerShare(uint256 _pricePerShare) external onlyOwner {
-    pricePerShare = _pricePerShare;
+    require(_pricePerShare >= pricePerShare(), MockSUsds__PriceDecrease());
+    chi = _pricePerShare;
+    rho = block.timestamp;
+  }
+
+  function setRatePerSecond(uint256 _ratePerSecond) external onlyOwner {
+    chi = pricePerShare();
+    rho = block.timestamp;
+    ratePerSecond = _ratePerSecond;
   }
 
   function setBroken(bool _broken) external onlyOwner {
@@ -35,11 +53,11 @@ contract MockSUsds is ERC20, Ownable {
   }
 
   function convertToShares(uint256 _assets) public view returns (uint256) {
-    return (_assets * WAD) / pricePerShare;
+    return (_assets * WAD) / pricePerShare();
   }
 
   function convertToAssets(uint256 _shares) public view returns (uint256) {
-    return (_shares * pricePerShare) / WAD;
+    return (_shares * pricePerShare()) / WAD;
   }
 
   function deposit(uint256 _assets, address _receiver) public returns (uint256 shares) {

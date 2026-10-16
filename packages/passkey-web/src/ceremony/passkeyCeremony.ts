@@ -6,7 +6,7 @@
  */
 
 import { RelatedOriginPasskeyError, markPasskeyWritten } from "../policy/passkeyErrors.js"
-import { encodeUserHandle } from "./userHandle.js"
+import { type UserHandleProvenance, encodeUserHandle } from "./userHandle.js"
 import { isRpDomainSuffix } from "../policy/relyingParty.js"
 import { iosBelowFloor, parseUserAgent } from "../policy/userAgentInfo.js"
 import { authDataFromAttestation, p256FromAuthData, p256FromSpki } from "./attestation.js"
@@ -43,6 +43,8 @@ export type PasskeyCreateRequest = {
   prfFirstSalt: Uint8Array
   /** PRF `eval.second` salt, evaluated in the same ceremony. */
   prfSecondSalt?: Uint8Array
+  /** What the page writes into the handle about this creation (`userHandle.ts`); absent writes unknown. */
+  provenance?: UserHandleProvenance
   /** How long the browser may wait for an answer; absent takes the ceremony's default. */
   timeoutMs?: number
   /** Ends the ceremony: the browser's sheet closes, and no queued or retried request follows. */
@@ -66,6 +68,8 @@ export type PasskeyCreateResult = {
    * where the class is decided.
    */
   transports: readonly string[] | undefined
+  /** The `user.id` the passkey was created under; the one key that can relabel it later. */
+  userHandle: Uint8Array
 }
 
 export type PasskeyAssertRequest = {
@@ -449,12 +453,30 @@ async function withTabSlot<T>(
  * would look like a crash instead of a missing result and skip the chained-assertion fallback.
  */
 export function decodePrfSlot(results: unknown, slot: "first" | "second"): Uint8Array | undefined {
-  const value = (results as Record<string, ArrayBuffer | Uint8Array | undefined> | undefined)?.[
-    slot
-  ]
-  if (!value) return undefined
-  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value)
-  return bytes.length === 32 ? bytes : undefined
+  const bytes = bytesOf((results as Record<string, unknown> | undefined)?.[slot])
+  return bytes?.length === 32 ? bytes : undefined
+}
+
+const isByte = (b: unknown): boolean =>
+  Number.isInteger(b) && (b as number) >= 0 && (b as number) <= 255
+
+/**
+ * The bytes a slot holds: a buffer, a view over one, or a plain list of byte values, which is how
+ * a password manager's extension can return it. Nothing else is read: `new Uint8Array` makes zeros
+ * of a number, and of a list of anything but numbers.
+ */
+function bytesOf(value: unknown): Uint8Array | undefined {
+  if (value instanceof Uint8Array) return value
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+  }
+  // By tag, so a buffer from another realm reads too.
+  if (Object.prototype.toString.call(value) === "[object ArrayBuffer]") {
+    return new Uint8Array(value as ArrayBuffer)
+  }
+  // `Array.from` turns a hole into undefined, which is no byte.
+  if (Array.isArray(value) && Array.from(value).every(isByte)) return Uint8Array.from(value)
+  return undefined
 }
 
 function toAttachment(value: string | null | undefined): PasskeyAttachment | undefined {
@@ -617,12 +639,13 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
   ) {}
 
   async create(request: PasskeyCreateRequest): Promise<PasskeyCreateResult> {
+    const userHandle = encodeUserHandle(request.userName, request.provenance)
     const publicKey: CreationOptionsL3 = {
       rp: { id: request.rpId, name: request.rpName },
-      // The name rides in the handle so an assertion anywhere hands it back; no secret (the PRF
-      // only exists after create).
+      // The name and the creation's provenance ride in the handle so an assertion anywhere hands
+      // them back; no secret (the PRF only exists after create).
       user: {
-        id: encodeUserHandle(request.userName),
+        id: userHandle,
         name: request.userName,
         displayName: request.userName,
       },
@@ -694,6 +717,7 @@ export class BrowserPasskeyCeremony implements PasskeyCeremony {
         backupEligible: readBackupEligible(authData),
         aaguid: readAaguid(authData),
         transports: readTransports(response),
+        userHandle,
       }
     } catch (err) {
       throw markPasskeyWritten(err)

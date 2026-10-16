@@ -242,7 +242,7 @@ describe("verifiedIdentity", () => {
     h.getNodeInfo.mockRejectedValue(new TypeError("Failed to fetch"))
     const { error } = await check()
     expect(error?.kind).toBe("unreachable")
-    expect(error?.title).toContain(NODE_URL)
+    expect(error?.title).toBe("zk.money cannot reach the network")
   })
 
   it("a node that accepts the connection but never answers is unreachable once the deadline passes", async () => {
@@ -390,6 +390,7 @@ describe("reportBootFailure", () => {
     expect(bootFailedCode()).toBe("other")
     expect(h.showReportableError).toHaveBeenCalledWith(boom, "pxe:boot", {
       title: "zk.money failed to start",
+      retry: { label: "Reload page", run: expect.any(Function) },
     })
   })
 })
@@ -438,7 +439,7 @@ describe("BootErrorScreen", () => {
     "node-mismatch": NODE_URL,
     "wrong-chain": RPC_HOST,
     "l1-unavailable": RPC_HOST,
-    "unreachable": NODE_URL,
+    "unreachable": "zk.money cannot reach the network",
     "other": "zk.money failed to start",
   }
 
@@ -608,9 +609,8 @@ describe("BootHold", () => {
     )
   })
 
-  it("a wallet build that fails shows the error screen, and its editor, in the wallet", async () => {
-    h.initializePXE.mockRejectedValue(new Error("boom"))
-    // Each mount is a new page: the boot runs once per page.
+  /** Each mount is a new page: the boot runs once per page. */
+  async function mountBoot(bootNode: AztecNode): Promise<HTMLElement> {
     await resetModulesAsActiveTab()
     const { PxeBootProvider } = await import("../src/ui/PxeBoot")
     const { BootHold } = await import("../src/App")
@@ -623,18 +623,87 @@ describe("BootHold", () => {
     }
     await act(async () => {
       root.render(
-        <PxeBootProvider node={node} pxeBoot={pxeBoot}>
+        <PxeBootProvider node={bootNode} pxeBoot={pxeBoot}>
           <BootHold />
         </PxeBootProvider>,
       )
     })
     for (let i = 0; i < 40 && !byTestId("boot-error"); i++) await flush()
-    const panel = byTestId("boot-error")!
+    return byTestId("boot-error")!
+  }
+
+  async function bootWithNodeFetch(fetch: typeof globalThis.fetch): Promise<HTMLElement> {
+    vi.stubGlobal("fetch", vi.fn(fetch))
+    const { createNode } = await import("@obsidion/sdk")
+    const realNode = createNode(NODE_URL, "node-key")
+    h.initializePXE.mockImplementation(() => realNode.getBlockNumber())
+    return mountBoot(realNode)
+  }
+
+  const bootFailedCode = () =>
+    h.fireEvent.mock.calls.find(([event]) => event === "pxe_boot_failed")?.[1]?.code
+
+  it("a wallet build that fails shows the error screen, and its editor, in the wallet", async () => {
+    h.initializePXE.mockRejectedValue(new Error("boom"))
+    const panel = await mountBoot(node)
     expect(panel.dataset.kind).toBe("other")
     expect(panel.textContent).toContain("zk.money failed to start")
     expect(panel.textContent).toContain("boom")
     expect(h.initializePXE).toHaveBeenCalledWith(expect.objectContaining({ chainIdentity: L1 }))
     await act(async () => byTestId("boot-change-endpoints")!.click())
     expect(container.querySelector('dialog[aria-label="Endpoints"]')).not.toBeNull()
+  })
+
+  it.each(["alone", "in an AggregateError"])(
+    "a damaged database %s offers only the reset page, with no report",
+    async (shape) => {
+      const replace = vi.fn()
+      Object.defineProperty(window, "location", { value: { replace }, writable: true })
+      const { SqliteCorruptionError } = await import("@aztec/kv-store/sqlite-opfs")
+      const corrupt = new SqliteCorruptionError(
+        "SQLITE_CORRUPT: sqlite3 result code 11: database disk image is malformed",
+      )
+      h.initializePXE.mockRejectedValue(
+        shape === "alone" ? corrupt : new AggregateError([corrupt, new Error("boom")]),
+      )
+      expect((await mountBoot(node)).dataset.kind).toBe("corrupt")
+      expect(h.showReportableError).not.toHaveBeenCalled()
+      expect([...container.querySelectorAll("button")].map((b) => b.textContent)).not.toContain(
+        "Retry",
+      )
+      expect(byTestId("boot-change-endpoints")).toBeNull()
+      await act(async () => byTestId("boot-clear-data")!.click())
+      await flush()
+      expect(replace).toHaveBeenCalledWith("/reset")
+    },
+  )
+
+  it.each<[string, typeof globalThis.fetch]>([
+    ["a rejected fetch", () => Promise.reject(new TypeError("qwerty"))],
+    ["an HTTP error", async () => new Response("", { status: 503, statusText: "qwerty" })],
+    ["a body that is not JSON", async () => new Response("<html>qwerty</html>")],
+  ])("%s while the wallet builds is an unreachable node, with no report", async (_, fetch) => {
+    const panel = await bootWithNodeFetch(fetch)
+    expect(panel.dataset.kind).toBe("unreachable")
+    expect(panel.textContent).toContain("zk.money cannot reach the network")
+    expect(panel.textContent).toContain("Check your internet connection, then retry.")
+    expect(panel.textContent).not.toContain(NODE_URL)
+    expect(bootFailedCode()).toBe("unreachable")
+    expect(h.showReportableError).not.toHaveBeenCalled()
+  })
+
+  it("an error the node answers while the wallet builds is reportable", async () => {
+    const panel = await bootWithNodeFetch(async (_, init) => {
+      const calls = JSON.parse(String(init?.body)) as { id: number }[]
+      const body = calls.map(({ id }) => ({
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32603, message: "boom" },
+      }))
+      return new Response(JSON.stringify(body), { headers: { "content-type": "application/json" } })
+    })
+    expect(panel.dataset.kind).toBe("other")
+    expect(bootFailedCode()).toBe("other")
+    expect(h.showReportableError).toHaveBeenCalled()
   })
 })

@@ -15,8 +15,10 @@ import {
   type RegistrationStage,
 } from "@obsidion/front-core"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { walletStorage } from "../../platform/storage/walletStorage"
 import { loadWalletIdentity } from "../identity/walletIdentity"
-import { getPendingStore } from "./webRegistration"
+import { registrationRouteFor } from "./registrationFunnel"
+import { getPendingStore, registrationAddressPublished } from "./webRegistration"
 
 export function readRegistrationStage(
   record: PendingRegistrationRecord,
@@ -66,11 +68,32 @@ function openRegistrationKey(): string | null {
 }
 
 /** Whether the active wallet owes its registration deposit: the gate that sends an action to the
- *  activation prompt instead. */
+ *  deposit screen instead. */
 export function useRegistrationDepositOwed(): boolean {
   return useSyncExternalStore(subscribeRegistrationStage, () => {
     const open = openRegistration()
     return open !== null && depositOwed(open.stage)
+  })
+}
+
+/** Whether the active wallet's tag is not yet claimed on L1; balance and activity wait for it. */
+export function useNameClaimPending(): boolean {
+  return useSyncExternalStore(subscribeRegistrationStage, () => {
+    const open = openRegistration()
+    return (
+      open !== null &&
+      open.stage !== "crediting" &&
+      open.stage !== "registered" &&
+      open.stage !== "failed"
+    )
+  })
+}
+
+/** Whether the active wallet's pending tag is already claimed on L1, so it can no longer be lost. */
+export function useNameClaimedOnL1(): boolean {
+  return useSyncExternalStore(subscribeRegistrationStage, () => {
+    const open = openRegistration()
+    return open !== null && (open.stage === "crediting" || open.stage === "registered")
   })
 }
 
@@ -91,4 +114,66 @@ export function useRegistrationStage(
 export function useOpenRegistration(): OpenRegistration | null {
   const key = useSyncExternalStore(subscribeRegistrationStage, openRegistrationKey)
   return key === null ? null : openRegistration()
+}
+
+// ── Tag confirmation ────────────────────────────────────────────────────────────
+
+const CONFIRMED_KEY = "webwallet.registration.confirmed"
+const confirmListeners = new Set<() => void>()
+
+function confirmedAddresses(): string[] {
+  try {
+    return JSON.parse(walletStorage.getItem(CONFIRMED_KEY) ?? "[]") as string[]
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Whether the user settled on this registration's tag. The ClaimFPC's broadcast rail sponsors one
+ * broadcast per L1 account, ever, so an address is broadcast only once its tag is final, and from
+ * then on the tag cannot change.
+ */
+export function registrationTagConfirmed(record: PendingRegistrationRecord): boolean {
+  if (registrationAddressPublished(record)) return true
+  if (!depositOwed(readRegistrationStage(record))) return true
+  if (confirmedAddresses().includes(record.sipaAddress.toLowerCase())) return true
+  const route = registrationRouteFor(record.tag)
+  // Random and paid tags wait on the user: keep or swap, and register or verify as a past user.
+  return route !== undefined && route !== "random" && route !== "paid"
+}
+
+/** The user keeps the drawn tag: its address may now be broadcast. */
+export function confirmRegistrationTag(record: PendingRegistrationRecord): void {
+  try {
+    const next = [...new Set([...confirmedAddresses(), record.sipaAddress.toLowerCase()])]
+    walletStorage.setItem(CONFIRMED_KEY, JSON.stringify(next))
+  } catch {
+    // Unsaved: the deposit screen asks again.
+  }
+  confirmListeners.forEach((listener) => listener())
+}
+
+function subscribeConfirmed(onChange: () => void): () => void {
+  confirmListeners.add(onChange)
+  const off = subscribeRegistrationStage(onChange)
+  return () => {
+    confirmListeners.delete(onChange)
+    off()
+  }
+}
+
+/** `registrationTagConfirmed`, kept current. True without a record: nothing is left to choose. */
+export function useRegistrationTagConfirmed(record: PendingRegistrationRecord | null): boolean {
+  return useSyncExternalStore(subscribeConfirmed, () =>
+    record ? registrationTagConfirmed(record) : true,
+  )
+}
+
+/** Whether the active wallet may still change its tag: the deposit is owed and the tag not final. */
+export function useRegistrationTagChangeable(): boolean {
+  return useSyncExternalStore(subscribeConfirmed, () => {
+    const open = openRegistration()
+    return open !== null && depositOwed(open.stage) && !registrationTagConfirmed(open.record)
+  })
 }

@@ -119,6 +119,8 @@ const sendTx = vi.fn()
 const wallet = { node: {}, pxe: {}, sendTx, registerSender: vi.fn() } as any
 const contractService = {
   getArtifactForContract: vi.fn(async () => ({})),
+  getArtifactForClass: vi.fn(async () => ({})),
+  getKnownClassIds: vi.fn(async () => []),
   getArtifactForInstance: vi.fn(async () => ({})),
 } as any
 

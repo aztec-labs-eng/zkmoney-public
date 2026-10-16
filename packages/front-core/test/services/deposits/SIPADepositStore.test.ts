@@ -103,10 +103,17 @@ describe("SIPADepositStore", () => {
   })
 
   describe("demote (reorg)", () => {
-    it("claimed (L2-derived) demotes to pendingClaim: endTime cleared, epoch bumped, claim anchor kept", async () => {
+    it("claimed (L2-derived) demotes to pendingClaim: endTime cleared, epoch bumped, claim anchor kept, the reorged sweep dropped", async () => {
+      const sweep = (inboxIndex: string) => ({ inboxIndex, sweepTxHash: "0xs", netAmount: "1" })
       await store.upsert(
         SIPA_ADDR,
-        { phase: "claimed", claimTxHash: "0x" + "aa".repeat(32) },
+        {
+          phase: "claimed",
+          claimTxHash: "0x" + "aa".repeat(32),
+          inboxIndex: "7",
+          claimedInboxIndexes: ["5", "7"],
+          sweeps: [sweep("5"), sweep("7")],
+        },
         makeFallback(),
       )
 
@@ -116,6 +123,8 @@ describe("SIPADepositStore", () => {
       expect(demoted?.endTime).toBeUndefined()
       expect(demoted?.reorgEpoch).toBe(1)
       expect(demoted?.claimTxHash).toBe("0x" + "aa".repeat(32))
+      expect(demoted?.claimedInboxIndexes).toEqual(["5"])
+      expect(demoted?.sweeps).toEqual([sweep("5")])
     })
 
     it("L1-derived terminals (recovered, failed) refuse demote", async () => {

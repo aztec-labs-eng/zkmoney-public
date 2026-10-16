@@ -1,8 +1,10 @@
 import React from "react"
+import { PrimaryGradientButton } from "@obsidion/web-ds"
 import { ActiveTabGate } from "./ActiveTabGate"
 import type { WebBootConfig } from "./config/env"
 import { GOOGLE_CALLBACK_PATH, GoogleCallbackScreen } from "./features/paylink/googleAuth"
 import { getDesktopSettingsPath } from "./platform/desktopBridge"
+import { BOOT_ERROR_LAYOUT } from "./ui/BootErrorScreen"
 import { BootSplash } from "./ui/PxeBoot"
 import { PreviewDraftRecovery } from "./dev/PreviewDraftRecovery"
 
@@ -29,26 +31,25 @@ export function BootGate({ resolveBoot }: { resolveBoot: () => Promise<WebBootCo
     setError(undefined)
     setAttempt((n) => n + 1)
   }
-  // The screen's only way on, so it must be a comfortable tap.
-  const retryButton = (
-    <button onClick={retry} style={{ minHeight: 44, padding: "0 20px", fontSize: 16 }}>
-      Retry
-    </button>
-  )
 
   if (error) {
     const settingsPath = getDesktopSettingsPath()
     return (
-      <div style={{ padding: 24, fontFamily: "monospace", color: "#f66" }}>
-        <p>zk.money could not load its configuration:</p>
-        <pre style={{ whiteSpace: "pre-wrap" }}>{error.message}</pre>
+      <div role="alert" style={BOOT_ERROR_LAYOUT}>
+        <span className="zkm-type-card-title">zk.money could not load its configuration</span>
+        <span
+          className="zkm-type-body"
+          style={{ color: "var(--text-secondary)", overflowWrap: "anywhere" }}
+        >
+          {error.message}
+        </span>
         {settingsPath && (
-          <p>
+          <span className="zkm-type-body" style={{ color: "var(--text-secondary)" }}>
             If zk.money's services are down, <a href={settingsPath}>Endpoint Settings</a> can point
             the wallet at other services or start it from the configuration it shipped with.
-          </p>
+          </span>
         )}
-        {retryButton}
+        <PrimaryGradientButton title="Retry" onClick={retry} />
         {import.meta.env.VITE_CONFIG_EDITOR === "true" && <PreviewDraftRecovery />}
       </div>
     )

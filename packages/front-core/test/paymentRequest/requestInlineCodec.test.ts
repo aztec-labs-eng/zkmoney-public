@@ -274,6 +274,42 @@ describe("requestInlineCodec", () => {
     })
   })
 
+  describe("v3 SIPA preimage slot", () => {
+    const INTENT = `0x${"4e".repeat(32)}`
+    const cases = [
+      ["account commitment", `0x${"5f".repeat(32)}`],
+      ["legacy recovery address", `0x${"6a".repeat(20)}`],
+    ] as const
+
+    it.each(cases)("round-trips a SIPA with its %s", (_, recovery) => {
+      const packet = { ...fullPacket(), sipaPreimage: { intentHash: INTENT, recovery } }
+      expect(decodeRequestInline(encodeRequestInline(packet))).toEqual(packet)
+    })
+
+    it("still decodes a link minted without one", () => {
+      expect(decodeRequestInline(encodeRequestInline(fullPacket())).sipaPreimage).toBeUndefined()
+    })
+
+    it("refuses a preimage without its SIPA, either way", () => {
+      const preimage = { intentHash: INTENT, recovery: cases[0][1] }
+      expect(() => encodeRequestInline({ ...minimalPacket(), sipaPreimage: preimage })).toThrow(
+        RequestEncodeError,
+      )
+      const entries = v3Entries()
+      entries.set(13, Buffer.alloc(64, 1))
+      expect(() => decodeRequestInline(rawFragment([...entries]))).toThrow(RequestDecodeError)
+    })
+
+    it("rejects a preimage of any other length", () => {
+      for (const len of [32, 51, 53, 63, 65]) {
+        const entries = v3Entries()
+        entries.set(12, fieldBytes(SIPA_ADDRESS_HEX))
+        entries.set(13, Buffer.alloc(len, 1))
+        expect(() => decodeRequestInline(rawFragment([...entries]))).toThrow(RequestDecodeError)
+      }
+    })
+  })
+
   describe("versioning", () => {
     it("round-trips tokenDecimals", () => {
       const packet = { ...minimalPacket(), amountAtomic: 5n, tokenDecimals: 18 }
@@ -384,7 +420,7 @@ describe("requestInlineCodec", () => {
 
     it("rejects an unknown key on a v3 fragment", () => {
       const entries = v3Entries()
-      entries.set(13, "surprise")
+      entries.set(14, "surprise")
       expect(() => decodeRequestInline(rawFragment([...entries]))).toThrow(RequestDecodeError)
     })
 

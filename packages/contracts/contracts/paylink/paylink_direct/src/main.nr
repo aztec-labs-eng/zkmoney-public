@@ -137,6 +137,52 @@ pub contract PaylinkDirect {
         );
     }
 
+    /// Bearer claim split across both layers: `withdrawal_amount` burns to `executor` as in
+    /// `claim_to_l1`, and the rest goes to `recipient` as in `claim`. No `#[authorize_once]`: the
+    /// link is the credential, and its holder can already move the whole note with `claim_to_l1`.
+    /// Recipient consent never guarded the funds, and any account can already be sent a transfer
+    /// with any meta. Consumes the same nullifier as `claim`, `claim_to_l1` and the refund.
+    #[external("private")]
+    fn claim_with_withdrawal(
+        recipient: AztecAddress,
+        withdrawal_amount: u128,
+        executor: EthAddress,
+        user_payload_hash: Field,
+        prover_tip: u128,
+        meta: [Field; TRANSFER_META_LEN],
+    ) {
+        assert_is_initialized_private(self.context);
+        assert(!recipient.is_zero(), "recipient required");
+        assert(!executor.is_zero(), "executor required");
+        let (note, amount, from_claimable_val, until_claimable_val) = get_note_and_unpack_data(
+            self.context,
+            DIRECT_HASH,
+            self.storage.paylink_direct_note.get_storage_slot(),
+        );
+        assert(withdrawal_amount > 0, "withdrawal required");
+        assert(withdrawal_amount < amount, "withdrawal must leave a payout");
+
+        execute_claim_to_l1(
+            executor,
+            user_payload_hash,
+            prover_tip,
+            self.address,
+            from_claimable_val,
+            until_claimable_val,
+            note.token_address,
+            withdrawal_amount,
+            self.context,
+        );
+        transfer(
+            self.address,
+            recipient,
+            amount - withdrawal_amount,
+            note.token_address,
+            meta,
+            self.context,
+        );
+    }
+
     // =============================================
     // REFUND
     // =============================================

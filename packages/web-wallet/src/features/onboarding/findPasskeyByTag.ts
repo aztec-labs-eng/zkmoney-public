@@ -12,7 +12,7 @@ import {
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
-import { resolveTagForCommit } from "../contacts/registryResolution"
+import { resolveSignInTagForCommit } from "../contacts/registryResolution"
 import type { EnterResult } from "./oxideOnboarding"
 
 export type PasskeyByTagLookup =
@@ -28,16 +28,16 @@ export type PasskeyByTagLookup =
 
 /**
  * The tag's passkey from L1. `resolveTag` defaults to the commit-time resolver (a fresh manifest);
- * a type-ahead caller passes `resolveTagViaRegistry`, which reads over the cached tuple. A read
- * that cannot reach the chain throws.
+ * a type-ahead caller passes `resolveSignInTag`, which reads over the cached tuple. A read that
+ * cannot reach the chain throws.
  */
 export async function lookupPasskeyByTag(
   tag: string,
-  options?: { resolveTag?: typeof resolveTagForCommit },
+  options?: { resolveTag?: typeof resolveSignInTagForCommit },
 ): Promise<PasskeyByTagLookup> {
   const l1 = createOxideL1Reader(l1PublicClient(getConfig()))
   const read = await readPasskeyCredentialsByTag(tag, {
-    resolveTag: options?.resolveTag ?? resolveTagForCommit,
+    resolveTag: options?.resolveTag ?? resolveSignInTagForCommit,
     readAuthKeys: (account) => l1.readAuthKeysCounted(account, MAX_PASSKEY_CANDIDATES),
   })
   if (read.kind !== "resolved") return read
@@ -89,7 +89,7 @@ export type MissDiagnosis =
 export async function diagnoseMiss(evidence: MissEvidence, tag: string): Promise<MissDiagnosis> {
   const l1 = createOxideL1Reader(l1PublicClient(getConfig()))
   const read = await readPasskeyCredentialsByTag(tag, {
-    resolveTag: resolveTagForCommit,
+    resolveTag: resolveSignInTagForCommit,
     readAuthKeys: (account) => l1.readAuthKeysCounted(account, MAX_PASSKEY_CANDIDATES),
   })
   if (read.kind === "unreadable") return read.complete ? "unreadable" : "INCONCLUSIVE"

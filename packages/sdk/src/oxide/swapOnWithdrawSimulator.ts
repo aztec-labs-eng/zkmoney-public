@@ -1,6 +1,6 @@
 /**
  * Prices a swap-on-withdraw: the relayer tip its escrow commits to, quoted on the exact L1 operation the relayer
- * will send, `OperationExecutor.execute(factory, deployAndExecute(args), DAI, minPayout)`, with the counterfactual
+ * will send, `OperationExecutor.execute` of `factory.deployAndExecute(args)` paid in DAI, with the counterfactual
  * escrow funded by a state override.
  *
  * The same simulation runs the swap, so the payout estimate is the executed route (3pool for the stables,
@@ -14,7 +14,6 @@ import {
   predictSwapEscrowAddressLocally,
   type SwapEscrowArgs,
 } from "@oxide/l1-contracts"
-import { quoteL1Operation } from "@oxide/oxide-client/l1_operation_quote.js"
 import {
   decodeAbiParameters,
   decodeFunctionResult,
@@ -33,6 +32,7 @@ import {
 import { L1_OPERATION_TIP_MARGIN_BPS } from "@obsidion/core/constants"
 import type { SwapEscrowOutput } from "@obsidion/core/types"
 import { MULTICALL3_ADDRESS } from "../services/sipaClaim.js"
+import { quoteEitherExecutor } from "./l1OperationQuote.js"
 import { swapRouteForOutput, type SwapDeductions } from "./swapOnWithdraw.js"
 
 const MULTICALL3_ETH_BALANCE_ABI = [
@@ -193,7 +193,7 @@ export class SwapOnWithdrawSimulator {
       this.readBalanceOfSlot(),
     ])
     const simulatedArgs = this.escrowArgs(args, SIMULATION_TIP)
-    const quote = await quoteL1Operation(this.client, {
+    const quote = await quoteEitherExecutor(this.client, {
       executor: this.tuple.operationExecutor,
       sender: SIMULATION_SENDER,
       ethUsdFeed: deployment.ethUsdFeed,

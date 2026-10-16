@@ -138,7 +138,9 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
     feed.emit([sipaDeposit({ amount: "99.732114451234567891", tokenSymbol: "USDC" })])
     await producer.flush()
 
-    expect(notifications.list()).toEqual([expect.objectContaining({ description: "$99.73 arrived" })])
+    expect(notifications.list()).toEqual([
+      expect.objectContaining({ description: "$99.73 arrived" }),
+    ])
   })
 
   it("creates a recovered notification with its own title", async () => {
@@ -245,6 +247,70 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
         },
       }),
     ])
+  })
+
+  it("names a Savings move's burn as the move, in flight, released and failed", async () => {
+    producer.start()
+    const skyMove = {
+      direction: "in" as const,
+      factory: "0x000000000000000000000000000000000000000f",
+      recipientCommitment: "0x" + "02".repeat(32),
+      recoveryCommitment: "0x" + "03".repeat(32),
+      relayerTip: "1",
+      nonce: "0x" + "01".repeat(32),
+    } as WithdrawalRecord["skyMove"]
+
+    feed.emit([withdrawal({ phase: "awaiting_proven", endTime: undefined, skyMove })])
+    await producer.flush()
+    expect(notifications.list()).toMatchObject([
+      { title: "Moving to Savings", description: "$4", pending: true },
+    ])
+
+    feed.emit([withdrawal({ phase: "done", skyMove })])
+    await producer.flush()
+    expect(notifications.list().map((n) => [n.title, n.description])).toContainEqual([
+      "Moving to Savings",
+      "$4",
+    ])
+
+    feed.emit([
+      withdrawal({
+        localId: "move-out",
+        phase: "failed",
+        skyMove: { ...skyMove!, direction: "out" },
+      }),
+    ])
+    await producer.flush()
+    expect(notifications.list().map((n) => n.title)).toContain("Move failed")
+
+    // A move out burns shares: it is named by their dollar value, never by the share count.
+    feed.emit([
+      withdrawal({
+        localId: "move-out-live",
+        amount: "100",
+        phase: "awaiting_proven",
+        endTime: undefined,
+        skyMove: { ...skyMove!, direction: "out", value: (105n * 10n ** 18n).toString() },
+      }),
+      withdrawal({
+        localId: "move-out-rebuilt",
+        amount: "100",
+        phase: "awaiting_proven",
+        endTime: undefined,
+        skyMove: { ...skyMove!, direction: "out" },
+      }),
+    ])
+    await producer.flush()
+    const descriptions = notifications.list().map((n) => n.description)
+    expect(descriptions).toContain("$105")
+    expect(descriptions).toContain("From Savings")
+    expect(descriptions).not.toContain("$100")
+    expect(
+      notifications
+        .list()
+        .map((n) => n.title + n.description)
+        .join(),
+    ).not.toContain("Ethereum")
   })
 
   it("creates a failure notification for a pre-mine failed withdrawal", async () => {
@@ -428,9 +494,7 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
 
       feed.emit([leg("gas", "swapping"), leg("funds", "l2_mined")])
       await producer.flush()
-      expect(notifications.list()).toMatchObject([
-        { description: "$7.50 · Releasing to Ethereum" },
-      ])
+      expect(notifications.list()).toMatchObject([{ description: "$7.50 · Releasing to Ethereum" }])
 
       feed.emit([leg("gas", "done", { endTime: 1_200 }), leg("funds", "done", { endTime: 1_100 })])
       await producer.flush()
@@ -767,9 +831,7 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
 
     feed.emit([sipaDeposit({ phase: "pendingClaim", endTime: undefined })])
     await producer.flush()
-    expect(notifications.list()).toMatchObject([
-      { description: "$10 · Crediting", pending: true },
-    ])
+    expect(notifications.list()).toMatchObject([{ description: "$10 · Crediting", pending: true }])
 
     feed.emit([sipaDeposit({ phase: "claimed", endTime: Date.now() })])
     await producer.flush()
@@ -797,9 +859,7 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
 
     feed.emit([sipaDeposit({ phase: "sweeping", endTime: undefined, fee: undefined })])
     await producer.flush()
-    expect(notifications.list()).toMatchObject([
-      { description: "$10 · Receiving", pending: true },
-    ])
+    expect(notifications.list()).toMatchObject([{ description: "$10 · Receiving", pending: true }])
   })
 
   it("says why a deposit waits for its sweep and updates the same row in place", async () => {

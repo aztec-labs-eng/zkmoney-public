@@ -1,5 +1,5 @@
 import type { ReactNode } from "react"
-import { IN_APP_UP_FRONT_COPY as COPY } from "@obsidion/passkey-web"
+import { IN_APP_UP_FRONT_COPY as COPY, type InAppUpFront } from "@obsidion/passkey-web"
 import { showReportableError } from "../../errors/errorModal"
 import { OpenInBrowser } from "./OpenInBrowser"
 
@@ -9,10 +9,12 @@ import { OpenInBrowser } from "./OpenInBrowser"
  * user agent, the one thing that can show a wrongly matched browser.
  */
 export function InAppBrowserNotice({
+  mode,
   exits,
   reportContext,
   testId = "in-app-notice",
 }: {
+  mode: InAppUpFront
   exits?: ReactNode
   reportContext: string
   testId?: string
@@ -21,7 +23,7 @@ export function InAppBrowserNotice({
     <div className="ww-invite-spinner" data-testid={testId}>
       <h2 className="ww-passkey-refusal__title">{COPY.title}</h2>
       <p className="ww-paylink-summary__caption">{COPY.line}</p>
-      <OpenInBrowser />
+      <OpenInBrowser mode={mode} />
       {exits}
       <button
         type="button"

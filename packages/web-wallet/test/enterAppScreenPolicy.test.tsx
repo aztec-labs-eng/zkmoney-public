@@ -89,8 +89,8 @@ vi.mock("../src/features/onboarding/findPasskeyByTag", async (importOriginal) =>
 }))
 vi.mock("../src/config/oxideTuple", () => ({ getOxideTuple: h.getOxideTuple }))
 vi.mock("../src/features/contacts/registryResolution", () => ({
-  resolveTagViaRegistry: vi.fn(),
-  resolveTagForCommit: vi.fn(),
+  resolveSignInTag: vi.fn(),
+  resolveSignInTagForCommit: vi.fn(),
 }))
 vi.mock("../src/features/onboarding/recoveryProbes", () => ({
   reservedNameHashes: h.reservedNameHashes,
@@ -266,16 +266,12 @@ const addressed = (path: string) => {
   const { origin, host, href, pathname, search, hash } = url
   return { assign: leaveAssign, origin, host, href, pathname, search, hash }
 }
-/**
- * The screen exited to where signing in starts: the campaign when this build names one, which ends
- * its own session on arrival, else the wallet's own /claim.
- */
+/** The screen exited to where signing in starts. */
 const leftForSignInStart = () =>
-  h.navigate.mock.calls.some((call) => (call as unknown[])[0] === "/claim") ||
-  leaveAssign.mock.calls.some((call) => call[0] === "https://launch.test.invalid/?signedout=1")
+  h.navigate.mock.calls.some((call) => (call as unknown[])[0] === "/claim")
 
 const L2 = `0x${"ac".repeat(32)}`
-/** A recovered account with no registered name — the state the waitlist answer decides. */
+/** A recovered account with no registered name. */
 const nameless = (address = L2) => ({
   entered: false,
   reason: "unclaimed",
@@ -287,14 +283,6 @@ const nameless = (address = L2) => ({
   ensDomain: "zk.money",
 })
 
-/** One campaign answer, as the verify endpoint returns it. */
-const answers = (body: unknown, status = 200) =>
-  fetchMock.mockImplementationOnce(async () => ({
-    ok: status < 400,
-    status,
-    json: async () => body,
-  }))
-const fetchMock = vi.fn()
 const refused = () => container.querySelector<HTMLElement>('[data-testid="enter-refused"]')
 const retry = () => container.querySelector<HTMLButtonElement>('[data-testid="enter-retry"]')!
 const screen = () => byTestId("sign-in-start")
@@ -328,13 +316,10 @@ beforeEach(() => {
   h.getConfig.mockReturnValue({
     rpId: "localhost",
     campaignUrl: "https://launch.test.invalid",
-    admissionGate: true,
     accountServiceTestMode: false,
   })
-  fetchMock.mockReset()
   leaveAssign.mockClear()
   vi.stubGlobal("location", addressed("/enter"))
-  vi.stubGlobal("fetch", fetchMock)
   localStorage.clear()
   container = document.createElement("div")
   document.body.appendChild(container)
@@ -379,6 +364,103 @@ describe("EnterAppScreen refusals", () => {
     expect(leftForSignInStart()).toBe(false)
   })
 
+  it("a passkey no anchor names on an incomplete catalog gets a retry, not no wallet", async () => {
+    h.enterWithPasskey.mockResolvedValueOnce({
+      entered: false,
+      reason: "unknown",
+      catalogIncomplete: true,
+    })
+    await render()
+    expect(refused()?.dataset.reason).toBe("error")
+    expect(container.textContent).not.toContain("No wallet was found")
+    expect(leftForSignInStart()).toBe(false)
+  })
+
+  describe("a laptop refused for want of key material", () => {
+    const MAC_CHROME_UA =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+    const WINDOWS_CHROME_UA =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+    const LINUX_CHROME_UA =
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+    const credentials = Object.getOwnPropertyDescriptor(navigator, "credentials")
+    const install = (value: unknown) =>
+      Object.defineProperty(navigator, "credentials", { value, configurable: true })
+    let ua: { mockRestore: () => void } | undefined
+    const asBrowser = (userAgent: string) => {
+      ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent)
+    }
+    const advice = () => byTestId("passkey-extension-advice")
+    /** The refusal as the auth service throws it once an assertion ran: with what answered. */
+    const noPrf = async (attachment?: "platform" | "cross-platform") => {
+      const { NoPrfError } = await policyErrors()
+      const e = new NoPrfError()
+      return attachment ? Object.assign(e, { observed: { credentialId: "id", attachment } }) : e
+    }
+    afterEach(() => {
+      ua?.mockRestore()
+      ua = undefined
+      if (credentials) Object.defineProperty(navigator, "credentials", credentials)
+      else delete (navigator as { credentials?: unknown }).credentials
+    })
+
+    it.each([
+      ["names the extension's pop-up where a script answers", { get: async () => null }, "use"],
+      [
+        "says to install the extension where the browser's own prompt answers",
+        { get: Promise.resolve.bind(Promise) },
+        "install",
+      ],
+    ] as const)("on Windows, where this computer answered, %s", async (_n, calls, wording) => {
+      const { EXTENSION_ADVICE_COPY } = await policyErrors()
+      asBrowser(WINDOWS_CHROME_UA)
+      install(calls)
+      h.enterWithPasskey.mockRejectedValueOnce(await noPrf("platform"))
+      await render()
+      expect(refused()?.dataset.reason).toBe("NoPrfError")
+      expect(advice()?.textContent).toBe(EXTENSION_ADVICE_COPY[wording])
+      expect(retry()).not.toBeNull()
+    })
+
+    it("gets no advice on Windows when another device answered, when nothing says what answered, or for another refusal", async () => {
+      const { DeviceBoundPasskeyError } = await policyErrors()
+      asBrowser(WINDOWS_CHROME_UA)
+      install({ get: async () => null })
+      h.enterWithPasskey.mockRejectedValueOnce(await noPrf("cross-platform"))
+      await render()
+      expect(refused()?.dataset.reason).toBe("NoPrfError")
+      expect(advice()).toBeNull()
+
+      h.enterWithPasskey.mockRejectedValueOnce(await noPrf())
+      await act(async () => retry().click())
+      await flush()
+      expect(refused()?.dataset.reason).toBe("NoPrfError")
+      expect(advice()).toBeNull()
+
+      h.enterWithPasskey.mockRejectedValueOnce(
+        Object.assign(new DeviceBoundPasskeyError(), {
+          observed: { credentialId: "id", attachment: "platform" },
+        }),
+      )
+      await act(async () => retry().click())
+      await flush()
+      expect(refused()?.dataset.reason).toBe("DeviceBoundPasskeyError")
+      expect(advice()).toBeNull()
+    })
+
+    it.each([
+      ["a Mac", MAC_CHROME_UA],
+      ["Linux", LINUX_CHROME_UA],
+    ])("gets no advice on %s, which has no Windows passkey window", async (_n, userAgent) => {
+      asBrowser(userAgent)
+      install({ get: async () => null })
+      h.enterWithPasskey.mockRejectedValueOnce(await noPrf("platform"))
+      await render()
+      expect(refused()?.dataset.reason).toBe("NoPrfError")
+      expect(advice()).toBeNull()
+    })
+  })
+
   it("a cancel while the identity is saved leaves the hint unwritten and navigates nowhere", async () => {
     h.enterWithPasskey.mockResolvedValueOnce({
       entered: true,
@@ -404,91 +486,17 @@ describe("EnterAppScreen refusals", () => {
     expect(h.navigate).not.toHaveBeenCalledWith("/", { replace: true })
   })
 
-  it("a granted account with no name is sent to finish signing up, not into the wallet", async () => {
-    h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    answers({ status: "granted" })
-    await render()
-    expect(refused()?.dataset.reason).toBe("GrantedRegistrationError")
-    expect(container.textContent).toContain("You're through the queue")
-    expect(container.textContent).not.toContain("still in line")
-    // Nothing without a name reaches the wallet: no identity is saved and nothing navigates itself.
-    expect(h.saveWalletIdentity).not.toHaveBeenCalled()
-    expect(leftForSignInStart()).toBe(false)
-
-    await act(async () => byTestId("enter-cancel")!.click())
-    await flush()
-    expect(h.navigate).toHaveBeenCalledWith("/claim?resume=1", { replace: true })
-  })
-
-  it("a nameless account stays out of the wallet even with the gate switched off", async () => {
-    h.getConfig.mockReturnValue({ rpId: "localhost", campaignUrl: "", admissionGate: false })
+  it("a nameless account with no reservation is sent to finish signing up, not into the wallet", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
     await render()
-    expect(fetchMock).not.toHaveBeenCalled()
-    // With the gate off the campaign gave no answer, so account-service is asked, and holds nothing.
     expect(h.reservedNameHashes).toHaveBeenCalledTimes(1)
-    expect(h.saveWalletIdentity).not.toHaveBeenCalled()
     expect(refused()?.dataset.reason).toBe("GrantedRegistrationError")
-  })
-
-  it("a queued account is told its place in line and offered the way to skip it", async () => {
-    h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    answers({ status: "queued", queuePosition: 812 })
-    await render()
-    expect(refused()?.dataset.reason).toBe("QueuedRegistrationError")
-    expect(container.textContent).toContain("You're still in line")
-    expect(container.textContent).toContain("number 812 in line")
-    // The wallet is not opened and nothing navigates on its own: the exit is the way on.
     expect(h.saveWalletIdentity).not.toHaveBeenCalled()
     expect(leftForSignInStart()).toBe(false)
 
-    // The exit resumes the signup that is already begun, rather than starting a new one.
     await act(async () => byTestId("enter-cancel")!.click())
     await flush()
     expect(h.navigate).toHaveBeenCalledWith("/claim?resume=1", { replace: true })
-  })
-
-  it("a queue with no position given says so without inventing one", async () => {
-    h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    answers({ status: "queued" })
-    await render()
-    expect(refused()?.dataset.reason).toBe("QueuedRegistrationError")
-    expect(container.textContent).toContain("held for you")
-    expect(container.textContent).not.toMatch(/in line\./)
-  })
-
-  it("a waitlist that could not answer offers another attempt, not a place in line", async () => {
-    h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    answers({}, 503)
-    await render()
-    expect(refused()?.dataset.reason).toBe("AdmissionUnavailableError")
-    expect(container.textContent).toContain("Couldn't check your place in line")
-    expect(container.textContent).not.toContain("You're still in line")
-    expect(retry()).not.toBeNull()
-    expect(leftForSignInStart()).toBe(false)
-  })
-
-  it("a key the waitlist has never seen signs up rather than being given a place in line", async () => {
-    h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    answers({}, 404)
-    await render()
-    expect(refused()).toBeNull()
-    expect(leftForSignInStart()).toBe(true)
-  })
-
-  it("a second attempt reads the cached grant rather than asking the campaign again", async () => {
-    h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    answers({ status: "granted" })
-    await render()
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(refused()?.dataset.reason).toBe("GrantedRegistrationError")
-
-    act(() => root.unmount())
-    root = createRoot(container)
-    h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    await render()
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    expect(refused()?.dataset.reason).toBe("GrantedRegistrationError")
   })
 
   it("an arrival read that could not answer shows the screen, unreported, and keeps the user off /claim", async () => {
@@ -621,8 +629,8 @@ describe("EnterAppScreen refusals", () => {
     await act(async () => byTestId("spinner-cancel")!.click())
     await flush()
     // React hands the click event to a bare handler; an exit that took it as a search string
-    // would leave for the campaign with "[object Object]" on the end.
-    expect(leaveAssign).toHaveBeenCalledWith("https://launch.test.invalid/?signedout=1")
+    // would land on "/claim[object Object]".
+    expect(h.navigate).toHaveBeenCalledWith("/claim", { replace: true })
   })
 
   it("Cancel sign-in past the prompt ends the attempt as well as the screen", async () => {
@@ -781,7 +789,6 @@ describe("EnterAppScreen miss diagnosis", () => {
 describe("EnterAppScreen reservation", () => {
   const hashOf = (tag: string) => namehash(`${tag}.zk.money`)
   const confirmStep = () => byTestId("confirm-tag")
-  const unknownToCampaign = () => answers({}, 404)
   /** A promise and the functions that settle it. */
   const deferred = <T,>() => {
     let resolve!: (value: T) => void
@@ -793,9 +800,8 @@ describe("EnterAppScreen reservation", () => {
     return { promise, resolve, reject }
   }
 
-  it("a key the campaign never saw, with a claim, confirms its tag; the card then resumes that signup", async () => {
+  it("a nameless key with a claim confirms its tag; the card then resumes that signup", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     h.reservedNameHashes.mockResolvedValueOnce([hashOf("cris")])
     await render()
     expect(h.reservedNameHashes.mock.calls[0]![0].address).toBe(nameless().bootstrap.address)
@@ -816,7 +822,6 @@ describe("EnterAppScreen reservation", () => {
 
   it("the reserved card's Back returns to the screen and forgets the reservation", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     h.reservedNameHashes.mockResolvedValueOnce([hashOf("cris")])
     await render()
     h.typedTag = "cris"
@@ -848,7 +853,6 @@ describe("EnterAppScreen reservation", () => {
 
   it("a tag the link already carries that names the claim skips the step, not the card", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     h.reservedNameHashes.mockResolvedValueOnce([hashOf("cris")])
     await render("/enter?handle=cris")
     expect(confirmStep()).toBeNull()
@@ -860,7 +864,6 @@ describe("EnterAppScreen reservation", () => {
 
   it("a link's tag that names no claim is only the step's seed", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     h.reservedNameHashes.mockResolvedValueOnce([hashOf("cris")])
     await render("/enter?handle=alice")
     expect(confirmStep()?.dataset.handle).toBe("alice")
@@ -869,7 +872,6 @@ describe("EnterAppScreen reservation", () => {
 
   it("a tag that names none of the claims is refused on the step; decorated forms still match", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     h.reservedNameHashes.mockResolvedValueOnce([hashOf("cris")])
     await render()
 
@@ -892,7 +894,6 @@ describe("EnterAppScreen reservation", () => {
       act(() => root.unmount())
       root = createRoot(container)
       h.enterWithPasskey.mockResolvedValueOnce(nameless())
-      unknownToCampaign()
       h.reservedNameHashes.mockResolvedValueOnce([hashOf("cris"), hashOf("cris2")])
       await render()
       h.typedTag = tag
@@ -904,30 +905,7 @@ describe("EnterAppScreen reservation", () => {
     }
   })
 
-  it("no claim is today's signup page", async () => {
-    h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
-    await render()
-    expect(h.reservedNameHashes).toHaveBeenCalledTimes(1)
-    expect(confirmStep()).toBeNull()
-    expect(h.navigate).toHaveBeenCalledWith("/claim", { replace: true })
-  })
-
-  it.each([{ status: "granted" }, { status: "queued", queuePosition: 3 }])(
-    "a campaign that knows the key still checks the reservation, and keeps its card when the passkey names none (%o)",
-    async (body) => {
-      h.enterWithPasskey.mockResolvedValueOnce(nameless())
-      answers(body)
-      await render()
-      // The lookup runs so a passkey that already holds a reservation resumes in place; with none
-      // named the campaign's verdict stands and never asks the user to type.
-      expect(h.reservedNameHashes).toHaveBeenCalledTimes(1)
-      expect(refused()?.dataset.reason).toMatch(/GrantedRegistrationError|QueuedRegistrationError/)
-    },
-  )
-
-  it("with the gate off a claim still confirms its tag instead of the granted card", async () => {
-    h.getConfig.mockReturnValue({ rpId: "localhost", campaignUrl: "", admissionGate: false })
+  it("a claim confirms its tag instead of the granted card", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
     h.reservedNameHashes.mockResolvedValueOnce([hashOf("cris")])
     await render()
@@ -939,7 +917,6 @@ describe("EnterAppScreen reservation", () => {
     h.getConfig.mockReturnValue({
       rpId: "localhost",
       campaignUrl: "",
-      admissionGate: false,
       accountServiceTestMode: true,
     })
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
@@ -955,7 +932,6 @@ describe("EnterAppScreen reservation", () => {
     const { AccountServiceTimeoutError } = await import("@obsidion/front-core")
     await render("/enter?choose=1")
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     h.reservedNameHashes.mockRejectedValueOnce(
       new AccountServiceTimeoutError("/domain/reservation", 15_000),
     )
@@ -970,20 +946,16 @@ describe("EnterAppScreen reservation", () => {
     })
     expect(leftForSignInStart()).toBe(false)
 
-    // A campaign that cannot answer by now would change nothing: the retry does not ask it again.
-    answers({}, 503)
     h.reservedNameHashes.mockResolvedValueOnce([hashOf("cris")])
     await act(async () => retry().click())
     await flush()
     expect(h.enterWithPasskey).toHaveBeenCalledTimes(1)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(h.reservedNameHashes).toHaveBeenCalledTimes(2)
     expect(confirmStep()).not.toBeNull()
   })
 
   it("the committed refusal's way on continues the signup rather than starting one", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     h.reservedNameHashes.mockRejectedValueOnce(new Error("offline"))
     await render()
     await act(async () => byTestId("enter-continue")!.click())
@@ -993,7 +965,6 @@ describe("EnterAppScreen reservation", () => {
 
   it("closing the reserved step continues the signup, where the reserved tag is not refused", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     h.reservedNameHashes.mockResolvedValueOnce([hashOf("cris")])
     await render()
     await act(async () => byTestId("confirm-tag-close")!.click())
@@ -1017,13 +988,12 @@ describe("EnterAppScreen reservation", () => {
 
   it("Cancel sign-in during the lookup hands back, and its late answer does nothing", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     const pending = deferred<string[]>()
     h.reservedNameHashes.mockReturnValueOnce(pending.promise)
     await render()
     await act(async () => byTestId("spinner-cancel")!.click())
     await flush()
-    expect(leaveAssign).toHaveBeenCalledWith("https://launch.test.invalid/?signedout=1")
+    expect(leftForSignInStart()).toBe(true)
     h.navigate.mockClear()
 
     await act(async () => pending.resolve([hashOf("cris")]))
@@ -1035,7 +1005,6 @@ describe("EnterAppScreen reservation", () => {
 
   it("a failed lookup answering after Cancel sign-in reports nothing", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     const pending = deferred<string[]>()
     h.reservedNameHashes.mockReturnValueOnce(pending.promise)
     await render()
@@ -1049,7 +1018,6 @@ describe("EnterAppScreen reservation", () => {
 
   it("Cancel sign-in during the retry's lookup leaves nothing behind either", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     h.reservedNameHashes.mockRejectedValueOnce(new Error("offline"))
     await render()
     const pending = deferred<string[]>()
@@ -1067,7 +1035,6 @@ describe("EnterAppScreen reservation", () => {
 
   it("from a reservation to a registered passkey: the registered tag enters the wallet", async () => {
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     h.reservedNameHashes.mockResolvedValueOnce([hashOf("cris")])
     await render()
     h.typedTag = "bob"
@@ -1116,7 +1083,6 @@ describe("EnterAppScreen reservation", () => {
     await act(async () => byTestId("confirm-back")!.click())
     await flush()
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    unknownToCampaign()
     h.reservedNameHashes.mockResolvedValueOnce([hashOf("cris")])
     await act(async () => byTestId("sign-in-show-passkeys")!.click())
     await flush()
@@ -1217,13 +1183,12 @@ describe("EnterAppScreen account switch", () => {
     expect(h.saveWalletIdentity).toHaveBeenCalledTimes(1)
   })
 
-  it("replaces the document before asking the waitlist when a different account is committed", async () => {
+  it("replaces the document before the reservation lookup when a different account is committed", async () => {
     commits("storage-b")
-    answers({ status: "granted" })
     await render()
     expect(assign).toHaveBeenCalledWith("/enter")
     // Nothing after the switch runs against the previous account's loaded records.
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(h.reservedNameHashes).not.toHaveBeenCalled()
     expect(refused()).toBeNull()
     expect(leftForSignInStart()).toBe(false)
   })
@@ -1300,7 +1265,6 @@ describe("EnterAppScreen account switch", () => {
     act(() => root.unmount())
     root = createRoot(container)
     commits("storage-b")
-    answers({}, 404)
     h.reservedNameHashes.mockResolvedValueOnce([namehash("cris.zk.money")])
     await render("/enter?handle=cris")
     expect(assign).toHaveBeenCalledTimes(1)
@@ -1318,12 +1282,11 @@ describe("EnterAppScreen account switch", () => {
   describe("signed out, as after a logout", () => {
     beforeEach(() => walletStorage.commitRemove("webwallet.storageId"))
 
-    it("replaces the document before asking the waitlist when the account's records are stale", async () => {
+    it("replaces the document before the reservation lookup when the account's records are stale", async () => {
       commits("storage-b", nameless(), true)
-      answers({ status: "granted" })
       await render()
       expect(assign).toHaveBeenCalledWith("/enter")
-      expect(fetchMock).not.toHaveBeenCalled()
+      expect(h.reservedNameHashes).not.toHaveBeenCalled()
       expect(refused()).toBeNull()
       expect(leftForSignInStart()).toBe(false)
     })
@@ -1376,12 +1339,11 @@ describe("EnterAppScreen account switch", () => {
       expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
     })
 
-    it("sends a key the waitlist has never seen to sign up, in place", async () => {
+    it("sends a nameless key to finish signing up, in place", async () => {
       commits("storage-b")
-      answers({}, 404)
       await render()
       expect(assign).not.toHaveBeenCalled()
-      expect(leftForSignInStart()).toBe(true)
+      expect(refused()?.dataset.reason).toBe("GrantedRegistrationError")
     })
 
     it("treats a page with no auth service as fresh", async () => {
@@ -1414,6 +1376,9 @@ describe("EnterAppScreen in an app's built-in browser", () => {
     // Chrome itself: a browser the in-app rule misses, so a request runs and can fail there.
     androidChrome:
       "Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36",
+    // An app's web view on the System WebView, with `wv` stripped: only its Chrome major tells.
+    androidChromeStale:
+      "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
     iosX: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Twitter for iPhone/10.80",
     iosInstagram:
       "Mozilla/5.0 (iPhone; CPU iPhone OS 18_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 Instagram 370.0.0.0.0 (iPhone15,2; iOS 18_5; en_US; en; scale=3.00; 1179x2556; 000000000)",
@@ -1506,6 +1471,64 @@ describe("EnterAppScreen in an app's built-in browser", () => {
     expect(byTestId("open-in-browser-link")!.getAttribute("href")).toContain("intent://")
     expect(screen()).toBeNull()
     expect(byTestId("sign-in-show-passkeys")).toBeNull()
+  })
+
+  it("a phone's Chrome far behind stable gets the card too, as a web view without the marker", async () => {
+    await open(UA.androidChromeStale)
+    expect(notice()).not.toBeNull()
+    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toContain("intent://")
+    expect(screen()).toBeNull()
+  })
+
+  it("a passkey that worked in a stale Chrome keeps the screen there, with no card", async () => {
+    remember("cred-bob", "bob")
+    await open(UA.androidChromeStale)
+    expect(notice()).toBeNull()
+    expect(screen()).not.toBeNull()
+  })
+
+  /** Client Hints brands, as Chromium answers them without a permission. */
+  const withBrands = (brands: unknown) =>
+    Object.defineProperty(navigator, "userAgentData", { value: { brands }, configurable: true })
+  afterEach(() => {
+    delete (navigator as { userAgentData?: unknown }).userAgentData
+  })
+  const CHROME_BRANDS = [
+    { brand: "Google Chrome", version: "138" },
+    { brand: "Chromium", version: "138" },
+    { brand: "Not A Brand", version: "99" },
+  ]
+  const PLAY = "https://play.google.com/store/apps/details?id=com.android.chrome"
+
+  it("a stale Chrome that names itself keeps the screen with no passkey record, and a refused prompt shows the card after", async () => {
+    withBrands(CHROME_BRANDS)
+    await open(UA.androidChromeStale)
+    expect(notice()).toBeNull()
+    expect(byTestId("update-chrome-maybe")).toBeNull()
+    expect(screen()).not.toBeNull()
+
+    h.enterWithPasskey.mockRejectedValueOnce(unsupported())
+    await click("sign-in-show-passkeys")
+    expect(refused()?.dataset.reason).toBe("NotSupportedError")
+    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toContain("intent://")
+    expect(byTestId("enter-retry")).not.toBeNull()
+  })
+
+  it("the pinned sign-in in a stale Chrome that names itself shows the same card after a refused prompt", async () => {
+    withBrands(CHROME_BRANDS)
+    await arriveFound(UA.androidChromeStale)
+    expect(notice()).toBeNull()
+    h.enterWithPasskey.mockRejectedValueOnce(unsupported())
+    await click("sign-in-login")
+    expect(refused()?.dataset.reason).toBe("NotSupportedError")
+    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toContain("intent://")
+  })
+
+  it("a stale Chrome with no brands shows the in-app card plus the update line", async () => {
+    await open(UA.androidChromeStale)
+    expect(container.textContent).toContain("Passkeys don't work in this app's browser")
+    expect(byTestId("open-in-browser-link")!.getAttribute("href")).toContain("intent://")
+    expect(byTestId("update-chrome-maybe")!.getAttribute("href")).toBe(PLAY)
   })
 
   it("a payment link waiting in this browser gives the reopen line on the card, and no link", async () => {
@@ -1767,12 +1790,11 @@ describe("EnterAppScreen passkey telemetry", () => {
     ])
   })
 
-  it("a nameless account succeeds, and the waitlist's refusal after it sends no passkey event", async () => {
+  it("a nameless account succeeds, and the refusal after it sends no passkey event", async () => {
     await toScreen()
     answeredEntry(() => nameless())
-    answers({ status: "queued", queuePosition: 3 })
     await click("sign-in-show-passkeys")
-    expect(refused()?.dataset.reason).toBe("QueuedRegistrationError")
+    expect(refused()?.dataset.reason).toBe("GrantedRegistrationError")
     expect(events()).toEqual([expect.objectContaining({ outcome: "succeeded" })])
   })
 

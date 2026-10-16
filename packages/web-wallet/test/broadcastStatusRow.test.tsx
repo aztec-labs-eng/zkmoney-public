@@ -1,7 +1,7 @@
 /** The status line under an address whose broadcast has not landed, read off the real ledger. */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { OperationStore } from "@obsidion/front-core"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import {
@@ -76,15 +76,26 @@ describe("BroadcastStatusRow", () => {
     expect(row()?.textContent).toBe("Publishing your address shortly")
   })
 
-  it("says a failed broadcast is retried, however often it failed, with nothing to press", async () => {
+  it("says a failed broadcast is retried, however often it failed, and re-broadcasts it at once on a press", async () => {
     const ledger = getBroadcastLedger()
+    const retry = () => row()?.querySelector<HTMLButtonElement>('[data-testid="broadcast-retry"]')
     await ledger.markFailed(ADDRESS, "offline")
     await render()
-    expect(row()?.textContent).toBe("Couldn't publish yet. Trying again soon")
+    expect(row()?.textContent).toContain("Couldn't publish yet. Trying again soon")
     await act(async () => {
       for (let i = 0; i < 5; i++) await ledger.markFailed(ADDRESS, "offline")
     })
-    expect(row()?.textContent).toBe("Couldn't publish yet. Trying again soon")
-    expect(row()?.querySelector("button")).toBeNull()
+    expect(row()?.textContent).toContain("Couldn't publish yet. Trying again soon")
+    expect(retry()?.textContent).toBe("Re-broadcast")
+    await act(async () => retry()!.click())
+    await vi.waitFor(() =>
+      expect(ledger.get(ADDRESS)).toMatchObject({ failures: 0, retryAt: undefined }),
+    )
+  })
+
+  it("offers a re-broadcast while any other wait holds the address", async () => {
+    await getBroadcastLedger().defer(ADDRESS, Date.now() + 30_000, "The address no longer derives")
+    await render()
+    expect(row()?.querySelector('[data-testid="broadcast-retry"]')).not.toBeNull()
   })
 })

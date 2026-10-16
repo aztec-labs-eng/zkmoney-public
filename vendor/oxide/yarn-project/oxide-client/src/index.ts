@@ -5,6 +5,8 @@ export * from './errors.js';
 export * from './frozen_notes.js';
 export * from './frozen_deposit.js';
 export * from './unprocessed_deposit.js';
+export * from './deposit_refund_eligibility.js';
+export * from './inbox_sibling_path.js';
 export * from './l1_operations.js';
 export * from './l2_operations.js';
 export * from './enclave_transport.js';

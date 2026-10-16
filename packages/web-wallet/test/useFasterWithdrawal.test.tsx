@@ -1,6 +1,6 @@
 /**
  * The faster option is offered whenever a nonzero tip can be quoted, whatever it saves; it hides when a
- * read fails or the tip is zero, and it re-quotes while open.
+ * read fails, the tip is zero or the burn may land past the tip cutoff, and it re-quotes while open.
  */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
@@ -51,6 +51,7 @@ const speedup = (speedupSeconds: number): WithdrawalSpeedupEstimate => ({
   worstSpeedupSeconds: speedupSeconds,
   speedupSeconds,
   confidence: "measured",
+  pastTipCutoff: false,
 })
 const tipQuote = (proverTip: bigint): ProverTipQuote => ({
   proverTip,
@@ -128,6 +129,17 @@ describe("useFasterWithdrawal", () => {
 
   it("is not loading while the step is closed", async () => {
     await render({ active: false })
+    expect(loading).toBe(false)
+  })
+
+  it("hides the tip when the burn may land past the tip cutoff", async () => {
+    await render({
+      load: async () => ({
+        estimate: { ...speedup(1_200), pastTipCutoff: true },
+        quote: tipQuote(TIP),
+      }),
+    })
+    expect(offer).toBeUndefined()
     expect(loading).toBe(false)
   })
 

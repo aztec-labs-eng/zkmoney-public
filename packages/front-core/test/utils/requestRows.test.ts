@@ -8,6 +8,7 @@ import {
   buildRequestRows,
   isFromNonContact,
   nonContactInbox,
+  payerAddedToContacts,
   payerForPaidLink,
   withoutAnsweredRequests,
   withoutPaidLinkReceives,
@@ -431,5 +432,20 @@ describe("payerForPaidLink", () => {
     expect(
       payerForPaidLink({ fulfillmentTxHash: undefined }, [receive("alice")], directory([])),
     ).toBeUndefined()
+  })
+})
+
+describe("payerAddedToContacts", () => {
+  it.each([
+    ["a full L2 contact", { displayName: "Alice", contact: alice }, true],
+    [
+      "an auto-added payer",
+      { displayName: "Alice", contact: { ...alice, autoAdded: true } },
+      false,
+    ],
+    ["a payer outside contacts", { displayName: "@bob", contact: undefined }, false],
+    ["no payer (Ethereum)", undefined, false],
+  ])("%s: %s", (_case, payer, added) => {
+    expect(payerAddedToContacts(payer)).toBe(added)
   })
 })

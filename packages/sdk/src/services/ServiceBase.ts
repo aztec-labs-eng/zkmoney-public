@@ -495,7 +495,7 @@ export abstract class ServiceContractBase extends ServiceBase {
       contract = await this.contractService.getContractWithArtifactAndAddress(
         anchor,
         this.wallet,
-        await this.contractService.getArtifactForContract(this.contractName, anchor),
+        await this.contractService.getArtifactForContract(this.contractName, anchor, this.wallet),
       )
     } else {
       contract = await this.contractService.getContract(this.contractName, this.wallet)

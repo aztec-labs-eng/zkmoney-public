@@ -119,7 +119,8 @@ export const isValidBool = (response: Fr[][]): boolean => {
   }
 }
 
-let feeJuiceContract: FeeJuiceContract | undefined
+/** Per wallet: a handle sends through the wallet, and so the node, it is bound to. */
+const feeJuiceContracts = new WeakMap<ObsidionWallet, FeeJuiceContract>()
 
 // `null` means intentionally omit an external fee payer and let the account pay
 // with its existing fee juice balance.
@@ -132,11 +133,13 @@ export const sendEmptyTx = async (
 ): Promise<TxSendResultMined<TxReceipt>> => {
   console.log("sendEmptyTx...")
 
+  let feeJuiceContract = feeJuiceContracts.get(wallet)
   if (!feeJuiceContract) {
     // Lazy: keeps the ~1MB FeeJuice artifact out of the entry chunk.
     const { FeeJuiceContract } = await import("@aztec/noir-contracts.js/FeeJuice")
     const feeJuiceAddr = (await wallet.node.getNodeInfo()).protocolContractAddresses.feeJuice
     feeJuiceContract = FeeJuiceContract.at(feeJuiceAddr, wallet)
+    feeJuiceContracts.set(wallet, feeJuiceContract)
   }
 
   const sendOptions: SendInteractionOptions = {

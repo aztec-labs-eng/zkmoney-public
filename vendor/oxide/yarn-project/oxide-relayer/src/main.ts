@@ -239,15 +239,8 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
     }
 
     if (config.modes.includes('epoch-proofs')) {
-      // Prover tips and subsidies are paid in the pinned portal's underlying.
-      await readUnderlyingToken(publicClient, new OxidePortalContract(publicClient, currentPublicConfig.portal));
       currentServices.push(
-        await startEpochProofs(config, manifest.current, {
-          client: publicClient,
-          l1TxQueue,
-          priceOracle,
-          teeSigner: opts.teeSigner,
-        }),
+        await startEpochProofs(config, manifest, { client: publicClient, node, l1TxQueue, teeSigner: opts.teeSigner }),
       );
     }
 
@@ -301,14 +294,6 @@ export async function selectPayoutTokens(
   const tokens = configured ?? [deployment.token];
   await Promise.all(tokens.map(token => assertPriceable(client, token, 'payout token')));
   return tokens;
-}
-
-/** Reads the portal underlying, the token prover tips and the prover subsidy are paid in. */
-export async function readUnderlyingToken(
-  client: Pick<PublicClient, 'readContract'>,
-  portal: Pick<OxidePortalContract, 'getUnderlying'>,
-): Promise<EthAddress> {
-  return assertPriceable(client, await portal.getUnderlying(), 'portal underlying');
 }
 
 /**

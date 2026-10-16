@@ -27,6 +27,28 @@ export class TxInFlightError extends Error {
   }
 }
 
+/**
+ * A node refused the transaction because one it holds already spends the same notes, and it
+ * refuses every retry until that one lands or expires.
+ */
+export class PendingTxConflictError extends Error {
+  constructor(readonly txHash: Hex, message: string, cause: unknown) {
+    super(message, { cause })
+    this.name = "PendingTxConflictError"
+  }
+}
+
+/** The pending transaction a node named when it refused one spending the same notes. */
+export function conflictingPendingTx(err: unknown): Hex | undefined {
+  for (let e: unknown = err; e !== undefined; e = e instanceof Error ? e.cause : undefined) {
+    const hash = /Nullifier conflict with existing tx (0x[0-9a-fA-F]{64})/.exec(
+      e instanceof Error ? e.message : String(e),
+    )?.[1]
+    if (hash) return hash.toLowerCase() as Hex
+  }
+  return undefined
+}
+
 export interface SubmissionTracker {
   /** The hash emitted at the submit boundary; undefined until then. */
   readonly txHash: Hex | undefined

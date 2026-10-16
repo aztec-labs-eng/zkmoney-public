@@ -7,9 +7,9 @@ import type { TeeSigner } from '@oxide/oxide-lib/types.js';
 import type { PublicClient } from 'viem';
 
 import type { RunConfig } from '../cli/config.js';
-import type { DeploymentEnvManifestPublicConfig } from '../config/deployment_env_manifest.js';
+import type { ResolvedManifestDeployment } from '../config/deployment_env_manifest.js';
 import type { L1TxQueue } from '../l1/l1_tx_queue.js';
-import type { ChainlinkPriceOracle } from '../price_oracle/chainlink_price_oracle.js';
+import type { PriceOracle } from '../price_oracle/price_oracle.js';
 import { OxideProverClaimRewardCollector } from './prover_claim/oxide_prover_claim_reward_collector.js';
 
 /**
@@ -23,34 +23,39 @@ import { OxideProverClaimRewardCollector } from './prover_claim/oxide_prover_cla
  */
 export async function startProverClaimCollector(
   config: RunConfig,
-  publicConfig: DeploymentEnvManifestPublicConfig,
+  deployments: ResolvedManifestDeployment[],
   client: PublicClient,
   l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>,
-  priceOracle: ChainlinkPriceOracle,
+  priceOracle: PriceOracle,
   teeSigner?: TeeSigner,
 ): Promise<OxideProverClaimRewardCollector> {
-  const enclaveUrl = publicConfig.enclaveUrl;
-  if (!teeSigner && !enclaveUrl) {
-    throw new Error('epoch-proofs mode requires enclaveUrl in the deployment env manifest public config.');
+  const missing = deployments.find(({ publicConfig }) => !publicConfig.enclaveUrl);
+  if (!teeSigner && missing) {
+    throw new Error(
+      `epoch-proofs mode requires enclaveUrl in the deployment env manifest public config of ${missing.label}.`,
+    );
   }
-
-  const proverSubsidy = publicConfig.proverSubsidy;
 
   const proverId = EthAddress.fromString(l1TxQueue.address);
 
-  const portalContract = new OxidePortalContract(client, publicConfig.portal);
-  const signer = teeSigner ?? (await FleetSigner.connect(enclaveUrl, portalContract));
+  const portals = await Promise.all(
+    deployments.map(async ({ publicConfig }) => ({
+      portalAddress: publicConfig.portal,
+      proverSubsidyAddress: publicConfig.proverSubsidy,
+      signer:
+        teeSigner ??
+        (await FleetSigner.connect(publicConfig.enclaveUrl, new OxidePortalContract(client, publicConfig.portal))),
+    })),
+  );
 
   const collector = await OxideProverClaimRewardCollector.create({
     proverId,
-    portalAddress: publicConfig.portal,
-    proverSubsidyAddress: proverSubsidy,
+    portals,
     client,
     // Share the relayer's L1 tx queue so claim sends take their turn on the one nonce with every other mode.
     l1TxQueue,
     nodeUrl: config.aztecNodeUrl,
     nodeApiKey: config.aztecNodeApiKey,
-    signer,
     priceOracle,
     log: undefined,
   });

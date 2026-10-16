@@ -1,0 +1,15 @@
+{
+  "scenario": "onboarding",
+  "bootstrap": "/pay/newfriend?demo=onboarding&flowFixture=success&flowEntry=pay",
+  "ready": { "selector": ".ww-invite" },
+  "steps": [
+    { "action": "waitFor", "text": "Pay $13.50 with fee", "exact": false },
+    { "action": "wait", "ms": 800 },
+    { "action": "screenshot", "file": "4-pay-fragment-signedout.png", "state": "pay page" },
+    { "action": "goto", "path": "/pay/newfriend?demo=onboarding&flowFixture=success&flowEntry=pay-standing" },
+    { "action": "waitFor", "text": "Public onchain payment.", "exact": true },
+    { "action": "wait", "ms": 800 },
+    { "action": "screenshot", "file": "4-pay-standing-signedout.png", "state": "standing pay page" }
+  ],
+  "finalScreenshot": false
+}

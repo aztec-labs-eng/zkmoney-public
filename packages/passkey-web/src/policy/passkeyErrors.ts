@@ -1,4 +1,5 @@
-import { WINDOWS_HELLO } from "./passkeyProviders.js"
+import { MAC_FLOORS_ADMITTED, type LocalManager } from "./laptopCreation.js"
+import { WINDOWS_HELLO, localManagersClause } from "./passkeyProviders.js"
 
 /**
  * Typed refusals from the passkey policy. Each carries a plain-language message the screens can
@@ -9,6 +10,16 @@ import { IOS_FLOOR_COPY, MAC_BROWSER_FLOOR_COPY } from "./refusalCopy.js"
 
 /** Every refusal the passkey policy raises; a screen stays put and offers a retry on one. */
 export class PasskeyPolicyError extends Error {}
+
+/**
+ * The managers the laptop's own route admits, carried by a refusal raised on that route so its
+ * copy names those and the phone instead of the phone-route list.
+ */
+export type LocalRouteOptions = { localManagers?: readonly LocalManager[] }
+
+/** "Try again and choose X or Y, or use your phone instead." */
+const tryAgainLocally = (managers: readonly LocalManager[]): string =>
+  `Try again and choose ${localManagersClause(managers)}, or use your phone instead.`
 
 /**
  * A ceremony that began on a security key was answered by something else. Sending this user to a
@@ -30,8 +41,15 @@ export class SecurityKeyRequiredError extends PasskeyPolicyError {
 export class PhoneRequiredError extends PasskeyPolicyError {
   readonly providerName?: string
 
-  constructor(options: { providerName?: string; ceremony?: "create" | "sign-in" } = {}) {
-    super(phoneRequiredMessage(options.providerName, options.ceremony ?? "sign-in"))
+  constructor(
+    options: { providerName?: string; ceremony?: "create" | "sign-in" } & LocalRouteOptions = {},
+  ) {
+    super(
+      options.localManagers
+        ? "The browser didn't say where that passkey was saved. " +
+            tryAgainLocally(options.localManagers)
+        : phoneRequiredMessage(options.providerName, options.ceremony ?? "sign-in"),
+    )
     this.providerName = options.providerName
     this.name = "PhoneRequiredError"
   }
@@ -78,13 +96,62 @@ export class LocalPasskeyRequiredError extends PasskeyPolicyError {
 
 /** The passkey is device-bound (or its backup flag could not be read), so no other device could ever open the wallet. */
 export class DeviceBoundPasskeyError extends PasskeyPolicyError {
-  constructor() {
+  constructor(options: LocalRouteOptions = {}) {
     super(
-      "This passkey can't be backed up, so it can't protect a wallet. Try again with a passkey " +
-        "manager that syncs, such as iCloud Keychain or Google Password Manager.",
+      "This passkey can't be backed up, so it can't protect a wallet. " +
+        (options.localManagers
+          ? tryAgainLocally(options.localManagers)
+          : "Try again with a passkey manager that syncs, such as iCloud Keychain or Google " +
+            "Password Manager."),
     )
     this.name = "DeviceBoundPasskeyError"
   }
+}
+
+/**
+ * A laptop's own passkey the local route cannot keep: saved in Apple Passwords on a Mac that is
+ * not admitted (`apple`), by a manager that withheld its id (`unnamed`), or not by a manager on
+ * this computer at all (`not-local`, an extension relabelling its in-page answer). Each names
+ * the managers the row admits and the phone.
+ */
+export type LaptopRefusalKind = "apple" | "unnamed" | "not-local"
+
+export class LaptopPasskeyRefusedError extends PasskeyPolicyError {
+  /**
+   * Apple Passwords refused where it is not admitted: below the macOS floor, or on a Safari that
+   * cannot report the version. The docs entry the card links explains it.
+   */
+  readonly belowMacFloor: boolean
+
+  constructor(
+    readonly kind: LaptopRefusalKind,
+    readonly managers: readonly LocalManager[] = [],
+    options: { appleWithdrawn?: boolean } = {},
+  ) {
+    super(
+      `${laptopRefusalLead(kind, options.appleWithdrawn === true)} ${tryAgainLocally(managers)}`,
+    )
+    this.name = "LaptopPasskeyRefusedError"
+    this.belowMacFloor = kind === "apple" && options.appleWithdrawn !== true
+  }
+}
+
+function laptopRefusalLead(kind: LaptopRefusalKind, appleWithdrawn: boolean): string {
+  if (kind === "apple") {
+    return appleWithdrawn
+      ? "Apple Passwords isn't available for a wallet on this browser yet."
+      : "Apple Passwords on this Mac can't be used for a wallet yet: it was measured to read " +
+          `the right secret key only on ${MAC_FLOORS_ADMITTED}. Before those, an Apple bug can ` +
+          "give a Mac the wrong secret key from a synced passkey, and on macOS 14 or earlier it " +
+          "gives none at all."
+  }
+  if (kind === "unnamed") {
+    return "zk.money couldn't tell which passkey manager saved this one, so it can't use it."
+  }
+  return (
+    "The passkey wasn't saved by a password manager on this computer, so zk.money can't use it " +
+    "from here."
+  )
 }
 
 /**
@@ -105,15 +172,20 @@ export class SecurityKeyNoPrfError extends PasskeyPolicyError {
 }
 
 /**
- * A laptop creation the browser mislabelled came back without key material or a backup flag and
- * is not followed up (see the creation driver). Its own refusal: the provider is fine and the
- * phone was reached, so neither `NoPrfError` nor `PhoneUnreachableError` tells the truth.
+ * A creation that could not be finished from what came back: a laptop creation the browser
+ * mislabelled, without key material or a backup flag, that is not followed up (`mislabelled`),
+ * or a follow-up answered by a different passkey than the one just made (`other-credential`);
+ * see the creation driver. Its own refusal: the provider is fine, so neither `NoPrfError` nor
+ * `PhoneUnreachableError` tells the truth.
  */
 export class IncompleteCreationError extends PasskeyPolicyError {
-  constructor() {
+  constructor(readonly kind: "mislabelled" | "other-credential" = "mislabelled") {
     super(
-      "This browser didn't return everything the wallet needs from your phone. Update Safari or " +
-        "use Chrome, then try again.",
+      kind === "mislabelled"
+        ? "This browser didn't return everything the wallet needs from your phone. Update Safari " +
+            "or use Chrome, then try again."
+        : "This browser didn't return everything the wallet needs from your new passkey. Try " +
+            "again, or use your phone.",
     )
     this.name = "IncompleteCreationError"
   }
@@ -121,12 +193,18 @@ export class IncompleteCreationError extends PasskeyPolicyError {
 
 /** The provider returned no PRF output at creation nor on the follow-up assertion. */
 export class NoPrfError extends PasskeyPolicyError {
-  constructor() {
+  /** The laptop manager a creation's answer named; a sign-in names none. */
+  readonly manager?: LocalManager
+
+  constructor(options: { manager?: LocalManager } & LocalRouteOptions = {}) {
     super(
-      "This passkey provider can't create a wallet key. Try again and pick a different passkey " +
-        "provider in the browser's sheet.",
+      "This passkey provider can't create a wallet key. " +
+        (options.localManagers
+          ? tryAgainLocally(options.localManagers)
+          : "Try again and pick a different passkey provider in the browser's sheet."),
     )
     this.name = "NoPrfError"
+    this.manager = options.manager
   }
 }
 
@@ -139,27 +217,39 @@ export class UnsupportedProviderError extends PasskeyPolicyError {
 
   constructor(
     readonly kind: "manager" | "security-key",
-    options: { providerName?: string; keyOfferable?: boolean } = {},
+    options: { providerName?: string; keyOfferable?: boolean } & LocalRouteOptions = {},
   ) {
-    super(
-      kind === "security-key"
-        ? "Only YubiKey 5 series security keys can protect a wallet today. Try again with iCloud " +
-            "Keychain, Google Password Manager, or 1Password."
-        : `${options.providerName ?? "This passkey manager"} can't protect a wallet yet. Try ` +
-            "again with iCloud Keychain, Google Password Manager, or 1Password" +
-            `${options.keyOfferable ? ", or a YubiKey 5 security key" : ""}.`,
-    )
+    super(unsupportedProviderMessage(kind, options))
     this.providerName = options.providerName
     this.name = "UnsupportedProviderError"
   }
 }
 
+function unsupportedProviderMessage(
+  kind: "manager" | "security-key",
+  options: { providerName?: string; keyOfferable?: boolean } & LocalRouteOptions,
+): string {
+  if (kind === "security-key") {
+    const lead = "Only YubiKey 5 series security keys can protect a wallet today."
+    if (options.localManagers) return `${lead} ${tryAgainLocally(options.localManagers)}`
+    return `${lead} Try again with iCloud Keychain, Google Password Manager, or 1Password.`
+  }
+  const lead = `${options.providerName ?? "This passkey manager"} can't protect a wallet yet.`
+  if (options.localManagers) return `${lead} ${tryAgainLocally(options.localManagers)}`
+  return (
+    `${lead} Try again with iCloud Keychain, Google Password Manager, or 1Password` +
+    `${options.keyOfferable ? ", or a YubiKey 5 security key" : ""}.`
+  )
+}
+
 /** The provider evaluated only one of the two salts, and not the one this route binds to. */
 export class SingleSaltProviderError extends PasskeyPolicyError {
-  constructor() {
+  constructor(options: LocalRouteOptions = {}) {
     super(
-      "This passkey provider returned only part of the key material the wallet needs. Try again " +
-        "with a different passkey provider.",
+      "This passkey provider returned only part of the key material the wallet needs. " +
+        (options.localManagers
+          ? tryAgainLocally(options.localManagers)
+          : "Try again with a different passkey provider."),
     )
     this.name = "SingleSaltProviderError"
   }

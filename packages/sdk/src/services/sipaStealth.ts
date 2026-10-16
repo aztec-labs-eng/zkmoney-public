@@ -6,11 +6,11 @@
  * rides native libsecp256k1 bindings, which don't load in a browser, so
  * the secp256k1 ops here are `@noble/curves` instead.
  *
- * Primary path: a discovered SIPA event carries `shared_secret_salt`, which IS
- * the resolver's ECDH shared secret — the wallet derives the recipient
- * commitment and recovery key from it with no ECDH and no day/nonce search.
- * `deriveSharedSecret` exists for the no-event recovery path (blind day/nonce
- * enumeration), which stays gated.
+ * A SIPA's salt has two origins: the resolver's ECDH shared secret
+ * (`deriveSharedSecret`) for a resolver-issued SIPA, and `deriveSelfSipaSecret`
+ * for one the wallet derives itself. Either way the discovered SIPA event
+ * carries the salt, and the recipient commitment and recovery key derive from
+ * it with no ECDH and no day/nonce search.
  *
  * Pure compute only — no contract call, no RPC, no storage.
  */
@@ -30,6 +30,9 @@ import { secp256k1 } from "@noble/curves/secp256k1"
 // pinned by the circuit-fixture tests.
 export const MAX_NONCE = 1_000_000
 const DOM_SEP__STEALTH_K = 0x8b6a41145c2309231109ae29649177a76f92d7df34703281d44018b565e9f3n
+
+/** Wallet-owned separator for self-derived salts; oxide has no counterpart, by design. */
+const DOM_SEP__SELF_SIPA_SALT = Buffer.from("obsidion:self-sipa-salt")
 
 const CURVE_ORDER = secp256k1.CURVE.n
 
@@ -53,6 +56,14 @@ function assertU32(value: number, name: string) {
   }
 }
 
+function assertSipaCoordinates(day: number, nonce: number) {
+  assertU32(day, "day")
+  assertU32(nonce, "nonce")
+  if (nonce >= MAX_NONCE) {
+    throw new Error(`nonce out of range: ${nonce} >= ${MAX_NONCE}`)
+  }
+}
+
 function assertScalar(value: bigint, name: string) {
   if (value <= 0n || value >= CURVE_ORDER) {
     throw new Error(`${name} not in field`)
@@ -66,11 +77,7 @@ function assertScalar(value: bigint, name: string) {
  * not key material.
  */
 function computeStealthTweak(day: number, nonce: number): bigint {
-  assertU32(day, "day")
-  assertU32(nonce, "nonce")
-  if (nonce >= MAX_NONCE) {
-    throw new Error(`nonce out of range: ${nonce} >= ${MAX_NONCE}`)
-  }
+  assertSipaCoordinates(day, nonce)
   return sha256ToField([
     new Fr(DOM_SEP__STEALTH_K).toBuffer(),
     toBufferBE(BigInt(day), 32),
@@ -99,6 +106,27 @@ export function deriveSharedSecret(
   }
   const sharedPoint = point.multiply(combined).toRawBytes(false)
   return sha256ToField([Buffer.from(sharedPoint.subarray(1, 65))])
+}
+
+/**
+ * The salt of a wallet-derived SIPA at `(day, nonce)`. Same coordinates as the
+ * resolver's ECDH salt, so slots, ledgers and resumes keep their shape, but
+ * hashed from a key the resolver never sees: the resolver can replay its own
+ * ECDH against the registry stealth key for any `(day, nonce)`, and that would
+ * reproduce the wallet's addresses, recipient commitments and recovery
+ * commitments. This key is never registered, so it cannot.
+ */
+export function deriveSelfSipaSecret(selfSipaKey: Fr, day: number, nonce: number): Fr {
+  if (selfSipaKey.isZero()) {
+    throw new Error("self SIPA key is zero")
+  }
+  assertSipaCoordinates(day, nonce)
+  return sha256ToField([
+    DOM_SEP__SELF_SIPA_SALT,
+    selfSipaKey.toBuffer(),
+    toBufferBE(BigInt(day), 32),
+    toBufferBE(BigInt(nonce), 32),
+  ])
 }
 
 /**

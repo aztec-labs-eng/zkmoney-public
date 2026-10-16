@@ -4,12 +4,10 @@ import { EthAddress } from '@aztec/foundation/eth-address';
 import { Logger, createLogger } from '@aztec/foundation/log';
 import { AztecNode } from '@aztec/stdlib/interfaces/server';
 
-import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
-
 import type { PublicClient } from 'viem';
 
 import type { L1TxQueue } from '../../l1/l1_tx_queue.js';
-import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
+import type { PriceOracle } from '../../price_oracle/price_oracle.js';
 import { ProverClaimDiscoverer, ProverClaimPortalConfig } from '../prover_claim_lib/index.js';
 import { Binding } from '../types.js';
 import { BatchPublisher } from './batch_publisher.js';
@@ -31,7 +29,6 @@ export type ClaimBatchSubmitterOptions = Partial<Pick<ProfitableClaimBatchSubmit
 
 export interface ProverClaimRewardCollectorCreateOptions {
   proverId: EthAddress;
-  portal: OxidePortalContract;
   rollup: RollupContract;
   client: PublicClient;
   /**
@@ -40,10 +37,10 @@ export interface ProverClaimRewardCollectorCreateOptions {
    */
   l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>;
   node: AztecNode;
+  /** The portals to collect rewards from. Each one is polled and submitted to on its own. */
   portals: ProverClaimPortalConfig[];
-  priceOracle: ChainlinkPriceOracle;
-  /** Minimum batch profit in the oracle's common quote currency.
-   *  Defaults to PROVER_CLAIM__MIN_BATCH_PROFIT. */
+  priceOracle: PriceOracle;
+  /** Minimum batch profit in USD, scaled to 18 decimals. Defaults to PROVER_CLAIM__MIN_BATCH_PROFIT. */
   minBatchProfit?: bigint;
   trackerOptions?: Partial<TrackerOptions>;
   claimBatchSubmitterOptions?: ClaimBatchSubmitterOptions;
@@ -78,7 +75,6 @@ export class ProverClaimRewardCollector {
     const discoverer = new ProverClaimDiscoverer({ binding: options.binding, portals: options.portals, log: this.log });
 
     this.publisher = new BatchPublisher({
-      portal: options.portal,
       client: options.client,
       l1TxQueue: options.l1TxQueue,
       confirmations: options.trackerOptions?.confirmations ?? config.FIRST_PROVER_TRACKER__MIN_CONFIRMATIONS,
@@ -97,7 +93,6 @@ export class ProverClaimRewardCollector {
     this.submitter = new ProfitableClaimBatchSubmitter({
       intervalMs: config.PROVER_CLAIM__BATCH_SUBMITTER_POLL_INTERVAL_MS,
       ...options.claimBatchSubmitterOptions,
-      portal: options.portal,
       rollup: options.rollup,
       portals: options.portals,
       backlog: this.backlog,
@@ -118,7 +113,9 @@ export class ProverClaimRewardCollector {
       pollIntervalMs: config.FIRST_PROVER_TRACKER__POLL_INTERVAL_MS,
       ...options.trackerOptions,
       proverId: options.proverId,
-      portal: options.portal,
+      // Track the captures on the first portal only, and use each range for every portal. This assumes that every
+      // portal has the same captured range. Read the warning on `EpochProfitTrackerOptions.portal` for the risk.
+      portal: options.portals[0].contract,
       rollup: options.rollup,
       node: options.node,
       roundaboutSize: options.roundaboutSize,

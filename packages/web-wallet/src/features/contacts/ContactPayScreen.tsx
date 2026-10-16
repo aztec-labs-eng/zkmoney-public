@@ -37,7 +37,7 @@ import { PayConfirmForm } from "./PayConfirmForm"
 import { PayWorking } from "./PayWorking"
 
 /** Router state: a fulfilling send carries the request (activity-row Send, or a decoded request
- *  link via `/request`); `from` marks entry from the contact detail, which stays as the backdrop
+ *  link via its pay page); `from` marks entry from the contact detail, which stays as the backdrop
  *  and is popped back to on success instead of pushed again. Link requests add: `source:"link"`
  *  (no local row — the fulfilled signal must not require one), the packet's `requesterAddress`
  *  pin, and the note. amount 0 = any-amount link (starts on the amount phase). */
@@ -49,8 +49,8 @@ interface PayScreenState {
     source?: "link"
     requesterAddress?: string
     note?: string
-    /** The request link's own hash, so the payer can switch to the Ethereum route on the landing. */
-    hash?: string
+    /** The pay page's path and hash, so the payer can switch to its Ethereum route. */
+    link?: string
   }
   from?: "detail"
   /** The person the page already loaded, so the flow opens without looking them up again. */
@@ -145,6 +145,9 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
     ? railReady && !!(obsidionWallet && obsidionAccount && tokenService && contractService)
     : !!tokenService
   const busy = useUserFlowActive()
+  // Paying a request saves an unsaved payee; a sender the wallet added from a transfer is approved by
+  // paying their request.
+  const savesPayee = (routerState?.contact ? !routerState.saved : !entry) || !!entry?.autoAdded
   // Abandoning the flow: pop history so the close returns wherever the user came from.
   const back = useBack(entry ? `/contacts/${idOrTag}` : "/send")
   // Finishing the flow: replace so the next back reaches the true origin, not the finished flow.
@@ -203,9 +206,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
               amountDisplay: amount,
               note: note.trim() || undefined,
               request,
-              // A sender the wallet added from a transfer is approved by paying their request.
-              saveUnsavedRequester:
-                (routerState?.contact ? !routerState.saved : !entry) || !!entry?.autoAdded,
+              saveUnsavedRequester: savesPayee,
             }
           : {
               mode: "request",
@@ -276,7 +277,9 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
 
   const notFound = entry === null && !request
   const handle = targetTag ?? (entry ? entry.tag ?? entry.name : "")
-  const title = isSend ? "Send" : "Request"
+  // Paying a request or a pay page.
+  const paying = isSend && !!request
+  const title = paying ? "Pay" : isSend ? "Send" : "Request"
 
   return (
     <Modal
@@ -307,7 +310,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
         <>
           <PayModalChrome
             title={title}
-            subtitle={`@${handle}.zk.money`}
+            subtitle={paying ? `@${handle}` : `@${handle}.zk.money`}
             name={handle}
             onClose={back}
             onBack={phase === "confirm" && !request ? () => setPhase("amount") : undefined}
@@ -334,6 +337,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
               onAmount={setAmount}
               onNote={setNote}
               onContinue={toConfirm}
+              submitLabel={paying ? `Pay @${handle}` : undefined}
             />
           )}
 
@@ -346,19 +350,15 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
               busy={busy}
               overspent={overspent}
               isSend={isSend}
+              payee={paying ? { tag: handle, savesContact: savesPayee } : undefined}
               onConfirm={submit}
             />
           )}
-          {!notFound && phase === "confirm" && request?.source === "link" && request.hash && (
+          {!notFound && phase === "confirm" && request?.source === "link" && request.link && (
             <button
               type="button"
               className="zkm-btn-reset ww-claim-modal__alt"
-              onClick={() =>
-                navigate(
-                  { pathname: "/request", hash: request.hash },
-                  { state: { external: true } },
-                )
-              }
+              onClick={() => navigate(request.link!, { state: { external: true } })}
             >
               Pay with an Ethereum wallet instead
             </button>

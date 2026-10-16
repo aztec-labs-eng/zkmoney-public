@@ -71,6 +71,18 @@ export interface RequestInlinePacket {
    * via CCIP at consume time.
    */
   sipaAddress?: string
+  /** Lets a payer re-predict `sipaAddress` from the active deployment. Rides only with `sipaAddress`. */
+  sipaPreimage?: SipaLinkPreimage
+}
+
+/**
+ * The SIPA's CREATE2 inputs a payer cannot read on chain; the factory, implementation, rollup version
+ * and resweepable flag come from the deployment it is checked against. `recovery` is 20 bytes for a
+ * legacy-eoa address, 32 for an account recovery commitment.
+ */
+export interface SipaLinkPreimage {
+  intentHash: string
+  recovery: string
 }
 
 /* -------------------------------------------------------------------------- */
@@ -79,7 +91,7 @@ export interface RequestInlinePacket {
 
 // The layout the encoder emits. v2 added the optional decimals key; v3 made
 // requestId a 32-byte field, added the token/requester L2 address keys, and
-// carries an optional 20-byte L1 SIPA. Decode still accepts v1/v2.
+// carries an optional 20-byte L1 SIPA and its preimage. Decode still accepts v1/v2.
 const FORMAT = 3
 const SUPPORTED_FORMATS = new Set<number>([1, 2, 3])
 
@@ -95,6 +107,7 @@ const KEY_DECIMALS = 9
 const KEY_TOKEN_ADDRESS = 10
 const KEY_REQUESTER_ADDRESS = 11
 const KEY_SIPA_ADDRESS = 12
+const KEY_SIPA_PREIMAGE = 13
 
 /** Every key a given wire format knows. An unknown key fails closed. */
 const KNOWN_KEYS_LEGACY = new Set<number>([
@@ -113,12 +126,14 @@ const KNOWN_KEYS_V3 = new Set<number>([
   KEY_TOKEN_ADDRESS,
   KEY_REQUESTER_ADDRESS,
   KEY_SIPA_ADDRESS,
+  KEY_SIPA_PREIMAGE,
 ])
 
 const MAX_FRAGMENT_BYTES = 512 // DoS guard before decode.
 const AMOUNT_BYTES = 16 // u128
 const FIELD_BYTES = 32 // BN254 field / L2 address
 const ETH_ADDRESS_BYTES = 20 // L1 SIPA
+const HASH_BYTES = 32 // keccak / commitment
 const BN254_FR_MODULUS = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n
 
 /* -------------------------------------------------------------------------- */
@@ -163,6 +178,11 @@ export function encodeRequestInline(packet: RequestInlinePacket): string {
   }
   if (packet.sipaAddress !== undefined) {
     map.set(KEY_SIPA_ADDRESS, hexToAddressBytes(packet.sipaAddress))
+  }
+  if (packet.sipaPreimage !== undefined) {
+    if (packet.sipaAddress === undefined)
+      throw new RequestEncodeError("sipaPreimage without sipaAddress")
+    map.set(KEY_SIPA_PREIMAGE, preimageToBytes(packet.sipaPreimage))
   }
   if (packet.tokenSymbol !== undefined) map.set(KEY_TOKEN_SYMBOL, packet.tokenSymbol)
   if (packet.note !== undefined) map.set(KEY_NOTE, packet.note)
@@ -227,6 +247,11 @@ function decodeStrict(b64url: string): RequestInlinePacket {
     if (requesterAddress !== undefined) packet.requesterAddress = fieldBytesToHex(requesterAddress)
     const sipaAddress = readField(decoded, KEY_SIPA_ADDRESS)
     if (sipaAddress !== undefined) packet.sipaAddress = addressBytesToHex(sipaAddress)
+    const preimage = readField(decoded, KEY_SIPA_PREIMAGE)
+    if (preimage !== undefined) {
+      if (sipaAddress === undefined) throw new RequestDecodeError()
+      packet.sipaPreimage = bytesToPreimage(preimage)
+    }
   }
 
   const tokenSymbol = readOptional(decoded, KEY_TOKEN_SYMBOL)
@@ -340,6 +365,24 @@ const hexToFieldBytes = (hex: string) => hexToBytes(hex, FIELD_BYTES, BN254_FR_M
 const fieldBytesToHex = (value: unknown) => bytesToHex(value, FIELD_BYTES, BN254_FR_MODULUS)
 const hexToAddressBytes = (hex: string) => hexToBytes(hex, ETH_ADDRESS_BYTES)
 const addressBytesToHex = (value: unknown) => bytesToHex(value, ETH_ADDRESS_BYTES)
+
+function preimageToBytes(preimage: SipaLinkPreimage): Buffer {
+  const recovery = /^0x[0-9a-fA-F]{40}$/.test(preimage.recovery)
+    ? hexToAddressBytes(preimage.recovery)
+    : hexToBytes(preimage.recovery, HASH_BYTES)
+  return Buffer.concat([hexToBytes(preimage.intentHash, HASH_BYTES), recovery])
+}
+
+function bytesToPreimage(value: unknown): SipaLinkPreimage {
+  const len = value instanceof Uint8Array ? value.length : 0
+  if (len !== HASH_BYTES + ETH_ADDRESS_BYTES && len !== 2 * HASH_BYTES)
+    throw new RequestDecodeError()
+  const bytes = value as Uint8Array
+  return {
+    intentHash: bytesToHex(bytes.subarray(0, HASH_BYTES), HASH_BYTES),
+    recovery: bytesToHex(bytes.subarray(HASH_BYTES), len - HASH_BYTES),
+  }
+}
 
 function asString(value: unknown): string {
   if (typeof value !== "string" || value.length === 0) throw new RequestDecodeError()

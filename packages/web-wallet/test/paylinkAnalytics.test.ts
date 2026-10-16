@@ -211,4 +211,11 @@ describe("consent disclosure copy", () => {
       expect(copy).not.toMatch(/never addresses, tags, amounts/i)
     }
   })
+
+  it("names the signup counts as always on, outside the opt-in", () => {
+    for (const copy of [ANALYTICS_CONSENT_COPY, ANALYTICS_SETTINGS_COPY]) {
+      expect(copy).toMatch(/signup steps are always counted/i)
+      expect(copy).not.toMatch(/onboarding progress/i)
+    }
+  })
 })

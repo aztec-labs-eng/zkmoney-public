@@ -258,7 +258,7 @@ export function ConfirmTagModal({
             />
             <button
               type="button"
-              className="zkm-btn-reset zkm-pressable ww-invite-pill"
+              className="zkm-btn-reset zkm-pressable ww-invite-pill ww-sign-in__alt"
               data-testid="sign-in-login"
               disabled={!canSubmit}
               onClick={submit}

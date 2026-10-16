@@ -19,10 +19,10 @@
     "test:modal-badges": "node --test --test-concurrency=1 test/browser/modalBadges.browser.mjs",
     "test:qr-sheets": "node --test --test-concurrency=1 test/browser/qrSheets.browser.mjs",
     "test:phone-sheets": "node --test --test-concurrency=1 test/browser/phoneSheets.browser.mjs",
+    "test:ticket-layout": "node --test test/browser/ticketTagStep.browser.mjs",
     "test:active-tab": "node --test --test-concurrency=1 test/browser/activeTab.browser.mjs",
     "test:qr": "vitest run --config vitest.qr.config.ts",
-    "test:passkey-rp-browser": "node test/browser/passkeyRp.browser.mjs",
-    "test:sealed-handoff-browser": "node --test --test-concurrency=1 test/browser/sealedHandoff.browser.mjs"
+    "test:passkey-rp-browser": "node test/browser/passkeyRp.browser.mjs"
   },
   "dependencies": {
     "@aztec/aztec.js": "v5.2.0",

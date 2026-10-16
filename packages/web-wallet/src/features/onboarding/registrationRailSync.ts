@@ -29,15 +29,17 @@ export function sweptPhase(phase: SIPADepositPhase): SIPADepositPhase {
 const swept = (record: PendingRegistrationRecord) =>
   record.sweptAt !== undefined || record.sweepTxHash !== undefined
 
-/** Funds seen at a registration SIPA, written only onto a rail record that still shows none. */
+/** Funds seen at a registration SIPA, written only onto a rail record that still shows none.
+ * `decimals` is the funding coin's; absent, the record's own token is assumed. */
 export async function noteRegistrationDepositSeen(
   sipaAddress: string,
   amount: bigint,
+  decimals?: number,
 ): Promise<void> {
   if (amount <= 0n) return
   await SIPADepositStore.get(webStorage).update(sipaAddress as Address, (deposit) => {
     if (!isUnfundedSipaDeposit(deposit)) return null
-    const decimals = deposit.tokenDecimals ?? tokenDecimalsForNetwork(getConfig().network)
+    decimals ??= deposit.tokenDecimals ?? tokenDecimalsForNetwork(getConfig().network)
     return {
       phase: deposit.phase,
       reorgEpoch: deposit.reorgEpoch,

@@ -28,8 +28,7 @@ const h = vi.hoisted(() => ({
   readAuthKeys: vi.fn(),
   readAuthKeysCounted: vi.fn(),
   getCode: vi.fn(),
-  takeHandoffMaterial: vi.fn(),
-  resolveTagForCommit: vi.fn(),
+  resolveSignInTagForCommit: vi.fn(),
   storageIdFromSecret: vi.fn(),
 }))
 
@@ -69,11 +68,7 @@ vi.mock("../src/config/oxideTuple", () => ({
   l1PublicClient: () => ({}),
 }))
 vi.mock("../src/features/contacts/registryResolution", () => ({
-  resolveTagForCommit: h.resolveTagForCommit,
-}))
-vi.mock("../src/platform/storage/handoffMaterial", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/platform/storage/handoffMaterial")>()),
-  takeHandoffMaterial: h.takeHandoffMaterial,
+  resolveSignInTagForCommit: h.resolveSignInTagForCommit,
 }))
 vi.mock("../src/platform/storage/activeStorage", async (importOriginal) => {
   const original = await importOriginal<typeof import("../src/platform/storage/activeStorage")>()
@@ -238,7 +233,6 @@ beforeEach(() => {
     setItem: (k: string, v: string) => void store.set(k, v),
     removeItem: (k: string) => void store.delete(k),
   })
-  h.takeHandoffMaterial.mockReturnValue(null)
   h.readNameOf.mockResolvedValue(nameOf("alice"))
   // No L1 account for an unhinted sign-in's installed-key read.
   h.getCode.mockResolvedValue(undefined)
@@ -260,7 +254,6 @@ describe("enterWithPasskey under a credential hint", () => {
     expect(result).toMatchObject({ entered: true, handle: "alice", address: ADDR })
     expect(ceremony.asserts).toEqual([[a.credentialId]])
     expect(ceremony.assertRequests[0]!.prfSecondSalt).toBeDefined()
-    expect(h.takeHandoffMaterial).not.toHaveBeenCalled()
     expect((await service.getSecretKey())?.toString()).toBe(a.secretKey.toString())
     expect(getActiveCredentialId()).toBe(a.credentialId)
     expect(h.addWebauthnAccount).toHaveBeenCalledWith(
@@ -872,7 +865,7 @@ describe("lookupPasskeyByTag", () => {
     qy: `0x${(fill + 1).toString(16).padStart(2, "0").repeat(32)}`,
   })
   const resolved = () =>
-    h.resolveTagForCommit.mockResolvedValue({
+    h.resolveSignInTagForCommit.mockResolvedValue({
       status: "resolved",
       account: ACCOUNT,
       l2Address: ADDR,
@@ -897,7 +890,7 @@ describe("lookupPasskeyByTag", () => {
       l2Address: ADDR,
       moreKeys: true,
     })
-    expect(h.resolveTagForCommit).toHaveBeenCalledWith("alice")
+    expect(h.resolveSignInTagForCommit).toHaveBeenCalledWith("alice")
     expect(h.readAuthKeysCounted).toHaveBeenCalledWith(ACCOUNT, 8)
   })
 
@@ -927,7 +920,7 @@ describe("lookupPasskeyByTag", () => {
   })
 
   it("the reader's non-answers pass through, and a read that cannot reach the chain throws", async () => {
-    h.resolveTagForCommit.mockResolvedValue({ status: "notFound" })
+    h.resolveSignInTagForCommit.mockResolvedValue({ status: "notFound" })
     expect(await lookupPasskeyByTag("nobody")).toEqual({ kind: "notFound" })
     resolved()
     h.readAuthKeysCounted.mockResolvedValue({ entries: [], authKeyCount: 0 })
@@ -954,7 +947,7 @@ describe("diagnoseMiss", () => {
     metadata: credentialIdToMetadata(id(credFill)),
   })
   const resolve = () =>
-    h.resolveTagForCommit.mockResolvedValue({
+    h.resolveSignInTagForCommit.mockResolvedValue({
       status: "resolved",
       account: ACCOUNT,
       l2Address: ADDR,
@@ -1036,9 +1029,9 @@ describe("diagnoseMiss", () => {
   })
 
   it("the by-tag non-answers pass through", async () => {
-    h.resolveTagForCommit.mockResolvedValue({ status: "notFound" })
+    h.resolveSignInTagForCommit.mockResolvedValue({ status: "notFound" })
     expect(await diagnoseMiss(evidence(), "nobody")).toBe("notFound")
-    h.resolveTagForCommit.mockResolvedValue({ status: "staleRollup" })
+    h.resolveSignInTagForCommit.mockResolvedValue({ status: "staleRollup" })
     expect(await diagnoseMiss(evidence(), "alice")).toBe("staleRollup")
   })
 })

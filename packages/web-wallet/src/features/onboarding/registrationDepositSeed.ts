@@ -7,7 +7,7 @@
  * custodial registration and seeds the ones whose address still re-derives.
  */
 
-import type { Address } from "viem"
+import type { Address, Hex } from "viem"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import {
   SIPADepositStore,
@@ -22,6 +22,13 @@ import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { oxideEnvFor } from "../../config/oxideTuple"
 import { getPendingStore } from "./webRegistration"
+
+/** The salt seeded with a registration address on this device, if any. */
+export async function seededRegistrationSalt(sipaAddress: Address): Promise<Hex | undefined> {
+  const store = SIPADepositStore.get(webStorage)
+  await store.load()
+  return (store.get(sipaAddress)?.messageSecret || undefined) as Hex | undefined
+}
 
 /** Seed claim inputs or backfill a missing fee without replacing an existing deposit's progress. */
 export function makeRegistrationDepositSeeder(env: {

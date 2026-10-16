@@ -25,8 +25,10 @@ export const MAX_ITEMS_PER_BATCH = 100;
 
 export interface BatchSelectionOpts<T> {
   tipOf: (candidate: T) => bigint;
-  /** Signed profit of a quoted batch, in the caller's quote currency. */
-  profitOf: (gas: bigint, reward: bigint) => Promise<bigint>;
+  /** The value of a batch's reward, in the caller's quote currency. The reward is in the token the batch pays in. */
+  rewardValueOf: (reward: bigint) => bigint;
+  /** The cost of `gas`, in the caller's quote currency. */
+  gasCostOf: (gas: bigint) => bigint;
   /** Profit a batch must clear to be worth a transaction. */
   minProfit: bigint;
   /** Profit a batch must clear as a share of its reward, in basis points. Defaults to no margin requirement. */
@@ -45,18 +47,20 @@ export async function selectProfitableBatch<T>(
   quote: QuoteBatch<T>,
   opts: BatchSelectionOpts<T>,
 ): Promise<{ batch: T[]; quote: BatchQuote }> {
-  const { tipOf, profitOf, minProfit } = opts;
+  const { tipOf, rewardValueOf, gasCostOf, minProfit } = opts;
   const minProfitMarginBps = opts.minProfitMarginBps ?? 0n;
 
   /** Quote a batch and price it. `viable` is "fits one L1 tx and clears both profit floors". */
   const evaluate = async (candidateBatch: readonly T[]) => {
     const quoted = await quote(candidateBatch);
     const reward = candidateBatch.reduce((sum, candidate) => sum + tipOf(candidate), 0n) + quoted.subsidy;
-    const profit = await profitOf(quoted.totalGas, reward);
+    // Both floors are in the quote currency, so the reward is valued before either is applied.
+    const rewardValue = rewardValueOf(reward);
+    const profit = rewardValue - gasCostOf(quoted.totalGas);
     const viable =
       quoted.totalGas <= L1_TRANSACTION_GAS_CAP &&
       profit >= minProfit &&
-      profit * 10_000n >= reward * minProfitMarginBps;
+      profit * 10_000n >= rewardValue * minProfitMarginBps;
     return { quoted, profit, viable };
   };
 

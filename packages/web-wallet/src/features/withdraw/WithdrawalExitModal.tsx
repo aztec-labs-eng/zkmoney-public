@@ -9,6 +9,8 @@ import { Modal } from "../../ui/Modal"
  */
 import { useState } from "react"
 import type { Hex } from "viem"
+import type { OxideEnvTuple } from "@obsidion/core/types"
+import type { TeeSigner } from "@obsidion/sdk"
 import {
   truncateMiddle,
   useAssetContext,
@@ -65,9 +67,12 @@ const SWAP_EXPLAINER =
 
 export function WithdrawalExitModal({
   record,
+  deployment,
   onClose,
 }: {
   record: WithdrawalRecord
+  /** The deployment and co-signer the burn was made on; Main's when absent. */
+  deployment?: () => Promise<{ tuple: OxideEnvTuple; signer: TeeSigner }>
   onClose: () => void
 }) {
   const config = getConfig()
@@ -117,9 +122,11 @@ export function WithdrawalExitModal({
       request = prompt.begin()
       // Null when the session is locked or still connecting; `selfFinalize` refuses it, except in
       // the dev demo, whose stubbed builder needs no wallet at all.
-      const wallet =
-        obsidionWallet && teeSigner ? { node: obsidionWallet.node, signer: teeSigner } : null
+      const own = deployment ? await deployment() : undefined
+      const signer = own?.signer ?? teeSigner
+      const wallet = obsidionWallet && signer ? { node: obsidionWallet.node, signer } : null
       const hash = await selfFinalize(record, wallet, {
+        tuple: own?.tuple,
         from: l1.account ?? undefined,
         onHelperOpened: setSubmitUrl,
         onStage,

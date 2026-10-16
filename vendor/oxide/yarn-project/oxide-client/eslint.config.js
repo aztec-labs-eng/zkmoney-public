@@ -6,6 +6,7 @@ const BINDINGS_FREE_MODULES = [
   'src/atlatl/process_withdrawal_request.ts',
   'src/broadcaster_calls.ts',
   'src/capsules.ts',
+  'src/deposit_refund_eligibility.ts',
   'src/eth_usd_price_feed.ts',
   'src/l1_operation_quote.ts',
   'src/l2_operations.ts',

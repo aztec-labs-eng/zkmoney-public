@@ -5,6 +5,7 @@
 //
 // packages/web-faucet carries its own copy of the same primitive (independent Vercel project).
 import { createHash } from "node:crypto"
+import { PAY_PAGE_PATH } from "./socialPreview"
 
 export type BasicAuthVerdict = "off" | "ok" | "challenge"
 
@@ -45,15 +46,18 @@ export function checkBasicAuth(
 
 export const BASIC_AUTH_CHALLENGE = 'Basic realm="zk.money wallet"'
 
-// A shared link lands in a chat as /link#… or /request#…; the crawler behind the card fetches the
-// path alone and cannot answer a challenge, as does a wallet app fetching the WalletConnect icon.
-// The two pages and both images are public to GET and HEAD, as on the CDN. Exact paths: nothing
-// under them, and /claim stays gated.
+// A shared link lands in a chat as /link#…, /request#… or /pay/<tag>; the crawler behind the card
+// fetches the path alone and cannot answer a challenge, as does a wallet app fetching the
+// WalletConnect icon. The link pages and both images are public to GET and HEAD, as on the CDN.
+// Exact paths: nothing under them, and /claim stays gated.
 const LINK_PREVIEW_PATHS = new Set(["/og.png", "/favicon.png", "/link", "/request"])
 
 /** Whether the request is served without a credential: a link preview or the wallet icon. */
 export function isPublicPath(method: string | undefined, path: string): boolean {
-  return (method === "GET" || method === "HEAD") && LINK_PREVIEW_PATHS.has(path)
+  return (
+    (method === "GET" || method === "HEAD") &&
+    (LINK_PREVIEW_PATHS.has(path) || PAY_PAGE_PATH.test(path))
+  )
 }
 
 // Same name and attributes as the CDN's cookie (function/viewer-response.js beside the

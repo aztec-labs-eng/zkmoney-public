@@ -1,4 +1,5 @@
 import { formatUnits } from "viem"
+import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   AMOUNT_MAX_DECIMALS,
   decimalPlaces,
@@ -48,6 +49,24 @@ export function usdFigure(display: string): string {
   // A charge that rounds to nothing still charges: never render it as free.
   if (n > 0 && n < 0.005) return "<$0.01"
   return `$${n.toFixed(2)}`.replace(/\.00$/, "")
+}
+
+/** `$1,234.56` from base units. */
+export function usdAtomic(atomic: bigint, decimals: number = DEFAULT_DECIMALS): string {
+  return usdBalance(formatUnits(atomic, decimals))
+}
+
+/**
+ * `$1,234.56` from base units with the cents truncated, as the ticking Savings balance shows them;
+ * every Savings dollar figure uses it so none disagrees with the balance by a cent.
+ */
+export function usdAtomicFloor(atomic: bigint, decimals: number = DEFAULT_DECIMALS): string {
+  const cents = (atomic < 0n ? -atomic : atomic) / 10n ** BigInt(decimals - 2)
+  const sign = atomic < 0n && cents > 0n ? "-" : ""
+  return `${sign}$${(cents / 100n).toLocaleString("en-US")}.${String(cents % 100n).padStart(
+    2,
+    "0",
+  )}`
 }
 
 /** `$1,234.56` — a balance string with thousands separators. */

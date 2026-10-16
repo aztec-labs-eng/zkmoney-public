@@ -15,11 +15,10 @@
 //   3. `forge build` inside vendor/oxide/l1-contracts/ (OxidePortal artifacts).
 //   4. `node gen_abis.mjs` inside vendor/oxide/yarn-project/l1-contracts/
 //      (emits src/abis/*.ts from the Foundry JSON).
-//   5. Stub the three refund-circuit artifacts under
-//      `vendor/oxide/noir-projects/{frozen_notes_refund,frozen_deposit_refund,unprocessed_deposit_refund}/target/`
-//      if `pnpm build:oxide-circuits` did not compile them — needed only because
-//      oxide-client's index re-exports modules that JSON-import these. The wallet
-//      does not use the frozen-archive refund path, so it does not read them.
+//   5. The three refund circuits under
+//      `vendor/oxide/noir-projects/{frozen_notes_refund,frozen_deposit_refund,unprocessed_deposit_refund}/target/`,
+//      which @oxide/refund-proof JSON-imports. A plain build stubs missing ones;
+//      `OXIDE_REFUND_CIRCUITS=required` compiles them with the pinned Aztec toolchain.
 //   6. tsc-build each yarn-project/ package in topological order.
 //
 // With `--relayer`, it then builds the Oxide relayer on top of that subset:
@@ -78,19 +77,14 @@ const SENTINELS = {
   yarnInstall: resolve(L1_CONTRACTS, "node_modules/.yarn-state.yml"),
   nitroForge: resolve(NITRO, "out/CertManager.sol/CertManager.json"),
   l1Forge: resolve(L1_CONTRACTS, "out/OxidePortal.sol/OxidePortal.json"),
-  frozenNotesRefundArtifact: resolve(
-    VENDOR_ROOT,
-    "noir-projects/frozen_notes_refund/target/frozen_notes_refund.json",
-  ),
-  frozenDepositRefundArtifact: resolve(
-    VENDOR_ROOT,
-    "noir-projects/frozen_deposit_refund/target/frozen_deposit_refund.json",
-  ),
-  unprocessedDepositRefundArtifact: resolve(
-    VENDOR_ROOT,
-    "noir-projects/unprocessed_deposit_refund/target/unprocessed_deposit_refund.json",
-  ),
 }
+
+const NOIR_PROJECTS = resolve(VENDOR_ROOT, "noir-projects")
+const REFUND_CIRCUITS = [
+  "frozen_notes_refund",
+  "frozen_deposit_refund",
+  "unprocessed_deposit_refund",
+]
 
 // Topological order: leaves first. oxide-lib has no @oxide/* deps; everything
 // else depends on it (attestation verification now lives at oxide-lib/src/attestation/).
@@ -168,6 +162,9 @@ if (
   for (const pkg of [...PACKAGES, ...RELAYER_PACKAGES]) {
     rmSync(resolve(YARN_PROJECT, pkg, "dest"), { recursive: true, force: true })
   }
+  for (const circuit of REFUND_CIRCUITS) {
+    rmSync(resolve(NOIR_PROJECTS, circuit, "target"), { recursive: true, force: true })
+  }
 }
 
 if (!existsSync(SENTINELS.yarnInstall)) {
@@ -196,19 +193,35 @@ if (!allAbisExist) {
 // nothing to compare against later, so writing a stamp would only be misleading.
 if (vendorSha) writeFileSync(VENDOR_SHA_STAMP, `${vendorSha}\n`)
 
-// Stub the three refund-circuit artifacts that @oxide/refund-proof
-// JSON-imports (frozen_notes_refund, frozen_deposit_refund,
-// unprocessed_deposit_refund), unless `pnpm build:oxide-circuits` compiled
-// them. The wallet does not use the frozen-archive refund path.
-for (const stub of [
-  SENTINELS.frozenNotesRefundArtifact,
-  SENTINELS.frozenDepositRefundArtifact,
-  SENTINELS.unprocessedDepositRefundArtifact,
-]) {
-  if (!existsSync(stub)) {
-    console.error(`Stubbing ${stub} (frozen-archive path; unused here)`)
-    mkdirSync(dirname(stub), { recursive: true })
-    writeFileSync(stub, "{}\n")
+// Only a frozen-source refund executes these circuits, so a plain build stubs missing ones and
+// needs no Aztec toolchain. `required` compiles them, replacing stubs and output from another pin.
+const isCompiledCircuit = (path) => {
+  try {
+    return typeof JSON.parse(readFileSync(path, "utf8")).bytecode === "string"
+  } catch {
+    return false
+  }
+}
+const refundCircuitsRequired = process.env.OXIDE_REFUND_CIRCUITS === "required"
+for (const circuit of REFUND_CIRCUITS) {
+  const target = resolve(NOIR_PROJECTS, circuit, "target")
+  const artifact = resolve(target, `${circuit}.json`)
+  const stamp = resolve(target, ".vendor-sha")
+  if (refundCircuitsRequired) {
+    const pinned =
+      !vendorSha || (existsSync(stamp) && readFileSync(stamp, "utf8").trim() === vendorSha)
+    if (isCompiledCircuit(artifact) && pinned) continue
+    console.error(`vendor/oxide/noir-projects: compile ${circuit}`)
+    run("./bootstrap.sh", [circuit], NOIR_PROJECTS)
+    if (!isCompiledCircuit(artifact)) {
+      console.error(`ERROR: ${circuit} compiled to no circuit bytecode`)
+      process.exit(1)
+    }
+    if (vendorSha) writeFileSync(stamp, `${vendorSha}\n`)
+  } else if (!existsSync(artifact)) {
+    console.error(`Stubbing ${artifact} (OXIDE_REFUND_CIRCUITS=required compiles it)`)
+    mkdirSync(target, { recursive: true })
+    writeFileSync(artifact, "{}\n")
   }
 }
 

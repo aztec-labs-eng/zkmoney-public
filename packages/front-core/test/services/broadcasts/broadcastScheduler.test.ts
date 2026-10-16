@@ -251,7 +251,7 @@ describe("BroadcastScheduler", () => {
       waits.push(wait)
       clock += wait!
     }
-    expect(waits).toEqual([30_000, 120_000, 600_000, 3_600_000, 3_600_000, 3_600_000])
+    expect(waits).toEqual([30_000, 60_000, 120_000, 300_000, 300_000, 300_000])
     await drain(p)
     expect(p.prover.sent).toHaveLength(7)
     expect(p.ledger.get(address(1))?.state).toBe("landed")

@@ -25,7 +25,7 @@ const {
 } = require("../src/config")
 const probeModule = require("../src/probe")
 const { probeConfigProfile } = probeModule
-const { upstreamPathFor } = require("../src/proxy")
+const { matchProxy, upstreamPathFor } = require("../src/proxy")
 const { createL1SubmitBridge, SUBMISSION_TTL_MS } = require("../src/l1SubmitBridge")
 const { renderL1SubmitPage, renderL1SubmitGonePage } = require("../src/l1SubmitPage")
 const {
@@ -128,11 +128,33 @@ async function main() {
       path.resolve(__dirname, "../config/default.json"),
       path.join(configFixture, "config/default.json"),
     )
-    const committed = loadConfig(configFixture)
-    assert.equal(committed.hostname, "localhost")
-    assert.equal(committed.localPort, 5173)
-    assert.ok(committed.proxies["/svc/enclave"])
-    assert.ok(committed.proxies["/svc/account"])
+    // The committed defaults, read without a developer's enclave override.
+    const enclaveOverride = process.env.OBSIDION_ENCLAVE_TARGET
+    delete process.env.OBSIDION_ENCLAVE_TARGET
+    try {
+      const committed = loadConfig(configFixture)
+      assert.equal(committed.hostname, "localhost")
+      assert.equal(committed.localPort, 5173)
+      assert.ok(committed.proxies["/svc/enclave"])
+      assert.ok(committed.proxies["/svc/account"])
+      // Savings' co-signer has its own enclave, matching vite's /svc/enclave-sky proxy.
+      assert.deepEqual(matchProxy("/svc/enclave-sky/rpc", committed.proxies), {
+        prefix: "/svc/enclave-sky",
+        target: "http://localhost:5072",
+      })
+      assert.equal(matchProxy("/svc/enclave/rpc", committed.proxies).target, "http://localhost:5071")
+      // The override retargets Main's enclave only.
+      process.env.OBSIDION_ENCLAVE_TARGET = "http://127.0.0.1:9999"
+      const overridden = loadConfig(configFixture)
+      assert.equal(matchProxy("/svc/enclave/rpc", overridden.proxies).target, "http://127.0.0.1:9999")
+      assert.equal(
+        matchProxy("/svc/enclave-sky/rpc", overridden.proxies).target,
+        "http://localhost:5072",
+      )
+    } finally {
+      if (enclaveOverride === undefined) delete process.env.OBSIDION_ENCLAVE_TARGET
+      else process.env.OBSIDION_ENCLAVE_TARGET = enclaveOverride
+    }
 
     // configuration settings: save/load round-trip, validation, env precedence, reset-to-empty
     const endpointsFile = path.join(temporaryDirectory, "endpoints.json")

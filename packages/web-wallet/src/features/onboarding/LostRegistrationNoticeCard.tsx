@@ -41,16 +41,13 @@ const COPY = {
  * and the next navigation would otherwise land them on /claim as if they had never been here. Reads
  * the closed record, so it survives the reload; dismissing it is the acknowledgement.
  */
-export function LostRegistrationNoticeCard({ onlyTag }: { onlyTag?: string } = {}) {
+export function LostRegistrationNoticeCard() {
   const navigate = useNavigate()
   const [notice, setNotice] = useState(lostRegistrationNotice)
   // A race lost mid-session closes the record under the user — surface it without a reload.
   useEffect(() => getPendingStore().onListChanged(() => setNotice(lostRegistrationNotice())), [])
 
   if (!notice) return null
-  // A screen that speaks for one name says nothing about another name's attempt: the notice keeps
-  // until a surface that owns no particular name (Home, the landing) can carry it.
-  if (onlyTag !== undefined && notice.tag !== onlyTag) return null
   const copy = COPY[notice.kind]
   const dismiss = () => {
     acknowledgeLostRegistration()

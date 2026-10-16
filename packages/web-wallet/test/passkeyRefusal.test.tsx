@@ -14,19 +14,22 @@ vi.mock("@obsidion/web-ds", () => ({
   PrimaryGradientButton: ({
     title,
     testId,
+    isLoading,
     onClick,
   }: {
     title: string
     testId?: string
+    isLoading?: boolean
     onClick?: () => void
   }) => (
-    <button data-testid={testId} onClick={onClick}>
+    <button data-testid={testId} disabled={isLoading} onClick={onClick}>
       {title}
     </button>
   ),
 }))
 
 const { PasskeyRefusal, refusalFor } = await import("../src/features/identity/PasskeyRefusal")
+type RouteRefusal = import("../src/features/identity/PasskeyRefusal").RouteRefusal
 const errors = await import("@obsidion/passkey-web")
 const { subscribeErrorModal } = await import("../src/errors/errorModal")
 const { stashClaimLink } = await import("../src/features/paylink/claimStash")
@@ -148,6 +151,216 @@ describe("PasskeyRefusal", () => {
     )
     expect(container.querySelector('[data-testid="passkey-retry"]')).toBeNull()
     expect(container.textContent).toContain("key changed")
+  })
+
+  it("adds the extension advice under the message in the wording the screen names, and only then", async () => {
+    const e = new errors.NoPrfError()
+    const refusal = { name: e.name, message: e.message }
+    const line = () => container.querySelector('[data-testid="passkey-extension-advice"]')
+    for (const wording of ["use", "install"] as const) {
+      const advised = { ...refusal, extensionAdvice: wording }
+      await act(async () => root.render(<PasskeyRefusal error={advised} onRetry={() => {}} />))
+      expect(line()?.textContent).toBe(errors.EXTENSION_ADVICE_COPY[wording])
+      // The refusal's own words stay the alert; the advice follows them.
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe(e.message)
+      expect(container.querySelector("h2")?.textContent).toBe("Try a different passkey manager")
+      expect(container.querySelector('[data-testid="passkey-retry"]')).not.toBeNull()
+    }
+
+    await act(async () => root.render(<PasskeyRefusal error={refusal} onRetry={() => {}} />))
+    expect(line()).toBeNull()
+  })
+})
+
+describe("PasskeyRefusal after a creation on this computer", () => {
+  const phoneExit = () =>
+    container.querySelector<HTMLButtonElement>('[data-testid="passkey-phone"]')
+  const retry = () => container.querySelector<HTMLButtonElement>('[data-testid="passkey-retry"]')
+  const isPill = (button: HTMLElement | null) => {
+    if (!button) throw new Error("no such button")
+    return button.className.includes("ww-invite-pill")
+  }
+  const buttonOrder = () =>
+    Array.from(container.querySelectorAll("button")).map((button) => button.dataset.testid)
+  const refused = (over: Partial<RouteRefusal> = {}): RouteRefusal => {
+    const e = new errors.LaptopPasskeyRefusedError("apple", ["gpm"])
+    return {
+      name: e.name,
+      message: e.message,
+      leftover: true,
+      belowMacFloor: e.belowMacFloor,
+      route: "this-device",
+      reach: "ok",
+      ...over,
+    }
+  }
+  const whyLink = () =>
+    container.querySelector<HTMLAnchorElement>('[data-testid="passkey-apple-floor"] a')
+
+  it("adds the Safari line under the floor link, in the wording named", async () => {
+    const line = () => container.querySelector('[data-testid="passkey-safari-advice"]')
+    for (const wording of ["version", "chrome"] as const) {
+      await act(async () =>
+        root.render(
+          <PasskeyRefusal error={refused({ safariAdvice: wording })} onRetry={() => {}} />,
+        ),
+      )
+      expect(line()?.textContent).toBe(errors.SAFARI_REFUSAL_COPY[wording])
+      expect(whyLink()).not.toBeNull()
+    }
+    await act(async () => root.render(<PasskeyRefusal error={refused()} onRetry={() => {}} />))
+    expect(line()).toBeNull()
+  })
+
+  it("names the floor, links the cleanup, and leads with the phone", async () => {
+    const onRetry = vi.fn()
+    const onPhone = vi.fn()
+    await act(async () =>
+      root.render(<PasskeyRefusal error={refused()} onRetry={onRetry} onPhone={onPhone} />),
+    )
+    expect(container.querySelector("h2")?.textContent).toBe("Save the passkey somewhere else")
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
+      "only on macOS 15.7.5 or a later macOS 15, or macOS 26.4.1 or later",
+    )
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("an Apple bug")
+    expect(whyLink()!.textContent).toBe("Why Apple Passwords is refused on this Mac")
+    expect(whyLink()!.getAttribute("href")).toBe(
+      "https://docs.zk.money/docs/passkeys#save-somewhere-else",
+    )
+    expect(container.querySelector('[data-testid="passkey-leftover"]')).not.toBeNull()
+    expect(phoneExit()!.textContent).toBe("Use my phone")
+    expect(isPill(phoneExit())).toBe(false)
+    expect(isPill(retry())).toBe(true)
+    await act(async () => phoneExit()!.click())
+    expect(onPhone).toHaveBeenCalledTimes(1)
+    expect(onRetry).not.toHaveBeenCalled()
+    await act(async () => retry()!.click())
+    expect(onRetry).toHaveBeenCalledTimes(1)
+    expect(onPhone).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(["ok", "unknown"] as const)(
+    "with the phone's reach %s, draws the phone once, then Try again, then the screen's exits",
+    async (reach) => {
+      await act(async () =>
+        root.render(
+          <PasskeyRefusal
+            error={refused({ reach })}
+            onRetry={() => {}}
+            onPhone={() => {}}
+            exits={<button data-testid="exit">Start over</button>}
+          />,
+        ),
+      )
+      expect(buttonOrder()).toEqual(["passkey-phone", "passkey-retry", "exit"])
+      expect(isPill(phoneExit())).toBe(false)
+      expect(isPill(retry())).toBe(true)
+    },
+  )
+
+  it("leads with the phone alone where the screen offers no retry", async () => {
+    await act(async () => root.render(<PasskeyRefusal error={refused()} onPhone={() => {}} />))
+    expect(buttonOrder()).toEqual(["passkey-phone"])
+    expect(isPill(phoneExit())).toBe(false)
+  })
+
+  it("leaves a screen's own lead in place, with Try again and the phone as pills", async () => {
+    await act(async () =>
+      root.render(
+        <PasskeyRefusal
+          error={refused()}
+          onRetry={() => {}}
+          onPhone={() => {}}
+          primary={{ title: "Show passkeys", onClick: () => {}, testId: "own-lead" }}
+        />,
+      ),
+    )
+    expect(buttonOrder()).toEqual(["own-lead", "passkey-retry", "passkey-phone"])
+    expect(isPill(retry())).toBe(true)
+    expect(isPill(phoneExit())).toBe(true)
+  })
+
+  it("presses neither the phone nor Try again while an attempt runs", async () => {
+    const onRetry = vi.fn()
+    const onPhone = vi.fn()
+    await act(async () =>
+      root.render(<PasskeyRefusal error={refused()} onRetry={onRetry} onPhone={onPhone} busy />),
+    )
+    await act(async () => {
+      phoneExit()!.click()
+      retry()!.click()
+    })
+    expect(onPhone).not.toHaveBeenCalled()
+    expect(onRetry).not.toHaveBeenCalled()
+  })
+
+  it("offers no phone where none can be reached, or where the screen offers none", async () => {
+    await act(async () =>
+      root.render(
+        <PasskeyRefusal
+          error={refused({ reach: "no-hybrid" })}
+          onRetry={() => {}}
+          onPhone={() => {}}
+        />,
+      ),
+    )
+    expect(phoneExit()).toBeNull()
+    expect(isPill(retry())).toBe(false)
+    await act(async () => root.render(<PasskeyRefusal error={refused()} onRetry={() => {}} />))
+    expect(phoneExit()).toBeNull()
+    expect(isPill(retry())).toBe(false)
+  })
+
+  it("links the reason, and leads with the phone, only where the macOS floor is what refused Apple Passwords", async () => {
+    const withdrawn = new errors.LaptopPasskeyRefusedError("apple", ["gpm"], {
+      appleWithdrawn: true,
+    })
+    await act(async () =>
+      root.render(
+        <PasskeyRefusal
+          error={refused({ message: withdrawn.message, belowMacFloor: withdrawn.belowMacFloor })}
+          onRetry={() => {}}
+          onPhone={() => {}}
+        />,
+      ),
+    )
+    expect(whyLink()).toBeNull()
+    expect(isPill(retry())).toBe(false)
+    expect(isPill(phoneExit())).toBe(true)
+  })
+
+  it("offers the phone for any refusal of this computer's route, and not for the phone's own", async () => {
+    const unsupported = new errors.UnsupportedProviderError("manager", {
+      providerName: "Windows Hello",
+      localManagers: ["gpm"],
+    })
+    await act(async () =>
+      root.render(
+        <PasskeyRefusal
+          error={refused({
+            name: unsupported.name,
+            message: unsupported.message,
+            belowMacFloor: false,
+          })}
+          onRetry={() => {}}
+          onPhone={() => {}}
+        />,
+      ),
+    )
+    expect(container.querySelector('[role="alert"]')?.textContent).toBe(unsupported.message)
+    expect(isPill(phoneExit())).toBe(true)
+    expect(isPill(retry())).toBe(false)
+    await act(async () =>
+      root.render(
+        <PasskeyRefusal
+          error={refused({ route: "phone" })}
+          onRetry={() => {}}
+          onPhone={() => {}}
+        />,
+      ),
+    )
+    expect(phoneExit()).toBeNull()
+    expect(isPill(retry())).toBe(false)
   })
 })
 

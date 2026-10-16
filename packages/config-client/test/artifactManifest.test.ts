@@ -4,6 +4,7 @@ import {
   artifactBlobUrl,
   artifactManifestUrl,
   assertProfileUrlShape,
+  createArtifactCatalog,
   createArtifactPinResolver,
   fetchArtifactManifest,
   parseArtifactManifest,
@@ -264,6 +265,42 @@ describe("createArtifactPinResolver", () => {
     })
     expect(fetchImpl).not.toHaveBeenCalled()
     await expect(resolve(CLASS_ID)).rejects.toThrow(/has no artifact manifest pin/)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+describe("createArtifactCatalog", () => {
+  const profileUrl = "https://cdn.zk.money/profiles/v5/current.json"
+
+  it("lists the classes held under one artifact name from the pin's single fetch", async () => {
+    const other = `0x${"3".repeat(64)}`
+    const entry = Object.values(manifest().classes)[0]!
+    const body = bytes(
+      manifest({ classes: { [CLASS_ID]: entry, [other]: { ...entry, name: "PaylinkDirect" } } }),
+    )
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(body))
+    const catalog = createArtifactCatalog({
+      profileUrl,
+      profileId: PROFILE_ID,
+      versionId: VERSION_ID,
+      expectedSha256: sha256(body),
+      fetchImpl,
+    })
+    expect(await catalog.classIds("PaylinkDirect")).toEqual([other])
+    expect(await catalog.classIds("sipaBroadcaster")).toEqual([CLASS_ID])
+    await catalog.resolvePin(CLASS_ID)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it("knows no classes without a manifest pin", async () => {
+    const fetchImpl = vi.fn<typeof fetch>()
+    const catalog = createArtifactCatalog({
+      profileUrl,
+      profileId: PROFILE_ID,
+      versionId: VERSION_ID,
+      fetchImpl,
+    })
+    expect(await catalog.classIds("PaylinkDirect")).toEqual([])
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 })

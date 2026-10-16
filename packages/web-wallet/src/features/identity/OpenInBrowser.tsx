@@ -1,7 +1,10 @@
 import { useRef, useState } from "react"
 import { useLocation } from "react-router-dom"
 import {
+  type InAppUpFront,
   OPEN_IN_BROWSER_COPY as COPY,
+  PLAY_STORE_CHROME_URL,
+  UPDATE_CHROME_COPY as UPDATE,
   currentAppDropsOpenLink,
   currentOpenInBrowserHref,
 } from "@obsidion/passkey-web"
@@ -43,9 +46,17 @@ export type EscapeRetry = { onClick: () => void; busy: boolean; testId: string }
 /**
  * The way out of an app's built-in browser, shown from the start beside the refusal, then the
  * refusal's retry: a pill once Open in browser is the primary action. `path` names the wallet page
- * to open there instead of this one.
+ * to open there instead of this one. `mode` is the up-front card's (`InAppUpFront`).
  */
-export function OpenInBrowser({ path, retry }: { path?: string; retry?: EscapeRetry }) {
+export function OpenInBrowser({
+  path,
+  retry,
+  mode = "leave",
+}: {
+  path?: string
+  retry?: EscapeRetry
+  mode?: InAppUpFront
+}) {
   const { state } = useLocation()
   const way = wayOut(path, state)
   const linkDropped = currentAppDropsOpenLink()
@@ -65,6 +76,15 @@ export function OpenInBrowser({ path, retry }: { path?: string; retry?: EscapeRe
     <p className="ww-escape__status" aria-live="polite">
       {copied ? COPY.copiedStatus : copyFailed ? COPY.copyFailed : ""}
     </p>
+  )
+  const copyPill = (url: string) => (
+    <button
+      type="button"
+      className="zkm-btn-reset zkm-pressable ww-invite-pill"
+      onClick={() => void copyLink(url)}
+    >
+      {copyLabel}
+    </button>
   )
 
   return (
@@ -96,13 +116,7 @@ export function OpenInBrowser({ path, retry }: { path?: string; retry?: EscapeRe
               </a>
               <p className="ww-escape__hint">{COPY.hint}</p>
               <p className="ww-escape__url">{way.url}</p>
-              <button
-                type="button"
-                className="zkm-btn-reset zkm-pressable ww-invite-pill"
-                onClick={() => void copyLink(way.url)}
-              >
-                {copyLabel}
-              </button>
+              {copyPill(way.url)}
               {status}
             </>
           ) : (
@@ -112,6 +126,19 @@ export function OpenInBrowser({ path, retry }: { path?: string; retry?: EscapeRe
               )}
               <p className="ww-escape__hint">{way.kind === "hint" ? REOPEN_AFTER_HINT : REOPEN}</p>
             </>
+          )}
+          {mode === "leave-or-update" && (
+            <p className="ww-escape__hint">
+              {UPDATE.maybeBefore}
+              <a
+                className="ww-invite__link"
+                data-testid="update-chrome-maybe"
+                href={PLAY_STORE_CHROME_URL}
+              >
+                {UPDATE.maybeLink}
+              </a>
+              {UPDATE.maybeAfter}
+            </p>
           )}
         </div>
       )}

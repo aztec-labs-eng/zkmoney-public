@@ -31,6 +31,7 @@ import {
   sipaNotifyEffects,
   worstPaylinkClaimMarginal,
   worstPaylinkClaimToL1Marginal,
+  worstPaylinkClaimWithWithdrawalMarginal,
   worstPaylinkDepositMarginal,
   worstPaylinkEmailClaimMarginal,
   worstPaylinkEmailClaimToL1Marginal,
@@ -180,6 +181,7 @@ export function deriveClaimFpcGasBudgets(
   const mPaylinkDeposit = worstPaylinkDepositMarginal()
   const mPaylinkClaim = worstPaylinkClaimMarginal()
   const mPaylinkClaimToL1 = worstPaylinkClaimToL1Marginal()
+  const mPaylinkClaimWithWithdrawal = worstPaylinkClaimWithWithdrawalMarginal()
   const emailClaimRow = "sponsor[authorize_intents,paylink_email.claim,oxide_token.publish_da]"
   const mPaylinkEmailClaim = worstPaylinkEmailClaimMarginal(measuredTx(emailClaimRow), base)
   const mPaylinkEmailClaimToL1 = worstPaylinkEmailClaimToL1Marginal(measuredTx(emailClaimRow), base)
@@ -216,6 +218,12 @@ export function deriveClaimFpcGasBudgets(
     mPublishDa,
   )
   covers(
+    `sponsor[paylink_direct.claim_with_withdrawal,${RELEASE},oxide_token.publish_da]`,
+    mPaylinkClaimWithWithdrawal,
+    mL1Operation,
+    mPublishDa,
+  )
+  covers(
     `sponsor[paylink_email.claim_to_l1,${RELEASE},oxide_token.publish_da]`,
     mPaylinkEmailClaimToL1,
     mL1Operation,
@@ -243,6 +251,7 @@ export function deriveClaimFpcGasBudgets(
     mPaylinkDeposit,
     mPaylinkClaim,
     mPaylinkClaimToL1,
+    mPaylinkClaimWithWithdrawal,
     mPaylinkEmailClaim,
     mPaylinkEmailClaimToL1,
   }

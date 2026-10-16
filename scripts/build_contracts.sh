@@ -275,12 +275,12 @@ for NARGO_FILE in $(find "${SEARCH_ROOTS[@]}" -type f -name "Nargo.toml" -not -p
     # transient-fetch reason as the contract branch above.
     # Circuits whose VK is pinned in @obsidion/core/constants — a stale pin ships the proof/VK
     # mismatch class the SSoT generator below exists to prevent, so their compile and VK
-    # derivation are both fatal rather than best-effort. Every generator takes the same CLI.
+    # derivation are both fatal rather than best-effort.
     VK_PINNED_CIRCUIT=false
     case "$CONTRACT_NAME" in
-      golden_ticket)
+      golden_ticket|eligibility)
         VK_PINNED_CIRCUIT=true
-        VKEY_GENERATOR="$REPO_ROOT/packages/sdk/scripts/golden-ticket/generate-vk.mjs"
+        VKEY_GENERATOR="$REPO_ROOT/packages/sdk/scripts/generate-vk.mjs"
         ;;
     esac
 

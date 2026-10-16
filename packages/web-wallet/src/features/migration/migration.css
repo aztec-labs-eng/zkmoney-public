@@ -18,6 +18,18 @@
   text-align: center;
   color: var(--text-secondary);
 }
+.ww-migration__residuals {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 15px;
+  line-height: 1.45;
+  text-align: center;
+  color: var(--text-secondary);
+}
 .ww-migration__later {
   align-self: center;
   margin-top: -8px;

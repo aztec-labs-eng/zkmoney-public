@@ -4,6 +4,7 @@ import { GradientText, Icon, NumberedStepRow } from "@obsidion/web-ds"
 import walletIcon from "../../assets/deposit/wallet-line.svg"
 import spyIcon from "../../assets/withdraw/spy-line.svg"
 import { useFreshAddressAvailable } from "./freshAddressAvailability"
+import { ETHERFI_ASSETS_COPY, useEtherfiAvailable } from "./etherfi"
 
 /** How to add a history-free account in the wallets users most often already hold. */
 const WALLET_GUIDES = [
@@ -127,11 +128,12 @@ function FreshAddressHowTo() {
 }
 
 /**
- * The method step of `/withdraw`, and the panel the existing-address sheet opens over. Each card
- * opens its branch. A deployment without the swap stack offers the existing address alone.
+ * The method step of `/withdraw`, and the panel the existing-address and ether.fi sheets open over.
+ * Each card opens its branch. A deployment without the swap stack offers the existing address alone.
  */
 export function WithdrawMethodScreen() {
   const available = useFreshAddressAvailable()
+  const etherfi = useEtherfiAvailable()
   const navigate = useNavigate()
 
   return (
@@ -139,7 +141,7 @@ export function WithdrawMethodScreen() {
       <h2 className="ww-chat__head ww-invite-modal-title">
         <GradientText weight={700}>Select withdrawal method</GradientText>
       </h2>
-      {available !== undefined && (
+      {available !== undefined && etherfi !== undefined && (
         <div className="ww-panel__scroll">
           <div className="ww-paymethods" style={{ gap: 24 }}>
             {available && (
@@ -171,6 +173,20 @@ export function WithdrawMethodScreen() {
               body="The destination address may have transaction history on the blockchain."
               onOpen={() => navigate("/withdraw/existing")}
             />
+            {etherfi && (
+              <MethodOption
+                icon={<Icon name="bank" size={22} color="#fff" />}
+                title="Withdraw to ether.fi"
+                body="Fund your ether.fi Cash balance from the address it gives you."
+                onOpen={() => navigate("/withdraw/etherfi")}
+              >
+                <span className="ww-withdraw__tags">
+                  <span className="ww-withdraw__tag" data-tone="warning">
+                    {ETHERFI_ASSETS_COPY}
+                  </span>
+                </span>
+              </MethodOption>
+            )}
           </div>
         </div>
       )}

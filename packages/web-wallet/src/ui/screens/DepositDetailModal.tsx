@@ -11,11 +11,7 @@ import {
   type SIPADepositPhase,
   type SIPADepositRecord,
 } from "@obsidion/front-core"
-import {
-  GradientText,
-  PrimaryGradientButton,
-  type StatusBadgeStyle,
-} from "@obsidion/web-ds"
+import { GradientText, Icon, PrimaryGradientButton, type StatusBadgeStyle } from "@obsidion/web-ds"
 import walletLineIcon from "../../assets/deposit/wallet-line.svg"
 import ethIcon from "../../assets/deposit/ethereum.webp"
 import { depositTokensFor } from "../../features/deposit/loadDepositFacts"
@@ -224,6 +220,52 @@ export function DepositDetailModal({
           onClick={exit.onStart}
         />
       )}
+    </Modal>
+  )
+}
+
+/** The tag a registration deposit paid for, apart from the deposit that carried the payment. */
+export function TagPurchaseModal({
+  record,
+  tag,
+  price,
+  onClose,
+}: {
+  record: SIPADepositRecord
+  tag: string
+  /** Display units. */
+  price: string
+  onClose: () => void
+}) {
+  return (
+    <Modal
+      variant="create"
+      label="Tag purchase details"
+      className="ww-sheet ww-sheet--detail"
+      onClose={onClose}
+    >
+      <span className="ww-deposit__connect-icon ww-sheet__icon">
+        <Icon name="at" size={32} color="#fff" />
+      </span>
+      <div className="ww-sheet__title">
+        <GradientText size={32} weight={700}>
+          -{usdFigure(price)}
+        </GradientText>
+        <small>{whenLabel(record.endTime ?? record.startTime)}</small>
+      </div>
+      <div className="ww-sheet__facts">
+        <DepositFact label="Status">
+          <DepositStatusValue {...depositStatus(record)} />
+        </DepositFact>
+        <DepositFact label="Name">
+          <b>{tag}.zk.money</b>
+        </DepositFact>
+        <DepositHashFact
+          label="Paid from deposit"
+          hash={record.sipaAddress}
+          url={l1AddressUrl(record.sipaAddress)}
+        />
+      </div>
     </Modal>
   )
 }

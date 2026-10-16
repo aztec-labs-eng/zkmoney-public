@@ -154,6 +154,27 @@ describe("reconcileSipaRequestFulfillments", () => {
     }
   })
 
+  it("fulfills one row per deposit: the live one over the codes it replaced", async () => {
+    const store = new RequestStorage(memoryAdapter())
+    await store.add(pendingLink({ id: "old", status: "cancelled", createdAt: 1 }))
+    await store.add(pendingLink({ id: "older", status: "cancelled", createdAt: 0 }))
+    await store.add(pendingLink({ id: "live", createdAt: 2 }))
+    await reconcileSipaRequestFulfillments(store, [deposit()])
+    await reconcileSipaRequestFulfillments(store, [deposit()])
+    expect((await store.findById("live"))?.status).toBe("fulfilled")
+    expect((await store.findById("old"))?.status).toBe("cancelled")
+    expect((await store.findById("older"))?.status).toBe("cancelled")
+  })
+
+  it("fulfills only the newest cancelled row when none is live", async () => {
+    const store = new RequestStorage(memoryAdapter())
+    await store.add(pendingLink({ id: "old", status: "cancelled", createdAt: 0 }))
+    await store.add(pendingLink({ id: "new", status: "cancelled", createdAt: 1 }))
+    await reconcileSipaRequestFulfillments(store, [deposit()])
+    expect((await store.findById("new"))?.status).toBe("fulfilled")
+    expect((await store.findById("old"))?.status).toBe("cancelled")
+  })
+
   it("flips a cancelled row — fulfilled always wins", async () => {
     const store = new RequestStorage(memoryAdapter())
     await store.add(pendingLink({ status: "cancelled" }))

@@ -31,14 +31,15 @@
     <link rel="preload" as="font" type="font/ttf" href="/fonts/Sen-VariableFont.ttf" crossorigin />
     <style>
       /* The brand font is declared here, not only in the design system's fonts.css: that arrives
-         with the JS bundle, so the boot screen painted before it in a fallback face. Served from
-         public/ because a path outside this package resolves at build but not in dev. */
+         with the JS bundle, so the boot screen painted before it in a fallback face. Blocking, not
+         swapping, so the boot screen never shows a fallback face first. Served from public/ because
+         a path outside this package resolves at build but not in dev. */
       @font-face {
         font-family: "Sen";
         src: url("/fonts/Sen-VariableFont.ttf") format("truetype-variations");
         font-weight: 400 800;
         font-style: normal;
-        font-display: swap;
+        font-display: block;
       }
       /* Page chrome outside the app column; the design system owns everything inside. */
       html,
@@ -64,11 +65,71 @@
         pointer-events: none;
         z-index: -1;
       }
+      /* The boot screen. It paints before any script runs, shows while #root is empty or the app
+         shows a BootSplash (body[data-booting]), and stays one element through
+         every boot stage. "shell" drops its surface over a shell already on screen; bootLeaving
+         fades it without unrendering it, so a stage that follows keeps it spinning. Its own layer
+         and containment keep the spin off the main thread the boot keeps busy. */
+      #boot-splash {
+        display: none;
+        position: fixed;
+        inset: 0;
+        z-index: 2147483647;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        color: #bfc2d7;
+        /* Dark as an image over #tint's colour, which Safari's toolbar tint reads from it. */
+        background: linear-gradient(#070707, #070707) #49087e;
+        pointer-events: none;
+        contain: strict;
+        transition: opacity 200ms ease-out;
+      }
+      #root:empty ~ #boot-splash,
+      body[data-booting] #boot-splash {
+        display: flex;
+      }
+      body[data-booting="shell"] #boot-splash {
+        background: none;
+      }
+      body[data-boot-leaving] #boot-splash {
+        opacity: 0;
+      }
+      /* The box turns, not the svg, as the design system's Spinner does. */
+      #boot-splash-spinner {
+        animation: boot-splash-spin 1.4s linear infinite;
+        will-change: transform;
+      }
+      #boot-splash-spinner > svg {
+        display: block;
+      }
+      @keyframes boot-splash-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
     </style>
   </head>
   <body>
     <div id="tint" aria-hidden="true"></div>
     <div id="root"></div>
+    <div id="boot-splash" aria-hidden="true">
+      <span id="boot-splash-spinner">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <circle
+            cx="14"
+            cy="14"
+            r="12.32"
+            stroke="currentColor"
+            stroke-width="3.36"
+            stroke-linecap="round"
+            stroke-dasharray="61.93 15.48"
+          />
+        </svg>
+      </span>
+      <span>Loading zk.money…</span>
+    </div>
     <script type="module" src="/src/boot.tsx"></script>
   </body>
 </html>

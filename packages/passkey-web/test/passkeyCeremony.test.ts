@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { runInNewContext } from "node:vm"
 import { APPLE_ICLOUD_AAGUID, ZERO_AAGUID } from "@obsidion/core/constants"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { hexToBytes } from "../src/ceremony/bytes.js"
@@ -19,7 +20,13 @@ import {
   passkeysSupported,
   requestHeldMs,
 } from "../src/ceremony/passkeyCeremony.js"
-import { decodeUserHandle, encodeUserHandle } from "../src/ceremony/userHandle.js"
+import {
+  UNKNOWN_PROVENANCE,
+  type UserHandleProvenance,
+  decodeUserHandle,
+  decodeUserHandleProvenance,
+  encodeUserHandle,
+} from "../src/ceremony/userHandle.js"
 import {
   RelatedOriginPasskeyError,
   isPasskeyCancelled,
@@ -548,6 +555,48 @@ describe("decodePrfSlot", () => {
     }
   })
 
+  it("reads a plain list of byte values, which is how 1Password's browser extension returns a slot", () => {
+    const first = Array.from({ length: 32 }, (_, i) => i)
+    const second = Array.from({ length: 32 }, (_, i) => 255 - i)
+    expect(decodePrfSlot({ first, second }, "first")).toEqual(Uint8Array.from(first))
+    expect(decodePrfSlot({ first, second }, "second")).toEqual(Uint8Array.from(second))
+    expect(decodePrfSlot({ first: first.slice(1) }, "first")).toBeUndefined()
+  })
+
+  it("reads no key from anything that is not bytes, whatever length it claims", () => {
+    const listOf = (entry: (i: number) => unknown) => Array.from({ length: 32 }, (_, i) => entry(i))
+    const holes: unknown[] = []
+    holes.length = 32
+    for (const first of [
+      32,
+      "32",
+      true,
+      holes,
+      listOf(() => null),
+      listOf(() => "7"),
+      listOf((i) => (i === 5 ? 256 : i)),
+      listOf((i) => (i === 5 ? -1 : i)),
+      listOf((i) => (i === 5 ? 1.5 : i)),
+      { length: 32 },
+      { ...listOf((i) => i) },
+    ]) {
+      expect(decodePrfSlot({ first }, "first")).toBeUndefined()
+    }
+  })
+
+  it("reads the bytes behind a view, and a buffer or a view from another realm", () => {
+    const source = Uint8Array.from({ length: 40 }, (_, i) => i)
+    expect(decodePrfSlot({ first: new DataView(source.buffer, 4, 32) }, "first")).toEqual(
+      source.subarray(4, 36),
+    )
+    const foreign = runInNewContext("new Uint8Array(32).fill(9)") as Uint8Array
+    expect(foreign instanceof Uint8Array).toBe(false)
+    const read = (slot: "first" | "second") =>
+      decodePrfSlot({ first: foreign, second: foreign.buffer }, slot)
+    expect(read("first")).toEqual(bytes(32).fill(9))
+    expect(read("second")).toEqual(bytes(32).fill(9))
+  })
+
   it("treats an explicit null as an absent slot, which is what a key with no PRF returns", () => {
     // The shape iOS reports for a fingerprint key: the slot is present and empty.
     expect(decodePrfSlot({ first: null, second: null }, "first")).toBeUndefined()
@@ -629,6 +678,22 @@ describe("BrowserPasskeyCeremony create", () => {
     })
   }
 
+  it("writes the name and the request's provenance into user.id, and an unknown one without", async () => {
+    const provenance: UserHandleProvenance = {
+      context: "windows_key",
+      osVersion: { major: 15, minor: 0, patch: 0 },
+      chip: "x86",
+    }
+    await stubCreate({}, { provenance })
+    const stamped = new Uint8Array(create.mock.calls.at(-1)![0].publicKey.user.id)
+    expect(decodeUserHandle(stamped)).toBe("@alice")
+    expect(decodeUserHandleProvenance(stamped)).toEqual(provenance)
+    await stubCreate()
+    const plain = new Uint8Array(create.mock.calls.at(-1)![0].publicKey.user.id)
+    expect(decodeUserHandle(plain)).toBe("@alice")
+    expect(decodeUserHandleProvenance(plain)).toEqual(UNKNOWN_PROVENANCE)
+  })
+
   it("offers ES256 and nothing else, so no authenticator can mint a key the wallet refuses", async () => {
     await stubCreate()
     const sent = create.mock.calls.at(-1)![0].publicKey
@@ -640,6 +705,13 @@ describe("BrowserPasskeyCeremony create", () => {
     expect(create.mock.calls.at(-1)![0].publicKey.timeout).toBe(timing.createTimeoutMs)
     await stubCreate({}, { timeoutMs: 300_000 })
     expect(create.mock.calls.at(-1)![0].publicKey.timeout).toBe(300_000)
+  })
+
+  it("hands back the user handle it sent, so the passkey can be renamed later", async () => {
+    const result = await stubCreate()
+    const sent = create.mock.calls.at(-1)![0].publicKey.user.id
+    expect(result.userHandle).toEqual(new Uint8Array(sent))
+    expect(decodeUserHandle(result.userHandle)).toBe("@alice")
   })
 
   it("the caller's signal closes an issued creation sheet", async () => {

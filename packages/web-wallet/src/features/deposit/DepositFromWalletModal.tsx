@@ -89,6 +89,8 @@ export function DepositFromWalletModal({
   deposit,
   token,
   fee,
+  registration = false,
+  minimum: minimumToReceive,
   valuation,
   onClose,
   onSent,
@@ -97,6 +99,8 @@ export function DepositFromWalletModal({
   onApproving,
   onNotApproved,
   onFeeChanged,
+  payee,
+  fixedAmount,
 }: {
   l1: ReturnType<typeof useL1Wallet>
   deposit: DepositAddress
@@ -104,6 +108,11 @@ export function DepositFromWalletModal({
   token: DepositTokenOption
   /** Protocol fee in display units; the modal cannot submit until it is known. */
   fee?: string
+  /** A registration address: `fee` is the registration's own, fixed by its record, not re-read. */
+  registration?: boolean
+  /** The least to receive, in display units, when the address needs more than the usual $1: a
+   * registration's floor less what it already holds. */
+  minimum?: string
   /** Prices `token` for the published limit; nothing can be sent without it. */
   valuation?: UsdValuation
   onClose: () => void
@@ -123,10 +132,14 @@ export function DepositFromWalletModal({
   onNotApproved: (submission: string) => void
   /** The fee read for a send differed from `fee`; the caller reloads it. */
   onFeeChanged?: () => void
+  /** Set when paying someone else's address: names them, and nothing is recorded on this device. */
+  payee?: string
+  /** What the payee receives, display units: prefilled and fixed. */
+  fixedAmount?: string
 }) {
   const config = getConfig()
   const isSandbox = config.network === Network.SANDBOX
-  const [amount, setAmount] = useState("")
+  const [amount, setAmount] = useState(fixedAmount ?? "")
   const [phase, setPhase] = useState<"form" | "confirm" | "depositing">("form")
   const [stage, setStage] = useState<DepositStage>()
   // Wallet balance reported by a rejected transfer; fresher than the mount-time read.
@@ -155,7 +168,8 @@ export function DepositFromWalletModal({
   }
 
   const parsed = parseAmount(amount)
-  const minimum = 1
+  // A fixed amount was checked where it was set.
+  const minimum = fixedAmount ? 0 : Math.max(1, Number(minimumToReceive ?? 0))
   // The typed amount is what lands; the wallet sends that plus the fee. The published limit counts
   // the send; the protocol ceiling counts the credit, which only the settlement token states up front.
   const limits =
@@ -236,6 +250,7 @@ export function DepositFromWalletModal({
         tokenSymbol: token.symbol,
         token: token.address ? { address: token.address, decimals: token.decimals } : undefined,
         mint: isSandbox && !bridgeMode,
+        record: !payee,
         onStage: setStage,
         onBrowserSubmit: setSubmitUrl,
         beforeApprove: (submission) => {
@@ -248,7 +263,7 @@ export function DepositFromWalletModal({
             required,
             unknownCapacity: UNKNOWN_CAPACITY,
             shownFee: fee,
-            freshFee: fresh.feeDisplay,
+            freshFee: registration ? fee : fresh.feeDisplay,
           }),
         onSubmitted: (txHash) => {
           submitted = true
@@ -322,6 +337,7 @@ export function DepositFromWalletModal({
     if (phase !== "depositing") onClose()
   }
 
+  const receiveLabel = payee ? `@${payee} receives` : "You receive"
   const from = bridgeMode
     ? "Your browser wallet"
     : `${l1.walletName ?? "Wallet"} · ${l1.account ? shortAddr(l1.account) : ""}`
@@ -337,7 +353,7 @@ export function DepositFromWalletModal({
       </div>
       <hr className="ww-divider" />
       <div className="ww-deposit__fact">
-        <span>You receive</span>
+        <span>{receiveLabel}</span>
         <b>{valid ? usdFigureGrouped(amount) : "$--"}</b>
       </div>
       {token.address && (
@@ -361,7 +377,7 @@ export function DepositFromWalletModal({
       />
     ) : phase === "form" ? (
       <PrimaryGradientButton
-        title="Deposit funds"
+        title={payee ? "Continue" : "Deposit funds"}
         isDisabled={!canSubmit}
         onClick={() => setPhase("confirm")}
         style={{ width: "100%", height: 48 }}
@@ -371,6 +387,8 @@ export function DepositFromWalletModal({
         title={
           phase === "depositing"
             ? STAGE_LABEL[stage ?? "connecting"] ?? "Working…"
+            : payee
+            ? "Confirm payment"
             : "Confirm deposit"
         }
         isLoading={phase === "depositing"}
@@ -399,16 +417,19 @@ export function DepositFromWalletModal({
           <>
             <div>
               <GradientText size={24} weight={700}>
-                Deposit from {bridgeMode ? "your browser" : l1.walletName ?? "wallet"}
+                {payee
+                  ? `Pay @${payee}`
+                  : `Deposit from ${bridgeMode ? "your browser" : l1.walletName ?? "wallet"}`}
               </GradientText>
               <div className="ww-fund__addr">{l1.account ? shortAddr(l1.account) : ""}</div>
             </div>
             <div className="ww-fund__fields">
-              <span className="ww-fund__label">Amount to receive</span>
+              <span className="ww-fund__label">{payee ? receiveLabel : "Amount to receive"}</span>
               <label className="ww-deposit__input ww-fund__amount">
                 <span>
                   <input
                     aria-label="Amount to receive"
+                    readOnly={!!fixedAmount}
                     inputMode="decimal"
                     placeholder={`Minimum ${usdFigureGrouped(String(minimum))}`}
                     value={amount}
@@ -443,13 +464,13 @@ export function DepositFromWalletModal({
                   operation="deposit"
                   problem={problem}
                   maximum={problem === "public" && maximum ? usdFigureGrouped(maximum) : undefined}
-                  onUseMaximum={maximum ? () => enterAmount(maximum) : undefined}
+                  onUseMaximum={maximum && !fixedAmount ? () => enterAmount(maximum) : undefined}
                 />
               )}
               <FundingCapacityPanel
                 view={capacity.view}
                 onRetry={capacity.retry}
-                onUseAvailable={enterAmount}
+                onUseAvailable={fixedAmount ? undefined : enterAmount}
                 onAboutLimits={() => setAboutLimits(true)}
               />
               <div className="ww-deposit__facts">{breakdown}</div>
@@ -470,7 +491,7 @@ export function DepositFromWalletModal({
               <GradientText size={32} weight={700}>
                 {usdFigureGrouped(amount)}
               </GradientText>
-              <div className="ww-fund__addr">Deposit</div>
+              <div className="ww-fund__addr">{payee ? "Payment" : "Deposit"}</div>
             </div>
             <div className="ww-fund__fields">
               <div className="ww-deposit__facts">

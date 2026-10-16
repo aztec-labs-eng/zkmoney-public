@@ -1,4 +1,5 @@
 import { createPublicClient, parseAbi, type Address, type Hex, type PublicClient } from "viem"
+import { withTimeout } from "../lib/withTimeout"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { isAllZeroHex } from "@obsidion/core/oxide"
 import {
@@ -7,6 +8,7 @@ import {
   oxideEnvFromTuple,
   resolveOxideAccountFactory,
 } from "@obsidion/front-core"
+import { loadRetiredRollupSources } from "@obsidion/core/oxide"
 import { l1Transport, type WebWalletConfig } from "./env"
 
 let cached: { key: string; tuple: Promise<OxideEnvTuple> } | undefined
@@ -36,6 +38,79 @@ export function getOxideTuple(config: WebWalletConfig): Promise<OxideEnvTuple> {
     })
   }
   return cached.tuple
+}
+
+let retiredCached: { key: string; deployments: Promise<OxideEnvTuple[]> } | undefined
+
+const portalTuples = new Map<string, Promise<OxideEnvTuple>>()
+
+/** How long one manifest tuple fetch may take before a later read fetches again. */
+export const ASSET_TUPLE_TIMEOUT_MS = 20_000
+
+/**
+ * The pinned deployment's retired-rollup siblings — other current deployments sharing its L1
+ * chain and name registry, which is what sign-in admission needs to accept a passkey still bound
+ * to a rollup this profile has since cut over from. A separate fetch and cache from
+ * {@link getOxideTuple}'s (see {@link loadRetiredRollupSources}'s doc comment for why).
+ * Bounded by {@link ASSET_TUPLE_TIMEOUT_MS}: a failed read stops sign-in from concluding a passkey
+ * has no account, so a slow manifest must not fail it sooner than a portal tuple fetch. The bound
+ * also keeps a fetch that never settles out of the cache.
+ */
+export async function getRetiredRollupSources(
+  config: WebWalletConfig,
+): Promise<OxideEnvTuple[]> {
+  const key = cacheKey(config)
+  if (retiredCached?.key !== key) {
+    const deployments = withTimeout(
+      loadRetiredRollupSources({ ...config.oxideProfile, network: config.network }),
+      ASSET_TUPLE_TIMEOUT_MS,
+    )
+    retiredCached = { key, deployments }
+    deployments.catch(() => {
+      if (retiredCached?.deployments === deployments) retiredCached = undefined
+    })
+  }
+  return retiredCached.deployments
+}
+
+/**
+ * The manifest tuple of `portal` in the profile's manifest, fetched once per manifest and portal.
+ * A failed or stalled fetch is not sticky: it rejects after {@link ASSET_TUPLE_TIMEOUT_MS} and the
+ * next read fetches again.
+ */
+export function getPortalTuple(
+  config: WebWalletConfig,
+  portal: string,
+  expectedGitSha?: string,
+): Promise<OxideEnvTuple> {
+  const key = `${config.oxideProfile.manifestUrl}|${portal.toLowerCase()}`
+  let tuple = portalTuples.get(key)
+  if (!tuple) {
+    const made = withTimeout(
+      loadOxideManifestTuple({
+        manifestUrl: config.oxideProfile.manifestUrl,
+        portal,
+        ...(expectedGitSha ? { expectedGitSha } : {}),
+        network: config.network,
+      }),
+      ASSET_TUPLE_TIMEOUT_MS,
+    )
+    portalTuples.set(key, made)
+    made.catch(() => {
+      if (portalTuples.get(key) === made) portalTuples.delete(key)
+    })
+    tuple = made
+  }
+  return tuple
+}
+
+/** The manifest tuple of the profile asset `symbol`; undefined where the profile lists no such asset. */
+export function getAssetTuple(
+  config: WebWalletConfig,
+  symbol: string,
+): Promise<OxideEnvTuple> | undefined {
+  const asset = config.assets.find((candidate) => candidate.symbol === symbol)
+  return asset && getPortalTuple(config, asset.portal, asset.expectedGitSha)
 }
 
 // TEMPORARY — remove once oxide's manifest carries registrationController. It is the one contract

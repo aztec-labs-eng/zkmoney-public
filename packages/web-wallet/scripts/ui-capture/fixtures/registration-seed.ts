@@ -1,3 +1,4 @@
+import { REGISTRATION_SCHEDULE_DEFAULTS } from "@obsidion/core/constants"
 import { type PendingRegistrationRecord } from "@obsidion/front-core"
 import { getConfig } from "../../../src/config/env"
 import { getPendingStore } from "../../../src/features/onboarding/webRegistration"
@@ -8,7 +9,7 @@ import { SIPA, field } from "./data"
 export async function seedRegistration(kind: string) {
   const kinds = ["awaiting", "free", "expired", "wrong-network", "retry", "short", "passkey-mismatch", "passkey-unavailable", "funded", "swept"]
   if (!kinds.includes(kind)) throw new Error(`Unknown registration fixture: ${kind}`)
-  const fee = kind === "free" ? "0" : "10000000000000000000"
+  const fee = kind === "free" ? "0" : String(REGISTRATION_SCHEDULE_DEFAULTS.standard.fee)
   const record: PendingRegistrationRecord = {
     account: "0x00000000000000000000000000000000000000f1", tag: "demo",
     nameHash: field("11") as `0x${string}`, l2Address: DEMO_L2_ADDRESS as `0x${string}`,
@@ -26,6 +27,6 @@ export async function seedRegistration(kind: string) {
     // The reservation's end: the claim server's seven-day hold.
     deadline: Math.floor(Date.now() / 1000) + (kind === "expired" ? -60 : 7 * 86_400),
     fee,
-    minDeposit: "5000000000000000000", feeWaived: kind === "free",
+    minDeposit: String(REGISTRATION_SCHEDULE_DEFAULTS.standard.min), feeWaived: kind === "free",
   })
 }

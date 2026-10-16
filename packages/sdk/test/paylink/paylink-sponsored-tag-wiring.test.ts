@@ -53,7 +53,11 @@ const { depositSpy, claimSpy, claimToL1Spy, releaseSpy, syncNoteSpy, TAG_SECRET,
     })),
     TAG_SECRET: { __fake: "escrowTagSecret" },
     FBPK: { __fake: "fallbackKeyHash" },
-    CLASS_ID: { __fake: "classId", equals: (o: unknown) => o === CLASS_ID },
+    CLASS_ID: {
+      __fake: "classId",
+      equals: (o: unknown) => o === CLASS_ID,
+      toString: () => "0xc1a55",
+    },
   }))
 
 // The deployment's broadcaster: registration is a PXE write, and the release rides the smallest tier.
@@ -152,6 +156,8 @@ import {
 } from "../../src/services/paylink/paylinkKeys.js"
 import { DEFAULT_CONTRACTS } from "@obsidion/contracts"
 import { buildSponsoredTeeOperation } from "../../src/services/sponsoredTeeOperation.js"
+import { authorizeSponsoredBatch } from "../../src/services/claimSponsor.js"
+import { Contract } from "@aztec/aztec.js/contracts"
 import { plainUserPayload, type WithdrawalOptions } from "../../src/services/plainWithdrawal.js"
 
 function paylinkKeyMaterial() {
@@ -195,6 +201,12 @@ function makeService() {
     tokenService,
     {
       getArtifactForContract: vi.fn(async () => ({ __fake: "artifact" })),
+      getArtifactForClass: vi.fn(async (classId: string) => {
+        if (classId !== String(CLASS_ID))
+          throw new Error(`No artifact for contract class ${classId}`)
+        return { __fake: "artifact" }
+      }),
+      getKnownClassIds: vi.fn(async () => [String(CLASS_ID)]),
       getArtifactForInstance: vi.fn(async () => ({ __fake: "broadcasterArtifact" })),
       getConfiguredClassId: vi.fn(() => undefined),
     } as any,
@@ -296,7 +308,7 @@ describe("sponsored paylink dispatch — tag sender", () => {
     const { service, sendTx } = makeService()
     await expect(
       service.claimSponsoredPaylink(
-        { ...linkParams, classId: { __fake: "other" } as any },
+        { ...linkParams, classId: { __fake: "other", toString: () => "0x07e4" } as any },
         sponsor,
       ),
     ).rejects.toThrow(/another version/)
@@ -353,6 +365,58 @@ describe("sponsored paylink dispatch — tag sender", () => {
     expect(registerEscrowTagSecret).toHaveBeenCalledWith(
       expect.objectContaining({ escrow: INSTANCE_ADDR, secret: TAG_SECRET }),
     )
+  })
+
+  it("a voucher claim burning a registration slice lets the escrow pay it, with no account call", async () => {
+    const { service, sendTx } = makeService()
+    const claimWithWithdrawal = vi.fn(() => ({ __fake: "claimWithWithdrawalInteraction" }))
+    const defaultAt = vi.mocked(Contract.at).getMockImplementation()!
+    vi.mocked(Contract.at).mockImplementation(
+      () =>
+        ({
+          address: INSTANCE_ADDR,
+          methods: {
+            claim: claimSpy,
+            claim_with_withdrawal: claimWithWithdrawal,
+            sync_note: syncNoteSpy,
+          },
+        } as never),
+    )
+    const sipa = EthAddress.fromString(`0x${"44".repeat(20)}`)
+
+    try {
+      await service.claimSponsoredPaylink(linkParams, sponsor, {
+        operationId: "op-ticket",
+        voucher: {
+          railId: sponsor.railId,
+          withdraw: { l1Recipient: sipa, amount: 7n, proverTip: 2n, withdrawal },
+        },
+      })
+    } finally {
+      vi.mocked(Contract.at).mockImplementation(defaultAt)
+    }
+
+    expect(claimWithWithdrawal).toHaveBeenCalledWith(
+      USER_ADDR,
+      7n,
+      EXECUTOR,
+      getUserPayloadHash(plainUserPayload(sipa)),
+      2n,
+      [],
+    )
+    expect(claimSpy).not.toHaveBeenCalled()
+    expect(authorizeSponsoredBatch).not.toHaveBeenCalled()
+    const args = vi.mocked(buildSponsoredTeeOperation).mock.calls[0]![1]
+    expect(args.user).toBe(INSTANCE_ADDR)
+    expect(args.intentsAccount).toBeUndefined()
+    expect(args.operations).toEqual([
+      expect.objectContaining({
+        kind: "outerCall",
+        withdrawals: [expect.objectContaining({ executor: EXECUTOR, amount: 7n, proverTip: 2n })],
+      }),
+    ])
+    expect(args.expectedWithdrawalAmount).toBe(7n)
+    expect((sendTx.mock.calls[0]![1] as any).sendMessagesAs).toBe(USER_ADDR)
   })
 
   it("claimSponsoredPaylinkToL1 requires a proof for an email link", async () => {

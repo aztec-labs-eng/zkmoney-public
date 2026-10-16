@@ -1001,10 +1001,10 @@ describe("useClaimLinkFlow", () => {
     it("owes the broadcast of a ticket's address that is not published, so Home can claim into it", async () => {
       held("unpublished")
       await render()
-      expect(oweBroadcast).toHaveBeenLastCalledWith(ready.record, true)
+      expect(oweBroadcast).toHaveBeenLastCalledWith(ready.record, true, { confirmed: true })
       held("ready")
       await render()
-      expect(oweBroadcast).toHaveBeenLastCalledWith(ready.record, false)
+      expect(oweBroadcast).toHaveBeenLastCalledWith(ready.record, false, { confirmed: true })
     })
 
     it("a review asked for while the address publishes shows where the broadcast stands, not the hold", async () => {

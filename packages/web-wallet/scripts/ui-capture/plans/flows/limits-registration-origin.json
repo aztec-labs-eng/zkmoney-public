@@ -35,7 +35,7 @@
     },
     {
       "action": "waitFor",
-      "selector": "[data-testid=\"funding-capacity-panel\"]:has-text(\"This payment needs 4.9 DAI; 0 DAI is available now.\")"
+      "selector": "[data-testid=\"funding-capacity-panel\"]:has-text(\"This payment needs 0.65 DAI; 0 DAI is available now.\")"
     },
     {
       "action": "waitFor",
@@ -57,7 +57,7 @@
     },
     {
       "action": "waitFor",
-      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"]:has-text(\"needs 4.9 DAI; 0 DAI of network capacity\")"
+      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"]:has-text(\"needs 0.65 DAI; 0 DAI of network capacity\")"
     },
     {
       "action": "waitFor",
@@ -75,7 +75,7 @@
     {
       "action": "screenshot",
       "file": "registration-original-help.png",
-      "state": "the wait's details name the original bucket's 4.9 DAI need and 0 DAI, not the active 48,250 DAI"
+      "state": "the wait's details name the original bucket's 0.65 DAI need and 0 DAI, not the active 48,250 DAI"
     }
   ]
 }

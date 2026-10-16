@@ -45,6 +45,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
         inboxAddress: { toString: () => "0xinbox" },
       },
     }),
+    getBlock: async () => undefined,
   }),
   readPortalChainIdentity: h.readPortal,
 }))
@@ -252,6 +253,26 @@ describe("BootGate", () => {
     expect(h.readPortal).toHaveBeenCalledTimes(1)
   })
 
+  it("reads the chain identity while the wallet database opens", async () => {
+    stubLocks(new FakeLocks())
+    await closeWalletStore()
+    const events: string[] = []
+    const dbs = testWalletDbs()
+    const open = dbs.open.bind(dbs)
+    vi.spyOn(dbs, "open").mockImplementation(async (version, persistent) => {
+      events.push("wallet open")
+      return open(version, persistent)
+    })
+    const read = h.readPortal.getMockImplementation()!
+    h.readPortal.mockImplementation((...args: unknown[]) => {
+      events.push("l1 read")
+      return read(...args)
+    })
+    await render()
+    await act(() => vi.waitFor(() => expect(container.textContent).toContain("Wallet ready")))
+    expect(events).toEqual(["l1 read", "wallet open"])
+  })
+
   describe("old wallet keys in localStorage", () => {
     const oldKeys = () => [
       "webwallet.msk",
@@ -374,6 +395,18 @@ describe("BootGate", () => {
     expect(h.store.close).toHaveBeenCalled()
     expect(h.app).not.toHaveBeenCalled()
   })
+
+  it("offers the reset page, without a retry, when the PXE store is damaged", async () => {
+    stubLocks(new FakeLocks())
+    vi.spyOn(console, "error").mockImplementation(() => {})
+    const { SqliteCorruptionError } = await import("@aztec/kv-store/sqlite-opfs")
+    h.createPxeStore.mockRejectedValue(
+      new SqliteCorruptionError("database disk image is malformed"),
+    )
+    await render()
+    await vi.waitFor(() => expect(button("Clear wallet data")).toBeDefined(), { timeout: 10_000 })
+    expect(button("Retry")).toBeUndefined()
+  }, 20_000)
 
   it("relays Google's OAuth callback without taking the active tab from its opener", async () => {
     const fake = new FakeLocks()

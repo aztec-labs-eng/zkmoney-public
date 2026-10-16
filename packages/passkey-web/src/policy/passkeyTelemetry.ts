@@ -15,10 +15,12 @@ import {
 } from "../ceremony/passkeyCeremony.js"
 import type { DevicePosture } from "./devicePosture.js"
 import type { PhoneReach } from "./passkeyCapabilities.js"
+import type { LaptopRefusalKind } from "./passkeyErrors.js"
 import { providerSlugFor } from "./passkeyProviders.js"
 import {
   PASSKEY_BROWSER_FAMILIES,
   PASSKEY_CANCEL_REASONS,
+  PASSKEY_ERROR_NAMES,
   PASSKEY_FAILURE_REASONS,
   PASSKEY_MAJOR_MAX,
   PASSKEY_MAJOR_MIN,
@@ -31,6 +33,7 @@ import {
   type PasskeyCancelReason,
   type PasskeyDeviceClass,
   type PasskeyElapsed,
+  type PasskeyErrorName,
   type PasskeyFailureReason,
   type PasskeyOs,
   type PasskeyPhoneReach,
@@ -164,6 +167,18 @@ const POLICY_REFUSALS: Readonly<Record<string, PasskeyRefusalReason>> = {
   RelatedOriginPasskeyError: "related_origin",
 }
 
+/** `LaptopPasskeyRefusedError` carries its reason in `kind`; an unknown kind counts as unnamed. */
+const LAPTOP_REFUSALS: Readonly<Record<LaptopRefusalKind, PasskeyRefusalReason>> = {
+  "apple": "apple_below_floor",
+  "unnamed": "provider_unnamed",
+  "not-local": "local_route_mismatch",
+}
+
+function laptopRefusalReason(error: unknown): PasskeyRefusalReason {
+  const kind = (error as { kind?: unknown } | null)?.kind
+  return (typeof kind === "string" && lookup(LAPTOP_REFUSALS, kind)) || "provider_unnamed"
+}
+
 const CEREMONY_FAILURES: readonly PasskeyErrorPredicate[] = [
   {
     test: (error) => isWedgedTabError(error) || isEvictedRequestError(error),
@@ -233,6 +248,9 @@ export function classifyPasskeyError(
   context: PasskeyErrorContext,
 ): PasskeyClassification | undefined {
   const name = nameOf(error)
+  if (name === "LaptopPasskeyRefusedError") {
+    return { outcome: "refused", reason: laptopRefusalReason(error) }
+  }
   const refusal = lookup(POLICY_REFUSALS, name)
   if (refusal) return { outcome: "refused", reason: refusal }
   const named = checkedPasskeyClassification(lookup(context.extraNames, name))
@@ -248,6 +266,12 @@ export function classifyPasskeyError(
   if (context.answered) return { outcome: "failed", reason: "after_prompt" }
   if (context.issued) return { outcome: "failed", reason: "request_failed" }
   return undefined
+}
+
+/** The thrown value's name as the vocabulary lists it; `other` for a non-object or an unlisted name. */
+export function passkeyErrorNameFor(error: unknown): PasskeyErrorName {
+  if (typeof error !== "object" || error === null) return "other"
+  return listed(PASSKEY_ERROR_NAMES, nameOf(error), "other")
 }
 
 export function elapsedBucketFor(ms: number): PasskeyElapsed {

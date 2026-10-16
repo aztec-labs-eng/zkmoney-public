@@ -295,4 +295,26 @@ describe("WithdrawalExitModal", () => {
       expect(text).not.toMatch(/210 DAI released to 0x/)
     })
   })
+
+  it("finalizes a Savings move out's burn on the Savings deployment, with its co-signer", async () => {
+    const tuple = { portal: `0x${"71".repeat(20)}` }
+    const signer = { id: "sky" }
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    await act(async () => {
+      root.render(
+        <WithdrawalExitModal
+          record={record}
+          deployment={async () => ({ tuple, signer } as never)}
+          onClose={vi.fn()}
+        />,
+      )
+    })
+    await act(async () => button("Finalize this withdrawal")!.click())
+    expect(h.selfFinalize).toHaveBeenCalledWith(
+      record,
+      { node: {}, signer },
+      expect.objectContaining({ tuple }),
+    )
+  })
 })

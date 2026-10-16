@@ -8,7 +8,7 @@ import { TeeSigner } from '@oxide/oxide-lib/types.js';
 import type { PublicClient } from 'viem';
 
 import type { L1TxQueue } from '../../l1/l1_tx_queue.js';
-import { ChainlinkPriceOracle } from '../../price_oracle/chainlink_price_oracle.js';
+import type { PriceOracle } from '../../price_oracle/price_oracle.js';
 import {
   ClaimBatchSubmitterOptions,
   ProverClaimRewardCollector,
@@ -18,11 +18,18 @@ import { createRollupContract } from '../rollup.js';
 import { ProverClaimAdaptor } from './adaptor.js';
 import { createClaimPortalConfig } from './portal_config.js';
 
+export interface CollectorPortal {
+  portalAddress: EthAddress;
+  proverSubsidyAddress: EthAddress;
+  /** TEE signer used to co-sign the withdrawal finalization embedded in each claim on this portal. */
+  signer: TeeSigner;
+}
+
 export interface OxideProverClaimRewardCollectorConfig {
   /** Address whose recorded first-prover captures are claimed, and the rewards recipient. */
   proverId: EthAddress;
-  portalAddress: EthAddress;
-  proverSubsidyAddress: EthAddress;
+  /** The portals to collect rewards from. */
+  portals: CollectorPortal[];
   client: PublicClient;
   /**
    * Queue to submit through. The host shares one signer across subsystems, so every send goes on the one
@@ -31,10 +38,8 @@ export interface OxideProverClaimRewardCollectorConfig {
   l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>;
   nodeUrl: string;
   nodeApiKey?: string;
-  /** TEE signer used to co-sign the withdrawal finalization embedded in each claim. */
-  signer: TeeSigner;
-  priceOracle: ChainlinkPriceOracle;
-  /** Minimum batch profit in the oracle's common quote currency: a batch below it is not worth a tx. */
+  priceOracle: PriceOracle;
+  /** Minimum batch profit in USD, scaled to 18 decimals: a batch below it is not worth a tx. */
   minBatchProfit?: bigint;
   trackerOptions?: Partial<TrackerOptions>;
   claimBatchSubmitterOptions?: ClaimBatchSubmitterOptions;
@@ -50,20 +55,24 @@ export class OxideProverClaimRewardCollector {
   static async create(config: OxideProverClaimRewardCollectorConfig): Promise<OxideProverClaimRewardCollector> {
     const l1Client = config.client;
     const node = createNodeClient({ url: config.nodeUrl, apiKey: config.nodeApiKey });
-    const portal = new OxidePortalContract(l1Client, config.portalAddress);
-    const rollup = createRollupContract(l1Client, await portal.getRollup());
-    const portals = [
-      await createClaimPortalConfig({
-        portal,
-        proverSubsidy: config.proverSubsidyAddress,
-        adaptorDeps: { node, portal, rollup, signer: config.signer },
-      }),
-    ];
+    if (config.portals.length === 0) {
+      throw new Error('Prover claim collector needs at least one portal');
+    }
+    const contracts = config.portals.map(entry => new OxidePortalContract(l1Client, entry.portalAddress));
+    const rollup = createRollupContract(l1Client, await contracts[0].getRollup());
+    const portals = await Promise.all(
+      config.portals.map((entry, i) =>
+        createClaimPortalConfig({
+          portal: contracts[i],
+          proverSubsidy: entry.proverSubsidyAddress,
+          adaptorDeps: { node, portal: contracts[i], rollup, signer: entry.signer },
+        }),
+      ),
+    );
     const adaptors = portals.map(b => b.adaptor);
 
     const collector = await ProverClaimRewardCollector.create({
       proverId: config.proverId,
-      portal,
       rollup,
       client: config.client,
       l1TxQueue: config.l1TxQueue,

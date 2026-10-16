@@ -1,7 +1,7 @@
 import { floorExceedsAsk, termsUnpriced } from "./registrationAsk"
 
 export const EARNED_QUOTE_ERROR =
-  "Your earned tag price has not been confirmed yet. Return to the campaign to sync your eligibility, then try again."
+  "Your earned tag price has not been confirmed yet. Wait a few minutes, then try again."
 
 /** Shown when the portal's cut is unread, so the earned price could not be checked. A retry settles it. */
 export const EARNED_QUOTE_UNCONFIRMED_ERROR =

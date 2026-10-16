@@ -20,7 +20,7 @@ import type { RefundableSipaEvent, RefundableSipaSource } from "./refundableDepo
  * This helper is intentionally intra-rollup: the events, tuple, deposit implementation and address
  * formula must all belong to the same deployed version.
  *
- * The implementation comes from the tuple and nowhere else. `SIPAFactory.implementationFor`
+ * The implementations come from the tuple and nowhere else. `SIPAFactory.implementationFor`
  * is keyed by rollup version, and several generations share one version, so it names the newest
  * generation's implementation rather than the one a retired generation's addresses commit to —
  * reading it here would derive an address no deposit was ever sent to. A tuple that publishes no
@@ -58,42 +58,66 @@ export async function deriveRefundableSipaSources(args: {
   }
 
   const recipient = AztecAddress.fromStringUnsafe(args.recipientL2Address)
-  const implementation = EthAddress.fromString(depositSIPAImplementation)
+  const depositImplementation = EthAddress.fromString(depositSIPAImplementation)
+  // Registration and metadata updates are the other intents the wallet announces to itself.
+  const otherImplementations = [
+    args.tuple.registrationSIPAImplementation,
+    args.tuple.updateMetadataSIPAImplementation,
+  ]
+    .filter((address): address is string => !!address && !isAllZeroHex(address))
+    .map((address) => EthAddress.fromString(address))
   const seen = new Set<string>()
   const out: RefundableSipaSource[] = []
   for (const event of args.events) {
     const secret = Fr.fromString(event.messageSecret)
-    const secretKey = secret.toString().toLowerCase()
-    if (seen.has(secretKey)) continue
-    seen.add(secretKey)
     const recipientCommitment = await computeStealthRecipientHash(secret, recipient)
     // Deposit intentData is the 32-byte recipient commitment; intentHash = keccak256 of it.
-    const intentHash = keccak256(recipientCommitment.toBuffer())
-    const common = {
-      sipaFactory: EthAddress.fromString(sipaFactory),
-      implementation,
-      intentHash,
-      rollupVersion: BigInt(rollupVersion),
-      resweepable: event.resweepable,
+    const depositIntentHash = keccak256(recipientCommitment.toBuffer())
+    // An event that carries no intent predates intent hashes: a deposit.
+    const carried =
+      event.intentHash && !isAllZeroHex(event.intentHash)
+        ? Buffer.from(event.intentHash.slice(2).padStart(64, "0"), "hex")
+        : depositIntentHash
+    const derivations = carried.equals(depositIntentHash)
+      ? [depositImplementation]
+      : otherImplementations
+    if (!derivations.length) {
+      throw new Error(
+        `oxide tuple for portal ${args.tuple.portal} publishes no registration or metadata-update ` +
+          "SIPA implementation, so a SIPA announced with another intent cannot be derived",
+      )
     }
-    const sipaAddress = accountProtocol
-      ? computeAccountSIPAAddress({
-          ...common,
-          recoveryCommitment: deriveRecoveryCommitment(
-            secret,
-            EthAddress.fromString(args.recoveryAccount!),
-          ),
-        })
-      : computeSIPAAddress({
-          ...common,
-          recoveryAddress: deriveRecoveryAddress(args.stealthPublicKey, secret),
-        })
-    out.push({
-      sipaAddress: sipaAddress.toString(),
-      recipientL2Address: args.recipientL2Address,
-      messageSecret: secret.toString(),
-      origin: "sipa-event",
-    })
+    for (const implementation of derivations) {
+      const common = {
+        sipaFactory: EthAddress.fromString(sipaFactory),
+        implementation,
+        intentHash: carried,
+        rollupVersion: BigInt(rollupVersion),
+        resweepable: event.resweepable,
+      }
+      const sipaAddress = (
+        accountProtocol
+          ? computeAccountSIPAAddress({
+              ...common,
+              recoveryCommitment: deriveRecoveryCommitment(
+                secret,
+                EthAddress.fromString(args.recoveryAccount!),
+              ),
+            })
+          : computeSIPAAddress({
+              ...common,
+              recoveryAddress: deriveRecoveryAddress(args.stealthPublicKey, secret),
+            })
+      ).toString()
+      if (seen.has(sipaAddress.toLowerCase())) continue
+      seen.add(sipaAddress.toLowerCase())
+      out.push({
+        sipaAddress,
+        recipientL2Address: args.recipientL2Address,
+        messageSecret: secret.toString(),
+        origin: "sipa-event",
+      })
+    }
   }
   return out
 }

@@ -257,7 +257,8 @@ async function currentDeployment(service: ContractService): Promise<WithdrawalDe
   return tuple
 }
 
-async function registerBroadcaster(
+/** The Broadcaster at `l2Broadcaster`, registered in the PXE, for building its calls. */
+export async function registerBroadcaster(
   wallet: ObsidionWallet,
   service: ContractService,
   l2Broadcaster: string,

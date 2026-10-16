@@ -1,6 +1,15 @@
 // @vitest-environment node
-import { describe, expect, it } from "vitest"
-import { iosBelowFloor, parseUserAgent, versionBelow } from "../src/policy/userAgentInfo.js"
+import { afterEach, describe, expect, it, vi } from "vitest"
+import {
+  MACOS_SYNCED_COPY_FLOORS,
+  atLeast,
+  currentUserAgentInfo,
+  currentUserAgentInfoSoon,
+  iosBelowFloor,
+  macosSyncedCopyReadsRight,
+  parseUserAgent,
+  versionBelow,
+} from "../src/policy/userAgentInfo.js"
 
 const cases: [string, string, ReturnType<typeof parseUserAgent>][] = [
   [
@@ -131,9 +140,37 @@ describe("parseUserAgent", () => {
       osFamily: "macos",
       osVersionReported: "14.5.0",
       osVersionFromHints: true,
+      platformFromHints: true,
       browserFamily: "chrome",
       browserVersionReported: "126",
+      browserFromHints: true,
     })
+  })
+
+  it("says the browser's name came from a Client Hints brand only when it did", () => {
+    const chromiumUa =
+      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+    const named = parseUserAgent({
+      userAgent: chromiumUa,
+      userAgentData: { brands: [{ brand: "Google Chrome", version: "140" }] },
+    })
+    expect(named).toMatchObject({ browserFamily: "chrome", browserFromHints: true })
+    // A Chromium with no brand of its own is Chrome only by its user-agent token.
+    const unnamed = parseUserAgent({
+      userAgent: chromiumUa,
+      userAgentData: { brands: [{ brand: "Chromium", version: "140" }] },
+    })
+    expect(unnamed.browserFamily).toBe("chrome")
+    expect(unnamed.browserFromHints).toBeUndefined()
+    // A brand that only contains Chrome's name is not Chrome's.
+    for (const brand of ["Not Google Chrome", "Google Chrome Helper"]) {
+      const near = parseUserAgent({
+        userAgent: chromiumUa,
+        userAgentData: { brands: [{ brand, version: "140" }] },
+      })
+      expect(near.browserFamily).toBe("chrome")
+      expect(near.browserFromHints).toBeUndefined()
+    }
   })
 
   it("says the OS version came from Client Hints only when it did", () => {
@@ -206,6 +243,9 @@ describe("parseUserAgent with empty Client Hints", () => {
     })
     expect(info.osFamily).toBe("linux")
     expect(info.osVersionReported).toBe("unknown")
+    // The platform's name is all Linux hints carry.
+    expect(info.osVersionFromHints).toBeUndefined()
+    expect(info.platformFromHints).toBe(true)
   })
 })
 
@@ -222,6 +262,208 @@ describe("versionBelow", () => {
   it("never calls an unknown or malformed version below the floor", () => {
     expect(versionBelow("unknown", "18.4")).toBe(false)
     expect(versionBelow("abc", "18.4")).toBe(false)
+  })
+})
+
+describe("parseUserAgent architecture", () => {
+  const chromeMac =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+
+  it("carries the Client Hints architecture as a claim, and nothing without it", () => {
+    expect(
+      parseUserAgent({
+        userAgent: chromeMac,
+        userAgentData: { platform: "macOS", platformVersion: "26.4.1", architecture: "arm" },
+      }).architectureReported,
+    ).toBe("arm")
+    expect(
+      parseUserAgent({ userAgent: chromeMac, userAgentData: { architecture: "" } })
+        .architectureReported,
+    ).toBeUndefined()
+    expect(parseUserAgent({ userAgent: chromeMac }).architectureReported).toBeUndefined()
+  })
+})
+
+describe("atLeast", () => {
+  it("passes only a plain dotted version at or above the floor", () => {
+    expect(atLeast("26.4.1", "26.4.1")).toBe(true)
+    expect(atLeast("27.0.1", "26.4.1")).toBe(true)
+    expect(atLeast("26.4", "26.4.1")).toBe(false)
+    expect(atLeast("26.4.0", "26.4.1")).toBe(false)
+  })
+
+  it("fails closed on anything that is not a plain version", () => {
+    for (const version of ["26.4.0-beta", "26.x", "", "unknown", "26.4.1.2", " 26.4.1"]) {
+      expect(atLeast(version, "26.4.1")).toBe(false)
+    }
+  })
+})
+
+describe("macosSyncedCopyReadsRight", () => {
+  it("admits the Sequoia range from its floor to the end of macOS 15", () => {
+    for (const version of [
+      MACOS_SYNCED_COPY_FLOORS.sequoia,
+      "15.7.9",
+      "15.8",
+      "15.8.1",
+      "15.10.0",
+    ]) {
+      expect(macosSyncedCopyReadsRight(version)).toBe(true)
+    }
+  })
+
+  it("admits Tahoe from its floor on, with no ceiling", () => {
+    for (const version of [MACOS_SYNCED_COPY_FLOORS.tahoe, "26.6.2", "27.0.1"]) {
+      expect(macosSyncedCopyReadsRight(version)).toBe(true)
+    }
+  })
+
+  it("refuses everything outside the two ranges", () => {
+    for (const version of [
+      "15.7",
+      "15.7.4",
+      "14.8.5",
+      "16.0.0",
+      "25.9.9",
+      "26.3.9",
+      "26.4",
+      "26.4.0",
+    ]) {
+      expect(macosSyncedCopyReadsRight(version)).toBe(false)
+    }
+  })
+
+  it("fails closed on anything that is not a plain version", () => {
+    for (const version of ["unknown", "", " ", "15.7.5-beta", "15.7.5.1"]) {
+      expect(macosSyncedCopyReadsRight(version)).toBe(false)
+    }
+  })
+})
+
+describe("currentUserAgentInfo", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("asks Client Hints for the platform version and the architecture", async () => {
+    const getHighEntropyValues = vi
+      .fn()
+      .mockResolvedValue({ platformVersion: "26.4.1", architecture: "arm" })
+    vi.stubGlobal("navigator", {
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+      userAgentData: { platform: "macOS", brands: [], getHighEntropyValues },
+    })
+    const info = await currentUserAgentInfo()
+    expect(getHighEntropyValues).toHaveBeenCalledWith(["platformVersion", "architecture"])
+    expect(info).toMatchObject({
+      osVersionReported: "26.4.1",
+      osVersionFromHints: true,
+      architectureReported: "arm",
+    })
+  })
+
+  it("keeps the user agent's claims when the hints call rejects", async () => {
+    vi.stubGlobal("navigator", {
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+      userAgentData: {
+        platform: "macOS",
+        brands: [],
+        getHighEntropyValues: vi.fn().mockRejectedValue(new Error("refused")),
+      },
+    })
+    const info = await currentUserAgentInfo()
+    expect(info.osVersionReported).toBe("10.15.7")
+    expect(info.osVersionFromHints).toBeUndefined()
+    expect(info.architectureReported).toBeUndefined()
+  })
+})
+
+describe("currentUserAgentInfoSoon", () => {
+  const CHROME_MAC =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it("takes the hints when they settle, and leaves no timer behind", async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal("navigator", {
+      userAgent: CHROME_MAC,
+      userAgentData: {
+        platform: "macOS",
+        brands: [],
+        getHighEntropyValues: vi.fn().mockResolvedValue({ platformVersion: "26.4.1" }),
+      },
+    })
+    const info = await currentUserAgentInfoSoon()
+    expect(info).toMatchObject({ osVersionReported: "26.4.1", osVersionFromHints: true })
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it("falls back to the user-agent string when the hints never settle", async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal("navigator", {
+      userAgent: CHROME_MAC,
+      userAgentData: {
+        platform: "macOS",
+        brands: [],
+        getHighEntropyValues: () => new Promise(() => {}),
+      },
+    })
+    const reading = currentUserAgentInfoSoon()
+    await vi.advanceTimersByTimeAsync(1000)
+    const info = await reading
+    expect(info).toMatchObject({ osFamily: "macos", osVersionReported: "10.15.7" })
+    expect(info.osVersionFromHints).toBeUndefined()
+  })
+
+  it("keeps the fallback when the hints settle late, however they settle", async () => {
+    for (const late of ["resolve", "reject"] as const) {
+      vi.useFakeTimers()
+      let settle!: () => void
+      vi.stubGlobal("navigator", {
+        userAgent: CHROME_MAC,
+        userAgentData: {
+          platform: "macOS",
+          brands: [],
+          getHighEntropyValues: () =>
+            new Promise((resolve, reject) => {
+              settle =
+                late === "resolve"
+                  ? () => resolve({ platformVersion: "26.4.1" })
+                  : () => reject(new Error("late"))
+            }),
+        },
+      })
+      const reading = currentUserAgentInfoSoon()
+      await vi.advanceTimersByTimeAsync(1000)
+      settle()
+      await vi.advanceTimersByTimeAsync(0)
+      const info = await reading
+      expect(info.osVersionReported).toBe("10.15.7")
+      expect(info.osVersionFromHints).toBeUndefined()
+      expect(vi.getTimerCount()).toBe(0)
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("falls back to the user-agent string when the hints read throws, and leaves no timer behind", async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal("navigator", {
+      userAgent: CHROME_MAC,
+      get userAgentData() {
+        throw new Error("no hints")
+      },
+    })
+    const info = await currentUserAgentInfoSoon()
+    expect(info).toMatchObject({ osFamily: "macos", osVersionReported: "10.15.7" })
+    expect(info.osVersionFromHints).toBeUndefined()
+    expect(vi.getTimerCount()).toBe(0)
   })
 })
 

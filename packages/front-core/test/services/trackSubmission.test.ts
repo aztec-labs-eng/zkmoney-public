@@ -1,7 +1,10 @@
 import { expect, it, vi } from "vitest"
 import { TxStatus, TxExecutionResult } from "@aztec/stdlib/tx"
 import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
-import { trackSubmission } from "../../src/core/services/transactions/trackSubmission"
+import {
+  conflictingPendingTx,
+  trackSubmission,
+} from "../../src/core/services/transactions/trackSubmission"
 
 const hash = `0x${"11".repeat(32)}` as const
 const receipt = (status: TxStatus, executionResult?: TxExecutionResult) => ({
@@ -122,4 +125,16 @@ it("announces nothing when the caller saves no hash", async () => {
   } finally {
     provingProgress.off("tx-hash-saved", saved)
   }
+})
+
+it("names the pending transaction a node refused a conflicting one for, through any cause", () => {
+  const held = `0x${"0A".repeat(32)}`
+  const refusal = new Error(
+    `Nullifier conflict with existing tx ${held}. Minimum required fee: 1, got: 0`,
+  )
+  expect(conflictingPendingTx(refusal)).toBe(held.toLowerCase())
+  expect(conflictingPendingTx(new Error("send failed", { cause: refusal }))).toBe(
+    held.toLowerCase(),
+  )
+  expect(conflictingPendingTx(new Error("Receipt timed out"))).toBeUndefined()
 })

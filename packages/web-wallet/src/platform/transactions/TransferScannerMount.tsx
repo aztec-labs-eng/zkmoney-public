@@ -18,34 +18,40 @@
 
 import { useEffect } from "react"
 import {
-  BalanceStorage,
-  ContactStorage,
-  RequestStorage,
-  TransactionStorage,
-  WalletSyncCoordinator,
-  WithdrawalStorage,
   balanceScope,
+  BalanceStorage,
   bootPriority,
+  ContactStorage,
   createTagForwardResolver,
   createWalletSyncSource,
   getActiveNetworkId,
+  RequestStorage,
   startRequestFulfillmentReconciler,
+  TransactionStorage,
+  useAccountContext,
   useAssetContext,
   useAztecContext,
   useContractServiceContext,
+  WalletSyncCoordinator,
+  WithdrawalStorage,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { resolveTagForCommit } from "../../features/contacts/registryResolution"
 import { loadWalletIdentity } from "../../features/identity/walletIdentity"
+import { savingsRescanToken } from "../../features/savings/savingsGateway"
 import { rescanWithdrawals } from "../../features/withdraw/withdrawGateway"
 import { webStorage } from "../storage/WebStorageAdapter"
 import { createContactsByL2 } from "../xmtp/adapters"
 
 const TRANSFER_SCAN_LOCK = "transfer-scan"
 
+/** How long a failed Savings rescan waits before it tries again. */
+export const SAVINGS_RESCAN_RETRY_MS = 30_000
+
 export function TransferScannerMount(): null {
   const { tokenService } = useAssetContext()
   const { obsidionWallet, currentNetwork } = useAztecContext()
+  const { obsidionAccount } = useAccountContext()
   const { contractService } = useContractServiceContext()
 
   useEffect(() => {
@@ -54,18 +60,41 @@ export function TransferScannerMount(): null {
     if (!tokenService || !obsidionWallet || !identity || !networkId || !currentNetwork) return
 
     const transactionStore = TransactionStorage.get(webStorage)
-    const stopReconciler = startRequestFulfillmentReconciler(RequestStorage.get(), transactionStore)
+    const stopReconciler = startRequestFulfillmentReconciler(
+      RequestStorage.get(),
+      transactionStore,
+      ContactStorage.get(),
+    )
 
     let disposed = false
     let building = false
     let built: { acquire: () => void; release: () => void } | undefined
 
-    void bootPriority
+    // Burns from every token the wallet holds. Main's runs first and on its own; a fresh device's
+    // moves back from Savings are burns of the Savings token, scanned after it once Savings'
+    // deployment resolves.
+    const rescanned = (label: string) => (err: unknown) =>
+      console.warn(
+        `[TransferScannerMount] ${label} withdrawal rescan failed (retried on next mount)`,
+        err,
+      )
+    const main = bootPriority
       .whenBalanceSettled()
-      .then(() => (disposed ? undefined : rescanWithdrawals(obsidionWallet, tokenService)))
-      .catch((err) => {
-        console.warn("[TransferScannerMount] withdrawal rescan failed (retried on next mount)", err)
-      })
+      .then(() => (disposed ? undefined : rescanWithdrawals(obsidionWallet, [{ tokenService }])))
+    main.catch(rescanned("Main"))
+    // A Savings lookup or scan that failed is tried again until it answers.
+    let savingsRetry: ReturnType<typeof setTimeout> | undefined
+    const scanSavings = (account: NonNullable<typeof obsidionAccount>) =>
+      void Promise.all([savingsRescanToken(obsidionWallet, account), main.catch(() => {})])
+        .then(([savings]) =>
+          savings && !disposed ? rescanWithdrawals(obsidionWallet, [savings]) : undefined,
+        )
+        .catch((err: unknown) => {
+          rescanned("Savings")(err)
+          if (!disposed)
+            savingsRetry = setTimeout(() => scanSavings(account), SAVINGS_RESCAN_RETRY_MS)
+        })
+    if (obsidionAccount) scanSavings(obsidionAccount)
 
     const build = async (): Promise<void> => {
       if (disposed || built || building) return
@@ -163,6 +192,7 @@ export function TransferScannerMount(): null {
 
     return () => {
       disposed = true
+      clearTimeout(savingsRetry)
       document.removeEventListener("visibilitychange", onVisibility)
       built?.release()
       stopReconciler()

@@ -68,6 +68,8 @@ export interface ContractServiceOptions {
    */
   resolveGenerationArtifact?: (contract: ContractName) => unknown | null
   resolveClassArtifact?: (classId: string) => Promise<ContractArtifact>
+  /** Every class id the reviewed artifact manifest holds under an artifact name, e.g. "PaylinkDirect". */
+  listClassIds?: (artifactName: string) => Promise<string[]>
   onL1AddressesLoaded?: (addresses: { token: string; portal: string }) => void
 }
 
@@ -210,6 +212,7 @@ export interface OxideEnvTuple {
   plainWithdrawalExecutor?: string
   /** L2 Broadcaster the wallet broadcasts L1 operations through. */
   l2Broadcaster?: string
+  updateMetadataSIPAImplementation?: string
   frozenNotesRefundVerifier?: string
   frozenDepositRefundVerifier?: string
   unprocessedDepositRefundVerifier?: string
@@ -461,28 +464,8 @@ export interface ZkProofClaimInput {
   }
 }
 
-// ── Exit-bundle protocol + generation manifest ──────────────────────
-// Cross-generation migration wire types. Pure data; the runtime GENERATIONS
-// manifest lives in constants and the wire version in front-core's
-// exitBundleCodec.
-export type {
-  ExitBundleRequest,
-  ExitBundleProceed,
-  ExitBundleHostMessage,
-  ExitBundleStage,
-  ExitBundleStatus,
-  ExitBundleNotesEnumerated,
-  ExitBundleResult,
-  ExitBundleError,
-  ExitBundleMessage,
-  GenerationStatus,
-  GenerationManifestEntry,
-  GenerationServices,
-} from "./exitBundle.js"
-
-// ── Generation stack (migration seam) ────────────────────────────────
-// Version-agnostic contract each generation's adapter implements.
-export type { GenerationStack, FrozenNotesEnumeration } from "./generationStack.js"
+// ── Generation manifest ──────────────────────────────────────────────
+export type { GenerationStatus, GenerationManifestEntry, GenerationServices } from "./generations.js"
 
 export type {
   RegistrationIntent,
@@ -494,6 +477,7 @@ export type {
   SignedTermsResponse,
   NameHold,
   NameClaimResponse,
+  DrawnNameResponse,
   NameReservationResponse,
 } from "./registration.js"
 
@@ -544,3 +528,8 @@ export type SIPADepositPhase =
   | "failed" // Terminal.
   | "recoverable" // sweep cannot proceed (e.g. sub-fee funding, or ETH) — recoverERC20/recoverETH is the exit
   | "recovered" // recoverERC20/recoverETH completed. Terminal.
+export type {
+  FrozenDepositDescriptor,
+  FrozenRefundKind,
+  MigrationFundingBatch,
+} from "./metadataMigration.js"

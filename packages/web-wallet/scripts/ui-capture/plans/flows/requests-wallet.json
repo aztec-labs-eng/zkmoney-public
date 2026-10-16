@@ -13,7 +13,7 @@
     {
       "action": "click",
       "role": "button",
-      "name": "Confirm & send",
+      "name": "Pay $24.00",
       "exact": true
     },
     {

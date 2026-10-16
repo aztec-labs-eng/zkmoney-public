@@ -311,7 +311,7 @@ export function WithdrawFreshModal({
       {phase !== "working" && (
         <>
           {phase === "confirm" && (
-            <div className="ww-fresh__back">
+            <div className="ww-deposit-warning__back">
               <TopNavIconButton
                 icon="chevron-left"
                 ariaLabel="Back"

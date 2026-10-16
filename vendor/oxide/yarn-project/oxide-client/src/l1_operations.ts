@@ -17,6 +17,7 @@ import type { RefundOwner } from '@oxide/oxide-lib/refund_authorization.js';
 import { resolveArchive, resolveBurnCheckpointArchive } from './archive_ref.js';
 import { buildFrozenDepositRefundProof } from './frozen_deposit.js';
 import { buildFrozenNotesRefundProof } from './frozen_notes.js';
+import { type InboxMessageSource, buildInboxSiblingPath } from './inbox_sibling_path.js';
 import type { NullificationEffectData, SpendMetadataResolver } from './token_operations_collector.js';
 import type { L1SubmitContext } from './types.js';
 import { buildUnprocessedDepositRefundProof } from './unprocessed_deposit.js';
@@ -188,6 +189,10 @@ export async function refundFrozenDeposit(
   );
 }
 
+/**
+ * A new Inbox message or an L1 reorg before the transaction runs can make the Inbox path stale. Then the portal refuses
+ * the refund. Call this function again to retry: it builds a new proof and a new path.
+ */
 export async function refundUnprocessedDeposit(
   ctx: L1SubmitContext,
   args: {
@@ -197,7 +202,9 @@ export async function refundUnprocessedDeposit(
     l2Recipient: RefundOwner;
     l2RecipientMasterNullifierHidingKey: GrumpkinScalar;
     messageLeafIndex: bigint;
-    inboxSiblingPath: Fr[];
+    /** The L1 block of the `Deposit` event. */
+    l1BlockNumber: bigint;
+    inbox: InboxMessageSource;
   },
   options: WriteOptions = {},
 ): Promise<ContractWriteResult> {
@@ -215,13 +222,15 @@ export async function refundUnprocessedDeposit(
     l2RecipientMasterNullifierHidingKey: args.l2RecipientMasterNullifierHidingKey,
     messageLeafIndex: args.messageLeafIndex,
   });
+  // Built after the proof, so that the path has the Inbox messages that arrived while the proof was built.
+  const inboxSiblingPath = await buildInboxSiblingPath(args.inbox, args);
   return await ctx.portal.refundUnprocessedDeposit(
     args.executorCall,
     args.amount,
     finalization.siloedNullifier,
     finalization.messageHash,
     args.messageLeafIndex,
-    args.inboxSiblingPath,
+    inboxSiblingPath,
     proof,
     finalization.signature,
     options,

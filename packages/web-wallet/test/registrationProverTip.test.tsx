@@ -36,6 +36,7 @@ const loaded = (worstSpeedupSeconds: number, proverTip = TIP) => ({
     worstSpeedupSeconds,
     speedupSeconds: worstSpeedupSeconds,
     confidence: "measured",
+    pastTipCutoff: false,
   } as unknown as WithdrawalSpeedupEstimate,
   quote: { proverTip, gasPriceWei: 1n, usdPerEth: 1n, subsidy: 0n } as ProverTipQuote,
 })

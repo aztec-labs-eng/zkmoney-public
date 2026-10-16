@@ -1,5 +1,6 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest"
 import type { AztecNode } from "@aztec/aztec.js/node"
+import { BlockNumber } from "@aztec/foundation/branded-types"
 
 const h = vi.hoisted(() => ({ createAztecNodeClient: vi.fn() }))
 vi.mock("@aztec/aztec.js/node", () => ({ createAztecNodeClient: h.createAztecNodeClient }))
@@ -8,11 +9,15 @@ const { createNode, NODE_INFO_TTL_MS } = await import("../src/node/createNode.js
 
 /** A client counting `getNodeInfo` reads, with one other method to prove pass-through. */
 function fakeClient(info: () => Promise<unknown> = async () => ({ rollupVersion: 1 })) {
-  const calls = { getNodeInfo: 0, getBlockNumber: 0 }
+  const calls = { getNodeInfo: 0, getBlockNumber: 0, getBlock: 0 }
   const client = {
     getNodeInfo: () => {
       calls.getNodeInfo++
       return info()
+    },
+    getBlock: async (block: number) => {
+      calls.getBlock++
+      return { number: block }
     },
     getBlockNumber: async () => {
       calls.getBlockNumber++
@@ -72,5 +77,21 @@ describe("createNode getNodeInfo memo", () => {
     await node.getBlockNumber()
 
     expect(calls.getBlockNumber).toBe(2)
+  })
+})
+
+describe("createNode genesis block memo", () => {
+  it("reads the genesis block once, and every other block each time", async () => {
+    const calls = fakeClient()
+    const node = createNode("http://node.invalid")
+
+    await Promise.all([node.getBlock(BlockNumber.ZERO), node.getBlock(BlockNumber.ZERO)])
+    await node.getBlock(BlockNumber.ZERO)
+    expect(calls.getBlock).toBe(1)
+
+    await node.getBlock(BlockNumber(5))
+    await node.getBlock(BlockNumber(5))
+    await node.getBlock(BlockNumber.ZERO, { includeTransactions: true })
+    expect(calls.getBlock).toBe(4)
   })
 })

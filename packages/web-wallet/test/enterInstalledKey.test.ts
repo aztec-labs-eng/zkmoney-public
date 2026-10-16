@@ -20,21 +20,11 @@ const h = vi.hoisted(() => ({
   readNameOf: vi.fn(),
   getCode: vi.fn(),
   readAuthKeys: vi.fn(),
-  /** The hand-off's anchor tiers; the entry tests pass theirs explicitly. */
-  tiers: [] as AnchorTier[],
   /** The published generations a test wants read instead of the unnamed default. */
   generations: undefined as unknown,
 }))
 
 vi.mock("../src/platform/auth/useAuthenticator", () => ({ getAuthService: () => h.service }))
-vi.mock("../src/platform/storage/handoffMaterial", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/platform/storage/handoffMaterial")>()),
-  takeHandoffMaterial: () => null,
-}))
-vi.mock("../src/features/onboarding/recoveryProbes", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/onboarding/recoveryProbes")>()),
-  anchorTiers: () => h.tiers,
-}))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ rpId: "localhost" }) }))
 vi.mock("../src/config/oxideTuple", () => ({
   getOxideTuple: async () => ({
@@ -82,9 +72,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   }),
 }))
 
-const { adoptHandoff, enterWithPasskey, resolveHandoff } = await import(
-  "../src/features/onboarding/oxideOnboarding"
-)
+const { enterWithPasskey } = await import("../src/features/onboarding/oxideOnboarding")
 const { credentialIdToMetadata } = await import("@obsidion/front-core")
 
 const ADDR = `0x${"aa".repeat(32)}`
@@ -149,7 +137,6 @@ const held = () => JSON.stringify([...store].filter(([k]) => k !== "webwallet.pa
 beforeEach(() => {
   vi.clearAllMocks()
   store.clear()
-  h.tiers = []
   h.generations = undefined
   vi.stubGlobal("localStorage", {
     getItem: (k: string) => store.get(k) ?? null,
@@ -235,9 +222,8 @@ describe("a sign-in anchored only by the master key adopts the credential's real
 
   it("a record-present discoverable sign-in still carries the passkey's name on the unclaimed result", async () => {
     const { created, wallet } = await freshBrowserWithPasskey()
-    // A device record for the credential (as adoptHandoff/storeAccount writes on the campaign
-    // hand-off), so the returning discoverable sign-in takes beginRecovery's record branch instead
-    // of the unsettled one. The name the passkey carries must survive that branch.
+    // A device record for the credential (as storeAccount writes), so the returning discoverable
+    // sign-in takes beginRecovery's record branch instead of the unsettled one. The name the passkey carries must survive that branch.
     await (h.service as WebAlphaAuthService).recordRecoveryMetadata({
       credentialId: created.credentialId,
       l2Address: ADDR,
@@ -394,6 +380,29 @@ describe("a sign-in anchored only by the master key adopts the credential's real
       committedNothing(createObsidionAccount, before)
     })
 
+    describe("with the retired-rollup list failed to load", () => {
+      beforeEach(() => {
+        h.generations = { ...unnamedGenerations, catalogIncomplete: true }
+      })
+
+      it("refuses an account-less key instead of sending it to a name claim", async () => {
+        const { created, wallet } = await laptopSignIn("local", false)
+        await expect(signIn(wallet, masterKeyOnly(created.secretKey))).rejects.toMatchObject({
+          name: "OxideIdentityUnavailableError",
+        })
+      })
+
+      it("marks a key no anchor names as unresolved on an incomplete catalog, keeping its evidence", async () => {
+        const { wallet, createObsidionAccount } = await laptopSignIn("cross-device")
+        const before = held()
+        const absent: CandidateProbe = async () => "absent"
+        const result = await signIn(wallet, [{ name: "campaign", probes: [absent] }])
+        expect(result).toMatchObject({ entered: false, reason: "unknown", catalogIncomplete: true })
+        expect(result).toHaveProperty("addresses")
+        committedNothing(createObsidionAccount, before)
+      })
+    })
+
     it("an anchor that names both candidates, or cannot answer, commits nothing", async () => {
       const { wallet, createObsidionAccount } = await laptopSignIn("cross-device")
       const before = held()
@@ -408,41 +417,6 @@ describe("a sign-in anchored only by the master key adopts the credential's real
         /unreachable/,
       )
       committedNothing(createObsidionAccount, before)
-    })
-
-    describe("a campaign hand-off whose material was missed, resolved on the same laptop", () => {
-      const hintsFor = (created: { credentialId: string; pubkey: string }) => ({
-        credentialId: created.credentialId,
-        pubkeyHex: created.pubkey,
-      })
-
-      it("adopts the hinted account when an anchor names it, and only on adoption", async () => {
-        const { created, wallet, createObsidionAccount } = await laptopSignIn("cross-device")
-        h.tiers = masterKeyOnly(created.secretKey)
-        const resolved = await resolveHandoff(
-          wallet as never,
-          {} as never,
-          config,
-          hintsFor(created),
-          gateFor("phone").gate,
-        )
-        expect(resolved.msk.equals(created.secretKey)).toBe(true)
-        expect(resolved.slot).toBe("first")
-        expect(createObsidionAccount).not.toHaveBeenCalled()
-        const keys = await adoptHandoff(wallet as never, resolved)
-        expect(keys.secretKey.equals(created.secretKey)).toBe(true)
-        await committedTheAccount(created, createObsidionAccount)
-      })
-
-      it("refuses with nothing written when no anchor names either candidate", async () => {
-        const { created, wallet, createObsidionAccount } = await laptopSignIn("local")
-        h.tiers = [{ name: "campaign", probes: [async () => "absent"] }]
-        const before = held()
-        await expect(
-          resolveHandoff(wallet as never, {} as never, config, hintsFor(created), gateFor("phone").gate),
-        ).rejects.toMatchObject({ name: "NoWalletForPasskeyError" })
-        committedNothing(createObsidionAccount, before)
-      })
     })
   })
 })

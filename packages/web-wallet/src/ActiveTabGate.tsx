@@ -4,6 +4,8 @@
  */
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
 import type { AztecNode } from "@aztec/aztec.js/node"
+import { BarretenbergSync } from "@aztec/bb.js"
+import { BlockNumber } from "@aztec/foundation/branded-types"
 import { NoRetryError, makeBackoff, retry } from "@aztec/foundation/retry"
 import type { AztecSQLiteOPFSStore } from "@aztec/kv-store/sqlite-opfs"
 import type { ChainIdentity } from "@obsidion/core/types"
@@ -32,7 +34,10 @@ import { BootErrorScreen } from "./ui/BootErrorScreen"
 import {
   BootSplash,
   assertCustomL1RpcSimulates,
+  bootWaitsForDemand,
   describeBootError,
+  identityReads,
+  isPayPath,
   reportBootFailure,
   verifiedIdentity,
   type PxeBootTarget,
@@ -88,6 +93,7 @@ async function openPxeStore(
 function walletDeps(): ActiveTabDeps<OpenedWallet> {
   const config = getConfig()
   const node = sendOnlyWhileActive(createNode(config.nodeUrl, config.nodeApiKey))
+  let reads: ReturnType<typeof identityReads> | undefined
   let identity: Promise<ChainIdentity> | undefined
   let l1RpcSimulates: Promise<void> | undefined
   return {
@@ -95,14 +101,26 @@ function walletDeps(): ActiveTabDeps<OpenedWallet> {
     // The wallet database first: the PXE store is only worth opening for a wallet this tab holds.
     open: async () => {
       const startedAt = (bootStartedAt ??= performance.now())
+      // None of these needs a store, so they load while the stores open: the chain reads the
+      // identity check judges, and the genesis block and hashing WASM the PXE starts with.
+      reads ??= identityReads(config, node)
+      const warmPxe = () => {
+        void node.getBlock(BlockNumber.ZERO)
+        // A failure resurfaces where the PXE first hashes.
+        BarretenbergSync.initSingleton().catch(() => {})
+      }
+      // Whether the PXE boot waits needs the wallet database; only a pay page can wait.
+      const payPage = isPayPath(location.pathname)
+      if (!payPage) warmPxe()
       await openWalletStore(activeRollup(), { persistent: await opfsAvailable() })
+      if (payPage && !bootWaitsForDemand()) warmPxe()
       try {
         await bindStoredConsent()
         // Checked once per page, after consent is bound so the check's events are sent. The wallet
         // database is named after the profile's rollup, which the check holds to L1's.
-        identity ??= verifiedIdentity(config, node)
-        const verified = await identity
-        await (l1RpcSimulates ??= assertCustomL1RpcSimulates(config))
+        identity ??= verifiedIdentity(config, node, reads)
+        l1RpcSimulates ??= assertCustomL1RpcSimulates(config)
+        const [verified] = await Promise.all([identity, l1RpcSimulates])
         const store = await openPxeStore(verified, config.nodeEndpointDigest)
         return {
           node,

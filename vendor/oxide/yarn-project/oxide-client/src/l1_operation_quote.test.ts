@@ -1,3 +1,4 @@
+import { LegacyOperationExecutorAbi } from '@oxide/l1-contracts/legacy_operation_executor.js';
 import { MAX_PRIORITY_FEE_WEI } from '@oxide/oxide-lib/oxide_constants.gen.js';
 
 import { describe, expect, it, jest } from '@jest/globals';
@@ -37,16 +38,25 @@ function fakeClient(call: Record<string, unknown>, priorityFee = PRIORITY_FEE) {
 }
 
 describe('estimateL1OperationFeeValues', () => {
-  it('adds the default headroom to the latest base fee, then the tip', async () => {
+  it('adds the headroom to the latest base fee, then the tip', async () => {
     const { client, getBlock } = fakeClient({});
     const feeValues = await estimateL1OperationFeeValues(client);
     expect(getBlock).toHaveBeenCalledWith({ blockTag: 'latest' });
-    expect(feeValues).toEqual({ maxFeePerGas: 1_693_750_000n, maxPriorityFeePerGas: PRIORITY_FEE });
+    expect(feeValues).toEqual({ maxFeePerGas: 3_100_000_000n, maxPriorityFeePerGas: PRIORITY_FEE });
   });
 
-  it('adds a configured headroom', async () => {
-    const feeValues = await estimateL1OperationFeeValues(fakeClient({}).client, 50);
-    expect(feeValues.maxFeePerGas).toBe(2_350_000_000n);
+  it('prices a given quote block without reading the latest block', async () => {
+    const { client, getBlock } = fakeClient({});
+    const feeValues = await estimateL1OperationFeeValues(client, { number: 99n, baseFeePerGas: 1_000_000_000n });
+    expect(getBlock).not.toHaveBeenCalled();
+    expect(feeValues.maxFeePerGas).toBe(2_100_000_000n);
+  });
+
+  it('throws on a block without a base fee', async () => {
+    const { client } = fakeClient({});
+    await expect(estimateL1OperationFeeValues(client, { number: 99n, baseFeePerGas: null })).rejects.toThrow(
+      'L1 block 99 has no base fee',
+    );
   });
 
   it('signs a tip below the cap as it is', async () => {
@@ -57,12 +67,12 @@ describe('estimateL1OperationFeeValues', () => {
   it('caps the tip at the max priority fee', async () => {
     const feeValues = await estimateL1OperationFeeValues(fakeClient({}, 5_000_000_000n).client);
     expect(feeValues.maxPriorityFeePerGas).toBe(MAX_PRIORITY_FEE_WEI);
-    expect(feeValues.maxFeePerGas).toBe((BASE_FEE * 10_625n) / 10_000n + MAX_PRIORITY_FEE_WEI);
+    expect(feeValues.maxFeePerGas).toBe(2n * BASE_FEE + MAX_PRIORITY_FEE_WEI);
   });
 });
 
 describe('simulateL1Operation', () => {
-  it('simulates the executor call at the latest base fee, with the sender funded and the extra state', async () => {
+  it('simulates the executor call with no gas cost at the latest base fee, with the sender funded and the extra state', async () => {
     const { client, simulateBlocks } = fakeClient({ status: 'success', result: 7n, gasUsed: 90_000n, logs: [] });
     const extra = [{ address: ESCROW, balance: 1n }];
     const result = await simulateL1Operation(client, {
@@ -80,7 +90,7 @@ describe('simulateL1Operation', () => {
       logs: [],
       blockNumber: 100n,
       baseFeePerGas: BASE_FEE,
-      costWei: 180_768_000_000_000n,
+      gasToCover: 90_768n,
     });
 
     const [request] = simulateBlocks.mock.calls[0] as [Record<string, any>];
@@ -93,10 +103,44 @@ describe('simulateL1Operation', () => {
     expect(block.calls[0]).toMatchObject({
       to: EXECUTOR,
       functionName: 'execute',
-      args: [OPERATION.target, OPERATION.calldata, OPERATION.payoutToken, 5n],
+      args: [OPERATION.target, OPERATION.calldata, OPERATION.payoutToken, 5n, 0n, 0n],
       from: SENDER,
       ...FEE_VALUES,
     });
+  });
+
+  it('simulates the four-argument call of a legacy executor', async () => {
+    const { client, simulateBlocks } = fakeClient({ status: 'success', result: 7n, gasUsed: 90_000n });
+    await simulateL1Operation(client, {
+      executor: EXECUTOR,
+      legacyExecutor: true,
+      sender: SENDER,
+      operation: OPERATION,
+      feeValues: FEE_VALUES,
+      minPayout: 5n,
+    });
+    const [request] = simulateBlocks.mock.calls[0] as [Record<string, any>];
+    expect(request.blocks[0].calls[0]).toMatchObject({
+      abi: LegacyOperationExecutorAbi,
+      functionName: 'execute',
+      args: [OPERATION.target, OPERATION.calldata, OPERATION.payoutToken, 5n],
+    });
+  });
+
+  it('simulates on a given quote block at its base fee', async () => {
+    const { client, simulateBlocks, getBlock } = fakeClient({ status: 'success', result: 7n, gasUsed: 90_000n });
+    const quoteBlock = { number: 99n, baseFeePerGas: 1_000_000_000n };
+    await simulateL1Operation(client, {
+      executor: EXECUTOR,
+      sender: SENDER,
+      operation: OPERATION,
+      feeValues: FEE_VALUES,
+      quoteBlock,
+    });
+    expect(getBlock).not.toHaveBeenCalled();
+    const [request] = simulateBlocks.mock.calls[0] as [Record<string, any>];
+    expect(request.blockNumber).toBe(99n);
+    expect(request.blocks[0].blockOverrides).toEqual({ baseFeePerGas: 1_000_000_000n });
   });
 
   it('returns a failed call as a failure', async () => {
@@ -121,7 +165,7 @@ describe('quoteL1Operation', () => {
     ethUsdFeed: priceFeedForChainId(1n).toString() as Address,
   };
 
-  it('requires the payout in the simulation and converts the gas cost to USD', async () => {
+  it('requires the payout in the simulation and prices its gas at the base fee plus the tip', async () => {
     const { client, simulateBlocks, readContract } = fakeClient({
       status: 'success',
       result: 9n,
@@ -133,13 +177,14 @@ describe('quoteL1Operation', () => {
     const [request] = simulateBlocks.mock.calls[0] as [Record<string, any>];
     expect(request.blocks[0].calls[0].args[3]).toBe(9n);
     expect(readContract).toHaveBeenCalledWith(expect.objectContaining({ address: args.ethUsdFeed }));
+    // 120,768 gas to cover at 1.6 gwei and 3,000 USD/ETH; the 3.1 gwei fee ceiling does not price it.
     expect(quote).toEqual({
-      maxFeePerGas: 1_693_750_000n,
+      maxFeePerGas: 3_100_000_000n,
       maxPriorityFeePerGas: PRIORITY_FEE,
       gasUsed: 120_000n,
       baseFeePerGas: BASE_FEE,
       usdPerEth: USD_PER_ETH,
-      minPayout: 611_701_200_000_000_000n,
+      minPayout: 579_686_400_000_000_000n,
     });
   });
 

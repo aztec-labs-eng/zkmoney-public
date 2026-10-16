@@ -263,3 +263,8 @@ export function payerForPaidLink(
   if (!displayName) return undefined
   return { displayName, contact }
 }
+
+/** Whether a paid request's payer is now a full contact: the paid screen's "Added to your contacts". */
+export function payerAddedToContacts(payer: PaidLinkPayer | undefined): boolean {
+  return !!payer?.contact && payer.contact.addressKind === "aztec-l2" && !payer.contact.autoAdded
+}

@@ -14,8 +14,8 @@ import {
   getContractInstanceFromInstantiationParams,
   type ContractInstanceWithAddress,
 } from "@aztec/stdlib/contract"
-import { claimFpcRefuelGas } from "@obsidion/contracts"
 import { CLAIM_FPC_GAS_TABLE } from "./claimFpcGasTable.js"
+import { CLAIM_FPC_MAX_FEES_PER_GAS, type claimFpcSponsoredFee } from "./claimFpcBatchGas.js"
 
 /** TS mirror of the circuit's `password_hash_of`: the `str<31>` packed as one big-endian field
  * (FieldCompressedString), poseidon2-hashed. ASCII-only. */
@@ -50,26 +50,24 @@ export async function getClaimFpcInstance(
 /**
  * The `fee` for a `refuel` send: the contract's own `REFUEL_OVERHEAD_GAS` declared exactly as the
  * limits, mirroring `claimFpcSponsoredFee` — the circuit bounds declared gas x fee-per-gas, so the
- * declaration must be the budget, and the wallet's priced fee-per-gas is the only variable.
+ * declaration must be the budget, at the config's fee-per-gas.
  *
- * refuel is a fixed shape, so the artifact global is asserted equal to the measured gas table to
- * the gas (the same cross-check discipline as `deriveClaimFpcGasBudgets`): a re-measurement or a
- * contract change that moves the number fails loudly here instead of shipping a drifted cap.
+ * refuel is a fixed shape, so its measured table entry is that global to the gas; the inventory
+ * test pins the two equal. Reading the table keeps the ClaimFPC artifact out of the wallet's boot
+ * bundle.
  */
-export function claimFpcRefuelFee(): { gasSettings: { gasLimits: Gas; teardownGasLimits: Gas } } {
-  const gas = claimFpcRefuelGas()
-  const measured = CLAIM_FPC_GAS_TABLE["refuel"]
-  if (!measured || measured.daGas !== gas.daGas || measured.l2Gas !== gas.l2Gas) {
+export function claimFpcRefuelFee(): ReturnType<typeof claimFpcSponsoredFee> {
+  const gas = CLAIM_FPC_GAS_TABLE["refuel"]
+  if (!gas) {
     throw new Error(
-      `REFUEL_OVERHEAD_GAS (da=${gas.daGas}, l2=${gas.l2Gas}) does not match the measured gas ` +
-        `table entry (da=${measured?.daGas}, l2=${measured?.l2Gas}) — re-run the sdk fpc suites ` +
-        "with CLAIMFPC_GAS_REPORT=1 and pin the contract global to the regenerated table",
+      "the measured gas table has no refuel entry; re-run the sdk fpc suites with CLAIMFPC_GAS_REPORT=1",
     )
   }
   return {
     gasSettings: {
       gasLimits: new Gas(gas.daGas, gas.l2Gas),
       teardownGasLimits: Gas.empty(),
+      maxFeesPerGas: CLAIM_FPC_MAX_FEES_PER_GAS,
     },
   }
 }

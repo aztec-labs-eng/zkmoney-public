@@ -274,7 +274,7 @@ describe("Modal", () => {
     destination.remove()
   })
 
-  it("suspends without dismissing or losing state, and restores the focused control", async () => {
+  it("lowers to non-modal without dismissing or losing state, and restores the focused control", async () => {
     const onClose = vi.fn()
     vi.mocked(HTMLDialogElement.prototype.close).mockImplementation(function (
       this: HTMLDialogElement,
@@ -298,11 +298,13 @@ describe("Modal", () => {
     input.value = "123"
     connect.focus()
     await render(form(true))
-    expect(frame.open).toBe(false)
+    expect(frame.open).toBe(true)
+    expect(frame.getAttribute("aria-modal")).toBe("false")
     expect(onClose).not.toHaveBeenCalled()
     await render(form(true))
-    expect(frame.open).toBe(false)
+    expect(frame.open).toBe(true)
     await render(form(false))
+    expect(frame.getAttribute("aria-modal")).toBe("true")
     expect(frame.open).toBe(true)
     expect(input.value).toBe("123")
     expect(document.activeElement).toBe(connect)

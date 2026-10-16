@@ -385,14 +385,32 @@
 .zkm-shimmer__band {
   position: absolute;
   inset: 0;
+  overflow: hidden;
   pointer-events: none;
-  background-image: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.4) 50%, transparent 100%);
-  background-size: 55% 100%;
-  background-repeat: no-repeat;
-  animation: zkm-shimmer-sweep 1.4s linear infinite;
 }
-/* band is 55% wide → position % maps to the remaining 45%: -123% parks it
-   fully off-left, 223% fully off-right */
+/* Moved by transform, not background-position, so it slides on the compositor while the main
+   thread is busy. 55% wide: -100% parks it fully off-left, 182% (100 / 55) fully off-right. */
+.zkm-shimmer__band::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 55%;
+  background-image: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.4) 50%, transparent 100%);
+  animation: zkm-shimmer-slide 1.4s linear infinite;
+  will-change: transform;
+}
+@keyframes zkm-shimmer-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(182%);
+  }
+}
+/* The glyph-clipped shimmer can only move its background: a 55% band maps position % to the
+   remaining 45%, so -123% parks it fully off-left, 223% fully off-right. */
 @keyframes zkm-shimmer-sweep {
   from {
     background-position: -123% 0;
@@ -402,10 +420,16 @@
   }
 }
 
+/* The box turns, not the svg in it: every engine runs a transform animation on an HTML box off the
+   main thread, which not all do for SVG. */
 .zkm-spinner-icon {
   display: block;
   flex: none;
   animation: zkm-spinner-rotate 1.4s linear infinite;
+  will-change: transform;
+}
+.zkm-spinner-icon > svg {
+  display: block;
 }
 @keyframes zkm-spinner-rotate {
   to {

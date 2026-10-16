@@ -9,7 +9,13 @@ import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { walletStorage } from "../src/platform/storage/walletStorage"
+import {
+  closeWalletStore,
+  openWalletStore,
+  walletStorage,
+} from "../src/platform/storage/walletStorage"
+import { sandboxProfile } from "./fixtures/sandboxProfile"
+import { testWalletDbs } from "./support/fakeWalletDb"
 import type { SignInStart } from "../src/features/onboarding/steps/ConfirmTagModal"
 
 vi.setConfig({ testTimeout: 30_000 })
@@ -31,7 +37,6 @@ const h = vi.hoisted(() => ({
   claimTag: vi.fn(),
   collectOnboardingKeys: vi.fn(async () => ({})),
   saveTerms: vi.fn(),
-  openActivationPrompt: vi.fn(),
   bridge: null as unknown,
 }))
 
@@ -51,8 +56,8 @@ vi.mock("../src/config/env", async (importOriginal) => ({
 }))
 vi.mock("../src/config/oxideTuple", () => ({ getOxideTuple: h.getOxideTuple }))
 vi.mock("../src/features/contacts/registryResolution", () => ({
-  resolveTagViaRegistry: vi.fn(),
-  resolveTagForCommit: vi.fn(),
+  resolveSignInTag: vi.fn(),
+  resolveSignInTagForCommit: vi.fn(),
 }))
 vi.mock("../src/features/onboarding/oxideOnboarding", async () => {
   const { matchWireNameHash } = await import("@obsidion/front-core")
@@ -90,9 +95,6 @@ vi.mock("../src/features/onboarding/recoveryProbes", () => ({
 vi.mock("../src/features/onboarding/registrationTerms", () => ({
   saveRegistrationTerms: h.saveTerms,
 }))
-vi.mock("../src/features/onboarding/activationPrompt", () => ({
-  openActivationPrompt: h.openActivationPrompt,
-}))
 // The lookup is the only stand-in: the diagnosis and the code table are the real ones.
 vi.mock("../src/features/onboarding/findPasskeyByTag", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/onboarding/findPasskeyByTag")>()),
@@ -106,7 +108,7 @@ vi.mock("../src/platform/auth/useAuthenticator", () => ({
   peekAuthService: () => undefined,
 }))
 vi.mock("../src/features/onboarding/webRegistration", () => ({
-  getPendingStore: () => ({ list: () => [] }),
+  getPendingStore: () => ({ list: () => [], get: () => null }),
 }))
 vi.mock("../src/features/paylink/claimStash", () => ({ peekClaimStash: () => undefined }))
 vi.mock("../src/features/paylink/sponsoredPaylink", () => ({ decodeLink: vi.fn() }))
@@ -314,9 +316,7 @@ const submitField = async () => {
 const navigatedTo = (route: string) =>
   h.navigate.mock.calls.some((call) => (call as unknown[])[0] === route)
 const leaveAssign = vi.fn()
-/** Cancelling hands back to the campaign, which ends its own session on arrival. */
-const leftForCampaign = () =>
-  leaveAssign.mock.calls.some((call) => call[0] === "https://launch.test.invalid/?signedout=1")
+const leftForClaim = () => navigatedTo("/claim")
 const lastOptions = () => {
   const calls = h.enterWithPasskey.mock.calls
   return calls[calls.length - 1][3] as EnterOptions
@@ -356,9 +356,6 @@ const nameless = () => ({
 })
 
 const MAP_KEY = "obsidion.obsidion_web_passkey_identity_map"
-/** The campaign claim notices owed on this browser (front-core CampaignClaimNotices). */
-const owedClaimNotices = () =>
-  JSON.parse(walletStorage.getItem("obsidion.obsidion_campaign_claim_notices") ?? "{}")
 /** This browser's root record for an account, with the tag it claimed. */
 function remember(credentialId: string, usertag: string, createdAt = 1) {
   const raw = walletStorage.getItem(MAP_KEY)
@@ -395,8 +392,6 @@ async function reachFound(path = "/enter?handle=alice") {
   expect(login().disabled).toBe(false)
 }
 
-const fetchMock = vi.fn()
-
 beforeEach(() => {
   vi.resetModules()
   leaveAssign.mockClear()
@@ -420,16 +415,12 @@ beforeEach(() => {
     startBroadcast: vi.fn(async () => true),
   })
   h.saveTerms.mockClear()
-  h.openActivationPrompt.mockClear()
   h.bridge = null
   h.getConfig.mockReturnValue({
     rpId: "localhost",
     campaignUrl: "https://launch.test.invalid",
-    admissionGate: true,
     accountServiceTestMode: false,
   })
-  fetchMock.mockReset()
-  vi.stubGlobal("fetch", fetchMock)
   localStorage.clear()
   container = document.createElement("div")
   document.body.appendChild(container)
@@ -467,15 +458,6 @@ describe("the arrival", () => {
     expect(screen()).toBeNull()
     expect(h.enterWithPasskey).toHaveBeenCalledTimes(1)
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
-  })
-
-  it("an entry with a name owes the campaign its claim notice", async () => {
-    h.enterWithPasskey.mockResolvedValueOnce(named())
-    await render()
-    await flush()
-    expect(owedClaimNotices()).toEqual({
-      [L2]: { l2Address: L2, tag: "alice", owedAt: expect.any(Number), attempts: 0 },
-    })
   })
 
   it("the arrival handle seeds the field and resolves it once; Login is then one click", async () => {
@@ -881,6 +863,71 @@ describe("the remembered accounts", () => {
   })
 })
 
+describe("the accounts from earlier rollups", () => {
+  /** A root record another rollup's database remembers. */
+  function rememberOn(version: string, credentialId: string, usertag: string, createdAt = 1) {
+    const db = testWalletDbs().db(version)
+    const raw = db.state.get(MAP_KEY)
+    const map = raw ? JSON.parse(raw) : { version: 1, entries: {} }
+    map.entries[credentialId] = {
+      credentialId,
+      rpId: "localhost",
+      l2Address: L2,
+      pubkey: `0x${"CD".repeat(64)}`,
+      isMskRoot: true,
+      createdAt,
+      usertag,
+    }
+    db.state.set(MAP_KEY, JSON.stringify(map))
+  }
+  const persistent = async () => {
+    await closeWalletStore()
+    await openWalletStore(sandboxProfile().shared.rollupVersion, { persistent: true })
+  }
+  const tags = () =>
+    Array.from(
+      container.querySelectorAll('[data-testid="sign-in-account"]'),
+      (row) => (row as HTMLElement).dataset.tag,
+    )
+
+  it("are listed after this rollup's own, which win a duplicate", async () => {
+    await persistent()
+    remember("cred-alice", "alice")
+    rememberOn("1000000001", "cred-alice", "alice-before")
+    rememberOn("1000000001", "cred-bob", "bob", 5)
+    await arrive()
+    expect(tags()).toEqual(["alice", "bob"])
+  })
+
+  it("pin a tapped row's passkey, as this rollup's rows do", async () => {
+    await persistent()
+    rememberOn("1000000001", "cred-bob", "bob")
+    await arrive()
+    h.enterWithPasskey.mockResolvedValueOnce(named("bob"))
+    await click("sign-in-account")
+    expect(h.lookup).not.toHaveBeenCalled()
+    expect(h.enterWithPasskey).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      "bob",
+      expect.objectContaining({ hints: { credentialId: "cred-bob", pubkeyHex: "cd".repeat(64) } }),
+    )
+    expect(walletStorage.getItem(MAP_KEY)).toBeNull()
+  })
+
+  it("are not read from a store that is not persistent", async () => {
+    rememberOn("1000000001", "cred-bob", "bob")
+    const list = vi.spyOn(testWalletDbs(), "list")
+    try {
+      await arrive()
+      expect(tags()).toEqual([])
+      expect(list).not.toHaveBeenCalled()
+    } finally {
+      list.mockRestore()
+    }
+  })
+})
+
 describe("Show passkeys and the cancels", () => {
   it("a write that failed after the chooser's answer committed shows the re-probe card, no Back", async () => {
     await arrive()
@@ -908,10 +955,10 @@ describe("Show passkeys and the cancels", () => {
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
   })
 
-  it("the screen's close hands back to the campaign, signed out of it", async () => {
+  it("the screen's close hands back to /claim", async () => {
     await arrive()
     await click("sign-in-close")
-    expect(leftForCampaign()).toBe(true)
+    expect(leftForClaim()).toBe(true)
   })
 
   it("cancel during a sign-in ends the attempt and the operation", async () => {
@@ -929,7 +976,7 @@ describe("Show passkeys and the cancels", () => {
     await click("spinner-cancel")
     expect(attempt?.aborted).toBe(true)
     expect(signal.aborted).toBe(true)
-    expect(leftForCampaign()).toBe(true)
+    expect(leftForClaim()).toBe(true)
   })
 })
 
@@ -945,7 +992,7 @@ describe("the endpoint editor", () => {
     expect(screen()).not.toBeNull()
     expect(h.enterWithPasskey).toHaveBeenCalledTimes(1)
     expect(h.navigate).not.toHaveBeenCalled()
-    expect(leftForCampaign()).toBe(false)
+    expect(leftForClaim()).toBe(false)
   })
 
   it("is offered under the desktop bridge too", async () => {
@@ -1039,18 +1086,16 @@ describe("the pinned sign-in", () => {
     await type("bob")
     await blur()
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) })
     h.reservedNameHashes.mockResolvedValueOnce([
       namehash("alice.zk.money"),
       namehash("bob.zk.money"),
     ])
     await click("sign-in-login")
     // The claim server replays the claim; the record, its terms and the pending identity are
-    // written here, and the wallet opens on the activation sheet.
+    // written here, and the wallet opens on the deposit screen.
     expect(h.claimTag).toHaveBeenCalledTimes(1)
     expect(h.claimTag.mock.calls[0]![0]).toBe("bob")
     expect(h.saveTerms).toHaveBeenCalledWith(expect.objectContaining({ tag: "bob" }))
-    expect(h.openActivationPrompt).toHaveBeenCalled()
     expect(loadWalletIdentity()).toMatchObject({ handle: "bob", address: L2, pending: true })
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
     expect(refused()).toBeNull()
@@ -1061,7 +1106,6 @@ describe("the pinned sign-in", () => {
     const { namehash } = await import("viem/ens")
     await arrive()
     h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), userHandle: "carol" })
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) })
     h.reservedNameHashes.mockResolvedValueOnce([namehash("carol.zk.money")])
     await click("sign-in-show-passkeys")
     expect(byTestId("confirm-tag")).toBeNull()
@@ -1073,7 +1117,6 @@ describe("the pinned sign-in", () => {
     const { namehash } = await import("viem/ens")
     await arrive()
     h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), userHandle: "carol" })
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) })
     h.reservedNameHashes.mockResolvedValueOnce([namehash("dave.zk.money")])
     await click("sign-in-show-passkeys")
     expect(h.claimTag).not.toHaveBeenCalled()
@@ -1081,13 +1124,12 @@ describe("the pinned sign-in", () => {
   })
 
   it("the passkey's own name names the reservation when the arrival tag names none", async () => {
-    // The arrival tag rode a sign-in link (?handle), which names the tag the waitlist knew, not
-    // necessarily the one the user reserved. It hashes to no held reservation; the passkey's own
+    // The arrival tag rode a sign-in link (?handle), which names a tag, not necessarily the one
+    // the user reserved. It hashes to no held reservation; the passkey's own
     // name, which does, still names it, the way the registered path already falls through to it.
     const { namehash } = await import("viem/ens")
     await arrive("/enter?handle=alice")
     h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), userHandle: "carol" })
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) })
     h.reservedNameHashes.mockResolvedValueOnce([namehash("carol.zk.money")])
     await click("sign-in-show-passkeys")
     expect(byTestId("confirm-tag")).toBeNull()
@@ -1095,53 +1137,13 @@ describe("the pinned sign-in", () => {
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
   })
 
-  it("a granted key resumes the reservation its passkey names rather than the granted card", async () => {
-    // A grant (the gate off answers granted too) is not a reason to send a passkey that already
-    // holds a reservation back to the signup: the name it carries reopens the wallet in place.
-    const { namehash } = await import("viem/ens")
+  it("a key with no reservation its passkey names shows the granted card", async () => {
     await arrive()
     h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), userHandle: "carol" })
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({ status: "granted" }),
-    })
-    h.reservedNameHashes.mockResolvedValueOnce([namehash("carol.zk.money")])
-    await click("sign-in-show-passkeys")
-    expect(byTestId("enter-refused")).toBeNull()
-    expect(byTestId("confirm-tag")).toBeNull()
-    expect(h.claimTag.mock.calls[0]?.[0]).toBe("carol")
-    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
-  })
-
-  it("a granted key with no reservation its passkey names still shows the granted card", async () => {
-    await arrive()
-    h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), userHandle: "carol" })
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({ status: "granted" }),
-    })
     h.reservedNameHashes.mockResolvedValueOnce([])
     await click("sign-in-show-passkeys")
     expect(h.claimTag).not.toHaveBeenCalled()
     expect(byTestId("enter-refused")).not.toBeNull()
-  })
-
-  it("a granted key whose reservation lookup fails yields to the granted card, not a network error", async () => {
-    await arrive()
-    h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), userHandle: "carol" })
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      status: 200,
-      json: async () => ({ status: "granted" }),
-    })
-    h.reservedNameHashes.mockRejectedValueOnce(new Error("account-service down"))
-    await click("sign-in-show-passkeys")
-    expect(h.claimTag).not.toHaveBeenCalled()
-    expect(byTestId("enter-refused")).not.toBeNull()
-    // The granted card, not the committed network error (whose way on is the enter-continue pill).
-    expect(byTestId("enter-continue")).toBeNull()
   })
 
   it("a reserved recovery that commits reloads carrying the passkey's name", async () => {
@@ -1160,7 +1162,52 @@ describe("the pinned sign-in", () => {
     })
     await click("sign-in-show-passkeys")
     expect(leaveAssign).toHaveBeenCalled()
-    expect(leaveAssign.mock.calls.at(-1)?.[0]).toContain("handle=carol")
+    expect(leaveAssign.mock.calls.at(-1)?.[0]).toContain("named=carol")
+    expect(leaveAssign.mock.calls.at(-1)?.[0]).not.toContain("handle=")
+  })
+
+  it("the name this browser remembers beats the passkey's own", async () => {
+    const { namehash } = await import("viem/ens")
+    await arrive()
+    h.enterWithPasskey.mockResolvedValueOnce({
+      ...nameless(),
+      usertag: "niall",
+      userHandle: "eager-lips",
+    })
+    h.reservedNameHashes.mockResolvedValueOnce([
+      namehash("eager-lips.zk.money"),
+      namehash("niall.zk.money"),
+    ])
+    await click("sign-in-show-passkeys")
+    expect(h.claimTag.mock.calls[0]?.[0]).toBe("niall")
+  })
+
+  it("after the reload, the remembered name still beats the one the passkey carried", async () => {
+    const { namehash } = await import("viem/ens")
+    h.enterWithPasskey.mockResolvedValueOnce({ ...nameless(), usertag: "niall" })
+    h.reservedNameHashes.mockResolvedValueOnce([
+      namehash("eager-lips.zk.money"),
+      namehash("niall.zk.money"),
+    ])
+    await render("/enter?named=eager-lips")
+    expect(h.claimTag.mock.calls[0]?.[0]).toBe("niall")
+  })
+
+  it("after the reload, the passkey's name still names its reservation", async () => {
+    const { namehash } = await import("viem/ens")
+    h.enterWithPasskey.mockResolvedValueOnce(nameless())
+    h.reservedNameHashes.mockResolvedValueOnce([namehash("eager-lips.zk.money")])
+    await render("/enter?named=eager-lips")
+    expect(h.claimTag.mock.calls[0]?.[0]).toBe("eager-lips")
+  })
+
+  it("after the reload, a passkey name that names nothing never fills the tag", async () => {
+    const { namehash } = await import("viem/ens")
+    h.enterWithPasskey.mockResolvedValueOnce(nameless())
+    h.reservedNameHashes.mockResolvedValueOnce([namehash("dave.zk.money")])
+    await render("/enter?named=eager-lips")
+    expect(h.claimTag).not.toHaveBeenCalled()
+    expect(byTestId("confirm-tag")?.dataset.handle).toBe("")
   })
 
   it("a reservation whose claim cannot be replayed keeps the card whose way on is the signup", async () => {
@@ -1170,7 +1217,6 @@ describe("the pinned sign-in", () => {
     await type("bob")
     await blur()
     h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    fetchMock.mockResolvedValueOnce({ ok: false, status: 404, json: async () => ({}) })
     h.reservedNameHashes.mockResolvedValueOnce([namehash("bob.zk.money")])
     h.claimTag.mockRejectedValueOnce(new Error("claim ledger unavailable"))
     await click("sign-in-login")
@@ -1456,7 +1502,6 @@ describe("the pinned sign-in", () => {
     h.confirmTag.mockReturnValueOnce({ handle: "alice", address: L2 })
     await click("confirm-tag-submit")
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
-    expect(owedClaimNotices()[L2]).toMatchObject({ tag: "alice" })
   })
 
   it("closing the confirm modal after a pinned entry cancels through the shared cancel", async () => {
@@ -1471,7 +1516,7 @@ describe("the pinned sign-in", () => {
     const signal = lastOptions().signal!
     await click("confirm-tag-close")
     expect(signal.aborted).toBe(true)
-    expect(leftForCampaign()).toBe(true)
+    expect(leftForClaim()).toBe(true)
   })
 
   it("Back ends the pinned attempt behind its prompt and returns to the screen", async () => {
@@ -1549,7 +1594,7 @@ describe("the completion writes", () => {
     h.enterWithPasskey.mockReturnValueOnce(new Promise((r) => (release = r)))
     await click("sign-in-login")
     await click("spinner-cancel")
-    expect(leftForCampaign()).toBe(true)
+    expect(leftForClaim()).toBe(true)
     await act(async () => release(named()))
     await flush()
     // The account it names is committed; the identity record, the passkey hint and the move into
@@ -1557,41 +1602,6 @@ describe("the completion writes", () => {
     expect(walletStorage.getItem("webwallet.identity")).toBeNull()
     expect(usertagFor("localhost", CREDENTIAL)).toBeUndefined()
     expect(navigatedTo("/")).toBe(false)
-  })
-
-  it("a cancel while the waitlist verify is pending caches, emits and shows nothing", async () => {
-    let release!: (value: unknown) => void
-    fetchMock.mockReturnValueOnce(new Promise((r) => (release = r)))
-    await reachFound()
-    h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    await click("sign-in-login")
-    expect(fetchMock).toHaveBeenCalledTimes(1)
-    await click("spinner-cancel")
-    h.fireEvent.mockClear()
-    await act(async () =>
-      release({ ok: true, status: 200, json: async () => ({ status: "granted" }) }),
-    )
-    await flush()
-    expect(walletStorage.getItem("webwallet.admission")).toBeNull()
-    expect(h.fireEvent).not.toHaveBeenCalledWith("admission_checked", expect.anything())
-    expect(refused()).toBeNull()
-    expect(navigatedTo("/")).toBe(false)
-    expect(owedClaimNotices()).toEqual({})
-  })
-
-  it("a late verify failure after a cancel opens no error modal", async () => {
-    let fail!: (err: unknown) => void
-    fetchMock.mockReturnValueOnce(new Promise((_r, reject) => (fail = reject)))
-    await reachFound()
-    h.enterWithPasskey.mockResolvedValueOnce(nameless())
-    await click("sign-in-login")
-    await click("spinner-cancel")
-    h.fireEvent.mockClear()
-    await act(async () => fail(new Error("offline")))
-    await flush()
-    expect(h.showReportableError).not.toHaveBeenCalled()
-    expect(h.fireEvent).not.toHaveBeenCalled()
-    expect(refused()).toBeNull()
   })
 })
 
@@ -1661,7 +1671,7 @@ describe("the reload guard", () => {
     const signal = lastOptions().signal!
     await click("spinner-cancel")
     expect(signal.aborted).toBe(true)
-    expect(assign).toHaveBeenCalledWith("https://launch.test.invalid/?signedout=1")
+    expect(leftForClaim()).toBe(true)
     await act(async () => release({ entered: false, reason: "unknown" }))
     await flush()
     expect(refused()).toBeNull()
@@ -1677,7 +1687,7 @@ describe("the reload guard", () => {
     })
     await render("/enter?handle=bob")
     await click("spinner-cancel")
-    expect(assign).toHaveBeenCalledWith("https://launch.test.invalid/?signedout=1")
+    expect(leftForClaim()).toBe(true)
     await act(async () => release(named("bob")))
     await flush()
     expect(assign).toHaveBeenCalledWith("/enter?handle=bob")

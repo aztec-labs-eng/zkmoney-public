@@ -122,6 +122,17 @@ describe("profile mode", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
+  it("exposes the version's assets, and none where the document lists none", async () => {
+    expect((await boot(PROFILE_ENV, serve(sandboxProfile()))).config.assets).toEqual([])
+    const profile = sandboxProfile()
+    profile.versions["0.0.1"].assets = [
+      { symbol: "DAI", portal: PORTAL },
+      { symbol: "sUSDS", portal: "0x125ab92a8d8a15883b37beab1b50802fdf9b9f64" },
+    ]
+    const { config } = await boot(PROFILE_ENV, serve(profile))
+    expect(config.assets.map((asset) => asset.symbol)).toEqual(["DAI", "sUSDS"])
+  })
+
   it("build overrides win for RPCs, while the profile owns XMTP and account service", async () => {
     const result = await boot(
       {

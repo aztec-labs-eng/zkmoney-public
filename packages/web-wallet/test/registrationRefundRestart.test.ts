@@ -4,6 +4,7 @@ import {
   encodeAbiParameters,
   encodeEventTopics,
   erc20Abi,
+  formatUnits,
   zeroAddress,
   type Address,
   type Hex,
@@ -38,11 +39,7 @@ import {
 } from "../src/features/onboarding/registrationTerms"
 import { canManualRegistrationSweep } from "../src/features/onboarding/registrationSweep"
 import { reconcileRegistrationRefund } from "../src/features/onboarding/registrationQuoteRecovery"
-import {
-  recordDepositAdmission,
-  hasWalletEntry,
-  hasDepositAdmission,
-} from "../src/features/identity/admission"
+import { recordDepositAdmission, hasDepositAdmission } from "../src/features/identity/admission"
 import { saveWalletIdentity } from "../src/features/identity/walletIdentity"
 import { signOut } from "../src/features/identity/signOut"
 import { ticketSignupRegistration } from "../src/features/paylink/ticketContinuation"
@@ -52,6 +49,7 @@ import {
   nameClaim,
   resetRegistrationStores,
 } from "./support/registrationFixtures"
+import { PAID, PAID_ASK, RANDOM, RANDOM_ASK } from "./support/registrationPrices"
 
 const h = vi.hoisted(() => ({
   sign: vi.fn(),
@@ -59,6 +57,7 @@ const h = vi.hoisted(() => ({
   registeredOwner: vi.fn(),
   heldName: vi.fn(),
   derive: vi.fn(),
+  seededSalt: vi.fn(async (): Promise<Hex | undefined> => undefined),
   buildSweep: vi.fn(),
   send: vi.fn(),
   wait: vi.fn(),
@@ -68,7 +67,7 @@ const h = vi.hoisted(() => ({
   metadataRegistry: vi.fn(),
   cut: vi.fn(),
   /** The controller's immutable schedule, counted: the sweep reads it exactly once. */
-  schedule: vi.fn(async () => ({ fee: 10n * DAI, min: 5n * DAI })),
+  schedule: vi.fn(async () => PAID),
   config: {} as WebWalletConfig,
   /** The pending-deposit observer; absent unless a test drives the capacity gate. */
   observer: { current: undefined as Pick<SipaProcessingObserver, "refreshForSweep"> | undefined },
@@ -125,6 +124,7 @@ vi.mock("../src/features/onboarding/registrationTerms", async (original) => ({
 vi.mock("../src/features/onboarding/registrationDepositSeed", () => ({
   makeRegistrationDepositSeeder: () => vi.fn().mockResolvedValue(undefined),
   healRegistrationDeposits: vi.fn(),
+  seededRegistrationSalt: h.seededSalt,
 }))
 vi.mock("../src/features/onboarding/webRegistrationBroadcast", () => ({
   createWebRegistrationBroadcaster: () => h.broadcast,
@@ -161,6 +161,13 @@ const L2 = `0x${"55".repeat(32)}` as Hex
 const HASH = `0x${"66".repeat(32)}` as Hex
 /** Answers the recovery's holding read: `balance` of the first token asked for. */
 const held = (balance: bigint) => async () => balance
+/** The old paid registration's deposit, refunded before the restart. */
+const REFUND = PAID_ASK
+/** An earned quote's minimum from before the random-tag price dropped. */
+const LEGACY_MIN = 5n * DAI
+/** The random-tag floor at a zero portal cut in USDC units, and the least USDC that clears it after the swap. */
+const USDC_FLOOR = (RANDOM.fee + RANDOM.min) / 10n ** 12n
+const USDC_CLEARS = (USDC_FLOOR * 10_000n) / 9_900n + 1n
 const ENV = {
   registry: OWNER,
   factory: OWNER,
@@ -179,7 +186,7 @@ const old: PendingRegistrationRecord = {
   l2Address: L2,
   l1ChainId: 11155111,
   sipaAddress: OLD,
-  fee: String(10n * DAI),
+  fee: String(PAID.fee),
   beneficiary: OWNER,
   depositToken: TOKEN,
   broadcast: true,
@@ -187,12 +194,16 @@ const old: PendingRegistrationRecord = {
   retries: 3,
   startTime: 1,
 }
-/** The earned 0.5 + 4.5 claim the restart is quoted. */
-const claim = () => nameClaim({ signature: "0xaa", terms: earnedTerms() })
-/** A claim on the standard 10 + 5 schedule, which the earned restart cannot use. */
+/** The random-tag claim the restart is quoted. */
+const claim = () =>
+  nameClaim({
+    signature: "0xaa",
+    terms: earnedTerms({ fee: String(RANDOM.fee), minDeposit: String(RANDOM.min) }),
+  })
+/** A claim on the paid schedule, which the earned restart cannot use. */
 const standardClaim = () =>
   nameClaim({
-    terms: earnedTerms({ fee: String(10n * DAI), minDeposit: String(5n * DAI), reduced: false }),
+    terms: earnedTerms({ fee: String(PAID.fee), minDeposit: String(PAID.min), reduced: false }),
   })
 /** A refund receipt moving `amount` of the token off the old address. */
 const transfer = (amount: bigint) => ({
@@ -225,7 +236,6 @@ beforeEach(async () => {
     l1RpcUrl: "http://127.0.0.1:8545",
     l1ChainId: 11155111,
     network: "testnet",
-    admissionGate: true,
     rpId: "localhost",
   } as WebWalletConfig
   await getPendingStore().load()
@@ -243,13 +253,13 @@ beforeEach(async () => {
       messageSecret: HASH,
       recoveryAddress: OWNER,
       recipientHash: HASH,
-      amount: "5",
+      amount: formatUnits(REFUND, 18),
       recoveryTxHash: HASH,
       startTime: 1,
     },
   )
   await signInPending(1)
-  recordDepositAdmission(old, 5n * DAI)
+  recordDepositAdmission(old, REFUND)
   h.sign.mockResolvedValue(claim())
   h.redeem.mockReset().mockResolvedValue({ status: "created" })
   h.registeredOwner.mockReset().mockResolvedValue(zeroAddress)
@@ -257,7 +267,7 @@ beforeEach(async () => {
   h.cut.mockResolvedValue(0n)
   h.metadataRegistry.mockResolvedValue(OWNER)
   h.balance.mockResolvedValue(0n)
-  h.receipt.mockResolvedValue(transfer(5n * DAI))
+  h.receipt.mockResolvedValue(transfer(REFUND))
   h.derive.mockResolvedValue({
     sipaAddress: NEW,
     sipaArgs: {},
@@ -286,11 +296,11 @@ const restart = (refunded = old) =>
 /** Replaces `unfunded`, an address nothing reached, with one at the earned price. */
 const replace = (unfunded = old) =>
   claimTag("demo", keys, h.config, {} as never, undefined, true, undefined, unfunded)
-/** The restarted record, its broadcast settled, with 5 DAI at its address. */
+/** The restarted record, its broadcast settled, with the random-tag ask at its address. */
 const fundedReplacement = async () => {
   const result = await restart()
   if (result.kind !== "pending") throw new Error("expected new deposit")
-  h.balance.mockResolvedValue(5n * DAI)
+  h.balance.mockResolvedValue(RANDOM_ASK)
   return getPendingStore().get(OWNER)!
 }
 /** Drops the cached claim, so the next sweep asks the claim server again. */
@@ -325,7 +335,7 @@ const recoverOld = async (txHash: Hex) => {
 }
 
 describe("refund then restart the earned registration", () => {
-  it("replaces the refunded commitment with 0.5 + 4.5 terms and retains access when broadcasting is spent", async () => {
+  it("replaces the refunded commitment with random-tag terms and retains access when broadcasting is spent", async () => {
     const result = await restart()
     expect(result.kind).toBe("pending")
     if (result.kind !== "pending") throw new Error("expected new deposit")
@@ -334,26 +344,45 @@ describe("refund then restart the earned registration", () => {
     const replacement = getPendingStore().get(OWNER)!
     expect(replacement).toMatchObject({
       sipaAddress: NEW,
-      fee: String(DAI / 2n),
+      fee: String(RANDOM.fee),
       phase: "awaiting_deposit",
       broadcast: false,
       replaced: { sipaAddress: OLD, refunded: true, broadcastSpent: true },
     })
-    expect(hasWalletEntry()).toBe(true)
     expect(hasDepositAdmission(replacement)).toBe(false)
-    expect((await NameClaimStore.get().get(L2))?.terms?.fee).toBe(String(DAI / 2n))
-    h.balance.mockResolvedValue(5n * DAI)
+    expect((await NameClaimStore.get().get(L2))?.terms?.fee).toBe(String(RANDOM.fee))
+    h.balance.mockResolvedValue(RANDOM_ASK)
     await expect(manualRegistrationSweep(replacement, { keys })).resolves.toBe(HASH)
     expect(h.buildSweep).toHaveBeenCalledWith(
       expect.objectContaining({
         sipaAddress: NEW,
-        signedTerms: expect.objectContaining({ fee: DAI / 2n, minDeposit: (45n * DAI) / 10n }),
+        signedTerms: expect.objectContaining({ fee: RANDOM.fee, minDeposit: RANDOM.min }),
       }),
       expect.anything(),
     )
     expect(h.send).toHaveBeenCalledWith(OWNER, "0x1234")
     expect(getPendingStore().get(OWNER)?.sweepTxHash).toBe(HASH)
   })
+  it("sweeps an address shown before the wallet's salt key, from the salt seeded with it", async () => {
+    const record = await fundedReplacement()
+    const seeded = `0x${"99".repeat(32)}` as Hex
+    const shown = await h.derive()
+    // The wallet's key now derives another address; only the seeded salt lands on this one.
+    h.derive.mockImplementation(async ({ sharedSecretSalt }: { sharedSecretSalt?: Hex }) =>
+      sharedSecretSalt === seeded ? shown : { ...shown, sipaAddress: OWNER },
+    )
+    await expect(manualRegistrationSweep(record, { keys })).rejects.toThrow(
+      "different deposit address",
+    )
+    h.seededSalt.mockResolvedValueOnce(seeded)
+    await expect(manualRegistrationSweep(record, { keys })).resolves.toBe(HASH)
+    expect(h.seededSalt).toHaveBeenLastCalledWith(NEW)
+    expect(h.buildSweep).toHaveBeenCalledWith(
+      expect.objectContaining({ sipaAddress: NEW }),
+      expect.anything(),
+    )
+  })
+
   describe("the capacity gate", () => {
     const blocked: SipaProcessingState = {
       reason: {
@@ -384,7 +413,7 @@ describe("refund then restart the earned registration", () => {
       await expect(sweep).rejects.toThrow(/stopped before signing/)
       expect(refreshForSweep).toHaveBeenCalledWith(
         NEW,
-        expect.objectContaining({ intent: "registration", registrationFee: String(DAI / 2n) }),
+        expect.objectContaining({ intent: "registration", registrationFee: String(RANDOM.fee) }),
       )
       expect(h.send).not.toHaveBeenCalled()
     })
@@ -437,13 +466,13 @@ describe("refund then restart the earned registration", () => {
 
     describe("a stable deposit on mainnet", () => {
       const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Address
-      /** 5.06 USDC, which clears the 4.5 DAI floor after the swap's allowed loss. */
+      /** USDC that clears the random-tag floor after the swap's allowed loss. */
       const stable = async () => {
         const result = await restart()
         if (result.kind !== "pending") throw new Error("expected new deposit")
         h.config = { ...h.config, network: "mainnet" } as WebWalletConfig
         h.balance.mockImplementation(async ({ address }: { address: Address }) =>
-          address === USDC ? 5_060_000n : 0n,
+          address === USDC ? USDC_CLEARS : 0n,
         )
         return getPendingStore().get(OWNER)!
       }
@@ -454,7 +483,11 @@ describe("refund then restart the earned registration", () => {
         await expect(manualRegistrationSweep(await stable(), { keys })).resolves.toBe(HASH)
         expect(refreshForSweep).toHaveBeenCalledWith(
           NEW,
-          expect.objectContaining({ amount: "5.06", tokenAddress: USDC, tokenDecimals: 6 }),
+          expect.objectContaining({
+            amount: formatUnits(USDC_CLEARS, 6),
+            tokenAddress: USDC,
+            tokenDecimals: 6,
+          }),
         )
       })
 
@@ -480,7 +513,7 @@ describe("refund then restart the earned registration", () => {
     const seedRail = (patch: { phase: "broadcast" | "resolved"; amount: string }) =>
       SIPADepositStore.get(webStorage).upsert(
         NEW,
-        { phase: patch.phase, registrationFee: String(DAI / 2n) },
+        { phase: patch.phase, registrationFee: String(RANDOM.fee) },
         {
           recipientL2Address: L2,
           messageSecret: HASH,
@@ -525,7 +558,7 @@ describe("refund then restart the earned registration", () => {
 
     it("measures a topped-up deposit at the balance it just read, not the smaller stored amount", async () => {
       const record = await replacement()
-      // 1 DAI stored would fit the 1 DAI left after the 0.5 fee; the 5 DAI on chain does not.
+      // 1 DAI stored fits the 1 DAI of room after the fee; the 5 DAI on chain does not.
       await seedRail({ phase: "broadcast", amount: "1" })
       await refusedBeforeSigning(record, exhausted())
       expect(SIPADepositStore.get(webStorage).get(NEW)?.amount).toBe("1")
@@ -561,25 +594,20 @@ describe("refund then restart the earned registration", () => {
   it("restarts after a sign-out cleared the admission receipt and the refunded address holds nothing", async () => {
     await signOut()
     expect(hasDepositAdmission(old)).toBe(false)
-    expect(hasWalletEntry()).toBe(false)
     await signInPending(2)
-    expect(hasWalletEntry()).toBe(false)
     const result = await restart()
     expect(result.kind).toBe("pending")
     expect(getPendingStore().get(OWNER)?.sipaAddress).toBe(NEW)
-    expect(hasWalletEntry()).toBe(true)
   })
   it("keeps wallet entry through a later sign-out: the replacement carries the verified refund", async () => {
     await restart()
     expect(getPendingStore().get(OWNER)?.refundedEntry).toEqual({
       sipaAddress: OLD,
       recoveryTxHash: HASH,
-      amount: String(5n * DAI),
+      amount: String(REFUND),
     })
     await signOut()
-    expect(hasWalletEntry()).toBe(false)
     await signInPending(3)
-    expect(hasWalletEntry()).toBe(true)
     expect(hasDepositAdmission(getPendingStore().get(OWNER)!)).toBe(false)
   })
   it("restarts from a refund whose receipt wait was interrupted before it confirmed", async () => {
@@ -591,7 +619,6 @@ describe("refund then restart the earned registration", () => {
     expect(result.kind).toBe("pending")
     expect(rail.get(OLD)?.phase).toBe("recovered")
     expect(getPendingStore().get(OWNER)?.sipaAddress).toBe(NEW)
-    expect(hasWalletEntry()).toBe(true)
   })
   it("keeps the verified refund on the replacement when the session dies after its checkpoint", async () => {
     h.metadataRegistry.mockRejectedValueOnce(new Error("rpc down"))
@@ -601,11 +628,10 @@ describe("refund then restart the earned registration", () => {
     expect(replacement.refundedEntry).toEqual({
       sipaAddress: OLD,
       recoveryTxHash: HASH,
-      amount: String(5n * DAI),
+      amount: String(REFUND),
     })
     await signOut()
     await signInPending(2)
-    expect(hasWalletEntry()).toBe(true)
     // The record no longer names the refunded address, so the plain earned claim resumes it.
     const result = await claimTag("demo", keys, h.config, {} as never, undefined, true)
     expect(result.kind).toBe("pending")
@@ -613,7 +639,6 @@ describe("refund then restart the earned registration", () => {
       sipaAddress: NEW,
       refundedEntry: { sipaAddress: OLD },
     })
-    expect(hasWalletEntry()).toBe(true)
   })
   it("stamps no waiver for a claim that signed no schedule", async () => {
     const unpriced = nameClaim()
@@ -630,7 +655,6 @@ describe("refund then restart the earned registration", () => {
     await signInPending(2)
     await getPendingStore().upsert(OWNER, { phase: "funded", fundedAt: 5, fundingTxHash: HASH })
     expect(hasDepositAdmission(old)).toBe(false)
-    expect(hasWalletEntry()).toBe(true)
     await SIPADepositStore.get(webStorage).upsert(OLD, {
       phase: "recoverable",
       recoveryTxHash: undefined,
@@ -644,17 +668,14 @@ describe("refund then restart the earned registration", () => {
       refundedEntry: { sipaAddress: OLD, recoveryTxHash: HASH, amount: String(15n * DAI) },
     })
     expect(getPendingStore().get(OWNER)?.fundedAt).toBeUndefined()
-    expect(hasWalletEntry()).toBe(true)
     await signOut()
     await signInPending(3)
-    expect(hasWalletEntry()).toBe(true)
     const result = await restart(getPendingStore().get(OWNER)!)
     expect(result.kind).toBe("pending")
     expect(getPendingStore().get(OWNER)).toMatchObject({
       sipaAddress: NEW,
       refundedEntry: { sipaAddress: OLD },
     })
-    expect(hasWalletEntry()).toBe(true)
   })
   it("keeps a funded registration's entry when the recovery's receipt cannot be read after it confirmed", async () => {
     await signOut()
@@ -665,10 +686,8 @@ describe("refund then restart the earned registration", () => {
     h.receipt.mockRejectedValue(new Error("rpc down"))
     await expect(recoverOld(HASH)).resolves.toBe(HASH)
     expect(getPendingStore().get(OWNER)).toMatchObject({ phase: "funded", fundedAt: 5 })
-    expect(hasWalletEntry()).toBe(true)
     await signOut()
     await signInPending(3)
-    expect(hasWalletEntry()).toBe(true)
     // 0.2 DAI comes back and is recovered with a readable receipt while the 15 DAI one is not.
     const later = `0x${"99".repeat(32)}` as Hex
     h.receipt.mockImplementation(async ({ hash }: { hash: Hex }) => {
@@ -682,7 +701,6 @@ describe("refund then restart the earned registration", () => {
     expect(getPendingStore().get(OWNER)).toMatchObject({ phase: "funded", fundedAt: 5 })
     await signOut()
     await signInPending(4)
-    expect(hasWalletEntry()).toBe(true)
     h.receipt.mockResolvedValue(transfer(15n * DAI))
     await reconcileRegistrationRefund(getPendingStore().get(OWNER)!, h.config)
     // The 0.2 DAI sized while the stamp stood pools with the 15 DAI that bought entry.
@@ -696,7 +714,6 @@ describe("refund then restart the earned registration", () => {
     })
     await signOut()
     await signInPending(5)
-    expect(hasWalletEntry()).toBe(true)
   })
   it("keeps wallet entry when the receipt that bought it is unreadable during the restart", async () => {
     const { registrationRefunded } = await import(
@@ -716,32 +733,29 @@ describe("refund then restart the earned registration", () => {
         failFirst = false
         throw new Error("rpc down")
       }
-      return transfer(5n * DAI)
+      return transfer(REFUND)
     })
     await expect(restart()).rejects.toThrow("could not be read")
     expect(getPendingStore().get(OWNER)?.sipaAddress).toBe(OLD)
-    expect(hasWalletEntry()).toBe(true)
     const result = await restart()
     expect(result.kind).toBe("pending")
     expect(getPendingStore().get(OWNER)).toMatchObject({
       sipaAddress: NEW,
-      refundedEntry: { sipaAddress: OLD, recoveryTxHash: HASH, amount: String(5n * DAI) },
+      refundedEntry: { sipaAddress: OLD, recoveryTxHash: HASH, amount: String(REFUND) },
     })
     await signOut()
     await signInPending(2)
-    expect(hasWalletEntry()).toBe(true)
   })
   it("restarts on a refund below the earned total without buying wallet entry", async () => {
     await signOut()
     await signInPending(2)
-    h.receipt.mockResolvedValue(transfer(DAI))
+    h.receipt.mockResolvedValue(transfer(RANDOM.fee))
     const result = await restart()
     expect(result.kind).toBe("pending")
     const replacement = getPendingStore().get(OWNER)!
     expect(replacement.sipaAddress).toBe(NEW)
-    expect(replacement.fee).toBe(String(DAI / 2n))
+    expect(replacement.fee).toBe(String(RANDOM.fee))
     expect(replacement.refundedEntry).toBeUndefined()
-    expect(hasWalletEntry()).toBe(false)
   })
   it("replaces an unfunded old address at the earned price while it stays empty", async () => {
     const result = await replace()
@@ -751,7 +765,7 @@ describe("refund then restart the earned registration", () => {
     expect(h.broadcast).not.toHaveBeenCalled()
     const replacement = getPendingStore().get(OWNER)!
     expect(replacement.sipaAddress).toBe(NEW)
-    expect(replacement.fee).toBe(String(DAI / 2n))
+    expect(replacement.fee).toBe(String(RANDOM.fee))
     expect(replacement.refundedEntry).toBeUndefined()
     // The old address was broadcast: the rail's one use is gone, so only a manual sweep finishes.
     expect(replacement.replaced).toEqual({
@@ -763,13 +777,13 @@ describe("refund then restart the earned registration", () => {
     const archived = registrationRecordForSipa(OLD)!
     expect(archived).toMatchObject({
       tag: "demo",
-      fee: String(10n * DAI),
+      fee: String(PAID.fee),
       phase: "failed_terminal",
     })
     expect(canManualRegistrationSweep(archived)).toBe(false)
     expect(registrationRecordForSipa(NEW)?.sipaAddress).toBe(NEW)
-    expect((await NameClaimStore.get().get(L2))?.terms?.fee).toBe(String(DAI / 2n))
-    h.balance.mockResolvedValue(5n * DAI)
+    expect((await NameClaimStore.get().get(L2))?.terms?.fee).toBe(String(RANDOM.fee))
+    h.balance.mockResolvedValue(RANDOM_ASK)
     await expect(manualRegistrationSweep(replacement, { keys })).resolves.toBe(HASH)
     expect(h.buildSweep).toHaveBeenCalledWith(
       expect.objectContaining({ sipaAddress: NEW }),
@@ -777,9 +791,9 @@ describe("refund then restart the earned registration", () => {
     )
   })
   it("re-enters the refunded record when the corrected quote only lowered the minimum", async () => {
-    // A legacy earned quote (0.5 + 5) refunded at 5: the fee, and so the address, stay.
+    // A legacy earned quote over an older, higher minimum, refunded: the fee, and so the address, stay.
     await getPendingStore().upsert(OWNER, {
-      fee: String(DAI / 2n),
+      fee: String(RANDOM.fee),
       nameHash: composeWireNameHash("demo", ENV.ensDomain),
       r1Key: { qx: HASH, qy: HASH },
       credentialId: "cred",
@@ -788,8 +802,8 @@ describe("refund then restart the earned registration", () => {
       account: OWNER,
       tag: "demo",
       deadline: 1,
-      fee: String(DAI / 2n),
-      minDeposit: String(5n * DAI),
+      fee: String(RANDOM.fee),
+      minDeposit: String(LEGACY_MIN),
       feeWaived: true,
     })
     h.derive.mockResolvedValue({
@@ -801,16 +815,16 @@ describe("refund then restart the earned registration", () => {
       stealthScalar: 1n,
     })
     const legacy = getPendingStore().get(OWNER)!
-    recordDepositAdmission(legacy, 5n * DAI)
+    recordDepositAdmission(legacy, LEGACY_MIN)
     expect(hasDepositAdmission(legacy)).toBe(true)
     const result = await restart(legacy)
     expect(result.kind).toBe("pending")
     expect(h.broadcast).not.toHaveBeenCalled()
     expect(getPendingStore().get(OWNER)).toMatchObject({
       sipaAddress: OLD,
-      fee: String(DAI / 2n),
+      fee: String(RANDOM.fee),
       phase: "awaiting_deposit",
-      refundedEntry: { sipaAddress: OLD, amount: String(5n * DAI) },
+      refundedEntry: { sipaAddress: OLD, amount: String(REFUND) },
     })
     expect(getPendingStore().get(OWNER)?.replaced).toBeUndefined()
     // The receipt vouched for the refunded deposit: the resumed registration must ask for a new one.
@@ -818,17 +832,16 @@ describe("refund then restart the earned registration", () => {
     expect(registrationRecordForSipa(OLD)?.phase).toBe("awaiting_deposit")
     expect(walletStorage.getItem("webwallet.registration.replaced")).toBe("[]")
     expect(loadRegistrationTerms(OWNER, "demo")).toMatchObject({
-      fee: String(DAI / 2n),
-      minDeposit: String((45n * DAI) / 10n),
+      fee: String(RANDOM.fee),
+      minDeposit: String(RANDOM.min),
       feeWaived: true,
       earnedExpected: true,
     })
-    expect(hasWalletEntry()).toBe(true)
     // The rail starts the address over: the old recovery is evidence, not the new deposit's state.
     const rail = SIPADepositStore.get(webStorage)
     expect(rail.get(OLD)).toMatchObject({ phase: "broadcast", amount: "0" })
     expect(rail.get(OLD)?.recoveryTxHash).toBeUndefined()
-    h.balance.mockResolvedValue(5n * DAI)
+    h.balance.mockResolvedValue(RANDOM_ASK)
     await expect(manualRegistrationSweep(getPendingStore().get(OWNER)!, { keys })).resolves.toBe(
       HASH,
     )
@@ -882,12 +895,12 @@ describe("refund then restart the earned registration", () => {
     await expect(replace()).rejects.toThrow("rpc down")
     expect(getPendingStore().get(OWNER)).toMatchObject({
       sipaAddress: NEW,
-      fee: String(DAI / 2n),
+      fee: String(RANDOM.fee),
       replaced: { sipaAddress: OLD, refunded: false, broadcastSpent: true },
     })
     expect(loadRegistrationTerms(OWNER, "demo")).toMatchObject({
-      fee: String(DAI / 2n),
-      minDeposit: String((45n * DAI) / 10n),
+      fee: String(RANDOM.fee),
+      minDeposit: String(RANDOM.min),
       feeWaived: true,
       earnedExpected: true,
     })
@@ -895,7 +908,7 @@ describe("refund then restart the earned registration", () => {
   })
   it("aborts the replace and keeps the old record when a deposit reaches it during the quote fetch", async () => {
     // Empty when the screen checked, funded by the time the checkpoint would overwrite it.
-    h.balance.mockResolvedValue(5n * DAI)
+    h.balance.mockResolvedValue(RANDOM_ASK)
     await expect(replace()).rejects.toThrow("A deposit reached this address")
     expect(getPendingStore().get(OWNER)?.sipaAddress).toBe(OLD)
     expect(h.broadcast).not.toHaveBeenCalled()
@@ -904,7 +917,7 @@ describe("refund then restart the earned registration", () => {
     "does not submit a manual sweep when %s",
     async (reason) => {
       const replacement = await fundedReplacement()
-      if (reason === "underfunded") h.balance.mockResolvedValue(DAI)
+      if (reason === "underfunded") h.balance.mockResolvedValue(RANDOM.fee + RANDOM.min - 1n)
       if (reason === "incompatible quote") {
         await forgetClaim()
         h.sign.mockResolvedValue(standardClaim())
@@ -929,14 +942,14 @@ describe("refund then restart the earned registration", () => {
     expect(h.send).not.toHaveBeenCalled()
     // The schedule the earlier claim signed is still what prices this registration.
     expect(loadRegistrationTerms(OWNER, "demo")).toMatchObject({
-      fee: String(DAI / 2n),
+      fee: String(RANDOM.fee),
       feeWaived: true,
     })
   })
   // The sweep credits an opening balance over the portal's cut, so a deposit that clears fee plus
   // minimum can still fall short of the floor the sweep enforces.
   it.each([
-    ["the portal's cut lifts the floor above it", 5n * DAI, "does not yet cover"],
+    ["the portal's cut lifts the floor above it", RANDOM_ASK, "does not yet cover"],
     ["the portal's cut is unread, so the floor is unknown", undefined, "Try again"],
   ])("signs nothing for a deposit while %s", async (_, cut, refusal) => {
     const replacement = await fundedReplacement()
@@ -951,7 +964,7 @@ describe("refund then restart the earned registration", () => {
     const replacement = await fundedReplacement()
     h.config = { ...h.config, network: "mainnet" } as WebWalletConfig
     const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-    let usdc = 5_000_000n
+    let usdc = USDC_FLOOR
     h.balance.mockImplementation(async ({ address }: { address: Address }) =>
       address === USDC ? usdc : 0n,
     )
@@ -959,7 +972,7 @@ describe("refund then restart the earned registration", () => {
       "does not yet cover",
     )
     expect(h.send).not.toHaveBeenCalled()
-    usdc = 5_060_000n
+    usdc = USDC_CLEARS
     await expect(manualRegistrationSweep(replacement, { keys })).resolves.toBe(HASH)
     expect(h.buildSweep).toHaveBeenCalledWith(
       expect.anything(),
@@ -981,13 +994,13 @@ describe("refund then restart the earned registration", () => {
     expect(getPendingStore().get(OWNER)?.refundedEntry).toEqual({
       sipaAddress: OLD,
       recoveryTxHash: HASH,
-      amount: String(5n * DAI),
+      amount: String(REFUND),
     })
   })
   it.each(["not refunded", "standard quote", "same address"])(
     "preserves the old record when %s",
     async (reason) => {
-      if (reason === "not refunded") h.balance.mockResolvedValue(5n * DAI)
+      if (reason === "not refunded") h.balance.mockResolvedValue(REFUND)
       if (reason === "standard quote") h.sign.mockResolvedValue(standardClaim())
       if (reason === "same address") h.derive.mockResolvedValue({ sipaAddress: OLD })
       await expect(restart()).rejects.toThrow(

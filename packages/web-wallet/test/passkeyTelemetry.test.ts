@@ -2,7 +2,7 @@
  * The wallet's passkey tracker: what it sends through the consent-gated events path, how it reads
  * the wallet's own errors, and which proving flow a signature is reported under.
  */
-import type { PasskeyRequestHook } from "@obsidion/passkey-web"
+import { type PasskeyRequestHook, parseUserAgent } from "@obsidion/passkey-web"
 import { act, createElement } from "react"
 import { createRoot } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest"
@@ -87,7 +87,7 @@ describe("sending", () => {
     expect(fetchSpy).not.toHaveBeenCalled()
   })
 
-  it.each(["onboarding", "handoff"] as const)(
+  it.each(["onboarding"] as const)(
     "sends a %s result with no id, no viewport and no cookie, whatever the consent answer is",
     async (flow) => {
       for (const consent of [true, false]) {
@@ -125,6 +125,36 @@ describe("sending", () => {
     expect(posted().map(({ body }) => body.platform)).toEqual(["web", "web", "web"])
     for (const { body } of posted()) expect(body.session_id).toMatch(UUID)
   })
+  it("names where the passkey was made, as the handle the wallet wrote claims", async () => {
+    const { passkeyTelemetry } = await load(true)
+    const { WebAlphaAuthService } = await import("../src/platform/auth/WebAlphaAuthService")
+    const fake = new FakePasskeyCeremony({
+      route: "cross-device",
+      onRequest: passkeyTelemetry.requestHook,
+    })
+    const mac = parseUserAgent({
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36",
+      userAgentData: { platform: "macOS", brands: [] },
+    })
+    const storage = new MemoryStorage()
+    const service = (ceremony: typeof fake | ReturnType<typeof passkeyTelemetry.wrap>) =>
+      new WebAlphaAuthService({
+        storage,
+        rpId: "localhost",
+        ceremony,
+        posture: () => "laptop",
+        userAgent: () => Promise.resolve(mac),
+      })
+    // Made on the bare fake, so only the sign-in is counted.
+    await service(fake).createPasskey("@alice")
+    await passkeyTelemetry.track({ ceremony: "sign_in", flow: "enter" }, () =>
+      service(passkeyTelemetry.wrap(fake)).recoverPasskey({ discover: true }),
+    )
+    expect(props()).toEqual([
+      expect.objectContaining({ ceremony: "sign_in", outcome: "succeeded", made_on: "mac_qr" }),
+    ])
+  })
 })
 
 describe("the wallet's own errors", () => {
@@ -161,6 +191,11 @@ describe("the wallet's own errors", () => {
         expect.objectContaining({ outcome, reason, prompts: "1" }),
       ),
     )
+    // A failed row names the thrown value only as far as the vocabulary lists it.
+    for (const [index, [, outcome]] of cases.entries()) {
+      if (outcome === "failed") expect(props()[index]).toMatchObject({ error_name: "other" })
+      else expect(props()[index]).not.toHaveProperty("error_name")
+    }
   })
 
   it("reads the recovery's answer from a passkey it did not ask for as a mismatch", async () => {
@@ -219,6 +254,99 @@ describe("the wallet's own errors", () => {
     expect(props()).toEqual([
       expect.objectContaining({ ceremony: "sign_in", outcome: "succeeded", prompts: "2+" }),
     ])
+  })
+})
+
+describe("the browser's error name", () => {
+  it("names a failed row's error, listed or other, and never carries its text", async () => {
+    const { passkeyTelemetry } = await load()
+    const { inner } = await authenticator(passkeyTelemetry.requestHook)
+    const ceremony = passkeyTelemetry.wrap(inner)
+    const errors = [
+      new DOMException(
+        "An unknown error occurred while talking to the credential manager.",
+        "NotReadableError",
+      ),
+      Object.assign(new Error("wrong key for 0x1234abcd"), { name: "0x1234abcd@alice" }),
+    ]
+    for (const error of errors) {
+      const run = passkeyTelemetry.track({ ceremony: "unlock", flow: "unlock" }, async () => {
+        await ceremony.assert(ASSERT)
+        throw error
+      })
+      await expect(run).rejects.toBe(error)
+    }
+    expect(props().map((p) => [p.outcome, p.reason, p.error_name])).toEqual([
+      ["failed", "after_prompt", "NotReadableError"],
+      ["failed", "after_prompt", "other"],
+    ])
+    const wire = JSON.stringify(posted())
+    expect(wire).not.toContain("credential manager")
+    expect(wire).not.toContain("0x1234abcd")
+  })
+})
+
+describe("the phone's platform-authenticator answer", () => {
+  const ANDROID =
+    "Mozilla/5.0 (Linux; Android 16; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36"
+
+  /** One sign-in on a tracker created under the current user agent, once its reads have settled. */
+  async function signIn() {
+    const { passkeyTelemetry } = await load()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const { inner } = await authenticator(passkeyTelemetry.requestHook)
+    const ceremony = passkeyTelemetry.wrap(inner)
+    await passkeyTelemetry.track({ ceremony: "sign_in", flow: "enter" }, () =>
+      ceremony.assert(ASSERT),
+    )
+  }
+
+  it("rides on a phone's rows once read", async () => {
+    const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(ANDROID)
+    try {
+      await signIn()
+    } finally {
+      ua.mockRestore()
+    }
+    // The test setup's PublicKeyCredential has no platform-authenticator static, so the check
+    // could not tell.
+    expect(props()).toEqual([
+      expect.objectContaining({ device_class: "phone", platform_authenticator: "unknown" }),
+    ])
+  })
+
+  it("never reaches a laptop's rows", async () => {
+    await signIn()
+    expect(props()).toEqual([expect.objectContaining({ device_class: "laptop" })])
+    expect(props()[0]).not.toHaveProperty("platform_authenticator")
+  })
+
+  it("rides with the error name on a signup row, on the identifier-free channel", async () => {
+    const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(ANDROID)
+    try {
+      const { passkeyTelemetry } = await load(false)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      const { inner } = await authenticator(passkeyTelemetry.requestHook)
+      const ceremony = passkeyTelemetry.wrap(inner)
+      const error = new DOMException("credential manager failed", "NotReadableError")
+      const run = passkeyTelemetry.track({ ceremony: "create", flow: "onboarding" }, async () => {
+        await ceremony.create(CREATE)
+        throw error
+      })
+      await expect(run).rejects.toBe(error)
+    } finally {
+      ua.mockRestore()
+    }
+    expect(posted()).toHaveLength(1)
+    const [{ body }] = posted()
+    expect(body.platform).toBe("web-signup")
+    expect(body).not.toHaveProperty("session_id")
+    expect(body.props).toMatchObject({
+      outcome: "failed",
+      reason: "after_prompt",
+      error_name: "NotReadableError",
+      platform_authenticator: "unknown",
+    })
   })
 })
 

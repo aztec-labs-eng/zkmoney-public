@@ -6,7 +6,6 @@ import { createLogger } from '@aztec/foundation/log';
 import type { Tuple } from '@aztec/foundation/serialize';
 
 import type { OxidePortalContract } from '@oxide/l1-contracts';
-import { computeDepositMessageHash } from '@oxide/oxide-lib/deposit_message_hashing.js';
 import { computeUnprocessedDepositRefundAuthMessage } from '@oxide/oxide-lib/refund_auth_message.js';
 import { type RefundOwner, deriveRefundOwnerAddress } from '@oxide/oxide-lib/refund_authorization.js';
 import type { TeeSigner, UnprocessedDepositRefundFinalizationOutput } from '@oxide/oxide-lib/types.js';
@@ -14,6 +13,7 @@ import { generateUnprocessedDepositRefundProof } from '@oxide/refund-proof/index
 
 import type { ArchiveRef } from './archive_ref.js';
 import type { ChainDataSource } from './chain_data_source.js';
+import { computePortalDepositMessageHash, isAbsorbedAtFrozenTip } from './deposit_refund_eligibility.js';
 import { PermanentError } from './errors.js';
 import { buildRefundAuthorization } from './refund_signature.js';
 
@@ -44,6 +44,11 @@ export async function buildUnprocessedDepositRefundProof(
   }
 
   const frozenTip = args.frozenArchive.checkpointEndBlockHeader;
+  if (isAbsorbedAtFrozenTip(frozenTip, args.messageLeafIndex)) {
+    throw new PermanentError(
+      `The frozen tip absorbed the deposit message at leaf index ${args.messageLeafIndex}, so it is not an unprocessed deposit`,
+    );
+  }
   const frozenTipHash = await frozenTip.hash();
 
   logger.info(
@@ -58,18 +63,11 @@ export async function buildUnprocessedDepositRefundProof(
     throw new Error(`Frozen tip ${frozenTipHash} is not in archive ${args.frozenArchive.root}`);
   }
 
-  const [l2Portal, rollupVersion] = await Promise.all([portal.getL2Portal(), portal.getRollupVersion()]);
-  const portalContext = {
-    l1Portal: portal.address,
-    l1ChainId: portal.getChainId(),
-    l2Portal,
-    rollupVersion,
-  };
-  const messageHash = await computeDepositMessageHash(portalContext, {
+  const { messageHash } = await computePortalDepositMessageHash(portal, {
     sharedSecretSalt: args.sharedSecretSalt,
     recipient: l2Recipient,
     amount: args.amount,
-    messageLeafIndex: new Fr(args.messageLeafIndex),
+    messageLeafIndex: args.messageLeafIndex,
   });
 
   const authMessage = await computeUnprocessedDepositRefundAuthMessage(

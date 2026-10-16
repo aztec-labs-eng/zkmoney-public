@@ -1,6 +1,7 @@
 import React from "react"
 import { createRoot } from "react-dom/client"
 import { missingBrowserFeatures } from "./browserSupport"
+import { captureLandingSource } from "./lib/trafficSource"
 import { DESKTOP_SETTINGS_PATH } from "./platform/desktopBridge"
 import { RESET_PATH, ResetScreen } from "./ui/ResetScreen"
 import { UnsupportedBrowser } from "./ui/UnsupportedBrowser"
@@ -40,6 +41,7 @@ class RootErrorBoundary extends React.Component<{ children: React.ReactNode }, {
 }
 
 const missing = missingBrowserFeatures()
+captureLandingSource()
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

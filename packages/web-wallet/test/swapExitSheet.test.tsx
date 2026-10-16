@@ -6,12 +6,19 @@ import React, { act } from "react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRoot, type Root } from "react-dom/client"
 import type { Address, Hex } from "viem"
-import { passThroughScreener, ScreeningProvider, type WithdrawalRecord } from "@obsidion/front-core"
+import {
+  passThroughScreener,
+  ScreeningProvider,
+  type SavingsMoveRecord,
+  type WithdrawalRecord,
+} from "@obsidion/front-core"
 import { clearWalletPrompt, useWalletPrompt } from "../src/features/deposit/walletPrompt"
 
 const h = vi.hoisted(() => ({
   executeSwapWithdrawal: vi.fn(),
   recoverSwapWithdrawal: vi.fn(),
+  runSkyEscrowMove: vi.fn(),
+  recoverSkyEscrowMove: vi.fn(),
   showReportableError: vi.fn(),
 }))
 
@@ -40,6 +47,8 @@ vi.mock("../src/features/withdraw/swapRecovery", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/withdraw/swapRecovery")>()),
   executeSwapWithdrawal: h.executeSwapWithdrawal,
   recoverSwapWithdrawal: h.recoverSwapWithdrawal,
+  runSkyEscrowMove: h.runSkyEscrowMove,
+  recoverSkyEscrowMove: h.recoverSkyEscrowMove,
 }))
 vi.mock("../src/lib/analytics", () => ({
   fireEvent: vi.fn(),
@@ -130,11 +139,15 @@ describe("SwapExitModal", () => {
   const slotOpen = () =>
     container.querySelector<HTMLElement>('[data-testid="wallet-slot"]')!.dataset.open
 
-  const render = async (reason: "stuck" | "unswappable", rec: WithdrawalRecord = record) => {
+  const render = async (
+    reason: "stuck" | "unswappable",
+    rec: WithdrawalRecord = record,
+    move?: SavingsMoveRecord,
+  ) => {
     await act(async () => {
       root.render(
         <ScreeningProvider screener={passThroughScreener}>
-          <SwapExitModal record={rec} reason={reason} onClose={vi.fn()} />
+          <SwapExitModal record={rec} reason={reason} move={move} onClose={vi.fn()} />
           <SlotProbe />
         </ScreeningProvider>,
       )
@@ -149,6 +162,8 @@ describe("SwapExitModal", () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     h.executeSwapWithdrawal.mockResolvedValue(L1_TX)
     h.recoverSwapWithdrawal.mockResolvedValue(L1_TX)
+    h.runSkyEscrowMove.mockResolvedValue(L1_TX)
+    h.recoverSkyEscrowMove.mockResolvedValue(L1_TX)
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -257,6 +272,59 @@ describe("SwapExitModal", () => {
         expect.objectContaining({ destination: typed }),
       )
       expect(container.textContent).toContain("Withdrawal recovered")
+    })
+  })
+
+  describe("a Savings move whose escrow nobody ran", () => {
+    const move = {
+      direction: "out",
+      withdrawalLocalId: "w1",
+      escrow: `0x${"e1".repeat(20)}`,
+      nonce: `0x${"01".repeat(32)}`,
+      recipientCommitment: `0x${"02".repeat(32)}`,
+      amount: "10",
+      startTime: 0,
+      value: (105n * 10n ** 18n).toString(),
+    } as SavingsMoveRecord
+    const burn = { ...record, phase: "done", recipient: move.escrow } as WithdrawalRecord
+    beforeEach(() => render("stuck", burn, move))
+
+    it("offers the run first, and recovery to an address the user types", () => {
+      expect(container.textContent).toContain("Move taking too long")
+      expect(container.textContent).toMatch(/the funds go on to Main Account/)
+      expect(container.textContent).toContain("$105.00")
+      expect(button(/^Run the move now$/)).toBeTruthy()
+      expect(
+        container.querySelector<HTMLInputElement>('input[aria-label="Recover DAI to"]')!.value,
+      ).toBe("")
+    })
+
+    it("runs the escrow from the button and says where the funds went", async () => {
+      await act(async () => button(/^Run the move now$/)!.click())
+      expect(h.runSkyEscrowMove).toHaveBeenCalledWith(move, burn, expect.anything())
+      expect(h.executeSwapWithdrawal).not.toHaveBeenCalled()
+      expect(container.textContent).toContain("Move sent on")
+      expect(container.textContent).toMatch(/Sent on to Main Account/)
+    })
+
+    it("recovers the escrow's DAI to the typed address", async () => {
+      const input = container.querySelector<HTMLInputElement>('input[aria-label="Recover DAI to"]')!
+      const typed = `0x${"55".repeat(20)}`
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!
+        setter.call(input, typed)
+        input.dispatchEvent(new Event("input", { bubbles: true }))
+      })
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 0))
+      })
+      await act(async () => button(/^Recover DAI to/)!.click())
+      expect(h.recoverSkyEscrowMove).toHaveBeenCalledWith(
+        move,
+        burn,
+        expect.objectContaining({ destination: typed }),
+      )
+      expect(container.textContent).toContain("Move recovered")
     })
   })
 

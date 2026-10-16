@@ -113,6 +113,10 @@ function Feed() {
   )
 }
 
+function Arriving() {
+  return <p data-testid="arriving">{useActivityEntries().arriving.main.toString()}</p>
+}
+
 let container: HTMLDivElement
 let root: Root
 
@@ -146,6 +150,36 @@ async function rows(): Promise<string[]> {
 
 const stamps = () =>
   [...container.querySelectorAll('[data-testid="row"]')].map((r) => r.getAttribute("data-time"))
+
+describe("arriving funds", () => {
+  const net = (8455n * 10n ** 18n) / 100n
+  const arriving = async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <Arriving />
+        </MemoryRouter>,
+      )
+    })
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0))
+    })
+    return container.querySelector('[data-testid="arriving"]')?.textContent
+  }
+
+  it("counts a migration in Main from its burn", async () => {
+    await withdrawals.create(burn("l2_mined"))
+    await arrival()
+    expect(await arriving()).toBe(net.toString())
+  })
+
+  it("counts a swept deposit the feed hides behind the burn from this wallet that paid it", async () => {
+    await withdrawals.create({ ...burn("l2_mined"), intent: "registration" })
+    await arrival({ phase: "pendingClaim", amount: "84.55", netAmount: net.toString() })
+    expect((await rows()).some((row) => row.includes("+$84.55"))).toBe(false)
+    expect(await arriving()).toBe(net.toString())
+  })
+})
 
 describe("migration activity rows", () => {
   it("shows the exit leaving the old network and the arrival it brings, from the burn on", async () => {

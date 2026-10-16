@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
   type ErrorModalPayload,
+  outOfMemoryCopy,
   showErrorModal,
   showReportableError,
   subscribeErrorModal,
@@ -9,6 +10,8 @@ import {
 const WEDGED_TAB_MESSAGE =
   "Your browser is still holding an earlier passkey request. Close any open passkey dialog, " +
   "reload this page, and try again."
+
+const oom = () => Object.assign(new Error("Out of memory"), { name: "RangeError" })
 
 function shown(error: unknown): ErrorModalPayload {
   const seen: ErrorModalPayload[] = []
@@ -35,10 +38,18 @@ describe("showReportableError", () => {
     await vi.waitFor(() => expect(reload).toHaveBeenCalledOnce())
   })
 
-  it("tells the person to wait and reload for a WebAssembly memory failure, and keeps the report", async () => {
+  it.each([
+    ["a WebAssembly memory failure", oom()],
+    [
+      "parallel tasks that all ran out of memory",
+      new AggregateError([
+        new AggregateError([oom(), oom(), oom()]),
+        new AggregateError([oom(), oom(), oom(), oom()]),
+      ]),
+    ],
+  ])("tells the person to wait and reload for %s, and keeps the report", async (_, error) => {
     const reload = vi.fn()
     vi.stubGlobal("location", { reload })
-    const error = Object.assign(new Error("Out of memory"), { name: "RangeError" })
     const seen: ErrorModalPayload[] = []
     const unsub = subscribeErrorModal((p) => seen.push(p))
     showReportableError(error, "request-link:create", {
@@ -62,6 +73,17 @@ describe("showReportableError", () => {
 
   it("offers a report for an unknown error", () => {
     expect(shown(new Error("boom"))).toMatchObject({ title: "Unexpected error", showReport: true })
+  })
+})
+
+describe("outOfMemoryCopy", () => {
+  it.each([
+    ["another error", new Error("boot failed")],
+    ["an aggregate with another failure", new AggregateError([oom(), new Error("boot failed")])],
+    ["an empty aggregate", new AggregateError([], "Out of memory")],
+    ["a string", "Out of memory"],
+  ])("does not match %s", (_, error) => {
+    expect(outOfMemoryCopy(error)).toBeUndefined()
   })
 })
 

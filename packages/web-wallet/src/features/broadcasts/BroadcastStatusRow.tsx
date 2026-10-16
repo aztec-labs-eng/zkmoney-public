@@ -4,6 +4,7 @@
  */
 import type { ReactNode } from "react"
 import { Spinner } from "@obsidion/web-ds"
+import { getBroadcastLedger } from "./broadcasts"
 import { broadcastStatusLine, useBroadcastStatus } from "./useBroadcastStatus"
 
 /** `fallback` reads while the ledger does not hold the address yet, e.g. before a tick owes it. */
@@ -28,6 +29,20 @@ export function BroadcastStatusRow({
     <div className="ww-send-to__note" data-testid="broadcast-status" data-status={status.kind}>
       {working && <Spinner size={12} />}
       <span>{broadcastStatusLine(status)}</span>
+      {status.kind === "retrying" && (
+        <button
+          type="button"
+          className="zkm-btn-reset ww-send-to__link"
+          data-testid="broadcast-retry"
+          onClick={() =>
+            void getBroadcastLedger()
+              .retryNow(address)
+              .catch((err: unknown) => console.warn("[broadcasts] could not retry", err))
+          }
+        >
+          Re-broadcast
+        </button>
+      )}
     </div>
   )
 }

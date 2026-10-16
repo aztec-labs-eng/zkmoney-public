@@ -3,7 +3,7 @@
  * when a verified incoming transfer carrying its id (from the on-chain `Transfer.meta`) lands and
  * satisfies it. Contact rows also require the verified sender to be that contact.
  */
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import type { IStorageAdapter } from "../../src/core/storages/adapter"
 import { RequestStorage, type PaymentRequest } from "../../src/core/storages/RequestStorage"
@@ -139,6 +139,70 @@ describe("reconcileRequestFulfillments", () => {
     await store.add(pendingRow({ status: "cancelled" }))
     await reconcileRequestFulfillments(store, verifiedTx())
     expect((await store.findById(REQ))?.status).toBe("cancelled")
+  })
+})
+
+describe("payer of a request becomes a full contact", () => {
+  const PAYER = "0x" + "be".repeat(32)
+  const OTHER_REQ = "0x" + "0e".repeat(32)
+  const paid = (tx: Partial<TokenTransaction> = {}) =>
+    verifiedTx({}, { from: "bob", senderL2Address: PAYER, ...tx })
+
+  it.each([
+    ["pays the payee's own request", pendingRow({ kind: "link", contactTag: "" }), paid(), true],
+    [
+      "carries no request id of the payee (printed code, plain link)",
+      pendingRow({ kind: "link", contactTag: "" }),
+      paid({ requestId: OTHER_REQ }),
+      false,
+    ],
+    ["carries no request id at all", pendingRow(), paid({ requestId: undefined }), false],
+    [
+      "pays a request someone else already paid",
+      pendingRow({ kind: "link", contactTag: "", status: "fulfilled" }),
+      paid(),
+      false,
+    ],
+    [
+      "was reverted by the network",
+      pendingRow({ kind: "link", contactTag: "" }),
+      paid({ status: "failed" }),
+      false,
+    ],
+  ])("a payment that %s: approved %s", async (_case, row, tx, approved) => {
+    const store = new RequestStorage(memoryAdapter())
+    await store.add(row)
+    const payers = { approveAutoAdded: vi.fn(async () => undefined) }
+    await reconcileRequestFulfillments(store, tx, payers)
+    if (approved) expect(payers.approveAutoAdded).toHaveBeenCalledWith(PAYER)
+    else expect(payers.approveAutoAdded).not.toHaveBeenCalled()
+  })
+
+  it("approves the payer of a stored receive the start-time sweep joins", async () => {
+    const store = new RequestStorage(memoryAdapter())
+    await store.add(pendingRow({ kind: "link", contactTag: "" }))
+    const payers = { approveAutoAdded: vi.fn(async () => undefined) }
+    const stop = startRequestFulfillmentReconciler(
+      store,
+      { findReceivesByRequestId: async () => [paid()] },
+      payers,
+    )
+    await vi.waitFor(async () => expect((await store.findById(REQ))?.status).toBe("fulfilled"))
+    expect(payers.approveAutoAdded).toHaveBeenCalledWith(PAYER)
+    stop()
+  })
+
+  it("still marks the request paid when the approval fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+    const store = new RequestStorage(memoryAdapter())
+    await store.add(pendingRow({ kind: "link", contactTag: "" }))
+    await reconcileRequestFulfillments(store, paid(), {
+      approveAutoAdded: async () => {
+        throw new Error("contacts unavailable")
+      },
+    })
+    expect((await store.findById(REQ))?.status).toBe("fulfilled")
+    warn.mockRestore()
   })
 })
 

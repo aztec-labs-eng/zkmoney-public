@@ -4,7 +4,10 @@ import { NO_WAIT } from "@aztec/aztec.js/contracts"
 import { EthCheatCodes } from "@aztec/ethereum/test"
 import { Fr } from "@aztec/aztec.js/fields"
 import { DateProvider } from "@aztec/foundation/timer"
-import { createAztecNodeAdminClient } from "@aztec/stdlib/interfaces/client"
+import {
+  createAztecNodeAdminClient,
+  createAztecNodeDebugClient,
+} from "@aztec/stdlib/interfaces/client"
 import { setupTest } from "../../../sdk/test/utils/helper.js"
 // @ts-expect-error zero-dep .mjs script, no types
 import { healNonceGaps, makeRpc } from "../../../../scripts/reorg-l1.mjs"
@@ -48,6 +51,7 @@ const nodeAdmin = createAztecNodeAdminClient(
   undefined,
   process.env.AZTEC_ADMIN_API_KEY,
 )
+const nodeDebug = createAztecNodeDebugClient(L2_RPC)
 const CHECKPOINT_PROPOSED_TOPIC =
   "0x6ff492bf2b4ca1b93a175167d14b3e46085b935cab3f39ca94013000799b93a0"
 
@@ -133,6 +137,18 @@ describe("reorg e2e (sandbox)", () => {
         blockNumber: receipt.blockNumber !== undefined ? Number(receipt.blockNumber) : undefined,
         blockHash: receipt.blockHash?.toString(),
         executionResult: receipt.executionResult,
+      }
+    },
+  }
+  const sequencer = {
+    pauseSequencer: () => nodeAdmin.pauseSequencer(),
+    resumeSequencer: () => nodeAdmin.resumeSequencer(),
+    // prove() runs on the automine sequencer's serial queue, behind in-flight block production.
+    drain: async () => {
+      await nodeDebug.prove()
+      const tips = await node.getChainTips()
+      if (tips.proposed.number !== tips.checkpointed.block.number) {
+        throw new Error("sequencer still publishing after the drain")
       }
     },
   }
@@ -348,10 +364,7 @@ describe("reorg e2e (sandbox)", () => {
     )
     const anchorHash = (await rowFor(tx.hash)).blockHash
 
-    // Stop checkpoint production before draining nonce healing. Reversing these calls leaves a
-    // window in which the sequencer can submit a new checkpoint between the drain and the L1 hold;
-    // rolling that submission back poisons the publisher nonce and starves every later scenario.
-    await withPausedReorgWriters(nodeAdmin, nonceHealer, async () => {
+    await withPausedReorgWriters(sequencer, nonceHealer, async () => {
       await l1CheatCodes.execWithPausedAnvil(async () => {
         const preRollbackReceipt = await receiptNode.getTxReceipt(tx.hash)
         if (preRollbackReceipt.status === "finalized") {

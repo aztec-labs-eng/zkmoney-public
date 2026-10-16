@@ -12,7 +12,8 @@ import {
 import {
   BrowserPasskeyCeremony,
   type DevicePosture,
-  NoPrfError,
+  LAPTOP_LOCAL_HINTS,
+  type LaptopCreation,
   type PasskeyAssertResult,
   type PasskeyAttachment,
   type PasskeyCeremony,
@@ -21,12 +22,16 @@ import {
   type PhoneReach,
   type PrfCandidates,
   RotatedCredentialError,
+  type UserAgentInfo,
+  bytesToBase64Url,
   candidatePubkeys,
   candidatesFrom,
   currentDevicePosture,
+  currentLaptopCreation,
   currentMisreportsCrossDevice,
   currentTrustsAttachmentLabel,
   currentPhoneReach,
+  currentUserAgentInfoSoon,
   impliedKeyTransports,
   isPhysicalOnly,
   preferredSlot,
@@ -54,7 +59,6 @@ import {
   type CachedMsk,
 } from "../storage/activeStorage"
 import { walletStorage } from "../storage/walletStorage"
-import type { HandoffMaterial } from "../storage/handoffMaterial"
 import { holdsAccountRecords } from "../storage/WebStorageAdapter"
 import {
   type AlphaAuthProvider,
@@ -66,6 +70,7 @@ import {
   WebAuthnAlphaAuthProvider,
   deriveMskFromPrfOutput,
 } from "@obsidion/sdk"
+import { countingLocalRefusals } from "./localRefusals"
 import { scopeOfStatus } from "./passkeyAttemptScope"
 import { PASSKEY_ENVIRONMENT_KEY } from "./passkeyEnvironmentKey"
 import { NoPasskeySessionError, SessionChangedError } from "./sessionErrors"
@@ -78,6 +83,21 @@ const toFrCandidates = (prf: PrfCandidates): RecoverPasskeyResult["candidates"] 
   first: prf.first && deriveMskFromPrfOutput(prf.first),
   second: prf.second && deriveMskFromPrfOutput(prf.second),
 })
+
+const PROBE_WAIT_MS = 1000
+
+/** `probe`'s answer, or `fallback` when the browser has not given one in time to open the sheet. */
+async function answeredInTime<T>(probe: Promise<T>, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const expired = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), PROBE_WAIT_MS)
+  })
+  try {
+    return await Promise.race([probe, expired])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 /**
  * Which passkey a recovery ceremony asks for; `discover` leaves the browser's list open. `signal`
@@ -165,10 +185,15 @@ export type WebAlphaAuthServiceOptions = {
   /** Whether the browser reports truthfully which device answered, so a refused sign-up may name
    * it; tests fix it, production reads the user agent. */
   trustsAttachmentLabel?: () => boolean
+  /** The browser's claims about itself, written into a new passkey's handle; tests fix it. */
+  userAgent?: () => Promise<UserAgentInfo>
   /** `null` sends laptop ceremonies no steering hints (the e2e build's virtual authenticators). */
   laptopHints?: null
   /** Provider ids admitted beyond the measured set; only the e2e build passes any. */
   extraProviders?: readonly string[]
+  /** Whether this laptop may create on its own password manager; tests fix it, production reads
+   * the browser's claims. */
+  laptopCreation?: () => Promise<LaptopCreation>
 }
 
 /**
@@ -198,9 +223,13 @@ export class WebAlphaAuthService implements AlphaAuthService {
   private readonly posture: () => DevicePosture
   private readonly misreportsCrossDevice: () => boolean
   private readonly trustsAttachmentLabel: () => boolean
+  private readonly userAgent: () => Promise<UserAgentInfo>
   private readonly laptopHints: null | undefined
   private readonly extraProviders: readonly string[] | undefined
   private readonly probeEnabled: boolean
+  private readonly laptopCreation: () => Promise<LaptopCreation>
+  /** The gate's answer for the next creation only; `createPasskey` consumes it. */
+  private heldCreation?: LaptopCreation
 
   private msk?: Fr
   private authProvider?: AlphaAuthProvider
@@ -231,20 +260,24 @@ export class WebAlphaAuthService implements AlphaAuthService {
     this.posture = options.posture ?? currentDevicePosture
     this.misreportsCrossDevice = options.misreportsCrossDevice ?? currentMisreportsCrossDevice
     this.trustsAttachmentLabel = options.trustsAttachmentLabel ?? currentTrustsAttachmentLabel
+    this.userAgent = options.userAgent ?? currentUserAgentInfoSoon
     this.laptopHints = options.laptopHints
     this.extraProviders = options.extraProviders
     this.probeEnabled = options.laptopHints !== null
+    this.laptopCreation = options.laptopCreation ?? (() => currentLaptopCreation(this.posture()))
   }
 
   /**
    * The UI hints for a creation route: a phone opens the sheet on the QR flow, a security key names
-   * itself so a manager's extension stands aside. `creationHintsFor` adds the security-key hint where
-   * it must. A configuration that sends no hints (the browser tests) keeps sending none.
+   * itself so a manager's extension stands aside, this device asks for its own managers without
+   * naming a key. `creationHintsFor` adds the security-key hint where it must. A configuration that
+   * sends no hints (the browser tests) keeps sending none.
    */
   private laptopHintsForRoute(route?: SignInRoute): readonly PasskeyHint[] | null | undefined {
     if (this.laptopHints === null) return null
     if (route === "phone") return ["hybrid"]
     if (route === "security-key") return ["security-key"]
+    if (route === "this-device") return LAPTOP_LOCAL_HINTS
     return undefined
   }
 
@@ -262,6 +295,9 @@ export class WebAlphaAuthService implements AlphaAuthService {
    * that inference. Persisted beside the record where the record has no creation list.
    */
   private readonly implied = new Map<string, readonly string[] | "refused">()
+
+  /** The handle each passkey this session created was created under, base64url, for its record. */
+  private readonly createdHandles = new Map<string, string>()
 
   /** Where each credential's passkey answered from this session, and the attempt that saw it. */
   private readonly answers = new Map<string, { where: PasskeyAnswer; owns?: () => boolean }>()
@@ -461,11 +497,26 @@ export class WebAlphaAuthService implements AlphaAuthService {
   /**
    * Whether this browser can hand a ceremony to a phone. Asked by the screens on laptop posture
    * before the phone explainer; the ceremonies themselves never ask. Off under the e2e seam, whose
-   * virtual authenticators report no hybrid transport.
+   * virtual authenticators report no hybrid transport. A browser that never answers reads as
+   * unknown, which keeps the phone's steps.
    */
   async probePhoneReach(): Promise<PhoneReach> {
     if (!this.probeEnabled) return "unknown"
-    return currentPhoneReach(this.posture())
+    return answeredInTime(currentPhoneReach(this.posture()), "unknown")
+  }
+
+  /**
+   * Whether this laptop may create the passkey on its own password manager, and with which. Asked
+   * by the gate before the creation sheet; never stored here, so a cancelled attempt leaves nothing.
+   * A browser that never answers gets phone creation.
+   */
+  probeLaptopCreation(): Promise<LaptopCreation> {
+    return answeredInTime(this.laptopCreation(), { local: false, chromeTip: false })
+  }
+
+  /** The snapshot the gate decided from, for the creation that follows at once. */
+  useLaptopCreation(creation: LaptopCreation): void {
+    this.heldCreation = creation
   }
 
   private recovered(
@@ -521,6 +572,31 @@ export class WebAlphaAuthService implements AlphaAuthService {
   async getSecretKey(): Promise<Fr | undefined> {
     if (!this.msk) await this.restoreFromCache()
     return this.msk
+  }
+
+  /** Sign an Oxide metadata digest as the WebAuthn challenge, without a UserOp or personal-sign wrapper. */
+  async signMetadataChallenge(challenge: `0x${string}`) {
+    const storageId = getActiveStorageId()
+    const credentialId = getActiveCredentialId()
+    const provider = await this.getAuthProvider()
+    if (!storageId || !credentialId || !(provider instanceof WebAuthnAlphaAuthProvider))
+      throw new NoPasskeySessionError()
+    const result = await provider.signChallenge(Buffer.from(challenge.slice(2), "hex"))
+    if (getActiveStorageId() !== storageId || getActiveCredentialId() !== credentialId)
+      throw new SessionChangedError()
+    const clientDataJSON =
+      typeof result.clientDataJSON === "string"
+        ? result.clientDataJSON
+        : new TextDecoder().decode(result.clientDataJSON)
+    return {
+      signature: `0x${Buffer.from(result.signature).toString("hex")}`,
+      webauthn: {
+        authenticatorData: `0x${Buffer.from(result.authenticatorData).toString("hex")}`,
+        clientDataJSON,
+        challengeIndex: clientDataJSON.indexOf('"challenge"'),
+        typeIndex: clientDataJSON.indexOf('"type"'),
+      },
+    }
   }
 
   /**
@@ -660,19 +736,34 @@ export class WebAlphaAuthService implements AlphaAuthService {
     transports?: readonly string[]
   }> {
     const posture = this.posture()
+    const creation = this.heldCreation
+    this.heldCreation = undefined
+    // The gate makes this unreachable: it hands out "this-device" only with a snapshot that allows it.
+    if (opts?.route === "this-device" && !creation?.local) {
+      throw new Error("laptop creation was not offered")
+    }
+    const localCreation =
+      opts?.route === "this-device" && creation?.local
+        ? { managers: creation.managers, appleWithdrawn: creation.withdrawn.includes("apple") }
+        : undefined
     // The screen's attempt rides on the status callback front-core hands over; see
     // `passkeyAttemptScope`.
     const asking = this.asking(scopeOfStatus(updateStatus))
     updateStatus?.("Creating passkey…")
+    const userAgent = await this.userAgent()
+    // A screen that left during the read sends no request.
+    opts?.signal?.throwIfAborted()
     // `securityKey` from the driver is deliberately not persisted: every record this wallet writes
     // says "platform". Storing the real class turns on front-core's no-anchor commit branch and the
     // no-backup acknowledgement, which land together with the screen that warns the user.
-    const { created, slot, prfOutput } = await runPasskeyCreation(asking, {
+    const creating = runPasskeyCreation(asking, {
       posture,
       rpId: this.rpId,
       rpName: this.rpName,
       userName: accountName,
+      userAgent,
       laptopHints: this.laptopHintsForRoute(opts?.route),
+      ...(localCreation ? { localCreation } : {}),
       extraProviders: this.extraProviders,
       misreportsCrossDevice: this.misreportsCrossDevice(),
       attachmentLabelTrusted: this.trustsAttachmentLabel(),
@@ -700,8 +791,12 @@ export class WebAlphaAuthService implements AlphaAuthService {
         }
       },
     })
+    const { created, slot, prfOutput } = await (localCreation
+      ? countingLocalRefusals(creating)
+      : creating)
     const secretKey = deriveMskFromPrfOutput(prfOutput)
     const authProvider = this.buildProvider(created.pubkey, created.credentialId)
+    this.createdHandles.set(created.credentialId, bytesToBase64Url(created.userHandle))
 
     return {
       authProvider,
@@ -725,7 +820,8 @@ export class WebAlphaAuthService implements AlphaAuthService {
 
   /** `stillOwns` is checked under the map's lock, so a cancel that landed while waiting writes nothing. */
   async recordRecoveryMetadata(meta: RecoveryMetadata, stillOwns?: () => boolean): Promise<void> {
-    await this.identityMap.upsert(meta, stillOwns)
+    const userHandle = this.createdHandles.get(meta.credentialId)
+    await this.identityMap.upsert(userHandle ? { ...meta, userHandle } : meta, stillOwns)
     const where = this.answerSeen(meta.credentialId)
     if (where) {
       await this.identityMap
@@ -1025,9 +1121,9 @@ export class WebAlphaAuthService implements AlphaAuthService {
   }
 
   /**
-   * A passkey another origin of this RP created (the campaign funnel), identified by the hand-off:
-   * one assertion reads both PRF slots, and the hinted public key is checked against its signature
-   * before anything is committed. A hint the signature does not match throws, never selects a key.
+   * A passkey identified by its credential and public key (a sign-in by tag): one assertion reads
+   * both PRF slots, and the hinted public key is checked against its signature before anything is
+   * committed. A hint the signature does not match throws, never selects a key.
    * A record this browser already holds for the credential counts the same as in `beginRecovery`.
    */
   async adoptKnownPasskey(hint: {
@@ -1062,42 +1158,6 @@ export class WebAlphaAuthService implements AlphaAuthService {
     if (record && !sameHex(record.pubkey, wanted)) throw new HintedKeyMismatchError()
     const pubkey = new Uint8Array(Buffer.from(wanted, "hex"))
     return this.recovered(assertion, candidates, pubkey, record)
-  }
-
-  /**
-   * A recovery result from material the campaign handed off, with no ceremony: the candidates
-   * the campaign evaluated, a provider for its passkey, the creation transports the material
-   * carried, and this browser's own record as the first anchor when it has one. A record for the
-   * credential that names another key is the rotated-credential refusal, the same as after a
-   * ceremony. The anchors decide, as always.
-   */
-  async recoverFromHandoffMaterial(material: HandoffMaterial): Promise<RecoverPasskeyResult> {
-    const record = await this.rootRecord(material.credentialId)
-    if (record && !sameHex(record.pubkey, material.pubkeyHex)) throw new RotatedCredentialError()
-    const candidates: RecoverPasskeyResult["candidates"] = {}
-    for (const slot of ["first", "second"] as const) {
-      const hex = material.candidates[slot]
-      if (!hex) continue
-      try {
-        candidates[slot] = Fr.fromHexString(hex)
-      } catch {
-        // A candidate that is not a field element is no candidate.
-      }
-    }
-    if (!candidates.first && !candidates.second) throw new NoPrfError()
-    const pubkey = material.pubkeyHex.replace(/^0x/i, "").toLowerCase()
-    return {
-      authProvider: this.providerFor({ credentialId: material.credentialId, pubkeyHex: pubkey }),
-      credentialId: material.credentialId,
-      pubkey,
-      candidates,
-      preferredSlot: record?.prfSlot ?? "first",
-      hasPersistedSlot: false,
-      candidateSource: "webauthn",
-      expectedAddress: record?.l2Address,
-      authenticatorType: record?.authenticatorType ?? "platform",
-      ...(material.transports ? { transports: material.transports } : {}),
-    }
   }
 
   /**

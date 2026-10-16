@@ -33,7 +33,6 @@ import {
   L2Actor,
 } from "@aztec/stdlib/messaging"
 import type { Hex, PublicClient } from "viem"
-import type { InboxMessageSource } from "./inboxSiblingPath.js"
 
 /** The L2-side handler signature the portal's message content commits to. */
 const NAME_OWNERSHIP_SIGNATURE = "name_ownership_verified(address,bytes32)"
@@ -91,6 +90,16 @@ export type RegistrationMessageNode = Pick<
   | "getL1ToL2MessageMembershipWitness"
   | "findLeavesIndexes"
 >
+
+/** Minimal Inbox surface — `InboxContract` at the portal's `INBOX()` satisfies it; tests pass fakes. */
+export interface InboxMessageSource {
+  client: { getBlockNumber(): Promise<bigint | number> }
+  getMessageSentEvents(fromBlock: bigint, toBlock: bigint): Promise<InboxMessageSentLog[]>
+}
+
+export interface InboxMessageSentLog {
+  args: { index: bigint; checkpointNumber: bigint | number; leaf?: unknown; hash?: unknown }
+}
 
 /** The canonical Inbox reader over an L1 client; `InboxMessageSource` is the slice the scan needs. */
 export function registrationInbox(

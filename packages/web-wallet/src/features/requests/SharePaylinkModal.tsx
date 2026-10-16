@@ -11,6 +11,7 @@ import { useLinkSharing } from "../../ui/hooks"
 import { Modal } from "../../ui/Modal"
 import { linkExpiryLabel, requestShareStatus, requestShareText } from "./shareView"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
+import { requestLinkOrigin } from "./requestLinkCreation"
 
 /**
  * Share step of the request-paylink flow (ULT-671), doubling as the detail sheet for a persisted
@@ -33,7 +34,7 @@ export function SharePaylinkModal({
   justCreated?: boolean
   onClose: () => void
 }) {
-  const url = buildRequestShareUrl(request, requesterTag, location.origin) ?? undefined
+  const url = buildRequestShareUrl(request, requesterTag, requestLinkOrigin()) ?? undefined
   const { copied, copy, share } = useLinkSharing(url, "Payment request", requestShareText(request.amount))
   const phone = usePhoneLayout()
   const status = requestShareStatus(request, Date.now())

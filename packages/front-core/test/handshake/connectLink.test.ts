@@ -5,6 +5,7 @@ import {
   buildHandshakeLink,
   mintableOrigin,
   parseConnectLink,
+  parsePayLink,
   parseUserTagFromQRPayload,
   walletBaseUrl,
 } from "../../src/index.js"
@@ -140,5 +141,44 @@ describe("dispatch ordering safety (connect vs. legacy bare-tag parser)", () => 
 
   it("HANDSHAKE_LINK_HOST is an origin the parser accepts", () => {
     expect(parseConnectLink(buildHandshakeLink(HANDSHAKE_LINK_HOST, PACKET))).toBe(PACKET)
+  })
+})
+
+describe("parsePayLink", () => {
+  it.each([
+    ["https://wallet.zk.money/pay/river", { tag: "river" }],
+    ["https://wallet.staging.zk.money/pay/River/", { tag: "river" }],
+    ["wallet-pr-12.zk.money/pay/bob_1", { tag: "bob_1" }],
+    [`https://wallet.zk.money/pay/river#${PACKET}`, { tag: "river", fragment: PACKET }],
+    [`  https://zk.money/pay/river#${PACKET}\n`, { tag: "river", fragment: PACKET }],
+  ])("reads %s", (link, expected) => {
+    expect(parsePayLink(link)).toEqual(expected)
+  })
+
+  it.each([
+    "",
+    "https://wallet.zk.money/pay",
+    "https://wallet.zk.money/pay/",
+    "https://wallet.zk.money/pay/river/extra",
+    "https://wallet.zk.money/pay/river?x=1",
+    "https://wallet.zk.money/pay/river#",
+    "https://wallet.zk.money/pay/river#bad.fragment",
+    "https://wallet.zk.money/pay/riv.er",
+    "https://evil.example/pay/river",
+    "https://zk.money.evil.example/pay/river",
+    "https://river.zk.money",
+    buildHandshakeLink(PAYLINK, PACKET),
+  ])("rejects %s", (link) => {
+    expect(parsePayLink(link)).toBeNull()
+  })
+
+  it("reads every link minted on a mintable origin", () => {
+    for (const origin of ["https://wallet.zk.money", "http://localhost:5173"]) {
+      const base = mintableOrigin(origin, Network.TESTNET)
+      expect(parsePayLink(`${base}/pay/river#${PACKET}`)).toEqual({
+        tag: "river",
+        fragment: PACKET,
+      })
+    }
   })
 })

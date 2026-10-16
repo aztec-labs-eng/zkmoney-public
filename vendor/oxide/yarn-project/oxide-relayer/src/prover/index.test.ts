@@ -8,17 +8,22 @@ import { type EpochProofsDeps, startEpochProofs } from './index.js';
 
 const config = { modes: ['epoch-proofs'], proverNodeUrl: 'https://prover.example' } as unknown as RunConfig;
 
-const deploymentWithProverSubsidy = (proverSubsidy: EthAddress): ResolvedManifestDeployment =>
-  ({
+const manifestWithProverSubsidy = (proverSubsidy: EthAddress) => ({
+  current: {
     label: 'v1',
-    publicConfig: { portal: EthAddress.random(), proverSubsidy },
-  }) as unknown as ResolvedManifestDeployment;
+    publicConfig: { portal: EthAddress.random(), proverSubsidy, rollupVersion: 7n },
+  } as unknown as ResolvedManifestDeployment,
+  historical: [],
+});
 
 describe('startEpochProofs', () => {
   it('refuses to start when the pinned entry publishes the zero address for proverSubsidy', async () => {
-    const deps = { client: {}, l1TxQueue: {}, priceOracle: {} } as unknown as EpochProofsDeps;
+    // Every read is the portal's underlying.
+    const client = { readContract: () => Promise.resolve(EthAddress.random().toString()) };
+    const node = { getNodeInfo: () => Promise.resolve({ rollupVersion: 7 }) };
+    const deps = { client, node, l1TxQueue: {} } as unknown as EpochProofsDeps;
 
-    await expect(startEpochProofs(config, deploymentWithProverSubsidy(EthAddress.ZERO), deps)).rejects.toThrow(
+    await expect(startEpochProofs(config, manifestWithProverSubsidy(EthAddress.ZERO), deps)).rejects.toThrow(
       /zero address for proverSubsidy/,
     );
   });

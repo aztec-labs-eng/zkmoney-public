@@ -490,11 +490,11 @@ describe("DepositScreen with the address sheet", () => {
     expect(byTestId("deposit-copy")).not.toBeNull()
   })
 
-  it("Pay with wallet closes the sheet and funds once the picked wallet lands", async () => {
+  it("the wallet link closes the sheet and funds once the picked wallet lands", async () => {
     await render()
     await openCoin("USDC")
     const pay = byTestId("deposit-pay-with-wallet") as HTMLButtonElement
-    expect(pay.textContent).toBe("Pay with wallet")
+    expect(pay.textContent).toBe("Or connect a wallet to fund")
     expect(pay.disabled).toBe(false)
     await act(async () => pay.click())
     expect(sheet()).toBeNull()

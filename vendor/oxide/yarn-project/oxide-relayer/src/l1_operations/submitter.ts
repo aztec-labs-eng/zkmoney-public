@@ -4,10 +4,13 @@ import { DateProvider } from '@aztec/foundation/timer';
 
 import { OperationExecutorAbi } from '@oxide/l1-contracts';
 import {
-  EXECUTOR_MIN_PAYOUT_CALLDATA_GAS,
+  GAS_COST_ARGS_CALLDATA_GAS,
+  type L1OperationQuoteBlock,
   SIMULATED_SENDER_BALANCE,
   type SimulateL1OperationArgs,
+  WEI_PER_ETH,
   estimateL1OperationFeeValues,
+  gasCostAtQuotePrice,
   simulateL1Operation,
 } from '@oxide/oxide-client/l1_operation_quote.js';
 import { L1OperationConditionKind } from '@oxide/oxide-lib/l1_operation_calldata.js';
@@ -65,27 +68,9 @@ type Evaluation =
   | { kind: 'blocked'; listed: EthAddress[] }
   | { kind: 'reverted'; error: unknown }
   | { kind: 'above_max_fee_per_gas'; maxFeePerGas: bigint }
-  | { kind: 'unprofitable'; payout: bigint; minPayout: bigint };
-
-/** A step of `#evaluate` failed. The operation keeps `reason` as its last reason. */
-class EvaluationError extends Error {
-  constructor(
-    readonly reason: 'screening_error' | 'completion_error',
-    cause: unknown,
-  ) {
-    super(errMessage(cause), { cause });
-    this.name = 'EvaluationError';
-  }
-}
-
-/** Awaits `promise` and rethrows a rejection as an `EvaluationError` with `reason`. */
-async function failsWith<T>(reason: EvaluationError['reason'], promise: Promise<T>): Promise<T> {
-  try {
-    return await promise;
-  } catch (err) {
-    throw new EvaluationError(reason, err);
-  }
-}
+  | { kind: 'unprofitable'; payout: bigint; gasCost: bigint }
+  /** A read failed. The operation keeps `reason` as its last reason. */
+  | { kind: 'failed'; reason?: 'screening_error' | 'completion_error'; error: unknown };
 
 /** Per-poll outcome counts, mostly for tests and logging. */
 export interface L1OperationRunSummary {
@@ -150,13 +135,7 @@ export class L1OperationSubmitter {
     operation: PendingL1Operation,
     summary: L1OperationRunSummary,
   ): Promise<void> {
-    let evaluation: Evaluation;
-    try {
-      evaluation = await this.#evaluate(operation);
-    } catch (error) {
-      await this.#deferFailure(operation, error, summary);
-      return;
-    }
+    const evaluation = await this.#evaluate(operation).catch((error): Evaluation => ({ kind: 'failed', error }));
     switch (evaluation.kind) {
       case 'send':
         await this.#broadcast(send, operation, evaluation, summary);
@@ -171,19 +150,30 @@ export class L1OperationSubmitter {
         await this.#deferAboveMaxFeePerGas(operation, evaluation.maxFeePerGas, summary);
         break;
       case 'unprofitable':
-        await this.#deferUnprofitable(operation, evaluation.payout, evaluation.minPayout, summary);
+        await this.#deferUnprofitable(operation, evaluation.payout, evaluation.gasCost, summary);
+        break;
+      case 'failed':
+        await this.#deferFailure(operation, evaluation.reason, evaluation.error, summary);
         break;
     }
   }
 
   /**
    * Decides what to do with the operation now. It reads L1 and the screening lists and changes no state. The checks
-   * run in sequence, and the first check that does not pass decides the result. A read that fails throws.
+   * run in sequence, and the first check that does not pass decides the result. A completion or screening read that
+   * fails returns `failed` with its reason. Another read that fails throws.
    */
   async #evaluate(operation: PendingL1Operation): Promise<Evaluation> {
-    const calldata = await failsWith('completion_error', this.#resolveCalldata(operation));
+    let calldata: Hex;
+    try {
+      calldata = await this.#resolveCalldata(operation);
+    } catch (error) {
+      return { kind: 'failed', reason: 'completion_error', error };
+    }
 
-    const feeValues = await estimateL1OperationFeeValues(this.deps.client, this.deps.config.maxFeeHeadroomPercent);
+    // One block prices the whole quote: the fee values, both simulations and the gas estimate.
+    const quoteBlock = await this.deps.client.getBlock({ blockTag: 'latest' });
+    const feeValues = await estimateL1OperationFeeValues(this.deps.client, quoteBlock);
     // The relayer does not send above the cap, so it does not simulate either. A revert at this fee must not charge
     // an attempt.
     if (isAboveMaxFeePerGas(this.deps.l1TxQueue, feeValues.maxFeePerGas)) {
@@ -199,65 +189,81 @@ export class L1OperationSubmitter {
         payoutToken: operation.payoutToken.toString(),
       },
       feeValues,
+      quoteBlock,
     };
     const simulation = await simulateL1Operation(this.deps.client, quote);
     if (simulation.status === 'failure') {
       return { kind: 'reverted', error: simulation.error };
     }
-    const { result: payout, logs = [], blockNumber } = simulation;
+    const { result: payout, logs = [] } = simulation;
 
-    const listed = await failsWith('screening_error', this.deps.screener.screen(operation, logs));
+    let listed: EthAddress[];
+    try {
+      listed = await this.deps.screener.screen(operation, logs);
+    } catch (error) {
+      return { kind: 'failed', reason: 'screening_error', error };
+    }
     if (listed.length > 0) {
       return { kind: 'blocked', listed };
     }
 
-    const { gasLimit, minPayout } = await this.#price(quote, payout, blockNumber);
-    if (payout < minPayout) {
-      return { kind: 'unprofitable', payout, minPayout };
+    const { gasLimit, gasCostArgs, quotedGasCost } = await this.#price(quote, payout, quoteBlock);
+    if (payout < quotedGasCost) {
+      return { kind: 'unprofitable', payout, gasCost: quotedGasCost };
     }
 
-    return { kind: 'send', data: encodeExecute(quote.operation, minPayout), payout, gasLimit, feeValues };
+    // The executor prices the gas to cover at the gas price the tx pays, so the sent `minPayout` is 0. The gas cost at
+    // the quote price only decides whether to send.
+    return { kind: 'send', data: encodeExecute(quote.operation, 0n, gasCostArgs), payout, gasLimit, feeValues };
   }
 
   /**
-   * Returns the gas limit and the minimum payout, which is the gas cost at the fee ceiling. Both calls require the
-   * quoted `payout`, so an inner failure cannot produce a cheaper run.
+   * Returns the gas limit, the `execute` arguments of the gas cost, and the gas cost at the quote price. The executor
+   * prices `gasToCover`, the gas used after refunds, at the gas price the tx pays. The relayer decides at the price the
+   * tx pays if the base fee holds: the base fee of the quote block plus the tip. Both calls require the quoted
+   * `payout`, so an inner failure cannot produce a cheaper run.
    */
   async #price(
     quote: SimulateL1OperationArgs,
     payout: bigint,
-    blockNumber: bigint,
-  ): Promise<{ gasLimit: bigint; minPayout: bigint }> {
+    quoteBlock: L1OperationQuoteBlock,
+  ): Promise<{ gasLimit: bigint; gasCostArgs: GasCostArgs; quotedGasCost: bigint }> {
     const estimatedGas = await this.deps.client.estimateGas({
-      // We run the estimation here at the same block as the simulation. Not strictly necessary but anyway seems
-      // reasonable to have these 2 rpc calls pinned.
-      blockNumber,
+      blockNumber: quoteBlock.number,
       account: quote.sender,
       to: quote.executor,
-      data: encodeExecute(quote.operation, payout),
+      data: encodeExecute(quote.operation, payout, NO_GAS_COST),
       maxFeePerGas: quote.feeValues.maxFeePerGas,
       maxPriorityFeePerGas: quote.feeValues.maxPriorityFeePerGas,
       stateOverride: [{ address: quote.sender, balance: SIMULATED_SENDER_BALANCE }],
     });
-    // The submitted minimum can have more non-zero bytes than the quoted payout.
-    const gasLimit = estimatedGas + EXECUTOR_MIN_PAYOUT_CALLDATA_GAS;
+    const gasLimit = estimatedGas + GAS_COST_ARGS_CALLDATA_GAS;
     if (this.deps.allowUnprofitable) {
-      return { gasLimit, minPayout: 0n };
+      return { gasLimit, gasCostArgs: NO_GAS_COST, quotedGasCost: 0n };
     }
-    // The minimum payout uses the gas used after refunds, not the gas limit.
     const gasSimulation = await simulateL1Operation(this.deps.client, { ...quote, minPayout: payout });
     if (gasSimulation.status === 'failure') {
       throw new Error(`gas simulation failed: ${errMessage(gasSimulation.error)}`);
     }
-    return { gasLimit, minPayout: await this.deps.priceOracle.weiToUSD(gasSimulation.costWei) };
+    const { gasToCover } = gasSimulation;
+    const tokenWeiPerEth = await this.deps.priceOracle.weiToUSD(WEI_PER_ETH);
+    return {
+      gasLimit,
+      gasCostArgs: { gasToCover, tokenWeiPerEth },
+      quotedGasCost: gasCostAtQuotePrice(gasToCover, quoteBlock, quote.feeValues, tokenWeiPerEth),
+    };
   }
 
   /**
    * An error, not a revert: no attempt is charged. A screening or completion error keeps its reason on the operation;
    * the screening reason drives an alarm.
    */
-  async #deferFailure(operation: PendingL1Operation, error: unknown, summary: L1OperationRunSummary): Promise<void> {
-    const reason = error instanceof EvaluationError ? error.reason : undefined;
+  async #deferFailure(
+    operation: PendingL1Operation,
+    reason: PendingL1OperationReason | undefined,
+    error: unknown,
+    summary: L1OperationRunSummary,
+  ): Promise<void> {
     const cause = reason ?? 'evaluation_error';
     this.log.warn('L1 operation evaluation failed; deferring', {
       event: 'l1_operation_deferred',
@@ -289,15 +295,15 @@ export class L1OperationSubmitter {
   async #deferUnprofitable(
     operation: PendingL1Operation,
     payout: bigint,
-    minPayout: bigint,
+    gasCost: bigint,
     summary: L1OperationRunSummary,
   ): Promise<void> {
     const changed = await this.#defer(operation, 'unprofitable', summary, { cause: 'unprofitable' });
-    this.#logDeferral(changed, 'L1 operation deferred by minimum payout', {
+    this.#logDeferral(changed, 'L1 operation deferred: payout below gas cost', {
       event: 'l1_operation_deferred',
       cause: 'unprofitable',
       payout: payout.toString(),
-      minPayout: minPayout.toString(),
+      gasCost: gasCost.toString(),
       ...operationLogFields(operation),
     });
   }
@@ -573,11 +579,31 @@ export class L1OperationSubmitter {
   }
 }
 
-function encodeExecute(operation: SimulateL1OperationArgs['operation'], minPayout: bigint): Hex {
+/** The `execute` arguments of the gas cost. The executor prices `gasToCover` at the gas price the tx pays. */
+interface GasCostArgs {
+  gasToCover: bigint;
+  tokenWeiPerEth: bigint;
+}
+
+/** No gas to cover, so the executor checks only the `minPayout` argument. */
+const NO_GAS_COST: GasCostArgs = { gasToCover: 0n, tokenWeiPerEth: 0n };
+
+function encodeExecute(
+  operation: SimulateL1OperationArgs['operation'],
+  minPayout: bigint,
+  gasCostArgs: GasCostArgs,
+): Hex {
   return encodeFunctionData({
     abi: OperationExecutorAbi,
     functionName: 'execute',
-    args: [operation.target, operation.calldata, operation.payoutToken, minPayout],
+    args: [
+      operation.target,
+      operation.calldata,
+      operation.payoutToken,
+      minPayout,
+      gasCostArgs.gasToCover,
+      gasCostArgs.tokenWeiPerEth,
+    ],
   });
 }
 

@@ -113,11 +113,12 @@ export function DepositAddressSheet({
   capacityNote,
   arrivalMinutes,
   onPayWithWallet,
-  walletLabel = "Pay with wallet",
+  walletLabel = "Or connect a wallet to fund",
   readError = false,
   problem,
   limitLabel,
   onOpenActivity,
+  ask,
   onClose,
 }: {
   token: DepositTokenOption
@@ -146,8 +147,8 @@ export function DepositAddressSheet({
   swapInto?: string
   /** The `$` figure that fits right now, on the limits row. */
   limitNow: string
-  /** The limits drawer's rows. */
-  limits: ReactNode
+  /** The limits drawer's rows; no drawer without them. */
+  limits?: ReactNode
   /** Why capacity holds a deposit sent now: zero, short, or unreadable. */
   capacityNote?: string
   /** Minutes from spotted to credited; unknown until the chain's timing is read. */
@@ -161,6 +162,8 @@ export function DepositAddressSheet({
   /** The per-transaction limit as a `$` figure, named when the spotted amount is over it. */
   limitLabel?: string
   onOpenActivity?: () => void
+  /** How much to send, when the address asks for a set amount. */
+  ask?: ReactNode
   onClose: () => void
 }) {
   const phone = usePhoneLayout()
@@ -304,6 +307,7 @@ export function DepositAddressSheet({
         <p className={phase === "creating" || phase === "ready" ? "" : "ww-deposit-sheet__sub--sm"}>
           {subtitle}
         </p>
+        {phase !== "spotted" && ask}
       </div>
 
       {phase === "spotted" ? (
@@ -395,12 +399,11 @@ export function DepositAddressSheet({
               {onPayWithWallet && (
                 <button
                   type="button"
-                  className="zkm-btn-reset ww-deposit-sheet__check"
+                  className="zkm-btn-reset ww-deposit-sheet__wallet"
                   disabled={!canCopy}
                   onClick={onPayWithWallet}
                   data-testid="deposit-pay-with-wallet"
                 >
-                  <Icon name="wallet" size={11} />
                   {walletLabel}
                 </button>
               )}
@@ -416,7 +419,7 @@ export function DepositAddressSheet({
               </button>
             </>
           )}
-          {phase !== "waiting" && (
+          {phase !== "waiting" && limits && (
             <div className="ww-deposit-sheet__limits" data-testid="address-limits">
               <button
                 type="button"
