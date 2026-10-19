@@ -28,6 +28,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   useAccountContext: () => ctx.account,
   useAssetContext: () => ctx.asset,
   useContractServiceContext: () => ctx.contracts,
+  useBootReady: () => true,
   SavingsProvider: ({ children }: { children: ReactNode }) => children,
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({}) }))

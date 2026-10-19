@@ -4,6 +4,7 @@ import type { PublicClient, WalletClient } from 'viem';
 import {
   addBeneficiary,
   readIsBeneficiary,
+  readR1InstallGas,
   readRegistrationFee,
   readRegistrationMin,
 } from './registration_controller.js';
@@ -33,6 +34,24 @@ describe('RegistrationController beneficiaries', () => {
     expect(readContract).toHaveBeenCalledWith(
       expect.objectContaining({ address: CONTROLLER, functionName: 'REGISTRATION_MIN' }),
     );
+  });
+
+  it('reads the R1 install gas limits off the controller', async () => {
+    const limits: Record<string, bigint> = {
+      R1_INSTALL_VERIFICATION_GAS: 50_000n,
+      R1_INSTALL_CALL_GAS_BASE: 85_000n,
+      R1_INSTALL_CALL_GAS_PER_WORD: 30_000n,
+    };
+    const readContract = jest.fn((request: { address: string; functionName: string }) =>
+      Promise.resolve(limits[request.functionName]),
+    );
+    const publicClient = { readContract } as unknown as PublicClient;
+    await expect(readR1InstallGas(publicClient, CONTROLLER)).resolves.toEqual({
+      verification: 50_000n,
+      callBase: 85_000n,
+      callPerWord: 30_000n,
+    });
+    expect(readContract.mock.calls.every(([request]) => request.address === CONTROLLER)).toBe(true);
   });
 
   it('reads isBeneficiary off the controller', async () => {

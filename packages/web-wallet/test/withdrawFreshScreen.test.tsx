@@ -104,7 +104,7 @@ describe("WithdrawFreshScreen", () => {
     expect(continueButton().disabled).toBe(true)
     expect(card()).toBeNull()
     expect(container.textContent).not.toContain("Connect your wallet")
-    expect(h.fireEvent).toHaveBeenCalledWith("withdraw_opened")
+    expect(h.fireEvent).toHaveBeenCalledWith("withdraw_opened", { method: "fresh" })
   })
 
   it.each<[keyof typeof FRESH_ADDRESS_VERDICT_COPY, string, string | undefined]>([

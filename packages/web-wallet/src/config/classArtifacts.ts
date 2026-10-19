@@ -18,10 +18,15 @@ export function setWebClassArtifactResolver(resolve: WebClassArtifactResolver): 
   resolveWebClassArtifact = resolve
 }
 
-export function getWebBroadcasterArtifact(wallet: ObsidionWallet, address: string | AztecAddress) {
+/** `instance`: the broadcaster's on-chain instance when the caller already read it. */
+export function getWebBroadcasterArtifact(
+  wallet: ObsidionWallet,
+  address: string | AztecAddress,
+  instance?: { currentContractClassId: { toString(): string } },
+) {
   if (!resolveWebClassArtifact) return getBroadcasterArtifact()
   return resolveInstanceArtifact(
-    wallet.node,
+    instance ? { getContract: async () => instance } : wallet.node,
     typeof address === "string" ? AztecAddress.fromStringUnsafe(address) : address,
     getBroadcasterArtifact,
     resolveWebClassArtifact,

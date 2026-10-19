@@ -4,6 +4,7 @@ import { logger } from "src/utils/logger"
 import { isZeroAddress } from "src/utils/validate"
 
 import { ContactStorage, L1_PLACEHOLDER_NAME, isUserLabel, type Contact } from "./ContactStorage.js"
+import { lookupEnsName, type GetEnsClient } from "../services/ens"
 
 const UNKNOWN_PROVIDER = "unknown"
 
@@ -84,6 +85,34 @@ export async function upsertSavedL1WalletContact({
   } catch (err) {
     logger.warn("[L1WalletContacts] Failed to upsert saved recipient:", err)
   }
+}
+
+const unnamedL1 = (entry: Contact): boolean =>
+  !!entry.l1Wallet && !entry.l1Wallet.deletedAt && !isUserLabel(entry.name)
+
+/**
+ * Names each unlabeled L1 contact (stored as the placeholder, so shown by its address) after its
+ * ENS primary name, now and after every contacts change. A label the user typed is never replaced.
+ * Returns the unsubscribe.
+ */
+export function nameL1ContactsByEns(getClient: GetEnsClient): () => void {
+  const storage = ContactStorage.get()
+  const run = () => {
+    void storage
+      .getEntries()
+      .then((entries) =>
+        Promise.all(
+          entries.filter(unnamedL1).map(async ({ address, l1Wallet }) => {
+            const name = await lookupEnsName(getClient, address as Address)
+            if (!name) return
+            await storage.nameUnlabeledL1Contact({ address, provider: l1Wallet!.provider }, name)
+          }),
+        ),
+      )
+      .catch((err) => logger.warn("[L1WalletContacts] Failed to name contacts by ENS:", err))
+  }
+  run()
+  return storage.onChange(run)
 }
 
 export interface UpdateSavedL1WalletContactParams {

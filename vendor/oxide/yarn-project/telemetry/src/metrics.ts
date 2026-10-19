@@ -94,23 +94,36 @@ export const TEE_ROUTER_UPSTREAM_FAILURE = defineMetric({
   optionalAttributes: [],
 });
 
-// The registrar is a short-lived Lambda that reads each balance once per run and flushes.
-export const TEE_REGISTRAR_ETH_BALANCE = defineMetric({
+// ── TEE registrar ─────────────────────────────────────────────────────────────
+// The registrar records these synchronous gauges after each successful fleet scan. When the scans fail, the
+// gauges get no datapoints and the missing-data alarms fire.
+
+export const TEE_REGISTRAR_STUCK_JOBS = defineMetric({
   kind: 'gauge',
-  name: 'oxide.tee_registrar.eth_balance',
-  description: 'ETH balance of the shared registrar key, in whole ETH. Pays L1 registration gas.',
-  unit: '{eth}',
-  valueType: 'double',
+  name: 'oxide.tee_registrar.stuck_jobs',
+  description: 'Number of registration jobs that stay in one phase for longer than its limit.',
+  unit: '{job}',
+  valueType: 'int',
   requiredAttributes: [],
   optionalAttributes: [],
 });
 
-export const TEE_REGISTRAR_FEE_JUICE_BALANCE = defineMetric({
+export const TEE_REGISTRAR_EXPIRING_LEASES = defineMetric({
   kind: 'gauge',
-  name: 'oxide.tee_registrar.fee_juice_balance',
-  description: "Fee-juice balance of the version's operator account, in whole units. Pays L2 signer consumes.",
-  unit: '{fee_juice}',
-  valueType: 'double',
+  name: 'oxide.tee_registrar.expiring_leases',
+  description: 'Number of ready hosts whose last successful probe is older than half the identity lease.',
+  unit: '{lease}',
+  valueType: 'int',
+  requiredAttributes: [],
+  optionalAttributes: [],
+});
+
+export const TEE_REGISTRAR_HOSTS_WITHOUT_ROUTABLE_IDENTITY = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.tee_registrar.hosts_without_routable_identity',
+  description: 'Number of in-service hosts that do not have a ready, current, and unexpired identity.',
+  unit: '{host}',
+  valueType: 'int',
   requiredAttributes: [],
   optionalAttributes: [],
 });
@@ -652,8 +665,9 @@ export const METRIC_DEFINITIONS = [
   TEE_ROUTER_DISCOVERY_AGE,
   TEE_ROUTER_DISCOVERY_FAILURE,
   TEE_ROUTER_UPSTREAM_FAILURE,
-  TEE_REGISTRAR_ETH_BALANCE,
-  TEE_REGISTRAR_FEE_JUICE_BALANCE,
+  TEE_REGISTRAR_STUCK_JOBS,
+  TEE_REGISTRAR_EXPIRING_LEASES,
+  TEE_REGISTRAR_HOSTS_WITHOUT_ROUTABLE_IDENTITY,
   RELAYER_L1_OPERATION_COUNT,
   RELAYER_L1_OPERATION_PENDING,
   RELAYER_L1_OPERATION_WAITING,

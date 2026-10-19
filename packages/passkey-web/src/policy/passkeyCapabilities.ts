@@ -1,5 +1,6 @@
+import { APPLE_ICLOUD_AAGUID, ZERO_AAGUID } from "@obsidion/core/constants"
 import type { PasskeyAttachment } from "../ceremony/passkeyCeremony.js"
-import type { DevicePosture } from "./devicePosture.js"
+import { type DevicePosture, currentDevicePosture } from "./devicePosture.js"
 import { PASSKEY_MANAGER_AAGUIDS } from "./passkeyProviders.js"
 import type { PasskeyPlatformAuthenticator } from "./passkeyTelemetryVocabulary.js"
 import {
@@ -210,4 +211,32 @@ export async function currentPhoneReach(posture: DevicePosture): Promise<PhoneRe
     clientCapabilities(),
   ])
   return probePhoneReach({ posture, userAgent, capabilities })
+}
+
+/** A sign-in that opened no wallet: the answer's label, and the provider this browser recorded. */
+export type MissedAnswer = { attachment?: PasskeyAttachment; recordAaguid?: string }
+
+/**
+ * Whether a laptop sign-in that opened no wallet may be a Mac's own iCloud copy returning the wrong
+ * key: on a Mac, unless the answer is known to be another device's or this browser's record names
+ * another manager. Decides the cards that lead with the phone and suggest a macOS update.
+ */
+export function macCopyMayBeWrong(
+  answer: MissedAnswer | undefined,
+  env: { posture: DevicePosture; osFamily: UserAgentInfo["osFamily"]; labelTrusted: boolean },
+): boolean {
+  if (env.posture !== "laptop" || env.osFamily !== "macos") return false
+  if (answer?.attachment === "cross-platform" && env.labelTrusted) return false
+  const made = answer?.recordAaguid?.toLowerCase()
+  return !made || made === ZERO_AAGUID || made === APPLE_ICLOUD_AAGUID
+}
+
+/** The live browser's answer. */
+export function currentMacCopyMayBeWrong(answer: MissedAnswer | undefined): boolean {
+  const userAgent = typeof navigator === "undefined" ? "" : navigator.userAgent ?? ""
+  return macCopyMayBeWrong(answer, {
+    posture: currentDevicePosture(),
+    osFamily: parseUserAgent({ userAgent }).osFamily,
+    labelTrusted: currentTrustsAttachmentLabel() && !currentMisreportsCrossDevice(),
+  })
 }

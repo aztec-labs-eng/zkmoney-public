@@ -2,7 +2,7 @@ import type { PaylinkWindow } from "@obsidion/core/types"
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest"
 import { PaylinkInitParams, PaylinkService } from "../../src/services/PaylinkService.js"
 import { derivePaylinkKeys } from "../../src/services/paylink/paylinkKeys.js"
-import { buildTransferMetaForSend } from "../../src/services/transferMeta.js"
+import { buildTransferMeta, buildTransferMetaForSend } from "../../src/services/transferMeta.js"
 import { TxHash } from "@aztec/stdlib/tx"
 import { Fr } from "@aztec/aztec.js/fields"
 import { Grumpkin } from "@aztec/foundation/crypto/grumpkin"
@@ -160,6 +160,48 @@ describe("PaylinkService Encryption and URL Tests", () => {
       contractAddress: noteToken,
       scopes: [escrow],
     })
+  })
+
+  it.each([
+    ["a valid tag", "river", "river"],
+    ["a tag failing the tag charset", "River Stone!", undefined],
+  ])("resolves a link's sender tag and creator with %s", async (_case, tag, expected) => {
+    const escrow = await AztecAddress.random()
+    const creator = await AztecAddress.random()
+    // The strict builder writes any ASCII tag, so the read side's own check is what drops a bad one.
+    const meta = buildTransferMeta({ memo: "lunch", senderTag: tag })
+    const service = new PaylinkService(
+      {
+        getPrivateEvents: vi
+          .fn()
+          .mockResolvedValue([{ event: { to: escrow, from: creator, meta } }]),
+      } as never,
+      null as never,
+      {} as never,
+      null as never,
+    )
+    vi.spyOn(service, "reconstructPaylinkContract").mockResolvedValue({
+      instance: { address: escrow },
+    } as never)
+    const internals = service as unknown as {
+      readEscrowNote: () => Promise<unknown>
+      registerToken: (token: AztecAddress) => Promise<void>
+    }
+    vi.spyOn(internals, "readEscrowNote").mockResolvedValue({
+      tokenAddress: await AztecAddress.random(),
+      hash: Fr.ZERO,
+    })
+    vi.spyOn(internals, "registerToken").mockResolvedValue()
+    const resolved = await service.resolveLink({
+      secret: Fr.random(),
+      paylinkType: DEFAULT_CONTRACTS.paylinkDirect,
+      classId: Fr.ZERO,
+      chainId: 31337,
+      rollupVersion: 1,
+    })
+    expect(resolved.memo).toBe("lunch")
+    expect(resolved.senderTag).toBe(expected)
+    expect(resolved.from).toBe(creator.toString())
   })
 
   describe("serverless link (generate + parse)", () => {

@@ -1,7 +1,8 @@
 /**
  * The speed a ticket registration's burn takes. Registration needs no tip, so Faster, the default,
  * tips only when that buys a faster withdrawal and the note still covers the burn with it. A surface
- * showing the split commits the choice, and the claim burns what was committed.
+ * showing the split commits the choice, and the claim burns what was committed. A signup that goes
+ * ahead before the quote answers commits Standard.
  */
 import { useEffect, useRef } from "react"
 import type { RegistrationSchedule } from "@obsidion/core/types"
@@ -29,6 +30,11 @@ export interface RegistrationSpeed {
   outcome: SpeedOutcome
   /** The tip the split commits; undefined while the quote, the schedule or the note are unread. */
   proverTip?: bigint
+  /**
+   * Commits Standard with no tip when nothing is committed yet, for a surface that goes ahead
+   * before the quote answers. The choice moves to Standard too, so a later quote keeps it.
+   */
+  settle: () => void
 }
 
 /**
@@ -79,5 +85,11 @@ export function useRegistrationSpeed({
     onCommit(tip, choice.speed)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- commits each decision once per target
   }, [active, tip, choice.speed, commitKey])
-  return { choice, outcome, proverTip: active ? tip : committed.current }
+  const settle = () => {
+    if (!active || tip !== undefined) return
+    choice.setSpeed("standard")
+    committed.current = 0n
+    onCommit(0n, "standard")
+  }
+  return { choice, outcome, proverTip: active ? tip : committed.current, settle }
 }

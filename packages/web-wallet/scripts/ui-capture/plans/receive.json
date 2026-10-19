@@ -2,7 +2,7 @@
   "scenario": "activity",
   "path": "/receive",
   "ready": {
-    "text": "Waiting for a payment"
+    "text": "Scan or share"
   },
   "steps": [
     {
@@ -25,12 +25,8 @@
       "value": "Lunch"
     },
     {
-      "action": "waitFor",
-      "text": "Waiting for $52.00"
-    },
-    {
       "action": "wait",
-      "ms": 600
+      "ms": 2000
     },
     {
       "action": "screenshot",

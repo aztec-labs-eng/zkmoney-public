@@ -23,6 +23,7 @@ import {
   requestAmountBucket,
 } from "../../lib/analytics"
 import { MessagingBanner } from "../../platform/xmtp/MessagingBanner"
+import { fireRequestOpened } from "../requests/requestOpened"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { PayModalChrome } from "../../ui/PayModalChrome"
 import { TeeSignerNotice } from "../../ui/TeeSignerNotice"
@@ -51,6 +52,8 @@ interface PayScreenState {
     note?: string
     /** The pay page's path and hash, so the payer can switch to its Ethereum route. */
     link?: string
+    /** From a standing `/pay/<tag>` page rather than a minted request. */
+    standing?: boolean
   }
   from?: "detail"
   /** The person the page already loaded, so the flow opens without looking them up again. */
@@ -94,6 +97,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   const [note, setNote] = useState(request?.note ?? "")
   const [stage, setStage] = useState<PayStage>("resolving")
   const [failedOnce, setFailedOnce] = useState(false)
+  const requestSource = request?.standing ? "pay_page" : request?.source ?? "contact"
   // Cancel is honoured only before proving starts; the sponsored rail can't abort a proof.
   const cancelled = useRef(false)
   const left = useRef(false)
@@ -119,13 +123,10 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   }, [idOrTag])
 
   // Funnel top: a fulfilling send is the payer opening a request; a plain send starts at the
-  // contact pick. Fires once per screen entry.
+  // contact pick.
   useEffect(() => {
     if (request) {
-      fireEvent("request_opened", {
-        source: request.source ?? "contact",
-        amount_bucket: requestAmountBucket(request.amount),
-      })
+      fireRequestOpened(requestSource, request.id, request.amount, request.tag)
     } else if (mode === "send") {
       fireEvent("send_contact_selected")
     }
@@ -177,6 +178,16 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
     setPhase("confirm")
   }
 
+  // Range only — never the exact amount or tag.
+  const fireSendSubmitted = (props: { duration_ms: number } | { in_flight: true }) =>
+    fireEvent("send_submitted", {
+      ...props,
+      amount_bucket: amountBucket(BigInt(Math.floor(parsed)), 0),
+      // Lets the contact-send funnel exclude fulfilling sends (they enter via request_opened,
+      // not send_contact_selected) while volume counts keep every send.
+      fulfills_request: !!request,
+    })
+
   const submit = async () => {
     if (failedOnce) fireEvent("retry_clicked", { flow: isSend ? "send" : "request" })
     if (isSend) outcome.start("resolving")
@@ -226,18 +237,12 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
       )
       outcome.finish()
       // sendToContact waits for the mine, so duration spans confirm → mine; the per-phase
-      // split rides tx_timing (flow "send"). Range only — never the exact amount or tag.
+      // split rides tx_timing (flow "send").
       if (result.txHash) {
-        fireEvent("send_submitted", {
-          duration_ms: elapsed(),
-          amount_bucket: amountBucket(BigInt(Math.floor(parsed)), 0),
-          // Lets the contact-send funnel exclude fulfilling sends (they enter via request_opened,
-          // not send_contact_selected) while volume counts keep every send.
-          fulfills_request: !!request,
-        })
+        fireSendSubmitted({ duration_ms: elapsed() })
         if (request) {
           fireEvent("request_paid", {
-            source: request.source ?? "contact",
+            source: requestSource,
             amount_bucket: requestAmountBucket(parsed),
           })
         }
@@ -259,6 +264,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
       // no error to report yet.
       if (e instanceof TxInFlightError) {
         outcome.finish()
+        fireSendSubmitted({ in_flight: true })
         return
       }
       outcome.finish()

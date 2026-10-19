@@ -10,9 +10,9 @@
 // Builds the full subset needed by oxide-client::submit():
 //   1. `yarn install` inside vendor/oxide/l1-contracts (pulls @aztec/l1-artifacts
 //      whose sources @oxide/l1-contracts and OxidePortal.sol consume via remappings).
-//   2. `forge build` inside vendor/oxide/l1-contracts/lib/nitro-validator/
-//      (produces CertManager.json + NitroValidator.json that gen_abis.mjs reads).
-//   3. `forge build` inside vendor/oxide/l1-contracts/ (OxidePortal artifacts).
+//   2. The pinned Solidity repositories under vendor/oxide/l1-contracts/.deps/.
+//   3. `forge build` inside vendor/oxide/l1-contracts/ (writes
+//      vendor/oxide/dist/l1_contracts/artifacts/).
 //   4. `node gen_abis.mjs` inside vendor/oxide/yarn-project/l1-contracts/
 //      (emits src/abis/*.ts from the Foundry JSON).
 //   5. The three refund circuits under
@@ -49,7 +49,7 @@ const REPO_ROOT = resolve(HERE, "..")
 const VENDOR_ROOT = resolve(REPO_ROOT, "vendor/oxide")
 const YARN_PROJECT = resolve(VENDOR_ROOT, "yarn-project")
 const L1_CONTRACTS = resolve(VENDOR_ROOT, "l1-contracts")
-const NITRO = resolve(L1_CONTRACTS, "lib/nitro-validator")
+const L1_DIST = resolve(VENDOR_ROOT, "dist/l1_contracts")
 
 // The ABI .ts files gen_abis.mjs writes — derived from its own TARGETS map so
 // the sentinel never under-covers when oxide adds a contract. gen_abis.mjs
@@ -75,8 +75,7 @@ const ABI_DIR = resolve(YARN_PROJECT, "l1-contracts/src/abis")
 // Sentinel files that mark each upstream-build step as done.
 const SENTINELS = {
   yarnInstall: resolve(L1_CONTRACTS, "node_modules/.yarn-state.yml"),
-  nitroForge: resolve(NITRO, "out/CertManager.sol/CertManager.json"),
-  l1Forge: resolve(L1_CONTRACTS, "out/OxidePortal.sol/OxidePortal.json"),
+  l1Forge: resolve(L1_DIST, "artifacts/OxidePortal.sol/OxidePortal.json"),
 }
 
 const NOIR_PROJECTS = resolve(VENDOR_ROOT, "noir-projects")
@@ -125,13 +124,13 @@ function run(cmd, args, cwd) {
 
 // The forge/ABI sentinels are existence-based and the tsc step below is mtime-based, so a vendor
 // pin bump would otherwise leave stale L1 artifacts (and gen_abis crashing on interfaces the
-// stale `out/` lacks). Stamp the submodule SHA; on mismatch, invalidate the forge outputs,
+// stale artifacts lack). Stamp the submodule SHA; on mismatch, invalidate the forge outputs,
 // generated ABIs and every package's `dest/` so they rebuild against the new pin.
 // A container build has no repo to ask — `.dockerignore` excludes `.git` — and no
 // stale artifacts either, since the stage starts clean. So a missing SHA means
 // "nothing to invalidate", not a build failure. `OXIDE_VENDOR_SHA` supplies it
 // where git is unavailable but the stamp is still wanted.
-const VENDOR_SHA_STAMP = resolve(L1_CONTRACTS, "out/.vendor-sha")
+const VENDOR_SHA_STAMP = resolve(L1_DIST, ".vendor-sha")
 const exportManifest = resolve(REPO_ROOT, "EXPORT-MANIFEST.json")
 const vendorSha =
   process.env.OXIDE_VENDOR_SHA?.trim() ||
@@ -152,8 +151,8 @@ if (
   (!existsSync(VENDOR_SHA_STAMP) || readFileSync(VENDOR_SHA_STAMP, "utf8").trim() !== vendorSha)
 ) {
   console.error(`vendor/oxide pin moved (or first build) — clearing forge outputs, ABIs and dest/`)
-  rmSync(resolve(L1_CONTRACTS, "out"), { recursive: true, force: true })
-  rmSync(resolve(NITRO, "out"), { recursive: true, force: true })
+  rmSync(L1_DIST, { recursive: true, force: true })
+  rmSync(resolve(L1_CONTRACTS, ".cache"), { recursive: true, force: true })
   rmSync(ABI_DIR, { recursive: true, force: true })
   // tsc emits into dest/ without pruning it, so a module the old pin had and the new one dropped
   // survives as an orphan importing symbols the regenerated modules no longer export — and the
@@ -172,12 +171,8 @@ if (!existsSync(SENTINELS.yarnInstall)) {
   run("yarn", ["install"], L1_CONTRACTS)
 }
 
-if (!existsSync(SENTINELS.nitroForge)) {
-  console.error("vendor/oxide/l1-contracts/lib/nitro-validator: forge build")
-  run("forge", ["build"], NITRO)
-}
-
 if (!existsSync(SENTINELS.l1Forge)) {
+  run("bash", ["fetch_solidity_deps.sh"], L1_CONTRACTS)
   console.error("vendor/oxide/l1-contracts: forge build")
   run("forge", ["build"], L1_CONTRACTS)
 }

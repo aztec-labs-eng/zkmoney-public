@@ -51,6 +51,7 @@ import { HomeTransactions } from "./HomeTransactions"
 import { useActivityEntries } from "./useActivityEntries"
 import earnCoin from "../../assets/home/earn-coin.webp"
 import gift from "../../assets/home/gift.webp"
+import { UpgradeBanner } from "../../features/migration/UpgradeIntro"
 import iosApp from "../../assets/home/ios-app.webp"
 import quickFresh from "../../assets/home/quick-fresh.webp"
 import quickPaylink from "../../assets/home/quick-paylink.webp"
@@ -351,6 +352,7 @@ export function HomeScreen() {
       setClaimAsked(false)
     },
     claimAsked,
+    () => setClaimAsked(false),
   )
   const customEndpoints = customEndpointsLabel(getConfig().endpoints)
   const requestEntries = entries.filter((entry) => entry.incomingRequest)
@@ -509,6 +511,7 @@ export function HomeScreen() {
           </div>
         )}
       </div>
+      {!onSavings && <UpgradeBanner />}
       <HomeActions actions={actions} phone={phone} />
       {onSavings ? (
         savingsHydrated && savingsEntries.length === 0 ? (

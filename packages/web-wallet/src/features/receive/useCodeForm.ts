@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react"
-import { decimalInput } from "../../ui/format"
+import { amountError, decimalInput } from "../../ui/format"
 import type { CodeForm, ReceiveCode } from "./receiveCode"
 import { parseRequestAmount } from "./receiveView"
 
@@ -13,6 +13,7 @@ export interface CodeFormState {
   note: string
   setAmount: (value: string) => void
   setNote: (value: string) => void
+  amountError?: string
   error?: string
 }
 
@@ -60,11 +61,9 @@ export function useCodeForm(
     note,
     setAmount: (value) => setAmount(decimalInput(value)),
     setNote,
-    error:
-      parsed === null
-        ? "Enter an amount above $0."
-        : failed
-        ? "The code didn't update. Edit it to try again."
-        : undefined,
+    amountError: amountError(amount.trim()),
+    error: failed
+      ? "Your pay QR code didn't update. Edit the amount or note to try again."
+      : undefined,
   }
 }

@@ -17,10 +17,10 @@ export {
   type PayloadFinalizer,
 } from "./stagedExecution.js"
 export { FeeUnavailableError } from "./FeeUnavailableError.js"
-// Public proving-progress helper (PerfBucketAccumulator stays internal).
 export {
   proveTxWithProgress,
   readTimingBenchFlag,
+  setPerfLogFlag,
   setTimingBenchFlag,
 } from "./proving-progress-helpers.js"
 

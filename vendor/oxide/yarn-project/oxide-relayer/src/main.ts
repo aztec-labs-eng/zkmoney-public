@@ -15,6 +15,7 @@ import { type RunConfig, redactRunConfig } from './cli/config.js';
 import {
   type DeploymentEnvManifestPublicConfig,
   type ResolvedManifestDeployment,
+  describeSkip,
   resolveDeploymentEnvManifest,
 } from './config/deployment_env_manifest.js';
 import { DeploymentManifestRefresher } from './config/deployment_manifest_refresher.js';
@@ -55,8 +56,14 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
   const manifest = await resolveDeploymentEnvManifest({
     deploymentEnvManifestUrl: config.deploymentEnvManifestUrl,
     portal: config.portal,
+    excludePortals: config.excludePortals,
+    acceptedPayoutTokens: config.l1OperationsPayoutTokens,
   });
   const currentPublicConfig = manifest.current.publicConfig;
+  for (const skipped of manifest.skipped) {
+    log.info(describeSkip(skipped));
+  }
+  const pinnedSkip = manifest.skipped.find(s => s.portal === currentPublicConfig.portal.toString().toLowerCase());
   const historical = config.modes.includes('l1-operations') ? manifest.historical : [];
   const currentStatePath = statePathForPortal(
     config.state.sqlitePath,
@@ -69,7 +76,9 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
   }));
 
   const node = createNodeClient({ url: config.aztecNodeUrl, apiKey: config.aztecNodeApiKey });
-  const { publicClient, chainId } = await getL1PublicClient(config.readL1RpcUrl, node);
+  const { publicClient, chainId, rollupVersion } = await getL1PublicClient(config.readL1RpcUrl, node);
+  // A wrong node URL must not make this process serve another L2.
+  assertNodeRollupVersion(rollupVersion, manifest.current);
   const identity = ({ publicConfig }: ResolvedManifestDeployment) => ({
     chainId,
     portal: publicConfig.portal.toString(),
@@ -117,7 +126,7 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
         `l1ReadRpc=${rpcHost(config.readL1RpcUrl)}`,
         `portal=${currentPublicConfig.portal}`,
         `rollupVersion=${currentPublicConfig.rollupVersion}`,
-        `aztecNodeUrl=${config.aztecNodeUrl}`,
+        `aztecNodeUrl=${rpcHost(config.aztecNodeUrl)}`,
         `aztecNodeApiKey=${config.aztecNodeApiKey ? '(configured)' : '(none)'}`,
         `enclaveUrl=${currentPublicConfig.enclaveUrl || '(none)'}`,
         `state=${currentStatePath}`,
@@ -133,7 +142,6 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
     if (config.disableSubmission) {
       console.log('submission is disabled; relayer will skip L1 transaction sends and treat them as mined.');
     }
-
     // The ephemeral key holds no ETH, so its balance tells nothing.
     if (signer.backend !== 'ephemeral') {
       telemetry.observeSignerBalance(() => publicClient.getBalance({ address: signer.address }));
@@ -162,6 +170,14 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
         ),
       );
       await assertSimulateV1Supported(publicClient, config.readL1RpcUrl);
+      // Two served entries on one Broadcaster both record and may both submit every operation on it.
+      const broadcasters = new Map<string, string[]>();
+      const noteServed = (deployment: ResolvedManifestDeployment) => {
+        const shared = recordBroadcaster(broadcasters, deployment);
+        if (shared) {
+          log.warn(`shared broadcaster ${deployment.publicConfig.broadcaster} portals=${shared.join(',')}`);
+        }
+      };
       const start = async (deployment: ResolvedManifestDeployment, store: SqliteStateStore) => {
         const { publicConfig, label } = deployment;
         const portal = new OxidePortalContract(publicClient, publicConfig.portal);
@@ -200,10 +216,21 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
         });
         worker.start();
         operationStores.add(store);
+        // One line per worker, the pinned one included, for deploy checks.
+        console.log(`deployment worker started label=${label} portal=${publicConfig.portal}`);
         return worker;
       };
-      currentServices.push(await start(manifest.current, state));
+      if (pinnedSkip) {
+        log.warn(
+          `the pinned entry ${manifest.current.label}:${currentPublicConfig.portal} gets no L1-operations worker ` +
+            `(${pinnedSkip.reason}); fpc-funding and epoch proofs still run for it when enabled`,
+        );
+      } else {
+        noteServed(manifest.current);
+        currentServices.push(await start(manifest.current, state));
+      }
       const discover = (deployment: ResolvedManifestDeployment, path: string) => {
+        noteServed(deployment);
         const supervisor = new HistoricalDeploymentSupervisor({
           label: deployment.label,
           portal: deployment.publicConfig.portal.toString(),
@@ -233,6 +260,8 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
       manifestRefresher = new DeploymentManifestRefresher({
         deploymentEnvManifestUrl: config.deploymentEnvManifestUrl,
         initial: manifest,
+        excludePortals: config.excludePortals,
+        acceptedPayoutTokens: config.l1OperationsPayoutTokens,
         discover: deployment =>
           discover(deployment, statePathForPortal(config.state.sqlitePath, deployment.publicConfig.portal, 2)),
       });
@@ -262,9 +291,9 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
     await waitForShutdown(opts.shutdownSignal);
   } finally {
     await manifestRefresher?.stop();
-    await Promise.allSettled(historicalSupervisors.map(supervisor => supervisor.stop()));
-    await Promise.allSettled(currentServices.map(service => service.stop()));
-    await Promise.allSettled([l1TxQueue.stop()]);
+    // Stop the L1 tx queue together with the workers. A worker run can wait on a queue hold that only the queue stop
+    // ends.
+    await Promise.allSettled([...historicalSupervisors, ...currentServices, l1TxQueue].map(service => service.stop()));
     // stop() with a timeout so shutdown does not hang if the exporter stalls.
     await Promise.allSettled([
       Promise.race([
@@ -281,6 +310,35 @@ export async function runRelayer(config: RunConfig, opts: RunRelayerOptions = {}
 /** The hostname of an L1 RPC URL, for logs that must not leak the provider API key the URL embeds. */
 function rpcHost(url: string): string {
   return new URL(url).hostname;
+}
+
+/**
+ * The pinned entry's rollup version selects the L2 this process serves. An Aztec node follows one rollup, so a
+ * node on another rollup would serve another L2; refuse to start instead.
+ */
+export function assertNodeRollupVersion(nodeRollupVersion: bigint, current: ResolvedManifestDeployment): void {
+  const expected = current.publicConfig.rollupVersion;
+  if (nodeRollupVersion !== expected) {
+    throw new Error(
+      `node reports rollup version ${nodeRollupVersion}, but the pinned entry ` +
+        `${current.label}:${current.publicConfig.portal} is on ${expected}`,
+    );
+  }
+}
+
+/**
+ * Record a served deployment's Broadcaster. Returns every served Portal on that Broadcaster once there is more than
+ * one, and `undefined` otherwise.
+ */
+export function recordBroadcaster(
+  served: Map<string, string[]>,
+  deployment: ResolvedManifestDeployment,
+): string[] | undefined {
+  const broadcaster = deployment.publicConfig.broadcaster.toString();
+  const portals = served.get(broadcaster) ?? [];
+  portals.push(deployment.publicConfig.portal.toString());
+  served.set(broadcaster, portals);
+  return portals.length > 1 ? [...portals] : undefined;
 }
 
 /**

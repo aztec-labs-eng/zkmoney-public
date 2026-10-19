@@ -198,13 +198,28 @@ describe("frozen migration batch selection and restart", () => {
     expect(f.saved.size).toBe(0)
   })
 
-  it("rejects a proof that the deployed source verifier cannot execute before saving a plan", async () => {
+  it("rejects a proof that the deployed source verifier cannot execute, keeping only its selection", async () => {
     const f = fixture()
     vi.mocked(f.client.call).mockRejectedValue(new Error("source verifier rejected refund"))
     await expect(f.make().prepare(f.recipient, 15n * TIP)).rejects.toThrow(
       "source verifier rejected",
     )
-    expect(f.saved.size).toBe(0)
+    expect([...f.saved.values()]).toEqual([
+      expect.not.objectContaining({ broadcastTx: expect.anything() }),
+    ])
+  })
+
+  it("saves a batch's selection and reports it before that batch's approval", async () => {
+    const f = fixture()
+    const order: string[] = []
+    vi.mocked(f.runtime.build).mockImplementationOnce(async (...args) => {
+      order.push(`build after ${f.saved.size} saved`)
+      return vi.mocked(f.runtime.build).getMockImplementation()!(...args)
+    })
+    await f.make().prepare(f.recipient, 15n * TIP, async (id) => {
+      order.push(`selected ${f.saved.has(id)}`)
+    })
+    expect(order).toEqual(["selected true", "build after 1 saved"])
   })
 
   it("rejects a changed recipient and a batch already refunded on L1", async () => {
@@ -316,12 +331,13 @@ describe("frozen migration quote", () => {
       movable: AMOUNTS.large! + 1n,
       stranded: 2n,
       waiting: 0n,
+      batches: 1,
     })
   })
 
   it("splits notes above the portal's amount cap across batches", async () => {
     const f = fixture([note("a", 600n * TIP), note("b", 600n * TIP)])
-    expect((await f.make().quote(minimums)).movable).toBe(1200n * TIP)
+    expect(await f.make().quote(minimums)).toMatchObject({ movable: 1200n * TIP, batches: 2 })
   })
 
   it("moves nothing when the first batch can't fund the migration, even if later ones could", async () => {
@@ -330,6 +346,7 @@ describe("frozen migration quote", () => {
       movable: 0n,
       stranded: AMOUNTS.medium,
       waiting: 0n,
+      batches: 0,
     })
     expect((await f.make().quote({ first: minimums.later, later: minimums.later })).movable).toBe(
       AMOUNTS.medium,
@@ -354,6 +371,7 @@ describe("frozen migration quote", () => {
       movable: AMOUNTS.deposit,
       stranded: AMOUNTS.small,
       waiting: 7n * TIP,
+      batches: 1,
     })
   })
 })

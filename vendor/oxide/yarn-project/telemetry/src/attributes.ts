@@ -47,7 +47,7 @@ export const TEE_ROUTER_DISCOVERY_FAILURE_KIND = defineAttribute({
   name: 'oxide.tee_router.discovery_failure.kind',
   description: 'Normalized category of target discovery failure.',
   valueType: 'string',
-  allowedValues: ['cloud_map_error', 'invalid_instance'] as const,
+  allowedValues: ['dynamodb_error', 'invalid_instance'] as const,
   privacy: 'A fixed failure enum; AWS responses and target identifiers are excluded.',
 });
 

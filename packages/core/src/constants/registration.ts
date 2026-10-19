@@ -32,6 +32,21 @@ export const REGISTRATION_SCHEDULE_DEFAULTS: Record<RegistrationKind, Registrati
 }
 
 /**
+ * Every fee the account service has signed, 18-dp DAI. A registration address commits to its fee and
+ * a re-sign can quote a lower one, so recovery tries each: 0 (free grants before the sweep fee), 0.5
+ * (the sweep fee: random tags and golden tickets), then the standard schedule's past fees.
+ */
+export const REGISTRATION_SIGNED_FEES: readonly bigint[] = [
+  0n,
+  5n * 10n ** 17n,
+  425n * 10n ** 16n,
+  49n * 10n ** 17n,
+  5n * 10n ** 18n,
+  55n * 10n ** 17n,
+  10n * 10n ** 18n,
+]
+
+/**
  * The least a deposit on this schedule may be for the chain to take it.
  *
  * Three contracts price a deposit `D` against a schedule of minimum `M` and fee `F`, and the

@@ -9,6 +9,7 @@ import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   SIPADepositStore,
+  UpgradeActivity,
   type SIPADepositRecord,
   type WithdrawalPhase,
   type WithdrawalRecord,
@@ -189,8 +190,8 @@ describe("migration activity rows", () => {
     // The arrival sits directly above its exit and reads as what it brings. Nothing has reached the
     // address yet, so it offers no exit and never reads as stuck, however long the burn takes.
     expect(shown).toEqual([
-      "Migration | Arriving on new network | +$84.55 | Pending",
-      expect.stringMatching(/^Migration \| Leaving old network/),
+      "Upgrade | Arriving on new version | +$84.55 | Pending",
+      expect.stringMatching(/^Upgrade \| Leaving old version/),
     ])
     const [arrivalStamp, exitStamp] = stamps()
     expect(exitStamp).toBe(STUCK_SUBLINE)
@@ -201,7 +202,7 @@ describe("migration activity rows", () => {
     await withdrawals.create({ ...burn("l2_mined"), arrivalFee: undefined })
     await arrival()
     const shown = await rows()
-    expect(shown[0]).toBe("Migration | Arriving on new network | Pending")
+    expect(shown[0]).toBe("Upgrade | Arriving on new version | Pending")
   })
 
   it("keeps the released exit as a finished leg below the claimed arrival", async () => {
@@ -209,8 +210,8 @@ describe("migration activity rows", () => {
     await arrival({ phase: "claimed", amount: "84.5" })
     const shown = await rows()
     expect(shown).toEqual([
-      expect.stringMatching(/^Migration \| Arrived/),
-      "Migration | Left old network | -$85",
+      expect.stringMatching(/^Upgrade \| Arrived/),
+      "Upgrade | Left old version | -$85",
     ])
     const [arrivalStamp, exitStamp] = stamps()
     expect(arrivalStamp).toBe(exitStamp)
@@ -223,12 +224,72 @@ describe("migration activity rows", () => {
     expect(shown.some((r) => r.includes("Arriv"))).toBe(false)
   })
 
+  // An upgrade's first refund rides its bootstrap, not a burn, to the update-metadata SIPA.
+  it("shows an upgrade's first refund as an arrival with no exit", async () => {
+    await arrival({ phase: "claimed", amount: "9.5", intent: "metadata" })
+    expect(await rows()).toEqual(["Upgrade | Arrived | $9.50"])
+  })
+
   // A burn failed locally after a lost hash stamp may still release on chain.
   it("shows a funded arrival behind a failed burn", async () => {
     await withdrawals.create(burn("failed"))
     await arrival({ phase: "recoverable", amount: "84.5" })
     const shown = await rows()
-    expect(shown).toContainEqual(expect.stringMatching(/^Migration \| Arriving on new network/))
+    expect(shown).toContainEqual(expect.stringMatching(/^Upgrade \| Arriving on new version/))
+  })
+})
+
+// A later refund batch of an upgrade rides its own send, not a burn, to its own deposit address.
+// An upgrade is one row over its batches; each batch's deposit is one of its legs.
+describe("an upgrade's row", () => {
+  const RUN = "metadata-migration/0xnew/0xold/0xaccount"
+  const SECOND = `0x${"6b".repeat(20)}` as const
+  const upgrades = UpgradeActivity.get(webStorage)
+  const batch = async (id: string, patch: Record<string, unknown>) => {
+    await webStorage.setItem(RUN, JSON.stringify({ phase: "arriving" }))
+    await webStorage.setItem(
+      `${RUN}/source/${id}`,
+      JSON.stringify({
+        binding: "b",
+        recipient: SIPA,
+        amount: (10n * 10n ** 18n).toString(),
+        exitFee: (10n ** 17n).toString(),
+        fromBlock: "1",
+        createdAt: 1_000,
+        sourceSelection: ["n"],
+        ...patch,
+      }),
+    )
+    await upgrades.addRun(RUN)
+  }
+  afterEach(async () => {
+    await webStorage.setItem("metadata-migration/runs", "[]")
+    await upgrades.changed()
+  })
+
+  it("shows nowhere until a batch is sent", async () => {
+    await batch("remaining-0", {})
+    await arrival()
+    expect(await rows()).toEqual([])
+  })
+
+  it("is one row over every batch and the deposit it brings, until each has arrived", async () => {
+    await batch("remaining-0", { broadcastTx: "0xa", sentAt: 1_500, received: true })
+    await batch("remaining-1", { recipient: SECOND, broadcastTx: "0xb", sentAt: 1_600 })
+    await arrival({ phase: "claimed", amount: "9.9", netAmount: (99n * 10n ** 17n).toString() })
+    expect(await rows()).toEqual(["Upgrade | 1 of 2 arrived | +$19.80 | Pending"])
+  })
+
+  it("never reads a deposit recovered to Ethereum as arrived", async () => {
+    await batch("remaining-0", { broadcastTx: "0xa", sentAt: 1_500, received: true })
+    await arrival({ phase: "recovered", amount: "9.9" })
+    expect(await rows()).toEqual([expect.stringMatching(/^Upgrade \| 0 of 1 arrived/)])
+  })
+
+  it("completes once every batch's deposit has arrived", async () => {
+    await batch("remaining-0", { broadcastTx: "0xa", sentAt: 1_500, received: true })
+    await arrival({ phase: "claimed", amount: "9.9", netAmount: (99n * 10n ** 17n).toString() })
+    expect(await rows()).toEqual(["Upgrade | 1 transfer | +$9.90"])
   })
 })
 

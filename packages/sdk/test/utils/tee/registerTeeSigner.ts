@@ -105,6 +105,7 @@ export interface ConsumeTeeSignerRegistrationParams {
   feePaymentMethod?: FeePaymentMethod
   /** Max seconds to wait for the L1→L2 message to become consumable. Default 300. */
   timeoutSeconds?: number
+  nodeUrl?: string
   logger?: Logger
 }
 
@@ -237,11 +238,10 @@ export async function consumeTeeSignerRegistrationOnL2(
   // the node never sees).
   await waitForL1ToL2MessageConsumable({
     wallet: params.wallet,
-    adminAccount: params.relayerAccount,
     messageHash: messageKey,
     network: params.network,
-    feePaymentMethod: params.feePaymentMethod,
     timeoutSeconds,
+    nodeUrl: params.nodeUrl,
     logger,
   })
 
@@ -289,21 +289,20 @@ export async function consumeTeeSignerRegistrationOnL2(
  */
 async function waitForL1ToL2MessageConsumable(args: {
   wallet: ObsidionWalletBackend
-  adminAccount: BaseAccount
   messageHash: Fr
   network: NetworkType
-  feePaymentMethod?: FeePaymentMethod
   timeoutSeconds: number
+  nodeUrl?: string
   logger: Logger
 }): Promise<void> {
-  const { wallet, adminAccount, messageHash, network, logger } = args
+  const { wallet, messageHash, network, logger } = args
 
   logger.info(`Waiting for L1→L2 message ${messageHash.toString()} to be consumable...`)
 
   if (network === Network.SANDBOX) {
-    await waitForSandboxL1ToL2Message(wallet as never, adminAccount, messageHash, {
+    await waitForSandboxL1ToL2Message(wallet.node, messageHash, {
       timeoutSeconds: args.timeoutSeconds,
-      feePaymentMethod: args.feePaymentMethod,
+      nodeUrl: args.nodeUrl,
     })
     logger.info("L1→L2 message is consumable")
     return

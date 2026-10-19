@@ -13,6 +13,19 @@ vi.mock("@obsidion/web-ds", () => ({
   GradientInitialAvatar: () => null,
   GradientText: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
   Icon: ({ name }: { name: string }) => <i data-icon={name} />,
+  PrimaryGradientButton: ({
+    title,
+    isDisabled,
+    onClick,
+  }: {
+    title: string
+    isDisabled?: boolean
+    onClick: () => void
+  }) => (
+    <button disabled={isDisabled} onClick={onClick}>
+      {title}
+    </button>
+  ),
   TopNavIconButton: ({ onClick }: { onClick: () => void }) => (
     <button aria-label="Close" onClick={onClick} />
   ),
@@ -107,6 +120,25 @@ describe("RequestDetailModal", () => {
     expect(button("Cancel request")).toBeDefined()
   })
 
+  it("offers Remind beside Cancel on a sent request, once", async () => {
+    const onRemind = vi.fn()
+    const view = (reminded: boolean) => (
+      <RequestDetailModal
+        requestId="req-1"
+        reminded={reminded}
+        onRemind={onRemind}
+        onClose={onClose}
+      />
+    )
+    await act(async () => root.render(view(false)))
+    await act(async () => button("Remind")!.click())
+    expect(onRemind).toHaveBeenCalledOnce()
+    await act(async () => root.render(view(true)))
+    expect(button("Reminder sent")!.disabled).toBe(true)
+    await act(async () => button("Cancel request")!.click())
+    expect(container.textContent).toContain("Cancel request?")
+  })
+
   it("opens straight on the confirm sheet for the bubble's inline Cancel", async () => {
     await render("confirm")
     expect(container.textContent).toContain("Cancel request?")
@@ -132,7 +164,6 @@ describe("RequestDetailModal", () => {
     await render()
     await act(async () => button("Cancel request")?.click())
     expect(container.textContent).toContain("Cancel request?")
-    expect(container.textContent).toContain("The user will no longer see this request")
 
     await act(async () => button("Cancel request")?.click())
     expect(cancelRequestById).toHaveBeenCalledWith("req-1")

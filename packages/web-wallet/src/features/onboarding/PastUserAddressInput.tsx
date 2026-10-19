@@ -1,5 +1,6 @@
 import { useRef, useState } from "react"
 import { GradientSpinner, Icon } from "@obsidion/web-ds"
+import { L1AddressText } from "../../ui/L1AddressText"
 
 export type LookupState =
   | { kind: "idle" }
@@ -13,15 +14,11 @@ export type LookupState =
 
 export const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/
 
-/** Truncated address: muted 0x, bold head and tail (0x19E7…Aff2A). */
+/** Truncated address, MetaMask's ends in bold (0x19E7a…Aff2A). */
 function FormattedAddress({ address }: { address: string }) {
-  const hex = address.slice(2)
   return (
     <span className="ww-verify-addr">
-      <span>0x</span>
-      <b>{hex.slice(0, 4)}</b>
-      <span>…</span>
-      <b>{hex.slice(-5)}</b>
+      <L1AddressText address={address} cut />
     </span>
   )
 }

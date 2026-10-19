@@ -189,6 +189,30 @@ function namePortalRecipient(config: WebWalletConfig): Hex {
   return config.claimFpcAddress as Hex
 }
 
+/** How long a resolver-operator selection is reused. Selecting one scans the deployment's whole
+ *  operator log history, and the tag step starts it ahead of the claim. */
+export const RESOLVER_OPERATOR_REUSE_MS = 5 * 60_000
+
+let operatorCached: { tuple: OxideEnvTuple; at: number; operator: Promise<Address> } | undefined
+
+function signupResolverOperator(
+  config: WebWalletConfig,
+  tuple: OxideEnvTuple,
+  publicClient: PublicClient,
+): Promise<Address> {
+  if (
+    operatorCached?.tuple !== tuple ||
+    Date.now() - operatorCached.at > RESOLVER_OPERATOR_REUSE_MS
+  ) {
+    const operator = fetchSignupResolverOperator(publicClient, tuple, config.network)
+    operatorCached = { tuple, at: Date.now(), operator }
+    operator.catch(() => {
+      if (operatorCached?.operator === operator) operatorCached = undefined
+    })
+  }
+  return operatorCached.operator
+}
+
 /**
  * The resolved oxide env plus the L1 client it was read through — the preamble
  * every onboarding rail (claim, detection, recovery) builds.
@@ -200,7 +224,7 @@ export async function oxideEnvFor(config: WebWalletConfig): Promise<{
 }> {
   const tuple = await getOxideTuple(config)
   const publicClient = l1PublicClient(config)
-  const resolverOperator = await fetchSignupResolverOperator(publicClient, tuple, config.network)
+  const resolverOperator = await signupResolverOperator(config, tuple, publicClient)
   const accountFactory = resolveOxideAccountFactory({ tuple })
   const env = oxideEnvFromTuple(tuple, {
     resolverOperator,

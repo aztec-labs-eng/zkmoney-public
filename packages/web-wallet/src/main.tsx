@@ -1,6 +1,7 @@
 import React from "react"
 import { createRoot } from "react-dom/client"
 import { missingBrowserFeatures } from "./browserSupport"
+import { prefetchProfile } from "./config/profilePrefetch"
 import { captureLandingSource } from "./lib/trafficSource"
 import { DESKTOP_SETTINGS_PATH } from "./platform/desktopBridge"
 import { RESET_PATH, ResetScreen } from "./ui/ResetScreen"
@@ -42,6 +43,7 @@ class RootErrorBoundary extends React.Component<{ children: React.ReactNode }, {
 
 const missing = missingBrowserFeatures()
 captureLandingSource()
+if (location.pathname !== RESET_PATH && missing.length === 0) prefetchProfile()
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

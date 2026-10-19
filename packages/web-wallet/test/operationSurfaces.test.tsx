@@ -113,6 +113,19 @@ describe("the panel", () => {
     expect(itemText("$25 to @alice")?.textContent).toContain("Received")
   })
 
+  it("says which stage a running operation is at, off its record", async () => {
+    await begin("op-stage", "paylink-claim")
+    await renderPanel()
+    const running = () => container.querySelector('.ww-notifications__item[role="status"]')
+    expect(running()?.textContent).toContain("$25 to @alice · Preparing")
+    await act(async () => getOperationStore().markProving("op-stage"))
+    expect(running()?.textContent).toContain("$25 to @alice · Proving")
+    await act(async () => getOperationStore().markSent("op-stage", hash))
+    expect(running()?.textContent).not.toContain("Proving")
+    expect(running()?.textContent).toContain("Sent · You can close this tab")
+    await act(async () => getOperationStore().settle("op-stage", hash))
+  })
+
   it("shows a boot-sweep failure with its cause", async () => {
     const store = getOperationStore()
     const lost = { operationId: "op-lost", flow: "send", summary: "$3 to @bob", scope: null }

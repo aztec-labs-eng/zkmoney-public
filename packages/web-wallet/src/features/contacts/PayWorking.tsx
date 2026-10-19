@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import { useState, type ReactNode } from "react"
 import { GradientSpinner } from "@obsidion/web-ds"
 
 /**
@@ -21,7 +21,8 @@ const LABEL: Record<PayWorkingBeat, string> = {
 
 /**
  * `onCancel` is offered only while the caller can still honor it — each flow checks its cancel flag
- * once, at its first stage boundary — so a caller withholds it once that gate has passed. `label`
+ * once, at its first stage boundary — so a caller withholds it once that gate has passed. A card that
+ * offered it keeps the button's space, so withdrawing it does not move the card. `label`
  * names what the preparing beat waits on when it is more than the transaction. `warn` is off for a
  * beat with no transaction to lose. `hint` is advice for the passkey prompt, under the stage.
  */
@@ -38,14 +39,23 @@ export function PayWorking({
   warn?: boolean
   hint?: ReactNode
 }) {
+  // Past the first beat the passkey sheet's own dismiss is the way out.
+  const cancellable = !!onCancel && beat === "preparing"
+  const [heldCancel, setHeldCancel] = useState(cancellable)
+  if (cancellable && !heldCancel) setHeldCancel(true)
   return (
     <div className="ww-pay__working">
       <GradientSpinner size={32} />
       <span className="ww-pay__stage">{beat === "preparing" && label ? label : LABEL[beat]}</span>
       {hint}
-      {/* Past the first beat the passkey sheet's own dismiss is the way out. */}
-      {onCancel && beat === "preparing" && (
-        <button type="button" className="zkm-btn-reset ww-pay__cancel" onClick={onCancel}>
+      {heldCancel && (
+        <button
+          type="button"
+          className="zkm-btn-reset ww-pay__cancel"
+          onClick={onCancel}
+          disabled={!cancellable}
+          style={cancellable ? undefined : { visibility: "hidden" }}
+        >
           Cancel
         </button>
       )}

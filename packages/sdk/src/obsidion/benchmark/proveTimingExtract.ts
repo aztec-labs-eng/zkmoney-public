@@ -51,6 +51,19 @@ function isKernelFunction(functionName: string): boolean {
   return KERNEL_PREFIXES.some((prefix) => functionName.startsWith(prefix))
 }
 
+function splitWitgen(perFunction: ProvingTimings["perFunction"]): {
+  userWitgen: number
+  kernelWitgen: number
+} {
+  let userWitgen = 0
+  let kernelWitgen = 0
+  for (const fn of perFunction) {
+    if (isKernelFunction(fn.functionName)) kernelWitgen += fn.time
+    else userWitgen += fn.time
+  }
+  return { userWitgen, kernelWitgen }
+}
+
 /**
  * Extract prove-side phase scalars from upstream `ProvingTimings`.
  *
@@ -63,12 +76,7 @@ export function extractProveTimings(
 ): ProveTimingScalars | null {
   if (!timings || timings.proving === undefined) return null
 
-  let userWitgen = 0
-  let kernelWitgen = 0
-  for (const fn of timings.perFunction) {
-    if (isKernelFunction(fn.functionName)) kernelWitgen += fn.time
-    else userWitgen += fn.time
-  }
+  const { userWitgen, kernelWitgen } = splitWitgen(timings.perFunction)
 
   return {
     sync: timings.sync ?? 0,
@@ -78,4 +86,33 @@ export function extractProveTimings(
     total: timings.total,
     unaccounted: timings.unaccounted,
   }
+}
+
+/**
+ * The `[Perf][ProveTx]` console line. The prove-side split comes from the PXE's own proving stats;
+ * `proving=none` means the PXE made no proof (fake proofs).
+ */
+export function formatProveTxPerfLine(parts: {
+  preProveMs: number
+  simulationMs: number
+  proveTimings: ProvingTimings | undefined
+  totalMs: number
+}): string {
+  const ms = (v: number): string => `${Math.round(v)}ms`
+  const fields = [`pre_prove=${ms(parts.preProveMs)}`, `sim=${ms(parts.simulationMs)}`]
+  const t = parts.proveTimings
+  if (t) {
+    const { userWitgen, kernelWitgen } = splitWitgen(t.perFunction)
+    fields.push(
+      `sync=${ms(t.sync ?? 0)}`,
+      `user_witgen=${ms(userWitgen)}`,
+      `kernel_witgen=${ms(kernelWitgen)}`,
+      `proving=${t.proving === undefined ? "none" : ms(t.proving)}`,
+      `pxe_total=${ms(t.total)}`,
+    )
+  } else {
+    fields.push("prove_stats=none")
+  }
+  fields.push(`total=${ms(parts.totalMs)}`)
+  return `[Perf][ProveTx] ${fields.join(" ")}`
 }

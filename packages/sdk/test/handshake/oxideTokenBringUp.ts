@@ -118,8 +118,6 @@ export async function bringUpOxideTokenSpike(options: {
   await l1DepositAndClaimPrivateBalance({
     oxideStack,
     wallet: walletA,
-    feePaymentMethod: sponsoredFeePaymentMethod,
-    claimSender: relayerAlpha as never,
     recipient: sender.getAddress(),
     amount: parseUnits(options.fundHuman, SPIKE_DECIMALS),
     sharedSecretFr: Fr.random(),

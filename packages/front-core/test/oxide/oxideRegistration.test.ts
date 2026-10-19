@@ -10,7 +10,7 @@ import { readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { type Address, type Hex, getAddress, keccak256, recoverAddress, zeroAddress } from "viem"
-import { decodeRegistrationIntentData } from "@oxide/l1-contracts"
+import { buildR1InstallUserOp, decodeRegistrationIntentData } from "@oxide/l1-contracts"
 
 import {
   encodeRegistrationData,
@@ -81,6 +81,8 @@ const ENV: OxideRegistrationEnv = {
 
 const R1KEY = { qx: `0x${"a1".repeat(32)}` as Hex, qy: `0x${"a2".repeat(32)}` as Hex }
 const CREDENTIAL_ID = "Y3JlZC1pZC0wMDE"
+/** A controller deployed before oxide raised the R1 install limits. */
+const EARLIER_R1_GAS = { verification: 50_000n, callBase: 85_000n, callPerWord: 30_000n }
 const USER_OP_HASH = `0x${"77".repeat(32)}` as Hex
 
 // ── D2: payload encoding + consent ────────────────────────────────────────────
@@ -226,6 +228,7 @@ function sessionDeps(over: Partial<Record<string, unknown>> = {}) {
     readAccountMetadataRegistry: vi.fn(async () => AMR),
     readUserRecord: vi.fn(async () => ({ ...RECORD.record, l2Address: L2 })),
     getUserOpHash: vi.fn(async () => USER_OP_HASH),
+    readR1InstallGas: vi.fn(async () => EARLIER_R1_GAS),
     getCode: vi.fn(async () => "0x"),
     readAuthKeys: vi.fn(async () => []),
   }
@@ -343,6 +346,17 @@ describe("startOxideRegistrationSession", () => {
     expect(store.get(OWNER)).toMatchObject({ sipaAddress: SIPA, broadcast: false, replaced })
   })
 
+  it("signs the R1 install with the limits of the controller the registry names", async () => {
+    const { deps, l1 } = sessionDeps()
+    await startOxideRegistrationSession(deps)
+    expect(l1.readR1InstallGas).toHaveBeenCalledWith(REGISTRY)
+    const metadata = `0x${Buffer.from(CREDENTIAL_ID, "base64url").toString("hex")}` as Hex
+    expect(l1.getUserOpHash).toHaveBeenCalledWith(
+      expect.anything(),
+      buildR1InstallUserOp(OWNER, 0n, R1KEY, metadata, EARLIER_R1_GAS),
+    )
+  })
+
   it("derives the SIPA, claims, and returns the broadcast it owes without sending it", async () => {
     const { deps, store, signDomain } = sessionDeps()
     const out = await startOxideRegistrationSession(deps)
@@ -421,6 +435,7 @@ function resumeDeps(
     readAccountMetadataRegistry: vi.fn(async () => AMR),
     readUserRecord: vi.fn(async () => ({ ...RECORD.record, l2Address: L2 })),
     getUserOpHash: vi.fn(async () => USER_OP_HASH),
+    readR1InstallGas: vi.fn(async () => EARLIER_R1_GAS),
     getCode: vi.fn(async () => "0x"),
     readAuthKeys: vi.fn(async () => []),
   }
@@ -438,6 +453,7 @@ function signDeps(signDomain = vi.fn(async (): Promise<unknown> => CLAIM)) {
     l1: {
       readAccountMetadataRegistry: vi.fn(async () => AMR),
       getUserOpHash: vi.fn(async () => USER_OP_HASH),
+      readR1InstallGas: vi.fn(async () => EARLIER_R1_GAS),
       getCode: vi.fn(async () => "0x"),
       readAuthKeys: vi.fn(async () => []),
     },

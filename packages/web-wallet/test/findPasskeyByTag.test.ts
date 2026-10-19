@@ -531,6 +531,11 @@ describe("enterWithPasskey under a credential hint", () => {
         pinned,
       ),
     ).toBe("PASSKEY_KEY_MISMATCH")
+    // A phone-steered answer whose label can't be believed names no class, so it is never this
+    // computer's certain wrong key.
+    expect(
+      diagnoseUnknown({ ...result, observed: { credentialId: a.credentialId } }, ADDR, pinned),
+    ).toBe("PASSKEY_KEY_MISMATCH")
     nothingAdopted(wallet)
   })
 

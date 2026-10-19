@@ -1,6 +1,7 @@
 import { benchmarkRegistry, setTimingBenchFlag } from "@obsidion/sdk"
 import type { BenchmarkSample } from "@obsidion/core/types"
 import { analyticsEnabled, fireEvent, type AnalyticsProps } from "./analytics"
+import { provingDevice } from "./provingDevice"
 
 /** Flatten a benchmark sample to tx_timing props: flow kind, status, note count, rounded phase durations. */
 export function txTimingProps(s: BenchmarkSample): AnalyticsProps {
@@ -25,11 +26,13 @@ export function txTimingProps(s: BenchmarkSample): AnalyticsProps {
  * bound to the live analytics consent gate, so a user with analytics off runs
  * no timing spans at all — and flipping consent in Settings takes effect on the
  * next tx, both ways. Emission re-checks the same gate inside `fireEvent`.
- * Durations and flow kind only — no payment data. Separate module from
+ * Durations, flow kind and the device class only — no payment data. Separate module from
  * `analytics.ts` so that file stays sdk-free (its tests run in node without
  * the wallet stack).
  */
 export function wireTxTimingAnalytics(): void {
   setTimingBenchFlag(analyticsEnabled)
-  benchmarkRegistry.setSampleSink((s) => fireEvent("tx_timing", txTimingProps(s)))
+  benchmarkRegistry.setSampleSink((s) =>
+    fireEvent("tx_timing", { ...txTimingProps(s), ...provingDevice() }),
+  )
 }

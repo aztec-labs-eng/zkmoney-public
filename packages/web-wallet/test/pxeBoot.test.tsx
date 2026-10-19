@@ -6,6 +6,7 @@ import type { AztecNode } from "@aztec/aztec.js/node"
 import type { AztecSQLiteOPFSStore } from "@aztec/kv-store/sqlite-opfs"
 import { BootSplash, type PxeBootTarget } from "../src/ui/PxeBoot"
 import { resetModulesAsActiveTab } from "./support/activeTab"
+import { stubProvingDevice } from "./support/provingDevice"
 
 const h = vi.hoisted(() => ({
   initializePXE: vi.fn(),
@@ -52,6 +53,8 @@ beforeEach(() => {
   h.initializePXE.mockReset()
   h.showReportableError.mockReset()
   h.fireEvent.mockReset()
+  h.reloadPage.mockReset()
+  sessionStorage.clear()
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -101,6 +104,23 @@ describe("PxeBootProvider", () => {
     expect(h.initializePXE).toHaveBeenCalledWith(
       expect.objectContaining({ chainIdentity: IDENTITY }),
     )
+  })
+
+  it("reports a finished boot with the device class proving depends on", async () => {
+    const restore = stubProvingDevice(true, 10)
+    try {
+      h.initializePXE.mockResolvedValue(undefined)
+      await mount()
+      await flush()
+      expect(h.fireEvent).toHaveBeenCalledWith("pxe_boot_completed", {
+        duration_ms: expect.any(Number),
+        attempts: 1,
+        cross_origin_isolated: true,
+        hardware_concurrency: 10,
+      })
+    } finally {
+      restore()
+    }
   })
 
   it("publishes and reports a boot that fails while this tab is active", async () => {
@@ -159,6 +179,66 @@ describe("PxeBootProvider", () => {
       expect(page.status()).toBe("booting")
       expect(h.showReportableError).not.toHaveBeenCalled()
       expect(h.fireEvent).not.toHaveBeenCalledWith("pxe_boot_failed", expect.anything())
+    },
+  )
+
+  it("reloads the page twice, then reports the third failure", async () => {
+    const failed = new TypeError(
+      "Failed to fetch dynamically imported module: /barretenberg-threads.js",
+    )
+    const error = new AggregateError([
+      new AggregateError([failed, failed]),
+      new AggregateError([failed]),
+    ])
+    h.initializePXE.mockRejectedValue(error)
+    for (const reloads of [1, 2]) {
+      const page = await mount()
+      await flush()
+      expect(page.status()).toBe("booting")
+      expect(h.reloadPage).toHaveBeenCalledTimes(reloads)
+    }
+    expect(h.fireEvent).not.toHaveBeenCalledWith("pxe_boot_failed", expect.anything())
+
+    const page = await mount()
+    await flush()
+    expect(page.status()).toBe("error")
+    expect(h.reloadPage).toHaveBeenCalledTimes(2)
+    expect(h.showReportableError).toHaveBeenCalledOnce()
+    expect(h.showReportableError).toHaveBeenCalledWith(error, "pxe:boot", expect.anything())
+  })
+
+  it("gives a boot after a successful one its own two reloads", async () => {
+    const safari = new TypeError("Importing a module script failed.")
+    h.initializePXE.mockRejectedValueOnce(safari).mockResolvedValueOnce(undefined)
+    h.initializePXE.mockRejectedValue(safari)
+    for (let page = 0; page < 4; page++) {
+      await mount()
+      await flush()
+    }
+    expect(h.reloadPage).toHaveBeenCalledTimes(3)
+    expect(h.showReportableError).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["getItem", "error"],
+    ["setItem", "error"],
+    ["removeItem", "ready"],
+  ] as const)(
+    "publishes %s-failing session storage as %s, with no reload",
+    async (method, status) => {
+      const denied = vi.spyOn(Storage.prototype, method).mockImplementation(() => {
+        throw new DOMException("denied", "SecurityError")
+      })
+      if (status === "ready") h.initializePXE.mockResolvedValue(undefined)
+      else
+        h.initializePXE.mockRejectedValue(
+          new TypeError("error loading dynamically imported module: /a"),
+        )
+      const page = await mount()
+      await flush()
+      denied.mockRestore()
+      expect(page.status()).toBe(status)
+      expect(h.reloadPage).not.toHaveBeenCalled()
     },
   )
 })

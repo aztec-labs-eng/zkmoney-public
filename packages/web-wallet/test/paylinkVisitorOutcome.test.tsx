@@ -65,6 +65,7 @@ vi.mock("../src/features/notifications/NotificationsMount", () => ({
 vi.mock("../src/ui/NotificationsBell", () => ({ NotificationsBell: () => null }))
 vi.mock("@obsidion/web-ds", () => ({
   Icon: () => null,
+  Shimmer: ({ children }: { children?: React.ReactNode }) => <div>{children}</div>,
   Spinner: () => null,
   GradientSpinner: () => null,
   GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
@@ -111,7 +112,11 @@ vi.mock("../src/features/withdraw/withdrawQuote", () => ({
 }))
 vi.mock("../src/features/paylink/emailClaim", () => ({ obtainEmailL1Proof: vi.fn() }))
 vi.mock("../src/platform/desktopBridge", () => ({ isDesktopL1SubmitActive: () => true }))
-vi.mock("../src/ui/format", () => ({ shortAddr: (v: string) => v, usdFigure: (v: string) => v }))
+vi.mock("../src/ui/format", () => ({
+  shortAddr: (v: string) => v,
+  shortL1Addr: (v: string) => v,
+  usdFigure: (v: string) => v,
+}))
 
 import { PaylinkVisitorScreen } from "../src/features/paylink/PaylinkVisitorScreen"
 

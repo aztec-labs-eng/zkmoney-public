@@ -41,3 +41,36 @@
 .ww-migration__later:disabled {
   opacity: 0.4;
 }
+.ww-upgrade__badge {
+  align-self: center;
+  width: 110px;
+  height: 110px;
+  margin-bottom: -8px;
+}
+/* Home's upgrade offer: the badge bleeds off the card's left edge. */
+.ww-shell .ww-banner--upgrade {
+  min-height: 86px;
+  padding-left: 96px;
+  border: 1px solid rgba(253, 253, 253, 0.12);
+  background: linear-gradient(90deg, rgba(154, 5, 255, 0.55), rgba(4, 150, 255, 0.55));
+}
+.ww-shell .ww-banner--upgrade img {
+  position: absolute;
+  left: -29px;
+  top: -19px;
+  width: 119px;
+  pointer-events: none;
+}
+.ww-banner--upgrade .ww-banner__text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ww-banner--upgrade .ww-banner__title {
+  font-size: 16px;
+  font-weight: 700;
+}
+.ww-banner--upgrade .ww-banner__body {
+  font-size: 12px;
+  color: var(--text-secondary);
+}

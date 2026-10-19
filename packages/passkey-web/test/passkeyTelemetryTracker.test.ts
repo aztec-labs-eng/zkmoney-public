@@ -2,6 +2,8 @@
 import { APPLE_ICLOUD_AAGUID, GPM_AAGUID } from "@obsidion/core/constants"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { bytesToHex, hexToBytes } from "../src/ceremony/bytes.js"
+import { NATIVE_LOCK_KEY } from "../src/ceremony/nativeLock.js"
+import { NATIVE_CREATE, NATIVE_GET, installCredentials } from "./support/extensionWrappers.js"
 import { type UserHandleProvenance, encodeUserHandle } from "../src/ceremony/userHandle.js"
 import {
   BrowserPasskeyCeremony,
@@ -73,6 +75,9 @@ function harness(options: Partial<PasskeyTelemetryOptions> = {}) {
       userAgent: parseUserAgent({ userAgent: CHROME_MAC }),
     }),
     pageHideTarget,
+    // Rows here are compared whole; the extension and lock reads are exercised by their own tests below.
+    extension: () => undefined as never,
+    nativeLock: () => undefined,
     ...options,
   })
   return {
@@ -1266,6 +1271,214 @@ describe("the phone's platform-authenticator answer", () => {
     expect(late).not.toHaveBeenCalled()
     expect(syncLaptop.sent[0]).toMatchObject({ device_class: "phone" })
     expect(syncLaptop.sent[0]).not.toHaveProperty("platform_authenticator")
+  })
+})
+
+describe("extension", () => {
+  const createOnce = (h: ReturnType<typeof harness>, steps: Step[]) =>
+    caught(
+      h.telemetry.track({ ceremony: "create" }, (own) =>
+        own(scripted(h.telemetry.requestHook, h.advance, steps)).create(createRequest()),
+      ),
+    )
+  const signInOnce = (h: ReturnType<typeof harness>) =>
+    caught(
+      h.telemetry.track({ ceremony: "sign_in" }, (own) =>
+        own(scripted(h.telemetry.requestHook, h.advance, [{ answer: LOCAL_ASSERT }])).assert(
+          assertRequest(),
+        ),
+      ),
+    )
+
+  it("rides on every row, whatever the ceremony and outcome", async () => {
+    const reader = vi.fn(() => "1password" as const)
+    const h = harness({ extension: reader })
+    await signInOnce(h)
+    await createOnce(h, [{ answer: QR_CREATE }])
+    await createOnce(h, [{ answer: QR_CREATE, error: { name: "NoPrfError" } }])
+    await createOnce(h, [{ error: new DOMException("closed", "NotAllowedError") }])
+    await createOnce(h, [{ error: new Error("boom") }])
+    h.telemetry.begin({ ceremony: "unlock" }).end({ outcome: "refused", reason: "phone_required" })
+    const ceremony = h.telemetry.wrap(
+      scripted(h.telemetry.requestHook, h.advance, [
+        { answer: LOCAL_ASSERT },
+        { answer: LOCAL_ASSERT },
+      ]),
+    )
+    await h.telemetry.track({ ceremony: "approve_tx", flow: "send" }, () =>
+      ceremony.assert(assertRequest()),
+    )
+    await ceremony.assert(assertRequest())
+    h.telemetry.begin({ ceremony: "create" })
+    h.pageHide()
+    expect(h.sent.map((p) => [p.ceremony, p.outcome, p.extension])).toEqual([
+      ["sign_in", "succeeded", "1password"],
+      ["create", "succeeded", "1password"],
+      ["create", "refused", "1password"],
+      ["create", "cancelled", "1password"],
+      ["create", "failed", "1password"],
+      ["unlock", "refused", "1password"],
+      ["approve_tx", "succeeded", "1password"],
+      ["untracked", "succeeded", "1password"],
+      ["create", "abandoned", "1password"],
+    ])
+    expect(reader).toHaveBeenCalledTimes(h.sent.length)
+  })
+
+  it("is read once per row, as the row is sent, and not for a prompt-free repeat", () => {
+    const answers = ["other", "1password", "none"] as const
+    let calls = 0
+    const h = harness({ extension: () => answers[calls++]! })
+    const refuse = () =>
+      h.telemetry.begin({ ceremony: "create" }).end({ outcome: "refused", reason: "no_prf" })
+    refuse()
+    refuse()
+    h.telemetry.begin({ ceremony: "sign_in" }).end({ outcome: "refused", reason: "no_prf" })
+    expect(h.sent.map((p) => p.extension)).toEqual(["other", "1password"])
+    expect(calls).toBe(2)
+  })
+
+  it("leaves the prop off when the read throws or answers off the list, and the rest of the row whole", async () => {
+    const control = harness({ extension: () => "none" as const })
+    await signInOnce(control)
+    const { extension, ...rest } = control.sent[0]!
+    expect(extension).toBe("none")
+    for (const read of [
+      () => {
+        throw new Error("blocked")
+      },
+      () => "dashlane" as never,
+    ]) {
+      const h = harness({ extension: read })
+      await signInOnce(h)
+      expect(h.sent[0]).toEqual(rest)
+    }
+  })
+
+  it("reads the page's create wrapper by default", async () => {
+    const restore = installCredentials({ get: NATIVE_GET, create: NATIVE_CREATE })
+    try {
+      const native = harness({ extension: undefined })
+      await signInOnce(native)
+      expect(native.sent[0]).toMatchObject({ extension: "none" })
+      restore()
+      const second = installCredentials({ get: NATIVE_GET, create: async () => null })
+      try {
+        const script = harness({ extension: undefined })
+        await signInOnce(script)
+        expect(script.sent[0]).toMatchObject({ extension: "other" })
+      } finally {
+        second()
+      }
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe("native lock", () => {
+  const signInOnce = (h: ReturnType<typeof harness>) =>
+    caught(
+      h.telemetry.track({ ceremony: "sign_in" }, (own) =>
+        own(scripted(h.telemetry.requestHook, h.advance, [{ answer: LOCAL_ASSERT }])).assert(
+          assertRequest(),
+        ),
+      ),
+    )
+  const scope = globalThis as Record<string, unknown>
+  afterEach(() => {
+    delete scope[NATIVE_LOCK_KEY]
+  })
+
+  it("rides on every row, one prop per call, whatever the ceremony and outcome", async () => {
+    const reader = vi.fn((_call: "create" | "get") => "applied" as const)
+    const h = harness({ nativeLock: reader })
+    await signInOnce(h)
+    await caught(
+      h.telemetry.track({ ceremony: "create" }, (own) =>
+        own(scripted(h.telemetry.requestHook, h.advance, [{ answer: QR_CREATE }])).create(
+          createRequest(),
+        ),
+      ),
+    )
+    h.telemetry.begin({ ceremony: "unlock" }).end({ outcome: "refused", reason: "phone_required" })
+    await caught(
+      h.telemetry.track({ ceremony: "create" }, (own) =>
+        own(scripted(h.telemetry.requestHook, h.advance, [{ error: new Error("boom") }])).create(
+          createRequest(),
+        ),
+      ),
+    )
+    await caught(
+      h.telemetry.track({ ceremony: "create" }, (own) =>
+        own(
+          scripted(h.telemetry.requestHook, h.advance, [
+            { error: new DOMException("closed", "NotAllowedError") },
+          ]),
+        ).create(createRequest()),
+      ),
+    )
+    expect(
+      h.sent.map((p) => [p.ceremony, p.outcome, p.native_lock_create, p.native_lock_get]),
+    ).toEqual([
+      ["sign_in", "succeeded", "applied", "applied"],
+      ["create", "succeeded", "applied", "applied"],
+      ["unlock", "refused", "applied", "applied"],
+      ["create", "failed", "applied", "applied"],
+      ["create", "cancelled", "applied", "applied"],
+    ])
+    expect(reader).toHaveBeenCalledTimes(h.sent.length * 2)
+    expect(new Set(reader.mock.calls.map((c) => c[0]))).toEqual(new Set(["create", "get"]))
+  })
+
+  it("carries each call's own answer, in either direction, and every listed value", async () => {
+    for (const [create, get] of [
+      ["applied", "lost_race"],
+      ["lost_race", "applied"],
+      ["skipped_accessor", "unsupported"],
+    ] as const) {
+      const h = harness({ nativeLock: (call) => (call === "create" ? create : get) })
+      await signInOnce(h)
+      expect(h.sent[0]).toMatchObject({ native_lock_create: create, native_lock_get: get })
+    }
+  })
+
+  it("leaves a prop off when its read answers nothing, off the list or throws, and the rest of the row whole", async () => {
+    const control = harness({ nativeLock: () => "applied" as const })
+    await signInOnce(control)
+    const { native_lock_create, native_lock_get, ...rest } = control.sent[0]!
+    expect([native_lock_create, native_lock_get]).toEqual(["applied", "applied"])
+    for (const read of [
+      () => undefined,
+      () => "frozen" as never,
+      () => {
+        throw new Error("blocked")
+      },
+    ]) {
+      const h = harness({ nativeLock: read })
+      await signInOnce(h)
+      expect(h.sent[0]).toEqual(rest)
+    }
+    const oneSided = harness({
+      nativeLock: (call) => (call === "get" ? ("applied" as const) : undefined),
+    })
+    await signInOnce(oneSided)
+    expect(oneSided.sent[0]).toEqual({ ...rest, native_lock_get: "applied" })
+  })
+
+  it("reads the page's record by default", async () => {
+    scope[NATIVE_LOCK_KEY] = { create: "lost_race", get: "applied" }
+    const recorded = harness({ nativeLock: undefined })
+    await signInOnce(recorded)
+    expect(recorded.sent[0]).toMatchObject({
+      native_lock_create: "lost_race",
+      native_lock_get: "applied",
+    })
+    delete scope[NATIVE_LOCK_KEY]
+    const bare = harness({ nativeLock: undefined })
+    await signInOnce(bare)
+    expect(bare.sent[0]).not.toHaveProperty("native_lock_create")
+    expect(bare.sent[0]).not.toHaveProperty("native_lock_get")
   })
 })
 

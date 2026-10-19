@@ -40,7 +40,6 @@ packages/contracts/contracts/**/*/target/
 packages/contracts/circuits/**/target/*.json
 packages/contracts/circuits/**/target/*.gz
 packages/contracts/**/codegenCache.json
-packages/launch-campaign-web/circuits/**/target/
 packages/contracts/src/artifacts/target/
 # Locally built bootstrap artifact manifests; the store is the record, only the README is tracked.
 packages/backend/config-service/artifacts/*/

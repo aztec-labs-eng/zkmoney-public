@@ -4,7 +4,11 @@ import { createLogger } from '@aztec/foundation/log';
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 
 import { statePathForPortal } from '../state/path.js';
-import { type ResolvedManifestDeployment, resolveDeploymentEnvManifest } from './deployment_env_manifest.js';
+import {
+  type ResolveDeploymentEnvManifestOptions,
+  type ResolvedManifestDeployment,
+  resolveDeploymentEnvManifest,
+} from './deployment_env_manifest.js';
 import { DeploymentManifestRefresher, MANIFEST_REFRESH_INTERVAL_MS } from './deployment_manifest_refresher.js';
 
 function entry(id: number, overrides: Record<string, unknown> = {}) {
@@ -32,7 +36,13 @@ function unreadable(id: number): Record<string, unknown> {
   return { label, portal, withdrawalProtocol, rollupVersion };
 }
 
-async function setup(...initialEntries: Record<string, unknown>[]) {
+type Policy = Pick<ResolveDeploymentEnvManifestOptions, 'excludePortals' | 'acceptedPayoutTokens'>;
+
+function setup(...initialEntries: Record<string, unknown>[]) {
+  return setupWithPolicy({}, ...initialEntries);
+}
+
+async function setupWithPolicy(policy: Policy, ...initialEntries: Record<string, unknown>[]) {
   let entries = initialEntries.length ? initialEntries : [entry(2), entry(1)];
   const fetchImpl = jest.fn<typeof fetch>(() =>
     Promise.resolve(new Response(JSON.stringify({ schemaVersion: '4', deployments: entries }))),
@@ -40,19 +50,30 @@ async function setup(...initialEntries: Record<string, unknown>[]) {
   const initial = await resolveDeploymentEnvManifest({
     deploymentEnvManifestUrl: 'https://manifest.example/prod.v4.json',
     portal: EthAddress.fromString(entry(2).portal),
+    ...policy,
     fetch: fetchImpl,
   });
   const discover = jest.fn<(deployment: ResolvedManifestDeployment) => void>();
   const logger = createLogger('test:manifest');
   const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
+  const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
   const refresher = new DeploymentManifestRefresher({
     deploymentEnvManifestUrl: 'https://manifest.example/prod.v4.json',
     initial,
+    ...policy,
     discover,
     fetch: fetchImpl,
     logger,
   });
-  return { refresher, initial, fetchImpl, discover, warn, publish: (...next: typeof entries) => (entries = next) };
+  return {
+    refresher,
+    initial,
+    fetchImpl,
+    discover,
+    warn,
+    info,
+    publish: (...next: typeof entries) => (entries = next),
+  };
 }
 
 afterEach(() => {
@@ -141,6 +162,27 @@ describe('DeploymentManifestRefresher', () => {
     publish(entry(2), entry(3));
     await refresher.runOnce();
     expect(discover).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies the startup policy to every refresh, logging each skip on each read', async () => {
+    const { refresher, publish, discover, info } = await setupWithPolicy(
+      {
+        excludePortals: [EthAddress.fromString(entry(3).portal)],
+        acceptedPayoutTokens: [EthAddress.fromString(entry(2).token)],
+      },
+      entry(2),
+    );
+    publish(entry(2), entry(3), entry(4, { token: '0x' + '07'.repeat(20) }), entry(5));
+    await refresher.runOnce();
+    await refresher.runOnce();
+    expect(discover.mock.calls.map(([d]) => d.label)).toEqual(['v5']);
+    const skips = info.mock.calls.map(([message]) => message).filter(m => String(m).startsWith('Not serving'));
+    expect(skips).toEqual([
+      `Not serving deployment v3:${entry(3).portal} (excluded)`,
+      `Not serving deployment v4:${entry(4).portal} (payout-token)`,
+      `Not serving deployment v3:${entry(3).portal} (excluded)`,
+      `Not serving deployment v4:${entry(4).portal} (payout-token)`,
+    ]);
   });
 
   it('retries failed registration without registering previous workers again', async () => {

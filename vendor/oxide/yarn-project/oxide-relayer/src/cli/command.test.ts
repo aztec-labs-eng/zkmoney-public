@@ -38,6 +38,7 @@ describe('createCliProgram', () => {
     expect(config.modes).toEqual(['l1-operations', 'fpc-funding']);
     expect(config.state.sqlitePath).toBe('/data/oxide-relayer-{portal}.sqlite3');
     expect(config.disableSubmission).toBe(false);
+    expect(config.excludePortals).toEqual([]);
     expect(config.l1OperationsSubmission).toBeDefined();
     expect(config.allowUnprofitable).toBe(false);
   });
@@ -56,7 +57,9 @@ describe('createCliProgram', () => {
   it('starts with the removed max retries env var of an older configuration, and uses the max pending age', async () => {
     const config = await parseRunConfig(REQUIRED_ARGS, { OXIDE_RELAYER_L1_OPERATIONS_MAX_RETRIES: '10' });
 
-    expect(config.l1OperationsSubmission).toEqual(expect.objectContaining({ maxPendingAgeMs: 7 * 24 * 60 * 60_000 }));
+    expect(config.l1OperationsSubmission).toEqual(
+      expect.objectContaining({ maxPendingAgeMs: 2 * 7 * 24 * 60 * 60_000 }),
+    );
     expect(config.l1OperationsSubmission).not.toHaveProperty('maxRetries');
   });
 
@@ -263,6 +266,24 @@ describe('createCliProgram', () => {
     const config = await parseRunConfig([...REQUIRED_ARGS, '--disable-submission'], {});
 
     expect(config.disableSubmission).toBe(true);
+  });
+
+  it('parses the exclude list from the flag or the environment, and redacts it as addresses', async () => {
+    const a = '0x00000000000000000000000000000000000000aa';
+    const b = '0x00000000000000000000000000000000000000bb';
+    const fromFlag = await parseRunConfig([...REQUIRED_ARGS, '--exclude-portals', `${a}, ${b},`], {});
+    expect(fromFlag.excludePortals.map(portal => portal.toString())).toEqual([a, b]);
+    expect(redactRunConfig(fromFlag).excludePortals).toEqual([a, b]);
+
+    const fromEnv = await parseRunConfig(REQUIRED_ARGS, { OXIDE_RELAYER_EXCLUDE_PORTALS: a });
+    expect(fromEnv.excludePortals.map(portal => portal.toString())).toEqual([a]);
+
+    await expect(parseRunConfig([...REQUIRED_ARGS, '--exclude-portals', 'garbage'], {})).rejects.toThrow(
+      '--exclude-portals has an invalid address: garbage.',
+    );
+    await expect(parseRunConfig([...REQUIRED_ARGS, '--exclude-portals', ','], {})).rejects.toThrow(
+      '--exclude-portals must include at least one address.',
+    );
   });
 
   it('rejects disabled submission with epoch proofs', async () => {

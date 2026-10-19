@@ -19,6 +19,7 @@ import { withdrawalAmounts } from "../bridge/withdrawalAmounts"
 import type { SIPADepositRecord, SIPASweep } from "../deposits/SIPADepositStore"
 import { savingsMoveBasis } from "../savings/savingsBasis"
 import type { SavingsMoveRecord } from "../savings/types"
+import type { UpgradeBatchItem } from "../../migration/upgradeActivity"
 
 export const ACTIVITY_CSV_COLUMNS = [
   "Date",
@@ -46,8 +47,8 @@ export type ActivityCsvType =
   | "Deposit"
   | "Withdrawal"
   | "Name registration"
-  | "Migration out"
-  | "Migration in"
+  | "Upgrade out"
+  | "Upgrade in"
   | "Savings deposit"
   | "Savings withdrawal"
 
@@ -121,6 +122,14 @@ const DEPOSIT_SETTLED: Record<SIPADepositPhase, boolean> = {
   recovered: false,
 }
 
+/** An upgrade's batch has left the old version once its refund executed on L1. */
+const UPGRADE_SETTLED: Record<UpgradeBatchItem["state"], boolean> = {
+  planned: false,
+  sent: false,
+  refunded: true,
+  received: true,
+}
+
 type TxRow = (tx: Transaction) => ActivityCsvRow
 
 /** null: the action moves no funds, or its movement is reported by another row. */
@@ -179,7 +188,7 @@ const WITHDRAWAL_TYPE: Record<WithdrawalKind, ActivityCsvType> = {
   "balance": "Withdrawal",
   "paylink": "Payment link paid to Ethereum",
   "registration": "Name registration",
-  "migration": "Migration out",
+  "migration": "Upgrade out",
   "savings-in": "Savings deposit",
   "savings-out": "Savings withdrawal",
 }
@@ -196,7 +205,8 @@ const DEPOSIT_TYPE: Record<DepositKind, ActivityCsvType> = {
   deposit: "Deposit",
   request: "Payment request paid",
   registration: "Name registration",
-  migration: "Migration in",
+  migration: "Upgrade in",
+  metadata: "Upgrade in",
 }
 
 type ItemRows = (item: ActivityItem, ctx: ItemContext) => ActivityCsvRow[]
@@ -214,6 +224,10 @@ const ITEM_KIND: Record<ActivityItem["kind"], ItemRows | null> = {
       : [],
   "bridge.sipaDeposit": (item, ctx) =>
     item.kind === "bridge.sipaDeposit" ? depositRows(item.record, ctx) : [],
+  "upgrade.batch": (item) =>
+    item.kind === "upgrade.batch" && UPGRADE_SETTLED[item.batch.state]
+      ? [upgradeRow(item.batch)]
+      : [],
   "p2p": null,
   "paylink": null,
   "request": null,
@@ -228,6 +242,7 @@ export const ACTIVITY_CSV_COVERAGE = {
   depositPhases: Object.keys(DEPOSIT_SETTLED),
   depositKinds: Object.keys(DEPOSIT_TYPE),
   itemKinds: Object.keys(ITEM_KIND),
+  upgradeStates: Object.keys(UPGRADE_SETTLED),
 }
 
 export function buildActivityCsvRows(sources: ActivityCsvSources): ActivityCsvRow[] {
@@ -235,9 +250,12 @@ export function buildActivityCsvRows(sources: ActivityCsvSources): ActivityCsvRo
     i.kind === "bridge.withdrawal" ? [i.record] : [],
   )
   const ctx: ItemContext = {
-    migrationArrivals: new Set(
-      withdrawals.filter((r) => r.intent === "migration").map((r) => r.recipient.toLowerCase()),
-    ),
+    migrationArrivals: new Set([
+      ...withdrawals.filter((r) => r.intent === "migration").map((r) => r.recipient.toLowerCase()),
+      ...sources.items.flatMap((i) =>
+        i.kind === "upgrade.batch" ? [i.batch.recipient.toLowerCase()] : [],
+      ),
+    ]),
     requestAddresses: requestLinkedSipaAddresses(sources.requests),
   }
   const txRows = sources.transactions.flatMap((tx) => {
@@ -390,6 +408,20 @@ function withdrawalRow(record: WithdrawalRecord): ActivityCsvRow {
     counterparty: { name: record.recipientAlias, address: paidTo, network: "Ethereum" },
     aztecTxHash: record.l2TxHash,
     ethereumTxHash: record.swapExecuteTxHash ?? record.recoveryTxHash ?? record.l1TxHash,
+  }
+}
+
+/** What a batch's refund took off the old version: the tip is its fee. */
+function upgradeRow(batch: UpgradeBatchItem): ActivityCsvRow {
+  const gross = BigInt(batch.amount)
+  const fee = BigInt(batch.exitFee)
+  return {
+    timestampMs: batch.startTime,
+    type: "Upgrade out",
+    sent: money(gross - fee, DEFAULT_DECIMALS, WALLET_TOKEN_SYMBOL),
+    fee: money(fee, DEFAULT_DECIMALS, WALLET_TOKEN_SYMBOL),
+    counterparty: { address: batch.recipient, network: "Ethereum" },
+    aztecTxHash: batch.tx,
   }
 }
 

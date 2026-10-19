@@ -241,6 +241,55 @@ describe("SharePaylinkModal", () => {
     expect(writeText.mock.calls[0][0].startsWith("https://wallet.zk.money/pay/alice#")).toBe(true)
   })
 
+  it("offers Cancel beside Share on an unpaid link opened from its row", async () => {
+    layout.phone = true
+    const onCancel = vi.fn()
+    await act(async () => {
+      root.render(
+        <SharePaylinkModal
+          request={request}
+          requesterTag="alice"
+          onCancel={onCancel}
+          onClose={() => {}}
+        />,
+      )
+    })
+    const titles = [...container.querySelectorAll("button")].map((b) => b.textContent)
+    expect(titles).toEqual(expect.arrayContaining(["Cancel request", "Share"]))
+    expect(titles).not.toContain("Copy link")
+    await act(async () => {
+      ;[...container.querySelectorAll("button")]
+        .find((b) => b.textContent === "Cancel request")
+        ?.click()
+    })
+    expect(onCancel).toHaveBeenCalledOnce()
+  })
+
+  it("keeps Cancel on an older link that cannot be shared, and confirms a copied share", async () => {
+    layout.phone = true
+    Object.defineProperty(navigator, "share", { configurable: true, value: undefined })
+    const onCancel = vi.fn()
+    const view = (overrides: Partial<PaymentRequest>) => (
+      <SharePaylinkModal
+        request={{ ...request, ...overrides }}
+        requesterTag="alice"
+        onCancel={onCancel}
+        onClose={() => {}}
+      />
+    )
+    const titles = () => [...container.querySelectorAll("button")].map((b) => b.textContent)
+    await act(async () => root.render(view({ networkId: undefined })))
+    expect(container.textContent).toContain("cannot be shared again")
+    expect(titles()).toContain("Cancel request")
+
+    await act(async () => root.render(view({})))
+    await act(async () => {
+      ;[...container.querySelectorAll("button")].find((b) => b.textContent === "Share")?.click()
+    })
+    expect(writeText).toHaveBeenCalledOnce()
+    expect(titles()).toContain("Copied!")
+  })
+
   it("opens link-request details from the activity row, with Share reusing the open path", async () => {
     const onOpen = vi.fn()
     const onCancel = vi.fn()
@@ -281,11 +330,11 @@ describe("SharePaylinkModal", () => {
     })
     expect(onOpen).toHaveBeenCalledTimes(2)
 
-    // No cancel: the SIPA behind a minted link is already broadcast, so offering to cancel it
-    // would promise a revocation nothing can perform.
-    expect([...container.querySelectorAll("button")].map((b) => b.textContent)).not.toContain(
-      "Cancel",
-    )
-    expect(onCancel).not.toHaveBeenCalled()
+    await act(async () => {
+      ;[...container.querySelectorAll("button")]
+        .find((button) => button.textContent === "Cancel")
+        ?.click()
+    })
+    expect(onCancel).toHaveBeenCalledWith(request.id)
   })
 })

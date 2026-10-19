@@ -10,6 +10,7 @@ import { assertPaylinkSwapSource, readPaylinkSource } from "./paylinkSource"
  */
 import { EthAddress } from "@aztec/aztec.js/addresses"
 import { Fr } from "@aztec/aztec.js/fields"
+import type { ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
 import { TxHash } from "@aztec/stdlib/tx"
 import { formatUnits, getAddress, parseUnits, type Address, type Hex } from "viem"
@@ -33,6 +34,7 @@ import {
   paylinkVoucherUses,
   readClaimFpcAllowance,
   UnknownRailError,
+  ClaimBatchFullError,
   type ClaimSponsorContext,
   type ObsidionAccount,
   type ObsidionWallet,
@@ -64,10 +66,12 @@ import {
   withdrawalAmounts,
   withdrawalRecipients,
   PendingRegistrationStore,
+  recordRegistrationBroadcastSent,
   goldenTicketCoverage,
   withRefundInFlight,
   allowanceCovers,
   deriveAllowanceState,
+  type PendingRegistrationRecord,
 } from "@obsidion/front-core"
 import {
   committedProverTip,
@@ -82,7 +86,7 @@ import { fpcFundingCut } from "../fees/fpcFundingCut"
 import { isFlowCancelled, runOperation, type OperationHandle } from "../operations/operations"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { walletStorage } from "../../platform/storage/walletStorage"
-import { withTimeout } from "../../lib/withTimeout"
+import { deadline, TimeoutError, withTimeout } from "../../lib/withTimeout"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 import {
   firePaylinkEvent,
@@ -103,6 +107,7 @@ import {
   noteSubscribed,
 } from "../onboarding/claimSponsorship"
 import { latestChainSeconds } from "./chainTime"
+import { resolveTagViaRegistry } from "../contacts/registryResolution"
 import { owePaylinkClaim, reportPaylinkClaims } from "./paylinkClaimReport"
 import { canCancelAt } from "./claimWindow"
 import { RAIL_REGISTERED, RAIL_VOUCHER } from "../onboarding/rails"
@@ -123,6 +128,15 @@ import {
 } from "../withdraw/withdrawGateway"
 import type { CreateStage, LinkFlavor, PaymentLink } from "./types"
 import { sponsorshipErrorCopy } from "../allowance/sponsorshipError"
+import { broadcastAttemptEnded, freshPayloads, getBroadcastLedger } from "../broadcasts/broadcasts"
+import { registrationBroadcastPayload } from "../broadcasts/registrationExecutor"
+import {
+  cacheFreshClaim,
+  createWebRegistrationBroadcaster,
+  registrationBroadcastCalls,
+} from "../onboarding/webRegistrationBroadcast"
+import { getPendingStore } from "../onboarding/webRegistration"
+import { getActiveStorageId } from "../../platform/storage/activeStorage"
 
 /** How long a fresh link stays claimable when the creator picks no expiry. */
 export const DEFAULT_CLAIM_WINDOW_DAYS = 30
@@ -131,8 +145,30 @@ const GRACE_PERIOD_OVERRIDE = import.meta.env.VITE_E2E_PAYLINK_GRACE_SECONDS as 
 const PENDING_DEPOSITS_KEY = "webwallet.pendingDeposits"
 /** Cap on `viewLink`'s escrow-note read; see the call site. */
 const NOTE_READ_TIMEOUT_MS = 20_000
-/** Cap on the allowance reads behind `voucherAvailable`; a stalled read must not pin the review sheet. */
+const SENDER_TAG_CHECK_TIMEOUT_MS = 5_000
+/** Cap on the voucher and allowance reads a sheet waits on; a stalled read must not pin it. */
 const VOUCHER_CHECK_TIMEOUT_MS = 8_000
+/** Cap on a registration claim's voucher read: nothing waits on it but the claim, queued behind Home's reads. */
+const REGISTRATION_VOUCHER_CHECK_TIMEOUT_MS = 30_000
+/** How long a ticket claim waits for the chain to decide a broadcast of its address already sent. */
+const PUBLISH_SETTLE_MS = 60_000
+/**
+ * Cap on a claim's preparation, its reads before it sends anything: room for the capped waits it
+ * can pass through back to back. Its proof is never capped.
+ */
+const CLAIM_PREPARE_TIMEOUT_MS =
+  NOTE_READ_TIMEOUT_MS + REGISTRATION_VOUCHER_CHECK_TIMEOUT_MS + PUBLISH_SETTLE_MS
+const CLAIM_PREPARE_TIMEOUT_MESSAGE =
+  "The claim took too long to prepare. Nothing was sent, so you can try again."
+
+/**
+ * Whether a ticket claim's own batch carries the registration broadcast its burn pays into. The
+ * merged transaction publishes nothing the two separate ones do not: the burn already pays the
+ * registration address, whose public record names the account (docs/paylink/golden-ticket.md
+ * §4.1). Off, or with no room in the batch, the address is published in a transaction of its own
+ * first.
+ */
+const CLAIM_BATCHES_REGISTRATION_BROADCAST = true
 
 export interface SponsoredPaylinkDeps {
   wallet: ObsidionWallet
@@ -447,6 +483,8 @@ export interface CreateLinkOptions {
   email?: string
   expiryDays?: number
   memo?: string
+  /** The creator's tag, which the link holder sees as who sent it. */
+  senderTag?: string
   voucher?: boolean
   /**
    * The share link, as soon as it exists — before the passkey prompt, while the deposit has yet to
@@ -486,22 +524,25 @@ async function voucherSponsor(
  * The link's own voucher, when its escrow still holds one: the sponsor context a claim pays itself
  * with, so a claimer fresh from signup needs no subscription. Undefined for an unvouchered or spent
  * link, which only a read that succeeded can say; a read that failed throws {@link VoucherReadError}.
+ * `after`: a PXE read started first, which this one queues behind; the deadline starts once it is
+ * over, so it bounds this read alone.
  */
 async function linkVoucher(
   deps: SponsoredPaylinkDeps,
   params: ReturnType<typeof decodePaylinkInline>,
+  timeoutMs = VOUCHER_CHECK_TIMEOUT_MS,
+  after?: Promise<unknown>,
 ): Promise<ClaimSponsorContext | undefined> {
   const sponsor = await voucherSponsor(deps)
   if (!sponsor) return undefined
   let uses: number
   try {
-    uses = await withTimeout(
-      paylinkVoucherUses(
-        { wallet: deps.wallet, contractService: deps.contractService, sponsor },
-        params,
-      ),
-      VOUCHER_CHECK_TIMEOUT_MS,
+    const read = paylinkVoucherUses(
+      { wallet: deps.wallet, contractService: deps.contractService, sponsor },
+      params,
     )
+    if (after) await Promise.race([read, after]).catch(() => {})
+    uses = await withTimeout(read, timeoutMs)
   } catch (err) {
     throw new VoucherReadError(err)
   }
@@ -577,7 +618,7 @@ async function createSponsoredLinkFlow(
   onStage?: (stage: CreateStage) => void,
   opts: CreateLinkOptions = {},
 ): Promise<CreatedLink> {
-  const { email, expiryDays = DEFAULT_CLAIM_WINDOW_DAYS, memo, voucher = false } = opts
+  const { email, expiryDays = DEFAULT_CLAIM_WINDOW_DAYS, memo, senderTag, voucher = false } = opts
   onStage?.("building")
   const svc = service(deps)
   const sponsor = await claimSponsorContext(deps, RAIL_REGISTERED)
@@ -657,6 +698,7 @@ async function createSponsoredLinkFlow(
         window: windows,
         email: emailInit,
         memo,
+        senderTag,
         // Binds the paylink's secrets to the creator, so a refund needs only the link and the
         // passkey.
         masterSecret,
@@ -721,7 +763,19 @@ export async function claimSponsoredLink(
         flow: "paylink-claim",
         summary: linkSummary(null),
       },
-      (op) => claimSponsoredLinkFlow(op, deps, fragment, onStage, zkProof, opts),
+      (op) => {
+        // From inside the gate: a background proof the claim waits out is not its preparation.
+        const prepare = deadline(
+          CLAIM_PREPARE_TIMEOUT_MS,
+          () =>
+            new Error(CLAIM_PREPARE_TIMEOUT_MESSAGE, {
+              cause: new TimeoutError(CLAIM_PREPARE_TIMEOUT_MS),
+            }),
+        )
+        return claimSponsoredLinkFlow(op, deps, fragment, prepare, onStage, zkProof, opts).finally(
+          prepare.clear,
+        )
+      },
       (txHash) => txHash,
     )
   } finally {
@@ -732,6 +786,8 @@ export async function claimSponsoredLink(
 export interface ClaimSponsoredLinkOptions {
   /** The claim pays for this account's pending registration: the SIPA burn is required, not optional. */
   fundRegistration?: boolean
+  /** {@link CLAIM_BATCHES_REGISTRATION_BROADCAST} for this claim. */
+  batchRegistrationBroadcast?: boolean
 }
 
 /** Resolves to the claim tx hash. */
@@ -739,6 +795,7 @@ async function claimSponsoredLinkFlow(
   op: OperationHandle,
   deps: SponsoredPaylinkDeps,
   fragment: string,
+  prepare: ReturnType<typeof deadline>,
   onStage?: (stage: CreateStage) => void,
   zkProof?: { vkey: string[]; proof: string[]; public_inputs: string[] },
   opts?: ClaimSponsoredLinkOptions,
@@ -746,17 +803,24 @@ async function claimSponsoredLinkFlow(
   onStage?.("building")
   const svc = service(deps)
   const params = decodePaylinkInline(fragment)
-  const { sponsor, voucherRail } = await claimRail(deps, params, Boolean(opts?.fundRegistration))
   const isEmail = params.paylinkType === DEFAULT_CONTRACTS.paylinkEmail
   if (isEmail && !zkProof) {
     throw new Error("This link is locked to an email — sign in first to prove ownership")
   }
-  if (isEmail) {
-    await deps.contractService.registerContractWithName(DEFAULT_CONTRACTS.oidcKeyRegistry)
-  }
+  // The operation's row is up already; these reads only fill it in. The note read reaches the PXE
+  // first, so the voucher read's deadline waits for it.
+  const noteRead = readPaylinkNote(svc, params)
+  const [{ sponsor, voucherRail }, note] = await prepare.within(
+    Promise.all([
+      claimRail(deps, params, Boolean(opts?.fundRegistration), noteRead),
+      noteRead,
+      isEmail
+        ? deps.contractService.registerContractWithName(DEFAULT_CONTRACTS.oidcKeyRegistry)
+        : undefined,
+    ]),
+  )
   const flavor: LinkFlavor = isEmail ? "email" : "direct"
   const decimals = tokenDecimalsForNetwork(getConfig().network)
-  const note = await readPaylinkNote(svc, params)
   op.describe(linkSummary(note && formatUnits(note.amount, decimals)))
   const { queueId, operationId } = await startPaylinkRow(
     deps,
@@ -769,16 +833,30 @@ async function claimSponsoredLinkFlow(
   onStage?.("proving")
   let txHash: string
   let burn: Awaited<ReturnType<typeof seedRegistrationBurn>> | undefined
+  let publish: Awaited<ReturnType<typeof registrationPublish>> | undefined
   // The claim is saved once its row holds the hash, and the burn riding it its record.
   const submission = trackSubmission(operationId, async (hash) => {
     await saveRowTxHash(queueId)(hash)
     if (burn && !(await burn.saved())) throw new Error("registration burn hash not saved")
   })
   try {
-    const slice = await registrationSlice(deps, note?.amount, Boolean(opts?.fundRegistration))
+    const slice = await prepare.within(
+      registrationSlice(deps, note?.amount, Boolean(opts?.fundRegistration)),
+    )
+    const batched = opts?.batchRegistrationBroadcast ?? CLAIM_BATCHES_REGISTRATION_BROADCAST
+    publish = slice?.unpublished
+      ? await prepare.within(registrationPublish(deps, slice.unpublished, batched))
+      : undefined
+    // What follows sends, and is never cut short.
+    prepare.clear()
+    // The address the burn pays is published before the burn, by the batch or on its own.
+    if (publish && !publish.calls) {
+      await publish.alone()
+      publish = undefined
+    }
     burn = slice ? await seedRegistrationBurn(deps, params, slice, operationId) : undefined
-    try {
-      txHash = await svc.claimSponsoredPaylink(params, sponsor, {
+    const send = (broadcasts?: ContractFunctionInteraction[]) =>
+      svc.claimSponsoredPaylink(params, sponsor, {
         operationId,
         ...(isEmail ? { zkProof } : {}),
         ...(voucherRail
@@ -792,14 +870,27 @@ async function claimSponsoredLinkFlow(
           : slice
           ? { withdraw: burnArgs(slice) }
           : {}),
+        ...(broadcasts ? { broadcasts } : {}),
       })
+    try {
+      try {
+        txHash = await send(publish?.calls)
+      } catch (err) {
+        if (!publish || !(err instanceof ClaimBatchFullError)) throw err
+        // A batch with no room for the broadcast: it goes first, on its own, and the burn after.
+        await publish.alone()
+        publish = undefined
+        txHash = await send()
+      }
     } catch (err) {
       // A batch that went out is a claim that went out: the burn's record keeps its hash, and the
       // chain settles both.
       const broadcast = burn ? await burn.recover(err) : null
       if (!broadcast) throw err
+      await publish?.inFlight(broadcast)
       throw new TxInFlightError(broadcast, err)
     }
+    await publish?.landed()
     await burn?.mined(txHash)
     if (sponsor.subscribe) noteSubscribed(deps.account, sponsor.fpcAddress, sponsor.railId)
     maybeRefuelFpc({ ...deps, fpc: { address: sponsor.fpcAddress, artifact: sponsor.fpcArtifact } })
@@ -837,8 +928,12 @@ export type RegistrationFundingRefusal =
  * for.
  */
 export class RegistrationFundingError extends Error {
-  constructor(readonly reason: RegistrationFundingRefusal, message: string) {
-    super(message)
+  constructor(
+    readonly reason: RegistrationFundingRefusal,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options)
     this.name = "RegistrationFundingError"
   }
 }
@@ -856,6 +951,8 @@ export interface RegistrationSlice {
   target: bigint
   /** How the burn settles; its release broadcast rides the claim batch. */
   withdrawal: WithdrawalOptions
+  /** The registration whose address is not published yet: the claim publishes it. */
+  unpublished?: PendingRegistrationRecord
 }
 
 /** The burn as the batch takes it. */
@@ -875,9 +972,16 @@ export async function claimRail(
   deps: SponsoredPaylinkDeps,
   params: ReturnType<typeof decodePaylinkInline>,
   fundRegistration: boolean,
+  /** A PXE read the voucher read queues behind, as {@link linkVoucher}'s `after`. */
+  after?: Promise<unknown>,
 ): Promise<{ sponsor: ClaimSponsorContext; voucherRail: ClaimSponsorContext | undefined }> {
   if (fundRegistration) {
-    const voucherRail = await linkVoucher(deps, params)
+    const voucherRail = await linkVoucher(
+      deps,
+      params,
+      REGISTRATION_VOUCHER_CHECK_TIMEOUT_MS,
+      after,
+    )
     if (!voucherRail)
       throw new Error("this link's voucher is spent, so it cannot pay for the account")
     return { sponsor: voucherRail, voucherRail }
@@ -885,7 +989,7 @@ export async function claimRail(
   try {
     return { sponsor: await claimSponsorContext(deps, RAIL_REGISTERED), voucherRail: undefined }
   } catch (err) {
-    const voucherRail = await linkVoucher(deps, params)
+    const voucherRail = await linkVoucher(deps, params, VOUCHER_CHECK_TIMEOUT_MS, after)
     if (!voucherRail) throw err
     return { sponsor: voucherRail, voucherRail }
   }
@@ -897,8 +1001,8 @@ export async function claimRail(
  * tag. The quote is `goldenTicketCoverage` off the signed schedule, the portal's live cut on both
  * legs and the prover tip the review committed, none when it committed nothing. Undefined leaves an
  * ordinary claim as it was; a required burn that cannot be priced or covered refuses the claim, as
- * does one the SIPA cannot take yet: lapsed terms need a renewal and an unpublished address its
- * broadcast before a burn to it is swept, and the burn is the irreversible half.
+ * do lapsed terms, which need a renewal before the irreversible burn. An address not yet published
+ * is published by the claim.
  */
 export async function registrationSlice(
   deps: SponsoredPaylinkDeps,
@@ -931,12 +1035,6 @@ export async function registrationSlice(
     throw new RegistrationFundingError(
       "expired",
       "the registration's reservation lapsed; renew it before the link funds it",
-    )
-  }
-  if (!record.broadcast) {
-    throw new RegistrationFundingError(
-      "unpublished",
-      "the registration's deposit address is not published yet, so a burn to it would not be swept",
     )
   }
   const schedule = signedSchedule(terms)
@@ -989,6 +1087,108 @@ export async function registrationSlice(
     fundingCut: cut,
     target: coverage.sipaTarget,
     withdrawal,
+    ...(record.broadcast ? {} : { unpublished: record }),
+  }
+}
+
+/**
+ * A ticket signup's registration broadcast, which its claim sends: in the claim's own batch
+ * (`calls`, when `batched`), or `alone` ahead of it. A queued ledger job for the address is dropped,
+ * since the claim sends it. One the ledger is proving or sent is waited out: undefined once it
+ * landed, nothing left to publish.
+ */
+async function registrationPublish(
+  deps: SponsoredPaylinkDeps,
+  record: PendingRegistrationRecord,
+  batched: boolean,
+) {
+  const config = getConfig()
+  const address = record.sipaAddress.toLowerCase()
+  const ledger = getBroadcastLedger()
+  await ledger.load()
+  try {
+    await withTimeout(broadcastAttemptEnded(address), PUBLISH_SETTLE_MS)
+  } catch (err) {
+    throw new RegistrationFundingError(
+      "unpublished",
+      "the registration's deposit address is still being published; claim once it lands",
+      { cause: err },
+    )
+  }
+  const landed = async (): Promise<void> => {
+    freshPayloads.delete(address)
+    await recordRegistrationBroadcastSent(getPendingStore(), record.account, address)
+    if (ledger.get(address)) await ledger.markLanded(address)
+  }
+  if (ledger.get(address)?.state === "landed") {
+    await landed()
+    return undefined
+  }
+  let built: Awaited<ReturnType<typeof registrationBroadcastPayload>>
+  try {
+    built = await registrationBroadcastPayload(deps.wallet, config, record)
+  } catch (err) {
+    throw new RegistrationFundingError(
+      "unpublished",
+      `the registration's deposit address cannot be published yet: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
+  }
+  const sender = {
+    wallet: deps.wallet,
+    account: built.account,
+    contractService: deps.contractService,
+    config,
+    handle: record.tag,
+  }
+  await cacheFreshClaim(sender, built.payload)
+  const calls = batched ? await registrationBroadcastCalls(sender, built.payload) : undefined
+  if (ledger.get(address)) await ledger.remove(address)
+  const owed = (txHash: string) =>
+    ledger.enqueue({
+      address,
+      kind: "registration",
+      scope: getActiveStorageId(),
+      source: { type: "registration", account: record.account },
+      txHash,
+    })
+  return {
+    calls,
+    /**
+     * The broadcast as its own tx, before the claim. The ledger holds its hash from the send on, so
+     * a send whose outcome is unknown is decided by the chain, never sent twice. Its job is held
+     * while this page sends.
+     */
+    async alone(): Promise<void> {
+      let noted: Promise<unknown> | undefined
+      const release = ledger.hold(address)
+      try {
+        await createWebRegistrationBroadcaster(sender)(built.payload, {
+          onTxHash: async (txHash) => {
+            noted = owed(txHash)
+            await noted
+          },
+        })
+      } catch (err) {
+        release()
+        if (!noted) throw err
+        await noted
+        await withTimeout(broadcastAttemptEnded(address), PUBLISH_SETTLE_MS).catch(() => {})
+        if (ledger.get(address)?.state !== "landed") throw err
+      }
+      try {
+        await landed()
+      } finally {
+        release()
+      }
+    },
+    /** The tx carrying the broadcast landed: the record says so, and no ledger job is left owing. */
+    landed,
+    /** The tx carrying it reached the node: the ledger watches that hash, and re-sends if it drops. */
+    async inFlight(txHash: string): Promise<void> {
+      await owed(txHash)
+    },
   }
 }
 
@@ -1034,9 +1234,7 @@ async function seedRegistrationBurn(
   const arm = (record: WithdrawalRecord) =>
     ensureWithdrawalTracker(deps.wallet)
       .then((tracker) => tracker?.watch(record))
-      .catch((e) =>
-        console.warn("registration burn: watcher arm failed, resumed on next load", e),
-      )
+      .catch((e) => console.warn("registration burn: watcher arm failed, resumed on next load", e))
   return {
     /** Whether the burn's hash stamp persisted. */
     saved: () => submission.saved(),
@@ -1500,6 +1698,24 @@ function statusService(deps: ViewLinkDeps): PaylinkService {
 }
 
 /**
+ * The funding transfer's sender tag, kept only when the name registry resolves it to that
+ * transfer's sender: the creator writes the tag, so any creator could write any tag. A read that
+ * fails drops it.
+ */
+async function verifiedSenderTag(tag?: string, from?: string): Promise<string | undefined> {
+  if (!tag || !from) return undefined
+  try {
+    const resolution = await withTimeout(resolveTagViaRegistry(tag), SENDER_TAG_CHECK_TIMEOUT_MS)
+    return resolution.status === "resolved" &&
+      resolution.l2Address.toLowerCase() === from.toLowerCase()
+      ? tag
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Decode a link + read its on-chain status via the paylink nullifier tree
  * (`PaylinkService.isPaylinkClaimed`). Needs only wallet + contractService — no
  * passkey. `resolveLink` also unpacks `from_claimable` so `/link` can withhold Claim
@@ -1518,6 +1734,7 @@ export async function viewLink(deps: ViewLinkDeps, fragment: string): Promise<Pa
     // the contract still gates the claim.
     const resolved = await withTimeout(svc.resolveLink(params, deps.account), NOTE_READ_TIMEOUT_MS)
     const decimals = tokenDecimalsForNetwork(getConfig().network)
+    const senderTag = await verifiedSenderTag(resolved.senderTag, resolved.from)
     return {
       ...link,
       status: "unclaimed",
@@ -1526,6 +1743,7 @@ export async function viewLink(deps: ViewLinkDeps, fragment: string): Promise<Pa
       claimableFrom: resolved.note.claimableFrom,
       claimableUntil: resolved.note.claimableUntil,
       memo: resolved.memo,
+      senderTag,
       email: resolved.email,
       commitment: resolved.commitment.toString(),
       txHash: resolved.txHash,

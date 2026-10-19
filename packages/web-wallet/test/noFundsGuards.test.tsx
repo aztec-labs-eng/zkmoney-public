@@ -49,6 +49,7 @@ vi.mock("../src/features/contacts/contactPay", () => ({
 vi.mock("../src/features/contacts/SendScreen", () => ({ SendScreen: () => null }))
 vi.mock("../src/features/identity/walletIdentity", () => ({
   loadOnboardedIdentity: () => ({ handle: "me" }),
+  loadWalletIdentity: () => ({ handle: "me", address: "0xme", claimedAt: 1 }),
 }))
 // The direct route prices its fee off the portal's FPC cut.
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({

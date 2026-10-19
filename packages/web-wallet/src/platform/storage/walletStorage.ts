@@ -113,6 +113,11 @@ const bootOrderError = () =>
       "tab, and closes when another tab takes over.",
   )
 
+/** Whether this origin holds a wallet database for any rollup. */
+export async function walletDatabasesExist(): Promise<boolean> {
+  return (await store.backend.list()).length > 0
+}
+
 function openDb(): WalletDb {
   if (!store.db) throw bootOrderError()
   return store.db

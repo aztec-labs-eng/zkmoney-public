@@ -10,7 +10,7 @@ import {PackedUserOperation} from "@account-abstraction/contracts/interfaces/Pac
 contract R1InstallGasTest is RegistrationTestBase {
   uint256 internal constant METADATA_WORDS = 8;
   uint256 internal constant GENEROUS_GAS = 5_000_000;
-  uint256 internal constant HEADROOM_PERCENT = 125;
+  uint256 internal constant HEADROOM_PERCENT = 600;
 
   function setUp() public override {
     super.setUp();

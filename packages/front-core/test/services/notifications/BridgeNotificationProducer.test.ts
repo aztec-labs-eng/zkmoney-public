@@ -377,7 +377,7 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
       feed.emit([exit("awaiting_proven")])
       await producer.flush()
       expect(notifications.list()).toMatchObject([
-        { title: "Moving funds", description: "$4 · Leaving old network", pending: true },
+        { title: "Upgrading", description: "$4 · Leaving old version", pending: true },
       ])
     })
 
@@ -399,9 +399,144 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
       feed.emit([exit("done"), sipaDeposit({ phase: "claimed", endTime: 1_200 })])
       await producer.flush()
       const titles = notifications.list().map((e) => e.title)
-      expect(titles).toContain("Migration complete")
+      expect(titles).toContain("Upgrade complete")
       expect(notifications.list().map((e) => e.description)).toContain("$10 arrived")
       expect(titles).not.toContain("Withdrawal complete")
+      expect(titles).not.toContain("Deposit complete")
+    })
+
+    describe("an upgrade's run", () => {
+      const RUN = "metadata-migration/0xnew/0xold/0xaccount"
+      const SECOND = "0x00000000000000000000000000000000000000Bb"
+      const batch = (
+        id: string,
+        recipient: string,
+        state: "planned" | "sent" | "received" = "sent",
+      ): ActivityItem => ({
+        kind: "upgrade.batch",
+        batch: {
+          run: RUN,
+          id,
+          first: false,
+          recipient,
+          amount: (10n * 10n ** 18n).toString(),
+          exitFee: (10n ** 17n).toString(),
+          state,
+          startTime: 1_000,
+        },
+      })
+      const shown = () => notifications.list().filter((e) => !e.dismissedAt)
+
+      it("is one live row until every batch has arrived, then one report", async () => {
+        producer.start()
+        feed.emit([
+          batch("remaining-0", SIPA_ADDRESS, "received"),
+          batch("remaining-1", SECOND),
+          sipaDeposit({ phase: "claimed", endTime: 1_200 }),
+        ])
+        await producer.flush()
+        expect(shown()).toMatchObject([
+          {
+            id: `migration-run:${RUN}`,
+            title: "Upgrading",
+            description: expect.stringContaining("1 of 2 arrived"),
+            pending: true,
+          },
+        ])
+
+        feed.emit([
+          batch("remaining-0", SIPA_ADDRESS, "received"),
+          batch("remaining-1", SECOND, "received"),
+          sipaDeposit({ phase: "claimed", endTime: 1_200 }),
+          sipaDeposit({ sipaAddress: SECOND, phase: "claimed", endTime: 1_300 }),
+        ])
+        await producer.flush()
+        expect(shown()).toMatchObject([
+          {
+            id: `migration-run:${RUN}:done:2`,
+            title: "Upgrade complete",
+            description: expect.stringContaining("2 transfers"),
+            target: { type: "upgrade.run", run: RUN },
+          },
+        ])
+      })
+
+      it("reports no completion for a run whose deposit was recovered to Ethereum", async () => {
+        producer.start()
+        feed.emit([
+          batch("remaining-0", SIPA_ADDRESS, "received"),
+          sipaDeposit({ phase: "recovered", endTime: 1_200 }),
+        ])
+        await producer.flush()
+        expect(shown().map((e) => e.title)).not.toContain("Upgrade complete")
+      })
+
+      it("counts nothing for a batch whose deposit was recovered to Ethereum", async () => {
+        producer.start()
+        feed.emit([
+          batch("remaining-0", SIPA_ADDRESS, "received"),
+          batch("remaining-1", SECOND),
+          sipaDeposit({ phase: "recovered", endTime: 1_200 }),
+        ])
+        await producer.flush()
+        expect(shown().find((e) => e.id === `migration-run:${RUN}`)?.description).toBe(
+          "$9.90 · 0 of 2 arrived",
+        )
+      })
+
+      it("reports a run it saw pending though its deposit settled before a reload", async () => {
+        producer.start()
+        feed.emit([batch("remaining-0", SIPA_ADDRESS)])
+        await producer.flush()
+        producer.stop()
+        vi.setSystemTime(5_000)
+        const reloaded = new BridgeNotificationProducer(feed, notifications, { liveRows: true })
+        reloaded.start()
+        feed.emit([
+          batch("remaining-0", SIPA_ADDRESS, "received"),
+          sipaDeposit({ phase: "claimed", endTime: 1_200 }),
+        ])
+        await reloaded.flush()
+        expect(shown().map((e) => e.title)).toContain("Upgrade complete")
+        reloaded.stop()
+      })
+
+      it("reports a run again once funds that reached the old version later arrive", async () => {
+        producer.start()
+        const first = [
+          batch("remaining-0", SIPA_ADDRESS, "received"),
+          sipaDeposit({ phase: "claimed", endTime: 1_200 }),
+        ]
+        feed.emit(first)
+        await producer.flush()
+        feed.emit([...first, batch("remaining-1", SECOND)])
+        await producer.flush()
+        expect(shown().find((e) => e.pending)?.description).toContain("1 of 2 arrived")
+        feed.emit([
+          ...first,
+          batch("remaining-1", SECOND, "received"),
+          sipaDeposit({ sipaAddress: SECOND, phase: "claimed", endTime: 1_400 }),
+        ])
+        await producer.flush()
+        expect(shown().map((e) => e.description)).toContainEqual(
+          expect.stringContaining("2 transfers"),
+        )
+      })
+
+      it("shows nothing for a run with nothing sent", async () => {
+        producer.start()
+        feed.emit([batch("remaining-0", SIPA_ADDRESS, "planned")])
+        await producer.flush()
+        expect(shown()).toEqual([])
+      })
+    })
+
+    it("reports an upgrade's first refund, which has no exit record, as a move", async () => {
+      producer.start()
+      feed.emit([sipaDeposit({ phase: "claimed", intent: "metadata", endTime: 1_200 })])
+      await producer.flush()
+      const titles = notifications.list().map((e) => e.title)
+      expect(titles).toContain("Upgrade complete")
       expect(titles).not.toContain("Deposit complete")
     })
 
@@ -436,22 +571,22 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
         await withdrawals.create(exit("awaiting_proven").record as WithdrawalRecord)
         await sipa.upsert(deposit.sipaAddress, { phase: "resolved" }, fallback)
         await real.flush()
-        expect(pending()).toEqual(["$4 · Leaving old network"])
+        expect(pending()).toEqual(["$4 · Leaving old version"])
 
         // Published and discovered, still unfunded: the exit's row alone says where the funds are.
         await sipa.upsert(deposit.sipaAddress, { phase: "broadcast", amount: "0" }, fallback)
         await real.flush()
-        expect(pending()).toEqual(["$4 · Leaving old network"])
+        expect(pending()).toEqual(["$4 · Leaving old version"])
 
         await withdrawals.patch("withdraw-local-id", { phase: "done", endTime: 1_100 })
         await sipa.upsert(deposit.sipaAddress, { phase: "sweeping", amount: "4" }, fallback)
         await real.flush()
-        expect(pending()).toEqual(["$4 · Arriving on new network"])
+        expect(pending()).toEqual(["$4 · Arriving on new version"])
 
         await sipa.upsert(deposit.sipaAddress, { phase: "claimed", endTime: 1_200 }, fallback)
         await real.flush()
         expect(pending()).toEqual([])
-        expect(notifications.list().map((e) => e.title)).toContain("Migration complete")
+        expect(notifications.list().map((e) => e.title)).toContain("Upgrade complete")
       } finally {
         real.stop()
       }

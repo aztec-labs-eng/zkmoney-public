@@ -13,6 +13,8 @@ import type {
   PasskeyRequestHook,
   PasskeyRequestSignal,
 } from "../ceremony/passkeyCeremony.js"
+import { type NativeLockCall, nativeLockFor } from "../ceremony/nativeLock.js"
+import { passkeyExtensionFor } from "../ceremony/passkeyCeremony.js"
 import { decodeUserHandleProvenance } from "../ceremony/userHandle.js"
 import { currentDevicePosture } from "./devicePosture.js"
 import {
@@ -42,7 +44,9 @@ import {
 } from "./passkeyTelemetry.js"
 import {
   PASSKEY_CEREMONIES,
+  PASSKEY_EXTENSIONS,
   PASSKEY_FLOWS,
+  PASSKEY_NATIVE_LOCKS,
   PASSKEY_PLATFORM_AUTHENTICATORS,
   PASSKEY_PROVIDERS,
   type PasskeyAttempt,
@@ -51,8 +55,10 @@ import {
   type PasskeyCredentialCreated,
   type PasskeyElapsed,
   type PasskeyErrorName,
+  type PasskeyExtension,
   type PasskeyFlow,
   type PasskeyMadeOn,
+  type PasskeyNativeLock,
   type PasskeyOutcome,
   type PasskeyPhoneReach,
   type PasskeyPlatformAuthenticator,
@@ -83,6 +89,11 @@ export type PasskeyCeremonyProps = {
   error_name?: PasskeyErrorName
   /** On a phone row once the probe has settled. */
   platform_authenticator?: PasskeyPlatformAuthenticator
+  /** Which extension's script wraps the page's passkey creation, read as the row is sent. */
+  extension?: PasskeyExtension
+  /** What the page-start lock did to the browser's own `create` and `get`, read as the row is sent. */
+  native_lock_create?: PasskeyNativeLock
+  native_lock_get?: PasskeyNativeLock
 } & PasskeyEnvironmentProps
 
 export type PasskeyTelemetryEnvironment = Pick<PasskeyTelemetrySnapshot, "posture" | "userAgent">
@@ -151,6 +162,10 @@ export type PasskeyTelemetryOptions = {
    * on a phone; nothing waits on it, so a row sent before it settles carries no answer.
    */
   platformAuthenticator?: () => Promise<PasskeyPlatformAuthenticator>
+  /** Which extension's script wraps the page's creation; read once per row, as it is sent. */
+  extension?: () => PasskeyExtension
+  /** What the page-start lock recorded for a call; read once per row, as it is sent. */
+  nativeLock?: (call: NativeLockCall) => PasskeyNativeLock | undefined
   /** The provider a snapshot names before any request of this page load. */
   fallbackProvider?: () => PasskeyProvider
   pageHideTarget?: EventTarget
@@ -401,6 +416,10 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
       undefined,
     )
     const env = currentEnvironment()
+    const extension = quiet(() => (options.extension ?? passkeyExtensionFor)())
+    const nativeLock = options.nativeLock ?? nativeLockFor
+    const lockCreate = quiet(() => nativeLock("create"))
+    const lockGet = quiet(() => nativeLock("get"))
     const props: PasskeyCeremonyProps = {
       ceremony: attempt.ceremony,
       ...(attempt.flow ? { flow: attempt.flow } : {}),
@@ -426,6 +445,9 @@ export function createPasskeyTelemetry(options: PasskeyTelemetryOptions): Passke
       ...(platformAuthenticator && env.posture === "phone"
         ? { platform_authenticator: platformAuthenticator }
         : {}),
+      ...(listed(PASSKEY_EXTENSIONS, extension) ? { extension } : {}),
+      ...(listed(PASSKEY_NATIVE_LOCKS, lockCreate) ? { native_lock_create: lockCreate } : {}),
+      ...(listed(PASSKEY_NATIVE_LOCKS, lockGet) ? { native_lock_get: lockGet } : {}),
       ...passkeyEnvironmentPropsFor(env),
     }
     quiet(() => Promise.resolve(options.send(props)).catch(() => {}))

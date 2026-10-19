@@ -2,8 +2,7 @@ import { PrimaryGradientButton } from "@obsidion/web-ds"
 import { BrandLockup } from "../../../ui/BrandLockup"
 import { PRIVACY_URL, TERMS_URL } from "../../../lib/links"
 import type { InviteNotice } from "./TagAvailabilityNotes"
-import { LandingFeatureCards } from "./LandingFeatureCards"
-import { useLiveSavingsApy } from "../../savings/savingsGateway"
+import { LandingFeatureCards, useLandingRate } from "./LandingFeatureCards"
 import { BootSplash } from "../../../ui/PxeBoot"
 
 /** The landing for a visitor with nothing here yet: the claim server draws their tag. */
@@ -22,9 +21,8 @@ export function CreateWalletStep({
   /** Abandons the draw the busy state is waiting on. */
   onCancel: () => void
 }) {
-  // The live rate is the first card's headline: the page waits for it rather than swap it in.
-  const rate = useLiveSavingsApy()
-  if (!rate.settled) return <BootSplash />
+  const rate = useLandingRate()
+  if (!rate.ready) return <BootSplash />
   return (
     <div className="ww-landing">
       <LandingFeatureCards apy={rate.apy} />
@@ -32,9 +30,12 @@ export function CreateWalletStep({
         <div style={{ marginBottom: 32 }}>
           <BrandLockup />
         </div>
-        <h1 className="ww-invite__title">Your money, private by default</h1>
+        <h1 className="ww-invite__title">Money that moves privately</h1>
+        <p className="ww-invite__subtitle">
+          Pay, get paid and save onchain. Your balance and transactions are private by default.
+        </p>
         <PrimaryGradientButton
-          title="Get started"
+          title="Open account"
           isLoading={busy}
           onClick={onCreate}
           testId="create-wallet"

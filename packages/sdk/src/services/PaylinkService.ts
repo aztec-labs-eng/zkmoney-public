@@ -11,6 +11,8 @@ import {
   buildSponsoredTeeOperation,
   type SponsoredTeeOperationArgs,
 } from "./sponsoredTeeOperation.js"
+import { MAX_SPONSORED_CALLS } from "../feePaymentMethod/sponsoredCall.js"
+import { claimFpcPolicySponsorsAnyCall } from "../feePaymentMethod/claimSponsoredCall.js"
 import {
   type ClaimSponsorContext,
   authorizeSponsoredBatch,
@@ -84,7 +86,6 @@ import type { DepositSpendMetadataResolver } from "../oxide/index.js"
 import type { TeeSigner } from "@oxide/oxide-lib/types.js"
 import {
   computeEscrowTagSecret,
-  registerEscrowTagSecret,
   registerPaylinkContractWithKeys,
   deriveDeterministicPaylinkKeys,
   findPaylinkKeysForDay,
@@ -99,9 +100,9 @@ import {
   paylinkEscrowInstance,
   paylinkTypeOf,
 } from "./paylink/paylinkEscrow.js"
+import { escrowDepositTx, registerEscrow, sharedNoteRead } from "./paylink/escrowRegistration.js"
 import {
   findDepositTxHash,
-  findEscrowDepositTx,
   PAYLINK_NONCE_EPOCH_DAY,
   scanPaylinkEscrows,
 } from "./paylink/paylinkRecovery.js"
@@ -208,6 +209,10 @@ export type ResolvedPaylink = {
   commitment: Fr
   /** The creator's memo, off the funding transfer. */
   memo?: string
+  /** The creator's tag as the funding transfer asserts it: verify it against `from`. */
+  senderTag?: string
+  /** The funding transfer's sender, the creator. */
+  from?: string
 }
 
 /** ClaimFPC sponsorship inputs for the `NO_FROM` paylink legs — see {@link ClaimSponsorContext}. */
@@ -230,6 +235,18 @@ export type VoucherClaimOptions = {
    * is not voucher-sponsored; this field remains so a voucher claim can carry the burn too.
    */
   withdraw?: PaylinkClaimWithdraw
+}
+
+/**
+ * A claim asked to carry calls its batch has no room for: only a voucher `claim_with_withdrawal`
+ * leaves slots free, and the FPC dispatches at most `MAX_SPONSORED_CALLS`. Thrown before anything is
+ * proven, so the caller can send those calls on their own.
+ */
+export class ClaimBatchFullError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "ClaimBatchFullError"
+  }
 }
 
 /**
@@ -615,29 +632,12 @@ export class PaylinkService extends ServiceBase {
     /** Undefined until the deposit is mined; the spend then anchors on the note's creation tx. */
     depositTxHash?: TxHash
   }> {
-    const { artifact, keys, instance } = await linkEscrow(this.contractService, params)
-    assertLinkChain(params, await linkChainInfo(this.wallet))
-
-    await registerPaylinkContractWithKeys({
-      wallet: this.wallet,
-      instance,
-      artifact,
-      keyMaterial: keys,
-    })
-    // The escrow tags its own PaylinkNote (`with_sender(self.address)` in `deposit`); this is what
-    // makes that tag scannable here. PXE skips it when the escrow is already a local account.
-    await this.wallet.registerSender(instance.address)
-    // The escrow's token note is tagged by whoever created the link, whom this PXE does not know;
-    // the link's pre-shared point is the only route to it.
-    if (params.escrowTagSecret) {
-      await registerEscrowTagSecret({
-        wallet: this.wallet,
-        escrow: instance.address,
-        secret: params.escrowTagSecret,
-      })
-    }
+    const { artifact, keys, instance } = await registerEscrow(
+      { wallet: this.wallet, contractService: this.contractService },
+      params,
+    )
     const contract = Contract.at(instance.address, artifact, this.wallet)
-    const deposit = await findEscrowDepositTx(this.wallet.node, instance)
+    const deposit = await escrowDepositTx(this.wallet, instance)
     return { contract, instance, keys, depositTxHash: deposit?.txHash }
   }
 
@@ -1086,16 +1086,18 @@ export class PaylinkService extends ServiceBase {
     }
     // Visitors have no account. ZERO is only a placeholder, not a valid note-discovery scope.
     const from = account.getAddress()
-    const sim = await contract.methods.sync_note!().simulate({
-      from: from.equals(AztecAddress.ZERO) ? NO_FROM : from,
-      additionalScopes: [contract.address],
+    return sharedNoteRead(this.wallet, contract.address, async () => {
+      const sim = await contract.methods.sync_note!().simulate({
+        from: from.equals(AztecAddress.ZERO) ? NO_FROM : from,
+        additionalScopes: [contract.address],
+      })
+      return buildPaylinkNoteView(sim.result)
     })
-    return buildPaylinkNoteView(sim.result)
   }
 
   /**
    * Everything chain says about a link: the escrow note (amount, windows, commitment) and the
-   * funding transfer's lane (email, memo). The transfer is read off the token the note names, so a
+   * funding transfer's lane (email, memo, sender tag). The transfer is read off the token the note names, so a
    * browser with no account and no token service still sees the memo. The transfer read is
    * fail-open: a note without its transfer still resolves, email-less.
    */
@@ -1114,6 +1116,8 @@ export class PaylinkService extends ServiceBase {
       email: deposit?.paylinkCreated?.email,
       commitment: note.hash,
       memo: deposit?.memo,
+      senderTag: deposit?.senderTag,
+      from: deposit?.from,
     }
   }
 
@@ -1410,6 +1414,8 @@ export class PaylinkService extends ServiceBase {
    * sponsor on any other rail is refused before the escrow is read: the escrow holds no note there,
    * and the batch would only fail in proving. `options.withdraw` (or `voucher.withdraw`) is a second
    * operation in that same tx, not a follow-up: it burns a slice of the claimed note to L1 (the registration SIPA).
+   * `options.broadcasts` ride the same batch unsigned by the enclave (the registration SIPA's own
+   * broadcast); a batch with no room for them throws {@link ClaimBatchFullError} first.
    */
   public async claimSponsoredPaylink(
     claimParams: PaylinkParams,
@@ -1425,6 +1431,8 @@ export class PaylinkService extends ServiceBase {
       voucher?: VoucherClaimOptions
       /** Same-batch burn; set even when the claim pays on the registered rail rather than a voucher. */
       withdraw?: PaylinkClaimWithdraw
+      /** Calls the enclave does not sign that ride the claim batch, e.g. a SIPA broadcast. */
+      broadcasts?: ContractFunctionInteraction[]
     },
   ): Promise<string> {
     const isEmail = claimParams.paylinkType === DEFAULT_CONTRACTS.paylinkEmail
@@ -1441,9 +1449,22 @@ export class PaylinkService extends ServiceBase {
     const prepared = await this.prepareSponsoredEscrow(claimParams, sponsor)
     const { escrow, user, meta } = prepared
     const voucherBurn = options?.voucher?.withdraw
+    const broadcasts = options?.broadcasts ?? []
     if (!isEmail && voucherBurn && escrow.methods.claim_with_withdrawal) {
-      return (await this.claimWithWithdrawal(prepared, voucherBurn, sponsor, options?.operationId))
-        .txHash
+      return (
+        await this.claimWithWithdrawal(
+          prepared,
+          voucherBurn,
+          sponsor,
+          options?.operationId,
+          broadcasts,
+        )
+      ).txHash
+    }
+    if (broadcasts.length > 0) {
+      throw new ClaimBatchFullError(
+        "only a voucher claim that burns through claim_with_withdrawal has room for extra calls",
+      )
     }
 
     let claimInteraction
@@ -1540,6 +1561,7 @@ export class PaylinkService extends ServiceBase {
     withdraw: PaylinkClaimWithdraw,
     sponsor: PaylinkSponsorContext,
     operationId?: string,
+    broadcasts: ContractFunctionInteraction[] = [],
   ): Promise<{ txHash: string; blockNumber: number }> {
     const { escrow, user, meta } = prepared
     const payout = await planPayout(
@@ -1556,6 +1578,20 @@ export class PaylinkService extends ServiceBase {
       },
       withdraw.withdrawal,
     )
+    // The claim, the release broadcast, the extra calls and `publish_da`.
+    const calls = 2 + payout.broadcasts.length + broadcasts.length
+    if (calls > MAX_SPONSORED_CALLS) {
+      throw new ClaimBatchFullError(
+        `the claim batch would need ${calls} calls; the FPC dispatches at most ${MAX_SPONSORED_CALLS}`,
+      )
+    }
+    // A per-call policy budgets each call at its worst case, which for this batch with a broadcast
+    // riding it sums above the flat caps the deployment prices; only an open policy declares those.
+    if (broadcasts.length > 0 && !claimFpcPolicySponsorsAnyCall(sponsor.policy)) {
+      throw new ClaimBatchFullError(
+        "a per-call policy cannot sponsor a claim with a withdrawal and a broadcast in one batch",
+      )
+    }
     const interaction = escrow.methods.claim_with_withdrawal!(
       user,
       withdraw.amount,
@@ -1571,7 +1607,7 @@ export class PaylinkService extends ServiceBase {
       { operationId, voucher: { railId: sponsor.railId } },
       {
         accountFree: true,
-        teeUnsignedInteractions: payout.broadcasts,
+        teeUnsignedInteractions: [...payout.broadcasts, ...broadcasts],
         plainWithdrawal: payout.plainWithdrawal,
         withdrawals: [
           {

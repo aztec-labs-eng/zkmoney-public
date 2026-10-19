@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from "vitest"
 import type { ProvingTimings } from "@aztec/stdlib/tx"
-import { extractProveTimings } from "./proveTimingExtract.js"
+import { extractProveTimings, formatProveTxPerfLine } from "./proveTimingExtract.js"
 
 function timings(over: Partial<ProvingTimings> = {}): ProvingTimings {
   return {
@@ -77,5 +77,38 @@ describe("extractProveTimings", () => {
     )
     expect(JSON.stringify(out)).not.toContain("oracles")
     expect(JSON.stringify(out)).not.toContain("getNotes")
+  })
+})
+
+describe("formatProveTxPerfLine", () => {
+  const base = { preProveMs: 12, simulationMs: 300.4, totalMs: 6100 }
+
+  it("prints the PXE's split, rounded", () => {
+    expect(formatProveTxPerfLine({ ...base, proveTimings: timings({ proving: 100.6 }) })).toBe(
+      "[Perf][ProveTx] pre_prove=12ms sim=300ms sync=5ms user_witgen=10ms kernel_witgen=42ms proving=101ms pxe_total=160ms total=6100ms",
+    )
+  })
+
+  it("keeps the witness split and says proving=none without a proof (fake proofs)", () => {
+    const line = formatProveTxPerfLine({ ...base, proveTimings: timings({ proving: undefined }) })
+    expect(line).toContain("user_witgen=10ms kernel_witgen=42ms proving=none")
+  })
+
+  it("says prove_stats=none when the PXE returned no stats", () => {
+    expect(formatProveTxPerfLine({ ...base, proveTimings: undefined })).toBe(
+      "[Perf][ProveTx] pre_prove=12ms sim=300ms prove_stats=none total=6100ms",
+    )
+  })
+
+  it("never prints oracle data", () => {
+    const line = formatProveTxPerfLine({
+      ...base,
+      proveTimings: timings({
+        perFunction: [
+          { functionName: "MyToken:transfer", time: 10, oracles: { getNotes: { times: [1] } } },
+        ],
+      }),
+    })
+    expect(line).not.toContain("getNotes")
   })
 })

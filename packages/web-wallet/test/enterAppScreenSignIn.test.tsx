@@ -282,6 +282,7 @@ type EnterOptions = {
   strictTag?: boolean
   signal?: AbortSignal
   chooser?: boolean
+  phone?: boolean
   cacheOnly?: boolean
   restoreCache?: boolean
 }
@@ -1458,6 +1459,82 @@ describe("the pinned sign-in", () => {
     h.enterWithPasskey.mockResolvedValueOnce(named())
     await click("enter-show-passkeys")
     expect(lastOptions()).toMatchObject({ chooser: true, restoreCache: false })
+  })
+
+  describe("on a Mac", () => {
+    const MAC_CHROME =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) " +
+      "Chrome/155.0.0.0 Safari/537.36"
+    const onMac = () =>
+      Object.defineProperty(navigator, "userAgent", { value: MAC_CHROME, configurable: true })
+    const localCopyMiss = () => ({
+      entered: false,
+      reason: "unknown",
+      credentialId: CANDIDATE.credentialId,
+      addresses: [OTHER, `0x${"ce".repeat(32)}`],
+      observed: { credentialId: CANDIDATE.credentialId, attachment: "platform" },
+    })
+
+    it("this computer's wrong key leads with the phone, which pins the same passkey again", async () => {
+      onMac()
+      await reachFound()
+      h.enterWithPasskey.mockResolvedValueOnce(localCopyMiss())
+      await click("sign-in-login")
+      expect(refused()?.dataset.reason).toBe("StoredAddressMismatchError")
+      expect(container.textContent).toContain("until you sign out or this browser clears its data")
+      expect(byTestId("enter-retry")).toBeNull()
+      expect(byTestId("enter-show-passkeys")).not.toBeNull()
+      h.enterWithPasskey.mockResolvedValueOnce(named())
+      await click("enter-phone")
+      expect(lastOptions()).toMatchObject({ hints: CANDIDATE, phone: true })
+    })
+
+    it("a dismissed phone attempt offers a retry that stays on the phone, twice over", async () => {
+      onMac()
+      await reachFound()
+      h.enterWithPasskey.mockResolvedValueOnce(localCopyMiss())
+      await click("sign-in-login")
+      h.enterWithPasskey.mockRejectedValueOnce(closed())
+      await click("enter-phone")
+      expect(refused()?.dataset.reason).toBe("PasskeyNotOnDeviceError")
+      h.enterWithPasskey.mockRejectedValueOnce(closed())
+      await click("enter-retry")
+      expect(lastOptions()).toMatchObject({ hints: CANDIDATE, phone: true })
+      expect(refused()?.dataset.reason).toBe("PasskeyNotOnDeviceError")
+      expect(byTestId("enter-retry")).not.toBeNull()
+    })
+
+    it("a key mismatch suggests a macOS update for this computer's answer, not another device's", async () => {
+      const update = () => byTestId("passkey-mac-update")
+      for (const [attachment, shown] of [
+        ["platform", true],
+        ["cross-platform", false],
+      ] as const) {
+        onMac()
+        resolvedLookup("alice", true)
+        await arrive("/enter?handle=alice")
+        h.enterWithPasskey.mockResolvedValueOnce({
+          ...localCopyMiss(),
+          observed: { credentialId: CANDIDATE.credentialId, attachment },
+        })
+        await click("sign-in-login")
+        expect(refused()?.dataset.reason).toBe("PasskeyKeyMismatchError")
+        expect(update() !== null).toBe(shown)
+        act(() => root.unmount())
+        root = createRoot(container)
+      }
+    })
+
+    it("Show passkeys from that card runs the chooser without the phone", async () => {
+      onMac()
+      await reachFound()
+      h.enterWithPasskey.mockResolvedValueOnce(localCopyMiss())
+      await click("sign-in-login")
+      h.enterWithPasskey.mockResolvedValueOnce(named())
+      await click("enter-show-passkeys")
+      expect(lastOptions()).toMatchObject({ chooser: true })
+      expect(lastOptions().phone).toBeUndefined()
+    })
   })
 
   it("a policy refusal on the pinned path keeps its retry and Back", async () => {

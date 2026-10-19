@@ -28,6 +28,7 @@ import {
 import { getConfig, l1ChainFor } from "../../config/env"
 import { showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent, lapTimer } from "../../lib/analytics"
+import { withdrawKind } from "./withdrawFunnel"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { HashRow, l1TxUrl } from "../../ui/detailRows"
 import { useCopy } from "../../ui/hooks"
@@ -134,7 +135,7 @@ export function WithdrawalExitModal({
       setTxHash(hash)
       setPhase("done")
       // Timing only — the recipient is as identifying as the withdrawal itself.
-      fireEvent("withdrawal_self_finalized", { duration_ms: elapsed() })
+      fireEvent("withdrawal_self_finalized", { duration_ms: elapsed(), kind: withdrawKind(record) })
     } catch (e) {
       setPhase("form")
       if (e instanceof WalletPromptOpenError) {

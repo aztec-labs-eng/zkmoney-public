@@ -1,11 +1,13 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
+  MACOS_APPLE_PRF_FLOOR,
   MACOS_SYNCED_COPY_FLOORS,
   atLeast,
   currentUserAgentInfo,
   currentUserAgentInfoSoon,
   iosBelowFloor,
+  macosGivesApplePrf,
   macosSyncedCopyReadsRight,
   parseUserAgent,
   versionBelow,
@@ -336,6 +338,20 @@ describe("macosSyncedCopyReadsRight", () => {
   it("fails closed on anything that is not a plain version", () => {
     for (const version of ["unknown", "", " ", "15.7.5-beta", "15.7.5.1"]) {
       expect(macosSyncedCopyReadsRight(version)).toBe(false)
+    }
+  })
+})
+
+describe("macosGivesApplePrf", () => {
+  it("holds from macOS 15", () => {
+    for (const version of [MACOS_APPLE_PRF_FLOOR, "15.0", "15.0.1", "15.7.4", "26.0", "27.0.1"]) {
+      expect(macosGivesApplePrf(version)).toBe(true)
+    }
+  })
+
+  it("fails before it, and on anything that is not a plain version", () => {
+    for (const version of ["14.9.9", "14.6", "13.7.1", "unknown", "", "15.0-beta", "15.7.5.1"]) {
+      expect(macosGivesApplePrf(version)).toBe(false)
     }
   })
 })

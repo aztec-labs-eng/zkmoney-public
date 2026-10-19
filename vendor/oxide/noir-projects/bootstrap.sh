@@ -3,8 +3,7 @@
 # release). `build` iterates over every `*/Nargo.toml` and dispatches on the package `type`:
 #   - contract : `aztec compile` (nargo + bb aztec_process + version stamp) — an L2 Aztec contract;
 #                its artifact JSON is consumed by yarn-project codegen.
-#   - bin      : `aztec-nargo compile` + `aztec-bb write_vk` → `<pkg>/target/keys/vk` — a circuit whose vk
-#                l1-contracts/bootstrap.sh turns into a Solidity Honk verifier.
+#   - bin      : `aztec-nargo compile` + `aztec-bb write_vk` → `<pkg>/target/keys/vk`.
 #   - lib      : skipped (compiled only as a dependency of the above).
 #
 # Usage:
@@ -13,8 +12,8 @@
 #   ./bootstrap.sh format         # `aztec-nargo fmt` across every package
 #   ./bootstrap.sh format --check # `aztec-nargo fmt --check` (CI mode, non-zero on diffs)
 #   ./bootstrap.sh test           # `aztec-nargo test` across every package (launches a TXE oracle resolver)
-#   ./bootstrap.sh clean          # `git clean -ffdx .` — nuke every untracked path under noir-projects/
-#   ./bootstrap.sh clean-lite     # remove every package's target/ dir (no git)
+#   ./bootstrap.sh clean          # remove every package's target/ dir
+#   ./bootstrap.sh clean-lite     # same scoped artifact cleanup
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -23,7 +22,6 @@ cd "$(dirname "$0")"
 source ../aztec-toolchain.sh
 
 require_cmd() { command -v "$1" >/dev/null 2>&1 || { echo "$1 not found on PATH; $2" >&2; exit 1; }; }
-require_jq() { require_cmd jq "install jq (apt install jq / brew install jq)"; }
 
 # Reads the `type = "..."` field from a package's Nargo.toml (empty if absent).
 pkg_type() { sed -n 's/^[[:space:]]*type[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$1/Nargo.toml" | head -1; }
@@ -36,11 +34,9 @@ build_contract() {
   (cd "$name" && aztec compile --silence-warnings --inliner-aggressiveness 0 --package "$name")
 }
 
-# Compiles a pure-noir circuit and writes its EVM-targeted Honk vk (ultra_honk + keccak Fiat-Shamir,
-# matching the Solidity verifier l1-contracts/bootstrap.sh generates from it).
+# Compiles a pure Noir circuit and writes its EVM-targeted Honk vk.
 build_circuit() {
   local name="$1"
-  require_jq
   require_aztec_toolchain aztec-nargo aztec-bb
   echo "==> aztec-nargo compile $name (circuit)"
   (
@@ -50,9 +46,12 @@ build_circuit() {
     json="target/$name.json"
     [ -f "$json" ] || { echo "Error: expected '$name/$json' was not produced." >&2; exit 1; }
 
+    local target=evm
+    case "$name" in
+      frozen_notes_refund|frozen_deposit_refund|unprocessed_deposit_refund) target=evm-no-zk ;;
+    esac
     mkdir -p target/keys
-    jq -r '.bytecode' "$json" | base64 -d | gunzip \
-      | aztec-bb write_vk --scheme ultra_honk --oracle_hash keccak -b - -o target/keys
+    aztec-bb write_vk -b "$json" -o target/keys -t "$target"
     echo "Wrote $name/target/keys/vk"
   )
 }
@@ -95,9 +94,8 @@ get_num_cpus() {
 build() {
   local num_cpus jobs
   require_parallel
-  # Preflight the whole build once: contracts need `aztec`, circuits need `aztec-nargo`, `aztec-bb` and jq. The
+  # Preflight the whole build once: contracts need `aztec`, circuits need `aztec-nargo` and `aztec-bb`. The
   # children below inherit AZTEC_TOOLCHAIN_CHECKED and skip the version call.
-  require_jq
   require_aztec_toolchain aztec-nargo aztec-bb
   num_cpus="$(get_num_cpus)"
   if [[ ! "$num_cpus" =~ ^[1-9][0-9]*$ ]]; then
@@ -176,11 +174,6 @@ clean_lite() {
   rm -rf ./*/target
 }
 
-clean() {
-  echo "==> git clean -ffdx . (untracked + ignored, scoped to noir-projects/)"
-  git clean -ffdx .
-}
-
 cmd="${1:-all}"
 shift || true
 
@@ -188,7 +181,7 @@ case "$cmd" in
   all|build)  build ;;
   format)     format "$@" ;;
   test)       test_cmd "$@" ;;
-  clean)      clean ;;
+  clean)      clean_lite ;;
   clean-lite) clean_lite ;;
   *)
     # Treat the args as package directory names — build each in turn.

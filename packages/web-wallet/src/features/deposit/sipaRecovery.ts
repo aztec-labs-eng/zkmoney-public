@@ -20,9 +20,17 @@ import {
   type PublicClient,
   type TransactionReceipt,
 } from "viem"
+import { REGISTRATION_SIGNED_FEES } from "@obsidion/core/constants"
 import {
+  claimRefusalReason,
+  composeWireNameHash,
   createRegistrationSipaDeriver,
+  deriveRegistrationAddress,
   depositAmounts,
+  fetchSignupResolverRecord,
+  legacyRegistrationSalt,
+  isNameBlocked,
+  isNameReserved,
   deriveStealthKey,
   isStuckSweep,
   deriveBootstrapKey,
@@ -56,6 +64,8 @@ import {
 } from "../../config/oxideTuple"
 import { registrationRefundConfirmed } from "../onboarding/registrationQuoteRecovery"
 import { healRegistrationDeposits } from "../onboarding/registrationDepositSeed"
+import { registrationAddressDeps } from "../onboarding/oxideOnboarding"
+import { loadWalletIdentity } from "../identity/walletIdentity"
 import { registrationRecordForSipa } from "../onboarding/webRegistration"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 import { isDesktopL1SubmitActive, submitViaDesktopBridge } from "../../platform/desktopBridge"
@@ -488,7 +498,6 @@ async function registrationCandidate(
     publicClient,
     env,
     tuple,
-    network: config.network,
   })
   const derivation = await derive({
     owner: pending.account as Address,
@@ -510,17 +519,22 @@ export async function readStrandedToken(
   token: Address,
 ): Promise<{ record: SIPADepositRecord; token: SipaFundingToken; balance: string }> {
   const config = getConfig()
-  // A registration address has a deposit record only once the registration seeds one.
-  const healed = await healRegistrationDeposits(config).then(
-    () => true,
-    () => false,
-  )
   const store = SIPADepositStore.get(new WebStorageAdapter())
-  await store.load()
-  const record = store.get(sipa)
+  const stored = async () => {
+    await store.load()
+    return store.get(sipa)
+  }
+  // A registration address has a deposit record only once one is seeded: from this device's
+  // registration record, else re-derived from the master secret and the wallet's name.
+  const ok = () => true
+  const failed = () => false
+  const healed = await healRegistrationDeposits(config).then(ok, failed)
+  const rederived =
+    (await stored()) !== null || (await rederiveRegistrationDeposit(config, sipa).then(ok, failed))
+  const record = await stored()
   if (!record) {
     throw new Error(
-      healed
+      healed && rederived
         ? "This wallet has no deposit at that address. Open the wallet that made the address and try there."
         : "Couldn't check this wallet's registration addresses. Check your connection and try again.",
     )
@@ -551,4 +565,51 @@ export async function readStrandedToken(
     token: { address: token, symbol, decimals: decimals ?? 18 },
     balance: decimals === undefined ? "All" : formatUnits(balance, decimals),
   }
+}
+
+/**
+ * Seeds this wallet's registration address when it is `sipa`, as on a device with no registration
+ * record. The address commits to its fee and salt, and a re-sign can quote another fee, so every
+ * fee ever signed is tried under the self-SIPA key's salt, then the resolver's earlier one, before
+ * a claim's. A refused claim means this name's address is not found here.
+ */
+async function rederiveRegistrationDeposit(config: WebWalletConfig, sipa: Address) {
+  const identity = loadWalletIdentity()
+  const secret = await getAuthService().getSecretKey()
+  if (!identity?.handle || !secret) return
+  const deps = await registrationAddressDeps(
+    identity.handle,
+    secret,
+    identity.address as Hex,
+    config,
+  )
+  const owner = await deps.l1.predictAccountAddress(
+    deps.env.factory,
+    deriveBootstrapKey(secret).address as Address,
+  )
+  const nameHash = composeWireNameHash(identity.handle, deps.env.ensDomain)
+  const seededAt = async (fees: readonly bigint[], salt?: Hex) => {
+    const derived = await Promise.all(
+      fees.map((fee) => deriveRegistrationAddress(deps, owner, nameHash, fee, salt)),
+    )
+    const found = derived.find((d) => d.derivation.sipaAddress.toLowerCase() === sipa.toLowerCase())
+    if (found) await deps.seedSipaDeposit(found.seed)
+    return found !== undefined
+  }
+  const fees = [...new Set([await deps.scheduleFee(), ...REGISTRATION_SIGNED_FEES])]
+  if (await seededAt(fees)) return
+  const { tuple, publicClient } = await oxideEnvFor(config)
+  const resolver = await fetchSignupResolverRecord(publicClient, tuple, config.network)
+  const legacySalt = legacyRegistrationSalt(secret, resolver.resolverPublicKey, nameHash)
+  if (await seededAt(fees, legacySalt)) return
+  const claim = await deps.accountService
+    .signDomain({ nameHash, userAddress: owner })
+    .catch((err: unknown) => {
+      if (isNameReserved(err) || isNameBlocked(err)) return undefined
+      if (claimRefusalReason(err) === "name_registered") return undefined
+      throw err
+    })
+  if (!claim?.terms) return
+  const quoted = [BigInt(claim.terms.fee)]
+  if (!(await seededAt(quoted))) await seededAt(quoted, legacySalt)
 }

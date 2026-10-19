@@ -14,6 +14,7 @@
 import { EthAddress } from "@aztec/aztec.js/addresses"
 import { formatUnits, type Address } from "viem"
 import {
+  decodePaylinkInline,
   exitPaylinkWithVoucher,
   nextOperationId,
   paylinkVoucherUses,
@@ -43,7 +44,7 @@ import { RAIL_VOUCHER } from "../onboarding/rails"
 import { fpcFundingCut } from "../fees/fpcFundingCut"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { owePaylinkClaim, reportPaylinkClaims } from "./paylinkClaimReport"
-import { assertPaylinkSwapSource, readPaylinkSource } from "./paylinkSource"
+import { assertPaylinkSwapSource, paylinkTuple, readPaylinkSource } from "./paylinkSource"
 import { linkIdentity } from "./linkIdentity"
 import { historicTeeSigner } from "../migration/historicTokenContext"
 import { assertWithinWithdrawalLimit } from "../limits/withdrawalLimit"
@@ -91,14 +92,26 @@ const VOUCHER_READ_TIMEOUT_MS = 10_000
 /**
  * Sponsored transactions this link's escrow still holds — how many cash-outs it can pay for. Zero
  * for a link created without a voucher, and for one whose voucher has been spent. Registering the
- * escrow in this PXE is part of the read, so it is slower than a plain simulation.
+ * escrow in this PXE is part of the read, so it is slower than a plain simulation. `tokenAddress`:
+ * the note's token as a read already found it, so the note is not read again for it.
  */
 export async function linkVoucherUses(
   deps: Pick<PaylinkExitDeps, "wallet" | "contractService">,
   fragment: string,
+  tokenAddress?: string,
 ): Promise<number> {
-  const { params, note: _note, tuple: _tuple, ...rest } = await voucherDeps(deps, fragment)
-  return withTimeout(paylinkVoucherUses(rest, params), VOUCHER_READ_TIMEOUT_MS)
+  const params = decodePaylinkInline(fragment)
+  const tuple = tokenAddress
+    ? await paylinkTuple(tokenAddress)
+    : (await readPaylinkSource(deps, fragment)).tuple
+  const { sponsor } = await claimSponsorRail(deps, RAIL_VOUCHER, { tuple })
+  return withTimeout(
+    paylinkVoucherUses(
+      { wallet: deps.wallet, contractService: deps.contractService, sponsor },
+      params,
+    ),
+    VOUCHER_READ_TIMEOUT_MS,
+  )
 }
 
 /** Stable recovery identity of a link's withdrawal record. */

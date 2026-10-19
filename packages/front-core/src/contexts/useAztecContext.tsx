@@ -53,6 +53,7 @@ interface AdoptWalletOptions extends CommonInitializePXEOptions {
   /** The adopted wallet brought its own; supplying another would silently go unused. */
   node?: never
   prover?: never
+  bbWasmPath?: never
   store?: never
   simulator?: never
   pendingTxStore?: never
@@ -65,6 +66,8 @@ interface BuildWalletOptions extends CommonInitializePXEOptions {
   /** The client this wallet talks to. Whoever owns it passes it in; this module never builds one. */
   node: AztecNode
   prover?: PrivateKernelProver
+  /** Where the PXE's own prover loads bb.js's wasm, when the caller serves it; ignored beside `prover`. */
+  bbWasmPath?: string
   store?: AztecAsyncKVStore
   simulator?: CircuitSimulator
   /**
@@ -208,7 +211,8 @@ export const AztecProvider = ({
               store: createLogger("pxe:store"),
               prover: createLogger("pxe:prover"),
             },
-            proverOrOptions: customProver,
+            proverOrOptions:
+              customProver ?? (opts.bbWasmPath ? { wasmPath: opts.bbWasmPath } : undefined),
             store: customStore,
             simulator: customSimulator,
           },

@@ -6,6 +6,7 @@
  */
 
 import { RelatedOriginPasskeyError, markPasskeyWritten } from "../policy/passkeyErrors.js"
+import type { PasskeyExtension } from "../policy/passkeyTelemetryVocabulary.js"
 import { type UserHandleProvenance, encodeUserHandle } from "./userHandle.js"
 import { isRpDomainSuffix } from "../policy/relyingParty.js"
 import { iosBelowFloor, parseUserAgent } from "../policy/userAgentInfo.js"
@@ -16,6 +17,7 @@ import {
   parseAuthenticatorDataFlags,
 } from "./authenticatorData.js"
 import { base64UrlToBytes } from "./bytes.js"
+import { nativeLockFor, printsNative } from "./nativeLock.js"
 
 /**
  * WebAuthn and Web Locks present at all — absent on old or locked-down browsers. The session store
@@ -194,17 +196,83 @@ export function onPasskeyRequest(listener: (active: boolean) => void): () => voi
   return () => listeners.delete(listener)
 }
 
+type CredentialCall = "get" | "create"
+
+/** The method's source text, or nothing where it cannot be read. */
+function credentialSource(call: CredentialCall): string | undefined {
+  try {
+    return Function.prototype.toString.call(navigator.credentials[call])
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * A script prints its JavaScript; a bound function or a Proxy prints as native without the name
+ * (Safari keeps a bound function's name, the one wrapper this misses).
+ */
+function scripted(call: CredentialCall, source: string): boolean {
+  return !printsNative(call, source)
+}
+
+/**
+ * The browser never puts `create` or `get` on the `navigator.credentials` instance: an own value
+ * there that is not the prototype's method is a script's, whatever it prints (Firefox's
+ * `exportFunction` prints as a named native). The lock's own copy, frozen in place or restored
+ * from a clean frame, is the exception: the record says so and the property has the shape only the
+ * lock leaves. Mirrors the lock's rule in nativeLock.ts, which cannot share code.
+ */
+function ownOverride(call: CredentialCall): boolean {
+  try {
+    const container = navigator.credentials
+    const own = Object.getOwnPropertyDescriptor(container, call)
+    if (!own || !("value" in own)) return false
+    let proto = Object.getPrototypeOf(container)
+    while (proto) {
+      const inherited = Object.getOwnPropertyDescriptor(proto, call)
+      if (inherited) {
+        if ("value" in inherited && inherited.value === own.value) return false
+        const lock = nativeLockFor(call)
+        return !(
+          (lock === "applied" || lock === "restored") &&
+          own.writable === false &&
+          own.configurable === false &&
+          printsNative(call, Function.prototype.toString.call(own.value))
+        )
+      }
+      proto = Object.getPrototypeOf(proto)
+    }
+    return false
+  } catch {
+    return false
+  }
+}
+
+/** Bitwarden's page script tests `fallbackRequested`; 1Password's reads the request's `hints`. */
+const BITWARDEN_MARKER = /\bfallbackRequested\b/
+const ONEPASSWORD_MARKER = /\bhints\b/
+
+/**
+ * Which extension's script wraps the page's passkey creation, read from the wrapper's source.
+ * Sign-up decides on `create`, and every measured extension wraps `get` the same way.
+ */
+export function passkeyExtensionFor(): PasskeyExtension {
+  const source = credentialSource("create")
+  if (source === undefined) return "none"
+  if (!scripted("create", source) && !ownOverride("create")) return "none"
+  if (BITWARDEN_MARKER.test(source)) return "bitwarden"
+  if (ONEPASSWORD_MARKER.test(source)) return "1password"
+  return "other"
+}
+
 /**
  * An extension (1Password, Bitwarden, …) answers WebAuthn inside the page when it has swapped
  * `navigator.credentials.get`, or `.create` for a creation, for its own script. Browser and OS
  * prompts leave both native.
  */
-export function extensionAnswersPasskeys(call: "get" | "create" = "get"): boolean {
-  try {
-    return !Function.prototype.toString.call(navigator.credentials[call]).includes("[native code]")
-  } catch {
-    return false
-  }
+export function extensionAnswersPasskeys(call: CredentialCall = "get"): boolean {
+  const source = credentialSource(call)
+  return source !== undefined && (scripted(call, source) || ownOverride(call))
 }
 
 function announce(slot: TabSlot, active: boolean): void {
@@ -623,6 +691,7 @@ function rpErrorFor(rpId: string, error: unknown): unknown {
   ) {
     return new RelatedOriginPasskeyError(error, {
       iosBelowFloor: iosBelowFloor(parseUserAgent({ userAgent: navigator.userAgent })),
+      bitwarden: describeError(error).message === BITWARDEN_RP_REFUSAL_MESSAGE,
     })
   }
   const { name, message } = describeError(error)

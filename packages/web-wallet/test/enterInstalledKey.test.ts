@@ -355,7 +355,10 @@ describe("a sign-in anchored only by the master key adopts the credential's real
 
     it("without the flag a local answer is admitted too, and anchored from the local slot", async () => {
       // The flag only corrects a mislabel; it no longer gates whether this Mac's own copy may answer.
-      const { created, wallet, recorded, createObsidionAccount } = await laptopSignIn("local", false)
+      const { created, wallet, recorded, createObsidionAccount } = await laptopSignIn(
+        "local",
+        false,
+      )
       const result = await signIn(wallet, masterKeyOnly(created.secretKey))
       expect(result).toMatchObject({ entered: false, reason: "unclaimed" })
       await committedTheAccount(created, createObsidionAccount)
@@ -399,6 +402,65 @@ describe("a sign-in anchored only by the master key adopts the credential's real
         const result = await signIn(wallet, [{ name: "campaign", probes: [absent] }])
         expect(result).toMatchObject({ entered: false, reason: "unknown", catalogIncomplete: true })
         expect(result).toHaveProperty("addresses")
+        committedNothing(createObsidionAccount, before)
+      })
+    })
+
+    describe("steered to the phone", () => {
+      const phoneSignIn = (wallet: unknown, tiers: AnchorTier[], hints?: object) =>
+        enterWithPasskey(wallet as never, config, undefined, {
+          contractService: {} as never,
+          gate: gateFor().gate,
+          tiers,
+          phone: true,
+          ...(hints ? { hints: hints as never } : {}),
+        })
+      const PHONE_HINTS = ["hybrid", "security-key"]
+
+      it("a held key never answers: the prompt runs, steered, and the phone's answer is committed", async () => {
+        const { ceremony, created, wallet, createObsidionAccount } = await laptopSignIn(
+          "cross-device",
+        )
+        await signIn(wallet, masterKeyOnly(created.secretKey))
+        expect(readCachedMsk()).toBeTruthy()
+        const asked = ceremony.assertRequests.length
+        createObsidionAccount.mockClear()
+        const result = await phoneSignIn(wallet, masterKeyOnly(created.secretKey))
+        expect(result).toMatchObject({ entered: false, reason: "unclaimed" })
+        expect(ceremony.assertRequests.length).toBeGreaterThan(asked)
+        expect(ceremony.assertRequests[asked]!.hints).toEqual(PHONE_HINTS)
+        expect(createObsidionAccount).toHaveBeenCalledWith(created.secretKey, expect.anything())
+      })
+
+      it("a pinned sign-in names the cross-device transports and the phone's hints", async () => {
+        const { ceremony, created, wallet, createObsidionAccount } = await laptopSignIn(
+          "cross-device",
+        )
+        const result = await phoneSignIn(wallet, masterKeyOnly(created.secretKey), {
+          credentialId: created.credentialId,
+          pubkeyHex: created.pubkey,
+        })
+        expect(result).toMatchObject({ entered: false, reason: "unclaimed" })
+        const request = ceremony.assertRequests.at(-1)!
+        expect(request.hints).toEqual(PHONE_HINTS)
+        expect(request.transports).toEqual(["hybrid", "usb", "nfc", "ble", "smart-card"])
+        await committedTheAccount(created, createObsidionAccount)
+      })
+
+      it("this Mac's diverged copy answering anyway commits nothing", async () => {
+        const { ceremony, created, wallet, createObsidionAccount } = await laptopSignIn(
+          "local",
+          false,
+        )
+        ceremony.creds.get(created.credentialId)!.secret = new Uint8Array(32).fill(7)
+        const before = held()
+        for (const hints of [
+          undefined,
+          { credentialId: created.credentialId, pubkeyHex: created.pubkey },
+        ]) {
+          const result = await phoneSignIn(wallet, masterKeyOnly(created.secretKey), hints)
+          expect(result).toMatchObject({ entered: false, reason: "unknown" })
+        }
         committedNothing(createObsidionAccount, before)
       })
     })

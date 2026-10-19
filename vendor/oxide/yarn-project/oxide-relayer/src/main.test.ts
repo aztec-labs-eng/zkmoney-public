@@ -1,8 +1,10 @@
+import { AztecAddress } from '@aztec/aztec.js/addresses';
 import { EthAddress } from '@aztec/foundation/eth-address';
 
 import { describe, expect, it } from '@jest/globals';
 
-import { assertSimulateV1Supported, selectPayoutTokens } from './main.js';
+import type { ResolvedManifestDeployment } from './config/deployment_env_manifest.js';
+import { assertNodeRollupVersion, assertSimulateV1Supported, recordBroadcaster, selectPayoutTokens } from './main.js';
 
 const READ_RPC_URL = 'https://eth-mainnet.example.com/v2/secret-api-key';
 
@@ -89,5 +91,41 @@ describe('selectPayoutTokens', () => {
     await expect(selectPayoutTokens(fakeClient([], decimalsOf), [dai, sUsds], { token: entryToken })).rejects.toThrow(
       `payout token ${sUsds.toString()} has 6 decimals`,
     );
+  });
+});
+
+describe('assertNodeRollupVersion', () => {
+  const portal = EthAddress.fromString('0x00000000000000000000000000000000000000a1');
+  const pinned = { label: 'v4', publicConfig: { portal, rollupVersion: 4n } } as ResolvedManifestDeployment;
+
+  it("passes when the node follows the pinned entry's rollup", () => {
+    expect(() => assertNodeRollupVersion(4n, pinned)).not.toThrow();
+  });
+
+  it('refuses to start on another rollup, naming both versions and the pinned entry', () => {
+    expect(() => assertNodeRollupVersion(5n, pinned)).toThrow(
+      `node reports rollup version 5, but the pinned entry v4:${portal.toString()} is on 4`,
+    );
+  });
+});
+
+describe('recordBroadcaster', () => {
+  const deployment = (portal: string, broadcaster: AztecAddress): ResolvedManifestDeployment =>
+    ({
+      label: portal,
+      publicConfig: { portal: EthAddress.fromString(portal), broadcaster },
+    }) as unknown as ResolvedManifestDeployment;
+  const a = '0x00000000000000000000000000000000000000aa';
+  const b = '0x00000000000000000000000000000000000000bb';
+  const c = '0x00000000000000000000000000000000000000cc';
+
+  it('reports every portal on a broadcaster once a second one is served, and nothing before', () => {
+    const served = new Map<string, string[]>();
+    const shared = AztecAddress.fromStringUnsafe('0x' + '01'.repeat(32));
+    expect(recordBroadcaster(served, deployment(a, shared))).toBeUndefined();
+    expect(
+      recordBroadcaster(served, deployment(b, AztecAddress.fromStringUnsafe('0x' + '02'.repeat(32)))),
+    ).toBeUndefined();
+    expect(recordBroadcaster(served, deployment(c, shared))).toEqual([a, c]);
   });
 });

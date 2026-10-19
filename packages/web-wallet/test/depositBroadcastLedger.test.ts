@@ -133,13 +133,17 @@ describe("deposit addresses on the broadcast ledger", () => {
     await executor.onLanded!(job)
     await executor.onLanded!(job)
     expect(readSipaPool(CACHE_KEY).map((e) => e.address)).toEqual([address(0)])
+    await expect(gw.depositAddress(wallet, {} as never, "alice")).resolves.toMatchObject({
+      address: address(0),
+      source: "pool",
+    })
   })
 
   it("hands the user a pool fill still being proven instead of deriving a second address", async () => {
     const gw = gateway()
     await refill(gw)
     const shown = await gw.depositAddress(wallet, {} as never, "alice")
-    expect(shown.address).toBe(address(0))
+    expect(shown).toMatchObject({ address: address(0), source: "filling" })
     expect(h.derived).toEqual([address(0)])
     expect(getBroadcastLedger().get(address(0))).toMatchObject({ kind: "deposit" })
 
@@ -156,6 +160,7 @@ describe("deposit addresses on the broadcast ledger", () => {
     const first = await gw.depositAddress(wallet, {} as never, "alice")
     const second = await gw.depositAddress(wallet, {} as never, "alice")
     expect(second.address).not.toBe(first.address)
+    expect(first.source).toBe("derived")
     // The first view never published it; the ledger still finishes it.
     expect(getBroadcastLedger().get(first.address)).toMatchObject({
       kind: "deposit",

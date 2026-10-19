@@ -1,4 +1,4 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useLocation } from "react-router-dom"
 import {
   type InAppUpFront,
@@ -13,6 +13,7 @@ import { useCopy } from "../../ui/hooks"
 import { hasConnectStash } from "../contacts/connectReceive"
 import { pageNameGrantToken } from "../onboarding/nameGrant"
 import { peekClaimStash } from "../paylink/claimStash"
+import { inAppCardShown, inAppCardTapped, type InAppCardContext } from "./inAppCardTelemetry"
 
 const REOPEN = "Open the link you were sent again, in your phone's browser."
 const REOPEN_AFTER_HINT = "Or open the link you were sent again, in your phone's browser."
@@ -45,17 +46,20 @@ export type EscapeRetry = { onClick: () => void; busy: boolean; testId: string }
 
 /**
  * The way out of an app's built-in browser, shown from the start beside the refusal, then the
- * refusal's retry: a pill once Open in browser is the primary action. `path` names the wallet page
- * to open there instead of this one. `mode` is the up-front card's (`InAppUpFront`).
+ * refusal's retry: a pill once a way out to the browser leads. `path` names the wallet page
+ * to open there instead of this one. `mode` is the up-front card's (`InAppUpFront`). `telemetry`
+ * counts the way out, once it renders, and its taps; without it nothing is counted.
  */
 export function OpenInBrowser({
   path,
   retry,
   mode = "leave",
+  telemetry,
 }: {
   path?: string
   retry?: EscapeRetry
   mode?: InAppUpFront
+  telemetry?: InAppCardContext
 }) {
   const { state } = useLocation()
   const way = wayOut(path, state)
@@ -64,8 +68,13 @@ export function OpenInBrowser({
   const [copyFailed, setCopyFailed] = useState(false)
   /** Bumped per copy: any copy that lands clears the failure, only the latest can report one. */
   const latestCopy = useRef(0)
+  const counted = telemetry && way.kind !== "none" ? telemetry : undefined
+  useEffect(() => {
+    if (counted) inAppCardShown(counted)
+  }, [counted?.when, counted?.screen])
 
   const copyLink = async (url: string) => {
+    if (counted) inAppCardTapped(counted, "copy_link")
     const mine = ++latestCopy.current
     setCopyFailed(false)
     const ok = await copy(url)
@@ -92,18 +101,12 @@ export function OpenInBrowser({
       {way.kind !== "none" && (
         <div className="ww-escape" data-testid="open-in-browser" data-escape={way.kind}>
           {way.kind === "link" && linkDropped ? (
-            // Where the app drops the link, Copy link leads and the app's own menu follows.
             <>
+              <p className="ww-escape__hint">{COPY.xMenuAlone}</p>
+              <p className="ww-escape__hint">{COPY.xCopy}</p>
               <p className="ww-escape__url">{way.url}</p>
-              <button
-                type="button"
-                className="zkm-btn-reset zkm-pressable zkm-primary-btn zkm-primary-btn--gradient ww-escape__open"
-                onClick={() => void copyLink(way.url)}
-              >
-                <span className="zkm-primary-btn__label">{copyLabel}</span>
-              </button>
+              {copyPill(way.url)}
               {status}
-              <p className="ww-escape__hint">{COPY.xMenu}</p>
             </>
           ) : way.kind === "link" ? (
             <>
@@ -111,6 +114,7 @@ export function OpenInBrowser({
                 className="zkm-pressable zkm-primary-btn zkm-primary-btn--gradient ww-escape__open"
                 data-testid="open-in-browser-link"
                 href={way.href}
+                onClick={() => counted && inAppCardTapped(counted, "open_link")}
               >
                 <span className="zkm-primary-btn__label">{COPY.open}</span>
               </a>
@@ -134,6 +138,7 @@ export function OpenInBrowser({
                 className="ww-invite__link"
                 data-testid="update-chrome-maybe"
                 href={PLAY_STORE_CHROME_URL}
+                onClick={() => counted && inAppCardTapped(counted, "update_link")}
               >
                 {UPDATE.maybeLink}
               </a>

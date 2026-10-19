@@ -10,6 +10,7 @@ const h = vi.hoisted(() => ({
   fetchTokenInformation: vi.fn(),
   rescan: vi.fn(async (_wallet: unknown, _tokens: unknown[]) => [] as unknown[]),
   savingsToken: vi.fn(async (): Promise<unknown> => undefined),
+  whenReady: vi.fn(async (_reader: string) => {}),
 }))
 
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
@@ -25,7 +26,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   }),
   useContractServiceContext: () => ({ contractService: {} }),
   getActiveNetworkId: () => NETWORK_ID,
-  bootPriority: { whenBalanceSettled: async () => {} },
+  bootPriority: { whenReady: h.whenReady },
   startRequestFulfillmentReconciler: () => () => {},
   createTagForwardResolver: () => ({}),
   createWalletSyncSource: () => ({}),
@@ -104,6 +105,20 @@ describe("TransferScannerMount", () => {
     await act(async () => resolveSavings(savings))
     await vi.waitFor(() => expect(h.rescan).toHaveBeenCalledTimes(2))
     expect(h.rescan.mock.calls[1][1]).toEqual([savings])
+  })
+
+  it("waits for the boot balance before either rescan, Savings token lookup included", async () => {
+    let release!: () => void
+    h.whenReady.mockReturnValueOnce(new Promise<void>((resolve) => (release = resolve)))
+    await act(async () => {
+      root.render(<TransferScannerMount />)
+    })
+    expect(h.whenReady).toHaveBeenCalledWith("withdrawalRescan")
+    expect(h.rescan).not.toHaveBeenCalled()
+    expect(h.savingsToken).not.toHaveBeenCalled()
+    await act(async () => release())
+    await vi.waitFor(() => expect(h.savingsToken).toHaveBeenCalledTimes(1))
+    expect(h.rescan).toHaveBeenCalledTimes(1)
   })
 
   it("tries the Savings scan again after its lookup fails, without touching Main's", async () => {

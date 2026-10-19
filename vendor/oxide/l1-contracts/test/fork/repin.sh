@@ -13,7 +13,7 @@ cd "$(dirname "$0")/../.."   # l1-contracts/
 
 : "${MAINNET_FORK_RPC_URL:?set MAINNET_FORK_RPC_URL to a mainnet archive endpoint that serves the pinned block}"
 
-FORK_BLOCK="$(grep -oP 'FORK_BLOCK\s*=\s*\K[0-9_]+' test/fork/MainnetForkFixture.sol | tr -d _)"
+FORK_BLOCK="$(sed -nE 's/.*FORK_BLOCK[[:space:]]*=[[:space:]]*([0-9_]+).*/\1/p' test/fork/MainnetForkFixture.sol | head -n 1 | tr -d _)"
 [ -n "$FORK_BLOCK" ] || { echo "could not read FORK_BLOCK from test/fork/MainnetForkFixture.sol" >&2; exit 1; }
 
 CACHE="${FOUNDRY_CACHE_DIR:-$HOME/.foundry/cache}/rpc/mainnet/$FORK_BLOCK"
@@ -23,7 +23,7 @@ echo "==> Clearing foundry fork cache for block $FORK_BLOCK"
 rm -f "$CACHE"
 
 echo "==> Live fork run to repopulate the cache (aztec-forge test test/fork/*)"
-./bootstrap.sh test --match-path 'test/fork/*'
+aztec-forge test --match-path 'test/fork/*'
 
 [ -f "$CACHE" ] || { echo "cache not written at $CACHE — did the live run fork?" >&2; exit 1; }
 

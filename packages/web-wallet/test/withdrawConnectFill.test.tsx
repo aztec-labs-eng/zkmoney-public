@@ -7,7 +7,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { getAddress } from "viem"
-import type { Contact } from "@obsidion/front-core"
+import { L1_PLACEHOLDER_NAME, type Contact } from "@obsidion/front-core"
 
 type SheetProps = { recipient: string; walletName?: string; onClose(): void; onDone(): void }
 
@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
   freshOffered: true,
   hook: vi.fn(),
   sheet: vi.fn(),
+  ens: {} as { name?: string; state?: string; address?: string },
 }))
 
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ l1ChainId: 11155111, l1RpcUrl: "" }) }))
@@ -28,6 +29,7 @@ vi.mock("../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => h.l1 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   ContactStorage: { get: () => ({ getEntries: async () => h.entries }) },
+  useEnsAddress: (text: string) => (text === h.ens.name ? h.ens : {}),
 }))
 vi.mock("../src/features/withdraw/useWithdrawals", () => ({
   useWithdrawals: () => ({ records: [] }),
@@ -125,7 +127,13 @@ describe("WithdrawScreen", () => {
     })
 
   beforeEach(() => {
-    Object.assign(h, { entries: [], verdict: { kind: "fresh" }, cleared: true, freshOffered: true })
+    Object.assign(h, {
+      entries: [],
+      verdict: { kind: "fresh" },
+      cleared: true,
+      freshOffered: true,
+      ens: {},
+    })
     Object.assign(h.l1, { account: null, walletName: null })
     vi.clearAllMocks()
     container = document.createElement("div")
@@ -264,6 +272,27 @@ describe("WithdrawScreen", () => {
     expect(rows().map((r) => r.querySelector("b")?.textContent)).toEqual(["Oldest"])
     await click(button("Edit Oldest"))
     expect(decodeURIComponent(location()!)).toBe(`/contacts/l1:manual:${OLDEST.toLowerCase()}`)
+  })
+
+  it("lists only the wallet an ENS name resolves to, and names the withdrawal after it", async () => {
+    h.ens = { name: "alice.fkey.id", state: "found", address: TYPED }
+    h.entries = [wallet("alice.fkey.id", OLDEST), wallet(L1_PLACEHOLDER_NAME, TYPED)]
+    await render()
+    await type(field(), "alice.fkey.id")
+    expect(rows()).toHaveLength(1)
+    await click(rows()[0])
+    await click(button("Continue without privacy"))
+    expect(sheet()).toMatchObject({ recipient: TYPED, walletName: "alice.fkey.id" })
+  })
+
+  it("searches saved wallets as usual when dotted text is not a name to resolve", async () => {
+    h.ens = { name: "ether.fi Cash", state: "invalid" }
+    h.entries = [wallet("ether.fi Cash", TYPED)]
+    await render()
+    await type(field(), "ether.fi Cash")
+    await click(rows()[0])
+    await click(button("Continue without privacy"))
+    expect(sheet()).toMatchObject({ recipient: TYPED, walletName: "ether.fi Cash" })
   })
 
   it("marks a pressed wallet while the screener holds it, and leaves when it clears", async () => {

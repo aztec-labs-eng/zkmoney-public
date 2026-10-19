@@ -1,12 +1,14 @@
 import type { ReactNode } from "react"
 import { IN_APP_UP_FRONT_COPY as COPY, type InAppUpFront } from "@obsidion/passkey-web"
 import { showReportableError } from "../../errors/errorModal"
+import type { InAppCardScreen } from "./inAppCardTelemetry"
 import { OpenInBrowser } from "./OpenInBrowser"
 
 /**
  * The way out of an app's built-in browser, shown in place of the passkey button before any
  * request. Nothing has failed, so there is no retry, and no way to try here. The report carries the
- * user agent, the one thing that can show a wrongly matched browser.
+ * user agent, the one thing that can show a wrongly matched browser. `reportContext` is also the
+ * screen the card's telemetry names.
  */
 export function InAppBrowserNotice({
   mode,
@@ -16,14 +18,14 @@ export function InAppBrowserNotice({
 }: {
   mode: InAppUpFront
   exits?: ReactNode
-  reportContext: string
+  reportContext: InAppCardScreen
   testId?: string
 }) {
   return (
     <div className="ww-invite-spinner" data-testid={testId}>
       <h2 className="ww-passkey-refusal__title">{COPY.title}</h2>
       <p className="ww-paylink-summary__caption">{COPY.line}</p>
-      <OpenInBrowser mode={mode} />
+      <OpenInBrowser mode={mode} telemetry={{ when: "up_front", screen: reportContext }} />
       {exits}
       <button
         type="button"

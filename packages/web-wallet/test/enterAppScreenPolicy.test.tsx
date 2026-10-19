@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { namehash } from "viem/ens"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { nativeCreate, onePasswordCreate, otherCreate } from "./support/passkeyExtensionStubs"
 import { setActiveCredentialId } from "../src/platform/storage/activeStorage"
 import { walletStorage } from "../src/platform/storage/walletStorage"
 import {
@@ -112,10 +113,12 @@ vi.mock("../src/features/onboarding/webRegistration", () => ({
   getPendingStore: () => ({ list: () => [] }),
 }))
 vi.mock("../src/features/paylink/claimStash", () => ({ peekClaimStash: () => h.claimStash }))
+vi.mock("../src/features/paylink/linkIdentity", () => ({ linkIdentity: (f: string) => `id:${f}` }))
 vi.mock("../src/features/paylink/sponsoredPaylink", () => ({ decodeLink: vi.fn() }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: h.showReportableError }))
 vi.mock("../src/lib/analytics", () => ({
   fireEvent: h.fireEvent,
+  fireOnboardingEvent: vi.fn(),
   failureCode: (e: unknown) => (e instanceof Error ? e.name : "err"),
 }))
 vi.mock("../src/features/onboarding/InvitationChrome", () => ({
@@ -405,10 +408,19 @@ describe("EnterAppScreen refusals", () => {
     })
 
     it.each([
-      ["names the extension's pop-up where a script answers", { get: async () => null }, "use"],
+      [
+        "names the extension's pop-up where 1Password's script answers",
+        { create: onePasswordCreate() },
+        "use",
+      ],
       [
         "says to install the extension where the browser's own prompt answers",
-        { get: Promise.resolve.bind(Promise) },
+        { create: nativeCreate },
+        "install",
+      ],
+      [
+        "says to install the extension where another manager's script answers",
+        { create: otherCreate() },
         "install",
       ],
     ] as const)("on Windows, where this computer answered, %s", async (_n, calls, wording) => {
@@ -494,9 +506,57 @@ describe("EnterAppScreen refusals", () => {
     expect(h.saveWalletIdentity).not.toHaveBeenCalled()
     expect(leftForSignInStart()).toBe(false)
 
-    await act(async () => byTestId("enter-cancel")!.click())
+    await act(async () => byTestId("enter-continue")!.click())
     await flush()
     expect(h.navigate).toHaveBeenCalledWith("/claim?resume=1", { replace: true })
+  })
+
+  it("a nameless account that is a stashed link's unfinished signup goes back to that link", async () => {
+    const { saveTicketSignupAccount } = await import("../src/features/paylink/ticketSignupAccount")
+    h.claimStash = "paylink-frag"
+    saveTicketSignupAccount("localhost", "id:paylink-frag", {
+      credentialId: "cred",
+      l2Address: L2,
+      tag: "river",
+    })
+    h.enterWithPasskey.mockResolvedValueOnce(nameless())
+    await render()
+    expect(h.navigate).toHaveBeenCalledWith("/link#paylink-frag", { replace: true })
+    expect(h.reservedNameHashes).not.toHaveBeenCalled()
+    expect(refused()).toBeNull()
+    localStorage.clear()
+  })
+
+  it("a stashed link's signup for another account leaves the nameless card", async () => {
+    const { saveTicketSignupAccount } = await import("../src/features/paylink/ticketSignupAccount")
+    h.claimStash = "paylink-frag"
+    saveTicketSignupAccount("localhost", "id:paylink-frag", {
+      credentialId: "cred",
+      l2Address: `0x${"bd".repeat(32)}`,
+      tag: "river",
+    })
+    h.enterWithPasskey.mockResolvedValueOnce(nameless())
+    await render()
+    expect(h.navigate).not.toHaveBeenCalledWith("/link#paylink-frag", { replace: true })
+    expect(refused()?.dataset.reason).toBe("GrantedRegistrationError")
+    localStorage.clear()
+  })
+
+  it("a nameless account's card offers another passkey, which opens the chooser again", async () => {
+    h.enterWithPasskey.mockResolvedValueOnce(nameless())
+    await render()
+    expect(refused()?.dataset.reason).toBe("GrantedRegistrationError")
+    expect(byTestId("enter-cancel")).not.toBeNull()
+    h.enterWithPasskey.mockResolvedValueOnce({
+      entered: true,
+      handle: "alice",
+      address: L2,
+      account: {},
+    })
+    await act(async () => byTestId("enter-show-passkeys")!.click())
+    await flush()
+    expect(h.enterWithPasskey).toHaveBeenCalledTimes(2)
+    expect(refused()).toBeNull()
   })
 
   it("an arrival read that could not answer shows the screen, unreported, and keeps the user off /claim", async () => {
@@ -730,6 +790,148 @@ describe("EnterAppScreen miss diagnosis", () => {
     await click("enter-show-passkeys")
     expect(h.enterWithPasskey).toHaveBeenCalledTimes(3)
     expect(h.enterWithPasskey.mock.calls.at(-1)![3]).toMatchObject({ chooser: true })
+  })
+
+  describe("on a Mac", () => {
+    const MAC_CHROME =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) " +
+      "Chrome/155.0.0.0 Safari/537.36"
+    let ua: { mockRestore: () => void } | undefined
+    beforeEach(() => {
+      ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(MAC_CHROME)
+    })
+    afterEach(() => ua?.mockRestore())
+
+    const PLATFORM = { credentialId: "id", attachment: "platform" }
+    const phoneOf = (call: number) =>
+      (h.enterWithPasskey.mock.calls[call]![3] as { phone?: boolean }).phone
+    const wrongKeyEntry = async (observed: object = PLATFORM) => {
+      const { StoredAddressMismatchError } = await import("@obsidion/front-core")
+      h.enterWithPasskey.mockImplementationOnce(
+        async (_w: unknown, _c: unknown, _h: unknown, options: EnterOptions) => {
+          await options.gate()
+          throw Object.assign(new StoredAddressMismatchError(), { verdict: "wrong-key", observed })
+        },
+      )
+    }
+
+    it("a record-anchored wrong key leads with the phone; Show passkeys stays beside it", async () => {
+      needsCeremony()
+      await render()
+      await wrongKeyEntry()
+      await click("sign-in-show-passkeys")
+      expect(container.textContent).toContain("until you sign out or this browser clears its data")
+      expect(byTestId("enter-retry")).toBeNull()
+      expect(byTestId("enter-show-passkeys")).not.toBeNull()
+      h.enterWithPasskey.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
+      await click("enter-phone")
+      expect(phoneOf(2)).toBe(true)
+      // The phone offered nothing: its card keeps a retry that stays on the phone.
+      expect(refused()?.dataset.reason).toBe("PasskeyNotOfferedError")
+      h.enterWithPasskey.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
+      await act(async () => retry().click())
+      await flush()
+      expect(phoneOf(3)).toBe(true)
+      expect(byTestId("enter-retry")).not.toBeNull()
+    })
+
+    it("an answer from another device keeps today's card", async () => {
+      needsCeremony()
+      await render()
+      await wrongKeyEntry({ credentialId: "id", attachment: "cross-platform" })
+      await click("sign-in-show-passkeys")
+      expect(byTestId("enter-phone")).toBeNull()
+      expect(byTestId("enter-show-passkeys")).not.toBeNull()
+    })
+
+    it("no wallet for this computer's answer leads with the phone; another device's does not", async () => {
+      needsCeremony()
+      await render()
+      gatedEntry({ entered: false, reason: "unknown", observed: PLATFORM })
+      await click("sign-in-show-passkeys")
+      expect(refused()?.dataset.reason).toBe("NoWalletForPasskeyError")
+      expect(byTestId("enter-phone")).not.toBeNull()
+      expect(byTestId("enter-show-passkeys")).not.toBeNull()
+      expect(byTestId("passkey-mac-update")).not.toBeNull()
+
+      gatedEntry({ entered: false, reason: "unknown", observed: PLATFORM })
+      await click("enter-phone")
+      expect(phoneOf(2)).toBe(true)
+      expect(byTestId("enter-phone")).not.toBeNull()
+
+      gatedEntry({
+        entered: false,
+        reason: "unknown",
+        observed: { credentialId: "id", attachment: "cross-platform" },
+      })
+      await click("enter-show-passkeys")
+      expect(phoneOf(3)).toBeUndefined()
+      expect(refused()?.dataset.reason).toBe("NoWalletForPasskeyError")
+      expect(byTestId("enter-phone")).toBeNull()
+      expect(byTestId("passkey-mac-update")).toBeNull()
+    })
+
+    it("a record from another manager keeps today's no-wallet card", async () => {
+      needsCeremony()
+      await render()
+      gatedEntry({
+        entered: false,
+        reason: "unknown",
+        observed: { ...PLATFORM, recordAaguid: "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4" },
+      })
+      await click("sign-in-show-passkeys")
+      expect(refused()?.dataset.reason).toBe("NoWalletForPasskeyError")
+      expect(byTestId("enter-phone")).toBeNull()
+    })
+
+    it("on Firefox, whose phone answer names no device, the phone keeps leading until Show passkeys", async () => {
+      ua?.mockRestore()
+      ua = vi
+        .spyOn(navigator, "userAgent", "get")
+        .mockReturnValue(
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:155.0) Gecko/20100101 Firefox/155.0",
+        )
+      needsCeremony()
+      await render()
+      gatedEntry({ entered: false, reason: "unknown", observed: PLATFORM })
+      await click("sign-in-show-passkeys")
+      expect(byTestId("enter-phone")).not.toBeNull()
+
+      // A phone-steered answer on this browser names no device class.
+      gatedEntry({ entered: false, reason: "unknown", observed: { credentialId: "id" } })
+      await click("enter-phone")
+      expect(phoneOf(2)).toBe(true)
+      expect(refused()?.dataset.reason).toBe("NoWalletForPasskeyError")
+      expect(byTestId("enter-phone")).not.toBeNull()
+
+      gatedEntry({ entered: false, reason: "unknown", observed: { credentialId: "id" } })
+      await click("enter-phone")
+      expect(phoneOf(3)).toBe(true)
+
+      gatedEntry({ entered: false, reason: "unknown", observed: PLATFORM })
+      await click("enter-show-passkeys")
+      expect(phoneOf(4)).toBeUndefined()
+    })
+  })
+
+  it("off a Mac the wrong-key card keeps Show passkeys and its copy", async () => {
+    const { StoredAddressMismatchError } = await import("@obsidion/front-core")
+    const { MISMATCH_COPY } = await policyErrors()
+    needsCeremony()
+    await render()
+    h.enterWithPasskey.mockImplementationOnce(
+      async (_w: unknown, _c: unknown, _h: unknown, options: EnterOptions) => {
+        await options.gate()
+        throw Object.assign(new StoredAddressMismatchError(), {
+          verdict: "wrong-key",
+          observed: { credentialId: "id", attachment: "platform" },
+        })
+      },
+    )
+    await click("sign-in-show-passkeys")
+    expect(byTestId("enter-phone")).toBeNull()
+    expect(byTestId("enter-show-passkeys")).not.toBeNull()
+    expect(container.textContent).toContain(MISMATCH_COPY["wrong-key"].message!)
   })
 
   it("a not-reproduced record mismatch keeps its retry", async () => {

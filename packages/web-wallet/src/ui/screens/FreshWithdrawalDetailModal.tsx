@@ -18,7 +18,8 @@ import {
 import { GradientText, Icon } from "@obsidion/web-ds"
 import ethIcon from "../../assets/deposit/ethereum.webp"
 import { l1AddressUrl, whenLabel } from "../detailRows"
-import { shortAddr, tokenAmount, usdFigure } from "../format"
+import { tokenAmount, usdFigure } from "../format"
+import { L1AddressLabel } from "../L1AddressLabel"
 import { Modal } from "../Modal"
 import { DepositFact } from "./DepositFact"
 import { DepositStatusValue } from "./DepositStatusValue"
@@ -81,10 +82,10 @@ export function FreshWithdrawalDetailModal({
             {head.recipientAlias && `${head.recipientAlias} · `}
             {recipientUrl ? (
               <a href={recipientUrl} target="_blank" rel="noreferrer">
-                {shortAddr(head.recipient)}
+                <L1AddressLabel address={head.recipient} />
               </a>
             ) : (
-              shortAddr(head.recipient)
+              <L1AddressLabel address={head.recipient} />
             )}
           </b>
         </DepositFact>

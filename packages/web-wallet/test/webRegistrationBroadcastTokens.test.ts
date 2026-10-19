@@ -21,11 +21,18 @@ const TUPLE = {
   token: MANIFEST_TOKEN,
 }
 
-const { assertSubsidySweepsSipa, buildSipaSweepBroadcasts, sendTx, readSipaDeployed } = vi.hoisted(() => ({
+const {
+  assertSubsidySweepsSipa,
+  buildSipaSweepBroadcasts,
+  sendTx,
+  readSipaDeployed,
+  getWebBroadcasterArtifact,
+} = vi.hoisted(() => ({
   assertSubsidySweepsSipa: vi.fn(),
   buildSipaSweepBroadcasts: vi.fn(),
   sendTx: vi.fn(),
   readSipaDeployed: vi.fn(),
+  getWebBroadcasterArtifact: vi.fn(async (..._args: unknown[]) => ({})),
 }))
 
 vi.mock("../src/features/deposit/sipaSweep", () => ({ readSipaDeployed }))
@@ -51,7 +58,7 @@ vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   l1PublicClient: () => ({}),
 }))
 vi.mock("../src/config/classArtifacts", () => ({
-  getWebBroadcasterArtifact: async () => ({}),
+  getWebBroadcasterArtifact,
   getWebOxideToken: async () => ({}),
 }))
 vi.mock("../src/features/onboarding/claimSponsorship", () => ({
@@ -132,10 +139,45 @@ describe("createWebRegistrationBroadcaster funding tokens", () => {
     expect(params.intent).toBe(OxideSipaIntent.Registration)
   })
 
+  it("readies the PXE while the L1 reads run, reading the broadcaster's instance once", async () => {
+    let deployed: (value: boolean) => void = () => {}
+    readSipaDeployed.mockReturnValue(new Promise<boolean>((r) => (deployed = r)))
+    const instance = { currentContractClassId: { toString: () => "0xclass" } }
+    const getContract = vi.fn(async () => instance)
+    const broadcast = createWebRegistrationBroadcaster({
+      wallet: {
+        pxe: { registerContractClass: async () => {}, registerContract: async () => {} },
+        node: { getContract },
+        sendTx,
+      } as never,
+      account: { getAddress: () => AztecAddress.fromStringUnsafe(`0x${"07".repeat(32)}`) } as never,
+      contractService: {} as never,
+      config: { network: Network.SANDBOX, l1ChainId: 31337 } as never,
+      handle: "alice",
+    })
+    const sent = broadcast(PAYLOAD as never)
+    await vi.waitFor(() => expect(getContract).toHaveBeenCalledOnce())
+    expect(sendTx).not.toHaveBeenCalled()
+    deployed(true)
+    await sent
+    expect(getContract).toHaveBeenCalledOnce()
+    // The artifact lookup takes the instance already read rather than asking the node again.
+    expect(getWebBroadcasterArtifact).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      instance,
+    )
+  })
+
   it("does not publish when the subsidy would deploy another SIPA", async () => {
     assertSubsidySweepsSipa.mockRejectedValue(new Error("would deploy"))
+    // The PXE is readied beside the L1 checks, so the wallet answers that half.
     const broadcast = createWebRegistrationBroadcaster({
-      wallet: {} as never,
+      wallet: {
+        pxe: { registerContractClass: async () => {}, registerContract: async () => {} },
+        node: { getContract: async () => ({}) },
+        sendTx,
+      } as never,
       account: { getAddress: () => AztecAddress.fromStringUnsafe(`0x${"07".repeat(32)}`) } as never,
       contractService: {} as never,
       config: { network: Network.SANDBOX, l1ChainId: 31337 } as never,

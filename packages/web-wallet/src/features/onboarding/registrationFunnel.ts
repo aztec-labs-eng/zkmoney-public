@@ -19,7 +19,7 @@ export type RegistrationRoute = (typeof REGISTRATION_ROUTES)[number]
 const memory = new Set<string>()
 
 /** True exactly once per key; storage failure degrades to a page-lifetime latch. */
-function latch(key: string): boolean {
+export function latch(key: string): boolean {
   if (memory.has(key)) return false
   memory.add(key)
   try {
@@ -33,7 +33,7 @@ function latch(key: string): boolean {
   return true
 }
 
-function lap(ms: number): number {
+export function lap(ms: number): number {
   return Math.max(0, Math.round(ms))
 }
 
@@ -92,4 +92,10 @@ export function reportRegistrationDepositFunded(sipaAddress: string, sinceStartM
 export function reportRegistrationDepositSwept(account: string, sinceFundedMs: number): void {
   if (!latch(`swept:${account}`)) return
   fireOnboardingEvent("registration_deposit_swept", { duration_ms: lap(sinceFundedMs) })
+}
+
+/** The signed quote ran out with the deposit still owed (pending step or Home). */
+export function reportRegistrationLapsed(account: string, phase: string): void {
+  if (!latch(`lapsed:${account}`)) return
+  fireOnboardingEvent("registration_lapsed", { phase })
 }

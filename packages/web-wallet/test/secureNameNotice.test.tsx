@@ -25,6 +25,7 @@ import {
 
 const h = vi.hoisted(() => ({
   navigate: vi.fn(),
+  fire: vi.fn(),
   config: { network: "testnet", l1Chain: { name: "Sepolia" }, rpId: "localhost" },
   amounts: { min: 0n, fee: 0n },
   /** How many times the controller's schedule was actually read. */
@@ -45,6 +46,10 @@ vi.mock("../src/features/deposit/sipaProcessing", async (importOriginal) => ({
   sipaProcessingObserver: () => h.observer,
 }))
 
+vi.mock("../src/lib/analytics", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/analytics")>()),
+  fireOnboardingEvent: h.fire,
+}))
 vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => h.navigate,
@@ -105,6 +110,11 @@ vi.mock("../src/features/onboarding/registrationTerms", async (importOriginal) =
   useSweepDeductions: () => h.deductions,
   useDepositSkim: () => h.sweepFee,
 }))
+// Fake fragments never decode; one named for an email link is one.
+vi.mock("../src/features/paylink/sponsoredPaylink", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/paylink/sponsoredPaylink")>()),
+  decodeLink: (fragment: string) => ({ flavor: fragment.startsWith("email") ? "email" : "direct" }),
+}))
 vi.mock("../src/features/onboarding/registrationFunding", () => ({
   useFundingTransfer: () => undefined,
 }))
@@ -142,7 +152,9 @@ const { REGISTRATIONS_PAUSED_NOTICE } = await import(
 )
 const { stashClaimLink, stashTicketSignup } = await import("../src/features/paylink/claimStash")
 const { takeClaimPromptRequest } = await import("../src/features/paylink/claimPrompt")
-const { startClaim, endClaim } = await import("../src/features/paylink/runningClaims")
+const { startClaim, endClaim, autoClaimGaveUp, holdAutoClaim, resetRunningClaims } = await import(
+  "../src/features/paylink/runningClaims"
+)
 const { ActivationHome } = await import("../src/features/onboarding/ActivationHome")
 const { rememberRegistrationRoute } = await import("../src/features/onboarding/registrationFunnel")
 const { savePastUserVerified, clearPastUserVerified } = await import(
@@ -634,6 +646,13 @@ describe("SecureNameNoticeCard — a quote past its deadline", () => {
       await getPendingStore().upsert(ACCOUNT, {}, record())
     })
     await render()
+    // One lapse per registration, however often Home shows it.
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    await render()
+    expect(h.fire.mock.calls.filter(([name]) => name === "registration_lapsed")).toEqual([
+      ["registration_lapsed", { phase: record().phase }],
+    ])
     // The deadline is the claim signature's, never the 7-day hold, so nothing here says the tag
     // was given up.
     expect(container.textContent).not.toContain("free again")
@@ -915,6 +934,7 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
 
   beforeEach(() => {
     sessionStorage.clear()
+    resetRunningClaims()
   })
 
   it("never asks for a deposit: the link's claim funds the name", async () => {
@@ -930,7 +950,7 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
     await render()
     await settleReads()
     expect(state()).toBe("ready")
-    expect(container.textContent).toContain("Claim your payment")
+    expect(container.textContent).toContain("Claiming @taga")
     expect(notice("deposit-ask")).toBeUndefined()
 
     // The link reopened on a tab that lost its marker is the same link.
@@ -957,45 +977,92 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
     expect(container.textContent).toContain("Nothing to send")
   })
 
-  it("reads as claiming while this page claims the link, and asks for the passkey", async () => {
+  it("reads as claiming while Home's own claim is due or running, and asks for the tap only after", async () => {
     await pendingName()
     ticketTerms()
     stash()
     await render()
     await settleReads()
+    // Home claims a ready direct link by itself: the hero reports that, not a button to press.
     expect(state()).toBe("ready")
-    expect(container.textContent).toContain("Claim your payment")
+    expect(container.textContent).toContain("Claiming @taga")
+    expect(container.textContent).toContain("Claiming your payment and setting up your account.")
+    expect(container.textContent).not.toContain("Claim your payment")
 
     await act(async () => startClaim("paylink-frag"))
-    expect(container.textContent).toContain("Claiming @taga")
-    expect(container.textContent).toContain("Approve with your passkey")
-    expect(container.textContent).not.toContain("Claim your payment")
+    expect(container.textContent).toContain("Claiming your payment and setting up your account.")
 
     // The burn's record lands before the batch signs: still the page's claim, not a sent one.
     await act(async () => {
       await getPendingStore().upsert(ACCOUNT, { fundedAt: Date.now() })
     })
     expect(state()).toBe("submitted")
-    expect(container.textContent).toContain("Approve with your passkey")
+    expect(container.textContent).toContain("Claiming your payment and setting up your account.")
 
     await act(async () => endClaim("paylink-frag"))
     expect(container.textContent).toContain("Nothing to send")
-    expect(container.textContent).not.toContain("Approve with your passkey")
   })
 
-  it("an address still publishing reads as setting up, not as unpublished", async () => {
+  it("says what Home's own claim waits for before it starts, then reads as claiming", async () => {
+    await pendingName()
+    ticketTerms()
+    stash()
+    await render()
+    await settleReads()
+    await act(async () => holdAutoClaim("paylink-frag", { countdown: "Ready to claim in 0:49" }))
+    expect(container.textContent).toContain("Claiming @taga shortly")
+    expect(container.textContent).toContain(
+      "Ready to claim in 0:49. New links wait a moment so the sender can cancel a mistake.",
+    )
+    await act(async () => holdAutoClaim("paylink-frag", "preparing"))
+    expect(container.textContent).toContain("Getting your wallet ready to claim your payment.")
+
+    await act(async () => startClaim("paylink-frag"))
+    expect(container.textContent).not.toContain("shortly")
+    expect(container.textContent).toContain("Claiming your payment and setting up your account.")
+  })
+
+  it("asks for the claim once Home's own try is over without one, or for an email link", async () => {
+    await pendingName()
+    ticketTerms()
+    stash()
+    await render()
+    await settleReads()
+    await act(async () => autoClaimGaveUp("paylink-frag"))
+    expect(state()).toBe("ready")
+    expect(container.textContent).toContain("Claim your payment")
+    expect(container.textContent).toContain("Claim it to finish")
+    expect(container.textContent).not.toContain("Claiming @taga")
+    // A claim started from the review reads as claiming again.
+    await act(async () => startClaim("paylink-frag"))
+    expect(container.textContent).toContain("Claiming @taga")
+    await act(async () => endClaim("paylink-frag"))
+
+    // An email link's sign-in needs the tap: Home never claims it alone.
+    resetRunningClaims()
+    sessionStorage.clear()
+    stashTicketSignup(ticketSignupStash({ fragment: "email-frag", amount: (3n * ONE).toString() }))
+    ticketTerms({ paylinkId: "id:email-frag" })
+    await render()
+    await settleReads()
+    expect(state()).toBe("ready")
+    expect(container.textContent).toContain("Claim your payment")
+  })
+
+  it("an address not yet published reads as claiming: the claim publishes it", async () => {
     await pendingName({ broadcast: false })
     ticketTerms()
     stash()
     await render()
     await settleReads()
-    expect(state()).toBe("unpublished")
-    expect(container.textContent).toContain("Setting up @taga")
-    expect(container.textContent).toContain("Publishing your deposit address")
+    expect(state()).toBe("ready")
+    expect(container.textContent).toContain("Claiming @taga")
+    expect(container.textContent).not.toContain("Setting up @taga")
+    expect(container.textContent).not.toContain("Publishing your deposit address")
     expect(container.textContent).not.toContain("was not published")
   })
 
-  it("keeps a blocked, lapsed or unpublished binding a ticket, and says what to do", async () => {
+  it("keeps a blocked or lapsed binding a ticket, and says what to do", async () => {
     await pendingName()
     ticketTerms({ paylinkBlocked: true })
     stash()
@@ -1015,15 +1082,15 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
     expect(state()).toBe("renew")
     expect(container.textContent).toContain("Refresh your reservation")
 
-    // Nothing re-sends an escalated record's address: the way back is the pending step.
+    // An escalated unpublished record is no dead end: its claim publishes the address.
     ticketTerms()
     await act(async () => {
       await getPendingStore().upsert(ACCOUNT, { broadcast: false, retries: 3 })
     })
     await render()
     await settleReads()
-    expect(state()).toBe("unpublished")
-    expect(container.textContent).toContain("was not published")
+    expect(state()).toBe("ready")
+    expect(container.textContent).not.toContain("was not published")
   })
 
   it("opens the link's review when the link is on this tab, else the pending step", async () => {

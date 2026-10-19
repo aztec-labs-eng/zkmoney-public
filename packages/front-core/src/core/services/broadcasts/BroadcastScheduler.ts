@@ -133,7 +133,7 @@ export class BroadcastScheduler {
     const { ledger } = this.deps
     await ledger.load()
     const scope = this.deps.scope()
-    const jobs = ledger.list().filter((job) => job.scope === scope)
+    const jobs = ledger.list().filter((job) => job.scope === scope && !ledger.isHeld(job.address))
     // Steps run one at a time, so a proving job with a hash is one whose sent write failed.
     const sent = jobs.find((job) => job.state === "sent" || (job.state === "proving" && job.txHash))
     if (sent) return this.decide(sent)

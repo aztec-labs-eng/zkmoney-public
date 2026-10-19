@@ -118,9 +118,9 @@ export const OPERATION_COPY: Readonly<Record<OperationFlow, FlowCopy>> = {
     ...failures(false),
   },
   "migration": {
-    live: "Moving",
-    failed: "Migration failed",
-    busy: "Waiting for your funds to move",
+    live: "Upgrading",
+    failed: "Upgrade failed",
+    busy: "Waiting for your upgrade",
     icon: "arrow.up.right",
     outcome: "record",
     ...failures(false),

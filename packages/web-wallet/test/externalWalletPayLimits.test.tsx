@@ -8,6 +8,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { parseUnits } from "viem"
 import type { RequestInlinePacket } from "@obsidion/front-core"
+import { shortL1Addr } from "../src/ui/format"
 import type { LinkDeployment } from "../src/features/requests/accountlessRequest"
 
 const SIPA = `0x${"aa".repeat(20)}`
@@ -216,7 +217,7 @@ describe("ExternalWalletPayModal limits", () => {
   it("holds copy and scan for a request over the limit, and keeps its address and amount", async () => {
     await render(packet("2500"))
     expect(addressButton()?.disabled).toBe(true)
-    expect(addressButton()?.textContent).toContain(SIPA.slice(0, 6))
+    expect(addressButton()?.textContent).toContain(shortL1Addr(SIPA))
     expect(buttonNamed("Show")?.disabled).toBe(true)
     expect(buttonNamed("Copy")?.disabled).toBe(true)
     const notice = document.querySelector("[data-testid='request-over-limit']")?.textContent ?? ""

@@ -66,6 +66,7 @@ export interface NotificationRoute {
 export function notificationRoute(entry: AppNotificationEntry): NotificationRoute | null {
   const t = entry.target as {
     type: string
+    run?: string
     txHash?: string
     bridgeKind?: string
     sourceId?: string
@@ -74,7 +75,7 @@ export function notificationRoute(entry: AppNotificationEntry): NotificationRout
   if (t.type === "contact.added") {
     return t.contactId ? { to: `/contacts/${encodeURIComponent(t.contactId)}` } : null
   }
-  if (t.type === "migration.residuals") return { migration: true }
+  if (t.type === "migration.residuals" || t.type === "migration.run") return { migration: true }
   if (t.type === "registration.pending") {
     // A payment link's registration is Home's: its claim runs there and its review reports it, so
     // the wizard's deposit ask is never the place to land.
@@ -89,6 +90,9 @@ export function notificationRoute(entry: AppNotificationEntry): NotificationRout
     t.type === "reorg.txDetail" || (t.bridgeKind === "withdrawal" && /:failed(:|$)/.test(entry.id))
   const noticeStale: Record<string, string> =
     failure && entry.severity === "error" ? { noticeStaleOn: "success" } : {}
+  if (t.type === "upgrade.run" && t.run) {
+    return { to: "/activity", state: { openUpgradeRun: t.run, notice } }
+  }
   if (t.type === "bridge.txDetail" && t.sourceId) {
     return {
       to: "/activity",
@@ -188,14 +192,15 @@ export function useNotificationList(scope?: NotificationScope) {
     [dismissEntry],
   )
   /**
-   * Opening an entry: an operation's is marked read, and so is the old-version funds row, which
-   * stays while they do. Any other is cleared.
+   * Opening an entry: an operation's is marked read, and so are the old-version funds row and a
+   * waiting upgrade's, which stay while those do. Any other is cleared.
    */
   const opened = useCallback(
     (entry: AppNotificationEntry) => {
       const operationId = operationIdOf(entry.id)
       if (operationId) void getOperationStore().markRead([operationId]).catch(console.warn)
-      else if (entry.target.type === "migration.residuals") void markRead(entry.id)
+      else if (entry.target.type === "migration.residuals" || entry.target.type === "migration.run")
+        void markRead(entry.id)
       else if (!entry.pending) void dismissEntry(entry.id)
     },
     [dismissEntry, markRead],
@@ -346,9 +351,16 @@ function EntryRow({
   )
 }
 
+/** Where a running operation is, off its record: the tab line says once it is sent. */
+function stageOf(operation: OperationRecord): string | undefined {
+  if (operation.state !== "local") return undefined
+  return operation.provingStartedAt === undefined ? "Preparing" : "Proving"
+}
+
 /** A transaction still in progress, read off its operation. */
 function OperationRow({ operation, place }: { operation: OperationRecord; place?: TabPlace }) {
   const copy = flowCopy(operation.flow)
+  const stage = stageOf(operation)
   return (
     <div className="ww-notifications__item" role="status">
       <div className="ww-notifications__row">
@@ -357,7 +369,9 @@ function OperationRow({ operation, place }: { operation: OperationRecord; place?
         </div>
         <span className="ww-notifications__body">
           <span className="ww-notifications__title">{copy.live}</span>
-          <span className="ww-notifications__desc">{operation.summary}</span>
+          <span className="ww-notifications__desc">
+            {stage && stage !== copy.live ? `${operation.summary} · ${stage}` : operation.summary}
+          </span>
           <TabLine operationId={operation.operationId} place={place} />
         </span>
         <span className="ww-notifications__time">

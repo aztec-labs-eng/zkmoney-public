@@ -43,11 +43,14 @@ export function l1Transport(readUrl: string, submissionUrl?: string): Transport 
   };
 }
 
-/** Read-only L1 client; L1 chain id from the aztec node must match `readL1RpcUrl` chain id. */
+/**
+ * Read-only L1 client; L1 chain id from the aztec node must match `readL1RpcUrl` chain id. Also returns the rollup
+ * version the node follows, from the same node info call.
+ */
 export async function getL1PublicClient(
   readL1RpcUrl: string,
   node: AztecNode,
-): Promise<{ publicClient: PublicClient<Transport, Chain>; chainId: bigint }> {
+): Promise<{ publicClient: PublicClient<Transport, Chain>; chainId: bigint; rollupVersion: bigint }> {
   const info = await node.getNodeInfo();
   const expectedChainId = info.l1ChainId;
   const publicClient = createPublicClient({ chain: chainFor(expectedChainId), transport: l1Transport(readL1RpcUrl) });
@@ -59,5 +62,5 @@ export async function getL1PublicClient(
         `l1ChainId ${expectedChainId}`,
     );
   }
-  return { publicClient, chainId: BigInt(expectedChainId) };
+  return { publicClient, chainId: BigInt(expectedChainId), rollupVersion: BigInt(info.rollupVersion) };
 }

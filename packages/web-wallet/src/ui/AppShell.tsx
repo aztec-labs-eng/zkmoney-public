@@ -22,7 +22,13 @@ import { PhoneIcon, type PhoneIconName } from "./PhoneIcon"
 import { usePhoneLayout } from "./usePhoneLayout"
 import { useNotificationsPanelOpen } from "./NotificationsPanel"
 import { NotificationsBell } from "./NotificationsBell"
-import { ContactStorage, useAccountContext, useAztecContext } from "@obsidion/front-core"
+import {
+  ContactStorage,
+  nameL1ContactsByEns,
+  useAccountContext,
+  useAztecContext,
+} from "@obsidion/front-core"
+import { ensClient } from "../lib/ens"
 import { isDemoMode } from "../dev/demoFlag"
 import { REQUESTS_PATH } from "../features/requests/nonContactView"
 import { useSavingsAvailable } from "../features/savings/savingsGateway"
@@ -36,9 +42,17 @@ import "./shell.css"
  */
 export function AppShell({ notice }: { notice?: ReactNode }) {
   return (
-    <ZkMoneyRoot flush style={{ minHeight: "100dvh" }}>
+    <ShellRoot>
       {notice}
       <Outlet />
+    </ShellRoot>
+  )
+}
+
+export function ShellRoot({ children }: { children: ReactNode }) {
+  return (
+    <ZkMoneyRoot flush style={{ minHeight: "100dvh" }}>
+      {children}
     </ZkMoneyRoot>
   )
 }
@@ -225,6 +239,17 @@ export function SidebarLayout({
   useEffect(() => {
     if (notificationsOpen) setOpen(false)
   }, [notificationsOpen])
+  useEffect(() => nameL1ContactsByEns(ensClient), [])
+  // The phone header sticks once the page scrolls past its top padding.
+  const [stuck, setStuck] = useState(false)
+  useEffect(() => {
+    const scroller = main.current
+    if (!phone || !scroller) return
+    const update = () => setStuck(scroller.scrollTop > 8)
+    update()
+    scroller.addEventListener("scroll", update, { passive: true })
+    return () => scroller.removeEventListener("scroll", update)
+  }, [phone])
 
   const go = (item: NavItem) => {
     setOpen(false)
@@ -398,9 +423,10 @@ export function SidebarLayout({
         <main ref={main} className="ww-main">
           <div className="ww-content">
             {!pageHeader && (
-              <div className="ww-shell-header">
+              <div className="ww-shell-header" data-stuck={(phone && stuck && !notificationsOpen) || undefined}>
                 <div className="ww-topbar">
                   {(!phone || unlocked) && <TagSearchBar placeholder={phone ? "tag" : undefined} />}
+                  {phone && !unlocked && <BrandLockup />}
                   <div className="ww-topbar__actions">
                     {unlocked && <NotificationsBell />}
                     {!phone && !unpicked && (
@@ -414,7 +440,6 @@ export function SidebarLayout({
                       </button>
                     )}
                     {!phone && account}
-                    {phone && !unlocked && <BrandLockup />}
                     {phone && (
                       <button
                         type="button"

@@ -52,7 +52,7 @@ export function WithdrawFreshScreen() {
   } = useScreenedAddress(parsed, "withdraw", { debounceMs: 300 })
 
   useEffect(() => {
-    fireEvent("withdraw_opened")
+    fireEvent("withdraw_opened", { method: "fresh" })
   }, [])
 
   const paste = () =>

@@ -209,7 +209,7 @@ export async function deliverRegistrationMessage(
   const message = await sendRegistrationMessage(l1, s.inboxAddress, s.fpc.fpcAddress, registrant, {
     rollupVersion: s.rollupVersion,
   })
-  await waitForSandboxL1ToL2Message(s.wallet, s.admin, message.messageHash, { timeoutSeconds: 120 })
+  await waitForSandboxL1ToL2Message(s.wallet.node, message.messageHash, { timeoutSeconds: 120 })
   return message
 }
 

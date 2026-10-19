@@ -13,7 +13,7 @@ import { getConfig } from "../../config/env"
 import { showErrorModal, showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { shortAddr, usdFigure } from "../../ui/format"
+import { usdFigure, shortL1Addr } from "../../ui/format"
 import { useProvingOutcome } from "../../ui/hooks"
 import { useUserFlowActive } from "../provingGate"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
@@ -456,8 +456,8 @@ export function ClaimToL1Modal({
   const name = walletName.trim() || undefined
   const destination = valid
     ? name
-      ? `${name} · ${shortAddr(recipient)}`
-      : shortAddr(recipient)
+      ? `${name} · ${shortL1Addr(recipient)}`
+      : shortL1Addr(recipient)
     : ""
 
   const directFeeAtomic = receiveOption.direct ? displayQuote.fee?.floorAtomic : undefined
@@ -611,7 +611,7 @@ export function ClaimToL1Modal({
                   >
                     <Icon name="wallet" size={18} color="var(--text-secondary)" />
                     <b>{w.name}</b>
-                    <span>{shortAddr(w.address)}</span>
+                    <span>{shortL1Addr(w.address)}</span>
                   </button>
                 ))}
               </div>
@@ -646,7 +646,7 @@ export function ClaimToL1Modal({
                     <b>{l1.account ? "Use your connected wallet" : "Connect your wallet"}</b>
                     <span>
                       {l1.account
-                        ? `${l1.walletName ?? "Wallet"} · ${shortAddr(l1.account)}`
+                        ? `${l1.walletName ?? "Wallet"} · ${shortL1Addr(l1.account)}`
                         : "Use Rainbow, MetaMask, Rabby, or WalletConnect"}
                     </span>
                   </span>

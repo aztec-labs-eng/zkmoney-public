@@ -4,7 +4,7 @@ import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { Icon } from "@obsidion/web-ds"
 import { tokenAmount } from "../../ui/format"
 import type { FasterWithdrawal } from "./useFasterWithdrawal"
-import { usePickerDismiss } from "./WithdrawalAssetPicker"
+import { usePickerDismiss } from "../../ui/usePickerDismiss"
 
 export type WithdrawalSpeed = "standard" | "faster"
 

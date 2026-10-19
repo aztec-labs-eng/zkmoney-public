@@ -3,6 +3,7 @@ import { runInNewContext } from "node:vm"
 import { APPLE_ICLOUD_AAGUID, ZERO_AAGUID } from "@obsidion/core/constants"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { hexToBytes } from "../src/ceremony/bytes.js"
+import { NATIVE_LOCK_KEY } from "../src/ceremony/nativeLock.js"
 import {
   BrowserPasskeyCeremony,
   type CeremonyTiming,
@@ -17,9 +18,20 @@ import {
   extensionAnswersPasskeys,
   isWedgedTabError,
   onPasskeyRequest,
+  passkeyExtensionFor,
   passkeysSupported,
   requestHeldMs,
 } from "../src/ceremony/passkeyCeremony.js"
+import {
+  BITWARDEN_CREATE,
+  LASTPASS_CREATE,
+  NATIVE_CREATE,
+  NATIVE_GET,
+  ONEPASSWORD_CREATE,
+  PROTON_PASS_CREATE,
+  installCredentials,
+  wrapperFrom,
+} from "./support/extensionWrappers.js"
 import {
   UNKNOWN_PROVENANCE,
   type UserHandleProvenance,
@@ -88,45 +100,277 @@ describe("passkeysSupported", () => {
   })
 })
 
-describe("extensionAnswersPasskeys", () => {
-  const native = () => Promise.resolve.bind(Promise)
+describe("passkeyExtensionFor and extensionAnswersPasskeys", () => {
   const script = () => async () => null
-  const install = (value: unknown) =>
-    Object.defineProperty(navigator, "credentials", { value, configurable: true })
+  let restore = () => {}
+  const install = (value: unknown) => {
+    restore()
+    restore = installCredentials(value)
+  }
+  afterEach(() => {
+    restore()
+    restore = () => {}
+  })
 
-  it("reads a native get and create as the browser's own prompt", () => {
-    install({ get: native(), create: native() })
+  it("reads the browser's own methods as none", () => {
+    install({ get: NATIVE_GET, create: NATIVE_CREATE })
+    expect(passkeyExtensionFor()).toBe("none")
     expect(extensionAnswersPasskeys()).toBe(false)
     expect(extensionAnswersPasskeys("create")).toBe(false)
   })
 
-  it("reads a script get as an extension's, for a sign-in only", () => {
-    install({ get: script(), create: native() })
+  it("names 1Password and Bitwarden by the markers in their captured wrappers", () => {
+    install({ get: NATIVE_GET, create: wrapperFrom(ONEPASSWORD_CREATE) })
+    expect(passkeyExtensionFor()).toBe("1password")
+    expect(extensionAnswersPasskeys("create")).toBe(true)
+    expect(extensionAnswersPasskeys()).toBe(false)
+    install({ get: NATIVE_GET, create: wrapperFrom(BITWARDEN_CREATE) })
+    expect(passkeyExtensionFor()).toBe("bitwarden")
+  })
+
+  it("reads LastPass, Proton Pass and a plain script as other", () => {
+    for (const source of [LASTPASS_CREATE, PROTON_PASS_CREATE]) {
+      install({ get: NATIVE_GET, create: wrapperFrom(source) })
+      expect(passkeyExtensionFor()).toBe("other")
+    }
+    install({ get: NATIVE_GET, create: script() })
+    expect(passkeyExtensionFor()).toBe("other")
+  })
+
+  it("pins each capture's markers", () => {
+    expect(ONEPASSWORD_CREATE).toMatch(/\bhints\b/)
+    expect(ONEPASSWORD_CREATE).not.toMatch(/\bfallbackRequested\b/)
+    expect(BITWARDEN_CREATE).toMatch(/\bfallbackRequested\b/)
+    expect(BITWARDEN_CREATE).not.toMatch(/\bhints\b/)
+    for (const source of [LASTPASS_CREATE, PROTON_PASS_CREATE]) {
+      expect(source).not.toMatch(/\bhints\b|\bfallbackRequested\b|\[native code\]/)
+    }
+  })
+
+  it("checks Bitwarden's marker first and holds both markers to whole words", () => {
+    install({ create: wrapperFrom("function create(e){ return e.hints && e.fallbackRequested }") })
+    expect(passkeyExtensionFor()).toBe("bitwarden")
+    install({
+      create: wrapperFrom("function create(e){ return hintsFor(e) || e.fallbackRequestedAt }"),
+    })
+    expect(passkeyExtensionFor()).toBe("other")
+  })
+
+  it("reads a native print without the method's own name as a script", () => {
+    install({ get: NATIVE_GET, create: Object.create.bind(Object) })
+    expect(passkeyExtensionFor()).toBe("other")
+    expect(extensionAnswersPasskeys("create")).toBe(true)
+    expect(extensionAnswersPasskeys()).toBe(false)
+    install({ get: NATIVE_GET, create: new Proxy(Object.create, {}) })
+    expect(passkeyExtensionFor()).toBe("other")
+    install({ get: NATIVE_GET, create: Reflect.get })
+    expect(passkeyExtensionFor()).toBe("other")
+  })
+
+  /** A function whose print is `text`, as another engine would give it. */
+  const printing = (text: string) => {
+    const fn = () => null
+    const original = Function.prototype.toString
+    Function.prototype.toString = function (this: unknown) {
+      return this === fn ? text : original.call(this)
+    }
+    return { fn, restore: () => void (Function.prototype.toString = original) }
+  }
+
+  it("reads the browser's print whatever the engine's whitespace, and any other native print as a script", () => {
+    const prints = [
+      ["function create() {\n    [native code]\n}", "none"],
+      ["function create() { [native code] }", "none"],
+      ["function () { [native code] }", "other"],
+      ["function() {\n    [native code]\n}", "other"],
+      ["function ProxyObject() {\n    [native code]\n}", "other"],
+    ] as const
+    for (const [text, expected] of prints) {
+      const { fn, restore } = printing(text)
+      try {
+        install({ get: NATIVE_GET, create: fn })
+        expect(passkeyExtensionFor()).toBe(expected)
+        expect(extensionAnswersPasskeys("create")).toBe(expected !== "none")
+      } finally {
+        restore()
+      }
+    }
+  })
+
+  it("reads a script named create that only mentions the native print as a script", () => {
+    install({
+      create: wrapperFrom("function create(e){ /* [native code] */ return e.publicKey?.hints }"),
+    })
+    expect(passkeyExtensionFor()).toBe("1password")
+    expect(extensionAnswersPasskeys("create")).toBe(true)
+    install({
+      create: wrapperFrom('function create(){ return "function create() { [native code] }" }'),
+    })
+    expect(passkeyExtensionFor()).toBe("other")
+  })
+
+  it("stringifies create once, for presence and vendor together", () => {
+    const wrapper = wrapperFrom(ONEPASSWORD_CREATE)
+    const original = Function.prototype.toString
+    let prints = 0
+    Function.prototype.toString = function (this: unknown) {
+      if (this === wrapper) prints += 1
+      return original.call(this)
+    }
+    try {
+      install({ create: wrapper })
+      expect(passkeyExtensionFor()).toBe("1password")
+      expect(prints).toBe(1)
+    } finally {
+      Function.prototype.toString = original
+    }
+  })
+
+  it("never reads get for the class, while the boolean reads each call on its own", () => {
+    const reads: string[] = []
+    install({
+      get get() {
+        reads.push("get")
+        return script()
+      },
+      create: NATIVE_CREATE,
+    })
+    expect(passkeyExtensionFor()).toBe("none")
+    expect(reads).toEqual([])
     expect(extensionAnswersPasskeys()).toBe(true)
     expect(extensionAnswersPasskeys("create")).toBe(false)
   })
 
-  it("reads a script create as an extension's, for a creation only", () => {
-    install({ get: native(), create: script() })
-    expect(extensionAnswersPasskeys("create")).toBe(true)
-    expect(extensionAnswersPasskeys()).toBe(false)
+  it("reads create once, for presence and vendor together", () => {
+    let reads = 0
+    const wrapper = wrapperFrom(ONEPASSWORD_CREATE)
+    install({
+      get create() {
+        reads += 1
+        if (reads > 1) throw new Error("read twice")
+        return wrapper
+      },
+    })
+    expect(passkeyExtensionFor()).toBe("1password")
+    expect(reads).toBe(1)
   })
 
-  it("reads no WebAuthn as no extension", () => {
+  it("reads no WebAuthn, or a lookup that throws, as none", () => {
     install(undefined)
+    expect(passkeyExtensionFor()).toBe("none")
     expect(extensionAnswersPasskeys()).toBe(false)
     install({})
-    expect(extensionAnswersPasskeys()).toBe(false)
+    expect(passkeyExtensionFor()).toBe("none")
     expect(extensionAnswersPasskeys("create")).toBe(false)
-  })
-
-  it("reads a lookup that throws as no extension", () => {
     install({
+      get create(): never {
+        throw new Error("blocked")
+      },
       get get(): never {
         throw new Error("blocked")
       },
     })
+    expect(passkeyExtensionFor()).toBe("none")
     expect(extensionAnswersPasskeys()).toBe(false)
+    expect(extensionAnswersPasskeys("create")).toBe(false)
+  })
+
+  it("keeps the boolean true for a scripted create with no get at all", () => {
+    install({ create: script() })
+    expect(extensionAnswersPasskeys("create")).toBe(true)
+    expect(passkeyExtensionFor()).toBe("other")
+  })
+
+  describe("an own create or get that is not the prototype's method", () => {
+    /** Another realm's `Object.create`: prints as the browser's own, is a different function. */
+    const foreignCreate: unknown = runInNewContext("Object.create")
+    const withPrototype = (own: Record<string, unknown>): Record<string, unknown> =>
+      Object.assign(Object.create({ create: NATIVE_CREATE, get: NATIVE_GET }), own)
+    const scope = globalThis as Record<string, unknown>
+    afterEach(() => {
+      delete scope[NATIVE_LOCK_KEY]
+    })
+
+    it("is a script's, whatever it prints", () => {
+      install(withPrototype({ create: foreignCreate }))
+      expect(extensionAnswersPasskeys("create")).toBe(true)
+      expect(extensionAnswersPasskeys()).toBe(false)
+      expect(passkeyExtensionFor()).toBe("other")
+      install(withPrototype({ get: runInNewContext("Reflect.get") }))
+      expect(extensionAnswersPasskeys()).toBe(true)
+      expect(extensionAnswersPasskeys("create")).toBe(false)
+      expect(passkeyExtensionFor()).toBe("none")
+    })
+
+    it("is the browser's own when it is the prototype's, or frozen as the lock leaves it with the record saying applied", () => {
+      const frozen = withPrototype({})
+      Object.defineProperty(frozen, "create", { value: foreignCreate, writable: false })
+      install(frozen)
+      scope[NATIVE_LOCK_KEY] = { create: "applied" }
+      expect(extensionAnswersPasskeys("create")).toBe(false)
+      expect(passkeyExtensionFor()).toBe("none")
+      scope[NATIVE_LOCK_KEY] = { create: "lost_race" }
+      expect(passkeyExtensionFor()).toBe("other")
+      install(withPrototype({ create: NATIVE_CREATE }))
+      delete scope[NATIVE_LOCK_KEY]
+      expect(extensionAnswersPasskeys("create")).toBe(false)
+      expect(passkeyExtensionFor()).toBe("none")
+    })
+
+    it("does not take a forged record's word for a writable override", () => {
+      install(withPrototype({ create: foreignCreate }))
+      scope[NATIVE_LOCK_KEY] = { create: "applied", get: "applied" }
+      expect(extensionAnswersPasskeys("create")).toBe(true)
+      expect(passkeyExtensionFor()).toBe("other")
+      const scripted = withPrototype({})
+      Object.defineProperty(scripted, "create", { value: () => null, writable: false })
+      install(scripted)
+      expect(extensionAnswersPasskeys("create")).toBe(true)
+    })
+
+    it("needs a prototype method to shadow: a plain stand-in keeps reading none", () => {
+      install({ get: NATIVE_GET, create: foreignCreate })
+      expect(passkeyExtensionFor()).toBe("none")
+      expect(extensionAnswersPasskeys("create")).toBe(false)
+    })
+
+    it("stays the lock's own after a script patches the prototype behind it", () => {
+      const credentials = withPrototype({})
+      install(credentials)
+      scope[NATIVE_LOCK_KEY] = { create: "applied", get: "applied" }
+      Object.defineProperty(credentials, "create", { value: NATIVE_CREATE, writable: false })
+      Object.getPrototypeOf(credentials).create = new Proxy(NATIVE_CREATE as object, {})
+      expect(extensionAnswersPasskeys("create")).toBe(false)
+      expect(passkeyExtensionFor()).toBe("none")
+    })
+
+    it("reads an own accessor through its getter, so 1Password's wrapper is still named", () => {
+      let reads = 0
+      const credentials = withPrototype({})
+      Object.defineProperty(credentials, "create", {
+        get: () => {
+          reads += 1
+          return wrapperFrom(ONEPASSWORD_CREATE)
+        },
+        configurable: false,
+      })
+      install(credentials)
+      scope[NATIVE_LOCK_KEY] = { create: "skipped_accessor", get: "applied" }
+      expect(passkeyExtensionFor()).toBe("1password")
+      expect(reads).toBe(1)
+      expect(extensionAnswersPasskeys("create")).toBe(true)
+      expect(extensionAnswersPasskeys()).toBe(false)
+    })
+
+    it("is an override when the prototype holds an accessor and the instance a value", () => {
+      const credentials = Object.create(
+        Object.defineProperty({ get: NATIVE_GET }, "create", { get: () => NATIVE_CREATE }),
+      )
+      Object.defineProperty(credentials, "create", { value: foreignCreate, writable: true })
+      install(credentials)
+      expect(extensionAnswersPasskeys("create")).toBe(true)
+      expect(passkeyExtensionFor()).toBe("other")
+    })
   })
 })
 
@@ -623,7 +867,23 @@ describe("BrowserPasskeyCeremony create", () => {
   /** A COSE EC2 key for a P-256 point, and a `none` attestation object wrapping an authData. */
   function coseP256(x: Uint8Array, y: Uint8Array): Uint8Array {
     // {1: 2, 3: -7, -1: 1, -2: x, -3: y}
-    return new Uint8Array([0xa5, 0x01, 0x02, 0x03, 0x26, 0x20, 0x01, 0x21, 0x58, 0x20, ...x, 0x22, 0x58, 0x20, ...y])
+    return new Uint8Array([
+      0xa5,
+      0x01,
+      0x02,
+      0x03,
+      0x26,
+      0x20,
+      0x01,
+      0x21,
+      0x58,
+      0x20,
+      ...x,
+      0x22,
+      0x58,
+      0x20,
+      ...y,
+    ])
   }
   function attestationOf(authData: Uint8Array): Uint8Array {
     // {"fmt": "none", "attStmt": {}, "authData": <bytes>} — authData placed last on purpose,
@@ -1084,36 +1344,42 @@ describe("requestHeldMs", () => {
 })
 
 describe("related-origin failures", () => {
-  it.each(["create", "assert"] as const)("explains %s rejection without changing RP", async (operation) => {
-    const browserError = new DOMException("RP not authorized", "SecurityError")
-    const browserRequest = vi.fn().mockRejectedValue(browserError)
-    Object.defineProperty(navigator, "credentials", {
-      configurable: true,
-      value: { create: browserRequest, get: browserRequest },
-    })
-    vi.spyOn(document, "hasFocus").mockReturnValue(true)
-    const ceremony = new BrowserPasskeyCeremony(timing)
-    const result =
-      operation === "create"
-        ? ceremony.create({
-            rpId: "auth.zk.money",
-            rpName: "zk.money",
-            userName: "alice",
-            prfFirstSalt: new Uint8Array(32),
-          })
-        : ceremony.assert({ rpId: "auth.zk.money", challenge: new Uint8Array(32) })
-    const error = (await result.then(() => undefined, (e: unknown) => e)) as Error
-    expect(error.name).toBe("RelatedOriginPasskeyError")
-    expect(error.message).toBe(
-      "A browser extension, such as a password manager, may have blocked the passkey request on this site. " +
-        "Turn off the extension's passkey option for this site, or use another browser, then try again. " +
-        "If it still fails, contact support.",
-    )
-    expect(error.cause).toBe(browserError)
-    expect(browserRequest).toHaveBeenCalledTimes(1)
-    const options = browserRequest.mock.calls[0]![0].publicKey
-    expect(operation === "create" ? options.rp.id : options.rpId).toBe("auth.zk.money")
-  })
+  it.each(["create", "assert"] as const)(
+    "explains %s rejection without changing RP",
+    async (operation) => {
+      const browserError = new DOMException("RP not authorized", "SecurityError")
+      const browserRequest = vi.fn().mockRejectedValue(browserError)
+      Object.defineProperty(navigator, "credentials", {
+        configurable: true,
+        value: { create: browserRequest, get: browserRequest },
+      })
+      vi.spyOn(document, "hasFocus").mockReturnValue(true)
+      const ceremony = new BrowserPasskeyCeremony(timing)
+      const result =
+        operation === "create"
+          ? ceremony.create({
+              rpId: "auth.zk.money",
+              rpName: "zk.money",
+              userName: "alice",
+              prfFirstSalt: new Uint8Array(32),
+            })
+          : ceremony.assert({ rpId: "auth.zk.money", challenge: new Uint8Array(32) })
+      const error = (await result.then(
+        () => undefined,
+        (e: unknown) => e,
+      )) as Error
+      expect(error.name).toBe("RelatedOriginPasskeyError")
+      expect(error.message).toBe(
+        "A browser extension, such as a password manager, may have blocked the passkey request on this site. " +
+          "Turn off the extension's passkey option for this site, or use another browser, then try again. " +
+          "If it still fails, contact support.",
+      )
+      expect(error.cause).toBe(browserError)
+      expect(browserRequest).toHaveBeenCalledTimes(1)
+      const options = browserRequest.mock.calls[0]![0].publicKey
+      expect(operation === "create" ? options.rp.id : options.rpId).toBe("auth.zk.money")
+    },
+  )
 })
 
 describe("extension refusals", () => {
@@ -1147,7 +1413,9 @@ describe("extension refusals", () => {
     async (operation) => {
       const error = await rejection(operation, "auth.zk.money", bitwardenRefusal())
       expect(error).toBeInstanceOf(RelatedOriginPasskeyError)
-      expect((error as Error).name).toBe("RelatedOriginPasskeyError")
+      expect(error).toMatchObject({ name: "RelatedOriginPasskeyError", bitwarden: true })
+      const other = new DOMException("RP not authorized", "SecurityError")
+      expect(await rejection(operation, "auth.zk.money", other)).toMatchObject({ bitwarden: false })
     },
   )
 

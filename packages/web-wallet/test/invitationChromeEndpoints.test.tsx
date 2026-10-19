@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   defaults: {} as Record<string, boolean>,
   bootStatus: "ready" as "booting" | "ready" | "error",
   bridge: null as unknown,
+  phone: false,
 }))
 
 vi.mock("../src/config/env", () => ({
@@ -38,6 +39,7 @@ vi.mock("../src/ui/PxeBoot", () => ({
   usePxeBoot: () => ({ bootStatus: h.bootStatus }),
 }))
 vi.mock("../src/platform/desktopBridge", () => ({ getDesktopL1Bridge: () => h.bridge }))
+vi.mock("../src/ui/usePhoneLayout", () => ({ usePhoneLayout: () => h.phone }))
 
 const { InvitationChrome } = await import("../src/features/onboarding/InvitationChrome")
 
@@ -49,6 +51,7 @@ beforeEach(() => {
   h.defaults = {}
   h.bootStatus = "ready"
   h.bridge = null
+  h.phone = false
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
@@ -135,6 +138,22 @@ describe("InvitationChrome endpoints pill", () => {
     expect(pill()!.textContent).toBe("CUSTOM NODE")
     await act(async () => pill()!.click())
     expect(modal()).not.toBeNull()
+  })
+})
+
+describe("InvitationChrome early-access pill", () => {
+  const earlyAccess = () => container.querySelector('[data-testid="early-access-pill"]')
+
+  it("shows on a laptop", async () => {
+    await mount()
+    expect(earlyAccess()?.textContent).toBe("EARLY ACCESSOPEN")
+  })
+
+  it("is left off a phone, where the endpoints pill stays", async () => {
+    h.phone = true
+    await mount()
+    expect(earlyAccess()).toBeNull()
+    expect(pill()).not.toBeNull()
   })
 })
 

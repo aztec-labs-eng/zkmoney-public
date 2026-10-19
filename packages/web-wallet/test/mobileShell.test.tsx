@@ -32,6 +32,7 @@ vi.mock("../src/features/onboarding/openRegistration", () => ({
 }))
 vi.mock("@obsidion/front-core", () => ({
   INTERRUPTED_ERRORS: {},
+  nameL1ContactsByEns: () => () => {},
   useAccountContext: () => ({ obsidionAccount: state.unlocked ? {} : undefined }),
   useAztecContext: () => ({ obsidionWallet: undefined }),
   useAppNotifications: () => ({

@@ -17,6 +17,53 @@ import { PhoneIcon } from "./PhoneIcon"
 import { usePhoneLayout } from "./usePhoneLayout"
 
 /** Bell + dropdown. Closing by any route marks everything read. */
+/**
+ * The bell while the wallet starts: nothing is listed yet. A tap opens the panel, which shows once
+ * the wallet is up.
+ */
+export function IdleBell() {
+  const [open, setOpen] = useNotificationsPanelOpen()
+  return (
+    <div className="ww-notifications__anchor">
+      <BellButton
+        label="Notifications"
+        expanded={open}
+        unread={false}
+        onClick={() => setOpen(!open)}
+      />
+    </div>
+  )
+}
+
+function BellButton({
+  label,
+  expanded,
+  ring,
+  unread,
+  onClick,
+}: {
+  label: string
+  expanded: boolean
+  ring?: "is-tab-bound" | "is-safe"
+  unread: boolean
+  onClick: () => void
+}) {
+  const phone = usePhoneLayout()
+  return (
+    <button
+      type="button"
+      className="zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--lg"
+      aria-label={label}
+      aria-expanded={expanded}
+      onClick={onClick}
+    >
+      {ring && <span className={`ww-notifications__bell-ring ${ring}`} />}
+      {phone ? <PhoneIcon name="bell" color="#fff" /> : <Icon name="bell" size={24} />}
+      {unread && <span className="ww-notifications__bell-dot" />}
+    </button>
+  )
+}
+
 export function NotificationsBell({
   openEntry,
   place = "tab",
@@ -26,7 +73,6 @@ export function NotificationsBell({
   place?: TabPlace
   scope?: NotificationScope
 }) {
-  const phone = usePhoneLayout()
   const byRoute = useRouteOpener()
   const opener = openEntry ?? byRoute
   const [open, setOpen] = useNotificationsPanelOpen()
@@ -96,10 +142,8 @@ export function NotificationsBell({
 
   return (
     <div className="ww-notifications__anchor" ref={anchorRef}>
-      <button
-        type="button"
-        className="zkm-btn-reset zkm-pressable ww-iconbtn ww-iconbtn--lg"
-        aria-label={
+      <BellButton
+        label={
           spinning
             ? running
               ? `Notifications, ${
@@ -108,17 +152,11 @@ export function NotificationsBell({
               : "Notifications, something is in progress"
             : "Notifications"
         }
-        aria-expanded={open}
+        expanded={open}
+        ring={spinning ? (tabBound ? "is-tab-bound" : "is-safe") : undefined}
+        unread={unreadCount > 0}
         onClick={() => (open ? close() : setOpen(true))}
-      >
-        {spinning && (
-          <span
-            className={`ww-notifications__bell-ring ${tabBound ? "is-tab-bound" : "is-safe"}`}
-          />
-        )}
-        {phone ? <PhoneIcon name="bell" color="#fff" /> : <Icon name="bell" size={24} />}
-        {unreadCount > 0 && <span className="ww-notifications__bell-dot" />}
-      </button>
+      />
       {open && (
         <NotificationsPanel onClose={close} openEntry={opener} place={place} scope={scope} />
       )}

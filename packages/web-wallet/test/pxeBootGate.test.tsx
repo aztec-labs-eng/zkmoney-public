@@ -42,6 +42,9 @@ vi.mock("../src/config/env", async (importOriginal) => ({
   getConfig: () => h.config,
 }))
 vi.mock("../src/config/oxideTuple", () => ({ l1PublicClient: () => "l1-client" }))
+vi.mock("../src/platform/bbWasmPath", () => ({
+  barretenbergWasm: () => ({ wasmPath: "/assets/bb-threads.wasm.gz" }),
+}))
 vi.mock("../src/dev/demoFlag", () => ({ isDemoMode: () => false }))
 vi.mock("../src/errors/errorModal", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/errors/errorModal")>()),
@@ -649,7 +652,9 @@ describe("BootHold", () => {
     expect(panel.dataset.kind).toBe("other")
     expect(panel.textContent).toContain("zk.money failed to start")
     expect(panel.textContent).toContain("boom")
-    expect(h.initializePXE).toHaveBeenCalledWith(expect.objectContaining({ chainIdentity: L1 }))
+    expect(h.initializePXE).toHaveBeenCalledWith(
+      expect.objectContaining({ chainIdentity: L1, bbWasmPath: "/assets/bb-threads.wasm.gz" }),
+    )
     await act(async () => byTestId("boot-change-endpoints")!.click())
     expect(container.querySelector('dialog[aria-label="Endpoints"]')).not.toBeNull()
   })

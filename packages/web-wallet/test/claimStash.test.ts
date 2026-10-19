@@ -32,6 +32,19 @@ describe("claim stash — the ticket-funded signup marker", () => {
     expect(peekTicketSignup()).toEqual(ticket)
   })
 
+  it("carries the visitor page's read of the link to Home", () => {
+    const read = {
+      amount: "25000000000000000000",
+      memo: "Pizza dinner",
+      claimableFrom: 1_800_000_100,
+      claimableUntil: 1_800_086_500,
+      tokenAddress: "0xtoken",
+      txHash: "0xfund",
+    }
+    stashTicketSignup({ ...ticket, ...read })
+    expect(peekTicketSignup()).toEqual({ ...ticket, ...read })
+  })
+
   it("a marker for another link is stale, never a ticket for the new one", () => {
     stashTicketSignup(ticket)
     stashClaimLink("frag-b")

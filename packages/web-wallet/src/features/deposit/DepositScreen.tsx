@@ -27,13 +27,14 @@ import {
   lapTimer,
 } from "../../lib/analytics"
 import { useCopy } from "../../ui/hooks"
-import { shortAddr, usdFigure } from "../../ui/format"
+import { usdFigure, shortL1Addr } from "../../ui/format"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { useRegistrationEscalated, useTagPresentationPending } from "../onboarding/webRegistration"
 import { RegistrationPendingError } from "../onboarding/registrationRail"
 import { useOwedRegistration } from "../onboarding/owedRegistration"
 import { registrationAddressPublished } from "../onboarding/webRegistration"
 import { noteRegistrationDepositSeen } from "../onboarding/registrationRailSync"
+import { reportRegistrationDepositShown } from "../onboarding/registrationFunnel"
 import { OweRegistrationBroadcast } from "../broadcasts/useOweRegistrationBroadcast"
 import { RegistrationAskLine, useRegistrationAsk } from "../onboarding/RegistrationAskLine"
 import { formatDepositDue } from "../onboarding/steps/DepositTermsRows"
@@ -289,7 +290,7 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
   const reloadFacts = () => setFactsAttempt((n) => n + 1)
 
   useEffect(() => {
-    fireEvent("deposit_sheet_opened")
+    fireEvent("deposit_sheet_opened", owed ? { registration: true } : undefined)
   }, [])
   const reportedOwed = useRef(false)
   useEffect(() => {
@@ -344,7 +345,7 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
         if (current.limit >= limit) return current.run
         return current.run.then((ok) => (ok ? true : resolveAddress(limit)))
       }
-      // The pool read on open fails quietly; the coin row's derive reports.
+      // The open's pool read fails quietly and stays out of the derive funnel; the coin row reports.
       const quiet = limit === 0
       setGenerating(true)
       setResolveFailed(false)
@@ -352,7 +353,7 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
       const elapsed = lapTimer()
       const stageLap = lapTimer()
       let sawResolving = false
-      fireEvent("address_resolve_started", { fresh: false })
+      if (!quiet) fireEvent("address_resolve_started", { fresh: false })
       const onStage = (next: DepositStage) => {
         if (next === "resolving") sawResolving = true
         fireEvent("deposit_resolve_stage", { stage: next, prev_stage_ms: stageLap() })
@@ -362,20 +363,20 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
           onStage,
           publishingLimit: limit,
         })
-        fireEvent("address_resolve_succeeded", {
-          duration_ms: elapsed(),
-          cached: !sawResolving,
-          fresh: false,
-        })
-        const { publish, owe } = next
-        setDeposit({ address: next.address, name: next.name, owe, publishing: !!publish })
-        fireEvent("deposit_address_shown", { pooled: !publish })
+        if (!quiet)
+          fireEvent("address_resolve_succeeded", {
+            duration_ms: elapsed(),
+            cached: !sawResolving,
+            fresh: false,
+          })
+        const { publish, owe, source } = next
+        setDeposit({ address: next.address, name: next.name, owe, source, publishing: !!publish })
         if (publish) {
           const publishLap = lapTimer()
           // The ledger keeps it owed whatever this reports; the status row shows where it stands.
           void publish().then(
             () => {
-              fireEvent("address_published", { duration_ms: publishLap() })
+              if (!quiet) fireEvent("address_published", { duration_ms: publishLap() })
               setDeposit((d) => (d?.address === next.address ? { ...d, publishing: false } : d))
             },
             (e) => {
@@ -397,8 +398,8 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
             if (!quiet) setCapped(true)
             return false
           }
-          fireEvent("address_resolve_failed", { duration_ms: elapsed(), code: failureCode(e) })
           if (!quiet) {
+            fireEvent("address_resolve_failed", { duration_ms: elapsed(), code: failureCode(e) })
             showReportableError(e, "deposit:resolve", { message: friendlyError(e) })
             setResolveFailed(true)
           }
@@ -611,6 +612,7 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
       fireEvent("deposit_funded", {
         funding: "external",
         amount_bucket: amountBucket(next, token.decimals),
+        ...(registrationAddress && { registration: true }),
       })
       setFunded(next)
       // The scanner moves the record on; back on its per-tick lane, the row shows within a tick.
@@ -681,6 +683,15 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
       })
       .finally(() => setRefreshing(false))
   }
+
+  // Once per address per mount, when the sheet shows it.
+  const reportedShown = useRef(new Set<string>())
+  useEffect(() => {
+    if (!sheetOpen || !shown || reportedShown.current.has(shown.address)) return
+    reportedShown.current.add(shown.address)
+    if (shown === registrationAddress) reportRegistrationDepositShown(shown.address)
+    else fireEvent("deposit_address_shown", { address_source: shown.source })
+  }, [sheetOpen, shown, registrationAddress])
 
   // A sheet with nothing to show and nothing coming closes: the derivation failed or never started.
   useEffect(() => {
@@ -790,7 +801,7 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
       : undefined
   const tagLabel = handle ? `@${handle}` : "your @tag"
   const walletLabel = l1.account
-    ? `Deposit from ${l1.walletName ?? "wallet"} · ${shortAddr(l1.account)}`
+    ? `Deposit from ${l1.walletName ?? "wallet"} · ${shortL1Addr(l1.account)}`
     : bridgeMode
     ? "Or deposit from your browser"
     : "Or connect a wallet to fund"
@@ -866,7 +877,7 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
         <>
           <b>Waiting for your browser wallet</b>
           <p>
-            A transfer to {shortAddr(unresolved.address)} may still be sent from your browser
+            A transfer to {shortL1Addr(unresolved.address)} may still be sent from your browser
             wallet. If it is, the deposit appears in your activity.
           </p>
         </>

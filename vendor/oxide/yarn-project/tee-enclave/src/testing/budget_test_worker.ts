@@ -3,6 +3,7 @@
 // import needs the explicit .ts extension.
 import { parentPort, workerData } from 'node:worker_threads';
 
+// @ts-expect-error Node runs this worker directly from TypeScript source.
 import { SignatureBudget, type SignatureBudgetWorkerData } from '../signature_budget.ts';
 
 const { budget, attempts } = workerData as { budget: SignatureBudgetWorkerData; attempts: number };

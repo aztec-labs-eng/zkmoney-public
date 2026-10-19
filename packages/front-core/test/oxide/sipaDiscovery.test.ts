@@ -135,6 +135,28 @@ describe("setupSipaDiscovery", () => {
     expect(result.broadcaster.toString()).toBe(TUPLE.l2Broadcaster)
   })
 
+  // The resolver tags SIPA events from address keys, with no handshake, so a PXE that skips this
+  // registration never finds a deposit sent to the user's name.
+  it("registers the resolver as an address-derived tagging source on a v5 PXE", async () => {
+    const { registerSender: _, ...rest } = makePxe()
+    const pxe = { ...rest, registerTaggingSecretSource: vi.fn(async () => undefined) }
+
+    await setupSipaDiscovery({
+      pxe,
+      node: makeNode(),
+      publicClient: CLIENT,
+      tuple: TUPLE,
+      network: SANDBOX,
+      sponsorFpc: "fpc-marker" as never,
+    })
+
+    const sources = pxe.registerTaggingSecretSource.mock.calls.map(
+      ([source]) => source as { kind: string; sender: { toString(): string } },
+    )
+    expect(sources[0]!.kind).toBe("address-derived")
+    expect(sources[0]!.sender.toString()).toBe(RESOLVER_RECORD.l2Address)
+  })
+
   it("bounds the operator scan by the caller's head, so one probe reads against one tip", async () => {
     const getBlockNumber = vi.fn(async () => HEAD)
     const client = {

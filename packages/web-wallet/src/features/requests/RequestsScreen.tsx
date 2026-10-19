@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom"
 import { GradientText, Icon } from "@obsidion/web-ds"
 import { ActivityListSkeleton } from "../../ui/Skeletons"
 import { useActivityEntries } from "../../ui/screens/useActivityEntries"
+import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { NonContactRequestsEntry } from "./NonContactRequestsScreen"
 import { RequestsUnavailableNotice } from "./RequestsUnavailableNotice"
 import { useNonContactRequests } from "./useNonContactRequests"
@@ -15,6 +16,7 @@ type Box = "Sent" | "Received"
  */
 export function RequestsScreen() {
   const navigate = useNavigate()
+  const phone = usePhoneLayout()
   const { entries, hydrated, requestsUnavailable, detailModals } = useActivityEntries()
   const [box, setBox] = useState<Box>("Sent")
   const unpaid = entries.filter((e) => e.unpaidRequest)
@@ -33,6 +35,19 @@ export function RequestsScreen() {
     </button>
   )
 
+  const tab = (value: Box, label: string, icon: string) => (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={box === value}
+      className="zkm-btn-reset ww-request-who__tab"
+      onClick={() => setBox(value)}
+    >
+      <Icon name={icon} size={18} />
+      {label}
+    </button>
+  )
+
   return (
     <div className="ww-panel ww-receive ww-requests">
       <div className="ww-panel__head">
@@ -46,25 +61,27 @@ export function RequestsScreen() {
             <Icon name="qr-code" size={36} color="#141413" />
           </span>
           <span className="ww-requests__code-text">
-            <b>Scan to get paid</b>
+            <b>Get paid</b>
+            <span>Create a payment code or request link</span>
           </span>
           <div className="ww-chip-row ww-requests__code-actions">
             {chip("New request", true, () => navigate("/receive"))}
           </div>
         </div>
-        <div className="ww-chip-row ww-requests__boxes">
-          {chip("Sent", box === "Sent", () => setBox("Sent"))}
-          {chip(
-            receivedCount ? `Received · ${receivedCount}` : "Received",
-            box === "Received",
-            () => setBox("Received"),
-          )}
+        <div
+          className="ww-request-who"
+          role="tablist"
+          aria-label="Requests"
+          data-who={box === "Received" ? "received" : "sent"}
+        >
+          {tab("Sent", "Sent", "send")}
+          {tab("Received", receivedCount ? `Received · ${receivedCount}` : "Received", "receive")}
         </div>
         {box === "Received" && hydrated && requestsUnavailable && <RequestsUnavailableNotice />}
         {!hydrated && <ActivityListSkeleton rows={3} />}
         {hydrated && (
-          <div className="ww-requests__list">
-            {visible.map((entry) => entry.compactNode ?? entry.node)}
+          <div className={`ww-requests__list${phone ? "" : " ww-requests__list--hover"}`}>
+            {visible.map((entry) => (phone ? entry.compactNode ?? entry.node : entry.node))}
             {box === "Received" && <NonContactRequestsEntry title="Not in your contacts" />}
             {visible.length === 0 && (box === "Sent" || others === 0) && (
               <span className="ww-requests__empty">

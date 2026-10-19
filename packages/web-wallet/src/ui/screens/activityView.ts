@@ -119,9 +119,9 @@ export function depositAttribution(record: SIPADepositRecord): {
 }
 
 /** Source-wallet name and funder address the deposit detail sheet puts over the facts. */
-export function depositHeadline(record: SIPADepositRecord): { title: string; address?: string } {
+export function depositHeadline(record: SIPADepositRecord): { title?: string; address?: string } {
   return {
-    title: record.walletName?.trim() || "Wallet",
+    title: record.walletName?.trim() || undefined,
     address: depositAttribution(record).funder,
   }
 }
@@ -185,14 +185,19 @@ export type SipaDepositIntentRow =
   | { intent: "registration"; name: string; record: SIPADepositRecord }
   | { intent: "migration"; record: SIPADepositRecord }
 
-/** `migration`: a migration's burn funds this SIPA, so the row is that migration's arrival. */
+/**
+ * `migration`: a migration's burn funds this SIPA, so the row is that migration's arrival. An
+ * upgrade's first refund pays its update-metadata SIPA, which is an arrival on its own.
+ */
 export function sipaDepositIntentRow(
   record: SIPADepositRecord,
   registrationName: string | undefined,
   migration = false,
 ): SipaDepositIntentRow {
   if (registrationName) return { intent: "registration", name: registrationName, record }
-  return migration ? { intent: "migration", record } : { intent: "deposit", record }
+  return migration || record.intent === "metadata"
+    ? { intent: "migration", record }
+    : { intent: "deposit", record }
 }
 
 /**

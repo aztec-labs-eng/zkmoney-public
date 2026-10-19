@@ -23,6 +23,7 @@ import {
   ActivityFeed,
   SIPADepositStore,
   TransactionStorage,
+  UpgradeActivity,
   RequestStorage,
   approvedContactTags,
   buildPaidLinkRows,
@@ -69,8 +70,10 @@ import {
   savingsMoveOfWithdrawal,
   useSavingsPosition,
   useSavingsSource,
+  useEnsName,
   type SavingsMoveRecord,
 } from "@obsidion/front-core"
+import { ensClient } from "../../lib/ens"
 import { declineRequestById, remindRequestById } from "../../features/contacts/requestActions"
 import { RequestDetailModal } from "../../features/contacts/RequestDetailModal"
 import { unlistedCodeRequestIds } from "../../features/receive/receiveCode"
@@ -98,8 +101,11 @@ import { LinkRecoverModal } from "../../features/paylink/LinkRecoverModal"
 import { usePaylinkDeps } from "../../features/paylink/usePaylinkDeps"
 import { IncomingRequestDetailModal } from "../../features/requests/IncomingRequestDetailModal"
 import { SharePaylinkModal } from "../../features/requests/SharePaylinkModal"
-import { RemoveRequestLinkModal } from "../../features/requests/RemoveRequestLinkModal"
+import { CancelRequestLinkModal } from "../../features/requests/CancelRequestLinkModal"
 import { SavingsMoveDetailModal } from "../../features/savings/SavingsMoveDetailModal"
+import { UpgradeBatchDetailModal } from "./UpgradeBatchDetailModal"
+import { UpgradeRunDetailModal } from "./UpgradeRunDetailModal"
+import { upgradeRecipients, upgradeRunsOf, type UpgradeRun } from "./upgradeRuns"
 import { savingsFinalizeDeployment } from "../../features/savings/savingsGateway"
 import {
   SavingsMoveRow,
@@ -114,7 +120,7 @@ import { swapExitReasonFor, type SwapExitReason } from "../../features/withdraw/
 import { WithdrawalExitModal } from "../../features/withdraw/WithdrawalExitModal"
 import { migrationAmounts } from "../../features/migration/migrationFee"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { rowTimestamp, shortAddr, usdFigure } from "../format"
+import { rowTimestamp, usdFigure, shortL1Addr } from "../format"
 import { writeClipboard } from "../hooks"
 import { usePhoneLayout } from "../usePhoneLayout"
 import { arrivingFunds, type ArrivingFunds } from "./arrivingFunds"
@@ -231,20 +237,21 @@ function WithdrawalRow({
   // A burn to this wallet's registration SIPA paid for its tag, not a withdrawal to a stranger.
   const registrationTag = registrationTagForSipa(record.recipient)
   const migration = record.intent === "migration"
+  const ensName = useEnsName(record.recipient, ensClient)
   return (
     <ActivityListRow
       counterparty={
         migration
-          ? "Migration"
+          ? "Upgrade"
           : registrationTag
           ? `@${registrationTag}`
-          : record.recipientAlias ?? shortAddr(record.recipient)
+          : record.recipientAlias ?? ensName ?? shortL1Addr(record.recipient)
       }
       counterpartyBadge={
         migration
           ? record.phase === "done"
-            ? "Left old network"
-            : "Leaving old network"
+            ? "Left old version"
+            : "Leaving old version"
           : registrationTag
           ? "Registration"
           : record.source === "paylink"
@@ -263,6 +270,25 @@ function WithdrawalRow({
           ? [{ title: exit.title, actionStyle: "gradient" as const, onClick: exit.onStart }]
           : []),
       ]}
+    />
+  )
+}
+
+/** One upgrade: its batches and the deposits they bring, as one row until every one has arrived. */
+function UpgradeRunRow({ run, onOpen }: { run: UpgradeRun; onOpen: () => void }) {
+  const transfers = run.legs.length === 1 ? "1 transfer" : `${run.legs.length} transfers`
+  return (
+    <ActivityListRow
+      counterparty="Upgrade"
+      counterpartyBadge={
+        run.complete ? transfers : `${run.arrived} of ${run.legs.length} arrived`
+      }
+      timestamp={rowTimestamp(run.time)}
+      amount={`+${usdFigure(formatUnits(run.total, DEFAULT_DECIMALS))}`}
+      statusLabel={run.settled ? undefined : "Pending"}
+      avatarIcon="wallet"
+      onClick={onOpen}
+      ariaLabel="Open upgrade details"
     />
   )
 }
@@ -297,14 +323,14 @@ function DepositRow({
   const migration = row.intent === "migration"
   return (
     <ActivityListRow
-      counterparty={registration ? `@${registration.name}` : migration ? "Migration" : "Deposit"}
+      counterparty={registration ? `@${registration.name}` : migration ? "Upgrade" : "Deposit"}
       counterpartyBadge={
         registration
           ? "Registration"
           : migration
           ? isSettledSipaPhase(record.phase)
             ? "Arrived"
-            : "Arriving on new network"
+            : "Arriving on new version"
           : undefined
       }
       timestamp={subline ?? rowTimestamp(time ?? record.startTime)}
@@ -372,8 +398,8 @@ type BridgeExit =
   | { kind: "swap"; record: WithdrawalRecord; reason: SwapExitReason }
   | { kind: "skyEscrow"; move: SavingsMoveRecord; burn: WithdrawalRecord }
 
-/** Actionable pending-request row — Decline/Send incoming, Cancel/Remind to a contact, Remove/Share on
- *  a link. Remove only drops the local row: nothing can revoke a minted link. */
+/** Actionable pending-request row — Decline/Send incoming, Cancel/Remind to a contact, Cancel/Share on
+ *  a link. Cancelling a link only drops the local row: nothing can revoke a minted link. */
 export function RequestRow({
   row,
   reminded,
@@ -381,7 +407,6 @@ export function RequestRow({
   onSend,
   onCancel,
   onRemind,
-  onRemove,
   onOpen,
   compact = false,
 }: {
@@ -393,7 +418,6 @@ export function RequestRow({
   onSend: (row: RequestRowView) => void
   onCancel: (id: string) => void
   onRemind: (id: string) => void
-  onRemove?: (id: string) => void
   onOpen?: () => void
 }) {
   const isLink = row.kind === "outgoingLink"
@@ -413,7 +437,7 @@ export function RequestRow({
           },
         ]
       : [
-          ...(onRemove ? [{ title: "Remove", onClick: () => onRemove(row.id) }] : []),
+          { title: "Cancel", onClick: () => onCancel(row.id) },
           ...(onOpen
             ? [{ title: "Share", actionStyle: "gradient" as const, onClick: onOpen }]
             : []),
@@ -595,6 +619,11 @@ export function useActivityEntries(): ActivityEntriesState {
   const { records: depositRecords, hydrated: depositsHydrated } = useCachedRecords(
     useMemo(() => SIPADepositStore.get(webStorage), []),
   )
+  const upgrades = UpgradeActivity.get(webStorage)
+  const upgradesHydrated = useSyncExternalStore(
+    useCallback((listener: () => void) => upgrades.onChanged(listener), [upgrades]),
+    () => upgrades.loaded(),
+  )
   const [items, setItems] = useState<ActivityItem[]>(() => feed.list())
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [transactionsHydrated, setTransactionsHydrated] = useState(false)
@@ -606,11 +635,14 @@ export function useActivityEntries(): ActivityEntriesState {
   // A record's localId or a group's id (disjoint: `wdraw_...` against 0x hex). Held by id, not by
   // value: the tracker advances the record while the sheet is open and the ladder has to follow it.
   const [withdrawalDetailId, setWithdrawalDetailId] = useState<string | null>(null)
+  const [upgradeDetailId, setUpgradeDetailId] = useState<string | null>(null)
+  const [upgradeRunId, setUpgradeRunId] = useState<string | null>(null)
   const [depositDetailId, setDepositDetailId] = useState<string | null>(null)
   const [tagDetailId, setTagDetailId] = useState<string | null>(null)
   const [requestLinkDetail, setRequestLinkDetail] = useState<PaymentRequest | null>(null)
   const [cancelRequestId, setCancelRequestId] = useState<string | null>(null)
-  const [removeLinkId, setRemoveLinkId] = useState<string | null>(null)
+  const [cancelLinkId, setCancelLinkId] = useState<string | null>(null)
+  const [sentDetailId, setSentDetailId] = useState<string | null>(null)
   const [incomingDetailId, setIncomingDetailId] = useState<string | null>(null)
   // Held by value, unlike the details above: a submitted exit advances its record straight out of
   // the filtered list, and a sheet mid-submit must not go with it.
@@ -620,7 +652,12 @@ export function useActivityEntries(): ActivityEntriesState {
   // time crosses those boundaries, and offers neither until the tip has been read.
   const chainNow = usePolledChainSeconds(paylinkDeps?.wallet.node)
 
-  useEffect(() => feed.onChanged(setItems), [feed])
+  // Read again once subscribed: a source can load between the first render and this effect.
+  useEffect(() => {
+    const unsubscribe = feed.onChanged(setItems)
+    setItems(feed.list())
+    return unsubscribe
+  }, [feed])
 
   // A just-created paylink or a tapped notification lands here with its row key in router state;
   // open its detail once the row exists, then clear the state so a back/refresh doesn't reopen it.
@@ -630,6 +667,8 @@ export function useActivityEntries(): ActivityEntriesState {
     openPaylink?: string
     openWithdrawalId?: string
     openDepositAddress?: string
+    /** An upgrade's run key: its row's sheet. */
+    openUpgradeRun?: string
     /** Full text of the notification that opened the detail. */
     notice?: string
     /** The row status that makes the notice stale. */
@@ -877,6 +916,12 @@ export function useActivityEntries(): ActivityEntriesState {
   // Records with a groupId show as their group, never as plain withdrawal rows.
   const withdrawalGroups = useMemo(() => withdrawalGroupsOf(withdrawalRecords), [withdrawalRecords])
   const groupDetail = withdrawalGroups.find((g) => g.groupId === withdrawalDetailId) ?? null
+  const upgradeDetail =
+    items.flatMap((item) =>
+      item.kind === "upgrade.batch" && `${item.batch.run}/${item.batch.id}` === upgradeDetailId
+        ? [item.batch]
+        : [],
+    )[0] ?? null
 
   // Request-link SIPAs render as the request row, not a generic deposit.
   const linkedSipas = requestLinkedSipaAddresses(requests)
@@ -887,6 +932,17 @@ export function useActivityEntries(): ActivityEntriesState {
       .filter((r) => r.intent === "migration")
       .map((r) => [r.recipient.toLowerCase(), r] as const),
   )
+  // An upgrade is one row over its batches; their deposits are its legs, not rows of their own.
+  const upgradeRuns = upgradeRunsOf(items)
+  const upgradeArrivals = upgradeRecipients(items)
+  const upgradeRunDetail = upgradeRuns.find((run) => run.run === upgradeRunId) ?? null
+  const openUpgradeRun = routerState?.openUpgradeRun
+  useEffect(() => {
+    if (!openUpgradeRun || !upgradeRuns.some((run) => run.run === openUpgradeRun)) return
+    setUpgradeRunId(openUpgradeRun)
+    setNotice(routerNotice ? { text: routerNotice } : undefined)
+    navigate(".", { replace: true, state: null })
+  }, [openUpgradeRun, upgradeRuns, routerNotice, navigate])
   // Registration addresses a burn from this wallet paid (a payment link's signup): the burn row is
   // the registration's, what left the balance; the feed keeps the deposit leg behind it.
   const burnFundedRegistrations = new Set(
@@ -926,17 +982,14 @@ export function useActivityEntries(): ActivityEntriesState {
       reminded={remindedIds.has(row.id)}
       onDecline={onDecline}
       onSend={onSend}
-      onCancel={onCancel}
+      onCancel={row.kind === "outgoingLink" ? setCancelLinkId : onCancel}
       onRemind={onRemind}
-      onRemove={row.kind === "outgoingLink" ? setRemoveLinkId : undefined}
       onOpen={
         row.kind === "outgoingLink"
           ? () => openLinkDetail(row.id)
           : row.kind === "incoming"
           ? () => setIncomingDetailId(row.id)
-          : row.contactTag
-          ? () => navigate(`/contacts/${encodeURIComponent(row.contactTag!)}`)
-          : undefined
+          : () => setSentDetailId(row.id)
       }
     />
   )
@@ -1029,6 +1082,24 @@ export function useActivityEntries(): ActivityEntriesState {
         />
       ),
     })),
+    ...upgradeRuns.map(
+      (run): ActivityEntry => ({
+        id: `upgrade-run:${run.run}`,
+        ts: run.time,
+        direction: "in",
+        pending: !run.settled,
+        node: (
+          <UpgradeRunRow
+            key={run.run}
+            run={run}
+            onOpen={() => {
+              setNotice(undefined)
+              setUpgradeRunId(run.run)
+            }}
+          />
+        ),
+      }),
+    ),
     // One row for the two burns of a legacy fresh-address withdrawal: worst leg's status, total burned.
     ...withdrawalGroups.map((group): ActivityEntry => {
       const head = group.legs.gas ?? group.records[0]
@@ -1046,7 +1117,7 @@ export function useActivityEntries(): ActivityEntriesState {
         node: (
           <ActivityListRow
             key={group.groupId}
-            counterparty={head.recipientAlias ?? shortAddr(head.recipient)}
+            counterparty={head.recipientAlias ?? shortL1Addr(head.recipient)}
             counterpartyBadge="Fresh address"
             timestamp={delayed ? STUCK_SUBLINE : rowTimestamp(withdrawalGroupTime(group))}
             amount={`-${usdFigure(withdrawalGroupAmount(group))}`}
@@ -1128,8 +1199,10 @@ export function useActivityEntries(): ActivityEntriesState {
         ]
       }
       if (item.kind === "bridge.sipaDeposit") {
+        if (upgradeArrivals.has(item.record.sipaAddress.toLowerCase())) return []
         const burn = migrationBurns.get(item.record.sipaAddress.toLowerCase())
-        // A migration's arrival shows from the burn on, funded or not; unfunded behind a failed
+        const exitTime = burn ? burn.endTime ?? burn.startTime : undefined
+        // A migration's arrival shows from its exit on, funded or not; unfunded behind a failed
         // burn, it never receives anything.
         if (
           ((!burn || burn.phase === "failed") && isUnfundedSipaDeposit(item.record)) ||
@@ -1139,9 +1212,10 @@ export function useActivityEntries(): ActivityEntriesState {
         }
         const pending = !!burn && isUnfundedSipaDeposit(item.record)
         // A migration's arrival sits directly above its exit, pending or funded.
-        const ts = burn
-          ? Math.max(pending ? 0 : bridgeItemTime(item), (burn.endTime ?? burn.startTime) + 1)
-          : bridgeItemTime(item)
+        const ts =
+          exitTime !== undefined
+            ? Math.max(pending ? 0 : bridgeItemTime(item), exitTime + 1)
+            : bridgeItemTime(item)
         const openDetail = () => {
           setNotice(undefined)
           setDepositDetailId(item.record.sipaAddress)
@@ -1187,8 +1261,12 @@ export function useActivityEntries(): ActivityEntriesState {
                 key={item.record.sipaAddress}
                 row={sipaDepositIntentRow(item.record, tag, !!burn)}
                 processing={item.processing}
-                arriving={pending ? { net: migrationAmounts(burn)?.netDisplay } : undefined}
-                time={burn ? ts : undefined}
+                arriving={
+                  pending
+                    ? { net: burn ? migrationAmounts(burn)?.netDisplay : undefined }
+                    : undefined
+                }
+                time={exitTime !== undefined ? ts : undefined}
                 onOpen={openDetail}
                 onExit={() => openDepositExit(item.record, item.processing)}
               />
@@ -1276,6 +1354,7 @@ export function useActivityEntries(): ActivityEntriesState {
     }),
     hydrated:
       depositsHydrated &&
+      upgradesHydrated &&
       withdrawalsHydrated &&
       transactionsHydrated &&
       requestsHydrated &&
@@ -1310,6 +1389,20 @@ export function useActivityEntries(): ActivityEntriesState {
                 : undefined
             }
             exit={withdrawalExit(withdrawalDetail)}
+          />
+        )}
+        {upgradeDetail && (
+          <UpgradeBatchDetailModal batch={upgradeDetail} onClose={() => setUpgradeDetailId(null)} />
+        )}
+        {upgradeRunDetail && (
+          <UpgradeRunDetailModal
+            run={upgradeRunDetail}
+            onViewLeg={(leg) => {
+              setUpgradeRunId(null)
+              if (leg.arrival) setDepositDetailId(leg.arrival.sipaAddress)
+              else setUpgradeDetailId(`${leg.batch.run}/${leg.batch.id}`)
+            }}
+            onClose={() => setUpgradeRunId(null)}
           />
         )}
         {groupDetail && (
@@ -1423,15 +1516,27 @@ export function useActivityEntries(): ActivityEntriesState {
             onClose={() => setSavingsDetailId(null)}
           />
         )}
-        {removeLinkId && (
-          <RemoveRequestLinkModal requestId={removeLinkId} onClose={() => setRemoveLinkId(null)} />
+        {cancelLinkId && (
+          <CancelRequestLinkModal requestId={cancelLinkId} onClose={() => setCancelLinkId(null)} />
         )}
         {requestLinkDetail && (
           <SharePaylinkModal
             request={requestLinkDetail}
             requesterTag={loadWalletIdentity()?.handle ?? ""}
             payer={payerForRequest(requestLinkDetail)}
+            onCancel={() => {
+              setRequestLinkDetail(null)
+              setCancelLinkId(requestLinkDetail.id)
+            }}
             onClose={() => setRequestLinkDetail(null)}
+          />
+        )}
+        {sentDetailId && (
+          <RequestDetailModal
+            requestId={sentDetailId}
+            reminded={remindedIds.has(sentDetailId)}
+            onRemind={() => onRemind(sentDetailId)}
+            onClose={() => setSentDetailId(null)}
           />
         )}
         {cancelRequestId && (

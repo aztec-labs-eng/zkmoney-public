@@ -21,6 +21,7 @@ import {
   type PendingTxRecord,
 } from "../../src/obsidion/pending/index.js"
 import { ObsidionWallet } from "../../src/obsidion/ObsidionWallet.js"
+import { setPerfLogFlag } from "../../src/obsidion/proving-progress-helpers.js"
 import { provingProgress } from "@obsidion/proving-progress"
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -74,6 +75,7 @@ function buildStubWallet(opts?: {
   txHash?: string
   pendingTxStore?: IPendingTxStore
   proveTxThrowsSync?: unknown
+  proveStats?: unknown
 }): StubBuild {
   const txHash = opts?.txHash ?? "0x" + "ab".repeat(32)
   const proveTxDeferreds: ReturnType<typeof deferred<any>>[] = []
@@ -88,6 +90,7 @@ function buildStubWallet(opts?: {
       constants: { anchorBlockHeader: { globalVariables: { timestamp: 0 } } },
     },
     toTx: async () => stubTx,
+    stats: opts?.proveStats,
   }
 
   const stubPxe: any = {
@@ -158,6 +161,7 @@ beforeEach(() => {
 afterEach(() => {
   provingProgress.removeAllListeners()
   provingProgress.clearOperationContext()
+  setPerfLogFlag(undefined)
 })
 
 // ─── Tests ─────────────────────────────────────────────────────────────────
@@ -288,5 +292,52 @@ describe("ObsidionWallet — send pipeline", () => {
     await settleUntil(() => proveTxDeferreds.length >= 2)
     proveTxDeferreds[1]!.resolve(undefined)
     await expect(p2).resolves.toBeDefined()
+  })
+
+  it("the [Perf][ProveTx] line carries the PXE's own prove-side split", async () => {
+    setPerfLogFlag(true)
+    const { wallet, proveTxDeferreds } = buildStubWallet({
+      proveStats: {
+        timings: {
+          sync: 2,
+          proving: 4200,
+          perFunction: [
+            { functionName: "Token:transfer", time: 310 },
+            { functionName: "private_kernel_init", time: 600 },
+            { functionName: "hiding_kernel", time: 90 },
+          ],
+          unaccounted: 8,
+          total: 5210,
+        },
+      },
+    })
+    const info = vi.fn()
+    ;(wallet as any).log.info = info
+    const sendPromise = wallet.sendTx(new ExecutionPayload([], [], [], []), {
+      from: await AztecAddress.random(),
+      wait: NO_WAIT,
+    } as any)
+    await settleUntil(() => proveTxDeferreds.length === 1)
+    proveTxDeferreds[0]!.resolve(undefined)
+    await sendPromise
+    const line = info.mock.calls.map((c) => String(c[0])).find((l) => l.includes("[Perf][ProveTx]"))
+    expect(line).toMatch(/ sim=\d+ms /)
+    expect(line).toContain(
+      "sync=2ms user_witgen=310ms kernel_witgen=690ms proving=4200ms pxe_total=5210ms",
+    )
+  })
+
+  it("prints no [Perf][ProveTx] line when the flag is off", async () => {
+    const { wallet, proveTxDeferreds } = buildStubWallet()
+    const info = vi.fn()
+    ;(wallet as any).log.info = info
+    const sendPromise = wallet.sendTx(new ExecutionPayload([], [], [], []), {
+      from: await AztecAddress.random(),
+      wait: NO_WAIT,
+    } as any)
+    await settleUntil(() => proveTxDeferreds.length === 1)
+    proveTxDeferreds[0]!.resolve(undefined)
+    await sendPromise
+    expect(info.mock.calls.some((c) => String(c[0]).includes("[Perf][ProveTx]"))).toBe(false)
   })
 })

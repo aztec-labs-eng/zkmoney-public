@@ -1,11 +1,19 @@
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { benchmarkRegistry, readTimingBenchFlag, setTimingBenchFlag } from "@obsidion/sdk"
 import type { BenchmarkSample } from "@obsidion/core/types"
 import { txTimingProps, wireTxTimingAnalytics } from "../src/lib/txTimingAnalytics"
+import { stubProvingDevice } from "./support/provingDevice"
+
+const h = vi.hoisted(() => ({ fireEvent: vi.fn() }))
+vi.mock("../src/lib/analytics", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  fireEvent: h.fireEvent,
+}))
 
 afterEach(() => {
   setTimingBenchFlag(undefined)
   benchmarkRegistry.setSampleSink(undefined)
+  h.fireEvent.mockReset()
 })
 
 describe("txTimingProps", () => {
@@ -47,6 +55,40 @@ describe("wireTxTimingAnalytics", () => {
     // No VITE_ZKMONEY_API_URL and no consent bound in tests → analyticsEnabled()
     // is false, so capture stays off too.
     expect(readTimingBenchFlag()).toBe(false)
+  })
+
+  it("sends each finished transaction's phases with the device class", () => {
+    const restore = stubProvingDevice(true, 8)
+    try {
+      wireTxTimingAnalytics()
+      benchmarkRegistry.contributeTee("op-device", { flow: "send", enclave: 300, notesUsed: 2 })
+      benchmarkRegistry.contributeProve("op-device", {
+        flow: "send",
+        sync: 100,
+        simulation: 2_000,
+        userWitgen: 4_000,
+        kernelWitgen: 5_000,
+        proving: 12_000,
+        unaccounted: 0,
+        incomplete: false,
+      })
+      expect(h.fireEvent).toHaveBeenCalledWith("tx_timing", {
+        flow: "send",
+        status: "ok",
+        notes_used: 2,
+        sync_ms: 100,
+        simulation_ms: 2_000,
+        enclave_ms: 300,
+        user_witgen_ms: 4_000,
+        kernel_witgen_ms: 5_000,
+        proving_ms: 12_000,
+        total_ms: 23_400,
+        cross_origin_isolated: true,
+        hardware_concurrency: 8,
+      })
+    } finally {
+      restore()
+    }
   })
 
   it("a predicate override is re-evaluated on every read", () => {

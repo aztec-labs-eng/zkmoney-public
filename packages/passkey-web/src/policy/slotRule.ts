@@ -88,7 +88,8 @@ const expectedAtCreation = (
  * reported this device, since an unreported answer says nothing about where the passkey went.
  * `localManagers` marks the laptop's own route and names the managers its refusals offer: there a
  * `cross-platform` answer that is not a key can only be an extension relabelling an in-page
- * answer, whose salts were never hashed by the browser.
+ * answer, whose salts were never hashed by the browser. `advice` follows a laptop's refusal on the
+ * phone and key routes.
  */
 export function checkCreationRoute(
   posture: DevicePosture,
@@ -96,6 +97,7 @@ export function checkCreationRoute(
   securityKey: boolean,
   providerName?: string,
   localManagers?: readonly LocalManager[],
+  advice?: string,
 ): void {
   const local = localManagers !== undefined
   if (attachment === expectedAtCreation(posture, securityKey, local)) return
@@ -112,6 +114,7 @@ export function checkCreationRoute(
   throw new PhoneRequiredError({
     ceremony: "create",
     providerName: attachment === "platform" ? providerName : undefined,
+    advice,
   })
 }
 
@@ -197,19 +200,23 @@ const PHONE_CREATION_HINTS: readonly PasskeyHint[] = ["client-device", "security
 const LAPTOP_CREATION_HINTS: readonly PasskeyHint[] = ["hybrid", "security-key"]
 
 /**
- * Steering when the device's own copy IS the route: open the sheet on this computer. No security
- * key is named, so a password manager answers for its own passkey; a sign-in names one beside it
- * only for a credential the consumer knows to be a hardware key.
+ * Steering to this computer that names no security key, so a password manager's extension may
+ * answer: a local sign-in's, which names one beside it only for a credential the consumer knows to
+ * be a hardware key, and a local creation's when the consumer wants the extension.
  */
 export const LAPTOP_LOCAL_HINTS: readonly PasskeyHint[] = ["client-device"]
 
+/** A local creation whose consumer names no hints: this computer first, then a security key. */
+export const LAPTOP_LOCAL_CREATION_HINTS: readonly PasskeyHint[] = ["client-device", "security-key"]
+
 /**
  * Steering for a creation. A laptop leads with the route its consumer names, the phone when it
- * names none, and always names a security key; on its own route (`local`) it sends the consumer's
- * hints as given, the local steering when it names none, and never a security key, which would
- * hide the very manager the route asks for. `null` sends nothing. A phone names its own passkey
- * and a security key — the two classes the route rule admits — and never `hybrid`, which it would
- * refuse. Steering is advisory: the route rule is what enforces this.
+ * names none, and always names a security key. On its own route (`local`) it sends the consumer's
+ * hints as given, else this computer and a security key, so 1Password's extension stands aside for
+ * the browser's own managers; a consumer that wants the extension passes `client-device` alone.
+ * `null` sends nothing. A phone names its own passkey and a security key — the two classes the
+ * route rule admits — and never `hybrid`, which it would refuse. Steering is advisory: the route
+ * rule is what enforces this.
  */
 export function creationHintsFor(
   posture: DevicePosture,
@@ -218,7 +225,7 @@ export function creationHintsFor(
 ): readonly PasskeyHint[] | undefined {
   if (posture !== "laptop") return PHONE_CREATION_HINTS
   if (laptopHints === null) return undefined
-  if (local) return laptopHints?.length ? laptopHints : LAPTOP_LOCAL_HINTS
+  if (local) return laptopHints?.length ? laptopHints : LAPTOP_LOCAL_CREATION_HINTS
   return laptopHints?.length ? namingSecurityKey(laptopHints) : LAPTOP_CREATION_HINTS
 }
 

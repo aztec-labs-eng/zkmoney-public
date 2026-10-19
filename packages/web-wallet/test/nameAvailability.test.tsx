@@ -427,6 +427,31 @@ describe("InvitationStep availability", () => {
     expect(cta().disabled).toBe(true)
   })
 
+  it("on a phone the tag field waits for a tap instead of focusing as the sheet opens", async () => {
+    const { deviceStorage } = await import("../src/platform/storage/rollupStorage")
+    deviceStorage.setItem("webwallet.ticket-intro-seen", "1")
+    const media = { matches: true, addEventListener() {}, removeEventListener() {} }
+    vi.stubGlobal("matchMedia", () => media)
+    vi.stubGlobal("fetch", answering({ status: "available" }))
+    await act(async () => {
+      root.render(
+        <ChooseTagStep
+          ticket={{ tokenDecimals: 18, tokenSymbol: "DAI" }}
+          busy={false}
+          onClaim={vi.fn()}
+          onLogIn={vi.fn()}
+          onCancel={vi.fn()}
+          onClose={vi.fn()}
+        />,
+      )
+    })
+    const field = document.querySelector<HTMLInputElement>('input[aria-label="Your tag"]')!
+    expect(field.hasAttribute("data-autofocus")).toBe(false)
+    expect(document.activeElement).not.toBe(field)
+    media.matches = false
+    deviceStorage.removeItem("webwallet.ticket-intro-seen")
+  })
+
   it("holds a seeded paylink tag while availability is pending", async () => {
     const onClaim = vi.fn()
     vi.stubGlobal("fetch", answering({ status: "available" }))

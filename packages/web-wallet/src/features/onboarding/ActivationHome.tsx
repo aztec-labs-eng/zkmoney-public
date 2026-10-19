@@ -2,13 +2,13 @@ import { useState, type ReactNode } from "react"
 import type { InviteNotice } from "./steps/TagAvailabilityNotes"
 import { formatUnits } from "viem"
 import { depositOwed, useAccountContext, useAztecContext } from "@obsidion/front-core"
-import { GradientHeroCard, GradientSpinner, Icon } from "@obsidion/web-ds"
+import { GradientHeroCard, GradientSpinner, Icon, TopNavIconButton } from "@obsidion/web-ds"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import { getConfig } from "../../config/env"
 import { fireOnboardingEvent } from "../../lib/analytics"
 import pastUserArt from "../../assets/onboarding/past-user-banner.webp"
 import pastUserVerifiedArt from "../../assets/onboarding/past-user-banner-verified.webp"
-import { shortAddr, usdFigure } from "../../ui/format"
+import { usdFigure, shortL1Addr } from "../../ui/format"
 import {
   ACTIVATION_STEP_COUNT,
   activationStepNumber,
@@ -67,10 +67,16 @@ function ActivationSteps(props: {
   beside?: Partial<Record<ActivationStep["id"], ReactNode>>
   current: ReactNode
   children?: ReactNode
+  onBack?: () => void
 }) {
   const at = props.steps.findIndex((step) => !step.done)
   return (
     <section className="ww-activation" data-testid={props.testId}>
+      {props.onBack && (
+        <span className="ww-activation__back">
+          <TopNavIconButton icon="chevron-left" ariaLabel="Back" onClick={props.onBack} />
+        </span>
+      )}
       <header className="ww-activation__head">
         <div className="ww-activation__title">
           <h2 className="ww-activation__welcome">
@@ -251,6 +257,8 @@ export function ActivationDraft(props: {
   onChooseOwn: () => void
   onCreate: () => void
   onReroll: () => Promise<void>
+  /** Drops the drawn tag and returns to the landing. */
+  onBack: () => void
 }) {
   const verifying = useVerifyOpen()
   // Verified and not yet spent: the own tag is free.
@@ -270,6 +278,7 @@ export function ActivationDraft(props: {
     <ActivationSteps
       testId="activation-draft"
       tag={tag}
+      onBack={props.onBack}
       tagActions={
         <TagActions
           tag={tag}
@@ -347,7 +356,7 @@ export function ActivationHome() {
       subtitle={
         pastUser
           ? `Your own tag, free as a past zk.money user.${
-              verifiedAccount ? ` Verified ${shortAddr(verifiedAccount)}.` : ""
+              verifiedAccount ? ` Verified ${shortL1Addr(verifiedAccount)}.` : ""
             }`
           : undefined
       }

@@ -78,13 +78,16 @@ import {
   type TxKind,
 } from "@obsidion/proving-progress"
 import {
-  PerfBucketAccumulator,
   proveTxWithProgress,
   readPerfLogFlag,
   readTimingBenchFlag,
 } from "./proving-progress-helpers.js"
 import { benchmarkRegistry } from "./benchmark/benchmarkRegistry.js"
-import { benchNow, extractProveTimings } from "./benchmark/proveTimingExtract.js"
+import {
+  benchNow,
+  extractProveTimings,
+  formatProveTxPerfLine,
+} from "./benchmark/proveTimingExtract.js"
 import { extractSimFunctions } from "./benchmark/simFunctionExtract.js"
 import {
   type InteractionWaitOptions,
@@ -714,8 +717,6 @@ export class ObsidionWallet extends BaseWallet {
     let simulationMs = 0
     let simFunctions: ReturnType<typeof extractSimFunctions>
 
-    const buckets = proveTxPerfLogs ? new PerfBucketAccumulator() : null
-    buckets?.subscribe()
     const t_total_start = Date.now()
 
     // Resolved before the scope so the stage emits below and the scope itself share one id.
@@ -753,7 +754,7 @@ export class ObsidionWallet extends BaseWallet {
       // Yields the authwits contract code requested via `emit_offchain_effect` and the exact gas
       // the prove will use (padding 0: gas is deterministic per call). Caller-supplied limits still
       // win.
-      const t_simulation = timingBench ? benchNow() : 0
+      const t_simulation = timingBench || proveTxPerfLogs ? benchNow() : 0
       const simResult = await this.simulateTxAssumingSynced(
         executionPayload,
         {
@@ -769,8 +770,8 @@ export class ObsidionWallet extends BaseWallet {
         // Estimation pass: completeFeeOptions loosens gas for the sim.
         true,
       )
+      if (timingBench || proveTxPerfLogs) simulationMs = benchNow() - t_simulation
       if (timingBench) {
-        simulationMs = benchNow() - t_simulation
         try {
           simFunctions = extractSimFunctions(simResult.stats?.timings)
         } catch {
@@ -911,6 +912,7 @@ export class ObsidionWallet extends BaseWallet {
             },
             { perfLog: proveTxPerfLogs, logger: this.log },
           )
+          const proveTimings = proveTxPerfLogs ? provenTx.stats?.timings : undefined
           // Prove-side benchmark scalars, read+cached in-process BEFORE
           // `toTx()` so a benchmarked sample never depends on post-prove
           // transforms; contributed to the registry after a successful submit.
@@ -1019,20 +1021,28 @@ export class ObsidionWallet extends BaseWallet {
             }
           }
 
-          return { txHash, offchainOutput }
+          return { txHash, offchainOutput, proveTimings }
         },
         flowKind,
         { operationId: opId },
       )
 
-      const { txHash, offchainOutput } = scopeResult
+      const { txHash, offchainOutput, proveTimings } = scopeResult
 
-      if (proveTxPerfLogs && buckets) {
-        const { sim, witgen, prove } = buckets.snapshot()
-        const t_total_ms = Date.now() - t_total_start
-        this.log.info(
-          `[Perf][ProveTx] pre_prove=${pre_prove_ms}ms sim=${sim}ms witgen=${witgen}ms prove=${prove}ms total=${t_total_ms}ms`,
-        )
+      if (proveTxPerfLogs) {
+        // A malformed stats shape must not fail a submitted send.
+        try {
+          this.log.info(
+            formatProveTxPerfLine({
+              preProveMs: pre_prove_ms,
+              simulationMs,
+              proveTimings,
+              totalMs: Date.now() - t_total_start,
+            }),
+          )
+        } catch {
+          /* perf log only */
+        }
       }
 
       if (opts.wait === NO_WAIT) {
@@ -1057,7 +1067,6 @@ export class ObsidionWallet extends BaseWallet {
     } finally {
       // Also covers a `wait`-ful caller's `waitForTx`.
       releaseAnchorPin()
-      buckets?.unsubscribe()
     }
   }
 

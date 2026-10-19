@@ -157,6 +157,8 @@ export interface DepositAddress {
   publish?: () => Promise<void>
   /** Owes the broadcast to the ledger, durably, without waiting for it: what funding needs first. */
   owe?: () => Promise<void>
+  /** How `depositAddress` got it: a landed pool entry, a pool fill still proving, or a derivation. */
+  source?: "pool" | "filling" | "derived"
 }
 
 /**
@@ -471,6 +473,8 @@ export interface SipaDepositGateway {
      */
     beforeApprove?: (submission: string) => Promise<void>
   }): Promise<{ txHash: Hex; address: Address; name: string }>
+  /** Starts the L1 reads a sync pass opens with, which need no PXE. */
+  warm(): Promise<void>
   /** Run discovery (once) + a claim sync pass. Returns null while locked. */
   sync(
     wallet: ObsidionWallet,
@@ -729,7 +733,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     if (pooled) {
       await this.wakeDeposit(pooled.address)
       await getBroadcastLedger().markShown(pooled.address)
-      return handedOut({ address: pooled.address, name })
+      return handedOut({ address: pooled.address, name, source: "pool" })
     }
 
     // A pool fill still being proven is as unshown as a landed one: it becomes this view's address,
@@ -750,6 +754,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
         name,
         publish: publish(filling),
         owe: owe(filling),
+        source: "filling",
       })
     }
 
@@ -782,7 +787,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     // relayer it exists — so hand it back now and publish behind it. Funds sent before that
     // lands sit at the counterfactual address (not lost) but are not swept until the relayer is
     // told. Callers that show or fund the address publish it first.
-    return { address, name, publish: publish(entry), owe: owe(entry) }
+    return { address, name, publish: publish(entry), owe: owe(entry), source: "derived" }
   }
 
   async readyAddress(
@@ -1482,6 +1487,16 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       .catch(() => {})
   }
 
+  /** They run while the first balance is read, and the pass finds them cached. */
+  async warm(): Promise<void> {
+    const tuple = await getOxideTuple(this.config)
+    await Promise.all([
+      this.tokenMeta(),
+      deploymentScanRange(this.publicClient, tuple),
+      this.depositImplementation(tuple),
+    ])
+  }
+
   async sync(
     wallet: ObsidionWallet,
     tokenService: TokenService,
@@ -1547,7 +1562,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     const tag = loadWalletIdentity()?.handle
     if (tag) {
       void bootPriority
-        .whenBalanceSettled()
+        .whenReady("depositPool")
         .then(() =>
           this.refillPool(
             wallet,

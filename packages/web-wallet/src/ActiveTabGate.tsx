@@ -4,7 +4,6 @@
  */
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react"
 import type { AztecNode } from "@aztec/aztec.js/node"
-import { BarretenbergSync } from "@aztec/bb.js"
 import { BlockNumber } from "@aztec/foundation/branded-types"
 import { NoRetryError, makeBackoff, retry } from "@aztec/foundation/retry"
 import type { AztecSQLiteOPFSStore } from "@aztec/kv-store/sqlite-opfs"
@@ -19,9 +18,11 @@ import { ErrorModalHost } from "./errors/ErrorModalHost"
 import { stashInboundNameGrant } from "./features/onboarding/oxideOnboarding"
 import { bindAnalyticsConsent } from "./lib/analytics"
 import { discardIncompatiblePasskeyState } from "./platform/auth/discardIncompatiblePasskeyState"
+import { warmBarretenberg } from "./platform/bbWasm"
 import { activateTab, revokeTab, sendOnlyWhileActive } from "./platform/storage/activeTab"
 import { ActiveTabLifecycle, type ActiveTabDeps } from "./platform/storage/activeTabLifecycle"
 import { createPxeStore, opfsAvailable } from "./platform/storage/createPxeStore"
+import { originWasFresh } from "./platform/storage/freshOrigin"
 import { activeRollup, removeOldWalletKeys } from "./platform/storage/rollupStorage"
 import {
   closeWalletStore,
@@ -106,12 +107,13 @@ function walletDeps(): ActiveTabDeps<OpenedWallet> {
       reads ??= identityReads(config, node)
       const warmPxe = () => {
         void node.getBlock(BlockNumber.ZERO)
-        // A failure resurfaces where the PXE first hashes.
-        BarretenbergSync.initSingleton().catch(() => {})
+        void warmBarretenberg()
       }
       // Whether the PXE boot waits needs the wallet database; only a pay page can wait.
       const payPage = isPayPath(location.pathname)
       if (!payPage) warmPxe()
+      // The fresh-origin check must not see this page's own database.
+      await originWasFresh()
       await openWalletStore(activeRollup(), { persistent: await opfsAvailable() })
       if (payPage && !bootWaitsForDemand()) warmPxe()
       try {

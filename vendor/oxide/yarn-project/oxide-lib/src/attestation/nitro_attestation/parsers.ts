@@ -22,6 +22,8 @@ export interface ParsedNitroAttestation {
   digest?: string;
   timestamp?: bigint;
   pcr0: Buffer;
+  pcr1: Buffer;
+  pcr2: Buffer;
   enclavePublicKey?: Buffer;
   userData?: Buffer;
   nonce?: Buffer;
@@ -340,7 +342,11 @@ export function parseNitroPayload(payloadBytes: Buffer): ParsedNitroAttestation 
   const payload = asMap(decodeCbor(payloadBytes), 'Nitro attestation payload');
   const pcrs = asMap(getMapValue(payload, 'pcrs') as CborValue, 'Nitro PCR map');
   const pcr0 = asBytes(getMapValue(pcrs, NITRO_PCR0), 'Nitro PCR0');
+  const pcr1 = asBytes(getMapValue(pcrs, 1), 'Nitro PCR1');
+  const pcr2 = asBytes(getMapValue(pcrs, 2), 'Nitro PCR2');
   assertLen('Nitro PCR0', pcr0, NITRO_PCR0_BYTES);
+  assertLen('Nitro PCR1', pcr1, NITRO_PCR0_BYTES);
+  assertLen('Nitro PCR2', pcr2, NITRO_PCR0_BYTES);
 
   const caBundle = asArray(getMapValue(payload, 'cabundle') as CborValue, 'Nitro cabundle').map((cert, i) =>
     asBytes(cert, `Nitro cabundle[${i}]`),
@@ -351,6 +357,8 @@ export function parseNitroPayload(payloadBytes: Buffer): ParsedNitroAttestation 
     digest: optionalString(getMapValue(payload, 'digest'), 'Nitro digest'),
     timestamp: optionalBigint(getMapValue(payload, 'timestamp'), 'Nitro timestamp'),
     pcr0,
+    pcr1,
+    pcr2,
     enclavePublicKey: optionalPublicKey(getMapValue(payload, 'public_key')),
     userData: optionalBytes(getMapValue(payload, 'user_data'), 'Nitro user_data'),
     nonce: optionalBytes(getMapValue(payload, 'nonce'), 'Nitro nonce'),

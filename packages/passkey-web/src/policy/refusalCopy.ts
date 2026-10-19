@@ -1,12 +1,11 @@
 import type { PasskeyHint } from "../ceremony/passkeyCeremony.js"
-import {
-  type LaptopCreation,
-  type LocalCreation,
-  type LocalManager,
-  MAC_FLOORS_ADMITTED,
-} from "./laptopCreation.js"
+import type { LocalManager } from "./laptopCreation.js"
 import { type PhoneReach, MAC_FIREFOX_FLOOR, MAC_SAFARI_FLOOR } from "./passkeyCapabilities.js"
-import { IOS_PASSKEY_FLOOR } from "./userAgentInfo.js"
+import {
+  type UserAgentInfo,
+  IOS_PASSKEY_FLOOR,
+  macosSyncedCopyReadsRight,
+} from "./userAgentInfo.js"
 
 export const UNSUPPORTED_BROWSER_MESSAGE =
   "This browser doesn't support passkeys, or the browser features the wallet needs with them. " +
@@ -77,29 +76,18 @@ export const LEFTOVER_PASSKEY_COPY = {
 } as const
 
 /**
- * The link under an Apple Passwords refusal (`belowMacFloor`), to the docs entry on where Apple
- * Passwords is admitted. Each front builds the href from its passkeys docs URL and `anchor`.
+ * The link under an Apple Passwords refusal (`appleRefusedHere`), to the docs entry on where Apple
+ * Passwords works. Each front builds the href from its passkeys docs URL and `anchor`.
  */
 export const APPLE_FLOOR_COPY = {
-  link: "Why Apple Passwords is refused on this Mac",
+  link: "Why Apple Passwords didn't work here",
   anchor: "save-somewhere-else",
 } as const
 
-/** Which wording the Safari line takes: `chrome` adds where Chrome can save, while Chrome admits Apple. */
-export type SafariAdvice = "version" | "chrome"
-
-const SAFARI_VERSION_UNREAD =
-  "Safari doesn't report which macOS this Mac runs, so Apple Passwords can't be used here."
-
-/** Under an Apple Passwords refusal on Safari's row, where the refusal is not about this Mac. */
-export const SAFARI_REFUSAL_COPY: Readonly<Record<SafariAdvice, string>> = {
-  version: SAFARI_VERSION_UNREAD,
-  chrome: `${SAFARI_VERSION_UNREAD} Chrome can use it on ${MAC_FLOORS_ADMITTED}.`,
-}
-
 /**
- * The words around an Open in browser link. `hintAlone` stands where no link is shown. In X's app,
- * which drops the link, `xMenu` follows Copy link and `xMenuAlone` stands where no link is shown.
+ * The words around an Open in browser link. `hint` follows the link and `hintAlone` stands where
+ * no link is shown. In X's app, which drops the link, `xMenu` follows another action, `xMenuAlone`
+ * leads, and `xCopy` offers Copy link after it.
  */
 export const OPEN_IN_BROWSER_COPY = {
   open: "Open in browser",
@@ -107,6 +95,7 @@ export const OPEN_IN_BROWSER_COPY = {
   hintAlone: "Tap ⋯ in this app and choose Open in browser.",
   xMenu: "Or tap ⋮ next to the web address at the bottom, then Open in browser.",
   xMenuAlone: "Tap ⋮ next to the web address at the bottom, then Open in browser.",
+  xCopy: "Or copy the link and open it in your browser.",
   copyLink: "Copy link",
   copied: "Copied",
   copiedStatus: "Link copied.",
@@ -162,7 +151,8 @@ const USE_PHONE = "Use my phone"
 /**
  * The two things a laptop user does next, shown before every ceremony. The passkey may live on a
  * phone or on a security key and the screens cannot tell which, so the steps name both routes
- * rather than send half the users after the wrong one.
+ * rather than send half the users after the wrong one. The variants named below are the campaign
+ * sheet's; the wallet's laptop sign-up sheet is `SIGN_UP_SHEET_COPY`.
  */
 export const PHONE_STEPS_COPY = {
   hero: { glyph: "phone", title: "Have your phone or security key ready" } as StepsHero,
@@ -235,43 +225,25 @@ export const PHONE_STEPS_COPY = {
       "key keeps the only copy of what it holds. If a phone holds your passkey, open zk.money on a " +
       "computer that can reach it.",
   },
-  /**
-   * The local variant: shown where `laptopCreationFor` lets this laptop create on its own password
-   * manager.
-   */
+  /** This computer's lines on the laptop sign-up sheet; `signUpOptionsFor` picks among them. */
   local: {
     title: "Create your passkey",
-    routes: [
-      { hint: "client-device", label: "Continue" },
-      { hint: "hybrid", label: USE_PHONE },
-      { hint: "security-key", label: USE_SECURITY_KEY },
-    ] as readonly StepsRoute[],
-    /** Back from the phone or key variant to this one. */
-    back: "Back",
-    /** On the phone variant, where this laptop could have created on its own manager. */
-    switchToLocal: "Use this computer",
-    /** Every control leading to this computer on a row with 1Password alone. */
-    switchToOnePassword: "Have 1Password?",
-    /** Above this computer's button where no extension answers; see `localNoteFor`. */
+    /** Under Continue, to the help page's list of the passkeys that work. */
+    docs: { label: "Supported passkeys and how they work", anchor: "which-passkeys-work" },
+    /** A Mac row with 1Password alone, where the Mac's passkey window offers it. */
     pickOnePassword: "When your browser asks where to save the passkey, pick 1Password.",
+    /** Under it where a phone is reachable: the Mac's provider may be Apple Passwords alone. */
+    noOnePasswordHere: "If the Mac doesn't offer 1Password, use your phone.",
     installExtension: "To use 1Password, install its browser extension and reload this page.",
     /** Shown when the sheet re-opens after the browser's prompt closed with nothing created. */
     unfinished: "Setup didn't finish. Try again, or use your phone.",
-    /**
-     * Under the button where a password manager's extension answers passkeys; see
-     * `extensionLineFor`. The Supported passkeys tip beside it names what the browser's own prompt
-     * may save in.
-     */
+    /** Where a password manager's extension answers passkeys. */
     extension: "If a password manager pops up, dismiss it and use your browser's own prompt.",
-    extensionOnePassword:
-      "If 1Password pops up, save the passkey there. Dismiss any other password manager.",
-    /** Added once a manager the row cannot use kept answering; see `repeatedRefusalLineFor`. */
-    refusedOften:
-      "A passkey zk.money can't use keeps being saved here. Pick one listed under Supported " +
-      "passkeys.",
+    /** Added once a manager the row cannot use kept answering. */
+    refusedOften: "Failed to save passkey. Please use one of the supported password managers.",
     /**
-     * Why the sheet opened on another variant: a manager this row cannot use kept answering on
-     * this computer. Keyed by the variant it opened on.
+     * Why the sheet opened on another device: a manager this row cannot use kept answering on
+     * this computer. Keyed by the option it opened on.
      */
     steered: {
       phone: "A passkey zk.money can't use keeps being saved here, so the phone comes first.",
@@ -279,18 +251,12 @@ export const PHONE_STEPS_COPY = {
     },
   },
   /**
-   * Where another browser keeps phone creation and Chrome would not: a label beside the supported
-   * passkeys, whose tip says why. `apple` is for Safari and Firefox on a Mac, which cannot say
-   * which macOS they run on; `gpm` for another browser on Windows or Linux, which has no Google
-   * Password Manager.
+   * Where another browser on Windows or Linux keeps phone creation and Chrome would not: a line over
+   * the picker, its lead set in bold.
    */
   chromeTip: {
-    label: "Chrome recommended",
-    title: "Skip the QR code",
-    apple:
-      `On ${MAC_FLOORS_ADMITTED}, Chrome can save the passkey in Apple Passwords ` +
-      "with no QR code.",
-    gpm: "In Chrome, you can save the passkey in Google Password Manager with no QR code.",
+    lead: "Chrome recommended.",
+    gpm: "It can save the passkey on this computer, with no QR code.",
   },
 } as const
 
@@ -301,35 +267,14 @@ export const PHONE_STEPS_COPY = {
 export const CHROME_REFUSAL_COPY = "Or sign up in Chrome and save it in Google Password Manager."
 
 /**
- * The line above this computer's button where no extension answers. On a Mac either 1Password
- * surface returns key material, so only a row with 1Password alone needs a word; on Windows and
- * Linux the extension is the surface that does, so every row that lists 1Password says so.
+ * Ends a laptop sign-up's refusal when Bitwarden's extension answered. Its excluded domains match
+ * the exact host, so the line names the page's own.
  */
-export function localNoteFor(creation: LocalCreation): string | undefined {
-  if (!creation.managers.includes("1password")) return undefined
-  if (creation.os !== "macos") return PHONE_STEPS_COPY.local.installExtension
-  return creation.managers.length === 1 ? PHONE_STEPS_COPY.local.pickOnePassword : undefined
-}
+export const bitwardenLineFor = (host: string): string =>
+  `To stop Bitwarden popping up here, add ${host} to Bitwarden's excluded domains, then try again.`
 
-/**
- * The line under this computer's button where an extension answers. A row that lists 1Password
- * saves in its pop-up; any other extension's passkey is refused, so its pop-up is dismissed.
- */
-export function extensionLineFor(creation: LocalCreation): string {
-  const { extension, extensionOnePassword } = PHONE_STEPS_COPY.local
-  return creation.managers.includes("1password") ? extensionOnePassword : extension
-}
-
-/**
- * Added under the local variant once a manager the row cannot use kept answering. None where
- * 1Password is the row's only manager: the sheet opens on another variant instead.
- */
-export function repeatedRefusalLineFor(creation: LocalCreation): string | undefined {
-  const alone = creation.managers.every((m) => m === "1password")
-  return alone ? undefined : PHONE_STEPS_COPY.local.refusedOften
-}
-
-const SUPPORTED_NAMES: Readonly<Record<LocalManager, string>> = {
+/** How the sheet names each manager. */
+export const SUPPORTED_NAMES: Readonly<Record<LocalManager, string>> = {
   "apple": "iCloud Keychain",
   "gpm": "Google Password Manager",
   "1password": "1Password",
@@ -341,18 +286,6 @@ export type SupportedCopy = {
   title: string
   providers: readonly string[]
   refused: string
-}
-
-/**
- * The tip for a variant: the phone variant lists every manager a phone creation admits; the local
- * variant lists only the managers this row admits, and the key.
- */
-export function supportedFor(creation?: LaptopCreation): SupportedCopy {
-  if (!creation?.local) return PHONE_STEPS_COPY.supported
-  return {
-    ...PHONE_STEPS_COPY.supported,
-    providers: [...creation.managers.map((m) => SUPPORTED_NAMES[m]), "YubiKey 5 security key"],
-  }
 }
 
 /**
@@ -407,6 +340,56 @@ export const PHONE_HELP_COPY = {
 } as const
 
 /**
+ * The laptop sign-up sheet: a picker of where the new passkey lives. `signUpOptionsFor` decides
+ * which options and lines show; lines the campaign's sheet shares stay in `PHONE_STEPS_COPY`.
+ */
+export const SIGN_UP_SHEET_COPY = {
+  title: PHONE_STEPS_COPY.local.title,
+  pickerLabel: "Where should your passkey live?",
+  continueLabel: PHONE_STEPS_COPY.continueLabel,
+  onePassword: {
+    label: "1Password",
+    description: "Saved by the 1Password extension in this browser",
+  },
+  /** Over the running button while a script zk.money cannot use answers the page's creation. */
+  extensionWarning:
+    "Unsupported browser extension detected! If it opens its own pop-up, close it and use the " +
+    "native passkey prompt.",
+  computer: {
+    label: "This computer",
+    macLabel: "This Mac",
+    /** Followed by the managers This computer reaches, joined by "or". */
+    savedIn: "Saved in",
+    /** A Mac row with 1Password alone and no extension-backed 1Password option. */
+    macWindow: "Saved in 1Password through your Mac's passkey window",
+  },
+  phone: {
+    label: "Your phone",
+    description: "Scan a QR code to save it on your phone",
+  },
+  key: {
+    label: "Security key",
+    description: "A YubiKey 5 you plug in or tap",
+    /** Where no phone can be reached but this computer can still save the passkey. */
+    noPhone: "This computer can't reach a phone.",
+  },
+  /** Where the browser ignores hints, so its own prompt offers both. */
+  phoneOrKey: {
+    label: "Your phone or a security key",
+    description: "Your browser shows a QR code for your phone, and a security-key option",
+    windows:
+      'In the next prompt, choose "iPhone, iPad or Android device" for your phone, or "Security ' +
+      'key", not Windows Hello.',
+  },
+  /** One line under each option that can reach a key; its tip holds the loss note. */
+  keyWarning: {
+    label: PHONE_STEPS_COPY.noPhone.detailsLabel,
+    note: PHONE_STEPS_COPY.noPhone.note,
+    models: PHONE_STEPS_COPY.noPhone.models,
+  },
+} as const
+
+/**
  * The laptop sign-in sheet. The browser cannot be steered to one device — its own account chooser
  * lists every passkey it can reach and honours no routing hint — so the sheet does not promise a
  * device. It names the one action and lets the browser's prompt offer whatever holds the passkey:
@@ -444,6 +427,33 @@ export const MISMATCH_COPY: Readonly<Record<"wrong-key" | "not-reproduced", Refu
   },
 }
 
+const MAC_UPDATE_FIXED = "later versions fixed this on the Macs we tested."
+
+/** Under a Mac sign-in card the Apple bug may explain: an update is worth a try, never a promise. */
+export const MAC_UPDATE_COPY = {
+  below: `Updating macOS is worth a try: ${MAC_UPDATE_FIXED}`,
+  unknown: `If this Mac isn't on the latest macOS, updating it is worth a try: ${MAC_UPDATE_FIXED}`,
+} as const
+
+export type MacUpdateAdvice = keyof typeof MAC_UPDATE_COPY
+
+/** Which update line a Mac gets: none where the reported macOS already reads its synced copy right. */
+export function macUpdateAdviceFor(ua: UserAgentInfo): MacUpdateAdvice | undefined {
+  if (ua.osFamily !== "macos") return undefined
+  if (!ua.osVersionFromHints) return "unknown"
+  return macosSyncedCopyReadsRight(ua.osVersionReported) ? undefined : "below"
+}
+
+/** The certain wrong key on a Mac, whose card leads with the phone. */
+export const MAC_WRONG_KEY_COPY: RefusalRow = {
+  title: "This computer is returning the wrong key",
+  retry: false,
+  message:
+    "This Mac's copy of your passkey is returning the wrong key, a known Apple bug on some macOS " +
+    "versions. Your wallet is fine. Use your phone this time and scan the QR code with it. After " +
+    "that, you stay signed in until you sign out or this browser clears its data.",
+}
+
 /**
  * A phone's one-tap step before a sign-in's second prompt. The first approval could not settle
  * which key the passkey holds, and a prompt that opens seconds after the last tap may be refused
@@ -460,22 +470,10 @@ export const APPROVE_AGAIN_COPY = {
 type PhoneStepsCopy = typeof PHONE_STEPS_COPY | typeof PHONE_STEPS_COPY.noPhone
 
 /**
- * The steps to show for what the browser said about reaching a phone, and for whether this laptop
- * may create on its own manager. Both fronts call this rather than matching on the reach
- * themselves, so the two never drift. The local variant drops its phone route where no phone can
- * be reached, keeping the key. A front that passes no creation never gets the local variant.
+ * The steps to show for what the browser said about reaching a phone. A front calls this rather
+ * than matching on the reach itself, so the two never drift.
  */
-export function stepsCopyFor(reach: PhoneReach): PhoneStepsCopy
-export function stepsCopyFor(
-  reach: PhoneReach,
-  creation: LaptopCreation | undefined,
-): PhoneStepsCopy | typeof PHONE_STEPS_COPY.local
-export function stepsCopyFor(reach: PhoneReach, creation?: LaptopCreation) {
-  if (creation?.local) {
-    const local = PHONE_STEPS_COPY.local
-    if (reach !== "no-hybrid") return local
-    return { ...local, routes: local.routes.filter((r) => r.hint !== "hybrid") }
-  }
+export function stepsCopyFor(reach: PhoneReach): PhoneStepsCopy {
   return reach === "no-hybrid" ? PHONE_STEPS_COPY.noPhone : PHONE_STEPS_COPY
 }
 
@@ -490,7 +488,7 @@ export const MAC_BROWSER_FLOOR_COPY =
   "or later. Update this browser, or sign up in Chrome or on your phone. Safari updates are in " +
   "System Settings > General > Software Update."
 
-/** Which wording the advice takes: `use` where an extension answers this page's passkeys. */
+/** Which wording the advice takes: `use` where 1Password's script answers the page's creation. */
 export type ExtensionAdvice = "use" | "install"
 
 const WINDOWS_PASSKEY_WINDOW =

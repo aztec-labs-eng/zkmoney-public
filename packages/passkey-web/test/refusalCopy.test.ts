@@ -2,19 +2,21 @@
 import { describe, expect, it } from "vitest"
 import * as errors from "../src/policy/passkeyErrors.js"
 import {
+  APPLE_FLOOR_COPY,
   IN_APP_BROWSER_REFUSAL,
   IN_APP_BROWSER_ROWS,
+  MAC_UPDATE_COPY,
+  MAC_WRONG_KEY_COPY,
+  MISMATCH_COPY,
   PHONE_STEPS_COPY,
   REFUSAL_FALLBACK,
   REFUSAL_ROWS,
   UPDATE_CHROME_COPY,
-  extensionLineFor,
-  localNoteFor,
+  macUpdateAdviceFor,
   refusalFor,
-  repeatedRefusalLineFor,
   stepsCopyFor,
-  supportedFor,
 } from "../src/policy/refusalCopy.js"
+import { parseUserAgent } from "../src/policy/userAgentInfo.js"
 
 const POLICY_ERRORS = [
   errors.PhoneRequiredError,
@@ -91,58 +93,11 @@ describe("refusalFor", () => {
 })
 
 describe("copy selection", () => {
-  // The rows as `laptopCreationFor` builds them.
-  const macChrome = {
-    local: true,
-    os: "macos",
-    row: "macChrome",
-    managers: ["apple", "gpm"],
-    withdrawn: [],
-  } as const
-  const edge = { ...macChrome, row: "macEdgeBrave", managers: ["apple"] } as const
-  const windows = {
-    local: true,
-    os: "windows",
-    row: "windowsChrome",
-    managers: ["gpm", "1password"],
-    withdrawn: [],
-  } as const
-  const windowsEdge = { ...windows, row: "windowsEdgeBrave", managers: ["1password"] } as const
-  const safari = {
-    local: true,
-    os: "macos",
-    row: "macSafari",
-    managers: ["1password"],
-    withdrawn: [],
-    chromeTip: "apple",
-  } as const
-
   it("picks the steps from what the browser said about reaching a phone", () => {
     expect(stepsCopyFor("no-hybrid")).toBe(PHONE_STEPS_COPY.noPhone)
     for (const reach of ["ok", "unknown", "below-floor"] as const) {
       expect(stepsCopyFor(reach)).toBe(PHONE_STEPS_COPY)
     }
-    // A laptop that may not create on its own manager reads today's steps whatever it says.
-    for (const creation of [
-      { local: false, chromeTip: "apple" },
-      { local: false, chromeTip: "gpm" },
-      { local: false, chromeTip: false },
-    ] as const) {
-      expect(stepsCopyFor("ok", creation)).toBe(PHONE_STEPS_COPY)
-      expect(stepsCopyFor("no-hybrid", creation)).toBe(PHONE_STEPS_COPY.noPhone)
-    }
-  })
-
-  it("offers its own manager first, then the phone, then the key, and drops the phone where none can be reached", () => {
-    expect(stepsCopyFor("ok", macChrome).routes.map((r) => r.hint)).toEqual([
-      "client-device",
-      "hybrid",
-      "security-key",
-    ])
-    expect(stepsCopyFor("no-hybrid", macChrome).routes.map((r) => r.hint)).toEqual([
-      "client-device",
-      "security-key",
-    ])
   })
 
   it("words the update line in parts that join to one sentence", () => {
@@ -152,47 +107,53 @@ describe("copy selection", () => {
       "If you're already in Chrome, update it from the Play Store and open this page again, or use another browser.",
     )
   })
+})
 
-  it("tells a user without an extension where 1Password answers, by the row's system", () => {
-    // On a Mac either surface returns key material: a word only where 1Password is alone.
-    expect(localNoteFor(safari)).toBe(PHONE_STEPS_COPY.local.pickOnePassword)
-    expect(localNoteFor({ ...macChrome, managers: ["apple", "gpm", "1password"] })).toBeUndefined()
-    expect(localNoteFor(macChrome)).toBeUndefined()
-    // On Windows and Linux only the extension does, so every row that lists 1Password says so.
-    for (const creation of [windows, windowsEdge, { ...windows, os: "linux" } as const]) {
-      expect(localNoteFor(creation)).toBe(PHONE_STEPS_COPY.local.installExtension)
-    }
-    expect(localNoteFor({ ...windows, managers: ["gpm"] })).toBeUndefined()
+describe("macUpdateAdviceFor", () => {
+  const hinted = (platform: string, platformVersion: string) =>
+    parseUserAgent({
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) " +
+        "Chrome/155.0.0.0 Safari/537.36",
+      userAgentData: { platform, platformVersion },
+    })
+
+  it("words the line by what the browser reports, and gives none past the floors", () => {
+    const safari = parseUserAgent({
+      userAgent:
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) " +
+        "Version/26.4 Safari/605.1.15",
+    })
+    expect(macUpdateAdviceFor(safari)).toBe("unknown")
+    expect(macUpdateAdviceFor(hinted("macOS", "26.2.0"))).toBe("below")
+    expect(macUpdateAdviceFor(hinted("macOS", "14.6"))).toBe("below")
+    expect(macUpdateAdviceFor(hinted("macOS", "26.4.1"))).toBeUndefined()
+    expect(macUpdateAdviceFor(hinted("macOS", "15.7.5"))).toBeUndefined()
+    const windows = parseUserAgent({
+      userAgent:
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+        "Chrome/155.0.0.0 Safari/537.36",
+    })
+    expect(macUpdateAdviceFor(windows)).toBeUndefined()
   })
 
-  it("names 1Password in the pop-up line only on rows that list it", () => {
-    for (const creation of [windows, windowsEdge, safari]) {
-      expect(extensionLineFor(creation)).toMatch(/1Password/)
-    }
-    for (const creation of [macChrome, edge, { ...windows, managers: ["gpm"] } as const]) {
-      expect(extensionLineFor(creation)).not.toMatch(/1Password/)
+  it("never promises", () => {
+    for (const line of Object.values(MAC_UPDATE_COPY)) {
+      expect(line).toContain("worth a try")
+      expect(line).not.toMatch(/\bwill\b|\bfixes\b/)
     }
   })
+})
 
-  it("after repeated refusals points elsewhere, except where 1Password is the only manager", () => {
-    expect(repeatedRefusalLineFor(windows)).toBeDefined()
-    expect(repeatedRefusalLineFor(macChrome)).toBeDefined()
-    expect(repeatedRefusalLineFor(windowsEdge)).toBeUndefined()
-  })
-
-  it("lists only the row's managers and the key as supported, and leaves the phone variant alone", () => {
-    expect(supportedFor(windows).providers).toEqual([
-      "Google Password Manager",
-      "1Password",
-      "YubiKey 5 security key",
-    ])
-    expect(supportedFor(windowsEdge).providers).toEqual(["1Password", "YubiKey 5 security key"])
-    expect(supportedFor(edge).providers).toEqual(["iCloud Keychain", "YubiKey 5 security key"])
-    expect(
-      supportedFor({ ...macChrome, managers: ["apple"], withdrawn: ["gpm"] }).providers,
-    ).not.toContain("Google Password Manager")
-    expect(supportedFor({ local: false, chromeTip: "apple" })).toBe(PHONE_STEPS_COPY.supported)
-    expect(supportedFor()).toBe(PHONE_STEPS_COPY.supported)
+describe("the wrong-key card", () => {
+  it("on a Mac sends the user to the phone and says how long the browser keeps them signed in", () => {
+    expect(MAC_WRONG_KEY_COPY.retry).toBe(false)
+    expect(MAC_WRONG_KEY_COPY.title).toBe(MISMATCH_COPY["wrong-key"].title)
+    expect(MAC_WRONG_KEY_COPY.message).toContain("Use your phone")
+    expect(MAC_WRONG_KEY_COPY.message).toContain(
+      "until you sign out or this browser clears its data",
+    )
+    expect(MAC_WRONG_KEY_COPY.message).not.toMatch(/\d+\.\d+/)
   })
 })
 
@@ -214,5 +175,11 @@ describe("refusal messages", () => {
     const noKey = new errors.UnsupportedProviderError("manager", { keyOfferable: false })
     expect(offer.message).toMatch(/security key/)
     expect(noKey.message).not.toMatch(/security key/)
+  })
+})
+
+describe("the sign-up refusal copy", () => {
+  it("names no macOS point release", () => {
+    expect(JSON.stringify({ PHONE_STEPS_COPY, APPLE_FLOOR_COPY })).not.toMatch(/15\.7\.5|26\.4\.1/)
   })
 })

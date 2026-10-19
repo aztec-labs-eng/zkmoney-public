@@ -12,3 +12,10 @@
  * its callback popup would stop at the already-open screen (see that file).
  */
 export const emailLockedLinksEnabled = import.meta.env.VITE_EMAIL_LOCKED_LINKS === "true"
+
+/**
+ * The sdk's `[Perf][ProveTx]` console line per transaction (`VITE_PROVE_TX_PERF_LOGS`): request
+ * build, simulation, app and kernel witness, proof and total times, for reading a device's proving
+ * from its console. Off by default.
+ */
+export const proveTxPerfLogsEnabled = import.meta.env.VITE_PROVE_TX_PERF_LOGS === "true"

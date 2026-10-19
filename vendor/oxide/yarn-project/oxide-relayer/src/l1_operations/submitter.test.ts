@@ -116,6 +116,7 @@ function fakeSender(opts: FakeSenderOpts = {}) {
     getBlock: jest.fn(() =>
       Promise.resolve({
         number: blockNumbers.shift() ?? 10n,
+        gasLimit: 30_000_000n,
         baseFeePerGas: feeValues.maxFeePerGas - feeValues.maxPriorityFeePerGas,
       }),
     ),
@@ -373,6 +374,7 @@ describe('L1OperationSubmitter', () => {
                 to: EXECUTOR.toString(),
                 functionName: 'execute',
                 from: SENDER.toString(),
+                gas: 15_000_000n,
               }),
             ],
           },

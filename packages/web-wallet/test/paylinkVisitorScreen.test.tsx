@@ -141,6 +141,7 @@ vi.mock("../src/features/paylink/ClaimToL1Modal", () => ({
 // The DS drags in liquid-glass optics jsdom can't render; this test is about which CTA appears.
 vi.mock("@obsidion/web-ds", () => ({
   Icon: () => null,
+  Shimmer: ({ children }: { children?: React.ReactNode }) => <div data-skeleton>{children}</div>,
   Spinner: () => <div data-testid="spinner" />,
   PrimaryGradientButton: ({
     title,
@@ -229,6 +230,15 @@ describe("PaylinkVisitorScreen", () => {
     },
   )
 
+  it.each([
+    ["river", "@river sent you"],
+    [undefined, "Someone sent you"],
+  ])("names the sender %s as %s", (senderTag, line) => {
+    voucher.uses = 1
+    render({ link: link({ senderTag }) })
+    expect(container.querySelector(".ww-paylink-summary__label")?.textContent).toBe(line)
+  })
+
   it("opens on signup for a link that carries no voucher", () => {
     voucher.uses = 0
     render({ link: link() })
@@ -255,10 +265,38 @@ describe("PaylinkVisitorScreen", () => {
     voucher.uses = undefined
     render({ link: link() })
 
-    expect(testId("spinner")).toBeTruthy()
+    // One loading treatment: the pending option's line pulses, and nothing spins over the text.
+    expect(button("Claim to an Ethereum wallet")?.querySelector('[aria-busy="true"]')).toBeTruthy()
+    expect(testId("spinner")).toBeNull()
     expect(testId("signup")).toBeNull()
     expect(button("Claim to an Ethereum wallet")?.disabled).toBe(true)
     expect(button("Receive to zk.money")).toBeTruthy()
+  })
+
+  it("pulses each pending option's line, with no spinner, while both answers are read", () => {
+    voucher.uses = undefined
+    offer.value = undefined
+    render({ link: link() })
+    for (const option of ["Receive to zk.money", "Claim to an Ethereum wallet"]) {
+      expect(button(option)?.querySelector('[aria-busy="true"]')).toBeTruthy()
+    }
+    expect(testId("spinner")).toBeNull()
+
+    voucher.uses = 1
+    offer.value = null
+    render({ link: link() })
+    expect(container.querySelector('.ww-paymethods [aria-busy="true"]')).toBeNull()
+  })
+
+  it("holds the amount's line while the note is read, and not once the reads stopped without it", () => {
+    voucher.uses = undefined
+    const summary = () => container.querySelector(".ww-paylink-summary")!
+    render({ link: link({ amount: undefined }), statusSettled: false })
+    expect(summary().querySelector("[data-skeleton]")).toBeTruthy()
+    render({ link: link({ amount: undefined }), statusSettled: true })
+    expect(summary().querySelector("[data-skeleton]")).toBeNull()
+    render({ link: link() })
+    expect(summary().textContent).toContain("$25")
   })
 
   it.each(["direct", "email"])(
@@ -376,7 +414,7 @@ describe("PaylinkVisitorScreen", () => {
   it("on a network that issues tickets, the link pays for the signup: the three-step modal opens over this page", () => {
     voucher.uses = 1
     offer.value = { threshold: "1", schedule: { fee: "5", minDeposit: "0" } }
-    render({ link: link({ memo: "Pizza dinner" }) })
+    render({ link: link({ memo: "Pizza dinner", senderTag: "river" }) })
     // The link pays fees out of the payment, so the option promises privacy and speed, never "free".
     expect(container.textContent).toContain("Instant. Your balance stays private.")
     expect(container.textContent).not.toContain("Free and instant")
@@ -388,8 +426,11 @@ describe("PaylinkVisitorScreen", () => {
       threshold: "1",
       schedule: { fee: "5", minDeposit: "0" },
       memo: "Pizza dinner",
+      senderTag: "river",
       // The page's own read of the note, in base units, so the signup's split is priced at once.
       amount: (25n * 10n ** 18n).toString(),
+      // The claim window as read here, so Home claims without reading the note again.
+      claimableFrom: 0,
     })
     expect(fireEvent).toHaveBeenCalledWith("paylink_visitor_chose", {
       choice: "account",
@@ -563,6 +604,11 @@ describe("PaylinkVisitorScreen", () => {
       act(() => button("Claim to an Ethereum wallet")!.click())
       expect(testId("cash-out")).toBeTruthy()
       expect(button("claim instead")).toBeUndefined()
+      // The network does not pay this visitor's registration.
+      expect(fireEvent).toHaveBeenCalledWith("paylink_visitor_chose", {
+        choice: "ethereum",
+        ticket: false,
+      })
     })
 
     it.each([
@@ -597,7 +643,7 @@ describe("PaylinkVisitorScreen", () => {
       const account = () => button("Receive to zk.money")!
       expect(account().disabled).toBe(true)
       expect(account().textContent).toContain("Checking what this link pays for")
-      expect(account().querySelector('[data-testid="spinner"]')).toBeTruthy()
+      expect(account().querySelector('[aria-busy="true"]')).toBeTruthy()
       act(() => account().click())
       nothingStarted()
 
@@ -633,14 +679,12 @@ describe("PaylinkVisitorScreen", () => {
       ["below the threshold", link()],
       ["not read", link({ amount: undefined })],
     ])(
-      "a link whose ticket signup already bound an account resumes it with the note %s",
+      "a link whose ticket signup already bound an account goes straight back into it with the note %s",
       (_, open) => {
         voucher.uses = 1
         offer.value = ticketOffer(30n * ONE)
         resumable.value = true
         render({ link: open })
-        expect(button("Receive to zk.money")?.disabled).toBe(false)
-        act(() => button("Receive to zk.money")!.click())
         expect(stashTicketSignup).toHaveBeenCalledOnce()
         expect(testId("ticket-signup")).toBeTruthy()
       },

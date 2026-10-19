@@ -5,12 +5,15 @@
  */
 import { readdirSync, readFileSync } from "node:fs"
 import { join } from "node:path"
-import { act } from "react"
+import { act, createRef } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { provingProgress } from "@obsidion/proving-progress"
 import { getOperationStore, type OperationFlow } from "../src/features/operations/operations"
-import { OperationHandOff } from "../src/features/operations/OperationHandOff"
+import {
+  OperationHandOff,
+  type OperationHandOffHandle,
+} from "../src/features/operations/OperationHandOff"
 
 const hash = `0x${"ab".repeat(32)}`
 
@@ -57,6 +60,25 @@ describe("OperationHandOff", () => {
     expect(onLeave).toHaveBeenCalledOnce()
   })
 
+  it("holds a flow with several ceremonies and proofs until it says it is prepared", async () => {
+    await begin("op-prepared")
+    const prepared = (done: boolean) =>
+      act(async () =>
+        root.render(<OperationHandOff onLeave={onLeave} until="prepared" prepared={done} />),
+      )
+    await prepared(false)
+    await act(async () => provingProgress.emitSigningStart())
+    await act(async () => provingProgress.emitSigningEnd())
+    expect(container.textContent).toContain("Proving privately")
+    await act(async () => provingProgress.emitStageStart("proving", "op-prepared"))
+    await act(async () => provingProgress.emitSigningStart())
+    expect(container.textContent).toContain("Confirm with passkey")
+    expect(onLeave).not.toHaveBeenCalled()
+    await prepared(true)
+    expect(onLeave).toHaveBeenCalledOnce()
+    expect(store().get("op-prepared")?.handedOffAt).toBeDefined()
+  })
+
   it("leaves when a flow with no ceremony starts proving", async () => {
     await begin("op-no-ceremony")
     await render()
@@ -93,6 +115,20 @@ describe("OperationHandOff", () => {
     expect(onLeave).toHaveBeenCalledOnce()
   })
 
+  it("leaves the same way, once, when its surface is closed while the flow runs", async () => {
+    await begin("op-closed")
+    const handle = createRef<OperationHandOffHandle>()
+    await act(async () =>
+      root.render(<OperationHandOff ref={handle} onLeave={onLeave} until="sent" />),
+    )
+    await act(async () => handle.current!.leave())
+    expect(onLeave).toHaveBeenCalledOnce()
+    // The bell, not the closed screen, reports a failure before proving.
+    expect(store().get("op-closed")?.handedOffAt).toBeDefined()
+    await act(async () => store().markSent("op-closed", hash))
+    expect(onLeave).toHaveBeenCalledOnce()
+  })
+
   it("stays for a flow that failed, so its screen can say why", async () => {
     await begin("op-fail")
     await render()
@@ -114,6 +150,26 @@ describe("OperationHandOff", () => {
     await begin("op-late")
     await act(async () => provingProgress.emitStageStart("proving", "op-late"))
     expect(onLeave).toHaveBeenCalledOnce()
+  })
+
+  it("keeps the Cancel button's space once the flow withdraws it, so the card holds still", async () => {
+    await begin("op-a")
+    const cancel = () => container.querySelector<HTMLButtonElement>(".ww-pay__cancel")
+    await act(async () => root.render(<OperationHandOff onLeave={onLeave} onCancel={() => {}} />))
+    expect(cancel()?.disabled).toBe(false)
+    expect(cancel()?.style.visibility).toBe("")
+    await act(async () => root.render(<OperationHandOff onLeave={onLeave} />))
+    expect(cancel()?.disabled).toBe(true)
+    expect(cancel()?.style.visibility).toBe("hidden")
+    await act(async () => provingProgress.emitSigningStart())
+    expect(container.textContent).toContain("Confirm with passkey")
+    expect(cancel()?.style.visibility).toBe("hidden")
+  })
+
+  it("leaves no Cancel space on a card that never offered it", async () => {
+    await begin("op-a")
+    await render()
+    expect(container.querySelector(".ww-pay__cancel")).toBeNull()
   })
 
   it("names a running child operation in place of the preparing text", async () => {

@@ -114,6 +114,24 @@ describe("live migration withdrawal durability", () => {
     expect(sent).not.toHaveBeenCalled()
   })
 
+  it("records no burn, so submits nothing, once a remaining batch's recovery is cancelled", async () => {
+    const f = fixture()
+    const later = { ...(await f.batches.get())!, day: 3, nonce: 4, broadcastTx: f.txHash }
+    const saved = new Map<string, MigrationFundingBatch>([["remaining", later]])
+    f.batches.get.mockImplementation(async (id?: string) => saved.get(id!))
+    f.batches.set.mockImplementation(async (id: string, next: MigrationFundingBatch) => {
+      saved.set(id, JSON.parse(JSON.stringify(next)))
+    })
+    f.receipt.mockResolvedValue({ executionResult: TxExecutionResult.SUCCESS })
+    const cancel = new AbortController()
+    f.withdraw.mockImplementation(async (_recipient, _amount, _sponsor, options) => {
+      cancel.abort()
+      await options.onTxHash(f.txHash)
+    })
+    await expect(f.source.recoverRemaining(cancel.signal)).rejects.toThrow()
+    expect(saved.get("remaining")!.burnTx).toBeUndefined()
+  })
+
   it("refuses a changed recipient or a source exit fee above the prepared one", async () => {
     const f = fixture()
     await expect(

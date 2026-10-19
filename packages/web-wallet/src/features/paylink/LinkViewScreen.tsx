@@ -1,19 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
 import { useAztecContext, useContractServiceContext } from "@obsidion/front-core"
+import { DEFAULT_CONTRACTS, getHardcodedArtifact } from "@obsidion/sdk"
 import { Card, ScreenNavBar, Spinner } from "@obsidion/web-ds"
 import { showReportableError } from "../../errors/errorModal"
 import { loadOnboardedIdentity } from "../identity/walletIdentity"
 import { OnboardingLayout } from "../../ui/OnboardingLayout"
+import { warmNoirWasm } from "../../platform/noirProver"
 import { stashClaimLink } from "./claimStash"
 import { PaylinkVisitorScreen } from "./PaylinkVisitorScreen"
-import {
-  decodeLink,
-  EmailPaylinkUnsupportedError,
-  emitLinkOpened,
-  type ViewLinkDeps,
-} from "./sponsoredPaylink"
-import { watchLink } from "./linkStatus"
+import { EmailPaylinkUnsupportedError, emitLinkOpened, type ViewLinkDeps } from "./sponsoredPaylink"
+import { seededLink, watchLink } from "./linkStatus"
 import { usePolledChainSeconds } from "./chainTime"
 import { withExpiry } from "./claimWindow"
 import type { PaymentLink } from "./types"
@@ -33,7 +30,7 @@ export function LinkViewScreen() {
 
   const [decoded, unsupported] = useMemo((): [PaymentLink | null, boolean] => {
     try {
-      return [fragment ? decodeLink(fragment) : null, false]
+      return [fragment ? seededLink(fragment) : null, false]
     } catch (e) {
       return [null, e instanceof EmailPaylinkUnsupportedError]
     }
@@ -47,6 +44,16 @@ export function LinkViewScreen() {
     stashClaimLink(fragment)
     navigate("/", { replace: true })
   }, [handoff, fragment, navigate])
+
+  // Fetched while the PXE registers the escrow's class, which needs no network: the simulator's
+  // wasm, and the token and ClaimFPC artifacts an unclaimed link's reads register next.
+  useEffect(() => {
+    if (handoff || !decoded) return
+    void warmNoirWasm().catch(() => {})
+    for (const contract of [DEFAULT_CONTRACTS.oxideToken, DEFAULT_CONTRACTS.claimFpc]) {
+      void getHardcodedArtifact(contract).catch(() => {})
+    }
+  }, [handoff, decoded])
 
   // Claim-funnel top for the visitor page; a handoff mount stays silent — useClaimLinkFlow emits.
   const openedFragment = useRef<string>(undefined)
@@ -68,10 +75,12 @@ export function LinkViewScreen() {
   // Settled either way: the visitor page's voucher read waits on it, and a failed check must not
   // hold that read forever.
   const [statusSettled, setStatusSettled] = useState(false)
+  const [noteMissed, setNoteMissed] = useState(false)
   const [statusAttempt, setStatusAttempt] = useState(0)
   useEffect(() => {
     if (handoff || !decoded || !statusDeps) return
     setStatusSettled(false)
+    setNoteMissed(false)
     return watchLink(
       statusDeps,
       fragment,
@@ -84,7 +93,10 @@ export function LinkViewScreen() {
           }`,
         })
       },
-      () => setStatusSettled(true),
+      (noteRead) => {
+        setStatusSettled(true)
+        setNoteMissed(!noteRead)
+      },
     )
   }, [handoff, decoded, statusDeps, fragment, statusAttempt])
 
@@ -102,6 +114,7 @@ export function LinkViewScreen() {
       <PaylinkVisitorScreen
         link={withExpiry(link, chainNow)}
         statusSettled={statusSettled}
+        noteMissed={noteMissed}
         onRetryStatus={() => setStatusAttempt((n) => n + 1)}
       />
     )

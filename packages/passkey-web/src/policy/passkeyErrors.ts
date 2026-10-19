@@ -1,5 +1,6 @@
-import { MAC_FLOORS_ADMITTED, type LocalManager } from "./laptopCreation.js"
+import type { LocalManager } from "./laptopCreation.js"
 import { WINDOWS_HELLO, localManagersClause } from "./passkeyProviders.js"
+import { MACOS_APPLE_PRF_FLOOR } from "./userAgentInfo.js"
 
 /**
  * Typed refusals from the passkey policy. Each carries a plain-language message the screens can
@@ -17,9 +18,17 @@ export class PasskeyPolicyError extends Error {}
  */
 export type LocalRouteOptions = { localManagers?: readonly LocalManager[] }
 
-/** "Try again and choose X or Y, or use your phone instead." */
+/** A line added after the message, saying how to keep what answered out of the next attempt. */
+type Advice = { advice?: string }
+
+const withAdvice = (message: string, advice?: string): string =>
+  advice ? `${message} ${advice}` : message
+
+/** "Try again and choose X or Y, or use your phone instead."; with no manager left, the phone. */
 const tryAgainLocally = (managers: readonly LocalManager[]): string =>
-  `Try again and choose ${localManagersClause(managers)}, or use your phone instead.`
+  managers.length
+    ? `Try again and choose ${localManagersClause(managers)}, or use your phone instead.`
+    : "Use your phone instead."
 
 /**
  * A ceremony that began on a security key was answered by something else. Sending this user to a
@@ -42,13 +51,17 @@ export class PhoneRequiredError extends PasskeyPolicyError {
   readonly providerName?: string
 
   constructor(
-    options: { providerName?: string; ceremony?: "create" | "sign-in" } & LocalRouteOptions = {},
+    options: { providerName?: string; ceremony?: "create" | "sign-in" } & LocalRouteOptions &
+      Advice = {},
   ) {
     super(
-      options.localManagers
-        ? "The browser didn't say where that passkey was saved. " +
-            tryAgainLocally(options.localManagers)
-        : phoneRequiredMessage(options.providerName, options.ceremony ?? "sign-in"),
+      withAdvice(
+        options.localManagers
+          ? "The browser didn't say where that passkey was saved. " +
+              tryAgainLocally(options.localManagers)
+          : phoneRequiredMessage(options.providerName, options.ceremony ?? "sign-in"),
+        options.advice,
+      ),
     )
     this.providerName = options.providerName
     this.name = "PhoneRequiredError"
@@ -109,19 +122,19 @@ export class DeviceBoundPasskeyError extends PasskeyPolicyError {
 }
 
 /**
- * A laptop's own passkey the local route cannot keep: saved in Apple Passwords on a Mac that is
- * not admitted (`apple`), by a manager that withheld its id (`unnamed`), or not by a manager on
- * this computer at all (`not-local`, an extension relabelling its in-page answer). Each names
- * the managers the row admits and the phone.
+ * A laptop's own passkey the local route cannot keep: saved in Apple Passwords where it gives no
+ * key or is not admitted (`apple`), by a manager that withheld its id (`unnamed`), or not by a
+ * manager on this computer at all (`not-local`, an extension relabelling its in-page answer).
+ * Each names the managers the row admits and the phone.
  */
 export type LaptopRefusalKind = "apple" | "unnamed" | "not-local"
 
 export class LaptopPasskeyRefusedError extends PasskeyPolicyError {
   /**
-   * Apple Passwords refused where it is not admitted: below the macOS floor, or on a Safari that
-   * cannot report the version. The docs entry the card links explains it.
+   * Apple Passwords refused on this computer, rather than withdrawn from the row: the card leads
+   * with the phone and links the docs entry that explains it.
    */
-  readonly belowMacFloor: boolean
+  readonly appleRefusedHere: boolean
 
   constructor(
     readonly kind: LaptopRefusalKind,
@@ -132,7 +145,7 @@ export class LaptopPasskeyRefusedError extends PasskeyPolicyError {
       `${laptopRefusalLead(kind, options.appleWithdrawn === true)} ${tryAgainLocally(managers)}`,
     )
     this.name = "LaptopPasskeyRefusedError"
-    this.belowMacFloor = kind === "apple" && options.appleWithdrawn !== true
+    this.appleRefusedHere = kind === "apple" && options.appleWithdrawn !== true
   }
 }
 
@@ -140,10 +153,8 @@ function laptopRefusalLead(kind: LaptopRefusalKind, appleWithdrawn: boolean): st
   if (kind === "apple") {
     return appleWithdrawn
       ? "Apple Passwords isn't available for a wallet on this browser yet."
-      : "Apple Passwords on this Mac can't be used for a wallet yet: it was measured to read " +
-          `the right secret key only on ${MAC_FLOORS_ADMITTED}. Before those, an Apple bug can ` +
-          "give a Mac the wrong secret key from a synced passkey, and on macOS 14 or earlier it " +
-          "gives none at all."
+      : `Apple Passwords can't protect a wallet on macOS before ${MACOS_APPLE_PRF_FLOOR}. Update ` +
+          "macOS to use it."
   }
   if (kind === "unnamed") {
     return "zk.money couldn't tell which passkey manager saved this one, so it can't use it."
@@ -174,18 +185,21 @@ export class SecurityKeyNoPrfError extends PasskeyPolicyError {
 /**
  * A creation that could not be finished from what came back: a laptop creation the browser
  * mislabelled, without key material or a backup flag, that is not followed up (`mislabelled`),
- * or a follow-up answered by a different passkey than the one just made (`other-credential`);
- * see the creation driver. Its own refusal: the provider is fine, so neither `NoPrfError` nor
- * `PhoneUnreachableError` tells the truth.
+ * a follow-up answered by a different passkey than the one just made (`other-credential`), or
+ * one on this computer's route, without key material, in a browser whose label for where the
+ * answer came from can't be trusted (`unverified`); see the creation driver. Its own refusal: the
+ * provider is fine, so neither `NoPrfError` nor `PhoneUnreachableError` tells the truth.
  */
 export class IncompleteCreationError extends PasskeyPolicyError {
-  constructor(readonly kind: "mislabelled" | "other-credential" = "mislabelled") {
+  constructor(readonly kind: "mislabelled" | "other-credential" | "unverified" = "mislabelled") {
     super(
       kind === "mislabelled"
         ? "This browser didn't return everything the wallet needs from your phone. Update Safari " +
             "or use Chrome, then try again."
+        : kind === "unverified"
+        ? "Browser passkey creation unavailable, please use your mobile instead."
         : "This browser didn't return everything the wallet needs from your new passkey. Try " +
-            "again, or use your phone.",
+          "again, or use your phone.",
     )
     this.name = "IncompleteCreationError"
   }
@@ -217,9 +231,9 @@ export class UnsupportedProviderError extends PasskeyPolicyError {
 
   constructor(
     readonly kind: "manager" | "security-key",
-    options: { providerName?: string; keyOfferable?: boolean } & LocalRouteOptions = {},
+    options: { providerName?: string; keyOfferable?: boolean } & LocalRouteOptions & Advice = {},
   ) {
-    super(unsupportedProviderMessage(kind, options))
+    super(withAdvice(unsupportedProviderMessage(kind, options), options.advice))
     this.providerName = options.providerName
     this.name = "UnsupportedProviderError"
   }
@@ -295,15 +309,25 @@ export class AmbiguousPasskeyError extends PasskeyPolicyError {
 
 /** The browser refused a request for a passkey that belongs to another zk.money site. */
 export class RelatedOriginPasskeyError extends PasskeyPolicyError {
-  constructor(cause?: unknown, options: { iosBelowFloor?: boolean } = {}) {
+  /** Bitwarden's extension sent the refusal. */
+  readonly bitwarden: boolean
+
+  constructor(
+    cause?: unknown,
+    options: { iosBelowFloor?: boolean; bitwarden?: boolean } & Advice = {},
+  ) {
     super(
-      options.iosBelowFloor
-        ? IOS_FLOOR_COPY
-        : "A browser extension, such as a password manager, may have blocked the passkey request on this site. " +
-            "Turn off the extension's passkey option for this site, or use another browser, then try again. " +
-            "If it still fails, contact support.",
+      withAdvice(
+        options.iosBelowFloor
+          ? IOS_FLOOR_COPY
+          : "A browser extension, such as a password manager, may have blocked the passkey request on this site. " +
+              "Turn off the extension's passkey option for this site, or use another browser, then try again. " +
+              "If it still fails, contact support.",
+        options.advice,
+      ),
       { cause },
     )
+    this.bitwarden = options.bitwarden ?? false
     this.name = "RelatedOriginPasskeyError"
   }
 }

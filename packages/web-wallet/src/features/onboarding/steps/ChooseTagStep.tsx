@@ -2,6 +2,7 @@ import { useRef, useState, type ComponentProps, type ReactNode } from "react"
 import { flushSync } from "react-dom"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
 import { normalizeTag } from "@obsidion/front-core"
+import { usePhoneLayout } from "../../../ui/usePhoneLayout"
 import { OnboardingCard } from "../OnboardingCard"
 import { nameIsUnavailable, useNameAvailability, type RouteNameGrant } from "../nameAvailability"
 import {
@@ -60,6 +61,8 @@ export function ChooseTagStep({
   // The phone intro covers the form: it stays out of reach until the intro is opened.
   const [covered, setCovered] = useState(ticketIntroShows)
   const field = useRef<HTMLInputElement>(null)
+  // On a phone focusing the field opens the keyboard and scrolls the sheet: the user taps it instead.
+  const phone = usePhoneLayout()
   const valid = normalizeTag(typed) !== null
   const grantToken = grant?.handle === normalizeTag(typed) ? grant.token : undefined
   const {
@@ -103,8 +106,8 @@ export function ChooseTagStep({
                 placeholder="tag"
                 value={typed}
                 ref={field}
-                autoFocus={!initialHandle && !covered}
-                data-autofocus={!covered || undefined}
+                autoFocus={!phone && !initialHandle && !covered}
+                data-autofocus={(!phone && !covered) || undefined}
                 onChange={(e) => setTyped(e.target.value.replace(/^@/, "").toLowerCase())}
                 disabled={busy}
               />
@@ -125,38 +128,40 @@ export function ChooseTagStep({
           />
           {split && <div className="ww-ticket-rows">{split}</div>}
           {warning}
-          <PrimaryGradientButton
-            title={
-              recoverBoundGrant
-                ? "Continue with passkey"
-                : (valid &&
-                    ticketClaimLabel(
-                      typed,
-                      ticket.amount,
-                      ticket.tokenDecimals,
-                      ticket.tokenSymbol,
-                    )) ||
-                  "Claim tag"
-            }
-            isDisabled={!submittable || held}
-            isLoading={busy}
-            onClick={submit}
-          />
-          {busy && (
-            <button
-              type="button"
-              className="zkm-btn-reset zkm-pressable ww-invite-cancel"
-              onClick={onCancel}
-            >
-              Cancel
-            </button>
-          )}
-          <p className="ww-invite-modal-foot">
-            Already have an account?{" "}
-            <button type="button" className="zkm-btn-reset ww-invite__link" onClick={onLogIn}>
-              Show passkeys
-            </button>
-          </p>
+          <div className="ww-sheet__actions">
+            <PrimaryGradientButton
+              title={
+                recoverBoundGrant
+                  ? "Continue with passkey"
+                  : (valid &&
+                      ticketClaimLabel(
+                        typed,
+                        ticket.amount,
+                        ticket.tokenDecimals,
+                        ticket.tokenSymbol,
+                      )) ||
+                    "Claim tag"
+              }
+              isDisabled={!submittable || held}
+              isLoading={busy}
+              onClick={submit}
+            />
+            {busy && (
+              <button
+                type="button"
+                className="zkm-btn-reset zkm-pressable ww-invite-cancel"
+                onClick={onCancel}
+              >
+                Cancel
+              </button>
+            )}
+            <p className="ww-invite-modal-foot">
+              Already have an account?{" "}
+              <button type="button" className="zkm-btn-reset ww-invite__link" onClick={onLogIn}>
+                Show passkeys
+              </button>
+            </p>
+          </div>
         </div>
         <GoldenTicketArt {...ticket} tag={valid ? typed : ""} />
       </form>
@@ -164,7 +169,7 @@ export function ChooseTagStep({
         {...ticket}
         onGone={() => {
           flushSync(() => setCovered(false))
-          field.current?.focus()
+          if (!phone) field.current?.focus()
         }}
       />
     </OnboardingCard>

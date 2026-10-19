@@ -23,7 +23,8 @@ import { useSipaProcessing } from "../../features/deposit/sipaProcessing"
 import { PendingLimitsLink } from "../../features/limits/AboutLimitsSheet"
 import { l2TxUrl } from "../../lib/explorer"
 import { l1AddressUrl, l1TxUrl, whenLabel } from "../detailRows"
-import { shortAddr, usdFigure } from "../format"
+import { usdFigure } from "../format"
+import { L1AddressLabel } from "../L1AddressLabel"
 import {
   depositAttribution,
   depositGrossFigure,
@@ -140,15 +141,16 @@ export function DepositDetailModal({
         <DepositFact label="From">
           <b>
             {title}
-            {address && " · "}
+            {title && address && " · "}
             {address &&
               (funderUrl ? (
                 <a href={funderUrl} target="_blank" rel="noreferrer">
-                  {shortAddr(address)}
+                  <L1AddressLabel address={address} />
                 </a>
               ) : (
-                shortAddr(address)
+                <L1AddressLabel address={address} />
               ))}
+            {!title && !address && "--"}
           </b>
         </DepositFact>
         {fundingTxHash ? (

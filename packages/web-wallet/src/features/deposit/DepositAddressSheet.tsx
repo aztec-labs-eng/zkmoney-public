@@ -15,6 +15,7 @@ import { DepositFact } from "../../ui/screens/DepositFact"
 import { tokenAmountLabel } from "./AddressLimits"
 import type { DepositTokenOption } from "./loadDepositFacts"
 import { WaitingBlock } from "./WaitingBlock"
+import { L1AddressText } from "../../ui/L1AddressText"
 import ethBadge from "../../assets/deposit/eth-fill.svg"
 
 /** Creating: no address to show yet. Waiting: copied, watching the address. Spotted: funds seen. */
@@ -60,29 +61,6 @@ export function LimitsRow({
         {action}
       </b>
     </div>
-  )
-}
-
-/** `0x7b3E` and the last four stand out, the middle is muted; a short fixture address stays plain. */
-function AddressText({ address }: { address: string }) {
-  if (address.length < 14) return <>{address}</>
-  return (
-    <>
-      <b>{address.slice(0, 6)}</b>
-      {address.slice(6, -6)}
-      <em>{address.slice(-6, -4)}</em>
-      <b>{address.slice(-4)}</b>
-    </>
-  )
-}
-
-/** The address shortened in the middle, `0x7b3E…d9F0`, for a phone's one-line row. */
-function ShortAddress({ address }: { address: string }) {
-  if (address.length <= 10) return <>{address}</>
-  return (
-    <>
-      <b>{address.slice(0, 6)}</b>…<b>{address.slice(-4)}</b>
-    </>
   )
 }
 
@@ -229,7 +207,7 @@ export function DepositAddressSheet({
         <DepositFact label="Address">
           {copyButton(
             "zkm-btn-reset ww-deposit-sheet__addr ww-deposit-sheet__addr--row",
-            address && <ShortAddress address={address} />,
+            address && <L1AddressText address={address} cut />,
           )}
         </DepositFact>
         {publishing && address && (
@@ -271,7 +249,7 @@ export function DepositAddressSheet({
         )}
         {copyButton(
           "zkm-btn-reset ww-deposit-sheet__addr",
-          address && <AddressText address={address} />,
+          address && <L1AddressText address={address} />,
         )}
         {publishing && address && <BroadcastStatusRow address={address} />}
         {live}

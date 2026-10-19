@@ -138,6 +138,7 @@ export type { LinkLibraries, LinkReferences, SIPAImplementations } from './deplo
 export {
   addBeneficiary,
   readIsBeneficiary,
+  readR1InstallGas,
   readRegistrationFee,
   readRegistrationMin,
 } from './registration_controller.js';
@@ -283,10 +284,12 @@ export type { R1InstallArg, RegistrationIntent, RegistrationProofs, SignedTermsA
 export {
   R1_INSTALL_CALL_GAS_BASE,
   R1_INSTALL_CALL_GAS_PER_WORD,
+  R1_INSTALL_GAS,
   R1_INSTALL_VERIFICATION_GAS,
   buildR1InstallUserOp,
   r1InstallCallGas,
 } from './r1_install.js';
+export type { R1InstallGas } from './r1_install.js';
 export {
   MAINNET_DAI,
   MAINNET_CHAIN_ID,

@@ -24,6 +24,7 @@ export const ObsidionCoreProvider = ({
   contractServiceStorage,
   contractServiceOptions,
   isTestAccount,
+  registerSponsorFpc,
 }: {
   children: ReactNode
   networkConfig: NetworkStorageConfig
@@ -31,6 +32,7 @@ export const ObsidionCoreProvider = ({
   contractServiceStorage: IContractServiceStorage
   contractServiceOptions: ContractServiceOptions
   isTestAccount?: boolean
+  registerSponsorFpc?: boolean
 }) => {
   return (
     <StorageProvider networkConfig={networkConfig} storageAdapter={storageAdapter}>
@@ -38,6 +40,7 @@ export const ObsidionCoreProvider = ({
         contractServiceStorage={contractServiceStorage}
         contractServiceOptions={contractServiceOptions}
         isTestAccount={isTestAccount}
+        registerSponsorFpc={registerSponsorFpc}
       >
         {children}
       </ObsidionCoreProviderInner>
@@ -50,17 +53,23 @@ const ObsidionCoreProviderInner = ({
   contractServiceStorage,
   contractServiceOptions,
   isTestAccount,
+  registerSponsorFpc,
 }: {
   children: ReactNode
   contractServiceStorage: IContractServiceStorage
   contractServiceOptions: ContractServiceOptions
   isTestAccount?: boolean
+  registerSponsorFpc?: boolean
 }) => {
   const { storageAdapter } = useStorageContext()
   if (!storageAdapter) return null
   return (
     <AztecProvider isTestAccount={isTestAccount}>
-      <ContractServiceProvider storage={contractServiceStorage} options={contractServiceOptions}>
+      <ContractServiceProvider
+        storage={contractServiceStorage}
+        options={contractServiceOptions}
+        registerSponsorFpc={registerSponsorFpc}
+      >
         {children}
       </ContractServiceProvider>
     </AztecProvider>

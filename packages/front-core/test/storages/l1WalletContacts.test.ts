@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   ContactStorage,
+  nameL1ContactsByEns,
   updateSavedL1WalletContact,
   upsertDepositL1WalletContact,
   upsertSavedL1WalletContact,
 } from "../../src/index.js"
+import type { EnsClient } from "../../src/core/services/ens"
 import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
 
 const ADDR = "0xabcdef0123456789abcdef0123456789abcdef01"
@@ -164,5 +166,50 @@ describe("updateSavedL1WalletContact", () => {
       }),
     ).rejects.toThrow("Invalid address")
     expect(await ContactStorage.get().getEntries()).toEqual([])
+  })
+})
+
+describe("nameL1ContactsByEns", () => {
+  const getClient = () => ({ getEnsName: async () => "niallinio.eth" } as unknown as EnsClient)
+
+  it("names an unlabeled L1 contact after its ENS name, but keeps a user's label", async () => {
+    const LABELED = "0x1111111111111111111111111111111111111111"
+    await upsertSavedL1WalletContact({ address: ADDR })
+    await upsertSavedL1WalletContact({ address: LABELED, name: "Savings" })
+    const stop = nameL1ContactsByEns(getClient)
+
+    await vi.waitFor(async () => {
+      const names = (await ContactStorage.get().getEntries()).map((e) => [e.address, e.name])
+      expect(names).toEqual([
+        [ADDR, "niallinio.eth"],
+        [LABELED, "Savings"],
+      ])
+    })
+    stop()
+  })
+})
+
+describe("nameL1ContactsByEns, racing the user", () => {
+  it("leaves a contact the user renamed while its ENS name was being looked up", async () => {
+    // Its own address: ENS lookups are cached per address across tests.
+    const ADDR = "0x2222222222222222222222222222222222222222"
+    await upsertSavedL1WalletContact({ address: ADDR })
+    const renaming = async () => {
+      await updateSavedL1WalletContact({
+        originalAddress: ADDR,
+        provider: "manual",
+        address: ADDR,
+        name: "Savings",
+      })
+      return "late.eth"
+    }
+    const stop = nameL1ContactsByEns(() => ({ getEnsName: renaming } as unknown as EnsClient))
+
+    await vi.waitFor(async () =>
+      expect((await ContactStorage.get().getEntries())[0].name).toBe("Savings"),
+    )
+    await new Promise((r) => setTimeout(r, 20))
+    expect((await ContactStorage.get().getEntries())[0].name).toBe("Savings")
+    stop()
   })
 })

@@ -5,12 +5,45 @@ import {
   currentPhoneReach,
   currentPlatformAuthenticator,
   currentTrustsAttachmentLabel,
+  macCopyMayBeWrong,
   mayStartLaptopCeremony,
   safariMislabelsCrossDevice,
   probePhoneReach,
   trustsAttachmentLabel,
 } from "../src/policy/passkeyCapabilities.js"
 import { parseUserAgent } from "../src/policy/userAgentInfo.js"
+import { APPLE_ICLOUD_AAGUID, GPM_AAGUID, ZERO_AAGUID } from "@obsidion/core/constants"
+
+describe("macCopyMayBeWrong", () => {
+  const mac = { posture: "laptop" as const, osFamily: "macos" as const, labelTrusted: true }
+
+  it("holds on a Mac laptop for this computer's answer, or one with no class", () => {
+    expect(macCopyMayBeWrong({ attachment: "platform" }, mac)).toBe(true)
+    expect(macCopyMayBeWrong({}, mac)).toBe(true)
+    expect(macCopyMayBeWrong(undefined, mac)).toBe(true)
+  })
+
+  it("never off a Mac laptop", () => {
+    expect(macCopyMayBeWrong({ attachment: "platform" }, { ...mac, osFamily: "windows" })).toBe(
+      false,
+    )
+    expect(macCopyMayBeWrong({ attachment: "platform" }, { ...mac, posture: "phone" })).toBe(false)
+  })
+
+  it("another device's answer rules it out only where the label is trusted", () => {
+    expect(macCopyMayBeWrong({ attachment: "cross-platform" }, mac)).toBe(false)
+    expect(
+      macCopyMayBeWrong({ attachment: "cross-platform" }, { ...mac, labelTrusted: false }),
+    ).toBe(true)
+  })
+
+  it("a record from another manager rules it out; Apple, zero or no id does not", () => {
+    const answer = (recordAaguid: string) => ({ attachment: "platform" as const, recordAaguid })
+    expect(macCopyMayBeWrong(answer(GPM_AAGUID), mac)).toBe(false)
+    expect(macCopyMayBeWrong(answer(APPLE_ICLOUD_AAGUID.toUpperCase()), mac)).toBe(true)
+    expect(macCopyMayBeWrong(answer(ZERO_AAGUID), mac)).toBe(true)
+  })
+})
 
 const chromeMac = parseUserAgent({
   userAgent:

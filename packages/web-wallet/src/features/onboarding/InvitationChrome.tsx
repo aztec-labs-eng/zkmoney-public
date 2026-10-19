@@ -3,13 +3,14 @@ import { BrandLockup } from "../../ui/BrandLockup"
 import { EndpointsModal, customEndpointsLabel } from "../../ui/EndpointsModal"
 import { useEndpointsHeld } from "../../ui/endpointsHold"
 import { usePxeBoot } from "../../ui/PxeBoot"
+import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { getConfig } from "../../config/env"
 import inviteGradient from "../../assets/onboarding/invite-gradient.svg"
 import landingGradient from "../../assets/onboarding/landing-gradient.svg"
 
 /**
  * Full-bleed invitation frame (ULT-667): the designed gradient canvas, top bar with
- * the wordmark and the early-access pill, centered content. The modal steps of
+ * the wordmark and, off phones, the early-access pill, centered content. The modal steps of
  * the signup flow render over it.
  */
 export function InvitationChrome({
@@ -29,6 +30,7 @@ export function InvitationChrome({
   pill?: boolean
   children: ReactNode
 }) {
+  const phone = usePhoneLayout()
   return (
     <div className="ww-invite">
       {landing ? (
@@ -40,7 +42,7 @@ export function InvitationChrome({
         {!bare && <BrandLockup />}
         <span className="ww-invite__topbar-end">
           <EndpointsPill />
-          {!bare && pill && (
+          {!bare && pill && !phone && (
             <span className="ww-invite__pill" data-testid="early-access-pill">
               EARLY ACCESS
               <span className="ww-invite__pill-open">OPEN</span>

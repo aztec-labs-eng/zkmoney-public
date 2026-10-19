@@ -135,6 +135,7 @@ vi.mock("../src/features/onboarding/registrationDepositSeed", () => ({
 }))
 vi.mock("../src/features/paylink/claimStash", () => ({
   peekClaimStash: () => state.claimFragment,
+  peekTicketSignup: () => null,
   clearClaimStash: (fragment?: string) => state.clearClaimStash(fragment),
 }))
 const claimSponsoredLink = vi.fn(
@@ -150,6 +151,7 @@ vi.mock("../src/features/paylink/sponsoredPaylink", () => ({
   }),
   claimSponsoredLink: (...args: Parameters<typeof claimSponsoredLink>) =>
     asOperation(claimSponsoredLink, "paylink-claim")(...args),
+  VoucherReadError: class VoucherReadError extends Error {},
 }))
 vi.mock("../src/features/paylink/usePaylinkDeps", () => ({
   usePaylinkDeps: () => ({ account: { getAddress: () => "0xme" } }),

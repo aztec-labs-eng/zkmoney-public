@@ -11,6 +11,7 @@ import type { IStorageAdapter } from "./storages/adapter"
 import { isFrozenGenerationVersion } from "./migration"
 import {
   AppNotificationStore,
+  bootPriority,
   ReorgMonitor,
   ReorgNotificationProducer,
   SIPADepositStore,
@@ -104,7 +105,11 @@ export function createReorgMonitor({
     // $isWithdrawalSpent. Un-bootstrapped (sandbox / cold manifest) throws into the monitor's
     // guarded catch.
     rerunWithdrawalFinalization: () => WithdrawalTrackingService.get().resumeAll(),
-    kickPxeSync: () => wallet.pxe.sync(),
+    // Until the first balance, the balance read's own sync brings note state up, and a sync here
+    // would move the anchor that read checks.
+    kickPxeSync: async () => {
+      if (bootPriority.isReady("reorgSync")) await wallet.pxe.sync()
+    },
     isFrozen,
     onOutcome: handleOutcome,
   })

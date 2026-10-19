@@ -98,6 +98,17 @@ describe("notification target -> activity detail", () => {
     expect(notificationRoute(entry({ type: "migration.residuals" }))).toEqual({ migration: true })
   })
 
+  it("opens an upgrade's run in activity", () => {
+    expect(notificationRoute(entry({ type: "upgrade.run", run: "run-key" }))).toMatchObject({
+      to: "/activity",
+      state: { openUpgradeRun: "run-key" },
+    })
+  })
+
+  it("opens the migration dialog, in place, for an upgrade that needs the user", () => {
+    expect(notificationRoute(entry({ type: "migration.run" }))).toEqual({ migration: true })
+  })
+
   it("opens the claim screen for a registration in flight", () => {
     expect(notificationRoute(entry({ type: "registration.pending", tag: "alice" }))).toEqual({
       to: "/claim/alice",

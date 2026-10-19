@@ -7,12 +7,12 @@
       content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content"
     />
     <!-- Chromium browsers tint their chrome with this. Safari 26 ignores it and samples a fixed
-         element at the viewport edge instead, which #tint below exists to be. Both carry the
-         colour the top of the app shows. -->
+         element at the viewport edge instead, which #tint below exists to be. -->
     <meta name="theme-color" content="#49087e" />
     <meta name="color-scheme" content="dark" />
     <title>zk.money</title>
-    <link rel="icon" type="image/png" sizes="32x32" href="/favicon.png" />
+    <link rel="icon" type="image/png" sizes="180x180" href="/favicon.png" />
+    <link rel="apple-touch-icon" href="/favicon.png" />
     <!-- Chat apps render these as a card. socialPreview.ts fills the __OG_*__ values per page: the
          zk.money card here, a payment-link card at /link and /request. -->
     <meta name="description" content="__OG_DESCRIPTION__" />
@@ -53,15 +53,14 @@
       }
       /* Safari 26 tints its toolbars from the background-color of fixed elements at the viewport
          edge and ignores the theme-color meta. This strip is here to be that element and nothing
-         else: it carries the colour the top of the app shows, and the app's own opaque surface
-         paints over it, so it is never seen. */
+         else. It is near-black because Safari draws its edge as a hairline under the toolbar. */
       #tint {
         position: fixed;
         top: 0;
         left: 0;
         right: 0;
         height: 1px;
-        background: #49087e;
+        background: #070707;
         pointer-events: none;
         z-index: -1;
       }
@@ -80,8 +79,7 @@
         justify-content: center;
         gap: 16px;
         color: #bfc2d7;
-        /* Dark as an image over #tint's colour, which Safari's toolbar tint reads from it. */
-        background: linear-gradient(#070707, #070707) #49087e;
+        background: #070707;
         pointer-events: none;
         contain: strict;
         transition: opacity 200ms ease-out;
@@ -95,6 +93,17 @@
       }
       body[data-boot-leaving] #boot-splash {
         opacity: 0;
+      }
+      /* A visitor's first screen, drawn while the wallet starts (PreBootLayer), replaces it. It
+         covers the app's root, which mounts its shell beneath before taking over. */
+      #pre-boot:not(:empty) ~ #boot-splash {
+        display: none;
+      }
+      #pre-boot:not(:empty) {
+        position: fixed;
+        inset: 0;
+        overflow-y: auto;
+        z-index: 1;
       }
       /* The box turns, not the svg, as the design system's Spinner does. */
       #boot-splash-spinner {
@@ -113,6 +122,7 @@
   </head>
   <body>
     <div id="tint" aria-hidden="true"></div>
+    <div id="pre-boot"></div>
     <div id="root"></div>
     <div id="boot-splash" aria-hidden="true">
       <span id="boot-splash-spinner">

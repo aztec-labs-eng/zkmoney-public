@@ -2,6 +2,9 @@ import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter, Route, Routes } from "react-router-dom"
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest"
+import { SIGN_UP_SHEET_COPY } from "@obsidion/passkey-web"
+import { onePasswordCreate, otherCreate } from "./support/passkeyExtensionStubs"
+import { shortL1Addr } from "../src/ui/format"
 import { walletStorage } from "../src/platform/storage/walletStorage"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import type { SignInRoute } from "@obsidion/core/types"
@@ -15,7 +18,7 @@ import {
   restartTicketSignupAccount,
   saveTicketSignupAccount,
 } from "../src/features/paylink/ticketSignupAccount"
-import type { GateOptions, SheetVariant } from "../src/features/identity/ceremonyGate"
+import type { GateOptions } from "../src/features/identity/ceremonyGate"
 import { setActiveCredentialId } from "../src/platform/storage/activeStorage"
 import { askedTotal } from "../src/features/onboarding/registrationAsk"
 import { PAID, PAID_ASK, RANDOM, RANDOM_ASK } from "./support/registrationPrices"
@@ -26,11 +29,19 @@ import {
   formatDepositDue,
   formatDepositSeen,
 } from "../src/features/onboarding/steps/DepositTermsRows"
-import { CHAIN_READ_RETRY_MS } from "../src/features/onboarding/registrationTerms"
+import {
+  CHAIN_READ_RETRIES,
+  CHAIN_READ_RETRY_MS,
+} from "../src/features/onboarding/registrationTerms"
 import { REGISTRATIONS_PAUSED_NOTICE } from "../src/features/onboarding/onboardingErrorCopy"
 import type { PendingRegistrationRecord } from "@obsidion/front-core"
 import type { Hex } from "viem"
-import type { LaptopCreation, PasskeyRequestScope, PhoneReach } from "@obsidion/passkey-web"
+import type {
+  LaptopCreation,
+  PasskeyRequestScope,
+  PhoneReach,
+  SignUpChoice,
+} from "@obsidion/passkey-web"
 import {
   type HeldRequest,
   pageHide,
@@ -38,6 +49,7 @@ import {
   passkeyTelemetryHarness,
 } from "./support/passkeyTelemetryHarness"
 import { testWalletDbs } from "./support/fakeWalletDb"
+import { peekPreBootCreate, setPreBootCreate } from "../src/ui/preBootTaps"
 import {
   earnedTerms,
   nameClaim,
@@ -84,6 +96,7 @@ const h = vi.hoisted(() => ({
   setObsidionAccount: vi.fn(),
   getAuthService: vi.fn(),
   claimSponsoredLink: vi.fn(async () => "0xclaim"),
+  prewarmGoldenTicket: vi.fn(),
   viewLink: vi.fn(),
   obtainEmailClaimProof: vi.fn(),
   paylinkDeps: { wallet: true } as { wallet: boolean } | undefined,
@@ -401,6 +414,11 @@ vi.mock("../src/features/onboarding/oxideOnboarding", async (importOriginal) => 
   reusePasskeyAccount: h.reusePasskeyAccount,
   buildRetrySignDeps: h.buildRetrySignDeps,
 }))
+// The tag step's warm-up loads the prover and reads the chain; here it is only observed.
+vi.mock("../src/features/onboarding/goldenTicket", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/onboarding/goldenTicket")>()),
+  prewarmGoldenTicket: h.prewarmGoldenTicket,
+}))
 vi.mock("../src/features/paylink/sponsoredPaylink", () => ({
   claimSponsoredLink: h.claimSponsoredLink,
   viewLink: h.viewLink,
@@ -445,6 +463,9 @@ vi.mock("../src/features/paylink/registrationProverTip", async () => {
         },
         outcome: { proverTip: 0n },
         proverTip: tip,
+        settle: () => {
+          if (active && tip === undefined) onCommit(0n, "standard")
+        },
       }
     },
   }
@@ -508,6 +529,7 @@ const {
   PhoneRequiredError: ScreenPhoneRequiredError,
   LaptopPasskeyRefusedError: ScreenLaptopRefusedError,
   markPasskeyWritten,
+  routeForChoice,
 } = await import("@obsidion/passkey-web")
 const realOxideOnboarding = await vi.importActual<
   typeof import("../src/features/onboarding/oxideOnboarding")
@@ -1430,7 +1452,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
   it("custody completes the signup: identity first, then All set! and the wallet", async () => {
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -1459,7 +1481,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
   it("a custody completion whose identity save fails offers a retry that finishes the signup", async () => {
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -1490,7 +1512,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     h.asked = false
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -1505,17 +1527,15 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
   })
 
-  it("reports the start and the exit of a signup in a browser that answered before it", async () => {
+  it("reports the exit of a signup in a browser that answered before it", async () => {
     h.asked = true
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
     await render("/claim/taga")
-    const started = h.fireEvent.mock.calls.filter(([name]) => name === "onboarding_started")
-    expect(started).toEqual([["onboarding_started", { entry: "link", source: "direct" }]])
     await click("landing-signin")
     await clickDeposit()
     await act(async () => {
@@ -1550,7 +1570,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
 
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -1569,7 +1589,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     h.getAuthService.mockReturnValue({ recoverFromCache, clear: vi.fn(), lockOut: vi.fn() })
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -1602,7 +1622,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     h.getAuthService.mockReturnValue({ recoverFromCache, clear: vi.fn(), lockOut: vi.fn() })
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -1633,7 +1653,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     })
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -1665,7 +1685,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     })
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -1722,7 +1742,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     })
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -1741,6 +1761,25 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     expect(enteredWallet()).toBe(true)
   })
 
+  it("an ordinary signup never adopts a cached key a payment link's signup bound", async () => {
+    const { saveTicketSignupAccount } = await import("../src/features/paylink/ticketSignupAccount")
+    saveTicketSignupAccount("localhost", "some-link", {
+      credentialId: "cred-held",
+      l2Address: L2_ADDRESS,
+      tag: "taglink",
+    })
+    h.getAuthService.mockReturnValue({
+      recoverFromCache: async () => ({ credentialId: "cred-held", expectedAddress: L2_ADDRESS }),
+      clear: vi.fn(),
+      lockOut: vi.fn(),
+    })
+    await render("/claim/taga")
+    await click("landing-signin")
+    await clickDeposit()
+    expect(h.reusePasskeyAccount).not.toHaveBeenCalled()
+    expect(h.createAccount).toHaveBeenCalled()
+  })
+
   it("a nameless identity reuses the session's passkey, not the newest root on the browser", async () => {
     const { setActiveCredentialId, setActiveStorageId } = await import(
       "../src/platform/storage/activeStorage"
@@ -1756,7 +1795,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     })
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -1789,7 +1828,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     })
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -1840,7 +1879,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
 
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -1887,8 +1926,8 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
     // The source stage answers first (no held key here), then the gate opens.
     await settleReads()
     expect(container.querySelector('[data-testid="phone-steps"]')).not.toBeNull()
-    // The campaign's sign-up sheet, mirrored: what to do with the QR code, not the sign-in copy.
-    expect(container.textContent).toContain("Scan QR code to create the passkey on your phone")
+    // The sign-up sheet: where the new passkey will live, not the sign-in copy.
+    expect(container.textContent).toContain("Where should your passkey live?")
     expect(container.textContent).not.toContain("signed up with")
     expect(h.createAccount).not.toHaveBeenCalled()
 
@@ -1929,7 +1968,7 @@ describe("signup modals — chained create-then-claim (ULT-667)", () => {
 
     // The op has no client-side abort — a submission that lands anyway surfaces the true outcome.
     await act(async () =>
-      release({ kind: "custody", confirmed: false, oxideAccount: ACCOUNT, claim: CLAIM }),
+      release({ kind: "custody", confirmed: true, oxideAccount: ACCOUNT, claim: CLAIM }),
     )
     expect(enteredWallet()).toBe(true)
     expect(loadWalletIdentity()).toMatchObject({ handle: "taga" })
@@ -2014,8 +2053,9 @@ describe("signup in an app's built-in browser", () => {
       expect(notice()?.textContent).toContain("Passkeys don't work in this app's browser")
       expect(cta()).toBeUndefined()
       expect(container.textContent).not.toContain("Deposit")
-      // X's app drops the link: Copy link leads, the app's own menu follows.
+      // X's app drops the link: the app's own menu leads, Copy link follows.
       expect(container.querySelector('[data-testid="open-in-browser-link"]')).toBeNull()
+      expect(escape()?.textContent).toContain("Tap ⋮ next to the web address")
       expect(escape()?.textContent).toContain("Copy link")
       expect(h.createAccount).not.toHaveBeenCalled()
       expect(container.querySelector('[data-testid="create-in-app-back"]')).not.toBeNull()
@@ -2104,7 +2144,7 @@ describe("signup in an app's built-in browser", () => {
     h.fireEvent.mockClear()
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -2274,7 +2314,7 @@ describe("modal overlay — one node for the whole step sequence (ULT-803)", () 
     expect(node).not.toBeNull()
 
     await act(async () =>
-      release({ kind: "custody", confirmed: false, oxideAccount: ACCOUNT, claim: CLAIM }),
+      release({ kind: "custody", confirmed: true, oxideAccount: ACCOUNT, claim: CLAIM }),
     )
     expect(enteredWallet()).toBe(true)
     expect(overlayCount()).toBe(1)
@@ -2633,7 +2673,7 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
     await click("Recover deposit")
     expect(container.textContent).toContain("Recovery requires ETH for gas")
     expect(h.claimTag).not.toHaveBeenCalled()
-    await click(`Recover to ${ACCOUNT.slice(0, 6)}…${ACCOUNT.slice(-4)}`)
+    await click(`Recover to ${shortL1Addr(ACCOUNT)}`)
     expect(container.textContent).toContain("Deposit recovered")
     expect(getPendingStore().current()?.sipaAddress).toBe(original.sipaAddress)
     await click("Done")
@@ -3590,8 +3630,33 @@ describe("the wallet owns signup", () => {
       await render("/claim")
       await settleReads()
       expect(assign).not.toHaveBeenCalled()
-      expect(container.textContent).toContain("Get started")
+      expect(container.textContent).toContain("Open account")
       expect(container.textContent).not.toContain("landing-signin")
+    })
+  })
+
+  it("runs an Open account tapped while the wallet started, once, busy from its first frame", async () => {
+    await withStubbedAssign(async () => {
+      setPreBootCreate(true)
+      let land!: (draw: Awaited<ReturnType<typeof h.drawTag>>) => void
+      h.drawTag.mockImplementationOnce(() => new Promise((resolve) => (land = resolve)))
+      try {
+        await render("/claim")
+        expect(button("Cancel")).toBeDefined()
+        expect(container.textContent).not.toContain("I already have an account")
+        expect(h.drawTag).toHaveBeenCalledTimes(1)
+        expect(peekPreBootCreate()).toBe(false)
+        await act(async () =>
+          land({ tag: "brisk-otter", nameHash: NAME_HASH, grantToken: "draw-token", expiresAt: 0 }),
+        )
+        await settleReads()
+        expect(h.drawTag).toHaveBeenCalledTimes(1)
+        expect(sessionStorage.getItem("obsidion.drawn-offer")).toBe("brisk-otter")
+        // A push, as for a tap after boot, so browser Back returns to the landing.
+        expect(h.navigate).toHaveBeenCalledWith("/")
+      } finally {
+        setPreBootCreate(false)
+      }
     })
   })
 
@@ -3602,14 +3667,27 @@ describe("the wallet owns signup", () => {
   it("a bare visit draws a tag and hands it to Home without making a passkey", async () => {
     await withStubbedAssign(async (assign) => {
       await render("/claim")
-      await click("Get started")
+      await click("Open account")
       await settleReads()
       expect(assign).not.toHaveBeenCalled()
       expect(h.drawTag).toHaveBeenCalledTimes(1)
       expect(h.createAccount).not.toHaveBeenCalled()
       expect(sessionStorage.getItem("obsidion.name-grant")).toBe("draw-token")
       expect(sessionStorage.getItem("obsidion.drawn-offer")).toBe("brisk-otter")
-      expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+      // A push, so browser Back returns to the landing.
+      expect(h.navigate).toHaveBeenCalledWith("/")
+    })
+  })
+
+  it("Back from Home drops the drawn tag, so the gate returns to the landing", async () => {
+    sessionStorage.setItem("obsidion.drawn-offer", "brisk-otter")
+    await withStubbedAssign(async () => {
+      await render("/claim", DraftHome)
+      await act(async () =>
+        document.querySelector<HTMLButtonElement>('[aria-label="Back"]')!.click(),
+      )
+      expect(sessionStorage.getItem("obsidion.drawn-offer")).toBeNull()
+      expect(h.createAccount).not.toHaveBeenCalled()
     })
   })
 
@@ -3770,7 +3848,7 @@ describe("the wallet owns signup", () => {
     })
   })
 
-  it("reports each Get started click and the drawn tag on the onboarding stream", async () => {
+  it("reports each Open account click and the drawn tag on the onboarding stream", async () => {
     const onboarding = () =>
       h.fireEvent.mock.calls.filter(([event]) =>
         ["onboarding_create_attempted", "onboarding_tag_drawn", "onboarding_failed"].includes(
@@ -3780,9 +3858,9 @@ describe("the wallet owns signup", () => {
     h.drawTag.mockRejectedValueOnce(new Error("offline"))
     await withStubbedAssign(async () => {
       await render("/claim")
-      await click("Get started")
+      await click("Open account")
       await settleReads()
-      await click("Get started")
+      await click("Open account")
       await settleReads()
       expect(onboarding()).toEqual([
         ["onboarding_create_attempted", { attempt: "1" }],
@@ -3797,10 +3875,10 @@ describe("the wallet owns signup", () => {
     h.drawTag.mockRejectedValueOnce(new Error("offline"))
     await withStubbedAssign(async () => {
       await render("/claim")
-      await click("Get started")
+      await click("Open account")
       await settleReads()
       expect(container.textContent).toContain("Couldn't pick a tag for you")
-      expect(container.textContent).toContain("Get started")
+      expect(container.textContent).toContain("Open account")
       expect(sessionStorage.getItem("obsidion.name-grant")).toBeNull()
     })
   })
@@ -3876,7 +3954,7 @@ describe("the wallet owns signup", () => {
     })
     h.claimTag.mockResolvedValue({
       kind: "custody",
-      confirmed: false,
+      confirmed: true,
       oxideAccount: ACCOUNT,
       claim: CLAIM,
     })
@@ -4314,7 +4392,7 @@ describe("deposit terms step — before any passkey prompt", () => {
       }
       expect(container.textContent).not.toContain("Deposit")
       // A phone's tag step already started the passkey.
-      const cta = ["Continue with your passkey", "Show QR Code", TICKET_CTA].find((l) => button(l))
+      const cta = ["Continue with your passkey", "Continue", TICKET_CTA].find((l) => button(l))
       if (cta) await click(cta)
     }
     const pendingClaim = (claim: unknown, recordOver: Partial<PendingRegistrationRecord> = {}) =>
@@ -4335,7 +4413,7 @@ describe("deposit terms step — before any passkey prompt", () => {
         expectWelcomeStep()
         const split = (id: string) =>
           container.querySelector(`[data-testid="paylink-signup-${id}"]`)?.textContent
-        expect(container.textContent).toContain("@sender sent you20.00 DAI")
+        expect(container.textContent).toContain("Someone sent you20.00 DAI")
         expect(split("paylink")).toBe("20.00 DAI")
         expect(split("tag-price")).toBe("Free with ticket")
         const kept = parseFloat(split("balance-after") ?? "")
@@ -4347,7 +4425,7 @@ describe("deposit terms step — before any passkey prompt", () => {
       }
     })
 
-    it("prices the split at the tip it commits, keeps that tip for the terms, and holds while it is quoted", async () => {
+    it("prices the split at the tip it commits, keeps that tip for the terms, and at Standard while it is quoted", async () => {
       ticketStash({ amount: 20n * ONE })
       const split = (id: string) =>
         container.querySelector(`[data-testid="paylink-signup-${id}"]`)?.textContent ?? ""
@@ -4369,18 +4447,115 @@ describe("deposit terms step — before any passkey prompt", () => {
           (10n ** 18n).toString(),
         )
 
+        // The quote refines the split once it answers; until then nothing holds on it.
         splitTip.value = undefined
         await render("/claim")
-        expect(split("network-fee")).toBe(DEPOSIT_TERMS_PENDING)
+        expect(parseFloat(split("network-fee"))).toBeCloseTo(fee)
+        expect(parseFloat(split("balance-after"))).toBeCloseTo(kept)
       } finally {
         splitTip.value = 10n ** 18n
       }
     })
 
+    describe("after the tag, before and after the passkey", () => {
+      const claimCta = () => buttons().find((b) => /^Claim (@|tag)/.test(b.textContent ?? ""))
+
+      it("starts the ticket's proof setup and the registration env on the tag step", async () => {
+        ticketStash({ amount: 20n * ONE })
+        const { oxideEnvFor } = await import("../src/config/oxideTuple")
+        await render("/claim")
+        expect(h.prewarmGoldenTicket).toHaveBeenCalledWith(h.aztec.obsidionWallet, "paylink-frag")
+        expect(oxideEnvFor).toHaveBeenCalled()
+        expect(h.createAccount).not.toHaveBeenCalled()
+      })
+
+      it("an ordinary signup warms nothing", async () => {
+        screenProps = {}
+        await render("/claim")
+        expect(h.prewarmGoldenTicket).not.toHaveBeenCalled()
+      })
+
+      it("enables the claim before the tip quote answers, and a passkey then commits Standard", async () => {
+        ticketStash({ amount: 20n * ONE })
+        pendingClaim(TICKET_CLAIM)
+        try {
+          splitTip.value = undefined
+          await render("/claim")
+          await typeTag("taga")
+          await settleReads()
+          expect(claimCta()?.disabled).toBe(false)
+          await walkToPasskey()
+          expect(h.createAccount).toHaveBeenCalledTimes(1)
+          expect(JSON.parse(sessionStorage.getItem(TICKET_STASH_KEY)!)).toMatchObject({
+            proverTip: "0",
+            speed: "standard",
+          })
+          expect(h.claimTag.mock.calls[0]?.[8]).toMatchObject({ proverTip: "0", speed: "standard" })
+        } finally {
+          splitTip.value = 10n ** 18n
+        }
+      })
+
+      it("names each stage of the claim after the passkey instead of one label", async () => {
+        ticketStash({ amount: 20n * ONE })
+        let stage!: (s: string) => void
+        h.claimTag.mockImplementationOnce(
+          (_tag: string, _keys: unknown, _config: unknown, _wallet: unknown, onStage: never) => {
+            stage = onStage
+            return new Promise(() => {})
+          },
+        )
+        await walkToPasskey()
+        const text = () => container.textContent ?? ""
+        expect(text()).toContain("Checking your payment…")
+        await act(async () => stage("claim"))
+        expect(text()).toContain("Checking your payment…")
+        await act(async () => stage("ticket_prove"))
+        expect(text()).toContain("Proving your ticket…")
+        await act(async () => stage("reserve"))
+        expect(text()).toContain("Reserving @taga…")
+        await act(async () => stage("derive"))
+        expect(text()).toContain("Setting up @taga…")
+        expect(text()).not.toContain("Using your paylink")
+        // Analytics keeps the registration session's own stages.
+        const stages = h.fireEvent.mock.calls
+          .filter(([event]) => event === "onboarding_oxide_stage")
+          .map(([, props]) => (props as { stage: string }).stage)
+        expect(stages).toEqual(["claim", "derive"])
+      })
+
+      it("says when the network fee stays unread, and reads it again on Try again", async () => {
+        ticketStash({ amount: 20n * ONE })
+        const skim = h.skim
+        vi.useFakeTimers()
+        try {
+          h.skim = undefined as unknown as bigint
+          await render("/claim")
+          await typeTag("taga")
+          expect(claimCta()?.disabled).toBe(true)
+          expect(container.textContent).not.toContain("network fee…")
+          await act(async () => void (await vi.advanceTimersByTimeAsync(CHAIN_READ_RETRY_MS + 50)))
+          expect(container.textContent).toContain("Still checking the network fee…")
+          for (let tick = 1; tick < CHAIN_READ_RETRIES; tick++) {
+            await act(async () => void (await vi.advanceTimersByTimeAsync(CHAIN_READ_RETRY_MS)))
+          }
+          expect(container.textContent).toContain("Couldn't check the network fee.")
+          expect(claimCta()?.disabled).toBe(true)
+
+          h.skim = skim
+          await click("Try again")
+          expect(container.textContent).not.toContain("network fee")
+          expect(claimCta()?.disabled).toBe(false)
+        } finally {
+          h.skim = skim
+        }
+      })
+    })
+
     describe("the threshold, before any passkey", () => {
       /** The CTA on either posture: a laptop's creation sheet, a phone's card. */
       const passkeyCta = () =>
-        button("Show QR Code") ??
+        button("Continue") ??
         buttons().find((b) => b.textContent?.startsWith("Claim @taga and ")) ??
         button("Create another passkey")
       const walkToWelcome = async () => {
@@ -4978,20 +5153,58 @@ describe("deposit terms step — before any passkey prompt", () => {
       expect(h.createAccount).toHaveBeenCalledTimes(2)
     })
 
-    /** The route a gate call was handed by the screen's own sheet. */
-    const pickOf = (options: unknown) => (options as { unheld?: SignInRoute } | undefined)?.unheld
-    /** A gate that resolves on the route the sheet picked, as the real one does where a phone is reachable. */
+    /** The option a gate call was handed by the screen's own sheet. */
+    const pickOf = (options: unknown) => (options as GateOptions | undefined)?.unheld?.choice
+    /** A gate that resolves on the option the sheet picked, as the real one does while it is offered. */
     const pickingGate = () =>
-      vi.fn(async (options?: unknown) => ({
-        signal: new AbortController().signal,
-        reach: "unknown" as const,
-        route: pickOf(options),
-      }))
+      vi.fn(async (options?: unknown) => {
+        const choice = pickOf(options)
+        return {
+          signal: new AbortController().signal,
+          reach: "unknown" as const,
+          choice,
+          route: choice && routeForChoice(choice),
+        }
+      })
+    const byId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)
+    const clickId = (id: string) =>
+      act(async () => {
+        const target = byId(id)
+        if (!target) throw new Error(`no control "${id}"`)
+        target.click()
+      })
+    /** Picks `choice` on the sheet's dropdown. */
+    const pickOption = async (choice: SignUpChoice) => {
+      await clickId("phone-steps-choice")
+      await clickId(`phone-steps-option-${choice}`)
+    }
+    /** The options the sheet's dropdown offers; it is closed again on the one already picked. */
+    const offered = async () => {
+      await clickId("phone-steps-choice")
+      const ids = [...container.querySelectorAll<HTMLElement>('[role="option"]')].map((o) =>
+        o.dataset.testid?.replace("phone-steps-option-", ""),
+      )
+      await act(async () =>
+        container.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')!.click(),
+      )
+      return ids
+    }
+    const credentials = Object.getOwnPropertyDescriptor(navigator, "credentials")
+    /** 1Password's script answers the page's passkey creation, or another manager's. */
+    const extensionAnswers = (script: () => unknown = onePasswordCreate) =>
+      Object.defineProperty(navigator, "credentials", {
+        value: { create: script() },
+        configurable: true,
+      })
+    afterEach(() => {
+      if (credentials) Object.defineProperty(navigator, "credentials", credentials)
+      else delete (navigator as { credentials?: unknown }).credentials
+    })
 
     it.each([
-      ["Show QR Code", "phone"],
-      ["Use a security key", "security-key"],
-    ] as const)("the ticket sheet's %s creates the account on its route", async (label, route) => {
+      ["phone", "phone"],
+      ["key", "security-key"],
+    ] as const)("the ticket sheet's %s creates the account on its route", async (choice, route) => {
       ticketStash({ amount: 20n * ONE })
       h.getAuthService.mockReturnValue({ recoverFromCache: async () => undefined })
       pendingClaim(TICKET_CLAIM)
@@ -5001,17 +5214,16 @@ describe("deposit terms step — before any passkey prompt", () => {
       await typeTag("taga")
       await clickClaimTag()
       await settleReads()
-      await click(label)
-      if (route === "security-key") {
-        // The link only swaps the sheet to its key variant; that variant's button creates.
-        expect(gate).not.toHaveBeenCalled()
-        await click("Use security key")
-      }
-      expect(gate.mock.calls[0]?.[0]).toMatchObject({ purpose: "create", unheld: route })
+      expect(byId("phone-steps")?.dataset.choice).toBe("phone")
+      if (choice !== "phone") await pickOption(choice)
+      // A pick only changes the sheet; its Continue creates.
+      expect(gate).not.toHaveBeenCalled()
+      await clickId("phone-steps-continue")
+      expect(gate.mock.calls[0]?.[0]).toMatchObject({ purpose: "create", unheld: { choice } })
       expect(h.createAccount.mock.calls[0]?.[5]).toMatchObject({ route })
     })
 
-    it("the ticket sheet shows no route until the browser says what it reaches and allows", async () => {
+    it("the ticket sheet shows no option until the browser says what it reaches and allows", async () => {
       ticketStash({ amount: 20n * ONE })
       let answer!: (reach: string) => void
       h.getAuthService.mockReturnValue({
@@ -5022,21 +5234,19 @@ describe("deposit terms step — before any passkey prompt", () => {
       await typeTag("taga")
       await clickClaimTag()
       await settleReads()
-      const byId = (id: string) =>
-        container.querySelector<HTMLButtonElement>(`[data-testid="${id}"]`)
-      // Nothing to pick yet: a waiting button where the routes will be, so no variant is shown
-      // only to be swapped once the browser answers.
+      // Nothing to pick yet: a waiting button where the picker will be, so no option is shown only
+      // to be replaced once the browser answers.
       expect(byId("phone-steps-loading")).not.toBeNull()
       expect(byId("phone-steps-continue")).toBeNull()
-      expect(byId("phone-steps-local")).toBeNull()
-      expect(byId("phone-steps-security-key")).toBeNull()
+      expect(byId("phone-steps-choice")).toBeNull()
       // Nothing warns above the sheet.
       expect(container.querySelector('[data-testid="passkey-loss-notice"]')).toBeNull()
       // A browser that reaches no phone is offered its key alone, never a phone it cannot use.
       await act(async () => answer("no-hybrid"))
       expect(byId("phone-steps-loading")).toBeNull()
-      expect(byId("phone-steps-continue")?.disabled).toBe(false)
-      expect(byId("phone-steps-security-key")).toBeNull()
+      expect((byId("phone-steps-continue") as HTMLButtonElement | null)?.disabled).toBe(false)
+      expect(byId("phone-steps")?.dataset.choice).toBe("key")
+      expect(byId("phone-steps-choice")).toBeNull()
       expect(h.createAccount).not.toHaveBeenCalled()
     })
 
@@ -5048,49 +5258,43 @@ describe("deposit terms step — before any passkey prompt", () => {
         managers: ["apple", "gpm"],
         withdrawn: [],
       }
-      const byId = (id: string) => container.querySelector<HTMLElement>(`[data-testid="${id}"]`)
-      const clickId = (id: string) =>
-        act(async () => {
-          const target = byId(id)
-          if (!target) throw new Error(`no control "${id}"`)
-          target.click()
-        })
       const ATTEMPT = ["localhost", "id:paylink-frag"] as const
       const BOUND = { credentialId: "new-ticket-passkey", l2Address: L2_ADDRESS, tag: "taga" }
       const useLaptopCreation = vi.fn()
       /**
        * A gate as the real one behaves on this laptop: a sheet's pick resolves at once, a call with
-       * no pick (or a way back to the sheet) holds until the sheet's control proceeds. `atTap` is
-       * what its own probe answers; a pick that row no longer allows holds the sheet on the phone.
+       * no pick (or a way back to the sheet) holds until the sheet's Continue proceeds. `atTap` is
+       * what its own probe answers; a local pick that row no longer allows holds the sheet on the
+       * phone.
        */
       const laptopGate = (atTap: LaptopCreation = MAC, reach: PhoneReach = "unknown") => {
         const signal = new AbortController().signal
         let held: GateOptions | undefined
-        let proceedHeld!: (route?: SignInRoute, from?: SheetVariant) => void
+        let proceedHeld!: (choice?: SignUpChoice) => void
         type Opened = {
           signal: AbortSignal
           reach: PhoneReach
           creation: LaptopCreation
+          choice?: SignUpChoice
           route?: SignInRoute
-          from?: SheetVariant
         }
+        const opened = (choice?: SignUpChoice): Opened => ({
+          signal,
+          reach,
+          creation: atTap,
+          choice,
+          route: choice && routeForChoice(choice),
+        })
         const gate = vi.fn((options?: unknown): Promise<Opened> => {
           const o = options as GateOptions | undefined
-          const allowed = o?.unheld !== "this-device" || atTap.local
-          if (o?.unheld && !o.openOn && allowed) {
-            return Promise.resolve({
-              signal,
-              reach,
-              creation: atTap,
-              route: o.unheld,
-              from: o.from,
-            })
-          }
+          const pick = o?.unheld?.choice
+          const allowed = !pick || routeForChoice(pick) !== "this-device" || atTap.local
+          if (pick && !o?.openOn && allowed) return Promise.resolve(opened(pick))
           held = allowed ? o : { ...o, openOn: "phone" }
           return new Promise((resolve) => {
-            proceedHeld = (route, from) => {
+            proceedHeld = (choice) => {
               held = undefined
-              resolve({ signal, reach, creation: atTap, route, from })
+              resolve(opened(choice))
             }
           })
         })
@@ -5103,9 +5307,8 @@ describe("deposit terms step — before any passkey prompt", () => {
                 reach: "ok",
                 creation: atTap,
                 openOn: held.openOn,
-                from: held.from,
                 unfinished: held.unfinished,
-                proceed: (route?: SignInRoute, from?: SheetVariant) => proceedHeld(route, from),
+                proceed: (choice?: SignUpChoice) => proceedHeld(choice),
               }
             : { kind: "idle" },
           cancel: () => {},
@@ -5136,7 +5339,7 @@ describe("deposit terms step — before any passkey prompt", () => {
       }
       const toLocalSheet = async (reach?: PhoneReach) => {
         const gate = await toSheet(MAC, MAC, reach)
-        expect(byId("phone-steps")?.dataset.variant).toBe("local")
+        expect(byId("phone-steps")?.dataset.choice).toBe("computer")
         return gate
       }
       const apple = () => markPasskeyWritten(new ScreenLaptopRefusedError("apple", ["gpm"]))
@@ -5146,19 +5349,62 @@ describe("deposit terms step — before any passkey prompt", () => {
       it("creates on this computer from the ticket sheet, and binds the ticket to the account", async () => {
         ticketStash({ amount: 20n * ONE })
         const gate = await toLocalSheet()
-        await clickId("phone-steps-local")
+        await clickId("phone-steps-continue")
         await settleReads()
         expect(gate.mock.calls[0]?.[0]).toMatchObject({
           purpose: "create",
-          unheld: "this-device",
-          from: "local",
+          unheld: { choice: "computer", supported: ["iCloud Keychain", "Google Password Manager"] },
         })
-        expect(useLaptopCreation).toHaveBeenCalledWith(MAC)
+        expect(useLaptopCreation).toHaveBeenCalledWith(MAC, "computer")
         expect(route(0)).toBe("this-device")
         expect(loadTicketSignupAccount(...ATTEMPT)).toEqual(BOUND)
       })
 
-      describe("on a row with 1Password alone, which opens on the phone where no extension answers", () => {
+      it.each([
+        ["1Password, the default where its extension answers", undefined, "1password"],
+        ["This Mac, picked over it", "computer", "computer"],
+      ] as const)(
+        "on Mac Chrome with an extension, the sheet hands %s to the auth service",
+        async (_, picked, choice) => {
+          ticketStash({ amount: 20n * ONE })
+          extensionAnswers()
+          const row: LaptopCreation = { ...MAC, managers: ["apple", "gpm", "1password"] }
+          const gate = await toSheet(row)
+          expect(byId("phone-steps")?.dataset.choice).toBe("1password")
+          if (picked) await pickOption(picked)
+          await clickId("phone-steps-continue")
+          await settleReads()
+          expect(pickOf(gate.mock.calls[0]?.[0])).toBe(choice)
+          expect(useLaptopCreation).toHaveBeenCalledWith(row, choice)
+          expect(route(0)).toBe("this-device")
+        },
+      )
+
+      it("the ticket sheet reopened after a close waits for fresh answers and shows them", async () => {
+        ticketStash({ amount: 20n * ONE })
+        await toLocalSheet()
+        expect(byId("phone-steps-choice")!.textContent).toContain("iCloud Keychain")
+        let answer!: (creation: LaptopCreation) => void
+        h.getAuthService.mockReturnValue({
+          recoverFromCache: async () => undefined,
+          probePhoneReach: async () => "no-hybrid",
+          probeLaptopCreation: () => new Promise((resolve) => (answer = resolve)),
+          useLaptopCreation,
+        })
+        await act(async () =>
+          container.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click(),
+        )
+        await clickClaimTag()
+        await settleReads()
+        expect(byId("phone-steps-loading")).not.toBeNull()
+        expect(byId("phone-steps-choice")).toBeNull()
+        await act(async () => answer({ ...MAC, managers: ["gpm"] }))
+        expect(byId("phone-steps")?.dataset.choice).toBe("computer")
+        expect(byId("phone-steps-choice")!.textContent).not.toContain("iCloud Keychain")
+        expect(await offered()).toEqual(["computer", "key"])
+      })
+
+      describe("on a row with 1Password alone", () => {
         const ONEPASSWORD_ONLY: LaptopCreation = {
           local: true,
           os: "windows",
@@ -5169,46 +5415,119 @@ describe("deposit terms step — before any passkey prompt", () => {
         }
         const PHONE_ONLY: LaptopCreation = { local: false, chromeTip: "gpm" }
 
-        it("Have 1Password? shows this computer, whose tap hands the row to the auth service", async () => {
+        it("with no extension, opens on the phone and says how to add 1Password", async () => {
           ticketStash({ amount: 20n * ONE })
+          await toSheet(ONEPASSWORD_ONLY)
+          expect(byId("phone-steps")?.dataset.choice).toBe("phone")
+          expect(byId("phone-steps-install-extension")).not.toBeNull()
+          expect(await offered()).toEqual(["phone", "key"])
+          await clickId("phone-steps-continue")
+          await settleReads()
+          expect(useLaptopCreation).toHaveBeenCalledWith(ONEPASSWORD_ONLY, "phone")
+          expect(route(0)).toBe("phone")
+        })
+
+        it("with an extension, opens on 1Password, whose Continue hands the row to the auth service", async () => {
+          ticketStash({ amount: 20n * ONE })
+          extensionAnswers()
           const gate = await toSheet(ONEPASSWORD_ONLY)
-          expect(byId("phone-steps")?.dataset.variant).toBe("phone")
-          expect(byId("phone-steps-switch-local")?.textContent).toBe("Have 1Password?")
-          await clickId("phone-steps-switch-local")
-          expect(byId("phone-steps")?.dataset.variant).toBe("local")
-          await clickId("phone-steps-local")
+          expect(byId("phone-steps")?.dataset.choice).toBe("1password")
+          await clickId("phone-steps-continue")
           await settleReads()
           expect(gate.mock.calls[0]?.[0]).toMatchObject({
             purpose: "create",
-            unheld: "this-device",
-            from: "local",
+            unheld: { choice: "1password", supported: ["1Password"] },
           })
-          expect(useLaptopCreation).toHaveBeenCalledWith(ONEPASSWORD_ONLY)
+          expect(useLaptopCreation).toHaveBeenCalledWith(ONEPASSWORD_ONLY, "1password")
           expect(route(0)).toBe("this-device")
+        })
+
+        it("with another manager's script, offers no 1Password and warns in red while the creation runs", async () => {
+          ticketStash({ amount: 20n * ONE })
+          extensionAnswers(otherCreate)
+          await toSheet(ONEPASSWORD_ONLY)
+          expect(byId("phone-steps")?.dataset.choice).toBe("phone")
+          expect(await offered()).toEqual(["phone", "key"])
+          expect(byId("phone-steps-extension-warning")).toBeNull()
+          h.createAccount.mockImplementationOnce(() => new Promise(() => {}))
+          await clickId("phone-steps-continue")
+          await settleReads()
+          expect(h.createAccount).toHaveBeenCalledTimes(1)
+          const warning = byId("phone-steps-extension-warning")
+          expect(warning?.textContent).toBe(SIGN_UP_SHEET_COPY.extensionWarning)
+          expect(warning?.getAttribute("role")).toBe("alert")
+        })
+
+        it("with 1Password's script, the running sheet carries no warning", async () => {
+          ticketStash({ amount: 20n * ONE })
+          extensionAnswers()
+          await toSheet(ONEPASSWORD_ONLY)
+          h.createAccount.mockImplementationOnce(() => new Promise(() => {}))
+          await clickId("phone-steps-continue")
+          await settleReads()
+          expect(h.createAccount).toHaveBeenCalledTimes(1)
+          expect(byId("phone-steps-extension-warning")).toBeNull()
+        })
+
+        it("a ticket bound after its sheet opened signs in without the creation's warning", async () => {
+          ticketStash({ amount: 20n * ONE })
+          extensionAnswers(otherCreate)
+          await toSheet(ONEPASSWORD_ONLY)
+          expect(byId("phone-steps")?.dataset.choice).toBe("phone")
+          saveTicketSignupAccount("localhost", "id:paylink-frag", {
+            credentialId: "other-tab-passkey",
+            l2Address: L2_ADDRESS,
+            tag: "taga",
+          })
+          h.reusePasskeyAccount.mockImplementationOnce(() => new Promise(() => {}))
+          await clickId("phone-steps-continue")
+          await settleReads()
+          expect(h.reusePasskeyAccount).toHaveBeenCalledTimes(1)
+          expect(h.createAccount).not.toHaveBeenCalled()
+          expect(byId("phone-steps-extension-warning")).toBeNull()
+        })
+
+        it("a sheet re-opened at the tap hands its own warning to the run", async () => {
+          ticketStash({ amount: 20n * ONE })
+          await toSheet(MAC, PHONE_ONLY)
+          expect(byId("phone-steps")?.dataset.choice).toBe("computer")
+          // A script that arrives after the ticket sheet read the page: the re-opened sheet reads it.
+          extensionAnswers(otherCreate)
+          await clickId("phone-steps-continue")
+          await settleReads()
+          expect(h.createAccount).not.toHaveBeenCalled()
+          expect(byId("phone-steps")?.dataset.choice).toBe("phone")
+          expect(byId("phone-steps-extension-warning")).toBeNull()
+          h.createAccount.mockImplementationOnce(() => new Promise(() => {}))
+          await clickId("phone-steps-continue")
+          await settleReads()
+          expect(h.createAccount).toHaveBeenCalledTimes(1)
+          expect(byId("phone-steps-extension-warning")?.textContent).toBe(
+            SIGN_UP_SHEET_COPY.extensionWarning,
+          )
         })
 
         it("a row no longer offered at the tap holds the sheet on the phone, and creates nothing on this computer", async () => {
           ticketStash({ amount: 20n * ONE })
+          extensionAnswers()
           await toSheet(ONEPASSWORD_ONLY, PHONE_ONLY)
-          await clickId("phone-steps-switch-local")
-          expect(byId("phone-steps")?.dataset.variant).toBe("local")
-          await clickId("phone-steps-local")
+          expect(byId("phone-steps")?.dataset.choice).toBe("1password")
+          await clickId("phone-steps-continue")
           await settleReads()
           expect(h.createAccount).not.toHaveBeenCalled()
-          expect(byId("phone-steps")?.dataset.variant).toBe("phone")
-          expect(byId("phone-steps-local")).toBeNull()
+          expect(byId("phone-steps")?.dataset.choice).toBe("phone")
+          expect(await offered()).toEqual(["phone", "key"])
           await clickId("phone-steps-continue")
           await settleReads()
           expect(h.createAccount).toHaveBeenCalledTimes(1)
           expect(route(0)).toBe("phone")
-          expect(useLaptopCreation).not.toHaveBeenCalledWith(ONEPASSWORD_ONLY)
+          expect(useLaptopCreation).not.toHaveBeenCalledWith(ONEPASSWORD_ONLY, expect.anything())
         })
 
         it("a row newly offered changes nothing for a phone pick", async () => {
           ticketStash({ amount: 20n * ONE })
           const gate = await toSheet(PHONE_ONLY, ONEPASSWORD_ONLY)
-          expect(byId("phone-steps")?.dataset.variant).toBe("phone")
-          expect(byId("phone-steps-local")).toBeNull()
+          expect(byId("phone-steps")?.dataset.choice).toBe("phone")
           await clickId("phone-steps-continue")
           await settleReads()
           expect(pickOf(gate.mock.calls[0]?.[0])).toBe("phone")
@@ -5219,15 +5538,15 @@ describe("deposit terms step — before any passkey prompt", () => {
       })
 
       it.each([
-        ["Try again", "create-retry", "local", "phone-steps-local", "this-device"],
-        ["Use my phone", "passkey-phone", "phone", "phone-steps-continue", "phone"],
+        ["Try again", "create-retry", "computer", "this-device"],
+        ["Use my phone", "passkey-phone", "phone", "phone"],
       ] as const)(
         "a refusal's %s restarts the interrupted attempt, holds the sheet, and the next pick binds the ticket",
-        async (_, exit, openOn, control, picked) => {
+        async (_, exit, openOn, picked) => {
           ticketStash({ amount: 20n * ONE })
           h.createAccount.mockRejectedValueOnce(apple())
           const gate = await toLocalSheet()
-          await clickId("phone-steps-local")
+          await clickId("phone-steps-continue")
           await settleReads()
           const refused = loadTicketSignupAttempt(...ATTEMPT)
           expect(isTicketSignupCreating(refused)).toBe(true)
@@ -5240,8 +5559,8 @@ describe("deposit terms step — before any passkey prompt", () => {
           expect(gate.mock.calls[1]?.[0]).toMatchObject({ purpose: "create", openOn })
           expect(pickOf(gate.mock.calls[1]?.[0])).toBeUndefined()
           expect(byId("create-refused")).toBeNull()
-          expect(byId("phone-steps")?.dataset.variant).toBe(openOn)
-          await clickId(control)
+          expect(byId("phone-steps")?.dataset.choice).toBe(openOn)
+          await clickId("phone-steps-continue")
           await settleReads()
           expect(h.createAccount).toHaveBeenCalledTimes(2)
           expect(route(1)).toBe(picked)
@@ -5253,7 +5572,7 @@ describe("deposit terms step — before any passkey prompt", () => {
         ticketStash({ amount: 20n * ONE })
         h.createAccount.mockRejectedValueOnce(apple())
         await toLocalSheet()
-        await clickId("phone-steps-local")
+        await clickId("phone-steps-continue")
         await settleReads()
         expect(byId("passkey-phone")).not.toBeNull()
         expect(byId("create-retry")).not.toBeNull()
@@ -5274,7 +5593,7 @@ describe("deposit terms step — before any passkey prompt", () => {
           ticketStash({ amount: 20n * ONE })
           h.createAccount.mockRejectedValueOnce(refusal())
           await toLocalSheet(reach)
-          await clickId("phone-steps-local")
+          await clickId("phone-steps-continue")
           await settleReads()
           expect(byId("create-refused")).not.toBeNull()
           expect(byId("passkey-phone") !== null).toBe(phoneOffered)
@@ -5288,7 +5607,7 @@ describe("deposit terms step — before any passkey prompt", () => {
           markPasskeyWritten(new ScreenPhoneRequiredError({ ceremony: "create" })),
         )
         const gate = await toLocalSheet()
-        await clickId("phone-steps-phone")
+        await pickOption("phone")
         await clickId("phone-steps-continue")
         await settleReads()
         expect(route(0)).toBe("phone")
@@ -5297,31 +5616,32 @@ describe("deposit terms step — before any passkey prompt", () => {
         await clickId("create-retry")
         await settleReads()
         expect(gate.mock.calls[1]?.[0]).toMatchObject({ openOn: "phone" })
-        expect(byId("phone-steps")?.dataset.variant).toBe("phone")
+        expect(byId("phone-steps")?.dataset.choice).toBe("phone")
       })
 
       it.each([
-        ["this computer", ["phone-steps-local"], "this-device"],
-        ["the phone", ["phone-steps-phone", "phone-steps-continue"], "phone"],
+        ["this computer", undefined, "this-device"],
+        ["the phone", "phone", "phone"],
       ] as const)(
         "a prompt closed with nothing made re-opens the sheet, and the next pick (%s) restarts the attempt before binding",
-        async (_, controls, picked) => {
+        async (_, picked, route1) => {
           ticketStash({ amount: 20n * ONE })
           h.createAccount.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
           const gate = await toLocalSheet()
-          await clickId("phone-steps-local")
+          await clickId("phone-steps-continue")
           await settleReads()
           // No card, no error line: the sheet again, saying the setup didn't finish, while the
           // interrupted attempt stays saved until the next pick replaces it.
           expect(byId("create-refused")).toBeNull()
           expect(container.querySelector(".ww-invite-modal-error")).toBeNull()
-          expect(gate.mock.calls[1]?.[0]).toMatchObject({ openOn: "local", unfinished: true })
+          expect(gate.mock.calls[1]?.[0]).toMatchObject({ openOn: "computer", unfinished: true })
           expect(byId("phone-steps-unfinished")).not.toBeNull()
           expect(isTicketSignupCreating(loadTicketSignupAttempt(...ATTEMPT))).toBe(true)
-          for (const control of controls) await clickId(control)
+          if (picked) await pickOption(picked)
+          await clickId("phone-steps-continue")
           await settleReads()
           expect(h.createAccount).toHaveBeenCalledTimes(2)
-          expect(route(1)).toBe(picked)
+          expect(route(1)).toBe(route1)
           expect(loadTicketSignupAccount(...ATTEMPT)).toEqual(BOUND)
         },
       )
@@ -5330,13 +5650,13 @@ describe("deposit terms step — before any passkey prompt", () => {
         ticketStash({ amount: 20n * ONE })
         h.createAccount.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
         await toLocalSheet()
-        await clickId("phone-steps-local")
+        await clickId("phone-steps-continue")
         await settleReads()
         const closed = loadTicketSignupAttempt(...ATTEMPT)
         if (!isTicketSignupCreating(closed)) throw new Error("expected the interrupted attempt")
         restartTicketSignupAccount(...ATTEMPT, closed.attemptId)
         const other = await beginTicketSignupAccount(...ATTEMPT, "taga")
-        await clickId("phone-steps-local")
+        await clickId("phone-steps-continue")
         await settleReads()
         expect(h.createAccount).toHaveBeenCalledTimes(1)
         expect(container.textContent).toContain("restarted in another tab")
@@ -5347,7 +5667,7 @@ describe("deposit terms step — before any passkey prompt", () => {
         ticketStash({ amount: 20n * ONE })
         h.createAccount.mockRejectedValueOnce(apple())
         await toLocalSheet()
-        await clickId("phone-steps-local")
+        await clickId("phone-steps-continue")
         await settleReads()
         const refused = loadTicketSignupAttempt(...ATTEMPT)
         if (!isTicketSignupCreating(refused)) throw new Error("expected the refused attempt")
@@ -5396,14 +5716,25 @@ describe("deposit terms step — before any passkey prompt", () => {
       h.getAuthService.mockReturnValue({ recoverFromCache: async () => undefined })
       h.createAccount.mockRejectedValueOnce(new ScreenPhoneRequiredError({ ceremony: "create" }))
       const signal = new AbortController().signal
-      let proceedHeld!: (route?: SignInRoute) => void
-      type Opened = { signal: AbortSignal; reach: "unknown"; route?: SignInRoute }
+      let proceedHeld!: (choice?: SignUpChoice) => void
+      type Opened = {
+        signal: AbortSignal
+        reach: "unknown"
+        choice?: SignUpChoice
+        route?: SignInRoute
+      }
+      const opened = (choice?: SignUpChoice): Opened => ({
+        signal,
+        reach: "unknown",
+        choice,
+        route: choice && routeForChoice(choice),
+      })
       const gate = vi.fn(
         (options?: unknown): Promise<Opened> =>
           gate.mock.calls.length === 1
-            ? Promise.resolve({ signal, reach: "unknown", route: pickOf(options) })
+            ? Promise.resolve(opened(pickOf(options)))
             : new Promise((resolve) => {
-                proceedHeld = (route) => resolve({ signal, reach: "unknown", route })
+                proceedHeld = (choice) => resolve(opened(choice))
               }),
       )
       h.gateHook = () => ({
@@ -5414,7 +5745,7 @@ describe("deposit terms step — before any passkey prompt", () => {
                 kind: "awaiting-action",
                 prompt: "phone-steps",
                 reach: "ok",
-                proceed: (route?: SignInRoute) => proceedHeld(route),
+                proceed: (choice?: SignUpChoice) => proceedHeld(choice),
               }
             : { kind: "idle" },
         cancel: () => {},
@@ -5424,10 +5755,13 @@ describe("deposit terms step — before any passkey prompt", () => {
       await typeTag("taga")
       await clickClaimTag()
       await settleReads()
-      await click("Use a security key")
-      await click("Use security key")
+      await pickOption("key")
+      await clickId("phone-steps-continue")
       await settleReads()
-      expect(gate.mock.calls[0]?.[0]).toMatchObject({ purpose: "create", unheld: "security-key" })
+      expect(gate.mock.calls[0]?.[0]).toMatchObject({
+        purpose: "create",
+        unheld: { choice: "key" },
+      })
       expect(container.querySelector('[data-testid="create-refused"]')).not.toBeNull()
       // The refused attempt stays saved, so the way on is a restart: the sheet asks again.
       pendingClaim(TICKET_CLAIM)
@@ -5437,7 +5771,7 @@ describe("deposit terms step — before any passkey prompt", () => {
       expect(pickOf(gate.mock.calls[1]?.[0])).toBeUndefined()
       expect(container.querySelector('[data-testid="phone-steps"]')).not.toBeNull()
       expect(h.createAccount).toHaveBeenCalledTimes(1)
-      await click("Show QR Code")
+      await clickId("phone-steps-continue")
       await settleReads()
       expect(h.createAccount.mock.calls[1]?.[5]).toMatchObject({ route: "phone" })
     })
@@ -5678,7 +6012,7 @@ describe("deposit terms step — before any passkey prompt", () => {
       expect(button("Enter now, deposit later")).toBeUndefined()
     })
 
-    it("holds the claim of a bound link while the address is unpublished, and owes its broadcast", async () => {
+    it("offers the claim of a bound link whose address is unpublished, and owes no broadcast", async () => {
       resetBroadcastsForTests()
       screenProps = {}
       await seedRecord({ broadcast: false })
@@ -5695,11 +6029,34 @@ describe("deposit terms step — before any passkey prompt", () => {
       ticketStash({ amount: 20n * ONE })
       await render("/claim")
       await settleReads()
-      expect(container.textContent).toContain("being published")
+      // The claim publishes the address, so nothing waits on a broadcast first.
+      expect(container.textContent).not.toContain("being published")
       expect(container.textContent).not.toContain("Send 10 DAI")
-      expect(button("Claim your payment")?.disabled).toBe(true)
-      expect(h.claimSponsoredLink).not.toHaveBeenCalled()
-      // The claim it holds needs the address published, so the step owes its broadcast.
+      expect(button("Claim your payment")?.disabled).toBe(false)
+      expect(button("Retry")).toBeUndefined()
+      await settleReads()
+      expect(getBroadcastLedger().get(getPendingStore().current()!.sipaAddress)).toBeNull()
+    })
+
+    it("owes the broadcast of an unpublished ticket address it shows without the bound link", async () => {
+      resetBroadcastsForTests()
+      screenProps = {}
+      await seedRecord({ broadcast: false })
+      saveRegistrationTerms({
+        account: ACCOUNT,
+        tag: "taga",
+        deadline: Math.floor(Date.now() / 1000) + 7200,
+        fee: (ONE / 2n).toString(),
+        minDeposit: "0",
+        feeWaived: true,
+        paylinkFunded: true,
+        paylinkId: "id:paylink-frag",
+      })
+      await render("/claim")
+      await settleReads()
+      // Nothing on this tab claims the link, so the address shown for a deposit is the ledger's.
+      expect(container.textContent).toContain("Send the deposit to the address below")
+      expect(button("Claim your payment")).toBeUndefined()
       await vi.waitFor(() =>
         expect(getBroadcastLedger().get(getPendingStore().current()!.sipaAddress)).toMatchObject({
           kind: "registration",
@@ -5831,6 +6188,44 @@ describe("deposit terms step — before any passkey prompt", () => {
       await act(async () => tick())
       await settleReads()
       expect(button("Claim your payment")?.disabled).toBe(false)
+    })
+
+    it("holds the review's claim until the tip quote answers, so it burns the tip it shows", async () => {
+      screenProps = {}
+      await seedRecord()
+      const committed = (3n * 10n ** 18n).toString()
+      saveRegistrationTerms({
+        account: ACCOUNT,
+        tag: "taga",
+        deadline: Math.floor(Date.now() / 1000) + 7200,
+        fee: (ONE / 2n).toString(),
+        minDeposit: "0",
+        feeWaived: true,
+        paylinkFunded: true,
+        paylinkId: "id:paylink-frag",
+        proverTip: committed,
+        speed: "faster",
+      })
+      ticketStash({ amount: 20n * ONE })
+      const split = (id: string) =>
+        container.querySelector(`[data-testid="paylink-signup-${id}"]`)?.textContent ?? ""
+      try {
+        splitTip.value = undefined
+        await render("/claim")
+        await settleReads()
+        expect(button("Claim your payment")?.disabled).toBe(true)
+        expect(split("network-fee")).toBe(DEPOSIT_TERMS_PENDING)
+        expect(loadRegistrationTerms(ACCOUNT, "taga")?.proverTip).toBe(committed)
+
+        splitTip.value = 10n ** 18n
+        await render("/claim")
+        await settleReads()
+        expect(button("Claim your payment")?.disabled).toBe(false)
+        expect(split("network-fee")).not.toBe(DEPOSIT_TERMS_PENDING)
+        expect(loadRegistrationTerms(ACCOUNT, "taga")?.proverTip).toBe((10n ** 18n).toString())
+      } finally {
+        splitTip.value = 10n ** 18n
+      }
     })
 
     /**
@@ -6025,7 +6420,7 @@ describe("deposit terms step — before any passkey prompt", () => {
       // The ordinary landing, not the three-step modal; the marker is left where it was.
       expect(container.textContent).not.toContain("Pick any name, free")
       expect(container.querySelector("dialog")).toBeNull()
-      expect(container.textContent).toContain("Get started")
+      expect(container.textContent).toContain("Open account")
       expect(h.claimTag).not.toHaveBeenCalled()
       expect(sessionStorage.getItem(TICKET_STASH_KEY)).not.toBeNull()
     })
@@ -6057,7 +6452,8 @@ describe("deposit terms step — before any passkey prompt", () => {
       pendingClaim(TICKET_CLAIM)
       await walkToPasskey()
       expect(enteredWallet()).toBe(true)
-      expect(container.textContent).not.toContain("Someone sent you")
+      // No review step: Home claims the link.
+      expect(container.querySelector('[data-testid="claim-review-amount"]')).toBeNull()
       expect(h.claimSponsoredLink).not.toHaveBeenCalled()
       expect(loadWalletIdentity()).toMatchObject({
         handle: "taga",
@@ -6176,7 +6572,7 @@ describe("deposit terms step — before any passkey prompt", () => {
         expect(container.textContent).toContain("Pick any name, free")
         await typeTag("taga")
         await clickClaimTag()
-        await click(button("Show QR Code") ? "Show QR Code" : "Create account with passkey")
+        await click(button("Continue") ? "Continue" : "Create account with passkey")
         await settleReads()
         expect(enteredWallet()).toBe(true)
         expect(container.textContent).not.toContain("Keep this tab open")
@@ -6248,5 +6644,22 @@ describe("no loss line on an ordinary sign-up", () => {
     await click("landing-signin")
     expect(buttons().some((b) => b.textContent?.startsWith("Deposit"))).toBe(true)
     expect(notices()).toBe(0)
+  })
+})
+
+// Last in the file: the fresh page load replaces the modules every test above shares.
+describe("onboarding_started", () => {
+  it("is reported once per page load, however often the wizard mounts", async () => {
+    vi.resetModules()
+    const { OnboardingScreen: Screen } = await import("../src/features/onboarding/OnboardingScreen")
+    await (await import("../src/features/onboarding/webRegistration")).getPendingStore().load()
+    await render("/claim/taga", Screen)
+    // Home's draft mounts the wizard again after /claim.
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    await render("/claim/taga", Screen)
+    expect(h.fireEvent.mock.calls.filter(([name]) => name === "onboarding_started")).toEqual([
+      ["onboarding_started", { entry: "link", source: "direct" }],
+    ])
   })
 })

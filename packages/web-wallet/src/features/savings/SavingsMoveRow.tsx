@@ -7,7 +7,7 @@ import {
   type SavingsMoveRecord,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
-import { rowTimestamp, usdAtomicFloor } from "../../ui/format"
+import { rowTimestamp, shortL1Addr, usdAtomicFloor } from "../../ui/format"
 import type { ActivityEntry } from "../../ui/screens/useActivityEntries"
 import type { SavingsAccount } from "./AccountSwitcher"
 import { savingsEtaCopy } from "./savingsMoveTiming"
@@ -37,7 +37,7 @@ export function savingsMoveStatus(
 
 /** Where a recovered move's funds went, for its row and its sheet. */
 export const recoveredTo = (move: SavingsMoveRecord): string | undefined =>
-  move.recovered && `Recovered to ${move.recovered.to.slice(0, 6)}…${move.recovered.to.slice(-4)}`
+  move.recovered && `Recovered to ${shortL1Addr(move.recovered.to)}`
 
 /**
  * The dollars a row shows for a move, as `perspective` sees it. A credit into Savings is what the

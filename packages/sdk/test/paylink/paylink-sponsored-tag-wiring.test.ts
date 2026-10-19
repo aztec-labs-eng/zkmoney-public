@@ -142,13 +142,15 @@ vi.mock("../../src/services/sponsoredTeeOperation.js", () => ({
 
 vi.mock("../../src/feePaymentMethod/sponsoredCall.js", () => ({
   computeIntentsOnlyAuthWitHash: vi.fn(async () => Fr.ZERO),
+  MAX_SPONSORED_CALLS: 5,
 }))
 
 vi.mock("@aztec/aztec.js/authorization", () => ({
   computeAuthWitMessageHash: vi.fn(async () => Fr.fromString("0xa11ce")),
 }))
 
-import { PaylinkService } from "../../src/services/PaylinkService.js"
+import { ClaimBatchFullError, PaylinkService } from "../../src/services/PaylinkService.js"
+import { KIND_BY_ANY } from "../../src/feePaymentMethod/claimSponsoredCall.js"
 import { ObsidionAccount } from "../../src/obsidion/alpha/account/ObsidionAccount.js"
 import {
   computeEscrowTagSecret,
@@ -417,6 +419,62 @@ describe("sponsored paylink dispatch — tag sender", () => {
     ])
     expect(args.expectedWithdrawalAmount).toBe(7n)
     expect((sendTx.mock.calls[0]![1] as any).sendMessagesAs).toBe(USER_ADDR)
+  })
+
+  describe("a registration broadcast riding the claim", () => {
+    const openSponsor = {
+      ...sponsor,
+      policy: { witnesses: [{ entry: { kind: KIND_BY_ANY } }] } as any,
+    }
+    const perCallSponsor = { ...sponsor, policy: { witnesses: [] } as any }
+    const notify = { __fake: "notifySipa" }
+    const sweep = { __fake: "sipaSweep" }
+    const sipa = EthAddress.fromString(`0x${"44".repeat(20)}`)
+    const claim = async (
+      on: typeof sponsor,
+      methods: Record<string, unknown> = { claim_with_withdrawal: vi.fn(() => ({})) },
+    ) => {
+      const { service, sendTx } = makeService()
+      const defaultAt = vi.mocked(Contract.at).getMockImplementation()!
+      vi.mocked(Contract.at).mockImplementation(
+        () =>
+          ({
+            address: INSTANCE_ADDR,
+            methods: { claim: claimSpy, sync_note: syncNoteSpy, ...methods },
+          } as never),
+      )
+      try {
+        await service.claimSponsoredPaylink(linkParams, on, {
+          voucher: {
+            railId: on.railId,
+            withdraw: { l1Recipient: sipa, amount: 7n, proverTip: 0n, withdrawal },
+          },
+          broadcasts: [notify, sweep] as never,
+        })
+      } finally {
+        vi.mocked(Contract.at).mockImplementation(defaultAt)
+      }
+      return sendTx
+    }
+
+    it("rides between the release and publish_da, unsigned by the enclave", async () => {
+      const sendTx = await claim(openSponsor)
+      const args = vi.mocked(buildSponsoredTeeOperation).mock.calls[0]![1]
+      // [claim_with_withdrawal, release, notify_sipa_recipient, sweep, publish_da]: five calls.
+      expect(args.operations).toHaveLength(1)
+      expect(args.teeUnsignedInteractions).toEqual([{ __fake: "releaseBroadcast" }, notify, sweep])
+      expect(args.user).toBe(INSTANCE_ADDR)
+      expect(authorizeSponsoredBatch).not.toHaveBeenCalled()
+      expect(sendTx).toHaveBeenCalledOnce()
+    })
+
+    it("is refused before anything is built where the batch has no room for it", async () => {
+      // An escrow class without claim_with_withdrawal claims with the five-call account batch.
+      await expect(claim(openSponsor, {})).rejects.toBeInstanceOf(ClaimBatchFullError)
+      // A per-call policy budgets the five calls above the flat caps.
+      await expect(claim(perCallSponsor)).rejects.toBeInstanceOf(ClaimBatchFullError)
+      expect(buildSponsoredTeeOperation).not.toHaveBeenCalled()
+    })
   })
 
   it("claimSponsoredPaylinkToL1 requires a proof for an email link", async () => {

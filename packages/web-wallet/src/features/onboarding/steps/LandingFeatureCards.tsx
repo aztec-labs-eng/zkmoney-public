@@ -5,6 +5,7 @@ import withdrawArt from "../../../assets/onboarding/landing-withdraw.webp"
 import chainsArt from "../../../assets/onboarding/landing-withdraw-chains.webp"
 import paylinksArt from "../../../assets/onboarding/landing-paylinks.webp"
 import { apyPercent } from "../../savings/EarningsCalculator"
+import { useLiveSavingsApy } from "../../savings/savingsGateway"
 
 const CARDS: {
   eyebrow: string
@@ -39,6 +40,21 @@ const CARDS: {
     gap: 24,
   },
 ]
+
+/** shell.css shows the cards from this width; jsdom has no matchMedia and reads as shown. */
+const cardsShown = () =>
+  typeof matchMedia !== "function" || matchMedia("(min-width: 960px)").matches
+
+/**
+ * The live rate the Savings card headlines, and whether the landing may show. Only a landing that
+ * shows the cards waits for it, rather than swap it in. Decided once, so a resize never puts the
+ * landing back behind the boot screen.
+ */
+export function useLandingRate(): { ready: boolean; apy: number | undefined } {
+  const rate = useLiveSavingsApy()
+  const [waits] = useState(cardsShown)
+  return { ready: rate.settled || !waits, apy: rate.settled ? rate.apy : undefined }
+}
 
 /**
  * Desktop landing's feature column: auto-advancing cards, with the indicator as the hold timer.

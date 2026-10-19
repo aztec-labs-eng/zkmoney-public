@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { createRoot, type Root } from "react-dom/client"
 import type { Address, Hash } from "viem"
 import type { SIPADepositRecord } from "@obsidion/front-core"
+import { shortL1Addr } from "../src/ui/format"
 
 vi.mock("../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/env")>()),
@@ -99,14 +100,14 @@ describe("DepositDetailModal", () => {
     await show(record({ fundingFromAddress: FUNDER, fundingTxHash: FUNDING_TX }))
 
     expect(container.textContent).toContain("Rainbow")
-    expect(container.textContent).toContain(FUNDER.slice(0, 6))
+    expect(container.textContent).toContain(shortL1Addr(FUNDER))
   })
 
-  it("falls back to the account this wallet funded from", async () => {
+  it("names only the account this wallet funded from when the source wallet is unnamed", async () => {
     await show(record({ walletName: undefined, walletAddress: WALLET }))
 
-    expect(container.textContent).toContain("Wallet")
-    expect(container.textContent).toContain(WALLET.slice(0, 6))
+    expect(container.textContent).not.toContain("Wallet")
+    expect(container.textContent).toContain(shortL1Addr(WALLET))
   })
 
   it("holds the tx-hash row while the funding transfer is still unread", async () => {

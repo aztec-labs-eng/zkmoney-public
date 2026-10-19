@@ -69,17 +69,10 @@ const click = async (label: string) => {
   await act(async () => button.click())
 }
 
-const renderPay = () =>
+const renderPay = (request: object = { id: "request", tag: "alice", amount: 25 }) =>
   act(async () =>
     root.render(
-      <MemoryRouter
-        initialEntries={[
-          {
-            pathname: "/contacts/alice/send",
-            state: { request: { id: "request", tag: "alice", amount: 25 } },
-          },
-        ]}
-      >
+      <MemoryRouter initialEntries={[{ pathname: "/contacts/alice/send", state: { request } }]}>
         <Routes>
           <Route path="/contacts/:idOrTag/send" element={<ContactPayScreen mode="send" />} />
           <Route path="/activity" element={<div>Activity</div>} />
@@ -175,6 +168,42 @@ describe("send outcome tracking", () => {
     expect(m.fireEvent).toHaveBeenCalledWith("action_failed", expect.anything())
     await act(async () => root.render(null))
     expect(m.fireEvent).not.toHaveBeenCalledWith("proving_cancelled", expect.anything())
+  })
+})
+
+describe("request funnel", () => {
+  const remount = async (request: object) => {
+    act(() => root.unmount())
+    root = createRoot(container)
+    await renderPay(request)
+  }
+
+  it("reports a send that reached the node with an unknown outcome as in flight", async () => {
+    const { TxInFlightError } = await import("@obsidion/front-core")
+    m.pay.mockRejectedValue(new TxInFlightError("0xsend", new Error("timeout")))
+    await click("Send")
+    expect(m.fireEvent).toHaveBeenCalledWith("send_submitted", {
+      in_flight: true,
+      amount_bucket: "<50",
+      fulfills_request: true,
+    })
+    expect(m.fireEvent).not.toHaveBeenCalledWith("action_failed", expect.anything())
+  })
+
+  it("reports a pay page's open once per page load and its payment as pay_page", async () => {
+    const page = { id: "0x01", tag: "river", amount: 25, source: "link", standing: true }
+    await remount(page)
+    // The Ethereum route and back mount the sheet again, under a new id.
+    await remount({ ...page, id: "0x02" })
+    const opens = m.fireEvent.mock.calls.filter(([name]) => name === "request_opened")
+    expect(opens).toEqual([["request_opened", { source: "pay_page", amount_bucket: "<50" }]])
+
+    m.pay.mockResolvedValue({ txHash: "0xsend" })
+    await click("Send")
+    expect(m.fireEvent).toHaveBeenCalledWith("request_paid", {
+      source: "pay_page",
+      amount_bucket: "<50",
+    })
   })
 })
 

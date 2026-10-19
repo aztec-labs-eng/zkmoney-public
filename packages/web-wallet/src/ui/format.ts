@@ -1,4 +1,4 @@
-import { formatUnits } from "viem"
+import { formatUnits, getAddress, isAddress } from "viem"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   AMOUNT_MAX_DECIMALS,
@@ -12,6 +12,22 @@ import {
 /** `0x1234…abcd` — the app-wide middle ellipsis for addresses and hashes. */
 export function shortAddr(value: string): string {
   return value.length <= 10 ? value : `${value.slice(0, 6)}…${value.slice(-4)}`
+}
+
+/**
+ * An L1 address checksummed and split where MetaMask splits it: the first 7 characters (with `0x`)
+ * and the last 5, so an address reads the same in both. A value too short to split is all `head`.
+ */
+export function l1AddressParts(address: string): { head: string; middle: string; tail: string } {
+  const value = isAddress(address, { strict: false }) ? getAddress(address) : address
+  if (value.length <= 12) return { head: value, middle: "", tail: "" }
+  return { head: value.slice(0, 7), middle: value.slice(7, -5), tail: value.slice(-5) }
+}
+
+/** `0xAbCdE…12345`: an L1 address cut like MetaMask cuts it. */
+export function shortL1Addr(address: string): string {
+  const { head, middle, tail } = l1AddressParts(address)
+  return middle ? `${head}…${tail}` : head
 }
 
 export { normalizeAmountInput as decimalInput, tokenAmount } from "@obsidion/front-core"

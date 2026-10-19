@@ -54,6 +54,15 @@ describe("resolveKeySource", () => {
     expect(h.recoverFromCache).not.toHaveBeenCalled()
   })
 
+  it("a phone-steered request is always a ceremony, even with a held key", async () => {
+    h.recoverFromCache.mockResolvedValue(held)
+    expect(await resolveKeySource({ discover: true, phone: true })).toEqual({
+      kind: "ceremony-required",
+      request: { discover: true, phone: true },
+    })
+    expect(h.recoverFromCache).not.toHaveBeenCalled()
+  })
+
   it("a discoverable request without the chooser still lets the held key answer", async () => {
     h.recoverFromCache.mockResolvedValue(held)
     expect(await resolveKeySource({ discover: true })).toEqual({ kind: "cache", result: held })

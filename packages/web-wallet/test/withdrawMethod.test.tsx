@@ -17,6 +17,8 @@ const STACK = {
   plainWithdrawalExecutor: "0x15",
 }
 
+const fireEvent = vi.hoisted(() => vi.fn())
+vi.mock("../src/lib/analytics", () => ({ fireEvent }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: env.network }) }))
 vi.mock("../src/config/oxideTuple", () => ({
   getOxideTuple: () => env.tuple?.() ?? new Promise(() => {}),
@@ -117,6 +119,18 @@ describe("WithdrawMethodScreen", () => {
     await render("/withdraw/existing")
     expect(titles()).toHaveLength(3)
     expect(container.querySelector("[data-sheet]")).not.toBeNull()
+  })
+
+  it("reports the picker open once it shows on its own, never under a branch's sheet", async () => {
+    fireEvent.mockClear()
+    await render("/withdraw/existing")
+    expect(fireEvent).not.toHaveBeenCalled()
+    await act(async () => root.unmount())
+    root = createRoot(container)
+    await render()
+    await click(options().find((o) => o.textContent!.includes("existing address"))!)
+    expect(location()).toBe("/withdraw/existing")
+    expect(fireEvent.mock.calls).toEqual([["withdraw_opened", { method: "picker" }]])
   })
 
   it("shows the frame with no options while the tuple is pending", async () => {

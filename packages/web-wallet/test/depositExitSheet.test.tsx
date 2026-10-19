@@ -459,7 +459,7 @@ describe("DepositExitModal — network capacity", () => {
     h.processing.current = blocked
     await render({ reason: "unsweepable", canSweep: false })
     expect(button("Sweep now")).toBeUndefined()
-    expect(button("Recover to 0x0000…00aa")!.disabled).toBe(false)
+    expect(button("Recover to 0x00000…000AA")!.disabled).toBe(false)
   })
 })
 
@@ -802,12 +802,12 @@ describe("DepositExitModal — opened from Recover", () => {
     vi.mocked(recoverDeposit).mockRejectedValueOnce(new Error("wallet unreachable"))
     h.processing.current = held
     await render(true)
-    await act(async () => button("Recover to 0x0000…00aa")!.click())
+    await act(async () => button("Recover to 0x00000…000AA")!.click())
     expect(recoverDeposit).toHaveBeenCalledOnce()
     h.processing.current = cleared
     await render(true)
     expect(button("Sweep now")).toBeUndefined()
-    expect(button("Recover to 0x0000…00aa")).toBeDefined()
+    expect(button("Recover to 0x00000…000AA")).toBeDefined()
   })
 
   it("leads with recovery and states the capacity reason, with no sweep to wait on", async () => {
@@ -831,9 +831,9 @@ describe("DepositExitModal — opened from Recover", () => {
     for (const id of ["sweep-details", "sweep-held", "sweep-gas"]) {
       expect(container.querySelector(`[data-testid="${id}"]`)).toBeNull()
     }
-    expect(button("Recover to 0x0000…00aa")!.disabled).toBe(false)
+    expect(button("Recover to 0x00000…000AA")!.disabled).toBe(false)
     const { recoverDeposit } = await import("../src/features/deposit/sipaRecovery")
-    await act(async () => button("Recover to 0x0000…00aa")!.click())
+    await act(async () => button("Recover to 0x00000…000AA")!.click())
     expect(recoverDeposit).toHaveBeenCalledWith(stuck, expect.anything())
     expect(h.selfSweep).not.toHaveBeenCalled()
   })
@@ -851,7 +851,7 @@ describe("DepositExitModal — opened from Recover", () => {
     )
     expect(container.textContent).not.toContain("may yet land")
     expect(button("Sweep now")).toBeUndefined()
-    expect(button("Recover to 0x0000…00aa")!.disabled).toBe(false)
+    expect(button("Recover to 0x00000…000AA")!.disabled).toBe(false)
     // The recover-only sheet reaches the limits details, where the reason's full wording is.
     await act(async () =>
       container

@@ -27,8 +27,14 @@ vi.mock("@obsidion/web-ds", () => ({
     </button>
   ),
 }))
+const fireOnboarding = vi.fn()
+vi.mock("../src/lib/analytics", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/analytics")>()),
+  fireOnboardingEvent: fireOnboarding,
+}))
 
 const { PasskeyRefusal, refusalFor } = await import("../src/features/identity/PasskeyRefusal")
+const { resetInAppCardCountsForTests } = await import("../src/features/identity/inAppCardTelemetry")
 type RouteRefusal = import("../src/features/identity/PasskeyRefusal").RouteRefusal
 const errors = await import("@obsidion/passkey-web")
 const { subscribeErrorModal } = await import("../src/errors/errorModal")
@@ -172,6 +178,96 @@ describe("PasskeyRefusal", () => {
   })
 })
 
+describe("PasskeyRefusal's macOS update line", () => {
+  const MAC_CHROME =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) " +
+    "Chrome/155.0.0.0 Safari/537.36"
+  const MAC_SAFARI =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) " +
+    "Version/26.4 Safari/605.1.15"
+  const userAgent = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent")!
+  /** The browser's user agent, and Client Hints answering with `platformVersion`. */
+  const browser = (ua: string, platformVersion?: () => Promise<{ platformVersion: string }>) => {
+    Object.defineProperty(navigator, "userAgent", { value: ua, configurable: true })
+    Object.defineProperty(navigator, "userAgentData", {
+      value: platformVersion
+        ? { platform: "macOS", brands: [], getHighEntropyValues: platformVersion }
+        : undefined,
+      configurable: true,
+    })
+  }
+  afterEach(() => {
+    Object.defineProperty(navigator, "userAgent", userAgent)
+    delete (navigator as { userAgentData?: unknown }).userAgentData
+    vi.useRealTimers()
+  })
+  const wrongKey = (macUpdate: boolean): RouteRefusal => ({
+    name: "StoredAddressMismatchError",
+    message: "",
+    verdict: "wrong-key",
+    ...(macUpdate ? { macUpdate } : {}),
+  })
+  const line = () => container.querySelector('[data-testid="passkey-mac-update"]')?.textContent
+  const show = (error: RouteRefusal) =>
+    act(async () => root.render(<PasskeyRefusal error={error} verdict={error.verdict} />))
+
+  it("words the line by the reported macOS, and gives none past the floors", async () => {
+    browser(MAC_CHROME, async () => ({ platformVersion: "26.2.0" }))
+    await show(wrongKey(true))
+    expect(line()).toBe(errors.MAC_UPDATE_COPY.below)
+
+    act(() => root.unmount())
+    root = createRoot(container)
+    browser(MAC_CHROME, async () => ({ platformVersion: "26.4.1" }))
+    await show(wrongKey(true))
+    expect(line()).toBeUndefined()
+  })
+
+  it("Safari, which reports no version, gets the conditional line", async () => {
+    browser(MAC_SAFARI)
+    await show(wrongKey(true))
+    expect(line()).toBe(errors.MAC_UPDATE_COPY.unknown)
+  })
+
+  it("a card the screen did not mark shows no line", async () => {
+    browser(MAC_CHROME, async () => ({ platformVersion: "26.2.0" }))
+    await show(wrongKey(false))
+    expect(line()).toBeUndefined()
+  })
+
+  it("hints that never answer leave the conditional line; a late answer still counts", async () => {
+    vi.useFakeTimers()
+    let answer!: (v: { platformVersion: string }) => void
+    browser(MAC_CHROME, () => new Promise((resolve) => (answer = resolve)))
+    await show(wrongKey(true))
+    expect(line()).toBeUndefined()
+    await act(async () => vi.advanceTimersByTime(1_000))
+    expect(line()).toBe(errors.MAC_UPDATE_COPY.unknown)
+    await act(async () => answer({ platformVersion: "15.6.1" }))
+    expect(line()).toBe(errors.MAC_UPDATE_COPY.below)
+  })
+
+  it("a late answer past the floors takes the line away", async () => {
+    vi.useFakeTimers()
+    let answer!: (v: { platformVersion: string }) => void
+    browser(MAC_CHROME, () => new Promise((resolve) => (answer = resolve)))
+    await show(wrongKey(true))
+    await act(async () => vi.advanceTimersByTime(1_000))
+    expect(line()).toBe(errors.MAC_UPDATE_COPY.unknown)
+    await act(async () => answer({ platformVersion: "26.6.2" }))
+    expect(line()).toBeUndefined()
+  })
+
+  it("a card swapped for one without the line before the answer shows none", async () => {
+    let answer!: (v: { platformVersion: string }) => void
+    browser(MAC_CHROME, () => new Promise((resolve) => (answer = resolve)))
+    await show(wrongKey(true))
+    await show(wrongKey(false))
+    await act(async () => answer({ platformVersion: "15.6.1" }))
+    expect(line()).toBeUndefined()
+  })
+})
+
 describe("PasskeyRefusal after a creation on this computer", () => {
   const phoneExit = () =>
     container.querySelector<HTMLButtonElement>('[data-testid="passkey-phone"]')
@@ -188,7 +284,7 @@ describe("PasskeyRefusal after a creation on this computer", () => {
       name: e.name,
       message: e.message,
       leftover: true,
-      belowMacFloor: e.belowMacFloor,
+      appleRefusedHere: e.appleRefusedHere,
       route: "this-device",
       reach: "ok",
       ...over,
@@ -197,33 +293,18 @@ describe("PasskeyRefusal after a creation on this computer", () => {
   const whyLink = () =>
     container.querySelector<HTMLAnchorElement>('[data-testid="passkey-apple-floor"] a')
 
-  it("adds the Safari line under the floor link, in the wording named", async () => {
-    const line = () => container.querySelector('[data-testid="passkey-safari-advice"]')
-    for (const wording of ["version", "chrome"] as const) {
-      await act(async () =>
-        root.render(
-          <PasskeyRefusal error={refused({ safariAdvice: wording })} onRetry={() => {}} />,
-        ),
-      )
-      expect(line()?.textContent).toBe(errors.SAFARI_REFUSAL_COPY[wording])
-      expect(whyLink()).not.toBeNull()
-    }
-    await act(async () => root.render(<PasskeyRefusal error={refused()} onRetry={() => {}} />))
-    expect(line()).toBeNull()
-  })
-
-  it("names the floor, links the cleanup, and leads with the phone", async () => {
+  it("says why Apple Passwords was refused, links the cleanup, and leads with the phone", async () => {
     const onRetry = vi.fn()
     const onPhone = vi.fn()
     await act(async () =>
       root.render(<PasskeyRefusal error={refused()} onRetry={onRetry} onPhone={onPhone} />),
     )
     expect(container.querySelector("h2")?.textContent).toBe("Save the passkey somewhere else")
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain(
-      "only on macOS 15.7.5 or a later macOS 15, or macOS 26.4.1 or later",
-    )
-    expect(container.querySelector('[role="alert"]')?.textContent).toContain("an Apple bug")
-    expect(whyLink()!.textContent).toBe("Why Apple Passwords is refused on this Mac")
+    const message = container.querySelector('[role="alert"]')?.textContent
+    expect(message).toContain("Apple Passwords can't protect a wallet on macOS before 15")
+    expect(message).toContain("Update macOS to use it")
+    expect(message).not.toMatch(/15\.7\.5|26\.4\.1/)
+    expect(whyLink()!.textContent).toBe("Why Apple Passwords didn't work here")
     expect(whyLink()!.getAttribute("href")).toBe(
       "https://docs.zk.money/docs/passkeys#save-somewhere-else",
     )
@@ -311,14 +392,17 @@ describe("PasskeyRefusal after a creation on this computer", () => {
     expect(isPill(retry())).toBe(false)
   })
 
-  it("links the reason, and leads with the phone, only where the macOS floor is what refused Apple Passwords", async () => {
+  it("links the reason, and leads with the phone, only where Apple Passwords was refused here", async () => {
     const withdrawn = new errors.LaptopPasskeyRefusedError("apple", ["gpm"], {
       appleWithdrawn: true,
     })
     await act(async () =>
       root.render(
         <PasskeyRefusal
-          error={refused({ message: withdrawn.message, belowMacFloor: withdrawn.belowMacFloor })}
+          error={refused({
+            message: withdrawn.message,
+            appleRefusedHere: withdrawn.appleRefusedHere,
+          })}
           onRetry={() => {}}
           onPhone={() => {}}
         />,
@@ -340,7 +424,7 @@ describe("PasskeyRefusal after a creation on this computer", () => {
           error={refused({
             name: unsupported.name,
             message: unsupported.message,
-            belowMacFloor: false,
+            appleRefusedHere: false,
           })}
           onRetry={() => {}}
           onPhone={() => {}}
@@ -406,6 +490,11 @@ describe("PasskeyRefusal in an app's built-in browser", () => {
     await act(async () => root.render(strict ? <StrictMode>{tree}</StrictMode> : tree))
   }
 
+  beforeEach(() => {
+    fireOnboarding.mockClear()
+    resetInAppCardCountsForTests()
+  })
+
   afterEach(() => {
     vi.restoreAllMocks()
     window.history.replaceState(null, "", startUrl)
@@ -414,6 +503,41 @@ describe("PasskeyRefusal in an app's built-in browser", () => {
     else delete (navigator as { clipboard?: unknown }).clipboard
     if (execCommand) Object.defineProperty(document, "execCommand", execCommand)
     else delete (document as { execCommand?: unknown }).execCommand
+  })
+
+  it.each(["enter", "onboarding"] as const)(
+    "counts the way out it renders after a failed request, and its taps, on the %s screen",
+    async (screen) => {
+      as(UA.iosX, "/enter")
+      Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true })
+      Object.defineProperty(document, "execCommand", { value: () => false, configurable: true })
+      await show(<PasskeyRefusal error={inApp} reportContext={screen} />)
+      await act(async () => buttonNamed("Copy link")!.click())
+      expect(fireOnboarding.mock.calls).toEqual([
+        ["onboarding_in_app_shown", { when: "after_miss", screen, in_app: "ios_x" }],
+        ["onboarding_in_app_exit", { when: "after_miss", screen, in_app: "ios_x", control: "copy_link" }],
+      ])
+    },
+  )
+
+  it("counts an Android web view's way out after a refused request", async () => {
+    as(UA.android, "/enter")
+    await show(<PasskeyRefusal error={notSupported} reportContext="enter" />)
+    expect(fireOnboarding.mock.calls).toEqual([
+      ["onboarding_in_app_shown", { when: "after_miss", screen: "enter", in_app: "android_other" }],
+    ])
+  })
+
+  it.each([
+    ["a laptop", UA.laptop, "enter"],
+    ["iPhone Safari", UA.iosSafari, "enter"],
+    ["a surface that is not a card screen", UA.android, undefined],
+  ])("counts nothing on %s", async (_n, ua, reportContext) => {
+    as(ua, "/enter")
+    await show(
+      <PasskeyRefusal error={notSupported} onRetry={() => {}} reportContext={reportContext} />,
+    )
+    expect(fireOnboarding).not.toHaveBeenCalled()
   })
 
   it("offers Chrome on Android with the hint, the link and Copy link, and turns the retry into a pill", async () => {
@@ -446,23 +570,35 @@ describe("PasskeyRefusal in an app's built-in browser", () => {
     expect(byTestId("passkey-retry")).toBeNull()
   })
 
-  it("in X's iPhone app, which drops the link, leads with Copy link, then its menu", async () => {
+  it("in X's iPhone app, which drops the link, leads with its menu, then Copy link as a pill", async () => {
     as(UA.iosX, "/claim/alice?entry=passkey&choose=1")
     await show(<PasskeyRefusal error={inApp} onRetry={() => {}} />)
     expect(link()).toBeNull()
-    expect(buttonNamed("Copy link")!.className).toContain("zkm-primary-btn--gradient")
     const text = escape()!.textContent ?? ""
-    expect(text).toContain("Or tap ⋮ next to the web address at the bottom, then Open in browser.")
+    const menu = text.indexOf("Tap ⋮ next to the web address at the bottom, then Open in browser.")
+    const copy = text.indexOf("Or copy the link and open it in your browser.")
+    const address = text.indexOf(`${window.location.origin}/claim/alice?entry=passkey&choose=1`)
+    expect(menu).toBeGreaterThanOrEqual(0)
+    expect(copy).toBeGreaterThan(menu)
+    expect(address).toBeGreaterThan(copy)
+    expect(text).not.toContain("Or tap ⋮")
     expect(text).not.toContain("Or tap ⋯")
-    expect(text).toContain(`${window.location.origin}/claim/alice?entry=passkey&choose=1`)
+    expect(buttonNamed("Copy link")!.className).toContain("ww-invite-pill")
+    expect(buttonNamed("Copy link")!.className).not.toContain("zkm-primary-btn--gradient")
   })
 
-  it("in X's Android app, which drops the Chrome link too, leads with Copy link and keeps the retry", async () => {
+  it("in X's Android app, which drops the Chrome link too, leads with its menu and keeps the retry", async () => {
     as(`${UA.android} TwitterAndroid`, "/enter?handle=alice")
     await show(<PasskeyRefusal error={notSupported} onRetry={() => {}} />)
     expect(link()).toBeNull()
-    expect(buttonNamed("Copy link")!.className).toContain("zkm-primary-btn--gradient")
-    expect(escape()!.textContent).toContain("Or tap ⋮ next to the web address at the bottom")
+    const text = escape()!.textContent ?? ""
+    const menu = text.indexOf("Tap ⋮ next to the web address at the bottom")
+    const copy = text.indexOf("Or copy the link")
+    const address = text.indexOf(`${window.location.origin}/enter?handle=alice`)
+    expect(menu).toBeGreaterThanOrEqual(0)
+    expect(copy).toBeGreaterThan(menu)
+    expect(address).toBeGreaterThan(copy)
+    expect(buttonNamed("Copy link")!.className).toContain("ww-invite-pill")
     expect(byTestId("passkey-retry")!.className).toContain("ww-invite-pill")
   })
 

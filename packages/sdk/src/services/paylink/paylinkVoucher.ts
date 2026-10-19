@@ -10,8 +10,6 @@ import { NO_FROM } from "@aztec/aztec.js/account"
 import type { EthAddress } from "@aztec/aztec.js/addresses"
 import { Contract, type ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
-import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
 import type { TeeSigner } from "@oxide/oxide-lib/types.js"
 import {
   ContractService,
@@ -23,19 +21,12 @@ import {
   contractClassWitness,
   registerSponsorFpc,
   type ClaimSponsorContext,
-  linkChainInfo,
 } from "../claimSponsor.js"
 import type { PaylinkParams } from "../PaylinkService.js"
 import { buildSponsoredTeeOperation } from "../sponsoredTeeOperation.js"
 import { buildOperationCall } from "./paylinkClaimSubmit.js"
-import { linkEscrow } from "./paylinkEscrow.js"
-import { assertLinkChain } from "./paylinkInlineCodec.js"
+import { registerEscrow, sharedNoteRead } from "./escrowRegistration.js"
 import { paylinkL1ClaimArgs, type PaylinkL1Proof } from "./paylinkL1Claim.js"
-import {
-  registerEscrowTagSecret,
-  registerPaylinkContractWithKeys,
-  type PaylinkKeyMaterial,
-} from "./paylinkKeys.js"
 import { buildPaylinkNoteView, type PaylinkNoteView } from "./paylinkNoteData.js"
 import { findEscrowDepositTx } from "./paylinkRecovery.js"
 import { makePaylinkSpendMetadataResolver } from "./paylinkSpendMetadata.js"
@@ -47,48 +38,22 @@ export interface PaylinkVoucherDeps {
   sponsor: ClaimSponsorContext
 }
 
-/** Rebuild the escrow from the link and give this PXE its keys, its tag and its sender. Idempotent. */
-export async function registerEscrow(
-  deps: Pick<PaylinkVoucherDeps, "wallet" | "contractService">,
-  params: PaylinkParams,
-): Promise<{
-  instance: ContractInstanceWithAddress
-  keys: PaylinkKeyMaterial
-  artifact: ContractArtifact
-}> {
-  const { artifact, keys, instance } = await linkEscrow(deps.contractService, params)
-  assertLinkChain(params, await linkChainInfo(deps.wallet))
-  await registerPaylinkContractWithKeys({
-    wallet: deps.wallet,
-    instance,
-    artifact,
-    keyMaterial: keys,
-  })
-  // The escrow tags its own notes, the voucher included, so it is its own sender here.
-  await deps.wallet.registerSender(instance.address)
-  // The escrow's token note is tagged by the creator; a sponsored create carries the point to it.
-  if (params.escrowTagSecret) {
-    await registerEscrowTagSecret({
-      wallet: deps.wallet,
-      escrow: instance.address,
-      secret: params.escrowTagSecret,
-    })
-  }
-  return { instance, keys, artifact }
-}
+export { registerEscrow }
 
 /** The escrow note behind a link, read with no account: what a bearer cash-out can burn. */
 export async function readPaylinkEscrowNote(
   deps: Pick<PaylinkVoucherDeps, "wallet" | "contractService">,
   params: PaylinkParams,
 ): Promise<PaylinkNoteView> {
-  const { instance, artifact } = await registerEscrow(deps as PaylinkVoucherDeps, params)
-  const escrow = Contract.at(instance.address, artifact, deps.wallet)
-  const sim = await escrow.methods.sync_note!().simulate({
-    from: NO_FROM,
-    additionalScopes: [instance.address],
+  const { instance, artifact } = await registerEscrow(deps, params)
+  return sharedNoteRead(deps.wallet, instance.address, async () => {
+    const escrow = Contract.at(instance.address, artifact, deps.wallet)
+    const sim = await escrow.methods.sync_note!().simulate({
+      from: NO_FROM,
+      additionalScopes: [instance.address],
+    })
+    return buildPaylinkNoteView(sim.result)
   })
-  return buildPaylinkNoteView(sim.result)
 }
 
 /** Sponsored txs the link's escrow still holds on the voucher rail: how many exits it can pay for. */

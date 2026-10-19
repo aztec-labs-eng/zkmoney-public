@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest"
 import {
   beginTicketSignupAccount,
+  boundToTicketSignup,
   completeTicketSignupAccount,
   loadTicketSignupAccount,
   loadTicketSignupAttempt,
@@ -82,5 +83,18 @@ describe("ticket signup creation checkpoints", () => {
     expect(loadTicketSignupAccount("rp", "link")).toEqual(account)
     expect(loadTicketSignupAccount("other-rp", "link")).toBeNull()
     expect(loadTicketSignupAccount("rp", "other-link")).toBeNull()
+  })
+})
+
+describe("boundToTicketSignup", () => {
+  beforeEach(() => localStorage.clear())
+
+  it("names only a completed binding's passkey on its own rpId", async () => {
+    const attempt = await beginTicketSignupAccount("rp", "link", "alice")
+    expect(boundToTicketSignup("rp", account.credentialId)).toBe(false)
+    await completeTicketSignupAccount("rp", "link", attempt.attemptId, account)
+    expect(boundToTicketSignup("rp", account.credentialId)).toBe(true)
+    expect(boundToTicketSignup("rp", "another-passkey")).toBe(false)
+    expect(boundToTicketSignup("other-rp", account.credentialId)).toBe(false)
   })
 })

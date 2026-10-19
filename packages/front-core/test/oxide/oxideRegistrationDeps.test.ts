@@ -14,10 +14,13 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   selectManifestResolverOperator: sdkMocks.selectManifestResolverOperator,
 }))
 
-import { PREFERRED_RESOLVER_OWNER } from "@obsidion/sdk"
+import { secp256k1 } from "@noble/curves/secp256k1"
+import { deriveSharedSecret, PREFERRED_RESOLVER_OWNER } from "@obsidion/sdk"
+import { deriveStealthKey } from "../../src/oxide/oxideAccountKeys"
 import {
   createOxideL1Reader,
   fetchSignupResolverOperator,
+  legacyRegistrationSalt,
   NO_NAME_PORTAL_RECIPIENT,
   oxideEnvFromTuple,
   resolveOxideAccountFactory,
@@ -169,6 +172,45 @@ describe("resolveStoredR1Key", () => {
   })
 })
 
+describe("createOxideL1Reader.readR1InstallGas", () => {
+  const REGISTRY = "0x00000000000000000000000000000000000000f1" as Address
+  const CONTROLLER = "0x00000000000000000000000000000000000000c1" as Address
+  const LIMITS = {
+    R1_INSTALL_VERIFICATION_GAS: 50_000n,
+    R1_INSTALL_CALL_GAS_BASE: 85_000n,
+    R1_INSTALL_CALL_GAS_PER_WORD: 30_000n,
+  }
+
+  function clientNaming(controller: Address | Error) {
+    const holders: Address[] = []
+    const readContract = vi.fn(async (params: { address: Address; functionName: string }) => {
+      if (params.functionName === "registrationController") {
+        if (controller instanceof Error) throw controller
+        return controller
+      }
+      holders.push(params.address)
+      return LIMITS[params.functionName as keyof typeof LIMITS]
+    })
+    return { client: { readContract } as never, holders }
+  }
+
+  const expected = { verification: 50_000n, callBase: 85_000n, callPerWord: 30_000n }
+
+  it("reads the limits off the controller the registry names", async () => {
+    const { client, holders } = clientNaming(CONTROLLER)
+    expect(await createOxideL1Reader(client).readR1InstallGas(REGISTRY)).toEqual(expected)
+    expect(new Set(holders)).toEqual(new Set([CONTROLLER]))
+  })
+
+  it("reads them off the registry itself when it names no controller", async () => {
+    for (const named of [`0x${"00".repeat(20)}` as Address, new Error("execution reverted")]) {
+      const { client, holders } = clientNaming(named)
+      expect(await createOxideL1Reader(client).readR1InstallGas(REGISTRY)).toEqual(expected)
+      expect(new Set(holders)).toEqual(new Set([REGISTRY]))
+    }
+  })
+})
+
 describe("createOxideL1Reader.readAuthKeys", () => {
   const ACCOUNT = "0x00000000000000000000000000000000000000aa" as Address
   const entry = (n: number) => ({
@@ -217,5 +259,24 @@ describe("createOxideL1Reader.readAuthKeys", () => {
     expect(calls.filter((c) => c.functionName === "getAuthKey").map((c) => c.args)).toEqual(
       Array.from({ length: 8 }, (_, i) => [BigInt(i)]),
     )
+  })
+})
+
+describe("legacyRegistrationSalt", () => {
+  it("is the salt the resolver computes for the registration's slot", () => {
+    const secret = { toString: () => `0x${"11".repeat(31)}` }
+    const resolverPrivateKey = 0xb0bn
+    const resolverPoint = secp256k1.ProjectivePoint.BASE.multiply(resolverPrivateKey).toAffine()
+    // A nameHash below MAX_NONCE sits at day 0, nonce = nameHash.
+    const nameHash = `0x${"00".repeat(31)}05` as const
+    const asResolver = deriveSharedSecret(
+      deriveStealthKey(secret).publicKey,
+      resolverPrivateKey,
+      0,
+      5,
+    )
+    expect(
+      legacyRegistrationSalt(secret, { x: resolverPoint.x, y: resolverPoint.y }, nameHash),
+    ).toBe(asResolver.toString())
   })
 })

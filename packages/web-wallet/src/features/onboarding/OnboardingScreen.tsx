@@ -26,12 +26,14 @@ import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/con
 import type { NameClaimResponse, SignInRoute } from "@obsidion/core/types"
 import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
+import { oxideEnvFor } from "../../config/oxideTuple"
 import { mockOnboarding } from "../../dev/mockOnboarding"
 import { showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent, fireOnboardingEvent, lapTimer } from "../../lib/analytics"
 import { landingSource } from "../../lib/trafficSource"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
 import { useHoldEndpoints } from "../../ui/endpointsHold"
+import { peekPreBootCreate, takePreBootCreate } from "../../ui/preBootTaps"
 import { useAsyncAction, useNextRoute } from "../../ui/hooks"
 import {
   recordDepositAdmission,
@@ -41,9 +43,8 @@ import {
 import {
   PHONE_CREATION,
   isGateCancelled,
-  routeForHints,
   useCeremonyGate,
-  type SheetVariant,
+  type UnheldPick,
 } from "../identity/ceremonyGate"
 import { IosFloorNotice } from "../identity/IosFloorNotice"
 import {
@@ -57,21 +58,22 @@ import {
 import { GateStep, PhoneSteps } from "../identity/PhoneSteps"
 import { signOut } from "../identity/signOut"
 import {
+  LaptopPasskeyRefusedError,
   NoPrfError,
   currentDevicePosture,
   currentOpenInBrowserHref,
-  extensionAnswersPasskeys,
+  passkeyExtensionFor,
   inAppBrowserRefusal,
   isPasskeyCancelled,
   isPasskeyPolicyError,
   passkeyWritten,
   type ExtensionAdvice,
-  type SafariAdvice,
   type LaptopCreation,
   type PasskeyAttemptContext,
   type PasskeyAttemptHandle,
   type PasskeyRequestScope,
   type PhoneReach,
+  type SignUpChoice,
 } from "@obsidion/passkey-web"
 import { statusForAttempt } from "../../platform/auth/passkeyAttemptScope"
 import { InAppBrowserNotice } from "../identity/InAppBrowserNotice"
@@ -93,6 +95,7 @@ import { endClaim, startClaim } from "../paylink/runningClaims"
 import { OperationHandOff } from "../operations/OperationHandOff"
 import {
   beginTicketSignupAccount,
+  boundToTicketSignup,
   completeTicketSignupAccount,
   isTicketSignupCreating,
   loadTicketSignupAccount,
@@ -127,6 +130,7 @@ import {
   claimTag,
   collectOnboardingKeys,
   getClaimStatus,
+  isRegistrationStage,
   nameGrantToken,
   NameTakenError,
   PasskeyMismatchError,
@@ -134,7 +138,9 @@ import {
   type ClaimTagOutcome,
   type OnboardingKeys,
   type PasskeyHints,
+  type SignupStage,
 } from "./oxideOnboarding"
+import { prewarmGoldenTicket } from "./goldenTicket"
 import { clearNameGrant, scopeNameGrant, setDrawnOfferTag, stashDrawnGrant } from "./nameGrant"
 import { grantPastUser, PastUserAlreadyUsedError } from "./pastUserClaim"
 import {
@@ -233,6 +239,7 @@ import {
   rememberRegistrationRoute,
   reportRegistrationDepositFunded,
   reportRegistrationDepositSwept,
+  reportRegistrationLapsed,
 } from "./registrationFunnel"
 
 function warnQuietCheck(err: unknown): undefined {
@@ -264,6 +271,21 @@ const BUSY_LABELS = {
   claiming: "Claiming your payment…",
 } as const
 
+/** What a paylink signup's claim is doing after the passkey, from the stage it last reached. */
+function paylinkSignupLabel(stage: SignupStage | undefined, tag: string): string {
+  switch (stage) {
+    case "ticket_prove":
+      return "Proving your ticket…"
+    case "reserve":
+      return `Reserving @${tag}…`
+    case "derive":
+    case "broadcast":
+      return `Setting up @${tag}…`
+    default:
+      return "Checking your payment…"
+  }
+}
+
 const subscribePendingStore = (onChange: () => void) => getPendingStore().onListChanged(onChange)
 
 /** Failures passkey_ceremony reports, which onboarding_failed leaves to it. */
@@ -273,8 +295,9 @@ const CREATE_PASSKEY: PasskeyAttemptContext = { ceremony: "create", flow: "onboa
 
 /** A creation as the gate opened it, and the ticket attempt it began. */
 type CreateAttempt = {
+  choice?: SignUpChoice
+  /** The route the gate derived from `choice`. */
   route?: SignInRoute
-  from?: SheetVariant
   reach: PhoneReach
   /** The gate's decision for this laptop, so a refusal's advice follows what the sheet offered. */
   creation?: LaptopCreation
@@ -282,29 +305,16 @@ type CreateAttempt = {
 }
 
 /** A creation's refusal, with what it attempted so the card's actions can go back to the sheet. */
-type CreateRefusal = RouteRefusal & { from?: SheetVariant; ticketAttemptId?: string }
+type CreateRefusal = RouteRefusal & { choice?: SignUpChoice; ticketAttemptId?: string }
 
 /** A sign-up saved on this computer, in a browser whose sheet said Chrome could keep it here. */
 const chromeAdviceFor = (err: { name: string }, attempted: CreateAttempt | undefined): boolean =>
   err.name === "PhoneRequiredError" && attempted?.creation?.chromeTip === "gpm"
 
 /**
- * An Apple Passwords refusal on Safari's row: Safari cannot report the macOS version, so the
- * refusal is not about this Mac. Chrome is named only while Mac Chrome still admits Apple.
- */
-function safariAdviceFor(
-  belowMacFloor: boolean,
-  attempted: CreateAttempt | undefined,
-): SafariAdvice | undefined {
-  const creation = attempted?.creation
-  if (!belowMacFloor || !creation?.local || creation.row !== "macSafari") return undefined
-  return creation.chromeTip === "apple" ? "chrome" : "version"
-}
-
-/**
  * A Windows sign-up on this computer that 1Password answered without key material gets the
  * 1Password advice: its Windows app returns none, its browser extension does. The wording follows
- * whether an extension answers the page's creations.
+ * whether the script answering the page's creation is 1Password's.
  */
 function extensionAdviceFor(
   err: unknown,
@@ -314,18 +324,50 @@ function extensionAdviceFor(
   const { os, managers } = attempted.creation
   if (os !== "windows" || !managers.includes("1password")) return undefined
   if (!(err instanceof NoPrfError) || err.manager !== "1password") return undefined
-  return extensionAnswersPasskeys("create") ? "use" : "install"
+  return passkeyExtensionFor() === "1password" ? "use" : "install"
 }
 
-const variantFor = (route?: SignInRoute): SheetVariant | undefined =>
-  route === "this-device"
-    ? "local"
-    : route === "phone"
-    ? "phone"
-    : route === "security-key"
-    ? "key"
-    : undefined
+/** The pop-up a refusal points at answers only the 1Password option, so its retry opens there. */
+const retryChoiceFor = (refusal: CreateRefusal): SignUpChoice | undefined =>
+  refusal.extensionAdvice === "use" && refusal.choice === "computer" ? "1password" : refusal.choice
+
 const REUSE_PASSKEY: PasskeyAttemptContext = { ceremony: "sign_in", flow: "onboarding" }
+
+/**
+ * The ticket signup's own creation sheet, which asks the browser both questions the gate asks again
+ * before the ceremony. Mounted only while shown, so every showing waits for its own answers and
+ * never offers what an earlier one said.
+ */
+function TicketSheet(
+  props: Omit<Parameters<typeof PhoneSteps>[0], "reach" | "creation" | "loading">,
+) {
+  const [probed, setProbed] = useState<{ reach: PhoneReach; creation: LaptopCreation }>()
+  useEffect(() => {
+    const service = getAuthService()
+    let live = true
+    void Promise.all([
+      Promise.resolve(service?.probePhoneReach?.())
+        .then((reach) => reach ?? "unknown")
+        .catch((): PhoneReach => "unknown"),
+      Promise.resolve(service?.probeLaptopCreation?.())
+        .then((creation) => creation ?? PHONE_CREATION)
+        .catch(() => PHONE_CREATION),
+    ]).then(([reach, creation]) => {
+      if (live) setProbed({ reach, creation })
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  return (
+    <PhoneSteps
+      {...props}
+      reach={probed?.reach ?? "unknown"}
+      creation={probed?.creation}
+      loading={!probed}
+    />
+  )
+}
 
 /**
  * Signup wizard (/claim/:handle?), ULT-667: a full-bleed invitation page with
@@ -363,6 +405,9 @@ export interface OnboardingScreenProps {
    *  passes none. */
   paylinkKit?: PaylinkKit
 }
+
+// One start per page load: /claim and the Home draft it hands to are one signup.
+let startedReported = false
 
 export function OnboardingScreen({
   embedded = false,
@@ -507,31 +552,35 @@ export function OnboardingScreen({
         "",
     ) ?? "",
   )
-  const [inviteBusy, setInviteBusy] = useState(false)
+  // "Open account", tapped while the wallet started: busy from the first frame, run once below.
+  const [startedBeforeBoot] = useState(() => freshStart && peekPreBootCreate())
+  const [inviteBusy, setInviteBusy] = useState(startedBeforeBoot)
   // Embedded, the pill is in the host page's frame, out of reach of a prop.
   useHoldEndpoints(inviteBusy)
   const [inviteNotice, setInviteNotice] = useState<InviteNotice>()
   const [modalBusy, setModalBusy] = useState(mock?.busy ?? false)
   const [createBusyPhase, setCreateBusyPhase] = useState<"passkey" | "claim" | "paylink">("passkey")
+  const [signupStage, setSignupStage] = useState<SignupStage>()
+  // The sheet's warning for the creation its pick starts, set in the same click as the pick.
+  const [creationWarning, setCreationWarning] = useState<string>()
   const [modalError, setModalError] = useState<string>()
   // A refusal renders as its own state, with a retry where it has one; anything else is
   // `modalError` text.
   const [modalRefusal, setModalRefusal] = useState<CreateRefusal>()
   const retryRef = useRef<(() => void) | undefined>(undefined)
   const { gate, state: gateState, cancel: cancelGate, dismiss: dismissGate } = useCeremonyGate()
-  // The route the ticket signup's own passkey sheet picked, and the variant it was picked from,
-  // when that sheet took the tap: the gate then holds no sheet of its own.
-  const unheldGate = useRef<{ route: SignInRoute; from: SheetVariant } | undefined>(undefined)
+  // The option the ticket signup's own passkey sheet picked, when that sheet took the tap: the gate
+  // then holds no sheet of its own.
+  const unheldGate = useRef<UnheldPick | undefined>(undefined)
   // How the next creation's sheet opens: a refusal's way back, or a closed prompt's.
-  const reopenRef = useRef<
-    { openOn: SheetVariant; from?: SheetVariant; unfinished?: boolean } | undefined
-  >(undefined)
+  const reopenRef = useRef<{ openOn: SignUpChoice; unfinished?: boolean } | undefined>(undefined)
   // What the running creation attempted, for the refusal card and the way back from it.
   const attemptedRef = useRef<CreateAttempt | undefined>(undefined)
   // A ticket attempt the browser's closed prompt left behind: the next pick restarts it first.
   const restartRef = useRef<string | undefined>(undefined)
   // The ticket signup's passkey CTA is held; its actions read this, so a retry holds too.
   const ticketHeldRef = useRef(false)
+  const settleTicketSpeedRef = useRef<() => void>(undefined)
   const [busyStage, setBusyStage] = useState<keyof typeof BUSY_LABELS>()
   const [inlineNotice, setInlineNotice] = useState<string>()
   // A policy refusal on the pending step's retry, rendered with its own retry.
@@ -699,6 +748,8 @@ export function OnboardingScreen({
   const startedAtRef = useRef<number>(performance.now())
   useEffect(() => {
     startedAtRef.current = performance.now()
+    if (startedReported) return
+    startedReported = true
     fireOnboardingEvent("onboarding_started", {
       entry: entryCohort,
       source: landingSource(),
@@ -812,7 +863,7 @@ export function OnboardingScreen({
     setInviteBusy(false)
   }
 
-  /** "Get started": the claim server draws the tag, and the passkey and claim run at once. */
+  /** "Open account": the claim server draws the tag, and the passkey and claim run at once. */
   const createDrawnWallet = async () => {
     setInviteNotice(undefined)
     setInviteBusy(true)
@@ -827,7 +878,7 @@ export function OnboardingScreen({
       stashDrawnGrant(tag, grantToken)
       // Home holds the keep-or-choose, and the passkey runs from there.
       setDrawnOfferTag(tag)
-      navigate("/", { replace: true })
+      navigate("/")
     } catch (err) {
       if (gen !== inviteGen.current) return
       const code = failureCode(err)
@@ -838,6 +889,10 @@ export function OnboardingScreen({
       if (gen === inviteGen.current) setInviteBusy(false)
     }
   }
+  useEffect(() => {
+    if (startedBeforeBoot && takePreBootCreate()) void createDrawnWallet()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, for the tap taken before boot
+  }, [])
   /**
    * Swaps the shown tag for another draw, dropping any kept or picked one; the shown tag stays if the
    * draw fails.
@@ -967,6 +1022,8 @@ export function OnboardingScreen({
     const previousStorageId = getActiveStorageId()
     lastAttempt.current = undefined
     setCreateBusyPhase("passkey")
+    // A pick the screen's own sheet took carries its warning in; every other run starts clean.
+    if (!unheldGate.current) setCreationWarning(undefined)
     setModalBusy(true)
     try {
       const elapsed = lapTimer()
@@ -1036,25 +1093,24 @@ export function OnboardingScreen({
           setStep("create")
         } else if (isPasskeyCancelled(err) && !leftover) {
           // The browser's prompt closed with nothing made: no error, just back to where it opened. A
-          // laptop's sheet re-opens on the variant it came from (this computer's says so); a phone
-          // is left on its button. A ticket attempt begun for the closed prompt is restarted by the
-          // next pick, before its replacement begins.
-          if (attempted?.route) {
+          // laptop's sheet re-opens on the option it ran (this computer's says so); a phone is left
+          // on its button. A ticket attempt begun for the closed prompt is restarted by the next
+          // pick, before its replacement begins.
+          if (attempted?.choice) {
             restartRef.current = attempted.ticketAttemptId
-            reopenRef.current =
-              attempted.route === "this-device"
-                ? { openOn: "local", unfinished: true }
-                : { openOn: attempted.route === "phone" ? "phone" : "key", from: attempted.from }
+            reopenRef.current = {
+              openOn: attempted.choice,
+              ...(attempted.route === "this-device" ? { unfinished: true } : {}),
+            }
             retryRef.current?.()
           }
         } else if (isPasskeyPolicyError(err)) {
-          const belowMacFloor = (err as { belowMacFloor?: boolean }).belowMacFloor === true
+          const appleRefusedHere = err instanceof LaptopPasskeyRefusedError && err.appleRefusedHere
           setModalRefusal({
             name: err.name,
             message: err.message,
             leftover,
-            ...(belowMacFloor ? { belowMacFloor } : {}),
-            safariAdvice: safariAdviceFor(belowMacFloor, attempted),
+            ...(appleRefusedHere ? { appleRefusedHere } : {}),
             ...(chromeAdviceFor(err, attempted) ? { chromeAdvice: true } : {}),
             extensionAdvice: extensionAdviceFor(err, attempted),
             ...attempted,
@@ -1102,6 +1158,7 @@ export function OnboardingScreen({
       reopenRef.current = undefined
       return
     }
+    if (fromPaylink) settleTicketSpeedRef.current?.()
     const identity = loadWalletIdentity()
     const namelessAddress = identity && !identity.handle ? identity.address : undefined
     retryRef.current = createAccountStep
@@ -1114,6 +1171,9 @@ export function OnboardingScreen({
         const prior = loadTicketSignupAccount(config.rpId, ticketId)
         if (prior) {
           if (!obsidionWallet) throw new Error("wallet is still starting, try again in a moment")
+          // A bound ticket signs in: the sheet's pick and its warning were for a creation.
+          unheldGate.current = undefined
+          setCreationWarning(undefined)
           const keys = await passkeyAttempt(REUSE_PASSKEY, gen, (own) =>
             reusePasskeyAccount(
               obsidionWallet,
@@ -1134,6 +1194,8 @@ export function OnboardingScreen({
       const fromCache = async () => {
         const cached = await getAuthService()?.recoverFromCache?.()
         if (!cached?.expectedAddress) return undefined
+        // A key a payment link's signup made belongs to that link's signup, named for its tag.
+        if (!fromPaylink && boundToTicketSignup(config.rpId, cached.credentialId)) return undefined
         if (!obsidionWallet) throw new Error("wallet is still starting, try again in a moment")
         const expectedAddress = cached.expectedAddress
         const keys = await passkeyAttempt(REUSE_PASSKEY, gen, (own) =>
@@ -1204,14 +1266,14 @@ export function OnboardingScreen({
         unheldGate.current = undefined
         const reopen = reopenRef.current
         reopenRef.current = undefined
-        const { route, from, reach, creation } = await gate({
+        const { choice, route, reach, creation } = await gate({
           purpose: "create",
-          ...(unheld ? { unheld: unheld.route, from: unheld.from } : {}),
+          ...(unheld ? { unheld } : {}),
           ...reopen,
         })
         // A route means a laptop creation, the only gate that checks for a phone.
         if (route) attempt.notePhoneReach(reach)
-        const attempted: CreateAttempt = { route, from, reach, creation }
+        const attempted: CreateAttempt = { choice, route, reach, creation }
         attemptedRef.current = attempted
         if (ticketId && restartId) {
           restartTicketSignupAccount(config.rpId, ticketId, restartId)
@@ -1224,7 +1286,7 @@ export function OnboardingScreen({
           setTicketAttempt(ticket)
           attempted.ticketAttemptId = ticket.attemptId
         }
-        getAuthService()?.useLaptopCreation?.(creation ?? PHONE_CREATION)
+        getAuthService()?.useLaptopCreation?.(creation ?? PHONE_CREATION, choice)
         return createAccount(false, AUTH_TYPE.WEB_AUTHN, statusForAttempt(own), handle, undefined, {
           route,
           signal,
@@ -1243,12 +1305,17 @@ export function OnboardingScreen({
   const claimWithAnalytics = (keys: OnboardingKeys) => {
     const elapsed = lapTimer()
     const lap = lapTimer()
+    setSignupStage(undefined)
     return claimTag(
       handle,
       keys,
       config,
       obsidionWallet,
-      (stage) => fireOnboardingEvent("onboarding_oxide_stage", { stage, prev_stage_ms: lap() }),
+      (stage) => {
+        setSignupStage(stage)
+        if (isRegistrationStage(stage))
+          fireOnboardingEvent("onboarding_oxide_stage", { stage, prev_stage_ms: lap() })
+      },
       expectedEarned,
       undefined,
       undefined,
@@ -1256,8 +1323,8 @@ export function OnboardingScreen({
     ).then((outcome) => {
       // `onboarding_tag_claimed` means CONFIRMED on-chain — an already-registered name proves it
       // here; a submitted op fires it from the detection tick once the Registry read settles, with
-      // custody_to_confirmed_ms from the durable record. Custody alone gets its own event.
-      if (outcome.kind === "custody" && outcome.confirmed) {
+      // custody_to_confirmed_ms from the durable record.
+      if (outcome.kind === "custody") {
         fireOnboardingEvent("onboarding_tag_claimed", { duration_ms: elapsed() })
         // The detection tick that normally writes this cache never runs for a session that saw
         // confirmation itself — its record closes with no tick in between.
@@ -1266,8 +1333,6 @@ export function OnboardingScreen({
           tag: handle,
           l2Address: keys.account.getAddress().toString(),
         })
-      } else if (outcome.kind === "custody") {
-        fireOnboardingEvent("onboarding_tag_custody", { duration_ms: elapsed() })
       }
       return outcome
     })
@@ -1391,8 +1456,8 @@ export function OnboardingScreen({
    * A reduced (earned) schedule with no deposit intent enters now, and the deposit screen asks
    * for a deposit still owed. Only a signup that chose the deposit up front waits on the wizard's own pending step.
    *
-   * A ticket-funded signup enters at once too: Home owes the SIPA's broadcast, then claims the link
-   * and funds the registration in one batch once it lands, and the bell carries the claim. Every
+   * A ticket-funded signup enters at once too: Home claims the link, publishing the registration's
+   * address and funding it, and the bell carries the claim. Every
    * other reduced (earned) signup enters the wallet at once when the user chose to deposit later,
    * reminded to deposit the signed total before the claim deadline.
    */
@@ -1751,8 +1816,8 @@ export function OnboardingScreen({
   const settlePendingPaylink = () => {
     const rec = record
     if (!rec || rec.phase !== "awaiting_deposit" || paylinkSettleRef.current) return
-    // Decided at the click, not the render: lapsed terms, an address still unpublished or a burn
-    // already out are sent to their own step before the batch spends the note.
+    // Decided at the click, not the render: lapsed terms or a burn already out are sent to their own
+    // step before the batch spends the note.
     const ticket = ticketActivation(
       rec,
       loadRegistrationTerms(rec.account, rec.tag),
@@ -1957,10 +2022,6 @@ export function OnboardingScreen({
   const { shown: sweepHold } = useSipaProcessing(record?.sipaAddress)
   const sweepBlocker = sweepHold?.blocker
   const awaitingDeposit = openPending && !fundsIn(stage)
-  const pendingUrgent =
-    openPending &&
-    (custodyHeld || !record.broadcast) &&
-    nowMs - record.startTime > PENDING_URGENCY_MS
   // The deadline and signed schedule outlive the in-memory claim through the persisted terms, so a
   // reload still shows them. A fresh claim outranks the stored copy of one.
   const terms = useRegistrationTerms(record?.account, record?.tag)
@@ -1974,6 +2035,18 @@ export function OnboardingScreen({
   // wizard owns the marker outright; a pending reservation only the link its terms name.
   const ticketStash = fromPaylink ? peekTicketSignup() : boundTicketSignup(terms)
   const paylinkStashed = ticketStash !== null
+  const pendingUrgent =
+    openPending &&
+    (custodyHeld || (!record.broadcast && !paylinkStashed)) &&
+    nowMs - record.startTime > PENDING_URGENCY_MS
+  // The tag and welcome steps are idle time: what the claim after the passkey needs and the passkey
+  // does not decide starts here, so the claim finds it ready.
+  useEffect(() => {
+    if (!fromPaylink || !ticketFragment || !obsidionWallet || mock) return
+    if (step !== "tag" && step !== "terms") return
+    prewarmGoldenTicket(obsidionWallet, ticketFragment)
+    oxideEnvFor(config).catch(() => {})
+  }, [fromPaylink, ticketFragment, obsidionWallet, mock, step, config])
   const readChain = (step === "terms" || step === "pending") && !mock
   // A ticket's tag step prices the split, so its fee is read before the terms.
   const readRelayerFee = useDepositSkim(config, readChain || paylinkStashed, readAttempt)
@@ -2100,7 +2173,7 @@ export function OnboardingScreen({
     chainReadPending.current = chainReadPendingNow
   }, [chainReadPendingNow])
   // The terms step has no Check pill, so the cadence is its only way back to a read that gave up.
-  useChainReadRetry(chainReadPendingNow, retryReads)
+  const chainReads = useChainReadRetry(chainReadPendingNow, retryReads)
   // The ticket signup's split: the signed schedule, else the one the service advertised before
   // the ticket was spent, priced at the portal's live cut on both legs. Unpriced until that cut
   // and the sweep fee are read; `covers` is the real check once the witness read the note.
@@ -2128,7 +2201,15 @@ export function OnboardingScreen({
     },
     commitKey: terms ? `${terms.account}:${terms.tag}` : undefined,
   })
-  const ticketProverTip = mock ? 0n : ticketSpeed.proverTip
+  settleTicketSpeedRef.current = ticketSpeed.settle
+  // Before the passkey the split is Standard's until the tip quote answers: the quote refines it,
+  // and a passkey started before then commits Standard (`settle`). The review claims at the tip it
+  // committed, so it waits for the quote.
+  const ticketBeforePasskey =
+    fromPaylink && (step === "tag" || step === "terms" || step === "create")
+  const ticketProverTip = mock
+    ? 0n
+    : ticketSpeed.proverTip ?? (ticketBeforePasskey ? 0n : undefined)
   const paylinkQuote =
     ticketStash && ticketSchedule && ticketCuts && ticketProverTip !== undefined
       ? paylinkSignupQuote({
@@ -2254,11 +2335,8 @@ export function OnboardingScreen({
     !custodyHeld &&
     awaitingDeposit &&
     record?.fundedAt === undefined
-  const lapseReportedRef = useRef(false)
   useEffect(() => {
-    if (!quoteExpired || lapseReportedRef.current || mock) return
-    lapseReportedRef.current = true
-    fireOnboardingEvent("registration_lapsed", { phase: record?.phase ?? "none" })
+    if (quoteExpired && record && !mock) reportRegistrationLapsed(record.account, record.phase)
   }, [quoteExpired, record, mock])
   const paylinkPending = paylinkStashed && awaitingDeposit && !wrongChain && !quoteExpired
   // The pending step's own claim, not a status check sharing the busy flag.
@@ -2308,9 +2386,6 @@ export function OnboardingScreen({
     if (registrationsPaused) {
       return `@${pendingTag} is held for you. No deposit is needed right now.`
     }
-    if (awaitingDeposit && paylinkStashed && record?.broadcast === false) {
-      return `@${pendingTag} is reserved. Your deposit address is being published; the payment claims once it is.`
-    }
     if (awaitingDeposit && paylinkStashed) {
       return `@${pendingTag} is reserved. This payment funds the account — confirm to claim it.`
     }
@@ -2328,7 +2403,10 @@ export function OnboardingScreen({
     !needsRefund &&
     !replaceUnfunded &&
     !broadcastSpent &&
-    (!record.broadcast || isRegistrationEscalated(record, nowMs) || pendingUrgent)
+    // A ticket's address is published by its claim, never by a retry.
+    ((!record.broadcast && !paylinkStashed) ||
+      isRegistrationEscalated(record, nowMs) ||
+      pendingUrgent)
   const retryButton = (className: string) =>
     retryWarranted && !pendingRefusal ? (
       <button
@@ -2448,18 +2526,18 @@ export function OnboardingScreen({
     }
   }
   /** A refusal card's way back to the creation sheet, opened on `openOn`, after another attempt. */
-  const backToSheet = (openOn?: SheetVariant) => {
+  const backToSheet = (openOn?: SignUpChoice) => {
     if (ticketHeldRef.current) return
     const refused = modalRefusal
     if (refused?.ticketAttemptId && !restartTicketAttempt(refused.ticketAttemptId)) return
     unheldGate.current = undefined
-    reopenRef.current = openOn ? { openOn, from: refused?.from } : undefined
+    reopenRef.current = openOn ? { openOn } : undefined
     retryRef.current?.()
   }
   // The in-app card with no retry: nothing more can be created in this browser.
   const inAppDeadEnd = inAppRefusal && !refusalRow?.retry
-  // The card's own action is the one bright one: Open in browser while this device has a browser
-  // to go to, or the phone where the card leads with it.
+  // The card's way out comes first: Open in browser or the app's own menu while this device has a
+  // browser to go to, or the phone where the card leads with it.
   const ctaStyle =
     (inAppRefusal && currentOpenInBrowserHref(window.location.href)) ||
     (step === "create" && modalRefusal && leadsWithPhone(modalRefusal))
@@ -2517,7 +2595,7 @@ export function OnboardingScreen({
           error={modalRefusal}
           // The sheet's own button is the in-app card's retry: it also restarts an interrupted
           // payment-link signup.
-          onRetry={inAppRefusal ? undefined : () => backToSheet(variantFor(modalRefusal.route))}
+          onRetry={inAppRefusal ? undefined : () => backToSheet(retryChoiceFor(modalRefusal))}
           onPhone={() => backToSheet("phone")}
           busy={modalBusy}
           reportContext="onboarding"
@@ -2557,31 +2635,6 @@ export function OnboardingScreen({
     !resumingTicket &&
     !isTicketSignupCreating(ticketAttempt) &&
     currentDevicePosture() === "laptop"
-  // The sheet names the device the passkey can live on from the browser's own answers, the ones
-  // the gate will probe again before the ceremony. Its routes wait for both, so a phone pick is
-  // never turned into a key after the tap, and the sheet never swaps variants under the user.
-  const [sheetReach, setSheetReach] = useState<PhoneReach>()
-  const [sheetCreation, setSheetCreation] = useState<LaptopCreation>()
-  useEffect(() => {
-    if (!ticketSheet) return
-    const service = getAuthService()
-    let live = true
-    Promise.resolve(service?.probePhoneReach?.())
-      .then((reach) => reach ?? "unknown")
-      .catch((): PhoneReach => "unknown")
-      .then((reach) => {
-        if (live) setSheetReach(reach)
-      })
-    Promise.resolve(service?.probeLaptopCreation?.())
-      .then((creation) => creation ?? PHONE_CREATION)
-      .catch(() => PHONE_CREATION)
-      .then((creation) => {
-        if (live) setSheetCreation(creation)
-      })
-    return () => {
-      live = false
-    }
-  }, [ticketSheet])
   // What the payment link's signup keeps and what the account costs, before the passkey is made:
   // the claim on Home commits to this split with no review of its own, so the signup waits for
   // the split to be priced and refuses a payment that cannot cover the account.
@@ -2590,6 +2643,9 @@ export function OnboardingScreen({
     !!ticketStash &&
     (paylinkQuote === undefined || paylinkQuote.tagWaived === undefined)
   const ticketUncovered = fromPaylink && !!ticketStash && paylinkQuote?.covers === false
+  // The cut and the sweep fee price the split; while either is unread the hold says so.
+  const ticketFeeUnread =
+    fromPaylink && !!ticketStash && (sweepDeductions === undefined || relayerFee === undefined)
   // A new passkey spends the ticket next, so it needs the note at or above the threshold. A bound
   // account resumes what it committed; its redeem checks the live threshold before spending.
   const ticketThreshold =
@@ -2636,6 +2692,21 @@ export function OnboardingScreen({
             This payment cannot cover the account deposit.
           </p>
         )}
+        {ticketFeeUnread && chainReads.retrying && (
+          <p className="ww-invite__checking">Still checking the network fee…</p>
+        )}
+        {ticketFeeUnread && chainReads.exhausted && (
+          <p className="ww-invite-modal-error" role="alert">
+            Couldn&apos;t check the network fee.{" "}
+            <button
+              type="button"
+              className="zkm-btn-reset ww-invite__link"
+              onClick={chainReads.retryNow}
+            >
+              Try again
+            </button>
+          </p>
+        )}
       </>
     ) : undefined
   const ticketSplit = ticketRows && (
@@ -2645,6 +2716,7 @@ export function OnboardingScreen({
           amount={ticketAmount}
           tokenDecimals={tokenDecimalsForNetwork(config.network)}
           tokenSymbol={WALLET_TOKEN_SYMBOL}
+          senderTag={ticketStash?.senderTag}
         />
       )}
       {ticketRows}
@@ -2683,7 +2755,7 @@ export function OnboardingScreen({
   const busyLabel =
     createBusyPhase === "claim"
       ? fromPaylink
-        ? "Using your paylink…"
+        ? paylinkSignupLabel(signupStage, handle)
         : "Preparing deposit address…"
       : resumingTicket
       ? "Confirming with your passkey…"
@@ -2692,30 +2764,40 @@ export function OnboardingScreen({
       : "Creating your passkey…"
   // A drawn tag's passkey sheet stays up, its button spinning, until Home opens on the account.
   const draftBusy = !!draftTag && termsBusy && gateState.kind !== "awaiting-action"
+  // Only while the passkey creation itself runs: not the browser check, a ticket's sign-in or
+  // the claim work after the passkey exists.
+  const runningWarning =
+    createBusyPhase === "passkey" && gateState.kind === "idle" && !resumingTicket
+      ? creationWarning
+      : undefined
   // Cancel closes the sheet; a link's signup keeps its own way back.
   const termsActions =
     termsBusy && gateState.kind === "awaiting-action" ? (
-      <GateStep state={gateState} details={ticketSplit} tag={handle} />
+      <GateStep state={gateState} details={ticketSplit} tag={handle} onPick={setCreationWarning} />
     ) : draftBusy ? (
-      <PhoneSteps reach="unknown" busy={busyLabel} tag={handle} onChoose={() => {}} />
+      <PhoneSteps
+        reach="unknown"
+        busy={busyLabel}
+        warning={runningWarning}
+        tag={handle}
+        onChoose={() => {}}
+      />
     ) : termsBusy || inAppWait ? (
-      <OnboardingSpinnerBody label={busyLabel} />
+      <OnboardingSpinnerBody label={busyLabel} warning={runningWarning} />
     ) : (refusalRow && !refusalKeepsActions) || inAppCard ? null : ticketSheet ? (
       // A refusal or the in-app card leaves only what the card itself offers.
-      <PhoneSteps
-        reach={sheetReach ?? "unknown"}
-        creation={sheetCreation}
-        loading={!sheetReach || !sheetCreation}
+      <TicketSheet
         details={ticketSplit}
         tag={handle}
         disabled={!passkeysSupported() || ticketHeld}
-        onChoose={(hints, from) => {
-          unheldGate.current = { route: routeForHints(hints), from }
+        onChoose={(choice, supported, warning) => {
+          unheldGate.current = { choice, supported }
+          setCreationWarning(warning)
           leaveTerms(false)
         }}
       />
     ) : (
-      <div className="ww-deposit-actions">
+      <div className={fromPaylink ? "ww-deposit-actions ww-sheet__actions" : "ww-deposit-actions"}>
         <PrimaryGradientButton
           title={
             fromPaylink
@@ -2765,14 +2847,8 @@ export function OnboardingScreen({
     !registrationsPaused &&
     !!record &&
     gateState.kind !== "awaiting-action"
-  // A payment link funds the address instead, so the pending step claims into it: that needs it
-  // published too.
-  useOweRegistrationBroadcast(
-    mock ? null : record,
-    pendingAddressShown ||
-      (step === "pending" && paylinkPending && !quoteMismatch && !needsRefund && !replaceUnfunded),
-    { confirmed: true },
-  )
+  // A payment link funds the address instead: its claim on this tab publishes it.
+  useOweRegistrationBroadcast(mock ? null : record, pendingAddressShown, { confirmed: true })
 
   // The terms and passkey sheet close like their X: outside, Escape, or the X itself.
   const sheetClose =
@@ -2851,6 +2927,7 @@ export function OnboardingScreen({
             amount: ticketAmount,
             tokenDecimals: tokenDecimalsForNetwork(config.network),
             tokenSymbol: WALLET_TOKEN_SYMBOL,
+            senderTag: ticketStash?.senderTag,
           }}
           initialHandle={handle || undefined}
           busy={inviteBusy}
@@ -2946,6 +3023,7 @@ export function OnboardingScreen({
               {gateState.kind === "awaiting-action" && (
                 <GateStep
                   state={gateState}
+                  onPick={setCreationWarning}
                   onCancel={() => {
                     markAttempts("userCancelled", true)
                     cancelGate()
@@ -3060,10 +3138,7 @@ export function OnboardingScreen({
                     <PrimaryGradientButton
                       title="Claim your payment"
                       isDisabled={
-                        busy ||
-                        paylinkQuote === undefined ||
-                        paylinkQuote.covers === false ||
-                        record?.broadcast === false
+                        busy || paylinkQuote === undefined || paylinkQuote.covers === false
                       }
                       onClick={() => void settlePendingPaylink()}
                     />
@@ -3132,6 +3207,11 @@ export function OnboardingScreen({
           onChooseOwn={() => setPickingName(true)}
           onCreate={createChosenAccount}
           onReroll={rerollDrawnTag}
+          onBack={() => {
+            setChosenTag(undefined)
+            // WalletEntryGate sends a visitor with no drawn tag and no identity to the landing.
+            setDrawnOfferTag(undefined)
+          }}
         />
       ) : freshStart ? (
         <CreateWalletStep

@@ -24,7 +24,7 @@ import {
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { shortAddr, usdBalance, usdFigure } from "../../ui/format"
+import { usdBalance, usdFigure, shortL1Addr } from "../../ui/format"
 import { useCopy } from "../../ui/hooks"
 import { DepositFromWalletModal } from "../deposit/DepositFromWalletModal"
 import { DepositQrSheet } from "../deposit/DepositQrSheet"
@@ -72,12 +72,15 @@ export function ExternalWalletPayModal({
   result,
   onClose,
   onFeeChanged,
+  onPaid,
 }: {
   packet: RequestInlinePacket
   result: AccountlessResolveResult
   onClose: () => void
   /** The deposit fee moved under a send; the caller quotes again. */
   onFeeChanged: () => void
+  /** The payment confirmed on Ethereum. */
+  onPaid?: () => void
 }) {
   const config = getConfig()
   const { copied, copy } = useCopy()
@@ -302,7 +305,7 @@ export function ExternalWalletPayModal({
                   onClick={copyAddress}
                   title={result.sipaAddress}
                 >
-                  {shortAddr(result.sipaAddress)}
+                  {shortL1Addr(result.sipaAddress)}
                   <Icon name={copied ? "check" : "copy"} size={16} />
                 </button>
               </div>
@@ -400,6 +403,7 @@ export function ExternalWalletPayModal({
           onApproving={async (submission) => holdPayment(config.network, payee, submission)}
           onNotApproved={(submission) => clearPayment(config.network, payee, submission)}
           onFeeChanged={onFeeChanged}
+          onConfirmed={onPaid}
         />
       )}
 

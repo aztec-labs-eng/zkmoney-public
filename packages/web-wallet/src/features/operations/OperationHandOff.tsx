@@ -4,7 +4,16 @@
  * flow's operation starts proving (a flow with no ceremony), or when the operation leaves this
  * page. A flow that fails, or a ceremony that fails, stays so its screen can say why.
  */
-import { useCallback, useEffect, useReducer, useRef, useState, type ReactNode } from "react"
+import {
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useReducer,
+  useRef,
+  useState,
+  type ReactNode,
+  type Ref,
+} from "react"
 import { provingProgress } from "@obsidion/proving-progress"
 import type { OperationRecord } from "@obsidion/front-core"
 import { PayWorking, type PayWorkingBeat } from "../contacts/PayWorking"
@@ -12,9 +21,16 @@ import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { flowCopy } from "./operationCopy"
 import { currentOperation, getOperationStore } from "./operations"
 
+export interface OperationHandOffHandle {
+  /** Leave now, as the hand-off would: the bell carries the operation, which runs on. */
+  leave(): void
+}
+
 export interface OperationHandOffProps {
   /** Leave the flow's surface. Called at most once. */
   onLeave: () => void
+  /** For a surface whose own close leaves the same way. */
+  ref?: Ref<OperationHandOffHandle>
   /** Offered on the working beat while the flow can still honour it. */
   onCancel?: () => void
   /**
@@ -25,9 +41,11 @@ export interface OperationHandOffProps {
   renderWorking?: (beat: PayWorkingBeat, label?: string, hint?: ReactNode) => ReactNode
   /**
    * `sent` holds the beat through the proof, for a flow whose next screen would compete with it:
-   * it leaves once the operation is sent.
+   * it leaves once the operation is sent. `prepared` holds it through every ceremony and proof the
+   * flow asks for, until `prepared` is set.
    */
-  until?: "handoff" | "sent"
+  until?: "handoff" | "sent" | "prepared"
+  prepared?: boolean
 }
 
 /** Settled, or `sent` and released: the chain has it, and nothing is left for this page to show. */
@@ -40,6 +58,8 @@ export function OperationHandOff({
   onCancel,
   renderWorking,
   until = "handoff",
+  prepared = false,
+  ref,
 }: OperationHandOffProps) {
   const [beat, setBeat] = useState<PayWorkingBeat>("preparing")
   const [, refresh] = useReducer((n: number) => n + 1, 0)
@@ -54,6 +74,7 @@ export function OperationHandOff({
     if (rootId.current) void store.markHandedOff(rootId.current).catch(() => {})
     leaveRef.current()
   }, [])
+  useImperativeHandle(ref, () => ({ leave }), [leave])
 
   // The flow's operation is the root one running when this mounts, or the first to start after.
   useEffect(() => {
@@ -61,6 +82,11 @@ export function OperationHandOff({
     const check = () => {
       rootId.current ??= currentOperation(store.list())?.operationId
       const root = rootId.current ? store.get(rootId.current) : null
+      if (until === "prepared") {
+        if (root && leftPage(root, store.isLive(root.operationId))) leave()
+        else refresh()
+        return
+      }
       if (until === "sent") {
         if (root?.state === "sent" || root?.state === "settled") return leave()
         if (root?.provingStartedAt !== undefined) setBeat("proving")
@@ -80,11 +106,15 @@ export function OperationHandOff({
   }, [leave, until])
 
   useEffect(() => {
+    if (until === "prepared" && prepared) leave()
+  }, [leave, until, prepared])
+
+  useEffect(() => {
     const onStart = () => setBeat("signing")
     const onEnd = (e: { failed?: boolean }) => {
       if (e.failed) return
-      if (until === "sent") setBeat("proving")
-      else leave()
+      if (until === "handoff") leave()
+      else setBeat("proving")
     }
     provingProgress.on("signing-start", onStart)
     provingProgress.on("signing-end", onEnd)

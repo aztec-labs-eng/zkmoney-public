@@ -399,7 +399,8 @@ describe("Modal", () => {
     })
 
     it("leaves sheets modal when the browser answers the request itself", async () => {
-      const get = Promise.resolve.bind(Promise, null)
+      // A real native: it prints its own name, as the browser's method does.
+      const get = Reflect.get
       Object.defineProperty(navigator, "credentials", {
         value: { get, create: vi.fn() },
         configurable: true,

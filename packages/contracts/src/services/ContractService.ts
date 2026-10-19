@@ -59,6 +59,18 @@ export interface ContractChain {
   pxe?: PXE
 }
 
+/** A class id per artifact object: hashing a class takes tens of ms, and a link read asks repeatedly. */
+const classIds = new WeakMap<ContractArtifact, Promise<string>>()
+function classIdOf(artifact: ContractArtifact): Promise<string> {
+  let id = classIds.get(artifact)
+  if (!id) {
+    id = getContractClassFromArtifact(artifact).then((contractClass) => contractClass.id.toString())
+    classIds.set(artifact, id)
+    id.catch(() => classIds.delete(artifact))
+  }
+  return id
+}
+
 /**
  * Simplified service for managing contract artifacts and instances
  */
@@ -621,8 +633,7 @@ export class ContractService {
       if (!classId) throw new Error("Historical artifact lookup requires a pinned contract class")
       if (address) {
         const cached = await this.tryGetArtifactFromPXE(address, chain.pxe)
-        if (cached && (await getContractClassFromArtifact(cached)).id.toString() === classId)
-          return cached
+        if (cached && (await classIdOf(cached)) === classId) return cached
       }
       return this.artifactForClass(classId, resolvedName)
     }
@@ -650,16 +661,15 @@ export class ContractService {
   ): Promise<ContractArtifact> {
     if (contractName) {
       const override = this.artifactOverrides.get(contractName)
-      if (override && (await getContractClassFromArtifact(override)).id.toString() === classId)
-        return override
+      if (override && (await classIdOf(override)) === classId) return override
       const bundled = await getHardcodedArtifact(contractName, this.options)
-      if ((await getContractClassFromArtifact(bundled)).id.toString() === classId) return bundled
+      if ((await classIdOf(bundled)) === classId) return bundled
     }
     if (!this.options.resolveClassArtifact) {
       throw new Error(`No artifact for contract class ${classId}`)
     }
     const artifact = await this.options.resolveClassArtifact(classId)
-    if ((await getContractClassFromArtifact(artifact)).id.toString() !== classId)
+    if ((await classIdOf(artifact)) !== classId)
       throw new Error(`Historical artifact differs from class ${classId}`)
     return artifact
   }
@@ -691,8 +701,8 @@ export class ContractService {
     const override = this.artifactOverrides.get(contractName)
     const bundled = await getHardcodedArtifact(contractName, this.options)
     const ids = [
-      ...(override ? [(await getContractClassFromArtifact(override)).id.toString()] : []),
-      (await getContractClassFromArtifact(bundled)).id.toString(),
+      ...(override ? [await classIdOf(override)] : []),
+      await classIdOf(bundled),
       this.config?.contracts[contractName]?.classId,
       ...((await this.options.listClassIds?.(bundled.name)) ?? []),
     ]

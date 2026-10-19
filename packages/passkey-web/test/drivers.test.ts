@@ -14,9 +14,10 @@ import { bytesToBase64Url, bytesToHex } from "../src/ceremony/bytes.js"
 import type { PasskeyHint } from "../src/ceremony/passkeyCeremony.js"
 import { UNKNOWN_PROVENANCE, decodeUserHandleProvenance } from "../src/ceremony/userHandle.js"
 import type { DevicePosture } from "../src/policy/devicePosture.js"
-import type { LocalManager } from "../src/policy/laptopCreation.js"
+import { type LocalManager, WITHDRAWN, laptopCreationFor } from "../src/policy/laptopCreation.js"
 import {
   type ObservedCeremony,
+  type PasskeyCreationOptions,
   runPasskeyAssertion,
   renamePasskey,
   runPasskeyCreation,
@@ -27,9 +28,13 @@ import { type UserAgentInfo, parseUserAgent } from "../src/policy/userAgentInfo.
 import {
   PhoneRequiredError,
   RelatedOriginPasskeyError,
+  UnsupportedProviderError,
   passkeyWritten,
 } from "../src/policy/passkeyErrors.js"
+import { bitwardenLineFor } from "../src/policy/refusalCopy.js"
+import { trustsAttachmentLabel } from "../src/policy/passkeyCapabilities.js"
 import { CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID } from "../src/policy/passkeyProviders.js"
+import { passkeyRouteFor } from "../src/policy/passkeyTelemetry.js"
 import { hmac } from "@noble/hashes/hmac"
 import { sha256 as nobleSha256 } from "@noble/hashes/sha256"
 import {
@@ -56,7 +61,7 @@ function create(
     signal?: AbortSignal
     userAgent?: UserAgentInfo
     laptopHints?: readonly PasskeyHint[] | null
-    localCreation?: { managers: readonly LocalManager[]; appleWithdrawn?: boolean }
+    localCreation?: PasskeyCreationOptions["localCreation"]
     extraProviders?: readonly string[]
   } = {},
 ) {
@@ -67,6 +72,8 @@ function create(
     rpName: "zk.money",
     userName: "@alice",
     challengeForChained: () => CHALLENGE,
+    // Every local row but Firefox's Mac row is on a browser whose label is trusted.
+    ...(extra.localCreation ? { attachmentLabelTrusted: true } : {}),
     ...extra,
   })
   return { ceremony, run }
@@ -98,9 +105,10 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     expect(bytesToHex(result.prfOutput)).toBe(
       bytesToHex(ceremony.prfFor(result.created.credentialId, "second")),
     )
+    // A key named after this computer, so 1Password's extension stands aside.
     expect(ceremony.creates[0]).toMatchObject({
       authenticatorAttachment: "platform",
-      hints: ["client-device"],
+      hints: ["client-device", "security-key"],
     })
     expect(ceremony.creates[0]!.timeoutMs).toBeUndefined()
     expect(ceremony.creates[0]!.prfSecondSalt).toHaveLength(32)
@@ -143,29 +151,35 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     expect(seam.ceremony.creates[0]!.authenticatorAttachment).toBe("platform")
   })
 
-  it("keeps the follow-up prompt on this device, pinned to the passkey just made", async () => {
+  it("keeps the follow-up prompt on this device with the creation's hints, pinned to the passkey just made", async () => {
     const { ceremony, run } = local({ manager: "gpm", aaguid: GPM_AAGUID, prfAtCreate: false })
     const result = await run
     expect(result.slot).toBe("second")
     expect(result.chained).toBeDefined()
     expect(ceremony.assertRequests[0]).toMatchObject({
-      hints: ["client-device"],
+      hints: ["client-device", "security-key"],
       credentialIds: [result.created.credentialId],
     })
+    const given = create(
+      "laptop",
+      { route: "local", aaguid: GPM_AAGUID, prfAtCreate: false },
+      { localCreation: macChrome, laptopHints: ["client-device"] },
+    )
+    await given.run
+    expect(given.ceremony.assertRequests[0]!.hints).toEqual(["client-device"])
     const seam = local({ aaguid: GPM_AAGUID, prfAtCreate: false }, belowFloor, null)
     await seam.run
     expect(seam.ceremony.assertRequests[0]!.hints).toBeUndefined()
   })
 
-  it("refuses Apple where the row leaves it out, with the floor or the withdrawal in the copy", async () => {
+  it("refuses Apple where the row leaves it out, as refused here or as withdrawn", async () => {
     const floor = local({ manager: "icloud", aaguid: APPLE_ICLOUD_AAGUID }, belowFloor)
     await expect(floor.run).rejects.toThrow(
       expect.objectContaining({
         name: "LaptopPasskeyRefusedError",
         kind: "apple",
-        message: expect.stringMatching(
-          /only on macOS 15\.7\.5 or a later macOS 15, or macOS 26\.4\.1 or later/,
-        ),
+        appleRefusedHere: true,
+        message: expect.stringContaining("on macOS before 15"),
       }),
     )
     // The row refuses an Apple answer before any key material is read.
@@ -183,8 +197,39 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     await expect(withdrawn.run).rejects.toThrow(
       expect.objectContaining({
         kind: "apple",
-        message: expect.not.stringMatching(/15\.7\.5|26\.4\.1/),
+        appleRefusedHere: false,
+        message: expect.stringContaining("isn't available for a wallet on this browser yet"),
       }),
+    )
+  })
+
+  it("refuses an Apple answer with no key as Apple, and keeps NoPrfError for another manager", async () => {
+    const safariRow: Local = { managers: ["apple", "1password"] }
+    const apple = local(
+      { manager: "icloud", aaguid: APPLE_ICLOUD_AAGUID, prfAtCreate: false, prfAtAssert: false },
+      safariRow,
+    )
+    await expect(apple.run).rejects.toThrow(
+      expect.objectContaining({
+        name: "LaptopPasskeyRefusedError",
+        kind: "apple",
+        managers: ["1password"],
+        appleRefusedHere: true,
+      }),
+    )
+    const alone = local(
+      { manager: "icloud", aaguid: APPLE_ICLOUD_AAGUID, prfAtCreate: false, prfAtAssert: false },
+      { managers: ["apple"] },
+    )
+    await expect(alone.run).rejects.toThrow(
+      expect.objectContaining({ kind: "apple", managers: [] }),
+    )
+    const onePassword = local(
+      { manager: "1password", aaguid: ONEPASSWORD_AAGUID, prfAtCreate: false, prfAtAssert: false },
+      safariRow,
+    )
+    await expect(onePassword.run).rejects.toThrow(
+      expect.objectContaining({ name: "NoPrfError", manager: "1password" }),
     )
   })
 
@@ -195,6 +240,225 @@ describe("runPasskeyCreation on the laptop's own route", () => {
         expect.objectContaining({ name: "LaptopPasskeyRefusedError", kind: "unnamed" }),
       )
       expect(ceremony.assertRequests).toHaveLength(0)
+    }
+  })
+
+  describe("Firefox's Mac row: Apple Passwords and 1Password, behind a label that is not trusted", () => {
+    const firefox = (
+      fake: FakeCeremonyOptions,
+      managers: LocalManager[] = ["apple", "1password"],
+    ) =>
+      create(
+        "laptop",
+        { route: "local", ...fake },
+        { localCreation: { managers }, attachmentLabelTrusted: false },
+      )
+
+    it("binds an Apple or a 1Password answer that brings its key, from the local slot", async () => {
+      const answers = [
+        { manager: "icloud", aaguid: APPLE_ICLOUD_AAGUID },
+        { manager: "1password", aaguid: ONEPASSWORD_AAGUID },
+      ] as const
+      for (const answer of answers) {
+        const { ceremony, run } = firefox(answer)
+        const result = await run
+        expect(result.slot).toBe("second")
+        expect(bytesToHex(result.prfOutput)).toBe(
+          bytesToHex(ceremony.prfFor(result.created.credentialId, "second")),
+        )
+        expect(ceremony.assertRequests).toHaveLength(0)
+      }
+    })
+
+    it("refuses a zero id as unnamed, and another manager's id as unsupported", async () => {
+      await expect(firefox({ aaguid: ZERO_AAGUID }).run).rejects.toThrow(
+        expect.objectContaining({ kind: "unnamed" }),
+      )
+      await expect(firefox({ aaguid: GPM_AAGUID }).run).rejects.toThrow(
+        named("UnsupportedProviderError"),
+      )
+    })
+
+    it("never asks again for an Apple answer without its key: the Apple refusal, nothing bound", async () => {
+      const { ceremony, run } = firefox({
+        manager: "icloud",
+        aaguid: APPLE_ICLOUD_AAGUID,
+        prfAtCreate: false,
+        // A follow-up would be answered by this Mac's copy with a different value.
+        divergent: true,
+      })
+      await expect(run).rejects.toThrow(
+        expect.objectContaining({
+          name: "LaptopPasskeyRefusedError",
+          kind: "apple",
+          managers: ["1password"],
+        }),
+      )
+      expect(ceremony.assertRequests).toHaveLength(0)
+    })
+
+    it("treats a trusted label on a browser that mislabels cross-device answers as untrusted", async () => {
+      const { ceremony, run } = create(
+        "laptop",
+        {
+          route: "local",
+          manager: "icloud",
+          aaguid: APPLE_ICLOUD_AAGUID,
+          prfAtCreate: false,
+          divergent: true,
+        },
+        {
+          localCreation: { managers: ["apple", "1password"] },
+          attachmentLabelTrusted: true,
+          misreportsCrossDevice: true,
+        },
+      )
+      await expect(run).rejects.toThrow(
+        expect.objectContaining({ kind: "apple", managers: ["1password"] }),
+      )
+      expect(ceremony.assertRequests).toHaveLength(0)
+    })
+
+    it("refuses a 1Password answer without its key, with no follow-up and no browser named", async () => {
+      const { ceremony, run } = firefox({
+        manager: "1password",
+        aaguid: ONEPASSWORD_AAGUID,
+        prfAtCreate: false,
+      })
+      await expect(run).rejects.toThrow(
+        expect.objectContaining({
+          name: "IncompleteCreationError",
+          kind: "unverified",
+          message: expect.not.stringMatching(/Safari|Chrome|Firefox/),
+        }),
+      )
+      expect(ceremony.assertRequests).toHaveLength(0)
+    })
+
+    it("lets a security key's follow-up run, pinned to the key", async () => {
+      const { ceremony, run } = create(
+        "laptop",
+        {
+          route: "cross-device",
+          aaguid: YUBIKEY_5_USB_A_AAGUID,
+          transports: ["usb"],
+          prfAtCreate: false,
+        },
+        { localCreation: { managers: ["apple", "1password"] }, attachmentLabelTrusted: false },
+      )
+      const result = await run
+      expect(result.securityKey).toBe(true)
+      expect(ceremony.assertRequests[0]).toMatchObject({ transports: ["usb"] })
+    })
+
+    it("a trusted label keeps the follow-up for the same Apple answer on Chromium's row", async () => {
+      const { ceremony, run } = create(
+        "laptop",
+        { route: "local", manager: "icloud", aaguid: APPLE_ICLOUD_AAGUID, prfAtCreate: false },
+        { localCreation: { managers: ["apple", "gpm"] }, attachmentLabelTrusted: true },
+      )
+      expect((await run).chained).toBeDefined()
+      expect(ceremony.assertRequests).toHaveLength(1)
+    })
+  })
+
+  describe("Safari's row: Apple must bring its key with the creation", () => {
+    const safari = (fake: FakeCeremonyOptions) =>
+      create(
+        "laptop",
+        { route: "local", prfAtCreate: false, ...fake },
+        { localCreation: { managers: ["apple", "1password"], appleKeyAtCreation: true } },
+      )
+
+    it("never asks again for an Apple answer without its key: the Apple refusal, nothing bound", async () => {
+      const { ceremony, run } = safari({
+        manager: "icloud",
+        aaguid: APPLE_ICLOUD_AAGUID,
+        divergent: true,
+      })
+      await expect(run).rejects.toThrow(
+        expect.objectContaining({ kind: "apple", managers: ["1password"] }),
+      )
+      expect(ceremony.assertRequests).toHaveLength(0)
+    })
+
+    it("still asks again for 1Password's answer, and binds an Apple answer that brings its key", async () => {
+      const onePassword = safari({ manager: "1password", aaguid: ONEPASSWORD_AAGUID })
+      expect((await onePassword.run).chained).toBeDefined()
+      const apple = safari({ manager: "icloud", aaguid: APPLE_ICLOUD_AAGUID, prfAtCreate: true })
+      expect((await apple.run).slot).toBe("second")
+      expect(apple.ceremony.assertRequests).toHaveLength(0)
+    })
+  })
+
+  describe("Firefox's Windows and Linux rows: 1Password alone, behind a trusted label", () => {
+    /** The driver's options as the wallet builds them from the row, once a gate admits it. */
+    const firefox = (userAgent: string, fake: FakeCeremonyOptions) => {
+      const ua = parseUserAgent({ userAgent })
+      const admitted = { ...WITHDRAWN, windowsFirefox: [], linuxFirefox: [] }
+      const creation = laptopCreationFor(ua, admitted)
+      if (!creation.local) throw new Error("no local row")
+      return create(
+        "laptop",
+        { route: "local", ...fake },
+        {
+          userAgent: ua,
+          localCreation: { managers: creation.managers },
+          attachmentLabelTrusted: trustsAttachmentLabel(ua),
+        },
+      )
+    }
+    const onePassword = { manager: "1password", aaguid: ONEPASSWORD_AAGUID } as const
+
+    for (const [os, userAgent, context] of [
+      [
+        "Windows",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0",
+        "windows_local",
+      ],
+      [
+        "Linux",
+        "Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0",
+        "laptop_other_local",
+      ],
+    ] as const) {
+      describe(os, () => {
+        it("binds 1Password's answer that brings its key, written as this computer's", async () => {
+          const { ceremony, run } = firefox(userAgent, onePassword)
+          const result = await run
+          expect(result.slot).toBe("second")
+          expect(ceremony.assertRequests).toHaveLength(0)
+          expect(
+            decodeUserHandleProvenance(ceremony.creds.get(result.created.credentialId)!.handle),
+          ).toEqual({ context, ...NO_CLAIMS })
+          expect(passkeyRouteFor("create", result.created)).toBe("same_device")
+        })
+
+        it("refuses another provider's id", async () => {
+          const windowsHello = "08987058-cadc-4b81-b6e1-30de50dcbe96"
+          for (const aaguid of [GPM_AAGUID, BITWARDEN, windowsHello]) {
+            await expect(firefox(userAgent, { aaguid }).run).rejects.toThrow(
+              named("UnsupportedProviderError"),
+            )
+          }
+        })
+
+        it("binds the follow-up's key for the same passkey, and refuses a follow-up with none", async () => {
+          const later = firefox(userAgent, { ...onePassword, prfAtCreate: false })
+          const result = await later.run
+          expect(result.chained?.credentialId).toBe(result.created.credentialId)
+          expect(bytesToHex(result.prfOutput)).toBe(
+            bytesToHex(later.ceremony.prfFor(result.created.credentialId, "second")),
+          )
+          const none = firefox(userAgent, {
+            ...onePassword,
+            prfAtCreate: false,
+            prfAtAssert: false,
+          })
+          await expect(none.run).rejects.toMatchObject({ name: "NoPrfError", manager: "1password" })
+          expect(none.ceremony.asserts).toHaveLength(1)
+        })
+      })
     }
   })
 
@@ -260,7 +524,10 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     const windowsChrome: Local = { managers: ["gpm", "1password"] }
     const silent = { prfAtCreate: false, prfAtAssert: false }
     // 1Password's Windows app in the Windows passkey window: its id, and no key material.
-    const app = local({ manager: "1password", aaguid: ONEPASSWORD_AAGUID, ...silent }, windowsChrome)
+    const app = local(
+      { manager: "1password", aaguid: ONEPASSWORD_AAGUID, ...silent },
+      windowsChrome,
+    )
     await expect(app.run).rejects.toMatchObject({ name: "NoPrfError", manager: "1password" })
     expect(app.ceremony.asserts).toHaveLength(1)
     const other = local({ manager: "gpm", aaguid: GPM_AAGUID, ...silent }, windowsChrome)
@@ -292,6 +559,21 @@ describe("runPasskeyCreation on the laptop's own route", () => {
       )
       expect(ceremony.assertRequests).toHaveLength(0)
     }
+    // Safari's row: a phone's Apple answer without its key, refused before any follow-up.
+    const phoneApple = create(
+      "laptop",
+      {
+        route: "cross-device",
+        aaguid: APPLE_ICLOUD_AAGUID,
+        transports: ["hybrid", "internal"],
+        prfAtCreate: false,
+      },
+      { localCreation: { managers: ["apple", "1password"] } },
+    )
+    await expect(phoneApple.run).rejects.toThrow(
+      expect.objectContaining({ name: "LaptopPasskeyRefusedError", kind: "not-local" }),
+    )
+    expect(phoneApple.ceremony.assertRequests).toHaveLength(0)
     const unreported = local({ attachment: null, aaguid: GPM_AAGUID })
     await expect(unreported.run).rejects.toThrow(
       expect.objectContaining({
@@ -301,8 +583,8 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     )
   })
 
-  it("refuses a follow-up answered by another device", async () => {
-    const { run } = create(
+  it("refuses a follow-up answered by another device, though its hints name a key", async () => {
+    const { ceremony, run } = create(
       "laptop",
       {
         route: "local",
@@ -315,6 +597,7 @@ describe("runPasskeyCreation on the laptop's own route", () => {
     await expect(run).rejects.toThrow(
       expect.objectContaining({ name: "LaptopPasskeyRefusedError", kind: "not-local" }),
     )
+    expect(ceremony.assertRequests[0]!.hints).toEqual(["client-device", "security-key"])
   })
 
   it("still takes a security key as itself", async () => {
@@ -1021,6 +1304,141 @@ describe("naming what answered a refused laptop sign-up", () => {
       })
       expect(ceremony.assertRequests).toHaveLength(1)
     }
+  })
+})
+
+describe("the line a Bitwarden answer's refusal adds on a laptop", () => {
+  const HOST = "wallet.test.zk.money"
+  const line = bitwardenLineFor(HOST)
+  const DASHLANE = "531126d6-e717-415c-9320-3d9aa6981239"
+  const trusted = { attachmentLabelTrusted: true }
+  const macChrome = { managers: ["apple", "gpm"] as const }
+  const unnamed = new PhoneRequiredError({ ceremony: "create" }).message
+  const unsupported = (providerName: string, localManagers?: readonly LocalManager[]) =>
+    new UnsupportedProviderError("manager", { providerName, keyOfferable: true, localManagers })
+      .message
+  const refusal = (run: Promise<unknown>): Promise<Error> =>
+    run.then(
+      () => {
+        throw new Error("expected a refusal")
+      },
+      (err: Error) => err,
+    )
+  /** A creation answered by a script, as an extension's is, or by the browser's own prompt. */
+  const answering = (extension: boolean) =>
+    vi.stubGlobal("navigator", {
+      credentials: { create: extension ? async () => null : Object.create },
+    })
+
+  beforeEach(() => {
+    vi.stubGlobal("location", { hostname: HOST })
+    answering(true)
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("ends the phone and key routes' refusal with it, naming this page's host", async () => {
+    for (const laptopHints of [undefined, ["security-key"] as const]) {
+      const err = await refusal(
+        create("laptop", { route: "local", aaguid: BITWARDEN }, { ...trusted, laptopHints }).run,
+      )
+      expect(err).toBeInstanceOf(PhoneRequiredError)
+      expect(err).toMatchObject({
+        name: "PhoneRequiredError",
+        providerName: "Bitwarden",
+        message: `${new PhoneRequiredError({ providerName: "Bitwarden" }).message} ${line}`,
+      })
+      expect(err.message).toContain(HOST)
+      expect(passkeyWritten(err)).toBe(true)
+    }
+  })
+
+  it("follows the id where the browser's label is untrusted and no manager is named", async () => {
+    const err = await refusal(
+      create("laptop", { route: "local", aaguid: BITWARDEN }, { attachmentLabelTrusted: false })
+        .run,
+    )
+    expect(err).toMatchObject({
+      name: "PhoneRequiredError",
+      providerName: undefined,
+      message: `${unnamed} ${line}`,
+    })
+  })
+
+  it("ends the provider refusal with it on this computer's route and off it", async () => {
+    const local = await refusal(
+      create("laptop", { route: "local", aaguid: BITWARDEN }, { localCreation: macChrome }).run,
+    )
+    expect(local).toBeInstanceOf(UnsupportedProviderError)
+    expect(local.message).toBe(`${unsupported("Bitwarden", macChrome.managers)} ${line}`)
+    expect(passkeyWritten(local)).toBe(true)
+    const offRoute = await refusal(
+      create("laptop", { route: "cross-device", aaguid: BITWARDEN }).run,
+    )
+    expect(offRoute).toMatchObject({
+      name: "UnsupportedProviderError",
+      message: `${unsupported("Bitwarden")} ${line}`,
+    })
+  })
+
+  it("ends Bitwarden's refusal of a related origin with it, though nothing was created", async () => {
+    const browserError = new Error("'rp.id' cannot be used with the current origin")
+    const refusedBy = (posture: DevicePosture, bitwarden: boolean) => {
+      const ceremony = new FakePasskeyCeremony({ route: "local" })
+      ceremony.create = async () => {
+        throw new RelatedOriginPasskeyError(browserError, { bitwarden })
+      }
+      return refusal(
+        runPasskeyCreation(ceremony, {
+          posture,
+          rpId: "auth.zk.money",
+          rpName: "zk.money",
+          userName: "@alice",
+          challengeForChained: () => CHALLENGE,
+        }),
+      )
+    }
+    const generic = new RelatedOriginPasskeyError().message
+    const onLaptop = await refusedBy("laptop", true)
+    expect(onLaptop).toBeInstanceOf(RelatedOriginPasskeyError)
+    expect(onLaptop).toMatchObject({ message: `${generic} ${line}`, cause: browserError })
+    expect(passkeyWritten(onLaptop)).toBe(false)
+    expect((await refusedBy("phone", true)).message).toBe(generic)
+    expect((await refusedBy("laptop", false)).message).toBe(generic)
+    answering(false)
+    expect((await refusedBy("laptop", true)).message).toBe(generic)
+  })
+
+  it("is not added on a phone", async () => {
+    const err = await refusal(create("phone", { route: "local", aaguid: BITWARDEN }).run)
+    expect(err).toMatchObject({
+      name: "UnsupportedProviderError",
+      message: unsupported("Bitwarden"),
+    })
+  })
+
+  it("is not added where no extension answers the page's creation", async () => {
+    answering(false)
+    const onPhoneRoute = await refusal(
+      create("laptop", { route: "local", aaguid: BITWARDEN }, trusted).run,
+    )
+    expect(onPhoneRoute.message).toBe(new PhoneRequiredError({ providerName: "Bitwarden" }).message)
+    const onLocalRoute = await refusal(
+      create("laptop", { route: "local", aaguid: BITWARDEN }, { localCreation: macChrome }).run,
+    )
+    expect(onLocalRoute.message).toBe(unsupported("Bitwarden", macChrome.managers))
+  })
+
+  it("is not added for another manager's id", async () => {
+    const onPhoneRoute = await refusal(
+      create("laptop", { route: "local", aaguid: DASHLANE }, trusted).run,
+    )
+    expect(onPhoneRoute.message).toBe(new PhoneRequiredError({ providerName: "Dashlane" }).message)
+    const onLocalRoute = await refusal(
+      create("laptop", { route: "local", aaguid: DASHLANE }, { localCreation: macChrome }).run,
+    )
+    expect(onLocalRoute.message).toBe(unsupported("Dashlane", macChrome.managers))
   })
 })
 
@@ -1766,6 +2184,45 @@ describe("runPasskeyAssertion", () => {
     expect(candidatesFrom(raw).second).toBeDefined()
     expect(ceremony.assertRequests[0]!.transports).toBeUndefined()
     expect(ceremony.assertRequests[0]!.hints).toBeUndefined()
+  })
+
+  describe("steered to the phone", () => {
+    async function steered(fake: FakeCeremonyOptions, localAllowed: boolean) {
+      const ceremony = new FakePasskeyCeremony(fake)
+      const created = await ceremony.create({
+        rpId: "localhost",
+        rpName: "zk.money",
+        userName: "@alice",
+        prfFirstSalt: new Uint8Array(32),
+      })
+      const result = runPasskeyAssertion(ceremony, {
+        posture: "laptop",
+        rpId: "localhost",
+        challenge: CHALLENGE,
+        credentialIds: [created.credentialId],
+        transports: ["internal", "hybrid"],
+        localAllowed,
+        steerToPhone: true,
+      })
+      return { ceremony, result }
+    }
+
+    it("sends the cross-device hints and drops this device's transport", async () => {
+      const { ceremony, result } = await steered({ route: "cross-device" }, true)
+      await result
+      expect(ceremony.assertRequests[0]!.hints).toEqual(["hybrid", "security-key"])
+      expect(ceremony.assertRequests[0]!.transports).toEqual(["hybrid"])
+    })
+
+    it("still admits this device's answer where the local route is allowed", async () => {
+      const { result } = await steered({ route: "local" }, true)
+      expect((await result).authenticatorAttachment).toBe("platform")
+    })
+
+    it("refuses this device's answer where it is not", async () => {
+      const { result } = await steered({ route: "local" }, false)
+      await expect(result).rejects.toThrow(named("PhoneRequiredError"))
+    })
   })
 
   it("waits for the observer before checking the route", async () => {
