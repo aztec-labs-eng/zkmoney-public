@@ -39,7 +39,8 @@ function fragmentFor(over: Partial<RequestInlinePacket> = {}): string {
   })
 }
 
-const { resolve, tagLookup, identity, portal, nodeIsDefault } = vi.hoisted(() => ({
+const { resolve, tagLookup, identity, portal, nodeIsDefault, fireEvent } = vi.hoisted(() => ({
+  fireEvent: vi.fn(),
   resolve: vi.fn(),
   tagLookup: vi.fn(),
   identity: { value: null as object | null },
@@ -47,6 +48,10 @@ const { resolve, tagLookup, identity, portal, nodeIsDefault } = vi.hoisted(() =>
   nodeIsDefault: { value: true },
 }))
 
+vi.mock("../src/lib/analytics", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/analytics")>()),
+  fireEvent,
+}))
 vi.mock("../src/features/contacts/registryResolution", () => ({
   resolveTagForCommit: (tag: string) => tagLookup(tag),
 }))
@@ -88,7 +93,9 @@ vi.mock("../src/features/requests/accountlessRequest", async (importOriginal) =>
 }))
 // The sheet pulls wagmi/RainbowKit; the landing is what these cover.
 vi.mock("../src/features/requests/ExternalWalletPayModal", () => ({
-  ExternalWalletPayModal: () => <div>pay-sheet</div>,
+  ExternalWalletPayModal: ({ onPaid }: { onPaid?: () => void }) => (
+    <button onClick={onPaid}>pay-sheet</button>
+  ),
 }))
 vi.mock("@obsidion/web-ds", () => ({
   AuroraBackground: () => null,
@@ -134,8 +141,14 @@ describe("RequestLandingScreen accountless landing", () => {
   }
   function SendProbe() {
     const { state } = useLocation()
-    const request = (state as { request?: { amount: number; link?: string } } | null)?.request
-    return <div data-testid="send">{`send-sheet ${request?.amount} ${request?.link}`}</div>
+    const request = (
+      state as { request?: { amount: number; link?: string; standing?: boolean } } | null
+    )?.request
+    return (
+      <div data-testid="send">{`send-sheet ${request?.amount} ${request?.link}${
+        request?.standing ? " standing" : ""
+      }`}</div>
+    )
   }
   function EnterProbe() {
     const { state } = useLocation()
@@ -145,6 +158,7 @@ describe("RequestLandingScreen accountless landing", () => {
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     resolve.mockReset()
+    fireEvent.mockReset()
     tagLookup.mockReset()
     tagLookup.mockImplementation(async (tag: string) => ({
       status: tag === "nobody" ? "notFound" : "resolved",
@@ -353,7 +367,9 @@ describe("RequestLandingScreen accountless landing", () => {
     )
     await render(fragmentFor(), true)
     expect(resolve).toHaveBeenCalledTimes(1)
-    expect(container.textContent).toContain("RPC unavailable")
+    // The raw failure goes to the console, never the page.
+    expect(container.textContent).not.toContain("RPC unavailable")
+    expect(container.textContent).toContain("Couldn't prepare a payment address.")
     await click("Try again")
     expect(resolve).toHaveBeenCalledTimes(2)
     expect(button("Pay with an Ethereum wallet").disabled).toBe(true)
@@ -557,6 +573,7 @@ describe("RequestLandingScreen accountless landing", () => {
     ])("tells %s when nobody holds the tag", async (_who, id) => {
       identity.value = id
       await render("", false, undefined, "/pay/nobody")
+      expect(container.textContent).toContain("Pay @nobody")
       expect(container.textContent).toContain("no zk.money account with this name")
       expect(container.textContent).not.toContain("send-sheet")
       expect(container.textContent).not.toContain("Pay with an Ethereum wallet")
@@ -586,8 +603,49 @@ describe("RequestLandingScreen accountless landing", () => {
       identity.value = {}
       await render("", false, undefined, "/pay/river")
       expect(container.querySelector('[data-testid="send"]')?.textContent).toBe(
-        "send-sheet 0 /pay/river",
+        "send-sheet 0 /pay/river standing",
       )
+    })
+
+    const opens = () => fireEvent.mock.calls.filter(([name]) => name === "request_opened")
+
+    it("reports its open once per page load, and its Ethereum payment, as pay_page", async () => {
+      resolve.mockResolvedValue({
+        sipaAddress: SIPA,
+        decimals: 6,
+        feeAtomic: 500_000n,
+        grossAtomic: 500_000n,
+        paymentUri: "ethereum:zoe",
+      })
+      await render("", false, undefined, "/pay/zoe")
+      act(() => root.unmount())
+      root = createRoot(container)
+      await render("", false, undefined, "/pay/zoe")
+      expect(opens()).toEqual([["request_opened", { source: "pay_page", amount_bucket: "any" }]])
+
+      await click("Pay with an Ethereum wallet")
+      await click("pay-sheet")
+      expect(fireEvent).toHaveBeenCalledWith("request_paid", {
+        source: "pay_page",
+        route: "ethereum",
+        amount_bucket: "any",
+      })
+    })
+
+    it("reports nothing to the payee on their own page", async () => {
+      identity.value = { handle: "yan" }
+      resolve.mockResolvedValue({
+        sipaAddress: SIPA,
+        decimals: 6,
+        feeAtomic: 500_000n,
+        grossAtomic: 500_000n,
+        paymentUri: "ethereum:yan",
+      })
+      await render("", false, undefined, "/pay/yan")
+      await click("Pay with an Ethereum wallet")
+      await click("pay-sheet")
+      expect(fireEvent).not.toHaveBeenCalledWith("request_opened", expect.anything())
+      expect(fireEvent).not.toHaveBeenCalledWith("request_paid", expect.anything())
     })
   })
 })

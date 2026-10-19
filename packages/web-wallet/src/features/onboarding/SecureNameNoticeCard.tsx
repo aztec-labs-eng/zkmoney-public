@@ -30,7 +30,13 @@ import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { openTicketClaimReview } from "../paylink/claimPrompt"
 import { peekClaimStash } from "../paylink/claimStash"
-import { useClaimRunning } from "../paylink/runningClaims"
+import {
+  useAutoClaimGaveUp,
+  useAutoClaimHold,
+  useClaimRunning,
+  type AutoClaimHold,
+} from "../paylink/runningClaims"
+import { decodeLink } from "../paylink/sponsoredPaylink"
 import { ticketActivation } from "../paylink/ticketContinuation"
 import { getWithdrawalStore } from "../withdraw/withdrawGateway"
 import { sipaProcessingObserver, useSipaProcessing } from "../deposit/sipaProcessing"
@@ -54,8 +60,25 @@ import {
 } from "./registrationTerms"
 import { REGISTRATIONS_PAUSED_NOTICE } from "./onboardingErrorCopy"
 import { registrationRecoveryNeeded, useRegistrationRefunded } from "./registrationQuoteRecovery"
+import { reportRegistrationLapsed } from "./registrationFunnel"
 
 const CLOCK_MS = 60_000
+
+/** A direct link, which Home claims without a tap; an email link's sign-in needs one. */
+function directLink(fragment: string): boolean {
+  try {
+    return decodeLink(fragment).flavor === "direct"
+  } catch {
+    return false
+  }
+}
+
+/** What the hero says while Home's own claim of the link waits to start. */
+function holdBody(hold: AutoClaimHold): string {
+  return hold === "preparing"
+    ? "Getting your wallet ready to claim your payment."
+    : `${hold.countdown}. New links wait a moment so the sender can cancel a mistake.`
+}
 
 /**
  * Where the open registration's deposit is on the rail, as the bell's live row words it, or null
@@ -142,7 +165,8 @@ function LiveDepositDetail(props: { sipaAddress: string; tag: string; onClose: (
  * Free names enter at once, and a waived reload may enter early): that a deposit is owed and how
  * long the reservation holds. The caller's `ask` renders the plain deposit ask with its hold and
  * waiver note; a quote to refresh, paused registrations and an unpublished address are banners that
- * lead to the pending step. Once funds are in it reads as claiming until the name registers.
+ * lead to the pending step. A ticket-funded name reads as claiming while Home claims its link, which
+ * also publishes its address. Once funds are in it reads as claiming until the name registers.
  */
 export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode }) {
   const navigate = useNavigate()
@@ -165,8 +189,11 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
   const depositAdmitted = useDepositAdmission(record)
   const refunded = useRegistrationRefunded(record)
   const publishStalled = useRegistrationPublishStalled(record)
-  // Whether this page is claiming the stashed link, for a ticket-funded name.
-  const claimRunning = useClaimRunning(peekClaimStash())
+  // Whether this page is claiming the stashed link, for a ticket-funded name, or will on its own.
+  const stashed = peekClaimStash()
+  const claimRunning = useClaimRunning(stashed)
+  const autoGaveUp = useAutoClaimGaveUp(stashed)
+  const autoHold = useAutoClaimHold(stashed)
   const terms = useRegistrationTerms(record?.account, record?.tag)
   const unsignedFallback = signedWithoutSchedule(terms)
   const [readAttempt, setReadAttempt] = useState(0)
@@ -192,53 +219,55 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
     return () => clearInterval(timer)
   }, [record])
   const [detailOpen, setDetailOpen] = useState(false)
+  const lapsed = !!open && depositOwed(open.stage) && !depositAdmitted && quoteExpired(terms, nowMs)
+  useEffect(() => {
+    if (lapsed && record) reportRegistrationLapsed(record.account, record.phase)
+  }, [lapsed, record])
 
   if (!open || !record) return null
   const { stage } = open
-  // A paylink-funded registration is never asked for an L1 deposit: its link's claim funds the
-  // SIPA. What it needs is decided before any price: progress while the address publishes, this
-  // page claims or the burn is on its way; the claim while the bound link is on this tab; else the
-  // way back to the link or the renewal.
+  // A paylink-funded registration is never asked for an L1 deposit: its link's claim funds and
+  // publishes the SIPA. What it needs is decided before any price: progress while this page claims
+  // or the burn is on its way; the claim while the bound link is on this tab; else the way back to
+  // the link or the renewal.
   const ticket = ticketActivation(record, terms, getWithdrawalStore().list(), nowMs)
   if (ticket) {
     const holdEnds = reservedUntil(terms, nowMs)
     const heldFor = holdEnds === undefined ? "" : ` until ${formatDateLabel(holdEnds)}`
     // The burn's record is written before its batch signs, so `submitted` alone would read as sent
-    // too early: the page's own claim covers proving, the passkey and the send.
-    const claimingLink = claimRunning && (ticket.state === "ready" || ticket.state === "submitted")
-    // An address still on its way to the relayer, as opposed to one nothing re-sends.
-    const publishing = ticket.state === "unpublished" && !publishStalled
-    const submitted = claimingLink || publishing || ticket.state === "submitted"
-    const title =
-      claimingLink || ticket.state === "submitted"
-        ? `Claiming @${record.tag}`
-        : publishing
-        ? `Setting up @${record.tag}`
-        : ticket.state === "ready"
-        ? "Claim your payment"
-        : ticket.state === "blocked"
-        ? `This payment cannot fund @${record.tag}`
-        : ticket.state === "renew"
-        ? "Refresh your reservation"
-        : ticket.state === "unpublished"
-        ? "Activate account"
-        : "Open your payment link"
-    const body = claimingLink
-      ? "Claiming your payment. Approve with your passkey when asked."
+    // too early: the page's own claim covers proving and the send. Home claims a ready direct link
+    // by itself, so the tap is asked for only once that try is over without a claim.
+    const claimingLink =
+      (claimRunning && (ticket.state === "ready" || ticket.state === "submitted")) ||
+      (ticket.state === "ready" && !autoGaveUp && directLink(ticket.stash.fragment))
+    // Home's own claim has not started: what it waits for, since the bell has nothing yet.
+    const held = claimingLink && !claimRunning ? autoHold : undefined
+    const submitted = claimingLink || ticket.state === "submitted"
+    const title = held
+      ? `Claiming @${record.tag} shortly`
+      : submitted
+      ? `Claiming @${record.tag}`
+      : ticket.state === "ready"
+      ? "Claim your payment"
+      : ticket.state === "blocked"
+      ? `This payment cannot fund @${record.tag}`
+      : ticket.state === "renew"
+      ? "Refresh your reservation"
+      : "Open your payment link"
+    const body = held
+      ? holdBody(held)
+      : claimingLink
+      ? "Claiming your payment and setting up your account."
       : ticket.state === "submitted"
       ? rail
         ? `${rail}. This only takes a moment.`
         : `Payment claimed. @${record.tag} registers once the network sweeps the deposit. Nothing to send.`
-      : publishing
-      ? "Publishing your deposit address. The payment you were sent funds it next."
       : ticket.state === "ready"
       ? `@${record.tag} is reserved${heldFor}. The payment you were sent funds it. Claim it to finish.`
       : ticket.state === "blocked"
       ? "The renewed price is not one the payment covers. Check on the registration."
       : ticket.state === "renew"
       ? `The reservation for @${record.tag} needs a fresh quote. Open it to renew.`
-      : ticket.state === "unpublished"
-      ? "Your deposit address was not published. Check on it to try again."
       : `@${record.tag} is reserved${heldFor}. Open the payment link you were sent again to claim it and fund the tag.`
     return (
       <button

@@ -2,11 +2,7 @@ import type { Logger } from "@aztec/foundation/log"
 import type { AztecAddress } from "@aztec/stdlib/aztec-address"
 import type { TxExecutionRequest, TxProvingResult } from "@aztec/stdlib/tx"
 import type { PXE } from "@aztec/pxe/client/lazy"
-import {
-  ProvingStage,
-  provingProgress,
-  type ProvingProgressEvent,
-} from "@obsidion/proving-progress"
+import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 
 /**
  * Wraps a PXE proveTx call to emit proving progress. PXE reports no progress
@@ -52,58 +48,19 @@ export async function proveTxWithProgress(
   }
 }
 
+/** Runtime override for {@link readPerfLogFlag}, for hosts without `process.env` (the browser). */
+let perfLogOverride: boolean | undefined
+
+export function setPerfLogFlag(on: boolean | undefined): void {
+  perfLogOverride = on
+}
+
 /**
- * Captures `[Perf][ProveTx]` bucket durations by subscribing to the
- * provingProgress singleton's stage events. Stable handler refs are bound
- * once in the constructor so off()-by-reference works correctly.
- *
- * Single-tx-in-flight assumption: the wallet UI gates sendTx behind a modal,
- * so only one tx is ever proving at a time. The accumulator does not
- * disambiguate events across concurrent txs — running two sendTx calls in
- * parallel will cross-contaminate timestamps. This is intentional; relax it
- * only if the UI ever permits concurrent proving.
+ * Reads the `[Perf][ProveTx]` log flag: the {@link setPerfLogFlag} override when set, else
+ * `process.env.OBSIDION_PROVE_TX_PERF_LOGS`. Default: false.
  */
-export class PerfBucketAccumulator {
-  private starts: Partial<Record<ProvingStage, number>> = {}
-  private ends: Partial<Record<ProvingStage, number>> = {}
-  private readonly onStart: (e: ProvingProgressEvent) => void
-  private readonly onComplete: (e: { stage: ProvingStage }) => void
-
-  constructor() {
-    this.onStart = (e) => {
-      this.starts[e.stage] = e.startTime
-    }
-    this.onComplete = (e) => {
-      this.ends[e.stage] = Date.now()
-    }
-  }
-
-  subscribe(): void {
-    provingProgress.on("stage-start", this.onStart)
-    provingProgress.on("stage-complete", this.onComplete)
-  }
-
-  unsubscribe(): void {
-    provingProgress.off("stage-start", this.onStart)
-    provingProgress.off("stage-complete", this.onComplete)
-  }
-
-  snapshot(): { sim: number; witgen: number; prove: number } {
-    return {
-      sim: durationOf(this.starts[ProvingStage.Simulating], this.ends[ProvingStage.Simulating]),
-      witgen: durationOf(this.starts[ProvingStage.Witgen], this.ends[ProvingStage.Witgen]),
-      prove: durationOf(this.starts[ProvingStage.Proving], this.ends[ProvingStage.Proving]),
-    }
-  }
-}
-
-function durationOf(start: number | undefined, end: number | undefined): number {
-  if (start === undefined || end === undefined) return 0
-  return Math.max(0, end - start)
-}
-
-/** Reads the `proveTxPerfLogs` flag from `process.env.OBSIDION_PROVE_TX_PERF_LOGS`. Default: false. */
 export function readPerfLogFlag(): boolean {
+  if (perfLogOverride !== undefined) return perfLogOverride
   if (typeof process !== "undefined" && process.env) {
     if (process.env.OBSIDION_PROVE_TX_PERF_LOGS === "true") return true
   }

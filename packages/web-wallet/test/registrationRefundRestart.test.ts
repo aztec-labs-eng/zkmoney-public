@@ -86,6 +86,11 @@ vi.mock("@obsidion/front-core", async (original) => ({
     readNameOf: h.heldName,
     readAccountMetadataRegistry: h.metadataRegistry,
     getUserOpHash: async () => `0x${"77".repeat(32)}`,
+    readR1InstallGas: async () => ({
+      verification: 50_000n,
+      callBase: 85_000n,
+      callPerWord: 30_000n,
+    }),
     // The account has no code yet, so consent signs with the bootstrap key.
     getCode: async () => undefined,
   }),

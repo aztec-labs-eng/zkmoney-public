@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { getAddress, isAddress, type Address } from "viem"
 import {
@@ -9,7 +9,8 @@ import {
   PrimaryGradientButton,
   TopNavIconButton,
 } from "@obsidion/web-ds"
-import { shortAddr } from "../../ui/format"
+import { fireEvent } from "../../lib/analytics"
+import { shortL1Addr } from "../../ui/format"
 import { useBack } from "../../ui/hooks"
 import { Modal } from "../../ui/Modal"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
@@ -49,6 +50,10 @@ export function WithdrawEtherfiScreen() {
   const [replacing, setReplacing] = useState(false)
   const [keep, setKeep] = useState(true)
   const [chosen, setChosen] = useState<Address>()
+
+  useEffect(() => {
+    fireEvent("withdraw_opened", { method: "etherfi" })
+  }, [])
 
   const usingSaved = !!saved && !replacing
   const raw = usingSaved ? saved : query.trim()
@@ -116,7 +121,7 @@ export function WithdrawEtherfiScreen() {
                   </span>
                   <span className="ww-deposit__connect-text">
                     <b>{ETHERFI_CONTACT_NAME}</b>
-                    <span>{shortAddr(saved)}</span>
+                    <span>{shortL1Addr(saved)}</span>
                   </span>
                 </span>
                 <button

@@ -5,7 +5,7 @@ import { predictLegacySIPA, type LegacySipaDeployArgs } from "@oxide/l1-contract
  * L1 reads backed by a viem PublicClient + @oxide/l1-contracts.
  */
 
-import { type Address, type Hex, type PublicClient } from "viem"
+import { type Address, type Hex, type PublicClient, zeroAddress } from "viem"
 import { Fr } from "@aztec/foundation/curves/bn254"
 import { EthAddress } from "@aztec/foundation/eth-address"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
@@ -25,6 +25,8 @@ import {
   predictSIPA,
   readAccountMetadataRegistry,
   readNameOf,
+  readR1InstallGas,
+  readRegistrationController,
   readUserAddress,
 } from "@oxide/l1-contracts"
 import type { OxideEnvTuple, RegistrationIntent, RegistrationSchedule } from "@obsidion/core/types"
@@ -37,6 +39,7 @@ import {
   deriveRecoveryAddress,
   Network,
   SipaSelfResolver,
+  deriveSharedSecret,
   fetchSipaResolverOperators,
   readDepositFee,
   readFpcFundingCut,
@@ -44,6 +47,7 @@ import {
   readSweepEvents,
   resolverSelectionPolicy,
   selectManifestResolverOperator,
+  type SipaK1Point,
   type SipaResolverOperatorRecord,
 } from "@obsidion/sdk"
 import { logger } from "src/utils/logger"
@@ -56,7 +60,7 @@ import type {
   RegistrationDepositReader,
   RegistrationSipaDeriver,
 } from "./oxideRegistration"
-import { deriveStealthKey, selfSipaResolverKeys } from "./oxideAccountKeys"
+import { deriveStealthKey, selfSipaResolverKeys, type FieldLike } from "./oxideAccountKeys"
 import {
   encodeRegistrationData,
   encodeUserRecord,
@@ -75,6 +79,15 @@ export async function fetchSignupResolverOperator(
   tuple: OxideEnvTuple,
   network: Network,
 ): Promise<Address> {
+  return (await fetchSignupResolverRecord(publicClient, tuple, network)).owner as Address
+}
+
+/** The resolver operator record {@link fetchSignupResolverOperator} selects. */
+export async function fetchSignupResolverRecord(
+  publicClient: PublicClient,
+  tuple: OxideEnvTuple,
+  network: Network,
+): Promise<SipaResolverOperatorRecord> {
   const { accountMetadataRegistry, portal } = tuple
   if (!accountMetadataRegistry || !portal) {
     throw new Error(
@@ -97,7 +110,7 @@ export async function fetchSignupResolverOperator(
     record.owner,
     `(${records.length} records)`,
   )
-  return record.owner as Address
+  return record
 }
 
 /**
@@ -173,41 +186,36 @@ function registrationDayNonce(nameHash: Hex): { day: number; nonce: number } {
 }
 
 /**
+ * The salt of a registration address shown before the self-SIPA key: the resolver ECDH over the
+ * wallet's stealth key. Recovery replays it for an address no record holds.
+ */
+export function legacyRegistrationSalt(
+  masterSecret: FieldLike,
+  resolverPublicKey: SipaK1Point,
+  nameHash: Hex,
+): Hex {
+  const { day, nonce } = registrationDayNonce(nameHash)
+  const scalar = deriveStealthKey(masterSecret).scalar
+  return deriveSharedSecret(resolverPublicKey, scalar, day, nonce).toString() as Hex
+}
+
+/**
  * The registration SIPA deriver: it self-resolves from the wallet's own keys and commits the SIPA to
- * `keccak256(registrationData)`, deriving non-resweepable (a registration is one-shot). The manifest
- * resolver's record names the user record's operator; it is fetched once and cached.
+ * `keccak256(registrationData)`, deriving non-resweepable (a registration is one-shot). The user
+ * record names `env.resolverOperator`, the operator `fetchSignupResolverOperator` selected.
  */
 export function createRegistrationSipaDeriver(deps: {
   publicClient: PublicClient
   env: OxideRegistrationEnv
   tuple: OxideEnvTuple
-  network: Network
 }): RegistrationSipaDeriver {
-  const { portal, accountMetadataRegistry } = deps.tuple
-  if (!portal || !accountMetadataRegistry) {
-    throw new Error(
-      "oxide manifest lacks portal / accountMetadataRegistry — registration SIPA derivation needs them",
-    )
+  const { portal } = deps.tuple
+  if (!portal) {
+    throw new Error("oxide manifest lacks portal — registration SIPA derivation needs it")
   }
   const sipaFactory = requireNonZeroL1Address(deps.tuple.sipaFactory, "sipaFactory") as Address
-  let operatorRecord: SipaResolverOperatorRecord | undefined
-  const getResolverOperator = async (): Promise<SipaResolverOperatorRecord> => {
-    if (operatorRecord) return operatorRecord
-    const records = await fetchSipaResolverOperators(
-      deps.publicClient,
-      accountMetadataRegistry as Address,
-      await deploymentScanRange(deps.publicClient, deps.tuple),
-    )
-    operatorRecord = selectManifestResolverOperator(records, {
-      portal,
-      resolverGatewayUrl: deps.tuple.resolverGatewayUrl,
-      ...resolverSelectionPolicy(deps.network),
-    })
-    return operatorRecord
-  }
 
   return async (input) => {
-    const operator = await getResolverOperator()
     const stealth = deriveStealthKey(input.masterSecret)
     const { day, nonce } = registrationDayNonce(input.nameHash)
     const selfResolver = new SipaSelfResolver(selfSipaResolverKeys(input.masterSecret))
@@ -225,7 +233,7 @@ export function createRegistrationSipaDeriver(deps: {
         l2Address: input.l2Address,
         rollupVersion: deps.env.rollupVersion,
         publicKey: { x: stealth.publicKey.x, y: stealth.publicKey.y },
-        resolverOperator: operator.owner as Hex,
+        resolverOperator: deps.env.resolverOperator,
       },
       fee: input.fee,
       beneficiary: input.beneficiary,
@@ -447,6 +455,11 @@ export function createOxideL1Reader(publicClient: PublicClient): OxideL1Reader {
         : null,
     getUserOpHash: (entryPoint, op) =>
       getUserOpHash(client, entryPoint, op as Parameters<typeof getUserOpHash>[2]),
+    // A registry from before the controller split names none and holds the limits itself.
+    readR1InstallGas: async (registry) => {
+      const controller = await readRegistrationController(client, registry).catch(() => zeroAddress)
+      return readR1InstallGas(client, controller === zeroAddress ? registry : controller)
+    },
     getAuthKeys: (account) => getAuthKeys(client, account),
     readAuthKeys: async (account, max) =>
       (await readAuthKeysBounded(publicClient, account, max)).entries,

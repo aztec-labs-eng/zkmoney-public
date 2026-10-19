@@ -17,11 +17,10 @@ import {
 } from "../src/platform/auth/localRefusals"
 import { DEVICE_KEYS } from "../src/platform/storage/rollupStorage"
 
-const native = () => Promise.resolve.bind(Promise, null)
 /** Whether a script answers the page's passkey creation, as a password manager's extension does. */
 const extension = (answers: boolean) =>
   Object.defineProperty(navigator, "credentials", {
-    value: { get: native(), create: answers ? async () => null : native() },
+    value: { get: Reflect.get, create: answers ? async () => null : Object.create },
     configurable: true,
   })
 const unsupported = () =>

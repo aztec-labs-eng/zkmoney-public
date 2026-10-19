@@ -293,16 +293,25 @@ describe("DepositScreen — claiming gate", () => {
     ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
     saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
-    depositAddress.mockResolvedValueOnce({ address: "0xp001ed", name: "alice.oxide.eth" })
+    depositAddress.mockResolvedValueOnce({
+      address: "0xp001ed",
+      name: "alice.oxide.eth",
+      source: "pool",
+    })
     await render()
     expect(depositAddress).toHaveBeenCalledWith(expect.anything(), expect.anything(), "alice", {
       onStage: expect.any(Function),
       publishingLimit: 0,
     })
-    expect(fireEvent).toHaveBeenCalledWith("deposit_address_shown", { pooled: true })
+    // The open's pool read is not a derive, and nothing is shown until the sheet opens.
+    const events = () => fireEvent.mock.calls.map(([e]) => e)
+    expect(events()).not.toContain("address_resolve_started")
+    expect(events()).not.toContain("address_resolve_succeeded")
+    expect(events()).not.toContain("deposit_address_shown")
     await act(async () => coinRow()!.click())
     expect(container.textContent).toContain("0xp001ed")
     expect(depositAddress).toHaveBeenCalledTimes(1)
+    expect(fireEvent).toHaveBeenCalledWith("deposit_address_shown", { address_source: "pool" })
   })
 
   it("reports a resolve that fails on the coin row, and resolves again on the next press", async () => {
@@ -383,6 +392,7 @@ describe("DepositScreen — claiming gate", () => {
     )
     expect(tagRow()?.textContent).toBe("Your name@aliceChoose your own")
     expect(fireEvent).toHaveBeenCalledWith("registration_deposit_opened")
+    expect(fireEvent).toHaveBeenCalledWith("deposit_sheet_opened", { registration: true })
     await act(async () => tagRow()!.querySelector("button")!.click())
     expect(document.querySelector("dialog[aria-label='Choose your name']")).not.toBeNull()
     expect(fireEvent).toHaveBeenCalledWith("name_sheet_opened", { screen: "deposit" })
@@ -396,6 +406,9 @@ describe("DepositScreen — claiming gate", () => {
     expect(tagRow()?.textContent).toBe("Your name@alice")
     await act(async () => coinRow()!.click())
     expect(container.innerHTML).toContain(`0x${"5a".repeat(20)}`)
+    const shown = fireEvent.mock.calls.map(([e]) => e)
+    expect(shown).toContain("registration_deposit_shown")
+    expect(shown).not.toContain("deposit_address_shown")
     expect(container.querySelector("[data-testid='activation-sheet']")).toBeNull()
 
     const connect = container.querySelector<HTMLButtonElement>(
@@ -518,6 +531,7 @@ describe("DepositScreen — claiming gate", () => {
       address: "0xdeadbeef",
       name: "alice.oxide.eth",
       publish,
+      source: "derived",
     })
     l1.account = ACCOUNT
     await render()
@@ -533,7 +547,7 @@ describe("DepositScreen — claiming gate", () => {
     expect(fireEvent).toHaveBeenCalledWith("address_publish_deferred", { reason: "import" })
     expect(fireEvent).not.toHaveBeenCalledWith("address_publish_failed", expect.anything())
     expect(fireEvent.mock.calls.filter(([e]) => e === "deposit_address_shown")).toEqual([
-      ["deposit_address_shown", { pooled: false }],
+      ["deposit_address_shown", { address_source: "derived" }],
     ])
 
     const fund = [...container.querySelectorAll("button")].find((b) =>

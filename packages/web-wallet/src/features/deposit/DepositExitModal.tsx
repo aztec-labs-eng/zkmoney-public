@@ -1,4 +1,5 @@
 import { Modal } from "../../ui/Modal"
+import { shortL1Addr } from "../../ui/format"
 /**
  * The two exits from a deposit the relayer has not moved, behind one surface: finish the sweep
  * yourself (funds continue into the private balance, the deposit fee comes back) or recover
@@ -106,8 +107,6 @@ const STRANDED_COPY =
 
 const UNSWEEPABLE_RECOVER_COPY =
   "Recovery sends the funds back out to an Ethereum address. It requires ETH for gas."
-
-const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`
 
 /** How long the deposit has been waiting: "12m" under the hour, "3h 05m" over it. */
 export function waitedLabel(ms: number): string {
@@ -479,8 +478,14 @@ export function DepositExitModal({
                 />
               </>
             )}
-            <ConfirmationSheetDetailRow label="Deposit address" value={short(record.sipaAddress)} />
-            <ConfirmationSheetDetailRow label={paidLabel} value={target ? short(target) : "—"} />
+            <ConfirmationSheetDetailRow
+              label="Deposit address"
+              value={shortL1Addr(record.sipaAddress)}
+            />
+            <ConfirmationSheetDetailRow
+              label={paidLabel}
+              value={target ? shortL1Addr(target) : "—"}
+            />
             <ConfirmationSheetDetailRow label="Network" value={l1ChainFor(config.l1ChainId).name} />
           </div>
 
@@ -538,7 +543,7 @@ export function DepositExitModal({
                   canSweep
                     ? "Recover to an Ethereum address"
                     : target
-                    ? `Recover to ${short(target)}`
+                    ? `Recover to ${shortL1Addr(target)}`
                     : "Recover"
                 }
                 buttonStyle={canSweep ? "dark" : undefined}
@@ -609,7 +614,7 @@ export function DepositExitModal({
                 ? registration
                   ? `Your name is registering, and what is left of ${amount} after the fee is on its way into your private balance.`
                   : `${amount} is on its way into your private balance. It should arrive within a few minutes.`
-                : `${amount} sent to ${target ? short(target) : "your wallet"}.`}
+                : `${amount} sent to ${target ? shortL1Addr(target) : "your wallet"}.`}
             </p>
           </div>
           {txHash && <HashRow label="Transaction ID" hash={txHash} url={l1TxUrl(txHash)} />}

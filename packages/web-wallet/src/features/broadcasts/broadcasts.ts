@@ -87,14 +87,28 @@ export function broadcastSettled(address: string): Promise<boolean> {
       const job = ledger.get(address)
       failures ??= job?.failures ?? 0
       const outcome =
-        job?.state === "landed"
-          ? true
-          : !job || job.failures > failures
-          ? false
-          : undefined
+        job?.state === "landed" ? true : !job || job.failures > failures ? false : undefined
       if (outcome === undefined) return
       off()
       resolve(outcome)
+    }
+    const off = ledger.onListChanged(check)
+    void ledger.load().then(check)
+  })
+}
+
+/**
+ * Resolves once no attempt at the address's broadcast is proving or sent: it landed, failed, waits
+ * for its turn, or is gone.
+ */
+export function broadcastAttemptEnded(address: string): Promise<void> {
+  const ledger = getBroadcastLedger()
+  return new Promise((resolve) => {
+    const check = () => {
+      const state = ledger.get(address)?.state
+      if (state === "proving" || state === "sent") return
+      off()
+      resolve()
     }
     const off = ledger.onListChanged(check)
     void ledger.load().then(check)

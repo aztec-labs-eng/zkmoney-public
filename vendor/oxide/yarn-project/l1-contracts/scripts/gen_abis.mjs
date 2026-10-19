@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Reads foundry-emitted artifacts under `../../l1-contracts/out/` and writes typed (`as const`)
+// Reads the workspace's Foundry artifacts under `../../dist/l1_contracts/artifacts/` and writes typed (`as const`)
 // ABI + bytecode constants to `src/abis/*.ts`. viem's contract-handle inference only narrows method return
 // types when the ABI is a literal-typed `as const` value, so a JSON `assert { type: 'json' }`
 // import isn't enough — we need the ABI to be a `.ts` file the compiler can see the literal
@@ -15,8 +15,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const OUT_DIR = join(ROOT, 'src', 'abis');
-const L1_CONTRACTS = join(ROOT, '..', '..', 'l1-contracts');
-const FOUNDRY_OUT = join(L1_CONTRACTS, 'out');
+const FOUNDRY_OUT = join(ROOT, '..', '..', 'dist', 'l1_contracts', 'artifacts');
 
 // Map `<sym>` to its source artifact JSON. `<sym>` becomes `<sym>Abi` / `<sym>Bytecode` exports
 // in a generated `<sym>.ts` file under `src/abis/`.

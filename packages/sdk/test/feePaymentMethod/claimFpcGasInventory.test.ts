@@ -239,6 +239,15 @@ describe("ClaimFPC per-call inventory", () => {
   })
 })
 
+/**
+ * Shapes the sdk sends only on a rail whose policy sponsors any call. Their worst-case per-call
+ * inventory sums above the caps, so `claimSponsoredPaylink` refuses them on a per-call policy
+ * (`ClaimBatchFullError`) and the wallet sends the broadcast and the claim apart.
+ */
+const OPEN_POLICY_ONLY = new Set([
+  "sponsor[paylink_direct.claim_with_withdrawal,broadcaster.broadcast_l1_operation_2k,oxide_token.notify_sipa_recipient,broadcaster.broadcast_l1_operation_2k,oxide_token.publish_da]",
+])
+
 describe("ClaimFPC flat batch caps", () => {
   it("declares the caps for any batch an open policy sponsors", async () => {
     const policy = await openPolicy()
@@ -257,6 +266,8 @@ describe("ClaimFPC flat batch caps", () => {
     for (const [tableKey, measured] of batchFlavors) {
       expect(CLAIM_FPC_BATCH_CAPS.daGas, `${tableKey} daGas`).toBeGreaterThanOrEqual(measured.daGas)
       expect(CLAIM_FPC_BATCH_CAPS.l2Gas, `${tableKey} l2Gas`).toBeGreaterThanOrEqual(measured.l2Gas)
+      // A per-call policy is never asked for these: the sdk splits them into shapes covered here.
+      if (OPEN_POLICY_ONLY.has(tableKey)) continue
       // The worst-case per-call budgets sit above their measured shapes, so covering them is the
       // stronger statement: a per-call policy could be swapped in without moving the caps.
       const inventory = claimFpcBatchGas(callsOf(tableKey))

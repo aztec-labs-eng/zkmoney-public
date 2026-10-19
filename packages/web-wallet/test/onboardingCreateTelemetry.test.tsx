@@ -10,15 +10,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { APPLE_ICLOUD_AAGUID, GPM_AAGUID, ONEPASSWORD_AAGUID } from "@obsidion/core/constants"
 import {
   CHROME_REFUSAL_COPY,
-  SAFARI_REFUSAL_COPY,
   EXTENSION_ADVICE_COPY,
   LaptopPasskeyRefusedError,
   NoPrfError,
+  PHONE_HELP_COPY,
   PHONE_STEPS_COPY,
   PhoneRequiredError,
+  SIGN_UP_SHEET_COPY,
   UnsupportedProviderError,
   markPasskeyWritten,
   type LaptopCreation,
+  type SignUpChoice,
 } from "@obsidion/passkey-web"
 import { OnboardingScreen } from "../src/features/onboarding/OnboardingScreen"
 import { LOCAL_REFUSAL_LIMIT, noteLocalRefusal } from "../src/platform/auth/localRefusals"
@@ -31,6 +33,7 @@ import {
   passkeyEvents,
   passkeyTelemetryHarness,
 } from "./support/passkeyTelemetryHarness"
+import { nativeCreate, onePasswordCreate, otherCreate } from "./support/passkeyExtensionStubs"
 import { nameClaim, resetRegistrationStores } from "./support/registrationFixtures"
 
 vi.setConfig({ testTimeout: 30_000 })
@@ -191,7 +194,7 @@ const fakeKeys = {
 }
 const CUSTODY = {
   kind: "custody",
-  confirmed: false,
+  confirmed: true,
   oxideAccount: ACCOUNT,
   claim: nameClaim(),
 }
@@ -211,6 +214,22 @@ const press = async (find: () => HTMLElement | undefined | null) => {
 const pressLabel = (label: string) => press(() => buttons().find((b) => b.textContent === label))
 const deposit = () => press(() => buttons().find((b) => b.textContent?.startsWith("Deposit")))
 const continueAtSteps = () => press(() => byTestId("phone-steps-continue"))
+/** The option the sheet has picked. */
+const choice = () => byTestId("phone-steps")?.dataset.choice
+/** Opens the sheet's dropdown and picks `id`. */
+const pick = async (id: SignUpChoice) => {
+  await press(() => byTestId("phone-steps-choice"))
+  await press(() => byTestId(`phone-steps-option-${id}`))
+}
+/** The options the sheet's dropdown offers, opened and closed again on the one already picked. */
+const offered = async () => {
+  await press(() => byTestId("phone-steps-choice"))
+  const ids = [...container.querySelectorAll<HTMLElement>('[role="option"]')].map((o) =>
+    o.dataset.testid?.replace("phone-steps-option-", ""),
+  )
+  await press(() => container.querySelector<HTMLElement>('[role="option"][aria-selected="true"]'))
+  return ids
+}
 /** The sheet's X, its only way out: there is no Cancel. */
 const closeButton = () => container.querySelector<HTMLButtonElement>('button[aria-label="Close"]')
 const closeSheet = () => press(closeButton)
@@ -230,6 +249,8 @@ const WINDOWS: LaptopCreation = {
   managers: ["gpm", "1password"],
   withdrawn: [],
 }
+const WINDOWS_FIREFOX_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0"
 const GPM_ANSWER = {
   authenticatorAttachment: "platform",
   backupEligible: true,
@@ -561,7 +582,6 @@ describe("signup create step — passkey telemetry", () => {
  * answer names the manager, and every way back from a refusal or a closed prompt is the sheet.
  */
 describe("signup create on this computer — passkey telemetry", () => {
-  const variant = () => byTestId("phone-steps")?.dataset.variant
   const createRoute = (call: number) =>
     (h.createAccount.mock.calls[call]?.[5] as { route?: string } | undefined)?.route
   /** The next create asks once, is answered as `evidence` says, then fails as `error` says. */
@@ -579,10 +599,11 @@ describe("signup create on this computer — passkey telemetry", () => {
       request.reject(new DOMException("closed", "NotAllowedError"))
       await request.settled
     })
-  const toLocalSheet = async () => {
+  /** The sheet, opened on one of this computer's options. */
+  const toLocalSheet = async (opens: SignUpChoice = "computer") => {
     await pressLabel("landing-signin")
     await deposit()
-    expect(variant()).toBe("local")
+    expect(choice()).toBe(opens)
   }
 
   beforeEach(() => {
@@ -592,11 +613,153 @@ describe("signup create on this computer — passkey telemetry", () => {
     h.probeLaptopCreation.mockResolvedValue(MAC)
   })
 
+  describe("the warning while the creation runs", () => {
+    const credentials = Object.getOwnPropertyDescriptor(navigator, "credentials")
+    const install = (value: unknown) =>
+      Object.defineProperty(navigator, "credentials", { value, configurable: true })
+    const warning = () => byTestId("phone-steps-extension-warning")
+    const refusal = () =>
+      markPasskeyWritten(
+        new UnsupportedProviderError("manager", {
+          providerName: "Bitwarden",
+          localManagers: ["apple", "gpm"],
+        }),
+      )
+    afterEach(() => {
+      if (credentials) Object.defineProperty(navigator, "credentials", credentials)
+      else delete (navigator as { credentials?: unknown }).credentials
+    })
+
+    it("shows over the spinner from the first running render, until the passkey exists", async () => {
+      install({ create: otherCreate() })
+      const held = heldCreate()
+      await toLocalSheet()
+      expect(warning()).toBeNull()
+      await act(async () => byTestId("phone-steps-continue")!.click())
+      expect(warning()?.textContent).toBe(SIGN_UP_SHEET_COPY.extensionWarning)
+      expect(warning()?.getAttribute("role")).toBe("alert")
+      expect(byTestId("phone-steps-loading") ?? byTestId("phone-steps")).toBeNull()
+      h.claimTag.mockImplementationOnce(() => new Promise(() => {}))
+      await act(async () => held.request!.answer(GPM_ANSWER))
+      await flush()
+      expect(container.textContent).toContain("Preparing deposit address…")
+      expect(warning()).toBeNull()
+    })
+
+    it("shows on the phone route too", async () => {
+      install({ create: otherCreate() })
+      heldCreate()
+      await toLocalSheet()
+      await pick("phone")
+      await continueAtSteps()
+      expect(createRoute(0)).toBe("phone")
+      expect(warning()?.textContent).toBe(SIGN_UP_SHEET_COPY.extensionWarning)
+    })
+
+    it("is gone on the refusal card and back on the retry's run", async () => {
+      install({ create: otherCreate() })
+      refusedCreate(GPM_ANSWER, refusal)
+      await toLocalSheet()
+      await continueAtSteps()
+      expect(byTestId("create-refused")!.dataset.reason).toBe("UnsupportedProviderError")
+      expect(warning()).toBeNull()
+      heldCreate()
+      await press(() => byTestId("create-retry"))
+      expect(choice()).toBe("computer")
+      await continueAtSteps()
+      expect(warning()?.textContent).toBe(SIGN_UP_SHEET_COPY.extensionWarning)
+    })
+
+    it("is in the first busy render, not added after it", async () => {
+      install({ create: otherCreate() })
+      heldCreate()
+      await toLocalSheet()
+      // Each record is one commit: the spinner must arrive with its warning, never grow one later.
+      const commits: boolean[] = []
+      const observer = new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (!(node instanceof HTMLElement)) continue
+            const spinner =
+              node.matches(".ww-invite-spinner") || !!node.querySelector(".ww-invite-spinner")
+            const alert =
+              node.matches(".ww-phone-steps__warning") ||
+              !!node.querySelector(".ww-phone-steps__warning")
+            if (spinner) commits.push(alert)
+            else if (alert) commits.push(false)
+          }
+        }
+      })
+      observer.observe(container, { childList: true, subtree: true })
+      await act(async () => byTestId("phone-steps-continue")!.click())
+      await flush()
+      observer.disconnect()
+      expect(commits).toEqual([true])
+    })
+
+    it("is back on the run a closed prompt's re-opened sheet starts", async () => {
+      install({ create: otherCreate() })
+      closedCreate()
+      await toLocalSheet()
+      await continueAtSteps()
+      expect(choice()).toBe("computer")
+      expect(warning()).toBeNull()
+      heldCreate()
+      await continueAtSteps()
+      expect(warning()?.textContent).toBe(SIGN_UP_SHEET_COPY.extensionWarning)
+    })
+
+    it("stays off during the retry's browser check", async () => {
+      install({ create: otherCreate() })
+      refusedCreate(GPM_ANSWER, refusal)
+      await toLocalSheet()
+      await continueAtSteps()
+      expect(byTestId("create-refused")).not.toBeNull()
+      h.probeLaptopCreation.mockImplementationOnce(() => new Promise(() => {}))
+      await press(() => byTestId("create-retry"))
+      expect(container.textContent).toContain("Checking this browser…")
+      expect(warning()).toBeNull()
+    })
+
+    it("is off on the retry's run once the script is gone", async () => {
+      install({ create: otherCreate() })
+      refusedCreate(GPM_ANSWER, refusal)
+      await toLocalSheet()
+      await continueAtSteps()
+      expect(byTestId("create-refused")).not.toBeNull()
+      install({ create: nativeCreate })
+      heldCreate()
+      await press(() => byTestId("create-retry"))
+      expect(choice()).toBe("computer")
+      await continueAtSteps()
+      expect(
+        byTestId("phone-steps-loading") ?? container.querySelector(".ww-invite-spinner"),
+      ).not.toBeNull()
+      expect(warning()).toBeNull()
+    })
+
+    it("stays off with 1Password's script, and with none", async () => {
+      for (const create of [onePasswordCreate(), nativeCreate]) {
+        install({ create })
+        heldCreate()
+        await toLocalSheet()
+        await continueAtSteps()
+        expect(
+          byTestId("phone-steps-loading") ?? container.querySelector(".ww-invite-spinner"),
+        ).not.toBeNull()
+        expect(warning()).toBeNull()
+        await act(async () => root.unmount())
+        root = createRoot(container)
+        await render()
+      }
+    })
+  })
+
   it("creates on this computer and reports the manager that answered", async () => {
     const held = heldCreate()
     await toLocalSheet()
-    await press(() => byTestId("phone-steps-local"))
-    expect(h.useLaptopCreation).toHaveBeenCalledWith(MAC)
+    await continueAtSteps()
+    expect(h.useLaptopCreation).toHaveBeenCalledWith(MAC, "computer")
     expect(createRoute(0)).toBe("this-device")
     await act(async () => held.request!.answer(GPM_ANSWER))
     await flush()
@@ -621,17 +784,17 @@ describe("signup create on this computer — passkey telemetry", () => {
     )
     await pressLabel("landing-signin")
     await deposit()
-    expect(variant()).toBe("phone")
-    await press(() => byTestId("phone-steps-continue"))
+    expect(choice()).toBe("phone")
+    await continueAtSteps()
     expect(byTestId("create-refused")!.dataset.reason).toBe("PhoneRequiredError")
     expect(byTestId("passkey-chrome-advice")!.textContent).toBe(CHROME_REFUSAL_COPY)
   })
 
   it.each([
-    ["Google Password Manager", "windowsEdgeBrave", "windows", "gpm", true],
-    ["Apple Passwords", "macSafari", "macos", "apple", false],
+    ["the Chrome tip", "windowsEdgeBrave", "windows", "gpm", true],
+    ["no Chrome tip", "macSafari", "macos", undefined, false],
   ] as const)(
-    "a row with 1Password alone that opened on the phone points at Chrome only where Chrome has %s",
+    "a row with 1Password alone that opened on the phone, with %s, points at Chrome only where the sheet did",
     async (_, row, os, chromeTip, named) => {
       h.probeLaptopCreation.mockResolvedValue({
         local: true,
@@ -639,7 +802,7 @@ describe("signup create on this computer — passkey telemetry", () => {
         row,
         managers: ["1password"],
         withdrawn: [],
-        chromeTip,
+        ...(chromeTip ? { chromeTip } : {}),
       })
       refusedCreate(GPM_ANSWER, () =>
         markPasskeyWritten(
@@ -648,8 +811,8 @@ describe("signup create on this computer — passkey telemetry", () => {
       )
       await pressLabel("landing-signin")
       await deposit()
-      expect(variant()).toBe("phone")
-      await press(() => byTestId("phone-steps-continue"))
+      expect(choice()).toBe("phone")
+      await continueAtSteps()
       expect(byTestId("create-refused")!.dataset.reason).toBe("PhoneRequiredError")
       expect(byTestId("passkey-chrome-advice")?.textContent ?? null).toBe(
         named ? CHROME_REFUSAL_COPY : null,
@@ -657,12 +820,12 @@ describe("signup create on this computer — passkey telemetry", () => {
     },
   )
 
-  it("an Apple answer below the floor is refused on a card that leads back to the sheet", async () => {
+  it("an Apple answer refused here gets a card that leads with the phone and back to the sheet", async () => {
     refusedCreate(APPLE_ANSWER, () =>
       markPasskeyWritten(new LaptopPasskeyRefusedError("apple", ["gpm"])),
     )
     await toLocalSheet()
-    await press(() => byTestId("phone-steps-local"))
+    await continueAtSteps()
     expect(events()).toEqual([
       expect.objectContaining({
         ceremony: "create",
@@ -675,7 +838,6 @@ describe("signup create on this computer — passkey telemetry", () => {
     const card = byTestId("create-refused")!
     expect(card.dataset.reason).toBe("LaptopPasskeyRefusedError")
     expect(byTestId("passkey-apple-floor")).not.toBeNull()
-    expect(byTestId("passkey-safari-advice")).toBeNull()
     expect(byTestId("passkey-chrome-advice")).toBeNull()
     expect(byTestId("passkey-leftover")).not.toBeNull()
     expect(byTestId("passkey-phone")!.className).not.toContain("ww-invite-pill")
@@ -684,10 +846,10 @@ describe("signup create on this computer — passkey telemetry", () => {
     const next = heldCreate()
     await press(() => byTestId("create-retry"))
     expect(byTestId("create-refused")).toBeNull()
-    expect(variant()).toBe("local")
+    expect(choice()).toBe("computer")
     expect(byTestId("phone-steps-unfinished")).toBeNull()
     expect(h.createAccount).toHaveBeenCalledTimes(1)
-    await press(() => byTestId("phone-steps-local"))
+    await continueAtSteps()
     expect(createRoute(1)).toBe("this-device")
     await act(async () => next.request!.answer(GPM_ANSWER))
     await flush()
@@ -696,34 +858,44 @@ describe("signup create on this computer — passkey telemetry", () => {
     )
   })
 
-  it.each([
-    ["names Chrome while Mac Chrome admits Apple", "apple", "chrome"],
-    ["names only the unread version once Apple is withdrawn from Mac Chrome", undefined, "version"],
-  ] as const)(
-    "an Apple answer on Safari's row gets the Safari line, which %s",
-    async (_, chromeTip, wording) => {
-      h.probeLaptopCreation.mockResolvedValue({
+  it.each(["macSafari", "macFirefox"] as const)(
+    "an Apple answer with no key on %s: Try again opens This Mac, now 1Password through the Mac's window",
+    async (row) => {
+      const managers = ["apple", "1password"] as const
+      const before: LaptopCreation = { local: true, os: "macos", row, managers, withdrawn: [] }
+      const after: LaptopCreation = {
         local: true,
         os: "macos",
-        row: "macSafari",
+        row,
         managers: ["1password"],
         withdrawn: [],
-        ...(chromeTip ? { chromeTip } : {}),
+      }
+      // The service stops offering Apple Passwords once it was refused on this page.
+      let refused = false
+      h.probeLaptopCreation.mockImplementation(async () => (refused ? after : before))
+      refusedCreate(APPLE_ANSWER, () => {
+        refused = true
+        return markPasskeyWritten(
+          new LaptopPasskeyRefusedError(
+            "apple",
+            managers.filter((m) => m !== "apple"),
+          ),
+        )
       })
-      refusedCreate(APPLE_ANSWER, () =>
-        markPasskeyWritten(new LaptopPasskeyRefusedError("apple", ["1password"])),
-      )
-      await pressLabel("landing-signin")
-      await deposit()
-      expect(variant()).toBe("phone")
-      await press(() => byTestId("phone-steps-switch-local"))
-      await press(() => byTestId("phone-steps-local"))
+      await toLocalSheet()
+      await continueAtSteps()
       expect(byTestId("create-refused")!.dataset.reason).toBe("LaptopPasskeyRefusedError")
       expect(byTestId("passkey-apple-floor")).not.toBeNull()
-      expect(byTestId("passkey-safari-advice")!.textContent).toBe(SAFARI_REFUSAL_COPY[wording])
-      // Try again asks for this computer, which the sheet honours whatever the count.
+      expect(byTestId("passkey-phone")!.className).not.toContain("ww-invite-pill")
+      expect(byTestId("create-refused")!.textContent).not.toMatch(/choose Apple Passwords/)
+      heldCreate()
       await press(() => byTestId("create-retry"))
-      expect(variant()).toBe("local")
+      expect(choice()).toBe("computer")
+      // The probe dropped Apple Passwords, so the option it opens on no longer names it.
+      expect(byTestId("phone-steps-choice")!.textContent).not.toContain("iCloud Keychain")
+      await continueAtSteps()
+      expect(h.useLaptopCreation).toHaveBeenLastCalledWith(after, "computer")
+      expect(createRoute(1)).toBe("this-device")
     },
   )
 
@@ -741,30 +913,55 @@ describe("signup create on this computer — passkey telemetry", () => {
     })
 
     it.each([
-      ["names the extension's pop-up where a script answers", { create: async () => null }, "use"],
+      [
+        "names the extension's pop-up where 1Password's script answers",
+        { create: onePasswordCreate() },
+        "1password",
+        "use",
+      ],
       [
         "says to install the extension where the browser's own prompt answers",
-        { create: Promise.resolve.bind(Promise) },
+        { create: nativeCreate },
+        "computer",
         "install",
       ],
-    ] as const)("on a Windows row that admits 1Password, %s", async (_n, calls, wording) => {
+      [
+        "says to install the extension where another manager's script answers",
+        { create: otherCreate() },
+        "computer",
+        "install",
+      ],
+    ] as const)("on a Windows row that admits 1Password, %s", async (_n, calls, opens, wording) => {
       h.probeLaptopCreation.mockResolvedValue(WINDOWS)
       install(calls)
       refusedCreate(ONEPASSWORD_ANSWER, () => noKey())
-      await toLocalSheet()
-      await press(() => byTestId("phone-steps-local"))
+      await toLocalSheet(opens)
+      await continueAtSteps()
       expect(byTestId("create-refused")!.dataset.reason).toBe("NoPrfError")
       expect(advice()?.textContent).toBe(EXTENSION_ADVICE_COPY[wording])
       expect(byTestId("passkey-leftover")).not.toBeNull()
       expect(byTestId("passkey-phone")).not.toBeNull()
     })
 
+    it("retries This computer's refusal on 1Password, whose option the pop-up answers", async () => {
+      h.probeLaptopCreation.mockResolvedValue(WINDOWS)
+      install({ create: onePasswordCreate() })
+      refusedCreate(ONEPASSWORD_ANSWER, () => noKey())
+      await toLocalSheet("1password")
+      await pick("computer")
+      await continueAtSteps()
+      expect(advice()?.textContent).toBe(EXTENSION_ADVICE_COPY.use)
+      heldCreate()
+      await press(() => byTestId("create-retry"))
+      expect(choice()).toBe("1password")
+    })
+
     it("stays off when another manager answered without key material, and for another refusal", async () => {
       h.probeLaptopCreation.mockResolvedValue(WINDOWS)
-      install({ create: async () => null })
+      install({ create: onePasswordCreate() })
       refusedCreate(GPM_ANSWER, () => noKey("gpm"))
-      await toLocalSheet()
-      await press(() => byTestId("phone-steps-local"))
+      await toLocalSheet("1password")
+      await continueAtSteps()
       expect(byTestId("create-refused")!.dataset.reason).toBe("NoPrfError")
       expect(advice()).toBeNull()
 
@@ -772,16 +969,17 @@ describe("signup create on this computer — passkey telemetry", () => {
         markPasskeyWritten(new LaptopPasskeyRefusedError("unnamed", ["gpm", "1password"])),
       )
       await press(() => byTestId("create-retry"))
-      await press(() => byTestId("phone-steps-local"))
+      expect(choice()).toBe("1password")
+      await continueAtSteps()
       expect(byTestId("create-refused")!.dataset.reason).toBe("LaptopPasskeyRefusedError")
       expect(advice()).toBeNull()
     })
 
     it("stays off on a Mac row, and on a Windows row that does not admit 1Password", async () => {
-      install({ create: async () => null })
+      install({ create: onePasswordCreate() })
       refusedCreate(ONEPASSWORD_ANSWER, () => noKey())
       await toLocalSheet()
-      await press(() => byTestId("phone-steps-local"))
+      await continueAtSteps()
       expect(byTestId("create-refused")!.dataset.reason).toBe("NoPrfError")
       expect(advice()).toBeNull()
 
@@ -792,18 +990,18 @@ describe("signup create on this computer — passkey telemetry", () => {
       })
       refusedCreate(ONEPASSWORD_ANSWER, () => noKey())
       await press(() => byTestId("create-retry"))
-      await press(() => byTestId("phone-steps-local"))
+      await continueAtSteps()
       expect(byTestId("create-refused")!.dataset.reason).toBe("NoPrfError")
       expect(advice()).toBeNull()
     })
 
     it("stays off on the phone route", async () => {
       h.probeLaptopCreation.mockResolvedValue(WINDOWS)
-      install({ create: async () => null })
+      install({ create: onePasswordCreate() })
       refusedCreate(ONEPASSWORD_ANSWER, () => noKey())
-      await toLocalSheet()
-      await press(() => byTestId("phone-steps-phone"))
-      await press(() => byTestId("phone-steps-continue"))
+      await toLocalSheet("1password")
+      await pick("phone")
+      await continueAtSteps()
       expect(createRoute(0)).toBe("phone")
       expect(byTestId("create-refused")!.dataset.reason).toBe("NoPrfError")
       expect(advice()).toBeNull()
@@ -830,7 +1028,7 @@ describe("signup create on this computer — passkey telemetry", () => {
     beforeEach(() => {
       h.probeLaptopCreation.mockResolvedValue(ONEPASSWORD_ONLY)
       Object.defineProperty(navigator, "credentials", {
-        value: { create: async () => null },
+        value: { create: onePasswordCreate() },
         configurable: true,
       })
     })
@@ -841,44 +1039,118 @@ describe("signup create on this computer — passkey telemetry", () => {
 
     it("on a row with 1Password alone, the card's Try again opens the sheet on the phone", async () => {
       refusedCreate({ ...GPM_ANSWER, aaguid: undefined }, otherManager)
-      await toLocalSheet()
-      await press(() => byTestId("phone-steps-local"))
+      await toLocalSheet("1password")
+      await continueAtSteps()
       expect(byTestId("create-refused")!.dataset.reason).toBe("UnsupportedProviderError")
       for (let i = 0; i <= LOCAL_REFUSAL_LIMIT; i++) noteLocalRefusal()
       const next = heldCreate()
       await press(() => byTestId("create-retry"))
-      expect(variant()).toBe("phone")
+      expect(choice()).toBe("phone")
       expect(byTestId("phone-steps-steered")!.textContent).toBe(
         PHONE_STEPS_COPY.local.steered.phone,
       )
-      expect(byTestId("phone-steps-switch-local")).not.toBeNull()
+      // 1Password is still a pick away.
+      expect(await offered()).toEqual(["1password", "phone", "key"])
       await continueAtSteps()
       expect(createRoute(1)).toBe("phone")
       await act(async () => next.request!.answer())
       await flush()
     })
 
-    it("at the limit, Try again still opens on this computer", async () => {
+    it("on Firefox's row with 1Password alone, Try again opens on the phone or a key", async () => {
+      const ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(WINDOWS_FIREFOX_UA)
+      h.probeLaptopCreation.mockResolvedValue({ ...ONEPASSWORD_ONLY, row: "windowsFirefox" })
+      try {
+        refusedCreate({ ...GPM_ANSWER, aaguid: undefined }, otherManager)
+        await toLocalSheet("1password")
+        await continueAtSteps()
+        for (let i = 0; i <= LOCAL_REFUSAL_LIMIT; i++) noteLocalRefusal()
+        await press(() => byTestId("create-retry"))
+        expect(choice()).toBe("phone-or-key")
+        expect(byTestId("phone-steps-steered")).not.toBeNull()
+      } finally {
+        ua.mockRestore()
+      }
+    })
+
+    it("on a row with this computer's own manager, Try again keeps it and says why", async () => {
+      h.probeLaptopCreation.mockResolvedValue(WINDOWS)
       refusedCreate({ ...GPM_ANSWER, aaguid: undefined }, otherManager)
-      await toLocalSheet()
-      await press(() => byTestId("phone-steps-local"))
+      await toLocalSheet("1password")
+      await continueAtSteps()
+      for (let i = 0; i <= LOCAL_REFUSAL_LIMIT; i++) noteLocalRefusal()
+      await press(() => byTestId("create-retry"))
+      expect(choice()).toBe("computer")
+      expect(byTestId("phone-steps-steered")).toBeNull()
+      expect(byTestId("phone-steps-advice")!.textContent).toContain(
+        PHONE_STEPS_COPY.local.refusedOften,
+      )
+    })
+
+    it("over the limit, the card's phone exit and a closed phone prompt keep the phone", async () => {
+      h.probeLaptopCreation.mockResolvedValue(WINDOWS)
+      for (let i = 0; i <= LOCAL_REFUSAL_LIMIT; i++) noteLocalRefusal()
+      refusedCreate({ ...GPM_ANSWER, aaguid: undefined }, otherManager)
+      await toLocalSheet("computer")
+      await continueAtSteps()
+      await press(() => byTestId("passkey-phone"))
+      expect(choice()).toBe("phone")
+      expect(byTestId("phone-steps-steered")).toBeNull()
+      closedCreate()
+      await continueAtSteps()
+      expect(createRoute(1)).toBe("phone")
+      expect(choice()).toBe("phone")
+      expect(byTestId("phone-steps-unfinished")).toBeNull()
+    })
+
+    it("at the limit, Try again still opens on 1Password", async () => {
+      refusedCreate({ ...GPM_ANSWER, aaguid: undefined }, otherManager)
+      await toLocalSheet("1password")
+      await continueAtSteps()
       for (let i = 0; i < LOCAL_REFUSAL_LIMIT; i++) noteLocalRefusal()
       await press(() => byTestId("create-retry"))
-      expect(variant()).toBe("local")
+      expect(choice()).toBe("1password")
       expect(byTestId("phone-steps-steered")).toBeNull()
+    })
+
+    it("a closed 1Password prompt re-opens on 1Password, saying so, past the limit too", async () => {
+      for (let i = 0; i <= LOCAL_REFUSAL_LIMIT; i++) noteLocalRefusal()
+      closedCreate()
+      await toLocalSheet("phone")
+      await pick("1password")
+      await continueAtSteps()
+      expect(h.useLaptopCreation).toHaveBeenLastCalledWith(ONEPASSWORD_ONLY, "1password")
+      expect(createRoute(0)).toBe("this-device")
+      expect(choice()).toBe("1password")
+      expect(byTestId("phone-steps-unfinished")).not.toBeNull()
+      expect(byTestId("phone-steps-steered")).toBeNull()
+    })
+
+    it("an extension that appears after the sheet opened moves nothing", async () => {
+      Object.defineProperty(navigator, "credentials", {
+        value: { create: nativeCreate },
+        configurable: true,
+      })
+      await toLocalSheet("phone")
+      Object.defineProperty(navigator, "credentials", {
+        value: { create: onePasswordCreate() },
+        configurable: true,
+      })
+      expect(await offered()).toEqual(["phone", "key"])
+      expect(choice()).toBe("phone")
     })
   })
 
-  it("the refusal's phone exit re-opens the sheet on the phone, with Back to this computer", async () => {
+  it("the refusal's phone exit re-opens the sheet on the phone, with this computer a pick away", async () => {
     refusedCreate(APPLE_ANSWER, () =>
       markPasskeyWritten(new LaptopPasskeyRefusedError("apple", ["gpm"])),
     )
     await toLocalSheet()
-    await press(() => byTestId("phone-steps-local"))
+    await continueAtSteps()
     const next = heldCreate()
     await press(() => byTestId("passkey-phone"))
-    expect(variant()).toBe("phone")
-    expect(byTestId("phone-steps-back")).not.toBeNull()
+    expect(choice()).toBe("phone")
+    expect(await offered()).toEqual(["computer", "phone", "key"])
     await continueAtSteps()
     expect(createRoute(1)).toBe("phone")
     await act(async () => next.request!.answer())
@@ -892,8 +1164,8 @@ describe("signup create on this computer — passkey telemetry", () => {
       markPasskeyWritten(new LaptopPasskeyRefusedError("apple", ["gpm"])),
     )
     await toLocalSheet()
-    expect(byTestId("phone-steps-phone")).toBeNull()
-    await press(() => byTestId("phone-steps-local"))
+    expect(await offered()).toEqual(["computer", "key"])
+    await continueAtSteps()
     expect(byTestId("create-refused")).not.toBeNull()
     expect(byTestId("passkey-phone")).toBeNull()
   })
@@ -901,18 +1173,18 @@ describe("signup create on this computer — passkey telemetry", () => {
   it("a prompt closed on this computer with nothing made re-opens the sheet, saying so", async () => {
     closedCreate()
     await toLocalSheet()
-    await press(() => byTestId("phone-steps-local"))
+    await continueAtSteps()
     // No card, no error line: the sheet again, on this computer, with the unfinished line.
     expect(byTestId("create-refused")).toBeNull()
     expect(container.textContent).not.toContain("Nothing was created")
-    expect(variant()).toBe("local")
+    expect(choice()).toBe("computer")
     expect(byTestId("phone-steps-unfinished")).not.toBeNull()
     expect(events()).toEqual([
       expect.objectContaining({ ceremony: "create", reason: "prompt_closed", prompts: "1" }),
     ])
     // The next pick is a new attempt.
     const next = heldCreate()
-    await press(() => byTestId("phone-steps-local"))
+    await continueAtSteps()
     expect(h.createAccount).toHaveBeenCalledTimes(2)
     await act(async () => next.request!.answer(GPM_ANSWER))
     await flush()
@@ -920,13 +1192,14 @@ describe("signup create on this computer — passkey telemetry", () => {
     expect(events()[1]).toMatchObject({ outcome: "succeeded", attempt: "2" })
   })
 
-  it("a closed prompt on the phone route goes back to the phone variant, with no error", async () => {
+  it("a closed prompt on the phone route goes back to the phone, with no error", async () => {
     closedCreate()
     await toLocalSheet()
-    await press(() => byTestId("phone-steps-phone"))
+    await pick("phone")
     await continueAtSteps()
     expect(container.querySelector(".ww-invite-modal-error")).toBeNull()
-    expect(variant()).toBe("phone")
+    expect(choice()).toBe("phone")
+    expect(byTestId("phone-steps-unfinished")).toBeNull()
     expect(byTestId("create-refused")).toBeNull()
   })
 
@@ -935,7 +1208,7 @@ describe("signup create on this computer — passkey telemetry", () => {
       markPasskeyWritten(new DOMException("closed", "NotAllowedError")),
     )
     await toLocalSheet()
-    await press(() => byTestId("phone-steps-local"))
+    await continueAtSteps()
     // A passkey exists, so the sheet's unfinished line would mislead: the card says where it is.
     expect(byTestId("phone-steps")).toBeNull()
     const card = byTestId("create-refused")!
@@ -943,31 +1216,165 @@ describe("signup create on this computer — passkey telemetry", () => {
     expect(byTestId("passkey-leftover")).not.toBeNull()
     expect(byTestId("passkey-phone")).not.toBeNull()
     await press(() => byTestId("create-retry"))
-    expect(variant()).toBe("local")
+    expect(choice()).toBe("computer")
     expect(byTestId("phone-steps-unfinished")).toBeNull()
   })
 
   it.each(["ok", "no-hybrid"] as const)(
-    "a refused key attempt's Try again re-opens the key variant, whose Back returns where it came from (reach %s)",
+    "a refused key attempt's Try again re-opens on the key, with this computer a pick away (reach %s)",
     async (reach) => {
       h.probePhoneReach.mockResolvedValue(reach)
       refusedCreate({ authenticatorAttachment: "cross-platform", backupEligible: false }, () =>
         markPasskeyWritten(new NoPrfError()),
       )
       await toLocalSheet()
-      await press(() => byTestId("phone-steps-security-key"))
-      expect(variant()).toBe("key")
+      await pick("key")
+      expect(choice()).toBe("key")
       await continueAtSteps()
       expect(createRoute(0)).toBe("security-key")
       expect(byTestId("create-refused")).not.toBeNull()
       expect(byTestId("passkey-phone")).toBeNull()
       await press(() => byTestId("create-retry"))
-      expect(variant()).toBe("key")
-      expect(byTestId("phone-steps-back")!.getAttribute("aria-label")).toBe("Back")
-      await press(() => byTestId("phone-steps-back"))
-      expect(variant()).toBe("local")
+      expect(choice()).toBe("key")
+      await pick("computer")
+      expect(choice()).toBe("computer")
     },
   )
+
+  it("a key answering under This computer is reported as a security key", async () => {
+    const held = heldCreate()
+    await toLocalSheet()
+    await continueAtSteps()
+    expect(createRoute(0)).toBe("this-device")
+    await act(async () =>
+      held.request!.answer({
+        authenticatorAttachment: "cross-platform",
+        backupEligible: false,
+        transports: ["usb"],
+      }),
+    )
+    await flush()
+    expect(events()).toEqual([
+      expect.objectContaining({ ceremony: "create", outcome: "succeeded", route: "security_key" }),
+    ])
+  })
+
+  describe("the picked option's advice, on Windows Chrome", () => {
+    const WINDOWS_CHROME_UA =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+    const advice = () => byTestId("phone-steps-advice")!
+    let ua: { mockRestore: () => void }
+    beforeEach(() => {
+      ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(WINDOWS_CHROME_UA)
+      h.probeLaptopCreation.mockResolvedValue(WINDOWS)
+    })
+    afterEach(() => ua.mockRestore())
+
+    it("links the supported passkeys under Continue, with no tip to open", async () => {
+      await toLocalSheet()
+      expect(byTestId("phone-steps-supported")).toBeNull()
+      expect(byTestId("phone-steps-chrome-tip")).toBeNull()
+      const docs = byTestId("phone-steps-docs") as HTMLAnchorElement
+      expect(docs.textContent).toBe(PHONE_STEPS_COPY.local.docs.label)
+      expect(docs.href).toContain(`/docs/passkeys#${PHONE_STEPS_COPY.local.docs.anchor}`)
+    })
+
+    it("replaces the advice in its live region as the pick changes, leaving focus on the picker", async () => {
+      await toLocalSheet()
+      expect(advice().getAttribute("aria-live")).toBe("polite")
+      expect(advice().textContent).toBe(PHONE_STEPS_COPY.local.installExtension)
+      await pick("phone")
+      expect(advice().textContent).toBe(PHONE_HELP_COPY.windows)
+      expect(document.activeElement).toBe(byTestId("phone-steps-choice"))
+      expect(byTestId("phone-steps-key-warning")).toBeNull()
+      await pick("key")
+      expect(advice().textContent).toBe("")
+      // The key warning is a line of its own, outside the live region.
+      const warning = byTestId("phone-steps-key-warning")!
+      expect(advice().contains(warning)).toBe(false)
+      expect(warning.textContent).toContain(SIGN_UP_SHEET_COPY.keyWarning.note)
+    })
+
+    it("Escape closes the key warning's tip and nothing else", async () => {
+      await toLocalSheet()
+      await pick("key")
+      const row = byTestId("phone-steps-key-warning")!
+      const label = row.querySelector("button")!
+      await act(async () => label.click())
+      expect(row.dataset.open).toBeDefined()
+      label.focus()
+      await act(async () => {
+        label.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
+      })
+      await flush()
+      expect(row.dataset.open).toBeUndefined()
+      expect(document.activeElement).toBe(label)
+      expect(byTestId("phone-steps")).not.toBeNull()
+      expect(closeButton()).not.toBeNull()
+    })
+  })
+})
+
+/** Windows and Linux Firefox sign up in 1Password through its extension, or on another device. */
+describe("signup create in Firefox on Windows", () => {
+  const FIREFOX_ROW: LaptopCreation = {
+    local: true,
+    os: "windows",
+    row: "windowsFirefox",
+    managers: ["1password"],
+    withdrawn: [],
+    chromeTip: "gpm",
+  }
+  const credentials = Object.getOwnPropertyDescriptor(navigator, "credentials")
+  let ua: { mockRestore: () => void }
+  beforeEach(() => {
+    h.createAccount.mockReset()
+    ua = vi.spyOn(navigator, "userAgent", "get").mockReturnValue(WINDOWS_FIREFOX_UA)
+    h.probePhoneReach.mockResolvedValue("ok")
+    h.probeLaptopCreation.mockResolvedValue(FIREFOX_ROW)
+  })
+  afterEach(() => {
+    ua.mockRestore()
+    if (credentials) Object.defineProperty(navigator, "credentials", credentials)
+    else delete (navigator as { credentials?: unknown }).credentials
+  })
+  const createRoute = () =>
+    (h.createAccount.mock.calls[0]?.[5] as { route?: string } | undefined)?.route
+
+  it("with no extension, offers one card and says how to add 1Password", async () => {
+    heldCreate()
+    await pressLabel("landing-signin")
+    await deposit()
+    expect(choice()).toBe("phone-or-key")
+    expect(byTestId("phone-steps-choice")).toBeNull()
+    expect(byTestId("phone-steps")!.textContent).not.toContain(SIGN_UP_SHEET_COPY.pickerLabel)
+    const install = byTestId("phone-steps-install-extension")!
+    expect(install.textContent).toBe(PHONE_STEPS_COPY.local.installExtension)
+    // The Chrome line speaks to the same user, so it sits just above.
+    const chrome = byTestId("phone-steps-chrome-tip")!
+    const { lead, gpm } = PHONE_STEPS_COPY.chromeTip
+    expect(chrome.querySelector("strong")!.textContent).toBe(lead)
+    expect(chrome.textContent).toBe(`${lead} ${gpm}`)
+    expect(chrome.compareDocumentPosition(install) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
+    await continueAtSteps()
+    expect(createRoute()).toBe("phone")
+    expect(h.useLaptopCreation).toHaveBeenLastCalledWith(FIREFOX_ROW, "phone-or-key")
+  })
+
+  it("with 1Password's extension, opens on 1Password", async () => {
+    Object.defineProperty(navigator, "credentials", {
+      value: { create: onePasswordCreate() },
+      configurable: true,
+    })
+    heldCreate()
+    await pressLabel("landing-signin")
+    await deposit()
+    expect(choice()).toBe("1password")
+    expect(await offered()).toEqual(["1password", "phone-or-key"])
+    await continueAtSteps()
+    expect(createRoute()).toBe("this-device")
+    expect(h.useLaptopCreation).toHaveBeenLastCalledWith(FIREFOX_ROW, "1password")
+  })
 })
 
 /**

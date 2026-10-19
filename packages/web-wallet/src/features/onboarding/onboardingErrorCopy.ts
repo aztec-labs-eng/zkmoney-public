@@ -46,6 +46,37 @@ export const enterErrorMessage = (err: unknown): string => {
   return withCause("Couldn't enter with your passkey", err)
 }
 
+const OTHER_VERSION_LINK =
+  "Couldn't finish signup with this payment. Its link was made with another version of the app."
+const TICKET_RETRY_SOON =
+  "Couldn't finish signup with this payment right now. Try again in a moment."
+
+/** The golden ticket's circuit and service refusals, in words a payer can act on. */
+const TICKET_REFUSALS: [string, string][] = [
+  ["escrow class is not a paylink", OTHER_VERSION_LINK],
+  ["ticket_class_unreviewed", OTHER_VERSION_LINK],
+  ["ticket_classes_unavailable", TICKET_RETRY_SOON],
+  // The chain moved past the proof's root; a fresh proof reads a newer one.
+  ["ticket_root_stale", TICKET_RETRY_SOON],
+  ["ticket_root_mismatch", TICKET_RETRY_SOON],
+  ["ticket_spent", "Couldn't finish signup with this payment. Its free tag was already used."],
+  ["ticket_invalid", "Couldn't finish signup with this payment. Its free tag check didn't pass."],
+  ["ticket_owner_mismatch", "Couldn't finish signup with this payment. Try again."],
+  // Reached after the witness reads passed: the leaf is wrong, not late, so a retry fails too.
+  [
+    "paylink note is not under the root",
+    "Couldn't finish signup with this payment. Its link can't be proven to waive the tag price.",
+  ],
+  [
+    "paylink amount below threshold",
+    "Couldn't finish signup with this payment. It's below the amount that waives the tag price.",
+  ],
+  [
+    "paylink token mismatch",
+    "Couldn't finish signup with this payment. It's in a token that can't waive the tag price.",
+  ],
+]
+
 const clearsAt = (untilSeconds: number | undefined, nowMs: number): string => {
   const untilMs = untilSeconds === undefined ? NaN : untilSeconds * 1000
   if (!(untilMs > nowMs)) return "within an hour"
@@ -78,6 +109,12 @@ export const claimErrorMessage = (
     return withCause("Your payment isn't visible on the network yet. Try again in a moment", err)
   }
   const cause = errorSummary(err)
+  const refusal = TICKET_REFUSALS.find(([message]) => cause.includes(message))
+  if (refusal) return refusal[1]
+  // A circuit assert the prover could not name.
+  if (/^Assertion failed\b/.test(cause)) {
+    return "Couldn't claim your tag. Your payment couldn't be proven. Try again."
+  }
   if (
     /cannot cover the account deposit|did not waive the tag price|not issuing paylink tickets|below the amount that waives/.test(
       cause,

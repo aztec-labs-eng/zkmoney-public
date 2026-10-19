@@ -46,7 +46,9 @@ vi.mock("@obsidion/web-ds", () => ({
   GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
   Icon: ({ name }: { name: string }) => <i data-icon={name} />,
   IconCircle: () => null,
-  PrimaryGradientButton: ({ title }: { title: string }) => <button>{title}</button>,
+  PrimaryGradientButton: ({ title, onClick }: { title: string; onClick?: () => void }) => (
+    <button onClick={onClick}>{title}</button>
+  ),
   Spinner: () => <i data-icon="spinner" />,
   StatusBadge: ({ label }: { label: string }) => <span data-testid="status-badge">{label}</span>,
   TopNavIconButton: ({ ariaLabel, onClick }: { ariaLabel: string; onClick: () => void }) => (
@@ -263,7 +265,7 @@ describe("TxDetailModal", () => {
     const keep = () => container.querySelector(".ww-txd__notice--live")
     const safe = () => container.querySelector(".ww-txd__notice--safe")
     expect(keep()?.textContent).toContain("Keep this tab open until it's finished creation")
-    expect(keep()?.querySelector('[data-icon="spinner"]')).not.toBeNull()
+    expect(keep()?.querySelector('[data-icon="spinner"]')).toBeNull()
     expect(safe()).toBeNull()
     expect(container.textContent).toContain("Copy paylink")
     expect(container.querySelector(".ww-pay__title")?.textContent).toBe("Paylink")
@@ -315,6 +317,35 @@ describe("TxDetailModal", () => {
     await act(async () => clearRefundInFlight(secret))
     expect(value("Status")).toBe("Unclaimed")
     expect(container.textContent).toContain("Copy paylink")
+  })
+
+  it("creator paylink: copying it closes the sheet, a refused copy keeps it open", async () => {
+    const copyButton = () =>
+      [...document.querySelectorAll("button")].find((b) => b.textContent === "Copy paylink")!
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true })
+    const onClose = vi.fn()
+    await getOperationStore().begin({
+      operationId: "op-copy",
+      flow: "paylink-create",
+      summary: "$25",
+      scope: null,
+    })
+    const row = linkRow("pending", { operationId: "op-copy" })
+    await show(<TxDetailModal row={row} onClose={onClose} />)
+    await act(async () => copyButton().click())
+    expect(writeText).toHaveBeenCalledWith(paylink)
+    expect(onClose).toHaveBeenCalledOnce()
+
+    writeText.mockRejectedValue(new Error("denied"))
+    document.execCommand = () => false
+    onClose.mockClear()
+    await show(<></>)
+    await show(<TxDetailModal row={row} onClose={onClose} />)
+    await act(async () => copyButton().click())
+    expect(onClose).not.toHaveBeenCalled()
+    Reflect.deleteProperty(navigator, "clipboard")
+    await getOperationStore().remove("op-copy")
   })
 
   it("creator paylink with a refund in flight: Cancelling, and nothing to tap", async () => {

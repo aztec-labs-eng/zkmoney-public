@@ -18,10 +18,12 @@ import { failureCode, fireEvent } from "../../lib/analytics"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
 import {
   NoWalletForPasskeyError,
+  PHONE_STEPS_COPY,
   currentDevicePosture,
+  currentMacCopyMayBeWrong,
   currentUserAgentInfoSync,
   type ExtensionAdvice,
-  extensionAnswersPasskeys,
+  passkeyExtensionFor,
   inAppBrowserRefusal,
   isPasskeyPolicyError,
   type PasskeyAttemptHandle,
@@ -55,7 +57,11 @@ import {
 } from "../identity/PasskeyRefusal"
 import { GateStep } from "../identity/PhoneSteps"
 import { saveWalletIdentity } from "../identity/walletIdentity"
-import { mismatchVerdictOf, type Observation } from "../../platform/auth/WebAlphaAuthService"
+import {
+  mismatchVerdictOf,
+  observedOf,
+  type Observation,
+} from "../../platform/auth/WebAlphaAuthService"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
 import {
   listRetiredUsertagCandidates,
@@ -65,6 +71,8 @@ import {
 } from "../../platform/auth/WebPasskeyIdentityMap"
 import { resolveSignInTag } from "../contacts/registryResolution"
 import { peekClaimStash } from "../paylink/claimStash"
+import { linkIdentity } from "../paylink/linkIdentity"
+import { isTicketSignupCreating, loadTicketSignupAttempt } from "../paylink/ticketSignupAccount"
 import { hasConnectStash } from "../contacts/connectReceive"
 import {
   BY_TAG_FAILURE_CODES,
@@ -119,11 +127,11 @@ type Entry = {
   moreKeys?: boolean
 }
 
-/** What the refusal card's retry re-runs: whichever action ran last. */
+/** What the refusal card's retry re-runs: whichever action ran last, steered to the phone or not. */
 type LastAction =
   | { kind: "probe" }
-  | { kind: "enter" }
-  | ({ kind: "pinned" } & Found)
+  | { kind: "enter"; phone?: boolean }
+  | ({ kind: "pinned"; phone?: boolean } & Found)
   | { kind: "bound-grant"; result: Unclaimed; entry: Omit<Entry, "op"> }
   | { kind: "nameless"; result: Unclaimed; entry: Omit<Entry, "op"> }
 
@@ -161,8 +169,8 @@ const NO_RETRY = new Set<string>([
 /**
  * A Windows sign-in refused for want of key material, where this computer answered, gets the
  * 1Password advice: its Windows app returns none, its browser extension does. A sign-in cannot
- * name what answered, so the line is advice beside the refusal; its wording follows whether an
- * extension answers the page's sign-ins.
+ * name what answered, so the line is advice beside the refusal; its wording follows whether the
+ * script answering the page's passkey creation is 1Password's.
  */
 function extensionAdviceFor(e: {
   name: string
@@ -170,7 +178,25 @@ function extensionAdviceFor(e: {
 }): ExtensionAdvice | undefined {
   if (e.name !== "NoPrfError" || e.observed?.attachment !== "platform") return undefined
   if (currentUserAgentInfoSync().osFamily !== "windows") return undefined
-  return extensionAnswersPasskeys("get") ? "use" : "install"
+  return passkeyExtensionFor() === "1password" ? "use" : "install"
+}
+
+/**
+ * A card for a miss that may be this Mac's own copy returning the wrong key suggests a macOS
+ * update and, where `lead`, leads with the phone.
+ */
+const macHelpFor = (observed: Observation | undefined, lead = false): Partial<Refusal> =>
+  currentMacCopyMayBeWrong(observed) ? { macUpdate: true, ...(lead ? { macPhone: true } : {}) } : {}
+
+/** The card for a record this browser holds that the passkey no longer reproduces. */
+function mismatchRefusal(e: unknown): Refusal {
+  const verdict = mismatchVerdictOf(e)
+  return {
+    name: STORED_ADDRESS_MISMATCH,
+    message: "",
+    verdict,
+    ...macHelpFor(observedOf(e), verdict === "wrong-key"),
+  }
 }
 
 /** The card each tag-diagnosis verdict shows. The chain marks no root, so it never asserts divergence. */
@@ -402,9 +428,14 @@ export function EnterAppScreen() {
   )
 
   // A refusal is not an error to report, but it is a failed entry for the funnel.
-  const refuse = (e: Error, action: Entry["action"] = "enter") => {
+  const refuse = (e: Error, action: Entry["action"] = "enter", extra?: Partial<Refusal>) => {
     fireEvent("action_failed", { action, code: failureCode(e) })
-    setRefusal({ name: e.name, message: e.message, extensionAdvice: extensionAdviceFor(e) })
+    setRefusal({
+      name: e.name,
+      message: e.message,
+      extensionAdvice: extensionAdviceFor(e),
+      ...extra,
+    })
   }
   const failByTag = (outcome: keyof typeof BY_TAG_FAILURE_CODES) =>
     fireEvent("action_failed", { action: "enter:by-tag", code: BY_TAG_FAILURE_CODES[outcome] })
@@ -578,8 +609,30 @@ export function EnterAppScreen() {
     return true
   }
 
-  /** A nameless account's way on: its reservation, else the signup it continues. */
+  /**
+   * The stashed link's signup this passkey's account was made for, picked back up on that link, where
+   * the claim keeps its ticket.
+   */
+  const stashedSignupLink = (result: Unclaimed): string | undefined => {
+    const fragment = peekClaimStash()
+    if (!fragment) return undefined
+    try {
+      const attempt = loadTicketSignupAttempt(config.rpId, linkIdentity(fragment))
+      if (!attempt || isTicketSignupCreating(attempt)) return undefined
+      const address = result.account.getAddress().toString().toLowerCase()
+      return attempt.l2Address.toLowerCase() === address ? fragment : undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /** A nameless account's way on: its link's signup, its reservation, else the signup it continues. */
   const settleNameless = async (result: Unclaimed, entry: Entry) => {
+    const fragment = stashedSignupLink(result)
+    if (fragment) {
+      navigate(`/link#${fragment}`, { replace: true })
+      return
+    }
     if (await resumeReservation(result, entry)) return
     setRefusal({ name: GRANTED_REGISTRATION, message: "" })
   }
@@ -610,7 +663,9 @@ export function EnterAppScreen() {
     const card = missDiagnosisCard(diagnosis, tag)
     if (!card) return false
     fireEvent("action_failed", { action: entry.action, code: BY_TAG_FAILURE_CODES[diagnosis] })
-    setRefusal(card)
+    setRefusal(
+      diagnosis === "NOT_REPRODUCED_HERE" ? { ...card, ...macHelpFor(result.observed) } : card,
+    )
     return true
   }
 
@@ -759,7 +814,12 @@ export function EnterAppScreen() {
         // this browser holds that no longer reproduces keeps its verdict.
         if (result.storedAddressMismatch && result.verdict) {
           failByTag("PASSKEY_KEY_MISMATCH")
-          setRefusal({ name: STORED_ADDRESS_MISMATCH, message: "", verdict: result.verdict })
+          setRefusal({
+            name: STORED_ADDRESS_MISMATCH,
+            message: "",
+            verdict: result.verdict,
+            ...macHelpFor(result.observed, result.verdict === "wrong-key"),
+          })
           return
         }
         // A sole key is proven only by a read that found one; an entry with no read proves nothing.
@@ -771,7 +831,12 @@ export function EnterAppScreen() {
         // This computer's copy of the account's one key answered with the wrong value: the same card
         // as a record mismatch, whose way on is another device.
         if (diagnosis === "LOCAL_COPY_WRONG_KEY") {
-          setRefusal({ name: STORED_ADDRESS_MISMATCH, message: "", verdict: "wrong-key" })
+          setRefusal({
+            name: STORED_ADDRESS_MISMATCH,
+            message: "",
+            verdict: "wrong-key",
+            ...macHelpFor(result.observed, true),
+          })
           return
         }
         setRefusal({
@@ -780,6 +845,7 @@ export function EnterAppScreen() {
             diagnosis === "REGISTRY_UNANCHORED"
               ? `Your passkey reproduces @${entry.tag}'s account, but its record couldn't be confirmed. Try again.`
               : `This passkey's key doesn't reproduce @${entry.tag}'s account. Go back and check the tag, or choose Show passkeys and pick your phone (scan the QR code with it) or your security key in the browser's prompt.`,
+          ...(diagnosis === "PASSKEY_KEY_MISMATCH" ? macHelpFor(result.observed) : {}),
         })
         return
       }
@@ -792,7 +858,7 @@ export function EnterAppScreen() {
         setRefusal({ name: "error", message: NETWORK_MESSAGE })
         return
       }
-      refuse(new NoWalletForPasskeyError(), entry.action)
+      refuse(new NoWalletForPasskeyError(), entry.action, macHelpFor(result.observed, true))
     } else if (result.reason === "confirm") {
       claimRef.current = result.claim
       accountRef.current = result.account
@@ -867,7 +933,7 @@ export function EnterAppScreen() {
         if (op.signal.aborted || isGateCancelled(e)) return
         if (e instanceof StoredAddressMismatchError) {
           fireEvent("action_failed", { action: "enter", code: failureCode(e) })
-          setRefusal({ name: STORED_ADDRESS_MISMATCH, message: "", verdict: mismatchVerdictOf(e) })
+          setRefusal(mismatchRefusal(e))
           return
         }
         if (isPasskeyPolicyError(e)) {
@@ -891,12 +957,15 @@ export function EnterAppScreen() {
     return { op, attempt }
   }
 
-  /** The open sign-in: the browser's own chooser. Runs on a tap, so it restores no cache. */
-  const enter = () => {
+  /**
+   * The open sign-in: the browser's own chooser. Runs on a tap, so it restores no cache. `phone`
+   * steers the prompt to the phone.
+   */
+  const enter = (phone = false) => {
     const attempt = passkeyTelemetry.begin({ ceremony: "sign_in", flow: "enter" })
     const op = startOp(attempt)
     const tag = selectedTag
-    lastAction.current = { kind: "enter" }
+    lastAction.current = { kind: "enter", phone }
     setRefusal(undefined)
     setStart(false)
     void run(async () => {
@@ -909,6 +978,7 @@ export function EnterAppScreen() {
               ...(boundGrantToken ? { grantToken: boundGrantToken } : {}),
               gate: promptGate,
               chooser: chooserRef.current,
+              ...(phone ? { phone } : {}),
               strictTag: strict,
               signal: op.signal,
               restoreCache: false,
@@ -939,7 +1009,7 @@ export function EnterAppScreen() {
         // chosen by the verdict.
         if (e instanceof StoredAddressMismatchError) {
           fireEvent("action_failed", { action: "enter", code: failureCode(e) })
-          setRefusal({ name: STORED_ADDRESS_MISMATCH, message: "", verdict: mismatchVerdictOf(e) })
+          setRefusal(mismatchRefusal(e))
           return
         }
         if (isPasskeyPolicyError(e)) {
@@ -966,11 +1036,21 @@ export function EnterAppScreen() {
     return { op, attempt }
   }
 
-  /** The pinned sign-in for what a row or the field named; opens on that tap, restoring no cache. */
-  const pinned = (target: Found) => {
+  /**
+   * The pinned sign-in for what a row or the field named; opens on that tap, restoring no cache.
+   * `phone` steers the prompt to the phone.
+   */
+  const pinned = (target: Found, phone = false) => {
     const attempt = passkeyTelemetry.begin({ ceremony: "sign_in", flow: "enter" })
     const op = startOp(attempt)
-    lastAction.current = { kind: "pinned", ...target }
+    lastAction.current = {
+      kind: "pinned",
+      tag: target.tag,
+      candidate: target.candidate,
+      l2Address: target.l2Address,
+      ...(target.moreKeys !== undefined ? { moreKeys: target.moreKeys } : {}),
+      phone,
+    }
     setSelectedTag(target.tag)
     setRefusal(undefined)
     setStart(false)
@@ -985,6 +1065,7 @@ export function EnterAppScreen() {
                 ...(boundGrantToken ? { grantToken: boundGrantToken } : {}),
                 gate: promptGate,
                 hints: target.candidate,
+                ...(phone ? { phone } : {}),
                 signal: op.signal,
                 restoreCache: false,
                 own,
@@ -1061,10 +1142,18 @@ export function EnterAppScreen() {
   const rerun = () => {
     const last = lastAction.current
     if (last.kind === "probe") probe()
-    else if (last.kind === "enter") enter()
+    else if (last.kind === "enter") enter(last.phone)
     else if (last.kind === "bound-grant") retryBoundGrant(last)
     else if (last.kind === "nameless") settleNamelessAgain(last)
-    else pinned(last)
+    else pinned(last, last.phone)
+  }
+
+  /** The way on from a miss that may be this Mac's own copy: what ran last, steered to the phone. */
+  const usePhone = () => {
+    dropResolve()
+    const last = lastAction.current
+    if (last.kind === "pinned") pinned(last, true)
+    else enter(true)
   }
 
   // The screen's three ways in. Each ends the resolve first: nothing it answers may land on a
@@ -1201,8 +1290,14 @@ export function EnterAppScreen() {
         ? promptCauses(currentDevicePosture())
         : undefined
     // A retry runs the same attempt again; where that could only end the same way, the screen is
-    // where the user tries again instead.
-    const retryable = refusal.probeCommitted || refusal.committed || !NO_RETRY.has(refusal.name)
+    // where the user tries again instead. A phone attempt that offered nothing may still reach it.
+    const last = lastAction.current
+    const phoneOffered =
+      (last.kind === "enter" || last.kind === "pinned") &&
+      last.phone === true &&
+      (notOffered || refusal.name === PASSKEY_NOT_ON_DEVICE)
+    const retryable =
+      refusal.probeCommitted || refusal.committed || !NO_RETRY.has(refusal.name) || phoneOffered
     return (
       <InvitationChrome landing>
         <div className="ww-passkey-sheet">
@@ -1215,7 +1310,9 @@ export function EnterAppScreen() {
             verdict={refusal.verdict}
             reportContext="enter"
             primary={
-              wrongKey
+              refusal.macPhone
+                ? { title: PHONE_STEPS_COPY.noPhone.back, onClick: usePhone, testId: "enter-phone" }
+                : wrongKey
                 ? { title: "Show passkeys", onClick: showPasskeys, testId: "enter-show-passkeys" }
                 : resumeTag
                 ? {
@@ -1231,7 +1328,12 @@ export function EnterAppScreen() {
               resumeTag ? (
                 pill("Back", "enter-back", back)
               ) : resuming ? (
-                pill("Continue signing up", "enter-cancel", () => claimRoute("?resume=1"))
+                // A passkey picked by mistake, such as another signup's, needs a way to a different one.
+                <>
+                  {pill("Continue signing up", "enter-continue", () => claimRoute("?resume=1"))}
+                  {pill("Show passkeys", "enter-show-passkeys", showPasskeys)}
+                  {pill("Cancel sign-in", "enter-cancel", cancelSignIn)}
+                </>
               ) : refusal.committed ? (
                 <>
                   {pill("Continue signing up", "enter-continue", continueSignup)}
@@ -1241,6 +1343,7 @@ export function EnterAppScreen() {
                 pill("Cancel sign-in", "enter-cancel", cancelSignIn)
               ) : (
                 <>
+                  {refusal.macPhone && pill("Show passkeys", "enter-show-passkeys", showPasskeys)}
                   {pill("Back", "enter-back", back)}
                   {pill("Cancel sign-in", "enter-cancel", cancelSignIn)}
                 </>

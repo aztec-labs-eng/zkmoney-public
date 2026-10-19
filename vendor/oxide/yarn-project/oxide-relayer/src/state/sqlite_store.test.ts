@@ -53,7 +53,7 @@ describe('SqliteStateStore', () => {
   it('ties the database to one relayer deployment', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'oxide-relayer-state-'));
     const dbPath = path.join(dir, 'state.sqlite3');
-    const coreDeployment: RelayerDeployment = {
+    const bridgeDeployment: RelayerDeployment = {
       chainId: TEST_RELAYER_DEPLOYMENT.chainId,
       portal: TEST_RELAYER_DEPLOYMENT.portal,
       l2Token: TEST_RELAYER_DEPLOYMENT.l2Token,
@@ -61,8 +61,8 @@ describe('SqliteStateStore', () => {
     };
 
     try {
-      const coreStore = await openSqliteStateStore(dbPath, coreDeployment);
-      await coreStore.close();
+      const bridgeStore = await openSqliteStateStore(dbPath, bridgeDeployment);
+      await bridgeStore.close();
 
       const fullStore = await openSqliteStateStore(dbPath, TEST_RELAYER_DEPLOYMENT);
       await fullStore.close();

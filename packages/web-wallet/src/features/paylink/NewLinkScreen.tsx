@@ -40,6 +40,7 @@ import { useBusyLabel } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
 import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { SponsoredActionNotice, useSponsoredActionBlock } from "../allowance/SponsoredActionNotice"
+import { loadWalletIdentity } from "../identity/walletIdentity"
 
 type Phase = "amount" | "options" | "confirm" | "working"
 
@@ -66,6 +67,9 @@ export function NewLinkScreen() {
   const [expiryDays, setExpiryDays] = useState(DEFAULT_CLAIM_WINDOW_DAYS)
   const [protectEnabled, setProtectEnabled] = useState(false)
   const [email, setEmail] = useState("")
+  const [handle] = useState(() => loadWalletIdentity()?.handle)
+  const [showTag, setShowTag] = useState(true)
+  const senderTag = handle && showTag ? handle : undefined
   const [stage, setStage] = useState<CreateStage>("building")
   const [failedOnce, setFailedOnce] = useState(false)
   // Whether the link will carry a cash-out voucher; undefined while the allowance read is in flight.
@@ -162,6 +166,7 @@ export function NewLinkScreen() {
           email: emailLocked ? trimmedEmail : undefined,
           expiryDays,
           memo: note.trim() || undefined,
+          senderTag,
           onLink: (l) => {
             link.current = l
           },
@@ -306,6 +311,14 @@ export function NewLinkScreen() {
                     <Icon name="chevron-down" size={16} color="var(--text-primary)" />
                   </span>
                 </label>
+                {handle && (
+                  <div className="ww-pay__summary">
+                    <div className="ww-pay__protect">
+                      <span>Show my @{handle}</span>
+                      <GradientToggle isOn={showTag} onChange={setShowTag} />
+                    </div>
+                  </div>
+                )}
                 {emailLockedLinksEnabled && (
                   <div className="zkm-field">
                     <span className="zkm-field__label" title="Only the owner of this email can claim">
@@ -360,6 +373,7 @@ export function NewLinkScreen() {
                     <ConfirmationSheetDetailRow label="Validation" value={trimmedEmail} />
                   )}
                   {note.trim() && <ConfirmationSheetDetailRow label="Note" value={note.trim()} />}
+                  {senderTag && <ConfirmationSheetDetailRow label="From" value={`@${senderTag}`} />}
                   <ConfirmationSheetDetailRow
                     label="Recipient"
                     value={

@@ -9,7 +9,12 @@ import type { MetadataMigrationSource, MigrationSourceQuote } from "./MetadataMi
 import type { LiveMetadataMigrationSourceOptions } from "./LiveMetadataMigrationSource.js"
 import { buildClaimSponsorPayload } from "../feePaymentMethod/claimSponsoredCall.js"
 import { claimFpcSponsoredFee } from "../feePaymentMethod/claimFpcBatchGas.js"
-import { readOrdinaryDepositFee } from "./metadataMigration.js"
+import {
+  ApprovalNeededError,
+  MigrationHaltedError,
+  readOrdinaryDepositFee,
+  StalePlanError,
+} from "./metadataMigration.js"
 import {
   migrationDepositCalls,
   migrationSipaCoordinates,
@@ -211,6 +216,7 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
     const { candidates, waiting = 0n, ...limits } = await this.o.runtime.candidates()
     let left = candidates
     let movable = 0n
+    let batches = 0
     for (let minimumNetAmount = minimums.first; ; minimumNetAmount = minimums.later) {
       const batch = selectFrozenBatch({
         ...limits,
@@ -220,10 +226,11 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
       })
       if (!batch) break
       movable += batch.amount
+      batches++
       left = left.filter((c) => !batch.ids.includes(c.id))
     }
     const stranded = left.reduce((sum, c) => sum + BigInt(c.amount), 0n)
-    return { movable, stranded, waiting }
+    return { movable, stranded, waiting, batches }
   }
 
   /** Keys a proof by what it commits to, so a batch stored under another id reuses it. */
@@ -243,12 +250,16 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
       BigInt(batch.exitFee) < 0n ||
       BigInt(batch.amount) <= BigInt(batch.exitFee)
     ) {
-      throw new Error("Stored frozen batch does not match this migration")
+      throw new StalePlanError("Stored frozen batch does not match this migration")
     }
     return batch
   }
 
-  async prepare(recipient: Address, minimumNetAmount: bigint) {
+  async prepare(
+    recipient: Address,
+    minimumNetAmount: bigint,
+    onSelected?: (id: string) => Promise<void>,
+  ) {
     const o = this.o
     await o.runtime.validate(o.destinationAsset)
     // A frozen portal takes no funding cut; the refund pays only the relayer tip.
@@ -264,10 +275,7 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
       )
     const { kind, ids, amount } = selected
     const id = this.proofKey(recipient, kind, ids, String(tip))
-    const built = await o.runtime.build({ kind, ids }, recipient, tip)
-    if (built.amount !== amount) throw new Error("Source proof amount differs from the selection")
-    await this.validateOperation(built.operation, recipient)
-    this.prepared.set(id, built)
+    // Saved before its approval, so a resumed preparation rebuilds this exact challenge.
     if (!(await o.batches.get(id)))
       await o.batches.set(id, {
         binding: this.identity,
@@ -277,7 +285,13 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
         sourceSelection: ids,
         sourceKind: kind,
         fromBlock: String(await o.client.getBlockNumber()),
+        createdAt: Date.now(),
       })
+    await onSelected?.(id)
+    const built = await o.runtime.build({ kind, ids }, recipient, tip)
+    if (built.amount !== amount) throw new Error("Source proof amount differs from the selection")
+    await this.validateOperation(built.operation, recipient)
+    this.prepared.set(id, built)
     return { id, netAmount: amount - tip, operation: built.operation }
   }
 
@@ -287,7 +301,7 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
     const ids = batch.sourceSelection!
     await this.o.runtime.validate(this.o.destinationAsset)
     if (await this.o.runtime.refunded(ids))
-      throw new Error("The selected frozen batch has already been refunded")
+      throw new StalePlanError("The selected frozen batch has already been refunded")
     // A cached proof must not bypass fresh spentness checks when only part of a selection was
     // refunded elsewhere. The aggregate refunded() check above proves only that ALL were spent.
     const { candidates, maxNotesPerBatch, maxBatchAmount } = await this.o.runtime.candidates()
@@ -299,13 +313,13 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
       new Set(ids).size !== ids.length ||
       ids.some((id) => !available.has(id))
     ) {
-      throw new Error("A selected source candidate is no longer refundable")
+      throw new StalePlanError("A selected source candidate is no longer refundable")
     }
     const amount = ids.reduce((sum, id) => sum + available.get(id)!, 0n)
     if (amount !== BigInt(batch.amount) || amount > maxBatchAmount)
-      throw new Error("Restored source selection amount changed")
+      throw new StalePlanError("Restored source selection amount changed")
     if (WITHDRAW_RELAYER_TIP > BigInt(batch.exitFee))
-      throw new Error("The frozen refund relayer tip increased")
+      throw new StalePlanError("The frozen refund relayer tip increased")
     const key = this.proofKey(recipient, kind, ids, batch.exitFee)
     const built =
       this.prepared.get(key) ??
@@ -334,39 +348,142 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
     /* The destination broadcast carries the signed refund. */
   }
 
-  private async nextRemaining() {
+  /** Every saved `remaining-N` still in play, in order; an abandoned one is skipped. */
+  private async remaining(): Promise<{ id: string; batch: MigrationFundingBatch }[]> {
+    const out: { id: string; batch: MigrationFundingBatch }[] = []
     for (let index = 0; ; index++) {
       const id = `remaining-${index}`
       const batch = await this.o.batches.get(id)
-      if (batch) await this.read(id)
-      if (!batch?.received) return { id, batch }
+      if (!batch) return out
+      if (!batch.abandoned) out.push({ id, batch: await this.read(id) })
     }
+  }
+
+  private async nextIndex() {
+    for (let index = 0; ; index++)
+      if (!(await this.o.batches.get(`remaining-${index}`))) return index
   }
 
   private async ordinaryFee() {
     return readOrdinaryDepositFee(this.o.client, this.o.destination)
   }
 
-  async recoverRemaining(): Promise<void> {
+  /**
+   * Plan every later batch and prove it. Each batch's selection, coordinates and recipient are saved
+   * before its approval; unapproved batches go first, so a refused prompt never waits behind rebuilds
+   * of approved ones. Re-running it resumes: saved batches keep their ids, coordinates and recipients,
+   * and only funds no saved batch covers are planned anew.
+   */
+  async prepareRemaining(
+    minimumNetAmount: bigint,
+    opts: {
+      /** The first batch's id: its selection is not a later batch's. */
+      exclude?: string
+      /** Coordinates another SIPA of this migration already uses. */
+      reserved?: { day: number; nonce: number }[]
+      signal?: AbortSignal
+      onApproval?: (approved: number, total: number) => Promise<void>
+    } = {},
+  ): Promise<void> {
     const o = this.o
-    const next = await this.nextRemaining()
-    let batch = next.batch
-    if (!batch) {
-      const fee = await this.ordinaryFee()
-      // Anything no affordable batch can take stays on the source as a stranded residual.
-      if (!(await this.movable(fee + 1n))) return
-      const coordinates = migrationSipaCoordinates()
-      const resolved = await this.resolve(coordinates)
-      const selected = await this.prepare(resolved.sipaAddress, fee + 1n)
-      batch = { ...(await this.read(selected.id)), ...coordinates }
-      await o.batches.set(next.id, batch)
+    await o.runtime.validate(o.destinationAsset)
+    const first = new Set(opts.exclude ? (await this.read(opts.exclude)).sourceSelection! : [])
+    const { candidates, waiting: _, ...limits } = await o.runtime.candidates()
+    const available = new Map(candidates.map((c) => [c.id, BigInt(c.amount)]))
+    // An unsent batch whose selection lost an id, or overlaps the first batch, is planned again.
+    const saved: { id: string; batch: MigrationFundingBatch }[] = []
+    for (const entry of await this.remaining()) {
+      const ids = entry.batch.sourceSelection!
+      const holds =
+        ids.every((id) => available.has(id) && !first.has(id)) &&
+        ids.reduce((sum, id) => sum + available.get(id)!, 0n) === BigInt(entry.batch.amount)
+      if (entry.batch.broadcastTx || holds) saved.push(entry)
+      else await o.batches.set(entry.id, { ...entry.batch, abandoned: true })
     }
-    batch = await this.read(next.id)
-    const resolved = await this.resolve(batch)
-    if (resolved.sipaAddress.toLowerCase() !== batch.recipient.toLowerCase())
-      throw new Error("Remaining-funds SIPA changed")
-    if (!batch.broadcastTx) {
-      const { operation } = await this.restore(next.id, resolved.sipaAddress)
+    const covered = new Set([...first, ...saved.flatMap(({ batch }) => batch.sourceSelection!)])
+    let left = candidates.filter((c) => !covered.has(c.id))
+    const taken = [...saved.map(({ batch }) => batch), ...(opts.reserved ?? [])]
+    const open = saved.filter(({ batch }) => !batch.broadcastTx)
+    let index = await this.nextIndex()
+    for (;;) {
+      const selected = selectFrozenBatch({
+        ...limits,
+        candidates: left,
+        minimumNetAmount,
+        tip: WITHDRAW_RELAYER_TIP,
+      })
+      if (!selected) break
+      left = left.filter((c) => !selected.ids.includes(c.id))
+      let coordinates = migrationSipaCoordinates()
+      while (taken.some((t) => t.day === coordinates.day && t.nonce === coordinates.nonce))
+        coordinates = migrationSipaCoordinates()
+      taken.push(coordinates)
+      const resolved = await this.resolve(coordinates)
+      const batch: MigrationFundingBatch = {
+        binding: this.identity,
+        recipient: resolved.sipaAddress,
+        amount: String(selected.amount),
+        exitFee: String(WITHDRAW_RELAYER_TIP),
+        sourceSelection: selected.ids,
+        sourceKind: selected.kind,
+        fromBlock: String(await o.client.getBlockNumber()),
+        createdAt: Date.now(),
+        ...coordinates,
+      }
+      const id = `remaining-${index++}`
+      await o.batches.set(id, batch)
+      open.push({ id, batch })
+    }
+    const order = [
+      ...open.filter(({ batch }) => !batch.approved),
+      ...open.filter(({ batch }) => batch.approved),
+    ]
+    let approved = open.filter(({ batch }) => batch.approved).length
+    let total = open.length
+    await opts.onApproval?.(approved, total)
+    for (const { id, batch } of order) {
+      opts.signal?.throwIfAborted()
+      try {
+        await this.restore(id, batch.recipient as Address)
+      } catch (error) {
+        if (!(error instanceof StalePlanError)) throw error
+        // Its funds moved while it was proven: the next plan covers what is left of them.
+        await o.batches.set(id, { ...batch, abandoned: true })
+        if (batch.approved) approved--
+        total--
+        await opts.onApproval?.(approved, total)
+        continue
+      }
+      if (!batch.approved) {
+        await o.batches.set(id, { ...batch, approved: true })
+        approved++
+      }
+      await opts.onApproval?.(approved, total)
+    }
+  }
+
+  /**
+   * Send every planned, unsent batch, one after another: each sponsored send waits for inclusion,
+   * since the next spends the subscription note it re-inserts. A send never waits for a refund on
+   * L1. Proofs come from memory or a rebuild from saved approvals; this never plans a batch.
+   */
+  async recoverRemaining(signal?: AbortSignal): Promise<void> {
+    const o = this.o
+    // L1 refund evidence first: a refunded batch's carrier landed, whatever its receipt says now.
+    await this.reconcileRemaining()
+    for (const { id, batch } of await this.remaining()) {
+      if (batch.broadcastTx) {
+        // A carrier not yet included may still spend the note the next send needs: wait for it.
+        if (batch.refunded || batch.received) continue
+        const receipt = await o.wallet.node.getTxReceipt(TxHash.fromString(batch.broadcastTx))
+        if (receipt.executionResult === undefined) return
+        continue
+      }
+      signal?.throwIfAborted()
+      const resolved = await this.resolve(batch)
+      if (resolved.sipaAddress.toLowerCase() !== batch.recipient.toLowerCase())
+        throw new MigrationHaltedError("recipient", "Remaining-funds SIPA changed")
+      const { operation } = await this.restore(id, resolved.sipaAddress)
       const innerCalls = [
         ...(await broadcastL1Operation(o.broadcaster, operation).request()).calls,
         ...(await migrationDepositCalls(this.deposits, resolved)),
@@ -378,26 +495,56 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
         additionalScopes: [o.registered.user],
         fee: claimFpcSponsoredFee(o.registered.policy, innerCalls),
         onTxHash: async (hash) => {
-          batch!.broadcastTx = hash
-          await o.batches.set(next.id, batch!)
+          signal?.throwIfAborted()
+          await o.batches.set(id, { ...batch, broadcastTx: hash, sentAt: Date.now() })
         },
       })
-      return
     }
-    const receipt = await o.wallet.node.getTxReceipt(TxHash.fromString(batch.broadcastTx))
-    if (receipt.executionResult === TxExecutionResult.REVERTED)
-      throw new Error("Remaining-funds broadcast reverted; its saved refund requires attention")
-    // Actual source refund and destination receipt remain authoritative after tx-history pruning.
-    if (!(await o.runtime.refunded(batch.sourceSelection!))) return
-    if (
-      await receiveMigrationSweeps(
-        this.deposits,
-        resolved.sipaAddress,
-        BigInt(batch.fromBlock),
-        resolved.resolution.messageSecret,
+    await this.reconcileRemaining()
+  }
+
+  /**
+   * Bring every sent batch up to date from chain evidence. It never signs and never sends. A spent
+   * refund nullifier on L1 is the refund, whatever its carrier's receipt says. Funds that reach the
+   * source once every batch arrived wait for the user's approval.
+   */
+  async reconcileRemaining(): Promise<void> {
+    const o = this.o
+    for (const { id, batch } of await this.remaining()) {
+      if (!batch.broadcastTx || batch.received) continue
+      if (!batch.refunded) {
+        if (!(await o.runtime.refunded(batch.sourceSelection!))) {
+          const receipt = await o.wallet.node.getTxReceipt(TxHash.fromString(batch.broadcastTx))
+          if (receipt.executionResult === TxExecutionResult.REVERTED)
+            throw new MigrationHaltedError(
+              "reverted",
+              "Remaining-funds broadcast reverted; its saved refund requires attention",
+            )
+          continue
+        }
+        await o.batches.set(id, { ...batch, refunded: true })
+      }
+      const resolved = await this.resolve(batch)
+      if (
+        await receiveMigrationSweeps(
+          this.deposits,
+          resolved.sipaAddress,
+          BigInt(batch.fromBlock),
+          resolved.resolution.messageSecret,
+        )
       )
+        await o.batches.set(id, { ...batch, refunded: true, received: true })
+    }
+    if (
+      (await this.remaining()).every(({ batch }) => batch.received) &&
+      (await this.movable((await this.ordinaryFee()) + 1n, true))
     )
-      await o.batches.set(next.id, { ...batch, received: true })
+      throw new ApprovalNeededError("More funds reached the old version; approve moving them")
+  }
+
+  /** Whether every planned batch has been sent. */
+  async remainingSent(): Promise<boolean> {
+    return (await this.remaining()).every(({ batch }) => !!batch.broadcastTx)
   }
 
   private resolve(batch: Pick<MigrationFundingBatch, "day" | "nonce">) {
@@ -406,9 +553,9 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
     return resolveMigrationDeposit(this.deposits, batch.day, batch.nonce)
   }
 
-  /** Complete once a fresh scan finds no affordable remainder: what is left is stranded. */
+  /** Complete once every planned batch arrived and a fresh scan finds no affordable remainder. */
   async remainingComplete(): Promise<boolean> {
-    if ((await this.nextRemaining()).batch) return false
+    if (!(await this.remaining()).every(({ batch }) => batch.received)) return false
     return !(await this.movable((await this.ordinaryFee()) + 1n, true))
   }
 }

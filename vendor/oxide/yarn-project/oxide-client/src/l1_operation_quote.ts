@@ -24,6 +24,9 @@ export const GAS_COST_ARGS_CALLDATA_GAS = 2n * UINT256_EXTRA_CALLDATA_GAS;
 /** One ETH in wei: the amount whose payout-token value is the executor's `tokenWeiPerEth`. */
 export const WEI_PER_ETH = 10n ** 18n;
 
+/** Explicit gas for eth_simulateV1; Sepolia RPCs reject an omitted gas limit under validation. */
+const MAX_SIMULATION_GAS = 15_000_000n;
+
 /**
  * Percentage by which the transaction's fee ceiling allows the latest base fee to increase before inclusion. One block
  * can raise the base fee by at most 12.5%, so 100% covers about six rising blocks.
@@ -40,6 +43,8 @@ export const SIMULATED_SENDER_BALANCE = 2n ** 128n;
 export interface L1OperationQuoteBlock {
   number: bigint;
   baseFeePerGas: bigint | null;
+  /** Caps the simulation's explicit gas when set. */
+  gasLimit?: bigint;
 }
 
 /**
@@ -105,6 +110,8 @@ export async function simulateL1Operation(
   const { executor, legacyExecutor, sender, operation, feeValues, minPayout = 0n, stateOverrides = [] } = args;
   const quoteBlock = args.quoteBlock ?? (await client.getBlock({ blockTag: 'latest' }));
   const baseFeePerGas = baseFeeOf(quoteBlock);
+  const gas =
+    quoteBlock.gasLimit === undefined ? MAX_SIMULATION_GAS : minBigint(quoteBlock.gasLimit, MAX_SIMULATION_GAS);
   const [block] = await client.simulateBlocks({
     blockNumber: quoteBlock.number,
     blocks: [
@@ -127,6 +134,7 @@ export async function simulateL1Operation(
                   args: [operation.target, operation.calldata, operation.payoutToken, minPayout, 0n, 0n],
                 } as const)),
             from: sender,
+            gas,
             ...feeValues,
           },
         ],

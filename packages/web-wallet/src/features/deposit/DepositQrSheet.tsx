@@ -2,7 +2,7 @@ import type { ReactNode } from "react"
 import { Modal } from "../../ui/Modal"
 import { GradientText, TopNavIconButton } from "@obsidion/web-ds"
 import walletLineIcon from "../../assets/deposit/wallet-line.svg"
-import { shortAddr } from "../../ui/format"
+import { shortL1Addr } from "../../ui/format"
 import { GradientQrCard } from "../../ui/GradientQrCard"
 
 /** White-on-gradient QR of an EIP-681 ERC-20 transfer URI — wallets scan it and pre-fill send. */
@@ -38,7 +38,7 @@ export function DepositQrSheet({
       </GradientText>
       <GradientQrCard
         payload={paymentUri}
-        label={shortAddr(address)}
+        label={shortL1Addr(address)}
         ariaLabel={`${title} QR code`}
         copied={copied}
         onCopy={onCopy}

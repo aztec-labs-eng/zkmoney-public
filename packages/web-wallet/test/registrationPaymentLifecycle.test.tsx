@@ -1,6 +1,7 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { beforeEach, afterEach, expect, it, vi } from "vitest"
+import { shortL1Addr } from "../src/ui/format"
 const h = vi.hoisted(() => ({
   writeContract: vi.fn(),
   receipt: vi.fn(),
@@ -348,7 +349,7 @@ it("keeps an over-limit address on screen but does not offer it to copy", () => 
   act(() => root.render(<DepositAddressRow address={target.address} overLimit="public" />))
   const copy = el.querySelector<HTMLButtonElement>(".ww-send-to__copy")!
   expect(copy.disabled).toBe(true)
-  expect(copy.textContent).toContain(target.address.slice(0, 8))
+  expect(copy.textContent).toContain(shortL1Addr(target.address))
   const notice = el.querySelector("[data-testid='registration-over-limit']")?.textContent
   expect(notice).toContain("over the $2,500 limit")
 })

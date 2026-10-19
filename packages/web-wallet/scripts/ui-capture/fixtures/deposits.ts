@@ -55,6 +55,7 @@ export const getSipaDepositGateway: typeof actual.getSipaDepositGateway = () => 
       formatUnits(quotedDepositFee(DEMO_DEPOSIT_FEE, DEMO_FPC_FUNDING_CUT), 18),
     records: () => real.records(),
     subscribe: (listener) => real.subscribe(listener),
+    warm: () => real.warm(),
     sync: (...args) => real.sync(...args),
     nextSelfNonce: () => {
       throw new Error("Unmocked SIPA nonce allocation in a UI capture")

@@ -1,10 +1,11 @@
 import type { PrfSlot } from "@obsidion/core/types"
-import type {
-  PasskeyAssertResult,
-  PasskeyAttachment,
-  PasskeyCeremony,
-  PasskeyCreateResult,
-  PasskeyHint,
+import {
+  type PasskeyAssertResult,
+  type PasskeyAttachment,
+  type PasskeyCeremony,
+  type PasskeyCreateResult,
+  type PasskeyHint,
+  extensionAnswersPasskeys,
 } from "../ceremony/passkeyCeremony.js"
 import { bytesToBase64Url } from "../ceremony/bytes.js"
 import { prfSalts } from "./derivation.js"
@@ -17,6 +18,7 @@ import {
   IncompleteCreationError,
   LaptopPasskeyRefusedError,
   NoPrfError,
+  RelatedOriginPasskeyError,
   SecurityKeyNoPrfError,
   UnsupportedProviderError,
   markPasskeyWritten,
@@ -26,9 +28,11 @@ import {
   localProviderVerdict,
   providerAllowed,
   providerNameFor,
+  providerSlugFor,
   refusalKindFor,
 } from "./passkeyProviders.js"
 import { creationProvenanceFor } from "./provenance.js"
+import { bitwardenLineFor } from "./refusalCopy.js"
 import {
   checkAssertionRoute,
   checkCreationRoute,
@@ -78,8 +82,13 @@ export type PasskeyCreationOptions = {
    * Create on the laptop's own password manager: ask for this device and admit only a `platform`
    * answer from one of `managers`. Absent, a laptop is sent to a phone or a key as always. The
    * value comes from `laptopCreationFor`, probed once for the attempt the sheet showed.
+   * `appleKeyAtCreation` says an Apple answer must bring its key with the creation.
    */
-  localCreation?: { managers: readonly LocalManager[]; appleWithdrawn?: boolean }
+  localCreation?: {
+    managers: readonly LocalManager[]
+    appleWithdrawn?: boolean
+    appleKeyAtCreation?: boolean
+  }
   /** Provider ids admitted beyond the measured set; a test seam, and empty in production. */
   extraProviders?: readonly string[]
   /** The challenge the chained assertion signs; asked for only when creation left a gap. */
@@ -121,6 +130,24 @@ function answeringProvider(
   return providerNameFor(created.aaguid)
 }
 
+/**
+ * The line a laptop's refusal adds when Bitwarden's extension answered: it ignores every request
+ * field, so only its excluded domains keep it out of the retry. Keyed by id, since a refusal may
+ * drop the name.
+ */
+function bitwardenAdvice(posture: DevicePosture, bitwarden: boolean): string | undefined {
+  if (posture !== "laptop" || !bitwarden || !extensionAnswersPasskeys("create")) return undefined
+  const host = globalThis.location?.hostname
+  return host ? bitwardenLineFor(host) : undefined
+}
+
+/** On a related origin Bitwarden refuses before it creates anything; that refusal keeps the line. */
+function withBitwardenAdvice(error: unknown, posture: DevicePosture): unknown {
+  if (!(error instanceof RelatedOriginPasskeyError) || !error.bitwarden) return error
+  const advice = bitwardenAdvice(posture, true)
+  return advice ? new RelatedOriginPasskeyError(error.cause, { bitwarden: true, advice }) : error
+}
+
 /** The same response, read as another device's. */
 const asCrossDevice = <T extends { authenticatorAttachment?: PasskeyAttachment }>(
   result: T,
@@ -142,22 +169,26 @@ export async function runPasskeyCreation(
   const timeoutMs = creationTimeoutMs(posture, local)
   const ending = options.signal ? { signal: options.signal } : {}
   const salts = await prfSalts()
-  const reported = await ceremony.create({
-    rpId,
-    rpName: options.rpName,
-    userName: options.userName,
-    authenticatorAttachment: requested,
-    hints,
-    provenance: creationProvenanceFor({
-      posture,
-      userAgent: options.userAgent,
-      requested,
-      laptopHints: options.laptopHints,
-    }),
-    ...(timeoutMs === undefined ? {} : { timeoutMs }),
-    ...ending,
-    ...salts,
-  })
+  const reported = await ceremony
+    .create({
+      rpId,
+      rpName: options.rpName,
+      userName: options.userName,
+      authenticatorAttachment: requested,
+      hints,
+      provenance: creationProvenanceFor({
+        posture,
+        userAgent: options.userAgent,
+        requested,
+        laptopHints: options.laptopHints,
+      }),
+      ...(timeoutMs === undefined ? {} : { timeoutMs }),
+      ...ending,
+      ...salts,
+    })
+    .catch((error: unknown) => {
+      throw withBitwardenAdvice(error, posture)
+    })
   // The credential exists from here on: every failure below leaves it behind.
   try {
     await options.observe?.({ phase: "created", result: reported })
@@ -170,18 +201,21 @@ export async function runPasskeyCreation(
       misreportsCrossDevice: options.misreportsCrossDevice,
     })
     const created = corrected ? asCrossDevice(reported) : reported
+    const advice = bitwardenAdvice(posture, providerSlugFor(created.aaguid) === "bitwarden")
     checkCreationRoute(
       posture,
       created.authenticatorAttachment,
       securityKey,
       answeringProvider(created, securityKey, options),
       localManagers,
+      advice,
     )
     if (!providerAllowed(created.aaguid, securityKey, options.extraProviders)) {
       throw new UnsupportedProviderError(refusalKindFor(created.aaguid, securityKey), {
         providerName: providerNameFor(created.aaguid),
         keyOfferable: true,
         localManagers,
+        advice,
       })
     }
     // A laptop's own passkey must come from a manager the row admits, by a name it reported: the
@@ -198,6 +232,7 @@ export async function runPasskeyCreation(
           providerName: providerNameFor(created.aaguid),
           keyOfferable: true,
           localManagers,
+          advice,
         })
       }
     }
@@ -210,6 +245,19 @@ export async function runPasskeyCreation(
       // The follow-up names the credential but not the device, and a corrected answer's passkey may
       // already have synced to this one, so nothing can keep the follow-up on the phone.
       if (corrected) throw new IncompleteCreationError()
+      // Likewise on this computer's route where the label can't be trusted, or for Apple where the
+      // row says so: a phone may have made the passkey, and the copy just synced here could answer
+      // with this Mac's wrong key.
+      const labelUntrusted = !options.attachmentLabelTrusted || options.misreportsCrossDevice
+      const apple = localManagerFor(created.aaguid) === "apple"
+      const appleNeedsKey = apple && options.localCreation?.appleKeyAtCreation === true
+      if (localManagers && !securityKey && (labelUntrusted || appleNeedsKey)) {
+        if (!apple) throw new IncompleteCreationError("unverified")
+        throw new LaptopPasskeyRefusedError(
+          "apple",
+          localManagers.filter((m) => m !== "apple"),
+        )
+      }
       // Some providers only return PRF on an assertion, some evaluate one salt at creation, and
       // some responses carry no readable flags. The assertion has to stand on its own: nothing
       // from the create result is kept.
@@ -265,7 +313,9 @@ export async function runPasskeyCreation(
 /**
  * The key material, or a refusal the user can act on. Only a total absence is translated: an
  * unreadable backup flag and a value in the wrong slot keep their own refusals. A key gets its own
- * refusal; a platform passkey keeps `NoPrfError`, naming the laptop manager the creation reported.
+ * refusal; on this computer's route Apple Passwords gets the Apple refusal, whose retry offers the
+ * row's other managers; any other platform passkey keeps `NoPrfError`, naming the laptop manager
+ * the creation reported.
  */
 function readPrfOrRefuseKey(
   evidence: Evidence,
@@ -279,7 +329,14 @@ function readPrfOrRefuseKey(
   } catch (err) {
     if (!(err instanceof NoPrfError)) throw err
     if (securityKey) throw new SecurityKeyNoPrfError()
-    throw new NoPrfError({ localManagers, manager: localManagerFor(createdAaguid) })
+    const manager = localManagerFor(createdAaguid)
+    if (localManagers && manager === "apple") {
+      throw new LaptopPasskeyRefusedError(
+        "apple",
+        localManagers.filter((m) => m !== "apple"),
+      )
+    }
+    throw new NoPrfError({ localManagers, manager })
   }
 }
 
@@ -359,6 +416,9 @@ export type PasskeyAssertionOptions = {
   /** Admit the laptop's own passkey: open the sheet on this device, send no transport restriction,
    *  and let a `platform` answer through the route check. Default false keeps today's rule. */
   localAllowed?: boolean
+  /** Steer the sheet to another device (the cross-device hints and transports) whatever
+   *  `localAllowed` lets through the route check. */
+  steerToPhone?: boolean
   /** The credentials are a hardware key's, as far as the consumer knows: a security key is named
    *  beside the local route, so the sheet keeps that row and a manager's extension stands aside. */
   securityKey?: boolean
@@ -376,17 +436,13 @@ export async function runPasskeyAssertion(
   ceremony: PasskeyCeremony,
   options: PasskeyAssertionOptions,
 ): Promise<PasskeyAssertResult> {
+  const steersLocal = options.localAllowed && !options.steerToPhone
   const reported = await ceremony.assert({
     rpId: options.rpId,
     challenge: options.challenge,
     credentialIds: options.credentialIds,
-    transports: offerableTransports(options.posture, options.transports, options.localAllowed),
-    hints: signInHintsFor(
-      options.posture,
-      options.laptopHints,
-      options.localAllowed,
-      options.securityKey,
-    ),
+    transports: offerableTransports(options.posture, options.transports, steersLocal),
+    hints: signInHintsFor(options.posture, options.laptopHints, steersLocal, options.securityKey),
     ...(options.signal ? { signal: options.signal } : {}),
     ...(await prfSalts()),
   })

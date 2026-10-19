@@ -22,6 +22,12 @@ export interface TicketSignupStash {
   /** The note's amount, base units, once the witness read it. */
   amount?: string
   memo?: string
+  senderTag?: string
+  /** The rest of the visitor page's read of the note, so Home claims without reading it first. */
+  claimableFrom?: number
+  claimableUntil?: number
+  tokenAddress?: string
+  txHash?: string
   /** The prover tip the split committed to before the terms exist, base units. */
   proverTip?: string
   /** The speed the split committed to with it. */

@@ -62,9 +62,12 @@ body:has(dialog.ww-modal-overlay[open]) .ww-main {
     padding-right: 0;
   }
   .ww-modal.ww-reg-sheet > .ww-reg-sheet__card {
-    flex-shrink: 1;
     padding-left: calc(var(--modal-pad-x, 24px) + var(--ww-safe-area-left));
     padding-right: calc(var(--modal-pad-x, 24px) + var(--ww-safe-area-right));
+  }
+  /* Doubled class to outrank the no-shrink rule above: the card is the sheet's scroll box. */
+  .ww-modal.ww-modal.ww-reg-sheet > .ww-reg-sheet__card {
+    flex-shrink: 1;
   }
   .ww-modal.ww-deposit-warning,
   .ww-modal.ww-feedback {

@@ -239,6 +239,14 @@ export function macosSyncedCopyReadsRight(version: string): boolean {
   )
 }
 
+/** Apple Passwords returns no key material on a macOS before this one. */
+export const MACOS_APPLE_PRF_FLOOR = "15"
+
+/** Whether a macOS version is one where Apple Passwords returns key material. Fails closed. */
+export function macosGivesApplePrf(version: string): boolean {
+  return atLeast(version, MACOS_APPLE_PRF_FLOOR)
+}
+
 /** iOS before this release had a cross-device passkey bug the phone flow trips on. */
 export const IOS_PASSKEY_FLOOR = "18.4"
 

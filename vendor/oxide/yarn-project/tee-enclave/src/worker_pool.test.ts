@@ -47,7 +47,7 @@ describe('WorkerPool', () => {
     await pool.start();
     let resolveExit!: (code: unknown) => void;
     const exited = new Promise(resolve => (resolveExit = resolve));
-    const exit = jest.spyOn(process, 'exit').mockImplementation((code => resolveExit(code)) as never);
+    const exit = jest.spyOn(process, 'exit').mockImplementation(((code: unknown) => resolveExit(code)) as never);
     const error = jest.spyOn(console, 'error').mockImplementation(() => {});
     try {
       void pool.dispatch(Buffer.from('exit')).catch(() => {});

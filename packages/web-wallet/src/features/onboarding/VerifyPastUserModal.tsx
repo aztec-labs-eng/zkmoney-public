@@ -12,7 +12,7 @@ import coinsArt from "../../assets/onboarding/past-user-coins.webp"
 import badgeArt from "../../assets/onboarding/past-user-badge.webp"
 import { fireOnboardingEvent } from "../../lib/analytics"
 import { Modal } from "../../ui/Modal"
-import { shortAddr } from "../../ui/format"
+import { shortL1Addr } from "../../ui/format"
 import { useL1Wallet } from "../deposit/l1Wallet"
 import { chooseOwnName } from "./chooseOwnName"
 import { ADDRESS_RE, PastUserAddressInput, type LookupState } from "./PastUserAddressInput"
@@ -288,7 +288,9 @@ export function VerifyPastUserModal(props: {
           </span>
           <span className="ww-verify__connect-text">
             <b>
-              {wallet.account ? `Use ${shortAddr(wallet.account)}` : "Connect the wallet you used"}
+              {wallet.account
+                ? `Use ${shortL1Addr(wallet.account)}`
+                : "Connect the wallet you used"}
             </b>
             <span>
               {wallet.account

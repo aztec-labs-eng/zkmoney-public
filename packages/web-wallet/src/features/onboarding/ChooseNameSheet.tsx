@@ -24,6 +24,21 @@ const VERDICTS: Partial<Record<NameAvailability, string>> = {
   "blocked": "blocked",
   "blocked-reserved": "blocked",
 }
+/** One `onboarding_handle_checked` per distinct name a sheet settles a verdict on. */
+export function useReportHandleCheck(
+  name: string | null,
+  fresh: boolean,
+  checking: boolean,
+  status: NameAvailability,
+) {
+  const checked = useRef<string | null>(null)
+  useEffect(() => {
+    const verdict = VERDICTS[status]
+    if (!fresh || checking || !verdict || checked.current === name) return
+    checked.current = name
+    fireOnboardingEvent("onboarding_handle_checked", { status: verdict })
+  }, [name, fresh, checking, status])
+}
 const CHOSEN_ROUTES: Record<"invite" | "past-user" | "pay", string> = {
   "invite": "invite",
   "past-user": "past_user",
@@ -58,13 +73,7 @@ export function ChooseNameSheet({ tag, onClose }: { tag: string; onClose: () => 
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per opening
   }, [])
-  const checked = useRef<string | null>(null)
-  useEffect(() => {
-    const verdict = VERDICTS[status]
-    if (!fresh || checking || !verdict || checked.current === name) return
-    checked.current = name
-    fireOnboardingEvent("onboarding_handle_checked", { status: verdict })
-  }, [name, fresh, checking, status])
+  useReportHandleCheck(name, fresh, checking, status)
 
   const deposit = () => {
     onClose()

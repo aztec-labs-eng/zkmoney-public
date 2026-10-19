@@ -40,7 +40,6 @@ packages/contracts/contracts/**/*/target/
 packages/contracts/circuits/**/target/*.json
 packages/contracts/circuits/**/target/*.gz
 packages/contracts/**/codegenCache.json
-packages/launch-campaign-web/circuits/**/target/
 packages/contracts/src/artifacts/target/
 # Locally built bootstrap artifact manifests; the store is the record, only the README is tracked.
 packages/backend/config-service/artifacts/*/
@@ -122,3 +121,6 @@ ds-bundle/
 
 packages/web-wallet-desktop/config/mainnet.env
 !**/.env.mainnet.example
+
+# scripts/build-oxide-tee.mjs writes this file, because Oxide does not supply one.
+vendor/oxide/yarn-project/telemetry/tsconfig.build.json

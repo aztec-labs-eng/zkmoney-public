@@ -5,6 +5,7 @@ import type { WebBootConfig } from "./config/env"
 import { GOOGLE_CALLBACK_PATH, GoogleCallbackScreen } from "./features/paylink/googleAuth"
 import { getDesktopSettingsPath } from "./platform/desktopBridge"
 import { BOOT_ERROR_LAYOUT } from "./ui/BootErrorScreen"
+import { PreBootLayer } from "./ui/PreBootLayer"
 import { BootSplash } from "./ui/PxeBoot"
 import { PreviewDraftRecovery } from "./dev/PreviewDraftRecovery"
 
@@ -61,5 +62,10 @@ export function BootGate({ resolveBoot }: { resolveBoot: () => Promise<WebBootCo
   // which would stop it at the other-tab screen. It still waits for the configuration: the relay
   // writes to the partition of the rollup the configuration names.
   if (location.pathname === GOOGLE_CALLBACK_PATH) return <GoogleCallbackScreen />
-  return <ActiveTabGate boot={boot} />
+  return (
+    <>
+      <ActiveTabGate boot={boot} />
+      <PreBootLayer />
+    </>
+  )
 }

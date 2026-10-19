@@ -15,6 +15,11 @@ const update = vi.hoisted(() => vi.fn(() => Promise.resolve({})))
 const modal = vi.hoisted(() => vi.fn())
 const screening = vi.hoisted(() => ({ cleared: true }))
 const factory = vi.hoisted(() => ({ kind: "confirmed" as string }))
+const fireEvent = vi.hoisted(() => vi.fn())
+vi.mock("../src/lib/analytics", async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  fireEvent,
+}))
 
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
@@ -117,6 +122,7 @@ describe("WithdrawEtherfiScreen", () => {
     expect(link.rel).toBe("noreferrer")
     expect(text()).toContain("USDC or USDT on Ethereum only")
     expect(button("Continue").disabled).toBe(true)
+    expect(fireEvent).toHaveBeenCalledWith("withdraw_opened", { method: "etherfi" })
   })
 
   it("keeps a pasted address as the ether.fi contact and opens the modal narrowed to USDC and USDT", async () => {

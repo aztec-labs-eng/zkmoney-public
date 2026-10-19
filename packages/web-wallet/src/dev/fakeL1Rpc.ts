@@ -19,7 +19,7 @@ export const DEMO_SIPA_BALANCE = 2_500_000_000_000_000_000n
 /** The implementation's `depositFee()` — the relayer's sweep fee, at the deployed figure. */
 export const DEMO_DEPOSIT_FEE = 250_000_000_000_000_000n
 
-/** The portal's `FPC_FUNDING_CUT()`, at the figure every oxide deployment profile carries. Skimmed
+/** The portal's `FPC_FUNDING_CUT()`, at the live deployments' figure. Skimmed
  *  beside the sweep fee, so a deposit has to clear both to be sweepable. */
 export const DEMO_FPC_FUNDING_CUT = 100_000_000_000_000_000n
 

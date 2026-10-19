@@ -162,7 +162,7 @@ const WITHDRAWAL_KINDS: Record<string, [Partial<WithdrawalRecord>, ActivityCsvRo
   "balance": [{}, "Withdrawal"],
   "paylink": [{ source: "paylink" }, "Payment link paid to Ethereum"],
   "registration": [{ intent: "registration", source: "paylink" }, "Name registration"],
-  "migration": [{ intent: "migration" }, "Migration out"],
+  "migration": [{ intent: "migration" }, "Upgrade out"],
   "savings-in": [
     { skyMove: { direction: "in" } as WithdrawalRecord["skyMove"] },
     "Savings deposit",
@@ -193,6 +193,7 @@ const DEPOSIT_KINDS: Record<
 > = {
   deposit: [{}, {}, "Deposit"],
   registration: [{}, { intent: "registration" }, "Name registration"],
+  metadata: [{}, { intent: "metadata" }, "Upgrade in"],
   request: [{ requests: [{ sipaAddress: SIPA } as never] }, {}, "Payment request paid"],
   migration: [
     {
@@ -201,13 +202,36 @@ const DEPOSIT_KINDS: Record<
       ],
     },
     {},
-    "Migration in",
+    "Upgrade in",
   ],
 }
+
+const UPGRADE_STATES: Record<string, boolean> = {
+  planned: false,
+  sent: false,
+  refunded: true,
+  received: true,
+}
+
+const upgradeBatch = (state: string): ActivityItem => ({
+  kind: "upgrade.batch",
+  batch: {
+    run: "run",
+    id: "remaining-0",
+    first: false,
+    recipient: SIPA,
+    amount: (10n * 10n ** 18n).toString(),
+    exitFee: (10n ** 17n).toString(),
+    state: state as "sent",
+    tx: "0xcarrier",
+    startTime: 1,
+  },
+})
 
 /** Feed item kinds whose rows come from somewhere else. */
 const ITEM_KINDS: Record<string, "exported" | "from transactions"> = {
   "bridge.withdrawal": "exported",
+  "upgrade.batch": "exported",
   "bridge.sipaDeposit": "exported",
   "p2p": "from transactions",
   "paylink": "from transactions",
@@ -225,6 +249,7 @@ describe("every stored kind is pinned here", () => {
     ["depositPhases", DEPOSIT_PHASES],
     ["depositKinds", DEPOSIT_KINDS],
     ["itemKinds", ITEM_KINDS],
+    ["upgradeStates", UPGRADE_STATES],
   ] as const)("%s", (name, table) => {
     expect(keys(table)).toEqual([...ACTIVITY_CSV_COVERAGE[name]].sort())
   })
@@ -281,6 +306,26 @@ describe("withdrawals", () => {
       fee: { amount: "0.75", currency: "DAI" },
       aztecTxHash: "0xl2",
       ethereumTxHash: "0xl1",
+    })
+  })
+})
+
+describe("upgrade batches", () => {
+  it.each(Object.entries(UPGRADE_STATES))("state %s exported: %s", (state, exported) => {
+    expect(!!only({ items: [upgradeBatch(state)] })).toBe(exported)
+  })
+
+  it("leaves the old version as a migration, the tip its fee, and arrives as one", () => {
+    const rows = buildActivityCsvRows({
+      transactions: [],
+      requests: [],
+      items: [upgradeBatch("received"), deposit({ sipaAddress: SIPA })],
+    })
+    expect(rows.map((r) => r.type).sort()).toEqual(["Upgrade in", "Upgrade out"])
+    expect(rows.find((r) => r.type === "Upgrade out")).toMatchObject({
+      sent: { amount: "9.9", currency: "DAI" },
+      fee: { amount: "0.1", currency: "DAI" },
+      aztecTxHash: "0xcarrier",
     })
   })
 })

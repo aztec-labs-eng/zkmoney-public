@@ -4,9 +4,9 @@ import { EthAddress } from '@aztec/foundation/eth-address';
 import { readFile } from 'node:fs/promises';
 
 /**
- * Reader for the published `<deployment-env>.v4.json` deployment env manifest
- * (shape: scripts/src/generated/deployment-env-manifest.schema.json). The relayer pins one entry by portal and
- * watches the other L1-operation entries on the same rollup version.
+ * Reader for the published schema v4 `v<major>/<deployment-env>/releases.json` deployment env manifest
+ * (writer: deployer/src/composer/publish_deployment_manifest.ts). The relayer pins one entry by portal and
+ * watches the other L1-operation entries on the same rollup version, minus the entries its policy skips.
  */
 
 /** The deployment-env-manifest fields the relayer uses for one deployment. */
@@ -32,9 +32,23 @@ export interface ResolvedManifestDeployment {
   publicConfig: DeploymentEnvManifestPublicConfig;
 }
 
+/** Why the policy gives an entry on the pinned rollup no worker. */
+export type SkipReason = 'excluded' | 'payout-token';
+
+/** An L1-operation entry on the pinned rollup that the policy skips. `portal` is lower-case. */
+export interface SkippedManifestDeployment {
+  label: string;
+  portal: string;
+  reason: SkipReason;
+}
+
 export interface ResolvedDeploymentEnvManifest {
+  /** The pinned entry. It is listed in `skipped` too when the policy gives it no worker. */
   current: ResolvedManifestDeployment;
+  /** The other entries that get a worker. */
   historical: ResolvedManifestDeployment[];
+  /** Entries on the pinned rollup that the policy skips, the pinned entry included. */
+  skipped: SkippedManifestDeployment[];
   /** Why this relayer cannot read each historical entry that it would watch. */
   unreadable: string[];
 }
@@ -43,6 +57,10 @@ export interface ResolvedDeploymentEnvManifest {
 export interface ResolveDeploymentEnvManifestOptions {
   deploymentEnvManifestUrl: string;
   portal: EthAddress;
+  /** Entries that get no worker, by portal. */
+  excludePortals?: EthAddress[];
+  /** When set, only entries whose `token` is listed get a worker. */
+  acceptedPayoutTokens?: EthAddress[];
   fetch?: typeof fetch;
 }
 
@@ -68,9 +86,10 @@ interface DeploymentEnvManifestDocument {
 }
 
 /**
- * Fetch `<deployment-env>.v4.json`, pin one entry by portal and select the historical entries to watch.
- * Only these entries are parsed. An older entry can lack a field that this relayer reads, and it stays a supported
- * deployment for other consumers.
+ * Fetch `<deployment-env>.v4.json`, pin one entry by portal and select the historical entries to watch: the other
+ * L1-operation entries on the pinned entry's rollup, minus the entries that the policy skips. Only these entries
+ * are parsed. An older entry can lack a field that this relayer reads, and it stays a supported deployment for
+ * other consumers.
  */
 export async function resolveDeploymentEnvManifest(
   opts: ResolveDeploymentEnvManifestOptions,
@@ -86,8 +105,14 @@ export async function resolveDeploymentEnvManifest(
     );
   }
   const current = parseDeployment(url, pinned);
+  const skipReason = policyOf(opts);
   const historical: ResolvedManifestDeployment[] = [];
+  const skipped: SkippedManifestDeployment[] = [];
   const unreadable: string[] = [];
+  const pinnedSkip = skipReason(pinned);
+  if (pinnedSkip) {
+    skipped.push(skippedOf(pinned, pinnedSkip));
+  }
   for (const entry of entries) {
     if (
       entry === pinned ||
@@ -96,13 +121,49 @@ export async function resolveDeploymentEnvManifest(
     ) {
       continue;
     }
+    const reason = skipReason(entry);
+    if (reason) {
+      skipped.push(skippedOf(entry, reason));
+      continue;
+    }
     try {
       historical.push(parseDeployment(url, entry));
     } catch (err: unknown) {
       unreadable.push(message(err));
     }
   }
-  return { current, historical, unreadable };
+  return { current, historical, skipped, unreadable };
+}
+
+/** One log line for a skipped entry, the same at startup and on every refresh. */
+export function describeSkip({ label, portal, reason }: SkippedManifestDeployment): string {
+  return `Not serving deployment ${label}:${portal} (${reason})`;
+}
+
+/**
+ * The selection policy: an excluded portal gets no worker, and with an accepted payout-token list, neither does an
+ * entry whose `token` is not listed. An entry without a `token` string is left to the parser, which reports it.
+ */
+function policyOf(opts: ResolveDeploymentEnvManifestOptions): (entry: RawDeployment) => SkipReason | undefined {
+  const excluded = new Set((opts.excludePortals ?? []).map(lower));
+  const accepted = opts.acceptedPayoutTokens && new Set(opts.acceptedPayoutTokens.map(lower));
+  return entry => {
+    if (typeof entry.portal === 'string' && excluded.has(entry.portal.toLowerCase())) {
+      return 'excluded';
+    }
+    if (accepted && typeof entry.token === 'string' && !accepted.has(entry.token.toLowerCase())) {
+      return 'payout-token';
+    }
+    return undefined;
+  };
+}
+
+function lower(address: EthAddress): string {
+  return address.toString().toLowerCase();
+}
+
+function skippedOf(entry: RawDeployment, reason: SkipReason): SkippedManifestDeployment {
+  return { label: String(entry.label), portal: String(entry.portal).toLowerCase(), reason };
 }
 
 function nameOf(entry: RawDeployment): string {

@@ -7,15 +7,9 @@ import type { ViemClient } from "@aztec/ethereum/types"
 import { OxidePortalContract } from "@oxide/l1-contracts"
 import { resolveFreezeArchive } from "@oxide/oxide-client/archive_ref.js"
 import {
-  buildRefundFrozenDepositPortalCalldata,
-  buildRefundFrozenNotesPortalCalldata,
-  buildRefundUnprocessedDepositPortalCalldata,
-} from "@oxide/oxide-client/atlatl/process_refund_requests.js"
-import {
   classifyDepositRefund,
   type DepositInbox,
 } from "@oxide/oxide-client/deposit_refund_eligibility.js"
-import { getRefundableFrozenNotes } from "@oxide/oxide-client/frozen_notes.js"
 import type {
   DepositSpendMetadata,
   SpendMetadataResolver,
@@ -24,9 +18,6 @@ import { computeNoteNullifier } from "@oxide/oxide-lib/hash.js"
 import { L1OperationCondition } from "@oxide/oxide-lib/l1_operation_calldata.js"
 import { MAX_FROZEN_NOTES_PER_REFUND, TX_AMOUNT_CAP } from "@oxide/oxide-lib/oxide_constants.gen.js"
 import type { InboxMessageSource } from "@oxide/oxide-client/inbox_sibling_path.js"
-import { FrozenDepositRefundCircuit } from "@oxide/refund-proof/frozen_deposit_refund/artifact.js"
-import { RefundCircuit } from "@oxide/refund-proof/frozen_notes_refund/artifact.js"
-import { UnprocessedDepositRefundCircuit } from "@oxide/refund-proof/unprocessed_deposit_refund/artifact.js"
 import { buildPlainExecutorCall } from "@oxide/oxide-lib/plain_withdrawal.js"
 import {
   deriveRefundOwnerAddress,
@@ -37,7 +28,11 @@ import { keccak256, toHex, type Address } from "viem"
 import type { FrozenDepositDescriptor, OxideEnvTuple } from "@obsidion/core/types"
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
 import type { ObsidionAccount } from "../obsidion/alpha/account/ObsidionAccount.js"
-import { WebAuthnAlphaAuthProvider } from "../obsidion/alpha/auth/WebAuthnAlphaAuthProvider.js"
+import {
+  WebAuthnAlphaAuthProvider,
+  type SignChallengeOptions,
+  type WebAuthnSignResult,
+} from "../obsidion/alpha/auth/WebAuthnAlphaAuthProvider.js"
 import {
   FrozenMetadataMigrationSource,
   type FrozenMigrationRuntime,
@@ -75,13 +70,21 @@ interface Options {
 }
 
 /** The alpha account's passkey as the owner a frozen refund authorizes with. */
+export type RefundChallengeSigner = (
+  challenge: Buffer,
+  opts?: SignChallengeOptions,
+) => Promise<WebAuthnSignResult>
+
+/** `wrapSigner` lets the host reuse an approval it saved for the same challenge. */
 export async function passkeyRefundOwner(
   wallet: ObsidionWallet,
   account: ObsidionAccount,
+  wrapSigner: (sign: RefundChallengeSigner) => RefundChallengeSigner = (sign) => sign,
 ): Promise<RefundOwner> {
   const auth = account.getAuthProvider()
   if (!(auth instanceof WebAuthnAlphaAuthProvider))
     throw new Error("A frozen refund is authorized with the account's passkey")
+  const signChallenge = wrapSigner((challenge, opts) => auth.signChallenge(challenge, opts))
   const address = account.getAddress()
   const instance = await wallet.pxe.getContractInstance(address)
   if (!instance) throw new Error("The account instance is not registered in this PXE")
@@ -100,7 +103,7 @@ export async function passkeyRefundOwner(
       signer: {
         publicKey: { x, y },
         sign: async (message) => {
-          const signed = await auth.signChallenge(message.toBuffer())
+          const signed = await signChallenge(message.toBuffer())
           return {
             authenticatorData: Buffer.from(signed.authenticatorData),
             clientDataJSON: Buffer.from(signed.clientDataJSON),
@@ -115,6 +118,12 @@ export async function passkeyRefundOwner(
   return owner
 }
 
+/**
+ * Oxide's refund modules embed the three refund circuits (about 1.8 MB together), so they and the
+ * circuit artifacts load with the first frozen source rather than with the SDK.
+ */
+const refundCalldata = () => import("@oxide/oxide-client/atlatl/process_refund_requests.js")
+
 /** The owner's frozen notes that are still refundable, keyed by refund nullifier. */
 export async function readRefundableFrozenNotes(o: {
   portal: OxidePortalContract
@@ -123,6 +132,7 @@ export async function readRefundableFrozenNotes(o: {
   owner: AztecAddress
   resolveSpendMetadata: SpendMetadataResolver
 }) {
+  const { getRefundableFrozenNotes } = await import("@oxide/oxide-client/frozen_notes.js")
   const notes = await getRefundableFrozenNotes(
     o.portal,
     o.token,
@@ -316,11 +326,16 @@ export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
 
   async validate(destinationAsset: Address): Promise<void> {
     const o = this.o
-    if (
-      [RefundCircuit, FrozenDepositRefundCircuit, UnprocessedDepositRefundCircuit].some(
-        (circuit) => typeof circuit.bytecode !== "string",
-      )
-    )
+    const circuits = await Promise.all([
+      import("@oxide/refund-proof/frozen_notes_refund/artifact.js").then((m) => m.RefundCircuit),
+      import("@oxide/refund-proof/frozen_deposit_refund/artifact.js").then(
+        (m) => m.FrozenDepositRefundCircuit,
+      ),
+      import("@oxide/refund-proof/unprocessed_deposit_refund/artifact.js").then(
+        (m) => m.UnprocessedDepositRefundCircuit,
+      ),
+    ])
+    if (circuits.some((circuit) => typeof circuit.bytecode !== "string"))
       throw new Error(
         "A frozen refund circuit is a build stub: run `pnpm --filter @obsidion/oxide-build build:refund-circuits`",
       )
@@ -428,6 +443,7 @@ export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
       amount = notes.reduce((sum, note) => sum + note.amount.toBigInt(), 0n)
       if (relayerTip < 0n || amount <= relayerTip)
         throw new Error("Frozen refund cannot cover its relayer tip")
+      const { buildRefundFrozenNotesPortalCalldata } = await refundCalldata()
       calldata = await buildRefundFrozenNotesPortalCalldata(ctx, {
         executorCall: this.executorCall(recipient, relayerTip),
         notesToRefund: notes,
@@ -451,6 +467,10 @@ export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
         l2RecipientMasterNullifierHidingKey: o.depositMetadata.masterNullifierHidingKey,
         messageLeafIndex: BigInt(descriptor.messageLeafIndex),
       }
+      const {
+        buildRefundFrozenDepositPortalCalldata,
+        buildRefundUnprocessedDepositPortalCalldata,
+      } = await refundCalldata()
       calldata =
         deposit.kind === "frozen-deposit"
           ? await buildRefundFrozenDepositPortalCalldata(ctx, {
@@ -492,6 +512,7 @@ export async function createLocalMetadataMigrationSource(
     sourceChain?: { wallet: ObsidionWallet; account: ObsidionAccount }
     /** The source account's swept deposits on the source portal, read on the source rollup. */
     depositDescriptors(opts: { fresh: boolean }): Promise<FrozenDepositDescriptor[]>
+    wrapRefundSigner?: (sign: RefundChallengeSigner) => RefundChallengeSigner
   },
 ) {
   const client = options.client as unknown as ViemClient
@@ -517,7 +538,7 @@ export async function createLocalMetadataMigrationSource(
       inbox: await depositInbox(client, portal),
       rollup: info.l1ContractAddresses.rollupAddress.toString() as Address,
       rollupVersion: BigInt(info.rollupVersion),
-      owner: await passkeyRefundOwner(chain.wallet, chain.account),
+      owner: await passkeyRefundOwner(chain.wallet, chain.account, options.wrapRefundSigner),
       resolveSpendMetadata: await chain.account.makeSpendMetadataResolver(),
       depositMetadata: await (
         await chain.account.makeDepositSpendMetadataResolver()

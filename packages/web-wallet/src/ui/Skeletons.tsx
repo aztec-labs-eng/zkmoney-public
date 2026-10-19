@@ -53,13 +53,16 @@ export function ActivityListSkeleton({ rows = 3 }: { rows?: number }) {
   )
 }
 
-/** Placeholder for the home hero balance (zkm-type-hero is 50px/1.15). */
-export function BalanceSkeleton() {
+/**
+ * Placeholder for a hero figure, by default the home balance (zkm-type-hero is 50px/1.15). The
+ * margins make up the figure's line height, so the figure lands without a jump.
+ */
+export function BalanceSkeleton({ width = 190, height = 46 }: { width?: number; height?: number }) {
   return (
     <Shimmer
       style={{ width: "fit-content", borderRadius: 12, overflow: "hidden", margin: "6px 0" }}
     >
-      <SkeletonBlock width={190} height={46} radius={12} />
+      <SkeletonBlock width={width} height={height} radius={12} />
     </Shimmer>
   )
 }

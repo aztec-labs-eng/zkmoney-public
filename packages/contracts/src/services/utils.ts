@@ -121,6 +121,9 @@ export const ensureContractRegisteredInPXE = async (
   await registerContractInPXE(pxe, instance, await getArtifact())
 }
 
+/** Each bundled artifact, parsed once per page: a large one takes hundreds of ms on a phone. */
+const bundledArtifacts = new Map<ContractName, Promise<ContractArtifact>>()
+
 export const getHardcodedArtifact = async (
   contract: ContractName,
   options?: ContractServiceOptions,
@@ -132,6 +135,8 @@ export const getHardcodedArtifact = async (
     return loadContractArtifact(override as NoirCompiledContract)
   }
 
+  const loaded = bundledArtifacts.get(contract)
+  if (loaded) return loaded
   const importArtifact = HARDCODED_ARTIFACT_IMPORTS[contract]
   if (!importArtifact) {
     // Without this, loadContractArtifact(null) dies far away with an opaque
@@ -142,7 +147,12 @@ export const getHardcodedArtifact = async (
       `No hardcoded artifact for contract "${contract}" — is it a valid ContractName?`,
     )
   }
-  return loadContractArtifact((await importArtifact()).default as NoirCompiledContract)
+  const loading = importArtifact().then((m) =>
+    loadContractArtifact(m.default as NoirCompiledContract),
+  )
+  bundledArtifacts.set(contract, loading)
+  loading.catch(() => bundledArtifacts.delete(contract))
+  return loading
 }
 
 /**

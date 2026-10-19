@@ -132,11 +132,7 @@ export async function savingsRescanToken(
 ): Promise<RescanToken | undefined> {
   const tuple = await getSavingsTuple(getConfig())
   if (!tuple) return undefined
-  const tokenService = await TokenService.create(
-    wallet,
-    account,
-    AztecAddress.fromStringUnsafe(tuple.l2Token),
-  )
+  const tokenService = await savingsTokenService(wallet, account, tuple.l2Token)
   return { tokenService, tuple, label: SAVINGS_ASSET }
 }
 
@@ -168,6 +164,28 @@ function once<T>(make: () => Promise<T>): () => Promise<T> {
     }
     return pending
   }
+}
+
+const savingsTokens = new WeakMap<ObsidionWallet, Map<string, Promise<TokenService>>>()
+
+/**
+ * The Savings token's service, one per wallet and account: the Savings source and the withdrawal
+ * rescan share it, so the PXE registers the token once. A failed create is tried again.
+ */
+function savingsTokenService(
+  wallet: ObsidionWallet,
+  account: ObsidionAccount,
+  l2Token: string,
+): Promise<TokenService> {
+  const byKey = savingsTokens.get(wallet) ?? new Map<string, Promise<TokenService>>()
+  savingsTokens.set(wallet, byKey)
+  const key = `${account.getAddress().toString()}:${l2Token.toLowerCase()}`
+  const cached = byKey.get(key)
+  if (cached) return cached
+  const created = TokenService.create(wallet, account, AztecAddress.fromStringUnsafe(l2Token))
+  byKey.set(key, created)
+  created.catch(() => byKey.get(key) === created && byKey.delete(key))
+  return created
 }
 
 /**
@@ -251,11 +269,7 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
   const factory = once<SkyFactory>(async () => resolveSkyFactory(client, await deployments()))
   const savingsToken = once<TokenService>(async () => {
     const { savings } = await deployments()
-    return TokenService.create(
-      deps.wallet,
-      deps.account,
-      AztecAddress.fromStringUnsafe(savings.l2Token),
-    )
+    return savingsTokenService(deps.wallet, deps.account, savings.l2Token)
   })
   // Reads and claims need no co-signer; only a burn out of Savings does, so it connects then, and
   // a failed connect is tried again on the next move out.

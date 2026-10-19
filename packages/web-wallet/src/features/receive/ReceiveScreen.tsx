@@ -15,7 +15,7 @@ import { REQUESTS_PATH } from "../requests/nonContactView"
 import { requestFromContact } from "../contacts/contactPay"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { PrintedCard, printedCodeHost, useSaveCard } from "./PrintedCard"
-import { CODE_LOGO, ReceiveCodeCard, ReceivePaid, WaitingLine } from "./ReceiveCodeFace"
+import { CODE_LOGO, ReceiveCodeCard, ReceivePaid } from "./ReceiveCodeFace"
 import { parseRequestAmount } from "./receiveView"
 import { RequestContactPicker } from "./RequestContactPicker"
 import { useCodeForm } from "./useCodeForm"
@@ -40,7 +40,20 @@ export function ReceiveScreen() {
   const [full, setFull] = useState(false)
   useWakeLock(!!code && !payment)
 
+  // A link request counts once handed out: copied, shared or shown full screen. Codes re-mint
+  // unseen, so minting is no measure.
+  const counted = useRef<string | undefined>(undefined)
+  const handOut = () => {
+    if (!code || counted.current === code.requestId) return
+    counted.current = code.requestId
+    fireEvent("request_created", {
+      source: "link",
+      amount_bucket: requestAmountBucket(code.amount),
+    })
+  }
+
   const enterFull = () => {
+    handOut()
     setFull(true)
     document.documentElement.requestFullscreen?.().catch(() => {})
   }
@@ -139,7 +152,7 @@ export function ReceiveScreen() {
   ) : (
     <>
       <section className="ww-request-form">
-        <label className="zkm-field">
+        <label className={`zkm-field${form.amountError ? " zkm-field--error" : ""}`}>
           <span className="zkm-field__label">Amount</span>
           <span
             className="zkm-field__box ww-request-form__amount"
@@ -158,6 +171,7 @@ export function ReceiveScreen() {
             />
             <span className="ww-request-form__unit">USD</span>
           </span>
+          {form.amountError && <span className="zkm-field__error">{form.amountError}</span>}
         </label>
         <label className="zkm-field">
           <span className="zkm-field__label ww-request-form__label">
@@ -211,7 +225,6 @@ export function ReceiveScreen() {
               </button>
             </span>
           </div>
-          <WaitingLine code={code} />
         </div>
       ) : (
         <div role="tabpanel">
@@ -229,7 +242,10 @@ export function ReceiveScreen() {
             title={phone ? "Share link" : copied ? "Copied" : "Copy link"}
             leadingIcon={phone ? "share" : copied ? "check" : "copy"}
             isDisabled={!code}
-            onClick={() => void (phone ? share() : copy())}
+            onClick={() => {
+              handOut()
+              void (phone ? share() : copy())
+            }}
           />
         </section>
       )}
@@ -262,7 +278,6 @@ export function ReceiveScreen() {
               <TopNavIconButton icon="x" ariaLabel="Close full screen" onClick={exitFull} />
             </div>
             <ReceiveCodeCard tag={tag} code={code} />
-            <WaitingLine code={code} />
             <div className="ww-receive-full__print">
               <div className="ww-receive__actions">
                 <PrimaryGradientButton

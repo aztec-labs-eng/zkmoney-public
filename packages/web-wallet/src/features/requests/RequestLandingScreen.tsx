@@ -37,7 +37,7 @@ import { getOxideTuple } from "../../config/oxideTuple"
 import { fireEvent, requestAmountBucket } from "../../lib/analytics"
 import { usdBalance, usdFigure } from "../../ui/format"
 import { useBack, useLinkSharing } from "../../ui/hooks"
-import { usePxeBoot, verifiedIdentity } from "../../ui/PxeBoot"
+import { BootSplash, usePxeBoot, verifiedIdentity } from "../../ui/PxeBoot"
 import { loadOnboardedIdentity } from "../identity/walletIdentity"
 import { resolveTagForCommit } from "../contacts/registryResolution"
 import { InvitationChrome } from "../onboarding/InvitationChrome"
@@ -48,6 +48,7 @@ import {
 } from "./accountlessRequest"
 import { ExternalWalletPayModal } from "./ExternalWalletPayModal"
 import { requestAmountDisplay, validateRequestPacket, type RequestLinkProblem } from "./requestLink"
+import { fireRequestOpened } from "./requestOpened"
 
 /** `unknownPayee`: a pay page for a tag nobody holds, such as a mistyped `<tag>.zk.money`. */
 type PayProblem = RequestLinkProblem | "unknownPayee"
@@ -206,11 +207,13 @@ function SignedInRequest({
               requesterAddress: packet.requesterAddress,
               note: packet.note,
               link: `${pathname}${hash}`,
+              standing,
             },
           },
         })
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e))
+        console.error("Payment request failed to open", e)
+        if (!cancelled) setError("Couldn't open this request. Check your connection and reload.")
       }
     })()
     return () => {
@@ -218,21 +221,34 @@ function SignedInRequest({
     }
   }, [packet, standing, navigate])
 
+  // The boot screen stays up through the hand-off to the send screen.
+  if (!problem && !error) return <BootSplash />
   return (
-    <div className="ww-flow">
-      <ScreenNavBar title="Payment request" />
-      {problem || error ? (
-        <Card style={{ marginTop: 24 }}>
-          <div style={{ textAlign: "center", padding: "18px 8px", color: "var(--text-secondary)" }}>
-            {problem ? PROBLEM_COPY[problem] : error}
-          </div>
-        </Card>
-      ) : (
-        <div style={{ display: "flex", justifyContent: "center", padding: "48px 0" }}>
-          <Spinner />
-        </div>
-      )}
-    </div>
+    <InvitationChrome>
+      <div className="ww-invite__content ww-invite__content--landing ww-invite__content--pay">
+        <PaySummary packet={packet} />
+        <p className="ww-paylink-summary__caption">{problem ? PROBLEM_COPY[problem] : error}</p>
+      </div>
+    </InvitationChrome>
+  )
+}
+
+/** The payee and amount a pay page opens with. */
+function PaySummary({ packet }: { packet: RequestInlinePacket }) {
+  const amountDisplay = requestAmountDisplay(packet)
+  return (
+    <>
+      <span className="ww-invite-modal-badge">
+        <Icon name="arrow-down" size={32} color="#fff" />
+      </span>
+      <div className="ww-paylink-summary">
+        <span className="ww-paylink-summary__label">Pay @{packet.requesterTag}</span>
+        <span className="ww-paylink-summary__amount">
+          {amountDisplay ? usdBalance(amountDisplay) : "Any amount"}
+        </span>
+        {packet.note && <span className="ww-paylink-summary__note">{packet.note}</span>}
+      </div>
+    </>
   )
 }
 
@@ -240,7 +256,7 @@ type PanelState =
   | { kind: "loading" }
   | { kind: "problem"; problem: PayProblem }
   | { kind: "resolved"; result: AccountlessResolveResult }
-  | { kind: "error"; message: string; retryable: boolean }
+  | { kind: "error"; final?: string }
 
 /** No-account surface: the requested amount over the two ways to pay it. */
 /** `signedIn`: the payer has an account and picked the Ethereum route on the send sheet, so the
@@ -284,14 +300,13 @@ function AccountlessRequest({
   } | null>(null)
 
   const amountDisplay = requestAmountDisplay(packet)
+  const amount = amountDisplay ? Number(amountDisplay) : 0
+  const source = standing ? "pay_page" : "link"
 
   // The signed-in path reports its open from the contact send screen; this covers the
   // accountless surface (usually a no-op — a visitor with no account granted no consent).
   useEffect(() => {
-    fireEvent("request_opened", {
-      source: "link",
-      amount_bucket: requestAmountBucket(amountDisplay ? Number(amountDisplay) : 0),
-    })
+    if (!own) fireRequestOpened(source, packet.requestId, amount, packet.requesterTag)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only funnel entry
   }, [])
 
@@ -339,8 +354,11 @@ function AccountlessRequest({
             return { kind: "problem", problem: "wrongToken" }
           }
           const message = e instanceof Error ? e.message : String(e)
-          // Registry identity failures are final; network/resolve failures retry.
-          return { kind: "error", message, retryable: !message.includes("no longer") }
+          // Registry identity failures are final and worded for the payer; anything else retries and
+          // stays in the console.
+          if (message.includes("no longer")) return { kind: "error", final: message }
+          console.error("Payment address failed to prepare", e)
+          return { kind: "error" }
         }
       })()
       inFlight.current = { packet, attempt, result }
@@ -430,16 +448,7 @@ function AccountlessRequest({
             <TopNavIconButton icon="arrow-left" ariaLabel="Back" onClick={back} />
           </span>
         )}
-        <span className="ww-invite-modal-badge">
-          <Icon name="arrow-down" size={32} color="#fff" />
-        </span>
-        <div className="ww-paylink-summary">
-          <span className="ww-paylink-summary__label">Pay @{packet.requesterTag}</span>
-          <span className="ww-paylink-summary__amount">
-            {amountDisplay ? usdBalance(amountDisplay) : "Any amount"}
-          </span>
-          {packet.note && <span className="ww-paylink-summary__note">{packet.note}</span>}
-        </div>
+        <PaySummary packet={packet} />
 
         {state.kind === "problem" ? (
           <p className="ww-paylink-summary__caption">{PROBLEM_COPY[state.problem]}</p>
@@ -501,19 +510,14 @@ function AccountlessRequest({
               </button>
             </div>
 
-            {state.kind === "error" && (
-              <>
+            {state.kind === "error" &&
+              (state.final ? (
                 <p className="ww-invite-modal-error" role="alert">
-                  {state.message}
+                  {state.final}
                 </p>
-                {state.retryable && (
-                  <PrimaryGradientButton
-                    title="Try again"
-                    onClick={() => setAttempt((n) => n + 1)}
-                  />
-                )}
-              </>
-            )}
+              ) : (
+                <PrimaryGradientButton title="Try again" onClick={() => setAttempt((n) => n + 1)} />
+              ))}
           </>
         )}
 
@@ -561,6 +565,16 @@ function AccountlessRequest({
           result={result}
           onClose={() => setPayOpen(false)}
           onFeeChanged={() => setAttempt((n) => n + 1)}
+          onPaid={
+            own
+              ? undefined
+              : () =>
+                  fireEvent("request_paid", {
+                    source,
+                    route: "ethereum",
+                    amount_bucket: requestAmountBucket(amount),
+                  })
+          }
         />
       )}
     </InvitationChrome>

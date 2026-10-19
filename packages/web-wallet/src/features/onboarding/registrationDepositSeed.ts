@@ -102,7 +102,6 @@ export async function healRegistrationDeposits(config: WebWalletConfig): Promise
     publicClient,
     env,
     tuple,
-    network: config.network,
   })
   const seeder = makeRegistrationDepositSeeder({ feeToken: env.feeToken, l1ChainId: env.l1ChainId })
   let seeded = 0

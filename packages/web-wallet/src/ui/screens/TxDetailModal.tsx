@@ -30,7 +30,6 @@ import {
   GradientInitialAvatar,
   Icon,
   PrimaryGradientButton,
-  Spinner,
   StatusBadge,
   avatarColors,
   type StatusBadgeStyle,
@@ -192,7 +191,8 @@ export function TxDetailModal({
   // The counterparty's chat is where all of that user's transactions live; an unsaved tag opens it
   // unsaved.
   const contactId = row.contact?.id ?? row.counterpartyTag
-  const contactPath = contactId && !row.paylink ? `/contacts/${encodeURIComponent(contactId)}` : null
+  const contactPath =
+    contactId && !row.paylink ? `/contacts/${encodeURIComponent(contactId)}` : null
   const openContact =
     contactPath && pathname !== contactPath
       ? () => {
@@ -271,7 +271,6 @@ export function TxDetailModal({
       {/* Leaving loses the link's deposit while it proves here; once sent it is the chain's. */}
       {isLink && linkTabLine === "keep" && (
         <div className="ww-txd__notice ww-txd__notice--live" role="status">
-          <Spinner size={14} />
           <span>
             Your link is ready to share. Keep this tab open until it's finished creation. You can
             close this modal now, we'll notify you.
@@ -340,7 +339,9 @@ export function TxDetailModal({
               <PrimaryGradientButton
                 title={copied ? "Copied!" : "Copy paylink"}
                 leadingIcon={copied ? "check" : "file-copy"}
-                onClick={() => void copy(row.paylink!)}
+                onClick={() =>
+                  void copy(row.paylink!).then((copiedLink) => copiedLink && onClose())
+                }
               />
             </div>
           )}

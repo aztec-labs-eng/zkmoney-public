@@ -5,6 +5,7 @@ import {
   GradientInitialAvatar,
   GradientText,
   Icon,
+  PrimaryGradientButton,
 } from "@obsidion/web-ds"
 import cancelArt from "../../assets/contacts/cancel-request.webp"
 import { getConfig } from "../../config/env"
@@ -41,9 +42,6 @@ export function CancelRequestConfirmModal({
         <div className="ww-cancel-confirm">
           <img src={cancelArt} alt="" width={139} height={140} />
           <span className="ww-cancel-confirm__title">Cancel request?</span>
-          <span className="ww-cancel-confirm__sub">
-            The user will no longer see this request if you cancel it
-          </span>
         </div>
         <button
           type="button"
@@ -84,11 +82,16 @@ export function RequestDetailModal({
   requestId,
   tag,
   initialStep = "detail",
+  reminded = false,
+  onRemind,
   onClose,
 }: {
   requestId: string
   tag?: string
   initialStep?: "detail" | "confirm"
+  reminded?: boolean
+  /** Offers Remind beside Cancel on an open outgoing request. */
+  onRemind?: () => void
   onClose: () => void
 }) {
   const [row, setRow] = useState<PaymentRequest>()
@@ -198,7 +201,21 @@ export function RequestDetailModal({
           />
         </div>
 
-        {row.direction === "outgoing" && row.status === "pending" && (
+        {row.direction === "outgoing" && row.status === "pending" && onRemind && (
+          <div className="ww-share-modal__buttons">
+            <PrimaryGradientButton
+              title="Cancel request"
+              buttonStyle="dark"
+              onClick={() => setStep("confirm")}
+            />
+            <PrimaryGradientButton
+              title={reminded ? "Reminder sent" : "Remind"}
+              isDisabled={reminded}
+              onClick={onRemind}
+            />
+          </div>
+        )}
+        {row.direction === "outgoing" && row.status === "pending" && !onRemind && (
           <button
             type="button"
             className="zkm-btn-reset zkm-pressable ww-danger-btn"

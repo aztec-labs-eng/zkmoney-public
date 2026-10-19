@@ -14,6 +14,7 @@ import {
   type DevicePosture,
   LAPTOP_LOCAL_HINTS,
   type LaptopCreation,
+  LaptopPasskeyRefusedError,
   type PasskeyAssertResult,
   type PasskeyAttachment,
   type PasskeyCeremony,
@@ -22,7 +23,9 @@ import {
   type PhoneReach,
   type PrfCandidates,
   RotatedCredentialError,
+  type SignUpChoice,
   type UserAgentInfo,
+  appleKeyAtCreation,
   bytesToBase64Url,
   candidatePubkeys,
   candidatesFrom,
@@ -40,6 +43,7 @@ import {
   runPasskeyAssertion,
   runPasskeyCreation,
   decodeUserHandle,
+  withoutManager,
 } from "@obsidion/passkey-web"
 import {
   clearActiveCredentialId,
@@ -109,10 +113,17 @@ export type RecoverPasskeyRequest = {
   discover?: boolean
   signal?: AbortSignal
   own?: PasskeyRequestScope
+  /** Steer a laptop's prompt to the phone; see `assertForRecovery`. */
+  phone?: boolean
 }
 
 /** Which device answered and its class, kept beside a recovery result the plain result drops. */
-export type Observation = { credentialId: string; attachment?: PasskeyAttachment }
+export type Observation = {
+  credentialId: string
+  attachment?: PasskeyAttachment
+  /** The provider this browser's record names for the credential, when it holds one. */
+  recordAaguid?: string
+}
 
 /** A recovery result plus the observation the screens read to diagnose a miss. */
 export type WebRecoverResult = RecoverPasskeyResult & { observed?: Observation }
@@ -133,6 +144,10 @@ export const mismatchVerdictOf = (err: unknown): MismatchVerdict | undefined =>
   err instanceof StoredAddressMismatchError
     ? (err as { verdict?: MismatchVerdict }).verdict
     : undefined
+
+/** The observation an error from a recovery carries, when it carries one. */
+export const observedOf = (err: unknown): Observation | undefined =>
+  typeof err === "object" && err ? (err as { observed?: Observation }).observed : undefined
 
 /**
  * A recovery whose public key is still one of two. It carries what the anchors need to name the
@@ -228,8 +243,10 @@ export class WebAlphaAuthService implements AlphaAuthService {
   private readonly extraProviders: readonly string[] | undefined
   private readonly probeEnabled: boolean
   private readonly laptopCreation: () => Promise<LaptopCreation>
-  /** The gate's answer for the next creation only; `createPasskey` consumes it. */
-  private heldCreation?: LaptopCreation
+  /** The gate's answer and the sheet's pick, for the next creation only; `createPasskey` consumes both. */
+  private heldCreation?: { creation: LaptopCreation; choice?: SignUpChoice }
+  /** Apple Passwords gave no key on this page, so a retry stops offering it here. */
+  private appleRefused = false
 
   private msk?: Fr
   private authProvider?: AlphaAuthProvider
@@ -269,15 +286,19 @@ export class WebAlphaAuthService implements AlphaAuthService {
 
   /**
    * The UI hints for a creation route: a phone opens the sheet on the QR flow, a security key names
-   * itself so a manager's extension stands aside, this device asks for its own managers without
-   * naming a key. `creationHintsFor` adds the security-key hint where it must. A configuration that
-   * sends no hints (the browser tests) keeps sending none.
+   * itself so a manager's extension stands aside. This device takes `creationHintsFor`'s default,
+   * which names a key too, except where 1Password was picked: its extension answers only a request
+   * that names none. `creationHintsFor` adds the security-key hint where it must. A configuration
+   * that sends no hints (the browser tests) keeps sending none.
    */
-  private laptopHintsForRoute(route?: SignInRoute): readonly PasskeyHint[] | null | undefined {
+  private laptopHintsForRoute(
+    route?: SignInRoute,
+    choice?: SignUpChoice,
+  ): readonly PasskeyHint[] | null | undefined {
     if (this.laptopHints === null) return null
     if (route === "phone") return ["hybrid"]
     if (route === "security-key") return ["security-key"]
-    if (route === "this-device") return LAPTOP_LOCAL_HINTS
+    if (route === "this-device" && choice === "1password") return LAPTOP_LOCAL_HINTS
     return undefined
   }
 
@@ -321,13 +342,18 @@ export class WebAlphaAuthService implements AlphaAuthService {
     backupEligible?: boolean
   }): PasskeyAnswer | undefined {
     if (this.answeredLocally(evidence.authenticatorAttachment)) {
-      return this.trustsAttachmentLabel() && !this.misreportsCrossDevice() ? "local" : undefined
+      return this.labelTrusted() ? "local" : undefined
     }
     const elsewhere =
       this.posture() === "laptop" &&
       evidence.authenticatorAttachment === "cross-platform" &&
       evidence.backupEligible === true
     return elsewhere ? "remote" : undefined
+  }
+
+  /** Whether this browser's label for which device answered can be believed. */
+  private labelTrusted(): boolean {
+    return this.trustsAttachmentLabel() && !this.misreportsCrossDevice()
   }
 
   /**
@@ -446,7 +472,8 @@ export class WebAlphaAuthService implements AlphaAuthService {
    * `platform` or a cross-device answer is accepted either way, and the anchors settle it.
    * `securityKey` names a hardware key in the hints, so the sheet keeps that row and a password
    * manager's extension stands aside; for anything else the extension may answer. `signal` can end
-   * it.
+   * it. `phone` steers the sheet to another device, and refuses this computer's answer only where
+   * the browser's label for it can be believed: elsewhere a phone's answer may carry that label.
    */
   private async assertForRecovery(
     posture: DevicePosture,
@@ -456,8 +483,9 @@ export class WebAlphaAuthService implements AlphaAuthService {
     securityKey = false,
     signal?: AbortSignal,
     own?: PasskeyRequestScope,
+    phone = false,
   ): Promise<PasskeyAssertResult> {
-    const localAllowed = posture === "laptop"
+    const localAllowed = posture === "laptop" && !(phone && this.labelTrusted())
     return runPasskeyAssertion(this.asking(own), {
       posture,
       rpId: this.rpId,
@@ -467,6 +495,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
       laptopHints: this.signInHints(),
       misreportsCrossDevice: this.misreportsCrossDevice(),
       localAllowed,
+      steerToPhone: phone,
       securityKey,
       ...(signal ? { signal } : {}),
       observe: async ({ result }) => {
@@ -482,9 +511,22 @@ export class WebAlphaAuthService implements AlphaAuthService {
     })
   }
 
-  /** Which device answered and its class, for a screen diagnosing a miss. */
-  private observationOf(assertion: PasskeyAssertResult): Observation {
-    return { credentialId: assertion.credentialId, attachment: assertion.authenticatorAttachment }
+  /**
+   * Which device answered and its class, for a screen diagnosing a miss. A phone-steered answer on
+   * a browser whose label can't be believed names no class: it may be the phone's.
+   */
+  private observationOf(
+    assertion: PasskeyAssertResult,
+    steered = false,
+    record?: RecoveryMetadata,
+  ): Observation {
+    const attachment =
+      steered && !this.labelTrusted() ? undefined : assertion.authenticatorAttachment
+    return {
+      credentialId: assertion.credentialId,
+      attachment,
+      ...(record?.prfAaguid ? { recordAaguid: record.prfAaguid } : {}),
+    }
   }
 
   /** This browser's record for the credential. A rotated signing credential never derives the key. */
@@ -511,12 +553,15 @@ export class WebAlphaAuthService implements AlphaAuthService {
    * A browser that never answers gets phone creation.
    */
   probeLaptopCreation(): Promise<LaptopCreation> {
-    return answeredInTime(this.laptopCreation(), { local: false, chromeTip: false })
+    const creation = this.laptopCreation().then((c) =>
+      this.appleRefused ? withoutManager(c, "apple") : c,
+    )
+    return answeredInTime(creation, { local: false, chromeTip: false })
   }
 
-  /** The snapshot the gate decided from, for the creation that follows at once. */
-  useLaptopCreation(creation: LaptopCreation): void {
-    this.heldCreation = creation
+  /** The snapshot the gate decided from and the option picked, for the creation that follows at once. */
+  useLaptopCreation(creation: LaptopCreation, choice?: SignUpChoice): void {
+    this.heldCreation = { creation, choice }
   }
 
   private recovered(
@@ -524,6 +569,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     candidates: RecoverPasskeyResult["candidates"],
     pubkey: Uint8Array,
     record: RecoveryMetadata | undefined,
+    steered = false,
   ): WebRecoverResult {
     const userHandle = decodeUserHandle(assertion.userHandle)
     return {
@@ -539,7 +585,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
       ...(userHandle ? { userHandle } : {}),
       // The device that answered, which the result otherwise drops; a screen reads it to diagnose a
       // miss. On a settled key it names the first assertion, never the salt-free second one.
-      observed: this.observationOf(assertion),
+      observed: this.observationOf(assertion, steered, record),
     }
   }
 
@@ -575,13 +621,13 @@ export class WebAlphaAuthService implements AlphaAuthService {
   }
 
   /** Sign an Oxide metadata digest as the WebAuthn challenge, without a UserOp or personal-sign wrapper. */
-  async signMetadataChallenge(challenge: `0x${string}`) {
+  async signMetadataChallenge(challenge: `0x${string}`, opts?: { signal?: AbortSignal }) {
     const storageId = getActiveStorageId()
     const credentialId = getActiveCredentialId()
     const provider = await this.getAuthProvider()
     if (!storageId || !credentialId || !(provider instanceof WebAuthnAlphaAuthProvider))
       throw new NoPasskeySessionError()
-    const result = await provider.signChallenge(Buffer.from(challenge.slice(2), "hex"))
+    const result = await provider.signChallenge(Buffer.from(challenge.slice(2), "hex"), opts)
     if (getActiveStorageId() !== storageId || getActiveCredentialId() !== credentialId)
       throw new SessionChangedError()
     const clientDataJSON =
@@ -736,7 +782,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     transports?: readonly string[]
   }> {
     const posture = this.posture()
-    const creation = this.heldCreation
+    const { creation, choice } = this.heldCreation ?? {}
     this.heldCreation = undefined
     // The gate makes this unreachable: it hands out "this-device" only with a snapshot that allows it.
     if (opts?.route === "this-device" && !creation?.local) {
@@ -744,7 +790,11 @@ export class WebAlphaAuthService implements AlphaAuthService {
     }
     const localCreation =
       opts?.route === "this-device" && creation?.local
-        ? { managers: creation.managers, appleWithdrawn: creation.withdrawn.includes("apple") }
+        ? {
+            managers: creation.managers,
+            appleWithdrawn: creation.withdrawn.includes("apple"),
+            appleKeyAtCreation: appleKeyAtCreation(creation),
+          }
         : undefined
     // The screen's attempt rides on the status callback front-core hands over; see
     // `passkeyAttemptScope`.
@@ -762,7 +812,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
       rpName: this.rpName,
       userName: accountName,
       userAgent,
-      laptopHints: this.laptopHintsForRoute(opts?.route),
+      laptopHints: this.laptopHintsForRoute(opts?.route, choice),
       ...(localCreation ? { localCreation } : {}),
       extraProviders: this.extraProviders,
       misreportsCrossDevice: this.misreportsCrossDevice(),
@@ -793,7 +843,11 @@ export class WebAlphaAuthService implements AlphaAuthService {
     })
     const { created, slot, prfOutput } = await (localCreation
       ? countingLocalRefusals(creating)
-      : creating)
+      : creating
+    ).catch((err: unknown) => {
+      if (err instanceof LaptopPasskeyRefusedError && err.appleRefusedHere) this.appleRefused = true
+      throw err
+    })
     const secretKey = deriveMskFromPrfOutput(prfOutput)
     const authProvider = this.buildProvider(created.pubkey, created.credentialId)
     this.createdHandles.set(created.credentialId, bytesToBase64Url(created.userHandle))
@@ -942,7 +996,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
    */
   async unlock(
     deriveAddress: (msk: Fr, pubkeyHex: string) => Promise<string>,
-    options?: { signal?: AbortSignal; own?: PasskeyRequestScope },
+    options?: { signal?: AbortSignal; own?: PasskeyRequestScope; phone?: boolean },
   ): Promise<void> {
     await this.restoreFromCache()
     if (this.msk) return
@@ -952,12 +1006,12 @@ export class WebAlphaAuthService implements AlphaAuthService {
     // flight only while its owner's signal is still live; an owner that has gone away starts its own.
     // The shared ceremony is the flight owner's, so its attempt is the one the requests are
     // reported as.
-    const { signal, own } = options ?? {}
+    const { signal, own, phone } = options ?? {}
     const current = this.unlocking
     if (current && !current.signal?.aborted) return current.promise
     const flight: UnlockFlight = {
       signal,
-      promise: this.runUnlock(deriveAddress, signal, own).finally(() => {
+      promise: this.runUnlock(deriveAddress, signal, own, phone).finally(() => {
         if (this.unlocking === flight) this.unlocking = undefined
       }),
     }
@@ -969,6 +1023,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     deriveAddress: (msk: Fr, pubkeyHex: string) => Promise<string>,
     signal?: AbortSignal,
     own?: PasskeyRequestScope,
+    phone?: boolean,
   ): Promise<void> {
     const storageId = getActiveStorageId()
     const credentialId = getActiveCredentialId()
@@ -977,7 +1032,12 @@ export class WebAlphaAuthService implements AlphaAuthService {
     if (!storageId || !credentialId || !record?.l2Address) throw new NoPasskeySessionError()
     const stillOwns = () => this.epoch === epoch && !signal?.aborted
     signal?.throwIfAborted()
-    const recovered = await this.recoverPasskey({ credentialId, signal, ...(own ? { own } : {}) })
+    const recovered = await this.recoverPasskey({
+      credentialId,
+      signal,
+      ...(own ? { own } : {}),
+      ...(phone ? { phone } : {}),
+    })
     let msk: Fr
     try {
       msk = await selectRecoveredMsk(recovered, (candidate) =>
@@ -1020,12 +1080,20 @@ export class WebAlphaAuthService implements AlphaAuthService {
    */
   private tagRecordMismatch(err: unknown, recovered: WebRecoverResult): unknown {
     if (!(err instanceof StoredAddressMismatchError)) return err
-    return Object.assign(err, { verdict: this.mismatchVerdict(recovered) })
+    return Object.assign(err, {
+      verdict: this.mismatchVerdict(recovered),
+      observed: recovered.observed,
+    })
   }
 
   /** Attach which device answered to an early refusal so the screen can diagnose it. */
-  private withObservation(err: unknown, assertion: PasskeyAssertResult): unknown {
-    const observed = this.observationOf(assertion)
+  private withObservation(
+    err: unknown,
+    assertion: PasskeyAssertResult,
+    steered = false,
+    record?: RecoveryMetadata,
+  ): unknown {
+    const observed = this.observationOf(assertion, steered, record)
     return typeof err === "object" && err ? Object.assign(err, { observed }) : err
   }
 
@@ -1060,16 +1128,18 @@ export class WebAlphaAuthService implements AlphaAuthService {
       rootId ? await this.knownSecurityKey(rootId) : false,
       asked?.signal,
       asked?.own,
+      asked?.phone,
     )
     const record = await this.rootRecord(assertion.credentialId)
     // The sheet was held to the recorded credential; an answer from any other is not the session's.
     if (known && !record) throw new Error(UNASKED_PASSKEY_MESSAGE)
+    const steered = asked?.phone === true
     let candidates: RecoverPasskeyResult["candidates"]
     try {
       candidates = toFrCandidates(candidatesFrom(assertion))
     } catch (err) {
       // The observation rides the error so the screen can diagnose the miss.
-      throw this.withObservation(err, assertion)
+      throw this.withObservation(err, assertion, steered, record)
     }
 
     const pubkeyCandidates = await candidatePubkeys(assertion)
@@ -1077,7 +1147,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
       // A record whose key the signature cannot have come from is another credential's.
       if (!pubkeyCandidates.includes(record.pubkey.toLowerCase()))
         throw new RotatedCredentialError()
-      return this.recovered(assertion, candidates, hexBytes(record.pubkey), record)
+      return this.recovered(assertion, candidates, hexBytes(record.pubkey), record, steered)
     }
 
     return {
@@ -1088,14 +1158,14 @@ export class WebAlphaAuthService implements AlphaAuthService {
       authenticatorType: "platform",
       credentialId: assertion.credentialId,
       pubkeyCandidates,
-      observed: this.observationOf(assertion),
+      observed: this.observationOf(assertion, steered),
       settle: async (pubkey?: string, attempt?: AbortSignal) => {
         if (pubkey !== undefined) {
           const wanted = pubkey.toLowerCase().replace(/^0x/, "")
           if (!pubkeyCandidates.includes(wanted)) {
             throw new Error("That key is not a candidate of this sign-in's signature")
           }
-          return this.recovered(assertion, candidates, hexBytes(wanted), undefined)
+          return this.recovered(assertion, candidates, hexBytes(wanted), undefined, steered)
         }
         // The second assertion signs another random challenge, so the two signatures share exactly
         // one recovered key. It sends no salts and is deliberately left unsteered and unchecked: a
@@ -1109,7 +1179,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
         })
         void this.learnAnswer(second, () => !attempt?.aborted)
         const recoveredKey = await recoverPubkeyFromAssertions(assertion, second)
-        return this.recovered(assertion, candidates, recoveredKey, undefined)
+        return this.recovered(assertion, candidates, recoveredKey, undefined, steered)
       },
     }
   }
@@ -1131,6 +1201,7 @@ export class WebAlphaAuthService implements AlphaAuthService {
     pubkeyHex: string
     signal?: AbortSignal
     own?: PasskeyRequestScope
+    phone?: boolean
   }): Promise<WebRecoverResult> {
     const posture = this.posture()
     // What this browser recorded about reaching the authenticator steers the sheet, as in
@@ -1144,20 +1215,22 @@ export class WebAlphaAuthService implements AlphaAuthService {
       await this.knownSecurityKey(hint.credentialId),
       hint.signal,
       hint.own,
+      hint.phone,
     )
     const record = await this.rootRecord(assertion.credentialId)
+    const steered = hint.phone === true
     let candidates: RecoverPasskeyResult["candidates"]
     try {
       candidates = toFrCandidates(candidatesFrom(assertion))
     } catch (err) {
-      throw this.withObservation(err, assertion)
+      throw this.withObservation(err, assertion, steered, record)
     }
     const wanted = hint.pubkeyHex.toLowerCase().replace(/^0x/, "")
     if (!(await candidatePubkeys(assertion)).includes(wanted)) throw new HintedKeyMismatchError()
     // This browser's own record for the credential outranks the hint.
     if (record && !sameHex(record.pubkey, wanted)) throw new HintedKeyMismatchError()
     const pubkey = new Uint8Array(Buffer.from(wanted, "hex"))
-    return this.recovered(assertion, candidates, pubkey, record)
+    return this.recovered(assertion, candidates, pubkey, record, steered)
   }
 
   /**

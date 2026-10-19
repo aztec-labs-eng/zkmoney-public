@@ -15,16 +15,14 @@ import { requestLinkOrigin } from "./requestLinkCreation"
 
 /**
  * Share step of the request-paylink flow (ULT-671), doubling as the detail sheet for a persisted
- * link row: share/copy the link while it's unpaid, and see who paid once it's fulfilled.
- *
- * The sheet offers no cancel. A minted request link is a bearer document whose SIPA is already
- * broadcast, so nothing local can revoke it — the feed row owns removing the row.
+ * link row: share/copy or cancel the link while it's unpaid, and see who paid once it's fulfilled.
  */
 export function SharePaylinkModal({
   request,
   requesterTag,
   payer,
   justCreated = false,
+  onCancel,
   onClose,
 }: {
   request: PaymentRequest
@@ -32,17 +30,25 @@ export function SharePaylinkModal({
   payer?: { displayName: string }
   /** Opened straight from the create step: the sheet reads as a result, not a form. */
   justCreated?: boolean
+  /** Offers Cancel beside Share on an unpaid link. */
+  onCancel?: () => void
   onClose: () => void
 }) {
   const url = buildRequestShareUrl(request, requesterTag, requestLinkOrigin()) ?? undefined
-  const { copied, copy, share } = useLinkSharing(url, "Payment request", requestShareText(request.amount))
+  const { copied, copy, share } = useLinkSharing(
+    url,
+    "Payment request",
+    requestShareText(request.amount),
+  )
   const phone = usePhoneLayout()
   const status = requestShareStatus(request, Date.now())
   const expiry = linkExpiryLabel(request.expiresAt, Date.now())
   const amountLabel = requestAmountLabel(request.amount)
   const heading = justCreated ? "Your request link is ready" : "Request link"
   const nextStep =
-    request.amount > 0 ? `Share it with whoever owes you ${amountLabel}.` : "Share it with whoever owes you."
+    request.amount > 0
+      ? `Share it with whoever owes you ${amountLabel}.`
+      : "Share it with whoever owes you."
 
   return (
     <Modal variant="create" label="Request link" onClose={onClose}>
@@ -64,7 +70,15 @@ export function SharePaylinkModal({
         </div>
 
         {status.active &&
-          (url ? (
+          (url && onCancel ? (
+            <div className="ww-share-modal__buttons">
+              <PrimaryGradientButton title="Cancel request" buttonStyle="dark" onClick={onCancel} />
+              <PrimaryGradientButton
+                title={copied ? "Copied!" : phone ? "Share" : "Copy link"}
+                onClick={() => void (phone ? share() : copy())}
+              />
+            </div>
+          ) : url ? (
             <div className="ww-share-modal__buttons">
               <PrimaryGradientButton
                 title={copied ? "Copied!" : "Copy link"}
@@ -74,9 +88,18 @@ export function SharePaylinkModal({
               {phone && <PrimaryGradientButton title="Share" onClick={() => void share()} />}
             </div>
           ) : (
-            <span className="zkm-type-body-sm" style={{ color: "var(--text-secondary)" }}>
-              This older request cannot be shared again.
-            </span>
+            <>
+              <span className="zkm-type-body-sm" style={{ color: "var(--text-secondary)" }}>
+                This older request cannot be shared again.
+              </span>
+              {onCancel && (
+                <PrimaryGradientButton
+                  title="Cancel request"
+                  buttonStyle="dark"
+                  onClick={onCancel}
+                />
+              )}
+            </>
           ))}
 
         <div className="ww-review-card">

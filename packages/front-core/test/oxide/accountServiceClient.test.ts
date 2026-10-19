@@ -345,6 +345,7 @@ describe("AccountServiceClient HTTP", () => {
     const client = new AccountServiceClient("https://acct.test", { testMode: true })
     const owner = "0x2222222222222222222222222222222222222222" as Hex
     const nullifier = `0x${"33".repeat(32)}` as Hex
+    const classIds: [Hex, Hex] = [`0x${"44".repeat(32)}`, `0x${"55".repeat(32)}`]
 
     await expect(
       client.redeemGoldenTicket({
@@ -353,12 +354,13 @@ describe("AccountServiceClient HTTP", () => {
         blockNumber: 4,
         nullifier,
         owner,
+        classIds,
       }),
     ).resolves.toEqual({ status: "created" })
 
     const [url, init] = fetchMock.mock.calls[0]
     expect(url).toBe("https://acct.test/domain/golden-ticket")
-    expect(JSON.parse(init.body)).toMatchObject({ keyId: owner, owner, nullifier })
+    expect(JSON.parse(init.body)).toMatchObject({ keyId: owner, owner, nullifier, classIds })
   })
 
   it("names a testMode NameClaim with the bootstrap subject when one is wired", async () => {

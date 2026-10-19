@@ -185,6 +185,20 @@ describe("the voucher uses a link's escrow holds", () => {
     expect(h.seen.at(-1)?.error).toBeUndefined()
   })
 
+  it("reads the voucher at once, reusing the token the page's own read already found", async () => {
+    linkVoucherUses.mockResolvedValue(1)
+    const h = harness((f) => useLinkVoucher(link(f, { tokenAddress: "0xtoken" })))
+    await h.renderAsync("frag-a")
+    expect(h.seen.at(-1)?.uses).toBe(1)
+    expect(linkVoucherUses).toHaveBeenCalledWith(expect.anything(), "frag-a", "0xtoken")
+
+    // Without it the read starts all the same, and finds the token itself.
+    linkVoucherUses.mockClear()
+    const unread = harness((f) => useLinkVoucher(link(f)))
+    await unread.renderAsync("frag-b")
+    expect(linkVoucherUses).toHaveBeenCalledWith(expect.anything(), "frag-b", undefined)
+  })
+
   it("does not report an error while the wallet is still booting", async () => {
     vi.useFakeTimers()
     CTX.aztec.obsidionWallet = undefined

@@ -204,6 +204,26 @@ describe("the creation route rule", () => {
       expect.objectContaining({ providerName: undefined, message: SIGN_UP }),
     )
   })
+
+  it("ends a laptop's refusal with the advice it is given, and only then", () => {
+    const advice = "Add this site to the manager's excluded domains."
+    const named = new PhoneRequiredError({ providerName: "Bitwarden" }).message
+    expect(() =>
+      checkCreationRoute("laptop", "platform", false, "Bitwarden", undefined, advice),
+    ).toThrow(
+      expect.objectContaining({
+        name: "PhoneRequiredError",
+        providerName: "Bitwarden",
+        message: `${named} ${advice}`,
+      }),
+    )
+    expect(() =>
+      checkCreationRoute("laptop", "platform", false, undefined, undefined, advice),
+    ).toThrow(expect.objectContaining({ providerName: undefined, message: `${SIGN_UP} ${advice}` }))
+    expect(() => checkCreationRoute("laptop", "platform", false, "Bitwarden")).toThrow(
+      expect.objectContaining({ message: named }),
+    )
+  })
 })
 
 describe("the assertion route rule", () => {
@@ -240,15 +260,19 @@ describe("the assertion route rule", () => {
 describe("the laptop's own route", () => {
   const managers = ["apple", "gpm"] as const
 
-  it("asks for this device, keeps the default timeout, and steers to it without a key", () => {
+  it("asks for this device, keeps the default timeout, and steers to it, then to a key", () => {
     expect(requestedAttachment("laptop", true)).toBe("platform")
     expect(requestedAttachment("laptop")).toBe("cross-platform")
     expect(requestedAttachment("phone", true)).toBeUndefined()
     expect(creationTimeoutMs("laptop", true)).toBeUndefined()
     expect(creationTimeoutMs("laptop")).toBe(300_000)
-    expect(creationHintsFor("laptop", undefined, true)).toEqual(["client-device"])
+    // The key is named so 1Password's extension stands aside.
+    expect(creationHintsFor("laptop", undefined, true)).toEqual(["client-device", "security-key"])
+    expect(creationHintsFor("laptop", [], true)).toEqual(["client-device", "security-key"])
+    // The consumer's hints go as given: `client-device` alone lets the extension answer.
     expect(creationHintsFor("laptop", ["client-device"], true)).toEqual(["client-device"])
     expect(creationHintsFor("laptop", null, true)).toBeUndefined()
+    expect(creationHintsFor("phone", undefined, true)).toEqual(["client-device", "security-key"])
     // Off the local route the consumer's hints still gain the security key.
     expect(creationHintsFor("laptop", ["hybrid"])).toEqual(["hybrid", "security-key"])
   })

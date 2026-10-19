@@ -7,13 +7,15 @@ import { isDemoMode } from "../../dev/demoFlag"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
 import {
+  PHONE_STEPS_COPY,
+  currentMacCopyMayBeWrong,
   inAppBrowserRefusal,
   isPasskeyPolicyError,
   type PasskeyAttemptHandle,
 } from "@obsidion/passkey-web"
 import { PrimaryGradientButton } from "@obsidion/web-ds"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
-import { mismatchVerdictOf } from "../../platform/auth/WebAlphaAuthService"
+import { mismatchVerdictOf, observedOf } from "../../platform/auth/WebAlphaAuthService"
 import { hasRecordFor } from "../../platform/auth/WebPasskeyIdentityMap"
 import { getActiveCredentialId } from "../../platform/storage/activeStorage"
 import { useAsyncAction } from "../../ui/hooks"
@@ -45,6 +47,8 @@ export function UnlockGate({ children }: { children: ReactNode }) {
   const [installFailed, setInstallFailed] = useState(false)
   const attempt = useRef<AbortController | undefined>(undefined)
   const attemptRef = useRef<PasskeyAttemptHandle | undefined>(undefined)
+  // Whether the last unlock was steered to the phone, so its retry is too.
+  const phoneRef = useRef(false)
 
   // Leaving the screen ends the attempt behind its prompt: nothing commits for a pane that is gone.
   useEffect(
@@ -64,7 +68,10 @@ export function UnlockGate({ children }: { children: ReactNode }) {
   }
   if (!unlockError || !obsidionWallet) return <BootSplash inShell />
 
-  const unlock = () => {
+  const unlock = (phone = false) => {
+    // A phone attempt that ends with nothing offered goes back to the card it came from.
+    const cameFrom = phone ? refusal : undefined
+    phoneRef.current = phone
     setRefusal(undefined)
     setInstallFailed(false)
     // A newer tap supersedes the attempt behind any open prompt: its abort tears that prompt down
@@ -83,12 +90,16 @@ export function UnlockGate({ children }: { children: ReactNode }) {
               obsidionWallet
                 .deriveAccountAddress(msk, pubkeyHex)
                 .then((address) => address.toString()),
-            { signal: controller.signal, own },
+            { signal: controller.signal, own, ...(phone ? { phone } : {}) },
           ),
         )
       } catch (e) {
         // A superseded attempt's late answer belongs to nobody: the newer tap owns the pane.
-        if (controller.signal.aborted || isPasskeyNotOffered(e)) return
+        if (controller.signal.aborted) return
+        if (isPasskeyNotOffered(e)) {
+          if (cameFrom) setRefusal(cameFrom)
+          return
+        }
         if (e instanceof Error && e.name === "NoPasskeySessionError") {
           setToEnter(true)
           return
@@ -101,7 +112,14 @@ export function UnlockGate({ children }: { children: ReactNode }) {
         const verdict = mismatchVerdictOf(e)
         if (verdict) {
           fireEvent("action_failed", { action: "identity:unlock", code: failureCode(e) })
-          setRefusal({ name: STORED_ADDRESS_MISMATCH, message: "", verdict })
+          const mac = currentMacCopyMayBeWrong(observedOf(e))
+          setRefusal({
+            name: STORED_ADDRESS_MISMATCH,
+            message: "",
+            verdict,
+            ...(mac ? { macUpdate: true } : {}),
+            ...(mac && verdict === "wrong-key" ? { macPhone: true } : {}),
+          })
           return
         }
         if (isPasskeyPolicyError(e)) {
@@ -141,13 +159,15 @@ export function UnlockGate({ children }: { children: ReactNode }) {
     }, "identity:choose-passkey")
   }
 
+  // On a card that leads with the phone, the credential that returned the wrong key is hidden there.
+  const avoid = refusal?.macPhone ? credentialId ?? undefined : undefined
   const exits = (
     <button
       type="button"
       className="zkm-btn-reset zkm-pressable ww-invite-pill"
       data-testid="unlock-choose-passkey"
       disabled={busy}
-      onClick={() => chooseAnotherPasskey()}
+      onClick={() => chooseAnotherPasskey(avoid)}
     >
       Use a different passkey
     </button>
@@ -168,11 +188,17 @@ export function UnlockGate({ children }: { children: ReactNode }) {
         <PasskeyRefusal
           error={refusal}
           verdict={refusal.verdict}
-          onRetry={() => unlock()}
+          onRetry={() => unlock(phoneRef.current)}
           busy={busy}
           // The certain wrong key: this copy would answer again, so the way on is another device.
           primary={
-            refusal.verdict === "wrong-key"
+            refusal.macPhone
+              ? {
+                  title: PHONE_STEPS_COPY.noPhone.back,
+                  onClick: () => unlock(true),
+                  testId: "unlock-phone",
+                }
+              : refusal.verdict === "wrong-key"
               ? {
                   title: "Show passkeys",
                   onClick: () => chooseAnotherPasskey(credentialId ?? undefined),

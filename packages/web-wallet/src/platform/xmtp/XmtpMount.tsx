@@ -26,6 +26,7 @@ import {
   importHistory,
   startArchivePublisher,
   startHistoryImporter,
+  useBootReady,
   useLocalConfigStore,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
@@ -206,11 +207,13 @@ async function mountReceivePipeline(
 
 export function XmtpMount(): null {
   const config = useLocalConfigStore()
+  const ready = useBootReady("messaging")
   useEffect(() => {
     if (messagingCapability() !== "ok") {
       setXmtpUiState("unsupported")
       return () => setXmtpUiState("off")
     }
+    if (!ready) return
     const lifecycle = new XmtpLifecycle({
       locks: navigator.locks,
       isVisible: () => document.visibilityState === "visible",
@@ -226,6 +229,6 @@ export function XmtpMount(): null {
     })
     lifecycle.start()
     return () => lifecycle.stop()
-  }, [config])
+  }, [config, ready])
   return null
 }

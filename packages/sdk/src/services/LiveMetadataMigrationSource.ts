@@ -204,7 +204,7 @@ export class LiveMetadataMigrationSource implements MetadataMigrationSource {
   }
 
   /** A saved hash is never burned again, even if the node no longer recognizes it. */
-  async fund(id: string, recipient: Address): Promise<void> {
+  async fund(id: string, recipient: Address, signal?: AbortSignal): Promise<void> {
     const o = this.options
     const batch = await this.read(id, recipient)
     if (batch.burnTx) {
@@ -227,6 +227,7 @@ export class LiveMetadataMigrationSource implements MetadataMigrationSource {
           portal: await readPortalWithdrawalState(o.client, o.source.tuple.portal as Address),
         },
         onTxHash: async (hash) => {
+          signal?.throwIfAborted()
           batch.burnTx = hash
           await o.batches.set(id, batch)
         },
@@ -260,7 +261,7 @@ export class LiveMetadataMigrationSource implements MetadataMigrationSource {
     }
   }
 
-  async recoverRemaining(): Promise<void> {
+  async recoverRemaining(signal?: AbortSignal): Promise<void> {
     const o = this.options
     const { id, batch: saved } = await this.nextRemaining()
     let batch = saved
@@ -302,6 +303,7 @@ export class LiveMetadataMigrationSource implements MetadataMigrationSource {
         additionalScopes: [o.registered.user],
         fee: claimFpcSponsoredFee(o.registered.policy, innerCalls),
         onTxHash: async (hash) => {
+          signal?.throwIfAborted()
           batch!.broadcastTx = hash
           await o.batches.set(id, batch!)
         },
@@ -310,7 +312,7 @@ export class LiveMetadataMigrationSource implements MetadataMigrationSource {
     }
     await this.requireIncluded(batch.broadcastTx, "Remaining-funds broadcast")
     if (!batch.burnTx) {
-      await this.fund(id, resolved.sipaAddress)
+      await this.fund(id, resolved.sipaAddress, signal)
       return
     }
     if (

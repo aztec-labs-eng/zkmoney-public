@@ -128,3 +128,16 @@ export function saveTicketSignupAccount(
 ): void {
   walletStorage.setItem(keyFor(rpId, paylinkId), JSON.stringify(account))
 }
+
+/** A payment link's signup bound this passkey: only that link's signup continues its account. */
+export function boundToTicketSignup(rpId: string, credentialId: string): boolean {
+  const prefix = keyFor(rpId, "")
+  return walletStorage.keys().some((key) => {
+    if (!key.startsWith(prefix)) return false
+    try {
+      return JSON.parse(walletStorage.getItem(key) ?? "null")?.credentialId === credentialId
+    } catch {
+      return false
+    }
+  })
+}

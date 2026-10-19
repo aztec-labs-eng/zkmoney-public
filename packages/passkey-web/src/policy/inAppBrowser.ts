@@ -161,7 +161,7 @@ export function currentOpenInBrowserHref(url: string): string | undefined {
 
 /**
  * Whether the app hosting the page drops the Open in browser link: X's app does on iPhone and on
- * Android, so there no link is offered and Copy link leads, with the app's own menu after it.
+ * Android, so there no link is offered and the way out is the app's own menu or a copied link.
  */
 export function currentAppDropsOpenLink(): boolean {
   const userAgent = globalThis.navigator?.userAgent ?? ""

@@ -174,6 +174,9 @@ function makeStore() {
         return next
       },
     ),
+    remove: vi.fn(async (address: string) => {
+      records.delete(address.toLowerCase())
+    }),
   }
 }
 
@@ -1580,11 +1583,11 @@ describe("syncSipaDeposits self-initiated records", () => {
     await syncSipaDeposits(deps)
 
     expect(mocks.readDepositFee).toHaveBeenCalledWith(
-      deps.publicClient,
+      expect.objectContaining({ getBlockNumber: deps.publicClient.getBlockNumber }),
       REGISTRATION_IMPLEMENTATION,
     )
     expect(mocks.readSipaFundingStatus).toHaveBeenCalledWith(
-      deps.publicClient,
+      expect.objectContaining({ getBlockNumber: deps.publicClient.getBlockNumber }),
       expect.objectContaining({ sipa: SIPA_C }),
     )
     expect(store.records.get(SIPA_C)).toMatchObject({ intent: "registration" })
@@ -1604,7 +1607,7 @@ describe("syncSipaDeposits self-initiated records", () => {
     await syncSipaDeposits(deps)
 
     expect(mocks.readDepositFee).toHaveBeenCalledWith(
-      deps.publicClient,
+      expect.objectContaining({ getBlockNumber: deps.publicClient.getBlockNumber }),
       REGISTRATION_IMPLEMENTATION,
     )
   })
@@ -1850,8 +1853,13 @@ describe("syncSipaDeposits scan rationing", () => {
         { block: claimable, index: 9n },
       ]),
     )
-    // Sweeps are processed oldest first, so the first readiness check is the unsettled one's.
-    mocks.isL1ToL2MessageReady.mockResolvedValueOnce(false).mockResolvedValue(true)
+    // Each sweep carries its own message; the unsettled one's is not ready yet.
+    mocks.readDepositMessageKey.mockImplementation(async (...args: unknown[]) =>
+      fr(`0x${(args[3] as bigint).toString(16).padStart(64, "0")}`),
+    )
+    mocks.isL1ToL2MessageReady.mockImplementation(
+      async (_node: unknown, key: unknown) => BigInt(String(key)) !== 7n,
+    )
 
     const result = await syncSipaDeposits(deps)
 
@@ -2554,6 +2562,78 @@ describe("syncSipaDeposits balance refresh", () => {
     },
   )
 
+  it("reads the balance once for a pass's claims across SIPAs, and records them all after it", async () => {
+    const { deps, store, tokenService } = makeDeps()
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A), sipaEvent(SECRET_B)])
+    mocks.computeSIPAAddress
+      .mockImplementationOnce(() => ({ toString: () => SIPA_A }))
+      .mockImplementationOnce(() => ({ toString: () => SIPA_B }))
+    mocks.readSweepEvents.mockImplementation(async (_pc: unknown, sipa: string) => [
+      sipa === SIPA_A
+        ? { index: 7n, amount: 990_000n, blockNumber: 1n, txHash: TX_HASH }
+        : { index: 9n, amount: 500_000n, blockNumber: 2n, txHash: TX_HASH },
+    ])
+    let land: () => void = () => {}
+    const refreshBalance = vi.fn(() => new Promise<void>((resolve) => (land = resolve)))
+
+    const pass = syncSipaDeposits({ ...deps, refreshBalance })
+    await vi.waitFor(() => expect(refreshBalance).toHaveBeenCalledTimes(1))
+    expect(tokenService.claimSweptDeposit).toHaveBeenCalledTimes(2)
+    expect(store.records.get(SIPA_A)?.phase).not.toBe("claimed")
+    expect(store.records.get(SIPA_B)?.phase).not.toBe("claimed")
+
+    land()
+
+    expect(await pass).toMatchObject({ claimed: 2 })
+    expect(refreshBalance).toHaveBeenCalledTimes(1)
+    expect(store.records.get(SIPA_A)?.phase).toBe("claimed")
+    expect(store.records.get(SIPA_B)?.phase).toBe("claimed")
+  })
+
+  it("reads every sweep's message and readiness once, all before the first claim", async () => {
+    const { deps, tokenService } = makeDeps()
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([
+      { index: 7n, amount: 990_000n, blockNumber: 1n, txHash: TX_HASH },
+      { index: 9n, amount: 500_000n, blockNumber: 2n, txHash: TX_HASH },
+    ])
+    mocks.readDepositMessageKey.mockImplementation(async (...args: unknown[]) =>
+      fr(`0x${(args[3] as bigint).toString(16).padStart(64, "0")}`),
+    )
+
+    expect(await syncSipaDeposits(deps)).toMatchObject({ claimed: 2 })
+
+    expect(mocks.readDepositMessageKey).toHaveBeenCalledTimes(2)
+    expect(mocks.isL1ToL2MessageReady).toHaveBeenCalledTimes(2)
+    const firstClaim = tokenService.claimSweptDeposit.mock.invocationCallOrder[0]!
+    for (const order of mocks.isL1ToL2MessageReady.mock.invocationCallOrder)
+      expect(order).toBeLessThan(firstClaim)
+  })
+
+  it("keeps a newer sweep pending when an older one on the same SIPA claims in the pass", async () => {
+    const { deps, store } = makeDeps()
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A)])
+    mocks.readSweepEvents.mockResolvedValue([
+      { index: 7n, amount: 990_000n, blockNumber: 1n, txHash: TX_HASH },
+      { index: 9n, amount: 500_000n, blockNumber: 2n, txHash: TX_HASH },
+    ])
+    mocks.readDepositMessageKey.mockImplementation(async (...args: unknown[]) =>
+      fr(`0x${(args[3] as bigint).toString(16).padStart(64, "0")}`),
+    )
+    mocks.isL1ToL2MessageReady.mockImplementation(
+      async (_node: unknown, key: unknown) => BigInt(String(key)) === 7n,
+    )
+
+    expect(await syncSipaDeposits(deps)).toMatchObject({ claimed: 1, pendingSettlement: 1 })
+
+    expect(store.records.get(SIPA_A)).toMatchObject({
+      phase: "pendingClaim",
+      inboxIndex: "9",
+      netAmount: "500000",
+      claimedInboxIndexes: ["7"],
+    })
+  })
+
   it("completes a pass whose refresh rejects", async () => {
     const { deps } = makeDeps()
     sweptEvent()
@@ -2796,5 +2876,232 @@ describe("syncSipaDeposits second payment left without an exit", () => {
     expect(record.endTime).toBeUndefined()
     expect(isStuckSweep(record as never, (record.startTime as number) + STUCK_SWEEP_MS)).toBe(true)
     expect(onSweptAddressFunded).toHaveBeenCalledOnce()
+  })
+})
+
+describe("syncSipaDeposits upgrade SIPAs", () => {
+  const UPGRADE_IMPLEMENTATION = "0x6b1e0c2f3b4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f" as Address
+  const UPGRADE_HASH = `0x${"77".repeat(32)}`
+  const SIPA_UPGRADE = "0xeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" as Address
+
+  /** Each implementation derives its own address: deposit → A, registration → C, upgrade → E. */
+  function deriveByImplementation() {
+    mocks.computeSIPAAddress.mockImplementation(
+      (inputs: { implementation: { toString(): string } }) => {
+        const implementation = inputs.implementation.toString()
+        const address =
+          implementation === REGISTRATION_IMPLEMENTATION
+            ? SIPA_C
+            : implementation === UPGRADE_IMPLEMENTATION
+            ? SIPA_UPGRADE
+            : SIPA_A
+        return { toString: () => address }
+      },
+    )
+  }
+
+  /** `deployed` hold code; `swept` also emitted a `Sweep`, as a settled upgrade's SIPA does. */
+  function upgradeDeps(deployed: Address[], store = makeStore(), swept: Address[] = deployed) {
+    const made = makeDeps(store)
+    mocks.readSweepEvents.mockImplementation(async (_pc: unknown, sipa: string) =>
+      swept.some((s) => s.toLowerCase() === sipa.toLowerCase())
+        ? [{ index: 4n, amount: 975_000n, blockNumber: 1n, txHash: TX_HASH }]
+        : [],
+    )
+    const getCode = vi.fn(async ({ address }: { address: string }) =>
+      deployed.some((d) => d.toLowerCase() === address.toLowerCase()) ? "0x6080" : undefined,
+    )
+    const deps = {
+      ...made.deps,
+      tuple: {
+        ...TUPLE,
+        updateMetadataSIPAImplementation: UPGRADE_IMPLEMENTATION,
+      } as OxideEnvTuple,
+      publicClient: { ...(made.deps.publicClient as object), getCode } as never,
+    }
+    return { ...made, deps, getCode }
+  }
+
+  beforeEach(() => {
+    deriveByImplementation()
+    mocks.readSweepEvents.mockResolvedValue([])
+    mocks.readSipaFundingStatus.mockResolvedValue({
+      balance: 0n,
+      scaledBalance: 0n,
+      fee: 100n,
+      sweepable: false,
+    })
+  })
+
+  it("stores a swept upgrade SIPA at its update-metadata address and prices it there", async () => {
+    const { deps, store } = upgradeDeps([SIPA_UPGRADE])
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A, UPGRADE_HASH)])
+
+    await syncSipaDeposits(deps)
+
+    expect(store.records.get(SIPA_UPGRADE)).toMatchObject({ intent: "metadata" })
+    expect(store.records.get(SIPA_C)).toBeUndefined()
+    expect(mocks.readDepositFee).toHaveBeenCalledWith(
+      expect.objectContaining({ getBlockNumber: deps.publicClient.getBlockNumber }),
+      UPGRADE_IMPLEMENTATION,
+    )
+  })
+
+  it("reads a non-deposit event as a registration until its upgrade address is swept", async () => {
+    const { deps, store } = upgradeDeps([])
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A, UPGRADE_HASH)])
+
+    await syncSipaDeposits(deps)
+
+    expect(store.records.get(SIPA_C)).toMatchObject({ intent: "registration", replayed: true })
+    expect(store.records.get(SIPA_UPGRADE)).toBeUndefined()
+  })
+
+  it("never reads code without an update-metadata implementation", async () => {
+    const { deps, store } = makeDeps()
+    const getCode = vi.fn()
+    Object.assign(deps.publicClient as object, { getCode })
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A, UPGRADE_HASH)])
+
+    await syncSipaDeposits(deps)
+
+    expect(getCode).not.toHaveBeenCalled()
+    expect(store.records.get(SIPA_C)).toMatchObject({ intent: "registration" })
+  })
+
+  it.each([
+    ["upgrade first", [UPGRADE_HASH, undefined]],
+    ["deposit first", [undefined, UPGRADE_HASH]],
+  ])(
+    "keeps an upgrade SIPA and the DepositSIPA sharing its salt apart, %s, across runs",
+    async (_order, hashes) => {
+      const { deps, store } = upgradeDeps([SIPA_UPGRADE])
+      mocks.fetchSipaEvents.mockResolvedValue(hashes.map((hash) => sipaEvent(SECRET_A, hash)))
+
+      await syncSipaDeposits(deps)
+      await syncSipaDeposits(deps)
+
+      expect([...store.records.keys()].sort()).toEqual([SIPA_A, SIPA_UPGRADE].sort())
+      expect(store.records.get(SIPA_UPGRADE)).toMatchObject({ intent: "metadata" })
+      expect(store.records.get(SIPA_A)?.intent).toBeUndefined()
+    },
+  )
+
+  it("moves a misfiled upgrade from its registration address once its SIPA has code", async () => {
+    const store = makeStore()
+    store.records.set(SIPA_C, {
+      phase: "broadcast",
+      replayed: true,
+      intent: "registration",
+      amount: "0",
+      messageSecret: SECRET_A.toString(),
+      recipientL2Address: RECIPIENT_HEX,
+    })
+    const { deps } = upgradeDeps([SIPA_UPGRADE], store)
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A, UPGRADE_HASH)])
+
+    await syncSipaDeposits(deps)
+
+    expect(store.records.get(SIPA_C)).toBeUndefined()
+    expect(store.records.get(SIPA_UPGRADE)).toMatchObject({ intent: "metadata" })
+  })
+
+  it("reads a predeployed, never-swept upgrade address as a registration", async () => {
+    const { deps, store } = upgradeDeps([SIPA_UPGRADE], makeStore(), [])
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A, UPGRADE_HASH)])
+
+    await syncSipaDeposits(deps)
+
+    expect(store.records.get(SIPA_C)).toMatchObject({ intent: "registration" })
+    expect(store.records.get(SIPA_UPGRADE)).toBeUndefined()
+  })
+
+  it("resolves a swept upgrade even when its registration address was deployed too", async () => {
+    const { deps, store } = upgradeDeps([SIPA_C, SIPA_UPGRADE], makeStore(), [SIPA_UPGRADE])
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A, UPGRADE_HASH)])
+
+    await syncSipaDeposits(deps)
+
+    expect(store.records.get(SIPA_UPGRADE)).toMatchObject({ intent: "metadata" })
+    expect(store.records.get(SIPA_C)).toBeUndefined()
+  })
+
+  it("keeps a misfiled-shaped registration whose upgrade address was only predeployed", async () => {
+    const store = makeStore()
+    store.records.set(SIPA_C, {
+      phase: "broadcast",
+      replayed: true,
+      intent: "registration",
+      amount: "0",
+      messageSecret: SECRET_A.toString(),
+      recipientL2Address: RECIPIENT_HEX,
+    })
+    const { deps } = upgradeDeps([SIPA_UPGRADE], store, [])
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A, UPGRADE_HASH)])
+
+    await syncSipaDeposits(deps)
+
+    expect(store.records.get(SIPA_C)).toMatchObject({ intent: "registration" })
+    expect(store.records.get(SIPA_UPGRADE)).toBeUndefined()
+  })
+
+  it("keeps tracking stray funds at a misfiled address and gives the upgrade its own record", async () => {
+    const store = makeStore()
+    store.records.set(SIPA_C, {
+      phase: "recoverable",
+      replayed: true,
+      intent: "registration",
+      amount: "0.000001",
+      messageSecret: SECRET_A.toString(),
+      recipientL2Address: RECIPIENT_HEX,
+    })
+    const { deps } = upgradeDeps([SIPA_UPGRADE], store)
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A, UPGRADE_HASH)])
+
+    await syncSipaDeposits(deps)
+    await syncSipaDeposits(deps)
+
+    expect(store.records.get(SIPA_C)).toMatchObject({ intent: "registration", amount: "0.000001" })
+    expect(store.records.get(SIPA_UPGRADE)).toMatchObject({ intent: "metadata" })
+  })
+
+  it("rechecks a misfiled-shaped record only at its slow-lane turn", async () => {
+    const store = makeStore()
+    store.records.set(SIPA_C, {
+      phase: "broadcast",
+      replayed: true,
+      intent: "registration",
+      amount: "0",
+      lastScanAt: Date.now(),
+      messageSecret: SECRET_A.toString(),
+      recipientL2Address: RECIPIENT_HEX,
+    })
+    const { deps, getCode } = upgradeDeps([SIPA_UPGRADE], store)
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A, UPGRADE_HASH)])
+
+    await syncSipaDeposits(deps)
+
+    expect(getCode).not.toHaveBeenCalled()
+    expect(store.records.get(SIPA_C)).toMatchObject({ intent: "registration" })
+  })
+
+  it("leaves a funded registration alone and reads no code for it", async () => {
+    const store = makeStore()
+    store.records.set(SIPA_C, {
+      phase: "claimed",
+      intent: "registration",
+      amount: "5",
+      inboxIndex: "1",
+      messageSecret: SECRET_A.toString(),
+      recipientL2Address: RECIPIENT_HEX,
+    })
+    const { deps, getCode } = upgradeDeps([SIPA_UPGRADE], store)
+    mocks.fetchSipaEvents.mockResolvedValue([sipaEvent(SECRET_A, UPGRADE_HASH)])
+
+    await syncSipaDeposits(deps)
+
+    expect(getCode).not.toHaveBeenCalled()
+    expect(store.records.get(SIPA_C)).toMatchObject({ intent: "registration", phase: "claimed" })
+    expect(store.records.get(SIPA_UPGRADE)).toBeUndefined()
   })
 })

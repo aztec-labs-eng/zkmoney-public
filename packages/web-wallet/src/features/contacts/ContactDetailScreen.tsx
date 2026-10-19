@@ -32,6 +32,7 @@ import {
 } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
 import { showReportableError } from "../../errors/errorModal"
+import { fireEvent, requestAmountBucket } from "../../lib/analytics"
 import { useBack } from "../../ui/hooks"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { getSipaDepositGateway } from "../deposit/sipaGateway"
@@ -322,6 +323,10 @@ export function ContactDetailScreen() {
         return
       }
       await RequestStorage.get().add(row)
+      fireEvent("request_created", {
+        source: "contact",
+        amount_bucket: requestAmountBucket(row.amount),
+      })
       setRequestDraft(undefined)
       const broadcaster = getRequestBroadcaster()
       const requesterTag = loadWalletIdentity()?.handle

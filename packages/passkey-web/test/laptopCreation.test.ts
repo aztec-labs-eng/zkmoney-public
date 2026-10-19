@@ -1,14 +1,20 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { classifyDevicePosture } from "../src/policy/devicePosture.js"
 import {
   type LaptopCreation,
   type LocalManager,
   type Withdrawn,
+  EXTENSION_WITHDRAWN,
   WITHDRAWN,
   currentLaptopCreation,
   laptopCreationFor,
+  withoutManager,
 } from "../src/policy/laptopCreation.js"
-import { MACOS_SYNCED_COPY_FLOORS, parseUserAgent } from "../src/policy/userAgentInfo.js"
+import { MACOS_APPLE_PRF_FLOOR, parseUserAgent } from "../src/policy/userAgentInfo.js"
+
+/** The Firefox rows as they read once a gate admits them. */
+const FIREFOX_ADMITTED: Withdrawn = { ...WITHDRAWN, windowsFirefox: [], linuxFirefox: [] }
 
 const MAC_CHROME_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
@@ -21,6 +27,8 @@ const LINUX_CHROME_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
 const CROS_UA =
   "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36"
+const CROS_FIREFOX_UA =
+  "Mozilla/5.0 (X11; CrOS x86_64 14541.0.0; rv:139.0) Gecko/20100101 Firefox/139.0"
 const macSafariUa = (version: string) =>
   `Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/${version} Safari/605.1.15`
 const MAC_SAFARI_UA = macSafariUa("26.4")
@@ -28,6 +36,13 @@ const MAC_FIREFOX_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:139.0) Gecko/20100101 Firefox/139.0"
 const WINDOWS_FIREFOX_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:139.0) Gecko/20100101 Firefox/139.0"
+/** Firefox on Linux, and Firefox on an Android phone asking for the desktop site: the same claim. */
+const LINUX_FIREFOX_UA = "Mozilla/5.0 (X11; Linux x86_64; rv:139.0) Gecko/20100101 Firefox/139.0"
+const ANDROID_FIREFOX_UA = "Mozilla/5.0 (Android 15; Mobile; rv:139.0) Gecko/139.0 Firefox/139.0"
+/** Firefox forks: LibreWolf sends Firefox's string; one that appends its own token reads the same. */
+const LIBREWOLF_UA = LINUX_FIREFOX_UA
+const WATERFOX_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0 Waterfox/6.5.0"
 const IPAD_CHROME_DESKTOP_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/154.0.8037.55 Safari/604.1"
 
@@ -75,8 +90,6 @@ const safari = (version = "26.4") => parseUserAgent({ userAgent: macSafariUa(ver
 const phone: LaptopCreation = { local: false, chromeTip: false }
 /** Phone creation, with the line saying Chrome can create here in Google Password Manager. */
 const tipsChrome: LaptopCreation = { local: false, chromeTip: "gpm" }
-/** Phone creation on a Mac, with the line saying Chrome can create here in Apple Passwords. */
-const tipsApple: LaptopCreation = { local: false, chromeTip: "apple" }
 const macChrome = (managers: LocalManager[], withdrawn: LocalManager[] = []): LaptopCreation => ({
   local: true,
   os: "macos",
@@ -96,14 +109,31 @@ const macEdgeBrave = (
   withdrawn,
   ...(chromeTip ? { chromeTip } : {}),
 })
-const macSafari = (chromeTip?: "apple"): LaptopCreation => ({
+const macSafari = (
+  managers: LocalManager[] = ["apple", "1password"],
+  withdrawn: LocalManager[] = [],
+): LaptopCreation => ({
   local: true,
   os: "macos",
   row: "macSafari",
-  managers: ["1password"],
-  withdrawn: [],
-  ...(chromeTip ? { chromeTip } : {}),
+  managers,
+  withdrawn,
 })
+const macFirefox = (
+  managers: LocalManager[] = ["apple", "1password"],
+  withdrawn: LocalManager[] = [],
+): LaptopCreation => ({
+  local: true,
+  os: "macos",
+  row: "macFirefox",
+  managers,
+  withdrawn,
+  ...(managers.includes("1password") ? { extensionWithdrawn: true as const } : {}),
+})
+const firefox = (version: string) =>
+  parseUserAgent({
+    userAgent: `Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:${version}) Gecko/20100101 Firefox/${version}`,
+  })
 /** The other-Chromium row of Windows or Linux: 1Password alone, Chrome tipped while it has GPM. */
 const onePasswordOn = (
   os: "windows" | "linux",
@@ -117,49 +147,56 @@ const onePasswordOn = (
   withdrawn,
   ...(chromeTip ? { chromeTip } : {}),
 })
+/** Firefox's row of Windows or Linux: 1Password alone, Chrome tipped while it has GPM. */
+const firefoxOn = (os: "windows" | "linux", chromeTip: "gpm" | false = "gpm"): LaptopCreation => ({
+  local: true,
+  os,
+  row: os === "windows" ? "windowsFirefox" : "linuxFirefox",
+  managers: ["1password"],
+  withdrawn: [],
+  ...(chromeTip ? { chromeTip } : {}),
+})
 
 describe("laptopCreationFor", () => {
-  it("admits Apple on Mac Chrome at either floor, beside Google Password Manager and 1Password", () => {
+  /** macOS 15 and later, the synced-copy floors' inside and outside alike. */
+  const admitted = [
+    MACOS_APPLE_PRF_FLOOR,
+    "15.0",
+    "15.0.1",
+    "15.6.1",
+    "15.7.4",
+    "15.7.5",
+    "15.8.1",
+    "16.0.0",
+    "26.0",
+    "26.2.0",
+    "26.3.9",
+    "26.4.0",
+    "26.4.1",
+    "26.6.2",
+    "27.0.1",
+  ]
+
+  it("admits Apple on Mac Chrome from macOS 15, beside Google Password Manager and 1Password", () => {
     const expected = macChrome(["apple", "gpm", "1password"])
-    for (const version of [MACOS_SYNCED_COPY_FLOORS.tahoe, "26.6.2", "27.0.1"]) {
-      expect(laptopCreationFor(mac(version))).toEqual(expected)
-    }
-    for (const version of [
-      MACOS_SYNCED_COPY_FLOORS.sequoia,
-      "15.7.9",
-      "15.8",
-      "15.8.1",
-      "15.10.0",
-    ]) {
+    for (const version of admitted) {
       expect(laptopCreationFor(mac(version))).toEqual(expected)
     }
   })
 
-  /** Versions outside both ranges, and hinted versions the floor check cannot read. */
-  const refused = [
-    "26.4.0",
-    "26.3.9",
-    "26.3.0",
-    "15.7.4",
-    "15.7",
-    "16.0.0",
-    "25.9.9",
-    "14.8.5",
-    "15.7.5-beta",
-    "15.7.5.1",
-    " ",
-  ]
+  /** Versions before macOS 15, and hinted versions the floor check cannot read. */
+  const refused = ["14.8.5", "14.6", "13.7.1", "14.9.9", "15.0-beta", "15.7.5.1", "unknown", " "]
 
-  it("offers Mac Chrome without Apple outside the two ranges", () => {
+  it("offers Mac Chrome without Apple before macOS 15", () => {
     const expected = macChrome(["gpm", "1password"])
     for (const version of refused) {
       expect(laptopCreationFor(mac(version))).toEqual(expected)
     }
   })
 
-  it("offers Mac Edge and Brave Apple and 1Password at the floor, 1Password alone outside it", () => {
+  it("offers Mac Edge and Brave Apple and 1Password from macOS 15, 1Password alone before it", () => {
     for (const brand of [edge, brave, chromium]) {
-      for (const version of ["26.4.1", "15.7.5", "15.8.1"]) {
+      for (const version of ["26.4.1", "26.3", "15.7.4", "15.0"]) {
         expect(laptopCreationFor(mac(version, brand))).toEqual(macEdgeBrave(["apple", "1password"]))
       }
       for (const version of refused) {
@@ -170,17 +207,28 @@ describe("laptopCreationFor", () => {
     }
   })
 
-  it("offers Safari 26.4 and later 1Password alone, with the Apple Chrome tip", () => {
+  it("offers Safari 26.4 and later Apple Passwords and 1Password", () => {
     for (const version of ["26.4", "26.4.1", "26.5", "27.0"]) {
-      expect(laptopCreationFor(safari(version))).toEqual(macSafari("apple"))
+      expect(laptopCreationFor(safari(version))).toEqual(macSafari())
     }
   })
 
-  it("keeps Safari below 26.4 and Firefox on a Mac on phone creation with the Apple Chrome tip", () => {
-    for (const version of ["26.0", "26.3", "18.6", "17.6"]) {
-      expect(laptopCreationFor(safari(version))).toEqual(tipsApple)
+  it("offers Firefox 153 and later on a Mac Apple Passwords and 1Password", () => {
+    for (const version of ["153.0", "155.0", "160.1"]) {
+      expect(laptopCreationFor(firefox(version))).toEqual(macFirefox())
     }
-    expect(laptopCreationFor(parseUserAgent({ userAgent: MAC_FIREFOX_UA }))).toEqual(tipsApple)
+  })
+
+  it("keeps Safari below 26.4 and Firefox below 153 on a Mac on phone creation", () => {
+    for (const version of ["26.0", "26.3", "18.6", "17.6"]) {
+      expect(laptopCreationFor(safari(version))).toMatchObject({ local: false })
+    }
+    for (const version of ["139.0", "152.0"]) {
+      expect(laptopCreationFor(firefox(version))).toMatchObject({ local: false })
+    }
+    expect(laptopCreationFor(parseUserAgent({ userAgent: MAC_FIREFOX_UA }))).toMatchObject({
+      local: false,
+    })
   })
 
   it("offers Windows Chrome Google Password Manager and 1Password on any Windows", () => {
@@ -202,13 +250,30 @@ describe("laptopCreationFor", () => {
     }
   })
 
-  it("keeps Firefox on Windows on phone creation with the Chrome tip", () => {
+  it("offers Firefox on Windows and Linux 1Password alone from its user-agent string, with the Chrome tip", () => {
     const hinted = parseUserAgent({
       userAgent: WINDOWS_FIREFOX_UA,
       userAgentData: { platform: "Windows", platformVersion: "15.0.0" },
     })
     for (const ua of [hinted, parseUserAgent({ userAgent: WINDOWS_FIREFOX_UA })]) {
-      expect(laptopCreationFor(ua)).toEqual(tipsChrome)
+      expect(laptopCreationFor(ua, FIREFOX_ADMITTED)).toEqual(firefoxOn("windows"))
+    }
+    expect(
+      laptopCreationFor(parseUserAgent({ userAgent: LINUX_FIREFOX_UA }), FIREFOX_ADMITTED),
+    ).toEqual(firefoxOn("linux"))
+  })
+
+  it("puts Firefox forks on Firefox's rows, and neither a phone's Firefox nor ChromeOS on Linux's", () => {
+    expect(
+      laptopCreationFor(parseUserAgent({ userAgent: LIBREWOLF_UA }), FIREFOX_ADMITTED),
+    ).toEqual(firefoxOn("linux"))
+    expect(laptopCreationFor(parseUserAgent({ userAgent: WATERFOX_UA }), FIREFOX_ADMITTED)).toEqual(
+      firefoxOn("windows"),
+    )
+    expect(classifyDevicePosture({ userAgent: ANDROID_FIREFOX_UA })).toBe("phone")
+    expect(laptopCreationFor(parseUserAgent({ userAgent: ANDROID_FIREFOX_UA }))).toEqual(phone)
+    for (const userAgent of [CROS_UA, CROS_FIREFOX_UA]) {
+      expect(laptopCreationFor(parseUserAgent({ userAgent }))).toEqual(phone)
     }
   })
 
@@ -283,10 +348,13 @@ describe("laptopCreationFor", () => {
       macChrome: [],
       macEdgeBrave: [],
       macSafari: [],
+      macFirefox: [],
       windowsChrome: [],
       windowsEdgeBrave: [],
+      windowsFirefox: [],
       linuxChrome: [],
       linuxEdgeBrave: [],
+      linuxFirefox: [],
       ...overrides,
     })
 
@@ -310,7 +378,7 @@ describe("laptopCreationFor", () => {
 
     it("falls back to the phone when a row has no manager left", () => {
       expect(
-        laptopCreationFor(mac("15.7.4"), withdrawing({ macChrome: ["gpm", "1password"] })),
+        laptopCreationFor(mac("14.6"), withdrawing({ macChrome: ["gpm", "1password"] })),
       ).toEqual(phone)
       expect(
         laptopCreationFor(mac("26.4.1"), withdrawing({ macChrome: ["apple", "gpm", "1password"] })),
@@ -348,7 +416,13 @@ describe("laptopCreationFor", () => {
       expect(laptopCreationFor(linux(brave), noGpm("linuxChrome"))).toEqual(
         onePasswordOn("linux", [], false),
       )
-      expect(laptopCreationFor(mac("26.3.0", edge), noGpm("macChrome"))).toEqual(
+      expect(
+        laptopCreationFor(
+          parseUserAgent({ userAgent: WINDOWS_FIREFOX_UA }),
+          noGpm("windowsChrome"),
+        ),
+      ).toEqual(firefoxOn("windows", false))
+      expect(laptopCreationFor(mac("14.6", edge), noGpm("macChrome"))).toEqual(
         macEdgeBrave(["1password"]),
       )
       expect(
@@ -372,7 +446,7 @@ describe("laptopCreationFor", () => {
       expect(
         laptopCreationFor(
           parseUserAgent({ userAgent: WINDOWS_FIREFOX_UA }),
-          withdrawing({ windowsChrome: ["gpm"] }),
+          withdrawing({ windowsChrome: ["gpm"], windowsFirefox: ["1password"] }),
         ),
       ).toEqual(phone)
     })
@@ -384,11 +458,20 @@ describe("laptopCreationFor", () => {
       expect(
         laptopCreationFor(linux(brave), withdrawing({ linuxEdgeBrave: ["1password"] })),
       ).toEqual(tipsChrome)
-      expect(laptopCreationFor(safari(), withdrawing({ macSafari: ["1password"] }))).toEqual(
-        tipsApple,
-      )
       expect(
-        laptopCreationFor(mac("26.3.0", edge), withdrawing({ macEdgeBrave: ["1password"] })),
+        laptopCreationFor(
+          parseUserAgent({ userAgent: WINDOWS_FIREFOX_UA }),
+          withdrawing({ windowsFirefox: ["1password"] }),
+        ),
+      ).toEqual(tipsChrome)
+      expect(
+        laptopCreationFor(
+          parseUserAgent({ userAgent: LINUX_FIREFOX_UA }),
+          withdrawing({ linuxFirefox: ["1password"] }),
+        ),
+      ).toEqual(tipsChrome)
+      expect(
+        laptopCreationFor(mac("14.6", edge), withdrawing({ macEdgeBrave: ["1password"] })),
       ).toEqual(tipsChrome)
       // Chrome's own row is untouched by it.
       expect(
@@ -396,24 +479,43 @@ describe("laptopCreationFor", () => {
       ).toMatchObject({ managers: ["gpm", "1password"] })
     })
 
-    it("drops the Apple Chrome tip while Apple is withdrawn from Mac Chrome", () => {
-      const noApple = withdrawing({ macChrome: ["apple"], macSafari: ["1password"] })
-      expect(laptopCreationFor(safari(), noApple)).toEqual(phone)
-      expect(laptopCreationFor(safari("26.0"), withdrawing({ macChrome: ["apple"] }))).toEqual(
-        phone,
+    it("gives Safari and Firefox on a Mac no Chrome tip", () => {
+      expect(
+        laptopCreationFor(safari(), withdrawing({ macSafari: ["apple", "1password"] })),
+      ).toEqual(phone)
+      expect(
+        laptopCreationFor(firefox("155.0"), withdrawing({ macFirefox: ["apple", "1password"] })),
+      ).toEqual(phone)
+      expect(laptopCreationFor(safari("26.0"))).toEqual(phone)
+      expect(laptopCreationFor(firefox("140.0"))).toEqual(phone)
+    })
+
+    it("turns Safari and Firefox on a Mac back to 1Password alone once Apple is withdrawn", () => {
+      expect(laptopCreationFor(safari(), withdrawing({ macSafari: ["apple"] }))).toEqual(
+        macSafari(["1password"], ["apple"]),
+      )
+      expect(laptopCreationFor(firefox("155.0"), withdrawing({ macFirefox: ["apple"] }))).toEqual(
+        macFirefox(["1password"], ["apple"]),
       )
     })
 
-    it("ships with nothing withdrawn", () => {
-      expect(WITHDRAWN).toEqual({
-        macChrome: [],
-        macEdgeBrave: [],
-        macSafari: [],
-        windowsChrome: [],
-        windowsEdgeBrave: [],
-        linuxChrome: [],
-        linuxEdgeBrave: [],
-      })
+    it("ships with 1Password withdrawn from Firefox on Windows and Linux, and nothing else", () => {
+      expect(WITHDRAWN).toEqual(
+        withdrawing({ windowsFirefox: ["1password"], linuxFirefox: ["1password"] }),
+      )
+      for (const userAgent of [WINDOWS_FIREFOX_UA, LINUX_FIREFOX_UA]) {
+        expect(laptopCreationFor(parseUserAgent({ userAgent }))).toEqual(tipsChrome)
+      }
+    })
+
+    it("offers 1Password through the Mac's window alone on Firefox's Mac row", () => {
+      expect(EXTENSION_WITHDRAWN).toEqual(["macFirefox"])
+      expect(laptopCreationFor(firefox("155.0"))).toMatchObject({ extensionWithdrawn: true })
+      expect(laptopCreationFor(safari())).not.toHaveProperty("extensionWithdrawn")
+      expect(laptopCreationFor(mac("26.4.1"))).not.toHaveProperty("extensionWithdrawn")
+      expect(
+        laptopCreationFor(firefox("155.0"), withdrawing({ macFirefox: ["1password"] })),
+      ).not.toHaveProperty("extensionWithdrawn")
     })
   })
 })
@@ -462,6 +564,32 @@ describe("currentLaptopCreation", () => {
 
   it("offers Safari its row from the user-agent string alone", async () => {
     vi.stubGlobal("navigator", { userAgent: MAC_SAFARI_UA })
-    expect(await currentLaptopCreation("laptop")).toEqual(macSafari("apple"))
+    expect(await currentLaptopCreation("laptop")).toEqual(macSafari())
+  })
+
+  it("keeps Firefox on Windows on the phone while its row is withdrawn, tipping Chrome", async () => {
+    vi.stubGlobal("navigator", { userAgent: WINDOWS_FIREFOX_UA })
+    expect(await currentLaptopCreation("laptop")).toEqual(tipsChrome)
+  })
+})
+
+describe("withoutManager", () => {
+  it("takes the manager off the row", () => {
+    expect(withoutManager(macSafari(), "apple")).toEqual(macSafari(["1password"]))
+    expect(withoutManager(macFirefox(), "apple")).toEqual(macFirefox(["1password"]))
+    expect(withoutManager(macChrome(["apple", "gpm", "1password"]), "apple")).toEqual(
+      macChrome(["gpm", "1password"]),
+    )
+  })
+
+  it("falls back to the phone when the row has nothing left", () => {
+    expect(withoutManager(macFirefox(["1password"]), "1password")).toEqual(phone)
+    expect(withoutManager(macEdgeBrave(["1password"], [], "gpm"), "1password")).toEqual(tipsChrome)
+  })
+
+  it("leaves a row without the manager, and phone creation, as they are", () => {
+    const row = macChrome(["gpm", "1password"])
+    expect(withoutManager(row, "apple")).toBe(row)
+    expect(withoutManager(phone, "apple")).toBe(phone)
   })
 })

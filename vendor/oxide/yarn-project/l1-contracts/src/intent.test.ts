@@ -8,6 +8,7 @@ import { describe, expect, test } from '@jest/globals';
 import { type Hex, decodeAbiParameters, parseAbiParameters } from 'viem';
 
 import type { UserRecordArg } from './account_metadata_registry.js';
+import { packU128LimbsToBytes32 } from './entrypoint.js';
 import {
   type RegistrationIntent,
   type RegistrationProofs,
@@ -20,7 +21,13 @@ import {
   encodeRegistrationProofs,
   encodeRegistrationRecord,
 } from './intent.js';
-import { R1_INSTALL_CALL_GAS_BASE, R1_INSTALL_CALL_GAS_PER_WORD, r1InstallCallGas } from './r1_install.js';
+import {
+  R1_INSTALL_CALL_GAS_BASE,
+  R1_INSTALL_CALL_GAS_PER_WORD,
+  R1_INSTALL_VERIFICATION_GAS,
+  buildR1InstallUserOp,
+  r1InstallCallGas,
+} from './r1_install.js';
 import { SipaIntent } from './sipa_factory.js';
 import { buildSipaDeployAndSweepOperation } from './sipa_sweep_operation.js';
 
@@ -156,6 +163,20 @@ describe('intent codec', () => {
     expect(r1InstallCallGas(`0x${'00'.repeat(31)}`)).toBe(R1_INSTALL_CALL_GAS_BASE + R1_INSTALL_CALL_GAS_PER_WORD);
     expect(r1InstallCallGas(`0x${'00'.repeat(32)}`)).toBe(R1_INSTALL_CALL_GAS_BASE + 2n * R1_INSTALL_CALL_GAS_PER_WORD);
     expect(r1InstallCallGas(`0x${'00'.repeat(33)}`)).toBe(R1_INSTALL_CALL_GAS_BASE + 3n * R1_INSTALL_CALL_GAS_PER_WORD);
+  });
+
+  test('the r1 install op carries the limits of the controller that sweeps it', () => {
+    const earlier = { verification: 50_000n, callBase: 85_000n, callPerWord: 30_000n };
+    const metadata = `0x${'00'.repeat(33)}` as const;
+    const key = { qx: `0x${'11'.repeat(32)}`, qy: `0x${'22'.repeat(32)}` } as const;
+    const owner = '0x0000000000000000000000000000000000000001';
+    expect(r1InstallCallGas(metadata, earlier)).toBe(85_000n + 3n * 30_000n);
+    expect(buildR1InstallUserOp(owner, 0n, key, metadata, earlier).accountGasLimits).toBe(
+      packU128LimbsToBytes32(50_000n, 175_000n),
+    );
+    expect(buildR1InstallUserOp(owner, 0n, key, metadata).accountGasLimits).toBe(
+      packU128LimbsToBytes32(R1_INSTALL_VERIFICATION_GAS, r1InstallCallGas(metadata)),
+    );
   });
 });
 

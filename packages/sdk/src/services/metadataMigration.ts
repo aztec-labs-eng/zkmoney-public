@@ -39,6 +39,43 @@ export interface MetadataDestination {
   operationExecutor: Address
 }
 
+/**
+ * The saved plan no longer matches the chain: its consent, routing or source batch is out of date.
+ * Only this error lets the durable flow discard the plan and prepare again; any other failure keeps
+ * it, so a retry reuses its saved approvals.
+ */
+export class StalePlanError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "StalePlanError"
+  }
+}
+
+/**
+ * Why a retry soon repeats a stop: another account or deployment is in use, a sent transaction
+ * reverted, or a saved transfer's deposit address no longer resolves to the one approved.
+ */
+export type MigrationHalt = "account" | "reverted" | "recipient"
+
+/** A stop a blind retry repeats, so the durable flow stops for the user at once. */
+export class MigrationHaltedError extends Error {
+  constructor(readonly halt: MigrationHalt, message: string) {
+    super(message)
+    this.name = "MigrationHaltedError"
+  }
+}
+
+/**
+ * A step needs an approval it has not been given, outside a user's own action. The durable flow
+ * stops for one press instead of prompting from a background pass.
+ */
+export class ApprovalNeededError extends Error {
+  constructor(message = "This upgrade needs your approval to continue") {
+    super(message)
+    this.name = "ApprovalNeededError"
+  }
+}
+
 function address(value: string | undefined, field: string): Address {
   if (!value || !/^0x[0-9a-f]{40}$/i.test(value) || value.toLowerCase() === zeroAddress) {
     throw new Error(`Metadata migration requires ${field} in the destination manifest`)
@@ -89,7 +126,9 @@ export async function readMetadataDestinationState(
   ])
   if (BigInt(chainId) !== destination.chainId) throw new Error("Destination L1 chain changed")
   if (!same(registry, destination.metadataRegistry) || !same(controller, destination.controller)) {
-    throw new Error("Destination metadata registry or controller changed; prepare migration again")
+    throw new StalePlanError(
+      "Destination metadata registry or controller changed; prepare migration again",
+    )
   }
   if (!same(implementation, destination.implementation)) {
     throw new Error("Destination factory does not serve the requested metadata implementation")
@@ -198,7 +237,9 @@ export async function assertMetadataUpdateFresh(
     prepared.intent.owner,
   )
   if (!same(state, prepared.intent.expectedStateHash)) {
-    throw new Error("Destination metadata changed; prepare migration again before broadcasting")
+    throw new StalePlanError(
+      "Destination metadata changed; prepare migration again before broadcasting",
+    )
   }
 }
 

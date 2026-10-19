@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   useAccountContext,
   useAssetContext,
@@ -73,8 +73,8 @@ const VOUCHER_ANSWER_MS = 12_000
  */
 export function useLinkVoucher(
   link: PaymentLink | null | undefined,
-  /** `enabled: false` holds the read (answer stays unknown) — for a caller that has another PXE
-   *  registration of the same escrow in flight. */
+  /** `enabled: false` holds the read (answer stays unknown): for a caller whose own read of the
+   *  escrow is still running, which a fresh escrow's note must land for first. */
   { enabled = true }: { enabled?: boolean } = {},
 ): {
   uses: number | undefined
@@ -97,6 +97,9 @@ export function useLinkVoucher(
   const retry = useCallback(() => setAttempt((n) => n + 1), [])
   const eligible = !!link && link.status === "unclaimed"
   const fragment = link?.fragment
+  // The token the page's own read found, so the voucher read skips its own read of the note.
+  const token = useRef(link?.tokenAddress)
+  token.current = link?.tokenAddress
   useEffect(() => {
     setUses(undefined)
     setError(undefined)
@@ -110,7 +113,7 @@ export function useLinkVoucher(
     // The deadline bounds the chain read, not the wallet boot that precedes it.
     if (!readDeps) return
     const timer = setTimeout(fail, VOUCHER_ANSWER_MS)
-    void linkVoucherUses(readDeps, fragment).then(
+    void linkVoucherUses(readDeps, fragment, token.current).then(
       (n) => {
         if (stale) return
         clearTimeout(timer)

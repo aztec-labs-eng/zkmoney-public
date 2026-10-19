@@ -123,7 +123,7 @@ describe("gates on the wallet's flows", () => {
       expect(host.textContent).not.toContain("send screen")
     })
 
-    it("offers the registration update when the account must migrate to register here", () => {
+    it("offers the upgrade when the account must upgrade to register here", () => {
       loadWalletIdentity.mockReturnValue({ address: "0xabc", handle: "taga" })
       useSponsoredRailPending.mockReturnValue(true)
       setRegistrationMigrationNeeded(true)
@@ -149,7 +149,7 @@ describe("gates on the wallet's flows", () => {
         expect(host.textContent).not.toContain("Finishing your registration")
         const before = requests
         const update = [...host.querySelectorAll("button")].find(
-          (b) => b.textContent === "Update registration",
+          (b) => b.textContent === "Upgrade now",
         )!
         act(() => update.click())
         expect(requests).toBe(before + 1)

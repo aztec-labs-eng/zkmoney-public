@@ -112,20 +112,24 @@ describe("paylink registration funding", () => {
     })
   })
 
-  it("refuses lapsed terms and an unpublished address before pricing anything", async () => {
+  it("refuses lapsed terms before pricing anything", async () => {
     const lapsed = Math.floor(Date.now() / 1000) - 60
     terms({ deadline: lapsed })
     expect(await refusal(fund())).toBe("expired")
+    expect(h.fundingCut).not.toHaveBeenCalled()
     // The clock the caller passes decides, not the wall clock alone.
     expect((await fund(noteAmount, lapsed * 1000 - 1))?.amount).toBe(BURN)
-    terms()
-    await store.upsert(account, { broadcast: false })
-    expect(await refusal(fund())).toBe("unpublished")
-    expect(h.fundingCut).toHaveBeenCalledOnce()
     // A deadline of zero is a stamp with no reservation behind it, not a lapse.
-    await store.upsert(account, { broadcast: true })
     terms({ deadline: 0 })
     expect((await fund())?.amount).toBe(BURN)
+  })
+
+  it("prices an unpublished address and names it for the batch to publish", async () => {
+    expect((await fund())?.unpublished).toBeUndefined()
+    await store.upsert(account, { broadcast: false })
+    const slice = await fund()
+    expect(slice?.amount).toBe(BURN)
+    expect(slice?.unpublished).toMatchObject({ account, sipaAddress, broadcast: false })
   })
 
   it("funds a signed minimum above the cut once, never on top of the cut", async () => {

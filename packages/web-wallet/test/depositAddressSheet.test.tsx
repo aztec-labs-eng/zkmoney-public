@@ -6,12 +6,16 @@ import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { beforeEach, afterEach, describe, expect, it, vi, beforeAll } from "vitest"
+import { getAddress } from "viem"
+import { l1AddressParts, shortL1Addr } from "../src/ui/format"
 import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import type { Hex } from "viem"
 
 const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
 const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb"
 const ADDRESS = "0x7b3E9c41aD02f8B5c6E1d7a9F04c3B8e2A61d9F0"
+// MetaMask's bold ends of the checksummed address.
+const ENDS = [l1AddressParts(ADDRESS).head, l1AddressParts(ADDRESS).tail]
 const ACCOUNT = `0x${"a1".repeat(20)}` as Hex
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
 
@@ -231,9 +235,8 @@ describe("DepositScreen with the address sheet", () => {
     )
     const address = byTestId("deposit-address")!
     expect(address.title).toBe(ADDRESS)
-    expect(address.textContent).toBe(ADDRESS)
-    expect([...address.querySelectorAll("b")].map((b) => b.textContent)).toEqual(["0x7b3E", "d9F0"])
-    expect(address.querySelector("em")!.textContent).toBe("61")
+    expect(address.textContent).toBe(getAddress(ADDRESS))
+    expect([...address.querySelectorAll("strong")].map((b) => b.textContent)).toEqual(ENDS)
     expect(qr()?.innerHTML).toContain(
       `ethereum:${USDC}@${getConfig().l1ChainId}/transfer?address=${ADDRESS}`,
     )
@@ -588,8 +591,8 @@ describe("DepositScreen with the address sheet", () => {
     )
     const address = byTestId("deposit-address")!
     expect(address.title).toBe(ADDRESS)
-    expect(address.textContent).toBe("0x7b3E…d9F0")
-    expect([...address.querySelectorAll("b")].map((b) => b.textContent)).toEqual(["0x7b3E", "d9F0"])
+    expect(address.textContent).toBe(shortL1Addr(ADDRESS))
+    expect([...address.querySelectorAll("strong")].map((b) => b.textContent)).toEqual(ENDS)
     expect(address.querySelector("em")).toBeNull()
     const rows = [...sheet()!.querySelectorAll(".ww-sheet__fact > span:first-child")].map(
       (n) => n.textContent,

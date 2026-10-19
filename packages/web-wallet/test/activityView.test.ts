@@ -644,9 +644,9 @@ describe("depositHeadline", () => {
     })
   })
 
-  it("falls back to Wallet when the source is unnamed", () => {
+  it("names no source when the wallet is unnamed", () => {
     expect(depositHeadline({ walletName: "  ", walletAddress: "0x22" } as never)).toEqual({
-      title: "Wallet",
+      title: undefined,
       address: "0x22",
     })
   })

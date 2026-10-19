@@ -70,7 +70,7 @@ npm run dist:mac|dist:win|dist:linux          # installers (preflight + signing:
 
 ## Configuration
 
-The launcher loads `config/generated.json` when present, otherwise `config/default.json`. The generated file is included in installers and ignored by Git. Rebuild after changing the committed defaults. Configuration fields: `hostname` (the page host; changing it regenerates the TLS certificate), `passkeyRpId` (the RP recorded by the bundle), `startPath`, `windowMode` (`app` = chromeless window), `proxies` (path prefix → target origin), `spaFallback`, `contentSecurityPolicy` (default `null`; a strict policy can prevent WASM proving), `includeTestTypeFlag`, `certificateDays`.
+The launcher loads `config/generated.json` when present, otherwise `config/default.json`. The generated file is included in installers and ignored by Git. Rebuild after changing the committed defaults. Configuration fields: `hostname` (the page host; changing it regenerates the TLS certificate), `passkeyRpId` (the RP recorded by the bundle), `startPath`, `windowMode` (`app` = chromeless window), `proxies` (path prefix → target origin), `spaFallback`, `contentSecurityPolicy` (default `null`; a strict policy can prevent WASM proving, and one that sets `script-src` must admit the inline passkey-lock script at the top of `<head>`), `includeTestTypeFlag`, `certificateDays`.
 
 The committed defaults are the local-sandbox pairing of web-wallet's dev setup:
 `hostname: "localhost"`, `localPort: 5173` and the same proxy targets as `vite.config.ts`'s

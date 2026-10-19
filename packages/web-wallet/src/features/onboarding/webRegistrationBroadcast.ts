@@ -5,7 +5,8 @@ import { getWebBroadcasterArtifact, getWebOxideToken } from "../../config/classA
  * for itself and spends the rail's only use.
  *
  * The batch carries no account call and needs no signature: the account has no setup step, and
- * the subscribe leg's eligibility is the NameClaim.
+ * the subscribe leg's eligibility is the NameClaim. A ticket-funded registration's claim sends it,
+ * on this rail or in the claim's own batch.
  *
  * The plain-SIPA analogue is `sipaGateway.broadcastSipa`; registration rides the same `SIPA` event
  * and sweep broadcast — it is just one more intent (the registration record + its
@@ -14,6 +15,7 @@ import { getWebBroadcasterArtifact, getWebOxideToken } from "../../config/classA
  */
 import type { Address } from "viem"
 import { NO_FROM } from "@aztec/aztec.js/account"
+import type { ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
 import { Fr } from "@aztec/aztec.js/fields"
 import {
@@ -43,6 +45,7 @@ import { RAIL_REGISTRATION_BROADCAST } from "./rails"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { readSipaDeployed } from "../deposit/sipaSweep"
 import type { WebWalletConfig } from "../../config/env"
+import type { OxideEnvTuple } from "@obsidion/core/types"
 
 export interface WebRegistrationBroadcasterDeps {
   wallet: ObsidionWallet
@@ -54,116 +57,142 @@ export interface WebRegistrationBroadcasterDeps {
 }
 
 /**
+ * Cache the fresh claim so `claimSponsorContext`'s subscribe leg finds it: the name is not yet
+ * registered, so it cannot be recovered from the Registry's NameClaimed log. Runs ahead of the
+ * registration's broadcast, wherever it is sent.
+ */
+export async function cacheFreshClaim(
+  deps: Pick<WebRegistrationBroadcasterDeps, "account" | "config" | "handle">,
+  payload: RegistrationBroadcastPayload,
+): Promise<void> {
+  const tuple = await getOxideTuple(deps.config)
+  await NameClaimStore.get().put({
+    address: deps.account.getAddress().toString(),
+    handle: deps.handle,
+    nameHash: composeWireNameHash(deps.handle, requireTupleField(tuple, "ensDomain")),
+    nonce: String(payload.domainAuth.nonce),
+    deadline: String(payload.domainAuth.deadline),
+    signature: payload.domainAuth.signature,
+    // The signed terms ride the record so a later manual sweep prices the same floor.
+    ...(payload.signedTerms.signature !== "0x"
+      ? {
+          terms: {
+            fee: String(payload.signedTerms.fee),
+            minDeposit: String(payload.signedTerms.minDeposit),
+            nonce: String(payload.signedTerms.nonce),
+            deadline: String(payload.signedTerms.deadline),
+            signature: payload.signedTerms.signature,
+          },
+        }
+      : {}),
+  })
+}
+
+/**
+ * The PXE only simulates calls into contracts it holds an instance + artifact for, and at
+ * onboarding nothing else has registered the broadcaster yet (the deposit-discovery mount does,
+ * but only once the wallet is open). Upserts, so a repeat is free.
+ */
+async function registeredBroadcaster(
+  wallet: ObsidionWallet,
+  tuple: OxideEnvTuple,
+): Promise<BroadcasterContract> {
+  const address = AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Broadcaster"))
+  const instance = await wallet.node.getContract(address)
+  if (!instance) throw new Error(`Broadcaster instance not found at ${address}`)
+  const artifact = await getWebBroadcasterArtifact(wallet, address, instance)
+  const pxe = wallet.pxe as never as {
+    registerContractClass: (a: unknown) => Promise<unknown>
+    registerContract: (c: unknown) => Promise<unknown>
+  }
+  if (canonicalGenerationStack() === "v4") {
+    await pxe.registerContract({ instance, artifact })
+  } else {
+    await pxe.registerContractClass(artifact)
+    await pxe.registerContract(instance)
+  }
+  return BroadcasterContract.at(address, artifact, wallet as never)
+}
+
+/**
+ * The calls that publish a registration SIPA: the token's `SIPA` event to the account and the
+ * sweep the relayer runs. Its own broadcast sends them, and so does a ticket claim batch that
+ * carries them. Refuses an address the subsidy would not sweep.
+ */
+export async function registrationBroadcastCalls(
+  deps: Omit<WebRegistrationBroadcasterDeps, "account" | "handle">,
+  payload: RegistrationBroadcastPayload,
+): Promise<ContractFunctionInteraction[]> {
+  const { wallet, contractService, config } = deps
+  const tuple = await getOxideTuple(config)
+  const l1 = l1PublicClient(config)
+  const [deployed, broadcaster, token] = await Promise.all([
+    readSipaDeployed(l1, payload.sipaAddress).then(async (deployed) => {
+      if (!deployed && !("recoveryAddress" in payload.sipaArgs)) {
+        await assertSubsidySweepsSipa(l1, {
+          depositSubsidy: requireTupleField(tuple, "depositSubsidy") as Address,
+          portal: requireTupleField(tuple, "portal") as Address,
+          sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
+          intent: OxideSipaIntent.Registration,
+          deployArgs: payload.sipaArgs,
+          intentData: payload.registrationData,
+          sipa: payload.sipaAddress,
+        })
+      }
+      return deployed
+    }),
+    registeredBroadcaster(wallet, tuple),
+    getWebOxideToken(wallet, contractService, requireTupleField(tuple, "l2Token")),
+  ])
+  return buildSipaSweepBroadcasts(token, broadcaster, {
+    recipient: AztecAddress.fromStringUnsafe(payload.recipient),
+    sharedSecretSalt: Fr.fromString(payload.sharedSecretSalt),
+    resweepable: payload.sipaArgs.resweepable,
+    intentHash: payload.sipaArgs.intentHash,
+    sipa: payload.sipaAddress,
+    deployed,
+    sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
+    intent: OxideSipaIntent.Registration,
+    deployArgs: payload.sipaArgs,
+    intentData: payload.registrationData,
+    proofs: ("recoveryAddress" in payload.sipaArgs
+      ? encodeLegacyRegistrationProofs
+      : encodeRegistrationProofs)({
+      consentSig: payload.consentSig,
+      bootstrap: payload.bootstrap,
+      domainAuth: payload.domainAuth,
+      signedTerms: payload.signedTerms,
+      r1Install: payload.r1Install,
+    }),
+    operationExecutor: requireTupleField(tuple, "operationExecutor") as Address,
+    depositSubsidy: requireTupleField(tuple, "depositSubsidy") as Address,
+    chainId: BigInt(config.l1ChainId),
+    // TODO(benesjan): the relayer copies this sweep for each other token it accepts.
+    // https://linear.app/aztec-labs/issue/OX-1877/for-v6-handle-multi-token-balance-condition-l1-operations-properly
+    tokens: [requireTupleField(tuple, "token") as Address],
+  })
+}
+
+/**
  * A {@link RegistrationBroadcaster} bound to this session's wallet + account. Resolves with the tx
  * hash once the node took it; a throw is the ledger's to retry, so this never swallows failures.
  */
 export function createWebRegistrationBroadcaster(
   deps: WebRegistrationBroadcasterDeps,
 ): RegistrationBroadcaster {
-  const { wallet, account, contractService, config, handle } = deps
+  const { wallet, account, contractService } = deps
   return async (payload: RegistrationBroadcastPayload, attempt = {}) => {
-    const tuple = await getOxideTuple(config)
     const address = account.getAddress()
-    const deployed = await readSipaDeployed(l1PublicClient(config), payload.sipaAddress)
-    if (!deployed && !("recoveryAddress" in payload.sipaArgs)) {
-      await assertSubsidySweepsSipa(l1PublicClient(config), {
-        depositSubsidy: requireTupleField(tuple, "depositSubsidy") as Address,
-        portal: requireTupleField(tuple, "portal") as Address,
-        sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
-        intent: OxideSipaIntent.Registration,
-        deployArgs: payload.sipaArgs,
-        intentData: payload.registrationData,
-        sipa: payload.sipaAddress,
-      })
-    }
-
-    // Cache the fresh claim so `claimSponsorContext`'s subscribe leg finds it: the name is not yet
-    // registered, so it cannot be recovered from the Registry's NameClaimed log.
-    await NameClaimStore.get().put({
-      address: address.toString(),
-      handle,
-      nameHash: composeWireNameHash(handle, requireTupleField(tuple, "ensDomain")),
-      nonce: String(payload.domainAuth.nonce),
-      deadline: String(payload.domainAuth.deadline),
-      signature: payload.domainAuth.signature,
-      // The signed terms ride the record so a later manual sweep prices the same floor.
-      ...(payload.signedTerms.signature !== "0x"
-        ? {
-            terms: {
-              fee: String(payload.signedTerms.fee),
-              minDeposit: String(payload.signedTerms.minDeposit),
-              nonce: String(payload.signedTerms.nonce),
-              deadline: String(payload.signedTerms.deadline),
-              signature: payload.signedTerms.signature,
-            },
-          }
-        : {}),
-    })
-
-    const sponsor = await claimSponsorContext(
-      { wallet, account, contractService },
-      RAIL_REGISTRATION_BROADCAST,
-    )
+    await cacheFreshClaim(deps, payload)
+    const [sponsor, broadcastCalls] = await Promise.all([
+      claimSponsorContext({ wallet, account, contractService }, RAIL_REGISTRATION_BROADCAST),
+      registrationBroadcastCalls(deps, payload).then(async (interactions) =>
+        (
+          await Promise.all(interactions.map((call) => call.request()))
+        ).flatMap((request) => request.calls),
+      ),
+    ])
     const { fpcAddress, fpcArtifact, railId, policy, subscribe } = sponsor
-
-    // The PXE only simulates calls into contracts it holds an instance + artifact for, and at
-    // onboarding nothing else has registered the broadcaster yet (the deposit-discovery mount does,
-    // but only once the wallet is open). Upserts, so a repeat is free.
-    const broadcasterAddress = AztecAddress.fromStringUnsafe(
-      requireTupleField(tuple, "l2Broadcaster"),
-    )
-    const artifact = await getWebBroadcasterArtifact(
-      wallet,
-      requireTupleField(tuple, "l2Broadcaster"),
-    )
-    const instance = await wallet.node.getContract(broadcasterAddress)
-    if (!instance) throw new Error(`Broadcaster instance not found at ${broadcasterAddress}`)
-    const pxe = wallet.pxe as never as {
-      registerContractClass: (a: unknown) => Promise<unknown>
-      registerContract: (c: unknown) => Promise<unknown>
-    }
-    if (canonicalGenerationStack() === "v4") {
-      await pxe.registerContract({ instance, artifact })
-    } else {
-      await pxe.registerContractClass(artifact)
-      await pxe.registerContract(instance)
-    }
-    const broadcaster = BroadcasterContract.at(broadcasterAddress, artifact, wallet as never)
-    const token = await getWebOxideToken(
-      wallet,
-      contractService,
-      requireTupleField(tuple, "l2Token"),
-    )
-    const interactions = buildSipaSweepBroadcasts(token, broadcaster, {
-      recipient: AztecAddress.fromStringUnsafe(payload.recipient),
-      sharedSecretSalt: Fr.fromString(payload.sharedSecretSalt),
-      resweepable: payload.sipaArgs.resweepable,
-      intentHash: payload.sipaArgs.intentHash,
-      sipa: payload.sipaAddress,
-      deployed,
-      sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
-      intent: OxideSipaIntent.Registration,
-      deployArgs: payload.sipaArgs,
-      intentData: payload.registrationData,
-      proofs: ("recoveryAddress" in payload.sipaArgs
-        ? encodeLegacyRegistrationProofs
-        : encodeRegistrationProofs)({
-        consentSig: payload.consentSig,
-        bootstrap: payload.bootstrap,
-        domainAuth: payload.domainAuth,
-        signedTerms: payload.signedTerms,
-        r1Install: payload.r1Install,
-      }),
-      operationExecutor: requireTupleField(tuple, "operationExecutor") as Address,
-      depositSubsidy: requireTupleField(tuple, "depositSubsidy") as Address,
-      chainId: BigInt(config.l1ChainId),
-      // TODO(benesjan): the relayer copies this sweep for each other token it accepts.
-      // https://linear.app/aztec-labs/issue/OX-1877/for-v6-handle-multi-token-balance-condition-l1-operations-properly
-      tokens: [requireTupleField(tuple, "token") as Address],
-    })
-    const broadcastCalls = (await Promise.all(interactions.map((call) => call.request()))).flatMap(
-      (payload) => payload.calls,
-    )
 
     const common = {
       fpcAddress,

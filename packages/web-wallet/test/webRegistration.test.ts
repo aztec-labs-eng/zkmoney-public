@@ -1032,6 +1032,11 @@ describe("forced resume tick — the spent-rail renewal (the pending step's retr
         credentialId: "Y3JlZC1pZC0wMDE",
         l1: {
           getUserOpHash: vi.fn(async () => `0x${"77".repeat(32)}` as Hex),
+          readR1InstallGas: vi.fn(async () => ({
+            verification: 50_000n,
+            callBase: 85_000n,
+            callPerWord: 30_000n,
+          })),
           readAccountMetadataRegistry: vi.fn(async () => OTHER),
         },
         deriveRegistrationSipa: vi.fn(async () => ({

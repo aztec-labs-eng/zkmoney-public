@@ -88,7 +88,7 @@ describe("SavingsMoveDetailModal", () => {
         />,
       ),
     )
-    expect(host.textContent).toContain("Recovered to 0x1234…abcd")
+    expect(host.textContent).toContain("Recovered to 0x12340…0abcd")
     expect(host.textContent).toContain("Recovery tx")
     expect(host.textContent).not.toContain("Moving to")
     expect([...host.querySelectorAll("button")].map((b) => b.textContent)).not.toContain(

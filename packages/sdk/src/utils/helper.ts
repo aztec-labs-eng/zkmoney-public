@@ -9,8 +9,10 @@ import { sha256 } from "@aztec/foundation/crypto/sha256"
 import type { FeePaymentMethod } from "@aztec/aztec.js/fee"
 import { Gas, GasFees, GasSettings } from "@aztec/stdlib/gas"
 import type { AztecNode } from "@aztec/aztec.js/node"
-import { isL1ToL2MessageReady, waitForL1ToL2MessageReady } from "@aztec/aztec.js/messaging"
-import { createAztecNodeAdminClient } from "@aztec/stdlib/interfaces/client"
+import { isL1ToL2MessageReady } from "@aztec/aztec.js/messaging"
+import { retryUntil } from "@aztec/foundation/retry"
+import { createAztecNodeDebugClient } from "@aztec/stdlib/interfaces/client"
+import { AZTEC_NODE_URL } from "@obsidion/core/constants"
 
 /**
  * The fee a new tx must actually cover to be admitted. `getCurrentMinFees` is only the
@@ -186,50 +188,66 @@ export const sendEmptyTxs = async (
   }
 }
 
+const WARP_SLOT_TAKEN = /is expired: L1 synced to/
+
+type SandboxWarpOptions = { timeoutSeconds?: number; nodeUrl?: string }
+
+const ignoreLostSlot = (error: Error) => {
+  if (!WARP_SLOT_TAKEN.test(error.message)) throw error
+}
+
+async function warpSandboxUntil(
+  ready: () => Promise<boolean>,
+  description: string,
+  options?: SandboxWarpOptions,
+): Promise<void> {
+  const debug = createAztecNodeDebugClient(options?.nodeUrl ?? AZTEC_NODE_URL)
+  await retryUntil(
+    async () => {
+      if (await ready()) return true
+      await debug.warpL2TimeAtLeastBy(1).catch(ignoreLostSlot)
+      return undefined
+    },
+    description,
+    options?.timeoutSeconds ?? 300,
+    1,
+  )
+}
+
 /**
  * Sandbox-only: advance blocks until an L1→L2 inbox message is consumable.
  *
- * Fast path: flip the sequencer to `minTxsPerBlock: 0` via the node admin RPC so empty blocks
- * tick for free (no client-side proving), then restore. Auth: set `AZTEC_ADMIN_API_KEY`, or start
- * the sandbox with `AZTEC_DISABLE_ADMIN_API_KEY=1`. When the admin RPC is unreachable or
- * unauthorized, falls back to driving blocks with fully-proven empty txs (slow: one proof each).
+ * Each block comes from the local network's debug RPC: no tx, no key, no client-side proving.
+ * Pass `nodeUrl` when `node` is not the default sandbox node.
  */
 export async function waitForSandboxL1ToL2Message(
-  wallet: ObsidionWallet,
-  account: Account,
+  node: AztecNode,
   messageHash: Fr,
-  options?: {
-    timeoutSeconds?: number
-    feePaymentMethod?: EmptyTxFeePaymentMethod
-    adminUrl?: string
-  },
+  options?: SandboxWarpOptions,
 ): Promise<void> {
-  const timeoutSeconds = options?.timeoutSeconds ?? 300
-
-  const admin = createAztecNodeAdminClient(
-    options?.adminUrl ?? process.env.AZTEC_NODE_ADMIN_URL ?? "http://localhost:8880",
-    undefined,
-    undefined,
-    process.env.AZTEC_ADMIN_API_KEY,
+  await warpSandboxUntil(
+    () => isL1ToL2MessageReady(node, messageHash),
+    `L1→L2 message ${messageHash}`,
+    options,
   )
-  let prevMinTxsPerBlock: number | undefined
-  try {
-    prevMinTxsPerBlock = (await admin.getConfig()).minTxsPerBlock
-    await admin.setConfig({ minTxsPerBlock: 0 })
-  } catch {
-    const deadline = Date.now() + timeoutSeconds * 1000
-    while (!(await isL1ToL2MessageReady(wallet.node as never, messageHash as never))) {
-      if (Date.now() > deadline) break
-      await sendEmptyTxs(wallet, account, 1, options?.feePaymentMethod)
-    }
-    await waitForL1ToL2MessageReady(wallet.node as never, messageHash as never, { timeoutSeconds })
-    return
-  }
-  try {
-    await waitForL1ToL2MessageReady(wallet.node as never, messageHash as never, { timeoutSeconds })
-  } finally {
-    await admin.setConfig({ minTxsPerBlock: prevMinTxsPerBlock ?? 1 }).catch(() => {})
-  }
+}
+
+export async function warpSandboxTimeTo(
+  node: AztecNode,
+  timestamp: number,
+  options?: SandboxWarpOptions,
+): Promise<void> {
+  await createAztecNodeDebugClient(options?.nodeUrl ?? AZTEC_NODE_URL)
+    .warpL2TimeAtLeastTo(timestamp)
+    .catch(ignoreLostSlot)
+  await warpSandboxUntil(
+    async () => {
+      const latest = (await node.getBlockData("latest"))?.header.globalVariables.timestamp
+      return latest !== undefined && latest >= BigInt(timestamp)
+    },
+    `L2 time ${timestamp}`,
+    options,
+  )
 }
 
 /**

@@ -1,7 +1,7 @@
 /**
  * A ticket registration's speed starts on Faster, and its burn tips the prover only when that is
- * worth it and the note still covers the burn with the tip; Standard, a failed or a stalled quote
- * commits none.
+ * worth it and the note still covers the burn with the tip; Standard, a failed or a stalled quote, or
+ * a signup that goes ahead before the quote, commits none.
  */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
@@ -134,6 +134,27 @@ describe("useRegistrationSpeed", () => {
     })
     expect(seen.choice.loading).toBe(false)
     expect(seen.proverTip).toBe(0n)
+  })
+
+  it("commits Standard when the signup goes ahead before the quote, and a later quote keeps it", async () => {
+    let answer: (value: ReturnType<typeof loaded>) => void = () => {}
+    await render({ load: () => new Promise((resolve) => (answer = resolve)) })
+    expect(seen.proverTip).toBeUndefined()
+    await act(async () => seen.settle())
+    expect(onCommit).toHaveBeenLastCalledWith(0n, "standard")
+    expect(seen.choice.speed).toBe("standard")
+    await act(async () => answer(loaded(600)))
+    expect(seen.choice.offer?.proverTip).toBe(TIP)
+    expect(seen.proverTip).toBe(0n)
+    expect(onCommit).toHaveBeenLastCalledWith(0n, "standard")
+  })
+
+  it("leaves a committed choice alone when settled", async () => {
+    await render({ load: async () => loaded(600) })
+    const calls = onCommit.mock.calls.length
+    await act(async () => seen.settle())
+    expect(onCommit).toHaveBeenCalledTimes(calls)
+    expect(seen.choice.speed).toBe("faster")
   })
 
   it("decides nothing while the cuts are unread", async () => {

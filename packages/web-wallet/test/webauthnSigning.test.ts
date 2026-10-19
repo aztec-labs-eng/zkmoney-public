@@ -220,6 +220,15 @@ describe("makeWebauthnSignFn steering", () => {
     )
   })
 
+  it("hands the caller's signal to the ceremony, so a cancel ends it before its prompt opens", async () => {
+    const ceremony = new FakePasskeyCeremony()
+    const created = await ceremony.create(createRequest)
+    const sign = makeWebauthnSignFn(ceremony, "localhost", created.credentialId, created.pubkey)
+    const cancel = new AbortController()
+    await sign(Buffer.alloc(32, 7), { signal: cancel.signal })
+    expect(ceremony.assertRequests.at(-1)!.signal).toBe(cancel.signal)
+  })
+
   it("sends no transports when it is given none", async () => {
     const ceremony = new FakePasskeyCeremony()
     const created = await ceremony.create(createRequest)

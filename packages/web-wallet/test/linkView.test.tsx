@@ -79,6 +79,13 @@ vi.mock("../src/features/paylink/sponsoredPaylink", () => ({
   emitLinkOpened: (...args: unknown[]) => emitLinkOpened(...args),
 }))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError }))
+const warmNoirWasm = vi.fn(async () => {})
+const getHardcodedArtifact = vi.fn(async (_name: string) => ({}))
+vi.mock("../src/platform/noirProver", () => ({ warmNoirWasm }))
+vi.mock("@obsidion/sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/sdk")>()),
+  getHardcodedArtifact,
+}))
 // The DS drags in liquid-glass optics jsdom can't render; the test is about which surface appears.
 vi.mock("@obsidion/web-ds", () => ({
   AuroraBackground: () => null,
@@ -169,6 +176,22 @@ describe("LinkViewScreen", () => {
     await render()
     expect(visitor()).not.toBeNull()
     expect(navigate).not.toHaveBeenCalled()
+  })
+
+  it("fetches what an unclaimed link's later reads need while its first read runs", async () => {
+    identity = null
+    await render()
+    expect(warmNoirWasm).toHaveBeenCalledTimes(1)
+    expect(getHardcodedArtifact.mock.calls.map(([name]) => name)).toEqual([
+      "oxideToken",
+      "claimFpc",
+    ])
+  })
+
+  it("fetches nothing for a browser it hands to Home", async () => {
+    await render()
+    expect(warmNoirWasm).not.toHaveBeenCalled()
+    expect(getHardcodedArtifact).not.toHaveBeenCalled()
   })
 
   it("keeps the signup page after this mount writes an identity", async () => {

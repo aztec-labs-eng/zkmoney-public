@@ -431,13 +431,23 @@ export const CHAIN_READ_RETRIES = 5
 /** Gap between those retries. Long enough that a struggling RPC is left alone between attempts. */
 export const CHAIN_READ_RETRY_MS = 24_000
 
+/** Where a surface's unread figures stand, for the copy it shows while it waits. */
+export interface ChainReadRetry {
+  /** A retry has fired: the figures have stayed unread past one retry gap. */
+  retrying: boolean
+  /** The retries ran out with the figures still unread. */
+  exhausted: boolean
+  /** Reads again now and starts the retry budget over. */
+  retryNow: () => void
+}
+
 /**
  * A refresh key for the one-shot reads below. They make three attempts and then wait for a trigger;
  * a surface with no Check pill has none, so this supplies one: the key bumps on a slow cadence
  * while `pending` says something is still unread, and stops once nothing is. Each time `pending`
  * turns true again the budget starts over, so the bound is per spell of unread figures.
  */
-export function useChainReadRetry(pending: boolean, retry: () => void): void {
+export function useChainReadRetry(pending: boolean, retry: () => void): ChainReadRetry {
   const [attempts, setAttempts] = useState(0)
   useEffect(() => {
     if (pending) setAttempts(0)
@@ -450,6 +460,14 @@ export function useChainReadRetry(pending: boolean, retry: () => void): void {
     }, CHAIN_READ_RETRY_MS)
     return () => clearTimeout(timer)
   }, [pending, attempts, retry])
+  return {
+    retrying: pending && attempts > 0 && attempts < CHAIN_READ_RETRIES,
+    exhausted: pending && attempts >= CHAIN_READ_RETRIES,
+    retryNow: () => {
+      setAttempts(0)
+      retry()
+    },
+  }
 }
 
 /**

@@ -55,6 +55,17 @@ export type MigrationResidualsNotificationTarget = {
   type: "migration.residuals"
 }
 
+/** An upgrade that stopped for the user: the migration dialog continues it. */
+export type MigrationRunNotificationTarget = {
+  type: "migration.run"
+}
+
+/** One upgrade's batches and their arrivals: activity's row for the run. */
+export type UpgradeRunNotificationTarget = {
+  type: "upgrade.run"
+  run: string
+}
+
 export type AppNotificationTarget =
   | BridgeNotificationTarget
   | TransferNotificationTarget
@@ -63,6 +74,8 @@ export type AppNotificationTarget =
   | ReorgNotificationTarget
   | ContactAddedNotificationTarget
   | MigrationResidualsNotificationTarget
+  | MigrationRunNotificationTarget
+  | UpgradeRunNotificationTarget
   | {
       type: string
       [key: string]: unknown

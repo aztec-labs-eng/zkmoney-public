@@ -3,7 +3,7 @@ import { normalizeTag } from "@obsidion/front-core"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { fireOnboardingEvent } from "../../lib/analytics"
 import { Modal } from "../../ui/Modal"
-import { PAY_PRICE } from "./ChooseNameSheet"
+import { PAY_PRICE, useReportHandleCheck } from "./ChooseNameSheet"
 import { useNameAvailability } from "./nameAvailability"
 import { TagAvailabilityNotes } from "./steps/TagAvailabilityNotes"
 import { loadTagDraft, saveTagDraft } from "./tagPick"
@@ -29,6 +29,7 @@ export function OwnTagSheet(props: {
   const fresh = name !== null && name !== props.current
   const { status, checking } = useNameAvailability(typed, fresh)
   const available = fresh && !checking && status === "available"
+  useReportHandleCheck(name, fresh, checking, status)
   useEffect(() => {
     fireOnboardingEvent("name_sheet_opened", { screen: "activation" })
   }, [])

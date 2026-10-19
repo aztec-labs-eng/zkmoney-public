@@ -21,7 +21,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   getActiveNetworkId: () => h.networkId,
   rebuildPaylinks: h.rebuildPaylinks,
   createTransferEventSource: () => ({}),
-  bootPriority: { whenBalanceSettled: async () => {} },
+  bootPriority: { whenReady: async () => {} },
   checkSpentViaPaylinkService: () => async () => new Map(),
   PaylinkClaimReconciler: class {
     reconcile = h.reconcile

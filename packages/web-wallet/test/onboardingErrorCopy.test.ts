@@ -95,4 +95,55 @@ describe("claimErrorMessage", () => {
       ),
     ).toMatch(/^Couldn't finish signup with this payment\./)
   })
+
+  it("says what a golden ticket circuit refusal means, never the bare assert", () => {
+    expect(claimErrorMessage(new Error("escrow class is not a paylink"))).toBe(
+      "Couldn't finish signup with this payment. Its link was made with another version of the app.",
+    )
+    expect(claimErrorMessage(new Error("paylink amount below threshold"))).toMatch(
+      /^Couldn't finish signup with this payment\. It's below the amount/,
+    )
+    // Not a sync delay: retrying proves the same leaf.
+    const notUnderRoot = claimErrorMessage(new Error("paylink note is not under the root"))
+    expect(notUnderRoot).toBe(
+      "Couldn't finish signup with this payment. Its link can't be proven to waive the tag price.",
+    )
+    expect(notUnderRoot).not.toMatch(/try again/i)
+    for (const raw of ["Assertion failed", "Assertion failed: some other check"]) {
+      const message = claimErrorMessage(new Error(raw))
+      expect(message).not.toContain("Assertion failed")
+      expect(message).toBe("Couldn't claim your tag. Your payment couldn't be proven. Try again.")
+    }
+  })
+
+  it("says what the service's class-pair refusals mean, never the raw code", () => {
+    const unreviewed = claimErrorMessage(
+      new AccountServiceError(400, "ticket_class_unreviewed", { error: "ticket_class_unreviewed" }),
+    )
+    expect(unreviewed).toBe(
+      "Couldn't finish signup with this payment. Its link was made with another version of the app.",
+    )
+    const unavailable = claimErrorMessage(
+      new AccountServiceError(503, "ticket_classes_unavailable", {
+        error: "ticket_classes_unavailable",
+      }),
+    )
+    expect(unavailable).toBe(
+      "Couldn't finish signup with this payment right now. Try again in a moment.",
+    )
+  })
+
+  it("never shows a golden ticket refusal code", () => {
+    for (const code of [
+      "ticket_invalid",
+      "ticket_spent",
+      "ticket_root_stale",
+      "ticket_root_mismatch",
+      "ticket_owner_mismatch",
+    ]) {
+      const message = claimErrorMessage(new AccountServiceError(400, code, { error: code }))
+      expect(message).not.toContain(code)
+      expect(message).toMatch(/^Couldn't finish signup with this payment/)
+    }
+  })
 })

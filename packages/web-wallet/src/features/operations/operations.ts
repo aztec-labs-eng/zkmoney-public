@@ -57,17 +57,21 @@ export interface OperationHandle {
  * Run `run` as one user operation, behind the single-flight gate: it is `local` until the flow's
  * record holds the hash, and settles when `run` resolves. A failure before proving began, or a
  * cancel, sent nothing, so the record goes. A `TxInFlightError` leaves it `sent` for the chain; any
- * other failure is definite, and fails it even once sent.
+ * other failure is definite, and fails it even once sent. The record begins ahead of the gate, so
+ * the bell lists the operation while a background proof finishes first.
  */
 export function runOperation<T>(
   input: OperationInput,
   run: (op: OperationHandle) => Promise<T>,
   txHashOf?: (result: T) => string | undefined,
 ): Promise<T> {
+  const store = getOperationStore()
+  const { operationId } = input
+  const begun = store.begin({ ...input, scope: getActiveStorageId() })
+  // Awaited inside the gate; this only keeps a failed write from reading as unhandled meanwhile.
+  begun.catch(() => {})
   return runUserFlow(async () => {
-    const store = getOperationStore()
-    const { operationId } = input
-    await store.begin({ ...input, scope: getActiveStorageId() })
+    await begun
     // On chain but unsettled. A hash the flow's record failed to save still takes it to `sent`.
     const toChain = async (txHash: string | undefined) => {
       if (txHash && store.get(operationId)?.state === "local")

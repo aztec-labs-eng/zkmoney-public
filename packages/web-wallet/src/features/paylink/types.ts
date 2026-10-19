@@ -31,4 +31,6 @@ export interface PaymentLink {
   txHash?: string
   /** Creator's memo, off the escrow's funding transfer, or set on create. */
   memo?: string
+  /** Creator's tag off the funding transfer, kept only once the name registry puts it on its sender. */
+  senderTag?: string
 }

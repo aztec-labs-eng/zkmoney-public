@@ -55,7 +55,7 @@ export function PaylinkClaimMount(): null {
     })
     active = reconciler
     const rescan = async () => {
-      await bootPriority.whenBalanceSettled()
+      await bootPriority.whenReady("paylinkRescan")
       if (controller.signal.aborted) return
       // Cached once the account is unlocked; a locked wallet skips this pass.
       const masterSecret = await getSecretKey()

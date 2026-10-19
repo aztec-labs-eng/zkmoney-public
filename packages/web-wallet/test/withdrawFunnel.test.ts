@@ -3,6 +3,7 @@ import { walletStorage } from "../src/platform/storage/walletStorage"
 import type { WithdrawalRecord } from "@obsidion/front-core"
 import {
   reportWithdrawFunnel,
+  withdrawKind,
   withdrawTransitions,
   type ReportedPhases,
 } from "../src/features/withdraw/withdrawFunnel"
@@ -75,6 +76,24 @@ describe("withdrawTransitions", () => {
     expect(withdrawTransitions([record({})], next).events).toEqual([])
   })
 
+  it("reports only the user's own cash-outs, and a split withdrawal once, by its funds leg", () => {
+    const done = { phase: "done" as const, endTime: 3_661_000 }
+    const records = [
+      record({ ...done, localId: "sky", skyMove: {} as WithdrawalRecord["skyMove"] }),
+      record({ ...done, localId: "link", source: "paylink" }),
+      record({ ...done, localId: "reg", intent: "registration" }),
+      record({ ...done, localId: "mig", intent: "migration" }),
+      record({ ...done, localId: "gas", groupId: "0x01", groupLeg: "gas" }),
+      record({ ...done, localId: "funds", groupId: "0x01", groupLeg: "funds" }),
+    ]
+    const { events, next } = withdrawTransitions(records, {})
+    expect(events.map((e) => e.event)).toEqual([
+      "withdraw_finalization_ready",
+      "withdraw_finalized",
+    ])
+    expect(next).toEqual({ funds: "done" })
+  })
+
   it("omits durations it cannot compute rather than guessing", () => {
     const { events } = withdrawTransitions(
       [record({ phase: "done", phaseEnteredAt: undefined, endTime: undefined })],
@@ -84,6 +103,14 @@ describe("withdrawTransitions", () => {
       { event: "withdraw_finalization_ready", props: { since_confirm_ms: undefined } },
       { event: "withdraw_finalized", props: { l1_wait_ms: undefined, total_ms: undefined } },
     ])
+  })
+})
+
+describe("withdrawKind", () => {
+  it("names a savings move, a paylink claim, and anything else a withdrawal", () => {
+    expect(withdrawKind(record({ skyMove: {} as WithdrawalRecord["skyMove"] }))).toBe("savings")
+    expect(withdrawKind(record({ source: "paylink" }))).toBe("paylink")
+    expect(withdrawKind(record({}))).toBe("withdraw")
   })
 })
 

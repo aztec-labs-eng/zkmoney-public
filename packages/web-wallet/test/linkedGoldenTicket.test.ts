@@ -101,6 +101,17 @@ describe("redeemLinkedGoldenTicket", () => {
     await expect(redeem()).rejects.toThrow(/cannot cover the account deposit/)
   })
 
+  it("tells its caller when the proof starts", async () => {
+    ticket()
+    const onProving = vi.fn()
+    h.redeem.mockImplementationOnce(async (args: { onProving?: () => void }) => {
+      args.onProving?.()
+      return { status: "created", amount: 20n * DAI }
+    })
+    await redeemLinkedGoldenTicket(keys, config, wallet, peekTicketSignup(), onProving)
+    expect(onProving).toHaveBeenCalledTimes(1)
+  })
+
   it("prices the burn from the advertised schedule at the live cut before the ticket is spent, and keeps the amount", async () => {
     ticket()
     h.fundingCut.mockResolvedValue(DAI / 10n)

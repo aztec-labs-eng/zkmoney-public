@@ -8,7 +8,7 @@ import {
 import { GradientText, Icon, TopNavIconButton } from "@obsidion/web-ds"
 import ethIcon from "../../assets/deposit/ethereum.webp"
 import { l1TxUrl, whenLabel } from "../../ui/detailRows"
-import { shortAddr, tokenAmount, usdFigure } from "../../ui/format"
+import { shortAddr, tokenAmount, usdFigure, shortL1Addr } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { DepositStatusValue } from "../../ui/screens/DepositStatusValue"
 import { withdrawalStatus } from "../../ui/screens/WithdrawalDetailModal"
@@ -103,7 +103,7 @@ export function ClaimProgressModal({
           )}
           <div className="ww-deposit__fact">
             <span>{recovered ? "Recovered to" : "To"}</span>
-            <b>{shortAddr(destination)}</b>
+            <b>{shortL1Addr(destination)}</b>
           </div>
           <div className="ww-deposit__fact">
             <span>Token</span>

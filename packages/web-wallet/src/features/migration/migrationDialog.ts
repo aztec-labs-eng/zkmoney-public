@@ -7,6 +7,7 @@ import { createExternalState } from "../../lib/externalState"
 
 const requests = createExternalState(0)
 const registrationNeeded = createExternalState(false)
+const upgradeOffered = createExternalState(false)
 
 /** Opens the dialog, even after the session's "Later". */
 export function openMigrationDialog(): void {
@@ -24,4 +25,13 @@ export function setRegistrationMigrationNeeded(needed: boolean): void {
 
 export function useRegistrationMigrationNeeded(): boolean {
   return useSyncExternalStore(registrationNeeded.subscribe, registrationNeeded.get)
+}
+
+/** Home offers the upgrade while there is one to make and no run of it is going. */
+export function setUpgradeOffered(offered: boolean): void {
+  upgradeOffered.set(offered)
+}
+
+export function useUpgradeOffered(): boolean {
+  return useSyncExternalStore(upgradeOffered.subscribe, upgradeOffered.get)
 }

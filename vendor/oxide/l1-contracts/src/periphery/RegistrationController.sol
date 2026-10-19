@@ -27,9 +27,9 @@ contract RegistrationController is IRegistrationController, IAccountMetadataCont
   );
 
   IEntryPoint public constant ENTRY_POINT = ERC4337Utils.ENTRYPOINT_V08;
-  uint256 public constant R1_INSTALL_VERIFICATION_GAS = 50_000;
-  uint256 public constant R1_INSTALL_CALL_GAS_BASE = 85_000;
-  uint256 public constant R1_INSTALL_CALL_GAS_PER_WORD = 30_000;
+  uint256 public constant R1_INSTALL_VERIFICATION_GAS = 155_000;
+  uint256 public constant R1_INSTALL_CALL_GAS_BASE = 390_000;
+  uint256 public constant R1_INSTALL_CALL_GAS_PER_WORD = 145_000;
 
   INameRegistry public immutable NAME_REGISTRY;
   address public immutable override SIPA_FACTORY;

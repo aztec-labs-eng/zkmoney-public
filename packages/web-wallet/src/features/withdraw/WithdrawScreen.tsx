@@ -5,12 +5,15 @@ import {
   ContactStorage,
   L1_PLACEHOLDER_NAME,
   contactRowFromEntry,
+  useEnsAddress,
   type Contact,
 } from "@obsidion/front-core"
 import { Card, GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
 import { fireEvent } from "../../lib/analytics"
-import { shortAddr } from "../../ui/format"
+import { ensClient } from "../../lib/ens"
+import { shortL1Addr } from "../../ui/format"
+import { Blockie, L1AddressText } from "../../ui/L1AddressText"
 import { useBack } from "../../ui/hooks"
 import { Modal } from "../../ui/Modal"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
@@ -67,18 +70,6 @@ const TAGS = { "linked-deposit": "Has history", "withdrew-before": "Used before"
 /** How long a pressed row waits on Ethereum before the address reads as unchecked. */
 const VERDICT_WAIT_MS = 5_000
 
-/** The first and last four hex digits stand out, so a destination can be checked by eye. */
-function HexAddress({ address, full }: { address: string; full?: boolean }) {
-  const strong = { color: "var(--text-primary)" }
-  return (
-    <span style={{ overflowWrap: "anywhere" }}>
-      0x<strong style={strong}>{address.slice(2, 6)}</strong>
-      {full ? address.slice(6, -4) : `${address.slice(6, 10)}…${address.slice(-8, -4)}`}
-      <strong style={strong}>{address.slice(-4)}</strong>
-    </span>
-  )
-}
-
 /**
  * Existing-address withdrawal, as a sheet over the method step: pick or paste a destination, read
  * what ties it to the user, then hand it to `WithdrawToWalletModal`. A pressed row leaves for the
@@ -113,7 +104,10 @@ export function WithdrawScreen() {
   const connected = l1.account
 
   const search = query.trim()
-  const raw = search || (picked === "connected" ? connected : picked) || ""
+  const ens = useEnsAddress(search, ensClient)
+  const raw = ens.name
+    ? ens.address ?? ""
+    : search || (picked === "connected" ? connected : picked) || ""
   const target = isAddress(raw) ? getAddress(raw) : null
   const same = (address?: string | null) =>
     !!target && address?.toLowerCase() === target.toLowerCase()
@@ -123,6 +117,7 @@ export function WithdrawScreen() {
     (match && match.name !== L1_PLACEHOLDER_NAME && match.name) ||
     (same(connected) && l1.walletName) ||
     (same(prefill.recipient) && prefill.alias) ||
+    ens.name ||
     undefined
 
   const contacts = saved.map((w) => w.entry)
@@ -135,7 +130,7 @@ export function WithdrawScreen() {
   const screened = useScreenedAddress(target, "withdraw", { debounceMs: 300 })
 
   useEffect(() => {
-    fireEvent("withdraw_opened")
+    fireEvent("withdraw_opened", { method: "existing" })
   }, [])
 
   // Connecting is a pick, and only while nothing else is chosen.
@@ -155,7 +150,13 @@ export function WithdrawScreen() {
     setStep(kind === "fresh" ? "amount" : "privacy")
   }, [going, target, screened.cleared, kind, name])
 
-  const rows = search
+  // A name being resolved lists only the wallet it resolves to: a saved wallet of the same name may
+  // hold an address the name has moved off (stealth names hand out a fresh one per lookup). Text
+  // that is not a name, or a name with no address, searches as usual (e.g. "ether.fi Cash").
+  const ensPick = !!ens.name && (ens.state === "resolving" || ens.state === "found")
+  const rows = ensPick
+    ? saved.filter((w) => same(w.address))
+    : search
     ? saved.filter((w) => `${w.name} ${w.address}`.toLowerCase().includes(search.toLowerCase()))
     : saved.filter((w, i) => i < 3 || same(w.address))
 
@@ -218,7 +219,7 @@ export function WithdrawScreen() {
               <Icon name="search" size={16} color="var(--text-secondary)" />
               <input
                 aria-label="Address"
-                placeholder="Search or paste an address"
+                placeholder="Search, or paste an address or ENS name"
                 spellCheck={false}
                 data-autofocus
                 value={query}
@@ -239,6 +240,17 @@ export function WithdrawScreen() {
                 </button>
               )}
             </span>
+            {ens.name && ens.state !== "found" && (
+              <span className="ww-fund__label">
+                {ens.state === "resolving"
+                  ? "Looking up this name…"
+                  : ens.state === "missing"
+                  ? "No address resolution found for this name."
+                  : ens.state === "invalid"
+                  ? "This isn't a valid ENS name."
+                  : "Couldn't look up this name. Try again, or paste the address."}
+              </span>
+            )}
             {target && !screened.cleared ? (
               <ScreeningNotice
                 verdict={screened.verdict}
@@ -309,15 +321,10 @@ export function WithdrawScreen() {
                         style={{ flex: 1, paddingBlock: 12, background: "none" }}
                         onClick={() => setGoing(true)}
                       >
-                        <span
-                          className="ww-deposit__connect-icon"
-                          style={{ width: 44, height: 44 }}
-                        >
-                          <img src={walletIcon} alt="" width={16} height={14} />
-                        </span>
+                        <Blockie address={target} size={44} />
                         <span className="ww-deposit__connect-text">
                           <b>{name ?? "Address"}</b>
-                          <HexAddress address={target} />
+                          <L1AddressText address={target} cut />
                         </span>
                         {tie(target) && (
                           <span
@@ -352,17 +359,12 @@ export function WithdrawScreen() {
                             paddingRight: 0,
                             background: "none",
                           }}
-                          onClick={() => pick(w.address)}
+                          onClick={() => (ensPick ? setGoing(true) : pick(w.address))}
                         >
-                          <span
-                            className="ww-deposit__connect-icon"
-                            style={{ width: 44, height: 44 }}
-                          >
-                            <img src={walletIcon} alt="" width={16} height={14} />
-                          </span>
+                          <Blockie address={w.address} size={44} />
                           <span className="ww-deposit__connect-text">
                             <b>{w.name}</b>
-                            <HexAddress address={w.address} />
+                            <L1AddressText address={w.address} cut />
                           </span>
                           {tag && (
                             <span
@@ -412,7 +414,7 @@ export function WithdrawScreen() {
                   <b>{connected ? "Use your connected wallet" : "Connect your wallet"}</b>
                   <span>
                     {connected
-                      ? `${l1.walletName ?? "Wallet"} · ${shortAddr(connected)}`
+                      ? `${l1.walletName ?? "Wallet"} · ${shortL1Addr(connected)}`
                       : "Use Rainbow, MetaMask, Rabby, or WalletConnect"}
                   </span>
                 </span>
@@ -450,7 +452,8 @@ export function WithdrawScreen() {
                   className="ww-withdraw__box"
                   style={{ fontSize: 11, boxShadow: "inset 0 0 0 1px var(--accent-pink)" }}
                 >
-                  <HexAddress address={chosen.recipient} full />
+                  <Blockie address={chosen.recipient} />
+                  <L1AddressText address={chosen.recipient} />
                 </span>
               </div>
               <VerdictCard kind={chosen.kind} address={chosen.recipient} />

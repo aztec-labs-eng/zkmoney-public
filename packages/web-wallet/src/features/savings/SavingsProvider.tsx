@@ -7,6 +7,7 @@ import {
   useAccountContext,
   useAssetContext,
   useAztecContext,
+  useBootReady,
   useCachedRecords,
   useContractServiceContext,
 } from "@obsidion/front-core"
@@ -47,15 +48,16 @@ export function WebSavingsProvider({ children }: { children: ReactNode }) {
       clearTimeout(retry)
     }
   }, [])
+  const ready = useBootReady("savings")
   const source = useMemo(
     () =>
-      savings && obsidionWallet && obsidionAccount && tokenService && contractService
+      ready && savings && obsidionWallet && obsidionAccount && tokenService && contractService
         ? createSavingsSource(
             { wallet: obsidionWallet, account: obsidionAccount, contractService, tokenService },
             savings,
           )
         : null,
-    [savings, obsidionWallet, obsidionAccount, tokenService, contractService],
+    [ready, savings, obsidionWallet, obsidionAccount, tokenService, contractService],
   )
   const { records } = useCachedRecords(useMemo(getSavingsMoveStore, []))
   const { records: burns } = useCachedRecords(useMemo(getWithdrawalStore, []))

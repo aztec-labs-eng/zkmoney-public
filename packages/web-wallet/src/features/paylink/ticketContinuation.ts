@@ -56,6 +56,15 @@ export function boundTicketSignup(
   return markerFor(terms, fragment)
 }
 
+/**
+ * This tab's claim publishes the registration's address: its terms are a ticket's, and the link they
+ * are bound to is stashed here. Without that link nothing claims, so the address is the ledger's to
+ * publish, as any registration's is once a surface shows it.
+ */
+export function claimPublishesAddress(record: { account: string; tag: string }): boolean {
+  return boundTicketSignup(loadRegistrationTerms(record.account, record.tag)) !== null
+}
+
 /** Fires as the open registrations change, when what a ticket-funded signup may do is read again. */
 export function onTicketRegistrationsChanged(listener: () => void): () => void {
   return PendingRegistrationStore.get(webStorage).onListChanged(listener)
@@ -113,11 +122,10 @@ export function ticketSignupResumable(fragment: string): boolean {
  *
  * - `submitted`: the burn is on its way to L1 (a withdrawal to the SIPA, or custody stamped), so
  *   the surface shows progress and never burns twice.
- * - `ready`: the bound link is on this tab, its terms are live and fundable and the SIPA is
- *   published, so the review may open.
+ * - `ready`: the bound link is on this tab and its terms are live and fundable, so the claim may
+ *   run. A SIPA not yet published is published by that claim.
  * - `blocked`: the last renewal quoted terms the link cannot pay. The link stays bound.
  * - `renew`: the terms lapsed or carry no schedule; the pending step's tick re-signs them.
- * - `unpublished`: the SIPA broadcast has not landed; Home's claim flow owes it to the ledger.
  * - `missing_link`: the bound link is not on this tab; the original link has to be reopened.
  *
  * Null for a registration no paylink funds.
@@ -127,7 +135,6 @@ export type TicketActivation =
   | { state: "ready"; stash: TicketSignupStash; schedule: RegistrationSchedule }
   | { state: "blocked"; stash: TicketSignupStash | null }
   | { state: "renew"; stash: TicketSignupStash | null }
-  | { state: "unpublished"; stash: TicketSignupStash | null }
   | { state: "missing_link" }
 
 function ticketState(
@@ -145,7 +152,6 @@ function ticketState(
   const schedule = signedSchedule(terms)
   const lapsed = quoteExpired(terms, nowMs)
   if (lapsed || !schedule) return { state: "renew", stash }
-  if (!record.broadcast) return { state: "unpublished", stash }
   if (!stash) return { state: "missing_link" }
   return { state: "ready", stash, schedule }
 }
@@ -208,8 +214,6 @@ export function ticketHoldNotice(
       return PAYLINK_TICKET_REFUSED_MESSAGE
     case "renew":
       return `The reservation for @${tag} needs a fresh quote before this payment can fund it. Refresh it on the registration page first.`
-    case "unpublished":
-      return `Your deposit address is not published yet, so this payment cannot fund it. Check the registration to publish it first.`
     case "submitted":
       return `This payment is already claimed. @${tag} registers once the network sweeps the deposit.`
     default:

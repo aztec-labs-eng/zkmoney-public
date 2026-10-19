@@ -89,6 +89,14 @@ describe("InvitationStep landing layout", () => {
     expect(onLogIn).toHaveBeenCalled()
   })
 
+  // The visitor page's choice uses the same container: its header holds still into this step.
+  it("lays the header out as the paylink visitor page does", async () => {
+    await render()
+    expect(container.querySelector("form")?.className).toBe(
+      "ww-invite__content ww-invite__content--landing ww-invite__content--visitor",
+    )
+  })
+
   it("keeps the heading layout when no header is given", async () => {
     await render({ header: undefined })
     expect(container.querySelector("h1")?.textContent).toBe("You're in!")

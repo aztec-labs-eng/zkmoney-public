@@ -17,13 +17,24 @@ import type { AztecNode } from "@aztec/aztec.js/node"
 import { SqliteCorruptionError, type AztecSQLiteOPFSStore } from "@aztec/kv-store/sqlite-opfs"
 import type { Hex } from "viem"
 import { useLocation } from "react-router-dom"
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useState } from "react"
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useState,
+  useSyncExternalStore,
+} from "react"
 import { getConfig, type WebWalletConfig } from "../config/env"
 import { l1PublicClient } from "../config/oxideTuple"
 import { outOfMemoryCopy, showReportableError } from "../errors/errorModal"
 import { loadWalletIdentity } from "../features/identity/walletIdentity"
 import { networkHasSwapStack } from "../features/withdraw/freshAddressAvailability"
 import { fireEvent } from "../lib/analytics"
+import { createExternalState } from "../lib/externalState"
+import { provingDevice } from "../lib/provingDevice"
+import { barretenbergWasm } from "../platform/bbWasmPath"
 import { isActiveTab } from "../platform/storage/activeTab"
 import { reloadPage } from "../platform/storage/walletStorage"
 
@@ -202,6 +213,8 @@ function bootOnce(
     await initializePXE({
       node,
       proverEnabled: getConfig().proverEnabled,
+      // The boot's bb.js, so the first proof downloads it no second time.
+      bbWasmPath: barretenbergWasm().wasmPath,
       store,
       chainIdentity: identity,
     }).catch((e: unknown) => {
@@ -210,9 +223,39 @@ function bootOnce(
     fireEvent("pxe_boot_completed", {
       duration_ms: Math.round(performance.now() - bootStartedAt),
       attempts,
+      ...provingDevice(),
     })
   })()
   return bootPromise
+}
+
+const DOWNLOAD_RELOADS_KEY = "pxeBoot.downloadReloads"
+const MAX_DOWNLOAD_RELOADS = 2
+const MODULE_DOWNLOAD_FAILURE =
+  /Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module/
+
+function isModuleDownloadFailure(e: unknown): boolean {
+  if (e instanceof AggregateError) return e.errors.some(isModuleDownloadFailure)
+  return e instanceof TypeError && MODULE_DOWNLOAD_FAILURE.test(e.message)
+}
+
+function takeDownloadReload(): boolean {
+  try {
+    const reloads = Number(sessionStorage.getItem(DOWNLOAD_RELOADS_KEY)) || 0
+    if (reloads >= MAX_DOWNLOAD_RELOADS) return false
+    sessionStorage.setItem(DOWNLOAD_RELOADS_KEY, String(reloads + 1))
+    return true
+  } catch {
+    return false
+  }
+}
+
+function clearDownloadReloads(): void {
+  try {
+    sessionStorage.removeItem(DOWNLOAD_RELOADS_KEY)
+  } catch {
+    return
+  }
 }
 
 /** The default L1 RPC carries its provider key in the path; a URL the user typed is theirs to see. */
@@ -392,9 +435,13 @@ export function PxeBootProvider({
     bootOnce(initializePXE, node, pxeBoot)
       // A tab another tab took over while this one booted publishes nothing: it is reloading, and
       // closed the store under the PXE, so a failure is expected.
-      .then(() => !cancelled && isActiveTab() && setState({ bootStatus: "ready" }))
+      .then(() => {
+        clearDownloadReloads()
+        if (!cancelled && isActiveTab()) setState({ bootStatus: "ready" })
+      })
       .catch((e: unknown) => {
         if (cancelled || !isActiveTab()) return
+        if (isModuleDownloadFailure(e) && takeDownloadReload()) return void reloadPage()
         reportBootFailure(e, pxeBoot)
         setState({ bootStatus: "error", bootError: describeBootError(e) })
       })
@@ -427,6 +474,17 @@ export function BootDemand() {
 
 const mountedSplashes: { inShell: boolean }[] = []
 let bootScreenShown = false
+/** The app has drawn its first screen, so a screen standing in for it must go. */
+const firstScreen = createExternalState(false)
+
+export function useFirstScreenShown(): boolean {
+  return useSyncExternalStore(firstScreen.subscribe, firstScreen.get)
+}
+
+const rootShowsText = () => {
+  const root = document.getElementById("root")
+  return (root?.innerText ?? root?.textContent ?? "").trim() !== ""
+}
 let splashWatch: number | undefined
 let splashLeaving: ReturnType<typeof setTimeout> | undefined
 
@@ -459,14 +517,27 @@ function showSplash(): void {
  */
 function releaseSplash(): void {
   const since = performance.now()
+  // Once this commit has settled, before it paints: a screen that replaced the last copy takes over
+  // from a stand-in at once, so the two never show together. The stand-in hid the boot screen, so
+  // it ends with no fade.
+  queueMicrotask(() => {
+    if (mountedSplashes.length > 0 || !rootShowsText()) return
+    if (document.getElementById("pre-boot")?.hasChildNodes()) {
+      cancelAnimationFrame(splashWatch ?? 0)
+      bootScreenShown = true
+      delete document.body.dataset.booting
+      delete document.body.dataset.bootLeaving
+    }
+    firstScreen.set(true)
+  })
   const watch = () => {
-    const root = document.getElementById("root")
-    const shown = (root?.innerText ?? root?.textContent ?? "").trim() !== ""
+    const shown = rootShowsText()
     if (!shown && performance.now() - since < SPLASH_MAX_WAIT_MS) {
       splashWatch = requestAnimationFrame(watch)
       return
     }
     bootScreenShown = true
+    firstScreen.set(true)
     document.body.dataset.bootLeaving = ""
     splashLeaving = setTimeout(() => {
       delete document.body.dataset.booting

@@ -27,6 +27,7 @@ import {
 } from "@obsidion/front-core"
 import { readNameClaimLog } from "@obsidion/sdk"
 import { loadRegistrationTerms, scheduleSource, signedSchedule } from "./registrationTerms"
+import { claimPublishesAddress } from "../paylink/ticketContinuation"
 import type { Address, Hex, PublicClient } from "viem"
 
 import {
@@ -46,7 +47,7 @@ import {
   type WalletIdentity,
 } from "../identity/walletIdentity"
 import { syncRegistrationRail } from "./registrationRailSync"
-import { oweRegistrationBroadcast } from "../broadcasts/broadcasts"
+import { oweRegistrationBroadcast, rememberRegistrationPayload } from "../broadcasts/broadcasts"
 import { sipaFundingTokens } from "../deposit/loadDepositFacts"
 
 export function getPendingStore(): PendingRegistrationStore {
@@ -223,8 +224,12 @@ export async function buildWebDetectionDeps(
     }),
     pendingStore: getPendingStore(),
     resolveLocalTag: (nameHash) => resolveLocalTag(nameHash, config),
-    // Owing is a ledger write; the ledger proves it once the wallet is up.
-    oweBroadcast: (record, owed) => oweRegistrationBroadcast(record, owed),
+    // Owing is a ledger write; the ledger proves it once the wallet is up. A ticket's claim on this
+    // tab publishes the address itself, so it only keeps the fresh payload for that claim.
+    oweBroadcast: async (record, owed) => {
+      if (!claimPublishesAddress(record)) return oweRegistrationBroadcast(record, owed)
+      if (owed?.payload) rememberRegistrationPayload(record.sipaAddress, owed.payload)
+    },
     // The boot tick passes no extras and stays unlock-free; the wallet-bound loop and the pending
     // step's forced retry supply the sign deps a spent-rail renewal needs.
     ...extras,

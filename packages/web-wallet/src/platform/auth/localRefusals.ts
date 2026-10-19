@@ -16,10 +16,10 @@ const STORAGE_KEY = "webwallet.local-refusals"
 /** Above this many refusals the sheet changes. */
 export const LOCAL_REFUSAL_LIMIT = 2
 
-/** A refusal another manager's answer causes. Apple Passwords below the macOS floor has its own card. */
+/** A refusal another manager's answer causes. Apple Passwords refused here has its own card. */
 export function countsAsLocalRefusal(err: unknown): boolean {
   if (err instanceof UnsupportedProviderError) return err.kind === "manager"
-  return err instanceof LaptopPasskeyRefusedError && !err.belowMacFloor
+  return err instanceof LaptopPasskeyRefusedError && !err.appleRefusedHere
 }
 
 export function localRefusalCount(): number {

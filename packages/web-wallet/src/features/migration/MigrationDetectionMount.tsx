@@ -1,7 +1,7 @@
 import { reloadPage } from "../../platform/storage/walletStorage"
 import { Modal } from "../../ui/Modal"
 /**
- * Boot-time migration detection: pop the "Migration detected" modal when the signed-in account
+ * Boot-time migration detection: pop the upgrade dialog when the signed-in account
  * still holds residual funds on a retired oxide deployment (`probeAccountResiduals`). Mounted
  * inside WalletGate (post-PXE, post-unlock) because the probes need the wallet + account.
  *
@@ -9,13 +9,13 @@ import { Modal } from "../../ui/Modal"
  * them to `PendingPaylinkMigrationService`, which waits out the window and mints a reclaim
  * notification once chain time passes it.
  *
- * "Later" is a SESSION dismiss only — funds on a retired deployment stay detectable, so the modal
- * returns next boot until they are moved. Detection failures are swallowed: this must never break
- * the wallet's boot. "Move funds" runs the exit half of the migration (`runIntraRollupMigration`)
- * under `OperationHandOff`: the modal shows the working beat, labeled "Publishing your new address"
- * while the arrival publishes, until the passkey signs the burn; then it closes into the bell and
- * the exit and the arrival ride the withdrawal and deposit rails. Residuals with nothing to do
- * right now become a notification instead of a modal.
+ * "Maybe later" is a SESSION dismiss only — funds on a retired deployment stay detectable, so the
+ * modal returns next boot until they are moved. Detection failures are swallowed: this must never
+ * break the wallet's boot. On an intra-rollup migration "Upgrade now" runs its exit half
+ * (`runIntraRollupMigration`) under `OperationHandOff`: the modal shows the working beat, labeled
+ * "Publishing your new address" while the arrival publishes, until the passkey signs the burn; then
+ * it closes into the bell and the exit and the arrival ride the withdrawal and deposit rails.
+ * Residuals with nothing to do right now become a notification instead of a modal.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useQuery } from "@tanstack/react-query"
@@ -27,7 +27,6 @@ import {
   useAssetContext,
   useAztecContext,
   useContractServiceContext,
-  metadataMigrationPhaseLabel,
   runMetadataMigration,
   type MetadataMigrationRecord,
 } from "@obsidion/front-core"
@@ -44,7 +43,6 @@ import {
   PrimaryGradientButton,
   TopNavIconButton,
 } from "@obsidion/web-ds"
-import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import { formatUnits } from "viem"
 import { fetchLiveProfilePortal, getConfig } from "../../config/env"
 import { showReportableError } from "../../errors/errorModal"
@@ -55,16 +53,32 @@ import { probeAccountResiduals, reconcilePendingPaylinks } from "./probeAccountR
 import { runIntraRollupMigration } from "./runIntraRollupMigration"
 import { migrationSummary } from "./migrationArrival"
 import { loadMigrationFee, migrationAmounts } from "./migrationFee"
-import { useBusyLabel, useLeavingLosesTransaction } from "../operations/operations"
+import {
+  isFlowCancelled,
+  runOperation,
+  useBusyLabel,
+  useLeavingLosesTransaction,
+} from "../operations/operations"
 import { runUserFlow, useUserFlowActive } from "../provingGate"
 import { OperationHandOff } from "../operations/OperationHandOff"
+import { PayWorking } from "../contacts/PayWorking"
+import { UpgradeIntro } from "./UpgradeIntro"
+import { continueLabel, upgradePhaseLabel, upgradeStopText } from "./upgradeCopy"
 import "./migration.css"
 import { createWebMetadataMigration, webMetadataMigrationKey } from "./createWebMetadataMigration"
-import { setRegistrationMigrationNeeded, useMigrationDialogRequest } from "./migrationDialog"
+import {
+  setRegistrationMigrationNeeded,
+  setUpgradeOffered,
+  useMigrationDialogRequest,
+} from "./migrationDialog"
 
 export const PROFILE_REPOINT_POLL_MS = 5 * 60_000
 
 const RESIDUALS_NOTIFICATION_ID = "migration:residuals"
+const RUN_NOTIFICATION_ID = "migration:run"
+
+/** The upgrade stopped for the user: the dialog and the bell say why. */
+class UpgradeStopped extends Error {}
 
 function useProfileRepoint(): boolean {
   const booted = getConfig().oxideProfile.portal.toLowerCase()
@@ -116,7 +130,16 @@ export function MigrationDetectionMount() {
   // Nothing on a retired version can move, and the account still has to update its registration.
   const [registrationOnly, setRegistrationOnly] = useState(false)
   const [funding, setFunding] = useState<Awaited<ReturnType<MetadataMigrationService["funding"]>>>()
+  // Followers of each arriving upgrade's source: its funds already move, so it is not offered.
+  const [following, setFollowing] = useState<ReadonlyMap<string, number>>(new Map())
   const migrationRun = useRef<AbortController | undefined>(undefined)
+  // Scans that follow a run; quotes wait for the last one.
+  const rescans = useRef(0)
+  // The user's start has approved and proven everything: the dialog hands the run to the bell.
+  const [prepared, setPrepared] = useState(false)
+  const [handedOff, setHandedOff] = useState(false)
+  // The run itself, not the scan that follows it.
+  const [runActive, setRunActive] = useState(false)
   useEffect(() => () => migrationRun.current?.abort(), [obsidionWallet, obsidionAccount])
 
   const checkSpent = useMemo(
@@ -129,8 +152,11 @@ export function MigrationDetectionMount() {
     [obsidionWallet, obsidionAccount, tokenService, contractService],
   )
 
+  // Only the latest scan answers for the inventory.
+  const scans = useRef(0)
   const refresh = useCallback(async () => {
     if (!obsidionWallet || !obsidionAccount) return
+    const scan = ++scans.current
     setRefreshing(true)
     let found: Awaited<ReturnType<typeof probeAccountResiduals>>
     try {
@@ -139,8 +165,9 @@ export function MigrationDetectionMount() {
       console.warn("[migration] re-probe failed:", error)
       return
     } finally {
-      setRefreshing(false)
+      if (scan === scans.current) setRefreshing(false)
     }
+    if (scan !== scans.current) return
     setScanRevision((n) => n + 1)
     setScanned(!!found)
     if (!found) {
@@ -157,7 +184,7 @@ export function MigrationDetectionMount() {
     if (!obsidionWallet || !obsidionAccount) return
     let cancelled = false
     void (async () => {
-      await bootPriority.whenBalanceSettled()
+      await bootPriority.whenReady("migrationProbe")
       if (cancelled) return
       const found = await probeAccountResiduals(obsidionWallet, obsidionAccount)
       if (cancelled) return
@@ -178,6 +205,41 @@ export function MigrationDetectionMount() {
   useEffect(() => {
     if (!obsidionWallet || !obsidionAccount || !current || !historic) return
     let cancelled = false
+    const observing = new AbortController()
+    // Every batch of an arriving upgrade is sent: its run finishes from chain evidence with no
+    // click, no prompt and no send. It asks for the dialog only if it stops for the user.
+    const observe = async (source: OxideEnvTuple) => {
+      if (!contractService || !tokenService) return
+      const portal = source.portal.toLowerCase()
+      const count = (by: number) => (now: ReadonlyMap<string, number>) =>
+        new Map(now).set(portal, (now.get(portal) ?? 0) + by)
+      setFollowing(count(1))
+      try {
+        const session = await createWebMetadataMigration({
+          wallet: obsidionWallet,
+          account: obsidionAccount,
+          contractService,
+          toTokenService: tokenService,
+          historic: source,
+          current,
+        })
+        await session.controller.load()
+        const record = await runMetadataMigration(session.controller, {
+          signal: observing.signal,
+          observeOnly: true,
+        })
+        if (observing.signal.aborted || !record) return
+        if (record.phase === "done") {
+          await loadAssets()
+          await refresh()
+          return
+        }
+        setResumeSource(source)
+        setMetadataRecord(record)
+      } finally {
+        setFollowing(count(-1))
+      }
+    }
     void (async () => {
       for (const source of [...historic, current]) {
         const raw = await webStorage.getItem(
@@ -187,6 +249,12 @@ export function MigrationDetectionMount() {
         if (!raw) continue
         const record = JSON.parse(raw) as MetadataMigrationRecord
         if (record.phase === "done") continue
+        if (record.phase === "arriving") {
+          void observe(source).catch((error) =>
+            console.warn("[migration] arriving upgrade check failed:", error),
+          )
+          continue
+        }
         setResumeSource(source)
         setMetadataRecord(record)
         return
@@ -195,8 +263,9 @@ export function MigrationDetectionMount() {
     })().catch((error) => console.warn("[migration] metadata probe failed:", error))
     return () => {
       cancelled = true
+      observing.abort()
     }
-  }, [obsidionWallet, obsidionAccount, current, historic])
+  }, [obsidionWallet, obsidionAccount, current, historic, contractService, tokenService])
 
   useEffect(() => {
     if (!obsidionWallet) return
@@ -278,10 +347,12 @@ export function MigrationDetectionMount() {
   const quoteOf = (r: HistoricResidualSummary) =>
     metadataFlow ? quoted?.quotes.get(r.tuple.portal.toLowerCase()) : undefined
   // Without the metadata flow a live balance moves whole, and nothing moves a frozen source.
+  const followed = (r: HistoricResidualSummary) =>
+    (following.get(r.tuple.portal.toLowerCase()) ?? 0) > 0
   const movableState = (r: HistoricResidualSummary) =>
     !metadataFlow
       ? !r.frozen && r.balance > 0n
-      : holdsFunds(r)
+      : holdsFunds(r) && !followed(r)
         ? quoteOf(r) && quoteOf(r)!.movable > 0n
         : false
   const migratable = residuals.find((r) => movableState(r) === true)
@@ -335,6 +406,11 @@ export function MigrationDetectionMount() {
   const registrationUpdate = metadataFlow && !!source
   useEffect(() => setRegistrationMigrationNeeded(registrationUpdate), [registrationUpdate])
   useEffect(() => () => setRegistrationMigrationNeeded(false), [])
+  useEffect(
+    () => setUpgradeOffered(registrationUpdate && !runActive),
+    [registrationUpdate, runActive],
+  )
+  useEffect(() => () => setUpgradeOffered(false), [])
   const request = useMigrationDialogRequest()
   const seenRequest = useRef(request)
   useEffect(() => {
@@ -348,6 +424,19 @@ export function MigrationDetectionMount() {
     (r) => !!source && r.tuple.portal.toLowerCase() === source.portal.toLowerCase(),
   )
   const moving = (executing && (metadataFlow ? quoteOf(executing)?.movable : migratable?.balance)) ?? 0n
+  // A frozen source's run goes to the bell once approved. A live source withdraws each later batch
+  // when it reaches it, and an externally funded run waits on the user's transfer: both stay here.
+  // With nothing to move from, the user funds the upgrade themselves.
+  const external = !!source && source.portal.toLowerCase() === current?.portal.toLowerCase()
+  const handsOff =
+    metadataFlow && (!!executing?.frozen || planSourceState(metadataRecord) === "frozen")
+  // What a fresh run's batches pay, and the approvals they ask for. A resumed run keeps the
+  // selections it saved, which the quote can't see.
+  const sourceQuote = !(resumeSource && metadataRecord) && executing && quoteOf(executing)
+  const summary =
+    sourceQuote && sourceQuote.fees !== undefined && sourceQuote.approvals !== undefined
+      ? { movable: sourceQuote.movable, fees: sourceQuote.fees, approvals: sourceQuote.approvals }
+      : undefined
   const amount = moving > 0n ? usd(dollars(moving)) : ""
   // Read per deployment pair; a failed read shows no fee and blocks nothing.
   const fee = useQuery({
@@ -372,7 +461,11 @@ export function MigrationDetectionMount() {
   // deposit in transit, a paylink still in its claim window) are a notification, not a boot modal:
   // the modal asks only for an action.
   const stuck = residuals.flatMap((r) =>
-    residualItems(r, { metadataFlow, quote: quoteOf(r), executing: r === executing }),
+    residualItems(r, {
+      metadataFlow,
+      quote: quoteOf(r),
+      executing: r === executing || followed(r),
+    }),
   )
   const notes = stuck.map(itemNote)
   const description = notes.join(" · ")
@@ -401,10 +494,47 @@ export function MigrationDetectionMount() {
     })().catch(console.warn)
   }, [scanComplete, description])
 
-  // Past the hand-off the migration outlives the modal: its withdrawal record's rows report it.
+  // A stopped or interrupted upgrade waits for the user: the bell keeps it until the run moves on.
+  const waiting =
+    !runActive && !!resumeSource && metadataRecord && !SENT.has(metadataRecord.phase)
+      ? metadataRecord.phase
+      : undefined
+  const movedOn = runActive || recordChecked || SENT.has(metadataRecord?.phase ?? "preparing")
+  useEffect(() => {
+    void (async () => {
+      const store = AppNotificationStore.get(webStorage)
+      await store.load()
+      if (!waiting) {
+        if (movedOn && store.get(RUN_NOTIFICATION_ID)) await store.remove(RUN_NOTIFICATION_ID)
+        return
+      }
+      const description =
+        waiting === "needsApproval"
+          ? "Your upgrade needs another approval. Open it to continue."
+          : waiting === "needsAttention"
+            ? "Your upgrade stopped. Open it to see why and continue."
+            : "Your upgrade is paused. Open it to continue."
+      const known = store.get(RUN_NOTIFICATION_ID)
+      await store.upsert({
+        id: RUN_NOTIFICATION_ID,
+        sourceId: RUN_NOTIFICATION_ID,
+        producer: "migration",
+        domain: "migration",
+        title: "Your upgrade needs you",
+        description,
+        timestampMs: known?.description === description ? known.timestampMs : Date.now(),
+        systemIcon: "exclamationmark.circle",
+        severity: waiting === "needsAttention" ? "error" : "info",
+        target: { type: "migration.run" },
+      })
+    })().catch(console.warn)
+  }, [waiting, movedOn])
+
+  // Past the hand-off the migration outlives the modal: its activity rows and the bell report it.
   const left = useRef(false)
   const onLeave = useCallback(() => {
     left.current = true
+    setHandedOff(true)
     setDismissed(true)
   }, [])
 
@@ -423,6 +553,9 @@ export function MigrationDetectionMount() {
     const run = new AbortController()
     migrationRun.current = run
     setMigrating(true)
+    setRunActive(true)
+    setPrepared(false)
+    setHandedOff(false)
     left.current = false
     try {
       if (metadataFlow) {
@@ -441,19 +574,53 @@ export function MigrationDetectionMount() {
           await session.controller.load()
           setResumeSource(source)
           let shownPlan: string | undefined
-          const record = await runUserFlow(() =>
-            runMetadataMigration(session.controller, {
-              signal: run.signal,
-              onProgress: async () => {
-                const plan = session.controller.getSnapshot()?.plan
-                if (plan && plan !== shownPlan) {
+          const progress = {
+            signal: run.signal,
+            // Display only: a failed read never stops the run, and the next pass reads again.
+            onProgress: async () => {
+              const plan = session.controller.getSnapshot()?.plan
+              if (plan && plan !== shownPlan) {
+                try {
                   const funding = await session.service.funding(plan)
                   if (!run.signal.aborted) setFunding(funding)
                   shownPlan = plan
+                } catch (error) {
+                  console.warn("[migration] funding read failed:", error)
                 }
-              },
-            }),
-          )
+              }
+            },
+          }
+          const sent = !handsOff
+            ? await runUserFlow(() => runMetadataMigration(session.controller, progress))
+            : await runOperation(
+                {
+                  operationId: `migration_${crypto.randomUUID()}`,
+                  flow: "migration",
+                  summary: migrationSummary(formatUnits(moving, DEFAULT_DECIMALS)),
+                },
+                async () => {
+                  const record = await runMetadataMigration(session.controller, {
+                    ...progress,
+                    retry: true,
+                    untilArriving: true,
+                    onPrepared: () => setPrepared(true),
+                  })
+                  if (run.signal.aborted) throw new Error("Cancelled")
+                  if (record?.phase === "needsAttention" || record?.phase === "needsApproval") {
+                    console.warn("[migration] stopped:", record.error)
+                    throw new UpgradeStopped(record.error)
+                  }
+                  return record
+                },
+              )
+          // The rest follows from chain evidence, with no prompt and no send.
+          const record =
+            sent?.phase === "arriving"
+              ? await runMetadataMigration(session.controller, {
+                  signal: run.signal,
+                  observeOnly: true,
+                })
+              : sent
           if (run.signal.aborted) return
           if (record?.phase === "done") {
             setResumeSource(null)
@@ -461,8 +628,16 @@ export function MigrationDetectionMount() {
           }
         } finally {
           unsubscribe()
+          // The run is over: the dialog shows how it stopped while the scan after it runs.
+          if (migrationRun.current === run) migrationRun.current = undefined
+          setRunActive(false)
           // The run moved funds the last scan counted: scan again rather than quote over it.
-          await refresh()
+          rescans.current++
+          try {
+            await refresh()
+          } finally {
+            rescans.current--
+          }
         }
         return
       }
@@ -480,13 +655,16 @@ export function MigrationDetectionMount() {
       await loadAssets()
       await refresh()
     } catch (error) {
-      // Back to the prompt: a closed passkey prompt is the user's own no, anything else is shown.
-      if (!left.current && !isPasskeyCancelled(error)) {
+      // Back to the prompt: a closed passkey prompt or a cancel is the user's own no, and a stopped
+      // upgrade says why itself; anything else is shown.
+      if (!left.current && !isFlowCancelled(error) && !(error instanceof UpgradeStopped)) {
         showReportableError(error, "migration:intra-rollup")
       }
     } finally {
       if (migrationRun.current === run) migrationRun.current = undefined
-      setMigrating(false)
+      // Unless a press during the scan after this run started another.
+      if (!migrationRun.current) setRunActive(false)
+      if (!migrationRun.current && !rescans.current) setMigrating(false)
     }
   }
 
@@ -502,7 +680,7 @@ export function MigrationDetectionMount() {
           <GradientText gradient="title" size={24} weight={700} style={{ textAlign: "center" }}>
             A new version of zk.money is live
           </GradientText>
-          <p className="ww-logout__body">Reload to move your funds to it.</p>
+          <p className="ww-logout__body">Reload to upgrade to it.</p>
           <div className="ww-logout__actions">
             <PrimaryGradientButton
               title="Later"
@@ -521,7 +699,8 @@ export function MigrationDetectionMount() {
   if (dismissed || (!migratable && !scanFailed && !source && !listing)) return null
 
   const close = () => {
-    migrationRun.current?.abort()
+    // Before the hand-off a close cancels the run; after it, the run goes on without the dialog.
+    if (!left.current) migrationRun.current?.abort()
     setDismissed(true)
     setRequested(false)
   }
@@ -564,40 +743,67 @@ export function MigrationDetectionMount() {
       </Modal>
     )
   }
-  const phase = metadataRecord ? metadataMigrationPhaseLabel[metadataRecord.phase] : undefined
+  // A stop while the run is going is one it is trying again: the user sees only the one it ends on.
+  const retrying = runActive && metadataRecord?.phase === "needsAttention"
+  const phase = metadataRecord && !retrying ? upgradePhaseLabel[metadataRecord.phase] : undefined
+  const working = runActive && !handedOff && (handsOff || !metadataFlow)
+  const approvals = metadataRecord?.approvals
   return (
     <Modal
       variant="bare"
-      label="Move your funds"
+      label="Upgrade zk.money"
       className="ww-modal--create"
-      onClose={migrating && !metadataFlow ? undefined : close}
+      onClose={working && !metadataFlow ? undefined : close}
     >
       <div data-testid="migration-detected-modal" className="ww-migration">
-        {migrating && !metadataFlow ? (
+        {working && metadataFlow ? (
+          <OperationHandOff
+            until="prepared"
+            prepared={prepared}
+            onLeave={onLeave}
+            renderWorking={(beat, _label, hint) => (
+              <>
+                <PayWorking beat={beat} hint={hint} onCancel={close} />
+                {approvals && approvals.approved < approvals.total && (
+                  <p className="ww-migration__note">
+                    Approve {approvals.approved + 1} of {approvals.total}
+                  </p>
+                )}
+              </>
+            )}
+          />
+        ) : working ? (
           <OperationHandOff onLeave={onLeave} />
         ) : (
           <>
             <div className="ww-modal__close">
               <TopNavIconButton icon="x" ariaLabel="Close" onClick={close} />
             </div>
-            <GradientText gradient="title" size={24} weight={700} style={{ textAlign: "center" }}>
-              {migratable
-                ? "Move your funds"
-                : source
-                  ? "Update your wallet registration"
-                  : "Couldn't check your old funds"}
-            </GradientText>
-            <p className="ww-migration__lead">
-              {migratable
-                ? (amount
-                    ? `${amount} sits on a retired version of the network. Move it now. `
-                    : "Your funds sit on a retired version of the network. Move them now. ") +
-                  "One tap, your keys stay the same."
-                : source
-                  ? "Update your wallet registration for this version. With no old funds, you " +
-                    "will need to fund the migration address."
-                  : "Some funds on a retired version could not be checked. Try again to see them."}
-            </p>
+            {source ? (
+              <UpgradeIntro
+                title="Upgrade to a faster zk.money"
+                lead={
+                  external
+                    ? "Upgrade to send and receive faster. With nothing on the old version that " +
+                      "can move, you fund the upgrade yourself."
+                    : "Upgrade to send and receive faster. Your balance stays safe."
+                }
+              />
+            ) : (
+              <>
+                <GradientText
+                  gradient="title"
+                  size={24}
+                  weight={700}
+                  style={{ textAlign: "center" }}
+                >
+                  Couldn't check your old funds
+                </GradientText>
+                <p className="ww-migration__lead">
+                  Some funds on an old version could not be checked. Try again to see them.
+                </p>
+              </>
+            )}
             {migratable && (
               <div className="ww-pay__summary">
                 {amount && <ConfirmationSheetDetailRow label="Amount" value={amount} />}
@@ -617,30 +823,42 @@ export function MigrationDetectionMount() {
                     />
                   </>
                 )}
-                <ConfirmationSheetDetailRow label="Takes" value="About an hour, hands-off" />
+                {summary && (
+                  <>
+                    <ConfirmationSheetDetailRow label="Fees" value={usd(dollars(summary.fees))} />
+                    <ConfirmationSheetDetailRow
+                      label="You'll receive"
+                      value={usd(dollars(summary.movable - summary.fees))}
+                    />
+                    <ConfirmationSheetDetailRow
+                      label="Approvals"
+                      value={String(summary.approvals)}
+                    />
+                  </>
+                )}
+                {!handsOff && (
+                  <ConfirmationSheetDetailRow label="Takes" value="About an hour, hands-off" />
+                )}
               </div>
             )}
-            {phase && <p className="ww-migration__note">{phase}</p>}
-            {metadataRecord?.error && (
-              <p className="ww-migration__note" role="alert">
-                {metadataRecord.error}
+            {handsOff && migratable && (
+              <p className="ww-migration__note">
+                Keep this tab open until your funds are sent, usually a few minutes.
               </p>
             )}
-            {funding && metadataRecord?.phase !== "done" && (
+            {phase && <p className="ww-migration__note">{phase}</p>}
+            {metadataRecord?.error && !retrying && (
+              <p className="ww-migration__note" role="alert">
+                {upgradeStopText(metadataRecord)}
+              </p>
+            )}
+            {funding?.external && metadataRecord?.phase !== "done" && (
               <p className="ww-migration__note">
-                {funding.external ? "Fund" : "Your source funds will arrive at"} your prepared
-                migration address <code>{funding.address}</code>.
-                {funding.external && (
-                  <>
-                    {" "}
-                    Send at least {formatUnits(funding.minimumAmount, funding.decimals)}{" "}
-                    {funding.symbol} (token <code>{funding.token}</code>) on L1 to cover the fee and
-                    a positive deposit.
-                  </>
-                )}{" "}
-                The settlement fee is {formatUnits(funding.fee, funding.decimals)} {funding.symbol};
-                the remainder is deposited into your wallet. The metadata update and deposit are
-                visible together on L1.
+                Send at least {formatUnits(funding.minimumAmount, funding.decimals)}{" "}
+                {funding.symbol} (token <code>{funding.token}</code>) on Ethereum to your upgrade
+                address <code>{funding.address}</code>.{" "}
+                {formatUnits(funding.fee, funding.decimals)} {funding.symbol} pays for the upgrade;
+                the rest reaches your balance.
               </p>
             )}
             {migratable && notes.length > 0 && (
@@ -654,17 +872,15 @@ export function MigrationDetectionMount() {
             {source ? (
               <PrimaryGradientButton
                 title={
-                  migrating
-                    ? "Migrating…"
+                  runActive
+                    ? "Upgrading…"
                     : busy
                       ? busyLabel
-                      : metadataRecord
-                        ? "Continue migration"
-                        : migratable
-                          ? "Move funds"
-                          : "Migrate"
+                      : resumeSource && metadataRecord
+                        ? continueLabel(metadataRecord)
+                        : "Upgrade now"
                 }
-                isDisabled={busy || migrating}
+                isDisabled={busy || runActive}
                 onClick={() => void onMigrate()}
               />
             ) : (
@@ -675,7 +891,7 @@ export function MigrationDetectionMount() {
               />
             )}
             <button type="button" className="zkm-btn-reset ww-migration__later" onClick={close}>
-              {migrating ? "Pause after current step" : "Later"}
+              {runActive ? "Close" : "Maybe later"}
             </button>
           </>
         )}
@@ -689,8 +905,26 @@ export function MigrationDetectionMount() {
  * destination, which the run waits for before it activates sponsorship.
  */
 function firstRefundSettled(record: MetadataMigrationRecord | null): boolean {
-  return !!record && ["subscribing", "recovering", "done"].includes(record.phase)
+  return (
+    !!record &&
+    (["subscribing", "recovering", "arriving", "done"].includes(record.phase) ||
+      (record.phase === "needsApproval" && !!record.subscriptionTx))
+  )
 }
+
+/** Every batch is sent: what is left needs no tab and no user. */
+const SENT: ReadonlySet<string> = new Set(["arriving", "done"])
+
+/** The source state a saved plan was prepared against; read while rendering, so it never throws. */
+function planSourceState(record: MetadataMigrationRecord | null): string | undefined {
+  try {
+    const plan = record?.plan && (JSON.parse(record.plan) as { sourceState?: string })
+    return plan ? plan.sourceState : undefined
+  } catch {
+    return undefined
+  }
+}
+
 
 /** Funds a source's first batch could move: a balance, or a frozen source's unclaimed deposits. */
 function holdsFunds(r: HistoricResidualSummary): boolean {

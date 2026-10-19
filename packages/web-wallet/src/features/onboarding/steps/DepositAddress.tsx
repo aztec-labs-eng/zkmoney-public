@@ -18,7 +18,8 @@ import {
 import { getConfig, l1ChainFor } from "../../../config/env"
 import { l1PublicClient } from "../../../config/oxideTuple"
 import { showErrorModal, showReportableError } from "../../../errors/errorModal"
-import { shortAddr } from "../../../ui/format"
+import { shortL1Addr } from "../../../ui/format"
+import { Blockie, L1AddressText } from "../../../ui/L1AddressText"
 import { useCopy } from "../../../ui/hooks"
 import { Modal } from "../../../ui/Modal"
 import { ScreeningNotice, useScreenedAddress } from "../../../ui/screening"
@@ -61,11 +62,6 @@ import {
 } from "./DepositTermsRows"
 import connectIcon from "../../../assets/deposit/eth-fill.svg"
 import ethIcon from "../../../assets/deposit/ethereum.webp"
-
-/** `0x4a88F2...3d6A9f`. The full address rides the copy button's label and title. */
-function shorten(address: Address): string {
-  return `${address.slice(0, 8)}...${address.slice(-6)}`
-}
 
 type OverLimit = "public" | "protocol"
 
@@ -203,7 +199,10 @@ export function DepositAddressRow({
           onClick={() => (capacityWarning ? setWarning(true) : copy(address))}
         >
           <span className="ww-send-to__label">Send to</span>
-          <span className="ww-send-to__value">{shorten(address)}</span>
+          <span className="ww-send-to__value">
+            <Blockie address={address} />
+            <L1AddressText address={address} cut />
+          </span>
           <span className="ww-send-to__icon" aria-live="polite">
             {copied ? (
               <Icon name="check-circle" size={16} color="var(--accent-green)" />
@@ -446,7 +445,7 @@ function ConnectedWalletPay({
     ? "Use Rainbow, MetaMask, Rabby, or WalletConnect"
     : total === 0n
     ? "Send any amount to the address above"
-    : shortAddr(l1.account)
+    : shortL1Addr(l1.account)
   // A payment already sent can still be rechecked; only a new one is held.
   const disabled =
     state !== "check" &&
@@ -519,7 +518,7 @@ function ConnectedWalletPay({
       {/* Once the transfer is broadcast the row tracks it; the modal is only the ask. */}
       {confirming && l1.account && state in PAY_STAGE_LABEL && (
         <PayConfirmModal
-          from={`${l1.walletName ?? "Wallet"} · ${shortAddr(l1.account)}`}
+          from={`${l1.walletName ?? "Wallet"} · ${shortL1Addr(l1.account)}`}
           to={address}
           total={total}
           feeToken={tokens[0]}
@@ -684,7 +683,10 @@ function PayConfirmModal({
           </div>
           <div className="ww-deposit__fact">
             <span>To</span>
-            <b title={to}>{shorten(to)}</b>
+            <b title={to}>
+              <Blockie address={to} />
+              {shortL1Addr(to)}
+            </b>
           </div>
           <hr className="ww-divider" />
           <div className="ww-deposit__fact">

@@ -13,8 +13,15 @@ export interface MetadataConsentSigner {
   bootstrap: PrivateKeyAccount
   passkey?: {
     publicKey: R1PublicKeyArg
-    signChallenge(challenge: Hex): Promise<PasskeySignResult>
+    signChallenge(challenge: Hex, opts?: { signal?: AbortSignal }): Promise<PasskeySignResult>
   }
+}
+
+/** Whether the consent asks a passkey: with no installed key, the bootstrap key signs it. */
+export async function metadataConsentPrompts(
+  deps: Pick<MetadataConsentSigner, "client" | "owner">,
+): Promise<boolean> {
+  return (await getAuthKeys(deps.client, deps.owner)).length > 0
 }
 
 /** Receives Oxide's PersonalSign digest, already domain-separated for this account. */

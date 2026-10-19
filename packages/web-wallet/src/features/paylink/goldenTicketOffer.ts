@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react"
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react"
 import { AccountServiceClient } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
+import { createExternalState } from "../../lib/externalState"
 import { isBaseUnits } from "./ticketThreshold"
 
 /** What the claim server offers a paylink signup: the threshold and the reduced schedule it buys. */
@@ -33,15 +34,42 @@ export interface GoldenTicketOfferRead {
   retry: () => void
 }
 
+let prefetched: Promise<GoldenTicketOffer | null> | undefined
+const prefetchedOffer = createExternalState<{ offer: GoldenTicketOffer | null } | undefined>(
+  undefined,
+)
+
+/** Starts the read before the page that shows it mounts; that page's first read takes it. */
+export function prefetchGoldenTicketOffer(): void {
+  if (prefetched) return
+  prefetched = fetchGoldenTicketOffer()
+  prefetched.then(
+    (offer) => prefetchedOffer.set({ offer }),
+    () => {},
+  )
+}
+
+/** The prefetched offer once it has landed. */
+export function usePrefetchedGoldenTicketOffer(): GoldenTicketOffer | null | undefined {
+  return useSyncExternalStore(prefetchedOffer.subscribe, prefetchedOffer.get)?.offer
+}
+
 export function useGoldenTicketOffer(): GoldenTicketOfferRead {
-  const [offer, setOffer] = useState<GoldenTicketOffer | null>()
+  // A prefetch that already landed shows from the first frame, for the read that takes it.
+  const [offer, setOffer] = useState<GoldenTicketOffer | null | undefined>(() =>
+    prefetched ? prefetchedOffer.get()?.offer : undefined,
+  )
   const [failed, setFailed] = useState(false)
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let live = true
-    setOffer(undefined)
-    setFailed(false)
-    fetchGoldenTicketOffer().then(
+    const early = attempt === 0 ? prefetched : undefined
+    prefetched = undefined
+    if (!early) {
+      setOffer(undefined)
+      setFailed(false)
+    }
+    ;(early ?? fetchGoldenTicketOffer()).then(
       (result) => {
         if (live) setOffer(result)
       },

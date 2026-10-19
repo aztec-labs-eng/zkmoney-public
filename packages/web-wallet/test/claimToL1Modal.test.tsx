@@ -104,6 +104,7 @@ vi.mock("../src/features/withdraw/useFasterWithdrawal", async (importOriginal) =
 vi.mock("../src/platform/desktopBridge", () => ({ isDesktopL1SubmitActive: () => true }))
 vi.mock("../src/ui/format", () => ({
   shortAddr: (v: string) => v,
+  shortL1Addr: (v: string) => v,
   usdFigure: (v: string) => v,
   tokenAmount: (v: string) => v,
 }))

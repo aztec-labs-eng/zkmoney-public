@@ -22,10 +22,14 @@ export const ContractServiceProvider = ({
   children,
   storage,
   options,
+  registerSponsorFpc = true,
 }: {
   children: ReactNode
   storage: IContractServiceStorage
   options: ContractServiceOptions
+  /** Registers the sponsor FPC with the PXE at boot. A host that pays no fee through it skips the
+   *  work, which otherwise queues on the PXE ahead of the host's first reads. */
+  registerSponsorFpc?: boolean
 }) => {
   const { obsidionWallet, currentNetwork } = useAztecContext()
   const [contractService, setContractService] = useState<ContractService | null>(null)
@@ -64,7 +68,7 @@ export const ContractServiceProvider = ({
           // An adopted instance (v4 boot path installs the v4-generation
           // ContractService before this provider runs) still needs the FPC
           // PXE registrations — idempotent, so safe on any existing instance.
-          await initFPC(existingInstance)
+          if (registerSponsorFpc) await initFPC(existingInstance)
         }
         return
       }
@@ -94,7 +98,7 @@ export const ContractServiceProvider = ({
       logger.log("contract service created: ", newContractService?.getNetwork())
 
       setContractService(newContractService)
-      await initFPC(newContractService)
+      if (registerSponsorFpc) await initFPC(newContractService)
 
       try {
         const l1Addresses = await newContractService.getL1Addresses()

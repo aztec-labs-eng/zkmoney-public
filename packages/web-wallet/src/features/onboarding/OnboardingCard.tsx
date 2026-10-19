@@ -1,6 +1,7 @@
 import { Modal, useModalFrame } from "../../ui/Modal"
 import type { ReactNode } from "react"
 import { GradientSpinner, Icon, TopNavIconButton } from "@obsidion/web-ds"
+import { ExtensionWarning } from "../identity/PhoneSteps"
 
 /**
  * One signup step in the shared modal lifecycle. The optional banner spans the card header.
@@ -57,15 +58,19 @@ export function OnboardingCard({
 /** Spinner body shared by the loading states: spinner, label, and a cancel when the op allows one. */
 export function OnboardingSpinnerBody({
   label,
+  warning,
   onCancel,
   cancelLabel = "Cancel sign-in",
 }: {
   label: string
+  /** Over the spinner while a passkey creation runs with an extension zk.money cannot use. */
+  warning?: string
   onCancel?: () => void
   cancelLabel?: string
 }) {
   return (
     <div className="ww-invite-spinner">
+      {warning && <ExtensionWarning text={warning} />}
       <GradientSpinner />
       <span className="ww-invite-spinner__label">{label}</span>
       {onCancel && (

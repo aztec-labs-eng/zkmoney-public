@@ -7,9 +7,12 @@ import { defineConfig, loadEnv, type Connect, type Plugin, type ProxyOptions } f
 import { nodePolyfills } from "vite-plugin-node-polyfills"
 import { BASIC_AUTH_CHALLENGE, gateBasicAuth, isPublicPath } from "./basicAuth.js"
 import { bakedConfigProfile } from "./bakedConfigProfile.js"
+import { bbWasmAsset } from "./bbWasmAsset.js"
 import { resolveBuildCommit } from "./buildCommit.js"
 import { desktopSettingsGuard } from "./desktopSettingsGuard.js"
 import { l1RpcCapability } from "./l1RpcCapability.js"
+import { nativePasskeyLock } from "./nativePasskeyLock.js"
+import { slimArtifactsIfAsked } from "./slimArtifacts.js"
 import { socialPreview } from "./socialPreview.js"
 import { metricsBuildPlugin } from "@obsidion/metrics-policy/build"
 
@@ -192,7 +195,7 @@ export default defineConfig(({ mode }) => {
     // builds emit circuit/oracle traces.
     define: {
       "process.env.LOG_LEVEL": JSON.stringify(process.env.PXE_LOG_LEVEL ?? "info"),
-      __BUILD_COMMIT__: JSON.stringify(resolveBuildCommit(env)),
+      "__BUILD_COMMIT__": JSON.stringify(resolveBuildCommit(env)),
     },
     ...(buildTarget ? { build: { target: buildTarget } } : {}),
     plugins: [
@@ -202,6 +205,8 @@ export default defineConfig(({ mode }) => {
       nodePolyfills({ include: ["buffer", "assert", "util"] }),
       shimResolveFix,
       sqliteRuntimeAssets,
+      bbWasmAsset(),
+      ...slimArtifactsIfAsked(process.env),
       wasmContentType,
       basicAuthGate,
       // Bakes the config profile into the bundle and emits build-target.json.
@@ -209,6 +214,7 @@ export default defineConfig(({ mode }) => {
       desktopSettingsGuard(),
       l1RpcCapability(),
       socialPreview(env),
+      nativePasskeyLock(),
     ],
     // Per the @xmtp/browser-sdk README: the SDK + wasm-bindings use import.meta.url (worker/WASM
     // loading) and must not be pre-bundled; @xmtp/proto is CJS and must be.

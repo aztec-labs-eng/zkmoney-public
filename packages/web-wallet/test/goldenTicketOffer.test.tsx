@@ -12,7 +12,9 @@ vi.mock("../src/config/env", () => ({
   getConfig: () => ({ accountServiceUrl: "http://account.test" }),
 }))
 
-const { useGoldenTicketOffer } = await import("../src/features/paylink/goldenTicketOffer")
+const { prefetchGoldenTicketOffer, useGoldenTicketOffer } = await import(
+  "../src/features/paylink/goldenTicketOffer"
+)
 
 const OFFER = { threshold: "3", schedule: { fee: "1", minDeposit: "0" } }
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
@@ -102,5 +104,34 @@ describe("useGoldenTicketOffer", () => {
     expect(state()).toBe("loading")
     await act(async () => settle(response({ goldenTicket: null })))
     expect(state()).toBe("none")
+  })
+
+  it("takes a read started before the page, and shows it from the first frame once landed", async () => {
+    fetchMock.mockResolvedValueOnce(response({ goldenTicket: OFFER }))
+    await act(async () => prefetchGoldenTicketOffer())
+    act(() => root.render(<Probe />))
+    expect(state()).toBe("offer:3")
+    await act(async () => {})
+    expect(state()).toBe("offer:3")
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it("starts a later read on the page from scratch, never from the early read another took", async () => {
+    fetchMock.mockResolvedValueOnce(response({ goldenTicket: OFFER }))
+    await act(async () => prefetchGoldenTicketOffer())
+    await mount()
+    act(() => root.unmount())
+    root = createRoot(container)
+
+    const seen: string[] = []
+    function Later() {
+      const { offer } = useGoldenTicketOffer()
+      const shown = offer ? `offer:${offer.threshold}` : "loading"
+      if (seen.at(-1) !== shown) seen.push(shown)
+      return null
+    }
+    fetchMock.mockResolvedValueOnce(response({ goldenTicket: { ...OFFER, threshold: "4" } }))
+    await act(async () => root.render(<Later />))
+    expect(seen).toEqual(["loading", "offer:4"])
   })
 })

@@ -1,4 +1,8 @@
-import { createMetadataMigrationSession, pubkeyToR1KeyArg } from "@obsidion/front-core"
+import {
+  createMetadataMigrationSession,
+  pubkeyToR1KeyArg,
+  UpgradeActivity,
+} from "@obsidion/front-core"
 import {
   createLocalMetadataMigrationSource,
   type ContractService,
@@ -66,6 +70,7 @@ export async function createWebMetadataMigration(params: {
     client,
     secretKey: keys.secretKey,
     key,
+    activity: UpgradeActivity.get(webStorage),
     storage: {
       getItem: async (key) => {
         checkSession()
@@ -83,21 +88,21 @@ export async function createWebMetadataMigration(params: {
       }),
     passkey: {
       publicKey: pubkeyToR1KeyArg(keys.pubkeyHex),
-      signChallenge: (digest) => {
+      signChallenge: (digest, opts) => {
         checkSession()
-        return getAuthService().signMetadataChallenge(digest)
+        return getAuthService().signMetadataChallenge(digest, opts)
       },
     },
-    source: async (context, batches) => {
+    source: async (context, batches, savedRefundSigner) => {
       if (!sourceToken)
         return {
           identity: "no-source-deployment",
           state: async () => "empty" as const,
           prepare: async () => {
-            throw new Error("This migration requires external funding")
+            throw new Error("This upgrade requires external funding")
           },
           restore: async () => {
-            throw new Error("This migration has no source refund")
+            throw new Error("This upgrade has no source refund")
           },
           fund: async () => {},
           recoverRemaining: async () => {},
@@ -110,6 +115,7 @@ export async function createWebMetadataMigration(params: {
         teeSigner: sourceContext!.teeSigner,
         account: params.account,
         batches,
+        wrapRefundSigner: savedRefundSigner,
         source: { tuple: params.historic, tokenService: sourceToken },
         sourceChain,
         depositDescriptors: async () =>

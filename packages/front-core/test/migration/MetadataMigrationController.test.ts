@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { MetadataMigrationController } from "../../src/core/migration/MetadataMigrationController"
+import { ApprovalGate } from "../../src/core/migration/savedApprovals"
 import type { MetadataMigrationSteps } from "../../src/core/migration/metadataMigrationFlow"
 import type { StorageLock } from "../../src/core/storages/adapter"
 
@@ -71,5 +72,44 @@ describe("MetadataMigrationController durability", () => {
     })
     await expect(make().advance(true)).rejects.toThrow("disk full")
     expect(sent).not.toHaveBeenCalled()
+  })
+})
+
+describe("the approval gate", () => {
+  it("holds the running advance's signal, and none after it", async () => {
+    const gate = new ApprovalGate()
+    const seen: (AbortSignal | boolean | undefined)[] = []
+    const steps = {
+      binding: async () => "bound",
+      prepare: async () => {
+        seen.push(gate.signal, gate.prompts)
+        return "plan"
+      },
+      ready: async () => {},
+      observe: async () => ({
+        bootstrapSpent: false,
+        metadataSettled: false,
+        messagesReady: false,
+        recurringSponsorship: false,
+        complete: false,
+      }),
+      broadcast: async () => {},
+      fund: async () => {},
+      subscribe: async () => {},
+      recoverRemaining: async () => {},
+    }
+    const items = new Map<string, string>()
+    const storage = {
+      getItem: async (key: string) => items.get(key) ?? null,
+      setItem: async (key: string, value: string) => void items.set(key, value),
+    }
+    const controller = new MetadataMigrationController(storage, steps, "key", undefined, gate)
+    const run = new AbortController()
+
+    await controller.advance(true, run.signal)
+
+    expect(seen).toEqual([run.signal, true])
+    expect(gate.signal).toBeUndefined()
+    expect(gate.prompts).toBe(true)
   })
 })

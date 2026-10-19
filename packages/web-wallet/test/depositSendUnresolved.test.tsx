@@ -180,7 +180,7 @@ vi.mock("@obsidion/web-ds", () => ({
 const { DepositScreen } = await import("../src/features/deposit/DepositScreen")
 const { saveWalletIdentity } = await import("../src/features/identity/walletIdentity")
 import { seedBootConfig } from "./seedBootConfig"
-import { shortAddr } from "../src/ui/format"
+import { shortL1Addr } from "../src/ui/format"
 import { sandboxProfile } from "./fixtures/sandboxProfile"
 import { testWalletDbs } from "./support/fakeWalletDb"
 import {
@@ -429,7 +429,7 @@ describe("DepositScreen after an unresolved desktop send", () => {
     expect(approvals.errors).toHaveLength(1)
     expect(approvals.errors[0]).toBeInstanceOf(UnresolvedSendHeldError)
     expect(JSON.parse(dbs.db(ROLLUP).state.get(await markerKey())!)).toEqual(other)
-    expect(byTestId("deposit-send-unresolved")!.textContent).toContain(shortAddr(SECOND))
+    expect(byTestId("deposit-send-unresolved")!.textContent).toContain(shortL1Addr(SECOND))
   })
 
   it("drops a hold saved after its send was refused, so the next send is not held", async () => {

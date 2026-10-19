@@ -30,18 +30,6 @@ export function ReceiveCodeCard({ tag, code }: { tag: string; code?: ReceiveCode
   )
 }
 
-/** The live line under the card. */
-export function WaitingLine({ code }: { code?: ReceiveCode }) {
-  return (
-    <span className="ww-receive__live">
-      <span className="ww-receive__dot" aria-hidden />
-      {code && code.amount > 0
-        ? `Waiting for ${requestAmountLabel(code.amount)}`
-        : "Waiting for a payment"}
-    </span>
-  )
-}
-
 /** Frames 5 and 6: what paid the code, the code it moved to, and the way back to it. */
 export function ReceivePaid({
   payment,

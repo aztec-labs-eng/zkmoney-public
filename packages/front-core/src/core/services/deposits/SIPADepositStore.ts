@@ -96,8 +96,11 @@ export interface SIPADepositRecord {
   reorgEpoch?: number
   /** The resolved name (self-initiated flow), e.g. "alice.oxidestaging.eth". */
   resolvedName?: string
-  /** Set when the SIPA is a registration, not a plain deposit — the intent its address commits to. */
-  intent?: "registration"
+  /**
+   * Set when the SIPA is not a plain deposit — the intent its address commits to. `metadata` is an
+   * upgrade's first refund, paid to the SIPA that updates the account's registration.
+   */
+  intent?: "registration" | "metadata"
   /** L1 token address of the funding transfer. */
   tokenAddress?: Address
   /** Decimals of `tokenAddress` (6 for the mainnet USDC/USDT swap route, else 18). */

@@ -102,7 +102,7 @@ describe("ticketSignupContinuation", () => {
     })
   })
 
-  it("holds a lapsed or unpublished signup with its reason, never as an ordinary claim", async () => {
+  it("holds a lapsed signup with its reason, never as an ordinary claim", async () => {
     stash()
     await PendingRegistrationStore.get(webStorage).upsert(ACCOUNT, {}, record())
     terms({ deadline: Math.floor(Date.now() / 1000) - 60 })
@@ -119,11 +119,20 @@ describe("ticketSignupContinuation", () => {
     // An unpriced quote is no schedule to burn from.
     terms({ fee: "0", minDeposit: "0" })
     expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, [])?.activation.state).toBe("renew")
+  })
+
+  it("is ready before its address is published: the claim publishes it", async () => {
+    stash()
     terms()
     await PendingRegistrationStore.get(webStorage).upsert(ACCOUNT, { broadcast: false }, record())
-    expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, [])?.activation.state).toBe(
-      "unpublished",
-    )
+    expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, [])?.activation.state).toBe("ready")
+    // Without its link on the tab nothing can publish it: the link is reopened.
+    sessionStorage.clear()
+    expect(
+      ticketActivation(record({ broadcast: false }), loadRegistrationTerms(ACCOUNT, "taga"), []),
+    ).toEqual({
+      state: "missing_link",
+    })
   })
 
   it("is nothing for an ordinary stashed link, or a marker for another link", async () => {
@@ -273,7 +282,7 @@ describe("ticketActivation", () => {
     ).toEqual({ state: "submitted" })
   })
 
-  it("is ready only with the bound link on this tab, live fundable terms and a published address", () => {
+  it("is ready only with the bound link on this tab and live fundable terms, published or not", () => {
     terms()
     stash()
     const ready = ticketActivation(full(), loadRegistrationTerms(ACCOUNT, "taga"), [])
@@ -282,7 +291,7 @@ describe("ticketActivation", () => {
 
     expect(
       ticketActivation(full({ broadcast: false }), loadRegistrationTerms(ACCOUNT, "taga"), []),
-    ).toMatchObject({ state: "unpublished" })
+    ).toMatchObject({ state: "ready" })
 
     sessionStorage.clear()
     expect(ticketActivation(full(), loadRegistrationTerms(ACCOUNT, "taga"), [])).toEqual({

@@ -1,6 +1,6 @@
 import { p256 } from "@noble/curves/p256"
 import { provingProgress } from "@obsidion/proving-progress"
-import type { WebAuthnSignResult } from "@obsidion/sdk"
+import type { SignChallengeOptions, WebAuthnSignResult } from "@obsidion/sdk"
 import { signedDigest, type PasskeyAssertResult, type PasskeyCeremony } from "@obsidion/passkey-web"
 import { activeSigningFlow, passkeyTelemetry } from "../../lib/passkeyTelemetry"
 
@@ -63,8 +63,8 @@ export function makeWebauthnSignFn(
   credentialId: string,
   pubkey: Uint8Array,
   steering?: SigningSteering,
-): (challenge: Buffer) => Promise<WebAuthnSignResult> {
-  return async (challenge: Buffer) => {
+): (challenge: Buffer, opts?: SignChallengeOptions) => Promise<WebAuthnSignResult> {
+  return async (challenge: Buffer, opts?: SignChallengeOptions) => {
     // Before any await: another flow can take the screen while the steering loads.
     const flow = activeSigningFlow()
     provingProgress.emitSigningStart()
@@ -79,6 +79,7 @@ export function makeWebauthnSignFn(
             challenge: new Uint8Array(challenge),
             credentialIds: [credentialId],
             ...(steer ? { transports: steer.transports } : {}),
+            ...(opts?.signal ? { signal: opts.signal } : {}),
           })
         } catch (e) {
           if (steer?.inferred) steering?.refused()

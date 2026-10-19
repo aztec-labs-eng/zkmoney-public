@@ -9,6 +9,7 @@ import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import { provingProgress, ProvingStage } from "@obsidion/proving-progress"
 import { TxStatus } from "@aztec/stdlib/tx"
 import { webStorage } from "../src/platform/storage/WebStorageAdapter"
+import { TimeoutError } from "../src/lib/withTimeout"
 import { saveRegistrationTerms } from "../src/features/onboarding/registrationTerms"
 import { testWalletDbs } from "./support/fakeWalletDb"
 
@@ -23,6 +24,25 @@ const h = vi.hoisted(() => ({
   getTxReceipt: vi.fn(async () => ({ status: "success", blockNumber: 42 })),
   watch: vi.fn(async (_record: unknown) => {}),
   portal: { address: `0x${"11".repeat(20)}` },
+  // The registration's own broadcast, as the ledger would build it.
+  payload: vi.fn(async (..._args: unknown[]) => ({
+    payload: { sipaAddress: "payload" },
+    account: { getAddress: () => "0xme" },
+  })),
+  cacheClaim: vi.fn(async (..._args: unknown[]) => {}),
+  broadcastCalls: vi.fn(async (..._args: unknown[]) => [{ __fake: "notify" }, { __fake: "sweep" }]),
+  sendAlone: vi.fn(async (..._args: unknown[]) => "0xbroadcast"),
+  // The claim's two reads of the escrow: its voucher and its note.
+  voucherUses: vi.fn(async (..._args: unknown[]) => 1),
+  note: vi.fn(async (..._args: unknown[]) => ({ amount: 3n * 10n ** 18n })),
+}))
+vi.mock("../src/features/broadcasts/registrationExecutor", () => ({
+  registrationBroadcastPayload: h.payload,
+}))
+vi.mock("../src/features/onboarding/webRegistrationBroadcast", () => ({
+  cacheFreshClaim: h.cacheClaim,
+  registrationBroadcastCalls: h.broadcastCalls,
+  createWebRegistrationBroadcaster: () => h.sendAlone,
 }))
 vi.mock("@obsidion/sdk", async (original) => ({
   ...(await original<typeof import("@obsidion/sdk")>()),
@@ -35,7 +55,7 @@ vi.mock("@obsidion/sdk", async (original) => ({
     paylinkType: "paylink_direct",
     secret: { toString: () => "secret", toBuffer: () => new Uint8Array(32) },
   }),
-  paylinkVoucherUses: async () => 1,
+  paylinkVoucherUses: h.voucherUses,
 }))
 vi.mock("../src/config/env", async (original) => ({
   ...(await original<typeof import("../src/config/env")>()),
@@ -48,7 +68,7 @@ vi.mock("../src/config/oxideTuple", async (original) => ({
 }))
 vi.mock("@obsidion/front-core", async (original) => ({
   ...(await original<typeof import("@obsidion/front-core")>()),
-  readPaylinkNote: async () => ({ amount: 3n * 10n ** 18n }),
+  readPaylinkNote: h.note,
   TxLifecycleService: {
     getInstance: () => ({
       startTrackingTx: async () => "claim-row",
@@ -85,7 +105,13 @@ const { claimSponsoredLink, RegistrationFundingError } = await import(
   "../src/features/paylink/sponsoredPaylink"
 )
 const { getWithdrawalStore } = await import("../src/features/withdraw/withdrawGateway")
-const { getOperationStore } = await import("../src/features/operations/operations")
+const { getBroadcastLedger, freshPayloads, resetBroadcastsForTests, startBroadcasts } =
+  await import("../src/features/broadcasts/broadcasts")
+const { ClaimBatchFullError } = await import("@obsidion/sdk")
+const { getOperationStore, getOperationsInProgress } = await import(
+  "../src/features/operations/operations"
+)
+const { trackBackgroundProve } = await import("../src/features/provingGate")
 
 const account = `0x${"aa".repeat(20)}`
 const l2Address = `0x${"bb".repeat(32)}` as const
@@ -122,11 +148,18 @@ const terms = (overrides: Partial<Parameters<typeof saveRegistrationTerms>[0]> =
   })
 const fund = () =>
   claimSponsoredLink(deps, "fixture", undefined, undefined, { fundRegistration: true })
+/** A funding claim that publishes an unpublished address in a transaction of its own first. */
+const fundSeparately = () =>
+  claimSponsoredLink(deps, "fixture", undefined, undefined, {
+    fundRegistration: true,
+    batchRegistrationBroadcast: false,
+  })
 const withdrawals = () => getWithdrawalStore().list()
-const sdkOptions = () =>
-  h.claimSdk.mock.calls[0]?.[2] as {
+const sdkOptions = (call = 0) =>
+  h.claimSdk.mock.calls[call]?.[2] as {
     operationId: string
     voucher?: { railId: number; withdraw?: Record<string, unknown> }
+    broadcasts?: unknown[]
   }
 
 let portals = 0
@@ -241,14 +274,228 @@ describe("a registration-funding claim's burn record", () => {
     expect(h.watch).not.toHaveBeenCalled()
   })
 
-  it("is refused, with nothing seeded, while the terms lapsed or the address is unpublished", async () => {
+  it("is refused, with nothing seeded, while the terms lapsed", async () => {
     terms({ deadline: Math.floor(Date.now() / 1000) - 60 })
     await expect(fund()).rejects.toMatchObject({ reason: "expired" })
-    terms()
-    await pending.upsert(account, { broadcast: false })
-    await expect(fund()).rejects.toBeInstanceOf(RegistrationFundingError)
     expect(withdrawals()).toHaveLength(0)
     expect(h.claimSdk).not.toHaveBeenCalled()
+  })
+
+  describe("for an address not yet published", () => {
+    beforeEach(async () => {
+      resetBroadcastsForTests()
+      await pending.upsert(account, { broadcast: false })
+    })
+    const owe = (over: Record<string, unknown> = {}) =>
+      getBroadcastLedger().enqueue({
+        address: sipaAddress,
+        kind: "registration",
+        scope: null,
+        source: { type: "registration", account },
+        ...over,
+      })
+
+    type Attempt = { onTxHash: (txHash: string) => Promise<void> }
+    /** The separate broadcast reaches the node under `hash`; `then` decides how its wait ends. */
+    const sendsAlone = (hash: string, then: () => Promise<string>) =>
+      h.sendAlone.mockImplementationOnce(async (_payload, attempt) => {
+        await (attempt as Attempt).onTxHash(hash)
+        return then()
+      })
+    /** The ledger's owner as the chain decides its job: the record first, then the job. */
+    const chainLands = async () => {
+      await pending.upsert(account, { broadcast: true })
+      await getBroadcastLedger().markLanded(sipaAddress)
+    }
+    const jobOf = () => getBroadcastLedger().get(sipaAddress)
+
+    it("publishes it on its own before the burn when batching is off, the ledger holding its hash", async () => {
+      // A job an earlier page owed: the claim sends its broadcast, so the ledger does not.
+      await owe()
+      freshPayloads.set(sipaAddress, {} as never)
+      let seededAtSend: number | undefined
+      sendsAlone("0xalone", async () => {
+        seededAtSend = withdrawals().length
+        expect(jobOf()).toMatchObject({ state: "sent", txHash: "0xalone" })
+        return "0xalone"
+      })
+      expect(await fundSeparately()).toBe(HASH)
+      expect(h.payload).toHaveBeenCalledWith(
+        (deps as { wallet: unknown }).wallet,
+        expect.anything(),
+        expect.objectContaining({ sipaAddress }),
+      )
+      expect(h.sendAlone).toHaveBeenCalledWith({ sipaAddress: "payload" }, expect.anything())
+      // The burn is seeded only once the address it pays is published.
+      expect(seededAtSend).toBe(0)
+      expect(h.broadcastCalls).not.toHaveBeenCalled()
+      expect(sdkOptions().broadcasts).toBeUndefined()
+      expect(sdkOptions().voucher?.withdraw).toMatchObject({ amount: BURN })
+      expect(pending.current(l2Address)?.broadcast).toBe(true)
+      expect(jobOf()).toMatchObject({ state: "landed" })
+      expect(freshPayloads.has(sipaAddress)).toBe(false)
+    })
+
+    it("publishes it in the claim's own batch, and stamps it once that lands", async () => {
+      await owe()
+      freshPayloads.set(sipaAddress, {} as never)
+      expect(await fund()).toBe(HASH)
+      expect(h.cacheClaim).toHaveBeenCalledWith(expect.objectContaining({ handle: "alice" }), {
+        sipaAddress: "payload",
+      })
+      expect(sdkOptions().broadcasts).toEqual([{ __fake: "notify" }, { __fake: "sweep" }])
+      expect(sdkOptions().voucher?.withdraw).toMatchObject({ amount: BURN })
+      expect(h.sendAlone).not.toHaveBeenCalled()
+      expect(pending.current(l2Address)?.broadcast).toBe(true)
+      expect(jobOf()).toBeNull()
+      expect(freshPayloads.has(sipaAddress)).toBe(false)
+    })
+
+    it("waits out a broadcast a page already sent, and claims once it lands", async () => {
+      await owe({ txHash: "0xsent" })
+      const claimed = fund()
+      await new Promise((r) => setTimeout(r, 10))
+      expect(h.claimSdk).not.toHaveBeenCalled()
+      await chainLands()
+      expect(await claimed).toBe(HASH)
+      expect(h.payload).not.toHaveBeenCalled()
+      expect(h.sendAlone).not.toHaveBeenCalled()
+      expect(sdkOptions().broadcasts).toBeUndefined()
+      expect(sdkOptions().voucher?.withdraw).toMatchObject({ amount: BURN })
+    })
+
+    it("takes the broadcast over in its batch when the page's attempt does not land", async () => {
+      await owe({ txHash: "0xsent" })
+      const claimed = fund()
+      await new Promise((r) => setTimeout(r, 10))
+      await getBroadcastLedger().markFailed(sipaAddress, "The network dropped the broadcast")
+      expect(await claimed).toBe(HASH)
+      expect(sdkOptions().broadcasts).toEqual([{ __fake: "notify" }, { __fake: "sweep" }])
+      expect(h.sendAlone).not.toHaveBeenCalled()
+      expect(pending.current(l2Address)?.broadcast).toBe(true)
+    })
+
+    it("takes the broadcast over on its own when batching is off and the page's attempt does not land", async () => {
+      await owe({ txHash: "0xsent" })
+      const claimed = fundSeparately()
+      await new Promise((r) => setTimeout(r, 10))
+      await getBroadcastLedger().markFailed(sipaAddress, "The network dropped the broadcast")
+      expect(await claimed).toBe(HASH)
+      expect(h.sendAlone).toHaveBeenCalledOnce()
+      expect(pending.current(l2Address)?.broadcast).toBe(true)
+    })
+
+    it("is refused for a retry, with nothing seeded, when that broadcast does not settle in time", async () => {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      try {
+        await owe({ txHash: "0xsent" })
+        const watched = vi.spyOn(getBroadcastLedger(), "onListChanged")
+        const refused = fund().catch((err: unknown) => err)
+        await vi.waitFor(() => expect(watched).toHaveBeenCalled())
+        await vi.advanceTimersByTimeAsync(60_000)
+        const err = await refused
+        expect(err).toBeInstanceOf(RegistrationFundingError)
+        expect(err).toMatchObject({ reason: "unpublished" })
+        expect((err as Error).cause).toBeInstanceOf(TimeoutError)
+        expect(h.claimSdk).not.toHaveBeenCalled()
+        expect(withdrawals()).toHaveLength(0)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("is refused when its broadcast cannot be built yet, with nothing seeded", async () => {
+      h.payload.mockRejectedValueOnce(new Error("Waiting for unlock"))
+      const refused = await fund().catch((err: unknown) => err)
+      expect(refused).toBeInstanceOf(RegistrationFundingError)
+      expect(refused).toMatchObject({ reason: "unpublished" })
+      expect(h.claimSdk).not.toHaveBeenCalled()
+      expect(withdrawals()).toHaveLength(0)
+    })
+
+    it("claims once the chain lands a separate broadcast whose own wait failed", async () => {
+      sendsAlone("0xalone", async () => {
+        throw new Error("Receipt timed out")
+      })
+      const claimed = fundSeparately()
+      await vi.waitFor(() => expect(jobOf()).toMatchObject({ state: "sent", txHash: "0xalone" }))
+      await chainLands()
+      expect(await claimed).toBe(HASH)
+      expect(h.sendAlone).toHaveBeenCalledOnce()
+      expect(sdkOptions().voucher?.withdraw).toMatchObject({ amount: BURN })
+    })
+
+    it("keeps the ledger beside it off a separate broadcast the node has not taken yet", async () => {
+      const ALONE = `0x${"22".repeat(32)}`
+      // The ledger's own view of the chain: a hash the node does not hold reads as dropped.
+      const nodeHolds = new Set<string>()
+      const receipt = vi.fn(async (hash: { toString(): string }) =>
+        nodeHolds.has(hash.toString())
+          ? { status: TxStatus.PROPOSED, blockNumber: 43 }
+          : { status: TxStatus.DROPPED },
+      )
+      const resend = vi.fn()
+      const stop = startBroadcasts({ node: { getTxReceipt: receipt } } as never, {
+        registration: {
+          landed: async () => false,
+          send: resend,
+          onLanded: async () => {
+            await pending.upsert(account, { broadcast: true })
+          },
+        },
+      })
+      try {
+        await new Promise((r) => setTimeout(r, 10))
+        sendsAlone(ALONE, async () => {
+          // Steps the ledger runs before the node takes the tx find nothing to decide.
+          await new Promise((r) => setTimeout(r, 50))
+          nodeHolds.add(ALONE)
+          throw new Error("Receipt timed out")
+        })
+        expect(await fundSeparately()).toBe(HASH)
+        expect(resend).not.toHaveBeenCalled()
+        expect(jobOf()).toMatchObject({ state: "landed", txHash: ALONE, failures: 0 })
+        expect(sdkOptions().voucher?.withdraw).toMatchObject({ amount: BURN })
+      } finally {
+        stop()
+      }
+    })
+
+    it("leaves a separate broadcast the chain dropped owed to the ledger, and claims nothing", async () => {
+      sendsAlone("0xalone", async () => {
+        throw new Error("Receipt timed out")
+      })
+      const claimed = fundSeparately().catch((err: unknown) => err)
+      await vi.waitFor(() => expect(jobOf()).toMatchObject({ state: "sent" }))
+      await getBroadcastLedger().markFailed(sipaAddress, "The network dropped the broadcast")
+      expect(await claimed).toMatchObject({ message: "Receipt timed out" })
+      expect(jobOf()).toMatchObject({ state: "queued", kind: "registration" })
+      expect(pending.current(l2Address)?.broadcast).toBe(false)
+      expect(h.claimSdk).not.toHaveBeenCalled()
+      expect(withdrawals()).toHaveLength(0)
+    })
+
+    it("sends the broadcast on its own first when the batch has no room for it", async () => {
+      h.claimSdk.mockRejectedValueOnce(new ClaimBatchFullError("no room"))
+      expect(await fund()).toBe(HASH)
+      expect(h.sendAlone).toHaveBeenCalledWith({ sipaAddress: "payload" }, expect.anything())
+      expect(h.claimSdk).toHaveBeenCalledTimes(2)
+      expect(sdkOptions(1).broadcasts).toBeUndefined()
+      expect(sdkOptions(1).voucher?.withdraw).toMatchObject({ amount: BURN })
+      expect(pending.current(l2Address)?.broadcast).toBe(true)
+    })
+
+    it("leaves the ledger watching a batch the node took, to re-send only if it drops", async () => {
+      h.claimSdk.mockImplementation(async (_params, _sponsor, options) => {
+        const { operationId } = options as { operationId: string }
+        provingProgress.emitStageStart(ProvingStage.Mining, operationId, HASH)
+        throw new Error("Receipt timed out")
+      })
+      h.getTxReceipt.mockRejectedValue(new Error("node away"))
+      await expect(fund()).rejects.toMatchObject({ name: "TxInFlightError", txHash: HASH })
+      expect(jobOf()).toMatchObject({ state: "sent", txHash: HASH })
+      expect(pending.current(l2Address)?.broadcast).toBe(false)
+    })
   })
 
   it("fails the record with the send's error, and drops it on a cancel", async () => {
@@ -383,5 +630,87 @@ describe("a registration-funding claim's burn record", () => {
     h.getTxReceipt.mockResolvedValue({ status: TxStatus.DROPPED } as never)
     await expect(fund()).rejects.toThrow("Node rejected the batch")
     expect(withdrawals()[0]).toMatchObject({ phase: "failed", error: "Node rejected the batch" })
+  })
+})
+
+describe("the claim's bell row", () => {
+  const row = () => getOperationsInProgress().find((op) => op.flow === "paylink-claim")
+
+  it("is listed before the voucher and note reads answer, which run together", async () => {
+    let answerVoucher!: (uses: number) => void
+    let answerNote!: (note: { amount: bigint }) => void
+    h.voucherUses.mockImplementationOnce(() => new Promise((r) => (answerVoucher = r)))
+    h.note.mockImplementationOnce(() => new Promise((r) => (answerNote = r)))
+    const claim = fund()
+    await vi.waitFor(() => expect(h.note).toHaveBeenCalled())
+    expect(h.voucherUses).toHaveBeenCalled()
+    const { operationId, summary } = row()!
+    expect(summary).toBe("Paylink")
+
+    answerVoucher(1)
+    answerNote({ amount: 3n * 10n ** 18n })
+    expect(await claim).toBe(HASH)
+    expect(getOperationStore().get(operationId)?.summary).toBe("$3 paylink")
+  })
+
+  it("is listed while a background proof finishes ahead of the claim", async () => {
+    let finishProof!: () => void
+    void trackBackgroundProve(() => new Promise<void>((r) => (finishProof = r)))
+    const claim = fund()
+    await vi.waitFor(() => expect(row()).toBeDefined())
+    expect(h.voucherUses).not.toHaveBeenCalled()
+    finishProof()
+    expect(await claim).toBe(HASH)
+  })
+})
+
+describe("the claim's preparation", () => {
+  const running = () => getOperationsInProgress().map((op) => op.operationId)
+  afterEach(() => vi.useRealTimers())
+
+  it("ends a claim whose read never answers, with nothing sent, so a retry can run", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    h.note.mockImplementationOnce(() => new Promise(() => {}))
+    const before = running()
+    const outcome = fund().then(
+      () => "sent",
+      (e: Error) => e,
+    )
+    await vi.advanceTimersByTimeAsync(111_000)
+    const ended = await Promise.race([outcome, Promise.resolve("still preparing")])
+    expect(ended).toBeInstanceOf(Error)
+    expect((ended as Error).message).toMatch(/took too long to prepare/)
+    expect((ended as Error).cause).toBeInstanceOf(TimeoutError)
+    expect(h.claimSdk).not.toHaveBeenCalled()
+    expect(running()).toEqual(before)
+    expect(await fund()).toBe(HASH)
+  })
+
+  it("never cuts its proof short", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    h.claimSdk.mockImplementationOnce(() => new Promise((r) => setTimeout(() => r(HASH), 300_000)))
+    const claim = fund()
+    await vi.advanceTimersByTimeAsync(300_000)
+    expect(await claim).toBe(HASH)
+  })
+})
+
+describe("the claim's voucher read", () => {
+  afterEach(() => vi.useRealTimers())
+
+  it("gets its whole deadline after the note read queued ahead of it on the PXE", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    // The PXE runs one simulation at a time: the note read takes 25 s, then the voucher read 10 s.
+    let queue: Promise<unknown> = Promise.resolve()
+    const serial = <T>(ms: number, value: T) => {
+      const run = queue.then(() => new Promise<T>((r) => setTimeout(() => r(value), ms)))
+      queue = run
+      return run
+    }
+    h.note.mockImplementationOnce(() => serial(25_000, { amount: 3n * 10n ** 18n }))
+    h.voucherUses.mockImplementationOnce(() => serial(10_000, 1))
+    const claim = fund()
+    await vi.advanceTimersByTimeAsync(40_000)
+    expect(await claim).toBe(HASH)
   })
 })

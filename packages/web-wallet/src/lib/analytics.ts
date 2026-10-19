@@ -82,11 +82,6 @@ export type AnalyticsEvent =
   | "deposit_swept"
   | "deposit_self_swept"
   | "deposit_recovered"
-  // ── Campaign crossing + admission gate (ULT-777) ── One emit per admission verify resolution
-  // (`outcome`), tagged with the surface that asked (`gate` is the WalletGate bounce, which runs
-  // no verify and reports `unknown`). The `entry` prop on onboarding_started and wallet_entered is
-  // the cohort crossing (Wallet entries by source reads wallet_entered).
-  | "admission_checked"
   // The registration terms the user accepted, and whether they chose to pay the deposit.
   | "registration_terms_accepted"
   // ── Find my passkey by tag ── The L1 read found the tag's credential (`more_keys`: the account
@@ -103,7 +98,7 @@ export type AnalyticsEvent =
  */
 export type OnboardingEvent =
   | "onboarding_started"
-  // Each "Get started" click (`attempt` 1 or 2+), and the claim server's drawn tag (`shuffle` on a
+  // Each "Open account" click (`attempt` 1 or 2+), and the claim server's drawn tag (`shuffle` on a
   // re-roll).
   | "onboarding_create_attempted"
   | "onboarding_tag_drawn"
@@ -117,12 +112,12 @@ export type OnboardingEvent =
   | "onboarding_handle_checked"
   // The passkey exists; `route` is how its tag was got.
   | "onboarding_account_created"
-  // `tag_claimed` means CONFIRMED on the Registry; `tag_custody` means the bundler holds the op
-  // (optimistic path). The confirmed event for a submitted op fires from the detection tick with
-  // custody_to_confirmed_ms from the durable record, so the pair never needs cross-session pairing.
+  // `tag_claimed` means CONFIRMED on the Registry. A submitted op fires it from the detection tick
+  // with custody_to_confirmed_ms from the durable record, so it never needs cross-session pairing.
   | "onboarding_tag_claimed"
-  | "onboarding_tag_custody"
   | "onboarding_oxide_stage"
+  // The ticket proof's phases (wasm, witness, backend, proof) and the device class.
+  | "golden_ticket_proof"
   // `named` separates tag-claiming completions from nameless wallets, which skip the tag events.
   | "onboarding_completed"
   // A finished signup leaving for the wallet, once per account.
@@ -135,6 +130,17 @@ export type OnboardingEvent =
   | "registration_deposit_funded"
   | "registration_deposit_swept"
   | "registration_lapsed"
+  // A registered user changing tag (features/onboarding/tagChangeFunnel.ts).
+  | "tag_change_opened"
+  | "tag_change_route_chosen"
+  | "tag_change_confirmed"
+  | "tag_change_funded"
+  | "tag_change_registered"
+  | "tag_change_abandoned"
+  // The in-app browser card (features/identity/inAppCardTelemetry.ts): its first display per page
+  // load per moment, and each control tapped.
+  | "onboarding_in_app_shown"
+  | "onboarding_in_app_exit"
 
 export type AnalyticsProps = Record<string, string | number | boolean | undefined>
 

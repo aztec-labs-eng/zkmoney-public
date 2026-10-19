@@ -253,16 +253,15 @@ export function WithdrawToWalletModal({
         proverTip,
       )
       outcome.finish()
-      // The sponsored send resolves only after the L2 receipt, so submitted == L2 mined here;
-      // duration spans confirm → mine (the prove-phase split rides tx_timing, flow "withdraw").
-      if (record.phase !== "submitting") {
-        const durationMs = elapsed()
-        void recordBurnDuration(durationMs)
-        fireEvent("withdraw_submitted", {
-          duration_ms: durationMs,
-          amount_bucket: amountBucket(BigInt(Math.floor(parsed)), 0),
-        })
-      }
+      // `submitting`: sent, receipt still pending. Only a mined burn's duration spans confirm → mine
+      // (the prove-phase split rides tx_timing, flow "withdraw").
+      const mined = record.phase !== "submitting"
+      const durationMs = elapsed()
+      if (mined) void recordBurnDuration(durationMs)
+      fireEvent("withdraw_submitted", {
+        duration_ms: mined ? durationMs : undefined,
+        amount_bucket: amountBucket(BigInt(Math.floor(parsed)), 0),
+      })
       void upsertSavedL1WalletContact({ address: recipient, name: walletName })
       if (!left.current) onDone()
     } catch (e) {

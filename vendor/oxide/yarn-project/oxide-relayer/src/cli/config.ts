@@ -35,6 +35,8 @@ export interface RunConfig extends ProverRunConfig {
   deploymentEnvManifestUrl: string;
   /** The deployment this relayer serves: the portal of one entry of the v4 manifest. */
   portal: EthAddress;
+  /** Manifest entries that get no L1-operations worker, by portal. Empty by default. */
+  excludePortals: EthAddress[];
   /**
    * L1 RPC for every read, and for submission too on a chain with no Flashbots Protect endpoint. Rejected when
    * it points at Protect: submission picks its own endpoint and takes no configuration (`l1/flashbots_protect.ts`).
@@ -96,6 +98,7 @@ export function redactRunConfig(config: RunConfig): Record<string, unknown> {
   const redacted = {
     ...config,
     portal: config.portal.toString(),
+    excludePortals: config.excludePortals.map(portal => portal.toString()),
     l1OperationsPayoutTokens: config.l1OperationsPayoutTokens?.map(token => token.toString()),
     proverPayoutTokens: config.proverPayoutTokens?.map(token => token.toString()),
     deploymentEnvManifestUrl: urlOrigin(config.deploymentEnvManifestUrl),
@@ -122,6 +125,7 @@ export function urlOrigin(url: string): string {
 export interface CommanderRunOptions extends ProverCommanderOptions {
   deploymentEnvManifest?: string;
   portal?: string;
+  excludePortals?: string;
   readL1Rpc?: string;
   flashbotsBlockRange?: number;
   l1MaxFeePerGasGwei?: number;

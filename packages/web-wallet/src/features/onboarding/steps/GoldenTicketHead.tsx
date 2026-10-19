@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ComponentProps } from "react"
 import { floorToCents } from "../../../ui/format"
 import { deviceStorage } from "../../../platform/storage/rollupStorage"
+import { senderLine } from "../../paylink/senderLine"
 
 /** `25.00`: a ticket amount floored to cents, so it never shows more than the link pays. */
 export function ticketAmountFigure(amount: bigint, decimals: number): string {
@@ -26,14 +27,16 @@ export function TicketPaymentCard({
   amount,
   tokenDecimals,
   tokenSymbol,
+  senderTag,
 }: {
   amount: bigint
   tokenDecimals: number
   tokenSymbol: string
+  senderTag?: string
 }) {
   return (
     <div className="ww-ticket-payment">
-      <span className="ww-ticket-payment__label">@sender sent you</span>
+      <span className="ww-ticket-payment__label">{senderLine(senderTag)}</span>
       <span className="ww-ticket-payment__amount" data-testid="paylink-signup-paylink">
         {ticketAmountFigure(amount, tokenDecimals)}{" "}
         <span className="ww-ticket-payment__symbol">{tokenSymbol}</span>
@@ -47,11 +50,14 @@ export function GoldenTicketHead({
   amount,
   tokenDecimals,
   tokenSymbol,
+  senderTag,
 }: {
   /** The link's amount; the payment card waits for it. */
   amount?: bigint
   tokenDecimals: number
   tokenSymbol: string
+  /** The link creator's verified tag. */
+  senderTag?: string
 }) {
   return (
     <div className="ww-ticket-head">
@@ -62,6 +68,7 @@ export function GoldenTicketHead({
           amount={amount}
           tokenDecimals={tokenDecimals}
           tokenSymbol={tokenSymbol}
+          senderTag={senderTag}
         />
       )}
     </div>
@@ -168,7 +175,7 @@ export function GoldenTicketIntro({
   )
 }
 
-function GoldenTicket({ amount, tokenDecimals, tokenSymbol, tag }: TicketProps) {
+function GoldenTicket({ amount, tokenDecimals, tokenSymbol, senderTag, tag }: TicketProps) {
   return (
     <div className="ww-golden-ticket">
       <div className="ww-golden-ticket__top">
@@ -176,7 +183,7 @@ function GoldenTicket({ amount, tokenDecimals, tokenSymbol, tag }: TicketProps) 
         <span className="ww-golden-ticket__admit">Admit one</span>
       </div>
       <div className="ww-golden-ticket__body">
-        <span className="ww-golden-ticket__label">@sender sent you</span>
+        <span className="ww-golden-ticket__label">{senderLine(senderTag)}</span>
         <span className="ww-golden-ticket__amount">
           {amount === undefined ? "…" : ticketAmountFigure(amount, tokenDecimals)}
           <small>{tokenSymbol}</small>

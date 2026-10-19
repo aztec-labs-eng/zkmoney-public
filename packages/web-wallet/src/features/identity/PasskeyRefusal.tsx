@@ -1,4 +1,4 @@
-import type { ReactNode } from "react"
+import { type ReactNode, useEffect, useState } from "react"
 import type { SignInRoute } from "@obsidion/core/types"
 import {
   APPLE_FLOOR_COPY,
@@ -6,13 +6,17 @@ import {
   type DevicePosture,
   EXTENSION_ADVICE_COPY,
   type ExtensionAdvice,
-  SAFARI_REFUSAL_COPY,
-  type SafariAdvice,
   IN_APP_BROWSER_ROWS,
   isNoCredentialError,
   isPasskeyCancelled,
   LEFTOVER_PASSKEY_COPY,
+  MAC_UPDATE_COPY,
+  MAC_WRONG_KEY_COPY,
   MISMATCH_COPY,
+  type MacUpdateAdvice,
+  currentUserAgentInfo,
+  currentUserAgentInfoSync,
+  macUpdateAdviceFor,
   PHONE_STEPS_COPY,
   type PhoneReach,
   type RefusalRow,
@@ -23,6 +27,7 @@ import { PrimaryGradientButton } from "@obsidion/web-ds"
 import { showReportableError } from "../../errors/errorModal"
 import { PASSKEYS_DOCS_URL } from "../../lib/links"
 import type { MismatchVerdict } from "../../platform/auth/WebAlphaAuthService"
+import { inAppCardScreen } from "./inAppCardTelemetry"
 import { OpenInBrowser } from "./OpenInBrowser"
 
 export type { RefusalState }
@@ -40,15 +45,56 @@ export type RouteRefusal = RefusalState & {
    * adds the way to 1Password's browser extension, in the wording named.
    */
   extensionAdvice?: ExtensionAdvice
-  /** Apple Passwords was refused where it is not admitted, so the card links the docs entry that says where it is. */
-  belowMacFloor?: boolean
-  /** That refusal came on Safari's row, where the macOS version cannot be read, so the card says so. */
-  safariAdvice?: SafariAdvice
+  /** Apple Passwords was refused on this computer, so the card links the docs entry that says why. */
+  appleRefusedHere?: boolean
   /** The passkey was saved on this computer where only Chrome can keep one, so the card names Chrome. */
   chromeAdvice?: boolean
   /** The creation route that was refused and the reach the gate probed, so the card can offer the phone. */
   route?: SignInRoute
   reach?: PhoneReach
+  /** A sign-in miss that may be this Mac's own copy returning the wrong key: the phone leads. */
+  macPhone?: boolean
+  /** A sign-in miss the Apple bug may explain, so the card suggests a macOS update. */
+  macUpdate?: boolean
+}
+
+/** How long the update line waits for the macOS version before taking the wording that needs none. */
+const MAC_VERSION_WAIT_MS = 1_000
+
+/** The update line, worded by the macOS version Client Hints report; a late answer still counts. */
+function MacUpdateLine() {
+  const [advice, setAdvice] = useState<MacUpdateAdvice>()
+  useEffect(() => {
+    let live = true
+    let answered = false
+    const fromUserAgent = () => macUpdateAdviceFor(currentUserAgentInfoSync())
+    const wait = setTimeout(() => {
+      if (live && !answered) setAdvice(fromUserAgent())
+    }, MAC_VERSION_WAIT_MS)
+    currentUserAgentInfo().then(
+      (ua) => {
+        answered = true
+        if (live) setAdvice(macUpdateAdviceFor(ua))
+      },
+      () => {
+        answered = true
+        if (live) setAdvice(fromUserAgent())
+      },
+    )
+    return () => {
+      live = false
+      clearTimeout(wait)
+    }
+  }, [])
+  if (!advice) return null
+  return (
+    <p
+      className="ww-paylink-summary__caption ww-passkey-refusal__message"
+      data-testid="passkey-mac-update"
+    >
+      {MAC_UPDATE_COPY[advice]}
+    </p>
+  )
 }
 
 /** The line under a refusal that left a passkey behind: where it is and how to delete it. */
@@ -73,7 +119,7 @@ function LeftoverPasskeyLine() {
   )
 }
 
-/** The link under an Apple Passwords refusal: where Apple Passwords is admitted, and why. */
+/** The link under an Apple Passwords refusal: where Apple Passwords works, and why. */
 function AppleFloorLine() {
   return (
     <p
@@ -165,8 +211,13 @@ const WALLET_ROWS: Record<string, RefusalRow> = {
   [RESERVED_REGISTRATION]: { title: "Your signup didn't finish", retry: false },
 }
 
-export function refusalFor(error: { name: string }, verdict?: MismatchVerdict): RefusalRow {
-  if (error.name === STORED_ADDRESS_MISMATCH && verdict) return MISMATCH_COPY[verdict]
+export function refusalFor(
+  error: { name: string; macPhone?: boolean },
+  verdict?: MismatchVerdict,
+): RefusalRow {
+  if (error.name === STORED_ADDRESS_MISMATCH && verdict) {
+    return verdict === "wrong-key" && error.macPhone ? MAC_WRONG_KEY_COPY : MISMATCH_COPY[verdict]
+  }
   return sharedRefusalFor(error, WALLET_ROWS)
 }
 
@@ -217,7 +268,7 @@ const phoneInReach = (error: RouteRefusal): boolean =>
  * phone is the card's bright action.
  */
 export const leadsWithPhone = (error: RouteRefusal): boolean =>
-  error.belowMacFloor === true && phoneInReach(error)
+  error.appleRefusedHere === true && phoneInReach(error)
 
 /**
  * A passkey refusal, rendered in place: title, the reason in plain words, a retry where one can
@@ -274,6 +325,7 @@ export function PasskeyRefusal({
     </button>
   )
   if (row.openInBrowser) {
+    const cardScreen = inAppCardScreen(reportContext)
     return (
       <div className="ww-invite-spinner" data-testid={testId} data-reason={error.name}>
         <h2 className="ww-passkey-refusal__title">{row.title}</h2>
@@ -284,6 +336,7 @@ export function PasskeyRefusal({
         <OpenInBrowser
           path={escapePath}
           retry={canRetry ? { onClick: onRetry!, busy, testId: retryTestId } : undefined}
+          telemetry={cardScreen ? { when: "after_miss", screen: cardScreen } : undefined}
         />
         {exits}
         <button
@@ -307,15 +360,8 @@ export function PasskeyRefusal({
       <p role="alert" className="ww-paylink-summary__caption ww-passkey-refusal__message">
         {row.message ?? error.message}
       </p>
-      {error.belowMacFloor && <AppleFloorLine />}
-      {error.safariAdvice && (
-        <p
-          className="ww-paylink-summary__caption ww-passkey-refusal__message"
-          data-testid="passkey-safari-advice"
-        >
-          {SAFARI_REFUSAL_COPY[error.safariAdvice]}
-        </p>
-      )}
+      {error.macUpdate && <MacUpdateLine />}
+      {error.appleRefusedHere && <AppleFloorLine />}
       {error.chromeAdvice && (
         <p
           className="ww-paylink-summary__caption ww-passkey-refusal__message"

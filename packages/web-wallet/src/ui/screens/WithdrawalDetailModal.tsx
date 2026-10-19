@@ -27,7 +27,8 @@ import {
 } from "../../features/withdraw/withdrawAssets"
 import { l2TxUrl } from "../../lib/explorer"
 import { l1AddressUrl, l1TxUrl, whenLabel } from "../detailRows"
-import { shortAddr, tokenAmount, usdFigure } from "../format"
+import { tokenAmount, usdFigure } from "../format"
+import { L1AddressLabel } from "../L1AddressLabel"
 import { Modal } from "../Modal"
 import { DepositFact } from "./DepositFact"
 import { DepositHashFact } from "./DepositHashFact"
@@ -168,10 +169,10 @@ export function WithdrawalDetailModal({
               {recipientAlias && `${recipientAlias} · `}
               {recipientUrl ? (
                 <a href={recipientUrl} target="_blank" rel="noreferrer">
-                  {shortAddr(record.recipient)}
+                  <L1AddressLabel address={record.recipient} />
                 </a>
               ) : (
-                shortAddr(record.recipient)
+                <L1AddressLabel address={record.recipient} />
               )}
             </b>
           )}
@@ -259,7 +260,9 @@ export function WithdrawalDetailModal({
         )}
         {record.recoveryTarget && (
           <DepositFact label="Recovered to">
-            <b>{shortAddr(record.recoveryTarget)}</b>
+            <b>
+              <L1AddressLabel address={record.recoveryTarget} />
+            </b>
           </DepositFact>
         )}
         {record.recoveryTxHash && (

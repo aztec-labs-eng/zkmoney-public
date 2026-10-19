@@ -111,6 +111,7 @@ export function useSipaDeposits(): void {
     for (const r of reportSweeps.current!(records)) {
       fireEvent("deposit_swept", {
         duration_ms: r.endTime !== undefined ? r.endTime - r.startTime : undefined,
+        ...(r.intent === "registration" && { registration: true }),
       })
     }
   }, [records])
@@ -123,6 +124,7 @@ export function useSipaDeposits(): void {
     if (!obsidionWallet || !tokenService) return
     let cancelled = false
     let timer: ReturnType<typeof setTimeout>
+    gateway.warm().catch((err) => console.warn("[sipa] warming the deposit sync failed:", err))
 
     const runOnce = async () => {
       // Fast unless a pass reports nothing in flight. A locked or failed pass reports
@@ -130,7 +132,7 @@ export function useSipaDeposits(): void {
       let nextDelay = SYNC_INTERVAL_MS
       let clean = false
       try {
-        await bootPriority.whenNotesSynced()
+        await bootPriority.whenReady("deposits")
         if (cancelled) return
         const result = await gateway.sync(obsidionWallet, tokenService, {
           onProgress: (done, total) => bootPriority.depositProgress(done, total),

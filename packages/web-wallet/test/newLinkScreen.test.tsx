@@ -33,7 +33,9 @@ vi.mock("../src/features/allowance/SponsoredActionNotice", () => ({
 vi.mock("@obsidion/web-ds", () => ({
   ConfirmationSheetDetailRow: () => null,
   GradientSpinner: () => null,
-  GradientToggle: () => null,
+  GradientToggle: ({ isOn, onChange }: { isOn: boolean; onChange?: (on: boolean) => void }) => (
+    <button role="switch" aria-checked={isOn} onClick={() => onChange?.(!isOn)} />
+  ),
   Icon: () => null,
   PrimaryGradientButton: ({
     title,
@@ -65,8 +67,19 @@ vi.mock("../src/errors/errorModal", () => ({
   showReportableError: (...a: unknown[]) => showReportableError(...a),
 }))
 
+const identity = vi.hoisted(() => ({ handle: undefined as string | undefined }))
+vi.mock("../src/features/identity/walletIdentity", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/identity/walletIdentity")>()),
+  loadWalletIdentity: () => ({ address: "0xabc", claimedAt: 1, handle: identity.handle }),
+}))
+
 type Stage = (s: string) => void
-type Opts = { onLink?: (l: unknown) => void; voucher?: boolean; email?: string }
+type Opts = {
+  onLink?: (l: unknown) => void
+  voucher?: boolean
+  email?: string
+  senderTag?: string
+}
 const link = {
   url: "https://wallet/link#frag",
   fragment: "frag",
@@ -125,6 +138,7 @@ describe("NewLinkScreen", () => {
 
   afterEach(() => {
     allowanceGate.reason = undefined
+    identity.handle = undefined
     ticket.offer = null
     act(() => root.unmount())
     container.remove()
@@ -164,6 +178,46 @@ describe("NewLinkScreen", () => {
     await act(async () => button("Confirm")?.click())
     expect(button("Create paylink")).toBeDefined()
   }
+
+  describe("the creator's tag on the link", () => {
+    const toggle = () => container.querySelector<HTMLButtonElement>('[role="switch"]')
+    const sentTag = () => createSponsoredLink.mock.lastCall?.[3].senderTag
+
+    it("names the creator by default", async () => {
+      identity.handle = "river"
+      await remount()
+      await act(async () => setInput("25"))
+      await act(async () => button("Next")?.click())
+      expect(container.textContent).toContain("Show my @river")
+      expect(toggle()?.getAttribute("aria-checked")).toBe("true")
+      await act(async () => button("Confirm")?.click())
+      await act(async () => button("Create paylink")?.click())
+      expect(sentTag()).toBe("river")
+    })
+
+    it("leaves the tag off a link the creator turns it off for", async () => {
+      identity.handle = "river"
+      await remount()
+      await act(async () => setInput("25"))
+      await act(async () => button("Next")?.click())
+      await act(async () => toggle()?.click())
+      expect(toggle()?.getAttribute("aria-checked")).toBe("false")
+      await act(async () => button("Confirm")?.click())
+      await act(async () => button("Create paylink")?.click())
+      expect(createSponsoredLink).toHaveBeenCalledOnce()
+      expect(sentTag()).toBeUndefined()
+    })
+
+    it("offers no switch to a wallet without a tag", async () => {
+      await act(async () => setInput("25"))
+      await act(async () => button("Next")?.click())
+      expect(toggle()).toBeNull()
+      expect(container.textContent).not.toContain("Show my")
+      await act(async () => button("Confirm")?.click())
+      await act(async () => button("Create paylink")?.click())
+      expect(sentTag()).toBeUndefined()
+    })
+  })
 
   describe("the tag a ticket-sized link gives", () => {
     const GRANT = "This link can be used by a new user to get their zk.money tag for free."

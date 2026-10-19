@@ -22,9 +22,10 @@ import {
 } from "@obsidion/web-ds"
 import { getConfig, l1ChainFor } from "../../config/env"
 import { showReportableError } from "../../errors/errorModal"
-import { usdAtomicFloor } from "../../ui/format"
+import { shortL1Addr, usdAtomicFloor } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { failureCode, fireEvent, lapTimer } from "../../lib/analytics"
+import { withdrawKind } from "./withdrawFunnel"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { HashRow, l1TxUrl, whenLabel } from "../../ui/detailRows"
 import { useCopy } from "../../ui/hooks"
@@ -74,8 +75,6 @@ const moveExecuteCopy = (to: string) =>
   `No relayer has run this move. You can run it yourself: the funds go on to ${to}, the tip this move set aside for whoever runs it comes back to your wallet, and you pay only the gas. If a relayer gets there first this transaction completes without doing anything.`
 
 const MOVE_RECOVER_SECONDARY_COPY = "Or send the DAI to an Ethereum address instead of moving it."
-
-const short = (a: string) => `${a.slice(0, 6)}…${a.slice(-4)}`
 
 export function SwapExitModal({
   record,
@@ -169,6 +168,7 @@ export function SwapExitModal({
       fireEvent(next === "execute" ? "withdrawal_swap_executed" : "withdrawal_swap_recovered", {
         duration_ms: elapsed(),
         reason,
+        kind: withdrawKind(record),
       })
     } catch (e) {
       setPhase("form")
@@ -241,7 +241,7 @@ export function SwapExitModal({
               {(move?.escrow ?? record.swapEscrow) && (
                 <ConfirmationSheetDetailRow
                   label="Escrow"
-                  value={short(move?.escrow ?? record.swapEscrow!)}
+                  value={shortL1Addr(move?.escrow ?? record.swapEscrow!)}
                 />
               )}
               {move ? (
@@ -296,7 +296,7 @@ export function SwapExitModal({
               />
             )}
             <PrimaryGradientButton
-              title={target ? `Recover DAI to ${short(target)}` : "Recover DAI"}
+              title={target ? `Recover DAI to ${shortL1Addr(target)}` : "Recover DAI"}
               buttonStyle={canExecute ? "dark" : undefined}
               isDisabled={!readyToRecover}
               onClick={() => void submit("recover")}
@@ -355,7 +355,7 @@ export function SwapExitModal({
                   ? `Swapped to ${record.swapOutput} and sent to ${
                       record.recipientAlias ?? truncateMiddle(record.recipient, 12)
                     }.`
-                  : `${amount} sent to ${target ? short(target) : "the address you chose"}.`}
+                  : `${amount} sent to ${target ? shortL1Addr(target) : "the address you chose"}.`}
               </p>
             </div>
             {txHash && <HashRow label="Transaction ID" hash={txHash} url={l1TxUrl(txHash)} />}

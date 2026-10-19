@@ -84,6 +84,8 @@ function runOptionsToConfig(opts: CommanderRunOptions): RunConfig {
     deploymentEnvManifestUrl:
       opts.deploymentEnvManifest ?? missing('--deployment-env-manifest or OXIDE_DEPLOYMENT_ENV_MANIFEST_URL'),
     portal: opts.portal ? EthAddress.fromString(opts.portal) : missing('--portal or OXIDE_PORTAL'),
+    excludePortals:
+      opts.excludePortals === undefined ? [] : parseEthAddresses(opts.excludePortals, '--exclude-portals'),
     readL1RpcUrl: opts.readL1Rpc ?? missing('--read-l1-rpc, READ_L1_RPC_URL, L1_RPC_URL, or ETHEREUM_HOST'),
     flashbotsBlockRange: opts.flashbotsBlockRange!,
     l1MaxFeePerGasGwei: opts.l1MaxFeePerGasGwei,

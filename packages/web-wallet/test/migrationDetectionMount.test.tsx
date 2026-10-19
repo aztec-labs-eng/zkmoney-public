@@ -43,11 +43,10 @@ vi.mock("@obsidion/front-core", async (importOriginal) => {
     useAccountContext: () => h.account,
     useAssetContext: () => h.asset.current,
     useContractServiceContext: () => h.contracts,
-    bootPriority: { whenBalanceSettled: async () => {} },
+    bootPriority: { whenReady: async () => {} },
     checkSpentViaPaylinkService: () => async () => new Map(),
     AppNotificationStore: { get: () => notes.store },
     runMetadataMigration: h.runMetadata,
-    metadataMigrationPhaseLabel: { awaitingMessages: "Waiting for your deposit and sponsorship" },
   }
 })
 // The DS drags in liquid-glass optics jsdom can't render; these tests are about the sheet's content.
@@ -110,7 +109,7 @@ const residualsRow = () => notes.store.get("migration:residuals")
 const { MigrationDetectionMount, PROFILE_REPOINT_POLL_MS } = await import(
   "../src/features/migration/MigrationDetectionMount"
 )
-const { openMigrationDialog, useRegistrationMigrationNeeded } = await import(
+const { openMigrationDialog, useRegistrationMigrationNeeded, useUpgradeOffered } = await import(
   "../src/features/migration/migrationDialog"
 )
 
@@ -231,11 +230,11 @@ describe("MigrationDetectionMount — metadata external funding", () => {
     expect(h.runMetadata).not.toHaveBeenCalled()
     await act(async () => {
       ;[...container.querySelectorAll("button")]
-        .find((button) => button.textContent === "Migrate")!
+        .find((button) => button.textContent === "Upgrade now")!
         .click()
     })
     expect(container.textContent).toContain("0.500000000000000001 DAI")
-    expect(container.textContent).toContain("settlement fee is 0.5 DAI")
+    expect(container.textContent).toContain("0.5 DAI pays for the upgrade")
     expect(container.textContent).toContain("0x" + "12".repeat(20))
     expect(container.textContent).toContain("0x" + "34".repeat(20))
     expect(h.runMetadata).toHaveBeenCalledTimes(1)
@@ -275,10 +274,48 @@ describe("MigrationDetectionMount — frozen sources", () => {
     session({ movable: 20n * 10n ** 18n })
     probe(frozen({ sweptDeposits: 2 }))
     await render()
-    expect(detectedModal()?.textContent).toContain("$20.00 sits on a retired version")
+    expect(detectedModal()?.textContent).toContain("Amount $20.00")
     expect(detectedModal()?.textContent).toContain("Amount $20.00")
     expect(detectedModal()?.textContent).not.toContain("Also there")
-    expect(button("Move funds")).toBeDefined()
+    expect(button("Upgrade now")).toBeDefined()
+  })
+
+  it("sums up what the upgrade moves, what it pays and the approvals it asks for", async () => {
+    withTokenService()
+    session({ movable: 30n * 10n ** 18n, batches: 3, approvals: 4, fees: 15n * 10n ** 17n })
+    probe(frozen({ balance: 10n * 10n ** 18n, sweptDeposits: 2 }))
+    await render()
+    const text = detectedModal()?.textContent
+    expect(text).toContain("Amount $30.00")
+    expect(text).toContain("Fees $1.50")
+    expect(text).toContain("You'll receive $28.50")
+    expect(text).toContain("Approvals 4")
+    expect(text).toContain("Keep this tab open until your funds are sent, usually a few minutes.")
+    expect(text).not.toContain("About an hour")
+  })
+
+  // Its saved batches keep their selections, which the quote can't see.
+  it("shows no fees or approvals for a resumed run", async () => {
+    withTokenService()
+    session({ movable: 30n * 10n ** 18n, batches: 3, approvals: 4, fees: 15n * 10n ** 17n })
+    probe(frozen({ balance: 10n * 10n ** 18n, sweptDeposits: 2 }))
+    const read = webStorage.getItem.bind(webStorage)
+    const saved = vi
+      .spyOn(webStorage, "getItem")
+      .mockImplementation(async (key) =>
+        key === "migration-test"
+          ? JSON.stringify({ phase: "needsAttention", plan: "p", error: "x" })
+          : read(key),
+      )
+    try {
+      await render()
+      const text = detectedModal()?.textContent
+      expect(text).toContain("Amount $30.00")
+      expect(text).not.toContain("Fees")
+      expect(text).not.toContain("Approvals")
+    } finally {
+      saved.mockRestore()
+    }
   })
 
   it("adds the refunds a run takes to the notes, and names what no batch can afford", async () => {
@@ -393,8 +430,8 @@ describe("MigrationDetectionMount — frozen sources", () => {
       expect(detectedModal()?.textContent).toContain("Amount $50.00")
       // The run's first refund executes before it stops.
       quotes.b = 20n
-      h.runMetadata.mockResolvedValue(record)
-      await act(async () => button("Continue migration")!.click())
+      h.runMetadata.mockResolvedValue({ ...record, phase: "needsAttention", error: "x" })
+      await act(async () => button("Continue upgrade")!.click())
       expect(detectedModal()?.textContent).toContain("Amount $20.00")
     })
   })
@@ -508,7 +545,7 @@ describe("MigrationDetectionMount — what is left on an old version", () => {
     probe({ sweptDeposits: 1 })
     await remount()
     expect(residualsRow()).toBeNull()
-    expect(button("Move funds")).toBeDefined()
+    expect(button("Upgrade now")).toBeDefined()
   })
 })
 
@@ -554,7 +591,7 @@ describe("MigrationDetectionMount — registration with nothing to move", () => 
       pendingWithdrawals: 0,
     })
   const registrationPrompt = () =>
-    detectedModal()?.textContent?.includes("Update your wallet registration")
+    detectedModal()?.textContent?.includes("you fund the upgrade yourself")
   let flag: () => boolean
   function Flag() {
     const needed = useRegistrationMigrationNeeded()
@@ -576,7 +613,7 @@ describe("MigrationDetectionMount — registration with nothing to move", () => 
     probe()
     await renderWithFlag()
     expect(registrationPrompt()).toBe(true)
-    expect(button("Migrate")).toBeDefined()
+    expect(button("Upgrade now")).toBeDefined()
     expect(sessionFor).toHaveBeenCalledWith(current.portal)
     expect(flag()).toBe(true)
   })
@@ -612,7 +649,7 @@ describe("MigrationDetectionMount — registration with nothing to move", () => 
     expect(needsMigration).not.toHaveBeenCalled()
     expect(registrationPrompt()).toBeFalsy()
     await act(async () => settle(true))
-    expect(detectedModal()?.textContent).toContain("Move your funds")
+    expect(detectedModal()?.textContent).toContain("Your balance stays safe.")
   })
 
   it("asks once a retry completes the inventory", async () => {
@@ -630,10 +667,10 @@ describe("MigrationDetectionMount — registration with nothing to move", () => 
     probe(live({ balance: 85n * 10n ** 18n, ...transit }))
     await render()
     expect(detectedModal()?.textContent).toContain("Also there: $10.00 in transit")
-    // The deposit arrives while the run is paused.
+    // The deposit arrives before the run stops.
     probe(live({ balance: 95n * 10n ** 18n }))
-    h.runMetadata.mockResolvedValue({ plan: "signed-plan", phase: "recovering" })
-    await act(async () => button("Move funds")!.click())
+    h.runMetadata.mockResolvedValue({ plan: "signed-plan", phase: "needsAttention", error: "x" })
+    await act(async () => button("Upgrade now")!.click())
     expect(detectedModal()?.textContent).not.toContain("in transit")
   })
 
@@ -641,8 +678,8 @@ describe("MigrationDetectionMount — registration with nothing to move", () => 
     movable.mockResolvedValue(true)
     probe(live({ balance: 85n * 10n ** 18n }))
     await render()
-    expect(detectedModal()?.textContent).toContain("Move your funds")
-    await act(async () => button("Move funds")!.click())
+    expect(detectedModal()?.textContent).toContain("Your balance stays safe.")
+    await act(async () => button("Upgrade now")!.click())
     expect(needsMigration).not.toHaveBeenCalled()
     expect(sessionFor).not.toHaveBeenCalledWith(current.portal)
     expect(h.runMetadata).toHaveBeenCalledTimes(1)
@@ -651,7 +688,7 @@ describe("MigrationDetectionMount — registration with nothing to move", () => 
   it("reopens on request after Later", async () => {
     probe()
     await render()
-    await act(async () => button("Later")!.click())
+    await act(async () => button("Maybe later")!.click())
     expect(detectedModal()).toBeNull()
     await act(async () => openMigrationDialog())
     expect(registrationPrompt()).toBe(true)
@@ -703,7 +740,7 @@ describe("MigrationDetectionMount — metadata resume", () => {
     await render()
     expect(h.runMetadata).not.toHaveBeenCalled()
     const button = [...container.querySelectorAll("button")].find(
-      (b) => b.textContent === "Migrate",
+      (b) => b.textContent === "Upgrade now",
     )!
     await act(async () => {
       button.click()
@@ -715,13 +752,13 @@ describe("MigrationDetectionMount — metadata resume", () => {
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     )
     expect(button.disabled).toBe(true)
-    expect(container.textContent).toContain("Waiting for your deposit and sponsorship")
+    expect(container.textContent).toContain("Waiting for your first transfer to arrive")
     await act(async () => finish())
     expect(container.querySelector('[role="alert"]')?.textContent).toBe(
-      "Destination registry changed",
+      "Your upgrade couldn't finish a step. Continue to try again.",
     )
     expect(button.disabled).toBe(false)
-    expect(button.textContent).toBe("Continue migration")
+    expect(button.textContent).toBe("Continue upgrade")
     await act(async () => button.click())
     expect(h.runMetadata).toHaveBeenCalledTimes(2)
     await act(async () => finish())
@@ -758,13 +795,374 @@ describe("MigrationDetectionMount — metadata resume", () => {
         pendingWithdrawals: 0,
       })
       await render()
-      expect(button("Continue migration")).toBeDefined()
+      expect(button("Continue upgrade")).toBeDefined()
       expect(h.runMetadata).not.toHaveBeenCalled()
-      await act(async () => button("Continue migration")!.click())
+      await act(async () => button("Continue upgrade")!.click())
       expect(h.runMetadata).toHaveBeenCalledTimes(1)
     } finally {
       saved.mockRestore()
     }
+  })
+})
+
+describe("MigrationDetectionMount — an arriving upgrade", () => {
+  const record = { plan: "signed-plan", phase: "arriving" }
+  const source = { ...incomplete.tuple, portal: "0x" + "02".repeat(20) }
+  let saved: { mockRestore(): void }
+  beforeEach(() => {
+    withTokenService()
+    const read = webStorage.getItem.bind(webStorage)
+    saved = vi
+      .spyOn(webStorage, "getItem")
+      .mockImplementation(async (key) =>
+        key === "migration-test" ? JSON.stringify(record) : read(key),
+      )
+    // Its refunds are published, not yet executed on L1: the source still quotes them.
+    h.metadataSession.mockResolvedValue({
+      controller: { load: async () => {}, getSnapshot: () => record, subscribe: () => () => {} },
+      service: {
+        quote: async () => ({ movable: 20n * 10n ** 18n, stranded: 0n, waiting: 0n }),
+        needsMigration: async () => false,
+      },
+    })
+    h.probe.mockResolvedValue({
+      current: { ...incomplete.tuple, updateMetadataSIPAImplementation: "0x" + "56".repeat(20) },
+      historic: [source],
+      residuals: [
+        { ...incomplete, tuple: source, frozen: true, incomplete: false, sweptDeposits: 2 },
+      ],
+      pendingWithdrawals: 0,
+    })
+  })
+  afterEach(() => saved.mockRestore())
+
+  it("is followed at boot without a prompt or a send, and opens no dialog", async () => {
+    h.runMetadata.mockImplementation(() => new Promise(() => {}))
+    await render()
+    expect(h.runMetadata).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ observeOnly: true }),
+    )
+    expect(detectedModal()).toBeNull()
+  })
+
+  it("keeps a source followed while a replaced follower ends", async () => {
+    let endFirst!: (record: unknown) => void
+    h.runMetadata
+      .mockImplementationOnce(() => new Promise((resolve) => (endFirst = resolve)))
+      .mockImplementation(() => new Promise(() => {}))
+    await render()
+    // A new token service restarts the boot's follower; the first one ends only after.
+    h.asset.current = { tokenService: {}, loadAssets: async () => {} }
+    await render()
+    await act(async () => endFirst({ ...record, phase: "arriving" }))
+    expect(h.runMetadata.mock.calls.length).toBeGreaterThan(1)
+    expect(detectedModal()).toBeNull()
+  })
+
+  it("opens the dialog once the run needs the user", async () => {
+    h.runMetadata.mockResolvedValue({ ...record, phase: "recovering" })
+    await render()
+    expect(button("Continue upgrade")).toBeDefined()
+  })
+})
+
+describe("MigrationDetectionMount — the upgrade's run", () => {
+  const source = { ...incomplete.tuple, portal: "0x" + "02".repeat(20) }
+  type RunRecord = {
+    phase: string
+    plan?: string
+    draft?: string
+    error?: string
+    refused?: boolean
+    approvals?: { approved: number; total: number }
+  }
+  let snapshot: RunRecord | null
+  let publish: () => void
+  let quote: ReturnType<typeof vi.fn>
+  let saved: { mockRestore(): void } | undefined
+  const runRow = () => notes.store.get("migration:run")
+  const operation = () =>
+    getOperationStore()
+      .list()
+      .find((r) => r.flow === "migration")
+  /** Runs until the mount aborts it, as on unmount. */
+  const untilAborted = (signal: AbortSignal) =>
+    new Promise((resolve) => signal.addEventListener("abort", () => resolve(snapshot)))
+  /** The run ends at `record`, after preparing when `prepared`; with no record it goes on. */
+  const runTo = (record: RunRecord | null, prepared = true) =>
+    h.runMetadata.mockImplementationOnce(
+      async (_c: unknown, o: { onPrepared?: () => void; signal: AbortSignal }) => {
+        if (prepared) o.onPrepared?.()
+        if (!record) return untilAborted(o.signal)
+        snapshot = record
+        publish()
+        return record
+      },
+    )
+  const boot = (record: RunRecord) => {
+    const read = webStorage.getItem.bind(webStorage)
+    saved = vi
+      .spyOn(webStorage, "getItem")
+      .mockImplementation(async (key) =>
+        key === "migration-test" ? JSON.stringify(record) : read(key),
+      )
+  }
+  beforeEach(async () => {
+    withTokenService()
+    snapshot = null
+    publish = () => {}
+    quote = vi.fn(async () => ({ movable: 20n * 10n ** 18n, stranded: 0n, waiting: 0n }))
+    await notes.store.remove("migration:run")
+    for (const r of getOperationStore().list()) await getOperationStore().remove(r.operationId)
+    h.metadataSession.mockResolvedValue({
+      controller: {
+        load: async () => {},
+        getSnapshot: () => snapshot,
+        subscribe: (listener: () => void) => {
+          publish = listener
+          return () => {}
+        },
+      },
+      service: { quote, needsMigration: async () => false },
+    })
+    h.probe.mockResolvedValue({
+      current: { ...incomplete.tuple, updateMetadataSIPAImplementation: "0x" + "56".repeat(20) },
+      historic: [source],
+      residuals: [
+        { ...incomplete, tuple: source, frozen: true, incomplete: false, sweptDeposits: 2 },
+      ],
+      pendingWithdrawals: 0,
+    })
+  })
+  afterEach(() => {
+    saved?.mockRestore()
+    saved = undefined
+  })
+  const move = async () => {
+    await render()
+    await act(async () => button("Upgrade now")!.click())
+  }
+
+  it("holds the dialog through every approval, and a cancel sends nothing", async () => {
+    let signal!: AbortSignal
+    h.runMetadata.mockImplementationOnce((_c: unknown, o: { signal: AbortSignal }) => {
+      signal = o.signal
+      return untilAborted(o.signal)
+    })
+    await move()
+    expect(detectedModal()?.textContent).toContain("Preparing transaction")
+    expect(operation()?.state).toBe("local")
+    await act(async () => button("Cancel")!.click())
+    expect(signal.aborted).toBe(true)
+    expect(operation()).toBeUndefined()
+    expect(showReportableError).not.toHaveBeenCalled()
+  })
+
+  it("hands the run to the bell once everything is approved, and a close then keeps it", async () => {
+    let signal!: AbortSignal
+    h.runMetadata.mockImplementationOnce(
+      (_c: unknown, o: { onPrepared(): void; signal: AbortSignal }) => {
+        signal = o.signal
+        o.onPrepared()
+        return untilAborted(o.signal)
+      },
+    )
+    await move()
+    expect(detectedModal()).toBeNull()
+    expect(operation()?.handedOffAt).toBeDefined()
+    await act(async () => openMigrationDialog())
+    await act(async () => button("Close")!.click())
+    expect(signal.aborted).toBe(false)
+  })
+
+  it("settles once every batch is sent, then follows the rest without a prompt or a send", async () => {
+    runTo({ phase: "arriving", plan: "p" })
+    runTo(null)
+    await move()
+    expect(operation()?.state).toBe("settled")
+    expect(h.runMetadata).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ observeOnly: true }),
+    )
+  })
+
+  it("keeps a stop after the hand-off in the bell, until the run moves on", async () => {
+    runTo({ phase: "needsAttention", plan: "p", error: "The relayer is down" })
+    await move()
+    expect(runRow()).toMatchObject({
+      title: "Your upgrade needs you",
+      severity: "error",
+      target: { type: "migration.run" },
+    })
+    expect(showReportableError).not.toHaveBeenCalled()
+    runTo(null, false)
+    await act(async () => openMigrationDialog())
+    await act(async () => button("Continue upgrade")!.click())
+    expect(runRow()).toBeNull()
+  })
+
+  it("keeps a run the tab left mid-send in the bell at boot, with no prompt", async () => {
+    boot({ phase: "recovering", plan: "p" })
+    await render()
+    expect(h.runMetadata).not.toHaveBeenCalled()
+    expect(runRow()).toMatchObject({ description: "Your upgrade is paused. Open it to continue." })
+  })
+
+  it("continues a refused approval from where it stopped", async () => {
+    boot({ phase: "needsAttention", draft: "d", approvals: { approved: 1, total: 6 } })
+    await render()
+    expect(button("Continue approving (2 of 6)")).toBeDefined()
+  })
+
+  it("asks for an approval the run is missing", async () => {
+    boot({ phase: "needsApproval", plan: "p" })
+    await render()
+    expect(button("Approve and continue")).toBeDefined()
+  })
+
+  it("continues approvals a saved plan's refused prompt left", async () => {
+    boot({ phase: "needsAttention", plan: "p", approvals: { approved: 1, total: 3 } })
+    await render()
+    expect(button("Continue approving (2 of 3)")).toBeDefined()
+  })
+
+  it("keeps a stop in the bell while the scan after it is still running", async () => {
+    runTo({ phase: "needsAttention", plan: "p", error: "The relayer is down" })
+    await render()
+    h.probe.mockImplementation(() => new Promise(() => {}))
+    await act(async () => button("Upgrade now")!.click())
+    expect(runRow()).toMatchObject({ title: "Your upgrade needs you" })
+  })
+
+  it("shows a refused approval while the scan after it is still running", async () => {
+    runTo(
+      {
+        phase: "needsAttention",
+        error: "Not allowed",
+        refused: true,
+        approvals: { approved: 1, total: 6 },
+      },
+      false,
+    )
+    await render()
+    h.probe.mockImplementation(() => new Promise(() => {}))
+    await act(async () => button("Upgrade now")!.click())
+    expect(detectedModal()?.textContent).toContain("The passkey request was closed")
+    expect(button("Continue approving (2 of 6)")?.disabled).toBe(false)
+  })
+
+  it("hands a resumed frozen run to the bell once its old version holds nothing more", async () => {
+    boot({ phase: "recovering", plan: JSON.stringify({ sourceState: "frozen" }) })
+    h.probe.mockResolvedValue({
+      current: { ...incomplete.tuple, updateMetadataSIPAImplementation: "0x" + "56".repeat(20) },
+      historic: [source],
+      residuals: [],
+      pendingWithdrawals: 0,
+    })
+    runTo(null)
+    await render()
+    await act(async () => button("Continue upgrade")!.click())
+    expect(detectedModal()).toBeNull()
+    expect(operation()?.handedOffAt).toBeDefined()
+  })
+
+  it("quotes only once the latest run's scan answers, when runs and their scans overlap", async () => {
+    await render()
+    const inventory = await h.probe.mock.results[0]!.value
+    const scans: ((found: unknown) => void)[] = []
+    h.probe.mockImplementation(() => new Promise((resolve) => scans.push(resolve)))
+    runTo({ phase: "needsAttention", plan: "p", error: "first" }, false)
+    await act(async () => button("Upgrade now")!.click())
+    runTo({ phase: "needsAttention", plan: "p", error: "second" }, false)
+    await act(async () => button("Continue upgrade")!.click())
+    const quotes = quote.mock.calls.length
+    await act(async () => scans[0]!(inventory))
+    expect(quote.mock.calls.length).toBe(quotes)
+    await act(async () => scans[1]!(inventory))
+    expect(quote.mock.calls.length).toBeGreaterThan(quotes)
+  })
+
+  it("sums up a fresh run once an earlier one completed", async () => {
+    quote.mockResolvedValue({
+      movable: 20n * 10n ** 18n,
+      stranded: 0n,
+      waiting: 0n,
+      batches: 2,
+      approvals: 3,
+      fees: 10n ** 18n,
+    })
+    runTo({ phase: "arriving", plan: "p" })
+    runTo({ phase: "done", plan: "p" }, false)
+    await move()
+    await act(async () => openMigrationDialog())
+    expect(detectedModal()?.textContent).toContain("Fees $1.00")
+    expect(detectedModal()?.textContent).toContain("Approvals 3")
+  })
+
+  it("offers the upgrade on Home only while no run is going", async () => {
+    let offered = () => false
+    function Offer() {
+      const shown = useUpgradeOffered()
+      offered = () => shown
+      return null
+    }
+    h.runMetadata.mockImplementationOnce(
+      (_c: unknown, o: { onPrepared(): void; signal: AbortSignal }) => {
+        o.onPrepared()
+        return untilAborted(o.signal)
+      },
+    )
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <MigrationDetectionMount />
+          <Offer />
+        </QueryClientProvider>,
+      )
+    })
+    expect(offered()).toBe(true)
+    await act(async () => button("Upgrade now")!.click())
+    expect(offered()).toBe(false)
+  })
+
+  it("never asks a saved run to fund its own upgrade", async () => {
+    boot({ phase: "needsAttention", plan: "p", error: "x" })
+    h.probe.mockResolvedValue({
+      current: { ...incomplete.tuple, updateMetadataSIPAImplementation: "0x" + "56".repeat(20) },
+      historic: [source],
+      residuals: [],
+      pendingWithdrawals: 0,
+    })
+    await render()
+    expect(detectedModal()?.textContent).toContain("Your balance stays safe.")
+    expect(detectedModal()?.textContent).not.toContain("fund the upgrade yourself")
+  })
+
+  it("says what stopped a run in the user's terms", async () => {
+    boot({
+      phase: "needsAttention",
+      plan: "p",
+      error: "Metadata state changed; prepare migration again",
+    })
+    await render()
+    const alert = detectedModal()?.querySelector('[role="alert"]')?.textContent
+    expect(alert).toBeDefined()
+    expect(alert).not.toMatch(/migration|metadata/i)
+  })
+
+  // A live source still withdraws its later batches when it reaches them, inside the dialog.
+  it("keeps the dialog for a live source", async () => {
+    h.probe.mockResolvedValue({
+      current: { ...incomplete.tuple, updateMetadataSIPAImplementation: "0x" + "56".repeat(20) },
+      historic: [source],
+      residuals: [{ ...incomplete, tuple: source, incomplete: false, balance: 20n * 10n ** 18n }],
+      pendingWithdrawals: 0,
+    })
+    runTo(null)
+    await move()
+    expect(detectedModal()).not.toBeNull()
+    expect(operation()).toBeUndefined()
   })
 })
 
@@ -821,11 +1219,11 @@ describe("MigrationDetectionMount — moving funds", () => {
 
   it("asks to move the balance, names the rest, and lets the user decide later", async () => {
     await render()
-    expect(detectedModal()?.textContent).toContain("Move your funds")
+    expect(detectedModal()?.textContent).toContain("Your balance stays safe.")
     expect(detectedModal()?.textContent).toContain("About an hour, hands-off")
     expect(detectedModal()?.textContent).toContain("$85.00")
     expect(detectedModal()?.textContent).toContain("1 deposit(s) in transit")
-    await act(async () => button("Later")!.click())
+    await act(async () => button("Maybe later")!.click())
     expect(detectedModal()).toBeNull()
   })
 
@@ -854,7 +1252,7 @@ describe("MigrationDetectionMount — moving funds", () => {
     await settle()
     expect(detectedModal()?.textContent).not.toContain("fee")
     expect(detectedModal()?.textContent).not.toContain("You'll receive")
-    expect(button("Move funds")?.disabled).toBe(false)
+    expect(button("Upgrade now")?.disabled).toBe(false)
   })
 
   it("shows the working beat until the passkey signs, then closes as the burn runs", async () => {
@@ -863,7 +1261,7 @@ describe("MigrationDetectionMount — moving funds", () => {
       asOperation(() => new Promise((resolve) => (finish = resolve)), "migration"),
     )
     await render()
-    await act(async () => button("Move funds")!.click())
+    await act(async () => button("Upgrade now")!.click())
     // Before the passkey the modal says what it is doing, not a disabled button.
     expect(detectedModal()?.textContent).toContain("Preparing transaction…")
     await act(async () => provingProgress.emitSigningStart())
@@ -900,7 +1298,7 @@ describe("MigrationDetectionMount — moving funds", () => {
       }, "migration"),
     )
     await render()
-    await act(async () => button("Move funds")!.click())
+    await act(async () => button("Upgrade now")!.click())
     expect(detectedModal()?.textContent).toContain("Publishing your new address")
     await act(async () => published())
     expect(detectedModal()?.textContent).toContain("Preparing transaction…")
@@ -910,16 +1308,16 @@ describe("MigrationDetectionMount — moving funds", () => {
   it("reports a failure on the prompt, but not a closed passkey prompt", async () => {
     h.migrate.mockRejectedValueOnce(new Error("fee floor moved"))
     await render()
-    await act(async () => button("Move funds")!.click())
+    await act(async () => button("Upgrade now")!.click())
     expect(showReportableError).toHaveBeenCalledWith(
       expect.objectContaining({ message: "fee floor moved" }),
       "migration:intra-rollup",
     )
-    expect(button("Move funds")).toBeDefined()
+    expect(button("Upgrade now")).toBeDefined()
 
     vi.mocked(showReportableError).mockClear()
     h.migrate.mockRejectedValueOnce(Object.assign(new Error("closed"), { name: "NotAllowedError" }))
-    await act(async () => button("Move funds")!.click())
+    await act(async () => button("Upgrade now")!.click())
     expect(showReportableError).not.toHaveBeenCalled()
   })
 
@@ -929,7 +1327,7 @@ describe("MigrationDetectionMount — moving funds", () => {
       asOperation(() => new Promise((_, reject) => (fail = reject)), "migration"),
     )
     await render()
-    await act(async () => button("Move funds")!.click())
+    await act(async () => button("Upgrade now")!.click())
     await endSigningAndHandOff()
     expect(detectedModal()).toBeNull()
     await act(async () => fail(new Error("burn reverted")))

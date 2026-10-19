@@ -2,6 +2,7 @@ import { act } from "react"
 import { createRoot } from "react-dom/client"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import {
+  GoldenTicketArt,
   GoldenTicketHead,
   GoldenTicketIntro,
 } from "../src/features/onboarding/steps/GoldenTicketHead"
@@ -13,12 +14,28 @@ declare global {
 
 const ONE = 10n ** 18n
 
-async function render(amount?: bigint) {
+async function render(amount?: bigint, senderTag?: string) {
   globalThis.IS_REACT_ACT_ENVIRONMENT = true
   const container = document.createElement("div")
   const root = createRoot(container)
   await act(async () =>
-    root.render(<GoldenTicketHead amount={amount} tokenDecimals={18} tokenSymbol="DAI" />),
+    root.render(
+      <>
+        <GoldenTicketHead
+          amount={amount}
+          tokenDecimals={18}
+          tokenSymbol="DAI"
+          senderTag={senderTag}
+        />
+        <GoldenTicketArt
+          amount={amount}
+          tokenDecimals={18}
+          tokenSymbol="DAI"
+          senderTag={senderTag}
+          tag=""
+        />
+      </>,
+    ),
   )
   return { container, unmount: () => act(async () => root.unmount()) }
 }
@@ -28,7 +45,7 @@ describe("GoldenTicketHead", () => {
     const { container, unmount } = await render(25n * ONE)
     expect(container.textContent).toContain("Golden ticket")
     expect(container.querySelector("h2")?.textContent).toBe("Pick any name, free")
-    expect(container.textContent).toContain("@sender sent you")
+    expect(container.textContent).toContain("Someone sent you")
     expect(container.querySelector('[data-testid="paylink-signup-paylink"]')?.textContent).toBe(
       "25.00 DAI",
     )
@@ -46,7 +63,17 @@ describe("GoldenTicketHead", () => {
   it("leaves the payment card out until the amount is read", async () => {
     const { container, unmount } = await render(undefined)
     expect(container.querySelector("h2")?.textContent).toBe("Pick any name, free")
-    expect(container.textContent).not.toContain("sent you")
+    expect(container.querySelector(".ww-ticket-head")?.textContent).not.toContain("sent you")
+    await unmount()
+  })
+
+  it.each([
+    ["river", "@river sent you"],
+    [undefined, "Someone sent you"],
+  ])("the card and the ticket name the sender %s as %s", async (senderTag, line) => {
+    const { container, unmount } = await render(25n * ONE, senderTag)
+    expect(container.querySelector(".ww-ticket-payment__label")?.textContent).toBe(line)
+    expect(container.querySelector(".ww-golden-ticket__label")?.textContent).toBe(line)
     await unmount()
   })
 })

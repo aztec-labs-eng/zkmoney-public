@@ -651,6 +651,30 @@ export class ContactStorage {
   }
 
   /**
+   * Names an L1 contact only if, inside the write lock, it is still live and unlabeled: a contact
+   * renamed or removed since the caller read it is left as the user left it.
+   */
+  public nameUnlabeledL1Contact(
+    identity: { address: string; provider: string },
+    name: string,
+  ): Promise<boolean> {
+    return this.mutate(async () => {
+      const probe: Contact = {
+        name,
+        address: identity.address,
+        addressKind: "ethereum-l1",
+        l1Wallet: { provider: identity.provider, provenance: "saved-recipient" },
+      }
+      const index = this.entries.findIndex((entry) => sameL1WalletIdentity(entry, probe))
+      const entry = this.entries[index]
+      if (!entry || isDeletedL1(entry) || isUserLabel(entry.name)) return false
+      this.entries[index] = { ...entry, name }
+      await this.saveToStorage()
+      return true
+    })
+  }
+
+  /**
    * User edit of an L1 wallet row (label and/or address), keyed by L1 identity
    * `(provider, originalAddress)`. Rewrites the row in place; when the address
    * changed, the prior address is recorded in `replacedAddresses` so

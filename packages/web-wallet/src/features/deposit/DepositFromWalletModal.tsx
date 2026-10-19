@@ -7,7 +7,7 @@ import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@ob
 import { getConfig } from "../../config/env"
 import { showReportableError } from "../../errors/errorModal"
 import { amountBucket, failureCode, fireEvent, lapTimer } from "../../lib/analytics"
-import { amountError, decimalInput, parseAmount, shortAddr } from "../../ui/format"
+import { amountError, decimalInput, parseAmount, shortL1Addr } from "../../ui/format"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
 import {
   DesktopBridgeUpdateRequiredError,
@@ -99,6 +99,7 @@ export function DepositFromWalletModal({
   onApproving,
   onNotApproved,
   onFeeChanged,
+  onConfirmed,
   payee,
   fixedAmount,
 }: {
@@ -132,6 +133,8 @@ export function DepositFromWalletModal({
   onNotApproved: (submission: string) => void
   /** The fee read for a send differed from `fee`; the caller reloads it. */
   onFeeChanged?: () => void
+  /** The transfer confirmed on Ethereum. */
+  onConfirmed?: () => void
   /** Set when paying someone else's address: names them, and nothing is recorded on this device. */
   payee?: string
   /** What the payee receives, display units: prefilled and fixed. */
@@ -278,10 +281,12 @@ export function DepositFromWalletModal({
           })
         },
       })
+      onConfirmed?.()
       fireEvent("deposit_funded", {
         duration_ms: elapsed(),
         funding: "wallet",
         amount_bucket: amountBucket(BigInt(Math.floor(parsed)), 0),
+        ...(registration && { registration: true }),
       })
     } catch (e) {
       if (e instanceof WalletPromptOpenError) {
@@ -340,7 +345,7 @@ export function DepositFromWalletModal({
   const receiveLabel = payee ? `@${payee} receives` : "You receive"
   const from = bridgeMode
     ? "Your browser wallet"
-    : `${l1.walletName ?? "Wallet"} · ${l1.account ? shortAddr(l1.account) : ""}`
+    : `${l1.walletName ?? "Wallet"} · ${l1.account ? shortL1Addr(l1.account) : ""}`
   const breakdown = (
     <>
       <div className="ww-deposit__fact">
@@ -421,7 +426,7 @@ export function DepositFromWalletModal({
                   ? `Pay @${payee}`
                   : `Deposit from ${bridgeMode ? "your browser" : l1.walletName ?? "wallet"}`}
               </GradientText>
-              <div className="ww-fund__addr">{l1.account ? shortAddr(l1.account) : ""}</div>
+              <div className="ww-fund__addr">{l1.account ? shortL1Addr(l1.account) : ""}</div>
             </div>
             <div className="ww-fund__fields">
               <span className="ww-fund__label">{payee ? receiveLabel : "Amount to receive"}</span>

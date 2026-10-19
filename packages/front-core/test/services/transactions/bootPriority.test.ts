@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { EventEmitter } from "eventemitter3"
-import { BootPriority } from "../../../src/core/services/transactions/bootPriority"
+import {
+  BOOT_ORDER,
+  BootPriority,
+  type BootReader,
+} from "../../../src/core/services/transactions/bootPriority"
 
 function catchUpSource() {
   const bus = new EventEmitter()
@@ -36,7 +40,7 @@ describe("BootPriority", () => {
   it("settles the balance only once notes and deposits have both settled", async () => {
     const boot = new BootPriority({ catchUp: catchUpSource() })
     let released = false
-    void boot.whenBalanceSettled().then(() => (released = true))
+    void boot.whenReady("migrationProbe").then(() => (released = true))
 
     boot.depositsReplayed()
     await vi.advanceTimersByTimeAsync(0)
@@ -51,18 +55,45 @@ describe("BootPriority", () => {
     const boot = new BootPriority({ catchUp: catchUpSource() })
     let notes = false
     let balance = false
-    void boot.whenNotesSynced().then(() => (notes = true))
-    void boot.whenBalanceSettled().then(() => (balance = true))
+    void boot.whenReady("deposits").then(() => (notes = true))
+    void boot.whenReady("migrationProbe").then(() => (balance = true))
     boot.notesSynced()
     await vi.advanceTimersByTimeAsync(0)
     expect(notes).toBe(true)
     expect(balance).toBe(false)
   })
 
+  it("releases every reader at its stage in BOOT_ORDER, and reports it ready", async () => {
+    const boot = new BootPriority({ catchUp: catchUpSource() })
+    const readers = Object.keys(BOOT_ORDER) as BootReader[]
+    const released = new Set<BootReader>()
+    for (const reader of readers) void boot.whenReady(reader).then(() => released.add(reader))
+    const atStage = (stage: string) => readers.filter((r) => BOOT_ORDER[r] === stage)
+
+    boot.notesSynced()
+    await vi.advanceTimersByTimeAsync(0)
+    expect([...released].sort()).toEqual(atStage("notes").sort())
+    expect(readers.filter((r) => boot.isReady(r)).sort()).toEqual(atStage("notes").sort())
+
+    boot.depositsReplayed()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(released.size).toBe(readers.length)
+    expect(readers.every((r) => boot.isReady(r))).toBe(true)
+  })
+
+  it("does not report a reader ready whose wait only gave up", async () => {
+    const boot = new BootPriority({ waitMs: 1_000, catchUp: catchUpSource() })
+    let released = false
+    void boot.whenReady("savings").then(() => (released = true))
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(released).toBe(true)
+    expect(boot.isReady("savings")).toBe(false)
+  })
+
   it("settles deposits on its own backstop after notes", async () => {
     const boot = new BootPriority({ depositsWaitMs: 1_000, catchUp: catchUpSource() })
     let balance = false
-    void boot.whenBalanceSettled().then(() => (balance = true))
+    void boot.whenReady("migrationProbe").then(() => (balance = true))
     boot.notesSynced()
     await vi.advanceTimersByTimeAsync(999)
     expect(balance).toBe(false)
@@ -130,7 +161,7 @@ describe("BootPriority", () => {
   it("bounds each stage's wait separately, without settling the balance", async () => {
     const boot = new BootPriority({ waitMs: 1_000, catchUp: catchUpSource() })
     let released = false
-    void boot.whenBalanceSettled().then(() => (released = true))
+    void boot.whenReady("migrationProbe").then(() => (released = true))
     await vi.advanceTimersByTimeAsync(900)
     boot.notesSynced()
     await vi.advanceTimersByTimeAsync(999)

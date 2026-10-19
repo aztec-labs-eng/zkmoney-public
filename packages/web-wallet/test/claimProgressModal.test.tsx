@@ -3,6 +3,7 @@ import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+import { shortL1Addr } from "../src/ui/format"
 
 vi.mock("@obsidion/web-ds", () => ({
   GradientText: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
@@ -129,7 +130,7 @@ describe("ClaimProgressModal", () => {
     expect(container.textContent).toContain("Claim recovered")
     expect(container.textContent).toContain("$19.65")
     expect(container.textContent).toContain("Recovered to")
-    expect(container.textContent).toContain(`${target.slice(0, 6)}…${target.slice(-4)}`)
+    expect(container.textContent).toContain(shortL1Addr(target))
     expect(container.querySelector("a")?.getAttribute("href")).toBe(
       `https://etherscan.io/tx/0x${"aa".repeat(32)}`,
     )

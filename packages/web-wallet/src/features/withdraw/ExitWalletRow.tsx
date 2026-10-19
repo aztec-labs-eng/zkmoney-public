@@ -5,7 +5,7 @@
  */
 import { Icon } from "@obsidion/web-ds"
 import connectIcon from "../../assets/deposit/eth-fill.svg"
-import { shortAddr } from "../../ui/format"
+import { shortL1Addr } from "../../ui/format"
 import type { useL1Wallet } from "../deposit/l1Wallet"
 
 type ExitWallet = Pick<
@@ -34,7 +34,7 @@ export function ExitWalletRow({ l1, chainName }: { l1: ExitWallet; chainName: st
         </b>
         <span>
           {l1.account
-            ? `${l1.walletName ?? "Wallet"} · ${shortAddr(l1.account)}`
+            ? `${l1.walletName ?? "Wallet"} · ${shortL1Addr(l1.account)}`
             : "Use Rainbow, MetaMask, Rabby, or WalletConnect"}
         </span>
       </span>

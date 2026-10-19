@@ -29,6 +29,7 @@ import {
   type AuthKeyEntry,
   type PackedUserOperation,
   type R1InstallArg,
+  type R1InstallGas,
   type R1PublicKeyArg,
   type UserRecordArg,
 } from "@oxide/l1-contracts"
@@ -80,6 +81,8 @@ export interface OxideL1Reader {
   readUserRecord(accountMetadataRegistry: Address, account: Address): Promise<UserRecordArg | null>
   /** EntryPoint.getUserOpHash — the migration relay's op-hash read. */
   getUserOpHash(entryPoint: Address, op: PackedUserOperation): Promise<Hex>
+  /** The R1 install gas limits of the controller the registry names, which rebuilds the op it sweeps. */
+  readR1InstallGas(registry: Address): Promise<R1InstallGas>
   /** The account's installed r1 keys — the enter flow's passkey match. */
   getAuthKeys(account: Address): Promise<readonly AuthKeyEntry[]>
   /**
@@ -114,6 +117,7 @@ export type RegistrationL1Reads = Pick<
   | "readAccountMetadataRegistry"
   | "readUserRecord"
   | "getUserOpHash"
+  | "readR1InstallGas"
   | "getCode"
   | "readAuthKeys"
 >
@@ -310,13 +314,14 @@ export async function buildRegistrationR1Install(
   masterSecret: FieldLike,
   owner: Address,
   env: OxideRegistrationEnv,
-  l1: Pick<RegistrationL1Reads, "getUserOpHash">,
+  l1: Pick<RegistrationL1Reads, "getUserOpHash" | "readR1InstallGas">,
   r1Key: R1PublicKeyArg,
   credentialId: string,
 ): Promise<R1InstallArg> {
   const entryPoint = requireEntryPoint(env)
   const metadata = credentialIdToMetadata(credentialId)
-  const op = buildR1InstallUserOp(owner, 0n, r1Key, metadata)
+  const gas = await l1.readR1InstallGas(env.registry)
+  const op = buildR1InstallUserOp(owner, 0n, r1Key, metadata, gas)
   const userOpHash = await l1.getUserOpHash(entryPoint, op)
   const bootstrap = deriveBootstrapKey(masterSecret)
   const signature = await bootstrap.sign({ hash: userOpHash })
@@ -541,6 +546,43 @@ function serialize<T>(run: () => Promise<T>): Promise<T> {
   return next
 }
 
+/**
+ * This wallet's registration address for `nameHash` at the committed `fee`, with its deposit
+ * record's claim inputs. The session commits to it; recovery finds it again with the same call,
+ * passing `sharedSecretSalt` for an address salted before the self-SIPA key.
+ */
+export async function deriveRegistrationAddress(
+  deps: Pick<
+    OxideRegistrationDeps,
+    "masterSecret" | "l2Address" | "beneficiary" | "deriveRegistrationSipa"
+  >,
+  owner: Address,
+  nameHash: Hex,
+  fee: bigint,
+  sharedSecretSalt?: Hex,
+): Promise<{ derivation: RegistrationDerivation; seed: RegistrationSipaSeed }> {
+  const derivation = await deps.deriveRegistrationSipa({
+    owner,
+    nameHash,
+    l2Address: deps.l2Address,
+    fee,
+    beneficiary: deps.beneficiary,
+    masterSecret: deps.masterSecret,
+    sharedSecretSalt,
+  })
+  return {
+    derivation,
+    seed: {
+      sipaAddress: derivation.sipaAddress,
+      messageSecret: derivation.sharedSecretSalt,
+      recipientHash: derivation.recipientCommitment,
+      origin: derivation.origin,
+      recipientL2Address: deps.l2Address,
+      registrationFee: fee,
+    },
+  }
+}
+
 // ── Session ───────────────────────────────────────────────────────────────────
 
 export function startOxideRegistrationSession(
@@ -607,25 +649,11 @@ async function sessionBody(deps: OxideRegistrationSessionDeps): Promise<OxideSes
   const fee = claim.terms ? BigInt(claim.terms.fee) : await deps.scheduleFee()
 
   deps.onStage?.("derive")
-  const derivation = await deps.deriveRegistrationSipa({
-    owner: oxideAccount,
-    nameHash,
-    l2Address: deps.l2Address,
-    fee,
-    beneficiary: deps.beneficiary,
-    masterSecret: deps.masterSecret,
-  })
+  const { derivation, seed } = await deriveRegistrationAddress(deps, oxideAccount, nameHash, fee)
 
   // The rail's claim inputs are recorded the moment the derivation exists — the discovery event
   // cannot identify a registration deposit, so this local seed is what credits the funds.
-  await deps.seedSipaDeposit?.({
-    sipaAddress: derivation.sipaAddress,
-    messageSecret: derivation.sharedSecretSalt,
-    recipientHash: derivation.recipientCommitment,
-    origin: derivation.origin,
-    recipientL2Address: deps.l2Address,
-    registrationFee: fee,
-  })
+  await deps.seedSipaDeposit?.(seed)
 
   // Durable checkpoint BEFORE the claim: a crash in claim / broadcast leaves an `awaiting_deposit`
   // record the resume tick re-drives. A live record for the SAME name keeps its deposit bookmarks —

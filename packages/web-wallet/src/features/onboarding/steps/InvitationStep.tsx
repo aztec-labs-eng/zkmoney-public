@@ -92,7 +92,10 @@ export function InvitationStep({
 
   if (header) {
     return (
-      <form className="ww-invite__content ww-invite__content--landing" onSubmit={submit}>
+      <form
+        className="ww-invite__content ww-invite__content--landing ww-invite__content--visitor"
+        onSubmit={submit}
+      >
         {header}
         <label className="ww-invite-field">
           <span className="ww-invite-field__label">Your tag</span>

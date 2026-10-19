@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   BroadcastAbandoned,
   BroadcastDeferred,
@@ -320,6 +320,24 @@ describe("BroadcastScheduler", () => {
     await drain(p, { mine: false })
     expect(p.prover.sent).toEqual([address(1)])
     expect(p.ledger.get(address(1))?.state).toBe("landed")
+  })
+
+  it("leaves a hash this page is still sending to that send, and decides it once released", async () => {
+    const p = page({ busy: () => true })
+    const stop = p.scheduler.start()
+    try {
+      const release = p.ledger.hold(address(1))
+      // Saved before the node takes the tx: the node reads it as dropped until then.
+      await p.ledger.enqueue(slot(1, { txHash: "0xmine" }))
+      expect(await p.scheduler.tick()).toBeUndefined()
+      expect(p.ledger.get(address(1))).toMatchObject({ state: "sent", txHash: "0xmine" })
+      chain.include("0xmine", address(1))
+      release()
+      await vi.waitFor(() => expect(p.ledger.get(address(1))?.state).toBe("landed"))
+      expect(p.prover.sent).toEqual([])
+    } finally {
+      stop()
+    }
   })
 
   it("keeps a landing open until its owner has recorded it", async () => {

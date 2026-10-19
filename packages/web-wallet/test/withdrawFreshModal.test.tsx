@@ -490,13 +490,13 @@ describe("WithdrawFreshModal", () => {
     ["mined", MINED, 1],
     ["left to chain", { phase: "submitting" }, 0],
   ])(
-    "closes through onDone when the burn is %s, and keeps a mined burn's time",
+    "closes through onDone when the burn is %s, reports it sent, and keeps a mined burn's time",
     async (_, record, mined) => {
       submit.mockResolvedValue(record)
       await confirm()
       expect(onDone).toHaveBeenCalledOnce()
       expect(button("Withdraw privately")).toBeUndefined()
-      expect(fired("withdraw_submitted")).toBe(mined)
+      expect(fired("withdraw_submitted")).toBe(1)
       expect(vi.mocked(recordBurnDuration).mock.calls).toHaveLength(mined)
     },
   )
@@ -507,17 +507,22 @@ describe("WithdrawFreshModal", () => {
       onStage = advance
       return new Promise(() => {})
     })
+    // A withdrawn Cancel keeps its space, hidden and disabled, so the card does not move.
+    const offered = () => {
+      const cancel = button("Cancel")
+      return !!cancel && !cancel.disabled && cancel.style.visibility !== "hidden"
+    }
     await confirm()
     await act(async () => onStage("building"))
-    expect(button("Cancel")).toBeDefined()
+    expect(offered()).toBe(true)
     await act(async () => {
       onStage("proving")
       // React has not yet removed the Cancel handler for the new stage.
       button("Cancel").click()
     })
-    expect(button("Cancel")).toBeUndefined()
+    expect(offered()).toBe(false)
     await act(async () => onStage("submitting"))
-    expect(button("Cancel")).toBeUndefined()
+    expect(offered()).toBe(false)
   })
 
   it("honors a cancel at the proving checkpoint", async () => {

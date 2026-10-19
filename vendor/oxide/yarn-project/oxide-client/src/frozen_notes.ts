@@ -1,5 +1,5 @@
 import type { AztecAddress } from '@aztec/aztec.js/addresses';
-import type { Contract } from '@aztec/aztec.js/contracts';
+import type { Contract, SimulateInteractionOptions } from '@aztec/aztec.js/contracts';
 import type { Fr } from '@aztec/aztec.js/fields';
 import { ARCHIVE_HEIGHT, MAX_NOTE_HASH_READ_REQUESTS_PER_CALL } from '@aztec/constants';
 import type { EthAddress } from '@aztec/foundation/eth-address';
@@ -37,6 +37,9 @@ const logger = createLogger('oxide-client:frozen_notes');
  * 1) unspent before the freeze
  * 2) present in the frozen archive
  * 3) and not already refunded on L1.
+ *
+ * The notes are enumerated by simulating as `owner`. An owner with no account entrypoint, such as an escrow, passes
+ * `simulateOptions` that reach its notes, e.g. `{ from: NO_FROM, additionalScopes: [owner] }`.
  */
 export async function getRefundableFrozenNotes(
   portal: OxidePortalContract,
@@ -45,13 +48,14 @@ export async function getRefundableFrozenNotes(
   owner: AztecAddress,
   resolveSpendMetadata: SpendMetadataResolver,
   archive?: ArchiveRef,
+  simulateOptions: SimulateInteractionOptions = { from: owner },
 ): Promise<NullificationEffectData[]> {
   const resolvedArchive = archive ?? (await resolveFreezeArchive(portal, chain));
   const anchorBlockHash = await resolvedArchive.checkpointEndBlockHeader.hash();
 
   const refundable: NullificationEffectData[] = [];
   for (let offset = 0; ; offset += MAX_NOTE_HASH_READ_REQUESTS_PER_CALL) {
-    const { offchainEffects } = await contract.methods.enumerate_owned_notes(owner, offset).simulate({ from: owner });
+    const { offchainEffects } = await contract.methods.enumerate_owned_notes(owner, offset).simulate(simulateOptions);
     if (offchainEffects.length === 0) {
       break;
     }

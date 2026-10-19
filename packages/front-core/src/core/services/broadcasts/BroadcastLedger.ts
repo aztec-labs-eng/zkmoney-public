@@ -66,6 +66,9 @@ export type NewBroadcastJob = Pick<BroadcastJob, "address" | "kind" | "scope" | 
 
 export class BroadcastLedger {
   private store: RecordStorage<BroadcastJob>
+  /** Addresses whose tx this page is submitting outside the scheduler, by hold count. */
+  private readonly held = new Map<string, number>()
+  private readonly releaseListeners = new Set<() => void>()
 
   constructor(storage: IStorageAdapter) {
     this.store = new RecordStorage<BroadcastJob>({
@@ -91,8 +94,38 @@ export class BroadcastLedger {
     return this.store.getByKey(keyOf(address))
   }
 
+  /** Fires on every write, and when a hold is released. */
   onListChanged(listener: (jobs: BroadcastJob[]) => void): () => void {
-    return this.store.onListChanged(listener)
+    const off = this.store.onListChanged(listener)
+    const released = () => listener(this.list())
+    this.releaseListeners.add(released)
+    return () => {
+      off()
+      this.releaseListeners.delete(released)
+    }
+  }
+
+  /**
+   * This page sends the address's tx itself. Its hash is saved before the node takes the tx, so
+   * until the send settles the node may not know it yet: a held job is not decided or run here.
+   * Page-local; a reload drops it and the chain decides the saved hash.
+   */
+  hold(address: string): () => void {
+    const key = keyOf(address)
+    this.held.set(key, (this.held.get(key) ?? 0) + 1)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      const left = this.held.get(key)! - 1
+      if (left > 0) this.held.set(key, left)
+      else this.held.delete(key)
+      for (const listener of [...this.releaseListeners]) listener()
+    }
+  }
+
+  isHeld(address: string): boolean {
+    return this.held.has(keyOf(address))
   }
 
   /**

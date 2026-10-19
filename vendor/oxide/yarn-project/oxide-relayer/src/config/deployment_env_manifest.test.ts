@@ -3,7 +3,7 @@ import { EthAddress } from '@aztec/foundation/eth-address';
 
 import { describe, expect, it } from '@jest/globals';
 
-import { resolveDeploymentEnvManifest } from './deployment_env_manifest.js';
+import { type ResolveDeploymentEnvManifestOptions, resolveDeploymentEnvManifest } from './deployment_env_manifest.js';
 
 const URL = 'https://manifest.example/prod.v4.json';
 const PORTAL = '0x0000000000000000000000000000000000000001';
@@ -45,14 +45,19 @@ function document(...deployments: Record<string, unknown>[]): string {
   return JSON.stringify({ schemaVersion: '4', deployments });
 }
 
-function resolve(body: string, portal = PORTAL) {
+type Policy = Pick<ResolveDeploymentEnvManifestOptions, 'excludePortals' | 'acceptedPayoutTokens'>;
+
+function resolve(body: string, portal = PORTAL, policy: Policy = {}) {
   const fetchImpl = () => Promise.resolve(new Response(body, { status: 200 }));
   return resolveDeploymentEnvManifest({
     deploymentEnvManifestUrl: URL,
     portal: EthAddress.fromString(portal),
+    ...policy,
     fetch: fetchImpl as typeof fetch,
   });
 }
+
+const addresses = (list: string[]) => list.map(address => EthAddress.fromString(address));
 
 describe('resolveDeploymentEnvManifest', () => {
   it('pins the entry by portal (any case) and reads every field from the entry itself', async () => {
@@ -92,6 +97,18 @@ describe('resolveDeploymentEnvManifest', () => {
     expect(manifest.current.label).toBe('v4');
     expect(manifest.current.publicConfig.portal.toString()).toBe(PORTAL);
     expect(manifest.historical.map(d => d.publicConfig.portal.toString())).toEqual([OTHER_PORTAL]);
+    expect(manifest.skipped).toEqual([]);
+  });
+
+  it("selects only the pinned entry's L2 from a file with entries on two L2s, without skipping the others", async () => {
+    const sameL2 = entry({ label: 'same-l2', portal: OTHER_PORTAL });
+    const otherL2 = entry({ label: 'other-l2', portal: THIRD_PORTAL, rollupVersion: '5' });
+    const manifest = await resolve(document(entry(), sameL2, otherL2), THIRD_PORTAL);
+    expect(manifest.current.label).toBe('other-l2');
+    expect(manifest.current.publicConfig.rollupVersion).toBe(5n);
+    expect(manifest.historical).toEqual([]);
+    expect(manifest.skipped).toEqual([]);
+    expect(manifest.unreadable).toEqual([]);
   });
 
   it('rejects a document with two entries that share a portal, whatever its case, naming both', async () => {
@@ -193,5 +210,71 @@ describe('manifest entries from other relayer versions', () => {
     const result = await resolve(document(entry(), newer));
     expect(result.historical.map(d => d.label)).toEqual(['newer']);
     expect(result.unreadable).toEqual([]);
+  });
+});
+
+describe('selection policy', () => {
+  const OTHER_TOKEN = '0x0000000000000000000000000000000000000060';
+  const other = () => entry({ label: 'other', portal: OTHER_PORTAL, token: OTHER_TOKEN });
+  const third = () => entry({ label: 'third', portal: THIRD_PORTAL });
+
+  it('skips an excluded portal, whatever its case, with reason excluded', async () => {
+    const upper = OTHER_PORTAL.toUpperCase().replace('0X', '0x');
+    const manifest = await resolve(document(entry(), other(), third()), PORTAL, {
+      excludePortals: addresses([upper]),
+    });
+    expect(manifest.historical.map(d => d.label)).toEqual(['third']);
+    expect(manifest.skipped).toEqual([{ label: 'other', portal: OTHER_PORTAL, reason: 'excluded' }]);
+    expect(manifest.unreadable).toEqual([]);
+  });
+
+  it('skips an entry whose token is not an accepted payout token, with reason payout-token', async () => {
+    const manifest = await resolve(document(entry(), other(), third()), PORTAL, {
+      acceptedPayoutTokens: addresses([TOKEN.toUpperCase().replace('0X', '0x')]),
+    });
+    expect(manifest.historical.map(d => d.label)).toEqual(['third']);
+    expect(manifest.skipped).toEqual([{ label: 'other', portal: OTHER_PORTAL, reason: 'payout-token' }]);
+  });
+
+  it('serves every entry whose token is listed, and applies no token rule without a list', async () => {
+    const listed = await resolve(document(entry(), other(), third()), PORTAL, {
+      acceptedPayoutTokens: addresses([TOKEN, OTHER_TOKEN]),
+    });
+    expect(listed.historical.map(d => d.label)).toEqual(['other', 'third']);
+    expect(listed.skipped).toEqual([]);
+    const unlisted = await resolve(document(entry(), other(), third()));
+    expect(unlisted.historical.map(d => d.label)).toEqual(['other', 'third']);
+    expect(unlisted.skipped).toEqual([]);
+  });
+
+  it('still pins a skipped pinned entry, and lists it as skipped', async () => {
+    const excluded = await resolve(document(entry(), other()), PORTAL, { excludePortals: addresses([PORTAL]) });
+    expect(excluded.current.label).toBe('v4');
+    expect(excluded.historical.map(d => d.label)).toEqual(['other']);
+    expect(excluded.skipped).toEqual([{ label: 'v4', portal: PORTAL, reason: 'excluded' }]);
+
+    const unpaid = await resolve(document(entry(), other()), PORTAL, {
+      acceptedPayoutTokens: addresses([OTHER_TOKEN]),
+    });
+    expect(unpaid.current.label).toBe('v4');
+    expect(unpaid.historical.map(d => d.label)).toEqual(['other']);
+    expect(unpaid.skipped).toEqual([{ label: 'v4', portal: PORTAL, reason: 'payout-token' }]);
+  });
+
+  it('applies the policy only to L1-operation entries on the pinned rollup', async () => {
+    const elsewhere = entry({ label: 'elsewhere', portal: OTHER_PORTAL, rollupVersion: '5' });
+    const legacy = entry({ label: 'legacy', portal: THIRD_PORTAL, withdrawalProtocol: 'legacy' });
+    const manifest = await resolve(document(entry(), elsewhere, legacy), PORTAL, {
+      excludePortals: addresses([OTHER_PORTAL, THIRD_PORTAL]),
+    });
+    expect(manifest.historical).toEqual([]);
+    expect(manifest.skipped).toEqual([]);
+  });
+
+  it('leaves an entry without a token to the parser when a payout list is set', async () => {
+    const { token: _dropped, ...noToken } = entry({ label: 'no-token', portal: OTHER_PORTAL });
+    const manifest = await resolve(document(entry(), noToken), PORTAL, { acceptedPayoutTokens: addresses([TOKEN]) });
+    expect(manifest.skipped).toEqual([]);
+    expect(manifest.unreadable).toEqual([expect.stringContaining('(no-token): token missing')]);
   });
 });

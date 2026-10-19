@@ -1,5 +1,7 @@
 import { Icon } from "@obsidion/web-ds"
+import { isAddress } from "viem"
 import { shortAddr } from "../format"
+import { L1AddressLabel } from "../L1AddressLabel"
 import { DepositFact } from "./DepositFact"
 
 export function DepositHashFact({
@@ -11,7 +13,11 @@ export function DepositHashFact({
   hash: string
   url?: string
 }) {
-  const text = shortAddr(hash)
+  const text = isAddress(hash, { strict: false }) ? (
+    <L1AddressLabel address={hash} />
+  ) : (
+    shortAddr(hash)
+  )
   return (
     <DepositFact label={label}>
       {url ? (

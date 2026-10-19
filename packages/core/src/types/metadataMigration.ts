@@ -23,11 +23,20 @@ export interface MigrationFundingBatch {
   /** What the source withholds before the recipient: relayer tip plus any source funding cut. */
   exitFee: string
   fromBlock: string
+  /** When it was planned, and when its carrier was sent: activity orders by them. */
+  createdAt?: number
+  sentAt?: number
   burnTx?: string
   broadcastTx?: string
   day?: number
   nonce?: number
   received?: boolean
+  /** Its approval was given; a rebuild uses the saved one. */
+  approved?: boolean
+  /** Its refund executed on L1, whatever its carrier transaction's receipt says. */
+  refunded?: boolean
+  /** Its selection stopped holding before it was sent; a later plan covers its funds. */
+  abandoned?: boolean
   /** Source generation identifiers, never note preimages or keys. */
   sourceSelection?: string[]
   /** Absent on records written before deposit refunds: notes. */

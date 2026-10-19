@@ -142,6 +142,45 @@ describe("useChainReadRetry", () => {
   })
 })
 
+describe("useChainReadRetry state", () => {
+  let state: ReturnType<typeof useChainReadRetry>
+  function StateProbe({ pending }: { pending: boolean }) {
+    const [key, setKey] = useState(0)
+    const retry = useCallback(() => setKey((n) => n + 1), [])
+    state = useChainReadRetry(pending, retry)
+    return <span data-testid="key">{key}</span>
+  }
+  const show = (pending: boolean) =>
+    act(() => {
+      root.render(<StateProbe pending={pending} />)
+    })
+
+  it("says when unread figures are being retried, when the retries ran out, and starts over on demand", async () => {
+    await show(true)
+    expect(state).toMatchObject({ retrying: false, exhausted: false })
+
+    await wait(CHAIN_READ_RETRY_MS)
+    expect(state).toMatchObject({ retrying: true, exhausted: false })
+
+    for (let tick = 0; tick < CHAIN_READ_RETRIES; tick++) await wait(CHAIN_READ_RETRY_MS)
+    expect(state).toMatchObject({ retrying: false, exhausted: true })
+    expect(key()).toBe(CHAIN_READ_RETRIES)
+
+    await act(async () => state.retryNow())
+    expect(key()).toBe(CHAIN_READ_RETRIES + 1)
+    expect(state.exhausted).toBe(false)
+    await wait(CHAIN_READ_RETRY_MS)
+    expect(key()).toBe(CHAIN_READ_RETRIES + 2)
+  })
+
+  it("reports nothing once the figures land", async () => {
+    await show(true)
+    for (let tick = 0; tick < CHAIN_READ_RETRIES; tick++) await wait(CHAIN_READ_RETRY_MS)
+    await show(false)
+    expect(state).toMatchObject({ retrying: false, exhausted: false })
+  })
+})
+
 /** The three attempts every one-shot chain read makes before it waits for its next trigger. */
 describe("useSweepDeductions", () => {
   /** Long enough for both waits between the three attempts. */

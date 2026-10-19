@@ -17,6 +17,7 @@ import { isStuckSweep, STUCK_SWEEP_MS } from "../deposits/sipaStuck"
 import type { SipaProcessingState } from "../deposits/sipaProcessing"
 import type { WithdrawalRecord } from "./types"
 import type { WithdrawalStorage } from "./WithdrawalStorage"
+import type { UpgradeActivity, UpgradeBatchItem } from "../../migration/upgradeActivity"
 import { logger } from "src/utils/logger"
 
 export type BridgeActivityItem =
@@ -31,7 +32,10 @@ export type TransferActivityItem = {
   sourceId: string
 }
 
-export type ActivityItem = BridgeActivityItem | TransferActivityItem
+/** A refund batch of an upgrade: its exit from the old version, paired with its arrival by recipient. */
+export type UpgradeActivityItem = { kind: "upgrade.batch"; batch: UpgradeBatchItem }
+
+export type ActivityItem = BridgeActivityItem | TransferActivityItem | UpgradeActivityItem
 
 export type BridgeItem = BridgeActivityItem
 
@@ -52,6 +56,8 @@ export class ActivityFeed {
   private unsubWithdrawals: (() => void) | null = null
   private processing: SipaProcessingSource | null = null
   private unsubProcessing: (() => void) | null = null
+  private upgrades: UpgradeActivity | null = null
+  private unsubUpgrades: (() => void) | null = null
   /** Fires when a deposit hidden behind its own withdrawal has sat long enough to need the user. */
   private wake: ReturnType<typeof setTimeout> | null = null
 
@@ -99,6 +105,10 @@ export class ActivityFeed {
             : { kind: "bridge.sipaDeposit", record }
         }),
       ...withdrawals.map<ActivityItem>((record) => ({ kind: "bridge.withdrawal", record })),
+      ...(this.upgrades?.items() ?? []).map<ActivityItem>((batch) => ({
+        kind: "upgrade.batch",
+        batch,
+      })),
     ]
     items.sort((a, b) => itemStartTime(b) - itemStartTime(a))
     return items
@@ -132,6 +142,15 @@ export class ActivityFeed {
     this.emit()
   }
 
+  /** Attach the upgrade runs whose batches the feed lists; it re-emits when one changes. */
+  setUpgradeSource(source: UpgradeActivity | null): void {
+    this.unsubUpgrades?.()
+    this.unsubUpgrades = null
+    this.upgrades = source
+    if (this.changedListeners.size > 0) this.ensureSubscribed()
+    this.emit()
+  }
+
   /**
    * Subscribe to feed changes. Fires when any store emits onListChanged.
    * Returns an unsubscribe function; the aggregator stays lazily connected to
@@ -154,6 +173,9 @@ export class ActivityFeed {
     }
     if (!this.unsubProcessing && this.processing) {
       this.unsubProcessing = this.processing.subscribe(() => this.emit())
+    }
+    if (!this.unsubUpgrades && this.upgrades) {
+      this.unsubUpgrades = this.upgrades.onChanged(() => this.emit())
     }
   }
 
@@ -195,11 +217,13 @@ function hiddenBehindOwnWithdrawal(
 
 export function itemStartTime(item: ActivityItem): number {
   if ("record" in item) return item.record.startTime
+  if ("batch" in item) return item.batch.startTime
   return item.startTime
 }
 
 export function itemEndTime(item: ActivityItem): number | undefined {
   if ("record" in item) return item.record.endTime
+  if ("batch" in item) return undefined
   return item.endTime
 }
 

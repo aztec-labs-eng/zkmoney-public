@@ -121,11 +121,30 @@ describe("initializePXE build path", () => {
     })
 
     expect(create.mock.calls[0][3]).toMatchObject({ chainInfo: undefined })
+    expect(create.mock.calls[0][2].proverOrOptions).toBeUndefined()
     expect(getNodeInfo).toHaveBeenCalled()
     expect(getActiveNetworkId()).toBe(NODE_ROLLUP)
     await expect(ctx.current.obsidionWallet!.getNodeIdentity()).resolves.toEqual({
       l1ChainId: 31337,
       rollupVersion: 4127419662,
+    })
+  })
+
+  it("hands the PXE's own prover the wasm path the caller serves bb.js from", async () => {
+    const create = stubCreate()
+    const { node } = stubNode()
+    const ctx = await mountProvider()
+
+    await act(async () => {
+      await ctx.current.initializePXE({
+        node,
+        chainIdentity,
+        bbWasmPath: "/assets/bb-threads.wasm.gz",
+      })
+    })
+
+    expect(create.mock.calls[0][2].proverOrOptions).toEqual({
+      wasmPath: "/assets/bb-threads.wasm.gz",
     })
   })
 })

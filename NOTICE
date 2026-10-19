@@ -22,6 +22,3 @@ Remix Icon glyphs
 vendor/oxide
   A subset of the Oxide protocol code by Aztec Labs. Files with an SPDX header
   keep that license.
-
-vendor/oxide/l1-contracts/lib/nitro-validator
-  Git submodule of https://github.com/base/nitro-validator under its own license.

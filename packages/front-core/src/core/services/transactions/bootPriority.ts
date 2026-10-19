@@ -1,9 +1,10 @@
 /**
- * Boot order: the balance first. PXE runs one job at a time, so on a fresh device every reader
- * started at unlock delays the first balance, and each one that syncs or adds a tagging source
- * wipes the token's note discovery. The coordinator's first read settles `notes`; the first SIPA
- * pass, whose replayed claims the balance includes, waits for it and then settles `deposits`;
- * every other boot-time PXE reader waits for both.
+ * Boot order: the balance first. PXE runs one job at a time, so every reader started at unlock
+ * delays the first balance, and each one that syncs or adds a tagging source wipes the token's note
+ * discovery or moves the anchor the balance read checks. The coordinator's first read settles
+ * `notes`; the first SIPA pass, whose replayed claims the balance includes, waits for it and then
+ * settles `deposits`. `BOOT_ORDER` names every other boot-time PXE reader and the stage it waits
+ * for, and is the one place that order is set.
  *
  * A notes wait gives up after `BOOT_WAIT_MS`, so a sync that stalls, or is paused because the tab
  * is hidden, cannot starve the rest. It is never shorter than the scanner's catch-up read, or
@@ -24,6 +25,30 @@ import { TRANSFER_SCAN_CATCH_UP_TIMEOUT_MS } from "./TransferEventScanner"
 export const BOOT_WAIT_MS = TRANSFER_SCAN_CATCH_UP_TIMEOUT_MS
 export const DEPOSITS_WAIT_MS = 60_000
 
+/** `notes`: the first balance. `settled`: the balance with the deposit replay's claims in it. */
+type BootStage = "notes" | "settled"
+
+/** What each boot-time reader waits for. */
+export const BOOT_ORDER = {
+  /** The SIPA pass; its first clean run settles `deposits`. */
+  deposits: "notes",
+  /** The Savings token and its position. */
+  savings: "notes",
+  /** Owed SIPA broadcasts: tagging sources, then a proof. */
+  broadcasts: "notes",
+  /** The reorg monitor's PXE sync after it settles records. */
+  reorgSync: "notes",
+  /** The XMTP client: a large WASM, a database and a network sync. */
+  messaging: "notes",
+  withdrawalRescan: "settled",
+  paylinkRescan: "settled",
+  migrationProbe: "settled",
+  /** A pool fill is a proof. */
+  depositPool: "settled",
+} as const satisfies Record<string, BootStage>
+
+export type BootReader = keyof typeof BOOT_ORDER
+
 type CatchUpSource = Pick<
   typeof globalEventEmitter,
   "beginSyncCatchUp" | "isSyncCatchingUp" | "onSyncCatchUpChanged" | "offSyncCatchUpChanged"
@@ -39,6 +64,7 @@ export class BootPriority {
   private readonly notes = deferred()
   private readonly deposits = deferred()
   private readonly settled: Promise<void>
+  private notesReached = false
   private balanceSettled = false
   private syncing = false
   private syncClosed = false
@@ -64,11 +90,12 @@ export class BootPriority {
       this.syncing = true
       this.endCatchUp = catchUp.beginSyncCatchUp()
       this.notify()
-      void this.whenBalanceSettled().then(() => this.closeSync())
+      void this.whenStage("settled").then(() => this.closeSync())
     }
     let notesAt = 0
     void this.notes.promise.then(() => {
       notesAt = now()
+      this.notesReached = true
       setTimeout(() => {
         if (!this.balanceSettled)
           logger.warn("[bootPriority] deposit replay still running; not waiting")
@@ -106,13 +133,14 @@ export class BootPriority {
     this.deposits.resolve()
   }
 
-  whenNotesSynced(): Promise<void> {
-    return this.bounded(this.notes.promise)
+  /** Resolves when `reader` may start: its stage was reached, or each stage's wait gave up. */
+  whenReady(reader: BootReader): Promise<void> {
+    return this.whenStage(BOOT_ORDER[reader])
   }
 
-  async whenBalanceSettled(): Promise<void> {
-    await this.whenNotesSynced()
-    await this.bounded(this.settled)
+  /** Whether `reader`'s stage has been reached; a wait that gave up does not count. */
+  isReady(reader: BootReader): boolean {
+    return BOOT_ORDER[reader] === "settled" ? this.balanceSettled : this.notesReached
   }
 
   /** A fresh device's first balance may still be short of deposits the replay has not claimed. */
@@ -142,6 +170,11 @@ export class BootPriority {
 
   private notify(): void {
     for (const listener of this.listeners) listener()
+  }
+
+  private async whenStage(stage: BootStage): Promise<void> {
+    await this.bounded(this.notes.promise)
+    if (stage === "settled") await this.bounded(this.settled)
   }
 
   private bounded(promise: Promise<void>): Promise<void> {

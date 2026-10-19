@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
-import { ProvingStage, provingProgress, type ProvingProgressEvent } from "@obsidion/proving-progress"
+import {
+  ProvingStage,
+  provingProgress,
+  type ProvingProgressEvent,
+} from "@obsidion/proving-progress"
 import type { PXE } from "@aztec/pxe/client/lazy"
 import {
-  PerfBucketAccumulator,
   proveTxWithProgress,
   readPerfLogFlag,
   readTimingBenchFlag,
+  setPerfLogFlag,
 } from "./proving-progress-helpers.js"
 
 beforeEach(() => {
@@ -16,6 +20,7 @@ beforeEach(() => {
 
 afterEach(() => {
   provingProgress.removeAllListeners()
+  setPerfLogFlag(undefined)
   delete process.env.OBSIDION_PROVE_TX_PERF_LOGS
   delete process.env.OBSIDION_TX_TIMING_BENCH
 })
@@ -49,7 +54,9 @@ describe("proveTxWithProgress", () => {
         throw new Error("simulation reverted")
       },
     }
-    await expect(proveTxWithProgress(stubPxe, {} as any, { scopes: [] })).rejects.toThrow("simulation reverted")
+    await expect(proveTxWithProgress(stubPxe, {} as any, { scopes: [] })).rejects.toThrow(
+      "simulation reverted",
+    )
   })
 
   it("emits reset when pxe.proveTx fails so UI clears stranded stage state", async () => {
@@ -62,7 +69,9 @@ describe("proveTxWithProgress", () => {
         throw new Error("circuit failed")
       },
     }
-    await expect(proveTxWithProgress(stubPxe, {} as any, { scopes: [] })).rejects.toThrow("circuit failed")
+    await expect(proveTxWithProgress(stubPxe, {} as any, { scopes: [] })).rejects.toThrow(
+      "circuit failed",
+    )
     expect(resetCount).toBe(1)
   })
 
@@ -109,68 +118,6 @@ describe("proveTxWithProgress", () => {
   })
 })
 
-describe("PerfBucketAccumulator", () => {
-  it("captures sim/witgen/prove durations from singleton events", () => {
-    const acc = new PerfBucketAccumulator()
-    acc.subscribe()
-
-    provingProgress.emitStageStart(ProvingStage.Simulating)
-    provingProgress.emitStageComplete(ProvingStage.Simulating)
-    provingProgress.emitStageStart(ProvingStage.Witgen)
-    provingProgress.emitStageComplete(ProvingStage.Witgen)
-    provingProgress.emitStageStart(ProvingStage.Proving)
-    provingProgress.emitStageComplete(ProvingStage.Proving)
-
-    const { sim, witgen, prove } = acc.snapshot()
-    expect(typeof sim).toBe("number")
-    expect(typeof witgen).toBe("number")
-    expect(typeof prove).toBe("number")
-    expect(sim).toBeGreaterThanOrEqual(0)
-    expect(witgen).toBeGreaterThanOrEqual(0)
-    expect(prove).toBeGreaterThanOrEqual(0)
-
-    acc.unsubscribe()
-  })
-
-  it("returns 0 for stages that never completed", () => {
-    const acc = new PerfBucketAccumulator()
-    acc.subscribe()
-    provingProgress.emitStageStart(ProvingStage.Simulating)
-    // no complete fires
-    const { sim, witgen, prove } = acc.snapshot()
-    expect(sim).toBe(0)
-    expect(witgen).toBe(0)
-    expect(prove).toBe(0)
-    acc.unsubscribe()
-  })
-
-  it("unsubscribe removes both listeners (no leak across calls)", () => {
-    const startCount = provingProgress.listenerCount("stage-start")
-    const completeCount = provingProgress.listenerCount("stage-complete")
-
-    const acc = new PerfBucketAccumulator()
-    acc.subscribe()
-    expect(provingProgress.listenerCount("stage-start")).toBe(startCount + 1)
-    expect(provingProgress.listenerCount("stage-complete")).toBe(completeCount + 1)
-
-    acc.unsubscribe()
-    expect(provingProgress.listenerCount("stage-start")).toBe(startCount)
-    expect(provingProgress.listenerCount("stage-complete")).toBe(completeCount)
-  })
-
-  it("subscribe + unsubscribe twice is a no-op (stable handler refs)", () => {
-    const startCount = provingProgress.listenerCount("stage-start")
-
-    const acc = new PerfBucketAccumulator()
-    acc.subscribe()
-    acc.unsubscribe()
-    acc.subscribe()
-    acc.unsubscribe()
-
-    expect(provingProgress.listenerCount("stage-start")).toBe(startCount)
-  })
-})
-
 describe("readPerfLogFlag", () => {
   it("returns false by default", () => {
     expect(readPerfLogFlag()).toBe(false)
@@ -186,6 +133,16 @@ describe("readPerfLogFlag", () => {
     expect(readPerfLogFlag()).toBe(false)
     process.env.OBSIDION_PROVE_TX_PERF_LOGS = "TRUE"
     expect(readPerfLogFlag()).toBe(false)
+  })
+
+  it("follows the runtime override over the env, both ways, until it is cleared", () => {
+    setPerfLogFlag(true)
+    expect(readPerfLogFlag()).toBe(true)
+    process.env.OBSIDION_PROVE_TX_PERF_LOGS = "true"
+    setPerfLogFlag(false)
+    expect(readPerfLogFlag()).toBe(false)
+    setPerfLogFlag(undefined)
+    expect(readPerfLogFlag()).toBe(true)
   })
 })
 

@@ -140,6 +140,30 @@ export const PASSKEY_PLATFORM_AUTHENTICATORS = ["yes", "no", "unknown"] as const
 export type PasskeyPlatformAuthenticator = (typeof PASSKEY_PLATFORM_AUTHENTICATORS)[number]
 
 /**
+ * Which extension's script wraps the page's passkey creation, read from the wrapper's source when
+ * the row is sent. `none` is the browser's own method or one the page could not read; `other` is
+ * any script the markers do not name.
+ */
+export const PASSKEY_EXTENSIONS = ["none", "1password", "bitwarden", "other"] as const
+export type PasskeyExtension = (typeof PASSKEY_EXTENSIONS)[number]
+
+/**
+ * What the page-start lock did to the browser's own `create` or `get`: frozen in place, put back
+ * from the prototype over a wrapper assigned before the page's scripts ran, left to an accessor
+ * already on the property (1Password's shape, whoever put it there), not the lock's to take (an
+ * override the prototype cannot replace, a refused definition, an unreadable print), or no WebAuthn
+ * on the page.
+ */
+export const PASSKEY_NATIVE_LOCKS = [
+  "applied",
+  "restored",
+  "skipped_accessor",
+  "lost_race",
+  "unsupported",
+] as const
+export type PasskeyNativeLock = (typeof PASSKEY_NATIVE_LOCKS)[number]
+
+/**
  * Where the passkey an assertion answered with was made, as its user handle claims: the device
  * class and the route the creating page asked for. `unknown` is a handle that carries no
  * recognisable provenance.
@@ -220,6 +244,9 @@ export const PASSKEY_CEREMONY_ENUM_PROPS = {
   phone_reach: PASSKEY_PHONE_REACHES,
   error_name: PASSKEY_ERROR_NAMES,
   platform_authenticator: PASSKEY_PLATFORM_AUTHENTICATORS,
+  extension: PASSKEY_EXTENSIONS,
+  native_lock_create: PASSKEY_NATIVE_LOCKS,
+  native_lock_get: PASSKEY_NATIVE_LOCKS,
   made_on: PASSKEY_MADE_ON,
   device_class: PASSKEY_DEVICE_CLASSES,
   os: PASSKEY_OS_FAMILIES,

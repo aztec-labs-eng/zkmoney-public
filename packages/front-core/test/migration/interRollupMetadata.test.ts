@@ -294,7 +294,7 @@ describe("inter-rollup wallet behavior against a synthetic future destination", 
     let { controller } = f
     // What the quote says moves is what the run refunds below: both notes.
     const quoted = await f.service.quote()
-    expect(quoted).toEqual({ movable: 50n * TIP, stranded: 0n, waiting: 0n })
+    expect(quoted).toMatchObject({ movable: 50n * TIP, stranded: 0n, waiting: 0n, batches: 2 })
     await controller.advance(true)
     expect(controller.getSnapshot()?.error).toBeUndefined()
     expect(f.sends).toHaveLength(1)
@@ -370,7 +370,8 @@ describe("inter-rollup wallet behavior against a synthetic future destination", 
     controller = f.make().controller
     await controller.load()
     await controller.advance()
-    expect(controller.getSnapshot()?.phase).toBe("recovering") // Source spentness is not a receipt.
+    // Every planned batch is sent; source spentness is not a receipt.
+    expect(controller.getSnapshot()?.phase).toBe("arriving")
     expect(f.sends).toHaveLength(3)
     chain.sweeps.set(depositSipa, [{ index: 2n, amount: 17n, txHash: field(102) }])
     await controller.advance()
@@ -389,15 +390,16 @@ describe("inter-rollup wallet behavior against a synthetic future destination", 
     const amount = (id: string) => BigInt(f.candidates.find((c) => c.id === id)!.amount)
     expect([...refunded].reduce((sum, id) => sum + amount(id), 0n)).toBe(quoted.movable)
   })
-  it("proves only the recovery refund when the destination record is already current", async () => {
+  it("proves every batch up front and sends them in one pass when the record is already current", async () => {
     const f = fixture()
     f.state.hash = userRecordStateHash(f.options.record)
     chain.recurring = true
     await f.controller.advance(true)
     expect(f.controller.getSnapshot()?.error).toBeUndefined()
     expect(f.controller.getSnapshot()?.phase).toBe("recovering")
-    expect(f.runtime.build).toHaveBeenCalledTimes(1)
-    expect(f.sends).toHaveLength(1)
+    expect(f.runtime.build).toHaveBeenCalledTimes(2)
+    expect(f.sends).toHaveLength(2)
+    expect(f.signConsent).toHaveBeenCalledTimes(1)
   })
 
   it("holds an unmigrated account to the metadata fee and a settled one to the ordinary fee", async () => {
@@ -417,7 +419,7 @@ describe("inter-rollup wallet behavior against a synthetic future destination", 
     // Metadata fee 5, ordinary fee 2: recurring sponsorship is not active yet.
     const f = fixture()
     f.candidates.splice(0, 2, { id: "rest", amount: String(TIP + 4n), kind: "note" })
-    expect(await f.service.quote()).toEqual({ movable: 0n, stranded: TIP + 4n, waiting: 0n })
+    expect(await f.service.quote()).toMatchObject({ movable: 0n, stranded: TIP + 4n, waiting: 0n })
     expect((await f.service.quote({ firstBatchSettled: true })).movable).toBe(TIP + 4n)
   })
 

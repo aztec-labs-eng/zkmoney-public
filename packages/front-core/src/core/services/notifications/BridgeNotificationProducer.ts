@@ -27,6 +27,12 @@ import type {
 } from "./AppNotificationStore"
 import { SnapshotNotificationProducer } from "./NotificationProducer"
 import type { NotificationFeed, NotificationProducer } from "./NotificationProducer"
+import {
+  upgradeBatchArrived,
+  upgradeRunTotal,
+  type UpgradeBatchItem,
+} from "../../migration/upgradeActivity"
+import { isSettledSipaPhase } from "../deposits/SIPADepositStore"
 import { dollars } from "./TransferReceiveNotificationProducer"
 import { isNativeEth } from "../../../oxide/sipaFunding"
 import { logger } from "src/utils/logger"
@@ -99,10 +105,10 @@ function inflightLabel(item: BridgeActivityItem, migration: boolean): string | u
       const phase = item.record.phase
       return phase === "submitting" || !WITHDRAWAL_PHASE_COPY[phase].live
         ? undefined
-        : "Leaving old network"
+        : "Leaving old version"
     }
     // Funded and on its way in; before that the exit's row says where the funds are.
-    return sipaDepositInflightLabel(item.record) ? "Arriving on new network" : undefined
+    return sipaDepositInflightLabel(item.record) ? "Arriving on new version" : undefined
   }
   if (item.kind === "bridge.withdrawal") {
     return item.record.phase === "submitting"
@@ -136,21 +142,26 @@ function groupAsItem(group: WithdrawalGroup): BridgeActivityItem {
 }
 
 /**
- * A migration is one exit (a withdrawal record with `intent: "migration"`) and one arrival (the
- * SIPA that exit pays), reported as one move of funds rather than a withdrawal and a deposit.
+ * A migration is one exit (a withdrawal record with `intent: "migration"`, or an upgrade's refund
+ * batch) and one arrival (the SIPA that exit pays), reported as one move of funds rather than a
+ * withdrawal and a deposit. An upgrade's first refund arrives at its update-metadata SIPA.
  */
-function migrationMatcher(items: BridgeActivityItem[]): (item: BridgeActivityItem) => boolean {
-  const arrivals = new Set(
-    items.flatMap((i) =>
+function migrationMatcher(
+  items: BridgeActivityItem[],
+  upgradeArrivals: readonly string[],
+): (item: BridgeActivityItem) => boolean {
+  const arrivals = new Set([
+    ...items.flatMap((i) =>
       i.kind === "bridge.withdrawal" && i.record.intent === "migration"
         ? [i.record.recipient.toLowerCase()]
         : [],
     ),
-  )
+    ...upgradeArrivals,
+  ])
   return (item) =>
     item.kind === "bridge.withdrawal"
       ? item.record.intent === "migration"
-      : arrivals.has(item.record.sipaAddress.toLowerCase())
+      : item.record.intent === "metadata" || arrivals.has(item.record.sipaAddress.toLowerCase())
 }
 
 /** A grouped leg keys its rows by its group, so the pair keeps one live row across the hand-off. */
@@ -188,7 +199,7 @@ function inflightInput(
     domain: "bridge",
     sourceId: id,
     title: migration
-      ? "Moving funds"
+      ? "Upgrading"
       : savings
       ? savingsMoveLabel(savings.direction)
       : withdrawal
@@ -202,6 +213,63 @@ function inflightInput(
     severity: "info",
     pending: true,
     target: targetForItem(item),
+  }
+}
+
+/** One upgrade run: its batches, each with the deposit that brings it once one is seen. */
+interface UpgradeRunRows {
+  run: string
+  legs: { batch: UpgradeBatchItem; arrival?: SIPADepositRecord }[]
+}
+
+function upgradeRunsOf(items: ActivityItem[]): UpgradeRunRows[] {
+  const deposits = new Map(
+    items.flatMap((i) =>
+      i.kind === "bridge.sipaDeposit"
+        ? [[i.record.sipaAddress.toLowerCase(), i.record] as const]
+        : [],
+    ),
+  )
+  const runs = new Map<string, UpgradeRunRows>()
+  for (const item of items) {
+    if (item.kind !== "upgrade.batch") continue
+    const run = runs.get(item.batch.run) ?? { run: item.batch.run, legs: [] }
+    run.legs.push({ batch: item.batch, arrival: deposits.get(item.batch.recipient.toLowerCase()) })
+    runs.set(item.batch.run, run)
+  }
+  return [...runs.values()].filter((r) => r.legs.some((leg) => leg.batch.state !== "planned"))
+}
+
+const legArrived = (leg: UpgradeRunRows["legs"][number]) => upgradeBatchArrived(leg.arrival)
+/** Nothing more arrives: every batch's deposit has settled, credited or not. */
+const runSettled = (run: UpgradeRunRows) =>
+  run.legs.every((leg) => !!leg.arrival && isSettledSipaPhase(leg.arrival.phase))
+
+function upgradeRunFigure(run: UpgradeRunRows): string {
+  return dollars(Number(formatUnits(upgradeRunTotal(run.legs), DEFAULT_DECIMALS)))
+}
+
+function upgradeRunInput(run: UpgradeRunRows, done: boolean): CreateAppNotificationInput {
+  const arrived = run.legs.filter(legArrived).length
+  // Funds that reach the old version later join the run: its larger whole reports anew.
+  const id = `migration-run:${run.run}${done ? `:done:${run.legs.length}` : ""}`
+  const n = run.legs.length
+  return {
+    id,
+    producer: "bridge",
+    domain: "bridge",
+    sourceId: id,
+    title: done ? "Upgrade complete" : "Upgrading",
+    description: done
+      ? `${upgradeRunFigure(run)} · ${n === 1 ? "1 transfer" : `${n} transfers`}`
+      : `${upgradeRunFigure(run)} · ${arrived} of ${n} arrived`,
+    timestampMs: done
+      ? Math.max(...run.legs.map((leg) => leg.arrival?.endTime ?? 0))
+      : Math.min(...run.legs.map((leg) => leg.batch.startTime)),
+    systemIcon: done ? iconForPhase("done") : "arrow.down.left",
+    severity: done ? severityForPhase("done") : "info",
+    ...(done ? {} : { pending: true }),
+    target: { type: "upgrade.run", run: run.run },
   }
 }
 
@@ -273,7 +341,8 @@ function titleForItem(
   phase: TerminalBridgePhase,
   migration: boolean,
 ): string {
-  if (migration) return phase === "done" ? "Migration complete" : "Migration failed"
+  if (migration && item.record.phase !== "recovered")
+    return phase === "done" ? "Upgrade complete" : "Upgrade failed"
   const savings = savingsMoveOf(item)
   if (savings) return phase === "done" ? savingsMoveLabel(savings.direction) : "Move failed"
   if (item.kind === "bridge.withdrawal") {
@@ -409,6 +478,7 @@ export class BridgeNotificationProducer implements NotificationProducer {
   private async syncLiveRows(
     items: BridgeActivityItem[],
     isMigration: (item: BridgeActivityItem) => boolean,
+    runs: UpgradeRunRows[],
   ): Promise<void> {
     // Preserve restored rows until the feed has loaded; from then on an empty snapshot means the
     // last record was removed (a cancelled withdrawal) or is another producer's to carry.
@@ -426,6 +496,15 @@ export class BridgeNotificationProducer implements NotificationProducer {
       } catch (err) {
         logger.warn("[BridgeNotificationProducer] failed to update in-flight notification:", err)
       }
+    }
+    // An upgrade is one live row until every batch has arrived.
+    for (const run of runs) {
+      if (runSettled(run)) continue
+      const input = upgradeRunInput(run, false)
+      stillFlying.add(input.id)
+      await this.notifications.upsert(input).catch((err) => {
+        logger.warn("[BridgeNotificationProducer] failed to update an upgrade's live row:", err)
+      })
     }
     for (const entry of this.notifications.list()) {
       if (entry.producer !== "bridge" || !entry.pending || stillFlying.has(entry.id)) continue
@@ -477,7 +556,8 @@ export class BridgeNotificationProducer implements NotificationProducer {
     const allBridgeItems = items.filter(isBridgeActivityItem)
     // Readiness is read off every bridge record, before the exclusion below: a wallet whose only
     // bridge activity is its registration deposit still retires the stored live row for it.
-    if (allBridgeItems.length) this.hasSeenBridgeItems = true
+    if (allBridgeItems.length || items.some((i) => i.kind === "upgrade.batch"))
+      this.hasSeenBridgeItems = true
     const withdrawals = allBridgeItems.flatMap((i) =>
       i.kind === "bridge.withdrawal" ? [i.record] : [],
     )
@@ -492,13 +572,38 @@ export class BridgeNotificationProducer implements NotificationProducer {
           !(item.kind === "bridge.withdrawal" && item.record.groupId),
       )
       .concat(withdrawalGroupsOf(withdrawals).map(groupAsItem))
-    const isMigration = migrationMatcher(bridgeItems)
+    const runs = upgradeRunsOf(items)
+    // An upgrade's deposits are its run's: the run reports them, save a failure of one.
+    const runArrivals = new Set(
+      runs.flatMap((run) => run.legs.map((leg) => leg.batch.recipient.toLowerCase())),
+    )
+    const ofRun = (item: BridgeActivityItem) =>
+      item.kind === "bridge.sipaDeposit" && runArrivals.has(item.record.sipaAddress.toLowerCase())
+    const isMigration = migrationMatcher(bridgeItems, [...runArrivals])
     await this.retireRecovered(withdrawals)
-    if (this.liveRows) await this.syncLiveRows(bridgeItems, isMigration)
+    if (this.liveRows)
+      await this.syncLiveRows(
+        bridgeItems.filter((item) => !ofRun(item)),
+        isMigration,
+        runs,
+      )
+
+    for (const run of runs) {
+      if (!run.legs.every(legArrived)) continue
+      const input = upgradeRunInput(run, true)
+      // A deposit claimed from a replayed sweep takes the sweep's time: a run seen pending reports.
+      if (input.timestampMs < baseline && !this.notifications.get(`migration-run:${run.run}`))
+        continue
+      await this.notifications.createIfAbsent(input).catch((err) => {
+        logger.warn("[BridgeNotificationProducer] failed to report an upgrade:", err)
+      })
+    }
 
     for (const item of bridgeItems) {
       const phase = terminalPhaseForItem(item)
       if (!phase) continue
+      if (phase === "done" && ofRun(item) && upgradeBatchArrived(item.record as SIPADepositRecord))
+        continue
       const migration = isMigration(item)
       // A migration's exit is half of one move; its arrival reports the move.
       if (migration && item.kind === "bridge.withdrawal" && phase === "done") continue

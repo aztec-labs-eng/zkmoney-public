@@ -8,7 +8,7 @@
  * other's rows (browsers without Web Locks fall back to scanning per-tab). Pauses while the tab is
  * hidden; re-acquires on visibility return.
  *
- * The withdrawal rescan waits for the boot balance (see `bootPriority`).
+ * The withdrawal rescans wait for the boot balance (see `bootPriority`).
  *
  * Also owns the request-fulfillment reconciler: receive rows are inserted here, and the reconciler
  * listens to that in-process insert event (plus a store sweep for the receive-before-request
@@ -79,14 +79,16 @@ export function TransferScannerMount(): null {
         err,
       )
     const main = bootPriority
-      .whenBalanceSettled()
+      .whenReady("withdrawalRescan")
       .then(() => (disposed ? undefined : rescanWithdrawals(obsidionWallet, [{ tokenService }])))
     main.catch(rescanned("Main"))
     // A Savings lookup or scan that failed is tried again until it answers.
     let savingsRetry: ReturnType<typeof setTimeout> | undefined
     const scanSavings = (account: NonNullable<typeof obsidionAccount>) =>
-      void Promise.all([savingsRescanToken(obsidionWallet, account), main.catch(() => {})])
-        .then(([savings]) =>
+      void main
+        .catch(() => {})
+        .then(() => (disposed ? undefined : savingsRescanToken(obsidionWallet, account)))
+        .then((savings) =>
           savings && !disposed ? rescanWithdrawals(obsidionWallet, [savings]) : undefined,
         )
         .catch((err: unknown) => {

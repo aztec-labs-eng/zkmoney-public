@@ -63,12 +63,14 @@ export interface DomainInfoResponse {
   goldenTicket?: { threshold: string; schedule?: { fee: string; minDeposit: string } } | null
 }
 
-/** A golden ticket proof and its public claim; the server supplies threshold, token and class ids. */
+/** A golden ticket proof and its public claim; the server supplies threshold and token. */
 export interface GoldenTicketRedeemRequest {
   proof: Hex
   root: Hex
   blockNumber: number
   nullifier: Hex
+  /** Direct then email class ids the proof was made for; the server checks each is reviewed. */
+  classIds?: [Hex, Hex]
   /** testMode only: the bootstrap address the proof names. Ignored when a bootstrap provider is set. */
   owner?: Hex
 }
@@ -472,6 +474,7 @@ export class AccountServiceClient {
       blockNumber: req.blockNumber,
       owner,
       nullifier: req.nullifier,
+      classIds: req.classIds,
     }
     const preimage = GOLDEN_TICKET_PREIMAGE(req.nullifier, owner)
     return this.postBootstrapSigned("/domain/golden-ticket", owner, preimage, body)

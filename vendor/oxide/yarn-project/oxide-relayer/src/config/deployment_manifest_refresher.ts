@@ -2,15 +2,20 @@ import { type Logger, createLogger } from '@aztec/foundation/log';
 import { RunningPromise } from '@aztec/foundation/running-promise';
 
 import {
+  type ResolveDeploymentEnvManifestOptions,
   type ResolvedDeploymentEnvManifest,
   type ResolvedManifestDeployment,
+  describeSkip,
   resolveDeploymentEnvManifest,
 } from './deployment_env_manifest.js';
 
 export const MANIFEST_REFRESH_INTERVAL_MS = 5 * 60_000;
 const MANIFEST_FETCH_TIMEOUT_MS = 10_000;
 
-interface DeploymentManifestRefresherOptions {
+interface DeploymentManifestRefresherOptions extends Pick<
+  ResolveDeploymentEnvManifestOptions,
+  'excludePortals' | 'acceptedPayoutTokens'
+> {
   deploymentEnvManifestUrl: string;
   initial: ResolvedDeploymentEnvManifest;
   discover: (deployment: ResolvedManifestDeployment) => void;
@@ -18,7 +23,7 @@ interface DeploymentManifestRefresherOptions {
   logger?: Logger;
 }
 
-/** Add operation workers on the startup rollup without changing the pinned deployment. */
+/** Add operation workers on the startup rollup, under the startup policy, without changing the pinned deployment. */
 export class DeploymentManifestRefresher {
   private readonly seen: Set<string>;
   private readonly abortController = new AbortController();
@@ -50,6 +55,8 @@ export class DeploymentManifestRefresher {
       const manifest = await resolveDeploymentEnvManifest({
         deploymentEnvManifestUrl: this.options.deploymentEnvManifestUrl,
         portal: this.options.initial.current.publicConfig.portal,
+        excludePortals: this.options.excludePortals,
+        acceptedPayoutTokens: this.options.acceptedPayoutTokens,
         fetch: (input, init) =>
           (this.options.fetch ?? fetch)(input, {
             ...init,
@@ -64,6 +71,9 @@ export class DeploymentManifestRefresher {
       }
       for (const reason of manifest.unreadable) {
         this.log.warn(`Not watching a deployment: ${reason}`);
+      }
+      for (const skipped of manifest.skipped) {
+        this.log.info(describeSkip(skipped));
       }
       for (const deployment of manifest.historical) {
         const portal = deployment.publicConfig.portal.toString().toLowerCase();

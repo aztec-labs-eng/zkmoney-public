@@ -1,7 +1,7 @@
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import { ContractService, Network } from "@obsidion/sdk"
+import { ContractService, Network, setPerfLogFlag } from "@obsidion/sdk"
 import type { AztecNode } from "@aztec/aztec.js/node"
-import { lazy, Suspense, useEffect, useState, useSyncExternalStore } from "react"
+import { lazy, Suspense, useEffect, useState, useSyncExternalStore, type ReactNode } from "react"
 import {
   AccountProvider,
   AssetProvider,
@@ -31,6 +31,7 @@ import {
 } from "react-router-dom"
 import { ScanNavigationProvider } from "./features/scan/ScanNavigation"
 import { getConfig, type WebBootConfig } from "./config/env"
+import { proveTxPerfLogsEnabled } from "./config/features"
 import { isDemoMode } from "./dev/demoFlag"
 import { ErrorModalHost } from "./errors/ErrorModalHost"
 import { bindAnalyticsConsent } from "./lib/analytics"
@@ -52,7 +53,6 @@ import {
   useRegistrationDepositOwed,
 } from "./features/onboarding/openRegistration"
 import { OnboardingScreen } from "./features/onboarding/OnboardingScreen"
-import { prefetchLiveSavingsApy } from "./features/savings/savingsGateway"
 import { drawnOfferTag, subscribeDrawnOffer } from "./features/onboarding/nameGrant"
 import { LinkViewScreen } from "./features/paylink/LinkViewScreen"
 import { ClaimRoute } from "./features/paylink/PaylinkOnboardingScreen"
@@ -87,6 +87,7 @@ import { getDesktopSettingsPath } from "./platform/desktopBridge"
 import { AppShell, SidebarLayout } from "./ui/AppShell"
 import { BakedProfileNotice, CustomProfileNotice } from "./ui/ConfigNotice"
 import { BootErrorScreen } from "./ui/BootErrorScreen"
+import { applyPreBootNavigation, PreBootRouterBridge } from "./ui/preBootTaps"
 import {
   BootDemand,
   BootSplash,
@@ -295,9 +296,17 @@ function SipaDepositsMount() {
  * without one is routed without waiting on the PXE. A tag drawn for this tab's signup lets the
  * visitor in to Home, which hosts the signup until the passkey exists.
  */
-function WalletEntryGate() {
+export function WalletEntryGate() {
   const draft = useSyncExternalStore(subscribeDrawnOffer, drawnOfferTag)
-  if (!loadOnboardedIdentity() && !draft) return <Navigate to="/claim" replace />
+  const ready = useBootReady()
+  if (!loadOnboardedIdentity() && !draft)
+    return (
+      <>
+        <Navigate to="/claim" replace />
+        {/* The redirect is no first screen: the boot screen holds until /claim's own wait. */}
+        {!ready && <BootSplash />}
+      </>
+    )
   return <Outlet />
 }
 
@@ -333,7 +342,7 @@ function WalletGate() {
       <WebSavingsProvider>
         <Outlet />
       </WebSavingsProvider>
-      {/* Funds-gated: pops "Migration detected" when a retired deployment still holds value.
+      {/* Funds-gated: pops the upgrade dialog when a retired deployment still holds value.
           Last so it stacks above any route-level sheet (same z-index, later in DOM). */}
       <MigrationDetectionMount />
     </UnlockGate>
@@ -409,6 +418,17 @@ function ContactRoute() {
   )
 }
 
+/** The wallet's router, opening on any route the pre-boot screen went to. */
+function AppRouter({ children }: { children: ReactNode }) {
+  useState(applyPreBootNavigation)
+  return (
+    <BrowserRouter>
+      <PreBootRouterBridge />
+      {children}
+    </BrowserRouter>
+  )
+}
+
 export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: ActiveTabBoot }) {
   const [services] = useState(() => createAppServices(activeTab.node))
   // Stash an inbound /connect packet before any gate redirect can drop the fragment.
@@ -421,7 +441,7 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
       // Bound before first render so even pre-route events (PXE boot) are consent-gated.
       bindAnalyticsConsent(() => services.configService.get("analyticsConsent"))
       wireTxTimingAnalytics()
-      prefetchLiveSavingsApy()
+      setPerfLogFlag(proveTxPerfLogsEnabled)
       setConfigReady(true)
     })
   }, [services])
@@ -446,6 +466,8 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                 storageAdapter={services.storageAdapter}
                 contractServiceStorage={services.contractServiceStorage}
                 contractServiceOptions={boot.contractServiceOptions}
+                // Every sponsored rail here pays through the ClaimFPC, which each registers itself.
+                registerSponsorFpc={false}
               >
                 <RegistrationDetectionMount />
                 <LeaveGuardMount />
@@ -457,7 +479,7 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                 <PxeBootProvider node={services.node} pxeBoot={activeTab.pxeBoot}>
                   <OperationsMount node={services.node} activeSince={activeTab.activeSince} />
                   <BroadcastsMount />
-                  <BrowserRouter>
+                  <AppRouter>
                     <BootDemand />
                     {/* L1 address screening (withdraw recipient, deposit EOA, registration payer) on every route. */}
                     <ScanNavigationProvider>
@@ -609,7 +631,7 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                         </Routes>
                       </ScreeningProvider>
                     </ScanNavigationProvider>
-                  </BrowserRouter>
+                  </AppRouter>
                   {/* Global error/info modal — any catch block surfaces it via showErrorModal(). */}
                   <ErrorModalHost />
                 </PxeBootProvider>

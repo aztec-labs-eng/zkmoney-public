@@ -11,7 +11,9 @@ import {
   STUCK_SWEEP_MS,
   type SipaCapacityKey,
   type SipaProcessingState,
+  UpgradeActivity,
 } from "@obsidion/front-core"
+import { onActiveStorageIdChange } from "../../platform/storage/activeStorage"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { getWithdrawalStore } from "../withdraw/withdrawGateway"
 import { sipaProcessingObserver } from "./sipaProcessingObserver"
@@ -19,14 +21,26 @@ import { sipaProcessingObserver } from "./sipaProcessingObserver"
 export { sipaProcessingObserver }
 
 let attached = false
+let upgradesAttached = false
 
-/** The page's one activity feed, with pending deposits annotated by the observer. */
+/** The page's one activity feed, with pending deposits annotated by the observer and the account's upgrade batches. */
 export function bridgeActivityFeed(): ActivityFeed {
   const feed = ActivityFeed.get(SIPADepositStore.get(webStorage), getWithdrawalStore())
   const source = sipaProcessingObserver()
   if (source && !attached) {
     attached = true
     feed.setProcessingSource(source)
+  }
+  if (!upgradesAttached) {
+    upgradesAttached = true
+    const upgrades = UpgradeActivity.get(webStorage)
+    feed.setUpgradeSource(upgrades)
+    const load = () =>
+      void upgrades
+        .changed()
+        .catch((error) => console.warn("[upgrade] activity load failed:", error))
+    load()
+    onActiveStorageIdChange(load)
   }
   return feed
 }

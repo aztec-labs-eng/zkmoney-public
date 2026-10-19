@@ -143,9 +143,9 @@ vi.mock("src/core", async () => {
 })
 
 vi.mock("../../src/core/migration/generationRegistry", async () => {
-  const actual = await vi.importActual<typeof import("../../src/core/migration/generationRegistry")>(
-    "../../src/core/migration/generationRegistry",
-  )
+  const actual = await vi.importActual<
+    typeof import("../../src/core/migration/generationRegistry")
+  >("../../src/core/migration/generationRegistry")
   return actual
 })
 
@@ -221,7 +221,10 @@ const contractStorage = {
   setArtifactCache: () => {},
 }
 
-function boot(options: Record<string, unknown>, { strict = false } = {}) {
+function boot(
+  options: Record<string, unknown>,
+  { strict = false, registerSponsorFpc }: { strict?: boolean; registerSponsorFpc?: boolean } = {},
+) {
   // A boot starts from whatever instance is already installed — normally none.
   env.singleton = env.adopted
   const probe: { current: ReturnType<typeof useContractServiceContext> | null } = { current: null }
@@ -232,7 +235,11 @@ function boot(options: Record<string, unknown>, { strict = false } = {}) {
   }
   const tree = (
     <Boundary onError={(e) => errors.push(e)}>
-      <ContractServiceProvider storage={contractStorage as any} options={options as any}>
+      <ContractServiceProvider
+        storage={contractStorage as any}
+        options={options as any}
+        registerSponsorFpc={registerSponsorFpc}
+      >
         <Probe />
       </ContractServiceProvider>
     </Boundary>
@@ -293,6 +300,14 @@ describe("profile mode construction", () => {
     )
   })
 
+  it("skips the sponsor FPC for a host that pays no fee through it", async () => {
+    const { probe } = boot(profileOptions(snapshotContracts()), { registerSponsorFpc: false })
+
+    await waitFor(() => expect(probe.current.contractService).not.toBeNull())
+    await settle()
+    expect(registerContractMock).not.toHaveBeenCalled()
+  })
+
   it("a snapshot for another network surfaces through the error boundary", async () => {
     const options = profileOptions(snapshotContracts())
     ;(options.config as any).network = Network.SANDBOX
@@ -331,5 +346,4 @@ describe("profile mode construction", () => {
     expect(recordReads()).toHaveLength(0)
     expect(recordWrites()).toHaveLength(0)
   })
-
 })

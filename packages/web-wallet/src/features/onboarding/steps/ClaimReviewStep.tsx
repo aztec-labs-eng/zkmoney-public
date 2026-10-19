@@ -1,29 +1,33 @@
-import type { ReactNode } from "react"
+import { useRef, type ReactNode } from "react"
 import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import type { PaylinkSignupQuote } from "../../paylink/paylinkSignupQuote"
-import { OperationHandOff } from "../../operations/OperationHandOff"
+import { OperationHandOff, type OperationHandOffHandle } from "../../operations/OperationHandOff"
 import { OnboardingCard } from "../OnboardingCard"
 import { formatTokenAmount } from "./DepositTermsRows"
 import { PaylinkSignupRows } from "./PaylinkSignupRows"
 import { SignupStepper } from "./SignupStepper"
+import { senderLine } from "../../paylink/senderLine"
 
 /**
  * Step three of a paylink-funded signup (Figma 11118:54014): the payment, its memo and the exact
  * split the claim commits to — what the tag costs, what the network and prover take, what opens the
  * wallet — before the one batch that claims the link and funds the registration SIPA. Closing keeps
- * the payment unclaimed and the reservation held; Home offers the claim again.
+ * the payment unclaimed and the reservation held; Home offers the claim again. Closing while the
+ * claim runs hands it to the bell, as its own hand-off would, and it runs on.
  */
 export function ClaimReviewStep({
   quote,
   tokenSymbol,
   tokenDecimals,
   memo,
+  senderTag,
   busy,
   status = "Unclaimed",
   onHandOff,
   error,
   notices,
   claimable = true,
+  settled = false,
   onClaim,
   onClose,
   speed,
@@ -35,6 +39,8 @@ export function ClaimReviewStep({
   tokenSymbol: string
   tokenDecimals: number
   memo?: string
+  /** The link creator's verified tag. */
+  senderTag?: string
   /** The claim runs: its working beat, until it is sent. */
   busy: boolean
   status?: string
@@ -43,19 +49,23 @@ export function ClaimReviewStep({
   notices?: ReactNode
   /** False while the claim is refused for a reason `error` gives; Close is the only way out. */
   claimable?: boolean
+  /**
+   * The claim is at work or went out: `status` says what follows, and nothing is left to claim or
+   * choose.
+   */
+  settled?: boolean
   onClaim: () => void
   onClose: () => void
 }) {
   const amount = (v: bigint) => formatTokenAmount(v, tokenDecimals, tokenSymbol)
+  const working = useRef<OperationHandOffHandle>(null)
+  const close = busy ? () => working.current?.leave() : onClose
   return (
-    <OnboardingCard
-      className="ww-modal--create ww-signup-step"
-      onClose={busy ? undefined : onClose}
-    >
+    <OnboardingCard className="ww-modal--create ww-signup-step" onClose={close}>
       <SignupStepper current={2} />
       <div className="ww-claim-review">
         <div className="ww-claim-review__payment">
-          <span className="ww-paylink-summary__label">Someone sent you</span>
+          <span className="ww-paylink-summary__label">{senderLine(senderTag)}</span>
           <span className="ww-paylink-summary__amount" data-testid="claim-review-amount">
             {quote?.paylink === undefined ? "a payment" : amount(quote.paylink)}
           </span>
@@ -72,9 +82,9 @@ export function ClaimReviewStep({
           quote={quote}
           tokenSymbol={tokenSymbol}
           tokenDecimals={tokenDecimals}
-          speed={speed}
+          speed={settled ? undefined : speed}
         />
-        {quote?.covers === false && (
+        {!settled && quote?.covers === false && (
           <p className="ww-invite-modal-error" role="alert">
             This payment cannot cover the account deposit.
           </p>
@@ -90,24 +100,23 @@ export function ClaimReviewStep({
         </p>
       )}
       {notices && <div className="ww-claim-review__notices">{notices}</div>}
-      {busy ? (
-        <OperationHandOff onLeave={onHandOff ?? (() => {})} until="sent" />
-      ) : (
-        <div className="ww-claim-review__actions">
-          <button
-            type="button"
-            className="zkm-btn-reset zkm-pressable ww-claim-review__close"
-            onClick={onClose}
-          >
-            Close
-          </button>
+      {busy && <OperationHandOff ref={working} onLeave={onHandOff ?? onClose} until="sent" />}
+      <div className="ww-claim-review__actions ww-sheet__actions">
+        <button
+          type="button"
+          className="zkm-btn-reset zkm-pressable ww-claim-review__close"
+          onClick={close}
+        >
+          Close
+        </button>
+        {!settled && !busy && (
           <PrimaryGradientButton
             title="Claim"
             isDisabled={quote === undefined || quote.covers === false || !claimable}
             onClick={onClaim}
           />
-        </div>
-      )}
+        )}
+      </div>
     </OnboardingCard>
   )
 }

@@ -1,7 +1,7 @@
 import { useId, useRef, useState, type ReactNode } from "react"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { Modal } from "../../ui/Modal"
-import { usePickerDismiss } from "../withdraw/WithdrawalAssetPicker"
+import { usePickerDismiss } from "../../ui/usePickerDismiss"
 import { CoinIcon } from "./DepositAddressSheet"
 import type { DepositTokenOption } from "./loadDepositFacts"
 

@@ -46,7 +46,7 @@ describe("useBalance", () => {
     expect(render(ctx).balanceSyncing).toBe(true) // outlives the catch-up that opened it
     bootPriority.notesSynced()
     bootPriority.depositsReplayed()
-    await bootPriority.whenBalanceSettled()
+    await bootPriority.whenReady("migrationProbe")
     expect(render(ctx).balanceSyncing).toBe(false)
     const again = globalEventEmitter.beginSyncCatchUp()
     expect(render(ctx).balanceSyncing).toBe(false)

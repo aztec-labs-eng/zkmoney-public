@@ -6,6 +6,7 @@
   "scripts": {
     "generate": "node scripts/gen_abis.mjs",
     "build": "tsc -p tsconfig.json",
+    "build:release": "tsc -p tsconfig.json",
     "lint": "../node_modules/.bin/eslint --cache ./src",
     "lint:fix": "../node_modules/.bin/eslint --cache --fix ./src",
     "test": "NODE_NO_WARNINGS=1 node --experimental-vm-modules ../node_modules/.bin/jest --forceExit"

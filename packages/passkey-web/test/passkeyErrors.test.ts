@@ -14,6 +14,7 @@ import {
   markPasskeyWritten,
   passkeyWritten,
 } from "../src/policy/passkeyErrors.js"
+import { bitwardenLineFor } from "../src/policy/refusalCopy.js"
 
 const BITWARDEN_FRAME =
   "CredentialsContainer.<anonymous> (chrome-extension://nngceckbapebfimnlniiiahkandclblb/content/fido2-page-script.js:1259:27)"
@@ -28,23 +29,23 @@ describe("the laptop's own route refusals", () => {
   const managers = ["apple", "gpm"] as const
 
   it("says why Apple Passwords was refused and names the way out", () => {
-    const floor = new LaptopPasskeyRefusedError("apple", ["gpm"])
-    expect(floor.name).toBe("LaptopPasskeyRefusedError")
-    expect(floor.kind).toBe("apple")
-    expect(floor.message).toContain(
-      "only on macOS 15.7.5 or a later macOS 15, or macOS 26.4.1 or later. Before those, an " +
-        "Apple bug can give a Mac the wrong secret key from a synced passkey, and on macOS 14 " +
-        "or earlier it gives none at all.",
+    const apple = new LaptopPasskeyRefusedError("apple", ["gpm", "1password"])
+    expect(apple.name).toBe("LaptopPasskeyRefusedError")
+    expect(apple.kind).toBe("apple")
+    expect(apple.message).toContain(
+      "Apple Passwords can't protect a wallet on macOS before 15. Update macOS to use it.",
     )
-    expect(floor.belowMacFloor).toBe(true)
-    expect(floor.message).toContain("Google Password Manager (sign in to Chrome first)")
-    expect(floor.message).toContain("or use your phone instead")
-    expect(floor.message).not.toMatch(/choose Apple Passwords/)
+    expect(apple.message).not.toMatch(/15\.7\.5|26\.4\.1/)
+    expect(apple.appleRefusedHere).toBe(true)
+    expect(apple.message).toContain("Google Password Manager (sign in to Chrome first)")
+    expect(apple.message).toContain("1Password")
+    expect(apple.message).toContain("or use your phone instead")
+    expect(apple.message).not.toMatch(/choose Apple Passwords/)
+    expect(new LaptopPasskeyRefusedError("apple", []).message).toMatch(/Use your phone instead\.$/)
     const withdrawn = new LaptopPasskeyRefusedError("apple", ["gpm"], { appleWithdrawn: true })
     expect(withdrawn.message).toContain("isn't available for a wallet on this browser yet")
-    expect(withdrawn.message).not.toMatch(/15\.7\.5|26\.4\.1/)
-    expect(withdrawn.belowMacFloor).toBe(false)
-    expect(new LaptopPasskeyRefusedError("unnamed", ["gpm"]).belowMacFloor).toBe(false)
+    expect(withdrawn.appleRefusedHere).toBe(false)
+    expect(new LaptopPasskeyRefusedError("unnamed", ["gpm"]).appleRefusedHere).toBe(false)
   })
 
   it("explains an unnamed or off-route answer in plain words, naming the managers", () => {
@@ -90,6 +91,73 @@ describe("the laptop's own route refusals", () => {
     expect(other.message).not.toContain("Safari")
     expect(other.message).toContain("your new passkey")
     expect(other.name).toBe(mislabelled.name)
+  })
+
+  it("sends an unverified creation to the phone without naming a browser", () => {
+    const unverified = new IncompleteCreationError("unverified")
+    expect(unverified.message).toContain("use your mobile instead")
+    expect(unverified.message).not.toMatch(/Safari|Chrome|Firefox/)
+    expect(unverified.message).not.toMatch(/try again/i)
+  })
+})
+
+describe("the line a refusal adds after its message", () => {
+  const advice = bitwardenLineFor("wallet.test.zk.money")
+
+  it("names the exact host to exclude", () => {
+    expect(advice).toBe(
+      "To stop Bitwarden popping up here, add wallet.test.zk.money to Bitwarden's excluded " +
+        "domains, then try again.",
+    )
+  })
+
+  it("follows the phone refusal in each of its forms, changing nothing else", () => {
+    for (const options of [
+      { ceremony: "create" as const },
+      { ceremony: "create" as const, providerName: "Bitwarden" },
+      { localManagers: ["apple", "gpm"] as const },
+    ]) {
+      const plain = new PhoneRequiredError(options)
+      const advised = new PhoneRequiredError({ ...options, advice })
+      expect(advised).toBeInstanceOf(PhoneRequiredError)
+      expect(advised.name).toBe("PhoneRequiredError")
+      expect(advised.providerName).toBe(plain.providerName)
+      expect(advised.message).toBe(`${plain.message} ${advice}`)
+    }
+  })
+
+  it("follows the unsupported-provider refusal on this computer's route and the others", () => {
+    const local = new UnsupportedProviderError("manager", {
+      providerName: "Bitwarden",
+      keyOfferable: true,
+      localManagers: ["apple", "gpm"],
+      advice,
+    })
+    expect(local.message).toBe(
+      "Bitwarden can't protect a wallet yet. Try again and choose Apple Passwords or Google " +
+        `Password Manager (sign in to Chrome first), or use your phone instead. ${advice}`,
+    )
+    const plain = new UnsupportedProviderError("manager", {
+      providerName: "Bitwarden",
+      keyOfferable: true,
+      advice,
+    })
+    expect(plain.message).toBe(
+      "Bitwarden can't protect a wallet yet. Try again with iCloud Keychain, Google Password " +
+        `Manager, or 1Password, or a YubiKey 5 security key. ${advice}`,
+    )
+    for (const err of [local, plain]) {
+      expect(err).toBeInstanceOf(UnsupportedProviderError)
+      expect(err).toMatchObject({
+        name: "UnsupportedProviderError",
+        kind: "manager",
+        providerName: "Bitwarden",
+      })
+    }
+    expect(new UnsupportedProviderError("manager", { providerName: "Bitwarden" }).message).toBe(
+      "Bitwarden can't protect a wallet yet. Try again with iCloud Keychain, Google Password " +
+        "Manager, or 1Password.",
+    )
   })
 })
 

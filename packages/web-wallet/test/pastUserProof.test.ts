@@ -48,7 +48,16 @@ describe("past-user proof", () => {
   it("proves a past user for the owner, and the pinned key verifies it", async () => {
     const signature = await pastUser.signMessage({ message: ELIGIBILITY_SIGN_MESSAGE })
     const inputs = await pastUserInputs({ signature, owner: OWNER, leaves })
-    const { proof, publicInputs } = await proveNoirCircuit(circuit, inputs, "past-user")
+    const laps: [string, number][] = []
+    const { proof, publicInputs } = await proveNoirCircuit(
+      circuit,
+      inputs,
+      "past-user",
+      (lap, ms) => laps.push([lap, ms]),
+    )
+    expect(laps.map(([lap]) => lap)).toEqual(["wasm", "witness", "backend", "proof"])
+    const times = laps.map(([, ms]) => ms)
+    expect(times).toEqual([...times].sort((a, b) => a - b))
 
     expect(publicInputs.slice(1)).toEqual([field(1n), field(OWNER), field(CAMPAIGN_NULLIFIER)])
     expect(publicInputs).not.toContain(field(pastUser.address))

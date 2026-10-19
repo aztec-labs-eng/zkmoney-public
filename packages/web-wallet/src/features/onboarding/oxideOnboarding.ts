@@ -334,13 +334,15 @@ export interface PasskeyHints {
 
 /**
  * Which passkey a ceremony asks for: a known credential or the open chooser. `discover` runs a
- * discoverable ceremony (no credential pinned); `chooser` bypasses the cache so no saved key answers.
+ * discoverable ceremony (no credential pinned); `chooser` bypasses the cache so no saved key answers;
+ * `phone` steers a laptop's prompt to the phone and bypasses the cache the same way.
  */
 export type CeremonyRequest = {
   credentialId?: string
   pubkeyHex?: string
   discover?: boolean
   chooser?: boolean
+  phone?: boolean
 }
 
 /**
@@ -360,8 +362,9 @@ export async function resolveKeySource(
   options?: { restore?: boolean },
 ): Promise<KeySource> {
   const request: CeremonyRequest = { ...hints }
-  // The chooser is the user asking for a different passkey: no cached source may answer for them.
-  if (request.chooser) return { kind: "ceremony-required", request }
+  // The chooser and the phone are the user asking for another passkey or device: no cached source
+  // may answer for them.
+  if (request.chooser || request.phone) return { kind: "ceremony-required", request }
   const service = getAuthService()
   const cached = await service.recoverFromCache(
     options?.restore === false ? { restore: false } : undefined,
@@ -381,7 +384,11 @@ async function ceremonyFor(
   signal: AbortSignal | undefined,
   own?: PasskeyRequestScope,
 ): Promise<BeginRecoveryResult> {
-  const cancel = { ...(signal ? { signal } : {}), ...(own ? { own } : {}) }
+  const cancel = {
+    ...(signal ? { signal } : {}),
+    ...(own ? { own } : {}),
+    ...(request.phone ? { phone: true } : {}),
+  }
   if (request.discover) return getAuthService().beginRecovery({ discover: true, ...cancel })
   return request.credentialId && request.pubkeyHex
     ? await getAuthService().adoptKnownPasskey({
@@ -577,12 +584,18 @@ async function keysFor(
 function signInRequest(options: {
   chooser?: boolean
   hints?: PasskeyCredentialCandidate
+  phone?: boolean
 }): CeremonyRequest | undefined {
+  const phone = options.phone ? { phone: true } : {}
   if (options.hints) {
-    return { credentialId: options.hints.credentialId, pubkeyHex: options.hints.pubkeyHex }
+    return {
+      credentialId: options.hints.credentialId,
+      pubkeyHex: options.hints.pubkeyHex,
+      ...phone,
+    }
   }
   if (options.chooser || currentDevicePosture() === "laptop") {
-    return { discover: true, ...(options.chooser ? { chooser: true } : {}) }
+    return { discover: true, ...(options.chooser ? { chooser: true } : {}), ...phone }
   }
   return undefined
 }
@@ -597,6 +610,7 @@ function signInRequest(options: {
 async function enterKeyMaterial(options: {
   gate: CeremonyGate
   chooser?: boolean
+  phone?: boolean
   hints?: PasskeyCredentialCandidate
   signal?: AbortSignal
   cacheOnly?: boolean
@@ -666,15 +680,13 @@ export async function reusePasskeyAccount(
 }
 
 /**
- * `custody` means onboarding may complete: the registration is confirmed on-chain, or the
- * optimistic session proved the bundler holds the op (`confirmed` distinguishes the two — the
- * confirmation event and the claim cache both key on it). The deferred setup recovers the
- * claim witness from the Registry's `NameClaimed` log, never from this session. `pending` is
- * resumable, never a failure — the durable record carries the state, and the UI shows
+ * `custody` means onboarding may complete: the registration is confirmed on-chain. The deferred
+ * setup recovers the claim witness from the Registry's `NameClaimed` log, never from this session.
+ * `pending` is resumable, never a failure — the durable record carries the state, and the UI shows
  * in-progress copy.
  */
 export type ClaimTagOutcome =
-  | { kind: "custody"; confirmed: boolean; oxideAccount: string }
+  | { kind: "custody"; confirmed: true; oxideAccount: string }
   /** `claim` is the fresh NameClaim (+ optional fee waiver) the deposit screen renders — in memory
    *  only, same as the session result it comes from; a resumed record has no claim to show. */
   | {
@@ -720,6 +732,37 @@ async function requireCredentialId(): Promise<string> {
   return credentialId
 }
 
+/** What deriving this wallet's registration address needs; the session and recovery share it. */
+export async function registrationAddressDeps(
+  handle: string,
+  secretKey: Fr,
+  l2Address: Hex,
+  config: WebWalletConfig,
+) {
+  const { tuple, env, publicClient } = await oxideEnvFor(config)
+  return {
+    tag: handle,
+    env,
+    masterSecret: secretKey,
+    l2Address,
+    accountService: accountServiceFor(config, { secretKey }, handle),
+    beneficiary: await resolveBeneficiary(config, Number(SANDBOX_REGISTRATION_BENEFICIARY_ID)),
+    // Read live at derivation: the committed fee must be exactly what the controller checks at
+    // sweep, and signed terms (when the claim carries them) take precedence over this schedule.
+    scheduleFee: () => readRegistrationSchedule(config).then((schedule) => schedule.fee),
+    l1: createOxideL1Reader(publicClient),
+    deriveRegistrationSipa: createRegistrationSipaDeriver({
+      publicClient,
+      env,
+      tuple,
+    }),
+    seedSipaDeposit: makeRegistrationDepositSeeder({
+      feeToken: env.feeToken,
+      l1ChainId: env.l1ChainId,
+    }),
+  }
+}
+
 /** Assemble the deposit-driven registration session deps (shared by claimTag + the retry sign deps). */
 async function registrationSessionDeps(
   handle: string,
@@ -727,31 +770,12 @@ async function registrationSessionDeps(
   config: WebWalletConfig,
   onStage?: (stage: OxideRegistrationStage) => void,
 ): Promise<OxideRegistrationSessionDeps> {
-  const { tuple, env, publicClient } = await oxideEnvFor(config)
+  const l2Address = keys.account.getAddress().toString() as Hex
   return {
-    tag: handle,
-    env,
-    masterSecret: keys.secretKey,
-    l2Address: keys.account.getAddress().toString() as Hex,
-    accountService: accountServiceFor(config, keys, handle),
-    beneficiary: await resolveBeneficiary(config, Number(SANDBOX_REGISTRATION_BENEFICIARY_ID)),
-    // Read live at derivation: the committed fee must be exactly what the controller checks at
-    // sweep, and signed terms (when the claim carries them) take precedence over this schedule.
-    scheduleFee: () => readRegistrationSchedule(config).then((schedule) => schedule.fee),
+    ...(await registrationAddressDeps(handle, keys.secretKey, l2Address, config)),
     r1Key: pubkeyToR1KeyArg(keys.pubkeyHex),
     passkey: await oxideAccountPasskey(keys.account.getAuthProvider()),
     credentialId: await requireCredentialId(),
-    l1: createOxideL1Reader(publicClient),
-    deriveRegistrationSipa: createRegistrationSipaDeriver({
-      publicClient,
-      env,
-      tuple,
-      network: config.network,
-    }),
-    seedSipaDeposit: makeRegistrationDepositSeeder({
-      feeToken: env.feeToken,
-      l1ChainId: env.l1ChainId,
-    }),
     pendingStore: getPendingStore(),
     onStage,
   }
@@ -775,6 +799,12 @@ export async function linkCoversTicketBurn(
 /** How a ticket-funded signup's redemption went before its claim was signed. */
 export type TicketRedemption = "none" | "redeemed" | "unavailable"
 
+/** The registration session's stages, plus a ticket signup's proof and the NameClaim after it. */
+export type SignupStage = OxideRegistrationStage | "ticket_prove" | "reserve"
+
+export const isRegistrationStage = (stage: SignupStage): stage is OxideRegistrationStage =>
+  stage === "derive" || stage === "claim" || stage === "broadcast"
+
 /**
  * A ticket-funded signup (the visitor chose to receive the link into a new account on a network
  * that issues tickets) redeems its golden ticket first, so the claim below quotes the ticket
@@ -790,6 +820,7 @@ export async function redeemLinkedGoldenTicket(
   config: WebWalletConfig,
   wallet: ObsidionWallet | undefined,
   ticket: TicketSignupStash | null,
+  onProving?: () => void,
 ): Promise<TicketRedemption> {
   if (!ticket) return "none"
   if (!wallet) throw new Error("wallet is still starting, try again in a moment")
@@ -799,6 +830,7 @@ export async function redeemLinkedGoldenTicket(
     secretKey: keys.secretKey,
     fragment: ticket.fragment,
     covers: linkCoversTicketBurn,
+    onProving,
   })
   if (outcome.amount !== undefined) updateTicketSignup({ amount: outcome.amount.toString() })
   switch (outcome.status) {
@@ -845,7 +877,7 @@ export async function claimTag(
   keys: OnboardingKeys,
   config: WebWalletConfig,
   wallet?: ObsidionWallet,
-  onStage?: (stage: OxideRegistrationStage) => void,
+  onStage?: (stage: SignupStage) => void,
   requireEarnedQuote = false,
   refundedRecord?: PendingRegistrationRecord,
   replacedRecord?: PendingRegistrationRecord,
@@ -935,7 +967,10 @@ export async function claimTag(
       // The session checks the name and account on L1 before requesting terms. Redeeming here
       // avoids spending a ticket on an account that already owns a name or on a taken name.
       ticketUnavailable =
-        (await redeemLinkedGoldenTicket(keys, config, wallet, ticket)) === "unavailable"
+        (await redeemLinkedGoldenTicket(keys, config, wallet, ticket, () =>
+          onStage?.("ticket_prove"),
+        )) === "unavailable"
+      if (ticket) onStage?.("reserve")
       const claim = await accountService.signDomain(...args)
       if (requireEarnedQuote || refundedRecord)
         assertEarnedQuote(claim.terms, await currentFpcFundingCut().catch(() => undefined))
@@ -1016,7 +1051,6 @@ export async function buildRetrySignDeps(
       publicClient,
       env,
       tuple,
-      network: config.network,
     }),
     seedSipaDeposit: makeRegistrationDepositSeeder({
       feeToken: env.feeToken,
@@ -1097,6 +1131,8 @@ export async function enterWithPasskey(
     grantToken?: string
     gate: CeremonyGate
     chooser?: boolean
+    /** Steer a laptop's prompt to the phone, the wrong-key card's way on. */
+    phone?: boolean
     hints?: PasskeyCredentialCandidate
     strictTag?: boolean
     signal?: AbortSignal
@@ -1162,7 +1198,7 @@ export async function enterWithPasskey(
     if (!(err instanceof StoredAddressMismatchError)) throw err
     verdict = auth.mismatchVerdict(recovered)
     // The plain path shows the card from the thrown error; the hinted path from the result.
-    if (!options.hints) throw Object.assign(err, { verdict })
+    if (!options.hints) throw Object.assign(err, { verdict, observed })
     resolved = { kind: "unknown" }
     storedAddressMismatch = true
   }

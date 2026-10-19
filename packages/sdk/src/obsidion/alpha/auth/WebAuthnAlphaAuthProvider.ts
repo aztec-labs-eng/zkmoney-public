@@ -17,6 +17,11 @@ const CLIENT_DATA_JSON_INDEX = 166
  */
 export const WITNESS_AUTHENTICATOR_DATA_LEN = CLIENT_DATA_JSON_LEN_INDEX - AUTHENTICATOR_DATA_INDEX
 
+/** `signal` ends the passkey ceremony, including any wait before its prompt opens. */
+export interface SignChallengeOptions {
+  signal?: AbortSignal
+}
+
 export interface WebAuthnSignResult {
   signature: Uint8Array // 64 bytes
   authenticatorData: Uint8Array // 37 bytes
@@ -38,16 +43,16 @@ export class WebAuthnAlphaAuthProvider implements AlphaAuthProvider {
   constructor(
     private pubkeyX: Buffer,
     private pubkeyY: Buffer,
-    private signFn: (challenge: Buffer) => Promise<WebAuthnSignResult>,
+    private signFn: (challenge: Buffer, opts?: SignChallengeOptions) => Promise<WebAuthnSignResult>,
   ) {}
 
   async getPubkeys(): Promise<[Buffer, Buffer]> {
     return [this.pubkeyX, this.pubkeyY]
   }
 
-  signChallenge(challenge: Buffer): Promise<WebAuthnSignResult> {
+  signChallenge(challenge: Buffer, opts?: SignChallengeOptions): Promise<WebAuthnSignResult> {
     if (challenge.length !== 32) throw new Error("WebAuthn challenge must be 32 bytes")
-    return this.signFn(challenge)
+    return this.signFn(challenge, opts)
   }
 
   async createAuthWit(messageHash: Fr): Promise<AuthWitness> {

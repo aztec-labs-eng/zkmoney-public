@@ -29,7 +29,7 @@ const L1_TIMESTAMP = 1_700_000_000n;
 function fakeClient(call: Record<string, unknown>, priorityFee = PRIORITY_FEE) {
   const simulateBlocks = jest.fn((_args: unknown) => Promise.resolve([{ calls: [call] }]));
   const getBlock = jest.fn((_args: unknown) =>
-    Promise.resolve({ number: 100n, baseFeePerGas: BASE_FEE, timestamp: L1_TIMESTAMP }),
+    Promise.resolve({ number: 100n, gasLimit: 30_000_000n, baseFeePerGas: BASE_FEE, timestamp: L1_TIMESTAMP }),
   );
   const estimateMaxPriorityFeePerGas = jest.fn(() => Promise.resolve(priorityFee));
   const readContract = jest.fn((_args: unknown) => Promise.resolve([1n, USD_PER_ETH, 0n, L1_TIMESTAMP, 1n] as const));
@@ -105,8 +105,27 @@ describe('simulateL1Operation', () => {
       functionName: 'execute',
       args: [OPERATION.target, OPERATION.calldata, OPERATION.payoutToken, 5n, 0n, 0n],
       from: SENDER,
+      gas: 15_000_000n,
       ...FEE_VALUES,
     });
+  });
+
+  it('uses the block gas limit when it is below the simulation cap', async () => {
+    const { client, getBlock, simulateBlocks } = fakeClient({ status: 'success', gasUsed: 90_000n });
+    getBlock.mockResolvedValue({
+      number: 100n,
+      gasLimit: 12_000_000n,
+      baseFeePerGas: BASE_FEE,
+      timestamp: L1_TIMESTAMP,
+    });
+    await simulateL1Operation(client, {
+      executor: EXECUTOR,
+      sender: SENDER,
+      operation: OPERATION,
+      feeValues: FEE_VALUES,
+    });
+    const [request] = simulateBlocks.mock.calls[0] as [Record<string, any>];
+    expect(request.blocks[0].calls[0].gas).toBe(12_000_000n);
   });
 
   it('simulates the four-argument call of a legacy executor', async () => {
@@ -141,6 +160,7 @@ describe('simulateL1Operation', () => {
     const [request] = simulateBlocks.mock.calls[0] as [Record<string, any>];
     expect(request.blockNumber).toBe(99n);
     expect(request.blocks[0].blockOverrides).toEqual({ baseFeePerGas: 1_000_000_000n });
+    expect(request.blocks[0].calls[0].gas).toBe(15_000_000n);
   });
 
   it('returns a failed call as a failure', async () => {

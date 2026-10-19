@@ -124,7 +124,12 @@ describe('l1 operation broadcast decoder', () => {
 
   function callValues(
     selector: FunctionSelector,
-    operation = { target, payoutToken, calldata, condition: L1OperationCondition.immediate() },
+    operation: {
+      target: EthAddress;
+      payoutToken: EthAddress;
+      calldata: Buffer;
+      condition: L1OperationCondition;
+    } = { target, payoutToken, calldata, condition: L1OperationCondition.immediate() },
   ): Fr[] {
     const { bytesLen, fields } = encodeL1OperationCalldata(operation.calldata);
     const condition = operation.condition;

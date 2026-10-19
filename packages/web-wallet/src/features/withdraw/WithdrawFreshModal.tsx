@@ -27,9 +27,9 @@ import {
   amountError,
   decimalInput,
   parseAmount,
-  shortAddr,
   tokenAmount,
   usdFigure,
+  shortL1Addr,
 } from "../../ui/format"
 import { useProvingOutcome } from "../../ui/hooks"
 import { DepositFact } from "../../ui/screens/DepositFact"
@@ -237,7 +237,9 @@ export function WithdrawFreshModal({
   const ready = !!(obsidionWallet && obsidionAccount && tokenService && contractService)
   const busy = useUserFlowActive()
   const busyLabel = useBusyLabel()
-  const destination = walletName ? `${walletName} · ${shortAddr(recipient)}` : shortAddr(recipient)
+  const destination = walletName
+    ? `${walletName} · ${shortL1Addr(recipient)}`
+    : shortL1Addr(recipient)
 
   const run = async () => {
     if (!valid || !committed || charged === undefined) return
@@ -276,16 +278,15 @@ export function WithdrawFreshModal({
         },
       )
       outcome.finish()
-      // The sponsored send resolves only after the L2 receipt, so submitted == L2 mined here;
-      // duration spans confirm → mine (the prove-phase split rides tx_timing, flow "withdraw").
-      if (record.phase !== "submitting") {
-        const durationMs = elapsed()
-        void recordBurnDuration(durationMs)
-        fireEvent("withdraw_submitted", {
-          duration_ms: durationMs,
-          amount_bucket: amountBucket(BigInt(Math.floor(parsed + gas)), 0),
-        })
-      }
+      // `submitting`: sent, receipt still pending. Only a mined burn's duration spans confirm → mine
+      // (the prove-phase split rides tx_timing, flow "withdraw").
+      const mined = record.phase !== "submitting"
+      const durationMs = elapsed()
+      if (mined) void recordBurnDuration(durationMs)
+      fireEvent("withdraw_submitted", {
+        duration_ms: mined ? durationMs : undefined,
+        amount_bucket: amountBucket(BigInt(Math.floor(parsed + gas)), 0),
+      })
       void upsertSavedL1WalletContact({ address: recipient, name: walletName })
       if (!left.current) onDone()
     } catch (e) {

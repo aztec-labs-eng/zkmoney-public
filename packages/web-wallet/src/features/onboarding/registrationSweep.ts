@@ -129,7 +129,6 @@ export async function manualRegistrationSweep(
     publicClient,
     env,
     tuple,
-    network: config.network,
   })
   // The record's committed payment: a record from before the intent committed it cannot re-derive.
   if (record.fee === undefined || record.beneficiary === undefined) {

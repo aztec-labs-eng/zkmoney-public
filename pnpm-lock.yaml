@@ -596,6 +596,9 @@ importers:
       '@xmtp/browser-sdk':
         specifier: 7.0.0
         version: 7.0.0(@aztec/viem@2.38.2(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3))
+      blo:
+        specifier: ^2.1.1
+        version: 2.1.1
       jsqr:
         specifier: 1.4.0
         version: 1.4.0
@@ -811,9 +814,18 @@ importers:
       '@jest/globals':
         specifier: ^30.0.0
         version: 30.4.1
+      '@swc/core':
+        specifier: ^1.10.12
+        version: 1.15.40
+      '@swc/jest':
+        specifier: ^0.2.36
+        version: 0.2.39(@swc/core@1.15.40)
       '@types/node':
         specifier: ^22.15.17
         version: 22.19.20
+      jest:
+        specifier: ^30.0.0
+        version: 30.4.2(@types/node@22.19.20)(esbuild-register@3.6.0(esbuild@0.28.2))(ts-node@10.9.2(@swc/core@1.15.40)(@types/node@22.19.20)(typescript@5.7.3))
       typescript:
         specifier: ^5.3.3
         version: 5.7.3
@@ -917,9 +929,6 @@ importers:
       viem:
         specifier: npm:@aztec/viem@2.38.2
         version: '@aztec/viem@2.38.2(bufferutil@4.1.0)(typescript@5.7.3)(utf-8-validate@5.0.10)(zod@4.4.3)'
-      zod:
-        specifier: ^4.4.3
-        version: 4.4.3
     devDependencies:
       '@jest/globals':
         specifier: ^30.0.0
@@ -930,9 +939,6 @@ importers:
       '@swc/jest':
         specifier: ^0.2.36
         version: 0.2.39(@swc/core@1.15.40)
-      '@types/jest':
-        specifier: ^30.0.0
-        version: 30.0.0
       '@types/node':
         specifier: ^22.15.17
         version: 22.19.20
@@ -1096,9 +1102,6 @@ importers:
       '@swc/jest':
         specifier: ^0.2.36
         version: 0.2.39(@swc/core@1.15.40)
-      '@types/jest':
-        specifier: ^30.0.0
-        version: 30.0.0
       '@types/node':
         specifier: ^22.15.17
         version: 22.19.20
@@ -5137,6 +5140,9 @@ packages:
 
   blakejs@1.2.1:
     resolution: {integrity: sha512-QXUSXI3QVc/gJME0dBpXrag1kbzOqCjCX8/b54ntNyW6sjtoqxqRk3LTmXzaJoh71zMsDCjM+47jS7XiwN/+fQ==}
+
+  blo@2.1.1:
+    resolution: {integrity: sha512-aphjv4MrxDzs8923XML7v67RatKijpvH48Fe4WHibRwYfWvgDlcfoQs/3Nkral/J91C2GxDLPLGjq6zF3lsHJw==}
 
   bn.js@4.12.3:
     resolution: {integrity: sha512-fGTi3gxV/23FTYdAoUtLYp6qySe2KE3teyZitipKNRuVYcBkoP/bB3guXN/XVKUe9mxCHXnc9C4ocyz8OmgN0g==}
@@ -10293,7 +10299,7 @@ snapshots:
       '@scure/bip32': 1.7.0
       '@scure/bip39': 1.6.0
       abitype: 1.1.0(typescript@5.7.3)(zod@4.4.3)
-      isows: 1.0.7(ws@8.18.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))
+      isows: 1.0.7(ws@8.18.3)
       ox: 0.9.6(typescript@5.7.3)(zod@4.4.3)
       ws: 8.18.3(bufferutil@4.1.0)(utf-8-validate@5.0.10)
     optionalDependencies:
@@ -14840,6 +14846,8 @@ snapshots:
 
   blakejs@1.2.1: {}
 
+  blo@2.1.1: {}
+
   bn.js@4.12.3: {}
 
   bn.js@5.2.3: {}
@@ -16685,7 +16693,7 @@ snapshots:
 
   isomorphic-timers-promises@1.0.1: {}
 
-  isows@1.0.7(ws@8.18.3(bufferutil@4.1.0)(utf-8-validate@5.0.10)):
+  isows@1.0.7(ws@8.18.3):
     dependencies:
       ws: 8.18.3(bufferutil@4.1.0)(utf-8-validate@5.0.10)
 

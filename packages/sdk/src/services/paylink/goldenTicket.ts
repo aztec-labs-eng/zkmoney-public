@@ -15,6 +15,7 @@ import { type ContractName, type ContractService, DEFAULT_CONTRACTS } from "@obs
 import { DOM_SEP__GOLDEN_TICKET } from "@obsidion/core/constants"
 import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
 import type { PaylinkParams } from "../PaylinkService.js"
+import { LINK_CLASS_REFUSAL } from "./paylinkInlineCodec.js"
 import { unpackPaylinkData } from "./paylinkNoteData.js"
 import { registerEscrow } from "./paylinkVoucher.js"
 
@@ -62,11 +63,30 @@ export interface GoldenTicketWitness {
 
 const hex = (f: { toString(): string }) => f.toString()
 
-/** Direct and email paylink class ids from the configured artifacts. */
-export async function paylinkClassIds(contractService: ContractService): Promise<[Fr, Fr]> {
-  const id = async (name: ContractName) =>
-    (await getContractClassFromArtifact(await contractService.getArtifactForContract(name))).id
-  return [await id(DEFAULT_CONTRACTS.paylinkDirect), await id(DEFAULT_CONTRACTS.paylinkEmail)]
+/**
+ * The class pair a ticket proves against, direct then email: the link's own class in its flavor's
+ * slot and the other flavor's current class in the other, so a link under an older reviewed class
+ * still proves and a link under the current classes sends the current pair. `escrow` is the link's
+ * escrow as `registerEscrow` resolves it. Its class must be one its own flavor has had here:
+ * `registerEscrow` finds a reviewed class by id alone, whatever flavor the manifest lists it under.
+ */
+export async function paylinkClassIds(
+  contractService: Pick<ContractService, "getArtifactForContract" | "getKnownClassIds">,
+  paylinkType: string,
+  escrow: { currentContractClassId: Fr },
+): Promise<[Fr, Fr]> {
+  const own = escrow.currentContractClassId
+  const slot = async (name: ContractName) => {
+    const current = (
+      await getContractClassFromArtifact(await contractService.getArtifactForContract(name))
+    ).id
+    if (paylinkType !== name || own.equals(current)) return current
+    if (!(await contractService.getKnownClassIds(name)).includes(own.toString())) {
+      throw new Error(LINK_CLASS_REFUSAL)
+    }
+    return own
+  }
+  return [await slot(DEFAULT_CONTRACTS.paylinkDirect), await slot(DEFAULT_CONTRACTS.paylinkEmail)]
 }
 
 export function goldenTicketNullifier(uniqueNoteHash: Fr): Promise<Fr> {
@@ -110,16 +130,34 @@ async function readSettledPaylinkNote(
 }
 
 /**
+ * The witness with everything but the owner and the threshold: the escrow rebuilt in this PXE, its
+ * settled note, and the note's membership path under one block's note-tree root. Nothing here needs
+ * the redeemer's key, so it can be read before the passkey exists.
+ */
+export interface PreparedGoldenTicketWitness {
+  /** ABI inputs without `owner` and `threshold`. */
+  inputs: Record<string, unknown>
+  root: Fr
+  blockNumber: number
+  token: AztecAddress
+  classIds: [Fr, Fr]
+  uniqueNoteHash: Fr
+  nullifier: Fr
+  amount: bigint
+}
+
+/**
  * Rebuild the escrow in this PXE, read its settled paylink note, and fetch the note's membership
  * path under the block's note-tree root. `blockNumber` defaults to the node's latest block. Throws
  * `GoldenTicketWitnessError` while the chain disagrees with the PXE.
  */
-export async function buildGoldenTicketWitness(
+export async function prepareGoldenTicketWitness(
   deps: GoldenTicketDeps,
   params: PaylinkParams,
-  opts: { threshold: bigint; owner: EthAddress; blockNumber?: number },
-): Promise<GoldenTicketWitness> {
-  const { instance, keys, artifact } = await registerEscrow(deps, params)
+  opts: { blockNumber?: number } = {},
+): Promise<PreparedGoldenTicketWitness> {
+  const { instance, keys } = await registerEscrow(deps, params)
+  const classIds = await paylinkClassIds(deps.contractService, params.paylinkType, instance)
   const escrow = instance.address
   const dao = await readSettledPaylinkNote(deps.wallet.pxe, escrow)
   if (!dao) {
@@ -149,25 +187,13 @@ export async function buildGoldenTicketWitness(
     )
   }
 
-  const classIds = await paylinkClassIds(deps.contractService)
-  const classId = (await getContractClassFromArtifact(artifact)).id
-  const note = paylinkNoteInput(dao)
-  const publicInputs: GoldenTicketPublicInputs = {
-    root,
-    blockNumber,
-    threshold: opts.threshold,
-    token: AztecAddress.fromFieldUnsafe(dao.note.items[6]!),
-    classIds,
-    owner: opts.owner,
-  }
+  const token = AztecAddress.fromFieldUnsafe(dao.note.items[6]!)
   const pk = keys.publicKeys
   const inputs: Record<string, unknown> = {
     root: hex(root),
-    threshold: `0x${opts.threshold.toString(16)}`,
-    token: { inner: hex(publicInputs.token.toField()) },
+    token: { inner: hex(token.toField()) },
     class_ids: classIds.map(hex),
-    owner: hex(opts.owner.toField()),
-    note,
+    note: paylinkNoteInput(dao),
     randomness: hex(dao.randomness),
     note_nonce: hex(dao.noteNonce),
     witness: {
@@ -184,15 +210,75 @@ export async function buildGoldenTicketWitness(
       mspk_m_hash: hex(pk.mspkMHash),
       fbpk_m_hash: hex(pk.fbpkMHash),
     },
-    class_id: hex(classId),
+    class_id: hex(instance.currentContractClassId),
   }
   return {
     inputs,
-    publicInputs,
+    root,
+    blockNumber,
+    token,
+    classIds,
     uniqueNoteHash,
     nullifier: await goldenTicketNullifier(uniqueNoteHash),
     amount: unpackPaylinkData(dao.note.items[2]!).amount,
   }
+}
+
+/**
+ * Throws `GoldenTicketWitnessError` unless the prepared note is still the escrow's settled note. A
+ * link claimed or cancelled since keeps its note under the prepared root, where a proof still
+ * verifies, so a redeem checks this before it spends the ticket.
+ */
+export async function assertGoldenTicketNoteSettled(
+  deps: GoldenTicketDeps,
+  params: PaylinkParams,
+  prepared: Pick<PreparedGoldenTicketWitness, "uniqueNoteHash">,
+): Promise<void> {
+  const { instance } = await registerEscrow(deps, params)
+  const dao = await readSettledPaylinkNote(deps.wallet.pxe, instance.address)
+  const unique =
+    dao &&
+    (await computeUniqueNoteHash(dao.noteNonce, await siloNoteHash(instance.address, dao.noteHash)))
+  if (!unique?.equals(prepared.uniqueNoteHash)) {
+    throw new GoldenTicketWitnessError(
+      "The link's note is no longer in this wallet's view of the chain.",
+    )
+  }
+}
+
+/** Binds a prepared witness to the redeemer and the threshold the service asks for. */
+export function finishGoldenTicketWitness(
+  prepared: PreparedGoldenTicketWitness,
+  opts: { threshold: bigint; owner: EthAddress },
+): GoldenTicketWitness {
+  const { inputs, root, blockNumber, token, classIds, uniqueNoteHash, nullifier, amount } = prepared
+  return {
+    inputs: {
+      ...inputs,
+      threshold: `0x${opts.threshold.toString(16)}`,
+      owner: hex(opts.owner.toField()),
+    },
+    publicInputs: {
+      root,
+      blockNumber,
+      threshold: opts.threshold,
+      token,
+      classIds,
+      owner: opts.owner,
+    },
+    uniqueNoteHash,
+    nullifier,
+    amount,
+  }
+}
+
+/** {@link prepareGoldenTicketWitness} then {@link finishGoldenTicketWitness}, in one call. */
+export async function buildGoldenTicketWitness(
+  deps: GoldenTicketDeps,
+  params: PaylinkParams,
+  opts: { threshold: bigint; owner: EthAddress; blockNumber?: number },
+): Promise<GoldenTicketWitness> {
+  return finishGoldenTicketWitness(await prepareGoldenTicketWitness(deps, params, opts), opts)
 }
 
 /** Packed `PaylinkNote` items in declaration order. */

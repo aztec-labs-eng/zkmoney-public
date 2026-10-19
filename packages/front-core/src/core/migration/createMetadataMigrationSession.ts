@@ -16,15 +16,22 @@ import {
   type TokenService,
   type MetadataMigrationServiceOptions,
   type MetadataMigrationSource,
+  type RefundChallengeSigner,
 } from "@obsidion/sdk"
 import { toBytes, toHex, type Address, type Hex, type PublicClient } from "viem"
 import { deriveBootstrapKey, selfSipaResolverKeys } from "../../oxide/oxideAccountKeys"
-import { signMetadataConsent, type MetadataConsentSigner } from "../../oxide/metadataConsent"
+import {
+  metadataConsentPrompts,
+  signMetadataConsent,
+  type MetadataConsentSigner,
+} from "../../oxide/metadataConsent"
 import { metadataMigrationBinding } from "../../oxide/metadataMigrationBinding"
 import { deploymentScanRange } from "../../oxide/deploymentScanRange"
 import type { IStorageAdapter, StorageLock } from "../storages/adapter"
 import { MetadataMigrationController } from "./MetadataMigrationController"
 import { MigrationFundingStore } from "./MigrationFundingStore"
+import { ApprovalGate, savedChallengeSigner, webAuthnAssertionCodec } from "./savedApprovals"
+import type { UpgradeActivity } from "./upgradeActivity"
 
 export interface MetadataMigrationSessionOptions {
   wallet: ObsidionWallet
@@ -39,6 +46,8 @@ export interface MetadataMigrationSessionOptions {
   lock: StorageLock
   key: string
   passkey?: MetadataConsentSigner["passkey"]
+  /** Told of every write, so activity lists this run's batches. */
+  activity?: UpgradeActivity
   source(
     context: Pick<
       MetadataMigrationServiceOptions,
@@ -52,6 +61,8 @@ export interface MetadataMigrationSessionOptions {
       | "tokenService"
     >,
     batches: MigrationFundingStore,
+    /** Wraps the source's refund signer so each approval is asked for once. */
+    savedRefundSigner: (sign: RefundChallengeSigner) => RefundChallengeSigner,
   ): Promise<MetadataMigrationSource>
 }
 
@@ -88,7 +99,24 @@ export async function createMetadataMigrationSession(o: MetadataMigrationSession
   }
   const bindingWitness = (nameHash: Hex) =>
     metadataMigrationBinding(o.secretKey, o.account.getAddress().toString() as Hex, nameHash)
-  const source = await o.source(context, new MigrationFundingStore(o.storage, `${o.key}/source`))
+  const storage = o.activity ? o.activity.reporting(o.key, o.storage) : o.storage
+  const approvals = `${o.key}/approvals`
+  const gate = new ApprovalGate()
+  const source = await o.source(
+    context,
+    new MigrationFundingStore(storage, `${o.key}/source`),
+    (sign) => savedChallengeSigner(sign, o.storage, approvals, webAuthnAssertionCodec, gate),
+  )
+  const passkey = o.passkey && {
+    ...o.passkey,
+    signChallenge: savedChallengeSigner(
+      o.passkey.signChallenge,
+      o.storage,
+      approvals,
+      undefined,
+      gate,
+    ),
+  }
   const service = new MetadataMigrationService({
     ...context,
     destination,
@@ -116,7 +144,11 @@ export async function createMetadataMigrationSession(o: MetadataMigrationSession
       }
     },
     signConsent: (digest) =>
-      signMetadataConsent({ client: o.client, owner, bootstrap, passkey: o.passkey }, digest),
+      signMetadataConsent({ client: o.client, owner, bootstrap, passkey }, digest),
+    consentPrompts: () => metadataConsentPrompts({ client: o.client, owner }),
   })
-  return { service, controller: new MetadataMigrationController(o.storage, service, o.key, o.lock) }
+  return {
+    service,
+    controller: new MetadataMigrationController(storage, service, o.key, o.lock, gate),
+  }
 }

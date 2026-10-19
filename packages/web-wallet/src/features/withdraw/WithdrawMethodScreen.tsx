@@ -1,8 +1,9 @@
-import { useId, useState, type ReactNode } from "react"
-import { Outlet, useNavigate } from "react-router-dom"
+import { useEffect, useId, useRef, useState, type ReactNode } from "react"
+import { Outlet, useMatch, useNavigate } from "react-router-dom"
 import { GradientText, Icon, NumberedStepRow } from "@obsidion/web-ds"
 import walletIcon from "../../assets/deposit/wallet-line.svg"
 import spyIcon from "../../assets/withdraw/spy-line.svg"
+import { fireEvent } from "../../lib/analytics"
 import { useFreshAddressAvailable } from "./freshAddressAvailability"
 import { ETHERFI_ASSETS_COPY, useEtherfiAvailable } from "./etherfi"
 
@@ -135,6 +136,14 @@ export function WithdrawMethodScreen() {
   const available = useFreshAddressAvailable()
   const etherfi = useEtherfiAvailable()
   const navigate = useNavigate()
+  // The branches report their own open; the picker reports once it shows on its own.
+  const atPicker = useMatch("/withdraw") !== null
+  const pickerReported = useRef(false)
+  useEffect(() => {
+    if (!atPicker || pickerReported.current) return
+    pickerReported.current = true
+    fireEvent("withdraw_opened", { method: "picker" })
+  }, [atPicker])
 
   return (
     <div className="ww-panel ww-withdraw">

@@ -85,7 +85,7 @@ describe("savingsMoveStatus", () => {
     })
     expect(savingsMoveStatus(recovered, burn("done"))).toBe("Recovered")
     expect(isSavingsMoveSettled(recovered, burn("done"))).toBe(true)
-    expect(recoveredTo(recovered)).toBe("Recovered to 0x1234…abcd")
+    expect(recoveredTo(recovered)).toBe("Recovered to 0x12340…0abcd")
     expect(isSavingsMoveSettled(move(), burn("done"))).toBe(false)
   })
 

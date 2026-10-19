@@ -4,12 +4,12 @@ import { OnboardingCard } from "../OnboardingCard"
 import { SignupStepper } from "./SignupStepper"
 
 /**
- * Step two of a paylink-funded signup (Figma 11118:53767): what the passkey does for the reserved
- * tag, the payment's split (the account is paid for out of it, so the person sees what they keep
- * before creating it), then the ceremony. `actions` is the CTA or whatever the ceremony is showing
+ * Step two of a paylink-funded signup (Figma 11118:53767): the welcome for the reserved tag, the
+ * payment's split (the account is paid for out of it, so the person sees what they keep before
+ * creating it), then the ceremony. `actions` is the CTA or whatever the ceremony is showing
  * in its place (spinner, device gate, refusal); `notices` sits above it. A `gated` hold shows the
  * gate's own sheet alone: it carries the split itself. While
- * the ceremony runs (`busy`) the welcome and the points step aside; the split stays with the spinner.
+ * the ceremony runs (`busy`) the welcome steps aside; the split stays with the spinner.
  */
 export function WelcomeStep({
   tag,
@@ -44,22 +44,6 @@ export function WelcomeStep({
               {resuming ? "Continue your signup" : `Welcome ${tag}!`}
             </h2>
           </div>
-          <ul className="ww-invite-facts">
-            {tag && (
-              <li>
-                <Icon name="at" size={20} color="#fff" />
-                <span>Reserve &lsquo;{tag}.zk.money&rsquo; as your zk.money payments @tag.</span>
-              </li>
-            )}
-            <li>
-              <Icon name="key" size={20} color="#fff" />
-              <span>Sign in with a passkey. No password, no seed phrase.</span>
-            </li>
-            <li>
-              <Icon name="install" size={20} color="#fff" />
-              <span>Backed up by your passkey provider. Nothing to write down or remember.</span>
-            </li>
-          </ul>
         </>
       )}
       {!gated && split}

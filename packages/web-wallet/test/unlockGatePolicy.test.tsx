@@ -304,6 +304,142 @@ describe("UnlockGate", () => {
     }
   })
 
+  describe("on a Mac", () => {
+    const ZERO_ID = "00000000-0000-0000-0000-000000000000"
+    const GPM_ID = "ea9b8d66-4d01-1d21-3ce4-b6b48cb575d4"
+    const MAC_CHROME =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) " +
+      "Chrome/155.0.0.0 Safari/537.36"
+    const ua = Object.getOwnPropertyDescriptor(Navigator.prototype, "userAgent")!
+    beforeEach(() => {
+      Object.defineProperty(navigator, "userAgent", { value: MAC_CHROME, configurable: true })
+    })
+    afterEach(() => {
+      Object.defineProperty(navigator, "userAgent", ua)
+    })
+
+    const wrongKey = async () => {
+      const { StoredAddressMismatchError } = await import("@obsidion/front-core")
+      return Object.assign(new StoredAddressMismatchError(), {
+        verdict: "wrong-key",
+        observed: { credentialId: "cred", attachment: "platform" },
+      })
+    }
+    const phoneFlag = (call: number) =>
+      (h.unlock.mock.calls[call]![1] as { phone?: boolean } | undefined)?.phone
+
+    it("the wrong-key card leads with the phone, keeps the session, and still hides the failing credential", async () => {
+      h.wallet = new FakeWallet()
+      h.unlock.mockRejectedValueOnce(await wrongKey())
+      await render()
+      await tapUnlock()
+      expect(container.textContent).toContain("until you sign out or this browser clears its data")
+      expect(byTestId("unlock-retry")).toBeNull()
+      expect(byTestId("unlock-show-passkeys")).toBeNull()
+
+      await act(async () => byTestId("unlock-phone")!.click())
+      await flush()
+      expect(h.unlock).toHaveBeenCalledTimes(2)
+      expect(phoneFlag(0)).toBeUndefined()
+      expect(phoneFlag(1)).toBe(true)
+      expect(h.clear).not.toHaveBeenCalled()
+      expect(h.retryUnlock).toHaveBeenCalledTimes(1)
+    })
+
+    it("the different-passkey exit on that card names the failing credential", async () => {
+      h.wallet = new FakeWallet()
+      h.unlock.mockRejectedValueOnce(await wrongKey())
+      await render()
+      await tapUnlock()
+      await act(async () => byTestId("unlock-choose-passkey")!.click())
+      await flush()
+      expect(h.assign).toHaveBeenCalledWith("/enter?choose=1&avoid=cred")
+    })
+
+    it("a phone attempt refused for this computer's answer retries on the phone", async () => {
+      const { PhoneRequiredError } = await import("@obsidion/passkey-web")
+      h.wallet = new FakeWallet()
+      h.unlock.mockRejectedValueOnce(await wrongKey())
+      h.unlock.mockRejectedValueOnce(new PhoneRequiredError())
+      await render()
+      await tapUnlock()
+      await act(async () => byTestId("unlock-phone")!.click())
+      await flush()
+      expect(byTestId("unlock-refused")?.dataset.reason).toBe("PhoneRequiredError")
+      await act(async () => byTestId("unlock-retry")!.click())
+      await flush()
+      expect(phoneFlag(2)).toBe(true)
+    })
+
+    it("a dismissed phone prompt puts the wrong-key card back", async () => {
+      h.wallet = new FakeWallet()
+      h.unlock.mockRejectedValueOnce(await wrongKey())
+      h.unlock.mockRejectedValueOnce(new DOMException("closed", "NotAllowedError"))
+      await render()
+      await tapUnlock()
+      await act(async () => byTestId("unlock-phone")!.click())
+      await flush()
+      expect(byTestId("unlock-phone")).not.toBeNull()
+      expect(container.textContent).toContain("wrong key")
+    })
+
+    it.each([
+      ["this computer's answer with no record id", { attachment: "platform" }, true],
+      ["a zero record id", { attachment: "platform", recordAaguid: ZERO_ID }, true],
+      ["another device's answer", { attachment: "cross-platform" }, false],
+      ["a Google Password Manager record", { attachment: "platform", recordAaguid: GPM_ID }, false],
+    ] as const)(
+      "a not-reproduced mismatch from %s: update line %s",
+      async (_n, observed, shown) => {
+        const { StoredAddressMismatchError } = await import("@obsidion/front-core")
+        h.wallet = new FakeWallet()
+        h.unlock.mockRejectedValueOnce(
+          Object.assign(new StoredAddressMismatchError(), {
+            verdict: "not-reproduced",
+            observed: { credentialId: "cred", ...observed },
+          }),
+        )
+        await render()
+        await tapUnlock()
+        expect(byTestId("unlock-retry")).not.toBeNull()
+        expect(byTestId("passkey-mac-update") !== null).toBe(shown)
+        expect(byTestId("unlock-phone")).toBeNull()
+      },
+    )
+
+    it("an answer from another device on a trusted browser keeps today's card", async () => {
+      const { StoredAddressMismatchError } = await import("@obsidion/front-core")
+      h.wallet = new FakeWallet()
+      h.unlock.mockRejectedValueOnce(
+        Object.assign(new StoredAddressMismatchError(), {
+          verdict: "wrong-key",
+          observed: { credentialId: "cred", attachment: "cross-platform" },
+        }),
+      )
+      await render()
+      await tapUnlock()
+      expect(byTestId("unlock-phone")).toBeNull()
+      expect(byTestId("unlock-show-passkeys")).not.toBeNull()
+    })
+  })
+
+  it("off a Mac the wrong-key card keeps its copy and Show passkeys", async () => {
+    const { StoredAddressMismatchError } = await import("@obsidion/front-core")
+    const { MISMATCH_COPY } = await import("@obsidion/passkey-web")
+    h.wallet = new FakeWallet()
+    h.unlock.mockRejectedValueOnce(
+      Object.assign(new StoredAddressMismatchError(), {
+        verdict: "wrong-key",
+        observed: { credentialId: "cred", attachment: "platform" },
+      }),
+    )
+    await render()
+    await tapUnlock()
+    expect(byTestId("unlock-phone")).toBeNull()
+    expect(byTestId("unlock-show-passkeys")).not.toBeNull()
+    expect(container.textContent).toContain(MISMATCH_COPY["wrong-key"].message!)
+  })
+
   it("no record for the active passkey goes straight to /enter", async () => {
     walletStorage.removeItem("obsidion.obsidion_web_passkey_identity_map")
     h.wallet = new FakeWallet()

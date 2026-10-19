@@ -26,6 +26,15 @@ const RELEASED: ReadonlySet<WithdrawalRecord["phase"]> = new Set<WithdrawalRecor
   "recovered",
 ])
 
+/** What a withdrawal record's burn pays for, as the exit events' `kind` reports it. */
+export function withdrawKind(r: WithdrawalRecord): "withdraw" | "savings" | "paylink" {
+  return r.skyMove ? "savings" : r.source === "paylink" ? "paylink" : "withdraw"
+}
+
+/** A user's own cash-out. A legacy split withdrawal counts once, by its funds leg. */
+const isUserWithdrawal = (r: WithdrawalRecord) =>
+  withdrawKind(r) === "withdraw" && !r.intent && r.groupLeg !== "gas"
+
 export interface FunnelEvent {
   event: Extract<AnalyticsEvent, `withdraw_final${string}`>
   props: AnalyticsProps
@@ -60,7 +69,7 @@ export function withdrawTransitions(
   const next: ReportedPhases = {}
   for (const r of records) {
     // A rescan's timestamps are the burn's, not this session's: nothing to measure.
-    if (r.rebuilt) continue
+    if (r.rebuilt || !isUserWithdrawal(r)) continue
     const prior = reported[r.localId]
     if (r.phase === "finalizing_l1") {
       if (prior === undefined)

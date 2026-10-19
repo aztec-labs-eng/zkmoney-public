@@ -16,11 +16,12 @@ import { SIGNER_BACKENDS, urlOrigin } from './config.js';
 
 const DEFAULT_SQLITE_PATH = '/data/oxide-relayer-{portal}.sqlite3';
 const DEFAULT_L1_OPERATIONS_RETRY_BACKOFF_MS = 30_000;
-const DEFAULT_L1_OPERATIONS_MAX_PENDING_AGE_SECONDS = 7 * 24 * 60 * 60;
+const DEFAULT_L1_OPERATIONS_MAX_PENDING_AGE_SECONDS = 2 * 7 * 24 * 60 * 60;
 
 export const RELAYER_ENV_VARS = [
   'OXIDE_DEPLOYMENT_ENV_MANIFEST_URL',
   'OXIDE_PORTAL',
+  'OXIDE_RELAYER_EXCLUDE_PORTALS',
   'READ_L1_RPC_URL',
   'L1_RPC_URL',
   'ETHEREUM_HOST',
@@ -77,6 +78,11 @@ export const RUN_OPTIONS: readonly CliOptionSpec[] = [
     env: 'OXIDE_DEPLOYMENT_ENV_MANIFEST_URL',
   },
   { flags: '--portal <address>', description: 'portal of the manifest deployment to run', env: 'OXIDE_PORTAL' },
+  {
+    flags: '--exclude-portals <addresses>',
+    description: 'comma-separated portals of manifest deployments that get no L1-operations worker',
+    env: 'OXIDE_RELAYER_EXCLUDE_PORTALS',
+  },
   {
     flags: '--read-l1-rpc <url>',
     description: 'L1 read RPC; L1 operations require eth_simulateV1; Sepolia also submits here; must not be Protect',

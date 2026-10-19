@@ -32,7 +32,7 @@ const MAX_BODY_BYTES = MAX_MESSAGE_SIZE + 4;
 
 function connectToEnclave(): Promise<net.Socket> {
   return new Promise((resolve, reject) => {
-    const sock = net.createConnection({ host: TCP_HOST, port: TCP_PORT }, () => resolve(sock));
+    const sock: net.Socket = net.createConnection({ host: TCP_HOST, port: TCP_PORT }, () => resolve(sock));
     sock.once('error', err => reject(err));
   });
 }
@@ -71,7 +71,13 @@ async function readReply(enclave: net.Socket, signal: AbortSignal): Promise<Buff
 async function proxyRpc(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const clientGone = new AbortController();
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
-  const signal = AbortSignal.any([clientGone.signal, timeout]);
+  // AbortSignal.any is available in the Node 24 runtime but missing from this
+  // workspace's older TypeScript/Node type declarations.
+  const signal = (
+    AbortSignal as typeof AbortSignal & {
+      any(signals: AbortSignal[]): AbortSignal;
+    }
+  ).any([clientGone.signal, timeout]);
   res.once('close', () => clientGone.abort());
 
   const enclave = await connectToEnclave();

@@ -1,11 +1,17 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react"
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
 import { useNavigate } from "react-router-dom"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
-import { canSelfFinalizeWithdrawal, useAztecContext, withdrawalAmounts } from "@obsidion/front-core"
-import { Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
+import {
+  canSelfFinalizeWithdrawal,
+  useAztecContext,
+  withdrawalAmounts,
+  type WithdrawalRecord,
+} from "@obsidion/front-core"
+import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
 import { fireEvent } from "../../lib/analytics"
-import { shortAddr, usdFigure } from "../../ui/format"
+import { shortL1Addr, usdFigure } from "../../ui/format"
+import { BalanceSkeleton } from "../../ui/Skeletons"
 import type { EntryOpener, NotificationScope } from "../../ui/NotificationsPanel"
 import { NotificationsBell } from "../../ui/NotificationsBell"
 import { withdrawalStatus } from "../../ui/screens/WithdrawalDetailModal"
@@ -18,7 +24,7 @@ import { swapExitReasonFor, type SwapExitReason } from "../withdraw/swapRecovery
 import { WithdrawalExitModal } from "../withdraw/WithdrawalExitModal"
 import { InvitationChrome } from "../onboarding/InvitationChrome"
 import { clearTicketSignup, stashClaimLink, stashTicketSignup } from "./claimStash"
-import { useGoldenTicketOffer } from "./goldenTicketOffer"
+import { useGoldenTicketOffer, type GoldenTicketOffer } from "./goldenTicketOffer"
 import { PaylinkOnboardingScreen } from "./PaylinkOnboardingScreen"
 import { ticketSignupCommitted, ticketSignupResumable } from "./ticketContinuation"
 import {
@@ -34,6 +40,7 @@ import { claimWaitSeconds, useClaimCountdown } from "./claimWindow"
 import { cashOutLink, planCashOutSwap } from "./paylinkExit"
 import { useLinkVoucher, useLinkWithdrawal } from "./usePaylinkDeps"
 import { CLOSED_LINK_COPY } from "./claimWindow"
+import { senderLine } from "./senderLine"
 import type { PaymentLink } from "./types"
 
 /**
@@ -51,12 +58,16 @@ import type { PaymentLink } from "./types"
 export function PaylinkVisitorScreen({
   link,
   statusSettled = true,
+  noteMissed = false,
   onRetryStatus,
 }: {
   link: PaymentLink
-  /** The page's status read is over. The voucher read registers the same escrow, and a PXE
-   *  cannot take two registrations of one contract at once; held until the first is done. */
+  /** The page's status read is over. The voucher read waits for it: a fresh escrow's note is
+   *  readable only a few blocks late, and the voucher read would miss it the same way. */
   statusSettled?: boolean
+  /** The status reads stopped without the note: this tab's earlier read shows its amount and
+   *  window, but not the token the cash-out prices its fee in. */
+  noteMissed?: boolean
   /** Reads the link's status again. */
   onRetryStatus: () => void
 }) {
@@ -66,8 +77,9 @@ export function PaylinkVisitorScreen({
   const chainNow = usePolledChainSeconds(obsidionWallet?.node)
   const claimWait = claimWaitSeconds(link.claimableFrom, chainNow)
   const countdown = useClaimCountdown(claimWait, chainNow, obsidionWallet?.node)
-  // The status reads stopped without the note, so the window stays unknown until a re-read.
-  const unreadable = statusSettled && link.status === "unclaimed" && link.claimableFrom == null
+  // The status reads stopped without the note, so the cash-out waits on a re-read.
+  const unreadable =
+    statusSettled && link.status === "unclaimed" && (noteMissed || link.claimableFrom == null)
   const { uses, deps, error, retry } = useLinkVoucher(link, { enabled: statusSettled })
   const withdrawal = useLinkWithdrawal(link)
   const [signup, setSignup] = useState(false)
@@ -153,6 +165,9 @@ export function PaylinkVisitorScreen({
     amount,
     canCashOut && !ticketSignupResumable(link.fragment),
   )
+  // Whether the network offered to pay this visitor's registration; unset until that is known.
+  const ticketOffered =
+    offer === undefined || eligibility === "unknown" ? undefined : eligibility === "eligible"
   // The status reads stopped without the note: their re-read is the retry.
   const amountFailed = eligibility === "unknown" && statusSettled
   const thresholdNote =
@@ -173,14 +188,20 @@ export function PaylinkVisitorScreen({
     if (offer === undefined || ticketUnread) return
     const ticket = !!offer && canCashOut
     if (eligibility !== undefined && eligibility !== "eligible") return
-    fireEvent("paylink_visitor_chose", { choice: "account", ticket })
+    fireEvent("paylink_visitor_chose", { choice: "account", ticket: ticketOffered })
     if (ticket) {
       stashTicketSignup({
         fragment: link.fragment,
         threshold: offer.threshold,
         schedule: offer.schedule,
         ...(link.memo ? { memo: link.memo } : {}),
+        ...(link.senderTag ? { senderTag: link.senderTag } : {}),
         amount,
+        // Home claims off this read rather than waiting on its own.
+        ...(link.claimableFrom != null ? { claimableFrom: link.claimableFrom } : {}),
+        ...(link.claimableUntil != null ? { claimableUntil: link.claimableUntil } : {}),
+        ...(link.tokenAddress ? { tokenAddress: link.tokenAddress } : {}),
+        ...(link.txHash ? { txHash: link.txHash } : {}),
       })
     } else clearTicketSignup()
     setTicketSignup(ticket)
@@ -188,49 +209,32 @@ export function PaylinkVisitorScreen({
     setSignup(true)
   }
 
+  // A link whose ticket signup already holds a passkey or a registration goes straight back into
+  // it, as after the reload that follows the passkey's creation; the choice was already made.
+  const resumable = ticketSignupResumable(link.fragment)
+  const resumed = useRef(false)
+  useEffect(() => {
+    if (resumed.current || signup || tracking || !resumable) return
+    if (offer === undefined || ticketUnread) return
+    resumed.current = true
+    startSignup()
+  })
+
   const closed = link.status === "unclaimed" ? undefined : CLOSED_LINK_COPY[link.status]
   const summary = (
-    <>
-      <span className="ww-invite-modal-badge">
-        <Icon name="link" size={32} color="#fff" />
-      </span>
-      <div className="ww-paylink-summary">
-        <span className="ww-paylink-summary__label">
-          {tracking ? "You withdrew" : closed ? closed.title : "Someone sent you"}
-        </span>
-        {/* A cash-out spends the escrow note the link's amount is read from; the record keeps it,
-            gross of the fee the receipt itemizes. */}
-        {tracking ? (
-          <span className="ww-paylink-summary__amount">
-            {usdFigure(withdrawalAmounts(withdrawal).grossDisplay)}
-          </span>
-        ) : (
-          link.amount && <span className="ww-paylink-summary__amount">${link.amount}</span>
-        )}
-        {link.memo && <span className="ww-paylink-summary__note">{link.memo}</span>}
-      </div>
-      {link.flavor === "email" && link.email && !tracking && (
-        <span className="ww-paylink-summary__pill">
-          EMAIL <b>{link.email}</b>
-        </span>
-      )}
-      {(tracking || closed || (known && !canCashOut)) && (
-        <p className="ww-paylink-summary__caption">
-          {tracking
-            ? `${withdrawalStatus(withdrawal).label} — to ${shortAddr(withdrawal.recipient)}`
-            : closed
-            ? closed.caption
-            : "Log in or sign up to zk.money to receive your payment"}
-        </p>
-      )}
-    </>
+    <VisitorSummary
+      link={link}
+      statusSettled={statusSettled}
+      withdrawal={tracking ? withdrawal : undefined}
+      noVoucher={known && !canCashOut}
+    />
   )
 
   let page: ReactNode
   if (tracking) {
     page = (
       <InvitationChrome actions={bell}>
-        <div className="ww-invite__content ww-invite__content--landing">
+        <div className="ww-invite__content ww-invite__content--landing ww-invite__content--visitor">
           {summary}
           <p className="ww-invite-modal-foot">
             <TabLine operationId={withdrawal.operationId} place="page" />
@@ -265,7 +269,9 @@ export function PaylinkVisitorScreen({
     // cashing out reads as claimed once the burn lands, so that sheet stays up until it resolves.
     page = (
       <InvitationChrome actions={bell}>
-        <div className="ww-invite__content ww-invite__content--landing">{summary}</div>
+        <div className="ww-invite__content ww-invite__content--landing ww-invite__content--visitor">
+          {summary}
+        </div>
       </InvitationChrome>
     )
   } else if (choosing) {
@@ -273,7 +279,7 @@ export function PaylinkVisitorScreen({
     const externalCaption = error
       ? "Couldn't check availability."
       : checking
-      ? "Checking availability…"
+      ? EXTERNAL_CHECKING_NOTE
       : unreadable
       ? "Couldn't check when this link can be claimed. Tap to try again."
       : countdown
@@ -281,97 +287,46 @@ export function PaylinkVisitorScreen({
       : !deps
       ? "Connecting…"
       : "Slower. Public onchain payment."
+    const externalPending = !error && (checking || (!unreadable && !countdown && !deps))
     page = (
       <InvitationChrome actions={bell}>
-        <div className="ww-invite__content ww-invite__content--landing">
+        <div className="ww-invite__content ww-invite__content--landing ww-invite__content--visitor">
           {summary}
-          <p className="ww-paylink-summary__caption">Choose how to receive payment</p>
-          <div className="ww-paymethods">
-            {/* Until the offer, voucher and amount are read the button promises nothing: a click
-                here would have to pick the paid signup for a visitor the link may be about to pay
-                for. A read that failed is not a confirmed absence, so the click retries it. */}
-            <button
-              type="button"
-              className="zkm-btn-reset zkm-pressable ww-deposit__connect ww-paymethod ww-paymethod--best"
-              disabled={signup || accountChecking || thresholdNote !== undefined}
-              onClick={accountRetry ?? startSignup}
-            >
-              {offer !== undefined && (
-                <span className="ww-paymethod__flag">
-                  <span>Private</span>
-                </span>
-              )}
-              <span className="ww-deposit__connect-icon">
-                <Icon name="lock-shield" size={24} color="#fff" />
-              </span>
-              <span className="ww-deposit__connect-text">
-                <b>Receive to zk.money</b>
-                <span>
-                  {accountRetry
-                    ? "Couldn't check what this link pays for. Tap to try again."
-                    : accountChecking
-                    ? "Checking what this link pays for…"
-                    : thresholdNote
-                    ? thresholdNote
-                    : offer === null
-                    ? "Create an account to receive it. Your balance stays private."
-                    : "Instant. Your balance stays private."}
-                </span>
-              </span>
-              {accountChecking ? (
-                <Spinner size={16} />
-              ) : (
-                <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
-              )}
-            </button>
-            <button
-              type="button"
-              className="zkm-btn-reset zkm-pressable ww-deposit__connect ww-paymethod"
-              disabled={
-                !known || !canCashOut || signup || (!unreadable && (!deps || claimWait !== 0))
-              }
-              onClick={() => {
+          <VisitorChoices
+            privateFlag={offer !== undefined}
+            account={{
+              // Until the offer, voucher and amount are read the button promises nothing: a click
+              // here would have to pick the paid signup for a visitor the link may be about to pay
+              // for. A read that failed is not a confirmed absence, so the click retries it.
+              disabled: signup || accountChecking || thresholdNote !== undefined,
+              onClick: accountRetry ?? startSignup,
+              pending: accountChecking,
+              note: accountRetry
+                ? "Couldn't check what this link pays for. Tap to try again."
+                : accountChecking
+                ? ACCOUNT_CHECKING_NOTE
+                : thresholdNote
+                ? thresholdNote
+                : offer === null
+                ? "Create an account to receive it. Your balance stays private."
+                : "Instant. Your balance stays private.",
+            }}
+            external={{
+              disabled:
+                !known || !canCashOut || signup || (!unreadable && (!deps || claimWait !== 0)),
+              onClick: () => {
                 if (unreadable) return onRetryStatus()
-                fireEvent("paylink_visitor_chose", {
-                  choice: "ethereum",
-                  // Whether a free account was on offer; unset while that read is pending or failed.
-                  ...(offer !== undefined ? { ticket: Boolean(offer) } : {}),
-                })
+                fireEvent("paylink_visitor_chose", { choice: "ethereum", ticket: ticketOffered })
                 setCashOut(true)
-              }}
-            >
-              <span className="ww-deposit__connect-icon">
-                <Icon name="wallet" size={24} color="#fff" />
-              </span>
-              <span className="ww-deposit__connect-text">
-                <b>Claim to an Ethereum wallet</b>
-                <span>{externalCaption}</span>
-              </span>
-              {checking && !error ? (
-                <Spinner size={16} />
-              ) : (
-                <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
-              )}
-            </button>
-          </div>
-          {error && (
-            <>
-              <p className="ww-invite-modal-error" role="alert">
-                {error}
-              </p>
-              <PrimaryGradientButton title="Try again" buttonStyle="dark" onClick={retry} />
-            </>
-          )}
-          <p className="ww-invite-modal-foot">
-            Already have an account?{" "}
-            <button
-              type="button"
-              className="zkm-btn-reset ww-invite__link"
-              onClick={() => navigate("/enter")}
-            >
-              Log in
-            </button>
-          </p>
+              },
+              pending: externalPending,
+              note: externalCaption,
+            }}
+            error={error}
+            onRetry={retry}
+            // The passkey prompt, not the key this browser last held: that may be this link's own signup.
+            onLogIn={() => navigate("/enter?choose=1")}
+          />
         </div>
         {signup && ticketSignup && (
           <PaylinkOnboardingScreen
@@ -445,4 +400,178 @@ export function PaylinkVisitorScreen({
       )}
     </>
   )
+}
+
+const ACCOUNT_CHECKING_NOTE = "Checking what this link pays for…"
+const EXTERNAL_CHECKING_NOTE = "Checking availability…"
+
+/**
+ * The page before any of its reads, as the wallet first renders it: shown while the wallet starts,
+ * so it paints before the PXE without looking different once the page itself takes over. Taps that
+ * need the wallet wait for it.
+ */
+export function PaylinkVisitorPending({
+  link,
+  offer,
+  bell,
+  onLogIn,
+}: {
+  link: PaymentLink
+  /** The network's ticket offer, once read. */
+  offer: GoldenTicketOffer | null | undefined
+  bell: ReactNode
+  onLogIn: () => void
+}) {
+  return (
+    <InvitationChrome actions={bell}>
+      <div className="ww-invite__content ww-invite__content--landing ww-invite__content--visitor">
+        <VisitorSummary link={link} statusSettled={false} noVoucher={false} />
+        {link.status === "unclaimed" && (
+          <VisitorChoices
+            privateFlag={offer !== undefined}
+            account={{ disabled: true, pending: true, note: ACCOUNT_CHECKING_NOTE }}
+            external={{ disabled: true, pending: true, note: EXTERNAL_CHECKING_NOTE }}
+            onLogIn={onLogIn}
+          />
+        )}
+      </div>
+    </InvitationChrome>
+  )
+}
+
+/** What the link pays, or why it no longer can, or the cash-out this browser made with it. */
+function VisitorSummary({
+  link,
+  statusSettled,
+  withdrawal,
+  noVoucher,
+}: {
+  link: PaymentLink
+  statusSettled: boolean
+  /** This browser's cash-out of the link, which the summary reports instead. */
+  withdrawal?: WithdrawalRecord
+  /** The voucher read found no way to cash the link out. */
+  noVoucher: boolean
+}) {
+  const closed = link.status === "unclaimed" ? undefined : CLOSED_LINK_COPY[link.status]
+  return (
+    <>
+      <span className="ww-invite-modal-badge">
+        <Icon name="link" size={32} color="#fff" />
+      </span>
+      <div className="ww-paylink-summary">
+        <span className="ww-paylink-summary__label">
+          {withdrawal ? "You withdrew" : closed ? closed.title : senderLine(link.senderTag)}
+        </span>
+        {/* A cash-out spends the escrow note the link's amount is read from; the record keeps it,
+            gross of the fee the receipt itemizes. */}
+        {withdrawal ? (
+          <span className="ww-paylink-summary__amount">
+            {usdFigure(withdrawalAmounts(withdrawal).grossDisplay)}
+          </span>
+        ) : link.amount ? (
+          <span className="ww-paylink-summary__amount">${link.amount}</span>
+        ) : (
+          // The amount's line (40px/1.3), held while the note is read.
+          !closed && !statusSettled && <BalanceSkeleton width={120} height={40} />
+        )}
+        {link.memo && <span className="ww-paylink-summary__note">{link.memo}</span>}
+      </div>
+      {link.flavor === "email" && link.email && !withdrawal && (
+        <span className="ww-paylink-summary__pill">
+          EMAIL <b>{link.email}</b>
+        </span>
+      )}
+      {(withdrawal || closed || noVoucher) && (
+        <p className="ww-paylink-summary__caption">
+          {withdrawal
+            ? `${withdrawalStatus(withdrawal).label} — to ${shortL1Addr(withdrawal.recipient)}`
+            : closed
+            ? closed.caption
+            : "Log in or sign up to zk.money to receive your payment"}
+        </p>
+      )}
+    </>
+  )
+}
+
+type VisitorOption = { disabled: boolean; onClick?: () => void; pending: boolean; note: string }
+
+/** The two ways to receive the link's funds, and the way in for an existing account. */
+function VisitorChoices({
+  privateFlag,
+  account,
+  external,
+  error,
+  onRetry,
+  onLogIn,
+}: {
+  privateFlag: boolean
+  account: VisitorOption
+  external: VisitorOption
+  error?: string
+  onRetry?: () => void
+  onLogIn: () => void
+}) {
+  return (
+    <>
+      <p className="ww-paylink-summary__caption">Choose how to receive payment</p>
+      <div className="ww-paymethods">
+        <button
+          type="button"
+          className="zkm-btn-reset zkm-pressable ww-deposit__connect ww-paymethod ww-paymethod--best"
+          disabled={account.disabled}
+          onClick={account.onClick}
+        >
+          {privateFlag && (
+            <span className="ww-paymethod__flag">
+              <span>Private</span>
+            </span>
+          )}
+          <span className="ww-deposit__connect-icon">
+            <Icon name="lock-shield" size={24} color="#fff" />
+          </span>
+          <span className="ww-deposit__connect-text">
+            <b>Receive to zk.money</b>
+            <OptionNote pending={account.pending}>{account.note}</OptionNote>
+          </span>
+          <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
+        </button>
+        <button
+          type="button"
+          className="zkm-btn-reset zkm-pressable ww-deposit__connect ww-paymethod"
+          disabled={external.disabled}
+          onClick={external.onClick}
+        >
+          <span className="ww-deposit__connect-icon">
+            <Icon name="wallet" size={24} color="#fff" />
+          </span>
+          <span className="ww-deposit__connect-text">
+            <b>Claim to an Ethereum wallet</b>
+            <OptionNote pending={external.pending}>{external.note}</OptionNote>
+          </span>
+          <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
+        </button>
+      </div>
+      {error && (
+        <>
+          <p className="ww-invite-modal-error" role="alert">
+            {error}
+          </p>
+          <PrimaryGradientButton title="Try again" buttonStyle="dark" onClick={onRetry} />
+        </>
+      )}
+      <p className="ww-invite-modal-foot">
+        Already have an account?{" "}
+        <button type="button" className="zkm-btn-reset ww-invite__link" onClick={onLogIn}>
+          Log in
+        </button>
+      </p>
+    </>
+  )
+}
+
+/** An option's second line, which pulses like the app's loading shimmer while its answer is pending. */
+function OptionNote({ pending, children }: { pending: boolean; children: ReactNode }) {
+  return <span aria-busy={pending || undefined}>{children}</span>
 }
