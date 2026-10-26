@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const h = vi.hoisted(() => ({
   versions: new Map<string, string>(),
+  rollups: new Map<string, string>(),
   getNodeInfo: vi.fn(),
   getSecretKey: vi.fn(async () => "0x01"),
 }))
@@ -18,6 +19,7 @@ vi.mock("../src/config/env", () => ({
     nodeUrl: "https://v6.rpc.example",
     nodeApiKey: "key",
     sourceRollupApiKey: "build-key",
+    sourceRollups: [{ nodeUrl: "https://v6r.rpc.example" }, { nodeUrl: "https://v5r.rpc.example" }],
   }),
 }))
 vi.mock("../src/platform/auth/useAuthenticator", () => ({
@@ -30,6 +32,7 @@ const {
   isOtherGeneration,
   loadSourceGeneration,
   nodeAztecMajor,
+  retiredRollupMajor,
   sourceAccountKeys,
   withSourceSigner,
 } = await import("../src/platform/sourceGeneration")
@@ -38,6 +41,7 @@ beforeEach(() => {
   h.getNodeInfo.mockReset()
   h.getNodeInfo.mockImplementation(async (url: string) => ({
     nodeVersion: h.versions.get(url),
+    l1ContractAddresses: { rollupAddress: h.rollups.get(url) ?? "0x00" },
   }))
   h.versions.set("https://v6.rpc.example", "6.0.0")
 })
@@ -64,6 +68,33 @@ describe("isOtherGeneration", () => {
     h.versions.set("https://v6b.rpc.example", "6.1.0")
     await expect(isOtherGeneration("https://v5.rpc.example")).resolves.toBe(true)
     await expect(isOtherGeneration("https://v6b.rpc.example")).resolves.toBe(false)
+  })
+})
+
+describe("retiredRollupMajor", () => {
+  it("names the major of a source rollup on another generation, and nothing for the active one", async () => {
+    h.versions.set("https://v5r.rpc.example", "5.2.0")
+    h.rollups.set("https://v5r.rpc.example", "0x5555")
+    h.versions.set("https://v6r.rpc.example", "6.1.0")
+    h.rollups.set("https://v6r.rpc.example", "0x6666")
+    await expect(retiredRollupMajor("0x5555")).resolves.toBe("5")
+    await expect(retiredRollupMajor("0x6666")).resolves.toBeUndefined()
+    await expect(retiredRollupMajor("0x7777")).resolves.toBeUndefined()
+  })
+
+  it("still names the source rollup's major when the active node does not answer", async () => {
+    vi.resetModules()
+    const fresh = await import("../src/platform/sourceGeneration")
+    h.versions.set("https://v5r.rpc.example", "5.2.0")
+    h.rollups.set("https://v5r.rpc.example", "0x5555")
+    h.getNodeInfo.mockImplementation(async (url: string) => {
+      if (url === "https://v6.rpc.example") throw new Error("down")
+      return {
+        nodeVersion: h.versions.get(url),
+        l1ContractAddresses: { rollupAddress: h.rollups.get(url) ?? "0x00" },
+      }
+    })
+    await expect(fresh.retiredRollupMajor("0x5555")).resolves.toBe("5")
   })
 })
 

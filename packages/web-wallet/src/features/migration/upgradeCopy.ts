@@ -95,6 +95,7 @@ const published = (record: MetadataMigrationRecord) =>
 /** A recipient still on an old version, who can't be paid or asked until they upgrade. */
 export const recipientNotUpgradedCopy = {
   title: (tag: string) => `@${tag} hasn't upgraded yet`,
+  badge: "Not upgraded",
   searchSubtitle: "See your history. Send funds once they upgrade.",
   payHint: (tag: string) =>
     `@${tag} hasn't upgraded yet. You can send or request funds once they upgrade.`,

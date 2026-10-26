@@ -315,6 +315,18 @@ describe("buildChatMessages", () => {
     expect(result[0].role).toBe("received-confirmed")
   })
 
+  it("matches transfers to a retired address of the contact", () => {
+    const upgraded = { ...maria, address: THEO_ADDRESS, retiredAddresses: [MARIA_ADDRESS] }
+    const transactions = [
+      tokenTx({ action: "send", to: MARIA_ADDRESS, txHash: "0xold" }),
+      tokenTx({ action: "send", to: THEO_ADDRESS, txHash: "0xnew", timestamp: 1_700_000_000_001 }),
+    ]
+    expect(buildChatMessages(upgraded, { transactions }).map((m) => m.id)).toEqual([
+      "0xold",
+      "0xnew",
+    ])
+  })
+
   it("returns empty array when the contact has no address", () => {
     const tx = tokenTx({ action: "send", to: MARIA_ADDRESS })
     const r = request({ status: "pending" })

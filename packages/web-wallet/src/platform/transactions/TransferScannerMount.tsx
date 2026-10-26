@@ -41,7 +41,10 @@ import {
 import { getConfig } from "../../config/env"
 import { resolveTagForCommit } from "../../features/contacts/registryResolution"
 import { loadWalletIdentity } from "../../features/identity/walletIdentity"
-import { importHistoricActivityOnce } from "../../features/migration/historicActivityImport"
+import {
+  importHistoricActivityOnce,
+  importHistoricContactsOnce,
+} from "../../features/migration/historicActivityImport"
 import { upgradeFirst } from "../../features/migration/upgradeFirst"
 import { savingsRescanToken } from "../../features/savings/savingsGateway"
 import { rescanWithdrawals } from "../../features/withdraw/withdrawGateway"
@@ -105,6 +108,13 @@ export function TransferScannerMount(): null {
           err,
         ),
       )
+
+    void importHistoricContactsOnce().catch((err: unknown) =>
+      console.warn(
+        "[TransferScannerMount] historic contacts import failed (retried next boot)",
+        err,
+      ),
+    )
 
     void bootPriority
       .whenReady("withdrawalRescan")

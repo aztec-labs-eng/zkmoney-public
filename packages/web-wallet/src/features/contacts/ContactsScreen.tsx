@@ -5,24 +5,36 @@ import {
   useContactsDirectory,
   type ContactRow as DirectoryRow,
 } from "@obsidion/front-core"
-import { ContactRow, GradientText, Icon, TopNavIconButton, avatarColors } from "@obsidion/web-ds"
+import {
+  ContactRow,
+  GradientText,
+  Icon,
+  RowChevron,
+  StatusBadge,
+  TopNavIconButton,
+  avatarColors,
+} from "@obsidion/web-ds"
 import { PhoneIcon } from "../../ui/PhoneIcon"
 import { useShellActions } from "../../ui/AppShell"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { useBack } from "../../ui/hooks"
+import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
 import { REQUESTS_PATH } from "../requests/nonContactView"
 import { TagSearchBar } from "./TagSearchBar"
 import { useContactActivity } from "./useContactActivity"
+import { useNotUpgradedTags } from "./useNotUpgradedTags"
 import emptyArt from "../../assets/contacts/empty-contacts.webp"
 import { MessagingBanner } from "../../platform/xmtp/MessagingBanner"
 import { NonContactRequestsEntry } from "../requests/NonContactRequestsScreen"
 
-function ContactGroup({ label, contacts, phone }: {
+function ContactGroup({ label, contacts, phone, notUpgraded }: {
   label: string
   contacts: DirectoryRow[]
   phone: boolean
+  notUpgraded: ReadonlySet<string>
 }) {
   const navigate = useNavigate()
+  const chevron = phone ? <PhoneIcon name="chevron-right" size={16} color="#bfc2d7" /> : <RowChevron />
   return (
     <div className="ww-contacts__section">
       <span className="ww-contacts__label">{label}</span>
@@ -35,7 +47,16 @@ function ContactGroup({ label, contacts, phone }: {
             isL1={c.addressKind === "ethereum-l1"}
             colors={avatarColors(c.tag)}
             avatarStyle={phone ? { fontSize: 28, fontWeight: 500 } : undefined}
-            trailing={phone ? <PhoneIcon name="chevron-right" size={16} color="#bfc2d7" /> : undefined}
+            trailing={
+              notUpgraded.has(c.tag.toLowerCase()) ? (
+                <span className="ww-contacts__trailing">
+                  <StatusBadge label={recipientNotUpgradedCopy.badge} badgeStyle="pending" />
+                  {chevron}
+                </span>
+              ) : (
+                chevron
+              )
+            }
             onClick={() => navigate(`/contacts/${encodeURIComponent(c.id)}`)}
           />
         ))}
@@ -54,6 +75,9 @@ export function ContactsScreen() {
   const back = useBack(REQUESTS_PATH)
   const sources = useContactActivity(phone)
   const recent = useMemo(() => recentContacts(contacts, sources), [contacts, sources])
+  const notUpgraded = useNotUpgradedTags(
+    useMemo(() => contacts.filter((c) => c.addressKind === "aztec-l2").map((c) => c.tag), [contacts]),
+  )
 
   return (
     <div className="ww-panel ww-contacts">
@@ -109,8 +133,8 @@ export function ContactsScreen() {
       ) : (
         <div className="ww-panel__scroll">
           <NonContactRequestsEntry />
-          {phone && recent.length > 0 && <ContactGroup label="Recent contacts" contacts={recent} phone={phone} />}
-          <ContactGroup label="All contacts" contacts={contacts} phone={phone} />
+          {phone && recent.length > 0 && <ContactGroup label="Recent contacts" contacts={recent} phone={phone} notUpgraded={notUpgraded} />}
+          <ContactGroup label="All contacts" contacts={contacts} phone={phone} notUpgraded={notUpgraded} />
         </div>
       )}
     </div>

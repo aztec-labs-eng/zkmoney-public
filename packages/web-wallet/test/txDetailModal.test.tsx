@@ -26,7 +26,9 @@ vi.mock("../src/config/env", async (importOriginal) => ({
 vi.mock("../src/lib/explorer", () => ({
   l1TxUrl: () => null,
   l1AddressUrl: () => null,
-  l2TxUrl: (_n: string, _u: string, hash: string) => `https://l2.example/tx/${hash}`,
+}))
+vi.mock("../src/ui/useL2TxUrl", () => ({
+  useL2TxUrl: () => (hash: string) => `https://l2.example/tx/${hash}`,
 }))
 vi.mock("../src/features/paylink/sponsoredPaylink", () => ({ viewLink: vi.fn() }))
 vi.mock("../src/features/paylink/usePaylinkDeps", () => ({ usePaylinkDeps: () => undefined }))

@@ -77,6 +77,8 @@ export interface ActivityRowView {
   error?: string
   /** On-chain hash — drives the detail modal's explorer link. Unset for pre-submit synth rows. */
   txHash?: string
+  /** The rollup the row was made on; picks the explorer its hashes link to. */
+  networkId?: string
   /** Sender-attached memo, when the stored row carries one. */
   note?: string
   /** Stored claim URL — creator paylink rows only; drives the detail modal's share section. */
@@ -379,6 +381,7 @@ export function buildActivityRows(
         status: tx.status,
         error: failureReason(tx),
         txHash: tx.txHash || undefined,
+        networkId: tx.networkId,
         note: "memo" in tx && typeof tx.memo === "string" && tx.memo ? tx.memo : undefined,
         paylink,
         // A landed refund reads refunded before the reconciler flags the row; the Pending tab follows it.

@@ -3,6 +3,7 @@ import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
 import { siloNullifier } from "@aztec-labs/stdlib/hash"
+import type { BlockParameter } from "@aztec-labs/stdlib/block"
 import { MerkleTreeId } from "@aztec-labs/stdlib/trees"
 import type { FunctionCall } from "@aztec-labs/stdlib/abi"
 import type { ExecutionPayload } from "@aztec-labs/stdlib/tx"
@@ -25,18 +26,48 @@ export type MigrationSponsorship =
   | { kind: "bootstrap"; gate: SubscribeOptions["gate"] }
   | { kind: "registered" }
 
+/** Whether ClaimFPC's one-per-identity `subscribe` nullifier for `identity` on `railId` is spent as of `block`. */
+async function claimFpcSubscriptionSpent(
+  node: Pick<AztecNode, "findLeavesIndexes">,
+  fpc: SubscribeOptions["fpcAddress"],
+  identity: Fr,
+  railId: number,
+  block: BlockParameter,
+): Promise<boolean> {
+  const inner = await poseidon2HashWithSeparator([identity, new Fr(railId)], 1236)
+  const [leaf] = await node.findLeavesIndexes(block, MerkleTreeId.NULLIFIER_TREE, [
+    await siloNullifier(fpc, inner),
+  ])
+  return leaf !== undefined
+}
+
 /** Matches this wallet's ClaimFPC gate.nr and subscribe. Identity is L1 owner, independent of L2 address. */
-export async function claimFpcIdentitySubscribed(
+export function claimFpcIdentitySubscribed(
   node: Pick<AztecNode, "findLeavesIndexes">,
   fpc: SubscribeOptions["fpcAddress"],
   owner: Address,
   railId: number,
 ): Promise<boolean> {
-  const inner = await poseidon2HashWithSeparator([new Fr(BigInt(owner)), new Fr(railId)], 1236)
-  const [leaf] = await node.findLeavesIndexes("latest", MerkleTreeId.NULLIFIER_TREE, [
-    await siloNullifier(fpc, inner),
-  ])
-  return leaf !== undefined
+  return claimFpcSubscriptionSpent(node, fpc, new Fr(BigInt(owner)), railId, "latest")
+}
+
+/**
+ * Whether a bootstrap key subscribed on a registration-gated rail as of `block`, whichever flow or device sent it. The
+ * identity is bootstrap_key.nr's `bootstrap_key_identity`, over the key witness's two 16-byte halves.
+ */
+export async function claimFpcRegistrationSubscribed(
+  node: Pick<AztecNode, "findLeavesIndexes">,
+  fpc: SubscribeOptions["fpcAddress"],
+  keyWitness: Uint8Array,
+  railId: number,
+  block: BlockParameter = "latest",
+): Promise<boolean> {
+  const half = (bytes: Uint8Array) => new Fr(BigInt(`0x${Buffer.from(bytes).toString("hex")}`))
+  const identity = await poseidon2HashWithSeparator(
+    [half(keyWitness.subarray(0, 16)), half(keyWitness.subarray(16, 32))],
+    1241,
+  )
+  return claimFpcSubscriptionSpent(node, fpc, identity, railId, block)
 }
 
 export interface MigrationBootstrapOptions {

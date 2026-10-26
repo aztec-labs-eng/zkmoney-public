@@ -7,6 +7,10 @@ const chain = vi.hoisted(() => ({
   uses: 1,
   /** A subscription note whose allowance may be spent; defaults to having uses left. */
   subscribed: undefined as boolean | undefined,
+  /** The account's key subscribed on the registered rail, as of the node's latest block. */
+  registrationSubscribed: false,
+  /** ...and as of the block the wallet's note read is anchored at. */
+  registrationSeen: false,
   result: vi.fn(async (..._args: unknown[]): Promise<unknown> => undefined),
 }))
 vi.mock("../../src/services/metadataMigration.js", async (original) => ({
@@ -40,6 +44,7 @@ vi.mock("../../src/feePaymentMethod/claimFpcBatchGas.js", () => ({
 vi.mock("../../src/feePaymentMethod/claimSponsoredCall.js", async (original) => ({
   ...(await original<typeof import("../../src/feePaymentMethod/claimSponsoredCall.js")>()),
   buildClaimSponsorPayload: async () => ({}),
+  buildClaimSubscribePayload: async () => ({}),
 }))
 vi.mock("../../src/services/registrationMessage.js", () => ({
   registrationInbox: () => ({}),
@@ -48,6 +53,8 @@ vi.mock("../../src/services/registrationMessage.js", () => ({
 vi.mock("../../src/services/migrationBootstrap.js", () => ({
   prepareMigrationBootstrap: vi.fn(),
   claimFpcIdentitySubscribed: async () => true,
+  claimFpcRegistrationSubscribed: async (...args: unknown[]) =>
+    args[4] === undefined ? chain.registrationSubscribed : chain.registrationSeen,
 }))
 
 import { MigrationHaltedError, StalePlanError } from "../../src/services/metadataMigration.js"
@@ -60,6 +67,8 @@ beforeEach(() => {
   chain.recordCurrent = false
   chain.uses = 1
   chain.subscribed = undefined
+  chain.registrationSubscribed = false
+  chain.registrationSeen = false
   chain.result.mockReset()
 })
 
@@ -138,6 +147,7 @@ describe("a saved plan", () => {
         executionResult: TxExecutionResult.SUCCESS,
       }),
     )
+    const sendTx = vi.fn(async () => {})
     const service = new MetadataMigrationService({
       source,
       client,
@@ -152,7 +162,19 @@ describe("a saved plan", () => {
       },
       bootstrap: { fpcAddress: fpc, user: fpc, railId: 0 },
       registered: { fpcAddress: fpc, user: fpc, railId: 1 },
+      registrationKeyProof: () => ({ keyWitness: new Uint8Array(32) }),
       wallet: {
+        sendTx,
+        pxe: {
+          getSyncedBlockHeader: async () => ({
+            globalVariables: { blockNumber: 10 },
+            hash: async () => "0xanchor",
+          }),
+        },
+        getSnapshot: async (read: () => Promise<unknown>) => ({
+          value: await read(),
+          anchorBlock: 10,
+        }),
         simulateTx: async () => {
           throw new Error("allowance exhausted")
         },
@@ -177,7 +199,7 @@ describe("a saved plan", () => {
       })
     const observe = async (published = true) =>
       service.observe({ plan: await plan(), ...(published ? { bootstrapTx } : {}) })
-    return { service, source, client, plan, observe, receipt }
+    return { service, source, client, plan, observe, receipt, sendTx }
   }
 
   describe("observed before recurring sponsorship", () => {
@@ -270,6 +292,46 @@ describe("a saved plan", () => {
       chain.recordCurrent = true
       chain.result.mockResolvedValue({ status: "failed", txHash: "0x01", revertReason: "0x" })
       expect(await observing().observe()).toMatchObject({ metadataSettled: true })
+    })
+  })
+
+  describe("activating sponsorship", () => {
+    beforeEach(() => {
+      chain.recordCurrent = true
+    })
+
+    it("sends nothing once the account holds the registered rail's note", async () => {
+      chain.registrationSubscribed = true
+      chain.subscribed = true
+      const f = observing()
+      await f.service.subscribe(await f.plan(), async () => {})
+      expect(f.sendTx).not.toHaveBeenCalled()
+    })
+
+    it("sends nothing while the note read's anchor has not seen the key's subscription", async () => {
+      chain.registrationSubscribed = true
+      chain.subscribed = false
+      const f = observing()
+      await f.service.subscribe(await f.plan(), async () => {})
+      expect(f.sendTx).not.toHaveBeenCalled()
+    })
+
+    it("stops without sending when the key subscribed but this account holds no note", async () => {
+      chain.registrationSubscribed = true
+      chain.registrationSeen = true
+      chain.subscribed = false
+      const f = observing()
+      await expect(f.service.subscribe(await f.plan(), async () => {})).rejects.toThrow(
+        "already subscribed",
+      )
+      expect(f.sendTx).not.toHaveBeenCalled()
+    })
+
+    it("subscribes when the key has not", async () => {
+      chain.subscribed = false
+      const f = observing()
+      await f.service.subscribe(await f.plan(), async () => {})
+      expect(f.sendTx).toHaveBeenCalledTimes(1)
     })
   })
 

@@ -2,6 +2,7 @@ import { NO_FROM } from "@aztec-labs/aztec.js/account"
 import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 import { Fr } from "@aztec-labs/aztec.js/fields"
 import { TxHash, TxStatus, TxExecutionResult } from "@aztec-labs/stdlib/tx"
+import type { BlockParameter } from "@aztec-labs/stdlib/block"
 import type { FunctionCall } from "@aztec-labs/stdlib/abi"
 import {
   encodeUserRecordMetadata,
@@ -29,6 +30,7 @@ import {
 import {
   prepareMigrationBootstrap,
   claimFpcIdentitySubscribed,
+  claimFpcRegistrationSubscribed,
   type MigrationBootstrapOptions,
 } from "./migrationBootstrap.js"
 import {
@@ -578,6 +580,11 @@ export class MetadataMigrationService {
     return "unknown"
   }
 
+  /**
+   * Activate the registered rail. Another flow of the wallet, such as the deposit-address ledger, can subscribe the
+   * account first: the run then sends nothing. The rail admits one subscription per key, so a key that subscribed
+   * with no note this wallet holds for the account, once it has synced past that subscription, stops the run instead.
+   */
   async subscribe(
     raw: string,
     onTxHash: (txHash: string) => Promise<void>,
@@ -594,6 +601,33 @@ export class MetadataMigrationService {
     const { message, nameHash } = await this.attestation(BigInt(plan.fromBlock))
     if (message?.status !== "ready")
       throw new Error("The registration attestation is not available to subscribe")
+    const keyProof = o.registrationKeyProof(nameHash)
+    const subscribed = (block?: BlockParameter) =>
+      claimFpcRegistrationSubscribed(
+        o.wallet.node,
+        o.registered.fpcAddress,
+        keyProof.keyWitness,
+        o.registered.railId,
+        block,
+      )
+    if (await subscribed()) {
+      // The note and the subscription are read at one anchor.
+      const { value } = await o.wallet.getSnapshot(async () => ({
+        held: await hasClaimFpcSubscription(
+          o.wallet,
+          o.registered.fpcAddress,
+          o.registered.fpcArtifact,
+          o.registered.user,
+          o.registered.railId,
+        ),
+        seen: await subscribed(await (await o.wallet.pxe.getSyncedBlockHeader()).hash()),
+      }))
+      // An anchor that has not seen the subscription reads again on a later pass.
+      if (value.held || !value.seen) return
+      throw new Error(
+        "The account's key already subscribed on the registered rail, and this wallet holds no subscription note for the account",
+      )
+    }
     // ClaimFPC requires at least one real batched call: publish the ordinary receive SIPA.
     const innerCalls = await this.receiveCalls(plan.day, plan.nonce)
     const payload = await buildClaimSubscribePayload({
@@ -601,7 +635,7 @@ export class MetadataMigrationService {
       innerCalls,
       gate: {
         kind: "registration",
-        ...o.registrationKeyProof(nameHash),
+        ...keyProof,
         leafIndex: new Fr(message.leafIndex),
       },
     })

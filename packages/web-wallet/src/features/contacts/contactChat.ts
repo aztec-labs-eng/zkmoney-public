@@ -27,6 +27,7 @@ export function selectedContactOf(entry: Contact): SelectedContact {
       name: row.name,
       tag: row.tag,
       address: row.address,
+      retiredAddresses: entry.retiredAddresses,
       addressKind: row.addressKind,
       provenance: row.provenance,
     }

@@ -281,4 +281,19 @@ describe("BootSplash", () => {
     expect(document.body.dataset.booting).toBe("shell")
     observer.disconnect()
   })
+
+  it("takes taps only while a copy covers the wallet", () => {
+    act(() => root.render(<BootSplash key="unlock" inShell />))
+    expect(document.body.dataset.bootCovers).toBeUndefined()
+
+    act(() => root.render(<BootSplash key="choice" covers />))
+    expect(document.body.dataset.bootCovers).toBe("")
+
+    act(() => root.render(<BootSplash key="rail" inShell />))
+    expect(document.body.dataset.bootCovers).toBeUndefined()
+
+    act(() => root.render(<BootSplash key="choice" covers />))
+    act(() => root.render(<p>Home</p>))
+    expect(document.body.dataset.bootCovers).toBeUndefined()
+  })
 })

@@ -3623,6 +3623,12 @@
   border-radius: 12px;
   background: rgba(255, 255, 255, 0.05);
 }
+.ww-contacts__trailing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
 /* Send and Receive are sibling tabs whose contact lists differ — Receive shows only @tag contacts.
    The empty state holds a one-row group's height (12px padding, a 48px row, 12px padding) so what
    follows it does not move when you switch. */

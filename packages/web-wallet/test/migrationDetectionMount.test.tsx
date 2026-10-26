@@ -1,7 +1,7 @@
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { MemoryRouter } from "react-router-dom"
+import { MemoryRouter, useNavigate } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { HistoricResidualSummary } from "../src/features/migration/historicResiduals"
 import type { MigrationSourceQuote } from "@obsidion/sdk"
@@ -34,6 +34,7 @@ const h = vi.hoisted(() => ({
   tokenCreate: vi.fn(),
   featureListed: vi.fn(async () => false),
   recordStale: vi.fn(),
+  event: vi.fn(),
   /** A saved run's storage key by source portal; one key for every source when absent. */
   keyFor: undefined as undefined | ((portal: string) => string),
 }))
@@ -179,6 +180,10 @@ vi.mock("../src/features/migration/migrationFee", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/migration/migrationFee")>()),
   loadMigrationFee: h.fee,
 }))
+vi.mock("../src/lib/analytics", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/analytics")>()),
+  fireEvent: h.event,
+}))
 
 const { showReportableError } = await import("../src/errors/errorModal")
 const { webStorage } = await import("../src/platform/storage/WebStorageAdapter")
@@ -200,9 +205,9 @@ const { openMigrationDialog, useUpgradeStatus } = await import(
   "../src/features/migration/migrationDialog"
 )
 const { UpgradeKeepOpenBanner } = await import("../src/features/migration/UpgradeIntro")
-const { markOldHoldingsRead, oldVersionScope, useOldVersionHoldings } = await import(
-  "../src/features/migration/oldVersionBalance"
-)
+const { markOldHoldingsRead, markUpgradeMovesFunds, oldVersionScope, useOldVersionHoldings } =
+  await import("../src/features/migration/oldVersionBalance")
+const { RECORD_CHECK_WAIT_MS } = await import("../src/features/migration/upgradeFirst")
 const { BalanceStorage } = await import("@obsidion/front-core")
 const { ManifestUnavailableError } = await import("../src/features/migration/freezeWatch")
 const { acquireUpgradeLock, upgradeLock } = await import("../src/features/migration/upgradeLock")
@@ -1930,8 +1935,8 @@ describe("MigrationDetectionMount — what is left on an old version", () => {
     probe({ balance: 10n ** 17n })
     await render()
     await act(async () => openMigrationDialog())
-    expect(document.querySelector('[data-testid="cutover-choose"]')).not.toBeNull()
-    expect(document.body.textContent).not.toContain("Nothing is left")
+    expect(listModal()?.textContent).toContain("Still checking")
+    expect(listModal()?.textContent).not.toContain("Nothing is left")
   })
 
   it("removes the row and offers Move funds once a waiting deposit can move", async () => {
@@ -2529,6 +2534,41 @@ describe("MigrationDetectionMount — the upgrade's run", () => {
     ])
     expect(movingHeader()).toBe(true)
     expect(detectedModal()?.textContent).not.toContain("Keep zk.money open")
+  })
+
+  it("keeps Moving at the figure the upgrade started with once the funds land", async () => {
+    walletStorage.setItem("webwallet.identity", JSON.stringify({ address: "0xabc", claimedAt: 0 }))
+    markOldHoldingsRead("0xabc")
+    await BalanceStorage.get(webStorage).updateBalance(
+      oldVersionScope(source.portal, "0xabc"),
+      source.l2Token,
+      20n * 10n ** 18n,
+    )
+    const header = () =>
+      document.querySelector('[data-testid="cutover-upgrading"] .ww-cutover__steps-head b')
+        ?.textContent
+    try {
+      prepares()
+      runTo({ phase: "arriving", plan: "p" })
+      runTo(null, false)
+      await move()
+      await act(async () => openMigrationDialog())
+      expect(header()).toBe("$20.00")
+
+      // The old version's record still holds the funds until the next check reads it.
+      h.balance = { walletBalance: "20.00", balanceKnown: true }
+      await render({ request: false })
+      expect(header()).toBe("$20.00")
+    } finally {
+      h.balance = { walletBalance: "0.00", balanceKnown: true }
+      walletStorage.removeItem("webwallet.identity")
+      walletStorage.removeItem(`webwallet.oldHoldingsRead/${BOOTED_PORTAL.toLowerCase()}/0xabc`)
+      await BalanceStorage.get(webStorage).updateBalance(
+        oldVersionScope(source.portal, "0xabc"),
+        source.l2Token,
+        0n,
+      )
+    }
   })
 
   // The run saves `arriving` before its last pass ends, and the bell keeps the tab until it does.
@@ -3392,8 +3432,7 @@ describe("MigrationDetectionMount — the dialog opens only on request", () => {
       probe(source)
       await render()
       expect(upgradeStatus().state).toBe("checking")
-      expect(upgradeSheet()).toBeNull()
-      expect(button("Upgrade now")!.disabled).toBe(true)
+      expect(upgradeButton()).toBeUndefined()
     } finally {
       saved.mockRestore()
     }
@@ -3729,6 +3768,7 @@ describe("MigrationDetectionMount — old-version holdings", () => {
 
   describe("1 Choose while the check runs", () => {
     const choose = () => document.querySelector('[data-testid="cutover-choose"]')
+    const splash = () => !!container.textContent?.includes("Loading zk.money")
     const card = () => document.querySelector('[data-testid="cutover-balance"]')!
     /** The total and both halves show their skeletons, not figures. */
     const loading = () =>
@@ -3780,9 +3820,165 @@ describe("MigrationDetectionMount — old-version holdings", () => {
       expect(button("Withdraw funds instead")!.disabled).toBe(false)
     })
 
-    it("stands in once the probe finds funds to move, with its figure, while it reads what moves", async () => {
+    it("keeps the boot screen up until the account's L1 record answers", async () => {
+      let stale = (_: boolean) => {}
+      h.recordStale.mockReturnValue(new Promise((resolve) => (stale = resolve)))
+
+      await reboot()
+
+      expect(splash()).toBe(true)
+      expect(document.body.dataset.booting).toBe("full")
+      expect(document.body.dataset.bootCovers).toBe("")
+      expect(choose()).toBeNull()
+
+      await act(async () => stale(true))
+
+      expect(splash()).toBe(false)
+      expect(document.body.dataset.bootCovers).toBeUndefined()
+      expect(choose()).not.toBeNull()
+    })
+
+    it("shows Home if the record misses its wait, and keeps Home when it answers late", async () => {
+      let stale = (_: boolean) => {}
+      h.recordStale.mockReturnValue(new Promise((resolve) => (stale = resolve)))
+      await reboot()
+
+      await act(async () => vi.advanceTimersByTimeAsync(RECORD_CHECK_WAIT_MS))
+      expect(splash()).toBe(false)
+
+      await act(async () => stale(true))
+      expect(choose()).toBeNull()
+    })
+
+    it("keeps the boot screen up through a failed check until the record answers", async () => {
+      let stale = (_: boolean) => {}
+      h.recordStale.mockReturnValue(new Promise((resolve) => (stale = resolve)))
+      act(() => root.unmount())
+      root = createRoot(container)
+      h.probe.mockRejectedValue(new Error("node unreachable"))
+
+      await render({ request: false })
+
+      expect(upgradeStatus().state).toBe("failed")
+      expect(splash()).toBe(true)
+
+      await act(async () => stale(true))
+
+      expect(splash()).toBe(false)
+      expect(choose()).toBeNull()
+    })
+
+    it("leaves Home up after a boot on Withdraw, and reports no request there", async () => {
+      markUpgradeMovesFunds("0xabc", true)
+      let go = (_: string) => {}
+      function Nav() {
+        go = useNavigate()
+        return null
+      }
+      act(() => root.unmount())
+      root = createRoot(container)
+      h.probe.mockReturnValue(new Promise(() => {}))
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={client}>
+            <MemoryRouter initialEntries={["/withdraw"]}>
+              <MigrationDetectionMount />
+              <Nav />
+            </MemoryRouter>
+            <Status />
+          </QueryClientProvider>,
+        )
+      })
+
+      await act(async () => openMigrationDialog("residuals"))
+      expect(h.event).not.toHaveBeenCalled()
+
+      await act(async () => go("/"))
+      expect(choose()).toBeNull()
+    })
+
+    it("leaves Home up after the new-version prompt", async () => {
+      markUpgradeMovesFunds("0xabc", true)
+      await reboot()
+      expect(choose()).not.toBeNull()
+
+      h.live.mockResolvedValue("0x" + "bb".repeat(20))
+      await poll()
+      expect(repointModal()).not.toBeNull()
+      await act(async () => button("Later")!.click())
+
+      expect(choose()).toBeNull()
+    })
+
+    it("stands in from boot over a released lock when the last check offered funds to move", async () => {
+      walletStorage.setItem("webwallet.version/0xabc", BOOTED_PORTAL.toLowerCase())
+      markUpgradeMovesFunds("0xabc", true)
+
+      try {
+        await reboot()
+
+        expect(choose()).not.toBeNull()
+      } finally {
+        walletStorage.removeItem("webwallet.version/0xabc")
+      }
+    })
+
+    it("leaves Home up through later checks once it steps aside", async () => {
       withTokenService()
       session()
+      markUpgradeMovesFunds("0xabc", true)
+      const answer = await reboot()
+      await act(async () => answer({ ...found, residuals: [{ ...funded, awaitingFreeze: true }] }))
+      expect(choose()).toBeNull()
+
+      quote.mockImplementationOnce(() => new Promise(() => {}))
+      h.probe.mockResolvedValue(found)
+      await act(async () => freeze.onFrozen())
+
+      expect(upgradeStatus().state).toBe("checking")
+      expect(choose()).toBeNull()
+    })
+
+    it("reports a dialog request made while it shows, and stays up", async () => {
+      markUpgradeMovesFunds("0xabc", true)
+      await reboot()
+
+      await act(async () => openMigrationDialog("residuals"))
+
+      expect(h.event).toHaveBeenCalledWith("action_failed", {
+        action: "upgrade:open",
+        code: "unknown",
+      })
+      expect(choose()).not.toBeNull()
+    })
+
+    it("leaves Home up through the check when boot chose Home, then offers what the probe found", async () => {
+      withTokenService()
+      session()
+      let quoted = () => {}
+      quote.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            quoted = () => resolve({ movable: 10n ** 18n, stranded: 0n, waiting: 0n })
+          }),
+      )
+      h.probe.mockResolvedValue(found)
+
+      await render({ request: false })
+
+      expect(upgradeStatus().state).toBe("checking")
+      expect(choose()).toBeNull()
+
+      await act(async () => quoted())
+
+      expect(upgradeStatus().state).toBe("offered")
+      expect(choose()).not.toBeNull()
+    })
+
+    it("shows the probe's figure while it reads what moves, when a stale record chose it", async () => {
+      withTokenService()
+      session()
+      h.recordStale.mockResolvedValue(true)
       let quoted = () => {}
       quote.mockImplementationOnce(
         () =>
@@ -3810,6 +4006,7 @@ describe("MigrationDetectionMount — old-version holdings", () => {
     it("leaves deposits still waiting out of the probe's figure", async () => {
       withTokenService()
       session()
+      h.recordStale.mockResolvedValue(true)
       quote.mockImplementationOnce(() => new Promise(() => {}))
       h.probe.mockResolvedValue({
         ...found,
@@ -3865,7 +4062,7 @@ describe("MigrationDetectionMount — old-version holdings", () => {
       expect(choose()).toBeNull()
     })
 
-    it("orders boot by this browser's last answer before the stale record", async () => {
+    it("decides boot by this browser's last answer, not a stale record", async () => {
       const { upgradeFirst } = await import("../src/features/migration/upgradeFirst")
       const order = vi.spyOn(upgradeFirst, "recordChecked")
       walletStorage.setItem(`webwallet.upgradeMovesFunds/${BOOTED_PORTAL.toLowerCase()}/0xabc`, "0")
@@ -3894,7 +4091,7 @@ describe("MigrationDetectionMount — old-version holdings", () => {
       expect(choose()).toBeNull()
     })
 
-    it("leaves Home up from boot with no check answered before", async () => {
+    it("leaves Home up from boot with no check answered before and a current record", async () => {
       await record(10n ** 18n)
 
       await reboot()

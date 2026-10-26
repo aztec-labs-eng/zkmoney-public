@@ -64,6 +64,8 @@ import { fetchLiveProfilePortal, getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { showReportableError } from "../../errors/errorModal"
 import { usd } from "../../ui/format"
+import { BootSplash } from "../../ui/PxeBoot"
+import { fireEvent } from "../../lib/analytics"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import type { HistoricResidualSummary } from "./historicResiduals"
 import {
@@ -110,7 +112,7 @@ import { notifyIfArmed } from "../cutover/notify"
 import { queueProgress, upgradeProgress, upgradeSteps } from "../cutover/upgradeProgress"
 import { WINDOW_ENDS } from "../../upgradeFreeze"
 import { useBackGuard } from "./backGuard"
-import { upgradeFirst } from "./upgradeFirst"
+import { RECORD_CHECK_WAIT_MS, upgradeFirst } from "./upgradeFirst"
 import {
   actionUpgradeTitle,
   checkingLead,
@@ -306,29 +308,46 @@ export function MigrationDetectionMount() {
       clearTimeout(timer)
     }
   }, [obsidionAccount])
-  // The account's L1 record still waits for its upgrade, so 1 Choose need not wait for the probe.
-  const [recordStale, setRecordStale] = useState(false)
+  // Boot decides once, before the wallet shows, whether 1 Choose stands in for Home while the check
+  // runs: from this browser's last answer, else whether the account's L1 record still waits for the
+  // upgrade, read within the v6 sync's wait for it.
+  const account = obsidionAccount?.getAddress().toString()
+  const [bootChoice, setBootChoice] = useState<{ account: string; choose: boolean }>()
   useEffect(() => {
     if (!obsidionAccount) return
+    const account = obsidionAccount.getAddress().toString()
     let live = true
-    setRecordStale(false)
-    // As 1 Choose does, the boot order takes this browser's last answer over the record.
-    const answered = upgradeMovedFunds(obsidionAccount.getAddress().toString())
-    if (answered !== undefined) upgradeFirst.recordChecked(answered)
+    const decide = (choose: boolean) => {
+      if (live) setBootChoice((now) => (now?.account === account ? now : { account, choose }))
+    }
+    const answered = upgradeMovedFunds(account)
+    if (answered !== undefined) {
+      upgradeFirst.recordChecked(answered)
+      decide(answered)
+    }
+    const wait = setTimeout(() => decide(false), RECORD_CHECK_WAIT_MS)
     webAccountRecordStale(obsidionAccount)
       .then((stale) => {
         console.info(`[migration] record stale=${stale} at ${Math.round(performance.now())}ms`)
         upgradeFirst.recordChecked(stale)
-        if (live) setRecordStale(stale)
+        decide(stale)
       })
       .catch((error) => {
         console.warn("[migration] record check failed:", error)
         upgradeFirst.recordChecked(false)
+        decide(false)
       })
     return () => {
       live = false
+      clearTimeout(wait)
     }
   }, [obsidionAccount])
+  const chooseFirst =
+    account === undefined
+      ? undefined
+      : bootChoice?.account === account
+      ? bootChoice.choose
+      : upgradeMovedFunds(account)
   const { walletBalance, balanceKnown } = useBalance()
   const oldHoldings = useOldVersionHoldings()
   const savings = useSavingsPosition()
@@ -1348,6 +1367,28 @@ export function MigrationDetectionMount() {
     setActionAsked(undefined)
     run()
   }, [requested, cleared, actionAsked])
+  // While the check runs, 1 Choose stands in, its figures loading, if boot chose it. Once it is off
+  // screen, Home keeps the screen until the check answers.
+  const expected =
+    !!chooseFirst &&
+    state === "checking" &&
+    !manifestUnread &&
+    lock.state !== "held" &&
+    (!probed || (metadataFlow && residuals.some((r) => movableState(r) !== false)))
+  const repointAsked = repointed && !repointDismissed && !losesTransaction
+  const onScreen = expected && !withdrawing && !repointAsked
+  useEffect(() => {
+    if (account && chooseFirst && !(onScreen && !actionAsked))
+      setBootChoice({ account, choose: false })
+  }, [account, chooseFirst, onScreen, actionAsked])
+  // It shows before Home, which holds every way to ask for the dialog, so no request can reach it.
+  // One that does is reported, and still answered.
+  const askedOverChoose = onScreen && requested
+  useEffect(() => {
+    if (!askedOverChoose) return
+    console.warn("[migration] a dialog request reached boot's 1 Choose")
+    fireEvent("action_failed", { action: "upgrade:open", code: "unknown" })
+  }, [askedOverChoose])
 
   const movedOn =
     runActive ||
@@ -1713,7 +1754,9 @@ export function MigrationDetectionMount() {
     }
   }
 
-  if (repointed && !repointDismissed && !losesTransaction) {
+  // The boot screen covers the wallet until boot decides.
+  if (account !== undefined && chooseFirst === undefined) return <BootSplash covers />
+  if (repointAsked) {
     return (
       <Modal
         variant="bare"
@@ -1743,8 +1786,13 @@ export function MigrationDetectionMount() {
     )
   }
 
-  // Savings the upgrade already moved count too: the old holdings no longer show them.
-  const balance = { main: heldMain, savings: heldSavings ?? savings.position?.value }
+  // Savings the upgrade already moved count too: the old holdings no longer show them. While the
+  // lock is held, its figure stands: arrivals land before the old holdings are read again.
+  const held = lock.state === "held" ? lock : undefined
+  const balance = {
+    main: held?.main ?? heldMain,
+    savings: held?.savings ?? heldSavings ?? savings.position?.value,
+  }
   // Before the quotes, the probe's figure: fees aside, and without deposits still waiting, as `lost`
   // leaves them out. A deposit or Savings source it cannot value leaves it loading.
   const counted = residuals.filter((r) => !liveSource(r) && !r.awaitingFeature && holdsFunds(r))
@@ -1920,17 +1968,6 @@ export function MigrationDetectionMount() {
   }
   // 1 Choose stands in for Home while an upgrade has funds to move. A record update alone shows only
   // on request. An action's request keeps its own sheet.
-  // While the check runs, 1 Choose stands in, its figures loading, once funds to move are likely:
-  // before the probe answers, from what the last answered check here offered, else a stale L1
-  // record; after, from what the probe found.
-  const expected =
-    state === "checking" &&
-    !manifestUnread &&
-    !!obsidionAccount &&
-    lock.state === "pending" &&
-    (probed
-      ? metadataFlow && residuals.some((r) => movableState(r) !== false)
-      : upgradeMovedFunds(obsidionAccount.getAddress().toString()) ?? recordStale)
   const choose = metadataFlow && state === "offered" && (funded || requested || signOpen)
   if ((choose || expected) && !withdrawing && !actionAsked) {
     return (

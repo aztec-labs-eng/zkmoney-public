@@ -38,8 +38,7 @@ import { PayModalChrome } from "../PayModalChrome"
 import { usePhoneLayout } from "../usePhoneLayout"
 import { Modal } from "../Modal"
 import { usdFigure } from "../format"
-import { getConfig } from "../../config/env"
-import { l2TxUrl } from "../../lib/explorer"
+import { useL2TxUrl } from "../useL2TxUrl"
 import {
   creatorLinkAction,
   isOtherRollupLink,
@@ -133,12 +132,10 @@ export function TxDetailModal({
     }
   }, [row.txHash, row.paylinkStatus])
 
-  const config = getConfig()
-  const explorerUrl = row.txHash ? l2TxUrl(config.network, config.nodeUrl, row.txHash) : null
+  const l2TxUrl = useL2TxUrl(row.networkId)
+  const explorerUrl = row.txHash && l2TxUrl ? l2TxUrl(row.txHash) : null
   // A refund has no row of its own, so the link's own row is where its transaction is readable.
-  const refundUrl = row.refundTxHash
-    ? l2TxUrl(config.network, config.nodeUrl, row.refundTxHash)
-    : null
+  const refundUrl = row.refundTxHash && l2TxUrl ? l2TxUrl(row.refundTxHash) : null
   // The feed row's view, re-derived off the refreshed link status and the polled chain tip, so the
   // two can never read differently.
   const linkView = row.paylinkRow

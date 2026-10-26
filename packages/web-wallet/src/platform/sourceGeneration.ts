@@ -13,21 +13,45 @@ const BUNDLES: Readonly<Record<string, string>> = { "5": "generations/v5/index.j
 
 const majorOf = (version: string) => version.replace(/^v/, "").split(".")[0]!
 
-const majors = new Map<string, Promise<string>>()
+const identities = new Map<string, Promise<{ major: string; rollupAddress: string }>>()
 
-/** The Aztec major version a node runs. `getNodeInfo` reads the same on every version. */
-export function nodeAztecMajor(nodeUrl: string): Promise<string> {
-  let major = majors.get(nodeUrl)
-  if (!major) {
+/** The Aztec major version and L1 rollup a node runs. `getNodeInfo` reads the same on every version. */
+function nodeIdentity(nodeUrl: string) {
+  let identity = identities.get(nodeUrl)
+  if (!identity) {
     const config = getConfig()
     const apiKey = nodeUrl === config.nodeUrl ? config.nodeApiKey : config.sourceRollupApiKey
-    major = createNode(nodeUrl, apiKey)
+    identity = createNode(nodeUrl, apiKey)
       .getNodeInfo()
-      .then((info) => majorOf(info.nodeVersion))
-    majors.set(nodeUrl, major)
-    major.catch(() => majors.delete(nodeUrl))
+      .then((info) => ({
+        major: majorOf(info.nodeVersion),
+        rollupAddress: info.l1ContractAddresses.rollupAddress.toString().toLowerCase(),
+      }))
+    identities.set(nodeUrl, identity)
+    identity.catch(() => identities.delete(nodeUrl))
   }
-  return major
+  return identity
+}
+
+/** The Aztec major version a node runs. */
+export function nodeAztecMajor(nodeUrl: string): Promise<string> {
+  return nodeIdentity(nodeUrl).then((identity) => identity.major)
+}
+
+/**
+ * The Aztec major version of the source rollup at `rollupAddress` when it differs from the active
+ * node's. Undefined for the active generation, or a rollup no profile version names or whose node
+ * does not answer.
+ */
+export async function retiredRollupMajor(rollupAddress: string): Promise<string | undefined> {
+  const address = rollupAddress.toLowerCase()
+  for (const { nodeUrl } of getConfig().sourceRollups ?? []) {
+    const identity = await nodeIdentity(nodeUrl).catch(() => undefined)
+    if (identity?.rollupAddress !== address) continue
+    const active = await nodeAztecMajor(getConfig().nodeUrl).catch(() => undefined)
+    return identity.major !== active ? identity.major : undefined
+  }
+  return undefined
 }
 
 /** Whether `nodeUrl` runs another Aztec major version than the active node. */
