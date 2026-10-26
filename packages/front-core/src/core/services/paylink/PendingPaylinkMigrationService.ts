@@ -44,6 +44,11 @@ export interface PendingPaylinkMigrationServiceDeps {
    * available no notice is minted; records still advance.
    */
   checkSpent?: CheckSpent
+  /**
+   * False once the stores write under another account than the one this service is for. Its queued
+   * and running work then stops before its next write; that account's next session redoes it.
+   */
+  ownsStorage?: () => boolean
   /** Test seam; defaults to `Date.now`. */
   now?: () => number
 }
@@ -68,6 +73,21 @@ function reclaimableNotification(
   }
 }
 
+/** Work in flight on each store. Every service over one store runs its changes one at a time. */
+const storeWork = new WeakMap<PendingPaylinkMigrationStore, Promise<unknown>>()
+
+function exclusive<T>(store: PendingPaylinkMigrationStore, work: () => Promise<T>): Promise<T> {
+  const run = (storeWork.get(store) ?? Promise.resolve()).then(work, work)
+  storeWork.set(
+    store,
+    run.catch(() => {}),
+  )
+  return run
+}
+
+/** Ends a job whose account no longer owns the stores. */
+class AccountChanged extends Error {}
+
 export class PendingPaylinkMigrationService {
   private readonly now: () => number
 
@@ -76,7 +96,11 @@ export class PendingPaylinkMigrationService {
   }
 
   /** Still-escrowed rows the residual probe attributed to a retired deployment, whatever their window state. */
-  async recordPending(rows: PaylinkTransaction[]): Promise<void> {
+  recordPending(rows: PaylinkTransaction[]): Promise<void> {
+    return this.exclusive(() => this.record(rows), undefined)
+  }
+
+  private async record(rows: PaylinkTransaction[]): Promise<void> {
     const { store } = this.deps
     await store.load()
     const nowMs = this.now()
@@ -86,6 +110,7 @@ export class PendingPaylinkMigrationService {
       // demotion can put the escrow back in play.
       const existing = store.get(row.txHash)
       if (existing && existing.status !== "resolved") continue
+      this.assertOwner()
       await store.set({
         txHash: row.txHash,
         untilClaimable: row.untilClaimable,
@@ -100,10 +125,49 @@ export class PendingPaylinkMigrationService {
   }
 
   /**
+   * Drops the records and reclaim notices of the links funded by `txHashes`, whose portals froze. A
+   * frozen migration refunds those escrows to L1, and an L2 reclaim after the freeze makes notes
+   * outside the frozen snapshot.
+   */
+  retire(txHashes: readonly string[]): Promise<void> {
+    return this.exclusive(async () => {
+      const { store, notificationStore } = this.deps
+      await Promise.all([store.load(), notificationStore.load()])
+      for (const txHash of txHashes) {
+        this.assertOwner()
+        await store.remove(txHash)
+        this.assertOwner()
+        await notificationStore.remove(paylinkReclaimableNotificationId(txHash))
+      }
+    }, undefined)
+  }
+
+  /**
    * Re-derive every unresolved record from its row and `nowSec` (chain-tip seconds, never the wall
    * clock — the contract gates on block time). Returns the full list for the caller's UI.
    */
-  async reconcile(nowSec: number): Promise<PendingPaylinkMigrationRecord[]> {
+  reconcile(nowSec: number): Promise<PendingPaylinkMigrationRecord[]> {
+    return this.exclusive(() => this.rederive(nowSec), [])
+  }
+
+  /** Runs `work` in the store's turn; work whose account changed ends with `dropped`. */
+  private exclusive<T>(work: () => Promise<T>, dropped: T): Promise<T> {
+    return exclusive(this.deps.store, async () => {
+      try {
+        this.assertOwner()
+        return await work()
+      } catch (err) {
+        if (err instanceof AccountChanged) return dropped
+        throw err
+      }
+    })
+  }
+
+  private assertOwner(): void {
+    if (this.deps.ownsStorage?.() === false) throw new AccountChanged()
+  }
+
+  private async rederive(nowSec: number): Promise<PendingPaylinkMigrationRecord[]> {
     const { store, notificationStore } = this.deps
     await store.load()
     let transactions: Transaction[] | null
@@ -131,7 +195,10 @@ export class PendingPaylinkMigrationService {
       }
       const row = rowsByHash.get(record.txHash.toLowerCase())
       const next = row ? this.derive(record, row, nowSec) : this.resolved(record, "unavailable")
-      if (next.status !== record.status) await store.set(next)
+      if (next.status !== record.status) {
+        this.assertOwner()
+        await store.set(next)
+      }
       // Minted from state, not from the transition, so a mint that failed or was cut off retries.
       if (next.status === "claimable" && row) await this.notify(next, row)
     }
@@ -156,6 +223,7 @@ export class PendingPaylinkMigrationService {
     // Unknown: no notice this run; the next reconcile asks again.
     if (spent === undefined) return
     // Every spend path consumes the same nullifier; with no local refund signal it was a claim.
+    this.assertOwner()
     if (spent) {
       await store.set(this.resolved(record, "claimed"))
       return

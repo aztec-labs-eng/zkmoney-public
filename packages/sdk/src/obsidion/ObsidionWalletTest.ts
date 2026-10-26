@@ -242,7 +242,7 @@ export class ObsidionWalletTest extends ObsidionWallet {
     if (!config.feePayer) {
       const sponsoredPaymentMethod = await getSponsoredFeePaymentMethod(this.pxe)
       const maxFeesPerGas =
-        config.gasSettings?.maxFeesPerGas ?? (await this.node.getCurrentMinFees())
+        config.gasSettings?.maxFeesPerGas ?? (await this.getGasSettings()).maxFeesPerGas
       const { txsLimits } = await this.node.getNodeInfo()
       const fullGasSettings = GasSettings.fallback({
         ...config.gasSettings,

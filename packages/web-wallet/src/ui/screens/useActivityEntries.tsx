@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react"
 import { useLocation, useNavigate } from "react-router-dom"
+import { useActionGuard, useWalletFrozen } from "../../features/actionGate"
 import { formatUnits } from "viem"
 import { DEFAULT_DECIMALS, REGISTRATION_SCHEDULE_DEFAULTS } from "@obsidion/core/constants"
 import {
@@ -72,9 +73,13 @@ import {
   useSavingsSource,
   useEnsName,
   type SavingsMoveRecord,
+  upgradeRecipients,
+  upgradeRunsOf,
+  type UpgradeRun,
 } from "@obsidion/front-core"
 import { ensClient } from "../../lib/ens"
-import { declineRequestById, remindRequestById } from "../../features/contacts/requestActions"
+import { declineRequestById } from "../../features/contacts/requestActions"
+import { REMIND_TITLE, useRemind, type RemindState } from "../../features/contacts/useRemind"
 import { RequestDetailModal } from "../../features/contacts/RequestDetailModal"
 import { unlistedCodeRequestIds } from "../../features/receive/receiveCode"
 import { DepositExitModal } from "../../features/deposit/DepositExitModal"
@@ -105,7 +110,6 @@ import { CancelRequestLinkModal } from "../../features/requests/CancelRequestLin
 import { SavingsMoveDetailModal } from "../../features/savings/SavingsMoveDetailModal"
 import { UpgradeBatchDetailModal } from "./UpgradeBatchDetailModal"
 import { UpgradeRunDetailModal } from "./UpgradeRunDetailModal"
-import { upgradeRecipients, upgradeRunsOf, type UpgradeRun } from "./upgradeRuns"
 import { savingsFinalizeDeployment } from "../../features/savings/savingsGateway"
 import {
   SavingsMoveRow,
@@ -124,11 +128,13 @@ import { rowTimestamp, usdFigure, shortL1Addr } from "../format"
 import { writeClipboard } from "../hooks"
 import { usePhoneLayout } from "../usePhoneLayout"
 import { arrivingFunds, type ArrivingFunds } from "./arrivingFunds"
+import { useOldVersionHoldings } from "../../features/migration/oldVersionBalance"
 import { contactDisplayName } from "../../features/contacts/contactsView"
 import {
   buildActivityRows,
   depositRowAmount,
   depositRowStatusLabel,
+  upgradeRowStatusLabel,
   depositRowSubline,
   STUCK_SUBLINE,
   isPendingActivityRow,
@@ -142,6 +148,9 @@ import { DepositDetailModal, TagPurchaseModal } from "./DepositDetailModal"
 import { FreshWithdrawalDetailModal } from "./FreshWithdrawalDetailModal"
 import { TxDetailModal } from "./TxDetailModal"
 import { WithdrawalDetailModal, withdrawalHeroAmount } from "./WithdrawalDetailModal"
+import { usePortalFrozen } from "../../features/withdraw/portalFrozen"
+import { fundsLeft, sharesUsd, useLastFrozenFunds } from "../../features/withdraw/frozenFunds"
+import { isFrozenRefundRecord } from "../../features/withdraw/frozenExit"
 
 /** Feed-row wording per phase, from the shared copy table; a `done` withdrawal carries no status. */
 export const WITHDRAWAL_PHASE_LABEL = Object.fromEntries(
@@ -248,10 +257,11 @@ function WithdrawalRow({
           : record.recipientAlias ?? ensName ?? shortL1Addr(record.recipient)
       }
       counterpartyBadge={
+        // In flight, the status pill says where the exit is.
         migration
           ? record.phase === "done"
             ? "Left old version"
-            : "Leaving old version"
+            : undefined
           : registrationTag
           ? "Registration"
           : record.source === "paylink"
@@ -280,12 +290,10 @@ function UpgradeRunRow({ run, onOpen }: { run: UpgradeRun; onOpen: () => void })
   return (
     <ActivityListRow
       counterparty="Upgrade"
-      counterpartyBadge={
-        run.complete ? transfers : `${run.arrived} of ${run.legs.length} arrived`
-      }
+      counterpartyBadge={run.complete ? transfers : `${run.arrived} of ${run.legs.length} arrived`}
       timestamp={rowTimestamp(run.time)}
       amount={`+${usdFigure(formatUnits(run.total, DEFAULT_DECIMALS))}`}
-      statusLabel={run.settled ? undefined : "Pending"}
+      statusLabel={upgradeRowStatusLabel(run)}
       avatarIcon="wallet"
       onClick={onOpen}
       ariaLabel="Open upgrade details"
@@ -317,6 +325,7 @@ function DepositRow({
   onExit: () => void
 }) {
   const { record } = row
+  const portalFrozen = usePortalFrozen()
   const offer = depositExitOffer(record, processing)
   const subline = depositRowSubline(processing, record, !!offer?.waiting)
   const registration = row.intent === "registration" ? row : undefined
@@ -327,10 +336,8 @@ function DepositRow({
       counterpartyBadge={
         registration
           ? "Registration"
-          : migration
-          ? isSettledSipaPhase(record.phase)
-            ? "Arrived"
-            : "Arriving on new version"
+          : migration && isSettledSipaPhase(record.phase)
+          ? "Arrived"
           : undefined
       }
       timestamp={subline ?? rowTimestamp(time ?? record.startTime)}
@@ -341,7 +348,7 @@ function DepositRow({
             : ""
           : depositRowAmount(record, !!offer)
       }
-      statusLabel={arriving ? "Pending" : depositRowStatusLabel(record)}
+      statusLabel={arriving ? "Pending" : depositRowStatusLabel(record, portalFrozen)}
       avatarIcon="arrow-down-circle"
       onClick={onOpen}
       ariaLabel="Open deposit details"
@@ -402,7 +409,7 @@ type BridgeExit =
  *  a link. Cancelling a link only drops the local row: nothing can revoke a minted link. */
 export function RequestRow({
   row,
-  reminded,
+  remind,
   onDecline,
   onSend,
   onCancel,
@@ -413,7 +420,7 @@ export function RequestRow({
   row: RequestRowView
   /** No action buttons: the row opens its detail. */
   compact?: boolean
-  reminded: boolean
+  remind: RemindState
   onDecline: (id: string) => void
   onSend: (row: RequestRowView) => void
   onCancel: (id: string) => void
@@ -431,9 +438,11 @@ export function RequestRow({
       ? [
           { title: "Cancel", onClick: () => onCancel(row.id) },
           {
-            title: reminded ? "Reminder sent" : "Remind",
+            title: REMIND_TITLE[remind],
             actionStyle: "gradient" as const,
-            onClick: () => !reminded && onRemind(row.id),
+            isLoading: remind === "sending",
+            isDisabled: remind === "sent",
+            onClick: () => onRemind(row.id),
           },
         ]
       : [
@@ -491,6 +500,8 @@ export interface ActivityEntriesState {
   savingsLedger: SavingsLedger | undefined
   /** Funds on their way into Main and Savings, which their balances show before they land. */
   arriving: ArrivingFunds
+  /** The upgrade's deposit addresses are read, so `arriving` counts none of them. */
+  upgradesLoaded: boolean
   /** True once every source has served its last-known state from storage. */
   hydrated: boolean
   /** The contacts could not be read, so incoming requests are hidden. The directory retries. */
@@ -590,7 +601,7 @@ function tagPriceOf(record: { registrationFee?: string }): bigint {
 export function useActivityEntries(): ActivityEntriesState {
   const navigate = useNavigate()
   const directory = useContactsDirectory()
-  const { tokenService } = useAssetContext()
+  const { tokenService, activeTokenAddress, balanceReadAt } = useAssetContext()
   const { obsidionWallet } = useAztecContext()
   const { records: withdrawalRecords, checkAgain, hydrated: withdrawalsHydrated } = useWithdrawals()
   const { records: savingsMoves, hydrated: savingsHydrated } = useCachedRecords(
@@ -599,6 +610,7 @@ export function useActivityEntries(): ActivityEntriesState {
   const savingsSource = useSavingsSource()
   const savingsPosition = useSavingsPosition().position
   const savingsSharePrice = savingsPosition?.sharePrice
+  const exitFunds = useLastFrozenFunds()
   const savingsTiming = useSavingsMoveTiming()
   const nowMs = useNowMs()
   const savingsEtaFor = useCallback(
@@ -619,6 +631,7 @@ export function useActivityEntries(): ActivityEntriesState {
   const { records: depositRecords, hydrated: depositsHydrated } = useCachedRecords(
     useMemo(() => SIPADepositStore.get(webStorage), []),
   )
+  const oldHoldings = useOldVersionHoldings()
   const upgrades = UpgradeActivity.get(webStorage)
   const upgradesHydrated = useSyncExternalStore(
     useCallback((listener: () => void) => upgrades.onChanged(listener), [upgrades]),
@@ -630,7 +643,6 @@ export function useActivityEntries(): ActivityEntriesState {
   const catchingUp = useSyncCatchingUp()
   const [requests, setRequests] = useState<PaymentRequest[]>([])
   const [requestsHydrated, setRequestsHydrated] = useState(false)
-  const [remindedIds, setRemindedIds] = useState<ReadonlySet<string>>(new Set())
   const [detail, setDetail] = useState<ActivityRowView | null>(null)
   // A record's localId or a group's id (disjoint: `wdraw_...` against 0x hex). Held by id, not by
   // value: the tracker advances the record while the sheet is open and the ladder has to follow it.
@@ -681,6 +693,7 @@ export function useActivityEntries(): ActivityEntriesState {
   // Desktop has no useful native share sheet, so a sent link's row copies instead; the id keeps the
   // "Copied!" flash on the one row that was clicked.
   const phone = usePhoneLayout()
+  const walletFrozen = useWalletFrozen()
   const [copiedLinkId, setCopiedLinkId] = useState<string | null>(null)
   const copiedTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(copiedTimer.current), [])
@@ -728,29 +741,27 @@ export function useActivityEntries(): ActivityEntriesState {
     () => new Map(requests.map((request) => [request.id, request])),
     [requests],
   )
+  const guard = useActionGuard()
   const onSend = useCallback(
     (row: RequestRowView) =>
       // Request context rides router state: ContactPayScreen prefills the amount, works for an
       // unsaved requester tag, and fulfills the request after the send lands.
-      navigate(`/contacts/${encodeURIComponent(row.contactTag ?? "")}/send`, {
-        state: {
-          request: {
-            id: row.id,
-            tag: row.contactTag,
-            amount: row.amountValue,
-            note: requestsById.get(row.id)?.note,
+      guard("send", () =>
+        navigate(`/contacts/${encodeURIComponent(row.contactTag ?? "")}/send`, {
+          state: {
+            request: {
+              id: row.id,
+              tag: row.contactTag,
+              amount: row.amountValue,
+              note: requestsById.get(row.id)?.note,
+            },
           },
-        },
-      }),
-    [navigate, requestsById],
+        }),
+      ),
+    [navigate, requestsById, guard],
   )
-  const onRemind = useCallback(
-    (id: string) => {
-      void remindRequestById(id, tokenService?.tokenAddress?.toString())
-        .then((ok) => ok && setRemindedIds((prev) => new Set(prev).add(id)))
-        .catch(console.warn)
-    },
-    [tokenService],
+  const { remind: onRemind, stateOf: remindStateOf } = useRemind(
+    tokenService?.tokenAddress?.toString(),
   )
 
   const refunds = useSyncExternalStore(onRefundInFlightChanged, refundInFlightVersion)
@@ -979,7 +990,7 @@ export function useActivityEntries(): ActivityEntriesState {
       key={row.id}
       row={row}
       compact={compact}
-      reminded={remindedIds.has(row.id)}
+      remind={remindStateOf(row.id, row.remindedAt)}
       onDecline={onDecline}
       onSend={onSend}
       onCancel={row.kind === "outgoingLink" ? setCancelLinkId : onCancel}
@@ -993,6 +1004,37 @@ export function useActivityEntries(): ActivityEntriesState {
       }
     />
   )
+
+  // A frozen exit stopped partway: what is left stays Pending until Withdraw sends it.
+  const exitRefunds = withdrawalRecords.filter(isFrozenRefundRecord)
+  const exitLeft = exitFunds
+    ? fundsLeft(exitFunds.main) +
+      (exitFunds.savings ? sharesUsd(fundsLeft(exitFunds.savings), savingsSharePrice) : 0n)
+    : 0n
+  const frozenExitEntry: ActivityEntry[] =
+    exitRefunds.length && exitLeft > 0n
+      ? [
+          {
+            id: "frozen-exit-left",
+            ts: Math.max(...exitRefunds.map((record) => record.endTime ?? record.startTime)) + 1,
+            direction: "out",
+            pending: true,
+            node: (
+              <ActivityListRow
+                key="frozen-exit-left"
+                counterparty="Withdrawal"
+                counterpartyBadge="Not finished"
+                timestamp="Open Withdraw to send the rest"
+                amount={`-${usdFigure(formatUnits(exitLeft, DEFAULT_DECIMALS))}`}
+                statusLabel="Pending"
+                avatarIcon="wallet"
+                onClick={() => navigate("/withdraw")}
+                ariaLabel="Open Withdraw"
+              />
+            ),
+          },
+        ]
+      : []
 
   const entries: ActivityEntry[] = [
     ...requestRows.map((row) => ({
@@ -1051,12 +1093,15 @@ export function useActivityEntries(): ActivityEntriesState {
           }}
           ariaLabel="Open transaction details"
           actions={[
+            // Frozen, a cancel's new note is past the refund snapshot: the link leaves through Withdraw.
             ...(row.creatorAction
               ? [
-                  {
-                    title: LINK_RECOVERY_TITLE[row.creatorAction],
-                    onClick: () => openLinkRecovery(row),
-                  },
+                  walletFrozen
+                    ? { title: "Withdraw", onClick: () => navigate("/withdraw") }
+                    : {
+                        title: LINK_RECOVERY_TITLE[row.creatorAction],
+                        onClick: () => openLinkRecovery(row),
+                      },
                 ]
               : []),
             ...(row.paylink && row.canShare
@@ -1290,6 +1335,7 @@ export function useActivityEntries(): ActivityEntriesState {
           },
         ]
       : []),
+    ...frozenExitEntry,
   ].sort((a, b) => b.ts - a.ts)
 
   const burns = new Map(withdrawalRecords.map((record) => [record.localId, record] as const))
@@ -1351,7 +1397,15 @@ export function useActivityEntries(): ActivityEntriesState {
       moves: savingsMoves,
       sharePrice: savingsSharePrice,
       transactions,
+      // Each figure's own read: a claim stays on its way until the figure shown holds it.
+      balanceReadAt: {
+        main: activeTokenAddress ? balanceReadAt[activeTokenAddress.toLowerCase()] : undefined,
+        savings: savingsPosition?.sharesReadAt,
+      },
+      upgradeRecipients: upgrades.recipients(),
+      oldVersions: oldHoldings.total,
     }),
+    upgradesLoaded: upgradesHydrated,
     hydrated:
       depositsHydrated &&
       upgradesHydrated &&
@@ -1534,7 +1588,7 @@ export function useActivityEntries(): ActivityEntriesState {
         {sentDetailId && (
           <RequestDetailModal
             requestId={sentDetailId}
-            reminded={remindedIds.has(sentDetailId)}
+            remind={remindStateOf(sentDetailId, requestsById.get(sentDetailId)?.remindedAt)}
             onRemind={() => onRemind(sentDetailId)}
             onClose={() => setSentDetailId(null)}
           />

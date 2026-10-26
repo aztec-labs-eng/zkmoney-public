@@ -18,7 +18,7 @@ const h = vi.hoisted(() => ({ fetchOperator: vi.fn() }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   loadOxideManifestTuple: async () => TUPLE,
-  fetchSignupResolverOperator: h.fetchOperator,
+  fetchSignupResolverRecord: h.fetchOperator,
 }))
 
 import { Network } from "@obsidion/core/constants"
@@ -40,7 +40,7 @@ describe("oxideEnvFor's resolver operator", () => {
     vi.useFakeTimers({ toFake: ["Date"] })
     clock += 10 * RESOLVER_OPERATOR_REUSE_MS
     vi.setSystemTime(clock)
-    h.fetchOperator.mockReset().mockResolvedValue(OPERATOR)
+    h.fetchOperator.mockReset().mockResolvedValue({ owner: OPERATOR })
   })
   afterEach(() => {
     vi.useRealTimers()

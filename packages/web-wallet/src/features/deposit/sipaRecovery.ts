@@ -20,15 +20,10 @@ import {
   type PublicClient,
   type TransactionReceipt,
 } from "viem"
-import { REGISTRATION_SIGNED_FEES } from "@obsidion/core/constants"
 import {
   claimRefusalReason,
-  composeWireNameHash,
   createRegistrationSipaDeriver,
-  deriveRegistrationAddress,
   depositAmounts,
-  fetchSignupResolverRecord,
-  legacyRegistrationSalt,
   isNameBlocked,
   isNameReserved,
   deriveStealthKey,
@@ -64,7 +59,7 @@ import {
 } from "../../config/oxideTuple"
 import { registrationRefundConfirmed } from "../onboarding/registrationQuoteRecovery"
 import { healRegistrationDeposits } from "../onboarding/registrationDepositSeed"
-import { registrationAddressDeps } from "../onboarding/oxideOnboarding"
+import { seedRederivedRegistrations } from "../onboarding/registrationRederive"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { registrationRecordForSipa } from "../onboarding/webRegistration"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
@@ -288,6 +283,8 @@ export interface DesktopBridgeChannelParams {
    * is the withdrawal's own recipient, which takes the relayer tip.
    */
   destination: Address
+  /** The only account the helper page may pay from. */
+  from?: Address
   chainId: number
   /** App-owned client: the helper page's wallet is not ours to poll. */
   publicClient: PublicClient
@@ -305,7 +302,7 @@ export function desktopBridgeChannel(params: DesktopBridgeChannelParams): L1Exit
       params.onStage?.("awaiting-browser")
       return submitViaDesktopBridge({
         onHelperOpened: params.onHelperOpened,
-        tx: { to, data, chainId: params.chainId },
+        tx: { from: params.from, to, data, chainId: params.chainId },
         display: {
           title: params.display.title,
           lines: [...params.display.lines, ["Network", l1ChainFor(params.chainId).name]],
@@ -442,6 +439,7 @@ async function recoveryDeployment(
       ...config.oxideProfile,
       network: config.network,
       publicClient,
+      sourcePortals: new Set(config.sourceRollupNodes?.keys()),
     })
     for (const candidate of [tuple, ...historic]) {
       if (
@@ -569,47 +567,25 @@ export async function readStrandedToken(
 
 /**
  * Seeds this wallet's registration address when it is `sipa`, as on a device with no registration
- * record. The address commits to its fee and salt, and a re-sign can quote another fee, so every
- * fee ever signed is tried under the self-SIPA key's salt, then the resolver's earlier one, before
- * a claim's. A refused claim means this name's address is not found here.
+ * record. A claim's fee is the last try; a refused claim means this name's address is not found.
  */
 async function rederiveRegistrationDeposit(config: WebWalletConfig, sipa: Address) {
   const identity = loadWalletIdentity()
   const secret = await getAuthService().getSecretKey()
   if (!identity?.handle || !secret) return
-  const deps = await registrationAddressDeps(
-    identity.handle,
-    secret,
-    identity.address as Hex,
-    config,
-  )
-  const owner = await deps.l1.predictAccountAddress(
-    deps.env.factory,
-    deriveBootstrapKey(secret).address as Address,
-  )
-  const nameHash = composeWireNameHash(identity.handle, deps.env.ensDomain)
-  const seededAt = async (fees: readonly bigint[], salt?: Hex) => {
-    const derived = await Promise.all(
-      fees.map((fee) => deriveRegistrationAddress(deps, owner, nameHash, fee, salt)),
-    )
-    const found = derived.find((d) => d.derivation.sipaAddress.toLowerCase() === sipa.toLowerCase())
-    if (found) await deps.seedSipaDeposit(found.seed)
-    return found !== undefined
-  }
-  const fees = [...new Set([await deps.scheduleFee(), ...REGISTRATION_SIGNED_FEES])]
-  if (await seededAt(fees)) return
-  const { tuple, publicClient } = await oxideEnvFor(config)
-  const resolver = await fetchSignupResolverRecord(publicClient, tuple, config.network)
-  const legacySalt = legacyRegistrationSalt(secret, resolver.resolverPublicKey, nameHash)
-  if (await seededAt(fees, legacySalt)) return
-  const claim = await deps.accountService
-    .signDomain({ nameHash, userAddress: owner })
-    .catch((err: unknown) => {
-      if (isNameReserved(err) || isNameBlocked(err)) return undefined
-      if (claimRefusalReason(err) === "name_registered") return undefined
-      throw err
-    })
-  if (!claim?.terms) return
-  const quoted = [BigInt(claim.terms.fee)]
-  if (!(await seededAt(quoted))) await seededAt(quoted, legacySalt)
+  const target = sipa.toLowerCase()
+  await seedRederivedRegistrations(config, secret, identity.handle, identity.address as Hex, {
+    keep: async (found) =>
+      found.filter((f) => f.derivation.sipaAddress.toLowerCase() === target).slice(0, 1),
+    quotedFee: async (deps, owner, nameHash) => {
+      const claim = await deps.accountService
+        .signDomain({ nameHash, userAddress: owner })
+        .catch((err: unknown) => {
+          if (isNameReserved(err) || isNameBlocked(err)) return undefined
+          if (claimRefusalReason(err) === "name_registered") return undefined
+          throw err
+        })
+      return claim?.terms ? BigInt(claim.terms.fee) : undefined
+    },
+  })
 }

@@ -15,6 +15,7 @@ import { l2TxUrl } from "../../lib/explorer"
 import { rowTimestamp, shortAddr, usdBalance } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { cancelRequestById } from "./requestActions"
+import { REMIND_TITLE, type RemindState } from "./useRemind"
 
 const STATUS_VIEW: Record<
   PaymentRequest["status"],
@@ -82,14 +83,14 @@ export function RequestDetailModal({
   requestId,
   tag,
   initialStep = "detail",
-  reminded = false,
+  remind = "idle",
   onRemind,
   onClose,
 }: {
   requestId: string
   tag?: string
   initialStep?: "detail" | "confirm"
-  reminded?: boolean
+  remind?: RemindState
   /** Offers Remind beside Cancel on an open outgoing request. */
   onRemind?: () => void
   onClose: () => void
@@ -209,8 +210,9 @@ export function RequestDetailModal({
               onClick={() => setStep("confirm")}
             />
             <PrimaryGradientButton
-              title={reminded ? "Reminder sent" : "Remind"}
-              isDisabled={reminded}
+              title={REMIND_TITLE[remind]}
+              isLoading={remind === "sending"}
+              isDisabled={remind === "sent"}
               onClick={onRemind}
             />
           </div>

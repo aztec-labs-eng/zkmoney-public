@@ -27,7 +27,6 @@ export const getSipaDepositGateway: typeof actual.getSipaDepositGateway = () => 
       return address
     },
     readyAddress: async () => ({ address: SIPA, day: Math.floor(Date.now() / 86_400_000) }),
-    wakeDeposit: async () => {},
     deposit: async (params) => {
       if (desktopState()) {
         // The helper approved the send, then no hash arrived: the browser wallet may still send it.
@@ -57,6 +56,9 @@ export const getSipaDepositGateway: typeof actual.getSipaDepositGateway = () => 
     subscribe: (listener) => real.subscribe(listener),
     warm: () => real.warm(),
     sync: (...args) => real.sync(...args),
+    observe: (...args) => real.observe(...args),
+    // Captures read no chain.
+    resolverPayments: () => ({ tick: async () => 60_000 }),
     nextSelfNonce: () => {
       throw new Error("Unmocked SIPA nonce allocation in a UI capture")
     },

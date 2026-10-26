@@ -7,9 +7,8 @@
 //
 // The pinned entry carries the ATOMIC attestation triple `enclaveUrl` ↔ `portal` ↔ `pcr0`
 // (the enclave is verified against the on-chain portal binding), so consumers never mix that
-// triple across entries. Every other entry on the same rollup and underlying (migrationSources
-// plus the caller's UNDERLYING read) identifies a deployment a user may still hold funds on AND
-// supplies the enclave the migration burn is co-signed against.
+// triple across entries. Migration sources come from explicitly supported profile history;
+// each supplies its own enclave, and the caller checks its portal's UNDERLYING.
 
 import { MAINNET_ENS_DOMAIN, MAINNET_ENTRY_POINT, Network } from "../constants/index.js"
 import type { OxideEnvProfile, OxideEnvTuple } from "../types/index.js"
@@ -323,23 +322,24 @@ function isCurrentProtocol(entry: Record<string, unknown>): boolean {
 }
 
 /**
- * Every other current-protocol entry on the pinned deployment's rollup, plus each entry on another rollup whose
- * lowercase portal is in `reachable` (the caller has a node for it). Entries share the manifest's `token` even when
- * their portal escrows another asset, so the caller must still drop portals whose UNDERLYING differs from the pin's.
- * A malformed entry throws.
+ * Sources explicitly selected by the wallet's supported profile history, sharing its L1 chain and name registry.
+ * The caller still checks each portal's UNDERLYING. Unselected deployments are not migration history.
  */
 export function migrationSources(
   manifest: unknown,
   pinned: OxideEnvTuple,
-  reachable: ReadonlySet<string> = new Set(),
+  sourcePortals: ReadonlySet<string> = new Set(),
 ): OxideEnvTuple[] {
   return requireDeployments(manifest)
-    .filter((entry) => !samePortal(entry, pinned.portal) && isCurrentProtocol(entry))
-    .map((entry) => parseDeployment(entry).tuple)
     .filter(
-      (tuple) =>
-        tuple.rollupVersion === pinned.rollupVersion || reachable.has(tuple.portal.toLowerCase()),
+      (entry) =>
+        typeof entry.portal === "string" &&
+        sourcePortals.has(entry.portal.toLowerCase()) &&
+        !samePortal(entry, pinned.portal) &&
+        sameLineage(entry, pinned) &&
+        isCurrentProtocol(entry),
     )
+    .map((entry) => parseDeployment(entry).tuple)
 }
 
 /**

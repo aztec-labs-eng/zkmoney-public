@@ -1188,23 +1188,28 @@ export class ObsidionWallet extends BaseWallet {
     if (this.stubClassIds.size > 0) return
     if (this.stubClassesInitPromise) return this.stubClassesInitPromise
 
+    // The id costs a full class hash, and so does registering. A PXE that kept the class from an
+    // earlier session is not asked to hash it again.
+    const registerStub = async (artifact: ContractArtifact) => {
+      const { id } = await getContractClassFromArtifact(artifact)
+      if (!(await this.pxe.getContractArtifact(id))) await this.pxe.registerContractClass(artifact)
+      return id
+    }
+
     this.stubClassesInitPromise = (async () => {
       // Alpha and alpha-test share the artifact: they differ only in signature scheme.
       const alphaArtifact = await getSimulatedAlphaAccountArtifact()
-      await this.pxe.registerContractClass(alphaArtifact)
-      const { id: alphaId } = await getContractClassFromArtifact(alphaArtifact)
+      const alphaId = await registerStub(alphaArtifact)
       this.stubArtifacts.set("alpha", alphaArtifact)
       this.stubClassIds.set("alpha", alphaId)
 
       const schnorrArtifact = await getStubSchnorrAccountContractArtifact()
-      await this.pxe.registerContractClass(schnorrArtifact)
-      const { id: schnorrId } = await getContractClassFromArtifact(schnorrArtifact)
+      const schnorrId = await registerStub(schnorrArtifact)
       this.stubArtifacts.set("schnorr", schnorrArtifact)
       this.stubClassIds.set("schnorr", schnorrId)
 
       const ecdsaArtifact = await getStubEcdsaAccountContractArtifact()
-      await this.pxe.registerContractClass(ecdsaArtifact)
-      const { id: ecdsaId } = await getContractClassFromArtifact(ecdsaArtifact)
+      const ecdsaId = await registerStub(ecdsaArtifact)
       this.stubArtifacts.set("ecdsasecp256k1", ecdsaArtifact)
       this.stubArtifacts.set("ecdsasecp256r1", ecdsaArtifact)
       this.stubClassIds.set("ecdsasecp256k1", ecdsaId)

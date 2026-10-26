@@ -10,6 +10,8 @@ import {
   nonContactInbox,
   payerAddedToContacts,
   payerForPaidLink,
+  REMIND_INTERVAL_MS,
+  remindedRecently,
   withoutAnsweredRequests,
   withoutPaidLinkReceives,
   type PaidLinkSipaDeposit,
@@ -193,6 +195,20 @@ function sipaDeposit(overrides: Partial<PaidLinkSipaDeposit> = {}): PaidLinkSipa
     ...overrides,
   }
 }
+
+describe("reminders", () => {
+  it("carries when an outgoing contact request was last reminded", () => {
+    const [row] = buildRequestRows([req({ direction: "outgoing", remindedAt: NOW - 1 })], NOW)
+    expect(row.remindedAt).toBe(NOW - 1)
+  })
+
+  it("blocks a reminder for 12 hours after the last one", () => {
+    expect(remindedRecently(undefined, NOW)).toBe(false)
+    expect(remindedRecently(NOW - REMIND_INTERVAL_MS + 1, NOW)).toBe(true)
+    expect(remindedRecently(NOW - REMIND_INTERVAL_MS, NOW)).toBe(false)
+    expect(REMIND_INTERVAL_MS).toBe(12 * 60 * 60 * 1000)
+  })
+})
 
 describe("buildPaidLinkRows", () => {
   it("projects fulfilled outgoing links only, timestamped at the SIPA settlement", () => {

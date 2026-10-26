@@ -42,6 +42,10 @@ vi.mock("../src/features/contacts/unsavedContact", () => ({
 }))
 vi.mock("../src/features/contacts/contactPay", () => ({ runContactPay: m.pay }))
 vi.mock("../src/features/contacts/SendScreen", () => ({ SendScreen: () => null }))
+vi.mock("../src/features/actionGate", () => ({
+  useWalletFrozen: () => false,
+  useActionVerdict: () => "open",
+}))
 vi.mock("../src/features/contacts/ContactDetailScreen", () => ({ ContactDetailScreen: () => null }))
 vi.mock("../src/features/contacts/PayAmountForm", () => ({ PayAmountForm: () => null }))
 vi.mock("../src/features/contacts/PayConfirmForm", () => ({

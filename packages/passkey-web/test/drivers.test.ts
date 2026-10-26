@@ -11,7 +11,12 @@ import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { bytesToBase64Url, bytesToHex } from "../src/ceremony/bytes.js"
-import type { PasskeyHint } from "../src/ceremony/passkeyCeremony.js"
+import {
+  type PasskeyCreateRequest,
+  type PasskeyHint,
+  isBlockedPromptError,
+  recordRequestHeld,
+} from "../src/ceremony/passkeyCeremony.js"
 import { UNKNOWN_PROVENANCE, decodeUserHandleProvenance } from "../src/ceremony/userHandle.js"
 import type { DevicePosture } from "../src/policy/devicePosture.js"
 import { type LocalManager, WITHDRAWN, laptopCreationFor } from "../src/policy/laptopCreation.js"
@@ -1678,6 +1683,40 @@ describe("security keys at creation", () => {
       )
       await expect(observed.run).rejects.toThrow(named("AbortError"))
       expect(signalled).toEqual(askedFor(observed.ceremony))
+    })
+
+    it("a refusal before any prompt reaches the caller as the ceremony's own error, hold and all", async () => {
+      const onThisComputer = {
+        localCreation: { managers: ["gpm"] as const },
+        attachmentLabelTrusted: true,
+      }
+      for (const [posture, extra, attachment] of [
+        ["laptop", {}, "cross-platform"],
+        ["laptop", onThisComputer, "platform"],
+        ["phone", {}, undefined],
+      ] as const) {
+        const refused = new DOMException("Dismissed", "NotAllowedError")
+        recordRequestHeld(refused, 40)
+        const ceremony = new FakePasskeyCeremony({})
+        let asked: PasskeyCreateRequest | undefined
+        ceremony.create = async (request) => {
+          asked = request
+          throw refused
+        }
+        await expect(
+          runPasskeyCreation(ceremony, {
+            posture,
+            rpId: "localhost",
+            rpName: "zk.money",
+            userName: "@alice",
+            challengeForChained: () => CHALLENGE,
+            ...extra,
+          }),
+        ).rejects.toBe(refused)
+        expect(asked?.authenticatorAttachment).toBe(attachment)
+        expect(isBlockedPromptError(refused)).toBe(true)
+        expect(signalled).toEqual([])
+      }
     })
 
     it("asks for nothing when a creation succeeds, never answered, or on a sign-in", async () => {

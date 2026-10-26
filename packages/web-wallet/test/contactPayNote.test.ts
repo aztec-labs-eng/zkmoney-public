@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   removeTransaction: vi.fn(async (..._args: unknown[]) => true),
   addEntry: vi.fn(async (_entry: object) => {}),
   addOrMergeContact: vi.fn(async (entry: object) => entry),
+  approveAutoAdded: vi.fn(async (_address: string) => undefined),
   removeEntry: vi.fn(async (_identity: object) => {}),
   /** Set to a hash to stand for a send the node has already been handed. */
   survivingHash: undefined as string | undefined,
@@ -49,6 +50,7 @@ vi.mock("@obsidion/front-core", () => ({
     get: () => ({
       addEntry: h.addEntry,
       addOrMergeContact: h.addOrMergeContact,
+      approveAutoAdded: h.approveAutoAdded,
       removeEntry: h.removeEntry,
     }),
   },
@@ -231,6 +233,27 @@ describe("contact pay note", () => {
     expect(h.addEntry).toHaveBeenCalledWith(contact)
     expect(order).toEqual(["contact", "row", "send", "approval"])
   })
+})
+
+it("makes a payee the wallet added a contact once the send lands", async () => {
+  vi.clearAllMocks()
+  await runContactPay(
+    {
+      mode: "send",
+      deps: {
+        tokenService: token as never,
+        account: { makeSpendMetadataResolver: async () => () => {} } as never,
+        wallet: {} as never,
+        contractService: {} as never,
+      },
+      tag: "alice",
+      senderTag: "bob",
+      amountDisplay: "5",
+    },
+    () => {},
+  )
+  expect(h.approveAutoAdded).toHaveBeenCalledWith("0xabc")
+  expect(h.addEntry).not.toHaveBeenCalled()
 })
 
 describe("approving an unsaved requester", () => {

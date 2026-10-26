@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type ComponentProps } from "react"
+import { useEffect, useLayoutEffect, useRef, useState, type ComponentProps } from "react"
+import { createPortal } from "react-dom"
 import { floorToCents } from "../../../ui/format"
 import { deviceStorage } from "../../../platform/storage/rollupStorage"
 import { senderLine } from "../../paylink/senderLine"
@@ -51,6 +52,7 @@ export function GoldenTicketHead({
   tokenDecimals,
   tokenSymbol,
   senderTag,
+  paid,
 }: {
   /** The link's amount; the payment card waits for it. */
   amount?: bigint
@@ -58,11 +60,13 @@ export function GoldenTicketHead({
   tokenSymbol: string
   /** The link creator's verified tag. */
   senderTag?: string
+  /** No ticket: the payment pays the name's own price, so nothing here says free. */
+  paid?: boolean
 }) {
   return (
     <div className="ww-ticket-head">
-      <span className="ww-ticket-head__badge">Golden ticket</span>
-      <h2 className="ww-ticket-head__title">Pick any name, free</h2>
+      <span className="ww-ticket-head__badge">{paid ? "Payment link" : "Golden ticket"}</span>
+      <h2 className="ww-ticket-head__title">{paid ? "Pick any name" : "Pick any name, free"}</h2>
       {amount !== undefined && (
         <TicketPaymentCard
           amount={amount}
@@ -155,13 +159,20 @@ export function GoldenTicketIntro({
     return () => wide.removeEventListener("change", widened)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `gone` guards itself
   }, [])
+  // Inside the sheet, a fixed intro takes the sheet's box until its slide-in ends, then jumps to the
+  // screen's: it renders in the dialog itself, which never moves, so it covers the screen from its
+  // first frame. Outside a dialog it stays where it is.
+  const anchor = useRef<HTMLSpanElement>(null)
+  const [host, setHost] = useState<HTMLElement | null>()
+  useLayoutEffect(() => setHost(anchor.current?.closest("dialog") ?? null), [])
   if (state === "gone") return null
-  return (
+  if (host === undefined) return <span ref={anchor} hidden />
+  const intro = (
     <button
       type="button"
       className="zkm-btn-reset ww-ticket-intro"
       data-leaving={state === "leaving" || undefined}
-      aria-label="Open your golden ticket"
+      aria-label={props.paid ? "Open your payment" : "Open your golden ticket"}
       // The dialog's first focus lands here while the form behind is inert.
       data-autofocus
       onClick={open}
@@ -170,16 +181,19 @@ export function GoldenTicketIntro({
       }}
     >
       <GoldenTicket {...props} tag="" />
-      <span className="ww-ticket-intro__hint">Tap to open your ticket</span>
+      <span className="ww-ticket-intro__hint">
+        {props.paid ? "Tap to open your payment" : "Tap to open your ticket"}
+      </span>
     </button>
   )
+  return host ? createPortal(intro, host) : intro
 }
 
-function GoldenTicket({ amount, tokenDecimals, tokenSymbol, senderTag, tag }: TicketProps) {
+function GoldenTicket({ amount, tokenDecimals, tokenSymbol, senderTag, tag, paid }: TicketProps) {
   return (
     <div className="ww-golden-ticket">
       <div className="ww-golden-ticket__top">
-        <span className="ww-golden-ticket__kicker">Golden ticket</span>
+        <span className="ww-golden-ticket__kicker">{paid ? "Payment link" : "Golden ticket"}</span>
         <span className="ww-golden-ticket__admit">Admit one</span>
       </div>
       <div className="ww-golden-ticket__body">
@@ -195,7 +209,7 @@ function GoldenTicket({ amount, tokenDecimals, tokenSymbol, senderTag, tag }: Ti
           @{tag || "yourname"}
           <small>.zk.money</small>
         </span>
-        <span className="ww-golden-ticket__stamp">Free</span>
+        {!paid && <span className="ww-golden-ticket__stamp">Free</span>}
       </div>
     </div>
   )

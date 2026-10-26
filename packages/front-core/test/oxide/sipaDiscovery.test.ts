@@ -8,13 +8,15 @@ const { fetchRecordsMock, selectResolverMock, FAKE_ARTIFACT } = vi.hoisted(() =>
 }))
 
 // package; the bundled artifact loader needs no real artifact here. AztecAddress
-// gets a minimal fromString/toString fake, the per-network policy is stubbed so
-// the test pins that discovery THREADS it into the resolver selection, and the
-// canonical generation stack is pinned to v4 so the combined-registration branch
-// is what's asserted.
-vi.mock("@obsidion/sdk", () => ({
+// gets a minimal fromString/toString fake, and the per-network policy is stubbed so
+// the test pins that discovery THREADS it into the resolver selection. Registration
+// runs through the real `ensureContractRegisteredInPXE`.
+vi.mock("@obsidion/sdk", async (importOriginal) => ({
+  ensureContractRegisteredInPXE: (await importOriginal<typeof import("@obsidion/sdk")>())
+    .ensureContractRegisteredInPXE,
   fetchSipaResolverOperators: fetchRecordsMock,
   selectManifestResolverOperator: selectResolverMock,
+  getBroadcasterArtifact: () => FAKE_ARTIFACT,
   resolverSelectionPolicy: (network: string) =>
     network === "mainnet"
       ? { failOnAmbiguousMatch: true }
@@ -29,18 +31,9 @@ vi.mock("@aztec/aztec.js/addresses", () => ({
     fromStringUnsafe: (value: string) => ({ toString: () => value.toLowerCase() }),
   },
 }))
-// Pin the canonical generation stack to v4 so the combined-registration branch is
-// exercised; the v5 split (registerContractClass + registerContract(instance)) is
-// the other branch. The artifact loader is stubbed to a fake — the branch, not the
-// artifact bytes, is what's under test.
-vi.mock("src/core", () => ({
-  canonicalGenerationStack: () => "v4",
-}))
-vi.mock("../../src/oxide/generationBroadcasterArtifact", () => ({
-  getGenerationBroadcasterArtifact: () => FAKE_ARTIFACT,
-}))
 import { Network } from "@obsidion/sdk"
 import { setupSipaDiscovery } from "../../src/oxide/sipaDiscovery"
+import { resetResolverOperatorRecordsForTests } from "../../src/oxide/resolverOperatorRecords"
 
 const PREFERRED_RESOLVER_OWNER = "0xe959F1c4F84C55c10114f3FA46a8DcFB51ab8d30"
 
@@ -87,6 +80,7 @@ function makeNode(instance: unknown = INSTANCE) {
 }
 
 beforeEach(() => {
+  resetResolverOperatorRecordsForTests()
   fetchRecordsMock.mockReset().mockResolvedValue([RESOLVER_RECORD])
   selectResolverMock.mockReset().mockReturnValue(RESOLVER_RECORD)
 })
@@ -123,13 +117,8 @@ describe("setupSipaDiscovery", () => {
     expect((node.getContract.mock.calls[0]![0] as { toString(): string }).toString()).toBe(
       TUPLE.l2Broadcaster,
     )
-    // canonical stack is v4 here -> the combined 4.3.0 registration shape; the v5
-    // split (registerContractClass + registerContract(instance)) is the other branch.
-    expect(pxe.registerContractClass).not.toHaveBeenCalled()
-    expect(pxe.registerContract).toHaveBeenCalledWith({
-      instance: INSTANCE,
-      artifact: FAKE_ARTIFACT,
-    })
+    expect(pxe.registerContractClass).toHaveBeenCalledWith(FAKE_ARTIFACT)
+    expect(pxe.registerContract).toHaveBeenCalledWith(INSTANCE)
 
     expect(result.resolver).toBe(RESOLVER_RECORD)
     expect(result.broadcaster.toString()).toBe(TUPLE.l2Broadcaster)
@@ -250,7 +239,22 @@ describe("setupSipaDiscovery", () => {
         tuple: TUPLE,
         network: SANDBOX,
       }),
-    ).rejects.toThrow(/Broadcaster instance not found/)
+    ).rejects.toThrow(/Contract not found on-chain/)
+    expect(pxe.registerContract).not.toHaveBeenCalled()
+  })
+
+  it("leaves a Broadcaster the PXE already holds alone: no node read, no class hash", async () => {
+    const pxe = {
+      ...makePxe(),
+      getContractInstance: vi.fn(async () => ({ originalContractClassId: "class-marker" })),
+      getContractArtifact: vi.fn(async () => FAKE_ARTIFACT),
+    }
+    const node = makeNode()
+
+    await setupSipaDiscovery({ pxe, node, publicClient: CLIENT, tuple: TUPLE, network: SANDBOX })
+
+    expect(node.getContract).not.toHaveBeenCalled()
+    expect(pxe.registerContractClass).not.toHaveBeenCalled()
     expect(pxe.registerContract).not.toHaveBeenCalled()
   })
 })

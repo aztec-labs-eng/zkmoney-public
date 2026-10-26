@@ -229,8 +229,8 @@ export async function computeEscrowTagSecret(args: {
 
 /**
  * Register a link-borne escrow tag secret so this PXE discovers the escrow's token note. Adding a
- * source clears the contract-sync cache, so every contract re-syncs against it -- a claim pays one
- * extra sweep, which is why this is called on claim paths only.
+ * source clears the contract-sync cache, so every contract re-syncs against it -- each new source
+ * costs one extra sweep, which is why only paths that read the escrow's note call this.
  */
 export async function registerEscrowTagSecret(args: {
   wallet: ObsidionWallet

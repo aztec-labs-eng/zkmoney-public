@@ -25,6 +25,7 @@ import { loadWalletIdentity } from "../identity/walletIdentity"
 import { whenVisibilityChanges } from "../../platform/visibilityScheduler"
 import { bridgeActivityFeed, sipaProcessingObserver } from "../deposit/sipaProcessing"
 import { getWithdrawalStore } from "../withdraw/withdrawGateway"
+import { portalFrozenNow, subscribe as subscribePortalFrozen } from "../withdraw/portalFrozen"
 
 export function NotificationsMount(): null {
   const { obsidionWallet } = useAztecContext()
@@ -37,8 +38,13 @@ export function NotificationsMount(): null {
         .catch(() => null)
     const producers = NotificationProducerRegistry.get()
     producers.register(
-      BridgeNotificationProducer.get(bridgeActivityFeed(), notificationStore, { liveRows: true }),
+      BridgeNotificationProducer.get(bridgeActivityFeed(), notificationStore, {
+        liveRows: true,
+        portalFrozen: portalFrozenNow,
+      }),
     )
+    // A swept deposit's live row retires once its portal is seen frozen.
+    const unsubFrozen = subscribePortalFrozen(() => bridgeActivityFeed().refresh())
     const joined = async () => {
       const identity = loadWalletIdentity()
       const networkId = getActiveNetworkId()
@@ -67,7 +73,10 @@ export function NotificationsMount(): null {
       }),
     )
     producers.start()
-    return () => producers.stop()
+    return () => {
+      unsubFrozen()
+      producers.stop()
+    }
   }, [])
 
   useEffect(() => {

@@ -29,7 +29,8 @@ const aztec = { obsidionWallet: {} }
 const contracts = { contractService: {} }
 
 const navigate = vi.hoisted(() => vi.fn())
-const readL1TokenBalance = vi.hoisted(() => vi.fn(async () => 0n))
+// What the rail observes at the address.
+const held = vi.hoisted(() => vi.fn(async (): Promise<bigint> => 0n))
 const fireEvent = vi.hoisted(() => vi.fn())
 /** Coins offered past the network's own. */
 const extraCoins = vi.hoisted(() => [] as { symbol: string; decimals: number; icon: string }[])
@@ -47,18 +48,6 @@ vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => navigate,
 }))
-vi.mock("../src/features/deposit/l1DepositTokenBalance", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/deposit/l1DepositTokenBalance")>()),
-  readL1TokenBalance,
-  // The funding sheet reads the wallet's balance on mount; jsdom has no L1 to answer.
-  readL1DepositTokenBalance: async () => ({
-    raw: 10n ** 21n,
-    value: 1000,
-    display: "1000 TEST",
-    symbol: "TEST",
-    decimals: 18,
-  }),
-}))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAztecContext: () => aztec,
@@ -66,7 +55,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   useContractServiceContext: () => contracts,
 }))
 // One instance, like the real singleton — the screen keys effects off the gateway identity.
-const gateway = { depositAddress, wakeDeposit: vi.fn(async () => {}) }
+const gateway = { depositAddress, observe: vi.fn() }
 vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
 vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/features/deposit/loadDepositFacts")>()
@@ -145,6 +134,8 @@ const { getBroadcastLedger, resetBroadcastsForTests } = await import(
 )
 const { getConfig } = await import("../src/config/env")
 const { saveRegistrationTerms } = await import("../src/features/onboarding/registrationTerms")
+const { provideFakeDepositRail } = await import("./fakeDepositRail")
+const { SIPADepositStore } = await import("@obsidion/front-core")
 import { seedBootConfig } from "./seedBootConfig"
 import { usdFigure } from "../src/ui/format"
 import { PAID_ASK, RANDOM, RANDOM_ASK, usd } from "./support/registrationPrices"
@@ -212,8 +203,16 @@ describe("DepositScreen — claiming gate", () => {
       gotIt?.click()
     })
 
+  let observe: ReturnType<typeof provideFakeDepositRail>
   beforeEach(() => {
     vi.clearAllMocks()
+    held.mockResolvedValue(0n)
+    ;(SIPADepositStore as unknown as { instance: unknown }).instance = null
+    observe = provideFakeDepositRail({
+      addresses: () => ["0xdeadbeef", `0x${"5a".repeat(20)}`, "0xfeedbeef"],
+      held,
+      token: () => MANIFEST_TOKEN as Hex,
+    })
     resetBroadcastsForTests()
     l1.account = null
     l1.pickerOpen = false
@@ -539,10 +538,10 @@ describe("DepositScreen — claiming gate", () => {
     const generate = coinRow()
     await act(async () => generate!.click())
     expect(publish).toHaveBeenCalledOnce()
-    // The ledger publishes it; the sheet shows the address at once, with where the broadcast stands.
+    // The ledger publishes it; the sheet shows the address at once. Its broadcast shows once funds wait on it.
     expect(container.innerHTML).toContain("0xdeadbeef")
     expect(container.textContent).not.toContain(CREATING)
-    expect(container.querySelector("[data-testid='broadcast-status']")).not.toBeNull()
+    expect(container.querySelector("[data-testid='broadcast-status']")).toBeNull()
     expect(showReportableError).not.toHaveBeenCalled()
     expect(fireEvent).toHaveBeenCalledWith("address_publish_deferred", { reason: "import" })
     expect(fireEvent).not.toHaveBeenCalledWith("address_publish_failed", expect.anything())
@@ -613,17 +612,16 @@ describe("DepositScreen — claiming gate", () => {
       await render()
       await dismissDisclaimer()
       await act(async () => coinRow()!.click())
-      readL1TokenBalance.mockResolvedValue(floor - 1n)
+      held.mockResolvedValue(floor - 1n)
       await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
-      expect(readL1TokenBalance).toHaveBeenCalled()
+      expect(observe).toHaveBeenCalled()
       expect(container.textContent).not.toContain("spotted")
       expect(fireEvent).not.toHaveBeenCalledWith("deposit_funded", expect.anything())
       // At the floor the sweep accepts it, so the screen spots it.
-      readL1TokenBalance.mockResolvedValue(floor)
+      held.mockResolvedValue(floor)
       await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
       expect(fireEvent).toHaveBeenCalledWith("deposit_funded", expect.anything())
     } finally {
-      readL1TokenBalance.mockResolvedValue(0n)
       vi.useRealTimers()
     }
   })
@@ -640,10 +638,11 @@ describe("DepositScreen — claiming gate", () => {
 
       // An unfunded address is the steady state — the screen stays put.
       await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
-      expect(readL1TokenBalance).toHaveBeenCalledWith(MANIFEST_TOKEN, "0xdeadbeef")
+      expect(observe).toHaveBeenCalled()
+      expect(container.textContent).not.toContain("spotted")
       expect(navigate).not.toHaveBeenCalled()
 
-      readL1TokenBalance.mockResolvedValue(5n)
+      held.mockResolvedValue(5n)
       await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
       expect(container.textContent).toContain("spotted")
       expect(navigate).not.toHaveBeenCalled()
@@ -661,7 +660,7 @@ describe("DepositScreen — claiming gate", () => {
     }
   })
 
-  it("emits deposit_funded once even when two slow polls settle together", async () => {
+  it("emits deposit_funded once, however many passes see the funds", async () => {
     ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
     localStorage.clear()
     saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
@@ -671,14 +670,11 @@ describe("DepositScreen — claiming gate", () => {
       const generate = coinRow()
       await act(async () => generate!.click())
 
-      // Two ticks elapse while both reads hang, then both settle funded at once.
-      const settlers: Array<(b: bigint) => void> = []
-      const hang = () => new Promise<bigint>((resolve) => settlers.push(resolve))
-      readL1TokenBalance.mockImplementationOnce(hang).mockImplementationOnce(hang)
+      held.mockResolvedValue(5n)
       await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
+      held.mockResolvedValue(6n)
       await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
-      expect(settlers).toHaveLength(2)
-      await act(async () => settlers.forEach((s) => s(5n)))
+      expect(observe.mock.calls.length).toBeGreaterThan(1)
 
       expect(fireEvent.mock.calls.filter(([e]) => e === "deposit_funded")).toHaveLength(1)
       expect(container.textContent).toContain("spotted")
@@ -726,5 +722,149 @@ describe("DepositScreen — claiming gate", () => {
     l1.account = ACCOUNT
     await render()
     expect(fundSheet()).not.toBeNull()
+  })
+})
+
+/**
+ * A target the caller passes, such as an upgrade's, takes the place of a fresh deposit address: it
+ * names the fee and the least to send, makes the address itself, and hears when funds land.
+ */
+describe("DepositScreen — an explicit target", () => {
+  beforeAll(seedBootConfig)
+
+  let container: HTMLDivElement
+  let root: Root
+  const create = vi.fn()
+  const onFunded = vi.fn()
+  const fee = 5n * 10n ** 17n
+  const target = (
+    over: Partial<import("../src/features/deposit/depositTarget").DepositTarget> = {},
+  ): import("../src/features/deposit/depositTarget").DepositTarget => ({
+    kind: "upgrade",
+    create,
+    fee,
+    floor: fee + 1n,
+    ask: 10n ** 18n,
+    onFunded,
+    onShown: () => {},
+    ...over,
+  })
+  const screen = (shown: ReturnType<typeof target>) => (
+    <MemoryRouter initialEntries={["/"]}>
+      <ScreeningProvider screener={passThroughScreener}>
+        <DepositScreen onClose={() => {}} target={shown} title="Deposit to upgrade" />
+      </ScreeningProvider>
+    </MemoryRouter>
+  )
+  const render = (shown: ReturnType<typeof target>) => act(async () => root.render(screen(shown)))
+  const text = () => document.body.textContent ?? ""
+  const row = (id: string) => document.querySelector(`[data-testid='${id}']`)?.textContent ?? ""
+  const press = (title: string) =>
+    act(async () =>
+      [...document.querySelectorAll("button")].find((b) => b.textContent === title)!.click(),
+    )
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetBroadcastsForTests()
+    ;(PendingRegistrationStore as unknown as { instance: unknown }).instance = null
+    localStorage.clear()
+    saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
+    container = document.createElement("div")
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  it("prices the deposit from the target, derives nothing, and has the target make the address", async () => {
+    // As an upgrade's run does, the target reads as creating from the press that starts it.
+    create.mockImplementation(() => root.render(screen(target({ creating: true }))))
+    await render(target())
+    expect(text()).toContain("Deposit to upgrade")
+    expect(row("deposit-fee")).toContain("$0.50")
+    expect(row("deposit-minimum")).toContain("$1")
+    await press("Continue")
+    expect(create).toHaveBeenCalledOnce()
+    expect(text()).toContain(CREATING)
+    await render(target({ address: { address: "0xfeedbeef", name: "alice", publishing: true } }))
+    expect(document.body.innerHTML).toContain("0xfeedbeef")
+    expect(depositAddress).not.toHaveBeenCalled()
+  })
+
+  it("shows the target's line while its address is made", async () => {
+    const note = "Just a moment, we're making your address private."
+    create.mockImplementation(() =>
+      root.render(screen(target({ creating: true, creatingNote: note }))),
+    )
+    await render(target({ creatingNote: note }))
+    await press("Continue")
+    expect(text()).toContain(CREATING)
+    expect(text()).toContain(note)
+  })
+
+  it("keeps the usual line for a target that names none", async () => {
+    create.mockImplementation(() =>
+      root.render(screen(target({ kind: "registration", creating: true }))),
+    )
+    await render(target({ kind: "registration" }))
+    await press("Continue")
+    expect(text()).toContain(CREATING)
+    expect(text()).toContain("You'll copy it into your exchange or wallet next.")
+  })
+
+  it("rounds the floor up in a coin with fewer decimals, so a fee-only balance still waits", async () => {
+    extraCoins.push({ symbol: "USDC", decimals: 6, icon: "" })
+    vi.useFakeTimers()
+    try {
+      await render(target({ address: { address: "0xfeedbeef", name: "alice" } }))
+      await act(async () =>
+        document.querySelector<HTMLButtonElement>("[data-testid='deposit-coin-select']")!.click(),
+      )
+      await act(async () =>
+        document.querySelector<HTMLButtonElement>("[data-testid='deposit-coin-USDC']")!.click(),
+      )
+      await press("Continue")
+      held.mockResolvedValue(fee)
+      await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
+      expect(onFunded).not.toHaveBeenCalled()
+    } finally {
+      extraCoins.length = 0
+      held.mockResolvedValue(0n)
+      vi.useRealTimers()
+    }
+  })
+
+  it("quotes the target's fee in the address sheet's limits too", async () => {
+    await render(target({ address: { address: "0xfeedbeef", name: "alice" } }))
+    await press("Continue")
+    await act(async () =>
+      document.querySelector<HTMLButtonElement>(".ww-deposit-sheet__limits-head")!.click(),
+    )
+    expect(row("deposit-fee")).toContain("$0.50")
+  })
+
+  it("spots funds only at the target's floor, and tells the target", async () => {
+    vi.useFakeTimers()
+    try {
+      await render(target({ address: { address: "0xfeedbeef", name: "alice" } }))
+      await press("Continue")
+      held.mockResolvedValue(fee)
+      await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
+      expect(onFunded).not.toHaveBeenCalled()
+      held.mockResolvedValue(fee + 1n)
+      await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
+      expect(onFunded).toHaveBeenCalledWith(fee + 1n, 18)
+      expect(fireEvent).toHaveBeenCalledWith("deposit_funded", {
+        funding: "external",
+        amount_bucket: expect.anything(),
+      })
+    } finally {
+      held.mockResolvedValue(0n)
+      vi.useRealTimers()
+    }
   })
 })

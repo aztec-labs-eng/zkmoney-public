@@ -38,14 +38,19 @@
  * entirely — `headBlock` is a plain node read but `listIncoming` drags a full PXE sync behind it —
  * with a periodic full pass so a static-head rebuild is still caught.
  *
- * Snapshot sources return events and balance from one validated PXE anchor. `onSynced` publishes
+ * Snapshot sources return events and balances from one validated PXE anchor. `onSynced` publishes
  * the snapshot before event attribution/persistence, so their failures cannot withhold a balance.
  * A throwing hook fails the tick (backoff, full rescan next tick).
  */
 
 import type { IStorageAdapter } from "../../storages/adapter"
 import type { TokenInTxService } from "../../../types/tokens"
-import type { ScannedTransferEvent, TransferEventSource, WalletSyncSource } from "@obsidion/sdk"
+import type {
+  ScannedTransferEvent,
+  TransferEventSource,
+  WalletBalances,
+  WalletSyncSource,
+} from "@obsidion/sdk"
 import type {
   ContactsByL2,
   ITagForwardResolver,
@@ -135,7 +140,9 @@ export interface TransferEventScannerOptions {
   contacts: ContactsByL2
   token: { address: string; symbol: string; decimals: number }
   /** Publishes each chunk's validated snapshot before event attribution or persistence. */
-  onSynced?: (anchorBlock: number, balance?: bigint) => Promise<void>
+  onSynced?: (anchorBlock: number, balances?: WalletBalances) => Promise<void>
+  /** Each pass that read every chunk up to head. */
+  onCaughtUp?: () => void
   pollIntervalMs?: number
   sourceTimeoutMs?: number
   catchUpTimeoutMs?: number
@@ -207,6 +214,11 @@ export class TransferEventScanner {
     if (this.passes >= wanted) return
     this.idleTicks = IDLE_TICKS_PER_FULL_PASS
     return this.runTick()
+  }
+
+  /** Settles once no pass is in flight: every pass begun before the call has published. */
+  async drained(): Promise<void> {
+    while (this.inFlight) await this.inFlight
   }
 
   private runTick(): Promise<void> {
@@ -313,14 +325,14 @@ export class TransferEventScanner {
               readTimeoutMs,
             ),
             anchorBlock: await this.readAnchor(head),
-            balance: undefined,
+            balances: undefined,
           }
       synced = true
       if (!this.running || this.context !== ctx) return true
       anchor = snapshot.anchorBlock
       // Publish the balance before attribution or persistence can defer an event. The bounded
       // snapshot has no side effects: a late result after timeout/stop can never publish here.
-      const balanceComplete = await this.synced(ctx, anchor, snapshot.balance)
+      const balanceComplete = await this.synced(ctx, anchor, snapshot.balances)
       const complete = await this.ingestEvents(ctx, snapshot.events)
       if (!this.running || this.context !== ctx) return true
       if (!complete || !balanceComplete) return false
@@ -330,6 +342,7 @@ export class TransferEventScanner {
       from = chunkEnd + 1
     }
     this.lastScannedHead = head
+    this.opts.onCaughtUp?.()
     return true
   }
 
@@ -337,11 +350,11 @@ export class TransferEventScanner {
   private async synced(
     ctx: TransferScanContext,
     anchor: number,
-    balance?: bigint,
+    balances?: WalletBalances,
   ): Promise<boolean> {
     if (!this.opts.onSynced || !this.running || this.context !== ctx) return true
     try {
-      await this.bounded(this.opts.onSynced(anchor, balance), "onSynced")
+      await this.bounded(this.opts.onSynced(anchor, balances), "onSynced")
       return true
     } catch (err) {
       logger.warn(`${LOG_PREFIX} onSynced failed:`, err)

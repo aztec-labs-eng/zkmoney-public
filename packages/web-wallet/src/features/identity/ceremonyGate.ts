@@ -4,6 +4,7 @@ import {
   type DevicePosture,
   type LaptopCreation,
   type PhoneReach,
+  type SheetReopen,
   type SignUpChoice,
   PhoneUnreachableError,
   currentDevicePosture,
@@ -51,8 +52,8 @@ export type GateState =
    * `prompt` is what the screen renders: the "Sign in" sheet, the creation steps, or the tap before
    * a second prompt. `reach` and `creation` are what the browser said, so the creation steps can
    * name a device and offer this computer. `openOn` is the option the sheet opens on when the
-   * screen asks for one; `unfinished` marks a sheet re-opened after the browser's prompt closed
-   * with nothing made. `proceed` takes the option a creation picked (a sign-in passes none).
+   * screen asks for one; `reopened` says why a sheet re-opened after a creation made nothing.
+   * `proceed` takes the option a creation picked (a sign-in passes none).
    */
   | {
       kind: "awaiting-action"
@@ -60,7 +61,7 @@ export type GateState =
       reach: PhoneReach
       creation: LaptopCreation
       openOn?: SignUpChoice
-      unfinished?: boolean
+      reopened?: SheetReopen
       proceed: (choice?: SignUpChoice) => void
     }
 
@@ -81,8 +82,8 @@ export type GateOptions = {
   unheld?: UnheldPick
   /** Hold the creation sheet on this option: a refusal's way back, or a closed prompt's. */
   openOn?: SignUpChoice
-  /** The sheet re-opens after the browser's prompt closed with nothing made. */
-  unfinished?: boolean
+  /** Why the sheet re-opens after a creation made nothing. */
+  reopened?: SheetReopen
 }
 
 const sameList = (a: readonly string[], b: readonly string[]) =>
@@ -186,7 +187,7 @@ export function useCeremonyGate(
       /** The screen's own sheet already took the tap: resolve straight after the probe, no sheet. */
       unheld?: UnheldPick
       openOn?: SignUpChoice
-      unfinished?: boolean
+      reopened?: SheetReopen
     }): Promise<Probed & { choice?: SignUpChoice }> => {
       // The waiter is registered before any async work, so a cancel during a probe that never settles
       // still ends the call at once.
@@ -226,7 +227,7 @@ export function useCeremonyGate(
           prompt: params.prompt,
           ...probed,
           openOn,
-          unfinished: params.unfinished,
+          reopened: params.reopened,
           proceed: (choice) => {
             // A button from an earlier render must not release a later call's waiter.
             if (pending.current !== waiter) return
@@ -269,7 +270,7 @@ export function useCeremonyGate(
           : {
               unheld: options?.unheld,
               openOn: options?.openOn,
-              unfinished: options?.unfinished,
+              reopened: options?.reopened,
             }),
       })
       return {

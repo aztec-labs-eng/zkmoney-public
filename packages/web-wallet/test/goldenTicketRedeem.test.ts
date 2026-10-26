@@ -22,6 +22,8 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   deriveBootstrapKey: () => ({ address: `0x${"11".repeat(20)}` }),
 }))
+const rememberTicketSpent = vi.fn()
+vi.mock("../src/features/paylink/ticketSpent", () => ({ rememberTicketSpent }))
 vi.mock("../src/features/paylink/goldenTicketProver", () => ({
   proveGoldenTicketInBrowser: h.prove,
   warmGoldenTicketProver: h.warm,
@@ -93,6 +95,13 @@ describe("redeemGoldenTicketForLink", () => {
     await expect(redeem()).rejects.toThrow("store unavailable")
     h.redeem.mockResolvedValueOnce({ status: "created" })
     await expect(redeem()).resolves.toEqual({ status: "created", amount: 3n * DAI })
+    expect(rememberTicketSpent).not.toHaveBeenCalled()
+  })
+
+  it("remembers a ticket the service refused as spent, and still surfaces the refusal", async () => {
+    h.redeem.mockRejectedValueOnce(new AccountServiceError(409, "ticket_spent"))
+    await expect(redeem()).rejects.toThrow("ticket_spent")
+    expect(rememberTicketSpent).toHaveBeenCalledWith("frag")
   })
 
   it("binds the passkey's owner and the live threshold to the prepared witness, and says when it proves", async () => {

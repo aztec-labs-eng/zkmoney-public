@@ -7,6 +7,7 @@ import {
 import type { RegistrationSchedule } from "@obsidion/core/types"
 import {
   loadRegistrationTerms,
+  saveRegistrationTerms,
   PAYLINK_TICKET_REFUSED_MESSAGE,
   quoteExpired,
   registrationOffer,
@@ -37,10 +38,25 @@ function identityOf(fragment: string): string | null {
  */
 function markerFor(terms: RegistrationTerms, fragment: string): TicketSignupStash | null {
   if (!terms.paylinkId || terms.paylinkId !== identityOf(fragment)) return null
+  const stored = {
+    ...(terms.paylinkAmount !== undefined ? { amount: terms.paylinkAmount } : {}),
+    ...(terms.paylinkSender !== undefined ? { senderTag: terms.paylinkSender } : {}),
+  }
   const marker = peekTicketSignup()
-  if (marker && marker.fragment === fragment) return marker
+  if (marker && marker.fragment === fragment)
+    return {
+      ...marker,
+      amount: marker.amount ?? stored.amount,
+      senderTag: marker.senderTag ?? stored.senderTag,
+    }
   if (terms.fee === undefined || terms.minDeposit === undefined) return null
-  return { fragment, schedule: { fee: terms.fee, minDeposit: terms.minDeposit } }
+  return {
+    fragment,
+    schedule: { fee: terms.fee, minDeposit: terms.minDeposit },
+    // No ticket priced a deposit the link pays, so its split shows the name's price.
+    ...(terms.paylinkDeposit ? { paid: true as const } : {}),
+    ...stored,
+  }
 }
 
 /**
@@ -95,6 +111,80 @@ export function ticketSignupRegistration(
       ) ?? null
   )
 }
+
+/**
+ * The link closed before its claim paid the deposit it was to fund: the deposit is asked of the
+ * user again. A ticket's registration stays bound, since only its link prices it.
+ */
+export function releaseLinkDeposit(record: { account: string; tag: string }): void {
+  const terms = loadRegistrationTerms(record.account, record.tag)
+  if (terms?.paylinkDeposit) void saveRegistrationTerms({ ...terms, paylinkFunded: false })
+}
+
+/**
+ * This account's registration that still waits for its whole deposit, on live signed terms no link
+ * funds yet: a link opened on Home may pay it (`bindLinkDeposit`). Null for anything else.
+ */
+export function unfundedRegistration(
+  l2Address: string,
+  withdrawals: readonly { recipient: string; phase: string }[],
+  nowMs: number = Date.now(),
+): { record: PendingRegistrationRecord; schedule: RegistrationSchedule } | null {
+  const record = PendingRegistrationStore.get(webStorage).current(l2Address)
+  if (!record || record.phase !== "awaiting_deposit" || record.fundedAt !== undefined) return null
+  if (readRegistrationStage(record, withdrawals) !== "reserved" || unpublishable(record))
+    return null
+  const terms = loadRegistrationTerms(record.account, record.tag)
+  const schedule = signedSchedule(terms)
+  if (!schedule || quoteExpired(terms, nowMs) || registrationOffer(terms).funding === "paylink")
+    return null
+  return { record, schedule }
+}
+
+/** The link pays the registration's deposit, with the tip its review committed: Home's claim of it
+ *  burns that slice to the deposit address. */
+export function bindLinkDeposit(
+  record: { account: string; tag: string },
+  link: { fragment: string; amount?: bigint; senderTag?: string },
+  proverTip: bigint,
+  speed: "standard" | "faster",
+): Promise<void> | undefined {
+  const terms = loadRegistrationTerms(record.account, record.tag)
+  if (!terms) return undefined
+  return saveRegistrationTerms({
+    ...terms,
+    paylinkFunded: true,
+    paylinkDeposit: true,
+    paylinkId: linkIdentity(link.fragment),
+    ...(link.amount !== undefined ? { paylinkAmount: link.amount.toString() } : {}),
+    ...(link.senderTag ? { paylinkSender: link.senderTag } : {}),
+    proverTip: proverTip.toString(),
+    speed,
+  })
+}
+
+/** An address a replacement derived after the account's one broadcast was spent: unpublished, and
+ *  never publishable, so no link's claim can fund it. */
+const unpublishable = (record: PendingRegistrationRecord) =>
+  !record.broadcast && record.replaced?.broadcastSpent === true
+
+const FUNDING_REFUSAL_COPY: Record<string, string> = {
+  uncovered: "This payment cannot cover the account deposit.",
+  expired: "The reservation needs a fresh quote. Refresh it on the registration page first.",
+  blocked: "This payment cannot fund the registration at its current price.",
+  unpublished: "The registration's address is still being set up. Try again in a moment.",
+}
+
+/** Words for a claim the registration's funding refused; undefined for any other error. */
+export function fundingRefusalCopy(err: unknown): string | undefined {
+  if (!(err instanceof Error) || err.name !== "RegistrationFundingError") return undefined
+  const reason = (err as Error & { reason?: string }).reason ?? ""
+  return FUNDING_REFUSAL_COPY[reason] ?? "This payment cannot fund the registration right now."
+}
+
+/** Resolves once this browser's registrations are read, so an absent one is known absent. */
+export const loadRegistrations = (): Promise<void> =>
+  PendingRegistrationStore.get(webStorage).load()
 
 /** The loaded account has a registration whose terms name this link. */
 export function ticketSignupCommitted(fragment: string): boolean {

@@ -55,8 +55,8 @@ export interface NotificationRoute {
   state?: Record<string, string>
   /** Open the pending name's claim review on Home. */
   activate?: boolean
-  /** Open the migration dialog. */
-  migration?: boolean
+  /** Open the migration dialog, at the residuals' list for their row. */
+  migration?: "residuals" | "run"
 }
 
 /**
@@ -75,7 +75,8 @@ export function notificationRoute(entry: AppNotificationEntry): NotificationRout
   if (t.type === "contact.added") {
     return t.contactId ? { to: `/contacts/${encodeURIComponent(t.contactId)}` } : null
   }
-  if (t.type === "migration.residuals" || t.type === "migration.run") return { migration: true }
+  if (t.type === "migration.residuals") return { migration: "residuals" }
+  if (t.type === "migration.run") return { migration: "run" }
   if (t.type === "registration.pending") {
     // A payment link's registration is Home's: its claim runs there and its review reports it, so
     // the wizard's deposit ask is never the place to land.
@@ -118,7 +119,8 @@ export function useRouteOpener(): EntryOpener {
       const route = notificationRoute(entry)
       return route
         ? () => {
-            if (route.migration) openMigrationDialog()
+            if (route.migration)
+              openMigrationDialog(route.migration === "residuals" ? "residuals" : undefined)
             if (route.activate) openTicketClaimReview()
             if (route.to) navigate(route.to, route.state ? { state: route.state } : undefined)
           }

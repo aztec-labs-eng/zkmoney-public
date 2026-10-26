@@ -36,7 +36,7 @@ import { isDemoMode } from "./dev/demoFlag"
 import { ErrorModalHost } from "./errors/ErrorModalHost"
 import { bindAnalyticsConsent } from "./lib/analytics"
 import { wireTxTimingAnalytics } from "./lib/txTimingAnalytics"
-import { loadOnboardedIdentity, loadWalletIdentity } from "./features/identity/walletIdentity"
+import { loadOnboardedIdentity } from "./features/identity/walletIdentity"
 import { NameRequiredScreen } from "./ui/screens/NameRequiredScreen"
 import {
   buildWebDetectionDeps,
@@ -45,13 +45,12 @@ import {
   watchRegistrationRail,
 } from "./features/onboarding/webRegistration"
 import { walletResumeExtras } from "./features/onboarding/registrationResume"
-import { useSponsoredRailPending } from "./features/onboarding/sponsoredRailReadiness"
+import { SponsoredRailReadinessMount } from "./features/onboarding/sponsoredRailReadiness"
+import { useActionVerdict, type WalletAction } from "./features/actionGate"
+import { openMigrationDialog } from "./features/migration/migrationDialog"
 import { UnlockGate } from "./features/identity/UnlockGate"
 import { EnterAppScreen } from "./features/onboarding/EnterAppScreen"
-import {
-  useNameClaimPending,
-  useRegistrationDepositOwed,
-} from "./features/onboarding/openRegistration"
+import { useNameClaimPending } from "./features/onboarding/openRegistration"
 import { OnboardingScreen } from "./features/onboarding/OnboardingScreen"
 import { drawnOfferTag, subscribeDrawnOffer } from "./features/onboarding/nameGrant"
 import { LinkViewScreen } from "./features/paylink/LinkViewScreen"
@@ -66,10 +65,11 @@ import { ReceiveScreen } from "./features/receive/ReceiveScreen"
 import { ContactsScreen } from "./features/contacts/ContactsScreen"
 import { SendScreen } from "./features/contacts/SendScreen"
 import { ContactDetailScreen } from "./features/contacts/ContactDetailScreen"
-import { ContactPayScreen, type ContactPayOutlet } from "./features/contacts/ContactPayScreen"
+import { ContactPayScreen } from "./features/contacts/ContactPayScreen"
 import { ConnectReceiveScreen } from "./features/contacts/ConnectReceiveScreen"
 import { hasConnectStash, stashInboundConnect } from "./features/contacts/connectReceive"
 import { WithdrawScreen } from "./features/withdraw/WithdrawScreen"
+import { FrozenExitScreen } from "./features/withdraw/FrozenExitScreen"
 import { WithdrawEtherfiScreen } from "./features/withdraw/WithdrawEtherfiScreen"
 import { WithdrawMethodScreen } from "./features/withdraw/WithdrawMethodScreen"
 import { WithdrawFreshScreen } from "./features/withdraw/WithdrawFreshScreen"
@@ -79,7 +79,7 @@ import { MigrationDetectionMount } from "./features/migration/MigrationDetection
 import { NotificationsMount } from "./features/notifications/NotificationsMount"
 import { PaylinkClaimMount } from "./features/notifications/PaylinkClaimMount"
 import { TransferScannerMount } from "./platform/transactions/TransferScannerMount"
-import { useSipaDeposits } from "./features/deposit/useSipaDeposits"
+import { SipaDepositsMount } from "./features/deposit/useSipaDeposits"
 import { BrowserContractServiceStorage } from "./platform/contracts/BrowserContractServiceStorage"
 import { contactsWriteLock, requestsWriteLock } from "./platform/storage/contactsLock"
 import { webStorage } from "./platform/storage/WebStorageAdapter"
@@ -285,11 +285,6 @@ function AssetGate({
   )
 }
 
-function SipaDepositsMount() {
-  useSipaDeposits()
-  return null
-}
-
 /**
  * Wallet routes require an entered identity (a name is NOT required — nameless accounts are
  * prompted to register from Home). It is a storage read, so this sits above BootHold: a visitor
@@ -334,6 +329,7 @@ function WalletGate() {
           network identity to register, so it renders the seeded stores as-is. */}
       {!isDemoMode() && <XmtpMount />}
       <NotificationsMount />
+      {!isDemoMode() && <SponsoredRailReadinessMount />}
       {!isDemoMode() && <PaylinkClaimMount />}
       {/* Chain-native incoming-transfer ingest — independent of XMTP and the leader lock. */}
       {!isDemoMode() && <TransferScannerMount />}
@@ -342,73 +338,67 @@ function WalletGate() {
       <WebSavingsProvider>
         <Outlet />
       </WebSavingsProvider>
-      {/* Funds-gated: pops the upgrade dialog when a retired deployment still holds value.
-          Last so it stacks above any route-level sheet (same z-index, later in DOM). */}
+      {/* Where the account's upgrade stands, and its dialog on request. Last so the dialog stacks
+          above any route-level sheet (same z-index, later in DOM). */}
       <MigrationDetectionMount />
     </UnlockGate>
   )
 }
 
-/**
- * Routes that act in the account's name. A nameless account is sent to register one, on the
- * attempt and with the reason. The deposit screen sits here and NOT behind {@link SponsoredRailGate}:
- * its address derives from the account alone, and the sponsored broadcast behind it waits in the
- * background until the registration lands.
- */
-export function NameGate() {
-  const identity = loadWalletIdentity()
-  if (identity && !identity.handle) return <NameRequiredScreen />
+/** Until the tag is claimed on L1 these routes go to Home, which shows the activation progress. */
+function ClaimPendingGate() {
+  if (useNameClaimPending()) return <Navigate to="/" replace />
   return <Outlet />
 }
 
 /**
- * Until the tag is claimed on L1 these routes go to Home, which shows the activation progress with
- * its listeners mounted. `depositOpen` keeps the deposit screen reachable while the registration
- * still owes its deposit.
+ * A route that starts `action`, gated by {@link actionVerdict} on the attempt, with the reason:
+ * a nameless account is asked for a name, one whose registration has yet to reach the rollup waits
+ * for it, and one that must upgrade goes to Home with the upgrade sheet titled for the action.
+ * A registered account spends a few seconds checking on every cold load, so that reads as loading.
  */
-function ClaimPendingGate({ depositOpen = false }: { depositOpen?: boolean }) {
-  const pending = useNameClaimPending()
-  const owed = useRegistrationDepositOwed()
-  if (pending && !(depositOpen && owed)) return <Navigate to="/" replace />
-  return <Outlet />
+export function ActionGate({ action }: { action: WalletAction }) {
+  const verdict = useActionVerdict(action)
+  switch (verdict) {
+    case "open":
+      return <Outlet />
+    case "holding":
+    case "checking":
+      return <BootSplash inShell />
+    case "upgrade":
+      return <UpgradeFirst action={action} to="/" />
+    case "exit":
+      return <FrozenExitScreen />
+    case "home":
+    case "frozen":
+      return <Navigate to="/" replace />
+    default:
+      return <NameRequiredScreen pending={verdict === "registering"} />
+  }
 }
 
-/**
- * Routes whose only rail is ClaimFPC-sponsored. That rail admits an account the L1 registry
- * registered, so a just-registered account cannot pay for any of them until the NamePortal's
- * L1->L2 message reaches the rollup. The block lands here, on the attempt, and says why — rather
- * than hiding the action up front or letting the flow fail at the fee.
- */
-export function SponsoredRailGate() {
-  const gate = useSponsoredRailGate()
-  // A registered account spends a few seconds checking on every cold load, so it reads as loading.
-  if (gate === "checking") return <BootSplash inShell />
-  if (gate !== "open") return <NameRequiredScreen pending={gate === "pending"} />
-  return <Outlet />
-}
-
-function useSponsoredRailGate(): "open" | "checking" | "pending" | "required" {
-  const identity = loadWalletIdentity()
-  const registrationPending = useSponsoredRailPending()
-  if (identity && !identity.handle) return "required"
-  // Demo mode never creates the wallet services needed to check registration.
-  if (isDemoMode()) return "open"
-  // Not yet known: the services are booting or the first L1 read is in flight.
-  if (registrationPending === undefined) return "checking"
-  return registrationPending ? "pending" : "open"
+/** Leaves an action's route for `to`, asking for the upgrade first. */
+function UpgradeFirst({ action, to }: { action: WalletAction; to: string }) {
+  useEffect(() => openMigrationDialog({ action }), [action])
+  return <Navigate to={to} replace />
 }
 
 /**
  * A contact's page with its Send flow as a child route, so opening Send keeps the page mounted.
- * Send is gated like the SponsoredRailGate routes. The check starts with the page and never holds the
- * modal: the flow keeps Confirm disabled until it answers.
+ * Send is gated like the action routes, except that the check never holds the modal: the flow
+ * keeps Confirm disabled until it answers. An upgrade to make leaves Send for the contact's page.
  */
-function ContactRoute() {
-  const from = (useLocation().state as { from?: string } | null)?.from
-  const gate = useSponsoredRailGate()
-  const pay = useOutlet({ railReady: gate === "open" } satisfies ContactPayOutlet)
-  if (pay && (gate === "pending" || gate === "required")) {
-    return <NameRequiredScreen pending={gate === "pending"} />
+export function ContactRoute() {
+  const location = useLocation()
+  const from = (location.state as { from?: string } | null)?.from
+  const verdict = useActionVerdict("send")
+  const pay = useOutlet()
+  if (pay && verdict === "upgrade")
+    return <UpgradeFirst action="send" to={location.pathname.replace(/\/send\/?$/, "")} />
+  if (pay && verdict === "frozen")
+    return <Navigate to={location.pathname.replace(/\/send\/?$/, "")} replace />
+  if (pay && (verdict === "registering" || verdict === "name")) {
+    return <NameRequiredScreen pending={verdict === "registering"} />
   }
   return (
     <>
@@ -562,8 +552,12 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                                         <Route path="savings" element={<HomeScreen />} />
                                         <Route path="settings" element={<SettingsScreen />} />
                                         <Route path="activity" element={<ActivityScreen />} />
-                                        <Route element={<ClaimPendingGate />}>
+                                        <Route element={<ActionGate action="receive" />}>
                                           <Route path="receive" element={<ReceiveScreen />} />
+                                        </Route>
+                                        <Route element={<ClaimPendingGate />}>
+                                          {/* A picker: each way out is gated on its own. */}
+                                          <Route path="send" element={<SendScreen />} />
                                           <Route path="contacts" element={<ContactsScreen />} />
                                           <Route
                                             path={REQUESTS_PATH}
@@ -587,32 +581,23 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                                             />
                                           </Route>
                                         </Route>
-                                        <Route element={<NameGate />}>
-                                          <Route element={<ClaimPendingGate depositOpen />}>
-                                            <Route path="deposit" element={<DepositScreen />} />
-                                          </Route>
-                                          <Route element={<ClaimPendingGate />}>
-                                            <Route element={<SponsoredRailGate />}>
-                                              <Route path="links/new" element={<NewLinkScreen />} />
-                                              <Route path="send" element={<SendScreen />} />
-                                              <Route path="withdraw">
-                                                <Route element={<WithdrawMethodScreen />}>
-                                                  <Route index element={null} />
-                                                  <Route
-                                                    path="existing"
-                                                    element={<WithdrawScreen />}
-                                                  />
-                                                  <Route
-                                                    path="etherfi"
-                                                    element={<WithdrawEtherfiScreen />}
-                                                  />
-                                                </Route>
-                                                <Route
-                                                  path="fresh"
-                                                  element={<WithdrawFreshScreen />}
-                                                />
-                                              </Route>
+                                        <Route element={<ActionGate action="deposit" />}>
+                                          <Route path="deposit" element={<DepositScreen />} />
+                                        </Route>
+                                        <Route element={<ActionGate action="link" />}>
+                                          <Route path="links/new" element={<NewLinkScreen />} />
+                                        </Route>
+                                        <Route element={<ActionGate action="withdraw" />}>
+                                          <Route path="withdraw">
+                                            <Route element={<WithdrawMethodScreen />}>
+                                              <Route index element={null} />
+                                              <Route path="existing" element={<WithdrawScreen />} />
+                                              <Route
+                                                path="etherfi"
+                                                element={<WithdrawEtherfiScreen />}
+                                              />
                                             </Route>
+                                            <Route path="fresh" element={<WithdrawFreshScreen />} />
                                           </Route>
                                         </Route>
                                       </Route>

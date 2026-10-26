@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest"
 import { Fr } from "@aztec/aztec.js/fields"
 import { PaylinkService, type PaylinkParams } from "@obsidion/sdk"
 import {
+  creatorLinksFromRows,
   refundParamsFromRow,
   isPaylinkInRefundWindow,
   paylinkWindows,
@@ -71,6 +72,39 @@ describe("refundParamsFromRow", () => {
     vi.spyOn(PaylinkService, "parsePaylinkUrl").mockRejectedValue(new Error("Invalid paylink link"))
     const row = baseRow({ paylink: "https://x/#garbage", fallbackSecret: Fr.random().toString() })
     await expect(refundParamsFromRow(row)).resolves.toBeNull()
+  })
+})
+
+describe("creatorLinksFromRows", () => {
+  it("keeps each creator row's link with its fallback secret, a legacy row included", async () => {
+    const [tokened, legacy] = [decodedParams(), decodedParams()]
+    vi.spyOn(PaylinkService, "parsePaylinkUrl")
+      .mockResolvedValueOnce(tokened)
+      .mockResolvedValueOnce(legacy)
+    const [first, second] = [Fr.random(), Fr.random()]
+    const rows = [
+      baseRow({ paylink: "https://x/#a", fallbackSecret: first.toString(), tokenAddress: "0x1" }),
+      // Written before rows carried a token address.
+      baseRow({ paylink: "https://x/#b", fallbackSecret: second.toString() }),
+      // A claimer's row holds no creator secret, and a plain send no link.
+      baseRow({ paylink: "https://x/#c", tokenAddress: "0x1" }),
+      { action: "send", timestamp: 0, status: "success", txHash: "0xsend" } as never,
+    ]
+    expect(await creatorLinksFromRows(rows)).toEqual([
+      { ...tokened, fallbackSecret: first },
+      { ...legacy, fallbackSecret: second },
+    ])
+  })
+
+  it("skips a row whose link or fallback secret is malformed", async () => {
+    vi.spyOn(PaylinkService, "parsePaylinkUrl")
+      .mockRejectedValueOnce(new Error("bad link"))
+      .mockResolvedValue(decodedParams())
+    const rows = [
+      baseRow({ paylink: "https://x/#bad", fallbackSecret: Fr.random().toString() }),
+      baseRow({ paylink: "https://x/#frag", fallbackSecret: "not-a-field" }),
+    ]
+    expect(await creatorLinksFromRows(rows)).toEqual([])
   })
 })
 

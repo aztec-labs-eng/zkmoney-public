@@ -83,6 +83,21 @@ describe("paylinkSignupQuote", () => {
     expect(unread.networkFee).toBe(dai(0.5) + CUT + CUT + WITHDRAW_RELAYER_TIP + dai(0.01))
   })
 
+  it("frees a ticket's tag whatever the live sweep fee, its whole fee the network's", () => {
+    const ticket = paylinkSignupQuote({
+      schedule: { fee: dai(0.7), min: 0n },
+      cuts,
+      sweepFee: dai(0.5),
+      proverTip: 0n,
+      ticket: true,
+    })
+    expect(ticket.tagWaived).toBe(true)
+    expect(ticket.tagFee).toBe(0n)
+    expect(ticket.networkFee).toBe(dai(0.7) + CUT + CUT + WITHDRAW_RELAYER_TIP + dai(0.01))
+    const unread = paylinkSignupQuote({ schedule: TICKET, cuts, proverTip: 0n, ticket: true })
+    expect(unread.tagWaived).toBeUndefined()
+  })
+
   it("funds a signed minimum above the cut once, and names its excess as returned", () => {
     const quote = paylinkSignupQuote({
       paylink: dai(3),

@@ -18,12 +18,15 @@ export function Warning({
   role = "status",
   style,
   children,
+  onDismiss,
 }: {
   title: ReactNode
   tone?: WarningTone
   role?: "status" | "note" | "alert"
   style?: CSSProperties
   children?: ReactNode
+  /** Adds a close button to a card with a body. */
+  onDismiss?: () => void
 }) {
   if (!children) {
     return (
@@ -38,6 +41,20 @@ export function Warning({
         {TONE_ICON[tone ?? "warning"] && <Icon name={TONE_ICON[tone ?? "warning"]!} size={18} />}
         {title}
         <Icon name="chevron-down" size={16} className="ww-withdraw__warning-chevron" />
+        {onDismiss && (
+          <button
+            type="button"
+            className="zkm-btn-reset ww-withdraw__warning-dismiss"
+            aria-label="Dismiss"
+            onClick={(e) => {
+              // Inside the summary, so it would also toggle the card.
+              e.preventDefault()
+              onDismiss()
+            }}
+          >
+            <Icon name="x" size={14} strokeWidth={2.5} />
+          </button>
+        )}
       </summary>
       <div className="ww-withdraw__warning-body">{children}</div>
     </details>

@@ -95,7 +95,9 @@ describe("notification target -> activity detail", () => {
   })
 
   it("opens the migration dialog, in place, for funds left on an old version", () => {
-    expect(notificationRoute(entry({ type: "migration.residuals" }))).toEqual({ migration: true })
+    expect(notificationRoute(entry({ type: "migration.residuals" }))).toEqual({
+      migration: "residuals",
+    })
   })
 
   it("opens an upgrade's run in activity", () => {
@@ -106,7 +108,7 @@ describe("notification target -> activity detail", () => {
   })
 
   it("opens the migration dialog, in place, for an upgrade that needs the user", () => {
-    expect(notificationRoute(entry({ type: "migration.run" }))).toEqual({ migration: true })
+    expect(notificationRoute(entry({ type: "migration.run" }))).toEqual({ migration: "run" })
   })
 
   it("opens the claim screen for a registration in flight", () => {
@@ -137,7 +139,7 @@ describe("notification target -> activity detail", () => {
   })
 
   it("opens a Savings move's burn in the Savings detail its row opens, and a fresh leg as its group", () => {
-    const withdrawal = (record: object) => ({ kind: "bridge.withdrawal", record } as never)
+    const withdrawal = (record: object) => ({ kind: "bridge.withdrawal", record }) as never
     expect(
       bridgeDetailTarget(withdrawal({ localId: "m1", skyMove: { direction: "out" } })),
     ).toEqual({
@@ -177,7 +179,7 @@ describe("savingsMoveExitOffer", () => {
         phaseEnteredAt: 0,
         skyMove: sky,
         ...extra,
-      } as never)
+      }) as never
     const move = (direction: "in" | "out", extra: object = {}) =>
       ({
         direction,
@@ -185,7 +187,7 @@ describe("savingsMoveExitOffer", () => {
         escrow: "0x00000000000000000000000000000000000000ee",
         nonce: sky.nonce,
         ...extra,
-      } as never)
+      }) as never
     for (const direction of ["in", "out"] as const)
       expect(savingsMoveExitOffer(move(direction), burn({ phase: "finalizing_l1" }), later)).toBe(
         "finalize",

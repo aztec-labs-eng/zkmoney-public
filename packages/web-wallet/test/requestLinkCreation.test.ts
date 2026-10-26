@@ -1,4 +1,9 @@
-import { decodeRequestInline, type PaymentRequest } from "@obsidion/front-core"
+import {
+  decodeRequestInline,
+  sipaDeploymentTag,
+  type PaymentRequest,
+  type SipaOrigin,
+} from "@obsidion/front-core"
 import { describe, expect, it, vi } from "vitest"
 import { createAndStoreRequestLink } from "../src/features/requests/requestLinkCreation"
 
@@ -39,18 +44,41 @@ describe("createAndStoreRequestLink", () => {
     })
   })
 
+  const sipaAddress = `0x${"3d".repeat(20)}`
+  const origin = {
+    protocol: "account",
+    sipaFactory: `0x${"6a".repeat(20)}`,
+    implementation: `0x${"7b".repeat(20)}`,
+    intentHash: `0x${"4e".repeat(32)}`,
+    rollupVersion: "7",
+    resweepable: true,
+    recoveryAccount: `0x${"8c".repeat(20)}`,
+    recoveryCommitment: `0x${"5f".repeat(32)}`,
+    accountFactory: `0x${"9d".repeat(20)}`,
+  } as SipaOrigin
+
   it("carries the recorded preimage of the link's address", async () => {
-    const sipaAddress = `0x${"3d".repeat(20)}`
-    const preimage = { intentHash: `0x${"4e".repeat(32)}`, recovery: `0x${"5f".repeat(32)}` }
-    const preimageOf = vi.fn(async () => preimage)
+    const preimage = { intentHash: origin.intentHash, recovery: `0x${"5f".repeat(32)}` }
+    const originOf = vi.fn(async () => origin)
     const result = await createAndStoreRequestLink(
       { ...input, sipaAddress },
       { add: async () => {} },
-      preimageOf,
+      originOf,
     )
-    expect(preimageOf).toHaveBeenCalledWith(sipaAddress)
+    expect(originOf).toHaveBeenCalledWith(sipaAddress)
     expect(decodeRequestInline(result.url.split("#")[1]).sipaPreimage).toEqual(preimage)
     expect(result.row.sipaPreimage).toEqual(preimage)
+  })
+
+  it("tags a Receive code's address with the deployment it was derived under", async () => {
+    const result = await createAndStoreRequestLink(
+      { ...input, requestId: `0x${"00".repeat(16)}${"0a".repeat(16)}`, compact: true, sipaAddress },
+      { add: async () => {} },
+      async () => origin,
+    )
+    const packet = decodeRequestInline(result.url.split("#")[1])
+    expect(packet.sipaDeployment).toBe(sipaDeploymentTag(origin))
+    expect(packet.sipaPreimage).toBeUndefined()
   })
 
   it("does not reveal a result when persistence fails", async () => {

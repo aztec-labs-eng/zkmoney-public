@@ -32,9 +32,7 @@ import { loadWalletIdentity } from "../identity/walletIdentity"
 import { useRegistrationEscalated, useTagPresentationPending } from "../onboarding/webRegistration"
 import { RegistrationPendingError } from "../onboarding/registrationRail"
 import { useOwedRegistration } from "../onboarding/owedRegistration"
-import { registrationAddressPublished } from "../onboarding/webRegistration"
-import { noteRegistrationDepositSeen } from "../onboarding/registrationRailSync"
-import { reportRegistrationDepositShown } from "../onboarding/registrationFunnel"
+import { useRegistrationDepositTarget } from "../onboarding/registrationDepositTarget"
 import { OweRegistrationBroadcast } from "../broadcasts/useOweRegistrationBroadcast"
 import { RegistrationAskLine, useRegistrationAsk } from "../onboarding/RegistrationAskLine"
 import { formatDepositDue } from "../onboarding/steps/DepositTermsRows"
@@ -54,7 +52,7 @@ import {
 } from "./loadDepositFacts"
 import { sentDepositRecord } from "./sentDepositRecord"
 import { AddressLimitsDetail } from "./AddressLimits"
-import { ADDRESS_RECHECK_NOTE } from "./AddressCapacity"
+import { ADDRESS_RECHECK_NOTE, swapCapacityNote } from "../limits/limitsCopy"
 import { WalletAboutLimitsSheet } from "../limits/AboutLimitsSheet"
 import { InfoButton } from "../limits/InfoButton"
 import { formatPublicLimit, usdFigureGrouped } from "../limits/publicLimit"
@@ -63,7 +61,7 @@ import type { LimitsTopic } from "../limits/aboutLimitsView"
 import { targetEligibility, useTargetCapacity } from "./targetCapacity"
 import { fundingCapacityView } from "./fundingCapacity"
 import { useL1Wallet } from "./l1Wallet"
-import { readL1TokenBalance } from "./l1DepositTokenBalance"
+import { useDepositWatch } from "../onboarding/useDepositWatch"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
 import { OneTimeAddressPoints, type OneTimeAddressPoint } from "./OneTimeAddressWarning"
 import {
@@ -78,7 +76,8 @@ import {
   type DepositSpottedProblem,
 } from "./DepositAddressSheet"
 import { CheckAgainPill } from "./WaitingBlock"
-import { getSipaDepositGateway, type DepositAddress, type DepositStage } from "./sipaGateway"
+import { getSipaDepositGateway, type DepositStage } from "./sipaGateway"
+import type { DepositTarget, ShownAddress } from "./depositTarget"
 import { AddressesPublishingError, addressesPublishing } from "./addressesPublishing"
 import { getBroadcastLedger } from "../broadcasts/broadcasts"
 import { getActiveStorageId } from "../../platform/storage/activeStorage"
@@ -94,9 +93,6 @@ import { useDepositArrivalMinutes } from "./depositArrival"
 
 /** Shown, unfunded addresses still publishing above which the screen waits instead of deriving. */
 const PUBLISHING_LIMIT = 2
-
-/** How often the address on screen is checked for a transfer nobody told us about. */
-const FUNDING_POLL_MS = 10_000
 
 /** How long the sheet says "Address copied!" before it waits for the funds. */
 const COPIED_MS = 2_000
@@ -126,12 +122,6 @@ const DEPOSIT_INFO_POINTS: OneTimeAddressPoint[] = [
   },
 ]
 
-/**
- * The address this screen holds. `publishing`: its broadcast has not landed. It shows, copies and
- * funds all the same: the broadcast ledger publishes it, and funds wait at the address until then.
- */
-type ShownAddress = DepositAddress & { publishing?: boolean }
-
 /** Map raw errors to something a user can act on (esp. the stale-identity resolve revert). */
 function friendlyError(e: unknown): string {
   const msg = e instanceof Error ? e.message : String(e)
@@ -160,9 +150,14 @@ function coinOrder(tokens: DepositTokenOption[]): DepositTokenOption[] {
  * `<tag>.<ensDomain>` to copy or scan, or funds it from a connected wallet. Anything sent there is
  * discovered and credited automatically by the SIPA sync loop mounted in WalletGate; the screen
  * watches the address itself so the sheet can say when funds are spotted. With `onClose` it is a
- * modal over Home instead of a page: the coin pick, then the same address sheet.
+ * modal over Home instead of a page: the coin pick, then the same address sheet. A `target` (an
+ * owed registration's, or one the caller passes) takes the place of a fresh deposit address.
  */
-export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
+export function DepositScreen({
+  onClose,
+  target: explicitTarget,
+  title,
+}: { onClose?: () => void; target?: DepositTarget; title?: string } = {}) {
   const navigate = useNavigate()
   const handle = loadWalletIdentity()?.handle
   // The gate is effectful, not cosmetic: while the registration is unconfirmed, deriving and
@@ -194,16 +189,12 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
   const chainName = l1ChainId === 1 ? "Ethereum Mainnet" : l1Chain.name
 
   const [deposit, setDeposit] = useState<ShownAddress>()
-  const registrationSipa = registration?.sipaAddress as DepositAddress["address"] | undefined
-  const registrationPublishing = !!registration && !registrationAddressPublished(registration)
-  const registrationAddress = useMemo<ShownAddress | undefined>(
-    () =>
-      registrationSipa && handle
-        ? { address: registrationSipa, name: handle, publishing: registrationPublishing }
-        : undefined,
-    [registrationSipa, handle, registrationPublishing],
-  )
-  const shown = registrationAddress ?? deposit
+  const registrationTarget = useRegistrationDepositTarget(registration, handle, registrationAsk)
+  const target = explicitTarget ?? registrationTarget
+  // Read by callbacks the funding poll holds, so a new ask does not restart the poll.
+  const targetRef = useRef(target)
+  targetRef.current = target
+  const shown = target ? target.address : deposit
   const [generating, setGenerating] = useState(false)
   const [resolveFailed, setResolveFailed] = useState(false)
   const [capped, setCapped] = useState(false)
@@ -226,6 +217,8 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
   const [aboutLimits, setAboutLimits] = useState<LimitsTopic>()
   // A funding click made while disconnected, waiting on the wallet the picker is asking for.
   const [fundOnConnect, setFundOnConnect] = useState(false)
+  // A funding click waiting on the target's address.
+  const [fundWhenShown, setFundWhenShown] = useState(false)
   // A desktop send may have been approved without a known hash: that address may still be funded, so
   // new funding waits until funds reach it or the user starts again.
   const unresolvedScope = loadWalletIdentity()?.address ?? "unknown"
@@ -281,7 +274,12 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
   const [factsAttempt, setFactsAttempt] = useState(0)
   const fee = facts?.fee
   const manifestToken = facts?.token
-  const sentRecord = sent ? sentDepositRecord(sent, stored, l1ChainId, facts) : undefined
+  // A target's sweep takes its own fee, so a deposit sent to it is shown at that fee.
+  const sentFacts =
+    facts && target?.fee !== undefined
+      ? { ...facts, sweepFeeAtomic: target.fee, fpcFundingCutAtomic: 0n }
+      : facts
+  const sentRecord = sent ? sentDepositRecord(sent, stored, l1ChainId, sentFacts) : undefined
   const { copied, copy } = useCopy()
   // Without the fee nothing may be funded: the wallet path would charge amount + 0 while the sweep
   // still takes the real fee. Copy/Deposit stay disabled until it loads.
@@ -418,10 +416,11 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
   // The address appears on open: one nobody was shown from the pool, else a fresh derivation. While
   // a sent deposit's detail is open, the next address waits for the user to come back to the sheet.
   useEffect(() => {
-    if (claiming || deposit || capped || resolveFailed || busy || sent) return
+    if (target || claiming || deposit || capped || resolveFailed || busy || sent) return
     if (hold.status !== "none" || !handle || !obsidionWallet || !contractService) return
     void resolveAddress(0)
   }, [
+    target,
     claiming,
     deposit,
     capped,
@@ -449,11 +448,21 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
 
   /** Open the funding sheet. Funding needs the address the user is shown, so derive one first. */
   const beginFunding = useCallback(() => {
-    if (fee == null || (claiming && !registrationAddress)) return
+    if (fee == null || (claiming && !target)) return
     // The sheet moves the wallet's money, so it opens only for an address whose broadcast landed.
     if (shown) return void setFundOpen(true)
+    if (target) {
+      setFundWhenShown(true)
+      return target.create?.()
+    }
     if (!generating) void resolveAddress().then((ok) => ok && setFundOpen(true))
-  }, [fee, shown, generating, resolveAddress, claiming, registrationAddress])
+  }, [fee, shown, generating, resolveAddress, claiming, target])
+  // A target's address appears on its own, after `create`.
+  useEffect(() => {
+    if (!fundWhenShown || !shown) return
+    setFundWhenShown(false)
+    setFundOpen(true)
+  }, [fundWhenShown, shown])
 
   // `l1.connect` only opens the wallet picker; the account lands renders later, so the click that
   // asked to fund would otherwise stop at "Wallet connected" and need a second one. A picker that
@@ -470,6 +479,13 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
     }
   }, [fundOnConnect, canFund, l1.pickerOpen, beginFunding])
 
+  // A target's sweep takes its own fee, not the plain deposit fee. Priced in the settlement token,
+  // which a stablecoin matches one to one.
+  const depositFee = target
+    ? target.fee !== undefined
+      ? formatUnits(target.fee, settlement.decimals)
+      : undefined
+    : fee
   const ready = !!shown && !generating && fee != null
   const qrToken = token.address ?? manifestToken
   // Tokens other than the manifest token are swapped into it before the portal credits them.
@@ -478,7 +494,9 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
     kind: "deposit",
     decimals: token.decimals,
     swap,
-    feeAtomic: facts && quotedDepositFee(facts.sweepFeeAtomic, facts.fpcFundingCutAtomic),
+    feeAtomic: target
+      ? target.fee
+      : facts && quotedDepositFee(facts.sweepFeeAtomic, facts.fpcFundingCutAtomic),
   }
   const valuation = manifestToken && depositValuation(token, manifestToken, l1ChainId)
   const maxSend = maximumSendAtomic(route, valuation)
@@ -509,11 +527,26 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
     capacityView.tone === "ok" || capacityView.tone === "checking"
       ? undefined
       : [capacityView.statusText, capacityView.detailText].filter(Boolean).join(" ")
+  // A swapped coin's credit is set by the swap rate, so no figure is promised for it.
+  // The sweep floors each coin on its own, so only what the address holds in the picked coin counts.
+  const held = token.symbol === settlement.symbol ? (target?.held ?? 0n) : 0n
+  // The least to send, before the address: a target's ask, less what its address holds.
+  const askLeft =
+    target?.ask === undefined
+      ? undefined
+      : held > 0n && held < target.ask
+        ? target.ask - held
+        : target.ask
+  const depositMinimum = !target
+    ? MINIMUM_DEPOSIT
+    : askLeft === undefined
+    ? QUOTE_PENDING
+    : formatDepositDue(askLeft, settlement.decimals).replace(/\.00$/, "")
   const limitsDrawer = (
     <>
       <LimitsRow
         label="Minimum deposit"
-        value={MINIMUM_DEPOSIT}
+        value={depositMinimum}
         info={
           <InfoButton label="About the deposit limit" onClick={() => setAboutLimits("limit")} />
         }
@@ -545,7 +578,9 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
       />
       <LimitsRow
         label="Fee"
-        value={quoteFailed ? "Unavailable" : fee ? usdFigure(fee) : QUOTE_PENDING}
+        value={
+          depositFee != null ? usdFigure(depositFee) : quoteFailed ? "Unavailable" : QUOTE_PENDING
+        }
         testId="deposit-fee"
         info={<InfoButton label="About the deposit fee" onClick={() => setAboutLimits("limit")} />}
         action={
@@ -594,8 +629,7 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
       <>
         {swap && (
           <p className="ww-about-limits__note" data-testid="address-capacity-swap">
-            Maximum send amount for current capacity unavailable: the {settlement.symbol} credited
-            from {token.symbol} is set by the swap.
+            {swapCapacityNote(settlement.symbol, token.symbol)}
           </p>
         )}
         <p className="ww-about-limits__note">{ADDRESS_RECHECK_NOTE}</p>
@@ -609,74 +643,67 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
     (next: bigint) => {
       if (fundedSeen.current) return
       fundedSeen.current = true
+      const funded = targetRef.current
       fireEvent("deposit_funded", {
         funding: "external",
         amount_bucket: amountBucket(next, token.decimals),
-        ...(registrationAddress && { registration: true }),
+        ...(funded?.kind === "registration" && { registration: true }),
       })
       setFunded(next)
       // The scanner moves the record on; back on its per-tick lane, the row shows within a tick.
-      if (registrationAddress)
-        void noteRegistrationDepositSeen(registrationAddress.address, next, token.decimals)
-      else if (deposit) void gateway.wakeDeposit(deposit.address)
+      if (funded) funded.onFunded(next, token.decimals)
     },
-    [token.decimals, deposit, gateway, registrationAddress],
+    [token.decimals],
   )
   // The ask is priced in the settlement token; any stablecoin funds it one to one, in its own units.
   const settledToToken = (settled: bigint) =>
     (settled * 10n ** BigInt(token.decimals)) / 10n ** BigInt(settlement.decimals)
-  // A registration address short of its floor is not funded: the sweep refuses it, so it waits.
-  const registrationFloorRef = useRef<bigint | undefined>(undefined)
-  registrationFloorRef.current =
-    registrationAsk?.floor === undefined ? undefined : settledToToken(registrationAsk.floor)
+  // A target's address short of its floor is not funded: the sweep refuses it, so it waits. Rounded
+  // up, so a coin with fewer decimals still covers all of it.
+  const floorRef = useRef<bigint | undefined>(undefined)
+  const unit = 10n ** BigInt(settlement.decimals)
+  floorRef.current =
+    target?.floor === undefined
+      ? undefined
+      : (target.floor * 10n ** BigInt(token.decimals) + unit - 1n) / unit
   const recordRead = useCallback(
-    (next: bigint) => {
+    (next: bigint, at: number) => {
       setReadError(false)
       setBalance(next)
-      setLastReadAt(Date.now())
+      setLastReadAt(at)
       if (next === 0n) return
-      const floor = registrationFloorRef.current
-      if (registrationAddress && (floor === undefined || next < floor)) return
+      const floor = floorRef.current
+      if (targetRef.current && (floor === undefined || next < floor)) return
       markFunded(next)
     },
-    [markFunded, registrationAddress],
+    [markFunded],
   )
 
-  // A third-party send leaves no local trace, and the sync loop's own funding read drops to a
-  // five-minute lane once the address is ten minutes old — too slow for a screen someone is
-  // watching. A seen balance moves the sheet to spotted; the sweep credits it.
+  // A third-party send leaves no local trace: the rail's record of the address is what moves the
+  // sheet to spotted, and the sweep credits it. The demo's fake L1 reports a balance for every
+  // address, which would read as an instant external send; the connected-wallet path is tracked by
+  // its own detail sheet.
+  const watched = useDepositWatch(
+    shown &&
+      qrToken &&
+      !fundOpen &&
+      !sent &&
+      funded == null &&
+      !(import.meta.env.DEV && isDemoMode())
+      ? shown.address
+      : null,
+  )
+  const watchedBalance = settledToToken(watched.balance)
   useEffect(() => {
-    // The connected-wallet path is tracked by its own detail sheet.
-    if (!shown || !qrToken || fundOpen || sent || funded != null) return
-    // The demo's fake L1 reports a balance for every address, which would read as
-    // an instant external send.
-    if (import.meta.env.DEV && isDemoMode()) return
-    let cancelled = false
-    // Only the picked token is watched; funding in another one still lands via the sync loop's
-    // own read, just without this screen noticing.
-    const timer = setInterval(() => {
-      void readL1TokenBalance(qrToken, shown.address)
-        .then((next) => {
-          if (!cancelled) recordRead(next)
-        })
-        .catch((e) => {
-          if (cancelled) return
-          setReadError(true)
-          console.warn("[deposit] funding poll failed:", e)
-        })
-    }, FUNDING_POLL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(timer)
-    }
-  }, [shown, qrToken, fundOpen, sent, funded, recordRead])
+    if (watched.readAt !== undefined) recordRead(watchedBalance, watched.readAt)
+  }, [watched.readAt, watchedBalance, recordRead])
 
-  /** The poll's read, on demand. */
+  /** An observe pass, on demand. */
   const refresh = () => {
     if (!shown || !qrToken || refreshing) return
     setRefreshing(true)
-    readL1TokenBalance(qrToken, shown.address)
-      .then(recordRead)
+    watched
+      .read()
       .catch((e) => {
         setReadError(true)
         console.warn("[deposit] balance read failed:", e)
@@ -689,14 +716,15 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
   useEffect(() => {
     if (!sheetOpen || !shown || reportedShown.current.has(shown.address)) return
     reportedShown.current.add(shown.address)
-    if (shown === registrationAddress) reportRegistrationDepositShown(shown.address)
+    if (targetRef.current) targetRef.current.onShown(shown.address)
     else fireEvent("deposit_address_shown", { address_source: shown.source })
-  }, [sheetOpen, shown, registrationAddress])
+  }, [sheetOpen, shown])
 
   // A sheet with nothing to show and nothing coming closes: the derivation failed or never started.
+  const creating = generating || !!target?.creating
   useEffect(() => {
-    if (sheetOpen && !shown && !generating && !capped) setSheetOpen(false)
-  }, [sheetOpen, shown, generating])
+    if (sheetOpen && !shown && !creating && !capped) setSheetOpen(false)
+  }, [sheetOpen, shown, creating])
 
   const waitTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(waitTimer.current), [])
@@ -727,7 +755,9 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
       setLastReadAt(undefined)
     }
     setToken(next)
-    if (!shown) void resolveAddress()
+    if (shown) return
+    if (target) target.create?.()
+    else void resolveAddress()
   }
   /** The held address was spent or may be: the next sheet derives a fresh one. */
   const dropAddress = () => {
@@ -757,42 +787,17 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
       : (capacityKnown && capacityEligibility.zero) || (fitsNow !== undefined && funded > fitsNow)
       ? "capacity"
       : undefined
-  // A swapped coin's credit is set by the swap rate, so no figure is promised for it.
-  // A registration's sweep takes its fee and the funding cut, not the plain deposit fee.
-  const registrationSpent = registrationAddress ? registrationAsk?.spent : undefined
-  // Priced in the settlement token, which a stablecoin matches one to one.
-  const depositFee = registrationAddress
-    ? registrationSpent !== undefined
-      ? formatUnits(registrationSpent, settlement.decimals)
-      : undefined
-    : fee
   // The least the funding sheet may credit, in the picked coin: the floor less what the sweep
-  // takes (the sheet adds that fee to what it sends) and less what the address already holds in
-  // this very coin, since the sweep floors each coin on its own.
-  const registrationMinimum =
-    registrationAddress && registrationAsk?.floor !== undefined && registrationSpent !== undefined
+  // takes (the sheet adds that fee to what it sends) and less what the address already holds.
+  const targetMinimum =
+    target?.floor !== undefined && target.fee !== undefined
       ? formatUnits(
           settledToToken(
-            (() => {
-              const held = token.symbol === settlement.symbol ? registrationAsk.seen : 0n
-              const owed = registrationAsk.floor - registrationSpent - held
-              return owed > 0n ? owed : 0n
-            })(),
+            target.floor - target.fee - held > 0n ? target.floor - target.fee - held : 0n,
           ),
           token.decimals,
         )
       : undefined
-  // The least to send, before the address: a registration's ask, less what its address holds in the
-  // picked coin, since the sweep floors each coin on its own.
-  const askLeft = registrationAddress
-    ? (token.symbol === settlement.symbol ? registrationAsk?.remaining : undefined) ??
-      registrationAsk?.total
-    : undefined
-  const depositMinimum = !registrationAddress
-    ? MINIMUM_DEPOSIT
-    : askLeft === undefined
-    ? QUOTE_PENDING
-    : formatDepositDue(askLeft, settlement.decimals).replace(/\.00$/, "")
   const arriving =
     !swap && funded != null && depositFee != null
       ? usdFigureGrouped(
@@ -812,7 +817,7 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
         className="zkm-btn-reset ww-deposit__link"
         data-testid="deposit-connect-link"
         // An unconfirmed tag has no broadcast queued to sweep what arrives, so nothing may be sent yet.
-        disabled={fee == null || (claiming && !registrationAddress) || (owed && !tagConfirmed)}
+        disabled={fee == null || (claiming && !target) || (owed && !tagConfirmed)}
         onClick={() => {
           if (!canFund) {
             setFundOnConnect(true)
@@ -835,7 +840,7 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
   )
 
   // Web has no background re-sign; the claim page owns the status check.
-  const claimingBlock = claiming && !registrationAddress && (
+  const claimingBlock = claiming && !target && (
     <>
       <button
         type="button"
@@ -928,7 +933,7 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
           address={shown?.address}
           paymentUri={paymentUri}
           publishing={!!shown?.publishing}
-          creatingNote={capped ? new AddressesPublishingError().message : undefined}
+          creatingNote={capped ? new AddressesPublishingError().message : target?.creatingNote}
           canCopy={ready}
           copied={copied}
           onCopy={copyAddress}
@@ -975,8 +980,8 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
           deposit={shown}
           token={token}
           fee={depositFee}
-          registration={!!registrationAddress}
-          minimum={registrationMinimum}
+          target={target?.kind}
+          minimum={targetMinimum}
           valuation={manifestToken && depositValuation(token, manifestToken, l1ChainId)}
           onClose={() => setFundOpen(false)}
           onSent={(next) => {
@@ -1050,7 +1055,7 @@ export function DepositScreen({ onClose }: { onClose?: () => void } = {}) {
         {registration && <OweRegistrationBroadcast record={registration} />}
         {!sheetOpen && !fundOpen && !sentRecord && !discovered && (
           <DepositCoinModal
-            title={owed ? "Deposit to activate your account" : "Deposit funds"}
+            title={title ?? (owed ? "Deposit to activate your account" : "Deposit funds")}
             coins={coins}
             coinName={coinName}
             token={token}

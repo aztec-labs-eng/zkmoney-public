@@ -1,8 +1,7 @@
 // @vitest-environment jsdom
 /**
- * The deposit rail learns of a registration's funds and sweep from the wallet, ahead of its own
- * Sweep-log scan, so the deposit flow's surfaces (the bell's live row first) carry the registration
- * from the moment the money lands.
+ * The deposit rail learns of a registration's sweep from the wallet, ahead of its own scan, so the
+ * deposit flow's surfaces (the bell's live row first) carry the registration from the sweep.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
@@ -15,10 +14,9 @@ vi.mock("../src/config/env", () => ({
   getConfig: () => ({ network: "testnet", l1ChainId: 11155111 }),
 }))
 
-const { noteRegistrationDepositSeen, syncRegistrationRail, sweptPhase } = await import(
+const { syncRegistrationRail, sweptPhase } = await import(
   "../src/features/onboarding/registrationRailSync"
 )
-const { saveRegistrationTerms } = await import("../src/features/onboarding/registrationTerms")
 const { webStorage } = await import("../src/platform/storage/WebStorageAdapter")
 const { walletStorage } = await import("../src/platform/storage/walletStorage")
 
@@ -71,50 +69,7 @@ function resetRail() {
 
 beforeEach(resetRail)
 
-describe("funds seen at the address", () => {
-  it("put the deposit on the rail at the amount seen, and the bell's live row with it", async () => {
-    await seedRail()
-    expect(sipaDepositInflightLabel(deposit())).toBeUndefined()
-    await noteRegistrationDepositSeen(SIPA, 15n * DAI)
-    expect(deposit()).toMatchObject({ phase: "broadcast", amount: "15" })
-    expect(sipaDepositInflightLabel(deposit())).toBe("Receiving")
-  })
-
-  it("keep an amount the rail already holds, and write nothing for an empty read", async () => {
-    await seedRail()
-    await noteRegistrationDepositSeen(SIPA, 0n)
-    expect(deposit().amount).toBe("0")
-    await noteRegistrationDepositSeen(SIPA, 15n * DAI)
-    await noteRegistrationDepositSeen(SIPA, 16n * DAI)
-    expect(deposit().amount).toBe("15")
-  })
-
-  it("do nothing for an address the rail does not track", async () => {
-    await rail().load()
-    await noteRegistrationDepositSeen(SIPA, 15n * DAI)
-    expect(rail().get(SIPA as never)).toBeNull()
-  })
-})
-
 describe("the tick's stamps reach the rail", () => {
-  it("a funded record puts the amount the address watch stamped on the rail", async () => {
-    await seedRail()
-    saveRegistrationTerms({
-      account: ACCOUNT,
-      tag: "taga",
-      deadline: 0,
-      depositAmount: String(15n * DAI),
-    })
-    await syncRegistrationRail([record({ fundedAt: Date.now(), phase: "funded" })])
-    expect(deposit()).toMatchObject({ phase: "broadcast", amount: "15" })
-  })
-
-  it("a funded record with no stamped amount leaves the rail waiting for the watch", async () => {
-    await seedRail()
-    await syncRegistrationRail([record({ fundedAt: Date.now(), phase: "funded" })])
-    expect(sipaDepositInflightLabel(deposit())).toBeUndefined()
-  })
-
   it("a swept record moves the rail to sweeping with the sweep's hash, once", async () => {
     await seedRail({ amount: "15" })
     const swept = record({ fundedAt: 1, sweptAt: 2, sweepTxHash: HASH, phase: "funded" })
@@ -139,26 +94,9 @@ describe("the tick's stamps reach the rail", () => {
   })
 })
 
-// The address watch, the tick and the rail's own scan report on the same deposit independently.
+// The tick and the rail's own scan report on the same deposit independently.
 describe("observations that land together", () => {
   const swept = () => record({ fundedAt: 1, sweptAt: 2, sweepTxHash: HASH, phase: "funded" })
-
-  it("keep the sweep whichever lands first", async () => {
-    await seedRail()
-    await Promise.all([
-      syncRegistrationRail([swept()]),
-      noteRegistrationDepositSeen(SIPA, 15n * DAI),
-    ])
-    expect(deposit()).toMatchObject({ phase: "sweeping", sweepTxHash: HASH })
-
-    resetRail()
-    await seedRail()
-    await Promise.all([
-      noteRegistrationDepositSeen(SIPA, 15n * DAI),
-      syncRegistrationRail([swept()]),
-    ])
-    expect(deposit()).toMatchObject({ phase: "sweeping", sweepTxHash: HASH, amount: "15" })
-  })
 
   // The scan's write lands anywhere inside the observations' own reads and writes.
   it("never undo a phase the scan moves the deposit to meanwhile", async () => {
@@ -166,7 +104,7 @@ describe("observations that land together", () => {
       for (let ticks = 0; ticks < 4; ticks++) {
         resetRail()
         await seedRail()
-        const seen = [noteRegistrationDepositSeen(SIPA, 15n * DAI), syncRegistrationRail([swept()])]
+        const seen = [syncRegistrationRail([swept()])]
         for (let i = 0; i < ticks; i++) await Promise.resolve()
         await Promise.all([...seen, rail().upsert(SIPA as never, { phase })])
         expect(deposit()).toMatchObject({ phase, sweepTxHash: HASH })

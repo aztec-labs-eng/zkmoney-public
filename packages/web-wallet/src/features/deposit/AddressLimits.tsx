@@ -2,9 +2,7 @@ import { formatUnits } from "viem"
 import { InfoButton } from "../limits/InfoButton"
 import { LimitsRows } from "../limits/AboutLimitsContent"
 import { LimitLine } from "../limits/publicLimit"
-
-/** Shown where a route cannot establish a maximum. */
-export const MAX_SEND_UNAVAILABLE = "Unavailable"
+import { CHECKING, MAX_SEND_ROW, swapCreditNote, UNAVAILABLE } from "../limits/limitsCopy"
 
 /** `2,500 DAI`: exact, with the integer part grouped. */
 export function tokenAmountLabel(atomic: bigint, decimals: number, symbol: string): string {
@@ -50,32 +48,27 @@ export function AddressLimitsDetail({
 }) {
   const label = (atomic: bigint | undefined) =>
     checking
-      ? "Checking…"
+      ? CHECKING
       : atomic === undefined
-      ? MAX_SEND_UNAVAILABLE
+      ? UNAVAILABLE
       : tokenAmountLabel(atomic, decimals, symbol)
   return (
     <>
       <LimitsRows
         rows={[
           {
-            label: "Maximum send amount",
+            label: MAX_SEND_ROW.send,
             value: label(maxSendAtomic),
             testId: "address-limits-max-send",
           },
           {
-            label: "Maximum received",
+            label: MAX_SEND_ROW.received,
             value: label(maxCreditAtomic),
             testId: "address-limits-max-credit",
           },
         ]}
       />
-      {swapInto && (
-        <p className="ww-about-limits__note">
-          {symbol} is swapped to {swapInto} at the market rate, so the {swapInto} credited can
-          differ.
-        </p>
-      )}
+      {swapInto && <p className="ww-about-limits__note">{swapCreditNote(symbol, swapInto)}</p>}
     </>
   )
 }

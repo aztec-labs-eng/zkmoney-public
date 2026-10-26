@@ -23,6 +23,7 @@ import {
   passkeyEvents,
   passkeyTelemetryHarness,
 } from "./support/passkeyTelemetryHarness"
+import * as copy from "../src/features/limits/limitsCopy"
 
 const EXPLORER = "https://sepolia.etherscan.io"
 const SWEEP_HASH = `0x${"5e".repeat(32)}` as Hex
@@ -333,7 +334,7 @@ describe("DepositExitModal — network capacity", () => {
         .click(),
     )
     const details = document.querySelector(
-      "dialog[aria-label='About limits'] [data-testid='about-limits-capacity']",
+      `dialog[aria-label="${copy.SHEET_TITLE}"] [data-testid='about-limits-capacity']`,
     )
     // The settlement token comes from the deployment; this test's config names none.
     expect(details?.textContent).toMatch(
@@ -373,7 +374,7 @@ describe("DepositExitModal — network capacity", () => {
       for (let i = 0; i < 5; i++) await act(async () => {})
       return () =>
         document.querySelector<HTMLElement>(
-          "dialog[aria-label='About limits'] [data-testid='about-limits-capacity']",
+          `dialog[aria-label="${copy.SHEET_TITLE}"] [data-testid='about-limits-capacity']`,
         )!
     }
     const readActive = () =>
@@ -862,7 +863,7 @@ describe("DepositExitModal — opened from Recover", () => {
     )
     for (let i = 0; i < 5; i++) await act(async () => {})
     const details = document.querySelector(
-      "dialog[aria-label='About limits'] [data-testid='about-limits-capacity']",
+      `dialog[aria-label="${copy.SHEET_TITLE}"] [data-testid='about-limits-capacity']`,
     )
     expect(details?.textContent).toContain("Waiting won't change this.")
     warn.mockRestore()

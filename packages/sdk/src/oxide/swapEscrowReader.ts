@@ -145,7 +145,9 @@ export class L1SwapEscrowReader implements SwapEscrowReader {
   private async findLog<T extends { transactionHash: Hex | null }>(
     fetch: (fromBlock: bigint, toBlock: bigint) => Promise<T[]>,
   ): Promise<(T & { transactionHash: Hex }) | undefined> {
-    const toBlock = await this.client.getBlockNumber()
+    // Uncached: viem caches the head for a polling interval, and a lagging head misses the log of the
+    // execution whose emptied balance the caller just read.
+    const toBlock = await this.client.getBlockNumber({ cacheTime: 0 })
     const fromBlock = toBlock > this.maxLookbackBlocks ? toBlock - this.maxLookbackBlocks : 0n
     for (let start = fromBlock; start <= toBlock; start += this.logRangeBlocks) {
       const end =

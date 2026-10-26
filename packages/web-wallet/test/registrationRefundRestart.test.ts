@@ -12,6 +12,7 @@ import {
 } from "viem"
 import { Fr } from "@aztec/aztec.js/fields"
 import {
+  goldenTicketBurn,
   NameClaimStore,
   SIPADepositStore,
   composeWireNameHash,
@@ -42,7 +43,11 @@ import { reconcileRegistrationRefund } from "../src/features/onboarding/registra
 import { recordDepositAdmission, hasDepositAdmission } from "../src/features/identity/admission"
 import { saveWalletIdentity } from "../src/features/identity/walletIdentity"
 import { signOut } from "../src/features/identity/signOut"
-import { ticketSignupRegistration } from "../src/features/paylink/ticketContinuation"
+import {
+  ticketSignupContinuation,
+  ticketSignupRegistration,
+} from "../src/features/paylink/ticketContinuation"
+import { stashClaimLink } from "../src/features/paylink/claimStash"
 import {
   DAI,
   earnedTerms,
@@ -1114,5 +1119,57 @@ describe("ticket redemption after registration preflight", () => {
     expect(getPendingStore().get(OWNER)).toMatchObject({ sipaAddress: NEW })
     expect(loadRegistrationTerms(OWNER, "demo")).not.toHaveProperty("paylinkId")
     expect(ticketSignupRegistration("ticket-link", L2)).toBeNull()
+  })
+})
+
+describe("a link with no ticket for this signup, which pays the name's own deposit", () => {
+  const LINK = "deposit-link"
+  beforeEach(() => {
+    sessionStorage.clear()
+    stashClaimLink(LINK)
+  })
+  /** A random tag's claim with the link's note and committed tip handed in. */
+  const register = (amount: bigint, proverTip = 0n, earned = true) =>
+    claimTag("demo", keys, h.config, {} as never, undefined, earned, undefined, undefined, null, {
+      fragment: LINK,
+      amount,
+      proverTip,
+      speed: "faster",
+    })
+  /** What the claim burns for the random tag's signed deposit at a zero cut. */
+  const burn = (proverTip: bigint) =>
+    goldenTicketBurn(RANDOM, { withdrawalCut: 0n, depositCut: 0n }, proverTip).burn
+
+  it("binds the registration to the link, with its tip, when the note covers the signed deposit", async () => {
+    const outcome = await register(20n * DAI, DAI / 10n)
+    expect(outcome).toMatchObject({ kind: "pending", depositLink: { fragment: LINK } })
+    expect(h.redeem).not.toHaveBeenCalled()
+    expect(loadRegistrationTerms(OWNER, "demo")).toMatchObject({
+      paylinkFunded: true,
+      paylinkDeposit: true,
+      paylinkId: `id:${LINK}`,
+      proverTip: String(DAI / 10n),
+      speed: "faster",
+    })
+    // Home's claim of the link pays the registration.
+    expect(ticketSignupContinuation(LINK, L2, [])?.activation.state).toBe("ready")
+  })
+
+  it.each([
+    ["covers the deposit but not the tip", () => register(burn(DAI / 10n), DAI / 10n)],
+    [
+      "is priced while the cut is unread",
+      () => {
+        h.sign.mockResolvedValue(standardClaim())
+        h.cut.mockRejectedValue(new Error("rpc down"))
+        return register(20n * DAI, 0n, false)
+      },
+    ],
+  ])("leaves the registration on its own deposit when the note %s", async (_, run) => {
+    const outcome = await run()
+    expect(outcome).toMatchObject({ kind: "pending" })
+    expect(outcome).not.toHaveProperty("depositLink")
+    expect(loadRegistrationTerms(OWNER, "demo")).not.toHaveProperty("paylinkId")
+    expect(ticketSignupContinuation(LINK, L2, [])).toBeNull()
   })
 })

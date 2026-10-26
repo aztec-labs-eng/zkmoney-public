@@ -222,3 +222,33 @@ describe("paylink registration funding", () => {
     expect(h.fundingCut).not.toHaveBeenCalled()
   })
 })
+
+describe("a link that pays an ordinary deposit", () => {
+  /** A drawn tag's signed deposit, bound to the link with no ticket behind it. */
+  const depositTerms = () =>
+    saveRegistrationTerms({
+      account,
+      tag: "alice",
+      deadline: Number(FAR_DEADLINE),
+      fee: String(dai(0.5)),
+      minDeposit: String(dai(1)),
+      feeWaived: true,
+      paylinkFunded: true,
+      paylinkDeposit: true,
+      paylinkId: "id:link",
+    })
+  const renew = () =>
+    rememberReissuedClaim(
+      { account, tag: "alice", fee: String(dai(0.5)) },
+      {
+        hold: { deadline: "4102444900" },
+        terms: earnedTerms({ fee: String(dai(0.5)), minDeposit: String(dai(1)) }),
+      },
+    )
+
+  it("stays the link's through a renewal that quotes no ticket", async () => {
+    depositTerms()
+    expect(renew()).toEqual({ ticketRefused: false })
+    expect((await fund())?.amount).toBe(dai(1.7))
+  })
+})

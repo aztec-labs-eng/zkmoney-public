@@ -56,6 +56,7 @@ const faster = vi.hoisted(() => ({
         standardEtaSeconds: number
         tippedEtaSeconds: number
         worstSpeedupSeconds: number
+        measured: boolean
       }
     | undefined,
   loading: false,
@@ -329,13 +330,13 @@ describe("ClaimToL1Modal email swap speed", () => {
       standardEtaSeconds: 44 * 60,
       tippedEtaSeconds: 12 * 60,
       worstSpeedupSeconds: 30 * 60,
+      measured: true,
     }
   })
 
-  it("re-plans the leg with the tip and binds the proof to that escrow", async () => {
+  it("plans the leg with the tip it opens on, and binds the proof to that escrow", async () => {
+    planSwap.mockResolvedValue(tippedLeg as never)
     await confirmSheet("25", "email", "USDC")
-    planSwap.mockResolvedValueOnce(tippedLeg as never)
-    await chooseSpeed("Faster")
     expect(planSwap).toHaveBeenLastCalledWith(
       recipient,
       "USDC",
@@ -352,15 +353,16 @@ describe("ClaimToL1Modal email swap speed", () => {
     )
   })
 
-  it("drops a proof bound to the untipped escrow when Faster is chosen", async () => {
+  it("drops a proof bound to the tipped escrow when Standard is chosen", async () => {
+    planSwap.mockResolvedValue(tippedLeg as never)
     await confirmSheet("25", "email", "USDC")
     await click("Verify email with Google")
     expect(button("Confirm and claim")).toBeTruthy()
-    planSwap.mockResolvedValueOnce(tippedLeg as never)
-    await chooseSpeed("Faster")
+    const planned = planSwap.mock.calls.length
+    await chooseSpeed("Standard")
     expect(button("Confirm and claim")).toBeUndefined()
     expect(button("Verify email with Google")).toBeTruthy()
-    expect(planSwap).toHaveBeenCalledTimes(2)
+    expect(planSwap).toHaveBeenCalledTimes(planned + 1)
   })
 
   it("burns the tip its leg was planned with when the offer re-quotes", async () => {
@@ -376,15 +378,16 @@ describe("ClaimToL1Modal email swap speed", () => {
   })
 
   it("keeps a verified tipped leg through a failed re-quote", async () => {
+    planSwap.mockResolvedValue(tippedLeg as never)
     await confirmSheet("25", "email", "USDC")
-    planSwap.mockResolvedValueOnce(tippedLeg as never)
-    await chooseSpeed("Faster")
     await click("Verify email with Google")
+    const planned = planSwap.mock.calls.length
     faster.offer = undefined
     simulation.mockReturnValue({ status: "unavailable" })
     await renderSheet("25", "email")
     expect(button("Confirm and claim").disabled).toBe(false)
-    expect(planSwap).toHaveBeenCalledTimes(2)
+    // The verified leg is kept rather than re-planned.
+    expect(planSwap).toHaveBeenCalledTimes(planned)
     await click("Confirm and claim")
     expect(onConfirm).toHaveBeenCalledWith(
       expect.objectContaining({ swap: tippedLeg, proverTip: TIP }),
@@ -422,13 +425,13 @@ describe("ClaimToL1Modal email swap speed", () => {
   })
 
   it("keeps a verified leg's tip when a new quote's tip exceeds the link", async () => {
+    planSwap.mockResolvedValue(tippedLeg as never)
     await confirmSheet("25", "email", "USDC")
-    planSwap.mockResolvedValueOnce(tippedLeg as never)
-    await chooseSpeed("Faster")
     await click("Verify email with Google")
+    const planned = planSwap.mock.calls.length
     faster.offer = { ...faster.offer!, proverTip: 30n * 10n ** 18n }
     await renderSheet("25", "email")
-    expect(planSwap).toHaveBeenCalledTimes(2)
+    expect(planSwap).toHaveBeenCalledTimes(planned)
     expect(speedRow()!.querySelector("button")!.textContent).toBe("Faster")
     // The row names the tip the burn carries, not the newer quote.
     expect(await fasterDetail()).toContain("0.5 DAI")

@@ -19,6 +19,11 @@
       "types": "./dist/oxide/index.d.ts",
       "import": "./dist/oxide/index.js",
       "require": "./dist/oxide/index.js"
+    },
+    "./text": {
+      "types": "./dist/text/index.d.ts",
+      "import": "./dist/text/index.js",
+      "require": "./dist/text/index.js"
     }
   },
   "scripts": {

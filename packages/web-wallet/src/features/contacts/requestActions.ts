@@ -48,22 +48,30 @@ export async function markRequestPaidById(id: string, txHash: string): Promise<b
   return markRequestPaidLocally(id, txHash, RequestStorage.get())
 }
 
-/** Re-announce a stored outgoing request over XMTP. `tokenAddress` comes from the asset context. */
+/**
+ * Re-announce a stored outgoing request over XMTP, recording the reminder once it is delivered.
+ * `tokenAddress` comes from the asset context.
+ */
 export async function remindRequestById(id: string, tokenAddress?: string): Promise<boolean> {
+  const store = RequestStorage.get()
   // Demo mounts no XMTP; the reminder is acknowledged without a delivery.
-  if (import.meta.env.DEV && isDemoMode()) return true
-  const target = await RequestStorage.get().findById(id)
+  if (import.meta.env.DEV && isDemoMode()) {
+    await store.markReminded(id, Date.now())
+    return true
+  }
+  const target = await store.findById(id)
   const broadcaster = getRequestBroadcaster()
   const requesterTag = loadWalletIdentity()?.handle
   if (!target || !broadcaster || !requesterTag || !tokenAddress) return false
   const config = getConfig()
   const walletAsset = resolveAssetConstants(config.network).DAI
-  await announceOutgoingRequest(target, {
+  const delivered = await announceOutgoingRequest(target, {
     broadcaster,
     resolveXmtpAddress,
     requesterTag,
     networkId: getActiveNetworkId()!,
     token: { address: tokenAddress, symbol: walletAsset.symbol, decimals: walletAsset.decimals },
   })
-  return true
+  if (delivered) await store.markReminded(id, Date.now())
+  return delivered
 }

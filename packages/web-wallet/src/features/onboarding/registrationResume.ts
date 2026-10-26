@@ -3,6 +3,7 @@
  * mined. Detection itself stays credential-free; these arm only once the wallet is unlocked.
  */
 import { AztecAddress } from "@aztec/aztec.js/addresses"
+import { BlockNumber } from "@aztec/foundation/branded-types"
 import type { Address } from "viem"
 import { fetchSipaEvents, type ObsidionWallet } from "@obsidion/sdk"
 import {
@@ -34,14 +35,15 @@ export async function unlockedSessionKeys(
 }
 
 /**
- * Whether the record's broadcast mined: the `SIPA` event it sends this wallet is in the PXE,
- * matched by the salt the deposit rail seeded. Throws when it cannot tell (an unseeded record, a
- * failed event read) so the tick spends nothing.
+ * Whether the record's broadcast mined, from `sinceBlock` on when given (a republish): the `SIPA`
+ * event it sends this wallet is in the PXE, matched by the salt the deposit rail seeded. Throws when
+ * it cannot tell (an unseeded record, a failed event read) so the tick spends nothing.
  */
 export async function registrationBroadcastSeen(
   record: PendingRegistrationRecord,
   config: WebWalletConfig,
   wallet: ObsidionWallet,
+  sinceBlock?: number,
 ): Promise<boolean> {
   const salt = SIPADepositStore.get(webStorage).get(record.sipaAddress as Address)?.messageSecret
   if (!salt) throw new Error(`registration deposit ${record.sipaAddress} is not seeded`)
@@ -50,6 +52,7 @@ export async function registrationBroadcastSeen(
     wallet,
     AztecAddress.fromStringUnsafe(requireTupleField(tuple, "l2Token")),
     AztecAddress.fromStringUnsafe(record.l2Address),
+    sinceBlock === undefined ? undefined : { fromBlock: BlockNumber(sinceBlock) },
   )
   const wanted = salt.toLowerCase()
   return events.some((event) => event.sharedSecretSalt.toString().toLowerCase() === wanted)

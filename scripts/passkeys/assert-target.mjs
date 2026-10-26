@@ -4,10 +4,21 @@ import { selectWebPasskeyRpId } from "../../packages/passkey-web/dist/index.js"
 
 const [directory, environment] = process.argv.slice(2)
 if (!directory || !environment) throw new Error("Usage: assert-target.mjs <dist> <environment>")
-const rpId = selectWebPasskeyRpId({ VITE_PASSKEY_ENVIRONMENT: environment })
+const deployment = process.env.TARGET_DEPLOYMENT || undefined
+const rpId = selectWebPasskeyRpId({
+  VITE_PASSKEY_ENVIRONMENT: environment,
+  VITE_PASSKEY_DEPLOYMENT: deployment,
+})
 const target = JSON.parse(readFileSync(`${directory}/passkey-target.json`, "utf8"))
 if (target.environment !== environment || target.rpId !== rpId) {
   throw new Error(`Bundle targets ${JSON.stringify(target)}; expected ${environment} / ${rpId}`)
+}
+if (
+  deployment &&
+  (target.deployment !== deployment ||
+    target.profileId !== process.env.VITE_CONFIG_EXPECTED_PROFILE_ID)
+) {
+  throw new Error("Bundle does not identify the selected deployment and profile")
 }
 console.log(`Passkey target verified: ${environment} / ${rpId}`)
 
@@ -16,12 +27,18 @@ if (process.argv.includes("--live") && environment === "production") {
     redirect: "error",
     signal: AbortSignal.timeout(10_000),
   })
-  if (response.status !== 200 || response.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json") {
+  if (
+    response.status !== 200 ||
+    response.headers.get("content-type")?.split(";")[0]?.trim() !== "application/json"
+  ) {
     throw new Error("Production RP must serve HTTP 200 with Content-Type: application/json")
   }
   const document = await response.json()
   const expected = [...WEB_PASSKEY_PRODUCTION_ORIGINS].sort()
-  if (!Array.isArray(document.origins) || JSON.stringify([...document.origins].sort()) !== JSON.stringify(expected)) {
+  if (
+    !Array.isArray(document.origins) ||
+    JSON.stringify([...document.origins].sort()) !== JSON.stringify(expected)
+  ) {
     throw new Error(
       "Publish the approved production related origins at auth.zk.money before deploying this bundle",
     )

@@ -19,6 +19,7 @@ import {
   passkeyEvents,
   passkeyTelemetryHarness,
 } from "./support/passkeyTelemetryHarness"
+import * as copy from "../src/features/limits/limitsCopy"
 
 const h = vi.hoisted(() => ({
   copied: [] as string[],
@@ -67,7 +68,6 @@ vi.mock("../src/config/oxideTuple", () => ({
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   readFundingTransfers: async () => [],
-  readSweepEvents: async () => [],
   readSipaPortalTerms: async (_client: unknown, implementation: string) => {
     h.termsReads.push(implementation)
     if (h.termsFail) throw new Error("terms read failed")
@@ -294,9 +294,9 @@ describe("RegistrationDepositDetailModal", () => {
     )
   })
 
-  it("offers a re-broadcast of the unpublished address it shows once its broadcast is held", async () => {
+  it("offers a re-broadcast of a funded unpublished address once its broadcast is held", async () => {
     resetBroadcastsForTests()
-    const unpublished = record({ broadcast: false })
+    const unpublished = record({ broadcast: false, fundedAt: Date.now() })
     confirmRegistrationTag(unpublished)
     render(<RegistrationDepositDetailModal record={unpublished} {...base} />)
     await vi.waitFor(() => expect(getBroadcastLedger().get(SIPA)).not.toBeNull())
@@ -365,10 +365,10 @@ describe("RegistrationDepositDetailModal", () => {
     act(() =>
       maximum!.querySelector<HTMLButtonElement>("[data-testid='about-limits-link']")!.click(),
     )
-    const sheet = document.querySelector("dialog[aria-label='About limits']")!
+    const sheet = document.querySelector(`dialog[aria-label="${copy.SHEET_TITLE}"]`)!
     const operation = sheet.querySelector<HTMLElement>("[data-testid='about-limits-operation']")!
     expect(sheet.querySelector("section")).toBe(operation)
-    expect(operation.textContent).toContain("$2,500 sent, incl. fees")
+    expect(operation.textContent).toContain(copy.LIMIT_NOTE)
   })
 
   it("holds copy and a new payment for an ask over the maximum, and keeps the address", async () => {
@@ -610,7 +610,7 @@ describe("RegistrationDepositDetailModal", () => {
             .click(),
         )
         await settle()
-        const sheet = document.querySelector("dialog[aria-label='About limits']")!
+        const sheet = document.querySelector(`dialog[aria-label="${copy.SHEET_TITLE}"]`)!
         return {
           sheet,
           section: sheet.querySelector<HTMLElement>("[data-testid='about-limits-capacity']")!,
@@ -660,7 +660,7 @@ describe("RegistrationDepositDetailModal", () => {
     it("offers Check again after the original terms fail to read, and reads them again", async () => {
       h.termsFail = true
       const implementation = await openFor()
-      expect(panel()?.textContent).toContain("Capacity could not be checked.")
+      expect(panel()?.textContent).toContain(copy.CAPACITY_UNAVAILABLE)
       expect(capacity.keys).toEqual([])
       h.termsFail = false
       await act(async () =>
@@ -807,7 +807,7 @@ describe("RegistrationDepositDetailModal", () => {
       reason!.querySelector<HTMLButtonElement>("[data-testid='about-limits-link']")!.click(),
     )
     const details = document.querySelector(
-      "dialog[aria-label='About limits'] [data-testid='about-limits-capacity']",
+      `dialog[aria-label="${copy.SHEET_TITLE}"] [data-testid='about-limits-capacity']`,
     )
     expect(details?.textContent).toContain("No network capacity is available now.")
     expect(details?.textContent).toContain("No automatic refill is configured.")

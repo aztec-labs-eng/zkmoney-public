@@ -1,5 +1,6 @@
 import type { ReactNode } from "react"
 import { GradientInitialAvatar } from "./Avatars"
+import { Spinner } from "./Effects"
 import { Icon } from "./Icon"
 import { StatusBadge, type StatusBadgeStyle } from "./StatusPill"
 
@@ -9,6 +10,9 @@ export interface TransactionRowAction {
   actionStyle?: "neutral" | "gradient"
   /** Optional leading icon (the app uses "share"). */
   icon?: string
+  /** A spinner in place of the label, and no taps, while the action runs. */
+  isLoading?: boolean
+  isDisabled?: boolean
   onClick?: () => void
 }
 
@@ -20,7 +24,7 @@ export interface ActivityListRowProps {
   timestamp: string
   /** Signed amount string; a "+" prefix renders green. */
   amount: string
-  /** Status label under the amount (Pending / Unclaimed / Unpaid / Claimed / Migrated / You owe / Failed / Needs recovery / Funds not sent / Recovered / Cancelled / Cancelling / Reclaiming / Reclaimed / Expired / Paid, and a deposit's Awaiting funds / Receiving / Crediting / Deposit failed). */
+  /** Status label under the amount; `STATUS_STYLE` gives its badge. */
   statusLabel?: StatusLabel
   /** Avatar node; defaults to a deterministic gradient-initial avatar from `counterparty`. */
   avatar?: ReactNode
@@ -56,10 +60,15 @@ export const STATUS_STYLE = {
   "Moving to Savings": "pending",
   "Moving to Main Account": "pending",
   "Swapping": "pending",
+  // An upgrade batch before its refund is sent.
+  "Waiting for approval": "pending",
+  "Approved": "pending",
   // A deposit on its way in.
   "Awaiting funds": "pending",
   "Receiving": "pending",
   "Crediting": "pending",
+  // A swept deposit a frozen portal refunds through Withdraw.
+  "Refundable": "pending",
   // A paylink refund on its way back to the creator.
   "Cancelling": "pending",
   "Reclaiming": "pending",
@@ -168,10 +177,19 @@ export function ActivityListRow({
               className={`zkm-btn-reset zkm-pressable zkm-activity-action zkm-activity-action--${
                 a.actionStyle ?? "neutral"
               }`}
+              disabled={a.isLoading || a.isDisabled}
+              aria-busy={a.isLoading || undefined}
+              aria-label={a.isLoading ? a.title : undefined}
               onClick={a.onClick}
             >
-              {a.icon && <Icon name={a.icon} size={16} />}
-              {a.title}
+              {a.isLoading ? (
+                <Spinner size={16} color="#fff" />
+              ) : (
+                <>
+                  {a.icon && <Icon name={a.icon} size={16} />}
+                  {a.title}
+                </>
+              )}
             </button>
           ))}
         </div>

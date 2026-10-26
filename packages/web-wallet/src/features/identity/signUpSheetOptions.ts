@@ -1,6 +1,7 @@
 import {
   type LaptopCreation,
   type PhoneReach,
+  type SheetReopen,
   type SignUpChoice,
   type SignUpOptions,
   currentUserAgentInfoSync,
@@ -19,7 +20,7 @@ export function signUpSheetOptions(input: {
   creation: LaptopCreation
   reach: PhoneReach
   preferred?: SignUpChoice
-  unfinished?: boolean
+  reopened?: SheetReopen
 }): SignUpOptions {
   const extension = passkeyExtensionFor()
   const ua = currentUserAgentInfoSync()

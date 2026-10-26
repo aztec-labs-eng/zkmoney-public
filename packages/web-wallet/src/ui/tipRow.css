@@ -1,0 +1,60 @@
+/* Each tip opens over its own line, never against a far ancestor. */
+.ww-tiprow {
+  position: relative;
+  display: inline-flex;
+}
+.zkm-btn-reset.ww-tiprow__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.ww-tiprow__label > svg {
+  flex: none;
+}
+.ww-tiprow__label:hover,
+.ww-tiprow__label:focus-visible,
+.ww-tiprow__label[aria-expanded="true"] {
+  color: var(--text-primary);
+}
+.ww-tiprow__label:focus-visible {
+  outline: 2px solid #fff;
+  outline-offset: 2px;
+}
+.ww-tiprow__tip {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 8px);
+  z-index: 1;
+  width: 300px;
+  /* Never wider than the card, which a narrow sheet would otherwise clip it against. */
+  max-width: 100%;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #3a3a3a;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-primary);
+  visibility: hidden;
+}
+.ww-tiprow[data-open] .ww-tiprow__tip {
+  visibility: visible;
+  animation: ww-tiprow-tip-in 140ms ease-out;
+}
+@keyframes ww-tiprow-tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ww-tiprow[data-open] .ww-tiprow__tip {
+    animation: none;
+  }
+}

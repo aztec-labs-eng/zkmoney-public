@@ -34,6 +34,7 @@
 import { Fr } from "@aztec/aztec.js/fields"
 import type { FieldLike } from "@aztec/aztec.js/abi"
 import { MAX_TAG_LENGTH, TRANSFER_META_LEN } from "@obsidion/core/constants"
+import { plainText } from "@obsidion/core/text"
 import { BYTES_PER_FIELD, metaCapacity, packMetaFields, unpackMetaFields } from "./metaFields.js"
 
 export { fieldLikeToFr } from "./metaFields.js"
@@ -238,7 +239,7 @@ export function decodeTransferMeta(meta: readonly FieldLike[] | undefined): Tran
       if (tag && TAG_RE.test(tag)) out.recipientTag = tag
     } else if (type === TYPE_MEMO && out.memo === undefined && len > 0) {
       const memo = decodeText(value)
-      if (memo) out.memo = memo
+      if (memo) out.memo = plainText(memo)
     } else if (type === TYPE_PAYLINK_CREATED && out.paylinkCreated === undefined) {
       const created = decodePaylinkCreated(value)
       if (created) out.paylinkCreated = created

@@ -14,6 +14,7 @@ import { TimeoutError } from "../../lib/withTimeout"
 import { showErrorModal, showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { useDepositSkim, useSweepDeductions } from "../onboarding/registrationTerms"
+import { loadWalletIdentity } from "../identity/walletIdentity"
 import { ClaimReviewStep } from "../onboarding/steps/ClaimReviewStep"
 import { getWithdrawalStore, type WithdrawStage } from "../withdraw/withdrawGateway"
 import { usePolledChainSeconds } from "./chainTime"
@@ -33,7 +34,7 @@ import {
   PAYLINK_NOT_CLAIMABLE_YET_MESSAGE,
   useClaimCountdown,
 } from "./claimWindow"
-import { openClaimPrompt } from "./claimPrompt"
+import { openClaimPrompt, setLinkFunding } from "./claimPrompt"
 import { clearClaimStash } from "./claimStash"
 import {
   autoClaimGaveUp,
@@ -68,13 +69,19 @@ import {
   type ViewLinkDeps,
 } from "./sponsoredPaylink"
 import {
+  bindLinkDeposit,
+  fundingRefusalCopy,
+  loadRegistrations,
   onTicketRegistrationsChanged,
+  releaseLinkDeposit,
   ticketHoldNotice,
   ticketSignupCommitted,
   ticketSignupContinuation,
+  unfundedRegistration,
 } from "./ticketContinuation"
 import type { PaymentLink } from "./types"
-import { usePaylinkDeps } from "./usePaylinkDeps"
+import { useLinkVoucher, usePaylinkDeps } from "./usePaylinkDeps"
+import { useActionGuard, useActionVerdict } from "../actionGate"
 
 export interface ClaimLinkFlow {
   /** The claim prompt, or the sheet for the beats that need the user, when one is on screen. */
@@ -110,6 +117,8 @@ const autoClaimed = new Set<string>()
 /** Tries after the first, for a failure that may pass: a read that timed out behind other work. */
 const AUTO_CLAIM_RETRIES = 2
 const AUTO_CLAIM_BACKOFF_MS = 5_000
+/** How long Home waits to learn whether the link funds a registration before the plain prompt. */
+const DETECT_BUDGET_MS = 15_000
 
 function retryable(e: unknown): boolean {
   return (
@@ -187,6 +196,8 @@ export function useClaimLinkFlow(
   const { contractService } = useContractServiceContext()
   const claimDeps = usePaylinkDeps()
   const chainNow = usePolledChainSeconds(obsidionWallet?.node)
+  const guard = useActionGuard()
+  const upgradeFirst = useActionVerdict("claim") !== "open"
 
   // Claim-funnel top for the Home handoff surface — /link redirects signed-in visitors here
   // without emitting. Once per fragment, as soon as the network identity (part of the join key)
@@ -217,6 +228,23 @@ export function useClaimLinkFlow(
         )
       : null
   const continuation = readContinuation()
+  // This account's registration still waiting for its deposit, when no registration is this
+  // link's yet: the link pays it when its note covers the deposit, the fees and the tip.
+  // Read off the entered identity too, so the wallet's own boot does not decide the modal.
+  const accountAddress = claimDeps?.account.getAddress().toString() ?? loadWalletIdentity()?.address
+  const unfunded =
+    fragment && accountAddress && continuation === null && !ticketSignupCommitted(fragment)
+      ? unfundedRegistration(accountAddress, getWithdrawalStore().list())
+      : null
+  const [registrationsLoaded, setRegistrationsLoaded] = useState(false)
+  useEffect(() => {
+    let live = true
+    const loaded = () => live && setRegistrationsLoaded(true)
+    loadRegistrations().then(loaded, loaded)
+    return () => {
+      live = false
+    }
+  }, [])
   const [, rerender] = useReducer((n: number) => n + 1, 0)
   // The signup moves under Home: its address publishes, or its burn goes out from another surface.
   useEffect(() => {
@@ -236,14 +264,25 @@ export function useClaimLinkFlow(
   useEffect(() => {
     if (!fragment || !claimDeps || continuation !== null) return
     if (!ticketSignupCommitted(fragment)) return
-    clearClaimStash(fragment)
-    onDone()
+    let live = true
+    // Decided once the burns are loaded: until then, after a reload, the link's own burn is missing
+    // and its registration reads as funded by other means.
+    void getWithdrawalStore()
+      .load()
+      .then(() => {
+        if (!live || readContinuation() !== null || !ticketSignupCommitted(fragment)) return
+        clearClaimStash(fragment)
+        onDone()
+      })
+    return () => {
+      live = false
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fragment, claimDeps, continuation === null])
   const navigate = useNavigate()
   const config = getConfig()
-  const deductions = useSweepDeductions(config, undefined, continuation !== null)
-  const sweepFee = useDepositSkim(config, continuation !== null)
+  const deductions = useSweepDeductions(config, undefined, continuation !== null || !!unfunded)
+  const sweepFee = useDepositSkim(config, continuation !== null || !!unfunded)
   const [beat, setBeat] = useState<ClaimBeat>()
   const [l1Open, setL1Open] = useState(false)
   const signInAbort = useRef<AbortController | null>(null)
@@ -336,6 +375,16 @@ export function useClaimLinkFlow(
   // the note do: on the re-read. A later answer still lands. A claim of this link holds the PXE the
   // reads queue behind, so that time runs only while none does.
   const claimBusy = running || claiming
+  // A fresh read found the link closed while its claim had yet to fund the registration.
+  const closedUnclaimed =
+    !seedOnly && link?.status !== undefined && link.status !== "unclaimed" && !claimBusy
+  // Every state but `submitted`, whose burn is on its way, still waits on the link.
+  const waitingRecord =
+    continuation && continuation.activation.state !== "submitted" ? continuation.record : undefined
+  useEffect(() => {
+    if (closedUnclaimed && waitingRecord) releaseLinkDeposit(waitingRecord)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed by the registration
+  }, [closedUnclaimed, waitingRecord?.account, waitingRecord?.tag])
   useEffect(() => {
     if (!statusDeps || !fragment || readSettled || claimBusy) return
     const stalled = setTimeout(() => {
@@ -362,7 +411,7 @@ export function useClaimLinkFlow(
    * Starts the claim; false when nothing could start. `auto`: Home's own try, retried, which may
    * start off this tab's earlier read.
    */
-  const claim = (auto = false): boolean => {
+  const claim = (auto = false, fundRegistration = continuation !== null): boolean => {
     if (
       !fragment ||
       !link ||
@@ -406,7 +455,7 @@ export function useClaimLinkFlow(
           // Proving and submitting start before the passkey prompt; the sheet keeps its last beat.
           if (live() && s !== "proving" && s !== "submitting") setBeat(s)
         },
-        continuation !== null,
+        fundRegistration,
         signIn.signal,
       ).then(
         () => {
@@ -443,7 +492,9 @@ export function useClaimLinkFlow(
           }
           const windowCopy = claimWindowRevertCopy(e)
           const reason =
-            windowCopy?.message ?? (e instanceof Error ? e.message : "Something went wrong")
+            windowCopy?.message ??
+            fundingRefusalCopy(e) ??
+            (e instanceof Error ? e.message : "Something went wrong")
           // The review says why wherever it opens next, its Claim the retry.
           claimFailed(owned, reason)
           // Failed before the hand-off: the reopened prompt is the retry, and the sheet says why.
@@ -469,6 +520,8 @@ export function useClaimLinkFlow(
   const autoHeld =
     fragment === null
       ? "no link"
+      : upgradeFirst
+      ? "upgrade first"
       : continuation?.activation.state !== "ready"
       ? `ticket ${continuation?.activation.state ?? (claimDeps ? "not this account's" : "unread")}`
       : !link
@@ -651,6 +704,86 @@ export function useClaimLinkFlow(
     },
     commitKey: reviewRecord && `${reviewRecord.account}:${reviewRecord.tag}`,
   })
+  // The registration this link may fund: its split, shown before the claim, with the speed choice
+  // that commits the tip. A link with no voucher, or a note short of the split, claims as any other.
+  const voucher = useLinkVoucher(unfunded ? link : null)
+  const fundSchedule = unfunded?.schedule
+  const fundCuts = deductions && {
+    withdrawalCut: deductions.fpcCut,
+    depositCut: deductions.fpcCut,
+  }
+  const fundTip = useRef<{ tip: bigint; speed: "standard" | "faster" }>(undefined)
+  const fundSpeed = useRegistrationSpeed({
+    active: !!unfunded && voucher.uses !== 0,
+    node: obsidionWallet?.node,
+    noteAmount: paylinkAmount,
+    schedule: fundSchedule,
+    cuts: fundCuts,
+    onCommit: (tip, speed) => {
+      fundTip.current = { tip, speed }
+    },
+  })
+  // The review is chosen, and priced, only once the voucher and the sweep fee answered.
+  const fundAnswered = voucher.uses !== undefined && sweepFee !== undefined
+  const fundQuote =
+    fundAnswered && fundSchedule && fundCuts && fundSpeed.proverTip !== undefined
+      ? paylinkSignupQuote({
+          ...(paylinkAmount !== undefined ? { paylink: paylinkAmount } : {}),
+          schedule: fundSchedule,
+          cuts: fundCuts,
+          sweepFee,
+          proverTip: fundSpeed.proverTip,
+        })
+      : undefined
+  // Which modal applies is decided before any shows: the plain prompt never flashes ahead of the
+  // review. A read that fails, or a decision past its time, falls back to the plain prompt.
+  const [detectExpiredFor, setDetectExpiredFor] = useState<string>()
+  const detectExpired = !!fragment && detectExpiredFor === fragment
+  const fundRefused =
+    !unfunded ||
+    voucher.uses === 0 ||
+    voucher.error !== undefined ||
+    detectExpired ||
+    link?.status !== "unclaimed" ||
+    fundQuote?.covers === false
+  const detecting =
+    continuation === null &&
+    !!accountAddress &&
+    !detectExpired &&
+    (!registrationsLoaded || (!fundRefused && fundQuote === undefined))
+  useEffect(() => {
+    if (!detecting || !fragment) return
+    const timer = setTimeout(() => setDetectExpiredFor(fragment), DETECT_BUDGET_MS)
+    return () => clearTimeout(timer)
+  }, [detecting, fragment])
+  // The hero asks for no deposit while the link may pay an entered account's unfunded registration,
+  // and leads back to the review once it does. A ticket signup keeps its own claiming hero.
+  const linkFunding =
+    !fragment || !unfunded || link?.status !== "unclaimed"
+      ? null
+      : detecting
+      ? "checking"
+      : !fundRefused && fundQuote !== undefined
+      ? "review"
+      : null
+  useEffect(() => {
+    if (!fragment) return
+    setLinkFunding(linkFunding ? { fragment, state: linkFunding, amount: paylinkAmount } : null)
+  }, [fragment, linkFunding, paylinkAmount])
+  const fundAndClaim = () => {
+    if (!unfunded || !fragment || fundQuote?.covers !== true || !voucher.uses) return
+    fundSpeed.settle()
+    const committed = fundTip.current ?? { tip: 0n, speed: "standard" as const }
+    // The terms read back at once: the claim's slice is priced off this binding.
+    void bindLinkDeposit(
+      unfunded.record,
+      { fragment, amount: paylinkAmount, senderTag: link?.senderTag },
+      committed.tip,
+      committed.speed,
+    )
+    claim(false, true)
+  }
+
   // A review opened over a running or sent claim shows the tip that claim burns.
   const proverTip =
     reviewSpeed.proverTip ?? (reviewShown ? undefined : committedProverTip(reviewTerms))
@@ -700,6 +833,7 @@ export function useClaimLinkFlow(
                 cuts: { withdrawalCut: deductions.fpcCut, depositCut: deductions.fpcCut },
                 sweepFee,
                 proverTip,
+                ticket: !reviewTerms?.paylinkDeposit,
               })
         }
         tokenSymbol={WALLET_TOKEN_SYMBOL}
@@ -713,7 +847,7 @@ export function useClaimLinkFlow(
           claiming || running
             ? "Claiming"
             : submitted
-            ? hold
+            ? `Registering @${continuation.record.tag}`
             : link.status !== "unclaimed" || offerRetry
             ? LINK_STATUS_LABEL[link.status]
             : offeredWait === undefined
@@ -722,6 +856,12 @@ export function useClaimLinkFlow(
             ? PAYLINK_NOT_CLAIMABLE_YET_MESSAGE
             : LINK_STATUS_LABEL[link.status]
         }
+        statusDetail={
+          submitted && !claiming && !running
+            ? "Waiting for the network to sweep the deposit"
+            : undefined
+        }
+        amount={paylinkAmount}
         // A claim at work or sent has nothing left to claim; its status says what follows.
         settled={running || submitted}
         error={
@@ -753,8 +893,32 @@ export function useClaimLinkFlow(
           offeredWait === 0 &&
           !running
         }
-        onClaim={() => claim()}
+        onClaim={() => guard("claim", () => void claim())}
         onClose={autoDue && onReviewClosed ? onReviewClosed : onDone}
+      />
+    ) : detecting ? null : !fundRefused ? (
+      <ClaimReviewStep
+        quote={fundQuote}
+        amount={paylinkAmount}
+        tokenSymbol={WALLET_TOKEN_SYMBOL}
+        tokenDecimals={tokenDecimalsForNetwork(config.network)}
+        speed={<SpeedRow choice={fundSpeed.choice} outcome={fundSpeed.outcome} />}
+        memo={link.memo}
+        senderTag={link.senderTag}
+        busy={claiming}
+        onHandOff={handOff}
+        status={
+          offeredWait === undefined
+            ? "Checking when this link can be claimed…"
+            : offeredWait
+            ? PAYLINK_NOT_CLAIMABLE_YET_MESSAGE
+            : LINK_STATUS_LABEL[link.status]
+        }
+        error={failure}
+        claimable={fundQuote?.covers === true && offeredWait === 0 && !running}
+        onClaim={fundAndClaim}
+        // Close keeps the link: the hero leads back to this review.
+        onClose={onDone}
       />
     ) : (
       <ClaimLinkModal
@@ -764,8 +928,8 @@ export function useClaimLinkFlow(
         loading={loading}
         onRetryRead={offerRetry ? retryRead : undefined}
         onClose={dismiss}
-        onClaim={() => claim()}
-        onClaimToL1={() => setL1Open(true)}
+        onClaim={() => guard("claim", () => void claim())}
+        onClaimToL1={() => guard("claim", () => setL1Open(true))}
       />
     )
 

@@ -16,6 +16,7 @@ export const DEVICE_KEYS: ReadonlySet<string> = new Set([
   "zkm_rid",
   "webwallet.hide-balances",
   "webwallet.hide-deposit-privacy-disclaimer",
+  "webwallet.hide-maintenance-notice",
   "webwallet.hide-one-time-address-warning",
   "webwallet.hide-paylink-info",
   "webwallet.hide-withdraw-privacy-disclaimer",

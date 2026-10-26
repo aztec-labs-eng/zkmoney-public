@@ -18,7 +18,6 @@ import {
 import {
   migrationDepositCalls,
   migrationSipaCoordinates,
-  receiveMigrationSweeps,
   resolveMigrationDeposit,
   type MigrationDestinationContext,
 } from "./migrationDeposit.js"
@@ -28,6 +27,8 @@ export interface FrozenRefundCandidate {
   id: string
   amount: string
   kind: FrozenRefundKind
+  /** The escrow an `escrow-note` belongs to. */
+  owner?: string
 }
 
 export interface FrozenRefundSelection {
@@ -73,6 +74,31 @@ const EXACT_COVER_NOTES = 16
 
 type Note = { id: string; amount: bigint }
 
+const largestFirst = (a: Note, b: Note) =>
+  a.amount === b.amount ? (a.id < b.id ? -1 : 1) : a.amount > b.amount ? -1 : 1
+
+/** One batch per escrow: its largest notes within the count and amount caps. */
+function escrowBatches(candidates: FrozenRefundCandidate[], maxCount: number, cap: bigint) {
+  const byOwner = new Map<string, Note[]>()
+  for (const c of candidates) {
+    if (c.kind !== "escrow-note") continue
+    const notes = byOwner.get(c.owner!) ?? []
+    notes.push({ id: c.id, amount: BigInt(c.amount) })
+    byOwner.set(c.owner!, notes)
+  }
+  return [...byOwner.values()].map((notes) => {
+    const ids: string[] = []
+    let amount = 0n
+    for (const note of notes.sort(largestFirst)) {
+      if (ids.length === maxCount) break
+      if (amount + note.amount > cap) continue
+      ids.push(note.id)
+      amount += note.amount
+    }
+    return { kind: "escrow-note" as const, ids, amount }
+  })
+}
+
 /** The smallest-total subset of `notes` (largest first) reaching `need` within the count and amount caps. */
 function coverNotes(notes: Note[], need: bigint, maxCount: number, cap: bigint) {
   const pool = notes.slice(0, EXACT_COVER_NOTES)
@@ -105,9 +131,11 @@ function coverNotes(notes: Note[], need: bigint, maxCount: number, cap: bigint) 
 /**
  * The next refund batch that nets more than `minimumNetAmount` after the relayer tip, or none.
  *
- * A deposit is refunded alone. Notes take the covering subset with the smallest total, so later
- * batches stay affordable, then the smallest remaining notes ride along up to the caps. This is a
- * heuristic, not an optimal partition: whatever no affordable batch can take is a stranded residual.
+ * A deposit is refunded alone, and a payment link's escrow on its own once no deposit clears the
+ * minimum: a link's refund asks no approval, so it never holds back one. The account's notes take the
+ * covering subset with the smallest total, so later batches stay affordable, then the smallest
+ * remaining notes ride along up to the caps. This is a heuristic, not an optimal partition: whatever
+ * no affordable batch can take is a stranded residual.
  */
 export function selectFrozenBatch(o: {
   candidates: FrozenRefundCandidate[]
@@ -126,14 +154,15 @@ export function selectFrozenBatch(o: {
   }
   const ids = new Set<string>()
   for (const c of o.candidates) {
-    if (BigInt(c.amount) <= 0n || ids.has(c.id)) throw new Error("Invalid frozen-source candidate")
+    if (BigInt(c.amount) <= 0n || ids.has(c.id) || (c.kind === "escrow-note" && !c.owner))
+      throw new Error("Invalid frozen-source candidate")
     ids.add(c.id)
   }
   const need = o.minimumNetAmount + o.tip
   const notes = o.candidates
     .filter((c) => c.kind === "note")
     .map((c) => ({ id: c.id, amount: BigInt(c.amount) }))
-    .sort((a, b) => (a.amount === b.amount ? (a.id < b.id ? -1 : 1) : a.amount > b.amount ? -1 : 1))
+    .sort(largestFirst)
   const cover = coverNotes(notes, need, o.maxNotesPerBatch, o.maxBatchAmount)
   if (cover) {
     let amount = cover.reduce((sum, n) => sum + n.amount, 0n)
@@ -146,13 +175,23 @@ export function selectFrozenBatch(o: {
     }
     return { kind: "note", ids: batch, amount }
   }
-  const deposit = o.candidates
-    .filter((c) => c.kind !== "note")
-    .map((c) => ({ ...c, value: BigInt(c.amount) }))
-    .filter((c) => c.value >= need && c.value <= o.maxBatchAmount)
-    .sort((a, b) => (a.value === b.value ? (a.id < b.id ? -1 : 1) : a.value > b.value ? -1 : 1))[0]
-  return deposit && { kind: deposit.kind, ids: [deposit.id], amount: deposit.value }
+  const largest = (batches: Array<{ kind: FrozenRefundKind; ids: string[]; amount: bigint }>) =>
+    batches
+      .filter((batch) => batch.amount >= need && batch.amount <= o.maxBatchAmount)
+      .sort((a, b) =>
+        largestFirst({ id: a.ids[0]!, amount: a.amount }, { id: b.ids[0]!, amount: b.amount }),
+      )[0]
+  return (
+    largest(
+      o.candidates
+        .filter((c) => c.kind === "frozen-deposit" || c.kind === "unprocessed-deposit")
+        .map((c) => ({ kind: c.kind, ids: [c.id], amount: BigInt(c.amount) })),
+    ) ?? largest(escrowBatches(o.candidates, o.maxNotesPerBatch, o.maxBatchAmount))
+  )
 }
+
+/** A payment link's refund is signed by the link's fallback key, so it asks the user nothing. */
+const asksApproval = (kind?: FrozenRefundKind) => kind !== "escrow-note"
 
 type Options = Pick<
   LiveMetadataMigrationSourceOptions,
@@ -161,14 +200,17 @@ type Options = Pick<
   | "destination"
   | "selfResolver"
   | "token"
-  | "tokenService"
   | "broadcaster"
   | "registered"
   | "owner"
   | "batches"
+  | "received"
+  | "swept"
 > & {
   runtime: FrozenMigrationRuntime
   destinationAsset: Address
+  /** Nothing more arrives at deposit address `recipient`: its deposit settled, credited or not. */
+  depositSettled?(recipient: Address): Promise<boolean>
 }
 
 /** Frozen funds are released only by broadcasts on the destination; no old-L2 transaction. */
@@ -198,25 +240,46 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
     return { ...o, node: o.wallet.node, recipient: o.registered.user, recoveryAccount: o.owner }
   }
 
-  async state(): Promise<"frozen" | "empty"> {
+  /** What the source can refund, read against a validated deployment. */
+  private async inventory(fresh = false) {
     await this.o.runtime.validate(this.o.destinationAsset)
-    return (await this.o.runtime.candidates()).candidates.length ? "frozen" : "empty"
+    return this.o.runtime.candidates({ fresh })
+  }
+
+  async state(): Promise<"frozen" | "empty"> {
+    return (await this.inventory()).candidates.length ? "frozen" : "empty"
   }
 
   /** Whether one batch nets more than `minimumNetAmount` after the relayer tip. */
   async movable(minimumNetAmount: bigint, fresh = false): Promise<boolean> {
-    await this.o.runtime.validate(this.o.destinationAsset)
-    const candidates = await this.o.runtime.candidates({ fresh })
+    const candidates = await this.inventory(fresh)
     return !!selectFrozenBatch({ ...candidates, minimumNetAmount, tip: WITHDRAW_RELAYER_TIP })
+  }
+
+  /** Everything the source holds for the account, dust and waiting deposits included. */
+  async holdings(): Promise<bigint> {
+    const { candidates, waiting = 0n } = await this.inventory(true)
+    return candidates.reduce((sum, c) => sum + BigInt(c.amount), waiting)
+  }
+
+  /** Nothing more arrives for a batch: it is received, or its refund's deposit settled. */
+  private async settled(batch: MigrationFundingBatch): Promise<boolean> {
+    if (batch.received) return true
+    return !!batch.refunded && !!(await this.o.depositSettled?.(batch.recipient as Address))
+  }
+
+  private async allSettled(): Promise<boolean> {
+    for (const { batch } of await this.remaining()) if (!(await this.settled(batch))) return false
+    return true
   }
 
   /** Every batch a run takes, chosen as `prepare` and recovery choose them. */
   async quote(minimums: { first: bigint; later: bigint }): Promise<MigrationSourceQuote> {
-    await this.o.runtime.validate(this.o.destinationAsset)
-    const { candidates, waiting = 0n, ...limits } = await this.o.runtime.candidates()
+    const { candidates, waiting = 0n, ...limits } = await this.inventory()
     let left = candidates
     let movable = 0n
     let batches = 0
+    let approvals = 0
     for (let minimumNetAmount = minimums.first; ; minimumNetAmount = minimums.later) {
       const batch = selectFrozenBatch({
         ...limits,
@@ -227,10 +290,11 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
       if (!batch) break
       movable += batch.amount
       batches++
+      if (asksApproval(batch.kind)) approvals++
       left = left.filter((c) => !batch.ids.includes(c.id))
     }
     const stranded = left.reduce((sum, c) => sum + BigInt(c.amount), 0n)
-    return { movable, stranded, waiting, batches }
+    return { movable, stranded, waiting, batches, approvals }
   }
 
   /** Keys a proof by what it commits to, so a batch stored under another id reuses it. */
@@ -259,6 +323,7 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
     recipient: Address,
     minimumNetAmount: bigint,
     onSelected?: (id: string) => Promise<void>,
+    depositFee?: bigint,
   ) {
     const o = this.o
     await o.runtime.validate(o.destinationAsset)
@@ -282,6 +347,7 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
         recipient,
         amount: String(amount),
         exitFee: String(tip),
+        ...(depositFee === undefined ? {} : { depositFee: String(depositFee) }),
         sourceSelection: ids,
         sourceKind: kind,
         fromBlock: String(await o.client.getBlockNumber()),
@@ -292,7 +358,12 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
     if (built.amount !== amount) throw new Error("Source proof amount differs from the selection")
     await this.validateOperation(built.operation, recipient)
     this.prepared.set(id, built)
-    return { id, netAmount: amount - tip, operation: built.operation }
+    return {
+      id,
+      netAmount: amount - tip,
+      operation: built.operation,
+      asksApproval: asksApproval(kind),
+    }
   }
 
   async restore(id: string, recipient: Address) {
@@ -309,7 +380,7 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
       candidates.filter((c) => c.kind === kind).map((c) => [c.id, BigInt(c.amount)]),
     )
     if (
-      ids.length > (kind === "note" ? maxNotesPerBatch : 1) ||
+      ids.length > (kind === "note" || kind === "escrow-note" ? maxNotesPerBatch : 1) ||
       new Set(ids).size !== ids.length ||
       ids.some((id) => !available.has(id))
     ) {
@@ -328,7 +399,11 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
       throw new Error("Restored source proof amount changed")
     await this.validateOperation(built.operation, recipient)
     this.prepared.set(key, built)
-    return { netAmount: built.amount - BigInt(batch.exitFee), operation: built.operation }
+    return {
+      netAmount: built.amount - BigInt(batch.exitFee),
+      operation: built.operation,
+      asksApproval: asksApproval(kind),
+    }
   }
 
   private async validateOperation(
@@ -370,13 +445,14 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
 
   /**
    * Plan every later batch and prove it. Each batch's selection, coordinates and recipient are saved
-   * before its approval; unapproved batches go first, so a refused prompt never waits behind rebuilds
-   * of approved ones. Re-running it resumes: saved batches keep their ids, coordinates and recipients,
-   * and only funds no saved batch covers are planned anew.
+   * before its approval; the batches still to approve go first, so a refused prompt never waits
+   * behind proofs that ask nothing. Re-running it resumes: saved batches keep their ids, coordinates
+   * and recipients, and only funds no saved batch covers are planned anew.
    */
   async prepareRemaining(
     minimumNetAmount: bigint,
     opts: {
+      depositFee?: bigint
       /** The first batch's id: its selection is not a later batch's. */
       exclude?: string
       /** Coordinates another SIPA of this migration already uses. */
@@ -424,6 +500,7 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
         recipient: resolved.sipaAddress,
         amount: String(selected.amount),
         exitFee: String(WITHDRAW_RELAYER_TIP),
+        ...(opts.depositFee === undefined ? {} : { depositFee: String(opts.depositFee) }),
         sourceSelection: selected.ids,
         sourceKind: selected.kind,
         fromBlock: String(await o.client.getBlockNumber()),
@@ -434,12 +511,16 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
       await o.batches.set(id, batch)
       open.push({ id, batch })
     }
+    const toApprove = (batch: MigrationFundingBatch) =>
+      asksApproval(batch.sourceKind) && !batch.approved
     const order = [
-      ...open.filter(({ batch }) => !batch.approved),
-      ...open.filter(({ batch }) => batch.approved),
+      ...open.filter(({ batch }) => toApprove(batch)),
+      ...open.filter(({ batch }) => !toApprove(batch)),
     ]
-    let approved = open.filter(({ batch }) => batch.approved).length
-    let total = open.length
+    let approved = open.filter(
+      ({ batch }) => asksApproval(batch.sourceKind) && batch.approved,
+    ).length
+    let total = open.filter(({ batch }) => asksApproval(batch.sourceKind)).length
     await opts.onApproval?.(approved, total)
     for (const { id, batch } of order) {
       opts.signal?.throwIfAborted()
@@ -449,14 +530,16 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
         if (!(error instanceof StalePlanError)) throw error
         // Its funds moved while it was proven: the next plan covers what is left of them.
         await o.batches.set(id, { ...batch, abandoned: true })
-        if (batch.approved) approved--
-        total--
+        if (asksApproval(batch.sourceKind)) {
+          if (batch.approved) approved--
+          total--
+        }
         await opts.onApproval?.(approved, total)
         continue
       }
       if (!batch.approved) {
         await o.batches.set(id, { ...batch, approved: true })
-        approved++
+        if (asksApproval(batch.sourceKind)) approved++
       }
       await opts.onApproval?.(approved, total)
     }
@@ -506,7 +589,7 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
   /**
    * Bring every sent batch up to date from chain evidence. It never signs and never sends. A spent
    * refund nullifier on L1 is the refund, whatever its carrier's receipt says. Funds that reach the
-   * source once every batch arrived wait for the user's approval.
+   * source once every batch settled wait for the user's approval.
    */
   async reconcileRemaining(): Promise<void> {
     const o = this.o
@@ -524,21 +607,12 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
         }
         await o.batches.set(id, { ...batch, refunded: true })
       }
+      if (await this.settled({ ...batch, refunded: true })) continue
       const resolved = await this.resolve(batch)
-      if (
-        await receiveMigrationSweeps(
-          this.deposits,
-          resolved.sipaAddress,
-          BigInt(batch.fromBlock),
-          resolved.resolution.messageSecret,
-        )
-      )
+      if (await this.deposits.received(resolved.sipaAddress))
         await o.batches.set(id, { ...batch, refunded: true, received: true })
     }
-    if (
-      (await this.remaining()).every(({ batch }) => batch.received) &&
-      (await this.movable((await this.ordinaryFee()) + 1n, true))
-    )
+    if ((await this.allSettled()) && (await this.movable((await this.ordinaryFee()) + 1n, true)))
       throw new ApprovalNeededError("More funds reached the old version; approve moving them")
   }
 
@@ -553,9 +627,9 @@ export class FrozenMetadataMigrationSource implements MetadataMigrationSource {
     return resolveMigrationDeposit(this.deposits, batch.day, batch.nonce)
   }
 
-  /** Complete once every planned batch arrived and a fresh scan finds no affordable remainder. */
+  /** Complete once every planned batch settled and a fresh scan finds no affordable remainder. */
   async remainingComplete(): Promise<boolean> {
-    if (!(await this.remaining()).every(({ batch }) => batch.received)) return false
+    if (!(await this.allSettled())) return false
     return !(await this.movable((await this.ordinaryFee()) + 1n, true))
   }
 }

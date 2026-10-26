@@ -150,6 +150,11 @@ export async function openCode(deps: CodeDeps, now: number = Date.now()): Promis
   if (!code || (code.amount === 0 && !code.note) || codeIsStale(code, now))
     return currentCode(deps, now)
   if (await deps.paid(code)) return nextCode(deps, code, now)
+  return clearCode(deps, now)
+}
+
+/** Drops the code's amount and note, keeping its address; the code it replaces leaves the requests list. */
+export function clearCode(deps: CodeDeps, now: number = Date.now()): Promise<ReceiveCode> {
   return setCodeAmount(deps, BLANK_FORM, now)
 }
 

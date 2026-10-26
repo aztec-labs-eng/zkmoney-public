@@ -81,7 +81,7 @@ describe("announceOutgoingRequest", () => {
 
   it("announces over XMTP with the resolved address and requester identity", async () => {
     const announce = vi.fn().mockResolvedValue({ status: "sent", messageId: "m1" })
-    await announceOutgoingRequest(row, {
+    const delivered = await announceOutgoingRequest(row, {
       broadcaster: { announce },
       resolveXmtpAddress: async () => "0xabc",
       requesterTag: "bob",
@@ -98,11 +98,24 @@ describe("announceOutgoingRequest", () => {
       note: undefined,
       expiresAt: undefined,
     })
+    expect(delivered).toBe(true)
+  })
+
+  it("reports a send the broadcaster did not make as not delivered", async () => {
+    const announce = vi.fn().mockResolvedValue({ status: "failed", reason: "offline" })
+    const delivered = await announceOutgoingRequest(row, {
+      broadcaster: { announce },
+      resolveXmtpAddress: async () => "0xabc",
+      requesterTag: "bob",
+      networkId: "testnet",
+      token: TOKEN,
+    })
+    expect(delivered).toBe(false)
   })
 
   it("skips silently when the contact has no XMTP binding", async () => {
     const announce = vi.fn()
-    await announceOutgoingRequest(row, {
+    const delivered = await announceOutgoingRequest(row, {
       broadcaster: { announce },
       resolveXmtpAddress: async () => null,
       requesterTag: "bob",
@@ -110,6 +123,7 @@ describe("announceOutgoingRequest", () => {
       token: TOKEN,
     })
     expect(announce).not.toHaveBeenCalled()
+    expect(delivered).toBe(false)
   })
 
   it("never throws — a resolve failure is swallowed (the local row is authoritative)", async () => {
@@ -123,7 +137,7 @@ describe("announceOutgoingRequest", () => {
         networkId: "testnet",
         token: TOKEN,
       }),
-    ).resolves.toBeUndefined()
+    ).resolves.toBe(false)
   })
 })
 

@@ -56,6 +56,19 @@ export interface SIPASweep {
   fundingTokenDecimals?: number
 }
 
+/** A sweep seen on L1 and not yet claimed: its claim inputs, kept so a later pass claims it without
+ *  reading L1 again. Decimal strings for the bigints. */
+export interface SIPAPendingSweep {
+  inboxIndex: string
+  amount: string
+  messageKey: Hex
+  blockNumber: string
+  sweepTxHash: Hash
+  /** What the sweep took out of the SIPA and in which token, once the window it was seen in is gone. */
+  grossAmount?: string
+  fundingToken?: Address
+}
+
 export interface SIPADepositRecord {
   /** Counterfactual SIPA address (canonical key, lowercased on store). */
   sipaAddress: Address
@@ -131,17 +144,21 @@ export interface SIPADepositRecord {
   /** Error message when phase === "failed". */
   error?: string
   /**
-   * L1 block height through which this SIPA's `Sweep` logs have been read (decimal
-   * string, JSON-safe bigint). The next sync resumes just below it rather than
-   * re-walking the whole look-back.
+   * The head (decimal string) of the pass that first read this SIPA's whole history. From then on
+   * it rides the deployment's cursor.
    */
-  lastScannedBlock?: string
-  /** A scan from the account's history start has completed for this SIPA. */
-  historyScanned?: boolean
-  /** ms epoch of the last `Sweep` scan — the slow lane's cadence check. */
-  lastScanAt?: number
-  /** Blocks (decimal strings) of sweeps a tick left unresolved; the next tick re-reads each one. */
-  unresolvedSweepBlocks?: string[]
+  observedFrom?: string
+  /** A block (decimal string) a failed pass left this SIPA to re-read from. */
+  rescanFrom?: string
+  /** Sweeps seen and not yet claimed, in inbox order. */
+  pendingSweeps?: SIPAPendingSweep[]
+  /** ms epoch the rail last asked for this funded, overdue SIPA to be published again. */
+  republishAskedAt?: number
+  /**
+   * The largest balance the rail last observed at the SIPA across its accepted tokens, raw units of
+   * the fee token. What the registration tick reads as funded.
+   */
+  heldBalance?: string
   /**
    * On-chain funding attribution, read from the token's `Transfer(to = sipa)`. The self-initiated
    * flow also stamps `fundingTxHash` from its own receipt, which lands first; the sender address is
@@ -166,6 +183,7 @@ export interface SIPADepositRecord {
 }
 
 const KEY_SIPA_DEPOSITS = "@obsidion/sipa-deposits/records"
+const KEY_OBSERVED_THROUGH = "@obsidion/sipa-deposits/observed-through/"
 
 type UpdatedListener = (record: SIPADepositRecord) => void
 type ListChangedListener = (records: SIPADepositRecord[]) => void
@@ -179,6 +197,15 @@ const SETTLED_PHASES: ReadonlySet<SIPADepositPhase> = new Set(["claimed", "faile
 
 export function isSettledSipaPhase(phase: SIPADepositPhase): boolean {
   return SETTLED_PHASES.has(phase)
+}
+
+/** Whether the rail has claimed every sweep it saw at the address, and at least one. */
+export function sipaSweepsReceived(record: SIPADepositRecord | null | undefined): boolean {
+  return (
+    record?.phase === "claimed" &&
+    !!record.claimedInboxIndexes?.length &&
+    !record.pendingSweeps?.length
+  )
 }
 
 /**
@@ -233,7 +260,7 @@ export class SIPADepositStore {
   private static instance: SIPADepositStore | null = null
   private store: RecordStorage<SIPADepositRecord>
 
-  private constructor(storage: IStorageAdapter) {
+  private constructor(private readonly storage: IStorageAdapter) {
     this.store = new RecordStorage<SIPADepositRecord>({
       storage,
       storageKey: KEY_SIPA_DEPOSITS,
@@ -274,11 +301,26 @@ export class SIPADepositStore {
     sipaAddress: Address,
     patch: SIPADepositPatch,
     fallback?: Omit<SIPADepositRecord, "sipaAddress" | "phase">,
+    opts?: { strict?: boolean },
   ): Promise<SIPADepositRecord> {
-    const stored = await this.store.updateRecord(sipaAddress.toLowerCase(), (existing) =>
-      merge(sipaAddress, existing, patch, fallback),
+    const stored = await this.store.updateRecord(
+      sipaAddress.toLowerCase(),
+      (existing) => merge(sipaAddress, existing, patch, fallback),
+      opts,
     )
     return stored as SIPADepositRecord
+  }
+
+  /** Writes `record` unless one is already stored at `sipaAddress`; resolves to it, or null if not. */
+  async create(
+    sipaAddress: Address,
+    record: Omit<SIPADepositRecord, "sipaAddress">,
+  ): Promise<SIPADepositRecord | null> {
+    let created: SIPADepositRecord | null = null
+    await this.store.updateRecord(sipaAddress.toLowerCase(), (existing) =>
+      existing ? null : (created = merge(sipaAddress, null, { phase: record.phase }, record)),
+    )
+    return created
   }
 
   /**
@@ -316,6 +358,9 @@ export class SIPADepositStore {
         // and the ledger so the next scan re-attempts the claim.
         claimedInboxIndexes: existing.claimedInboxIndexes?.filter((i) => i !== existing.inboxIndex),
         sweeps: existing.sweeps?.filter((s) => s.inboxIndex !== existing.inboxIndex),
+        // The sweep sits behind the deployment cursor, so the record reads its history again.
+        observedFrom: undefined,
+        rescanFrom: undefined,
       }
     })
   }
@@ -326,6 +371,16 @@ export class SIPADepositStore {
 
   async clearAll(): Promise<void> {
     await this.store.clearAll()
+  }
+
+  /** The block through which every observed SIPA of the deployment at `portal` has been read. */
+  async observedThrough(portal: Address): Promise<bigint | undefined> {
+    const stored = await this.storage.getItem(KEY_OBSERVED_THROUGH + portal.toLowerCase())
+    return stored ? BigInt(stored) : undefined
+  }
+
+  async setObservedThrough(portal: Address, block: bigint): Promise<void> {
+    await this.storage.setItem(KEY_OBSERVED_THROUGH + portal.toLowerCase(), block.toString())
   }
 
   onUpdated(listener: UpdatedListener): () => void {

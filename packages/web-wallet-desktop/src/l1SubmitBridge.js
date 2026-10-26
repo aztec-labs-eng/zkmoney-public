@@ -59,6 +59,9 @@ function createL1SubmitBridge({ now = () => Date.now() } = {}) {
       const tx = body?.tx ?? {}
       const display = body?.display ?? {}
       if (!HEX_ADDRESS.test(tx.to)) throw new Error("tx.to must be a 20-byte hex address")
+      if (tx.from !== undefined && !HEX_ADDRESS.test(tx.from)) {
+        throw new Error("tx.from must be a 20-byte hex address when present")
+      }
       if (
         typeof tx.data !== "string" ||
         !HEX_DATA.test(tx.data) ||
@@ -101,7 +104,7 @@ function createL1SubmitBridge({ now = () => Date.now() } = {}) {
       submissions.set(id, {
         state: "pending",
         createdAt: now(),
-        tx: { to: tx.to, data: tx.data, value: tx.value, chainId: tx.chainId },
+        tx: { from: tx.from, to: tx.to, data: tx.data, value: tx.value, chainId: tx.chainId },
         display: { title: display.title, lines },
         recheck,
         check: 0,

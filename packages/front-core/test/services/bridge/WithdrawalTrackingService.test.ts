@@ -254,7 +254,7 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
       })
     })
 
-    it("watch arms, first tick derives + advances to finalizing_l1, next tick reaches done with the L1 link", async () => {
+    it("watch arms, and one tick derives, sees the burn proven and released, and reaches done with the L1 link", async () => {
       const store = await seedStore()
       await store.create(submittingRecord("w1"))
       await store.markMined("w1", L2TX_1, 100, "1000000")
@@ -278,14 +278,9 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
       expect(store.get("w1")?.phase).toBe("l2_mined")
       expect(store.get("w1")?.phaseEnteredAt).toBeGreaterThan(0)
 
-      // Tick 1: derive + stamp withdrawalId, receipt proven → finalizing_l1.
-      await tracker.syncOnce()
-      expect(store.get("w1")?.withdrawalId).toBe(WID_1)
-      expect(store.get("w1")?.phase).toBe("finalizing_l1")
-
-      // Tick 2: isSpent → done + resolved L1 link.
       await tracker.syncOnce()
       const done = store.get("w1")!
+      expect(done.withdrawalId).toBe(WID_1)
       expect(done.phase).toBe("done")
       expect(done.l1TxHash).toBe(L1TX)
       expect(done.endTime).toBeGreaterThan(0)
@@ -467,11 +462,9 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
       expect(store.get("w1")?.withdrawalId).toBeUndefined()
       expect(node.getTxReceipt as ReturnType<typeof vi.fn>).not.toHaveBeenCalled()
 
-      // Tick 2: derivation succeeds → advances; Tick 3: isSpent → done.
+      // Tick 2: derivation succeeds, and the proven, spent burn reaches done.
       await tracker.syncOnce()
       expect(store.get("w1")?.withdrawalId).toBe(WID_1)
-      expect(store.get("w1")?.phase).toBe("finalizing_l1")
-      await tracker.syncOnce()
       expect(store.get("w1")?.phase).toBe("done")
     })
   })
@@ -536,8 +529,6 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
       })
       await tracker.resumeAll()
 
-      await tracker.syncOnce()
-      expect(store.get("w1")?.phase).toBe("finalizing_l1")
       await tracker.syncOnce()
       expect(store.get("w1")?.phase).toBe("done")
       expect(store.get("w1")?.reorgEpoch).toBe(1)
@@ -731,6 +722,95 @@ describe("WithdrawalTrackingService (chain-watching)", () => {
       expect(store.get("done1")?.phase).toBe("done")
       expect(store.get("done1")?.l1TxHash).toBe(L1TX)
       expect(store.get("pre1")?.phase).toBe("submitting")
+    })
+
+    it("starts a pass without waiting for the first interval", async () => {
+      const store = await seedStore()
+      await store.create(submittingRecord("w1"))
+      await store.markMined("w1", L2TX_1, 100, "1000000")
+
+      const tracker = WithdrawalTrackingService.get({
+        store,
+        node: makeNode(TxStatus.FINALIZED),
+        finalizationReader: makeReader({ isSpent: vi.fn(async () => true) }),
+        portalContext: PORTAL_CONTEXT,
+        scheduler: NOOP_SCHEDULER,
+      })
+      await tracker.resumeAll()
+
+      await vi.waitFor(() => expect(store.get("w1")?.phase).toBe("done"))
+    })
+
+    it("a pass asked for during another runs again for records created meanwhile", async () => {
+      const store = await seedStore()
+      await store.create(submittingRecord("w1"))
+      await store.markMined("w1", L2TX_1, 100, "1000000")
+
+      let release!: () => void
+      const held = new Promise<void>((resolve) => (release = resolve))
+      const isSpent = vi.fn(async (id: Hex) => {
+        if (id === WID_1) await held
+        return true
+      })
+      const tracker = WithdrawalTrackingService.get({
+        store,
+        node: makeNode(TxStatus.PROVEN),
+        finalizationReader: makeReader({ isSpent }),
+        portalContext: PORTAL_CONTEXT,
+        scheduler: NOOP_SCHEDULER,
+      })
+      const first = tracker.syncOnce()
+      await vi.waitFor(() => expect(isSpent).toHaveBeenCalledWith(WID_1))
+
+      await store.create(submittingRecord("w2"))
+      await store.markMined("w2", L2TX_2, 101, "1000000")
+      const second = tracker.syncOnce()
+      release()
+      await Promise.all([first, second])
+
+      expect(store.get("w1")?.phase).toBe("done")
+      expect(store.get("w2")?.phase).toBe("done")
+    })
+
+    it("steps four records at once, and a failed read frees its slot", async () => {
+      const store = await seedStore()
+      const ids: Hex[] = []
+      for (let i = 1; i <= 5; i++) {
+        const l2TxHash = ("0x" + String(i).padStart(2, "0").repeat(32)) as Hex
+        const withdrawalId = ("0x" + String(i + 50).repeat(32)) as Hex
+        await store.create(submittingRecord(`w${i}`))
+        await store.markMined(`w${i}`, l2TxHash, 100 + i, "1000000")
+        await store.patch(`w${i}`, { phase: "finalizing_l1", withdrawalId })
+        ids.push(withdrawalId)
+      }
+
+      const reads = new Map<
+        Hex,
+        { resolve: (spent: boolean) => void; reject: (err: Error) => void }
+      >()
+      const isSpent = vi.fn(
+        (id: Hex) => new Promise<boolean>((resolve, reject) => reads.set(id, { resolve, reject })),
+      )
+      const tracker = WithdrawalTrackingService.get({
+        store,
+        node: makeNode(TxStatus.PROVEN),
+        finalizationReader: makeReader({ isSpent }),
+        portalContext: PORTAL_CONTEXT,
+        scheduler: NOOP_SCHEDULER,
+      })
+      const pass = tracker.syncOnce()
+
+      await vi.waitFor(() => expect(reads.size).toBe(4))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(reads.has(ids[4])).toBe(false)
+
+      reads.get(ids[0])!.reject(new Error("rpc down"))
+      await vi.waitFor(() => expect(reads.has(ids[4])).toBe(true))
+
+      for (const id of ids.slice(1)) reads.get(id)!.resolve(true)
+      await pass
+      expect(store.get("w1")?.phase).toBe("finalizing_l1")
+      for (let i = 2; i <= 5; i++) expect(store.get(`w${i}`)?.phase).toBe("done")
     })
   })
 

@@ -1,7 +1,6 @@
 import { NO_FROM } from "@aztec/aztec.js/account"
 import { EthAddress } from "@aztec/aztec.js/addresses"
 import { Fr } from "@aztec/aztec.js/fields"
-import { isL1ToL2MessageReady } from "@aztec/aztec.js/messaging"
 import { TxHash, TxStatus, TxExecutionResult } from "@aztec/stdlib/tx"
 import type { FunctionCall } from "@aztec/stdlib/abi"
 import {
@@ -43,11 +42,9 @@ import {
   registrationInbox,
   REGISTRATION_MESSAGE_SECRET,
 } from "./registrationMessage.js"
-import { readSweepEvents, readDepositMessageKey } from "./sipaClaim.js"
 import {
   migrationDepositCalls,
   migrationSipaCoordinates,
-  receiveMigrationSweeps,
   resolveMigrationDeposit,
   type MigrationDestinationContext,
 } from "./migrationDeposit.js"
@@ -67,16 +64,20 @@ export interface MetadataMigrationSource {
     recipient: Address,
     minimumNetAmount: bigint,
     onSelected?: (id: string) => Promise<void>,
+    /** What the batch's deposit pays on the destination, recorded with it. */
+    depositFee?: bigint,
   ): Promise<{
     id: string
     netAmount: bigint
     operation?: BroadcastL1Operation
+    /** False for a batch whose proof asks the user nothing. */
+    asksApproval?: boolean
   }>
   /** Rebuild from source data and verify the selected batch still pays the specified SIPA. */
   restore(
     id: string,
     recipient: Address,
-  ): Promise<{ netAmount: bigint; operation?: BroadcastL1Operation }>
+  ): Promise<{ netAmount: bigint; operation?: BroadcastL1Operation; asksApproval?: boolean }>
   /**
    * Live burn only. Must durably record its tx before RPC and reconcile it on retries. A cancelled
    * `signal` stops it before recording a new hash.
@@ -91,6 +92,8 @@ export interface MetadataMigrationSource {
   prepareRemaining?(
     minimumNetAmount: bigint,
     opts: {
+      /** What each batch's deposit pays on the destination, recorded with it. */
+      depositFee?: bigint
       exclude?: string
       reserved?: { day: number; nonce: number }[]
       signal?: AbortSignal
@@ -107,6 +110,8 @@ export interface MetadataMigrationSource {
    * `first` after the source's exit, each later one at least `later`.
    */
   quote?(minimums: { first: bigint; later: bigint }): Promise<MigrationSourceQuote>
+  /** Everything the source holds for the account. */
+  holdings?(): Promise<bigint>
 }
 
 /** Funds still on the source, read from chain. A refund counts until it executes on L1. */
@@ -119,7 +124,10 @@ export interface MigrationSourceQuote {
   waiting: bigint
   /** How many refund batches move it. */
   batches?: number
-  /** Approvals a run asks for: the consent until the first refund settles, and one per batch. */
+  /**
+   * Approvals a run asks for: the consent until the first refund settles, and one per batch that
+   * asks one. A source's own quote counts only its batches.
+   */
   approvals?: number
   /** What the batches pay: each one's relayer tip and its deposit's fee. */
   fees?: bigint
@@ -145,6 +153,10 @@ export interface MetadataMigrationServiceOptions
   consentPrompts?(): Promise<boolean>
   /** Scan bound captured before publication, persisted with the signed plan. */
   fromBlock?: bigint
+  /** Whether a balance read begun now is stored. Absent: an import is enough. */
+  confirmBalance?(): Promise<boolean>
+  /** A funding address is shown for the first time: seed it on the rail, as a registration address is. */
+  seedFunding?(sipa: Address, resolution: { messageSecret: Fr; recipientHash: Fr }): Promise<void>
 }
 
 /** What a preparation saves before it signs, so resuming it asks for the same approvals. */
@@ -190,8 +202,8 @@ export class MetadataMigrationService {
     )
   }
 
-  async funding(raw: string) {
-    const { sipa, plan } = await this.restore(raw)
+  /** What funding the update takes, before any plan: its sweep's fee and the least it sweeps. */
+  async fundingTerms() {
     const o = this.options
     const token = o.destination.token
     const [fee, decimals, symbol] = await Promise.all([
@@ -199,13 +211,15 @@ export class MetadataMigrationService {
       o.client.readContract({ address: token, abi: erc20Abi, functionName: "decimals" }),
       o.client.readContract({ address: token, abi: erc20Abi, functionName: "symbol" }),
     ])
+    return { fee, minimumAmount: fee + 1n, token, decimals, symbol }
+  }
+
+  async funding(raw: string) {
+    const { sipa, plan, resolution } = await this.restore(raw)
+    await this.options.seedFunding?.(sipa, resolution)
     return {
       address: sipa,
-      fee,
-      minimumAmount: fee + 1n,
-      token,
-      decimals,
-      symbol,
+      ...(await this.fundingTerms()),
       external: plan.sourceState === "empty",
     }
   }
@@ -260,9 +274,9 @@ export class MetadataMigrationService {
     const sourceState = await o.source.state()
     // A current destination record publishes no bootstrap, so its refund would never be broadcast.
     const first = await this.firstBatch(async () => sourceState)
-    // The consent, then one approval per batch, counted up front for the run's screen.
+    // The consent, then each batch's approval, counted up front for the run's screen.
     const consent = await this.consentApprovals()
-    const total = consent + (sourceState === "frozen" ? await this.batches(first) : 0)
+    const total = consent + (sourceState === "frozen" ? await this.batchApprovals(first) : 0)
     await onApproval?.(0, total)
     signal?.throwIfAborted()
     const metadata = await prepareMetadataUpdate({
@@ -279,8 +293,8 @@ export class MetadataMigrationService {
     const batch =
       sourceState === "empty" || first.skipped
         ? undefined
-        : await this.firstSourceBatch(saved, metadata.sipa, first.minimum, saveDraft, signal)
-    const before = consent + (batch ? 1 : 0)
+        : await this.firstSourceBatch(saved, metadata.sipa, first, saveDraft, signal)
+    const before = consent + (batch && batch.asksApproval !== false ? 1 : 0)
     if (batch) await onApproval?.(before, total)
     signal?.throwIfAborted()
     if (sourceState === "frozen")
@@ -318,20 +332,20 @@ export class MetadataMigrationService {
     return (await this.options.consentPrompts?.()) === false ? 0 : 1
   }
 
-  /** How many batches a frozen source moves now, by the rules preparing applies. */
-  private async batches(first: { minimum: bigint; skipped: boolean }): Promise<number> {
+  /** How many approvals a frozen source's batches ask now, by the rules preparing applies. */
+  private async batchApprovals(first: { minimum: bigint; skipped: boolean }): Promise<number> {
     const o = this.options
     if (!o.source.quote) return 0
     const later = (await readOrdinaryDepositFee(o.client, o.destination)) + 1n
     const quote = await o.source.quote({ first: first.skipped ? later : first.minimum, later })
-    return quote.batches ?? 0
+    return quote.approvals ?? quote.batches ?? 0
   }
 
   /** The draft's batch when it still pays this SIPA, else a new selection saved before its approval. */
   private async firstSourceBatch(
     draft: Draft,
     sipa: Address,
-    minimum: bigint,
+    first: { fee: bigint; minimum: bigint },
     saveDraft: ((draft: string) => Promise<void>) | undefined,
     signal: AbortSignal | undefined,
   ) {
@@ -344,10 +358,15 @@ export class MetadataMigrationService {
         if (!(error instanceof StalePlanError)) throw error
       }
     }
-    return o.source.prepare(sipa, minimum, async (id) => {
-      await saveDraft?.(JSON.stringify({ ...draft, sourceBatch: id } satisfies Draft))
-      signal?.throwIfAborted()
-    })
+    return o.source.prepare(
+      sipa,
+      first.minimum,
+      async (id) => {
+        await saveDraft?.(JSON.stringify({ ...draft, sourceBatch: id } satisfies Draft))
+        signal?.throwIfAborted()
+      },
+      first.fee,
+    )
   }
 
   /** Plan and prove every later batch, beside the first batch and the plan's own coordinates. */
@@ -358,7 +377,9 @@ export class MetadataMigrationService {
   ) {
     const o = this.options
     if (!o.source.prepareRemaining) return
-    await o.source.prepareRemaining((await readOrdinaryDepositFee(o.client, o.destination)) + 1n, {
+    const depositFee = await readOrdinaryDepositFee(o.client, o.destination)
+    await o.source.prepareRemaining(depositFee + 1n, {
+      depositFee,
       exclude: plan.sourceBatch,
       reserved: [{ day: plan.day, nonce: plan.nonce }],
       signal,
@@ -473,7 +494,7 @@ export class MetadataMigrationService {
     const fee = skipped
       ? await readOrdinaryDepositFee(o.client, o.destination)
       : await readMetadataUpdateFee(o.client, o.destination)
-    return { skipped, minimum: fee + 1n }
+    return { skipped, fee, minimum: fee + 1n }
   }
 
   /**
@@ -493,7 +514,9 @@ export class MetadataMigrationService {
     const batches = BigInt(quote.batches)
     return {
       ...quote,
-      approvals: quote.batches + (opts.firstBatchSettled ? 0 : await this.consentApprovals()),
+      approvals:
+        (quote.approvals ?? quote.batches) +
+        (opts.firstBatchSettled ? 0 : await this.consentApprovals()),
       // The first deposit pays the fee its minimum covers; every later one the ordinary fee.
       fees: batches && batches * WITHDRAW_RELAYER_TIP + first - 1n + (batches - 1n) * ordinary,
     }
@@ -501,6 +524,16 @@ export class MetadataMigrationService {
 
   async movable(): Promise<boolean> {
     return (await this.quote()).movable > 0n
+  }
+
+  /** What the source holds for the account, or undefined when it can't say. */
+  async holdings(): Promise<bigint | undefined> {
+    return this.options.source.holdings?.()
+  }
+
+  /** Whether the balance holds everything the run imported, so the run may be done. */
+  async confirmBalance(): Promise<boolean> {
+    return (await this.options.confirmBalance?.()) ?? true
   }
 
   private async recurring(): Promise<boolean> {
@@ -564,7 +597,11 @@ export class MetadataMigrationService {
     })
   }
 
-  async broadcast(raw: string, onTxHash: (txHash: string) => Promise<void>): Promise<void> {
+  async broadcast(
+    raw: string,
+    onTxHash: (txHash: string) => Promise<void>,
+    operationId?: string,
+  ): Promise<void> {
     const o = this.options
     const { plan, resolution, metadata, sipa } = await this.restore(raw, true)
     if ((await o.source.state()) !== plan.sourceState)
@@ -582,6 +619,7 @@ export class MetadataMigrationService {
         : await this.bootstrap(metadata!, resolution.messageSecret, batch?.operation)
     await o.wallet.sendTx(prepared.payload, {
       ...prepared.sendOptions,
+      operationId,
       onTxHash: async (hash) => {
         await assertMetadataUpdateFresh(o.client, metadata!)
         await onTxHash(hash)
@@ -632,12 +670,7 @@ export class MetadataMigrationService {
     const metadataSettled =
       (await readMetadataDestinationState(o.client, o.destination, o.owner)) ===
       userRecordStateHash(o.record)
-    const sweeps = await readSweepEvents(o.client, sipa, BigInt(plan.fromBlock))
-    const sweep = sweeps.at(-1)
-    const key =
-      sweep &&
-      (await readDepositMessageKey(o.client, o.destination.portal, sweep.txHash, sweep.index))
-    const depositReady = !!key && (await isL1ToL2MessageReady(o.wallet.node, key))
+    const depositReceived = await o.received(sipa)
     const { message } = await this.attestation(BigInt(plan.fromBlock))
     return {
       bootstrapStatus: await this.txState(record.bootstrapTx),
@@ -651,17 +684,17 @@ export class MetadataMigrationService {
       metadataSettled,
       messagesReady:
         metadataSettled &&
-        depositReady &&
+        depositReceived &&
         (message?.status === "consumable" || recurringSponsorship),
       recurringSponsorship,
+      swept: await o.swept(sipa),
       sent: (await o.source.remainingSent?.()) ?? false,
-      // A verified sweep + imported message + locally stored deposit establishes the receipt.
-      // Storing is repeatable and always uses chain events, including after a PXE restart. A
-      // destination record that was already current published no bootstrap, so no first deposit.
+      // The rail's claim of every sweep establishes the receipt. A destination record that was
+      // already current published no bootstrap, so no first deposit.
       complete:
         metadataSettled &&
         recurringSponsorship &&
-        (!record.bootstrapTx || (depositReady && (await this.claim(record.plan)))) &&
+        (!record.bootstrapTx || depositReceived) &&
         (await o.source.remainingComplete()),
     }
   }
@@ -680,7 +713,11 @@ export class MetadataMigrationService {
     return "unknown"
   }
 
-  async subscribe(raw: string, onTxHash: (txHash: string) => Promise<void>): Promise<void> {
+  async subscribe(
+    raw: string,
+    onTxHash: (txHash: string) => Promise<void>,
+    operationId?: string,
+  ): Promise<void> {
     const o = this.options
     const { plan } = await this.restore(raw)
     if (
@@ -689,7 +726,7 @@ export class MetadataMigrationService {
     ) {
       throw new Error("Destination metadata changed before sponsorship activation")
     }
-    if (!(await this.claim(raw))) throw new Error("The migration deposit is not available yet")
+    if (!(await this.received(raw))) throw new Error("The migration deposit is not available yet")
     const { message, nameHash } = await this.attestation(BigInt(plan.fromBlock))
     if (message?.status !== "consumable")
       throw new Error("The registration attestation is not available to subscribe")
@@ -711,6 +748,7 @@ export class MetadataMigrationService {
       sendMessagesAs: o.registered.user,
       additionalScopes: [o.registered.user],
       fee: claimFpcSponsoredFee(o.registered.policy, innerCalls),
+      operationId,
       onTxHash,
     })
   }
@@ -722,14 +760,9 @@ export class MetadataMigrationService {
     )
   }
 
-  private async claim(raw: string): Promise<boolean> {
-    const { plan, sipa, resolution } = await this.restore(raw)
-    return receiveMigrationSweeps(
-      this.deposits,
-      sipa,
-      BigInt(plan.fromBlock),
-      resolution.messageSecret,
-    )
+  private async received(raw: string): Promise<boolean> {
+    const { sipa } = await this.restore(raw)
+    return this.options.received(sipa)
   }
 
   async reconcileRemaining(raw: string): Promise<void> {
@@ -740,7 +773,7 @@ export class MetadataMigrationService {
   async recoverRemaining(raw: string, published: boolean, signal?: AbortSignal): Promise<void> {
     await this.restore(raw)
     if (!(await this.recurring())) throw new Error("Recurring sponsorship is not available")
-    if (published && !(await this.claim(raw)))
+    if (published && !(await this.received(raw)))
       throw new Error("The first migration deposit is not available")
     await this.options.source.recoverRemaining(signal)
   }

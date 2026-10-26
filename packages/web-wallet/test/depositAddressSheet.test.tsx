@@ -10,6 +10,7 @@ import { getAddress } from "viem"
 import { l1AddressParts, shortL1Addr } from "../src/ui/format"
 import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import type { Hex } from "viem"
+import * as copy from "../src/features/limits/limitsCopy"
 
 const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
 const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb"
@@ -23,12 +24,12 @@ const aztec = { obsidionWallet: {} }
 const contracts = { contractService: {} }
 // The open's pool read hits: the coin row shows the address with no derivation.
 const depositAddress = vi.fn(async () => ({ address: ADDRESS, name: "alice.oxide.eth" }))
-const wakeDeposit = vi.fn(async () => {})
-const gateway = { depositAddress, wakeDeposit }
+const gateway = { depositAddress, observe: vi.fn() }
 
 const navigate = vi.hoisted(() => vi.fn())
 const fireEvent = vi.hoisted(() => vi.fn())
-const readL1TokenBalance = vi.hoisted(() => vi.fn(async () => 0n))
+// What the rail observes at the address, in DAI units: the coin it settles in.
+const held = vi.hoisted(() => vi.fn(async () => 0n))
 const layout = vi.hoisted(() => ({ phone: false }))
 // Plenty of shared capacity, read from a fake bucket instead of the network.
 const capacity = vi.hoisted(() => ({
@@ -51,10 +52,6 @@ vi.mock("react-router-dom", async (importOriginal) => ({
 vi.mock("../src/lib/analytics", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/analytics")>()),
   fireEvent,
-}))
-vi.mock("../src/features/deposit/l1DepositTokenBalance", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/deposit/l1DepositTokenBalance")>()),
-  readL1TokenBalance,
 }))
 vi.mock("../src/ui/usePhoneLayout", () => ({ usePhoneLayout: () => layout.phone }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
@@ -137,6 +134,8 @@ const { DepositScreen } = await import("../src/features/deposit/DepositScreen")
 const { saveWalletIdentity } = await import("../src/features/identity/walletIdentity")
 const { getConfig } = await import("../src/config/env")
 const { seedBootConfig } = await import("./seedBootConfig")
+const { provideFakeDepositRail } = await import("./fakeDepositRail")
+const { SIPADepositStore } = await import("@obsidion/front-core")
 
 const byTestId = (id: string) => document.querySelector<HTMLElement>(`[data-testid='${id}']`)
 const copyButton = () => byTestId("deposit-copy") as HTMLButtonElement | null
@@ -150,6 +149,7 @@ describe("DepositScreen with the address sheet", () => {
 
   let container: HTMLDivElement
   let root: Root
+  let observe: ReturnType<typeof provideFakeDepositRail>
 
   const render = () =>
     act(async () => {
@@ -172,7 +172,7 @@ describe("DepositScreen with the address sheet", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    readL1TokenBalance.mockResolvedValue(0n)
+    held.mockResolvedValue(0n)
     capacity.availableAtomic = 40_000n * 10n ** 18n
     capacity.readFails = false
     capacity.epoch += 1
@@ -182,6 +182,8 @@ describe("DepositScreen with the address sheet", () => {
     l1.pickerOpen = false
     layout.phone = false
     localStorage.clear()
+    ;(SIPADepositStore as unknown as { instance: unknown }).instance = null
+    observe = provideFakeDepositRail({ addresses: () => [ADDRESS], held, token: () => USDC as Hex })
     localStorage.setItem("webwallet.hide-deposit-privacy-disclaimer", "true")
     Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
     saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
@@ -309,7 +311,9 @@ describe("DepositScreen with the address sheet", () => {
     expect(sheet()!.textContent).toContain("Waiting for your USDC")
     expect(sheet()!.textContent).toContain("Send USDC on Ethereum to the address below.")
     expect(sheet()!.textContent).toContain("Waiting for deposit")
-    expect(byTestId("deposit-balance")!.textContent).toBe("Balance at this address: $0 USDC")
+    expect(byTestId("deposit-balance")!.textContent).toBe(
+      "Balance at this address: $0 USDC · Last checked 2s ago",
+    )
     expect(byTestId("address-limits")).toBeNull()
     expect(byTestId("deposit-address")!.title).toBe(ADDRESS)
 
@@ -338,27 +342,28 @@ describe("DepositScreen with the address sheet", () => {
     expect(byTestId("address-limits")).not.toBeNull()
   })
 
-  it("reads the balance on Check again and on the poll, and counts the seconds since", async () => {
+  it("observes on Check again and on the watch cadence, and counts the seconds since", async () => {
     vi.useFakeTimers()
     await render()
     await openCoin("USDC")
     await act(async () => byTestId("deposit-copy")!.click())
     await tick(2000)
-    expect(readL1TokenBalance).not.toHaveBeenCalled()
+    const passes = observe.mock.calls.length
+    expect(passes).toBeGreaterThan(0)
 
     await act(async () => byTestId("deposit-check-again")!.click())
-    expect(readL1TokenBalance).toHaveBeenCalledWith(USDC, ADDRESS)
+    expect(observe).toHaveBeenCalledTimes(passes + 1)
     expect(byTestId("deposit-balance")!.textContent).toBe(
       "Balance at this address: $0 USDC · Last checked 0s ago",
     )
-    await tick(3000)
-    expect(byTestId("deposit-balance")!.textContent).toContain("Last checked 3s ago")
+    await tick(1000)
+    expect(byTestId("deposit-balance")!.textContent).toContain("Last checked 1s ago")
     expect(fireEvent).not.toHaveBeenCalledWith("deposit_funded", expect.anything())
 
-    // The screen's own poll, ten seconds after the address was shown, feeds the same line.
-    await tick(7000)
-    expect(readL1TokenBalance).toHaveBeenCalledTimes(2)
-    expect(byTestId("deposit-balance")!.textContent).toContain("Last checked 2s ago")
+    // The watch cadence, four seconds after the sheet opened, feeds the same line.
+    await tick(1000)
+    expect(observe).toHaveBeenCalledTimes(passes + 2)
+    expect(byTestId("deposit-balance")!.textContent).toContain("Last checked 0s ago")
   })
 
   it("spots a balance once, and Close goes Home", async () => {
@@ -367,7 +372,7 @@ describe("DepositScreen with the address sheet", () => {
     await openCoin("DAI")
     await act(async () => byTestId("deposit-copy")!.click())
     await tick(2000)
-    readL1TokenBalance.mockResolvedValue(50n * 10n ** 18n)
+    held.mockResolvedValue(50n * 10n ** 18n)
     await act(async () => byTestId("deposit-check-again")!.click())
 
     expect(sheet()!.textContent).toContain("50 DAI spotted")
@@ -377,7 +382,6 @@ describe("DepositScreen with the address sheet", () => {
     expect(sheet()!.textContent).toContain("You can close this screen.")
     expect(fireEvent.mock.calls.filter(([e]) => e === "deposit_funded")).toHaveLength(1)
     expect(navigate).not.toHaveBeenCalled()
-    expect(wakeDeposit).toHaveBeenCalledWith(ADDRESS)
 
     await act(async () => button("Close")!.click())
     expect(sheet()).toBeNull()
@@ -395,7 +399,7 @@ describe("DepositScreen with the address sheet", () => {
 
     await act(async () => byTestId("deposit-copy")!.click())
     await tick(2000)
-    readL1TokenBalance.mockResolvedValue(50n * 10n ** 6n)
+    held.mockResolvedValue(50n * 10n ** 18n)
     await act(async () => byTestId("deposit-check-again")!.click())
     expect(sheet()!.textContent).toContain("should arrive in about a few minutes")
     expect(byTestId("deposit-arriving")!.textContent).toBe("50 USDC sent · a few min")
@@ -407,7 +411,7 @@ describe("DepositScreen with the address sheet", () => {
     await openCoin("USDC")
     await act(async () => byTestId("deposit-copy")!.click())
     await tick(2000)
-    readL1TokenBalance.mockResolvedValue(50n * 10n ** 6n)
+    held.mockResolvedValue(50n * 10n ** 18n)
     await act(async () => byTestId("deposit-check-again")!.click())
 
     expect(sheet()!.textContent).toContain("50 USDC spotted")
@@ -446,7 +450,7 @@ describe("DepositScreen with the address sheet", () => {
     capacity.readFails = true
     await render()
     await openCoin("USDC")
-    expect(byTestId("deposit-capacity-note")!.textContent).toBe("Capacity could not be checked.")
+    expect(byTestId("deposit-capacity-note")!.textContent).toBe(copy.CAPACITY_UNAVAILABLE)
     expect(copyButton()!.disabled).toBe(false)
 
     await closeSheet()
@@ -467,7 +471,7 @@ describe("DepositScreen with the address sheet", () => {
     await openCoin("DAI")
     await act(async () => byTestId("deposit-copy")!.click())
     await tick(2000)
-    readL1TokenBalance.mockResolvedValue(50n * 10n ** 18n)
+    held.mockResolvedValue(50n * 10n ** 18n)
     await act(async () => byTestId("deposit-check-again")!.click())
 
     expect(sheet()!.textContent).toContain("50 DAI spotted")
@@ -518,7 +522,7 @@ describe("DepositScreen with the address sheet", () => {
     await act(async () => byTestId("deposit-copy")!.click())
     await tick(2000)
 
-    readL1TokenBalance.mockRejectedValueOnce(new Error("rpc down"))
+    held.mockRejectedValueOnce(new Error("rpc down"))
     await act(async () => byTestId("deposit-check-again")!.click())
     expect(byTestId("deposit-balance")!.textContent).toBe(
       "Couldn't check this address. Check your connection and try again.",
@@ -527,8 +531,9 @@ describe("DepositScreen with the address sheet", () => {
 
     // The pill spins for a moment after a press before it takes another.
     await tick(800)
+    const passes = observe.mock.calls.length
     await act(async () => byTestId("deposit-check-again")!.click())
-    expect(readL1TokenBalance).toHaveBeenCalledTimes(2)
+    expect(observe).toHaveBeenCalledTimes(passes + 1)
     expect(byTestId("deposit-balance")!.textContent).toBe(
       "Balance at this address: $0 USDC · Last checked 0s ago",
     )
@@ -540,7 +545,7 @@ describe("DepositScreen with the address sheet", () => {
     await openCoin("DAI")
     await act(async () => byTestId("deposit-copy")!.click())
     await tick(2000)
-    readL1TokenBalance.mockResolvedValue(3_000n * 10n ** 18n)
+    held.mockResolvedValue(3_000n * 10n ** 18n)
     await act(async () => byTestId("deposit-check-again")!.click())
 
     expect(sheet()!.textContent).toContain("3,000 DAI spotted")
@@ -562,7 +567,7 @@ describe("DepositScreen with the address sheet", () => {
     await openCoin("DAI")
     await act(async () => byTestId("deposit-copy")!.click())
     await tick(2000)
-    readL1TokenBalance.mockResolvedValue(500n * 10n ** 18n)
+    held.mockResolvedValue(500n * 10n ** 18n)
     await act(async () => byTestId("deposit-check-again")!.click())
 
     expect(sheet()!.textContent).toContain("500 DAI spotted")
@@ -598,7 +603,34 @@ describe("DepositScreen with the address sheet", () => {
       (n) => n.textContent,
     )
     expect(rows).toEqual(["Network", "Address", "Status"])
+    // An unpublished address reads as any other until funds wait on its broadcast.
+    expect(byTestId("deposit-status")!.textContent).toBe("Awaiting deposit")
+    expect(byTestId("broadcast-status")).toBeNull()
+    expect(sheet()!.querySelector(".ww-deposit-sheet__coin-spin")).toBeNull()
     expect(sheet()!.querySelector(".ww-deposit-sheet__pill")).toBeNull()
+  })
+
+  it("shows the address's broadcast once funds wait on it", async () => {
+    vi.useFakeTimers()
+    let land: (next: {
+      address: string
+      name: string
+      publish?: () => Promise<void>
+    }) => void = () => {}
+    depositAddress.mockReturnValueOnce(new Promise((resolve) => (land = resolve)))
+    await render()
+    await openCoin("DAI")
+    await act(async () =>
+      land({ address: ADDRESS, name: "alice.oxide.eth", publish: () => new Promise(() => {}) }),
+    )
+    expect(byTestId("broadcast-status")).toBeNull()
+    await act(async () => byTestId("deposit-copy")!.click())
+    await tick(2000)
+    held.mockResolvedValue(10n * 10n ** 18n)
+    await act(async () => byTestId("deposit-check-again")!.click())
+
+    expect(sheet()!.textContent).toContain("10 DAI spotted")
+    expect(byTestId("broadcast-status")).not.toBeNull()
   })
 
   it("renders no QR code on a phone", async () => {

@@ -26,6 +26,36 @@ export function openTicketClaimReview(): boolean {
   return true
 }
 
+/** Home's check of whether a stashed link pays the open registration, for the hero to show. */
+export interface LinkFunding {
+  fragment: string
+  state: "checking" | "review"
+  amount?: bigint
+}
+let funding: LinkFunding | null = null
+const fundingListeners = new Set<() => void>()
+
+export function setLinkFunding(next: LinkFunding | null): void {
+  if (
+    funding?.fragment === next?.fragment &&
+    funding?.state === next?.state &&
+    funding?.amount === next?.amount
+  )
+    return
+  funding = next
+  for (const listener of fundingListeners) listener()
+}
+
+export function useLinkFunding(): LinkFunding | null {
+  return useSyncExternalStore(
+    (listener) => {
+      fundingListeners.add(listener)
+      return () => fundingListeners.delete(listener)
+    },
+    () => funding,
+  )
+}
+
 /** Home takes the request; a second render sees nothing pending. */
 export function takeClaimPromptRequest(): string | null {
   const fragment = requested

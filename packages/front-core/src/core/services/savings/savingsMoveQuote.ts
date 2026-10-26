@@ -85,12 +85,7 @@ export interface SavingsQuoteDeps {
 }
 
 /** The burn's value and what reaches its escrow: the burn less the source portal's cut and the release tip. */
-async function releaseLeg(
-  deps: SavingsQuoteDeps,
-  direction: SavingsDirection,
-  amount: bigint,
-  paid: { sourceCut?: bigint; releaseTip?: bigint } = {},
-) {
+async function releaseLeg(deps: SavingsQuoteDeps, direction: SavingsDirection, amount: bigint) {
   const { client, factory } = deps
   const { main, savings } = deps.deployments
   const [source, destination] = direction === "in" ? [main, savings] : [savings, main]
@@ -104,12 +99,11 @@ async function releaseLeg(
       args: [shares],
     })
   const [sourceCut, arrivalCut, releaseTip] = await Promise.all([
-    paid.sourceCut ?? cutOf(tupleField(source, "portal")),
+    cutOf(tupleField(source, "portal")),
     cutOf(tupleField(destination, "portal")),
-    paid.releaseTip ??
-      quoteSkyReleaseTip(client, tupleField(source, "withdrawalSubsidy"), route).then(
-        (release) => release.relayerTip,
-      ),
+    quoteSkyReleaseTip(client, tupleField(source, "withdrawalSubsidy"), route).then(
+      (release) => release.relayerTip,
+    ),
   ])
   const value = direction === "in" ? amount : await toDai(amount)
   const released = direction === "in" ? amount - sourceCut : await toDai(amount - sourceCut)
@@ -163,20 +157,4 @@ export async function quoteSavingsMove(
     net,
     fee: value - net,
   }
-}
-
-/**
- * What a burned move should land, priced the way its quote would have been, for a move rebuilt from
- * its burn without one. The escrow's tip is the burn's; the source cut and release tip are the burn's
- * where it kept them, else priced now.
- */
-export async function expectedSavingsNet(
-  deps: SavingsQuoteDeps,
-  direction: SavingsDirection,
-  amount: bigint,
-  paid: { escrowTip: bigint; sourceCut?: bigint; releaseTip?: bigint },
-): Promise<bigint> {
-  const { arrivalCut, releaseTip, released } = await releaseLeg(deps, direction, amount, paid)
-  const net = released - releaseTip - paid.escrowTip - arrivalCut
-  return net > 0n ? net : 0n
 }

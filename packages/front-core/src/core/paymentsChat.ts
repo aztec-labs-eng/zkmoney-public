@@ -1,3 +1,4 @@
+import { plainText } from "@obsidion/core/text"
 import { QueueStatus } from "@obsidion/sdk"
 import type { Transaction } from "src/types"
 import { depositAmounts, type DepositAmounts } from "./services/deposits/depositAmounts"
@@ -190,7 +191,7 @@ export function buildChatMessages(
         timeLabel: transferTimeLabel(status, tx.timestamp),
         amount: `${sign}$${fiat.toFixed(2)}`,
         role,
-        memo: ("memo" in tx && tx.memo) || undefined,
+        memo: ("memo" in tx && tx.memo && plainText(tx.memo)) || undefined,
         explorerUrl: tx.txHash && txUrl ? txUrl(tx.txHash) : undefined,
         _ts: tx.timestamp,
       })
@@ -249,7 +250,7 @@ export function buildChatMessages(
       timeLabel: formatTimeLabel(r.createdAt),
       amount,
       role,
-      memo: r.note || undefined,
+      memo: (r.note && plainText(r.note)) || undefined,
       _ts: r.createdAt,
     })
   }

@@ -31,7 +31,9 @@ export function ReceiveScreen() {
   const back = useBack(REQUESTS_PATH)
   // A request names the tag as payee, so until the name is activated the way on is the deposit.
   const awaitingActivation = useRegistrationDepositOwed()
-  const { tag, code, payment, setAmount, showCode } = useReceiveCode(!awaitingActivation)
+  const { tag, code, payment, setAmount, clearAmount, showCode } = useReceiveCode(
+    !awaitingActivation,
+  )
   const { copied, copy, share } = useLinkSharing(
     code?.url,
     "Pay me",
@@ -116,6 +118,8 @@ export function ReceiveScreen() {
         source: "contact",
         amount_bucket: requestAmountBucket(amount),
       })
+      // The contact's request is the one row; the code holding the same amount would be a second.
+      await clearAmount().catch((err) => console.warn("[receive] code not cleared:", err))
       navigate(REQUESTS_PATH)
     } catch (e) {
       setSendError(e instanceof Error ? e.message : "Couldn't send the request")

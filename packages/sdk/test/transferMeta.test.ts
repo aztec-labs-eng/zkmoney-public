@@ -41,6 +41,21 @@ describe("transferMeta", () => {
     expect(TRANSFER_MEMO_MAX_BYTES).toBe(111)
   })
 
+  it("decodes a memo without direction overrides or stacked marks", () => {
+    expect(
+      decodeTransferMeta(
+        buildTransferMeta({
+          memo:
+            "ko " +
+            String.fromCharCode(0x202e) +
+            "olleh" +
+            "q" +
+            String.fromCharCode(0x301, 0x302, 0x303, 0x304, 0x305),
+        }),
+      ).memo,
+    ).toBe("ko olleh" + "q" + String.fromCharCode(0x301, 0x302, 0x303))
+  })
+
   it("round-trips every subset of requestId, tags and memo, from Fr[] and bigint[]", () => {
     const requestId = Fr.random().toString()
     const full = { requestId, senderTag: "honk-goose", recipientTag: "timon", memo: "lunch ✓" }

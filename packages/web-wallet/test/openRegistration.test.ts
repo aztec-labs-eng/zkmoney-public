@@ -1,6 +1,11 @@
+import { act, createElement } from "react"
+import { createRoot } from "react-dom/client"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { saveWalletIdentity } from "../src/features/identity/walletIdentity"
-import { openRegistration } from "../src/features/onboarding/openRegistration"
+import {
+  openRegistration,
+  useRegistrationInCustody,
+} from "../src/features/onboarding/openRegistration"
 import { getPendingStore } from "../src/features/onboarding/webRegistration"
 import {
   ACCOUNT,
@@ -44,5 +49,22 @@ describe("openRegistration", () => {
     await getPendingStore().upsert(ACCOUNT, {}, record)
     await seedRegistrationRail(record, { phase: "sweeping" })
     expect(openRegistration()?.stage).toBe("sweeping")
+  })
+})
+
+describe("useRegistrationInCustody", () => {
+  function Custody() {
+    return createElement("span", null, String(useRegistrationInCustody()))
+  }
+
+  it("names the registration's account from the pending record, before any identity is saved", async () => {
+    await getPendingStore().upsert(ACCOUNT, {}, record)
+    const el = document.createElement("div")
+    const root = createRoot(el)
+    await act(async () => root.render(createElement(Custody)))
+    expect(el.textContent).toBe(L2_ADDRESS)
+    await act(async () => getPendingStore().close(ACCOUNT, "confirmed"))
+    expect(el.textContent).toBe("null")
+    await act(async () => root.unmount())
   })
 })

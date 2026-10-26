@@ -48,7 +48,6 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  canonicalGenerationStack: () => "v5",
   composeWireNameHash: () => `0x${"aa".repeat(32)}`,
   NameClaimStore: { get: () => ({ put: async () => {} }) },
 }))

@@ -21,7 +21,7 @@ import {
   reopenRefundedDeposit,
 } from "./registrationQuoteRecovery"
 import { Fr } from "@aztec/aztec.js/fields"
-import { toBytes, toHex, type Hex } from "viem"
+import { toBytes, toHex, type Hex, type PublicClient } from "viem"
 import type { PrivateKeyAccount } from "viem/accounts"
 import {
   AccountServiceClient,
@@ -62,6 +62,7 @@ import {
   readRegistrationSchedule,
   resolveBeneficiary,
   saveRegistrationTerms,
+  wireTermsFundLink,
   wireTermsFundTicket,
   type RegistrationTerms,
 } from "./registrationTerms"
@@ -84,7 +85,12 @@ import {
   type PrfSlot,
   type RecoverPasskeyResult,
 } from "@obsidion/sdk"
-import { getOxideTuple, l1PublicClient, oxideEnvFor, requireTupleField } from "../../config/oxideTuple"
+import {
+  getOxideTuple,
+  l1PublicClient,
+  oxideEnvFor,
+  requireTupleField,
+} from "../../config/oxideTuple"
 import type { WebWalletConfig } from "../../config/env"
 import {
   PasskeyPolicyError,
@@ -182,11 +188,15 @@ function pubkeyHexFrom(x: Buffer, y: Buffer): string {
 
 /** Persist the account so a reload's `useAccount` mount can recover it. */
 async function persistAccount(account: ObsidionAccount, credentialId: string, pubkey: string) {
-  await AccountStorage.get().addWebauthnAccount("Account 1", account.getCompleteAddress().toString(), {
-    credentialId,
-    pubkey,
-    authenticatorType: "platform",
-  })
+  await AccountStorage.get().addWebauthnAccount(
+    "Account 1",
+    account.getCompleteAddress().toString(),
+    {
+      credentialId,
+      pubkey,
+      authenticatorType: "platform",
+    },
+  )
 }
 
 /**
@@ -400,7 +410,8 @@ async function ceremonyFor(
 }
 
 /** A gate that hands out no attempt signal (the tests' stand-ins) gets one that never cancels. */
-const attemptFrom = (signal: AbortSignal | undefined): AbortSignal => signal ?? new AbortController().signal
+const attemptFrom = (signal: AbortSignal | undefined): AbortSignal =>
+  signal ?? new AbortController().signal
 
 /**
  * The ceremony `request` describes, after the screen's gate, with the attempt the gate started.
@@ -520,7 +531,9 @@ async function installedKeyFor(
     console.warn("[oxideOnboarding] installed passkey key: timeout; asking the passkey again")
   } else if (outcome.kind === "read-failed") {
     const name = outcome.error instanceof Error ? outcome.error.name : "unknown"
-    console.warn(`[oxideOnboarding] installed passkey key: read-failed (${name}); asking the passkey again`)
+    console.warn(
+      `[oxideOnboarding] installed passkey key: read-failed (${name}); asking the passkey again`,
+    )
   }
   return undefined
 }
@@ -665,7 +678,11 @@ export async function reusePasskeyAccount(
   const owns = () => !attempt?.aborted && !signal?.aborted
   const settled = await settleRecovery(recovered, gate, attempt)
   if (!owns()) throw new GateCancelledError()
-  const picked = await candidateDeriving(settled, expectedL2Address, deriveAddressWith(wallet, settled.pubkey))
+  const picked = await candidateDeriving(
+    settled,
+    expectedL2Address,
+    deriveAddressWith(wallet, settled.pubkey),
+  )
   if (!picked) throw new PasskeyMismatchError()
   const account = await adoptRecoveredAccount(
     wallet,
@@ -696,6 +713,8 @@ export type ClaimTagOutcome =
       /** The network paused paylink tickets before this signup's was redeemed; `claim.terms` say
        *  whether one redeemed earlier still priced it. */
       ticketUnavailable?: true
+      /** The stashed link funds the signed deposit: its claim on Home pays the registration. */
+      depositLink?: LinkDeposit
     }
 
 /**
@@ -727,7 +746,9 @@ export function accountServiceFor(
 async function requireCredentialId(): Promise<string> {
   const credentialId = await resolveStoredCredentialId()
   if (!credentialId) {
-    throw new Error("no passkey credential id for the current account — cannot install the r1 key on registration")
+    throw new Error(
+      "no passkey credential id for the current account — cannot install the r1 key on registration",
+    )
   }
   return credentialId
 }
@@ -738,8 +759,10 @@ export async function registrationAddressDeps(
   secretKey: Fr,
   l2Address: Hex,
   config: WebWalletConfig,
+  l1Client?: PublicClient,
 ) {
-  const { tuple, env, publicClient } = await oxideEnvFor(config)
+  const { tuple, env, publicClient: envClient } = await oxideEnvFor(config)
+  const publicClient = l1Client ?? envClient
   return {
     tag: handle,
     env,
@@ -853,7 +876,12 @@ export function checkpointRegistrationTerms(
   account: string,
   tag: string,
   claim: NameClaimResponse,
-  opts: { earnedExpected: boolean; ticket: TicketSignupStash | null },
+  opts: {
+    earnedExpected: boolean
+    ticket: TicketSignupStash | null
+    /** The link, when its note covers these terms' deposit (`linkCoversDeposit`). */
+    depositLink?: LinkDeposit
+  },
 ): RegistrationTerms {
   const ticket = opts.ticket && wireTermsFundTicket(claim.terms) ? opts.ticket : null
   return {
@@ -865,11 +893,52 @@ export function checkpointRegistrationTerms(
       ? {
           paylinkFunded: true,
           paylinkId: linkIdentity(ticket.fragment),
+          ...(ticket.amount !== undefined ? { paylinkAmount: ticket.amount } : {}),
+          ...(ticket.senderTag ? { paylinkSender: ticket.senderTag } : {}),
           ...(ticket.proverTip !== undefined ? { proverTip: ticket.proverTip } : {}),
           ...(ticket.speed !== undefined ? { speed: ticket.speed } : {}),
         }
+      : opts.depositLink
+      ? {
+          paylinkFunded: true,
+          paylinkId: linkIdentity(opts.depositLink.fragment),
+          paylinkDeposit: true,
+          paylinkAmount: opts.depositLink.amount.toString(),
+          ...(opts.depositLink.senderTag ? { paylinkSender: opts.depositLink.senderTag } : {}),
+          proverTip: opts.depositLink.proverTip.toString(),
+          ...(opts.depositLink.speed ? { speed: opts.depositLink.speed } : {}),
+        }
       : {}),
   }
+}
+
+/** A link with no ticket for this signup, which pays the name's own deposit when it covers it. */
+export interface LinkDeposit {
+  fragment: string
+  /** The note, base units. */
+  amount: bigint
+  /** The prover tip the split committed, base units, and the speed with it. */
+  proverTip: bigint
+  speed?: "standard" | "faster"
+  /** The link creator's verified tag. */
+  senderTag?: string
+}
+
+/**
+ * The note covers the signed deposit and the committed prover tip with something left, at the
+ * portal's live cut on both legs: the rule a ticket's burn is held to. Unpriced terms or an unread
+ * cut cover nothing.
+ */
+export async function linkCoversDeposit(
+  link: LinkDeposit,
+  terms: NameClaimResponse["terms"],
+): Promise<boolean> {
+  if (!terms || !wireTermsFundLink(terms)) return false
+  const cut = await currentFpcFundingCut().catch(() => undefined)
+  if (cut === undefined) return false
+  const schedule = { fee: BigInt(terms.fee), min: BigInt(terms.minDeposit) }
+  const cuts = { withdrawalCut: cut, depositCut: cut }
+  return goldenTicketCoverage(link.amount, schedule, cuts, link.proverTip).covers
 }
 
 export async function claimTag(
@@ -882,6 +951,7 @@ export async function claimTag(
   refundedRecord?: PendingRegistrationRecord,
   replacedRecord?: PendingRegistrationRecord,
   ticket: TicketSignupStash | null = null,
+  linkDeposit?: LinkDeposit,
 ): Promise<ClaimTagOutcome> {
   let ticketUnavailable = false
   let entry: PendingRegistrationRecord["refundedEntry"]
@@ -961,6 +1031,7 @@ export async function claimTag(
     }
   }
   let quoted: NameClaimResponse | undefined
+  let depositLink: LinkDeposit | undefined
   const accountService = deps.accountService
   deps.accountService = {
     signDomain: async (...args: Parameters<typeof accountService.signDomain>) => {
@@ -974,6 +1045,8 @@ export async function claimTag(
       const claim = await accountService.signDomain(...args)
       if (requireEarnedQuote || refundedRecord)
         assertEarnedQuote(claim.terms, await currentFpcFundingCut().catch(() => undefined))
+      if (linkDeposit && (await linkCoversDeposit(linkDeposit, claim.terms)))
+        depositLink = linkDeposit
       quoted = claim
       return claim
     },
@@ -986,6 +1059,7 @@ export async function claimTag(
       checkpointRegistrationTerms(record.account, handle, quoted, {
         earnedExpected: requireEarnedQuote,
         ticket,
+        depositLink,
       }),
     )
   }
@@ -1024,6 +1098,7 @@ export async function claimTag(
         oxideAccount: result.oxideAccount,
         claim: result.claim,
         ...(ticketUnavailable ? { ticketUnavailable: true as const } : {}),
+        ...(depositLink ? { depositLink } : {}),
       }
     }
   }
@@ -1185,9 +1260,10 @@ export async function enterWithPasskey(
   let verdict: MismatchVerdict | undefined
   try {
     const grantToken = handle ? options.grantToken : undefined
-    const grant = grantToken && handle
-      ? { nameHash: composeWireNameHash(handle, ensDomain), token: grantToken }
-      : undefined
+    const grant =
+      grantToken && handle
+        ? { nameHash: composeWireNameHash(handle, ensDomain), token: grantToken }
+        : undefined
     resolved = await resolveRecoveredMsk(
       recovered,
       deriver.derive,
@@ -1220,11 +1296,23 @@ export async function enterWithPasskey(
   const remembered = strict ? undefined : usertagFor(config.rpId, recovered.credentialId)
 
   const identity = requireVerifiedIdentity(
-    await resolveOxideIdentity(generations, deriveBootstrapKey(msk).address, await deriver.derive(msk)),
+    await resolveOxideIdentity(
+      generations,
+      deriveBootstrapKey(msk).address,
+      await deriver.derive(msk),
+    ),
   )
   throwIfEnded()
   const adopt = async () => {
-    const adopted = await adoptRecoveredAccount(wallet, recovered, msk, slot, cancel, undefined, active)
+    const adopted = await adoptRecoveredAccount(
+      wallet,
+      recovered,
+      msk,
+      slot,
+      cancel,
+      undefined,
+      active,
+    )
     // The commit stands, but a scope that ended while the account was persisted hands nothing back:
     // no result reaches a screen the user left.
     throwIfEnded()
@@ -1269,7 +1357,11 @@ export function tagMatches(entered: EnteredClaim, handle: string): string | null
 }
 
 /** The bare form of `handle` that hashes to any of `nameHashes`; null when none does. */
-export function reservedTagMatch(nameHashes: readonly Hex[], ensDomain: string, handle: string): string | null {
+export function reservedTagMatch(
+  nameHashes: readonly Hex[],
+  ensDomain: string,
+  handle: string,
+): string | null {
   for (const nameHash of nameHashes) {
     const matched = matchWireNameHash(handle, ensDomain, nameHash)
     if (matched) return matched
@@ -1277,7 +1369,10 @@ export function reservedTagMatch(nameHashes: readonly Hex[], ensDomain: string, 
   return null
 }
 
-export function confirmTag(entered: EnteredClaim, handle: string): { handle: string; address: string } {
+export function confirmTag(
+  entered: EnteredClaim,
+  handle: string,
+): { handle: string; address: string } {
   const matched = tagMatches(entered, handle)
   if (!matched) throw new Error(`@${handle} is not the tag this passkey claimed`)
   // The matched form is what re-hashes to the claim on every later detection tick.

@@ -188,7 +188,7 @@ describe("NewLinkScreen", () => {
       await remount()
       await act(async () => setInput("25"))
       await act(async () => button("Next")?.click())
-      expect(container.textContent).toContain("Show my @river")
+      expect(container.textContent).toContain("Show my tag")
       expect(toggle()?.getAttribute("aria-checked")).toBe("true")
       await act(async () => button("Confirm")?.click())
       await act(async () => button("Create paylink")?.click())

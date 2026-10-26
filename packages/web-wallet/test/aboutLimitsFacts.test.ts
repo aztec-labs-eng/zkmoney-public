@@ -1,66 +1,27 @@
 import { describe, expect, it } from "vitest"
 import {
   deriveAllowanceState,
-  depositTokenValuation,
-  NOMINAL_USD_VALUATION,
   type AllowanceSnapshot,
   type PortalCapacityState,
 } from "@obsidion/front-core"
 import type { ClaimFpcAllowance } from "@obsidion/sdk"
-import type { DepositTokenOption } from "../src/features/deposit/loadDepositFacts"
 import {
   capacityFacts,
   productLimitFacts,
   sponsorshipFacts,
 } from "../src/features/limits/aboutLimitsFacts"
 import { aboutLimitsView } from "../src/features/limits/aboutLimitsView"
+import * as copy from "../src/features/limits/limitsCopy"
+import { CAPACITY_LOW } from "../src/features/deposit/fundingCapacity"
 
 const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
-const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
-const USDT = "0xdAC17F958D2ee523a2206206994597C13D831ec7"
-const OTHER = "0x1111111111111111111111111111111111111111"
-const option = (symbol: string, address?: `0x${string}`): DepositTokenOption => ({
-  symbol,
-  address,
-  decimals: 18,
-  icon: "",
-})
-// The deposit screen's rule: a token without an address is the manifest token.
-const valuedOn = (chainId: number, portalToken: string) => (token: DepositTokenOption) =>
-  depositTokenValuation({ chainId, portalToken, token: token.address ?? portalToken })
-
 describe("productLimitFacts", () => {
-  it("states the published maximum for each operation with its amount basis", () => {
-    expect(productLimitFacts({ tokens: [] })).toEqual({
-      deposit: { maximumUsd: "2500", basis: "sent-including-fees" },
-      withdrawal: { maximumUsd: "2500", basis: "debited-including-fees" },
+  it("states the published maximum for each operation", () => {
+    expect(productLimitFacts()).toEqual({
+      deposit: { maximumUsd: "2500" },
+      withdrawal: { maximumUsd: "2500" },
+      send: { maximumUsd: "2500" },
     })
-  })
-
-  it("lists the tokens the nominal rate covers, matched by address", () => {
-    const tokens = [option("DAI"), option("USDC", USDC), option("USDT", USDT), option("DAI", OTHER)]
-    expect(productLimitFacts({ tokens, valuationOf: valuedOn(1, DAI) }).valuation).toEqual({
-      tokens: ["DAI", "USDC", "USDT"],
-    })
-    // Off mainnet only the portal's own token is accepted, whatever the other options are called.
-    expect(productLimitFacts({ tokens, valuationOf: valuedOn(11155111, OTHER) }).valuation).toEqual(
-      { tokens: ["DAI", "DAI"] },
-    )
-  })
-
-  it("leaves the valuation unknown when no token can be valued", () => {
-    expect(productLimitFacts({ tokens: [option("DAI")] }).valuation).toBeUndefined()
-    const none = productLimitFacts({ tokens: [option("X", OTHER)], valuationOf: valuedOn(1, DAI) })
-    expect(none.valuation).toBeUndefined()
-  })
-
-  it("hides the list when a token has any valuation other than the nominal rate", () => {
-    const valuationOf = (token: DepositTokenOption) =>
-      token.symbol === "USDC"
-        ? { source: "market", usdPerToken: { numerator: 99n, denominator: 100n } }
-        : NOMINAL_USD_VALUATION
-    const facts = productLimitFacts({ tokens: [option("DAI"), option("USDC", USDC)], valuationOf })
-    expect(facts.valuation).toBeUndefined()
   })
 })
 
@@ -113,15 +74,14 @@ describe("sponsorshipFacts", () => {
     expect(sponsorshipFacts(ready(allowance({ refillPeriod: 0 })))).toEqual({ state: "spent" })
   })
 
-  it("states no renewal time for a stored zero that may renew", () => {
+  it("states the renewal period, not a renewal time, for a stored zero that may renew", () => {
     const view = aboutLimitsView(
       { product: {}, sponsorship: sponsorshipFacts(ready(allowance())) },
       { time: String },
     ).sponsorship
-    expect(view.status?.text).toBe("Renewal status unknown")
-    expect(view.rows.map((row) => row.label)).not.toContain("Next renewal")
-    expect([...view.rows.map((row) => row.value), ...view.notes].join(" ")).not.toMatch(
-      /\d{1,2}:\d{2}|countdown|in about|midnight reset/i,
+    expect(view.status?.text).toBe(copy.SPONSORSHIP_STATUS.renewalUnknown)
+    expect(view.rows.find((row) => row.label === copy.SPONSORSHIP_ROW.renews)?.value).toBe(
+      copy.renewsAfterUsedUp("24 hours"),
     )
   })
 })
@@ -156,10 +116,10 @@ describe("capacityFacts", () => {
       notice: undefined,
       offerRetry: undefined,
     })
-    const panel = { statusText: "Network capacity is low.", offerRetry: false }
+    const panel = { statusText: CAPACITY_LOW, offerRetry: false }
     expect(
       capacityFacts({ status: "fresh", key, snapshot, fetchedAt: 42 }, "DAI", panel),
-    ).toMatchObject({ notice: "Network capacity is low.", offerRetry: false })
+    ).toMatchObject({ notice: CAPACITY_LOW, offerRetry: false })
     const stale = capacityFacts(
       { status: "stale", key, snapshot, fetchedAt: 42, reason: "age" },
       "DAI",

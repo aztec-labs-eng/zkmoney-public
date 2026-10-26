@@ -138,6 +138,22 @@ describe("buildChatMessages", () => {
     expect(result[1].memo).toBeUndefined()
   })
 
+  it("drops direction overrides and stacked marks from a peer's memo", () => {
+    const tx = tokenTx({
+      action: "receive",
+      from: MARIA_ADDRESS,
+      memo:
+        "ko " +
+        String.fromCharCode(0x202e) +
+        "olleh" +
+        "q" +
+        String.fromCharCode(0x301, 0x302, 0x303, 0x304, 0x305),
+    })
+    expect(buildChatMessages(maria, { transactions: [tx] })[0].memo).toBe(
+      "ko olleh" + "q" + String.fromCharCode(0x301, 0x302, 0x303),
+    )
+  })
+
   it("maps a pending outgoing send to sent-pending and timeLabel='Pending'", () => {
     const tx = tokenTx({
       action: "send",

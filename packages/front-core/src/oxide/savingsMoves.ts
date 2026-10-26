@@ -49,6 +49,8 @@ export interface SavingsMove {
     blockNumber?: string
     /** When the deposit's L1 block was made, ms: when the move's shares entered or left Savings' side. */
     at?: number
+    /** When this device stored the claim, ms: the destination's balance holds it from its next read. */
+    storedAt?: number
   }
   /**
    * The vault's own figures from the escrow run's receipt: the USDS it took in for a move in, or
@@ -147,14 +149,15 @@ const DEPOSIT_SCAN_WINDOWS_PER_SYNC = 20
 /**
  * Finds the move's deposit and claims it. A claim that fails, usually because the deposit's message has not reached L2
  * yet, leaves the move unclaimed for the next sync and comes back as `claimError`. A claim the token refuses as already
- * stored or spent was made by an earlier pass whose record was lost, so the move is claimed. `startedAtMs` is when the
+ * stored or spent was made by an earlier pass whose record was lost, so the move is claimed; only a claim stored now
+ * comes back `stored`, as the balance does not hold it yet. `startedAtMs` is when the
  * burn began; a move with no cursor searches from the L1 block of that time rather than the chain's start.
  */
 export async function settleSavingsMove(
   move: SavingsMove,
   deps: SavingsMoveSettleDeps,
   startedAtMs?: number,
-): Promise<{ move: SavingsMove; claimError?: unknown }> {
+): Promise<{ move: SavingsMove; claimError?: unknown; stored?: boolean }> {
   if (!isSavingsMovePending(move)) return { move }
   const destination = await destinationOf(move, deps)
   let deposit = move.deposit
@@ -189,7 +192,7 @@ export async function settleSavingsMove(
       recipient: deps.recipient,
       sharedSecretSalt: deriveSkyEscrowSalts(deps.masterSecret, move.nonce).recipient,
     })
-    return { move: settled(true) }
+    return { move: settled(true), stored: true }
   } catch (claimError) {
     if (isAlreadyClaimedError(claimError)) return { move: settled(true) }
     return { move: settled(false), claimError }

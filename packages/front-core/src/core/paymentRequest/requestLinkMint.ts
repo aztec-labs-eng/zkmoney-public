@@ -3,6 +3,7 @@
  * request-id generation, wallet/network lookups, persistence, sharing UI, and
  * amount/expiry display formatting from the returned row.
  */
+import { encodePacked, keccak256, type Address } from "viem"
 import { parseEscrowAmount } from "../../utils/escrowAmount"
 import type { PaymentRequest } from "../storages/RequestStorage"
 import type { SipaOrigin } from "../services/deposits/SIPADepositStore"
@@ -51,6 +52,10 @@ export interface MintRequestLinkArgs {
   /** Self-broadcast L1 SIPA. Optional on the v3 fragment. */
   sipaAddress?: string
   sipaPreimage?: SipaLinkPreimage
+  /** Mint a compact Receive code; `requestId` must come from `randomCodeRequestId`. */
+  compact?: boolean
+  /** A compact code's `sipaDeploymentTag` for `sipaAddress`. */
+  sipaDeployment?: string
 }
 
 /** What a link carries so a payer can re-predict the SIPA that `origin` records. */
@@ -59,6 +64,24 @@ export function sipaLinkPreimage(origin: SipaOrigin): SipaLinkPreimage {
     intentHash: origin.intentHash,
     recovery: origin.protocol === "legacy-eoa" ? origin.recoveryAddress : origin.recoveryCommitment,
   }
+}
+
+/** 4 bytes naming the deployment a SIPA was derived under, so a payer can tell a code's address is current. */
+export function sipaDeploymentTag(deployment: {
+  sipaFactory: string
+  implementation: string
+  rollupVersion: string | bigint
+}): string {
+  return keccak256(
+    encodePacked(
+      ["address", "address", "uint256"],
+      [
+        deployment.sipaFactory as Address,
+        deployment.implementation as Address,
+        BigInt(deployment.rollupVersion),
+      ],
+    ),
+  ).slice(0, 10)
 }
 
 export interface MintedRequestLink {
@@ -142,6 +165,8 @@ export function mintRequestLink(args: MintRequestLinkArgs): MintedRequestLink {
     networkId: args.networkId,
     sipaAddress: args.sipaAddress,
     sipaPreimage: args.sipaPreimage,
+    compact: args.compact,
+    sipaDeployment: args.sipaDeployment,
   })
 
   const row: PaymentRequest = {

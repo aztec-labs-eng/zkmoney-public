@@ -17,6 +17,15 @@ import type { ActivityRowView } from "../src/ui/screens/activityView"
 const h = vi.hoisted(() => ({
   pathname: "/",
   navigate: vi.fn(),
+  frozen: false,
+}))
+
+vi.mock("../src/features/actionGate", () => ({ useWalletFrozen: () => h.frozen }))
+vi.mock("../src/features/paylink/chainTime", () => ({
+  usePolledChainSeconds: () => Math.floor(Date.now() / 1000),
+}))
+vi.mock("../src/features/notifications/PaylinkClaimMount", () => ({
+  recheckPaylinkClaim: async () => {},
 }))
 
 vi.mock("../src/config/env", async (importOriginal) => ({
@@ -107,6 +116,7 @@ describe("TxDetailModal", () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     h.pathname = "/"
     h.navigate.mockReset()
+    h.frozen = false
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -361,5 +371,22 @@ describe("TxDetailModal", () => {
     expect(value("Status")).toBe("Cancelling")
     expect(container.textContent).not.toContain("Copy paylink")
     expect(container.textContent).not.toContain("Cancel paylink")
+  })
+
+  it("open creator paylink while frozen: Withdraw in place of Cancel link", async () => {
+    const button = (title: string) =>
+      [...container.querySelectorAll("button")].find((b) => b.textContent === title)
+    const row = linkRow("success", {
+      fallbackSecret: "0x01",
+      refundableUntil: Math.floor(Date.now() / 1000) + 3_600,
+    })
+    await show(<TxDetailModal row={row} onClose={vi.fn()} />)
+    expect(button("Cancel link")).toBeTruthy()
+
+    h.frozen = true
+    await show(<TxDetailModal row={row} onClose={vi.fn()} />)
+    expect(button("Cancel link")).toBeUndefined()
+    await act(async () => button("Withdraw")!.click())
+    expect(h.navigate).toHaveBeenCalledWith("/withdraw")
   })
 })

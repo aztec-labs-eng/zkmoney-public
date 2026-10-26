@@ -259,8 +259,20 @@ describe("linkDeployment", () => {
       "expired",
     ],
     ["the link has no preimage", { sipaAddress: SIPA }, SIPA, "unproven"],
+    [
+      "a code's deployment tag is the active one",
+      { sipaAddress: SIPA, sipaDeployment: "0x0a0b0c0d" },
+      SIPA,
+      "active",
+    ],
+    [
+      "a code's deployment tag is another",
+      { sipaAddress: SIPA, sipaDeployment: "0x01020304" },
+      SIPA,
+      "expired",
+    ],
   ] as const)("%s", async (_, link, predicted, verdict) => {
-    expect(await linkDeployment(link, async () => predicted as never)).toBe(verdict)
+    expect(await linkDeployment(link, async () => predicted as never, "0x0a0b0c0d")).toBe(verdict)
   })
 })
 

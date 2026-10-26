@@ -151,7 +151,9 @@ const { REGISTRATIONS_PAUSED_NOTICE } = await import(
   "../src/features/onboarding/onboardingErrorCopy"
 )
 const { stashClaimLink, stashTicketSignup } = await import("../src/features/paylink/claimStash")
-const { takeClaimPromptRequest } = await import("../src/features/paylink/claimPrompt")
+const { setLinkFunding, takeClaimPromptRequest } = await import(
+  "../src/features/paylink/claimPrompt"
+)
 const { startClaim, endClaim, autoClaimGaveUp, holdAutoClaim, resetRunningClaims } = await import(
   "../src/features/paylink/runningClaims"
 )
@@ -726,6 +728,45 @@ describe("formatRemaining", () => {
   })
 })
 
+describe("SecureNameNoticeCard with a link that may pay the deposit", () => {
+  const opened = async () => {
+    h.amounts = { min: 45n * 10n ** 17n, fee: 5n * 10n ** 17n }
+    saveWalletIdentity({ handle: "taga", address: L2_ADDRESS, claimedAt: 1, pending: true })
+    saveRegistrationTerms(
+      registrationTerms({ deadline: Math.floor((Date.now() + 3 * DAY) / 1000) }),
+    )
+    stashClaimLink("frag")
+    await act(async () => {
+      await getPendingStore().upsert(ACCOUNT, {}, record())
+    })
+  }
+  afterEach(() => setLinkFunding(null))
+
+  it("asks for no deposit while Home checks the link, and asks again once it cannot pay", async () => {
+    await opened()
+    setLinkFunding({ fragment: "frag", state: "checking" })
+    await render()
+    await settleReads()
+    expect(notice("deposit-ask")).toBeUndefined()
+    expect(container.textContent).toContain("Checking your payment")
+    await act(async () => setLinkFunding(null))
+    expect(notice("deposit-ask")).toBeDefined()
+  })
+
+  it("leads back to the review of a link that pays it", async () => {
+    await opened()
+    setLinkFunding({ fragment: "frag", state: "review", amount: 41n * 10n ** 18n })
+    await render()
+    await settleReads()
+    expect(notice("deposit-ask")).toBeUndefined()
+    expect(container.textContent).toContain("The 41 DAI you were sent pays for @taga")
+    await act(async () =>
+      container.querySelector<HTMLButtonElement>('[data-link-funding="review"]')!.click(),
+    )
+    expect(takeClaimPromptRequest()).toBe("frag")
+  })
+})
+
 describe("SecureNameNoticeCard — the lead line", () => {
   const liveTerms = {
     account: ACCOUNT,
@@ -963,6 +1004,21 @@ describe("SecureNameNoticeCard — a ticket-funded name", () => {
     await render()
     await settleReads()
     expect(state()).toBe("missing_link")
+  })
+
+  it("keeps its claiming hero whatever Home says about a link that may pay a deposit", async () => {
+    await pendingName()
+    ticketTerms()
+    stash()
+    for (const state of ["checking", "review"] as const) {
+      setLinkFunding({ fragment: "paylink-frag", state })
+      await render()
+      await settleReads()
+      expect(container.textContent).toContain("Claiming @taga")
+      expect(container.textContent).not.toContain("Checking your payment")
+      expect(container.textContent).not.toContain("you were sent pays for")
+    }
+    setLinkFunding(null)
   })
 
   it("shows progress once the burn is submitted, while the address still reads zero", async () => {

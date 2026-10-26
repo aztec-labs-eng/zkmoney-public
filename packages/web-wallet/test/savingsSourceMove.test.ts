@@ -117,8 +117,9 @@ const source = () =>
   createSavingsSource(
     {
       wallet: {},
-      account: { getAddress: () => ({}) },
+      account: { getAddress: () => ({}), getCompleteAddress: () => "0xcomplete" },
       contractService: {},
+      network: "sandbox",
       tokenService: {
         getBalance: async () => 10n ** 30n,
         fetchTokenInformation: async () => ({ symbol: "DAI" }),
@@ -142,7 +143,7 @@ describe("createSavingsSource move", () => {
     h.signerLoad.mockRejectedValueOnce(new Error("TEE not registered")).mockResolvedValue(signer)
     h.quote.mockResolvedValue(quoteOf(90n))
     const savings = source()
-    await savings.read().catch(() => {})
+    await savings.readPrice().catch(() => {})
     expect(h.signerLoad).not.toHaveBeenCalled()
     await expect(savings.move("out", 100n, () => {})).rejects.toThrow("TEE not registered")
     expect(h.runBurn).not.toHaveBeenCalled()

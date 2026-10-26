@@ -3,20 +3,13 @@
  * sweep time, so every reader of a SIPA's funding — the deposit rail, the registration tick, the
  * manual sweep — asks here and gets the same answer.
  */
-import {
-  erc20Abi,
-  parseEventLogs,
-  zeroAddress,
-  type Address,
-  type Hash,
-  type PublicClient,
-} from "viem"
+import { zeroAddress, type Address, type Hash, type PublicClient } from "viem"
 import { SIPA_SWAP_MAX_SLIPPAGE_BPS } from "@obsidion/core/constants"
 import {
-  readFundingTransfers,
   readSipaFundingStatus,
   type SipaFundingStatus,
   type SipaFundingTransfer,
+  type TokenTransfer,
 } from "@obsidion/sdk"
 
 /** An L1 ERC-20 a SIPA can be funded with. */
@@ -110,6 +103,18 @@ export async function readSipaFunding(
   )
 }
 
+/** The largest of `balances` (keyed by lowercased token) across `tokens`, in `feeToken` units. */
+export function largestBalance(
+  balances: ReadonlyMap<string, bigint>,
+  feeToken: SipaFundingToken,
+  tokens: readonly SipaFundingToken[],
+): bigint {
+  return tokens.reduce((max, token) => {
+    const scaled = (balances.get(token.address.toLowerCase()) ?? 0n) * feeScale(feeToken, token)
+    return scaled > max ? scaled : max
+  }, 0n)
+}
+
 /** Which of `tokens` holds `sipa`'s funds, by balance alone; `tokens[0]` is the fee token. */
 export function readSipaHolding(
   publicClient: PublicClient,
@@ -135,28 +140,6 @@ export async function readSipaBalance(
   return (await readSipaHolding(publicClient, sipa, tokens)).status.scaledBalance
 }
 
-/** The earliest transfer into `sipa` across `fundingTokens`: a SIPA is single-use, so it is the deposit. */
-export async function readFirstFunding(
-  publicClient: PublicClient,
-  sipa: Address,
-  fundingTokens: readonly SipaFundingToken[],
-  fromBlock?: bigint,
-  toBlock?: bigint,
-): Promise<{ transfer: SipaFundingTransfer; token: SipaFundingToken } | undefined> {
-  const perToken = await Promise.all(
-    fundingTokens.map((token) =>
-      readFundingTransfers(
-        publicClient as never,
-        token.address as never,
-        sipa as never,
-        fromBlock,
-        toBlock,
-      ),
-    ),
-  )
-  return firstFunding(perToken, fundingTokens)
-}
-
 /** The earliest of `perToken[i]`, the transfers of `fundingTokens[i]` into one SIPA. */
 export function firstFunding(
   perToken: readonly SipaFundingTransfer[][],
@@ -179,23 +162,21 @@ export interface SweptFunding {
 }
 
 /**
- * Which of `fundingTokens` the sweep `txHash` moved out of `sipa`, and how much: what its funder
- * had sent. Undefined when the tx moved more than one of them out, since a batched tx can carry
- * several sweeps of one SIPA and the receipt does not say which token each took.
+ * Which of `fundingTokens` the sweep `txHash` moved out of its SIPA, and how much: what its funder
+ * had sent. `outflows` are the SIPA's transfers out. Undefined when the tx moved more than one of
+ * them out, since a batched tx can carry several sweeps of one SIPA and the logs do not say which
+ * token each took.
  */
-export async function readSweptFunding(
-  publicClient: PublicClient,
+export function sweptFunding(
+  outflows: readonly TokenTransfer[],
   txHash: Hash,
-  sipa: Address,
   fundingTokens: readonly SipaFundingToken[],
-): Promise<SweptFunding | undefined> {
-  const { logs } = await publicClient.getTransactionReceipt({ hash: txHash })
-  const transfers = parseEventLogs({ abi: erc20Abi, eventName: "Transfer", logs })
+): SweptFunding | undefined {
   const out = new Map<string, bigint>()
-  for (const log of transfers) {
-    if (log.args.from.toLowerCase() !== sipa.toLowerCase()) continue
-    const token = log.address.toLowerCase()
-    out.set(token, (out.get(token) ?? 0n) + log.args.value)
+  for (const flow of outflows) {
+    if (flow.txHash.toLowerCase() !== txHash.toLowerCase()) continue
+    const token = flow.token.toLowerCase()
+    out.set(token, (out.get(token) ?? 0n) + flow.value)
   }
   const swept = fundingTokens.filter((t) => out.has(t.address.toLowerCase()))
   const token = swept.length === 1 ? swept[0] : undefined

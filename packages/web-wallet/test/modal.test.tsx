@@ -424,20 +424,25 @@ describe("Modal", () => {
       offsetTop = 0
     }
     let viewport: FakeViewport
+    let box: { mockRestore(): void }
     beforeEach(() => {
       viewport = new FakeViewport()
       Object.defineProperty(window, "visualViewport", { value: viewport, configurable: true })
       Object.defineProperty(window, "innerHeight", { value: 800, configurable: true })
+      box = vi
+        .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+        .mockImplementation(() => ({ bottom: 800 }) as DOMRect)
     })
     afterEach(() => {
       Object.defineProperty(window, "visualViewport", { value: undefined, configurable: true })
+      box.mockRestore()
       vi.useRealTimers()
     })
 
-    it("carries the keyboard's inset and the visible height on the sheet's root", async () => {
+    it("carries the keyboard's inset and the visible height on the sheet's root while its field has focus", async () => {
       await render(
         <Modal title="Amount">
-          <input aria-label="Amount" />
+          <input aria-label="Amount" data-autofocus />
         </Modal>,
       )
       expect(dialog().style.getPropertyValue("--ww-keyboard-inset")).toBe("0px")
@@ -464,7 +469,9 @@ describe("Modal", () => {
         const input = container.querySelector("input")!
         expect(document.activeElement).toBe(input)
         expect(focus.mock.contexts.indexOf(input)).toBeGreaterThanOrEqual(0)
-        expect(focus.mock.calls[focus.mock.contexts.indexOf(input)][0]).toEqual({ preventScroll: true })
+        expect(focus.mock.calls[focus.mock.contexts.indexOf(input)][0]).toEqual({
+          preventScroll: true,
+        })
         expect(scrolled).not.toHaveBeenCalled()
         finish()
         await act(async () => {

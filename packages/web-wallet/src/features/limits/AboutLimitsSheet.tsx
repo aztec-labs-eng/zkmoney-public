@@ -1,10 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react"
-import type { Address } from "viem"
 import { Modal } from "../../ui/Modal"
 import { getConfig } from "../../config/env"
-import { getOxideTuple } from "../../config/oxideTuple"
 import { useSponsoredAllowance } from "../allowance/useSponsoredAllowance"
-import { depositValuation } from "../deposit/depositValuation"
 import { depositTokensFor } from "../deposit/loadDepositFacts"
 import type { SipaCapacityKey } from "@obsidion/front-core"
 import { sipaProcessingObserver } from "../deposit/sipaProcessing"
@@ -19,6 +16,7 @@ import type {
   SponsorshipFacts,
 } from "./aboutLimitsView"
 import { InfoButton } from "./InfoButton"
+import { SHEET_TITLE } from "./limitsCopy"
 
 /** The About limits sheet, drawn from the facts it is given. */
 export function AboutLimitsSheet({
@@ -29,6 +27,7 @@ export function AboutLimitsSheet({
   onRetryCapacity,
   onRetrySponsorship,
   format,
+  showCapacity,
 }: {
   facts: AboutLimitsFacts
   /** The section to open first; without one, every section is expanded. */
@@ -39,9 +38,10 @@ export function AboutLimitsSheet({
   onRetryCapacity?: () => void
   onRetrySponsorship?: () => void
   format?: AboutLimitsFormat
+  showCapacity?: boolean
 }) {
   return (
-    <Modal title="About limits" onClose={onClose}>
+    <Modal title={SHEET_TITLE} onClose={onClose}>
       <div data-testid="about-limits-sheet">
         <AboutLimitsContent
           facts={facts}
@@ -50,6 +50,7 @@ export function AboutLimitsSheet({
           onRetryCapacity={onRetryCapacity}
           onRetrySponsorship={onRetrySponsorship}
           format={format}
+          showCapacity={showCapacity}
         />
       </div>
     </Modal>
@@ -60,12 +61,13 @@ interface WalletSheetProps {
   onClose: () => void
   topic?: LimitsTopic
   details?: LimitsDetails
-  capacity?: CapacitySource
+  /** `false` leaves the capacity section out, for Settings, where no deposit is in view. */
+  capacity?: CapacitySource | false
   /** The token the bucket is metered in; defaults to the deployment's settlement token. */
   settlementSymbol?: string
 }
 
-/** The product policy, the token valuation matched by address and the bucket `capacity` names. */
+/** The product policy and the bucket `capacity` names. */
 function PolicyAndCapacitySheet({
   onClose,
   topic,
@@ -75,36 +77,12 @@ function PolicyAndCapacitySheet({
   sponsorship,
   onRetrySponsorship,
 }: WalletSheetProps & { sponsorship: SponsorshipFacts; onRetrySponsorship?: () => void }) {
-  const config = getConfig()
-  const tokens = depositTokensFor(config.network)
-  const [manifestToken, setManifestToken] = useState<Address>()
-  const shared = useAboutLimitsCapacity(capacity, settlementSymbol ?? tokens[0].symbol)
-
-  useEffect(() => {
-    let live = true
-    // A profile that cannot name its manifest throws here; the sheet then shows no valuation.
-    Promise.resolve()
-      .then(() => getOxideTuple(config))
-      .then(
-        (tuple) => {
-          if (live && tuple.token) setManifestToken(tuple.token as Address)
-        },
-        (error: unknown) => console.warn("[limits] deposit token read failed:", error),
-      )
-    return () => {
-      live = false
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- read once per opening
-  }, [])
-
+  const symbol = settlementSymbol ?? depositTokensFor(getConfig().network)[0].symbol
+  // An unresolved source reads no store.
+  const shared = useAboutLimitsCapacity(capacity || { kind: "unresolved" }, symbol)
   const facts: AboutLimitsFacts = {
-    product: productLimitFacts({
-      tokens,
-      valuationOf: manifestToken
-        ? (token) => depositValuation(token, manifestToken, config.l1ChainId)
-        : undefined,
-    }),
-    capacity: shared.facts,
+    product: productLimitFacts(),
+    capacity: capacity ? shared.facts : undefined,
     sponsorship,
   }
   return (
@@ -115,6 +93,7 @@ function PolicyAndCapacitySheet({
       onClose={onClose}
       onRetryCapacity={shared.retry}
       onRetrySponsorship={onRetrySponsorship}
+      showCapacity={capacity !== false}
     />
   )
 }

@@ -48,9 +48,12 @@ type EscrowVerifier =
   | Pick<ContractService, "getArtifactForContract" | "getKnownClassIds">
   | undefined
 
+/** Private balances by token address, read at one PXE anchor. */
+export type WalletBalances = Record<string, bigint>
+
 export interface WalletSyncSnapshot {
   events: ScannedTransferEvent[]
-  balance: bigint
+  balances: WalletBalances
   anchorBlock: number
 }
 
@@ -61,8 +64,8 @@ export interface WalletSyncSource extends TransferEventSource {
     toBlockExclusive: number,
     opts?: { assumeSynced?: boolean },
   ): Promise<WalletSyncSnapshot>
-  /** The balance alone, on one sync. */
-  readBalanceSnapshot(): Promise<{ balance: bigint; anchorBlock: number }>
+  /** The balances alone, on one sync. */
+  readBalanceSnapshot(): Promise<{ balances: WalletBalances; anchorBlock: number }>
 }
 
 export interface TransferEventSource {
@@ -125,20 +128,23 @@ export function createTransferEventSource(deps: {
   }
 }
 
-/** Events and balance verified against the same PXE header, without changing event-only callers. */
+/**
+ * Events and balances verified against the same PXE header, without changing event-only callers.
+ * `readBalances` picks the tokens; it runs at the anchor the events were read at.
+ */
 export function createWalletSyncSource(deps: {
   wallet: ObsidionWallet
   tokenAddress: string
   accountAddress: string
   contractService?: EscrowVerifier
-  readBalance: () => Promise<bigint>
+  readBalances: () => Promise<WalletBalances>
 }): WalletSyncSource {
   return {
     ...createTransferEventSource(deps),
     async readSnapshot(fromBlock, toBlockExclusive, opts) {
       const { events, projection, anchorBlock } = await deps.wallet.getPrivateEventsSnapshot<
         TransferEvent,
-        bigint
+        WalletBalances
       >(
         OxideTokenContract.events.Transfer,
         {
@@ -147,18 +153,18 @@ export function createWalletSyncSource(deps: {
           toBlock: BlockNumber(toBlockExclusive),
           scopes: [AztecAddress.fromStringUnsafe(deps.accountAddress)],
         },
-        deps.readBalance,
+        deps.readBalances,
         opts,
       )
       return {
         events: await decodeEvents(events, deps.contractService),
-        balance: projection,
+        balances: projection,
         anchorBlock,
       }
     },
     async readBalanceSnapshot() {
-      const { value, anchorBlock } = await deps.wallet.getSnapshot(deps.readBalance)
-      return { balance: value, anchorBlock }
+      const { value, anchorBlock } = await deps.wallet.getSnapshot(deps.readBalances)
+      return { balances: value, anchorBlock }
     },
   }
 }

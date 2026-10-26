@@ -36,11 +36,8 @@ import {
   OneTimeAddressWarning,
 } from "../deposit/OneTimeAddressWarning"
 import { AddressLimits, AddressLimitsDetail, tokenAmountLabel } from "../deposit/AddressLimits"
-import {
-  ADDRESS_RECHECK_NOTE,
-  AddressCapacityPanel,
-  capacityShareWarning,
-} from "../deposit/AddressCapacity"
+import { AddressCapacityPanel, capacityShareWarning } from "../deposit/AddressCapacity"
+import { ADDRESS_RECHECK_NOTE } from "../limits/limitsCopy"
 import { WalletAboutLimitsSheet } from "../limits/AboutLimitsSheet"
 import { sourceFromTarget } from "../limits/capacitySources"
 import type { LimitsTopic } from "../limits/aboutLimitsView"

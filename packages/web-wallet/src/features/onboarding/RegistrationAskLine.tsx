@@ -57,12 +57,7 @@ export function useRegistrationAsk(): RegistrationAsk | null {
     (readCut && deductions === undefined) || (readSchedule && chainAmounts === undefined),
     retryReads,
   )
-  const watch = useDepositWatch(
-    config,
-    record
-      ? { token: record.depositToken as Address, address: record.sipaAddress as Address }
-      : null,
-  )
+  const watch = useDepositWatch(record ? (record.sipaAddress as Address) : null)
   const stalled = useRegistrationPublishStalled(record)
   if (!record || stalled || record.l1ChainId !== config.l1ChainId) return null
   if (quoteExpired(terms, Date.now()) || (unsignedFallback && chainAmounts === null)) return null

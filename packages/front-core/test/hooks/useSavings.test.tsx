@@ -1,13 +1,19 @@
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 import { act, renderHook, waitFor } from "@testing-library/react"
 import type { ReactNode } from "react"
 import { SavingsProvider } from "../../src/contexts/useSavingsContext"
 import { useSavings } from "../../src/hooks/useSavings"
+import { BalanceStorage } from "../../src/core/storages/BalanceStorage"
 import type {
   SavingsMoveRecord,
-  SavingsPosition,
+  SavingsPrice,
   SavingsSource,
 } from "../../src/core/services/savings/types"
+import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
+import { resetSingleton } from "../__test-helpers__/resetSingleton"
+
+const ONE = 10n ** 18n
+const BALANCE = { scope: "sandbox:0xcomplete", tokenAddress: "0xsav" }
 
 function fakeSource(initial: SavingsMoveRecord[] = []) {
   let records = initial
@@ -22,15 +28,10 @@ function fakeSource(initial: SavingsMoveRecord[] = []) {
         return () => listeners.delete(listener)
       },
     },
-    read: vi.fn(async (): Promise<SavingsPosition> => {
+    balance: BALANCE,
+    readPrice: vi.fn(async (): Promise<SavingsPrice> => {
       reads += 1
-      return {
-        shares: 10n,
-        value: BigInt(reads) * 11n,
-        sharePrice: 10n ** 18n,
-        apy: 0.05,
-        readAt: reads,
-      }
+      return { sharePrice: BigInt(reads) * ONE, apy: 0.05, readAt: reads }
     }),
     quote: vi.fn(),
     move: vi.fn(async (direction, amount) => ({ direction, amount: String(amount) })),
@@ -43,10 +44,18 @@ function fakeSource(initial: SavingsMoveRecord[] = []) {
   return { source, write }
 }
 
+const holdShares = (shares: bigint, anchor = 1) =>
+  act(() => BalanceStorage.get().updateBalance(BALANCE.scope, BALANCE.tokenAddress, shares, anchor))
+
 const wrap =
   (source: SavingsSource | null) =>
   ({ children }: { children: ReactNode }) =>
     <SavingsProvider source={source}>{children}</SavingsProvider>
+
+beforeEach(() => {
+  resetSingleton(BalanceStorage as unknown as { instance: BalanceStorage | null })
+  BalanceStorage.get(new InMemoryStorageAdapter())
+})
 
 describe("useSavings", () => {
   it("reports no Savings without a source", () => {
@@ -56,44 +65,56 @@ describe("useSavings", () => {
     expect(result.current.moves).toEqual([])
   })
 
-  it("reads the position once, lists the store's moves, and re-reads after a claim", async () => {
+  it("values the shares the sync stored at the price read, and lists the store's moves", async () => {
     const pending = { withdrawalLocalId: "w1", direction: "in", startTime: 1 } as SavingsMoveRecord
-    const { source, write } = fakeSource([pending])
+    const { source } = fakeSource([pending])
     const { result } = renderHook(() => useSavings(), { wrapper: wrap(source) })
+    await waitFor(() => expect(source.readPrice).toHaveBeenCalledTimes(1))
+    // The price alone is not a position: the shares come from the wallet's sync.
+    expect(result.current.hydrated).toBe(false)
+    await holdShares(3n * ONE)
     await waitFor(() => expect(result.current.hydrated).toBe(true))
     expect(result.current.available).toBe(true)
-    expect(result.current.position?.value).toBe(11n)
+    expect(result.current.position).toMatchObject({ shares: 3n * ONE, value: 3n * ONE, apy: 0.05 })
+    expect(result.current.position?.sharesReadAt).toBe(BalanceStorage.get().list()[0]!.updatedAt)
     expect(result.current.moves).toEqual([pending])
-    expect(source.read).toHaveBeenCalledTimes(1)
-
-    act(() => write([{ ...pending, deposit: { inboxIndex: "1", amount: "2", claimed: true } }]))
-    await waitFor(() => expect(result.current.position?.value).toBe(22n))
   })
 
-  it("re-reads after a move is sent", async () => {
+  it("moves with the stored shares, with no read of its own", async () => {
     const { source } = fakeSource()
+    await holdShares(ONE)
+    const { result } = renderHook(() => useSavings(), { wrapper: wrap(source) })
+    await waitFor(() => expect(result.current.position?.value).toBe(ONE))
+    await holdShares(5n * ONE, 2)
+    await waitFor(() => expect(result.current.position?.value).toBe(5n * ONE))
+    expect(source.readPrice).toHaveBeenCalledTimes(1)
+  })
+
+  it("re-reads the price after a move is sent", async () => {
+    const { source } = fakeSource()
+    await holdShares(ONE)
     const { result } = renderHook(() => useSavings(), { wrapper: wrap(source) })
     await waitFor(() => expect(result.current.hydrated).toBe(true))
     await act(async () => {
       await result.current.move("in", 5n, () => {})
     })
     expect(source.move).toHaveBeenCalledWith("in", 5n, expect.any(Function))
-    await waitFor(() => expect(source.read).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(source.readPrice).toHaveBeenCalledTimes(2))
   })
 
   it("drops a slow read from the source it replaced, and starts the new source unread", async () => {
-    const position = (value: bigint): SavingsPosition => ({
-      shares: 1n,
-      value,
-      sharePrice: 10n ** 18n,
-      readAt: 0,
-    })
-    let answerOld!: (p: SavingsPosition) => void
+    await holdShares(ONE)
+    const price = (sharePrice: bigint): SavingsPrice => ({ sharePrice, readAt: 0 })
+    let answerOld!: (p: SavingsPrice) => void
     const { source: old } = fakeSource()
-    vi.mocked(old.read).mockImplementation(() => new Promise((resolve) => (answerOld = resolve)))
+    vi.mocked(old.readPrice).mockImplementation(
+      () => new Promise((resolve) => (answerOld = resolve)),
+    )
     const { source: next } = fakeSource()
-    let answerNext!: (p: SavingsPosition) => void
-    vi.mocked(next.read).mockImplementation(() => new Promise((resolve) => (answerNext = resolve)))
+    let answerNext!: (p: SavingsPrice) => void
+    vi.mocked(next.readPrice).mockImplementation(
+      () => new Promise((resolve) => (answerNext = resolve)),
+    )
     let current: SavingsSource = old
     const { result, rerender } = renderHook(() => useSavings(), {
       wrapper: ({ children }) => <SavingsProvider source={current}>{children}</SavingsProvider>,
@@ -101,25 +122,24 @@ describe("useSavings", () => {
     current = next
     rerender()
     expect(result.current.hydrated).toBe(false)
-    await act(async () => answerNext(position(7n)))
-    await act(async () => answerOld(position(99n)))
-    expect(result.current.position?.value).toBe(7n)
+    await act(async () => answerNext(price(7n * ONE)))
+    await act(async () => answerOld(price(99n * ONE)))
+    expect(result.current.position?.value).toBe(7n * ONE)
   })
 
   it("keeps the latest of two overlapping reads", async () => {
+    await holdShares(ONE)
     const { source } = fakeSource()
-    const answers: ((value: bigint) => void)[] = []
-    vi.mocked(source.read).mockImplementation(
+    const answers: ((sharePrice: bigint) => void)[] = []
+    vi.mocked(source.readPrice).mockImplementation(
       () =>
-        new Promise((resolve) =>
-          answers.push((value) => resolve({ shares: 1n, value, sharePrice: 1n, readAt: 0 })),
-        ),
+        new Promise((resolve) => answers.push((sharePrice) => resolve({ sharePrice, readAt: 0 }))),
     )
     const { result } = renderHook(() => useSavings(), { wrapper: wrap(source) })
     await waitFor(() => expect(answers).toHaveLength(1))
     act(() => void result.current.refresh())
-    await act(async () => answers[1](2n))
-    await act(async () => answers[0](1n))
-    expect(result.current.position?.value).toBe(2n)
+    await act(async () => answers[1](2n * ONE))
+    await act(async () => answers[0](ONE))
+    expect(result.current.position?.value).toBe(2n * ONE)
   })
 })

@@ -8,6 +8,10 @@ const DEFAULT = { source: "default", isDefault: true }
 const CUSTOM = { source: "settings", isDefault: false }
 const state = vi.hoisted(() => ({
   phone: true,
+  frozen: false,
+  exitFunds: undefined as
+    | { main: { refundable: bigint; links: bigint; waiting: bigint } }
+    | undefined,
   fresh: false as boolean | undefined,
   navigate: vi.fn(),
   claimFragment: null as string | null,
@@ -19,6 +23,12 @@ const state = vi.hoisted(() => ({
   savingsEntries: [] as { id: string; ts: number; node: ReactNode }[],
   growing: false,
   arriving: { main: 0n, savings: 0n },
+  walletBalance: 0n,
+  oldHoldings: { total: 0n, pending: false },
+  lock: { state: "pending", checked: true } as { state: string; main?: bigint; checked: boolean },
+  /** Actions that must wait for the upgrade, and every action a press asked for. */
+  upgrade: new Set<string>(),
+  asked: [] as string[],
   savingsLedger: undefined as
     | {
         basis: bigint
@@ -36,8 +46,16 @@ vi.mock("react-router-dom", async (original) => ({
   useNavigate: () => state.navigate,
 }))
 vi.mock("../src/ui/usePhoneLayout", () => ({ usePhoneLayout: () => state.phone }))
+vi.mock("../src/features/actionGate", () => ({
+  useActionGuard: () => (action: string, run: () => void) => {
+    state.asked.push(action)
+    if (!state.upgrade.has(action)) run()
+  },
+  useActionVerdict: (action: string) => (state.upgrade.has(action) ? "upgrade" : "open"),
+  useWalletFrozen: () => state.frozen,
+}))
 vi.mock("@obsidion/front-core", () => ({
-  useBalance: () => ({ walletBalance: "0", balanceKnown: true }),
+  useBalance: () => ({ walletAsset: { balanceAtomic: state.walletBalance }, balanceKnown: true }),
   useSavings: () => state.savings,
   useSavingsPosition: () => ({
     position: state.savings.position,
@@ -90,10 +108,19 @@ vi.mock("@obsidion/web-ds", () => ({
   PrimaryGradientButton: ({ title, onClick }: { title: string; onClick: () => void }) => (
     <button onClick={onClick}>{title}</button>
   ),
-  HomeQuickActionsRow: ({ actions }: { actions: { title: string; onClick: () => void }[] }) => (
+  HomeQuickActionsRow: ({
+    actions,
+  }: {
+    actions: { title: string; disabled?: boolean; onClick: () => void }[]
+  }) => (
     <div>
       {actions.map((a) => (
-        <button key={a.title} onClick={a.onClick}>
+        <button
+          key={a.title}
+          className="zkm-quick-action"
+          disabled={a.disabled}
+          onClick={a.onClick}
+        >
           {a.title}
         </button>
       ))}
@@ -101,7 +128,7 @@ vi.mock("@obsidion/web-ds", () => ({
   ),
 }))
 vi.mock("../src/features/identity/walletIdentity", () => ({
-  loadWalletIdentity: () => ({ handle: "alice" }),
+  loadWalletIdentity: () => ({ handle: "alice", address: "0xabc" }),
 }))
 vi.mock("../src/features/onboarding/LostRegistrationNoticeCard", () => ({
   LostRegistrationNoticeCard: () => <div>Recover registration</div>,
@@ -121,7 +148,9 @@ vi.mock("../src/features/invite/useInvite", () => ({
   useInvite: () => ({ code: state.inviteCode, credited: false }),
 }))
 // The Move sheet has its own suite; its import graph reads front-core constants this mock lacks.
-vi.mock("../src/features/savings/MoveFundsSheet", () => ({ MoveFundsSheet: () => null }))
+vi.mock("../src/features/savings/MoveFundsSheet", () => ({
+  MoveFundsSheet: () => <div data-testid="move-sheet" />,
+}))
 // The calculator has its own suite; here only that Home opens it.
 vi.mock("../src/features/savings/EarningsCalculator", async (original) => ({
   ...(await original<typeof import("../src/features/savings/EarningsCalculator")>()),
@@ -132,6 +161,9 @@ vi.mock("../src/config/env", () => ({
 }))
 vi.mock("../src/features/onboarding/registrationDepositSeed", () => ({
   healRegistrationDeposits: vi.fn(),
+}))
+vi.mock("../src/features/onboarding/registrationRederive", () => ({
+  discoverRegistrationDeposits: vi.fn(async () => 0),
 }))
 vi.mock("../src/features/paylink/claimStash", () => ({
   peekClaimStash: () => state.claimFragment,
@@ -155,6 +187,7 @@ vi.mock("../src/features/paylink/sponsoredPaylink", () => ({
 }))
 vi.mock("../src/features/paylink/usePaylinkDeps", () => ({
   usePaylinkDeps: () => ({ account: { getAddress: () => "0xme" } }),
+  useLinkVoucher: () => ({ uses: 0 }),
 }))
 vi.mock("../src/features/paylink/chainTime", () => ({ usePolledChainSeconds: () => 1_000 }))
 // The ticket signup's review continuation is out of scope here: Home's phone layout is the subject.
@@ -164,6 +197,9 @@ vi.mock("../src/features/paylink/ticketContinuation", () => ({
   pendingTicketRegistration: () => false,
   onTicketRegistrationsChanged: () => () => {},
   ticketHoldNotice: () => undefined,
+  unfundedRegistration: () => null,
+  loadRegistrations: async () => {},
+  releaseLinkDeposit: () => {},
 }))
 vi.mock("../src/features/withdraw/freshAddressAvailability", () => ({
   useFreshAddressAvailable: () => state.fresh,
@@ -207,10 +243,21 @@ vi.mock("../src/errors/errorModal", () => ({
   showReportableError: vi.fn(),
 }))
 vi.mock("../src/lib/analytics", () => ({ fireEvent: vi.fn(), failureCode: () => "x" }))
+vi.mock("../src/features/withdraw/frozenFunds", () => ({
+  useFrozenFunds: () => ({ funds: state.exitFunds, failed: false, rescan: vi.fn() }),
+  useLastFrozenFunds: () => state.exitFunds,
+  fundsLeft: (f: { refundable: bigint; waiting: bigint }) => f.refundable + f.waiting,
+}))
 vi.mock("../src/ui/prefs", () => ({ useHideBalances: () => [false, vi.fn()] }))
 vi.mock("../src/ui/hooks", async (original) => ({
   ...(await original<typeof import("../src/ui/hooks")>()),
   writeClipboard: vi.fn(),
+}))
+vi.mock("../src/features/migration/oldVersionBalance", () => ({
+  useOldVersionHoldings: () => state.oldHoldings,
+}))
+vi.mock("../src/features/migration/upgradeLock", () => ({
+  useUpgradeLock: () => state.lock,
 }))
 vi.mock("../src/ui/screens/useActivityEntries", () => ({
   useActivityEntries: () => {
@@ -223,6 +270,7 @@ vi.mock("../src/ui/screens/useActivityEntries", () => ({
       savingsHydrated: true,
       savingsLedger: state.savingsLedger,
       arriving: state.arriving,
+      upgradesLoaded: true,
       hydrated: true,
     }
   },
@@ -238,12 +286,20 @@ beforeEach(() => {
   root = createRoot(host)
   vi.clearAllMocks()
   state.claimFragment = null
+  state.frozen = false
+  state.exitFunds = undefined
   state.inviteCode = "k7q2m9x"
   state.fresh = false
   state.endpoints = { node: DEFAULT, l1Rpc: DEFAULT, enclave: DEFAULT }
   state.savings = { available: false, position: null, hydrated: false, moves: [] }
   state.savingsLedger = undefined
   state.savingsEntries = []
+  state.arriving = { main: 0n, savings: 0n }
+  state.walletBalance = 0n
+  state.oldHoldings = { total: 0n, pending: false }
+  state.lock = { state: "pending", checked: true }
+  state.upgrade = new Set()
+  state.asked = []
   claimSponsoredLink.mockImplementation(async () => "0xclaimtx")
   resetRunningClaimsForTests()
 })
@@ -649,6 +705,63 @@ describe("Savings earnings", () => {
   })
 })
 
+describe("Home's actions wait for the upgrade", () => {
+  it.each([true, false])("asks to upgrade before each action, with phone=%s", async (phone) => {
+    state.upgrade = new Set(["deposit", "receive", "send", "withdraw", "link"])
+    state.fresh = true
+    await renderHome(phone)
+    for (const action of ["Deposit", "Receive", "Send", "Withdraw", "Deposit funds"]) click(action)
+    const asked = ["deposit", "receive", "send", "withdraw", "deposit"]
+    if (!phone) {
+      act(() => labeled("Withdraw to a fresh address")!.click())
+      act(() => labeled("Create payment link")!.click())
+      act(() =>
+        [...host.querySelectorAll<HTMLButtonElement>(".ww-banner--row")]
+          .find((b) => b.textContent?.includes("Share your @tag"))!
+          .click(),
+      )
+      asked.push("withdraw", "link", "receive")
+    }
+    expect(state.asked).toEqual(asked)
+    expect(state.navigate).not.toHaveBeenCalled()
+  })
+
+  it("asks to upgrade before a Savings move, never opening its sheet", async () => {
+    state.upgrade = new Set(["savings"])
+    state.savings = {
+      available: true,
+      position: { shares: 0n, value: 0n, sharePrice: 10n ** 18n, readAt: 1 },
+      hydrated: true,
+      moves: [],
+    }
+    await renderHome(true, "/savings")
+    for (const label of ["Add to Savings", "Move to Main Account"])
+      for (const button of [...host.querySelectorAll("button")].filter(
+        (b) => b.textContent === label,
+      ))
+        act(() => button.click())
+    expect(state.asked.length).toBeGreaterThanOrEqual(3)
+    expect(new Set(state.asked)).toEqual(new Set(["savings"]))
+    expect(host.querySelector('[data-testid="move-sheet"]')).toBeNull()
+    state.upgrade = new Set()
+    click("Move to Main Account")
+    expect(host.querySelector('[data-testid="move-sheet"]')).not.toBeNull()
+  })
+})
+
+describe("frozen Home", () => {
+  it.each([true, false])("leaves only Withdraw open, phone=%s", async (phone) => {
+    state.frozen = true
+    await renderHome(phone)
+    const tile = (title: string) =>
+      [...host.querySelectorAll<HTMLButtonElement>(".zkm-quick-action")].find((b) =>
+        b.textContent?.includes(title),
+      )!
+    for (const title of ["Deposit", "Receive", "Send"]) expect(tile(title).disabled).toBe(true)
+    expect(tile("Withdraw").disabled).toBe(false)
+  })
+})
+
 describe("Home quick actions", () => {
   const FRESH = "Withdraw to a fresh address"
   const PAYLINK = "Create payment link"
@@ -768,5 +881,90 @@ describe("custom endpoints pill", () => {
     expect(host.querySelector('a[href="/desktop-settings"]')).toBeNull()
     click("Custom node, enclave")
     expect(state.navigate).toHaveBeenLastCalledWith("/settings")
+  })
+})
+
+describe("Home over an upgrade", () => {
+  const WAD = 10n ** 18n
+  const balance = () => host.querySelector('[data-testid="wallet-balance"]')?.textContent
+
+  it("shows what the old version holds before the upgrade, with no invitation to deposit", async () => {
+    state.oldHoldings = { total: 100n * WAD, pending: false }
+    state.arriving = { main: 100n * WAD, savings: 0n }
+
+    await renderHome(false)
+
+    expect(balance()).toBe("$100.00")
+    expect(host.textContent).not.toContain("Deposit funds")
+    expect(host.querySelector(".ww-home-txns")).not.toBeNull()
+  })
+
+  it("waits for the first look at old versions while nothing is recorded", async () => {
+    state.oldHoldings = { total: 0n, pending: true }
+
+    await renderHome(false)
+
+    expect(balance()).toBeUndefined()
+    expect(host.querySelector('[data-testid="shimmer"]')).not.toBeNull()
+    expect(host.textContent).not.toContain("Deposit funds")
+  })
+
+  it("holds Main as it stood when the upgrade started, whatever has arrived since", async () => {
+    state.lock = { state: "held", main: 101n * WAD, checked: true }
+    state.walletBalance = 40n * WAD
+    state.arriving = { main: 61n * WAD, savings: 0n }
+
+    await renderHome(false)
+
+    expect(balance()).toBe("$101.00")
+    expect(host.textContent).not.toContain("Deposit funds")
+  })
+
+  it("shows no figure for an upgrade an older build started", async () => {
+    state.lock = { state: "held", checked: true }
+    state.walletBalance = 40n * WAD
+
+    await renderHome(false)
+
+    expect(balance()).toBe("—")
+  })
+
+  it("waits until this page has read the account's upgrade runs", async () => {
+    state.lock = { state: "pending", checked: false }
+
+    await renderHome(false)
+
+    expect(balance()).toBeUndefined()
+  })
+
+  it("invites a deposit once nothing is left to move", async () => {
+    await renderHome(false)
+
+    expect(balance()).toBe("$0.00")
+    expect(host.textContent).toContain("Deposit funds")
+  })
+})
+
+describe("Home's Main figure", () => {
+  const CENT = 10n ** 16n
+  const balance = () => host.querySelector('[data-testid="wallet-balance"]')?.textContent
+
+  it("stays on the cent as funds on their way fold into the balance", async () => {
+    state.walletBalance = 288_849n * (CENT / 100n)
+    state.arriving = { main: 17_951n * (CENT / 100n), savings: 0n }
+    await renderHome(false)
+    expect(balance()).toBe("$30.68")
+
+    state.walletBalance = 3_068n * CENT
+    state.arriving = { main: 0n, savings: 0n }
+    await renderHome(false)
+    expect(balance()).toBe("$30.68")
+  })
+
+  it("shows what the frozen portal still holds, not the refunded notes", async () => {
+    state.walletBalance = 11_352n * CENT
+    state.exitFunds = { main: { refundable: 2_949n * CENT, links: 0n, waiting: 1_000n * CENT } }
+    await renderHome(false)
+    expect(balance()).toBe("$39.49")
   })
 })

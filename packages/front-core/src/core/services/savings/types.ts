@@ -16,7 +16,12 @@ export interface SavingsPosition {
   /** Yearly yield from Sky's savings rate; absent where the vault publishes none. */
   apy?: number
   readAt: number
+  /** When the balance store last wrote the shares, ms; a claim counts as on its way until then. */
+  sharesReadAt?: number
 }
+
+/** The vault's side of a position: what a share redeems for and the rate, read on L1. */
+export type SavingsPrice = Pick<SavingsPosition, "sharePrice" | "apy" | "readAt">
 
 /** What a move costs and leaves, priced on L1 before the burn. Base units throughout. */
 export interface SavingsQuote {
@@ -49,8 +54,6 @@ export interface SavingsMoveRecord extends SavingsMove {
   /** The quote's DAI value and what it said would land; absent on a move adopted from a rescan. */
   value?: string
   net?: string
-  /** What a move adopted from a rescan should land, priced from its burn: it has no quote. */
-  expectedNet?: string
   /** What the last settle pass found, for a row to show while the move is pending. */
   lastCheck?: { at: number; message: string }
 }
@@ -58,7 +61,9 @@ export interface SavingsMoveRecord extends SavingsMove {
 /** What a front composes over its deployments; `useSavings` reads it. */
 export interface SavingsSource {
   moves: SavingsMoveStorage
-  read(): Promise<SavingsPosition>
+  /** Where the wallet's sync writes the shares held: Main's balance store, under the Savings token. */
+  balance: { scope: string; tokenAddress: string }
+  readPrice(): Promise<SavingsPrice>
   quote(direction: SavingsDirection, amount: bigint): Promise<SavingsQuote>
   /** Burns into a Sky escrow and records the move. The relayer runs the rest; `settle` claims it. */
   move(

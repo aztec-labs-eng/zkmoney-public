@@ -111,7 +111,8 @@ export function isDesktopL1SubmitActive(): boolean {
 }
 
 export interface DesktopL1SubmitParams {
-  tx: { to: Hex; data: Hex; value?: Hex; chainId: number }
+  /** `from` makes the helper page refuse any other account. */
+  tx: { from?: Hex; to: Hex; data: Hex; value?: Hex; chainId: number }
   /** Human-readable summary rendered on the helper page (labels and values). */
   display: { title: string; lines: [string, string][] }
   /** Called with the helper page's URL once it has been opened — shown to the

@@ -7,6 +7,7 @@ export interface HomeAction {
   /** The phone glyph where one exists; the desktop icon stands in otherwise. */
   phoneIcon?: PhoneIconName
   run: () => void
+  disabled?: boolean
 }
 
 /** The wallet card's action tiles: the phone row with its glyphs, or the design system's row. */
@@ -14,7 +15,12 @@ export function HomeActions({ actions, phone }: { actions: HomeAction[]; phone: 
   if (!phone) {
     return (
       <HomeQuickActionsRow
-        actions={actions.map(({ title, icon, run }) => ({ title, icon, onClick: run }))}
+        actions={actions.map(({ title, icon, run, disabled }) => ({
+          title,
+          icon,
+          disabled,
+          onClick: run,
+        }))}
       />
     )
   }
@@ -24,7 +30,10 @@ export function HomeActions({ actions, phone }: { actions: HomeAction[]; phone: 
         <button
           key={action.title}
           type="button"
-          className="zkm-btn-reset zkm-quick-action zkm-pressable"
+          disabled={action.disabled}
+          className={`zkm-btn-reset zkm-quick-action ${
+            action.disabled ? "zkm-quick-action--disabled" : "zkm-pressable"
+          }`}
           onClick={action.run}
         >
           <span className="zkm-quick-action__tile">

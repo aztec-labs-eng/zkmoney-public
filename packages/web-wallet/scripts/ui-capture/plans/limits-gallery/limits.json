@@ -37,16 +37,12 @@
     },
     {
       "action": "waitFor",
-      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"fresh\"][data-expanded=\"true\"]"
-    },
-    {
-      "action": "waitFor",
       "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"available\"][data-expanded=\"true\"]"
     },
     {
       "action": "screenshot",
       "file": "01-fits-available-top.png",
-      "state": "Settings > Limits: every section expanded; capacity up to date, 42 sponsored transactions"
+      "state": "Settings > Limits: every section expanded, no capacity section; 42 sponsored transactions"
     },
     {
       "action": "scroll",
@@ -56,7 +52,7 @@
     {
       "action": "screenshot",
       "file": "02-fits-available-sponsorship.png",
-      "state": "Scrolled to the end of the sheet: the sponsorship section with 42 sponsored transactions left"
+      "state": "Scrolled to the end of the sheet: 42 sponsored transactions left, then the docs link"
     },
     {
       "action": "press",
@@ -80,20 +76,12 @@
     },
     {
       "action": "waitFor",
-      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"fresh\"]"
-    },
-    {
-      "action": "waitFor",
       "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"renewal-unknown\"]"
     },
     {
-      "action": "hover",
-      "testId": "about-limits-capacity-state"
-    },
-    {
       "action": "screenshot",
-      "file": "03-low-capacity.png",
-      "state": "Low capacity, scrolled to the capacity section"
+      "file": "03-renewal-unknown-top.png",
+      "state": "Settings > Limits with the allowance renewal status unknown"
     },
     {
       "action": "scroll",
@@ -127,15 +115,7 @@
     },
     {
       "action": "waitFor",
-      "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-capacity\"][data-state=\"unavailable\"]"
-    },
-    {
-      "action": "waitFor",
       "selector": "dialog[aria-label=\"About limits\"] [data-testid=\"about-limits-sponsorship\"][data-state=\"unavailable\"]"
-    },
-    {
-      "action": "reachable",
-      "testId": "about-limits-capacity-retry"
     },
     {
       "action": "reachable",
@@ -144,7 +124,7 @@
     {
       "action": "screenshot",
       "file": "05-unavailable-sponsorship-retry.png",
-      "state": "Both reads failed; each section offers Check again"
+      "state": "The allowance read failed; its section offers Check again"
     },
     {
       "action": "press",

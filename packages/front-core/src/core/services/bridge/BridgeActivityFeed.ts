@@ -179,6 +179,11 @@ export class ActivityFeed {
     }
   }
 
+  /** Re-emits for a change no store write marks. */
+  refresh(): void {
+    this.emit()
+  }
+
   private emit(): void {
     const snapshot = this.list()
     for (const listener of this.changedListeners) {

@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { useNavigate } from "react-router-dom"
+import { useActionGuard } from "../actionGate"
 import type { PaymentRequest } from "@obsidion/front-core"
 import {
   GlassCircleButton,
@@ -108,6 +109,7 @@ function RequestRow({
  */
 export function NonContactRequestsScreen() {
   const navigate = useNavigate()
+  const guard = useActionGuard()
   const back = useBack("/contacts")
   const { requests, allowed, unavailable } = useNonContactRequests()
   const [detailId, setDetailId] = useState<string | null>(null)
@@ -127,16 +129,18 @@ export function NonContactRequestsScreen() {
   }
   // Same route as the Activity feed's Send-on-request; ContactPayScreen saves the unsaved requester.
   const pay = (request: PaymentRequest) =>
-    navigate(`/contacts/${encodeURIComponent(request.contactTag)}/send`, {
-      state: {
-        request: {
-          id: request.id,
-          tag: request.contactTag,
-          amount: request.amount,
-          note: request.note,
+    guard("send", () =>
+      navigate(`/contacts/${encodeURIComponent(request.contactTag)}/send`, {
+        state: {
+          request: {
+            id: request.id,
+            tag: request.contactTag,
+            amount: request.amount,
+            note: request.note,
+          },
         },
-      },
-    })
+      }),
+    )
 
   return (
     <div className="ww-panel ww-noncontacts">

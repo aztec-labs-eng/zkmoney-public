@@ -1,7 +1,11 @@
 import { erc20Abi, formatUnits, type Address } from "viem"
 import { quotedDepositFee } from "@obsidion/core/constants"
-import { Network, readDepositFee } from "@obsidion/sdk"
-import { depositSipaImplementation, type SipaFundingToken } from "@obsidion/front-core"
+import { Network } from "@obsidion/sdk"
+import {
+  depositSipaImplementation,
+  implementationDepositFee,
+  type SipaFundingToken,
+} from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { isDemoMode } from "../../dev/demoFlag"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
@@ -102,7 +106,7 @@ export async function loadDepositDisplayFacts(): Promise<DepositDisplayFacts> {
       publicClient,
       requireTupleField(tuple, "sipaFactory") as Address,
       requireTupleField(tuple, "portal") as Address,
-    ).then((implementation) => readDepositFee(publicClient, implementation)),
+    ).then((implementation) => implementationDepositFee(publicClient, implementation)),
     fpcFundingCut(publicClient, requireTupleField(tuple, "portal") as Address),
   ])
   return {

@@ -24,10 +24,6 @@ vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => vi.fn(),
 }))
-vi.mock("../src/features/deposit/l1DepositTokenBalance", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/deposit/l1DepositTokenBalance")>()),
-  readL1TokenBalance: vi.fn(async () => 0n),
-}))
 const feed = vi.hoisted(() => ({
   records: [] as { sipaAddress: string; phase: string; amount: string; sweepTxHash?: string }[],
 }))
@@ -39,7 +35,6 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 }))
 const pool = vi.hoisted(() => ({ next: [] as string[] }))
 const gateway = {
-  wakeDeposit: vi.fn(async () => {}),
   // An open with nothing queued stays resolving.
   depositAddress: vi.fn(() => {
     const address = pool.next.shift()
@@ -122,8 +117,17 @@ vi.mock("../src/features/deposit/DepositFromWalletModal", () => ({
     </div>
   ),
 }))
+const sentFacts = vi.hoisted(() => [] as unknown[])
 vi.mock("../src/features/deposit/sentDepositRecord", () => ({
-  sentDepositRecord: (sent: { address: string }) => ({ sipaAddress: sent.address }),
+  sentDepositRecord: (
+    sent: { address: string },
+    _stored: unknown,
+    _chain: number,
+    facts: unknown,
+  ) => {
+    sentFacts.push(facts)
+    return { sipaAddress: sent.address }
+  },
 }))
 vi.mock("../src/ui/screens/DepositDetailModal", () => ({
   DepositDetailModal: ({
@@ -534,6 +538,35 @@ describe("DepositScreen after an unresolved desktop send", () => {
     expect(byTestId("deposit-send-unresolved")).toBeNull()
     await reload()
     expect(byTestId("deposit-send-unresolved")).toBeNull()
+  })
+
+  it("records a send to a target's address at the target's fee, not the plain deposit's", async () => {
+    sentFacts.length = 0
+    const fee = 5n * 10n ** 17n
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <ScreeningProvider screener={passThroughScreener}>
+            <DepositScreen
+              target={{
+                kind: "upgrade",
+                address: { address: SECOND as Hex, name: "alice" },
+                fee,
+                floor: fee + 1n,
+                ask: 10n ** 18n,
+                onFunded: () => {},
+                onShown: () => {},
+              }}
+            />
+          </ScreeningProvider>
+        </MemoryRouter>,
+      )
+    })
+    for (let i = 0; i < 3; i++) await act(async () => {})
+    await act(async () => buttonContaining("deposit from your browser")!.click())
+    expect(byTestId("fund-sheet")!.dataset.address).toBe(SECOND)
+    await click("sent")
+    expect(sentFacts.at(-1)).toMatchObject({ sweepFeeAtomic: fee, fpcFundingCutAtomic: 0n })
   })
 
   it("reloads the fee when a send stops on a changed fee", async () => {

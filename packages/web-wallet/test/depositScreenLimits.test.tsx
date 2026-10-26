@@ -33,17 +33,12 @@ vi.mock("../src/dev/demoFlag", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/dev/demoFlag")>()),
   isDemoMode: () => demo.on,
 }))
-vi.mock("../src/features/deposit/l1DepositTokenBalance", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/deposit/l1DepositTokenBalance")>()),
-  readL1TokenBalance: vi.fn(async () => 0n),
-}))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAztecContext: () => ({ obsidionWallet: {} }),
   useContractServiceContext: () => ({ contractService: {} }),
 }))
 const gateway = {
-  wakeDeposit: vi.fn(async () => {}),
   depositAddress: vi.fn(async () => ({ address: "0xp001ed", name: "alice.oxide.eth" })),
 }
 vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
@@ -104,10 +99,10 @@ vi.mock("@obsidion/web-ds", () => ({
 
 const { DepositScreen, QUOTE_PENDING } = await import("../src/features/deposit/DepositScreen")
 const { saveWalletIdentity } = await import("../src/features/identity/walletIdentity")
-const { MAX_SEND_UNAVAILABLE } = await import("../src/features/deposit/AddressLimits")
 const { depositCapacityStore } = await import("../src/features/deposit/capacityStore")
 const { FAKE_ACTIVE_KEY } = await import("./fakeCapacity")
 import { seedBootConfig } from "./seedBootConfig"
+import * as copy from "../src/features/limits/limitsCopy"
 
 const FACTS = {
   fee: "0.35",
@@ -125,7 +120,7 @@ describe("DepositScreen limits in the address sheet", () => {
   const byTestId = (id: string) => document.querySelector<HTMLElement>(`[data-testid='${id}']`)
   const limits = () => byTestId("address-limits")
   const copyButton = () => byTestId("deposit-copy") as HTMLButtonElement | null
-  const aboutLimits = () => document.querySelector("dialog[aria-label='About limits']")
+  const aboutLimits = () => document.querySelector(`dialog[aria-label="${copy.SHEET_TITLE}"]`)
   const warningDialog = () =>
     document.querySelector("dialog[aria-label='One-time deposit address']")
   /** Opens the sheet for the one coin the sandbox lists, or the named one in the demo. */
@@ -201,7 +196,7 @@ describe("DepositScreen limits in the address sheet", () => {
     await openDrawer()
     expect(limitNow()).toBe("$2,500 incl. fees")
     const details = await openLimit()
-    expect(details.textContent).toContain("counts 1 TEST as $1")
+    expect(details.textContent).toContain(copy.LIMIT_NOTE)
     expect(maxSend(details)).toBe("2,500 TEST")
     // Net of the current fee: 0.25 sweep fee + 0.1 funding cut.
     expect(maxCredit(details)).toBe("2,499.65 TEST")
@@ -247,8 +242,8 @@ describe("DepositScreen limits in the address sheet", () => {
     expect(document.querySelector("[aria-label='Deposit address QR code']")).toBeNull()
     await openDrawer()
     const details = await openLimit()
-    expect(maxSend(details)).toBe(MAX_SEND_UNAVAILABLE)
-    expect(maxCredit(details)).toBe(MAX_SEND_UNAVAILABLE)
+    expect(maxSend(details)).toBe(copy.UNAVAILABLE)
+    expect(maxCredit(details)).toBe(copy.UNAVAILABLE)
   })
 
   it("names the swap for a token the portal does not settle in", async () => {
@@ -262,8 +257,8 @@ describe("DepositScreen limits in the address sheet", () => {
     const details = await openLimit()
     expect(maxSend(details)).toBe("2,500 USDC")
     // The swap sets the DAI credited, so no credit is stated.
-    expect(maxCredit(details)).toBe(MAX_SEND_UNAVAILABLE)
-    expect(details.textContent).toContain("USDC is swapped to DAI at the market rate")
+    expect(maxCredit(details)).toBe(copy.UNAVAILABLE)
+    expect(details.textContent).toContain(copy.swapCreditNote("USDC", "DAI"))
   })
 
   describe("shared capacity", () => {
@@ -330,7 +325,7 @@ describe("DepositScreen limits in the address sheet", () => {
       await openSheet()
       await openDrawer()
       expect(limitNow()).toBe("Could not check")
-      expect(capacityNote()?.textContent).toContain("Capacity could not be checked.")
+      expect(capacityNote()?.textContent).toContain(copy.CAPACITY_UNAVAILABLE)
       await act(async () => copyButton()!.click())
       expect(warningDialog()).toBeNull()
       expect(navigator.clipboard.writeText).toHaveBeenCalledTimes(1)
@@ -366,9 +361,7 @@ describe("DepositScreen limits in the address sheet", () => {
       for (let i = 0; i < 3; i++) await act(async () => {})
       expect(
         aboutLimits()!.querySelector("[data-testid='address-capacity-swap']")?.textContent,
-      ).toBe(
-        "Maximum send amount for current capacity unavailable: the DAI credited from USDC is set by the swap.",
-      )
+      ).toBe(copy.swapCapacityNote("DAI", "USDC"))
     })
   })
 })

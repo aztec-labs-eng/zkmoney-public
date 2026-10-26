@@ -8,7 +8,9 @@
  * migration-detected modal shows iff any historic deployment reports residuals — re-checked every
  * boot until drained, so there is no persisted "seen" state to go stale. On a frozen portal the
  * balance and the deposits are what is still refundable: a refund pays on L1 and leaves the L2
- * notes in place, and a deposit claimed on L2 after the freeze still refunds.
+ * notes in place, and a deposit claimed on L2 after the freeze still refunds. The balance takes in
+ * the open payment links, whose escrows refund to L1 too, so their rows start no L2 reclaim: notes
+ * a reclaim makes after the freeze are outside the frozen snapshot.
  *
  * Each probe runs in its own try/catch: one failing deployment or probe must not hide residuals
  * the other probes found. A failed balance read or SIPA scan is reported as `incomplete`, so an
@@ -19,7 +21,6 @@ import type { FrozenDepositDescriptor, OxideEnvTuple } from "@obsidion/core/type
 import { TokenService, type ObsidionWallet } from "@obsidion/sdk"
 import type { Account } from "@aztec/aztec.js/account"
 import {
-  createRefundDepositL1Reads,
   scanRefundableDeposits,
   scanSweptDeposits,
   paylinkRefundEligibility,
@@ -38,7 +39,10 @@ export function countPendingWithdrawals(records: readonly WithdrawalRecord[]): n
 
 export interface HistoricResidualSummary {
   tuple: OxideEnvTuple
-  /** Private balance on the historic l2Token (raw units); on a frozen portal, the refundable notes. */
+  /**
+   * Private balance on the historic l2Token (raw units). On a frozen portal, the refundable notes:
+   * the account's and its open payment links'.
+   */
   balance: bigint
   frozen: boolean
   /** Swept SIPA deposits still unclaimed on L2, or on a frozen portal still refundable. */
@@ -55,6 +59,11 @@ export interface HistoricResidualSummary {
   paylinkEscrows: number
   /** Creator paylinks on the historic token still inside their claim window — not refundable yet. */
   lockedPaylinks: PaylinkTransaction[]
+  /**
+   * Creator paylink rows on a historic token that is frozen, or whose freeze state the probe could
+   * not read: they leave the pending lane. A live portal's next probe records them again.
+   */
+  frozenLinks: PaylinkTransaction[]
   /** Every still-escrowed creator paylink on the historic token, window state aside — the pending lane's input. */
   paylinkCandidates: PaylinkTransaction[]
   incomplete: boolean
@@ -73,20 +82,18 @@ export interface HistoricResidualDeps {
     tuple: OxideEnvTuple,
     depositDescriptors: () => Promise<FrozenDepositDescriptor[]>,
   ): Promise<
-    { notes: bigint; deposits: number; waiting: number; waitingAmount: bigint } | undefined
+    | { notes: bigint; links: bigint; deposits: number; waiting: number; waitingAmount: bigint }
+    | undefined
   >
   /**
-   * Chain/PXE-only SIPA discovery for one historic deployment. The caller binds note sync, the
-   * retiring token balance, and the L2 nullifier check because those need the unlocked wallet/node.
+   * Chain/PXE-only SIPA discovery for one historic deployment. The caller binds note sync and the
+   * L2 nullifier check because those need the unlocked wallet/node.
    */
   sipaDiscovery?: {
     sources(tuple: OxideEnvTuple): Promise<readonly RefundableSipaSource[]>
     scanRange(tuple: OxideEnvTuple): Promise<{ fromBlock: bigint; toBlock: bigint }>
-    balance(tuple: OxideEnvTuple, sipaAddress: string): Promise<bigint>
-    claimed(
-      tuple: OxideEnvTuple,
-      deposit: RefundableDeposit<{ toString(): string }>,
-    ): Promise<boolean>
+    /** Which of `deposits` are already spent on L2, in one batch. */
+    consumed(tuple: OxideEnvTuple, deposits: readonly RefundableDeposit[]): Promise<boolean[]>
   }
   /**
    * Chain-tip seconds for the claim window, or null when the tip was unreadable: paylinks are then
@@ -97,7 +104,7 @@ export interface HistoricResidualDeps {
 
 /** Rows attributable to a historic deployment: tokenAddress match, or (legacy rows without one)
  *  created before the current deployment existed. */
-function isHistoricPaylinkRow(
+export function isHistoricPaylinkRow(
   row: PaylinkTransaction,
   tuple: OxideEnvTuple,
   currentTimestampMs: number,
@@ -116,27 +123,32 @@ export async function probeHistoricResiduals(
     deps.historic.map(async (tuple) => {
       let balance = 0n
       let frozen = false
+      // The frozen read failed, so the portal's state is unknown.
+      let frozenUnknown = false
       let incomplete = false
       let sweptDeposits = 0
       let inTransitDeposits = 0
       let inTransitAmount = 0n
       let waitingDeposits = 0
       let waitingAmount = 0n
+      // One observation of the deployment's portal over its whole life.
+      const target = async () => {
+        const range = await deps.sipaDiscovery!.scanRange(tuple)
+        return {
+          publicClient: deps.publicClient,
+          portal: tuple.portal as Address,
+          token: tuple.token as Address,
+          fromBlock: range.fromBlock,
+          head: range.toBlock,
+        }
+      }
       // A frozen portal refunds a deposit whatever its L2 state, so its scan skips the claim check.
       let swept: ReturnType<typeof scanSweptDeposits> | undefined
       const sweptScan = () =>
         (swept ??= (async () => {
           const sources = (await deps.sipaDiscovery?.sources(tuple)) ?? []
           if (!sources.length) return { descriptors: [], inTransit: [] }
-          return scanSweptDeposits({
-            sources,
-            l1Reads: createRefundDepositL1Reads(
-              deps.publicClient,
-              tuple.portal as Address,
-              await deps.sipaDiscovery!.scanRange(tuple),
-            ),
-            readSipaBalance: (address: string) => deps.sipaDiscovery!.balance(tuple, address),
-          })
+          return scanSweptDeposits(await target(), sources)
         })())
       try {
         const refundable = await deps.frozenSource?.(
@@ -145,7 +157,7 @@ export async function probeHistoricResiduals(
         )
         frozen = refundable !== undefined
         if (refundable !== undefined) {
-          balance = refundable.notes
+          balance = refundable.notes + refundable.links
           sweptDeposits = refundable.deposits
           waitingDeposits = refundable.waiting
           waitingAmount = refundable.waitingAmount
@@ -155,6 +167,7 @@ export async function probeHistoricResiduals(
         }
       } catch (error) {
         incomplete = true
+        frozenUnknown = true
         console.warn(`[migration] frozen probe failed for historic portal ${tuple.portal}:`, error)
       }
       const live = !frozen && !incomplete
@@ -180,18 +193,9 @@ export async function probeHistoricResiduals(
         try {
           const sources = await deps.sipaDiscovery.sources(tuple)
           if (sources.length > 0) {
-            const scan = await scanRefundableDeposits({
-              sources,
-              l1Reads: createRefundDepositL1Reads(
-                deps.publicClient,
-                tuple.portal as Address,
-                await deps.sipaDiscovery.scanRange(tuple),
-              ),
-              readErrorsThrow: true,
-              readSipaBalance: (address: string) => deps.sipaDiscovery!.balance(tuple, address),
-              isClaimed: (deposit: RefundableDeposit<{ toString(): string }>) =>
-                deps.sipaDiscovery!.claimed(tuple, deposit),
-            })
+            const scan = await scanRefundableDeposits(await target(), sources, (deposits) =>
+              deps.sipaDiscovery!.consumed(tuple, deposits),
+            )
             sweptDeposits = scan.refundable.length
             inTransitDeposits = scan.inTransit.length
             inTransitAmount = scan.inTransit.reduce((sum, d) => sum + d.balance, 0n)
@@ -205,10 +209,16 @@ export async function probeHistoricResiduals(
       let paylinkEscrows = 0
       const lockedPaylinks: PaylinkTransaction[] = []
       const paylinkCandidates: PaylinkTransaction[] = []
+      const frozenLinks: PaylinkTransaction[] = []
       try {
         for (const row of deps.rows) {
           const p = row as PaylinkTransaction
           if (!isHistoricPaylinkRow(p, tuple, currentTimestampMs)) continue
+          // A portal whose state is unknown may be frozen, so its rows start no reclaim either.
+          if (frozen || frozenUnknown) {
+            frozenLinks.push(p)
+            continue
+          }
           // Still escrowed: every rejection except the window itself means the escrow is gone.
           const atZero = paylinkRefundEligibility(p, 0)
           if (!atZero.eligible && atZero.reason !== "within-window") continue
@@ -242,6 +252,7 @@ export async function probeHistoricResiduals(
         paylinkEscrows,
         lockedPaylinks,
         paylinkCandidates,
+        frozenLinks,
         incomplete,
         hasResiduals:
           balance > 0n ||

@@ -6,6 +6,7 @@ import {
   settleSavingsMove,
   type SavingsMoveSettleDeps,
 } from "../../../oxide/savingsMoves"
+import { logger } from "src/utils/logger"
 import type { WithdrawalRecord } from "../bridge/types"
 import type { SavingsMoveStorage } from "./SavingsMoveStorage"
 import type { SavingsMoveRecord } from "./types"
@@ -63,17 +64,26 @@ function scanRange(current: ScanRange, pass: ScanRange): ScanRange {
 }
 
 export interface SavingsSettlePassDeps extends SavingsMoveSettleDeps {
-  /** What a quote-less move should land; see `expectedSavingsNet`. */
-  expectedNet?: (move: SavingsMoveRecord, burn: WithdrawalRecord) => Promise<bigint>
+  /** Re-reads the balances, so a claim stored now shows in its destination's balance. */
+  refreshBalance?: () => Promise<void>
 }
 
-/** The pass running on each store, so a caller during a pass joins it. */
-const passes = new WeakMap<SavingsMoveStorage, Promise<void>>()
+type PassArgs = Parameters<typeof settlePass> extends [SavingsMoveStorage, ...infer Rest]
+  ? Rest
+  : never
+
+/** The pass running on each store, and the one queued behind it with the latest caller's inputs. */
+const running = new WeakMap<SavingsMoveStorage, Promise<void>>()
+type QueuedPass = { args: PassArgs; promise: Promise<void> }
+const queued = new WeakMap<SavingsMoveStorage, QueuedPass>()
 
 /**
  * One pass over every pending move: adopt the ones only the burn records know, then find and claim
  * each one's deposit. A burn that failed is left alone; it funded nothing. Each pass leaves what it
- * found on the record, so a row can say why the move still waits. One pass runs per store at a time.
+ * found on the record, so a row can say why the move still waits. A claim stored now keeps when, and
+ * the balances are read at once; until its destination's balance is read after it, the move still
+ * counts as funds on their way. One pass runs per store at a time; a caller during a pass gets the
+ * next one, which runs on the latest caller's withdrawals, so a burn rebuilt mid-pass is adopted.
  */
 export function settleSavingsMoves(
   store: SavingsMoveStorage,
@@ -83,12 +93,32 @@ export function settleSavingsMoves(
   onClaimError: (move: SavingsMoveRecord, error: unknown) => void = () => {},
   now: () => number = Date.now,
 ): Promise<void> {
-  const running = passes.get(store)
-  if (running) return running
-  const pass = settlePass(store, deps, withdrawals, onClaimError, now).finally(() =>
-    passes.delete(store),
-  )
-  passes.set(store, pass)
+  const args: PassArgs = [deps, withdrawals, onClaimError, now]
+  const next = queued.get(store)
+  if (next) {
+    next.args = args
+    return next.promise
+  }
+  const current = running.get(store)
+  if (!current) return run(store, args)
+  const pass: QueuedPass = {
+    args,
+    promise: current
+      .catch(() => {})
+      .then((): Promise<void> => {
+        queued.delete(store)
+        return run(store, pass.args)
+      }),
+  }
+  queued.set(store, pass)
+  return pass.promise
+}
+
+function run(store: SavingsMoveStorage, args: PassArgs): Promise<void> {
+  const pass = settlePass(store, ...args).finally(() => {
+    if (running.get(store) === pass) running.delete(store)
+  })
+  running.set(store, pass)
   return pass
 }
 
@@ -101,19 +131,6 @@ async function settlePass(
 ): Promise<void> {
   await store.load()
   await adoptSavingsMoves(store, withdrawals)
-  // A move adopted from a rescan has no quote: what it should land is priced from its burn. A read
-  // that fails is tried again next pass.
-  if (deps.expectedNet)
-    for (const record of store.list()) {
-      const priced = record.net !== undefined || record.expectedNet !== undefined
-      if (priced || record.deposit || !isSavingsMovePending(record)) continue
-      const burn = withdrawals.find((w) => w.localId === record.withdrawalLocalId)
-      if (!burn?.skyMove || burn.phase === "failed") continue
-      const expectedNet = await deps.expectedNet(record, burn).catch(() => undefined)
-      const current = store.get(record.withdrawalLocalId)
-      if (expectedNet !== undefined && current)
-        await store.put({ ...current, expectedNet: expectedNet.toString() })
-    }
   // A rebuilt burn whose block time could not be read carries the rebuild's clock, which is after
   // the deposit: the search's floor must come from the destination instead.
   const startedAtOf = (record: SavingsMoveRecord) =>
@@ -184,13 +201,17 @@ async function settlePass(
         })
       continue
     }
-    const { move, claimError } = settled
+    const { move, claimError, stored } = settled
     if (claimError) onClaimError(record, claimError)
     // A claim another writer recorded meanwhile stands, and so does a better search range: neither
     // is written back. A move removed meanwhile stays removed.
     const current = store.get(record.withdrawalLocalId)
     if (!current) continue
-    const deposit = current.deposit?.claimed ? current.deposit : move.deposit
+    const deposit = current.deposit?.claimed
+      ? current.deposit
+      : move.deposit && stored
+      ? { ...move.deposit, storedAt: now() }
+      : move.deposit
     const range = scanRange(current, move)
     const lastCheck = {
       at: now(),
@@ -212,5 +233,9 @@ async function settlePass(
       lastCheck,
       ...(deposit?.claimed ? { endTime: current.endTime ?? now() } : {}),
     })
+    if (stored)
+      await deps
+        .refreshBalance?.()
+        .catch((err: unknown) => logger.warn("[settleSavingsMoves] balance refresh failed:", err))
   }
 }

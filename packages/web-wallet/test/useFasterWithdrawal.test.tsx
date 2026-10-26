@@ -101,6 +101,7 @@ describe("useFasterWithdrawal", () => {
       standardEtaSeconds: 2_700,
       tippedEtaSeconds: 1_500,
       worstSpeedupSeconds: 1_200,
+      measured: true,
     })
   })
 
@@ -111,6 +112,7 @@ describe("useFasterWithdrawal", () => {
       standardEtaSeconds: 2_700,
       tippedEtaSeconds: 2_700,
       worstSpeedupSeconds: 0,
+      measured: true,
     })
   })
 

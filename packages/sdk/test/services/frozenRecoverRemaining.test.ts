@@ -20,7 +20,6 @@ vi.mock("../../src/services/migrationDeposit.js", () => ({
     resolution: { messageSecret: { day, nonce } },
   }),
   migrationDepositCalls: async () => [],
-  receiveMigrationSweeps: chain.received,
 }))
 vi.mock("@oxide/oxide-client/broadcaster_calls.js", () => ({
   broadcastL1Operation: () => ({ request: async () => ({ calls: [] }) }),
@@ -43,12 +42,21 @@ const deposit = (id: string, amount = 20n * TIP) => ({
   kind: "frozen-deposit" as const,
 })
 
+const link = (id: string) => ({
+  id,
+  amount: String(20n * TIP),
+  kind: "escrow-note" as const,
+  owner: "0x0a",
+})
+
 function fixture(
-  candidates: { id: string; amount: string; kind: "note" | "frozen-deposit" }[] = [
-    deposit("a"),
-    deposit("b"),
-    deposit("c"),
-  ],
+  candidates: {
+    id: string
+    amount: string
+    kind: "note" | "frozen-deposit" | "escrow-note"
+    owner?: string
+  }[] = [deposit("a"), deposit("b"), deposit("c")],
+  hooks: { depositSettled?(recipient: string): Promise<boolean> } = {},
 ) {
   const saved = new Map<string, MigrationFundingBatch>()
   const order: string[] = []
@@ -76,11 +84,14 @@ function fixture(
       maxNotesPerBatch: 2,
       maxBatchAmount: 1000n * TIP,
       candidates: candidates.filter((c) => !spent.has(c.id)),
+      waiting: 7n,
     })),
     build,
     refunded: vi.fn(async (ids: string[]) => ids.every((id) => spent.has(id))),
   }
   const options = {
+    received: chain.received,
+    ...hooks,
     runtime,
     destinationAsset: "0x0000000000000000000000000000000000000001",
     destination: { portal: "0x01", factory: "0x01", rollupVersion: 5n },
@@ -117,6 +128,14 @@ describe("proving every later batch up front", () => {
       "build c after 3 saved",
     ])
     expect([...f.saved.values()].every((b) => b.approved && b.day !== undefined)).toBe(true)
+  })
+
+  it("records what each batch's deposit pays on the destination", async () => {
+    const f = fixture()
+
+    await f.make().prepareRemaining(3n, { depositFee: 2n })
+
+    expect([...f.saved.values()].map((b) => b.depositFee)).toEqual(["2", "2", "2"])
   })
 
   it("resumes a refused approval with the same batches, unapproved ones first", async () => {
@@ -320,6 +339,50 @@ describe("sending the planned batches", () => {
   })
 })
 
+describe("payment links", () => {
+  it("counts no approval for a link's batch, and proves it after the account's", async () => {
+    const f = fixture([link("l")])
+    f.build.mockRejectedValueOnce(new Error("source node down"))
+    await expect(f.make().prepareRemaining(3n)).rejects.toThrow("source node down")
+    f.candidates.push(deposit("a"))
+    const progress: [number, number][] = []
+
+    await f.make().prepareRemaining(3n, {
+      onApproval: async (approved, total) => void progress.push([approved, total]),
+    })
+
+    expect(f.order.map((o) => o.split(" ")[1])).toEqual(["a", "l"])
+    expect(progress).toEqual([
+      [0, 1],
+      [1, 1],
+      [1, 1],
+    ])
+  })
+
+  it("counts only the account's approvals beside a proven link batch, and once it is abandoned", async () => {
+    const f = fixture([link("l")])
+    await f.make().prepareRemaining(3n)
+    expect(f.saved.get("remaining-0")).toMatchObject({ approved: true })
+    f.candidates.push(deposit("a"))
+    const progress: [number, number][] = []
+    const onApproval = async (approved: number, total: number) =>
+      void progress.push([approved, total])
+
+    await f.make().prepareRemaining(3n, { onApproval })
+    f.spent.add("l")
+    await f.make().prepareRemaining(3n, { onApproval })
+
+    expect(f.saved.get("remaining-0")).toMatchObject({ abandoned: true })
+    expect(progress).toEqual([
+      [0, 1],
+      [1, 1],
+      [1, 1],
+      [1, 1],
+      [1, 1],
+    ])
+  })
+})
+
 describe("reconciling sent batches", () => {
   it("takes a spent refund nullifier as the refund, even after its carrier reverted", async () => {
     const f = fixture([deposit("a")])
@@ -362,5 +425,79 @@ describe("reconciling sent batches", () => {
     f.receipt.mockResolvedValue({ executionResult: TxExecutionResult.REVERTED })
 
     await expect(source.reconcileRemaining()).rejects.toThrow("reverted")
+  })
+})
+
+describe("counting what the source holds", () => {
+  it("counts every refundable fund and waiting deposit", async () => {
+    const f = fixture([deposit("a"), deposit("dust", TIP)])
+
+    expect(await f.make().holdings()).toBe(21n * TIP + 7n)
+  })
+})
+
+describe("settling a batch whose deposit is not credited", () => {
+  function recovering(candidates = [deposit("a")]) {
+    const recovered = new Set<string>()
+    const f = fixture(candidates, { depositSettled: async (r) => recovered.has(r) })
+    const recover = (id: string) => recovered.add(f.saved.get(id)!.recipient)
+    return { ...f, recover }
+  }
+
+  it("completes once a refunded batch's deposit was recovered to Ethereum", async () => {
+    const f = recovering()
+    const source = f.make()
+    await source.prepareRemaining(3n)
+    await source.recoverRemaining()
+    f.spent.add("a")
+    f.recover("remaining-0")
+
+    await source.reconcileRemaining()
+
+    expect(await source.remainingComplete()).toBe(true)
+    expect(chain.received).not.toHaveBeenCalled()
+    expect(f.saved.get("remaining-0")!.received).toBeUndefined()
+  })
+
+  it("asks for the user's approval when funds reach the source after a recovered batch", async () => {
+    const f = recovering()
+    const source = f.make()
+    await source.prepareRemaining(3n)
+    await source.recoverRemaining()
+    f.spent.add("a")
+    f.recover("remaining-0")
+    f.candidates.push(deposit("late"))
+    const sends = f.sendTx.mock.calls.length
+
+    await expect(f.make().recoverRemaining()).rejects.toBeInstanceOf(ApprovalNeededError)
+
+    expect(f.sendTx).toHaveBeenCalledTimes(sends)
+  })
+
+  it("completes on a deposit settled only after its refund was seen", async () => {
+    const f = recovering()
+    const source = f.make()
+    await source.prepareRemaining(3n)
+    await source.recoverRemaining()
+    f.spent.add("a")
+
+    await source.reconcileRemaining()
+    expect(await source.remainingComplete()).toBe(false)
+
+    f.recover("remaining-0")
+    await source.reconcileRemaining()
+    expect(await source.remainingComplete()).toBe(true)
+  })
+
+  it("never takes a settled deposit for a batch whose refund has not executed", async () => {
+    const f = recovering()
+    const source = f.make()
+    await source.prepareRemaining(3n)
+    await source.recoverRemaining()
+    f.recover("remaining-0")
+
+    await source.reconcileRemaining()
+
+    expect(await source.remainingComplete()).toBe(false)
   })
 })

@@ -664,6 +664,11 @@ function notify(hook: PasskeyRequestHook | undefined, signal: () => PasskeyReque
 /** How long the browser held each rejected request, keyed by the error the ceremony threw for it. */
 const heldFor = new WeakMap<object, number>()
 
+/** Records how long the browser held the request `error` came from; a non-object records nothing. */
+export function recordRequestHeld(error: unknown, heldMs: number): void {
+  if (typeof error === "object" && error !== null) heldFor.set(error, heldMs)
+}
+
 /**
  * How long the browser held the request `error` came from, issue to rejection; undefined for an
  * error no request threw. Waits before the issue, for the tab or for focus, are not counted.
@@ -672,13 +677,27 @@ export function requestHeldMs(error: unknown): number | undefined {
   return typeof error === "object" && error !== null ? heldFor.get(error) : undefined
 }
 
+/** A refusal held shorter than this came back before any prompt could have opened. */
+export const BLOCKED_PROMPT_MS = 1_000
+
+/**
+ * Whether `error` is a `NotAllowedError` the browser returned before a prompt could open, read from
+ * its own hold or its `cause`'s. Windows refuses at once while another passkey dialog is open
+ * anywhere in the session, another browser included. A very quick cancel reads the same.
+ */
+export function isBlockedPromptError(error: unknown): boolean {
+  if (describeError(error).name !== "NotAllowedError") return false
+  const held = requestHeldMs(error) ?? requestHeldMs((error as { cause?: unknown }).cause)
+  return held !== undefined && held < BLOCKED_PROMPT_MS
+}
+
 async function withRpError<T>(rpId: string, request: () => Promise<T>): Promise<T> {
   const issuedAt = Date.now()
   try {
     return await request()
   } catch (error) {
     const thrown = rpErrorFor(rpId, error)
-    if (typeof thrown === "object" && thrown !== null) heldFor.set(thrown, Date.now() - issuedAt)
+    recordRequestHeld(thrown, Date.now() - issuedAt)
     throw thrown
   }
 }

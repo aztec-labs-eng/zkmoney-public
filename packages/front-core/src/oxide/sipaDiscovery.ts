@@ -8,10 +8,10 @@
  *      reads) and pick the one matching the live manifest portal,
  *   2. register the broadcast account as a discovery sender (v5:
  *      `registerTaggingSecretSource`; 4.3.0: `registerSender` — duck-typed),
- *   3. `pxe.registerContract(Broadcaster)` — instance from the node at the
- *      manifest's `l2Broadcaster`, artifact bundled via `@obsidion/contracts`
- *      (class-id parity pinned by the drift sentinel test there) — so the
- *      wallet can broadcast its own SIPAs' sweeps.
+ *   3. register the Broadcaster at the manifest's `l2Broadcaster` unless the PXE
+ *      already holds it, artifact bundled via `@obsidion/contracts` (class-id
+ *      parity pinned by the drift sentinel test there) — so the wallet can
+ *      broadcast its own SIPAs' sweeps.
  *
  * Pure over injected collaborators (narrow PXE/node surfaces, viem client,
  * resolved tuple, network) so the sequence is testable without a PXE or RPC.
@@ -21,18 +21,17 @@
 import { AztecAddress } from "@aztec/aztec.js/addresses"
 import type { ContractArtifact } from "@aztec/stdlib/abi"
 import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
-import type { PublicClient } from "viem"
+import type { Address, PublicClient } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   Network,
-  fetchSipaResolverOperators,
+  ensureContractRegisteredInPXE,
+  getBroadcasterArtifact,
   resolverSelectionPolicy,
   selectManifestResolverOperator,
   type SipaResolverOperatorRecord,
 } from "@obsidion/sdk"
-import { deploymentScanRange } from "./deploymentScanRange"
-import { getGenerationBroadcasterArtifact } from "./generationBroadcasterArtifact"
-import { canonicalGenerationStack } from "src/core"
+import { readResolverOperatorRecords } from "./resolverOperatorRecords"
 
 /** The narrow PXE surface the setup drives. Registration shape is per-generation:
  * the 4.3.0 PXE takes the combined `{ instance, artifact }`, the v5 PXE splits
@@ -50,6 +49,8 @@ export interface SipaDiscoveryPxe {
       | ContractInstanceWithAddress
       | { instance: ContractInstanceWithAddress; artifact: ContractArtifact },
   ): Promise<unknown>
+  getContractInstance?(address: AztecAddress): Promise<unknown>
+  getContractArtifact?(classId: unknown): Promise<unknown>
 }
 
 /** The narrow node surface the setup drives. */
@@ -105,14 +106,13 @@ export async function setupSipaDiscovery(deps: {
     )
   }
 
-  // sdk's reads are typed against @aztec/viem; a plain-viem client is
-  // runtime-identical but nominally distinct to tsc — bridge at the call boundary.
-  const records = await fetchSipaResolverOperators(
-    publicClient as unknown as Parameters<typeof fetchSipaResolverOperators>[0],
-    accountMetadataRegistry as Parameters<typeof fetchSipaResolverOperators>[1],
-    // The retired tuple's own window: it starts before the live deployment, so the fallback
-    // record is inside it too.
-    await deploymentScanRange(publicClient, tuple, deps.scanHead),
+  // The retired tuple's own window: it starts before the live deployment, so the fallback record
+  // is inside it too.
+  const records = await readResolverOperatorRecords(
+    publicClient,
+    accountMetadataRegistry as Address,
+    tuple,
+    deps.scanHead,
   )
   // updateResolverOperator is permissionless, so match the gateway URL too and apply the
   // shared per-network anti-squatter policy — a squatter can copy every record
@@ -135,19 +135,9 @@ export async function setupSipaDiscovery(deps: {
   if (deps.sponsorFpc) await registerSender(pxe, deps.sponsorFpc)
 
   const broadcaster = AztecAddress.fromStringUnsafe(l2Broadcaster)
-  const instance = await node.getContract(broadcaster)
-  if (!instance) {
-    throw new Error(`Broadcaster instance not found at ${l2Broadcaster}`)
-  }
-  const artifact = deps.artifactFor
-    ? await deps.artifactFor(broadcaster)
-    : await getGenerationBroadcasterArtifact()
-  if (canonicalGenerationStack() === "v4") {
-    await pxe.registerContract({ instance, artifact })
-  } else {
-    await pxe.registerContractClass(artifact)
-    await pxe.registerContract(instance)
-  }
+  await ensureContractRegisteredInPXE(pxe, node, broadcaster, () =>
+    deps.artifactFor ? deps.artifactFor(broadcaster) : getBroadcasterArtifact(),
+  )
 
   return { resolver, broadcaster }
 }

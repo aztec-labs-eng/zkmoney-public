@@ -40,7 +40,8 @@ export async function saveUnsavedContact(contact: Contact): Promise<"added" | "c
   const fresh = await resolveTagForCommit(tag)
   if (fresh.status !== "resolved" || fresh.l2Address !== contact.address) return "changed"
   const entries = await ContactStorage.get().getEntries()
-  if (entries.some((e) => e.tag === tag)) return "added"
+  // A row the wallet added is approved by the add below.
+  if (entries.some((e) => e.tag === tag && !e.autoAdded)) return "added"
   const saved = await addContact(tag, contact.address, undefined, undefined, tag)
   if (!saved.success) throw new Error(saved.errors ?? "Could not add contact")
   return "added"

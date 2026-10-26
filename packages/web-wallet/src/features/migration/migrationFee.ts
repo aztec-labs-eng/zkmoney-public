@@ -5,18 +5,14 @@
  * back, so the net is an estimate.
  */
 import { formatUnits, type Address } from "viem"
-import {
-  DEFAULT_DECIMALS,
-  quotedDepositFee,
-  WITHDRAW_RELAYER_TIP,
-} from "@obsidion/core/constants"
+import { DEFAULT_DECIMALS, quotedDepositFee, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   depositSipaImplementation,
+  implementationDepositFee,
   withdrawalAmounts,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
-import { readDepositFee } from "@obsidion/sdk"
 import { getConfig } from "../../config/env"
 import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { fpcFundingCut } from "../fees/fpcFundingCut"
@@ -38,7 +34,7 @@ export async function loadMigrationFee(
       publicClient,
       requireTupleField(current, "sipaFactory") as Address,
       requireTupleField(current, "portal") as Address,
-    ).then((implementation) => readDepositFee(publicClient, implementation)),
+    ).then((implementation) => implementationDepositFee(publicClient, implementation)),
     fpcFundingCut(publicClient, requireTupleField(current, "portal") as Address),
   ])
   return {

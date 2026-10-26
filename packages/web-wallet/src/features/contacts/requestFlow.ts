@@ -50,15 +50,15 @@ export interface AnnounceDeps {
   token: { address: string; symbol?: string; decimals: number }
 }
 
-/** Best-effort announce of a persisted outgoing row. Never throws. */
+/** Best-effort announce of a persisted outgoing row: whether it reached the payer. Never throws. */
 export async function announceOutgoingRequest(
   request: PaymentRequest,
   deps: AnnounceDeps,
-): Promise<void> {
+): Promise<boolean> {
   try {
     const xmtpAddress = await deps.resolveXmtpAddress(request.contactTag)
-    if (!xmtpAddress) return
-    await deps.broadcaster.announce({
+    if (!xmtpAddress) return false
+    const status = await deps.broadcaster.announce({
       recipientXmtpAddress: xmtpAddress,
       requestId: request.id,
       requesterTag: deps.requesterTag,
@@ -70,8 +70,10 @@ export async function announceOutgoingRequest(
       note: request.note,
       expiresAt: request.expiresAt,
     })
+    return status.status === "sent"
   } catch (err) {
     console.warn("[requestFlow] announce failed", err)
+    return false
   }
 }
 

@@ -669,6 +669,7 @@ async function main() {
     }
     assert.throws(() => l1Bridge.create({ tx: { ...validTx, to: "nope" }, display: validDisplay }))
     assert.throws(() => l1Bridge.create({ tx: { ...validTx, chainId: 0 }, display: validDisplay }))
+    assert.throws(() => l1Bridge.create({ tx: { ...validTx, from: "nope" }, display: validDisplay }))
     assert.throws(() => l1Bridge.create({ tx: validTx, display: { title: "x", lines: [["one"]] } }))
 
     const createResponse = await request(port, hostname, "/desktop/l1-submit", {
@@ -1040,6 +1041,15 @@ async function main() {
     assert.match(approvedClick.document.body.innerHTML, /Sent/)
     assert.doesNotMatch(approvedClick.document.body.innerHTML, /arrive/)
     assert.equal(l1Bridge.get(approvedId).state, "submitted")
+
+    // a pinned payer: any other account is refused before the wallet is asked anything else
+    const pinnedId = l1Bridge.create({
+      tx: { ...validTx, from: "0x" + "11".repeat(20) },
+      display: validDisplay,
+    }).id
+    const pinnedClick = await clickSend(pinnedId)
+    assert.deepEqual(pinnedClick.walletCalls, ["eth_requestAccounts"])
+    assert.match(pinnedClick.status, /^Switch your wallet to 0x1111/)
 
     // refusal: no send, the button stays disabled, the reason is shown as one sentence
     const refusedId = recheckRecord()

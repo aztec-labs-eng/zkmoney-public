@@ -306,7 +306,7 @@ describe("SharePaylinkModal", () => {
             timestampMs: NOW,
             direction: "in",
           }}
-          reminded={false}
+          remind="idle"
           onDecline={() => {}}
           onSend={() => {}}
           onCancel={onCancel}

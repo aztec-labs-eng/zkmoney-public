@@ -7,7 +7,6 @@ import { describe, expect, it } from "vitest"
 import { deriveAllowanceState, type AllowanceSnapshot } from "@obsidion/front-core"
 import type { ClaimFpcAllowance } from "@obsidion/sdk"
 import {
-  ALLOWANCE_SCOPE,
   allowanceView,
   formatPeriod,
   sponsoredActionBlock,
@@ -87,12 +86,6 @@ describe("allowanceView", () => {
       true,
     )
     expect(allowanceView(ready({})).retry).toBe(false)
-  })
-
-  it("explains the allowance counts transactions, not their value", () => {
-    expect(ALLOWANCE_SCOPE).toMatch(/counts transactions, not their value/)
-    expect(ALLOWANCE_SCOPE).toMatch(/deposit addresses/)
-    expect(ALLOWANCE_SCOPE.replace("zk.money", "")).not.toMatch(/money/i)
   })
 })
 

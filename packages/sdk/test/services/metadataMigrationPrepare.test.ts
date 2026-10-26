@@ -193,6 +193,41 @@ describe("preparing an upgrade", () => {
     })
   })
 
+  it("counts no approval for a batch that asks none", async () => {
+    const { service, source } = fixture()
+    Object.assign(source, {
+      quote: async () => ({ movable: 30n, stranded: 0n, waiting: 0n, batches: 2, approvals: 1 }),
+    })
+    source.prepare.mockImplementation(async (_sipa, _minimum, onSelected) => {
+      await onSelected?.("batch-1")
+      return { id: "batch-1", netAmount: 10n, operation: { proven: true }, asksApproval: false }
+    })
+    source.prepareRemaining.mockImplementation(
+      async (_minimum: bigint, opts: { onApproval(a: number, t: number): Promise<void> }) => {
+        await opts.onApproval(0, 1)
+        await opts.onApproval(1, 1)
+      },
+    )
+    const progress: [number, number][] = []
+
+    const quote = await service.quote()
+    await service.prepare(
+      undefined,
+      async () => {},
+      undefined,
+      async (approved, total) => void progress.push([approved, total]),
+    )
+
+    expect(quote.approvals).toBe(2)
+    expect(progress).toEqual([
+      [0, 2],
+      [1, 2],
+      [1, 2],
+      [1, 2],
+      [2, 2],
+    ])
+  })
+
   it("counts no consent approval for an account that signs it with its bootstrap key", async () => {
     const { service, source } = fixture({ consentPrompts: async () => false })
     Object.assign(source, {
@@ -246,7 +281,10 @@ describe("preparing an upgrade", () => {
 
     const plan = JSON.parse(await service.prepare(undefined, async () => {}))
 
+    // Each batch learns the fee its deposit pays: the update's for the first, the ordinary one after.
+    expect(source.prepare).toHaveBeenCalledWith(expect.anything(), 6n, expect.any(Function), 5n)
     expect(source.prepareRemaining).toHaveBeenCalledWith(3n, {
+      depositFee: 2n,
       exclude: "batch-1",
       reserved: [{ day: plan.day, nonce: plan.nonce }],
       signal: undefined,

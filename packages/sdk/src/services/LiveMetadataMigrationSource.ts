@@ -24,7 +24,6 @@ import { claimFpcSponsoredFee } from "../feePaymentMethod/claimFpcBatchGas.js"
 import {
   migrationDepositCalls,
   migrationSipaCoordinates,
-  receiveMigrationSweeps,
   resolveMigrationDeposit,
   type MigrationDestinationContext,
 } from "./migrationDeposit.js"
@@ -36,6 +35,8 @@ export interface LiveMetadataMigrationSourceOptions
   /** The registered OxideAccount; it recovers every migration SIPA. */
   owner: Address
   source: { tuple: OxideEnvTuple; tokenService: TokenService }
+  /** The destination token, which the source route must deliver to. */
+  tokenService: TokenService
   registered: MetadataMigrationServiceOptions["registered"]
   sourceSponsor(): Promise<ClaimSponsorContext>
   /** front-core owns persistence; the controller holds the account-scoped lock. */
@@ -315,14 +316,7 @@ export class LiveMetadataMigrationSource implements MetadataMigrationSource {
       await this.fund(id, resolved.sipaAddress, signal)
       return
     }
-    if (
-      await receiveMigrationSweeps(
-        this.deposits,
-        resolved.sipaAddress,
-        BigInt(batch.fromBlock),
-        resolved.resolution.messageSecret,
-      )
-    )
+    if (await this.deposits.received(resolved.sipaAddress))
       await o.batches.set(id, { ...batch, received: true })
   }
 

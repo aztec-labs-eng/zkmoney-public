@@ -10,6 +10,16 @@ import { asOperation, endSigningAndHandOff } from "./support/handOff"
 vi.mock("../src/features/operations/operations", async () =>
   (await import("./support/fakeOperations")).fakeOperationsModule(),
 )
+/** Whether a claim must wait for the upgrade, and every action a press asked for. */
+const gate = vi.hoisted(() => ({ upgrade: false, asked: [] as string[] }))
+vi.mock("../src/features/actionGate", () => ({
+  useWalletFrozen: () => false,
+  useActionGuard: () => (action: string, run: () => void) => {
+    gate.asked.push(action)
+    if (!gate.upgrade) run()
+  },
+  useActionVerdict: () => (gate.upgrade ? "upgrade" : "open"),
+}))
 vi.mock("@obsidion/web-ds", () => ({
   ConfirmationSheetDetailRow: ({ label, value }: { label: string; value: React.ReactNode }) => (
     <div>
@@ -73,7 +83,10 @@ vi.mock("@obsidion/front-core", async () => {
     formatDateLabel: () => "Today",
     formatTimeLabel: () => "14:32",
     TxInFlightError: class TxInFlightError extends Error {
-      constructor(readonly txHash: string, cause?: unknown) {
+      constructor(
+        readonly txHash: string,
+        cause?: unknown,
+      ) {
         super(cause instanceof Error ? cause.message : String(cause))
       }
     },
@@ -130,7 +143,17 @@ vi.mock("../src/features/paylink/chainTime", () => ({
 let paylinkDeps: unknown
 vi.mock("../src/features/paylink/usePaylinkDeps", () => ({
   usePaylinkDeps: () => paylinkDeps,
+  // The link's voucher read, which a registration it funds needs for the claim batch.
+  useLinkVoucher: (link: unknown) => ({ uses: voucherPending.value ? undefined : link ? 1 : 0 }),
 }))
+/** The live sweep fee; undefined while it is read. */
+const skim: { value: bigint | undefined } = { value: 5n }
+/** This browser's registrations, as Home loads them. */
+const registrationsLoad: { value: Promise<void> } = { value: Promise.resolve() }
+/** The voucher read has not answered. */
+const voucherPending = { value: false }
+/** Some speed choice was asked to price its tip. */
+const speedActive = { value: false }
 const clearClaimStash = vi.fn()
 /** The visitor page's read of the link, as the ticket marker carries it to Home. */
 const ticketMarker: { value: Record<string, unknown> | null } = { value: null }
@@ -147,7 +170,17 @@ const ticketSignupContinuation = vi.fn(
 )
 /** Listeners on the open registrations; a test fires them as the store would. */
 const registrationListeners = new Set<() => void>()
+const releaseLinkDeposit = vi.fn()
+/** This account's registration still waiting for its deposit, or null. */
+const unfunded: { value: unknown } = { value: null }
+const bindLinkDeposit = vi.fn()
 vi.mock("../src/features/paylink/ticketContinuation", () => ({
+  releaseLinkDeposit: (record: unknown) => releaseLinkDeposit(record),
+  unfundedRegistration: () => unfunded.value,
+  loadRegistrations: () => registrationsLoad.value,
+  fundingRefusalCopy: (e: Error) =>
+    e.name === "RegistrationFundingError" ? "the funding's copy" : undefined,
+  bindLinkDeposit: (...a: unknown[]) => bindLinkDeposit(...a),
   ticketSignupContinuation: (f: string, l2: string | undefined, w: unknown) =>
     ticketSignupContinuation(f, l2, w),
   ticketSignupCommitted: () => committed.value,
@@ -170,14 +203,20 @@ vi.mock("../src/features/broadcasts/useOweRegistrationBroadcast", () => ({
 }))
 
 const withdrawals: { list: unknown[] } = { list: [] }
+/** The burns' load, which a reload has yet to finish. */
+const withdrawalsLoad = vi.fn(async () => {})
 vi.mock("../src/features/withdraw/withdrawGateway", () => ({
-  getWithdrawalStore: () => ({ list: () => withdrawals.list, onListChanged: () => () => {} }),
+  getWithdrawalStore: () => ({
+    list: () => withdrawals.list,
+    load: () => withdrawalsLoad(),
+    onListChanged: () => () => {},
+  }),
 }))
 const navigate = vi.fn()
 vi.mock("react-router-dom", () => ({ useNavigate: () => navigate }))
 const commitTip = vi.fn((_account: string, _tag: string, _tip: bigint) => {})
 vi.mock("../src/features/onboarding/registrationTerms", () => ({
-  useDepositSkim: () => 5n,
+  useDepositSkim: () => skim.value,
   useSweepDeductions: () => ({ skim: 0n, fpcCut: 10n }),
   commitRegistrationProverTip: (account: string, tag: string, tip: bigint) =>
     commitTip(account, tag, tip),
@@ -196,6 +235,7 @@ vi.mock("../src/features/paylink/registrationProverTip", () => ({
     onCommit: (tip: bigint, speed: string) => void
   }) => {
     const tip = active ? reviewTip.value : undefined
+    if (active) speedActive.value = true
     React.useEffect(() => {
       if (tip !== undefined) onCommit(tip, "faster")
     }, [tip])
@@ -209,6 +249,7 @@ vi.mock("../src/features/paylink/registrationProverTip", () => ({
       },
       outcome: { proverTip: 0n },
       proverTip: tip,
+      settle: () => {},
     }
   },
 }))
@@ -226,7 +267,7 @@ vi.mock("../src/features/onboarding/steps/ClaimReviewStep", () => ({
     onClose,
     onHandOff,
   }: {
-    quote?: { paylink?: bigint; youReceive?: bigint; provingFee: bigint }
+    quote?: { paylink?: bigint; youReceive?: bigint; provingFee: bigint; tagWaived?: boolean }
     memo?: string
     error?: string
     notices?: React.ReactNode
@@ -244,6 +285,7 @@ vi.mock("../src/features/onboarding/steps/ClaimReviewStep", () => ({
           ? `paylink ${quote.paylink} receive ${quote.youReceive} proving ${quote.provingFee}`
           : "pricing"}
       </span>
+      {quote?.tagWaived && <span>Free with ticket</span>}
       {memo && <span>{memo}</span>}
       {status && <span>{status}</span>}
       {error && <span role="alert">{error}</span>}
@@ -287,7 +329,9 @@ vi.mock("../src/lib/analytics", () => ({
 const { useClaimLinkFlow, resetRunningClaimsForTests } = await import(
   "../src/features/paylink/useClaimLinkFlow"
 )
-const { takeClaimPromptRequest } = await import("../src/features/paylink/claimPrompt")
+const { setLinkFunding, takeClaimPromptRequest, useLinkFunding } = await import(
+  "../src/features/paylink/claimPrompt"
+)
 const { useAutoClaimHold } = await import("../src/features/paylink/runningClaims")
 const { VoucherReadError } = (await import(
   "../src/features/paylink/sponsoredPaylink"
@@ -330,7 +374,18 @@ function Harness({
   onDone: () => void
   requested?: boolean
 }) {
-  return <div>{useClaimLinkFlow(fragment, onDone, requested).modal}</div>
+  return (
+    <div>
+      {useClaimLinkFlow(fragment, onDone, requested).modal}
+      <FundingProbe />
+    </div>
+  )
+}
+
+/** What the hero is told about the link and the open registration. */
+function FundingProbe() {
+  const funding = useLinkFunding()
+  return <i data-testid="funding" data-state={funding ? funding.state : "none"} />
 }
 
 /** Home's own wiring: the stashed link, and whether an activation surface asked for its review. */
@@ -368,9 +423,17 @@ describe("useClaimLinkFlow", () => {
     chainNowRef.now = 1_000
     isWindowRevert.mockReturnValue(false)
     continuation.value = null
+    unfunded.value = null
     ticketMarker.value = null
+    voucherPending.value = false
+    registrationsLoad.value = Promise.resolve()
+    skim.value = 5n
+    speedActive.value = false
+    setLinkFunding(null)
     fireEvent.mockClear()
     resetRunningClaimsForTests()
+    gate.upgrade = false
+    gate.asked = []
   })
 
   afterEach(() => {
@@ -379,6 +442,8 @@ describe("useClaimLinkFlow", () => {
     vi.clearAllMocks()
   })
 
+  const funding = () =>
+    container.querySelector('[data-testid="funding"]')?.getAttribute("data-state")
   const button = (title: string) =>
     [...container.querySelectorAll("button")].find((b) => b.textContent === title)
   // The value cell of the ConfirmationSheetDetailRow mock.
@@ -651,6 +716,18 @@ describe("useClaimLinkFlow", () => {
     expect(clearClaimStash).toHaveBeenCalledOnce()
   })
 
+  it("asks to upgrade before a claim, to this wallet or to Ethereum", async () => {
+    paylinkDeps = { account: { getAddress: () => "0xme" } }
+    l1Modal.props = undefined
+    gate.upgrade = true
+    await render()
+    await act(async () => button("Accept")!.click())
+    await act(async () => button("Claim to an Ethereum wallet instead")!.click())
+    expect(gate.asked).toEqual(["claim", "claim"])
+    expect(claimSponsoredLink).not.toHaveBeenCalled()
+    expect(l1Modal.props).toBeUndefined()
+  })
+
   it("a second Accept in the same batch does not start a second claim", async () => {
     paylinkDeps = { account: { getAddress: () => "0xme" } }
     let resolveClaim!: (hash: string) => void
@@ -869,6 +946,163 @@ describe("useClaimLinkFlow", () => {
     expect(button("Accept")).toBeDefined()
   })
 
+  describe("an account whose registration still waits for its deposit", () => {
+    const ONE = 10n ** 18n
+    const record = {
+      phase: "awaiting_deposit",
+      account: "0xacct",
+      tag: "brisk-otter",
+      sipaAddress: "0xsipa",
+    }
+    /** A drawn tag's signed deposit: the sweep fee and its minimum. */
+    const waiting = { record, schedule: { fee: ONE / 2n, min: ONE } }
+    const opened = (link: Record<string, unknown> = directLink) => {
+      paylinkDeps = { account: { getAddress: () => "0xme" } }
+      aztec.obsidionWallet = {}
+      contracts.contractService = {}
+      chainNowRef.now = 1_800_000_000
+      viewLink.mockResolvedValue(link)
+      unfunded.value = waiting
+    }
+    const settle = () => act(async () => new Promise((r) => setTimeout(r)))
+
+    it("shows the split the link pays before the claim, then funds the registration with its tip", async () => {
+      opened()
+      await render()
+      await settle()
+      // The review, not the plain prompt: what the registration takes and what the wallet keeps.
+      expect(container.querySelector('[data-testid="claim-review"]')).not.toBeNull()
+      expect(button("Accept")).toBeUndefined()
+      expect(container.textContent).toContain(`paylink ${100n * ONE}`)
+      expect(container.textContent).toContain(`proving ${ONE}`)
+      expect(claimSponsoredLink).not.toHaveBeenCalled()
+      await act(async () => button("Claim")!.click())
+      expect(bindLinkDeposit).toHaveBeenCalledWith(
+        record,
+        { fragment: "frag", amount: 100n * ONE, senderTag: undefined },
+        ONE,
+        "faster",
+      )
+      expect(claimSponsoredLink).toHaveBeenCalledWith(
+        paylinkDeps,
+        "frag",
+        expect.any(Function),
+        undefined,
+        { fundRegistration: true },
+      )
+    })
+
+    it("prices a paid tag at its own signed fee: a golden ticket waives nothing for an entered account", async () => {
+      opened()
+      unfunded.value = {
+        record: { ...record, tag: "maple-paid" },
+        schedule: { fee: 10n * ONE, min: ONE },
+      }
+      await render()
+      await settle()
+      expect(container.textContent).not.toContain("Free with ticket")
+      await act(async () => button("Claim")!.click())
+      expect(bindLinkDeposit).toHaveBeenCalled()
+      expect(claimSponsoredLink).toHaveBeenCalledWith(
+        paylinkDeps,
+        "frag",
+        expect.any(Function),
+        undefined,
+        { fundRegistration: true },
+      )
+    })
+
+    it("tells the hero it is checking until the voucher answers, then that the link pays", async () => {
+      opened()
+      voucherPending.value = true
+      await render()
+      await settle()
+      expect(funding()).toBe("checking")
+      expect(button("Accept")).toBeUndefined()
+      expect(container.querySelector('[data-testid="claim-review"]')).toBeNull()
+      // The tip is priced beside the voucher read, not after it.
+      expect(speedActive.value).toBe(true)
+      expect(bindLinkDeposit).not.toHaveBeenCalled()
+      voucherPending.value = false
+      await render()
+      await settle()
+      expect(funding()).toBe("review")
+      expect(container.querySelector('[data-testid="claim-review"]')).not.toBeNull()
+    })
+
+    it("chooses nothing before the sweep fee is read", async () => {
+      opened()
+      skim.value = undefined
+      await render()
+      await settle()
+      expect(container.querySelector('[data-testid="claim-review"]')).toBeNull()
+      expect(funding()).toBe("checking")
+      skim.value = 5n
+      await render()
+      await settle()
+      expect(container.querySelector('[data-testid="claim-review"]')).not.toBeNull()
+    })
+
+    it("a decision past its time decides only its own link", async () => {
+      vi.useFakeTimers()
+      try {
+        opened()
+        skim.value = undefined
+        await render()
+        await act(async () => vi.advanceTimersByTimeAsync(15_000))
+        expect(button("Accept")).toBeDefined()
+        await render("frag-b")
+        await act(async () => vi.advanceTimersByTimeAsync(0))
+        expect(button("Accept")).toBeUndefined()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it("closes the review without dropping the link, and the hero still leads back to it", async () => {
+      opened()
+      await render()
+      await settle()
+      await act(async () => button("Close")!.click())
+      expect(onDone).toHaveBeenCalled()
+      expect(clearClaimStash).not.toHaveBeenCalled()
+      await render(null)
+      expect(funding()).toBe("review")
+    })
+
+    it("says why a funding claim was refused in its own words, never the raw refusal", async () => {
+      opened()
+      claimSponsoredLink.mockRejectedValueOnce(
+        Object.assign(new Error("the registration's deposit address cannot be published yet: x"), {
+          name: "RegistrationFundingError",
+          reason: "unpublished",
+        }),
+      )
+      await render()
+      await settle()
+      await act(async () => button("Claim")!.click())
+      await settle()
+      expect(container.querySelector('[role="alert"]')?.textContent).toBe("the funding's copy")
+    })
+
+    it("claims as an ordinary payment when the note cannot cover the deposit and the tip", async () => {
+      opened({ ...directLink, amount: "1" })
+      await render()
+      await settle()
+      expect(container.querySelector('[data-testid="claim-review"]')).toBeNull()
+      // The hero asks for the deposit again.
+      expect(funding()).toBe("none")
+      await act(async () => button("Accept")!.click())
+      expect(bindLinkDeposit).not.toHaveBeenCalled()
+      expect(claimSponsoredLink).toHaveBeenCalledWith(
+        paylinkDeps,
+        "frag",
+        expect.any(Function),
+        undefined,
+      )
+    })
+  })
+
   describe("a ticket-funded signup entering Home", () => {
     const ONE = 10n ** 18n
     const ready = {
@@ -929,6 +1163,30 @@ describe("useClaimLinkFlow", () => {
       expect(commitTip).not.toHaveBeenCalled()
     })
 
+    it("asks to upgrade before the review's own Claim", async () => {
+      entered()
+      claimSponsoredLink.mockRejectedValueOnce(cancelled())
+      await render()
+      await settle()
+      await remount()
+      expect(review()).not.toBeNull()
+      gate.upgrade = true
+      await act(async () => button("Claim")!.click())
+      expect(gate.asked).toEqual(["claim"])
+      expect(claimSponsoredLink).toHaveBeenCalledOnce()
+    })
+
+    it("holds its own claim while the account must upgrade first", async () => {
+      entered()
+      gate.upgrade = true
+      await render()
+      await settle()
+      expect(claimSponsoredLink).not.toHaveBeenCalled()
+      gate.upgrade = false
+      await render()
+      expect(claimSponsoredLink).toHaveBeenCalledOnce()
+    })
+
     it("opens the review on request whatever the claim's state, working while a claim runs", async () => {
       entered()
       claimSponsoredLink.mockReturnValueOnce(new Promise(() => {}))
@@ -944,6 +1202,23 @@ describe("useClaimLinkFlow", () => {
       expect(button("Claim")).toBeUndefined()
     })
 
+    it("reviews the ticket's tag as free though its fee is above the live sweep fee", async () => {
+      entered()
+      await act(async () => root.render(<Harness fragment="frag" onDone={onDone} requested />))
+      await settle()
+      expect(review()).not.toBeNull()
+      expect(container.textContent).toContain("Free with ticket")
+    })
+
+    it("tells the hero nothing while the registrations load, so a ticket signup keeps its own hero", async () => {
+      entered()
+      continuation.value = null
+      registrationsLoad.value = new Promise(() => {})
+      await render()
+      await settle()
+      expect(funding()).toBe("none")
+    })
+
     it("lets the link go once its registration has moved past the claim", async () => {
       entered()
       continuation.value = null
@@ -953,6 +1228,60 @@ describe("useClaimLinkFlow", () => {
         expect(clearClaimStash).toHaveBeenCalledWith("frag")
         expect(onDone).toHaveBeenCalled()
         expect(claimSponsoredLink).not.toHaveBeenCalled()
+      } finally {
+        committed.value = false
+      }
+    })
+
+    it("hands a deposit the link was to pay back to the user once a fresh read finds the link closed", async () => {
+      entered({ ...directLink, status: "claimed", claimableFrom: 0 })
+      decodeLink.mockReturnValue({ ...directLink, claimableFrom: undefined })
+      await render()
+      await settle()
+      expect(claimSponsoredLink).not.toHaveBeenCalled()
+      expect(releaseLinkDeposit).toHaveBeenCalledWith(ready.record)
+    })
+
+    it("hands the deposit back once the link closes, while a renewal holds the signup blocked", async () => {
+      held("blocked")
+      viewLink.mockResolvedValue({ ...directLink, status: "expired", claimableFrom: 0 })
+      decodeLink.mockReturnValue({ ...directLink, claimableFrom: undefined })
+      await render()
+      await settle()
+      expect(releaseLinkDeposit).toHaveBeenCalledWith(ready.record)
+    })
+
+    it("keeps the registration whose burn is already on its way", async () => {
+      held("submitted")
+      viewLink.mockResolvedValue({ ...directLink, status: "claimed", claimableFrom: 0 })
+      decodeLink.mockReturnValue({ ...directLink, claimableFrom: undefined })
+      await render()
+      await settle()
+      expect(releaseLinkDeposit).not.toHaveBeenCalled()
+    })
+
+    it("keeps the link after a reload until its burns are loaded, which show the claim is its own", async () => {
+      entered()
+      continuation.value = null
+      committed.value = true
+      let loaded!: () => void
+      withdrawalsLoad.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            loaded = () => {
+              continuation.value = { ...ready, activation: { state: "submitted" } }
+              resolve()
+            }
+          }),
+      )
+      try {
+        await render()
+        await settle()
+        expect(clearClaimStash).not.toHaveBeenCalled()
+        await act(async () => loaded())
+        await settle()
+        expect(clearClaimStash).not.toHaveBeenCalled()
+        expect(onDone).not.toHaveBeenCalled()
       } finally {
         committed.value = false
       }
@@ -1285,7 +1614,7 @@ describe("useClaimLinkFlow", () => {
       await act(async () => root.render(<Harness fragment="frag" onDone={onDone} requested />))
       await settle()
       expect(review()).not.toBeNull()
-      expect(container.textContent).toContain("This payment is already claimed")
+      expect(container.textContent).toContain("Registering @taga")
       // A status, not an error: the claim went out.
       expect(container.querySelector('[role="alert"]')).toBeNull()
       expect(button("Claim")).toBeUndefined()

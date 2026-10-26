@@ -25,6 +25,7 @@
 
 import { encode as cborEncode, decode as cborDecode } from "cbor-x"
 import { Buffer } from "buffer"
+import { plainText } from "@obsidion/core/text"
 
 /* -------------------------------------------------------------------------- */
 /*  Packet type                                                               */
@@ -73,6 +74,13 @@ export interface RequestInlinePacket {
   sipaAddress?: string
   /** Lets a payer re-predict `sipaAddress` from the active deployment. Rides only with `sipaAddress`. */
   sipaPreimage?: SipaLinkPreimage
+  /**
+   * A Receive code (format 4), sized to scan: a 128-bit request id, and no token, network, requester
+   * address or preimage. Its token and network are the payer's own; it decodes with `networkId: ""`.
+   */
+  compact?: boolean
+  /** A code's stand-in for the preimage: `sipaDeploymentTag` of the deployment `sipaAddress` is from. */
+  sipaDeployment?: string
 }
 
 /**
@@ -92,8 +100,10 @@ export interface SipaLinkPreimage {
 // The layout the encoder emits. v2 added the optional decimals key; v3 made
 // requestId a 32-byte field, added the token/requester L2 address keys, and
 // carries an optional 20-byte L1 SIPA and its preimage. Decode still accepts v1/v2.
+// v4 is the compact Receive code: see `compact`.
 const FORMAT = 3
-const SUPPORTED_FORMATS = new Set<number>([1, 2, 3])
+const FORMAT_CODE = 4
+const SUPPORTED_FORMATS = new Set<number>([1, 2, 3, FORMAT_CODE])
 
 const KEY_FORMAT = 1
 const KEY_REQUEST_ID = 2
@@ -108,6 +118,7 @@ const KEY_TOKEN_ADDRESS = 10
 const KEY_REQUESTER_ADDRESS = 11
 const KEY_SIPA_ADDRESS = 12
 const KEY_SIPA_PREIMAGE = 13
+const KEY_SIPA_DEPLOYMENT = 14
 
 /** Every key a given wire format knows. An unknown key fails closed. */
 const KNOWN_KEYS_LEGACY = new Set<number>([
@@ -129,11 +140,24 @@ const KNOWN_KEYS_V3 = new Set<number>([
   KEY_SIPA_PREIMAGE,
 ])
 
+const KNOWN_KEYS_CODE = new Set<number>([
+  KEY_FORMAT,
+  KEY_REQUEST_ID,
+  KEY_REQUESTER_TAG,
+  KEY_AMOUNT,
+  KEY_NOTE,
+  KEY_EXPIRES_AT,
+  KEY_DECIMALS,
+  KEY_SIPA_ADDRESS,
+  KEY_SIPA_DEPLOYMENT,
+])
+
 const MAX_FRAGMENT_BYTES = 512 // DoS guard before decode.
 const AMOUNT_BYTES = 16 // u128
 const FIELD_BYTES = 32 // BN254 field / L2 address
 const ETH_ADDRESS_BYTES = 20 // L1 SIPA
 const HASH_BYTES = 32 // keccak / commitment
+const DEPLOYMENT_TAG_BYTES = 4
 const BN254_FR_MODULUS = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n
 
 /* -------------------------------------------------------------------------- */
@@ -160,7 +184,15 @@ export class RequestEncodeError extends Error {
 /*  Encode                                                                    */
 /* -------------------------------------------------------------------------- */
 
+/** A request id that fits a compact code: a field below 2^128. */
+export function randomCodeRequestId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(AMOUNT_BYTES))
+  bytes[0] |= 1
+  return `0x${"00".repeat(FIELD_BYTES - AMOUNT_BYTES)}${Buffer.from(bytes).toString("hex")}`
+}
+
 export function encodeRequestInline(packet: RequestInlinePacket): string {
+  if (packet.compact) return encodeCode(packet)
   if (!packet.requestId) throw new RequestEncodeError("Missing requestId")
   if (!packet.requesterTag) throw new RequestEncodeError("Missing requesterTag")
   if (!packet.networkId) throw new RequestEncodeError("Missing networkId")
@@ -198,6 +230,38 @@ export function encodeRequestInline(packet: RequestInlinePacket): string {
   return toBase64Url(cborEncode(map))
 }
 
+/** Format 4. The amount is its minimal big-endian bytes and needs its decimals. */
+function encodeCode(packet: RequestInlinePacket): string {
+  if (!packet.requestId) throw new RequestEncodeError("Missing requestId")
+  if (!packet.requesterTag) throw new RequestEncodeError("Missing requesterTag")
+  const id = BigInt(packet.requestId)
+  if (id === 0n || id >= 1n << 128n) throw new RequestEncodeError("requestId does not fit a code")
+
+  const map = new Map<number, unknown>()
+  map.set(KEY_FORMAT, FORMAT_CODE)
+  map.set(KEY_REQUEST_ID, amountToBytes(id))
+  map.set(KEY_REQUESTER_TAG, packet.requesterTag)
+  if (packet.amountAtomic > 0n) {
+    if (packet.tokenDecimals === undefined || !isDecimals(packet.tokenDecimals))
+      throw new RequestEncodeError("A code's amount needs its decimals")
+    const amount = amountToBytes(packet.amountAtomic)
+    map.set(KEY_AMOUNT, amount.subarray(amount.findIndex((b) => b !== 0)))
+    map.set(KEY_DECIMALS, packet.tokenDecimals)
+  }
+  if (packet.sipaAddress !== undefined) {
+    if (packet.sipaDeployment === undefined)
+      throw new RequestEncodeError("A code's address needs its deployment")
+    map.set(KEY_SIPA_ADDRESS, hexToAddressBytes(packet.sipaAddress))
+    map.set(KEY_SIPA_DEPLOYMENT, hexToBytes(packet.sipaDeployment, DEPLOYMENT_TAG_BYTES))
+  }
+  if (packet.note !== undefined) map.set(KEY_NOTE, packet.note)
+  if (packet.expiresAt !== undefined) {
+    if (!isWireTime(packet.expiresAt)) throw new RequestEncodeError("Invalid expiresAt")
+    map.set(KEY_EXPIRES_AT, packet.expiresAt)
+  }
+  return toBase64Url(cborEncode(map))
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Decode                                                                    */
 /* -------------------------------------------------------------------------- */
@@ -224,6 +288,7 @@ function decodeStrict(b64url: string): RequestInlinePacket {
 
   const format = asUint(readRequired(decoded, KEY_FORMAT))
   if (!SUPPORTED_FORMATS.has(format)) throw new RequestDecodeError()
+  if (format === FORMAT_CODE) return decodeCode(decoded)
 
   const knownKeys = format >= 3 ? KNOWN_KEYS_V3 : KNOWN_KEYS_LEGACY
   for (const k of allKeys(decoded)) {
@@ -258,7 +323,7 @@ function decodeStrict(b64url: string): RequestInlinePacket {
   if (tokenSymbol !== undefined) packet.tokenSymbol = asString(tokenSymbol)
 
   const note = readOptional(decoded, KEY_NOTE)
-  if (note !== undefined) packet.note = asString(note)
+  if (note !== undefined) packet.note = plainText(asString(note))
 
   const expiresAt = readOptional(decoded, KEY_EXPIRES_AT)
   if (expiresAt !== undefined) {
@@ -272,6 +337,53 @@ function decodeStrict(b64url: string): RequestInlinePacket {
   const rawDecimals = readField(decoded, KEY_DECIMALS)
   if (rawDecimals !== undefined) packet.tokenDecimals = asDecimals(rawDecimals)
 
+  return packet
+}
+
+function decodeCode(decoded: unknown): RequestInlinePacket {
+  for (const k of allKeys(decoded)) {
+    if (!KNOWN_KEYS_CODE.has(k)) throw new RequestDecodeError()
+  }
+  const id = readRequired(decoded, KEY_REQUEST_ID)
+  if (!(id instanceof Uint8Array) || id.length !== AMOUNT_BYTES) throw new RequestDecodeError()
+  const packet: RequestInlinePacket = {
+    requestId: bytesToHex(
+      Buffer.concat([Buffer.alloc(FIELD_BYTES - AMOUNT_BYTES), id]),
+      FIELD_BYTES,
+    ),
+    requesterTag: asString(readRequired(decoded, KEY_REQUESTER_TAG)),
+    amountAtomic: 0n,
+    networkId: "",
+    compact: true,
+  }
+  const amount = readField(decoded, KEY_AMOUNT)
+  if (amount !== undefined) {
+    if (
+      !(amount instanceof Uint8Array) ||
+      amount.length === 0 ||
+      amount.length > AMOUNT_BYTES ||
+      amount[0] === 0
+    )
+      throw new RequestDecodeError()
+    packet.amountAtomic = bytesToAmount(amount)
+    packet.tokenDecimals = asDecimals(readRequired(decoded, KEY_DECIMALS))
+  } else if (readField(decoded, KEY_DECIMALS) !== undefined) {
+    throw new RequestDecodeError()
+  }
+  const sipaAddress = readField(decoded, KEY_SIPA_ADDRESS)
+  const deployment = readField(decoded, KEY_SIPA_DEPLOYMENT)
+  if ((sipaAddress === undefined) !== (deployment === undefined)) throw new RequestDecodeError()
+  if (sipaAddress !== undefined) {
+    packet.sipaAddress = addressBytesToHex(sipaAddress)
+    packet.sipaDeployment = bytesToHex(deployment, DEPLOYMENT_TAG_BYTES)
+  }
+  const note = readOptional(decoded, KEY_NOTE)
+  if (note !== undefined) packet.note = plainText(asString(note))
+  const expiresAt = readOptional(decoded, KEY_EXPIRES_AT)
+  if (expiresAt !== undefined) {
+    if (!isWireTime(expiresAt)) throw new RequestDecodeError()
+    packet.expiresAt = expiresAt
+  }
   return packet
 }
 

@@ -91,4 +91,31 @@ describe("PaylinkSignupRows", () => {
     expect(value("balance-after")).toBe("24.00 DAI")
     await act(async () => root.unmount())
   })
+
+  it("counts a signed minimum's excess in the balance after, with no row of its own", async () => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    const container = document.createElement("div")
+    const root = createRoot(container)
+    const ONE = 10n ** 18n
+    await act(async () =>
+      root.render(
+        <PaylinkSignupRows
+          tokenSymbol="DAI"
+          tokenDecimals={18}
+          quote={{
+            youReceive: 24n * ONE,
+            networkFee: ONE / 2n,
+            provingFee: 0n,
+            returned: ONE / 20n,
+            burn: ONE,
+          }}
+        />,
+      ),
+    )
+    expect(container.textContent).not.toContain("Returned")
+    expect(
+      container.querySelector('[data-testid="paylink-signup-balance-after"]')?.textContent,
+    ).toBe("24.05 DAI")
+    await act(async () => root.unmount())
+  })
 })

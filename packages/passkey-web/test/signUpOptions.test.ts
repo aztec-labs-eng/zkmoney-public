@@ -11,7 +11,7 @@ import {
 } from "../src/policy/laptopCreation.js"
 import type { PhoneReach } from "../src/policy/passkeyCapabilities.js"
 import type { PasskeyExtension } from "../src/policy/passkeyTelemetryVocabulary.js"
-import { PHONE_HELP_COPY, PHONE_STEPS_COPY, SIGN_UP_SHEET_COPY } from "../src/policy/refusalCopy.js"
+import { PHONE_STEPS_COPY, SIGN_UP_SHEET_COPY } from "../src/policy/refusalCopy.js"
 import {
   type SignUpChoice,
   type SignUpOptions,
@@ -157,15 +157,33 @@ const TABLE: Row[] = [
       { options: ["1password", "phone-or-key"], selected: "1password" },
     ),
   ),
-  ...[UA.windowsEdge, UA.windowsBrave, UA.linuxEdge].flatMap((ua) =>
+  ...[UA.windowsEdge, UA.windowsBrave].flatMap((ua) =>
     both(
       `${ua.osFamily} ${ua.browserFamily}`,
       ua,
-      { options: ["phone", "key"], selected: "phone", line: "install-extension" },
-      { options: ["1password", "phone", "key"], selected: "1password" },
+      { options: ["phone-or-key"], selected: "phone-or-key", line: "install-extension" },
+      { options: ["1password", "phone-or-key"], selected: "1password" },
     ),
   ),
-  ...[UA.windowsChrome, UA.linuxChrome, UA.macChrome, UA.macEdge].flatMap((ua) =>
+  ...both(
+    "Windows Chrome without Client Hints",
+    UA.windowsChromeUnhinted,
+    { options: ["phone-or-key"], selected: "phone-or-key" },
+    { options: ["phone-or-key"], selected: "phone-or-key" },
+  ),
+  ...both(
+    "linux edge",
+    UA.linuxEdge,
+    { options: ["phone", "key"], selected: "phone", line: "install-extension" },
+    { options: ["1password", "phone", "key"], selected: "1password" },
+  ),
+  ...both(
+    "windows chrome",
+    UA.windowsChrome,
+    { options: ["computer", "phone-or-key"], selected: "computer" },
+    { options: ["1password", "computer", "phone-or-key"], selected: "1password" },
+  ),
+  ...[UA.linuxChrome, UA.macChrome, UA.macEdge].flatMap((ua) =>
     both(
       `${ua.osFamily} ${ua.browserFamily}`,
       ua,
@@ -357,7 +375,7 @@ describe("signUpOptionsFor", () => {
 
   it("offers nothing local on Windows Edge with no extension, and says to install it", () => {
     const s = sheet(UA.windowsEdge)
-    expect(ids(s)).toEqual(["phone", "key"])
+    expect(ids(s)).toEqual(["phone-or-key"])
     expect(s.line).toEqual({ kind: "install-extension", text: L.installExtension })
   })
 
@@ -390,15 +408,11 @@ describe("signUpOptionsFor", () => {
       const steeredKey = { kind: "steered", text: L.steered.key }
       for (const preferred of [undefined, "1password", "computer"] as const) {
         const input = { ...over, ...(preferred ? { preferred } : {}) }
-        expect(sheet(UA.windowsEdge, input)).toMatchObject({
-          selected: "phone",
-          line: steeredPhone,
-        })
-        expect(sheet(UA.windowsFirefox, input)).toMatchObject({
-          selected: "phone-or-key",
-          line: steeredPhone,
-        })
+        expect(sheet(UA.linuxEdge, input)).toMatchObject({ selected: "phone", line: steeredPhone })
         for (const ua of [UA.windowsEdge, UA.windowsFirefox]) {
+          expect(sheet(ua, input)).toMatchObject({ selected: "phone-or-key", line: steeredPhone })
+        }
+        for (const ua of [UA.linuxEdge, UA.windowsEdge, UA.windowsFirefox]) {
           expect(sheet(ua, { ...input, reach: "no-hybrid" })).toMatchObject({
             selected: "key",
             line: steeredKey,
@@ -407,22 +421,30 @@ describe("signUpOptionsFor", () => {
       }
     })
 
-    it("keeps 1Password after a closed prompt, with the unfinished line and no steering", () => {
+    it("keeps 1Password after a creation that made nothing, with its line and no steering", () => {
+      const lines = { "unfinished": L.unfinished, "blocked": L.blocked, "blocked-again": L.blockedAgain }
       for (const ua of [UA.windowsEdge, UA.windowsFirefox]) {
-        expect(sheet(ua, { ...over, preferred: "1password", unfinished: true })).toEqual(
-          expect.objectContaining({
-            selected: "1password",
-            line: { kind: "unfinished", text: L.unfinished },
-          }),
-        )
+        for (const reopened of ["unfinished", "blocked", "blocked-again"] as const) {
+          expect(sheet(ua, { ...over, preferred: "1password", reopened })).toEqual(
+            expect.objectContaining({
+              selected: "1password",
+              line: {
+                kind: reopened === "unfinished" ? "unfinished" : "blocked",
+                text: lines[reopened],
+              },
+            }),
+          )
+        }
       }
     })
 
     it("keeps a phone or key preference, with no steered line", () => {
       const kept: [UserAgentInfo, SignUpChoice][] = [
-        [UA.windowsEdge, "phone"],
-        [UA.windowsEdge, "key"],
-        [UA.windowsChrome, "phone"],
+        [UA.linuxEdge, "phone"],
+        [UA.linuxEdge, "key"],
+        [UA.windowsEdge, "phone-or-key"],
+        [UA.windowsChrome, "phone-or-key"],
+        [UA.macChrome, "phone"],
         [UA.windowsFirefox, "phone-or-key"],
       ]
       for (const [ua, preferred] of kept) {
@@ -442,10 +464,13 @@ describe("signUpOptionsFor", () => {
     it("lands on its nearest offered option", () => {
       const cases: [UserAgentInfo, Partial<SignUpOptionsInput>, SignUpChoice][] = [
         [UA.windowsFirefox, { preferred: "phone" }, "phone-or-key"],
-        [UA.windowsChrome, { preferred: "phone-or-key" }, "phone"],
+        [UA.linuxChrome, { preferred: "phone-or-key" }, "phone"],
         [UA.macSafari, { preferred: "key" }, "phone-or-key"],
         [UA.windowsChrome, { preferred: "1password" }, "computer"],
-        [UA.windowsChrome, { preferred: "key" }, "key"],
+        [UA.windowsChrome, { preferred: "key" }, "phone-or-key"],
+        [UA.linuxChrome, { preferred: "key" }, "key"],
+        [UA.windowsEdge, { preferred: "phone" }, "phone-or-key"],
+        [UA.windowsBrave, { preferred: "key" }, "phone-or-key"],
         [UA.macChrome, { preferred: "computer", extension: "1password" }, "computer"],
       ]
       for (const [ua, input, selected] of cases) expect(sheet(ua, input).selected).toBe(selected)
@@ -470,22 +495,23 @@ describe("signUpOptionsFor", () => {
     })
 
     it("falls through to the defaults when nothing local is left", () => {
-      expect(sheet(UA.windowsEdge, { preferred: "computer" }).selected).toBe("phone")
+      expect(sheet(UA.windowsEdge, { preferred: "computer" }).selected).toBe("phone-or-key")
+      expect(sheet(UA.linuxEdge, { preferred: "computer" }).selected).toBe("phone")
       expect(sheet(UA.chromeOs, { preferred: "1password" }).selected).toBe("phone")
     })
   })
 
   it("lists exactly what each option saves in", () => {
     const supported = (s: SignUpOptions, id: SignUpChoice) => option(s, id).supported
-    const windowsChrome = sheet(UA.windowsChrome, { extension: "1password" })
-    expect(supported(windowsChrome, "computer")).toEqual(["Google Password Manager"])
-    expect(supported(windowsChrome, "1password")).toEqual(["1Password"])
-    expect(supported(windowsChrome, "phone")).toEqual([
+    const linuxChrome = sheet(UA.linuxChrome, { extension: "1password" })
+    expect(supported(linuxChrome, "computer")).toEqual(["Google Password Manager"])
+    expect(supported(linuxChrome, "1password")).toEqual(["1Password"])
+    expect(supported(linuxChrome, "phone")).toEqual([
       "iCloud Keychain",
       "Google Password Manager",
       "1Password",
     ])
-    expect(supported(windowsChrome, "key")).toEqual(["YubiKey 5 security key"])
+    expect(supported(linuxChrome, "key")).toEqual(["YubiKey 5 security key"])
     expect(supported(sheet(UA.macChrome, { extension: "1password" }), "computer")).toEqual([
       "iCloud Keychain",
       "Google Password Manager",
@@ -522,24 +548,32 @@ describe("signUpOptionsFor", () => {
     })
   })
 
-  it("names Windows' own choices on the phone options", () => {
-    expect(option(sheet(UA.windowsFirefox), "phone-or-key").advice).toEqual([C.phoneOrKey.windows])
-    expect(option(sheet(UA.windowsChrome), "phone").advice).toEqual([PHONE_HELP_COPY.windows])
-    expect(option(sheet(UA.windowsChromeUnhinted), "phone").advice).toEqual([
-      PHONE_HELP_COPY.windows,
-    ])
+  it("names Windows' own choices on the merged option", () => {
+    for (const ua of [
+      UA.windowsChrome,
+      UA.windowsChromeUnhinted,
+      UA.windowsEdge,
+      UA.windowsBrave,
+      UA.windowsFirefox,
+    ]) {
+      expect(option(sheet(ua), "phone-or-key").advice).toEqual([C.phoneOrKey.windows])
+    }
     expect(option(sheet(UA.macChrome), "phone").advice).toEqual([])
+    expect(option(sheet(UA.linuxEdge), "phone").advice).toEqual([])
     expect(option(sheet(UA.linuxFirefox), "phone-or-key").advice).toEqual([])
-    expect(option(sheet(UA.windowsChrome), "key").advice).toEqual([])
+    expect(option(sheet(UA.linuxChrome), "key").advice).toEqual([])
   })
 
   it("tells every cross-device option to pass on an extension's pop-up", () => {
-    const s = sheet(UA.windowsChrome, { extension: "1password" })
-    expect(option(s, "phone").advice).toEqual([PHONE_HELP_COPY.windows, PHONE_STEPS_COPY.extension])
+    const s = sheet(UA.linuxChrome, { extension: "1password" })
+    expect(option(s, "phone").advice).toEqual([PHONE_STEPS_COPY.extension])
     expect(option(s, "key").advice).toEqual([PHONE_STEPS_COPY.extension])
-    expect(
-      option(sheet(UA.windowsFirefox, { extension: "1password" }), "phone-or-key").advice,
-    ).toEqual([C.phoneOrKey.windows, PHONE_STEPS_COPY.extension])
+    for (const ua of [UA.windowsChrome, UA.windowsFirefox]) {
+      expect(option(sheet(ua, { extension: "1password" }), "phone-or-key").advice).toEqual([
+        C.phoneOrKey.windows,
+        PHONE_STEPS_COPY.extension,
+      ])
+    }
   })
 
   it("warns about keys wherever a key can be picked", () => {
@@ -578,15 +612,19 @@ describe("signUpOptionsFor", () => {
           advice: [L.extension],
         })
         const edge = sheet(UA.windowsEdge, { extension })
-        expect(ids(edge)).toEqual(["phone", "key"])
-        expect(edge.selected).toBe("phone")
+        expect(ids(edge)).toEqual(["phone-or-key"])
+        expect(edge.selected).toBe("phone-or-key")
         expect(edge.line).toBeUndefined()
-        expect(option(edge, "phone").advice).toEqual([
-          PHONE_HELP_COPY.windows,
+        expect(option(edge, "phone-or-key").advice).toEqual([
+          C.phoneOrKey.windows,
           PHONE_STEPS_COPY.extension,
         ])
+        const linuxEdge = sheet(UA.linuxEdge, { extension })
+        expect(ids(linuxEdge)).toEqual(["phone", "key"])
+        expect(linuxEdge.line).toBeUndefined()
+        expect(option(linuxEdge, "phone").advice).toEqual([PHONE_STEPS_COPY.extension])
         const chromeOnWindows = sheet(UA.windowsChrome, { extension })
-        expect(ids(chromeOnWindows)).toEqual(["computer", "phone", "key"])
+        expect(ids(chromeOnWindows)).toEqual(["computer", "phone-or-key"])
         expect(option(chromeOnWindows, "computer").advice).toEqual([L.extension])
         const firefoxOnWindows = sheet(UA.windowsFirefox, { extension })
         expect(ids(firefoxOnWindows)).toEqual(["phone-or-key"])
@@ -598,8 +636,11 @@ describe("signUpOptionsFor", () => {
         )
         expect(option(chrome, "phone")).toEqual(option(chromeAs1Password, "phone"))
         expect(option(chrome, "key")).toEqual(option(chromeAs1Password, "key"))
-        expect(option(edge, "key")).toEqual(
-          option(sheet(UA.windowsEdge, { extension: "1password" }), "key"),
+        expect(option(edge, "phone-or-key")).toEqual(
+          option(sheet(UA.windowsEdge, { extension: "1password" }), "phone-or-key"),
+        )
+        expect(option(linuxEdge, "key")).toEqual(
+          option(sheet(UA.linuxEdge, { extension: "1password" }), "key"),
         )
         expect(option(firefoxOnWindows, "phone-or-key")).toEqual(
           option(sheet(UA.windowsFirefox, { extension: "1password" }), "phone-or-key"),
@@ -611,7 +652,10 @@ describe("signUpOptionsFor", () => {
       for (const extension of ["none", "1password", "bitwarden", "other"] as const) {
         expect(sheet(UA.macChrome, { extension, preferred: "phone" }).selected).toBe("phone")
         expect(sheet(UA.macChrome, { extension, preferred: "key" }).selected).toBe("key")
-        expect(sheet(UA.windowsEdge, { extension, preferred: "key" }).selected).toBe("key")
+        expect(sheet(UA.linuxEdge, { extension, preferred: "key" }).selected).toBe("key")
+        expect(sheet(UA.windowsEdge, { extension, preferred: "key" }).selected).toBe(
+          "phone-or-key",
+        )
         expect(sheet(UA.macFirefox, { extension, preferred: "phone" }).selected).toBe(
           "phone-or-key",
         )
@@ -652,22 +696,24 @@ describe("signUpOptionsFor", () => {
       }
     })
 
-    it("keeps the refusal-limit steering and the unfinished line", () => {
+    it("keeps the refusal-limit steering and the re-open line", () => {
       for (const extension of classes) {
         const over = { extension, refusedOften: true }
         const chrome = sheet(UA.macChrome, over)
         expect(chrome.selected).toBe("computer")
         expect(option(chrome, "computer").advice).toEqual([L.extension, L.refusedOften])
         expect(sheet(UA.windowsEdge, over)).toMatchObject({
-          selected: "phone",
+          selected: "phone-or-key",
           line: { kind: "steered", text: L.steered.phone },
         })
-        expect(sheet(UA.windowsEdge, { extension, unfinished: true }).line).toEqual({
+        expect(sheet(UA.windowsEdge, { extension, reopened: "unfinished" }).line).toEqual({
           kind: "unfinished",
-          text: L.unfinished,
+          text: L.unfinishedElsewhere,
         })
         expect(sheet(UA.macChrome, { extension, preferred: "1password" }).selected).toBe("computer")
-        expect(sheet(UA.windowsEdge, { extension, preferred: "1password" }).selected).toBe("phone")
+        expect(sheet(UA.windowsEdge, { extension, preferred: "1password" }).selected).toBe(
+          "phone-or-key",
+        )
       }
     })
 
@@ -683,10 +729,90 @@ describe("signUpOptionsFor", () => {
     })
   })
 
-  it("shows the unfinished line over any other", () => {
-    const s = sheet(UA.windowsEdge, { preferred: "1password", unfinished: true })
-    expect(s.selected).toBe("phone")
-    expect(s.line).toEqual({ kind: "unfinished", text: L.unfinished })
+  describe("the re-open line", () => {
+    const unfinished = { reopened: "unfinished" } as const
+
+    it("says setup didn't finish, offering the phone only where the sheet opens on this computer", () => {
+      for (const preferred of ["computer", undefined] as const) {
+        expect(sheet(UA.windowsChrome, { ...unfinished, preferred })).toMatchObject({
+          selected: "computer",
+          line: { kind: "unfinished", text: L.unfinished },
+        })
+      }
+      expect(
+        sheet(UA.windowsChrome, { ...unfinished, extension: "1password", preferred: "1password" }),
+      ).toMatchObject({ selected: "1password", line: { kind: "unfinished", text: L.unfinished } })
+      for (const preferred of ["phone", "key"] as const) {
+        expect(sheet(UA.macChrome, { ...unfinished, preferred })).toMatchObject({
+          selected: preferred,
+          line: { kind: "unfinished", text: L.unfinishedElsewhere },
+        })
+      }
+      for (const ua of [UA.windowsChrome, UA.windowsEdge]) {
+        expect(sheet(ua, { ...unfinished, preferred: "phone-or-key" })).toMatchObject({
+          selected: "phone-or-key",
+          line: { kind: "unfinished", text: L.unfinishedElsewhere },
+        })
+      }
+    })
+
+    it("offers the phone only where the sheet has one", () => {
+      const noPhone = { ...unfinished, reach: "no-hybrid" } as const
+      for (const [ua, input, selected] of [
+        [UA.windowsChrome, { preferred: "computer" }, "computer"],
+        [UA.windowsEdge, { extension: "1password", preferred: "1password" }, "1password"],
+        [UA.macChrome, { extension: "1password" }, "1password"],
+      ] as const) {
+        const s = sheet(ua, { ...noPhone, ...input })
+        expect(ids(s)).not.toContain("phone")
+        expect(ids(s)).not.toContain("phone-or-key")
+        expect(s).toMatchObject({
+          selected,
+          line: { kind: "unfinished", text: L.unfinishedElsewhere },
+        })
+      }
+    })
+
+    it("follows the option the sheet falls to, not the one asked for", () => {
+      // 1Password's extension gone, or a computer pick on a row with nothing local.
+      for (const preferred of ["1password", "computer"] as const) {
+        expect(sheet(UA.windowsEdge, { ...unfinished, preferred })).toMatchObject({
+          selected: "phone-or-key",
+          line: { kind: "unfinished", text: L.unfinishedElsewhere },
+        })
+      }
+      // The phone out of reach, the key takes a phone pick.
+      expect(
+        sheet(UA.windowsChrome, { ...unfinished, preferred: "phone", reach: "no-hybrid" }),
+      ).toMatchObject({ selected: "key", line: { kind: "unfinished", text: L.unfinishedElsewhere } })
+    })
+
+    it("says the prompt never opened, and on the second time in a row to try another browser", () => {
+      for (const [ua, preferred, selected] of [
+        [UA.macChrome, "phone", "phone"],
+        [UA.macChrome, "key", "key"],
+        [UA.windowsChrome, "computer", "computer"],
+        [UA.windowsChrome, "phone", "phone-or-key"],
+        [UA.windowsEdge, "phone", "phone-or-key"],
+      ] as const) {
+        expect(sheet(ua, { reopened: "blocked", preferred })).toMatchObject({
+          selected,
+          line: { kind: "blocked", text: L.blocked },
+        })
+        expect(sheet(ua, { reopened: "blocked-again", preferred })).toMatchObject({
+          selected,
+          line: { kind: "blocked", text: L.blockedAgain },
+        })
+      }
+    })
+
+    it("wins over the install line", () => {
+      for (const reopened of ["unfinished", "blocked"] as const) {
+        const s = sheet(UA.windowsEdge, { reopened })
+        expect(s.selected).toBe("phone-or-key")
+        expect(s.line?.kind).toBe(reopened)
+      }
+    })
   })
 
   it("draws every option with a label and a description", () => {
@@ -710,11 +836,20 @@ describe("routeForChoice", () => {
 })
 
 describe("ignoresHintsFor", () => {
-  it("is Safari and Firefox", () => {
-    for (const ua of [UA.macSafari, UA.macFirefox, UA.windowsFirefox, UA.linuxFirefox]) {
+  it("is Safari, Firefox, and every browser on Windows", () => {
+    for (const ua of [
+      UA.macSafari,
+      UA.macFirefox,
+      UA.windowsFirefox,
+      UA.linuxFirefox,
+      UA.windowsChrome,
+      UA.windowsChromeUnhinted,
+      UA.windowsEdge,
+      UA.windowsBrave,
+    ]) {
       expect(ignoresHintsFor(ua)).toBe(true)
     }
-    for (const ua of [UA.macChrome, UA.macEdge, UA.windowsBrave, UA.chromeOs]) {
+    for (const ua of [UA.macChrome, UA.macEdge, UA.linuxChrome, UA.linuxEdge, UA.chromeOs]) {
       expect(ignoresHintsFor(ua)).toBe(false)
     }
   })

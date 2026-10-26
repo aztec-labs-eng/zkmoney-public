@@ -16,6 +16,16 @@ const state = vi.hoisted(() => ({
   listeners: new Set<() => void>(),
   markAllRead: vi.fn(),
   logout: vi.fn(),
+  /** Actions that must wait for the upgrade, and every action a press asked for. */
+  upgrade: new Set<string>(),
+  asked: [] as string[],
+}))
+vi.mock("../src/features/actionGate", () => ({
+  useActionGuard: () => (action: string, run: () => void) => {
+    state.asked.push(action)
+    if (!state.upgrade.has(action)) run()
+  },
+  useWalletFrozen: () => false,
 }))
 // Savings reads the booted profile, which this suite never boots.
 vi.mock("../src/features/savings/savingsGateway", () => ({
@@ -188,6 +198,8 @@ const render = (
     )
   })
 beforeEach(() => {
+  state.upgrade = new Set()
+  state.asked = []
   state.savings = false
   state.phone = true
   state.unlocked = true
@@ -293,6 +305,29 @@ describe("phone shell", () => {
     const tabs = [...host.querySelectorAll<HTMLButtonElement>(".ww-tabbar button")]
     act(() => tabs[3].click())
     expect(host.querySelector('.ww-tabbar [aria-current="page"]')?.textContent).toBe("Deposit")
+  })
+  it("asks to upgrade before a money route or Receive, and opens every other route", () => {
+    state.upgrade = new Set(["deposit", "send", "withdraw", "receive"])
+    render()
+    const tabs = [...host.querySelectorAll<HTMLButtonElement>(".ww-tabbar button")]
+    for (const tab of tabs) act(() => tab.click())
+    expect(host.querySelector('.ww-tabbar [aria-current="page"]')?.textContent).toBe("Requests")
+    click("Open menu")
+    click("Receive code")
+    expect(host.textContent).not.toContain("Receive page")
+    expect(state.asked).toEqual(["deposit", "send", "withdraw", "receive"])
+  })
+  it("leaves a locked wallet's money routes to their own gates", () => {
+    state.upgrade = new Set(["send", "receive"])
+    state.unlocked = false
+    state.phone = false
+    render()
+    const send = [...host.querySelectorAll<HTMLButtonElement>("button")].find(
+      (b) => b.textContent === "Send",
+    )!
+    act(() => send.click())
+    expect(host.querySelector('[aria-current="page"]')?.textContent).toBe("Send")
+    expect(state.asked).toEqual([])
   })
   it("keeps the tab bar off desktop", () => {
     state.phone = false
@@ -485,7 +520,7 @@ describe("phone shell", () => {
     await act(async () =>
       root.render(
         <StrictMode>
-          <MobileMenu onClose={close}>
+          <MobileMenu open onClose={close}>
             <button aria-label="Close menu" />
             <dialog aria-label="Nested test" />
           </MobileMenu>
@@ -502,6 +537,54 @@ describe("phone shell", () => {
     expect(close).not.toHaveBeenCalled()
     await act(async () => menu()!.close())
     expect(close).toHaveBeenCalledOnce()
+  })
+})
+
+describe("MobileMenu close animation", () => {
+  let finish: () => void
+  const proto = HTMLDialogElement.prototype as unknown as { getAnimations?: () => unknown[] }
+  beforeEach(() => {
+    const finished = new Promise<void>((resolve) => (finish = resolve))
+    proto.getAnimations = () => [{ finished }]
+  })
+  afterEach(() => {
+    delete proto.getAnimations
+    vi.useRealTimers()
+  })
+  const show = (open: boolean) =>
+    act(() =>
+      root.render(
+        <MobileMenu open={open} onClose={() => {}}>
+          <button aria-label="Close menu" />
+        </MobileMenu>,
+      ),
+    )
+
+  it("stays mounted, marked closing, until its slide out ends", async () => {
+    show(true)
+    show(false)
+    expect(menu()?.hasAttribute("data-closing")).toBe(true)
+    await act(async () => finish())
+    expect(menu()).toBeNull()
+  })
+
+  it("stays open when reopened mid-close, even once that slide ends", async () => {
+    show(true)
+    show(false)
+    show(true)
+    expect(menu()?.hasAttribute("data-closing")).toBe(false)
+    await act(async () => finish())
+    expect(menu()?.open).toBe(true)
+  })
+
+  it("closes after a second when the slide never reports its end", () => {
+    vi.useFakeTimers()
+    show(true)
+    show(false)
+    act(() => vi.advanceTimersByTime(999))
+    expect(menu()).not.toBeNull()
+    act(() => vi.advanceTimersByTime(1))
+    expect(menu()).toBeNull()
   })
 })
 

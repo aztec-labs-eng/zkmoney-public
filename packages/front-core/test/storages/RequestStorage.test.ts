@@ -39,6 +39,18 @@ describe("RequestStorage", () => {
     expect((await store.findById("req-1"))?.amount).toBe(10)
   })
 
+  it("records a reminder only on a pending outgoing request", async () => {
+    const store = new RequestStorage(new InMemoryStorageAdapter())
+    await store.add(request({ id: "open" }))
+    await store.add(request({ id: "theirs", direction: "incoming" }))
+    await store.add(request({ id: "paid", status: "fulfilled" }))
+    expect(await store.markReminded("open", 5)).toEqual({ applied: true })
+    expect(await store.markReminded("theirs", 5)).toEqual({ applied: false })
+    expect(await store.markReminded("paid", 5)).toEqual({ applied: false })
+    expect(await store.markReminded("nope", 5)).toEqual({ applied: false })
+    expect((await store.list()).map((r) => r.remindedAt)).toEqual([5, undefined, undefined])
+  })
+
   it("findById returns null for a missing id", async () => {
     const store = new RequestStorage(new InMemoryStorageAdapter())
     expect(await store.findById("nope")).toBeNull()

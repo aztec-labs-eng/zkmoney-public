@@ -6,6 +6,7 @@ const OFFER: actual.FasterWithdrawal = {
   standardEtaSeconds: 44 * 60,
   tippedEtaSeconds: 12 * 60,
   worstSpeedupSeconds: 30 * 60,
+  measured: true,
 }
 export const useFasterWithdrawal: typeof actual.useFasterWithdrawal = (opts) => {
   const fixture = fixtureState() !== null

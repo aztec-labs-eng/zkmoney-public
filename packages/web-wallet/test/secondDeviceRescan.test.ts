@@ -151,7 +151,14 @@ describe("a second device", () => {
       getWithdrawalStore().list(),
     )
     const byDirection = Object.fromEntries(moves.list().map((m) => [m.direction, m]))
-    expect(byDirection.in.deposit).toEqual({ inboxIndex: "11", amount: "5", claimed: true })
+    // Stored on this PXE now, the move in stays on its way until Savings is read after it; Main's
+    // deposit was spent long ago, so its balance already holds it.
+    expect(byDirection.in.deposit).toEqual({
+      inboxIndex: "11",
+      amount: "5",
+      claimed: true,
+      storedAt: expect.any(Number),
+    })
     expect(byDirection.out.deposit).toEqual({ inboxIndex: "22", amount: "5", claimed: true })
     expect(claims.savings).toHaveBeenCalledWith(expect.objectContaining({ inboxIndex: 11n }))
     expect(claims.main).toHaveBeenCalledWith(expect.objectContaining({ inboxIndex: 22n }))

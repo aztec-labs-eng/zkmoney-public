@@ -1,21 +1,35 @@
 import { WEB_PASSKEY_PRODUCTION_ORIGINS, WEB_PASSKEY_RP_IDS } from "@obsidion/core/constants"
 
-export type WebPasskeyEnvironment = keyof typeof WEB_PASSKEY_RP_IDS
+export type WebPasskeyEnvironment = keyof typeof WEB_PASSKEY_RP_IDS | "playground"
 export type WebPasskeyEnv = {
   [key: string]: unknown
   VITE_PASSKEY_ENVIRONMENT?: string
   VITE_PASSKEY_RP_ID?: string
+  VITE_PASSKEY_DEPLOYMENT?: string
 }
 
 /** Deployment identity is independent of the wallet's selected chain. */
 export function selectWebPasskeyRpId(env: WebPasskeyEnv): string {
   const environment = env.VITE_PASSKEY_ENVIRONMENT ?? "local"
-  if (!Object.hasOwn(WEB_PASSKEY_RP_IDS, environment)) {
+  if (environment !== "playground" && !Object.hasOwn(WEB_PASSKEY_RP_IDS, environment)) {
     throw new Error(`Unknown VITE_PASSKEY_ENVIRONMENT "${environment}"`)
   }
-  const rpId = WEB_PASSKEY_RP_IDS[environment as WebPasskeyEnvironment]
+  const deployment = env.VITE_PASSKEY_DEPLOYMENT
+  if (
+    deployment &&
+    (environment !== "playground" || !/^[a-z]([a-z0-9-]{0,6}[a-z0-9])?$/.test(deployment))
+  ) {
+    throw new Error("Named passkey deployments require a valid playground deployment")
+  }
+  if (environment === "playground" && !deployment)
+    throw new Error("Playground requires a deployment")
+  const rpId = deployment
+    ? `${deployment}.plyg.zk.money`
+    : WEB_PASSKEY_RP_IDS[environment as keyof typeof WEB_PASSKEY_RP_IDS]
   if (env.VITE_PASSKEY_RP_ID && env.VITE_PASSKEY_RP_ID !== rpId) {
-    throw new Error(`VITE_PASSKEY_RP_ID "${env.VITE_PASSKEY_RP_ID}" conflicts with ${environment}: expected ${rpId}`)
+    throw new Error(
+      `VITE_PASSKEY_RP_ID "${env.VITE_PASSKEY_RP_ID}" conflicts with ${environment}: expected ${rpId}`,
+    )
   }
   return rpId
 }
@@ -39,7 +53,9 @@ export function assertWebPasskeyBuild(
     const value = env[key]
     if (!value) continue
     const url = new URL(value)
-    const productionOrigin = (WEB_PASSKEY_PRODUCTION_ORIGINS as readonly string[]).includes(url.origin)
+    const productionOrigin = (WEB_PASSKEY_PRODUCTION_ORIGINS as readonly string[]).includes(
+      url.origin,
+    )
     const allowed =
       rpId === WEB_PASSKEY_RP_IDS.production
         ? productionOrigin
@@ -56,11 +72,23 @@ export function webPasskeyBuildPlugin(env: Parameters<typeof assertWebPasskeyBui
   const rpId = assertWebPasskeyBuild(env)
   return {
     name: "web-passkey-target",
-    generateBundle(this: { emitFile(asset: { type: "asset"; fileName: string; source: string }): unknown }) {
+    generateBundle(this: {
+      emitFile(asset: { type: "asset"; fileName: string; source: string }): unknown
+    }) {
       this.emitFile({
         type: "asset",
         fileName: "passkey-target.json",
-        source: JSON.stringify({ environment: env.VITE_PASSKEY_ENVIRONMENT ?? "local", rpId }),
+        source: JSON.stringify({
+          environment: env.VITE_PASSKEY_ENVIRONMENT ?? "local",
+          rpId,
+          ...(env.VITE_PASSKEY_DEPLOYMENT
+            ? {
+                deployment: env.VITE_PASSKEY_DEPLOYMENT,
+                profileUrl: env.VITE_CONFIG_PROFILE_URL,
+                profileId: env.VITE_CONFIG_EXPECTED_PROFILE_ID,
+              }
+            : {}),
+        }),
       })
     },
   }

@@ -77,6 +77,13 @@ describe("BootPriority", () => {
 
     boot.depositsReplayed()
     await vi.advanceTimersByTimeAsync(0)
+    // No boot sync: restore readers wait for the balance like the rest.
+    const settled = [...atStage("notes"), ...atStage("restore"), ...atStage("settled")].sort()
+    expect([...released].sort()).toEqual(settled)
+    expect(readers.filter((r) => boot.isReady(r)).sort()).toEqual(settled)
+
+    boot.historyReplayed()
+    await vi.advanceTimersByTimeAsync(0)
     expect(released.size).toBe(readers.length)
     expect(readers.every((r) => boot.isReady(r))).toBe(true)
   })
@@ -101,6 +108,31 @@ describe("BootPriority", () => {
     expect(balance).toBe(true)
   })
 
+  it("settles history only after the balance, however early the scanner reached head", async () => {
+    const boot = new BootPriority({ catchUp: catchUpSource() })
+    let released = false
+    void boot.whenReady("depositPool").then(() => (released = true))
+    boot.historyReplayed()
+    boot.notesSynced()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(released).toBe(false)
+    boot.depositsReplayed()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(released).toBe(true)
+  })
+
+  it("settles history on its own backstop after the balance", async () => {
+    const boot = new BootPriority({ historyWaitMs: 1_000, catchUp: catchUpSource() })
+    let released = false
+    void boot.whenReady("depositPool").then(() => (released = true))
+    boot.notesSynced()
+    boot.depositsReplayed()
+    await vi.advanceTimersByTimeAsync(999)
+    expect(released).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(released).toBe(true)
+  })
+
   it("opens a boot sync on a catch-up before settle, holding its own catch-up until settle", async () => {
     const catchUp = catchUpSource()
     const boot = new BootPriority({ catchUp })
@@ -111,10 +143,67 @@ describe("BootPriority", () => {
     expect(catchUp.isSyncCatchingUp()).toBe(true) // bridges the gap before the next catch-up
     boot.notesSynced()
     boot.depositsReplayed()
+    boot.movesReplayed()
     await vi.advanceTimersByTimeAsync(0)
     expect(boot.isBalanceSyncing()).toBe(false)
     expect(catchUp.ownHolds()).toBe(0)
     catchUp.set(true)
+    expect(boot.isBalanceSyncing()).toBe(false)
+    expect(catchUp.ownHolds()).toBe(0)
+  })
+
+  it("on a catching-up device, runs restore readers at notes and settles once the moves are replayed too", async () => {
+    const catchUp = catchUpSource()
+    const boot = new BootPriority({ catchUp })
+    catchUp.set(true)
+    let restored = false
+    let balance = false
+    void boot.whenReady("savingsMoves").then(() => (restored = true))
+    void boot.whenReady("migrationProbe").then(() => (balance = true))
+
+    boot.notesSynced()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(restored).toBe(true)
+    expect(boot.isReady("withdrawalRescan")).toBe(true)
+
+    boot.depositsReplayed()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(balance).toBe(false)
+    expect(boot.isBalanceSyncing()).toBe(true)
+
+    boot.movesReplayed()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(balance).toBe(true)
+    expect(boot.isBalanceSyncing()).toBe(false)
+  })
+
+  it("keeps a boot sync open past the deposits backstop until the replays end", async () => {
+    const catchUp = catchUpSource()
+    const boot = new BootPriority({ depositsWaitMs: 1_000, catchUp })
+    catchUp.set(true)
+    let balance = false
+    void boot.whenReady("migrationProbe").then(() => (balance = true))
+    boot.notesSynced()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(balance).toBe(true)
+    expect(boot.isBalanceSyncing()).toBe(true)
+    expect(catchUp.ownHolds()).toBe(1)
+
+    boot.depositsReplayed()
+    boot.movesReplayed()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(boot.isBalanceSyncing()).toBe(false)
+    expect(catchUp.ownHolds()).toBe(0)
+  })
+
+  it("closes a boot sync whose replays never end on its own backstop after notes", async () => {
+    const catchUp = catchUpSource()
+    const boot = new BootPriority({ depositsWaitMs: 1_000, syncWaitMs: 3_000, catchUp })
+    catchUp.set(true)
+    boot.notesSynced()
+    await vi.advanceTimersByTimeAsync(2_999)
+    expect(boot.isBalanceSyncing()).toBe(true)
+    await vi.advanceTimersByTimeAsync(1)
     expect(boot.isBalanceSyncing()).toBe(false)
     expect(catchUp.ownHolds()).toBe(0)
   })
@@ -142,6 +231,7 @@ describe("BootPriority", () => {
     expect(boot.balanceSyncProgress()).toBe(0.25)
     boot.notesSynced()
     boot.depositsReplayed()
+    boot.movesReplayed()
     await vi.advanceTimersByTimeAsync(0)
     expect(boot.balanceSyncProgress()).toBeNull()
     boot.depositProgress(3, 4)

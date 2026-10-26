@@ -15,6 +15,15 @@ vi.mock("../src/features/requests/useNonContactRequests", () => ({
   useNonContactRequests: () => inbox,
 }))
 const declineRequestById = vi.hoisted(() => vi.fn(async (_id: string) => true))
+/** Whether a send must wait for the upgrade, and every action a press asked for. */
+const gate = vi.hoisted(() => ({ upgrade: false, asked: [] as string[] }))
+vi.mock("../src/features/actionGate", () => ({
+  useWalletFrozen: () => false,
+  useActionGuard: () => (action: string, run: () => void) => {
+    gate.asked.push(action)
+    if (!gate.upgrade) run()
+  },
+}))
 vi.mock("../src/features/contacts/requestActions", () => ({ declineRequestById }))
 vi.mock("@obsidion/web-ds", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/web-ds")>()),
@@ -114,6 +123,20 @@ describe("NonContactRequestsScreen", () => {
         request: { id: "r1", tag: "mina", amount: 42, note: "Dinner split" },
       })}`,
     )
+  })
+
+  it("asks to upgrade before paying a request", async () => {
+    gate.upgrade = true
+    gate.asked = []
+    try {
+      await mount("/requests/non-contacts", <NonContactRequestsScreen />)
+      await act(async () => buttons("View")[0].click())
+      await act(async () => buttons("Send")[0].click())
+      expect(gate.asked).toEqual(["send"])
+      expect(where() ?? "").not.toContain("/contacts/mina/send")
+    } finally {
+      gate.upgrade = false
+    }
   })
 
   it("closes the detail sheet once its request leaves the list", async () => {

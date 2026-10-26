@@ -86,14 +86,3 @@ export async function readL1DepositTokenBalance(
     decimals,
   }
 }
-
-/** Raw `token` balance of `owner` — how the deposit screen watches the address it handed out. */
-export async function readL1TokenBalance(token: Address, owner: Address): Promise<bigint> {
-  const publicClient = createPublicClient({ transport: l1Transport(getConfig()) })
-  return publicClient.readContract({
-    address: token,
-    abi: erc20Abi,
-    functionName: "balanceOf",
-    args: [owner],
-  })
-}

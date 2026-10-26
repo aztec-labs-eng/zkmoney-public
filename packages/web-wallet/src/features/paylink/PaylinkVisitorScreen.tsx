@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { useNavigate } from "react-router-dom"
-import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
+import { useLocation, useNavigate } from "react-router-dom"
+import { REGISTRATION_SCHEDULE_DEFAULTS, tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import {
   canSelfFinalizeWithdrawal,
   useAztecContext,
@@ -9,7 +9,8 @@ import {
 } from "@obsidion/front-core"
 import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
-import { fireEvent } from "../../lib/analytics"
+import { fireEvent, fireOnboardingEvent } from "../../lib/analytics"
+import { landingSource } from "../../lib/trafficSource"
 import { shortL1Addr, usdFigure } from "../../ui/format"
 import { BalanceSkeleton } from "../../ui/Skeletons"
 import type { EntryOpener, NotificationScope } from "../../ui/NotificationsPanel"
@@ -23,8 +24,15 @@ import { SwapExitModal } from "../withdraw/SwapExitModal"
 import { swapExitReasonFor, type SwapExitReason } from "../withdraw/swapRecovery"
 import { WithdrawalExitModal } from "../withdraw/WithdrawalExitModal"
 import { InvitationChrome } from "../onboarding/InvitationChrome"
-import { clearTicketSignup, stashClaimLink, stashTicketSignup } from "./claimStash"
+import {
+  clearTicketSignup,
+  peekTicketSignup,
+  receivesToAccount,
+  stashClaimLink,
+  stashTicketSignup,
+} from "./claimStash"
 import { useGoldenTicketOffer, type GoldenTicketOffer } from "./goldenTicketOffer"
+import { ticketKnownSpent } from "./ticketSpent"
 import { PaylinkOnboardingScreen } from "./PaylinkOnboardingScreen"
 import { ticketSignupCommitted, ticketSignupResumable } from "./ticketContinuation"
 import {
@@ -42,6 +50,12 @@ import { useLinkVoucher, useLinkWithdrawal } from "./usePaylinkDeps"
 import { CLOSED_LINK_COPY } from "./claimWindow"
 import { senderLine } from "./senderLine"
 import type { PaymentLink } from "./types"
+
+/** A typed name's own schedule, base units: what a link with no ticket pays for it. */
+const NAME_SCHEDULE = {
+  fee: REGISTRATION_SCHEDULE_DEFAULTS.standard.fee.toString(),
+  minDeposit: REGISTRATION_SCHEDULE_DEFAULTS.standard.min.toString(),
+}
 
 /**
  * `/link#…` for a visitor with no account. A link whose escrow holds a voucher offers two ways to
@@ -72,6 +86,7 @@ export function PaylinkVisitorScreen({
   onRetryStatus: () => void
 }) {
   const navigate = useNavigate()
+  const { state: routeState } = useLocation()
   const { obsidionWallet } = useAztecContext()
   // A claim is offered only once the window is known to be open; the chain refuses one before.
   const chainNow = usePolledChainSeconds(obsidionWallet?.node)
@@ -100,7 +115,9 @@ export function PaylinkVisitorScreen({
   // The network's ticket offer decides what "Receive to zk.money" means: the link paying for the
   // account (the three-step signup), or an ordinary signup with the link claimed on Home after. A
   // read that failed decides neither, so the choice retries it instead.
-  const { offer, failed: offerFailed, retry: retryOffer } = useGoldenTicketOffer()
+  const { offer: offered, failed: offerFailed, retry: retryOffer } = useGoldenTicketOffer()
+  // A ticket this browser already saw refused as spent is no ticket.
+  const offer = offered && ticketKnownSpent(link.fragment) ? null : offered
 
   useEffect(() => {
     stashClaimLink(link.fragment)
@@ -154,8 +171,9 @@ export function PaylinkVisitorScreen({
   // The ticket signup keeps this page as the backdrop of its modal steps whatever the reads say
   // once it has started: the wizard is never swapped under the visitor.
   const choosing = !tracking && (ticketSignup || (!signup && !voucherless))
-  // With a ticket on offer the account option promises it only once the voucher read has answered.
-  const ticketUnread = !!offer && !known
+  // Either signup mode is picked only once the voucher read has answered: the link pays for the
+  // account, ticket or name price, only through it.
+  const voucherUnread = !known
   const decimals = tokenDecimalsForNetwork(getConfig().network)
   // The note's amount as this page read it: it decides whether a new ticket signup may start, and
   // prices the signup's split at once.
@@ -176,24 +194,40 @@ export function PaylinkVisitorScreen({
       : undefined
   const accountRetry = offerFailed
     ? retryOffer
-    : ticketUnread && error
+    : voucherUnread && error
     ? retry
     : amountFailed
     ? onRetryStatus
     : undefined
   const accountChecking =
-    !accountRetry && (offer === undefined || ticketUnread || eligibility === "unknown")
+    !accountRetry && (offer === undefined || voucherUnread || eligibility === "unknown")
 
-  const startSignup = () => {
-    if (offer === undefined || ticketUnread) return
-    const ticket = !!offer && canCashOut
-    if (eligibility !== undefined && eligibility !== "eligible") return
-    fireEvent("paylink_visitor_chose", { choice: "account", ticket: ticketOffered })
+  // The signup funnel's first ticket step, once per mount: the page offered to pay for the account,
+  // or opened the signup a link sent here pays for at the name's price.
+  const ticketShown = useRef(false)
+  const reportTicketStart = () => {
+    if (ticketShown.current) return
+    ticketShown.current = true
+    fireOnboardingEvent("onboarding_started", { entry: "ticket", source: landingSource() })
+  }
+
+  /**
+   * `paid`: no ticket applies, and the link pays the name's own price when its note covers it.
+   * False when the signup cannot start yet.
+   */
+  const startSignup = (paid = false): boolean => {
+    if (offer === undefined || voucherUnread) return false
+    const ticket = canCashOut && (paid || !!offer)
+    if (!paid && eligibility !== undefined && eligibility !== "eligible") return false
+    // The link pays the name only with its amount in the marker: a later read never reaches it.
+    if (ticket && paid && amount === undefined) return false
+    fireEvent("paylink_visitor_chose", { choice: "account", ticket: !paid && ticketOffered })
     if (ticket) {
       stashTicketSignup({
         fragment: link.fragment,
-        threshold: offer.threshold,
-        schedule: offer.schedule,
+        ...(paid || !offer
+          ? { paid: true as const, schedule: NAME_SCHEDULE }
+          : { threshold: offer.threshold, schedule: offer.schedule }),
         ...(link.memo ? { memo: link.memo } : {}),
         ...(link.senderTag ? { senderTag: link.senderTag } : {}),
         amount,
@@ -204,20 +238,37 @@ export function PaylinkVisitorScreen({
         ...(link.txHash ? { txHash: link.txHash } : {}),
       })
     } else clearTicketSignup()
+    if (ticket && paid) reportTicketStart()
     setTicketSignup(ticket)
     setCashOut(false)
     setSignup(true)
+    return true
   }
 
   // A link whose ticket signup already holds a passkey or a registration goes straight back into
-  // it, as after the reload that follows the passkey's creation; the choice was already made.
+  // it, as after the reload that follows the passkey's creation; the choice was already made, so
+  // this tab's marker keeps its mode, ticket or paid. So does a link a signup elsewhere sent here
+  // to pick a name: its free tag when the ticket is eligible, else the name's own price.
   const resumable = ticketSignupResumable(link.fragment)
+  const sentHere = receivesToAccount(routeState)
   const resumed = useRef(false)
   useEffect(() => {
-    if (resumed.current || signup || tracking || !resumable) return
-    if (offer === undefined || ticketUnread) return
-    resumed.current = true
-    startSignup()
+    if (resumed.current || signup || tracking) return
+    if (offer === undefined || voucherUnread) return
+    if (resumable && peekTicketSignup()?.fragment === link.fragment) {
+      resumed.current = true
+      setTicketSignup(true)
+      setSignup(true)
+    } else if (resumable || (sentHere && eligibility === "eligible")) {
+      resumed.current = true
+      startSignup()
+    } else if (sentHere && eligibility !== "unknown") {
+      resumed.current = startSignup(true)
+    }
+  })
+
+  useEffect(() => {
+    if (!tracking && ticketOffered === true) reportTicketStart()
   })
 
   const closed = link.status === "unclaimed" ? undefined : CLOSED_LINK_COPY[link.status]
@@ -299,7 +350,7 @@ export function PaylinkVisitorScreen({
               // here would have to pick the paid signup for a visitor the link may be about to pay
               // for. A read that failed is not a confirmed absence, so the click retries it.
               disabled: signup || accountChecking || thresholdNote !== undefined,
-              onClick: accountRetry ?? startSignup,
+              onClick: accountRetry ?? (() => startSignup()),
               pending: accountChecking,
               note: accountRetry
                 ? "Couldn't check what this link pays for. Tap to try again."
@@ -362,7 +413,7 @@ export function PaylinkVisitorScreen({
             planSwap={(recipient, receiveAsset, quote, amount) =>
               planCashOutSwap(deps, link.fragment, amount, recipient, receiveAsset, quote)
             }
-            onClaimInstead={thresholdNote ? undefined : startSignup}
+            onClaimInstead={thresholdNote ? undefined : () => startSignup()}
           />
         )}
       </InvitationChrome>

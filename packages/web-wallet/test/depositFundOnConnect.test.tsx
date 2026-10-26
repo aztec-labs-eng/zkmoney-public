@@ -23,17 +23,12 @@ vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => vi.fn(),
 }))
-vi.mock("../src/features/deposit/l1DepositTokenBalance", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/deposit/l1DepositTokenBalance")>()),
-  readL1TokenBalance: vi.fn(async () => 0n),
-}))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAztecContext: () => ({ obsidionWallet: {} }),
   useContractServiceContext: () => ({ contractService: {} }),
 }))
 const gateway = {
-  wakeDeposit: vi.fn(async () => {}),
   depositAddress: vi.fn(async () => ({ address: "0xp001ed", name: "alice.oxide.eth" })),
 }
 vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
@@ -114,13 +109,11 @@ describe("DepositScreen — funding click held across the wallet picker", () => 
     [...container.querySelectorAll("button")].find((b) => b.textContent?.includes(text))
 
   /** First call mounts; later calls re-render the screen against the mutated `l1`. */
-  const render = () =>
+  const render = (screen = <DepositScreen />) =>
     act(async () => {
       root.render(
         <MemoryRouter>
-          <ScreeningProvider screener={passThroughScreener}>
-            <DepositScreen />
-          </ScreeningProvider>
+          <ScreeningProvider screener={passThroughScreener}>{screen}</ScreeningProvider>
         </MemoryRouter>,
       )
     })
@@ -237,6 +230,32 @@ describe("DepositScreen — funding click held across the wallet picker", () => 
 
     walletLands()
     await render()
+    expect(sheets()).toBe(1)
+  })
+
+  it("opens the sheet for an upgrade's address once the address it asked for appears", async () => {
+    const create = vi.fn()
+    const upgrade = (address?: Hex) => (
+      <DepositScreen
+        target={{
+          kind: "upgrade",
+          address: address && { address, name: "alice" },
+          create,
+          fee: 5n * 10n ** 17n,
+          floor: 5n * 10n ** 17n + 1n,
+          ask: 10n ** 18n,
+          onFunded: () => {},
+          onShown: () => {},
+        }}
+      />
+    )
+    walletLands()
+    await render(upgrade())
+    await act(async () => buttonContaining("Deposit from")!.click())
+    expect(create).toHaveBeenCalled()
+    expect(sheets()).toBe(0)
+
+    await render(upgrade(`0x${"ee".repeat(20)}`))
     expect(sheets()).toBe(1)
   })
 

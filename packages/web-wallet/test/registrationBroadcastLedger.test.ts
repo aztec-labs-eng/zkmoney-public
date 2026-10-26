@@ -24,8 +24,13 @@ const h = vi.hoisted(() => ({
 
 vi.mock("../src/features/onboarding/registrationResume", () => ({
   unlockedSessionKeys: async () => h.keys,
-  registrationBroadcastSeen: async (record: { sipaAddress: string }) =>
-    h.landed.has(record.sipaAddress.toLowerCase()),
+  // An event mined before a republish's boundary is the dropped broadcast, not the new one.
+  registrationBroadcastSeen: async (
+    record: { sipaAddress: string },
+    _config: unknown,
+    _wallet: unknown,
+    sinceBlock?: number,
+  ) => sinceBlock === undefined && h.landed.has(record.sipaAddress.toLowerCase()),
 }))
 vi.mock("../src/features/onboarding/webRegistrationBroadcast", () => ({
   createWebRegistrationBroadcaster: () => async (payload: RegistrationBroadcastPayload) => {
@@ -64,7 +69,7 @@ const {
 } = await import("../src/features/broadcasts/broadcasts")
 const { registrationExecutor } = await import("../src/features/broadcasts/registrationExecutor")
 const { getPendingStore } = await import("../src/features/onboarding/webRegistration")
-const { runUserFlow } = await import("../src/features/provingGate")
+const { runUserFlow, trackBackgroundProve } = await import("../src/features/provingGate")
 
 const payload = (deadlineSec = Math.floor(Date.now() / 1000) + 3600, termsDeadlineSec = 0) =>
   ({
@@ -170,6 +175,20 @@ describe("a registration's broadcast on the ledger", () => {
     await vi.waitFor(() => expect(getPendingStore().get(ACCOUNT)?.broadcast).toBe(true))
   })
 
+  it("sends a republished broadcast again although its first event mined", async () => {
+    h.landed.add(SIPA.toLowerCase())
+    await oweRegistrationBroadcast(getPendingStore().get(ACCOUNT)!)
+    start()
+    await vi.waitFor(() => expect(job()?.state).toBe("landed"))
+    expect(h.sent).toEqual([])
+    stop?.()
+    const rebuilt = payload()
+    h.rebuild.mockResolvedValue({ kind: "payload", payload: rebuilt })
+    expect(await getBroadcastLedger().republish(SIPA, 100)).toBe(true)
+    start()
+    await vi.waitFor(() => expect(h.sent).toEqual([rebuilt]))
+  })
+
   it("holds while the user's own transaction runs, and goes once it ends", async () => {
     let finish!: () => void
     const flow = runUserFlow(() => new Promise<void>((resolve) => (finish = resolve)))
@@ -179,6 +198,21 @@ describe("a registration's broadcast on the ledger", () => {
     expect(h.sent).toEqual([])
     finish()
     await flow
+    await vi.waitFor(() => expect(job()?.state).toBe("landed"))
+    expect(h.sent).toHaveLength(1)
+  })
+
+  // A user flow raised meanwhile waits on an attempt that is proving, so none may wait its turn.
+  it("holds while a background proof runs, never proving behind it, and goes once it ends", async () => {
+    let finish!: () => void
+    const step = trackBackgroundProve(() => new Promise<void>((resolve) => (finish = resolve)))
+    await oweRegistrationBroadcast(getPendingStore().get(ACCOUNT)!, { payload: payload() })
+    start()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(job()?.state).toBe("queued")
+    expect(h.sent).toEqual([])
+    finish()
+    await step
     await vi.waitFor(() => expect(job()?.state).toBe("landed"))
     expect(h.sent).toHaveLength(1)
   })

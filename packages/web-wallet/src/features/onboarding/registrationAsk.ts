@@ -244,9 +244,17 @@ export function registrationOffer(
   return { kind: registrationKind(waived), funding: "external_deposit" }
 }
 
+/** Wire terms a link's burn can fund: they price a sweep, which a zero fee never does. */
+export function wireTermsFundLink(
+  terms: { fee?: string; minDeposit?: string } | null | undefined,
+): boolean {
+  if (terms?.fee === undefined) return false
+  return !termsUnpriced(terms) && BigInt(terms.fee) > 0n
+}
+
 /**
- * Wire terms a paylink can pay for: the signer marked them a ticket and they price a sweep. A zero
- * fee never sweeps, and a reduced flag alone is an earned tag, not a ticket.
+ * Wire terms a paylink's ticket bought: the signer marked them a ticket and a burn can fund them. A
+ * reduced flag alone is an earned tag, not a ticket.
  */
 export function wireTermsFundTicket(
   terms:
@@ -254,8 +262,7 @@ export function wireTermsFundTicket(
     | null
     | undefined,
 ): boolean {
-  if (terms?.ticket !== true || terms.fee === undefined) return false
-  return !termsUnpriced(terms) && BigInt(terms.fee) > 0n
+  return terms?.ticket === true && wireTermsFundLink(terms)
 }
 
 /**

@@ -26,10 +26,11 @@ export function ClaimRoute({
   assetOptions: ComponentProps<typeof AssetProvider>["assetOptions"]
 }) {
   const [ticketFunded] = useState(pendingTicketRegistration)
-  if (!ticketFunded) return <OnboardingScreen />
-  return (
+  return ticketFunded ? (
     <AssetProvider assetOptions={assetOptions}>
       <PaylinkOnboardingScreen />
     </AssetProvider>
+  ) : (
+    <OnboardingScreen />
   )
 }

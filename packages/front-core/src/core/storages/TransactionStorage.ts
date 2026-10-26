@@ -439,8 +439,7 @@ export class TransactionStorage {
   /**
    * Reorg demote by txHash. Bumps `reorgEpoch`, reverses the row to `pending`
    * (clearing terminal `detailedStatus`/`endTime`), and preserves block anchors.
-   * `terminal: "failed"` (generation freeze) lands `failed` immediately instead
-   * — no re-inclusion expected.
+   * `terminal: "failed"` lands `failed` immediately instead — no re-inclusion expected.
    */
   public async demoteByTxHash(
     txHash: string,

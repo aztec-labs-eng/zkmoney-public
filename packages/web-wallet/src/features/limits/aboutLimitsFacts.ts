@@ -3,41 +3,13 @@
  * Nothing here reads the chain; the callers pass what their owners already read.
  */
 import { PUBLIC_TX_LIMIT_USD } from "@obsidion/core/constants"
-import {
-  NOMINAL_USD_VALUATION,
-  type AllowanceSnapshot,
-  type PortalCapacityState,
-  type UsdValuation,
-} from "@obsidion/front-core"
+import type { AllowanceSnapshot, PortalCapacityState } from "@obsidion/front-core"
 import { capacityStateLabel } from "../deposit/fundingCapacity"
-import type { DepositTokenOption } from "../deposit/loadDepositFacts"
 import type { CapacityFacts, ProductLimitFacts, SponsorshipFacts } from "./aboutLimitsView"
 
-/**
- * `valuationOf` values one deposit token by its address. Without it, no token list is shown. A token
- * with any valuation other than the nominal policy rate also hides the list, since its wording
- * names the $1 rate.
- */
-export function productLimitFacts({
-  tokens,
-  valuationOf,
-}: {
-  tokens: DepositTokenOption[]
-  valuationOf?: (token: DepositTokenOption) => UsdValuation | undefined
-}): ProductLimitFacts {
-  const maximumUsd = String(PUBLIC_TX_LIMIT_USD)
-  const facts: ProductLimitFacts = {
-    deposit: { maximumUsd, basis: "sent-including-fees" },
-    withdrawal: { maximumUsd, basis: "debited-including-fees" },
-  }
-  if (!valuationOf) return facts
-  const valued = tokens.flatMap((token) => {
-    const valuation = valuationOf(token)
-    return valuation ? [{ symbol: token.symbol, valuation }] : []
-  })
-  const nominal = valued.every(({ valuation }) => valuation.source === NOMINAL_USD_VALUATION.source)
-  if (valued.length > 0 && nominal) facts.valuation = { tokens: valued.map((v) => v.symbol) }
-  return facts
+export function productLimitFacts(): ProductLimitFacts {
+  const maximum = { maximumUsd: String(PUBLIC_TX_LIMIT_USD) }
+  return { send: maximum, deposit: maximum, withdrawal: maximum }
 }
 
 export function sponsorshipFacts(snapshot: AllowanceSnapshot): SponsorshipFacts {

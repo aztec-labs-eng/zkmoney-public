@@ -76,6 +76,7 @@ vi.mock("../src/config/oxideTuple", () => ({
 import { DepositAddressRow, DepositPayBlock } from "../src/features/onboarding/steps/DepositAddress"
 import { clearWalletPrompt } from "../src/features/deposit/walletPrompt"
 import { createPortalCapacityStore, type RequiredCredit } from "@obsidion/front-core"
+import { CAPACITY_UNAVAILABLE } from "../src/features/limits/limitsCopy"
 
 const DAI = 10n ** 18n
 const BUCKET = {
@@ -369,11 +370,11 @@ it("sends nothing when that last read no longer fits, and says why", async () =>
   expect(button().disabled).toBe(false)
 })
 it("holds a new payment while capacity doesn't confirm it, with the reason beside it", async () => {
-  target.funding = { required: REQUIRED, canFund: false, reason: "Capacity could not be checked." }
+  target.funding = { required: REQUIRED, canFund: false, reason: CAPACITY_UNAVAILABLE }
   act(() => root.render(<DepositPayBlock {...target} />))
   expect(button().disabled).toBe(true)
   expect(el.querySelector("[data-testid='registration-pay-reason']")?.textContent).toBe(
-    "Capacity could not be checked.",
+    CAPACITY_UNAVAILABLE,
   )
   await pay()
   expect(h.writeContract).not.toHaveBeenCalled()
@@ -382,7 +383,7 @@ it("rechecks a sent payment without a capacity read, even once capacity is uncon
   h.receipt.mockRejectedValueOnce(new Error("RPC timeout"))
   await pay()
   const reads = bucket.reads
-  target.funding = { required: REQUIRED, canFund: false, reason: "Capacity could not be checked." }
+  target.funding = { required: REQUIRED, canFund: false, reason: CAPACITY_UNAVAILABLE }
   act(() => root.render(<DepositPayBlock {...target} />))
   expect(button().disabled).toBe(false)
   await pay()

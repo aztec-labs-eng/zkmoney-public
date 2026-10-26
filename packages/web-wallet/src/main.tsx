@@ -6,6 +6,7 @@ import { captureLandingSource } from "./lib/trafficSource"
 import { DESKTOP_SETTINGS_PATH } from "./platform/desktopBridge"
 import { RESET_PATH, ResetScreen } from "./ui/ResetScreen"
 import { UnsupportedBrowser } from "./ui/UnsupportedBrowser"
+import { FREEZES, isFrozen, KEEPS_EXITS, reloadAtFreeze, showFreezePage } from "./upgradeFreeze"
 
 // A separate chunk, so `/reset` still loads when the wallet's own modules fail.
 const WalletBoot = React.lazy(() => import("./walletBoot"))
@@ -41,26 +42,35 @@ class RootErrorBoundary extends React.Component<{ children: React.ReactNode }, {
   }
 }
 
-const missing = missingBrowserFeatures()
-captureLandingSource()
-if (location.pathname !== RESET_PATH && missing.length === 0) prefetchProfile()
+function startWallet() {
+  const missing = missingBrowserFeatures()
+  captureLandingSource()
+  if (location.pathname !== RESET_PATH && missing.length === 0) prefetchProfile()
 
-createRoot(document.getElementById("root")!).render(
-  <React.StrictMode>
-    <RootErrorBoundary>
-      {location.pathname === RESET_PATH ? (
-        <ResetScreen />
-      ) : DesktopSettings && location.pathname === DESKTOP_SETTINGS_PATH ? (
-        <React.Suspense fallback={null}>
-          <DesktopSettings />
-        </React.Suspense>
-      ) : missing.length > 0 ? (
-        <UnsupportedBrowser missing={missing} />
-      ) : (
-        <React.Suspense fallback={null}>
-          <WalletBoot />
-        </React.Suspense>
-      )}
-    </RootErrorBoundary>
-  </React.StrictMode>,
-)
+  createRoot(document.getElementById("root")!).render(
+    <React.StrictMode>
+      <RootErrorBoundary>
+        {location.pathname === RESET_PATH ? (
+          <ResetScreen />
+        ) : DesktopSettings && location.pathname === DESKTOP_SETTINGS_PATH ? (
+          <React.Suspense fallback={null}>
+            <DesktopSettings />
+          </React.Suspense>
+        ) : missing.length > 0 ? (
+          <UnsupportedBrowser missing={missing} />
+        ) : (
+          <React.Suspense fallback={null}>
+            <WalletBoot />
+          </React.Suspense>
+        )}
+      </RootErrorBoundary>
+    </React.StrictMode>,
+  )
+}
+
+if (FREEZES && isFrozen() && !KEEPS_EXITS) {
+  void showFreezePage()
+} else {
+  if (FREEZES && !isFrozen()) reloadAtFreeze()
+  startWallet()
+}

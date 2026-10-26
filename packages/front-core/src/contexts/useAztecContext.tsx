@@ -13,8 +13,6 @@ import type { ChainIdentity } from "@obsidion/core/types"
 import {
   NetworkStorage,
   type NetworkConfig,
-  generationStorePrefix,
-  manifestCanonicalVersion,
   setActiveGenerationNode,
   setActiveNetworkId,
   getNodeApiKey,
@@ -28,41 +26,10 @@ import type { AztecAsyncKVStore } from "@aztec/kv-store"
 import type { CircuitSimulator } from "@aztec/simulator/client"
 import { logger } from "src/utils/logger"
 
-/**
- * Options for {@link AztecContextProps.initializePXE}.
- *
- * Two ways in, and no third: adopt a wallet that already has a node, or supply the node to build
- * one over. Neither is optional, so a caller cannot reach this without having decided which node it
- * means, and the wallet's client is always one a caller owns rather than one this module invented.
- */
-export type InitializePXEOptions = AdoptWalletOptions | BuildWalletOptions
-
-interface CommonInitializePXEOptions {
+/** Options for {@link AztecContextProps.initializePXE}: build the wallet over the node the caller owns. */
+export interface InitializePXEOptions {
   /** Explicit client-proving override; defaults per-network when unset. */
   proverEnabled?: boolean
-}
-
-/**
- * Adopt a pre-built wallet instead of constructing one here; its node came with it. The generation
- * seam: when the canonical generation's `stack` is "v4", the platform layer builds the wallet from
- * the v4-origin sdk create path (whose @aztec/* resolve to 4.3.0) and hands it in —
- * this module's own runtime imports are the current (5.0.1) stack and must not touch a v4 node.
- */
-interface AdoptWalletOptions extends CommonInitializePXEOptions {
-  wallet: ObsidionWallet
-  /** The adopted wallet brought its own; supplying another would silently go unused. */
-  node?: never
-  prover?: never
-  bbWasmPath?: never
-  store?: never
-  simulator?: never
-  pendingTxStore?: never
-  chainIdentity?: never
-}
-
-/** Build the wallet here, over the node the caller owns. */
-interface BuildWalletOptions extends CommonInitializePXEOptions {
-  wallet?: never
   /** The client this wallet talks to. Whoever owns it passes it in; this module never builds one. */
   node: AztecNode
   prover?: PrivateKernelProver
@@ -93,7 +60,6 @@ interface AztecContextProps {
   setNetworks: (networks: NetworkConfig[]) => void
   rollupAddress: string
   // setPXE: (pxe: PXE | null) => void
-  /** Adopt a wallet, or build one over the caller's node — see {@link InitializePXEOptions}. */
   initializePXE: (opts: InitializePXEOptions) => Promise<PXE | undefined>
 }
 
@@ -157,22 +123,6 @@ export const AztecProvider = ({
     const isProd = network.type !== Network.SANDBOX
     logger.log("isProd", isProd)
     try {
-      // Adoption path: the caller already built the wallet through a
-      // generation-specific create (v4 boot). Skip construction, keep the
-      // same context wiring.
-      if (opts.wallet) {
-        setObsidionWallet(opts.wallet)
-        // Publish this generation's node so front-core node-RPC callers use it
-        // instead of a fresh 5.0.1 client (which can't talk to a v4 node).
-        setActiveGenerationNode(opts.wallet.node)
-        const nodeInfo = await opts.wallet.node.getNodeInfo()
-        const rollup = nodeInfo.l1ContractAddresses.rollupAddress.toString()
-        setRollupAddress(rollup)
-        setActiveNetworkId(rollup)
-        setNetworkStatus("stable")
-        return opts.wallet.pxe
-      }
-
       // console.time("createPXEService")
 
       // const node = createAztecNodeClient(network.nodeUrl, {}, fetch)
@@ -192,10 +142,6 @@ export const AztecProvider = ({
           proverEnabled,
           // proveTx perf logs only when a prover/store/simulator is injected.
           proveTxPerfLogs: !!customProver || !!customStore || !!customSimulator,
-          // Store keyed by generation×network — each generation runs its own
-          // PXE store. Boot uses the manifest's canonical version; detection
-          // drives re-init on a cutover flip (generationRegistry).
-          dataDirectory: generationStorePrefix(manifestCanonicalVersion(), network.name),
           l1ChainId: l1ChainIdForNetwork(network.type),
         })
 

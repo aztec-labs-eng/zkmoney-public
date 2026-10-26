@@ -240,6 +240,7 @@ export function ClaimToL1Modal({
   const speedChoice = useSpeedChoice({
     active: phase !== "recipient",
     node,
+    amount: amountAtomic,
     held: swapLeg && swapLeg.proverTip > 0n ? swapLeg.offer : undefined,
   })
   const { speed } = speedChoice
@@ -676,7 +677,7 @@ export function ClaimToL1Modal({
               className="zkm-btn-reset ww-claim-l1__alt"
               onClick={onClaimInstead}
             >
-              Claim to zk.money instead. No fee.
+              Claim privately to zk.money instead.
             </button>
           )}
         </>

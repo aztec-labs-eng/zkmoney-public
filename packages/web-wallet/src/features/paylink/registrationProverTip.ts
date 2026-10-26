@@ -47,7 +47,7 @@ export function useRegistrationSpeed({
   noteAmount,
   schedule,
   cuts,
-  initialSpeed = "faster",
+  initialSpeed,
   onCommit,
   commitKey,
   load,
@@ -65,6 +65,7 @@ export function useRegistrationSpeed({
   const choice = useSpeedChoice({
     active,
     node,
+    amount: noteAmount,
     initialSpeed,
     answerWithinMs: REGISTRATION_OFFER_TIMEOUT_MS,
     load,

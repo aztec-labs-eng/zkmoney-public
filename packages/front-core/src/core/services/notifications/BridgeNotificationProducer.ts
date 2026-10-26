@@ -27,12 +27,8 @@ import type {
 } from "./AppNotificationStore"
 import { SnapshotNotificationProducer } from "./NotificationProducer"
 import type { NotificationFeed, NotificationProducer } from "./NotificationProducer"
-import {
-  upgradeBatchArrived,
-  upgradeRunTotal,
-  type UpgradeBatchItem,
-} from "../../migration/upgradeActivity"
-import { isSettledSipaPhase } from "../deposits/SIPADepositStore"
+import { upgradeBatchArrived } from "../../migration/upgradeActivity"
+import { upgradeRunsOf, type UpgradeRun } from "../../migration/upgradeRuns"
 import { dollars } from "./TransferReceiveNotificationProducer"
 import { isNativeEth } from "../../../oxide/sipaFunding"
 import { logger } from "src/utils/logger"
@@ -71,8 +67,11 @@ function terminalPhaseForItem(item: BridgeActivityItem): TerminalBridgePhase | n
  * What a deposit's live row says it is waiting on; undefined for one not yet funded, parked, or
  * settled, where a spinner would claim progress that is not happening.
  */
-export function sipaDepositInflightLabel(record: SIPADepositRecord): string | undefined {
-  return depositPhaseCopy(record).live
+export function sipaDepositInflightLabel(
+  record: SIPADepositRecord,
+  portalFrozen = false,
+): string | undefined {
+  return depositPhaseCopy(record, { portalFrozen }).live
 }
 
 /** Phases a rebuilt withdrawal sits in until the tracker has seen its L1 release. */
@@ -89,7 +88,7 @@ const UNRELEASED: ReadonlySet<WithdrawalRecord["phase"]> = new Set([
  * record rebuilt from chain starts at the burn: its release was never observed here, so until the
  * tracker sees it spent on L1 a live row would report an old, settled withdrawal as in progress.
  */
-function inflightLabel(item: BridgeActivityItem, migration: boolean): string | undefined {
+function inflightLabel(item: BridgeActivityItem, portalFrozen: boolean): string | undefined {
   if (item.kind === "bridge.sipaDeposit" && sipaReasonShown(item.processing, item.record)) {
     return SIPA_PROCESSING_COPY[item.processing.reason.kind].short
   }
@@ -100,22 +99,12 @@ function inflightLabel(item: BridgeActivityItem, migration: boolean): string | u
   ) {
     return undefined
   }
-  if (migration) {
-    if (item.kind === "bridge.withdrawal") {
-      const phase = item.record.phase
-      return phase === "submitting" || !WITHDRAWAL_PHASE_COPY[phase].live
-        ? undefined
-        : "Leaving old version"
-    }
-    // Funded and on its way in; before that the exit's row says where the funds are.
-    return sipaDepositInflightLabel(item.record) ? "Arriving on new version" : undefined
-  }
   if (item.kind === "bridge.withdrawal") {
     return item.record.phase === "submitting"
       ? undefined
       : WITHDRAWAL_PHASE_COPY[item.record.phase].live
   }
-  return sipaDepositInflightLabel(item.record)
+  return sipaDepositInflightLabel(item.record, portalFrozen)
 }
 
 /**
@@ -216,41 +205,8 @@ function inflightInput(
   }
 }
 
-/** One upgrade run: its batches, each with the deposit that brings it once one is seen. */
-interface UpgradeRunRows {
-  run: string
-  legs: { batch: UpgradeBatchItem; arrival?: SIPADepositRecord }[]
-}
-
-function upgradeRunsOf(items: ActivityItem[]): UpgradeRunRows[] {
-  const deposits = new Map(
-    items.flatMap((i) =>
-      i.kind === "bridge.sipaDeposit"
-        ? [[i.record.sipaAddress.toLowerCase(), i.record] as const]
-        : [],
-    ),
-  )
-  const runs = new Map<string, UpgradeRunRows>()
-  for (const item of items) {
-    if (item.kind !== "upgrade.batch") continue
-    const run = runs.get(item.batch.run) ?? { run: item.batch.run, legs: [] }
-    run.legs.push({ batch: item.batch, arrival: deposits.get(item.batch.recipient.toLowerCase()) })
-    runs.set(item.batch.run, run)
-  }
-  return [...runs.values()].filter((r) => r.legs.some((leg) => leg.batch.state !== "planned"))
-}
-
-const legArrived = (leg: UpgradeRunRows["legs"][number]) => upgradeBatchArrived(leg.arrival)
-/** Nothing more arrives: every batch's deposit has settled, credited or not. */
-const runSettled = (run: UpgradeRunRows) =>
-  run.legs.every((leg) => !!leg.arrival && isSettledSipaPhase(leg.arrival.phase))
-
-function upgradeRunFigure(run: UpgradeRunRows): string {
-  return dollars(Number(formatUnits(upgradeRunTotal(run.legs), DEFAULT_DECIMALS)))
-}
-
-function upgradeRunInput(run: UpgradeRunRows, done: boolean): CreateAppNotificationInput {
-  const arrived = run.legs.filter(legArrived).length
+function upgradeRunInput(run: UpgradeRun, done: boolean): CreateAppNotificationInput {
+  const figure = dollars(Number(formatUnits(run.total, DEFAULT_DECIMALS)))
   // Funds that reach the old version later join the run: its larger whole reports anew.
   const id = `migration-run:${run.run}${done ? `:done:${run.legs.length}` : ""}`
   const n = run.legs.length
@@ -261,8 +217,8 @@ function upgradeRunInput(run: UpgradeRunRows, done: boolean): CreateAppNotificat
     sourceId: id,
     title: done ? "Upgrade complete" : "Upgrading",
     description: done
-      ? `${upgradeRunFigure(run)} · ${n === 1 ? "1 transfer" : `${n} transfers`}`
-      : `${upgradeRunFigure(run)} · ${arrived} of ${n} arrived`,
+      ? `${figure} · ${n === 1 ? "1 transfer" : `${n} transfers`}`
+      : `${figure} · ${run.arrived} of ${n} arrived`,
     timestampMs: done
       ? Math.max(...run.legs.map((leg) => leg.arrival?.endTime ?? 0))
       : Math.min(...run.legs.map((leg) => leg.batch.startTime)),
@@ -408,6 +364,8 @@ export interface BridgeNotificationOptions {
    * it forever beside the completion row.
    */
   liveRows?: boolean
+  /** Whether the deposits' portal is frozen, so a swept deposit has no claim in flight. */
+  portalFrozen?: () => boolean
 }
 
 export class BridgeNotificationProducer implements NotificationProducer {
@@ -415,6 +373,7 @@ export class BridgeNotificationProducer implements NotificationProducer {
   private notifications: AppNotificationStore
   private runner: SnapshotNotificationProducer<ActivityItem>
   private liveRows: boolean
+  private portalFrozen: () => boolean
   private hasSeenBridgeItems = false
   readonly id = "bridge"
 
@@ -425,6 +384,7 @@ export class BridgeNotificationProducer implements NotificationProducer {
   ) {
     this.notifications = notifications
     this.liveRows = options.liveRows ?? false
+    this.portalFrozen = options.portalFrozen ?? (() => false)
     this.runner = new SnapshotNotificationProducer<ActivityItem>({
       id: this.id,
       feed,
@@ -478,7 +438,7 @@ export class BridgeNotificationProducer implements NotificationProducer {
   private async syncLiveRows(
     items: BridgeActivityItem[],
     isMigration: (item: BridgeActivityItem) => boolean,
-    runs: UpgradeRunRows[],
+    runs: UpgradeRun[],
   ): Promise<void> {
     // Preserve restored rows until the feed has loaded; from then on an empty snapshot means the
     // last record was removed (a cancelled withdrawal) or is another producer's to carry.
@@ -487,7 +447,7 @@ export class BridgeNotificationProducer implements NotificationProducer {
     const stillFlying = new Set<string>()
     for (const item of items) {
       const migration = isMigration(item)
-      const label = inflightLabel(item, migration)
+      const label = inflightLabel(item, this.portalFrozen())
       if (!label) continue
       // No baseline gate: a deposit that started before this session is still worth a live row.
       stillFlying.add(inflightSourceId(item))
@@ -499,7 +459,7 @@ export class BridgeNotificationProducer implements NotificationProducer {
     }
     // An upgrade is one live row until every batch has arrived.
     for (const run of runs) {
-      if (runSettled(run)) continue
+      if (run.settled) continue
       const input = upgradeRunInput(run, false)
       stillFlying.add(input.id)
       await this.notifications.upsert(input).catch((err) => {
@@ -589,7 +549,7 @@ export class BridgeNotificationProducer implements NotificationProducer {
       )
 
     for (const run of runs) {
-      if (!run.legs.every(legArrived)) continue
+      if (!run.complete) continue
       const input = upgradeRunInput(run, true)
       // A deposit claimed from a replayed sweep takes the sweep's time: a run seen pending reports.
       if (input.timestampMs < baseline && !this.notifications.get(`migration-run:${run.run}`))

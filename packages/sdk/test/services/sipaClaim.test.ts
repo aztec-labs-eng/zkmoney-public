@@ -1,19 +1,12 @@
 /**
- * SIPA claim primitives — unit tests over stub clients. The Deposit logs are
- * encoded with viem's own event encoders against the vendored
- * OxidePortalEventsAbi, so the messageKey extraction is tested against real
- * log wire format (including the multi-sweep-per-tx batch case); the sweep
- * calldata builder is decoded back with viem and compared against the
- * vendored encoders directly.
+ * SIPA claim primitives — unit tests over stub clients. The sweep calldata builder is decoded back
+ * with viem and compared against the vendored encoders directly.
  */
 
 import { describe, expect, it, vi } from "vitest"
 import {
   decodeFunctionData,
-  encodeAbiParameters,
-  encodeEventTopics,
   multicall3Abi,
-  parseAbiParameters,
   parseEther,
   type Address,
   type Hex,
@@ -23,7 +16,6 @@ import { Fr } from "@aztec/aztec.js/fields"
 import { AztecAddress } from "@aztec/aztec.js/addresses"
 import { GrumpkinScalar } from "@aztec/foundation/curves/grumpkin"
 import {
-  OxidePortalEventsAbi,
   encodeDeploySIPA,
   encodeRegistrationProofs,
   encodeSweep,
@@ -37,220 +29,48 @@ import {
   EMPTY_SIGNED_TERMS,
   encodeRecoverCall,
   fetchSipaEvents,
-  isSipaDepositClaimed,
+  readSipaDepositsConsumed,
   MULTICALL3_ADDRESS,
   readDepositFee,
-  readDepositMessageKey,
   readFundingTransfers,
-  readFundingTransfersMany,
   readSipaBalancesMany,
+  readSipaDeployedMany,
+  readSipaHoldingsAtHead,
   readSipaFundingStatus,
-  readSweepEvents,
-  readSweepEventsMany,
   TX_AMOUNT_CAP,
 } from "../../src/services/sipaClaim.js"
 import { OxideTokenContract } from "@obsidion/contracts"
 
 const SIPA = "0x1234567890abcdef1234567890abcdef12345678" as Address
-const PORTAL = "0x7992CD55908B19b60bc46926dEb9B1f1DFb6E0A9" as Address
 const TX_HASH = `0x${"ab".repeat(32)}` as Hex
 
-describe("isSipaDepositClaimed", () => {
-  it("uses the live nullifier tree as the claimed source of truth", async () => {
-    const getNullifierMembershipWitness = vi
-      .fn()
-      .mockResolvedValueOnce(undefined)
-      .mockResolvedValueOnce({ leafIndex: 7n })
-    const params = {
-      l1Portal: PORTAL,
-      l1ChainId: 31337n,
-      l2Token: AztecAddress.fromBigIntUnsafe(0x1234n),
-      rollupVersion: 7n,
-      recipient: AztecAddress.fromBigIntUnsafe(0xbee0n),
-      messageSecret: new Fr(11n),
-      amount: 100n,
-      inboxIndex: 9n,
-      masterNullifierHidingKey: GrumpkinScalar.random(),
-    }
+describe("readSipaDepositsConsumed", () => {
+  const scope = {
+    l2Token: AztecAddress.fromBigIntUnsafe(0x1234n),
+    masterNullifierHidingKey: GrumpkinScalar.random(),
+  }
 
-    expect(await isSipaDepositClaimed({ getNullifierMembershipWitness } as never, params)).toBe(
-      false,
-    )
-    expect(await isSipaDepositClaimed({ getNullifierMembershipWitness } as never, params)).toBe(
-      true,
-    )
-    expect(getNullifierMembershipWitness.mock.calls[0]![0]).toBe("latest")
-    expect(String(getNullifierMembershipWitness.mock.calls[0]![1])).toMatch(/^0x[0-9a-f]+$/)
-  })
-})
-
-function depositLog(portal: Address, key: Hex, index: bigint) {
-  const topics = encodeEventTopics({
-    abi: OxidePortalEventsAbi,
-    eventName: "Deposit",
-    args: { recipientCommitment: `0x${"11".repeat(32)}` as Hex },
-  })
-  const data = encodeAbiParameters(parseAbiParameters("uint256, bytes32, uint256"), [
-    1000n,
-    key,
-    index,
-  ])
-  return { address: portal, topics, data }
-}
-
-describe("readSweepEvents", () => {
-  /** A client whose head is `head` and which yields `logs` from the first chunk only. */
-  const clientAt = (head: bigint, logs: unknown[] = []) =>
-    ({
-      getBlockNumber: vi.fn(async () => head),
-      getContractEvents: vi.fn(async () => logs.splice(0, logs.length)),
-    } as unknown as PublicClient)
-
-  const ranges = (client: PublicClient) =>
-    (client.getContractEvents as ReturnType<typeof vi.fn>).mock.calls.map(([c]) => [
-      c.fromBlock,
-      c.toBlock,
-    ])
-
-  it("maps Sweep logs to claim inputs including the emitting tx", async () => {
-    const client = clientAt(100n, [
-      { args: { index: 7n, amount: 990n }, blockNumber: 100n, transactionHash: TX_HASH },
-    ])
-    const sweeps = await readSweepEvents(client, SIPA)
-    expect(sweeps).toEqual([{ index: 7n, amount: 990n, blockNumber: 100n, txHash: TX_HASH }])
-    const call = (client.getContractEvents as ReturnType<typeof vi.fn>).mock.calls[0][0]
-    expect(call.address).toBe(SIPA)
-    expect(call.eventName).toBe("Sweep")
-  })
-
-  // An `earliest → latest` range is refused outright by rate-limited RPCs, so the scan is
-  // bounded and chunked — never one unbounded call.
-  it("never asks for a range wider than the 10k chunk", async () => {
-    const client = clientAt(11_383_721n)
-    await readSweepEvents(client, SIPA)
-    for (const [from, to] of ranges(client)) {
-      expect(typeof from).toBe("bigint")
-      expect((to as bigint) - (from as bigint)).toBeLessThan(10_000n)
-    }
-  })
-
-  it("scans the look-back window up to the head, and no further", async () => {
-    const head = 11_383_721n
-    const client = clientAt(head)
-    await readSweepEvents(client, SIPA)
-    const r = ranges(client)
-    expect(r[0][0]).toBe(head - 50_000n)
-    expect(r[r.length - 1][1]).toBe(head)
-  })
-
-  it("honours an explicit fromBlock for a deposit older than the look-back", async () => {
-    const client = clientAt(25_000n)
-    await readSweepEvents(client, SIPA, 1_000n)
-    expect(ranges(client)[0][0]).toBe(1_000n)
-  })
-
-  it("clamps to genesis on a chain shorter than the look-back", async () => {
-    const client = clientAt(120n)
-    await readSweepEvents(client, SIPA)
-    expect(ranges(client)).toEqual([[0n, 120n]])
-  })
-
-  // A caller scanning many SIPAs bounds them all by one head, so it reads that head itself
-  // and each scan costs no eth_blockNumber of its own.
-  it("honours an explicit toBlock without reading the head", async () => {
-    const client = clientAt(11_383_721n)
-    await readSweepEvents(client, SIPA, 11_380_000n, 11_380_500n)
-    expect(client.getBlockNumber).not.toHaveBeenCalled()
-    expect(ranges(client)).toEqual([[11_380_000n, 11_380_500n]])
-  })
-
-  it("derives the look-back from an explicit toBlock, not the live head", async () => {
-    const client = clientAt(11_383_721n)
-    await readSweepEvents(client, SIPA, undefined, 60_000n)
-    expect(ranges(client)[0][0]).toBe(10_000n)
-  })
-})
-
-describe("readSweepEventsMany", () => {
-  const SIPA_2 = "0x2222222222222222222222222222222222222222" as Address
-  const sweep = (address: Address, blockNumber: bigint, index: bigint) => ({
-    address,
-    args: { index, amount: 1n },
-    blockNumber,
-    transactionHash: TX_HASH,
-  })
-
-  it("scans every SIPA in one address-list read over their union, keeping each to its window", async () => {
-    const getContractEvents = vi.fn(async (_request: object) => [
-      sweep(SIPA, 100n, 1n),
-      sweep(SIPA_2, 100n, 2n),
-      sweep(SIPA_2, 400n, 3n),
-    ])
-    const client = { getBlockNumber: vi.fn(), getContractEvents } as unknown as PublicClient
-
-    const sweeps = await readSweepEventsMany(
-      client,
-      [
-        { sipa: SIPA, fromBlock: 50n },
-        { sipa: SIPA_2, fromBlock: 300n },
-      ],
-      500n,
-    )
-
-    expect(getContractEvents).toHaveBeenCalledOnce()
-    expect(getContractEvents.mock.calls[0]![0]).toMatchObject({
-      address: [SIPA, SIPA_2],
-      eventName: "Sweep",
-      fromBlock: 50n,
-      toBlock: 500n,
+  it("looks every nullifier up in batches of the node's limit, all at once, in order", async () => {
+    const hashes = Array.from({ length: 250 }, (_, i) => new Fr(BigInt(i + 1)).toString() as Hex)
+    let inFlight = 0
+    let peak = 0
+    const findLeavesIndexes = vi.fn(async (_block: string, _tree: unknown, leaves: unknown[]) => {
+      inFlight++
+      peak = Math.max(peak, inFlight)
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      inFlight--
+      // Every third deposit has been consumed.
+      return leaves.map((_, i) => (i % 3 === 0 ? { data: 1n } : undefined))
     })
-    expect(client.getBlockNumber).not.toHaveBeenCalled()
-    expect(sweeps.get(SIPA.toLowerCase())!.map((s) => s.index)).toEqual([1n])
-    expect(sweeps.get(SIPA_2.toLowerCase())!.map((s) => s.index)).toEqual([3n])
+
+    const consumed = await readSipaDepositsConsumed({ findLeavesIndexes } as never, scope, hashes)
+
+    expect(findLeavesIndexes.mock.calls.map((c) => c[2].length)).toEqual([100, 100, 50])
+    expect(peak).toBe(3)
+    expect(consumed.filter(Boolean)).toHaveLength(34 + 34 + 17)
+    expect(consumed.slice(0, 4)).toEqual([true, false, false, true])
   })
 
-  it("reaches back the look-back for a SIPA with no cursor, and reads nothing for no SIPAs", async () => {
-    const getContractEvents = vi.fn(async (_request: object) => [])
-    const client = { getContractEvents } as unknown as PublicClient
-
-    expect(await readSweepEventsMany(client, [], 60_000n)).toEqual(new Map())
-    expect(getContractEvents).not.toHaveBeenCalled()
-
-    await readSweepEventsMany(client, [{ sipa: SIPA }, { sipa: SIPA, fromBlock: 59_000n }], 60_000n)
-    expect(getContractEvents.mock.calls[0]![0]).toMatchObject({ fromBlock: 10_000n })
-  })
-})
-
-describe("readFundingTransfersMany", () => {
-  const TOKEN = "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b" as Address
-  const SIPA_2 = "0x2222222222222222222222222222222222222222" as Address
-
-  it("filters Transfer on to = any SIPA and groups by recipient", async () => {
-    const getContractEvents = vi.fn(async (_request: object) => [
-      { args: { from: PORTAL, to: SIPA_2, value: 5n }, blockNumber: 10n, transactionHash: TX_HASH },
-    ])
-    const client = { getContractEvents } as unknown as PublicClient
-
-    const transfers = await readFundingTransfersMany(
-      client,
-      TOKEN,
-      [
-        { sipa: SIPA, fromBlock: 0n },
-        { sipa: SIPA_2, fromBlock: 0n },
-      ],
-      20n,
-    )
-
-    expect(getContractEvents.mock.calls[0]![0]).toMatchObject({
-      address: TOKEN,
-      eventName: "Transfer",
-      args: { to: [SIPA, SIPA_2] },
-    })
-    expect(transfers.get(SIPA.toLowerCase())).toEqual([])
-    expect(transfers.get(SIPA_2.toLowerCase())).toEqual([
-      { from: PORTAL, amount: 5n, blockNumber: 10n, txHash: TX_HASH },
-    ])
-  })
 })
 
 describe("readSipaBalancesMany", () => {
@@ -278,31 +98,94 @@ describe("readSipaBalancesMany", () => {
   })
 })
 
-describe("readDepositMessageKey", () => {
-  // In-field values — real message keys are sha256ToField outputs (< BN254 r).
-  const KEY_A = `0x${"0a".repeat(32)}` as Hex
-  const KEY_B = `0x${"0b".repeat(32)}` as Hex
+describe("readSipaDeployedMany", () => {
+  const OTHER = "0x00000000000000000000000000000000000000b2" as Address
+  const THIRD = "0x00000000000000000000000000000000000000b3" as Address
 
-  it("selects the Deposit event matching the inbox index in a multi-sweep batch tx", async () => {
-    const client = {
-      getTransactionReceipt: vi.fn(async () => ({
-        logs: [depositLog(PORTAL, KEY_A, 7n), depositLog(PORTAL, KEY_B, 8n)],
-      })),
-    } as unknown as PublicClient
+  it("counts every address that answers or reverts as deployed, in one Multicall3 call", async () => {
+    const readContract = vi.fn(async (_request: object) => [
+      { success: true, returnData: `0x${"11".repeat(32)}` },
+      { success: true, returnData: "0x" },
+      { success: false, returnData: "0x" },
+    ])
+    const client = { readContract } as unknown as PublicClient
 
-    const key = await readDepositMessageKey(client, PORTAL, TX_HASH, 8n)
-    expect(key?.toString()).toBe(KEY_B)
+    const deployed = await readSipaDeployedMany(client, [SIPA, OTHER, THIRD])
+
+    expect(readContract).toHaveBeenCalledOnce()
+    expect(readContract.mock.calls[0]![0]).toMatchObject({
+      address: MULTICALL3_ADDRESS,
+      functionName: "aggregate3",
+    })
+    expect(deployed).toEqual(new Set([SIPA.toLowerCase(), THIRD.toLowerCase()]))
+  })
+})
+
+describe("readSipaHoldingsAtHead", () => {
+  const DAI = "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b" as Address
+  const SUSDS = "0x5a1e0c2f3b4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f" as Address
+  const SIPA_2 = "0x9999999999999999999999999999999999999999" as Address
+
+  it("reads the block timestamp and each SIPA's own tokens plus ETH in one unchunked call", async () => {
+    const multicall = vi.fn(async (_request: object) => [
+      { status: "success", result: 1_700_000_000n },
+      { status: "success", result: 7n },
+      { status: "success", result: 0n },
+      { status: "success", result: 9n },
+      { status: "failure", error: new Error("reverted") },
+    ])
+    const client = { multicall } as unknown as PublicClient
+
+    const { timestamp, balances } = await readSipaHoldingsAtHead(client, [
+      { sipa: SIPA, tokens: [DAI] },
+      { sipa: SIPA_2, tokens: [SUSDS] },
+    ])
+
+    expect(multicall).toHaveBeenCalledOnce()
+    expect(multicall.mock.calls[0]![0]).toMatchObject({
+      multicallAddress: MULTICALL3_ADDRESS,
+      allowFailure: true,
+      batchSize: 0,
+      contracts: [
+        { address: MULTICALL3_ADDRESS, functionName: "getCurrentBlockTimestamp" },
+        { address: DAI, functionName: "balanceOf", args: [SIPA] },
+        { address: MULTICALL3_ADDRESS, functionName: "getEthBalance", args: [SIPA] },
+        { address: SUSDS, functionName: "balanceOf", args: [SIPA_2] },
+        { address: MULTICALL3_ADDRESS, functionName: "getEthBalance", args: [SIPA_2] },
+      ],
+    })
+    expect(timestamp).toBe(1_700_000_000n)
+    expect(balances.get(SIPA.toLowerCase())).toEqual(
+      new Map([
+        [DAI.toLowerCase(), 7n],
+        ["0x0000000000000000000000000000000000000000", 0n],
+      ]),
+    )
+    expect(balances.get(SIPA_2.toLowerCase())).toEqual(new Map([[SUSDS.toLowerCase(), 9n]]))
   })
 
-  it("ignores Deposit events from other contracts and returns null when nothing matches", async () => {
-    const otherPortal = "0x9999999999999999999999999999999999999999" as Address
+  it("throws when the call itself failed, so a caller never reads zero balances off an outage", async () => {
+    const failure = new Error("rpc down")
     const client = {
-      getTransactionReceipt: vi.fn(async () => ({
-        logs: [depositLog(otherPortal, KEY_A, 7n)],
-      })),
+      multicall: vi.fn(async () => [
+        { status: "failure", error: failure },
+        { status: "failure", error: failure },
+        { status: "failure", error: failure },
+      ]),
     } as unknown as PublicClient
 
-    expect(await readDepositMessageKey(client, PORTAL, TX_HASH, 7n)).toBeNull()
+    await expect(readSipaHoldingsAtHead(client, [{ sipa: SIPA, tokens: [DAI] }])).rejects.toBe(
+      failure,
+    )
+  })
+
+  it("refuses more reads than one call carries instead of splitting them", async () => {
+    const multicall = vi.fn()
+    const client = { multicall } as unknown as PublicClient
+    const holdings = Array.from({ length: 500 }, () => ({ sipa: SIPA, tokens: [DAI] }))
+
+    await expect(readSipaHoldingsAtHead(client, holdings)).rejects.toThrow(/one Multicall3 call/)
+    expect(multicall).not.toHaveBeenCalled()
   })
 })
 

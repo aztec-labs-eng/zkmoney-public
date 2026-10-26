@@ -8,8 +8,7 @@
  *
  * Alert semantics: `failed` / `grace-expired` → payment-failed alert, except a withdrawal's
  * `failed`, which BridgeNotificationProducer reports off the record;
- * `re-confirmed {hadAlerted:true}` → corrective notice; `exit-required` →
- * freeze notice routing to the withdrawal flow (never retry-framed);
+ * `re-confirmed {hadAlerted:true}` → corrective notice;
  * `demoted`, `re-confirmed {hadAlerted:false}`, `finalized` → silence.
  */
 
@@ -59,16 +58,6 @@ export function reorgNotificationInput(
             : "A payment we reported as failed was confirmed after all — no action needed",
         systemIcon: "checkmark.circle",
         severity: "success",
-      }
-    case "exit-required":
-      return {
-        ...base,
-        id: `reorg:exit:${hash}`,
-        title: "Withdrawal required",
-        description:
-          "The network froze before this transaction was proven. Recover the funds via the withdrawal flow",
-        systemIcon: "lock.shield",
-        severity: "error",
       }
     default:
       return null

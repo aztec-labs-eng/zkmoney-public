@@ -1,10 +1,10 @@
-import { Fr } from "@aztec/aztec.js/fields"
 import {
   RequestStorage,
   SIPADepositStore,
   TransactionStorage,
   isUnfundedSipaDeposit,
   payerAddedToContacts,
+  randomCodeRequestId,
   payerForPaidLink,
   useAssetContext,
   useAztecContext,
@@ -12,17 +12,15 @@ import {
   useContractServiceContext,
 } from "@obsidion/front-core"
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { formatUnits } from "viem"
-import { getConfig } from "../../config/env"
 import { isDemoMode } from "../../dev/demoFlag"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
-import { readL1TokenBalance } from "../deposit/l1DepositTokenBalance"
-import { sipaFundingTokens } from "../deposit/loadDepositFacts"
 import { getSipaDepositGateway } from "../deposit/sipaGateway"
+import { useDepositWatch } from "../onboarding/useDepositWatch"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { createAndStoreRequestLink, requestLinkOrigin } from "../requests/requestLinkCreation"
 import {
   CODE_ADDRESS_MAX_AGE_MS,
+  clearCode,
   codeIsStale,
   currentCode,
   nextCode,
@@ -34,7 +32,7 @@ import {
   type ReceiveCode,
 } from "./receiveCode"
 
-/** As often as the deposit screen reads a watched address. */
+/** How often a failed or address-less code is retried. */
 const POLL_MS = 10_000
 
 export interface CodePayment {
@@ -90,7 +88,8 @@ export function useReceiveCode(enabled: boolean) {
         const token = await tokenService.fetchTokenInformation()
         return createAndStoreRequestLink(
           {
-            requestId: Fr.random().toString(),
+            requestId: randomCodeRequestId(),
+            compact: true,
             requesterTag: tag,
             requesterAddress: identity?.address,
             tokenAddress: token.address,
@@ -175,7 +174,6 @@ export function useReceiveCode(enabled: boolean) {
       if (!deps) return
       setPayment({ ...found, hadAddress: !!paidCode.address })
       setCode(undefined)
-      if (paidCode.address) void getSipaDepositGateway().wakeDeposit(paidCode.address)
       const replace = () =>
         void run(() => nextCode(deps, paidCode))
           .then(setCode)
@@ -188,35 +186,23 @@ export function useReceiveCode(enabled: boolean) {
     [deps, run],
   )
 
-  // Ethereum: the address's balance. A code waiting for an address takes one when ready, and a
-  // stale one is replaced.
+  // Ethereum: the rail's record of the address. A funded record is the payment.
+  const demo = import.meta.env.DEV && isDemoMode()
+  const watched = useDepositWatch(code?.address && !payment && !demo ? code.address : null)
+  const { record } = watched
   useEffect(() => {
-    if (!code || payment) return
-    if (import.meta.env.DEV && isDemoMode()) return
-    let cancelled = false
-    const tick = async () => {
-      if (!code.address) return refresh()
-      const meta = await getSipaDepositGateway().tokenMeta()
-      for (const token of sipaFundingTokens(getConfig().network, meta)) {
-        const balance = await readL1TokenBalance(token.address, code.address)
-        if (cancelled) return
-        if (balance > 0n) {
-          return paid(code, {
-            via: "ethereum",
-            amount: Number(formatUnits(balance, token.decimals)),
-          })
-        }
-      }
-      if (codeIsStale(code, Date.now())) refresh()
-    }
+    if (code?.address && record && !isUnfundedSipaDeposit(record))
+      paid(code, { via: "ethereum", amount: Number(record.amount) })
+  }, [code, record, paid])
+
+  // A code waiting for an address takes one when ready, and a stale one is replaced.
+  useEffect(() => {
+    if (!code || payment || demo) return
     const timer = setInterval(() => {
-      tick().catch((err) => console.warn("[receive] address read failed:", err))
+      if (!code.address || codeIsStale(code, Date.now())) refresh()
     }, POLL_MS)
-    return () => {
-      cancelled = true
-      clearInterval(timer)
-    }
-  }, [code, payment, paid, refresh])
+    return () => clearInterval(timer)
+  }, [code, payment, demo, refresh])
 
   // Private: the fulfillment reconciler marks the code's request paid.
   useEffect(() => {
@@ -258,6 +244,10 @@ export function useReceiveCode(enabled: boolean) {
     },
     [deps, run],
   )
+  const clearAmount = useCallback(async () => {
+    if (!deps) return
+    setCode(await run(() => clearCode(deps)))
+  }, [deps, run])
 
   return {
     tag,
@@ -266,6 +256,7 @@ export function useReceiveCode(enabled: boolean) {
     failed,
     ready: !!deps,
     setAmount,
+    clearAmount,
     showCode: () => setPayment(undefined),
   }
 }

@@ -1,5 +1,4 @@
 /** The monitor's PXE sync waits for the first balance, whose read would see its anchor move. */
-import { GENERATIONS } from "@obsidion/core/constants"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { AccountStorage } from "../../src/core/storages/AccountStorage"
@@ -18,8 +17,6 @@ vi.mock("@aztec/aztec.js/node", async (importOriginal) => {
   return { ...actual, createAztecNodeClient: vi.fn() }
 })
 
-const CANONICAL_VERSION = GENERATIONS.find((g) => g.status === "canonical")!.version
-
 function setup() {
   resetSingleton(AccountStorage as unknown as { instance: AccountStorage | null })
   resetSingleton(TransactionStorage as unknown as { instance: TransactionStorage | null })
@@ -34,7 +31,6 @@ function setup() {
   const wallet = {
     node: { getNodeInfo: vi.fn(), getTxReceipt: vi.fn() },
     pxe: { sync },
-    getNodeIdentity: vi.fn(async () => ({ l1ChainId: 11155111, rollupVersion: CANONICAL_VERSION })),
   } as unknown as CreateReorgMonitorOptions["wallet"]
   return { monitor: createReorgMonitor({ wallet, storage }), sync }
 }

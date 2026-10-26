@@ -127,6 +127,10 @@ body:has(dialog.ww-modal-overlay[open]) .ww-main {
   .ww-panel .ww-noncontacts__head {
     padding: 20px 16px;
   }
+  /* Room for the page to scroll the request form above a keyboard that covers it. */
+  .ww-panel .ww-chat__foot {
+    padding-bottom: calc(20px + var(--ww-keyboard-inset, 0px));
+  }
   .ww-shell .ww-panel .ww-noncontacts-entry.ww-contacts__requests-entry {
     margin: 24px 16px 0;
   }

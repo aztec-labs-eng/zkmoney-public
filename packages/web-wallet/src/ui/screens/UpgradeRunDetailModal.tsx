@@ -7,26 +7,24 @@ import { Fragment } from "react"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { GradientText, Icon, type StatusBadgeStyle } from "@obsidion/web-ds"
 import { formatUnits } from "viem"
-import { upgradeBatchFigure } from "@obsidion/front-core"
+import {
+  legDeposit,
+  upgradeBatchFigure,
+  type UpgradeLeg,
+  type UpgradeRun,
+} from "@obsidion/front-core"
 import { whenLabel } from "../detailRows"
 import { usdFigure } from "../format"
 import { Modal } from "../Modal"
 import { depositStatus } from "./DepositDetailModal"
 import { DepositFact } from "./DepositFact"
 import { DepositStatusValue } from "./DepositStatusValue"
-import type { UpgradeLeg, UpgradeRun } from "./upgradeRuns"
-
-const SENT: Record<UpgradeLeg["batch"]["state"], { label: string; badge: StatusBadgeStyle }> = {
-  planned: { label: "Approved", badge: "pending" },
-  sent: { label: "Leaving old version", badge: "pending" },
-  refunded: { label: "Arriving", badge: "pending" },
-  received: { label: "Arriving", badge: "pending" },
-}
+import { batchStatus } from "./UpgradeBatchDetailModal"
 
 /** A leg's deposit speaks for it once seen and funded; until then, where its batch is. */
 export function legStatus(leg: UpgradeLeg): { label: string; badge: StatusBadgeStyle } {
-  const funded = leg.arrival && (leg.arrival.sweepTxHash || Number(leg.arrival.amount) > 0)
-  return funded ? depositStatus(leg.arrival!) : SENT[leg.batch.state]
+  const deposit = legDeposit(leg)
+  return deposit ? depositStatus(deposit) : batchStatus(leg.batch)
 }
 
 export function UpgradeRunDetailModal({

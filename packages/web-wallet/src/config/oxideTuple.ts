@@ -2,8 +2,9 @@ import { createPublicClient, parseAbi, type Address, type Hex, type PublicClient
 import { withTimeout } from "../lib/withTimeout"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { isAllZeroHex } from "@obsidion/core/oxide"
+import { MULTICALL3_ADDRESS } from "@obsidion/sdk"
 import {
-  fetchSignupResolverOperator,
+  fetchSignupResolverRecord,
   loadOxideManifestTuple,
   oxideEnvFromTuple,
   resolveOxideAccountFactory,
@@ -56,9 +57,7 @@ export const ASSET_TUPLE_TIMEOUT_MS = 20_000
  * has no account, so a slow manifest must not fail it sooner than a portal tuple fetch. The bound
  * also keeps a fetch that never settles out of the cache.
  */
-export async function getRetiredRollupSources(
-  config: WebWalletConfig,
-): Promise<OxideEnvTuple[]> {
+export async function getRetiredRollupSources(config: WebWalletConfig): Promise<OxideEnvTuple[]> {
   const key = cacheKey(config)
   if (retiredCached?.key !== key) {
     const deployments = withTimeout(
@@ -170,6 +169,20 @@ export function l1PublicClient(config: WebWalletConfig): PublicClient {
   }) as PublicClient
 }
 
+/** An L1 client that folds the contract reads it is handed within 50 ms into one Multicall3 call. */
+export function l1MulticallClient(config: WebWalletConfig): PublicClient {
+  const chain = {
+    ...config.l1Chain,
+    contracts: { ...config.l1Chain.contracts, multicall3: { address: MULTICALL3_ADDRESS } },
+  }
+  return createPublicClient({
+    chain,
+    transport: l1Transport(config),
+    // viem's default 1 KiB of calldata per batch holds six predictSIPA reads.
+    batch: { multicall: { wait: 50, batchSize: 16_384 } },
+  }) as PublicClient
+}
+
 /**
  * The L2 address a registration asks oxide's NamePortal to report the claimed name to: this
  * deployment's ClaimFPC, whose registration rail consumes that message. It is committed into the
@@ -193,24 +206,28 @@ function namePortalRecipient(config: WebWalletConfig): Hex {
  *  operator log history, and the tag step starts it ahead of the claim. */
 export const RESOLVER_OPERATOR_REUSE_MS = 5 * 60_000
 
-let operatorCached: { tuple: OxideEnvTuple; at: number; operator: Promise<Address> } | undefined
+type ResolverRecord = Awaited<ReturnType<typeof fetchSignupResolverRecord>>
 
-function signupResolverOperator(
+let operatorCached:
+  | { tuple: OxideEnvTuple; at: number; record: Promise<ResolverRecord> }
+  | undefined
+
+function signupResolverRecord(
   config: WebWalletConfig,
   tuple: OxideEnvTuple,
   publicClient: PublicClient,
-): Promise<Address> {
+): Promise<ResolverRecord> {
   if (
     operatorCached?.tuple !== tuple ||
     Date.now() - operatorCached.at > RESOLVER_OPERATOR_REUSE_MS
   ) {
-    const operator = fetchSignupResolverOperator(publicClient, tuple, config.network)
-    operatorCached = { tuple, at: Date.now(), operator }
-    operator.catch(() => {
-      if (operatorCached?.operator === operator) operatorCached = undefined
+    const record = fetchSignupResolverRecord(publicClient, tuple, config.network)
+    operatorCached = { tuple, at: Date.now(), record }
+    record.catch(() => {
+      if (operatorCached?.record === record) operatorCached = undefined
     })
   }
-  return operatorCached.operator
+  return operatorCached.record
 }
 
 /**
@@ -221,10 +238,12 @@ export async function oxideEnvFor(config: WebWalletConfig): Promise<{
   tuple: OxideEnvTuple
   env: ReturnType<typeof oxideEnvFromTuple>
   publicClient: PublicClient
+  resolver: ResolverRecord
 }> {
   const tuple = await getOxideTuple(config)
   const publicClient = l1PublicClient(config)
-  const resolverOperator = await signupResolverOperator(config, tuple, publicClient)
+  const resolver = await signupResolverRecord(config, tuple, publicClient)
+  const resolverOperator = resolver.owner as Address
   const accountFactory = resolveOxideAccountFactory({ tuple })
   const env = oxideEnvFromTuple(tuple, {
     resolverOperator,
@@ -232,5 +251,5 @@ export async function oxideEnvFor(config: WebWalletConfig): Promise<{
     accountFactory,
     namePortalRecipient: namePortalRecipient(config),
   })
-  return { tuple, env, publicClient }
+  return { tuple, env, publicClient, resolver }
 }

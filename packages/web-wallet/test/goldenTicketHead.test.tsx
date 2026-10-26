@@ -60,6 +60,24 @@ describe("GoldenTicketHead", () => {
     await unmount()
   })
 
+  it("says nothing is free for a link with no ticket", async () => {
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    const container = document.createElement("div")
+    const root = createRoot(container)
+    const ticket = { amount: 25n * ONE, tokenDecimals: 18, tokenSymbol: "DAI", paid: true }
+    await act(async () =>
+      root.render(
+        <>
+          <GoldenTicketHead {...ticket} />
+          <GoldenTicketArt {...ticket} tag="" />
+        </>,
+      ),
+    )
+    expect(container.querySelector("h2")?.textContent).toBe("Pick any name")
+    expect(container.textContent).not.toMatch(/free|golden ticket/i)
+    await act(async () => root.unmount())
+  })
+
   it("leaves the payment card out until the amount is read", async () => {
     const { container, unmount } = await render(undefined)
     expect(container.querySelector("h2")?.textContent).toBe("Pick any name, free")
@@ -127,6 +145,33 @@ describe("GoldenTicketIntro", () => {
     expect(onGone).toHaveBeenCalledTimes(1)
     expect(container.querySelector(".ww-ticket-intro")).toBeNull()
     await unmount()
+  })
+
+  it("covers the screen from the dialog itself, so the sheet's slide-in never moves or sizes it", async () => {
+    stubPhoneScreen()
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    const container = document.createElement("div")
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    await act(async () =>
+      root.render(
+        <dialog>
+          <div className="ww-modal">
+            <GoldenTicketIntro
+              amount={25n * ONE}
+              tokenDecimals={18}
+              tokenSymbol="DAI"
+              onGone={() => {}}
+            />
+          </div>
+        </dialog>,
+      ),
+    )
+    const intro = container.querySelector(".ww-ticket-intro")
+    expect(intro?.parentElement?.tagName).toBe("DIALOG")
+    expect(container.querySelector(".ww-modal .ww-ticket-intro")).toBeNull()
+    await act(async () => root.unmount())
+    container.remove()
   })
 
   it("hands the form back once the leaving animation's time is up, even when none ran", async () => {

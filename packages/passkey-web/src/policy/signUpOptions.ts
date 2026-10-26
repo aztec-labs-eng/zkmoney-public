@@ -2,12 +2,7 @@ import type { SignInRoute } from "@obsidion/core/types"
 import type { LaptopCreation, LocalManager } from "./laptopCreation.js"
 import type { PhoneReach } from "./passkeyCapabilities.js"
 import type { PasskeyExtension } from "./passkeyTelemetryVocabulary.js"
-import {
-  PHONE_HELP_COPY,
-  PHONE_STEPS_COPY,
-  SIGN_UP_SHEET_COPY,
-  SUPPORTED_NAMES,
-} from "./refusalCopy.js"
+import { PHONE_STEPS_COPY, SIGN_UP_SHEET_COPY, SUPPORTED_NAMES } from "./refusalCopy.js"
 import type { OsFamily, UserAgentInfo } from "./userAgentInfo.js"
 
 /** Where the user says the passkey will live. */
@@ -26,7 +21,16 @@ export type SignUpOption = {
   supported: readonly string[]
 }
 
-export type SignUpSheetLine = { kind: "unfinished" | "steered" | "install-extension"; text: string }
+/**
+ * Why the sheet re-opens after a creation ended with nothing made: the browser's prompt closed, or
+ * the browser refused before a prompt could open, once or twice in a row.
+ */
+export type SheetReopen = "unfinished" | "blocked" | "blocked-again"
+
+export type SignUpSheetLine = {
+  kind: "unfinished" | "blocked" | "steered" | "install-extension"
+  text: string
+}
 
 export type SignUpOptions = {
   options: readonly SignUpOption[]
@@ -49,8 +53,8 @@ export type SignUpOptionsInput = {
   os: OsFamily
   /** The option a re-open or an earlier pick asks for. */
   preferred?: SignUpChoice
-  /** The sheet re-opens after the browser's prompt closed with nothing made. */
-  unfinished?: boolean
+  /** Set when the sheet re-opens after a creation ended with nothing made. */
+  reopened?: SheetReopen
 }
 
 const ROUTES: Readonly<Record<SignUpChoice, SignInRoute>> = {
@@ -64,9 +68,13 @@ const ROUTES: Readonly<Record<SignUpChoice, SignInRoute>> = {
 /** The route an option asks for. The merged option asks for another device. */
 export const routeForChoice = (choice: SignUpChoice): SignInRoute => ROUTES[choice]
 
-/** Only Chromium's own prompt acts on hints. */
+/**
+ * Whether the browser's prompt ignores the request's hints, so phone and key are one option: Safari
+ * and Firefox always, and every browser on Windows, where a request to another device goes to
+ * Windows' own dialog, which lists both devices whatever was asked.
+ */
 export const ignoresHintsFor = (ua: UserAgentInfo): boolean =>
-  ua.browserFamily === "safari" || ua.browserFamily === "firefox"
+  ua.browserFamily === "safari" || ua.browserFamily === "firefox" || ua.osFamily === "windows"
 
 /** Where a preference lands, first offered wins. */
 const FALLBACK: Readonly<Record<SignUpChoice, readonly SignUpChoice[]>> = {
@@ -99,8 +107,7 @@ const lines = (...xs: (string | false | undefined)[]): string[] =>
  * page is 1Password's. Where the browser ignores hints, phone and key are one option.
  */
 export function signUpOptionsFor(input: SignUpOptionsInput): SignUpOptions {
-  const { creation, reach, extension, refusedOften, ignoresHints, os, preferred, unfinished } =
-    input
+  const { creation, reach, extension, refusedOften, ignoresHints, os, preferred, reopened } = input
   const copy = SIGN_UP_SHEET_COPY
   const localCopy = PHONE_STEPS_COPY.local
   const row = creation.local ? creation : undefined
@@ -164,7 +171,7 @@ export function signUpOptionsFor(input: SignUpOptionsInput): SignUpOptions {
       id: "phone",
       label: copy.phone.label,
       description: copy.phone.description,
-      advice: lines(windows && PHONE_HELP_COPY.windows, crossDevice),
+      advice: lines(crossDevice),
       supported: PHONE_SUPPORTED,
     })
   } else if (phone === "phone-or-key") {
@@ -195,11 +202,11 @@ export function signUpOptionsFor(input: SignUpOptionsInput): SignUpOptions {
     choices.find((c) => options.some((o) => o.id === c))
   const anotherDevice = first(["phone", "phone-or-key"]) ?? "key"
   // A manager this row can't use keeps answering on this computer: lead elsewhere, unless the
-  // user asked for another device or the last prompt closed with nothing made.
+  // user asked for another device or the last creation ended with nothing made.
   const steer =
     refusedOften &&
     row !== undefined &&
-    !unfinished &&
+    !reopened &&
     (preferred === undefined || preferred === "computer" || preferred === "1password")
   const selected: SignUpChoice = steer
     ? own.length > 0
@@ -208,8 +215,22 @@ export function signUpOptionsFor(input: SignUpOptionsInput): SignUpOptions {
     : (preferred && first(FALLBACK[preferred])) ??
       (offersOnePassword ? "1password" : own.length > 0 ? "computer" : anotherDevice)
 
-  const line: SignUpSheetLine | undefined = unfinished
-    ? { kind: "unfinished", text: localCopy.unfinished }
+  // The re-open line follows the option the sheet opens on, not the one asked for, and offers the
+  // phone only where the sheet has one to offer.
+  const line: SignUpSheetLine | undefined =
+    reopened === "unfinished"
+    ? {
+        kind: "unfinished",
+        text:
+          routeForChoice(selected) === "this-device" && first(["phone", "phone-or-key"])
+            ? localCopy.unfinished
+            : localCopy.unfinishedElsewhere,
+      }
+    : reopened
+    ? {
+        kind: "blocked",
+        text: reopened === "blocked" ? localCopy.blocked : localCopy.blockedAgain,
+      }
     : steer && selected !== "computer"
     ? { kind: "steered", text: localCopy.steered[selected === "key" ? "key" : "phone"] }
     : onePasswordAlone && !mac && !script

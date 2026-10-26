@@ -18,13 +18,14 @@ import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { openSourceRollupWallet, type SourceRollupWallet } from "../../platform/sourceRollupWallet"
 
-/** The retired deployment whose l2Token is `tokenAddress`, or null when none in the manifest has it. */
+/** The supported migration source whose l2Token is `tokenAddress`, or null. */
 export async function findHistoricTuple(tokenAddress: string): Promise<OxideEnvTuple | null> {
   const config = getConfig()
   const { historic } = await IntraRollupMigrationService.detectHistoricDeployments({
     ...config.oxideProfile,
     network: config.network,
     publicClient: l1PublicClient(config),
+    sourcePortals: new Set(config.sourceRollupNodes?.keys()),
   })
   return historic.find((t) => t.l2Token.toLowerCase() === tokenAddress.toLowerCase()) ?? null
 }

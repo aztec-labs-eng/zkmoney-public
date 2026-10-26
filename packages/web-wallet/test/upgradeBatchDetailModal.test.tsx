@@ -22,6 +22,7 @@ const batch: UpgradeBatchItem = {
   amount: (10n * 10n ** 18n).toString(),
   exitFee: (10n ** 17n).toString(),
   state: "refunded",
+  approved: true,
   tx: `0x${"b0".repeat(32)}`,
   startTime: 1_000,
 }
@@ -35,7 +36,7 @@ describe("upgrade batch details", () => {
     await act(async () => root.render(<UpgradeBatchDetailModal batch={batch} onClose={() => {}} />))
     const text = document.body.textContent ?? ""
     expect(text).toContain("$10")
-    expect(text).toContain("Released by the old version")
+    expect(text).toContain("Releasing")
     expect(text).toContain("Relayer tip$0.10")
     expect(text).toContain("Paid to")
     expect(text).toContain("Sent in")

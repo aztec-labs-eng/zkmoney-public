@@ -5,7 +5,6 @@
 import { AztecAddress } from "@aztec/aztec.js/addresses"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
-  createRefundDepositL1Reads,
   deploymentScanRange,
   deriveBootstrapKey,
   deriveRefundableSipaSources,
@@ -80,18 +79,17 @@ export async function sourceSipaSources(o: SourceSipaScan) {
 }
 
 /** Every swept deposit of the deployment's SIPAs, plus those still holding L1 funds. Any gap throws. */
-export async function sourceSweptDeposits(
-  o: SourceSipaScan & { readSipaBalance?: (sipaAddress: string) => Promise<bigint> },
-) {
+export async function sourceSweptDeposits(o: SourceSipaScan) {
   const sources = await sourceSipaSources(o)
-  if (!sources.length) return { descriptors: [], inTransit: [] }
-  return scanSweptDeposits({
+  const range = await deploymentScanRange(o.publicClient, o.tuple, o.scanHead)
+  return scanSweptDeposits(
+    {
+      publicClient: o.publicClient,
+      portal: o.tuple.portal as Address,
+      token: o.tuple.token as Address,
+      fromBlock: range.fromBlock,
+      head: range.toBlock,
+    },
     sources,
-    l1Reads: createRefundDepositL1Reads(
-      o.publicClient,
-      o.tuple.portal as Address,
-      await deploymentScanRange(o.publicClient, o.tuple, o.scanHead),
-    ),
-    readSipaBalance: o.readSipaBalance,
-  })
+  )
 }

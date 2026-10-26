@@ -4,6 +4,7 @@ import {
   StalePlanError,
   type MigrationHalt,
 } from "@obsidion/sdk"
+import { provingProgress } from "@obsidion/proving-progress"
 
 /** Shared migration driver. Contract actions live in the SDK adapter; this layer owns durability. */
 export type MetadataMigrationPhase =
@@ -43,6 +44,16 @@ export interface MetadataMigrationRecord {
   refused?: boolean
   /** Batch approvals given so far in this run's preparation, of how many. */
   approvals?: { approved: number; total: number }
+  /** What the run was quoted at its start, kept for a resumed run's sheet. */
+  summary?: MetadataMigrationSummary
+  /** The plan's address was swept: it takes nothing more. */
+  swept?: boolean
+}
+
+/** A run's network fees, in the token's base units, and the approvals it asks for. */
+export interface MetadataMigrationSummary {
+  fees: string
+  approvals: number
 }
 
 export interface MetadataMigrationObservation {
@@ -54,6 +65,8 @@ export interface MetadataMigrationObservation {
   messagesReady: boolean
   /** A synced recurring-rail subscription with executable allowance. */
   recurringSponsorship: boolean
+  /** The plan's address was swept. */
+  swept?: boolean
   /** Every planned later batch has been sent: what is left needs no tab. */
   sent: boolean
   /** Destination deposit receipt verified, including all selected source batches. */
@@ -83,11 +96,22 @@ export interface MetadataMigrationSteps {
     onApproval?: (approved: number, total: number) => Promise<void>,
   ): Promise<void>
   observe(record: MetadataMigrationRecord): Promise<MetadataMigrationObservation>
-  /** The callback MUST resolve durably before the proven tx is submitted to the node. */
-  broadcast(plan: string, onTxHash: (txHash: string) => Promise<void>): Promise<void>
+  /**
+   * The callback MUST resolve durably before the proven tx is submitted to the node. `operationId`
+   * names the proof to the operation running it.
+   */
+  broadcast(
+    plan: string,
+    onTxHash: (txHash: string) => Promise<void>,
+    operationId?: string,
+  ): Promise<void>
   /** Live source: withdraw to the prepared SIPA. Frozen/external: observe funding only. */
   fund(plan: string, signal?: AbortSignal): Promise<void>
-  subscribe(plan: string, onTxHash: (txHash: string) => Promise<void>): Promise<void>
+  subscribe(
+    plan: string,
+    onTxHash: (txHash: string) => Promise<void>,
+    operationId?: string,
+  ): Promise<void>
   /**
    * Only ordinary DepositSIPAs, and only after recurring sponsorship is established. `published` is
    * false when the destination record was already current, so no bootstrap carried a first deposit.
@@ -95,6 +119,8 @@ export interface MetadataMigrationSteps {
   recoverRemaining(plan: string, published: boolean, signal?: AbortSignal): Promise<void>
   /** Bring every sent batch up to date from chain evidence, never signing or sending. */
   reconcileRemaining?(plan: string): Promise<void>
+  /** Whether the balance holds everything the run imported: the run is done only then. */
+  confirmBalance?(): Promise<boolean>
 }
 
 export function newMetadataMigration(id: string, binding: string): MetadataMigrationRecord {
@@ -134,7 +160,11 @@ function needsApproval(error: unknown): boolean {
  * `start` is the user's own action: before anything is published it first rebuilds the saved plan,
  * so `signal` can still stop it. A cancel leaves the record as last saved. `onPrepared` fires once
  * that pass has nothing left to approve or prove. `observeOnly` reconciles what was sent and saves
- * what it sees, but never prepares, signs or sends.
+ * what it sees, but never prepares, signs or sends. A `promptless` pass carries a published plan on:
+ * it sends, but never prepares, signs a consent or broadcasts a bootstrap, and stops for the user
+ * where one of those is next. `exclusive` runs each step that sends one transaction, the bootstrap
+ * and the subscription, as the operation it names to the step; a promptless pass sends nothing else.
+ * A start saves its `summary` with the record.
  */
 export async function advanceMetadataMigration(
   initial: MetadataMigrationRecord,
@@ -144,18 +174,34 @@ export async function advanceMetadataMigration(
     start = false,
     signal,
     observeOnly = false,
+    promptless = false,
     onPrepared,
+    summary,
+    exclusive = (step) => step(),
   }: {
     start?: boolean
     signal?: AbortSignal
     observeOnly?: boolean
+    promptless?: boolean
     onPrepared?: () => void
+    summary?: MetadataMigrationSummary
+    exclusive?: <T>(step: (operationId?: string) => Promise<T>) => Promise<T>
   } = {},
 ): Promise<MetadataMigrationRecord> {
   let record = { ...initial }
   const save = async (patch: Partial<MetadataMigrationRecord>) => {
     record = { ...record, ...patch }
     await persist(record)
+  }
+  // A step cancelled while it waited its turn never starts.
+  const send = <T>(step: (operationId?: string) => Promise<T>) =>
+    exclusive((operationId) => {
+      signal?.throwIfAborted()
+      return step(operationId)
+    })
+  // The record holds the hash, so the step's operation is safe to reload over.
+  const saved = (operationId: string | undefined, txHash: string) => {
+    if (operationId) provingProgress.emitTxHashSaved(operationId, txHash)
   }
   const progress = (approved: number, total: number) => save({ approvals: { approved, total } })
   try {
@@ -165,10 +211,12 @@ export async function advanceMetadataMigration(
         "Switch back to the account and deployments used to start this upgrade",
       )
     }
+    if (start && !observeOnly && summary) await save({ summary })
     // No hash means this driver never authorized RPC submission. A stale plan is prepared again,
     // with fresh consent; any other stop keeps it and its saved approvals. Submitted plans stay intact.
     const unpublished = !record.bootstrapTx && !record.subscriptionTx
     if (observeOnly && !record.plan) return record
+    if (promptless && (!record.plan || record.stale)) throw new ApprovalNeededError()
     if (!observeOnly && record.phase === "needsAttention" && unpublished && record.stale) {
       await save({ plan: undefined, draft: undefined, phase: "preparing", stale: undefined })
     }
@@ -185,6 +233,7 @@ export async function advanceMetadataMigration(
     const plan = record.plan!
     const observed = await steps.observe(record)
     await save({
+      ...(observed.swept ? { swept: true } : {}),
       bootstrapStatus: observed.bootstrapStatus,
       subscriptionStatus: observed.subscriptionStatus,
       allowance: observed.recurringSponsorship
@@ -196,7 +245,8 @@ export async function advanceMetadataMigration(
         : "unspent",
     })
 
-    if (observed.complete && observed.recurringSponsorship && observed.metadataSettled) {
+    const complete = observed.complete && observed.recurringSponsorship && observed.metadataSettled
+    if (complete && (await steps.confirmBalance?.()) !== false) {
       await save({ phase: "done", error: undefined })
     } else if (observed.recurringSponsorship && observed.metadataSettled) {
       await save({ phase: observed.sent ? "arriving" : "recovering", error: undefined })
@@ -218,10 +268,17 @@ export async function advanceMetadataMigration(
       }
       await save({ phase: "subscribing", error: undefined })
       signal?.throwIfAborted()
-      await steps.subscribe(plan, async (txHash) => {
-        signal?.throwIfAborted()
-        await save({ subscriptionTx: txHash, subscriptionStatus: "unknown" })
-      })
+      await send((operationId) =>
+        steps.subscribe(
+          plan,
+          async (txHash) => {
+            signal?.throwIfAborted()
+            await save({ subscriptionTx: txHash, subscriptionStatus: "unknown" })
+            saved(operationId, txHash)
+          },
+          operationId,
+        ),
+      )
     } else if (record.bootstrapTx) {
       if (observed.bootstrapStatus === "reverted") {
         throw new MigrationHaltedError(
@@ -254,17 +311,25 @@ export async function advanceMetadataMigration(
           "This identity has already used its initial sponsored transaction on this FPC. Changing metadata does not renew that allowance",
         )
       }
+      if (promptless) throw new ApprovalNeededError()
       await save({ phase: "broadcasting", error: undefined })
       signal?.throwIfAborted()
       // Called before submission: a cancel here means nothing is sent.
-      await steps.broadcast(plan, async (txHash) => {
-        signal?.throwIfAborted()
-        await save({
-          bootstrapTx: txHash,
-          bootstrapStatus: "unknown",
-          allowance: observed.recurringSponsorship ? "registered" : "unknown",
-        })
-      })
+      await send((operationId) =>
+        steps.broadcast(
+          plan,
+          async (txHash) => {
+            signal?.throwIfAborted()
+            await save({
+              bootstrapTx: txHash,
+              bootstrapStatus: "unknown",
+              allowance: observed.recurringSponsorship ? "registered" : "unknown",
+            })
+            saved(operationId, txHash)
+          },
+          operationId,
+        ),
+      )
     }
   } catch (error) {
     if (signal?.aborted) return record

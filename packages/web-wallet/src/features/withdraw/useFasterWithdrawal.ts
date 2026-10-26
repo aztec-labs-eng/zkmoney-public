@@ -22,6 +22,8 @@ export interface FasterWithdrawal {
   tippedEtaSeconds: number
   /** What the tip saves wherever in this device's landing window the burn lands. */
   worstSpeedupSeconds: number
+  /** The ETAs come from recent L1 proofs, so a prover is known to act on tips. */
+  measured: boolean
 }
 
 /** Whether a tip buys at least {@link FASTER_WITHDRAWAL_MIN_SPEEDUP_SECONDS} for certain. */
@@ -43,6 +45,7 @@ export function fasterWithdrawalOffer({
         standardEtaSeconds: estimate.standardEtaSeconds,
         tippedEtaSeconds: estimate.tippedEtaSeconds,
         worstSpeedupSeconds: estimate.worstSpeedupSeconds,
+        measured: estimate.confidence === "measured",
       }
     : undefined
 }

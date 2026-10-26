@@ -5,7 +5,7 @@
  * with the new account at once, and the sweep's return deposit lands later. The rows sum to the
  * note: the burn's fixed dust slice, cents the sweep returns, is folded into the network fee rather
  * than shown as money owed back; a signed minimum's excess above the cut is real money held until
- * the sweep, and shows as returned.
+ * the sweep, and counts in the balance after.
  */
 import { GOLDEN_TICKET_BRIDGE_REMAINDER, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { RegistrationSchedule } from "@obsidion/core/types"
@@ -41,10 +41,13 @@ export function paylinkSignupQuote(args: {
   cuts: GoldenTicketCuts
   sweepFee?: bigint
   proverTip: bigint
+  /** A golden ticket's schedule: the tag is free whatever the live sweep fee, and the whole signed
+   *  fee is the network's. */
+  ticket?: boolean
 }): PaylinkSignupQuote {
-  const { paylink, schedule, cuts, sweepFee, proverTip } = args
+  const { paylink, schedule, cuts, sweepFee, proverTip, ticket } = args
   const burn = goldenTicketBurn(schedule, cuts, proverTip)
-  const tagFee = ticketTagCharge(schedule, sweepFee)
+  const tagFee = ticket && sweepFee !== undefined ? 0n : ticketTagCharge(schedule, sweepFee)
   const sweepPart = tagFee === undefined ? schedule.fee : schedule.fee - tagFee
   const coverage =
     paylink === undefined ? undefined : goldenTicketCoverage(paylink, schedule, cuts, proverTip)

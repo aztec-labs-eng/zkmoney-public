@@ -218,18 +218,14 @@ export class IntraRollupMigrationService {
   constructor(private readonly deps: IntraRollupMigrationDeps) {}
 
   /**
-   * Fetch the oxide env manifest and return the pinned deployment alongside the other deployments
-   * on its rollup whose portal escrows the same underlying. Every historic portal may still hold
-   * user funds — the historic tuples are the residual probe's inputs, and `historic.length === 0`
-   * is the steady state that costs nothing. An entry whose portal holds another asset (the Sky
-   * sUSDS portal) is a separate product, not an older generation. No cache: unlike
-   * {@link detectMigration}, presence of other deployments is a manifest fact, not a diff.
+   * Resolve supported profile history into migration sources with the same identity lineage and underlying asset.
+   * No selected sources means no historical contract reads.
    */
   static async detectHistoricDeployments(
     args: PinnedManifestArgs & {
       publicClient: PublicClient
-      /** Lowercase portals on other rollups that the caller has a node for. */
-      reachable?: ReadonlySet<string>
+      /** Lowercase source portals selected by supported profile history, with a configured source node. */
+      sourcePortals?: ReadonlySet<string>
     },
   ): Promise<{ current: OxideEnvTuple; historic: OxideEnvTuple[] }> {
     const fetchImpl = args.fetchImpl ?? fetch
@@ -241,7 +237,7 @@ export class IntraRollupMigrationService {
     }
     const manifest = await res.json()
     const current = extractPinnedOxideEnvTuple(manifest, args, pinnedEntryPolicy(args)).tuple
-    const candidates = migrationSources(manifest, current, args.reachable)
+    const candidates = migrationSources(manifest, current, args.sourcePortals)
     if (candidates.length === 0) return { current, historic: [] }
     const [pinned, ...others] = await Promise.all(
       [current, ...candidates].map((tuple) =>

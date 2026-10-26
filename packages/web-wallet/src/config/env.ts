@@ -70,7 +70,7 @@ export type WebWalletConfig = {
    * Resolved once here so no call site re-derives a manifest URL.
    */
   oxideProfile: OxideEnvProfile
-  /** Node of each lowercase portal that a cutover moved off this rollup; absent means none. */
+  /** Source node for each lowercase portal selected by supported profile history. */
   sourceRollupNodes?: ReadonlyMap<string, string>
   /** L1 chain the accounts and the Registry live on. */
   l1ChainId: number

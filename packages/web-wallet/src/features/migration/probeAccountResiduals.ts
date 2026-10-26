@@ -1,11 +1,9 @@
 /**
- * Session wiring for historic residual detection: read the manifest's retired entries the profile
- * reaches, bind the unlocked wallet's stealth key / PXE / L1 client, and run `probeHistoricResiduals`.
- * Returns null when there is no history or the wallet is locked. Every still-escrowed historic
- * paylink it finds is recorded for `reconcilePendingPaylinks`.
+ * Session wiring for historic residual detection: resolve the profile's selected migration sources,
+ * bind the unlocked wallet's stealth key / PXE / L1 client, and run `probeHistoricResiduals`.
+ * Every still-escrowed historic paylink it finds is recorded for `reconcilePendingPaylinks`.
  */
 import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   AppNotificationStore,
@@ -19,17 +17,18 @@ import {
 import {
   frozenSourceSummary,
   IntraRollupMigrationService,
-  isSipaDepositClaimed,
+  readSipaDepositsConsumed,
   type ObsidionAccount,
   type ObsidionWallet,
 } from "@obsidion/sdk"
-import { erc20Abi, type Address } from "viem"
 import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
+import { getActiveStorageId } from "../../platform/storage/activeStorage"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { latestChainSeconds } from "../paylink/chainTime"
 import { historicChain } from "./historicTokenContext"
+import { sourceFrozenEscrows } from "./sourceFrozenEscrows"
 import { sourceSipaSources } from "./sourceSipaSources"
 import {
   countPendingWithdrawals,
@@ -37,7 +36,7 @@ import {
   type HistoricResidualSummary,
 } from "./historicResiduals"
 
-function pendingPaylinkService(checkSpent?: CheckSpent) {
+function pendingPaylinkService(storageId: string | null, checkSpent?: CheckSpent) {
   const transactions = TransactionStorage.get(webStorage)
   return {
     transactions,
@@ -46,6 +45,7 @@ function pendingPaylinkService(checkSpent?: CheckSpent) {
       notificationStore: AppNotificationStore.get(webStorage),
       accountTransactions: () => transactions.getTransactions(),
       checkSpent,
+      ownsStorage: () => getActiveStorageId() === storageId,
     }),
   }
 }
@@ -56,8 +56,9 @@ export async function reconcilePendingPaylinks(
   wallet: ObsidionWallet,
   checkSpent?: CheckSpent,
 ): Promise<void> {
+  const storageId = getActiveStorageId()
   const sec = await chainSeconds(wallet)
-  if (sec != null) await pendingPaylinkService(checkSpent).pendingPaylinks.reconcile(sec)
+  if (sec != null) await pendingPaylinkService(storageId, checkSpent).pendingPaylinks.reconcile(sec)
 }
 
 export async function probeAccountResiduals(
@@ -74,22 +75,28 @@ export async function probeAccountResiduals(
 } | null> {
   const config = getConfig()
   const publicClient = l1PublicClient(config)
+  const storageId = getActiveStorageId()
   const { current, historic } = await IntraRollupMigrationService.detectHistoricDeployments({
     ...config.oxideProfile,
     network: config.network,
     publicClient,
-    reachable: new Set(config.sourceRollupNodes?.keys()),
+    sourcePortals: new Set(config.sourceRollupNodes?.keys()),
   })
   if (historic.length === 0) {
-    console.info("[migration] no historic deployments in manifest")
+    console.info("[migration] no supported migration sources in profile")
     return { current, historic, residuals: [], pendingWithdrawals: 0, chainTimeUnknown: false }
   }
 
-  const { transactions, pendingPaylinks } = pendingPaylinkService()
+  const { transactions, pendingPaylinks } = pendingPaylinkService(storageId)
   const chainSec = await chainSeconds(wallet)
   const msk = await getAuthService().getSecretKey()
-  if (!msk) {
+  if (!msk || !storageId) {
     console.info("[migration] wallet locked — probe skipped")
+    return null
+  }
+  // The key and the link rows must be the account the probe started for.
+  if (getActiveStorageId() !== storageId) {
+    console.info("[migration] account changed — probe skipped")
     return null
   }
   const recipient = account.getAddress()
@@ -108,13 +115,16 @@ export async function probeAccountResiduals(
     historic,
     rows: await transactions.getTransactions(),
     nowSec: chainSec,
-    frozenSource: async (tuple, depositDescriptors) =>
-      frozenSourceSummary({
+    frozenSource: async (tuple, depositDescriptors) => {
+      const chain = await chainFor(tuple)
+      return frozenSourceSummary({
         client: publicClient,
-        ...(await chainFor(tuple)),
+        ...chain,
         tuple,
         depositDescriptors,
-      }),
+        escrows: () => sourceFrozenEscrows({ chain, tuple, current, masterSecret: msk, storageId }),
+      })
+    },
     sipaDiscovery: {
       scanRange: (tuple) => deploymentScanRange(publicClient, tuple, scanHead),
       sources: async (tuple) =>
@@ -126,30 +136,35 @@ export async function probeAccountResiduals(
           masterSecret: msk,
           scanHead,
         }),
-      balance: (tuple, sipaAddress) =>
-        publicClient.readContract({
-          address: tuple.token as Address,
-          abi: erc20Abi,
-          functionName: "balanceOf",
-          args: [sipaAddress as Address],
-        }),
-      claimed: async (tuple, deposit) =>
-        isSipaDepositClaimed((await chainFor(tuple)).wallet.node as never, {
-          l1Portal: tuple.portal as Address,
-          l1ChainId: BigInt(config.l1ChainId),
-          l2Token: AztecAddress.fromStringUnsafe(tuple.l2Token),
-          rollupVersion: BigInt(tuple.rollupVersion),
-          recipient,
-          messageSecret: Fr.fromString(deposit.messageSecret),
-          amount: deposit.amount,
-          inboxIndex: deposit.messageLeafIndex,
-          masterNullifierHidingKey: depositMetadata.masterNullifierHidingKey as never,
-        }),
+      consumed: async (tuple, deposits) =>
+        readSipaDepositsConsumed(
+          (
+            await chainFor(tuple)
+          ).wallet.node as never,
+          {
+            l2Token: AztecAddress.fromStringUnsafe(tuple.l2Token),
+            masterNullifierHidingKey: depositMetadata.masterNullifierHidingKey as never,
+          },
+          deposits.map((deposit) => deposit.messageKey),
+        ),
     },
   })
+  // A scan that outlived its account writes nothing; the next account's probe reads its own.
+  if (getActiveStorageId() !== storageId) {
+    console.info("[migration] account changed — probe results dropped")
+    return null
+  }
   const withdrawals = WithdrawalStorage.get(webStorage)
   await withdrawals.load()
-  await pendingPaylinks.recordPending(found.flatMap((r) => r.paylinkCandidates))
+  const pending = found.flatMap((r) => r.paylinkCandidates)
+  await pendingPaylinks.recordPending(pending)
+  // A legacy row without a token matches every retired deployment: a live one's claim keeps it.
+  const claimed = new Set(pending.map((row) => row.txHash))
+  await pendingPaylinks.retire(
+    found.flatMap((r) =>
+      r.frozenLinks.flatMap((row) => (row.txHash && !claimed.has(row.txHash) ? [row.txHash] : [])),
+    ),
+  )
   return {
     current,
     historic,

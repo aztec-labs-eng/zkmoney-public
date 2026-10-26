@@ -10,6 +10,7 @@ import { useSyncExternalStore } from "react"
 import {
   NameClaimStore,
   PendingRegistrationStore,
+  SIPADepositStore,
   matchWireNameHash,
   createOxideL1Reader,
   createRegistrationDepositReader,
@@ -48,7 +49,6 @@ import {
 } from "../identity/walletIdentity"
 import { syncRegistrationRail } from "./registrationRailSync"
 import { oweRegistrationBroadcast, rememberRegistrationPayload } from "../broadcasts/broadcasts"
-import { sipaFundingTokens } from "../deposit/loadDepositFacts"
 
 export function getPendingStore(): PendingRegistrationStore {
   return PendingRegistrationStore.get(webStorage)
@@ -209,7 +209,7 @@ export async function buildWebDetectionDeps(
       // Resolved from the registry, not the manifest: an absent or stale pin makes front-core
       // fall back to the registry, whose controller-era build has no schedule immutables.
       registrationController: await scheduleSource(config, publicClient as never),
-      fundingTokens: sipaFundingTokens(config.network, env.feeToken),
+      store: SIPADepositStore.get(webStorage),
       // The record holds no bearer material; the saved terms carry the signed amounts. The record
       // names the tag those terms priced, which one device's shared account cannot.
       termsFor: (account: string) => {

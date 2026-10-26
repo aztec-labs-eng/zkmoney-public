@@ -6,6 +6,7 @@ import { PendingPaylinkMigrationStore } from "../../src/core/services/paylink/Pe
 import { PendingPaylinkMigrationService } from "../../src/core/services/paylink/PendingPaylinkMigrationService"
 import { setActiveNetworkId } from "../../src/core/activeNetworkId"
 import type { CheckSpent } from "../../src/core/services/paylink/PaylinkClaimReconciler"
+import type { IStorageAdapter } from "../../src/core/storages/adapter"
 import type { PaylinkTransaction, Transaction } from "../../src/types"
 
 const NOW_MS = 1_700_000_000_000
@@ -67,6 +68,87 @@ describe("PendingPaylinkMigrationService", () => {
         tokenAddress: "0xhistoric",
       }),
     ])
+  })
+
+  it("retires the given links' records and reclaim notices, and keeps the others", async () => {
+    // A legacy row carries no token address; the caller attributes it.
+    const legacy = row({ txHash: "0xLegacy", tokenAddress: undefined })
+    const other = row({ txHash: "0xOther", tokenAddress: "0xlive" })
+    const { store, notifications, service } = build([row(), legacy, other])
+    await service.recordPending([row(), legacy, other])
+    await service.reconcile(UNTIL + 10)
+    expect(notifications.list()).toHaveLength(3)
+    await service.retire(["0xRow", "0xLEGACY"])
+    expect(store.list().map((r) => r.txHash)).toEqual(["0xOther"])
+    expect(notifications.list().map((n) => n.id)).toEqual(["paylink:reclaimable:0xother"])
+  })
+
+  it("leaves no record or reclaim notice when a retirement lands during reconciliation", async () => {
+    let reached!: () => void
+    let release!: () => void
+    const reading = new Promise<void>((resolve) => (reached = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const deferred: CheckSpent = async (rows) => {
+      reached()
+      await gate
+      return new Map(rows.map((r) => [r.txHash, false]))
+    }
+    const second = row({ txHash: "0xSecond" })
+    const { store, notifications, service } = build([row(), second], deferred)
+    await service.recordPending([row(), second])
+    const reconciling = service.reconcile(UNTIL + 10)
+    await reading
+    const retiring = service.retire(["0xRow", "0xSecond"])
+    release()
+    await Promise.all([reconciling, retiring])
+    expect(store.list()).toEqual([])
+    expect(notifications.list()).toEqual([])
+  })
+
+  it("drops its queued and running work once its account no longer owns the stores", async () => {
+    // Keys under the active account, as the web adapter scopes them; a session commit moves it.
+    let account = "a"
+    const written: string[] = []
+    const data = new InMemoryStorageAdapter()
+    const at = (key: string) => `${account}.${key}`
+    const scoped: IStorageAdapter = {
+      getItem: (key) => data.getItem(at(key)),
+      setItem: (key, value) => {
+        written.push(at(key))
+        return data.setItem(at(key), value)
+      },
+      removeItem: (key) => {
+        written.push(at(key))
+        return data.removeItem(at(key))
+      },
+      clear: () => data.clear(),
+    }
+    let reached!: () => void
+    let release!: () => void
+    const reading = new Promise<void>((resolve) => (reached = resolve))
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const second = row({ txHash: "0xSecond" })
+    const service = new PendingPaylinkMigrationService({
+      store: new PendingPaylinkMigrationStore(scoped),
+      notificationStore: new AppNotificationStore(scoped),
+      accountTransactions: async () => [row(), second],
+      checkSpent: async (rows) => {
+        reached()
+        await gate
+        return new Map(rows.map((r) => [r.txHash, false]))
+      },
+      ownsStorage: () => account === "a",
+      now: () => NOW_MS,
+    })
+    await service.recordPending([row(), second])
+    const reconciling = service.reconcile(UNTIL + 10)
+    await reading
+    const retiring = service.retire(["0xRow", "0xSecond"])
+    const recording = service.recordPending([row({ txHash: "0xThird" })])
+    account = "b"
+    release()
+    await Promise.all([reconciling, retiring, recording])
+    expect(written.filter((key) => key.startsWith("b."))).toEqual([])
   })
 
   it("stays waiting inside the window and mints nothing", async () => {

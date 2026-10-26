@@ -1,6 +1,7 @@
 /**
  * The Savings provider settles as soon as a rescan rebuilds a burn with Sky meta the move store
- * does not know, not on the next tick: a second device adopts and claims its moves right away.
+ * does not know, not on the next tick: a second device adopts and claims its moves right away. At
+ * its boot stage it replays the moves: both tokens' burns rebuilt, then one pass, then boot is told.
  */
 import { act, type ReactNode } from "react"
 import { createRoot, type Root } from "react-dom/client"
@@ -10,14 +11,19 @@ import { InMemoryStorageAdapter } from "./support/memoryStorage"
 
 const h = vi.hoisted(() => ({
   settle: vi.fn(async () => {}),
-  tuple: vi.fn(async () => ({ portal: `0x${"71".repeat(20)}`, l2Token: "0x2b" })),
+  tuple: vi.fn(async (): Promise<unknown> => ({ portal: `0x${"71".repeat(20)}`, l2Token: "0x2b" })),
+  rescan: vi.fn(async (_wallet: unknown, _tokens: unknown[]): Promise<unknown[]> => []),
+  savingsToken: vi.fn(async (): Promise<unknown> => ({ label: "sUSDS" })),
+  // The replay's stage; most tests never reach it.
+  whenReady: vi.fn((_reader: string) => new Promise<void>(() => {})),
+  movesReplayed: vi.fn(),
 }))
 const moves = new SavingsMoveStorage(new InMemoryStorageAdapter())
 const withdrawals = WithdrawalStorage.get(new InMemoryStorageAdapter())
 
 // Stable like the real contexts: the source is memoized over them.
 const ctx = vi.hoisted(() => ({
-  aztec: { obsidionWallet: {} },
+  aztec: { obsidionWallet: {}, currentNetwork: { type: "sandbox" } },
   account: { obsidionAccount: {} },
   asset: { tokenService: {} },
   contracts: { contractService: {} },
@@ -29,16 +35,19 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   useAssetContext: () => ctx.asset,
   useContractServiceContext: () => ctx.contracts,
   useBootReady: () => true,
+  bootPriority: { whenReady: h.whenReady, movesReplayed: h.movesReplayed },
   SavingsProvider: ({ children }: { children: ReactNode }) => children,
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({}) }))
 vi.mock("../src/features/savings/savingsGateway", () => ({
   getSavingsTuple: () => h.tuple(),
   createSavingsSource: () => ({ moves, settle: h.settle }),
+  savingsRescanToken: () => h.savingsToken(),
 }))
 vi.mock("../src/features/savings/savingsMoveStore", () => ({ getSavingsMoveStore: () => moves }))
 vi.mock("../src/features/withdraw/withdrawGateway", () => ({
   getWithdrawalStore: () => withdrawals,
+  rescanWithdrawals: h.rescan,
 }))
 
 const { WebSavingsProvider } = await import("../src/features/savings/SavingsProvider")
@@ -71,8 +80,9 @@ const burn = (localId: string, sky: boolean): WithdrawalRecord =>
 let host: HTMLDivElement
 let root: Root
 beforeEach(async () => {
-  h.settle.mockClear()
-  h.tuple.mockClear()
+  vi.clearAllMocks()
+  h.whenReady.mockImplementation(() => new Promise<void>(() => {}))
+  h.rescan.mockImplementation(async () => [])
   await moves.load()
   await withdrawals.load()
   await withdrawals.clearAll()
@@ -86,6 +96,67 @@ afterEach(() => {
 })
 
 describe("WebSavingsProvider", () => {
+  it("replays the moves at its boot stage: both tokens rescanned, then a pass, then boot told", async () => {
+    let stage!: () => void
+    h.whenReady.mockImplementation(() => new Promise<void>((resolve) => (stage = resolve)))
+    let rebuilt!: () => void
+    h.rescan.mockImplementation(
+      (_wallet, tokens) =>
+        new Promise((resolve) => {
+          if ((tokens[0] as { label?: string }).label === "sUSDS") rebuilt = () => resolve([])
+          else resolve([])
+        }),
+    )
+    await act(async () => root.render(<WebSavingsProvider>{null}</WebSavingsProvider>))
+    await vi.waitFor(() => expect(h.settle).toHaveBeenCalledTimes(1))
+    expect(h.whenReady).toHaveBeenCalledWith("savingsMoves")
+    expect(h.rescan).not.toHaveBeenCalled()
+
+    await act(async () => stage())
+    await vi.waitFor(() => expect(h.rescan).toHaveBeenCalledTimes(2))
+    expect(h.rescan.mock.calls.map(([, tokens]) => tokens)).toEqual([
+      [{ tokenService: ctx.asset.tokenService }],
+      [{ label: "sUSDS" }],
+    ])
+    // The pass waits for the move out's burn to be rebuilt.
+    expect(h.settle).toHaveBeenCalledTimes(1)
+    expect(h.movesReplayed).not.toHaveBeenCalled()
+
+    await act(async () => rebuilt())
+    await vi.waitFor(() => expect(h.movesReplayed).toHaveBeenCalledTimes(1))
+    expect(h.settle).toHaveBeenCalledTimes(2)
+    expect(h.settle.mock.invocationCallOrder[1]).toBeLessThan(
+      h.movesReplayed.mock.invocationCallOrder[0],
+    )
+  })
+
+  it("tells boot there is nothing to replay where the profile has no sUSDS deployment", async () => {
+    h.tuple.mockResolvedValueOnce(undefined)
+    await act(async () => root.render(<WebSavingsProvider>{null}</WebSavingsProvider>))
+    await vi.waitFor(() => expect(h.movesReplayed).toHaveBeenCalledTimes(1))
+    expect(h.settle).not.toHaveBeenCalled()
+  })
+
+  it("releases the balance after a failed replay, and tries the replay again", async () => {
+    vi.useFakeTimers()
+    try {
+      vi.spyOn(console, "warn").mockImplementation(() => {})
+      h.whenReady.mockResolvedValue(undefined)
+      h.savingsToken.mockRejectedValueOnce(new Error("node down"))
+      await act(async () => root.render(<WebSavingsProvider>{null}</WebSavingsProvider>))
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)))
+      expect(h.movesReplayed).toHaveBeenCalledTimes(1)
+      const passes = h.settle.mock.calls.length
+      await act(async () => void (await vi.advanceTimersByTimeAsync(30_000)))
+      await act(async () => void (await vi.advanceTimersByTimeAsync(0)))
+      expect(h.savingsToken).toHaveBeenCalledTimes(2)
+      expect(h.settle.mock.calls.length).toBeGreaterThan(passes)
+    } finally {
+      vi.mocked(console.warn).mockRestore()
+      vi.useRealTimers()
+    }
+  })
+
   it("settles once the source is up, and again the moment a rescan rebuilds a Sky burn", async () => {
     await act(async () => root.render(<WebSavingsProvider>{null}</WebSavingsProvider>))
     await vi.waitFor(() => expect(h.settle).toHaveBeenCalledTimes(1))

@@ -3,7 +3,7 @@ import type { Address } from "viem"
 import { SHARE } from "../../../src/core/services/savings/savingsMath"
 import {
   TEST_SAVINGS_APY,
-  readSavingsPosition,
+  readSavingsPrice,
 } from "../../../src/core/services/savings/savingsPosition"
 
 const VAULT = "0x00000000000000000000000000000000000000cc" as Address
@@ -25,40 +25,34 @@ function vault(ssr?: bigint) {
   }
 }
 
-describe("readSavingsPosition", () => {
-  it("values the shares and reads the share price at a price other than one", async () => {
-    const position = await readSavingsPosition(vault() as never, VAULT, 200n * SHARE, {
-      l1ChainId: MAINNET,
-      now: 9,
-    })
-    expect(position).toEqual({
-      shares: 200n * SHARE,
-      value: 214n * SHARE,
-      sharePrice: (107n * SHARE) / 100n,
-      readAt: 9,
-    })
+describe("readSavingsPrice", () => {
+  it("reads the share price at a price other than one, in two reads", async () => {
+    const client = vault()
+    const price = await readSavingsPrice(client as never, VAULT, { l1ChainId: MAINNET, now: 9 })
+    expect(price).toEqual({ sharePrice: (107n * SHARE) / 100n, readAt: 9 })
+    expect(client.readContract).toHaveBeenCalledTimes(2)
   })
 
   it("derives the rate the vault publishes", async () => {
-    const position = await readSavingsPosition(vault(SSR_5_PERCENT) as never, VAULT, SHARE, {
+    const price = await readSavingsPrice(vault(SSR_5_PERCENT) as never, VAULT, {
       l1ChainId: SEPOLIA,
     })
-    expect(position.apy).toBeCloseTo(0.05, 4)
+    expect(price.apy).toBeCloseTo(0.05, 4)
   })
 
   it("shows the test default off mainnet where the vault publishes no rate", async () => {
-    const position = await readSavingsPosition(vault() as never, VAULT, SHARE, {
+    const price = await readSavingsPrice(vault() as never, VAULT, {
       l1ChainId: SEPOLIA,
     })
-    expect(position.apy).toBe(TEST_SAVINGS_APY)
+    expect(price.apy).toBe(TEST_SAVINGS_APY)
   })
 
   it("shows no rate on mainnet where the vault publishes none, and where the chain is unknown", async () => {
-    const mainnet = await readSavingsPosition(vault() as never, VAULT, SHARE, {
+    const mainnet = await readSavingsPrice(vault() as never, VAULT, {
       l1ChainId: MAINNET,
     })
     expect(mainnet.apy).toBeUndefined()
-    const unknown = await readSavingsPosition(vault() as never, VAULT, SHARE)
+    const unknown = await readSavingsPrice(vault() as never, VAULT)
     expect(unknown.apy).toBeUndefined()
   })
 })

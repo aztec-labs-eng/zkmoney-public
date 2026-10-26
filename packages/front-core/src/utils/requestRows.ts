@@ -25,6 +25,15 @@ export interface RequestRowView {
   timestampMs: number
   /** Feed-filter direction: money would leave on an incoming request, arrive on an outgoing one. */
   direction: "in" | "out"
+  /** When the payer was last reminded of an outgoing contact request (epoch ms). */
+  remindedAt?: number
+}
+
+/** A reminder blocks the next one for this long. */
+export const REMIND_INTERVAL_MS = 12 * 60 * 60 * 1000
+
+export function remindedRecently(remindedAt: number | undefined, now: number): boolean {
+  return remindedAt !== undefined && now - remindedAt < REMIND_INTERVAL_MS
 }
 
 function usd(amount: number, sign: "+" | "-"): string {
@@ -149,6 +158,7 @@ export function buildRequestRows(
         statusLabel: "Owes you",
         amount: usd(r.amount, "+"),
         direction: "in",
+        remindedAt: r.remindedAt,
       }
     })
 }

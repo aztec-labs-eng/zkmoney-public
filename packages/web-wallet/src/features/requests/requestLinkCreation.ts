@@ -2,12 +2,13 @@ import type { Address } from "viem"
 import {
   mintableOrigin,
   mintRequestLink,
+  sipaDeploymentTag,
   sipaLinkPreimage,
   SIPADepositStore,
   type MintedRequestLink,
   type MintRequestLinkArgs,
   type PaymentRequest,
-  type SipaLinkPreimage,
+  type SipaOrigin,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
@@ -21,26 +22,29 @@ export interface RequestLinkStore {
   add(row: PaymentRequest): Promise<void>
 }
 
-/** The preimage this wallet recorded when it derived `sipa`. */
-async function recordedSipaPreimage(sipa: string): Promise<SipaLinkPreimage | undefined> {
+/** What this wallet recorded when it derived `sipa`. */
+async function recordedSipaOrigin(sipa: string): Promise<SipaOrigin | undefined> {
   const deposits = SIPADepositStore.get(webStorage)
   await deposits.load()
-  const origin = deposits.get(sipa as Address)?.origin
-  return origin && sipaLinkPreimage(origin)
+  return deposits.get(sipa as Address)?.origin
 }
 
 /**
  * Persist the fulfilled-signal join row before exposing the shareable URL. A link with an address
- * carries its preimage, so a payer can check it against the active deployment.
+ * carries its preimage, and a code its deployment tag, so a payer can check it against the active
+ * deployment.
  */
 export async function createAndStoreRequestLink(
   input: MintRequestLinkArgs,
   store: RequestLinkStore,
-  preimageOf: (sipa: string) => Promise<SipaLinkPreimage | undefined> = recordedSipaPreimage,
+  originOf: (sipa: string) => Promise<SipaOrigin | undefined> = recordedSipaOrigin,
 ): Promise<MintedRequestLink> {
-  const sipaPreimage =
-    input.sipaPreimage ?? (input.sipaAddress ? await preimageOf(input.sipaAddress) : undefined)
-  const minted = mintRequestLink({ ...input, sipaPreimage })
+  const origin = input.sipaAddress ? await originOf(input.sipaAddress) : undefined
+  const minted = mintRequestLink({
+    ...input,
+    sipaPreimage: input.sipaPreimage ?? (origin && sipaLinkPreimage(origin)),
+    sipaDeployment: input.sipaDeployment ?? (origin && sipaDeploymentTag(origin)),
+  })
   await store.add(minted.row)
   return minted
 }

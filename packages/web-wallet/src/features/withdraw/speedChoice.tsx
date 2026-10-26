@@ -36,24 +36,46 @@ export interface SpeedChoice {
   pricedTip: bigint
 }
 
+/** The most a tip may cost for Faster to be the opening choice: 2 DAI. */
+export const FASTER_DEFAULT_MAX_TIP = 2n * 10n ** 18n
+/** Faster opens only when the tip is at most this share of the amount, in percent. */
+export const FASTER_DEFAULT_MAX_TIP_PERCENT = 10n
+
+/** Whether a choice nobody has made yet opens on Faster: a proven-useful tip that is cheap in absolute and relative terms. */
+export const opensOnFaster = (offer: FasterWithdrawal, amount: bigint) =>
+  offer.measured &&
+  offer.proverTip <= FASTER_DEFAULT_MAX_TIP &&
+  offer.proverTip * 100n <= amount * FASTER_DEFAULT_MAX_TIP_PERCENT
+
 export function useSpeedChoice({
   active,
   node,
-  initialSpeed = "standard",
+  amount,
+  initialSpeed,
   answerWithinMs,
   load,
   held,
 }: {
   active: boolean
   node?: WithdrawalSpeedupNode
+  /** What the burn moves, in the tip's token; the opening choice weighs the tip against it. */
+  amount?: bigint
+  /** Overrides the opening choice, which is otherwise decided once by {@link opensOnFaster}. */
   initialSpeed?: WithdrawalSpeed
   answerWithinMs?: number
   load?: LoadFasterWithdrawal
   held?: FasterWithdrawal
 }): SpeedChoice {
-  const [speed, setSpeed] = useState<WithdrawalSpeed>(initialSpeed)
+  const [chosen, setSpeed] = useState<WithdrawalSpeed | undefined>(initialSpeed)
   const live = useFasterWithdrawal({ active, node, answerWithinMs, load })
   const offer = held ?? live.offer
+  // Fixed by the first offer, so re-quotes around the limit never flip it; reopened with the flow.
+  const [opening, setOpening] = useState<WithdrawalSpeed>()
+  if (!active && opening !== undefined) setOpening(undefined)
+  if (active && opening === undefined && offer && amount !== undefined) {
+    setOpening(opensOnFaster(offer, amount) ? "faster" : "standard")
+  }
+  const speed = chosen ?? opening ?? "standard"
   const settled = !held && !!offer && !fasterIsWorthIt(offer)
   const pricedTip = speed === "faster" && offer && !settled ? offer.proverTip : 0n
   return { offer, loading: live.loading, speed, setSpeed, settled, held: !!held, pricedTip }

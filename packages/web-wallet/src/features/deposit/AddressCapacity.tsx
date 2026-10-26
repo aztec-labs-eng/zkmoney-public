@@ -11,9 +11,6 @@ export const CAPACITY_SHARE_WARNING: Record<"warn-zero" | "warn-unknown", string
     "Network capacity for this address isn't confirmed. A deposit sent to it may wait for capacity before it is processed. The funds stay at the address while they wait.",
 }
 
-export const ADDRESS_RECHECK_NOTE =
-  "Anyone with this address can still send to it, and the wallet can't stop that transfer. A saved address or QR code doesn't keep this capacity check, so check again before each transfer."
-
 /** The warning to repeat on Copy and Show QR, if the share decision calls for one. */
 export function capacityShareWarning(decision: AddressShareDecision): string | undefined {
   return decision === "warn-zero" || decision === "warn-unknown"

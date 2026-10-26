@@ -11,7 +11,6 @@ vi.mock("../../src/services/migrationDeposit.js", () => ({
   migrationSipaCoordinates: () => ({ day: 3, nonce: 4 }),
   resolveMigrationDeposit: async () => ({ sipaAddress: SIPA, resolution: {} }),
   migrationDepositCalls: async () => [],
-  receiveMigrationSweeps: sweeps.received,
 }))
 vi.mock("../../src/services/sipaIntents.js", () => ({
   readDepositSIPAImplementation: async () => SIPA,
@@ -59,6 +58,7 @@ function fixture() {
   const balance = vi.fn(async () => 0n)
   const sendTx = vi.fn()
   const options = {
+    received: sweeps.received,
     client: { readContract, getBlockNumber: async () => 7n },
     wallet: { node: { getTxReceipt: receipt }, sendTx },
     account,

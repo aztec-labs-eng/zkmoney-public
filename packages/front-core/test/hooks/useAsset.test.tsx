@@ -51,6 +51,7 @@ const {
       /** Seeded rows read as cache-hydrated (no `updatedAt`); `updateBalance` writes stamp one. */
       balances: {} as Record<string, bigint>,
       liveKeys: new Set<string>(),
+      writtenAt: new Map<string, number>(),
       listeners: new Set<(records: unknown[]) => void>(),
       contractAddress: undefined as { toString(): string } | undefined,
     },
@@ -107,7 +108,9 @@ vi.mock("src/core", async () => {
           scope: key.slice(0, sep),
           tokenAddress: key.slice(sep + 1),
           balance: balance.toString(),
-          updatedAt: mockStorageState.liveKeys.has(key) ? Date.now() : undefined,
+          updatedAt: mockStorageState.liveKeys.has(key)
+            ? (mockStorageState.writtenAt.get(key) ?? Date.now())
+            : undefined,
         }
       }),
     ),
@@ -119,6 +122,7 @@ vi.mock("src/core", async () => {
       const key = `${scope}:${addr}`
       mockStorageState.balances[key] = balance
       mockStorageState.liveKeys.add(key)
+      mockStorageState.writtenAt.set(key, Date.now())
       const records = balanceStorageStub.list()
       mockStorageState.listeners.forEach((l) => l(records))
     }),
@@ -227,6 +231,7 @@ describe("useAsset background-connect", () => {
     mockStorageState.tokens = []
     mockStorageState.balances = {}
     mockStorageState.liveKeys.clear()
+    mockStorageState.writtenAt.clear()
     mockStorageState.listeners.clear()
     mockStorageState.contractAddress = undefined
     tokenServiceStub.tokenAddress = undefined
@@ -677,9 +682,22 @@ describe("useAsset background-connect", () => {
     await act(async () => {
       await BalanceStorage.get().updateBalance("sandbox:0xcomplete", "0xtok", 777n, 12)
     })
+    const written = BalanceStorage.get().list()[0]!.updatedAt!
 
     await waitFor(() => expect(result.current.assets?.[0]?.balance).toBeGreaterThan(0))
     expect(result.current.liveAssetsLoaded).toBe(true)
+    // The asset carries when its balance was written, so a figure and what it holds move together.
+    await waitFor(() =>
+      expect(result.current.balanceReadAt["0xtok"]).toBeGreaterThanOrEqual(written),
+    )
+    // A balance spent to zero leaves the assets, but its read time stays.
+    await act(async () => {
+      await BalanceStorage.get().updateBalance("sandbox:0xcomplete", "0xtok", 0n, 13)
+    })
+    await waitFor(() => expect(result.current.assets ?? []).toHaveLength(0))
+    await waitFor(() =>
+      expect(result.current.balanceReadAt["0xtok"]).toBeGreaterThanOrEqual(written),
+    )
     unmount()
   })
 

@@ -115,7 +115,7 @@ export async function deriveRefundableSipaSources(args: {
         sipaAddress,
         recipientL2Address: args.recipientL2Address,
         messageSecret: secret.toString(),
-        origin: "sipa-event",
+        recipientCommitment: recipientCommitment.toString(),
       })
     }
   }

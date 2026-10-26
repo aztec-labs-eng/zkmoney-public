@@ -1,7 +1,37 @@
-import { useEffect, useRef, type ReactNode } from "react"
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react"
+
+/** Stays mounted through its slide out; with no animation running it closes at once. */
+export function MobileMenu({
+  open,
+  children,
+  onClose,
+}: {
+  open: boolean
+  children: ReactNode
+  onClose: () => void
+}) {
+  const [mounted, setMounted] = useState(open)
+  if (open && !mounted) setMounted(true)
+  const closed = useCallback(() => setMounted(false), [])
+  return mounted ? (
+    <MenuDialog closing={!open} onClosed={closed} onClose={onClose}>
+      {children}
+    </MenuDialog>
+  ) : null
+}
 
 /** The browser contains focus and makes the page inert while the menu is open. */
-export function MobileMenu({ children, onClose }: { children: ReactNode; onClose: () => void }) {
+function MenuDialog({
+  closing,
+  children,
+  onClose,
+  onClosed,
+}: {
+  closing: boolean
+  children: ReactNode
+  onClose: () => void
+  onClosed: () => void
+}) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {
     const dialog = ref.current!
@@ -10,7 +40,12 @@ export function MobileMenu({ children, onClose }: { children: ReactNode; onClose
     document.documentElement.style.overflow = "hidden"
     dialog.showModal()
     dialog.querySelector<HTMLElement>('[aria-label="Close menu"]')?.focus()
+    // The slide starts from a painted frame, so the work of opening cannot swallow it.
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => dialog.setAttribute("data-shown", ""))
+    })
     return () => {
+      cancelAnimationFrame(frame)
       dialog.close()
       document.documentElement.style.overflow = previousOverflow
       if (document.activeElement && document.activeElement !== document.body) return
@@ -23,6 +58,19 @@ export function MobileMenu({ children, onClose }: { children: ReactNode; onClose
       }
     }
   }, [])
+  useLayoutEffect(() => {
+    if (!closing) return
+    const animations = ref.current!.getAnimations?.({ subtree: true }) ?? []
+    if (animations.length === 0) return onClosed()
+    let live = true
+    const done = () => live && onClosed()
+    void Promise.all(animations.map((animation) => animation.finished)).then(done, done)
+    const timer = setTimeout(done, 1000)
+    return () => {
+      live = false
+      clearTimeout(timer)
+    }
+  }, [closing, onClosed])
 
   return (
     <dialog
@@ -30,6 +78,7 @@ export function MobileMenu({ children, onClose }: { children: ReactNode; onClose
       id="wallet-menu"
       className="ww-menu-dialog"
       aria-label="Wallet menu"
+      data-closing={closing || undefined}
       onKeyDown={(event) => {
         if (event.key !== "Tab") return
         const buttons = [

@@ -1,14 +1,11 @@
 import type { AztecAddress } from "@aztec/aztec.js/addresses"
-import { isL1ToL2MessageReady } from "@aztec/aztec.js/messaging"
 import type { AztecNode } from "@aztec/aztec.js/node"
-import type { Fr } from "@aztec/aztec.js/fields"
 import type { FunctionCall } from "@aztec/stdlib/abi"
 import { isContractDeployed } from "@oxide/l1-contracts"
 import type { L1OperationBroadcaster } from "@oxide/oxide-client/broadcaster_calls.js"
 import type { SipaNotifier } from "@oxide/oxide-client/sipa_event_calls.js"
 import type { Address, PublicClient } from "viem"
 import type { MetadataDestination } from "./metadataMigration.js"
-import { readDepositMessageKey, readSweepEvents } from "./sipaClaim.js"
 import {
   assertSubsidySweepsSipa,
   buildSipaSweepBroadcasts,
@@ -16,7 +13,6 @@ import {
 } from "./sipaIntents.js"
 import type { SelfResolvedSipa, SipaSelfResolver } from "./sipaSelfResolve.js"
 import { MAX_NONCE } from "./sipaStealth.js"
-import type { TokenService } from "./TokenService.js"
 
 /** What a migration needs to publish and receive SIPAs on its destination. */
 export interface MigrationDestinationContext {
@@ -26,11 +22,17 @@ export interface MigrationDestinationContext {
   selfResolver: SipaSelfResolver
   /** The destination token; it emits the SIPA event and stores the swept deposits. */
   token: SipaNotifier
-  tokenService: TokenService
   broadcaster: L1OperationBroadcaster
   recipient: AztecAddress
   /** The OxideAccount that may recover a SIPA's balance. */
   recoveryAccount: Address
+  /**
+   * Whether the deposit rail has claimed every sweep it saw at `sipa`, and at least one. The rail
+   * observes and claims the migration's SIPAs like any other; the migration only reads.
+   */
+  received(sipa: Address): Promise<boolean>
+  /** Whether the rail has seen a sweep leave `sipa`'s deposit address, whether or not it is claimed yet. */
+  swept(sipa: Address): Promise<boolean>
 }
 
 /**
@@ -101,34 +103,4 @@ export async function migrationDepositCalls(
   return (await Promise.all(interactions.map((call) => call.request()))).flatMap(
     (payload) => payload.calls,
   )
-}
-
-/**
- * Store every deposit `sipa` swept since `fromBlock`. False while none was swept or a message is in flight. Sweep
- * and message evidence outlive source tx pruning, so this never needs an old receipt.
- */
-export async function receiveMigrationSweeps(
-  c: MigrationDestinationContext,
-  sipa: Address,
-  fromBlock: bigint,
-  sharedSecretSalt: Fr,
-): Promise<boolean> {
-  const sweeps = await readSweepEvents(c.client, sipa, fromBlock)
-  if (!sweeps.length) return false
-  for (const sweep of sweeps) {
-    const key = await readDepositMessageKey(
-      c.client,
-      c.destination.portal,
-      sweep.txHash,
-      sweep.index,
-    )
-    if (!key || !(await isL1ToL2MessageReady(c.node, key))) return false
-    await c.tokenService.ensureSweptDeposit({
-      inboxIndex: sweep.index,
-      amount: sweep.amount,
-      recipient: c.recipient,
-      sharedSecretSalt,
-    })
-  }
-  return true
 }

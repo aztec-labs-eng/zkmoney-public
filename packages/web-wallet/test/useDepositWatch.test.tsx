@@ -1,128 +1,175 @@
+// @vitest-environment jsdom
 import { act } from "react"
 import { createRoot } from "react-dom/client"
-import { expect, it, vi } from "vitest"
+import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type { Address } from "viem"
-import { Network } from "@obsidion/sdk"
-import type { WebWalletConfig } from "../src/config/env"
-const { readContract } = vi.hoisted(() => ({ readContract: vi.fn() }))
-vi.mock("../src/config/oxideTuple", () => ({ l1PublicClient: () => ({ readContract }) }))
+import { SIPADepositStore } from "@obsidion/front-core"
+const gateway = vi.hoisted(() => ({ observe: vi.fn() }))
+vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
+import {
+  observeDeposits,
+  observeNow,
+  resetDepositPassesForTests,
+  watchDeposits,
+} from "../src/features/deposit/depositPasses"
 import { useDepositWatch } from "../src/features/onboarding/useDepositWatch"
+import { webStorage } from "../src/platform/storage/WebStorageAdapter"
+import { walletStorage } from "../src/platform/storage/walletStorage"
 
-it("does not grant a new address the previously observed balance while its read is pending", async () => {
-  const el = document.createElement("div")
-  const root = createRoot(el)
-  const config = {} as WebWalletConfig
-  const token = "0x0000000000000000000000000000000000000001" as Address
-  const first = "0x0000000000000000000000000000000000000002" as Address
-  const second = "0x0000000000000000000000000000000000000003" as Address
-  function View({ address }: { address?: Address }) {
-    const { balance } = useDepositWatch(config, address ? { token, address } : null)
-    return <span>{String(balance)}</span>
-  }
-  try {
-    readContract.mockResolvedValueOnce(5n * 10n ** 18n)
-    await act(async () => root.render(<View address={first} />))
-    expect(el.textContent).toBe("5000000000000000000")
-    readContract.mockImplementation(() => new Promise(() => {}))
-    await act(async () => root.render(<View address={second} />))
-    expect(el.textContent).toBe("0")
-    await act(async () => root.render(<View />))
-    expect(el.textContent).toBe("0")
-  } finally {
-    await act(async () => root.unmount())
-  }
+const FIRST = "0x00000000000000000000000000000000000000a2" as Address
+const SECOND = "0x00000000000000000000000000000000000000a3" as Address
+const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48" as Address
+
+const rail = () => SIPADepositStore.get(webStorage)
+
+async function seed(address: Address, over: Record<string, unknown> = {}) {
+  await rail().load()
+  await rail().upsert(
+    address,
+    { phase: "resolved" } as never,
+    {
+      amount: "0",
+      startTime: Date.now(),
+      tokenSymbol: "DAI",
+      tokenDecimals: 18,
+      ...over,
+    } as never,
+  )
+}
+
+beforeEach(() => {
+  for (const key of walletStorage.keys()) walletStorage.removeItem(key)
+  ;(SIPADepositStore as unknown as { instance: unknown }).instance = null
+  resetDepositPassesForTests()
+  gateway.observe.mockReset().mockResolvedValue({})
 })
 
-it("reads a USDC-funded address in the manifest token's units", async () => {
-  const el = document.createElement("div")
-  const root = createRoot(el)
-  const config = { network: Network.MAINNET } as WebWalletConfig
-  const token = "0x0000000000000000000000000000000000000001" as Address
-  const address = "0x0000000000000000000000000000000000000002" as Address
-  function View() {
-    const { balance, token: held } = useDepositWatch(config, { token, address })
-    return <span>{`${balance}:${held}`}</span>
-  }
-  try {
-    readContract.mockReset()
-    readContract.mockImplementation(async ({ address: erc20 }: { address: Address }) =>
-      erc20.toLowerCase() === "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" ? 15_000_000n : 0n,
-    )
-    await act(async () => root.render(<View />))
-    expect(el.textContent).toBe("15000000000000000000:0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48")
-  } finally {
-    await act(async () => root.unmount())
-  }
-})
+const WALLET = {} as never
+const ACCOUNT = `0x${"cd".repeat(32)}`
+afterEach(() => vi.useRealTimers())
 
-it("a read that lands after a newer one does not overwrite it", async () => {
-  vi.useFakeTimers()
+function render(view: React.ReactNode) {
   const el = document.createElement("div")
   const root = createRoot(el)
-  const config = {} as WebWalletConfig
-  const token = "0x0000000000000000000000000000000000000001" as Address
-  const address = "0x0000000000000000000000000000000000000002" as Address
-  let read!: () => Promise<void>
-  function View() {
-    const watch = useDepositWatch(config, { token, address })
-    read = watch.read
-    return <span>{String(watch.balance)}</span>
+  return {
+    el,
+    show: (next: React.ReactNode) => act(async () => root.render(next)),
+    done: () => act(async () => root.unmount()),
+    first: act(async () => root.render(view)),
   }
-  try {
-    readContract.mockReset()
-    readContract.mockResolvedValueOnce(0n)
-    await act(async () => root.render(<View />))
-    expect(el.textContent).toBe("0")
-    // The poll's read goes out and stalls; a manual read started after it lands first.
-    let landPoll!: (balance: bigint) => void
-    readContract.mockImplementationOnce(() => new Promise((resolve) => (landPoll = resolve)))
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_000)
+}
+
+function Balance({ address }: { address: Address | null }) {
+  const { balance, token } = useDepositWatch(address)
+  return <span>{`${balance}:${token}`}</span>
+}
+
+it("shows what the rail observed at the address, and moves when the rail does", async () => {
+  await seed(FIRST, { observedFrom: "1" })
+  const view = render(<Balance address={FIRST} />)
+  await view.first
+  expect(view.el.textContent).toBe("0:undefined")
+  await act(async () => {
+    await rail().upsert(FIRST, {
+      phase: "resolved",
+      heldBalance: "15000000000000000000",
+      tokenAddress: USDC,
     })
-    readContract.mockResolvedValueOnce(5n * 10n ** 18n)
-    await act(async () => read())
-    expect(el.textContent).toBe("5000000000000000000")
-    await act(async () => {
-      landPoll(0n)
-      await vi.advanceTimersByTimeAsync(1)
-    })
-    expect(el.textContent).toBe("5000000000000000000")
-  } finally {
-    await act(async () => root.unmount())
-    vi.useRealTimers()
-  }
+  })
+  expect(view.el.textContent).toBe(`15000000000000000000:${USDC}`)
+  await view.done()
 })
 
-it("stamps when each read landed, and keeps the last stamp through a failed one", async () => {
+it("reads a record from older storage, with no observed balance, as empty", async () => {
+  await seed(FIRST, { amount: "3" })
+  const view = render(<Balance address={FIRST} />)
+  await view.first
+  expect(view.el.textContent).toBe("0:undefined")
+  await view.done()
+})
+
+it("never grants a new address the previous one's balance", async () => {
+  await seed(FIRST, { heldBalance: "5", tokenAddress: USDC })
+  await seed(SECOND)
+  const view = render(<Balance address={FIRST} />)
+  await view.first
+  expect(view.el.textContent).toBe(`5:${USDC}`)
+  await view.show(<Balance address={SECOND} />)
+  expect(view.el.textContent).toBe("0:undefined")
+  await view.show(<Balance address={null} />)
+  expect(view.el.textContent).toBe("0:undefined")
+  await view.done()
+})
+
+it("shows when the last pass landed, only once the rail has read the address", async () => {
   vi.useFakeTimers()
-  const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-  const el = document.createElement("div")
-  const root = createRoot(el)
-  const config = {} as WebWalletConfig
-  const token = "0x0000000000000000000000000000000000000001" as Address
-  const address = "0x0000000000000000000000000000000000000002" as Address
-  function View() {
-    const { readAt } = useDepositWatch(config, { token, address })
+  await seed(FIRST)
+  observeDeposits(WALLET, ACCOUNT)
+  function When() {
+    const { readAt } = useDepositWatch(FIRST)
     return <span>{String(readAt)}</span>
   }
-  try {
-    readContract.mockReset()
-    readContract.mockResolvedValue(0n)
-    await act(async () => root.render(<View />))
-    const first = Number(el.textContent)
-    expect(first).toBe(Date.now())
-    readContract.mockRejectedValueOnce(new Error("HTTP request failed."))
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_000)
-    })
-    expect(Number(el.textContent)).toBe(first)
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(5_000)
-    })
-    expect(Number(el.textContent)).toBe(first + 10_000)
-  } finally {
-    await act(async () => root.unmount())
-    vi.useRealTimers()
-    warn.mockRestore()
-  }
+  const view = render(<When />)
+  await view.first
+  expect(view.el.textContent).toBe("undefined")
+  await act(async () => {
+    await rail().upsert(FIRST, { phase: "resolved", observedFrom: "1" })
+  })
+  expect(Number(view.el.textContent)).toBe(Date.now())
+  await view.done()
+})
+
+it("observes the wallet's account only while a screen watches it", async () => {
+  vi.useFakeTimers()
+  observeDeposits(WALLET, ACCOUNT)
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(gateway.observe).not.toHaveBeenCalled()
+
+  const release = watchDeposits()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(gateway.observe).toHaveBeenCalledWith(WALLET, ACCOUNT)
+  await vi.advanceTimersByTimeAsync(4_000)
+  expect(gateway.observe).toHaveBeenCalledTimes(2)
+  release()
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(gateway.observe).toHaveBeenCalledTimes(2)
+})
+
+it("observes a signup on its own cadence, faster while watched, and the latest account first", async () => {
+  vi.useFakeTimers()
+  const releaseWallet = observeDeposits(WALLET, ACCOUNT)
+  const signup = `0x${"ee".repeat(32)}`
+  const releaseSignup = observeDeposits(WALLET, signup, 12_000)
+  await vi.advanceTimersByTimeAsync(0)
+  expect(gateway.observe).toHaveBeenLastCalledWith(WALLET, signup)
+  await vi.advanceTimersByTimeAsync(12_000)
+  expect(gateway.observe).toHaveBeenCalledTimes(2)
+
+  const release = watchDeposits()
+  await vi.advanceTimersByTimeAsync(0)
+  await vi.advanceTimersByTimeAsync(4_000)
+  expect(gateway.observe).toHaveBeenCalledTimes(4)
+  release()
+
+  // Signup released: the wallet's account is observed again, and only while watched.
+  releaseSignup()
+  await vi.advanceTimersByTimeAsync(60_000)
+  expect(gateway.observe).toHaveBeenCalledTimes(4)
+  watchDeposits()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(gateway.observe).toHaveBeenLastCalledWith(WALLET, ACCOUNT)
+  releaseWallet()
+})
+
+it("joins a pass in flight, and rejects a manual read whose pass fails", async () => {
+  observeDeposits(WALLET, ACCOUNT)
+  let land!: (result: object) => void
+  gateway.observe.mockImplementationOnce(() => new Promise((resolve) => (land = resolve)))
+  const first = observeNow()
+  const second = observeNow()
+  expect(gateway.observe).toHaveBeenCalledTimes(1)
+  land({})
+  await Promise.all([first, second])
+  gateway.observe.mockRejectedValueOnce(new Error("HTTP request failed."))
+  await expect(observeNow()).rejects.toThrow("HTTP request failed.")
 })

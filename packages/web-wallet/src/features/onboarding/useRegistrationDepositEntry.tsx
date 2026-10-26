@@ -31,7 +31,6 @@ import {
   useRegistrationSchedule,
   useRegistrationTerms,
 } from "./registrationTerms"
-import { noteRegistrationDepositSeen } from "./registrationRailSync"
 import { registrationRecordForSipa } from "./registrationSweep"
 import {
   reportRegistrationDepositFunded,
@@ -166,17 +165,13 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
   // Before the sweep the address still holds the deposit; after it, the stamped terms or the
   // funding transfer do.
   const watch = useDepositWatch(
-    config,
-    record && stage !== null && depositOwed(stage)
-      ? { token: record.depositToken as never, address: record.sipaAddress as never }
-      : null,
+    record && stage !== null && depositOwed(stage) ? (record.sipaAddress as never) : null,
   )
   const live = watch.balance
-  // Stamp the live gross, here and on the rail; the sweep empties the address.
+  // Stamp the live gross; the sweep empties the address.
   useEffect(() => {
     if (!record || live <= 0n) return
     recordRegistrationDeposit(record.account, record.tag, live)
-    void noteRegistrationDepositSeen(record.sipaAddress, live)
   }, [record, live])
   const funding = useFundingTransfer(record, readAttempt)
   const deductions = useSweepDeductions(config, record?.depositToken, undefined, readAttempt)

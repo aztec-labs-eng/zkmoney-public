@@ -2,13 +2,18 @@ import { useEffect, useMemo, useState } from "react"
 import { useNavigate } from "react-router-dom"
 import { useContactsDirectory } from "@obsidion/front-core"
 import { ContactRow, GradientText, Icon, avatarColors } from "@obsidion/web-ds"
-import { PaylinkInfoModal, isPaylinkInfoHidden } from "../paylink/PaylinkInfoModal"
+import { PaylinkInfoModal, isPaylinkInfoHidden, shownVariant } from "../paylink/PaylinkInfoModal"
 import { voucherAvailable } from "../paylink/sponsoredPaylink"
 import { usePaylinkDeps } from "../paylink/usePaylinkDeps"
+import { StableCopy } from "../../ui/StableCopy"
 import { recentPeople } from "./recentPeople"
 import { useContactActivity } from "./useContactActivity"
 
 const RECENT_COUNT = 4
+const SEND_LINE = [
+  "Pay anyone via paylink. They'll need a zk.money account to claim.",
+  "Pay anyone, no account needed. They claim to zk.money or any ETH address.",
+]
 
 /** Send entry: paylink shortcut or pick someone recent. */
 export function SendScreen() {
@@ -52,11 +57,7 @@ export function SendScreen() {
               </span>
               <span className="ww-send-option__text">
                 <span>Send via paylink</span>
-                <span>
-                  {voucher
-                    ? "Pay anyone, no account needed. They claim to zk.money or any ETH address."
-                    : "Pay anyone via paylink. They'll need a zk.money account to claim."}
-                </span>
+                <StableCopy variants={SEND_LINE} shown={shownVariant(voucher)} />
               </span>
             </span>
             <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
@@ -113,7 +114,7 @@ export function SendScreen() {
       {info && (
         <PaylinkInfoModal
           offerHide={info === "first-use"}
-          voucher={voucher === true}
+          voucher={voucher}
           onClose={() => setInfo(undefined)}
           onGotIt={() => {
             setInfo(undefined)

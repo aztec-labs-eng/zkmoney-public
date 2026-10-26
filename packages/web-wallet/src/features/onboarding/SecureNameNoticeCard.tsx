@@ -21,6 +21,7 @@ import {
   fundsIn,
 } from "@obsidion/front-core"
 import { Card, Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
+import { WALLET_TOKEN_SYMBOL, tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import paylinkCoins from "../../assets/home/paylink-coins.webp"
 import { DepositDetailModal } from "../../ui/screens/DepositDetailModal"
 import { depositDetailOffer } from "../../ui/screens/useActivityEntries"
@@ -28,7 +29,7 @@ import { DepositExitModal } from "../deposit/DepositExitModal"
 import { getConfig } from "../../config/env"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { loadWalletIdentity } from "../identity/walletIdentity"
-import { openTicketClaimReview } from "../paylink/claimPrompt"
+import { openClaimPrompt, openTicketClaimReview, useLinkFunding } from "../paylink/claimPrompt"
 import { peekClaimStash } from "../paylink/claimStash"
 import {
   useAutoClaimGaveUp,
@@ -59,6 +60,7 @@ import {
   useSweepDeductions,
 } from "./registrationTerms"
 import { REGISTRATIONS_PAUSED_NOTICE } from "./onboardingErrorCopy"
+import { formatTokenAmount } from "./steps/DepositTermsRows"
 import { registrationRecoveryNeeded, useRegistrationRefunded } from "./registrationQuoteRecovery"
 import { reportRegistrationLapsed } from "./registrationFunnel"
 
@@ -194,6 +196,7 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
   const claimRunning = useClaimRunning(stashed)
   const autoGaveUp = useAutoClaimGaveUp(stashed)
   const autoHold = useAutoClaimHold(stashed)
+  const linkFunding = useLinkFunding()
   const terms = useRegistrationTerms(record?.account, record?.tag)
   const unsignedFallback = signedWithoutSchedule(terms)
   const [readAttempt, setReadAttempt] = useState(0)
@@ -379,6 +382,49 @@ export function SecureNameNoticeCard({ ask }: { ask: (note: string) => ReactNode
           />
         )}
       </>
+    )
+  }
+  // A stashed link that may pay the deposit: no deposit is asked for while Home checks it, and
+  // once it pays, the way back to its review stands in for the ask.
+  if (depositOwed(stage) && linkFunding && linkFunding.fragment === stashed) {
+    const checking = linkFunding.state === "checking"
+    const amount =
+      linkFunding.amount === undefined
+        ? "The payment"
+        : `The ${formatTokenAmount(
+            linkFunding.amount,
+            tokenDecimalsForNetwork(config.network),
+            WALLET_TOKEN_SYMBOL,
+          )}`
+    return (
+      <button
+        type="button"
+        className="zkm-btn-reset ww-banner ww-banner--activate"
+        data-testid="secure-name-notice"
+        data-link-funding={linkFunding.state}
+        aria-label={checking ? "Checking your payment" : `Claim your payment for @${record.tag}`}
+        disabled={checking}
+        onClick={() => openClaimPrompt(linkFunding.fragment)}
+      >
+        <span className="ww-banner__text">
+          <span className="ww-banner__title">
+            {checking ? "Checking your payment…" : "Claim your payment"}
+          </span>
+          <span className="ww-banner__body">
+            {checking
+              ? `Seeing whether the payment you were sent pays for @${record.tag}.`
+              : `${amount} you were sent pays for @${record.tag}. Claim it to finish.`}
+          </span>
+        </span>
+        <img src={paylinkCoins} alt="" />
+        <span className="ww-banner__chevron">
+          {checking ? (
+            <Spinner size={12} color="#fff" />
+          ) : (
+            <Icon name="chevron-right" size={12} color="#fff" />
+          )}
+        </span>
+      </button>
     )
   }
   if (!depositOwed(stage)) return null

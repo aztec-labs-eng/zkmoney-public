@@ -281,9 +281,15 @@ export function SettingsScreen() {
       {modal === "bug" && <BugReportModal onClose={() => setModal(undefined)} />}
       {modal === "contracts" && <ContractAddressesModal onClose={() => setModal(undefined)} />}
       {modal === "allowance" && (
-        <WalletAboutLimitsSheet topic="sponsorship" onClose={() => setModal(undefined)} />
+        <WalletAboutLimitsSheet
+          topic="sponsorship"
+          capacity={false}
+          onClose={() => setModal(undefined)}
+        />
       )}
-      {modal === "limits" && <WalletAboutLimitsSheet onClose={() => setModal(undefined)} />}
+      {modal === "limits" && (
+        <WalletAboutLimitsSheet capacity={false} onClose={() => setModal(undefined)} />
+      )}
       {modal === "endpoints" && <EndpointsModal onClose={() => setModal(undefined)} />}
       {import.meta.env.VITE_CONFIG_EDITOR === "true" && modal === "config" && (
         <ConfigProfileModal onClose={() => setModal(undefined)} />

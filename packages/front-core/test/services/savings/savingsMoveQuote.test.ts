@@ -19,7 +19,6 @@ vi.mock("@obsidion/sdk", () => ({
 import { SkyTipExceedsFundingError } from "@obsidion/sdk"
 import {
   SavingsFeeError,
-  expectedSavingsNet,
   quoteSavingsMove,
   resolveSkyFactory,
 } from "../../../src/core/services/savings/savingsMoveQuote"
@@ -139,30 +138,5 @@ describe("quoteSavingsMove", () => {
     ).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(SavingsFeeError)
     expect((err as SavingsFeeError).fee).toBe(ONE / 10n + ONE + 3n * ONE)
-  })
-})
-
-describe("expectedSavingsNet", () => {
-  const deps = { client, deployments, factory, cutOf }
-
-  it.each(["in", "out"] as const)(
-    "prices a move %s without a quote to what its quote would say lands",
-    async (direction) => {
-      const quote = await quoteSavingsMove(deps, direction, 100n * ONE)
-      const escrowTip = quote.escrowTip
-      expect(await expectedSavingsNet(deps, direction, 100n * ONE, { escrowTip })).toBe(quote.net)
-    },
-  )
-
-  it("takes the cut and the release tip its burn kept, and the escrow tip it paid", async () => {
-    sdk.quoteSkyReleaseTip.mockClear()
-    const net = await expectedSavingsNet(deps, "out", 100n * ONE, {
-      escrowTip: ONE / 4n,
-      sourceCut: 10n * ONE,
-      releaseTip: 2n * ONE,
-    })
-    // 90 shares at 1.05 less the 2 release tip, the 0.25 escrow tip and Main's 0.1 cut.
-    expect(net).toBe((945n * ONE) / 10n - 2n * ONE - ONE / 4n - ONE / 10n)
-    expect(sdk.quoteSkyReleaseTip).not.toHaveBeenCalled()
   })
 })

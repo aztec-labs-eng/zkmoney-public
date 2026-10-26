@@ -43,14 +43,22 @@ vi.mock("../src/features/paylink/paylinkExit", () => ({
   cashOutLink: m.cashOut,
   linkWithdrawalIdentity: () => ({ id: "paylink-id" }),
 }))
-vi.mock("../src/features/paylink/claimStash", () => ({ stashClaimLink: vi.fn() }))
+vi.mock("../src/features/paylink/claimStash", async (importOriginal) => ({
+  receivesToAccount: (await importOriginal<typeof import("../src/features/paylink/claimStash")>())
+    .receivesToAccount,
+  stashClaimLink: vi.fn(),
+}))
 // An open claim window: the Ethereum claim is withheld until the chain clock says so.
 vi.mock("../src/features/paylink/chainTime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/paylink/chainTime")>()),
   usePolledChainSeconds: () => 1_000,
 }))
-vi.mock("react-router-dom", () => ({ useNavigate: () => vi.fn() }))
-vi.mock("../src/lib/analytics", () => ({ fireEvent: m.fireEvent, failureCode: () => "unknown" }))
+vi.mock("react-router-dom", () => ({ useNavigate: () => vi.fn(), useLocation: () => ({}) }))
+vi.mock("../src/lib/analytics", () => ({
+  fireEvent: m.fireEvent,
+  fireOnboardingEvent: vi.fn(),
+  failureCode: () => "unknown",
+}))
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: m.error }))
 vi.mock("../src/ui/screens/WithdrawalDetailModal", () => ({
   withdrawalStatus: () => ({ label: "Releasing on Ethereum" }),

@@ -1,6 +1,7 @@
 import { amountError, decimalInput, parseAmount } from "../../ui/format"
-import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from "react"
+import { Fragment, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import { useNavigate, useParams } from "react-router-dom"
+import { useActionGuard } from "../actionGate"
 import {
   ContactStorage,
   TransactionStorage,
@@ -34,6 +35,7 @@ import { getConfig } from "../../config/env"
 import { showReportableError } from "../../errors/errorModal"
 import { fireEvent, requestAmountBucket } from "../../lib/analytics"
 import { useBack } from "../../ui/hooks"
+import { pageBottom, revealAboveKeyboard, useKeyboardInset } from "../../ui/keyboardInset"
 import { usePhoneLayout } from "../../ui/usePhoneLayout"
 import { getSipaDepositGateway } from "../deposit/sipaGateway"
 import { getWithdrawalStore } from "../withdraw/withdrawGateway"
@@ -66,7 +68,8 @@ import {
   l2ContactLabel,
   removeIdentityOf,
 } from "./contactsView"
-import { declineRequestById, remindRequestById, resolveXmtpAddress } from "./requestActions"
+import { declineRequestById, resolveXmtpAddress } from "./requestActions"
+import { REMIND_TITLE, useRemind } from "./useRemind"
 import { announceOutgoingRequest, newOutgoingRequest } from "./requestFlow"
 import { RequestDetailModal } from "./RequestDetailModal"
 import { lookUpUnsavedContact, saveUnsavedContact } from "./unsavedContact"
@@ -77,6 +80,7 @@ import { lookUpUnsavedContact, saveUnsavedContact } from "./unsavedContact"
  *  that is not saved opens here too, with Add contact in place of delete. */
 export function ContactDetailScreen() {
   const navigate = useNavigate()
+  const guard = useActionGuard()
   const phone = usePhoneLayout()
   const back = useBack("/contacts")
   const { idOrTag } = useParams()
@@ -97,7 +101,6 @@ export function ContactDetailScreen() {
   const [requestDraft, setRequestDraft] = useState<{ amount: string; note: string }>()
   const [submitting, setSubmitting] = useState(false)
   const [requestDetail, setRequestDetail] = useState<{ id: string; step: "detail" | "confirm" }>()
-  const [remindedIds, setRemindedIds] = useState<ReadonlySet<string>>(new Set())
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [sources, setSources] = useState<ContactChatSources>({})
   const [txDetail, setTxDetail] = useState<{ row: ActivityRowView; note?: string }>()
@@ -121,8 +124,7 @@ export function ContactDetailScreen() {
       const footer = chatFooter.current
       const latest = footer?.getClientRects().length ? footer : el?.lastElementChild
       latest?.scrollIntoView({ block: "end" })
-    }
-    else if (el) el.scrollTop = el.scrollHeight
+    } else if (el) el.scrollTop = el.scrollHeight
   }, [messages, phone])
 
   // Phones scroll the page, so the request form and its error can open below the fold.
@@ -132,6 +134,14 @@ export function ContactDetailScreen() {
   useEffect(() => {
     if (phone && requesting) chatFooter.current?.scrollIntoView({ block: "end" })
   }, [phone, requesting, requestAmountInvalid])
+  // The keyboard covers the page's foot, so the page needs room below the form to scroll it clear.
+  const [panel, setPanel] = useState<HTMLDivElement | null>(null)
+  useKeyboardInset(
+    useMemo(() => ({ current: panel }), [panel]),
+    phone,
+    pageBottom,
+  )
+  const requestForm = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -149,7 +159,8 @@ export function ContactDetailScreen() {
       const found = findContactEntry(await ContactStorage.get().getEntries(), idOrTag ?? "")
       if (found) {
         if (!cancelled) {
-          setSaved(true)
+          // A row the wallet added is not the user's contact until they add or pay it.
+          setSaved(!found.autoAdded)
           setEntry(found)
         }
         return
@@ -263,7 +274,7 @@ export function ContactDetailScreen() {
     if (!isL1 && !entry.tag) return
     setConfirmingDelete(false)
     setRenameError("")
-    setAlias(isL1 ? l1AliasDraft(entry) : (l2ContactLabel(entry) ?? ""))
+    setAlias(isL1 ? l1AliasDraft(entry) : l2ContactLabel(entry) ?? "")
     setRenaming(true)
   }
 
@@ -354,20 +365,19 @@ export function ContactDetailScreen() {
   const payRequest = async (m: ChatMessage) => {
     const row = await RequestStorage.get().findById(m.id)
     if (!row) return
-    navigate(`/contacts/${idOrTag}/send`, {
-      state: {
-        request: { id: row.id, tag: entry?.tag, amount: row.amount, note: row.note },
-        from: "detail",
-        contact: entry,
-        saved,
-      },
-    })
+    guard("send", () =>
+      navigate(`/contacts/${idOrTag}/send`, {
+        state: {
+          request: { id: row.id, tag: entry?.tag, amount: row.amount, note: row.note },
+          from: "detail",
+          contact: entry,
+          saved,
+        },
+      }),
+    )
   }
 
-  const remind = (id: string) =>
-    void remindRequestById(id, tokenService?.tokenAddress?.toString())
-      .then((ok) => ok && setRemindedIds((prev) => new Set(prev).add(id)))
-      .catch(console.warn)
+  const { remind, stateOf: remindStateOf } = useRemind(tokenService?.tokenAddress?.toString())
 
   // Every bubble opens its own sheet.
   const openMessage = (m: ChatMessage) => {
@@ -396,12 +406,13 @@ export function ContactDetailScreen() {
         { label: "Send", onClick: () => void payRequest(m).catch(console.warn) },
       ]
     if (m.role === "request-out") {
-      const reminded = remindedIds.has(m.id)
+      const state = remindStateOf(m.id, sources.requests?.find((r) => r.id === m.id)?.remindedAt)
       return [
         { label: "Cancel", onClick: () => setRequestDetail({ id: m.id, step: "confirm" }) },
         {
-          label: reminded ? "Reminder sent" : "Remind",
-          disabled: reminded,
+          label: REMIND_TITLE[state],
+          loading: state === "sending",
+          disabled: state === "sent",
           onClick: () => remind(m.id),
         },
       ]
@@ -439,7 +450,7 @@ export function ContactDetailScreen() {
   const handle = entry.tag ?? entry.name
   const header = isL1 ? l1ContactHeader(entry) : l2ContactHeader(entry)
   const avatarKey = isL1 ? header.title : handle
-  const avatarName = isL1 ? header.title : (l2ContactLabel(entry) ?? handle)
+  const avatarName = isL1 ? header.title : l2ContactLabel(entry) ?? handle
   const renamable = saved && (isL1 || Boolean(entry.tag))
   const ownHandle = loadWalletIdentity()?.handle ?? "me"
   // Payment rails need a completed handshake (payable L2 address) and a registered tag to
@@ -450,7 +461,7 @@ export function ContactDetailScreen() {
   const validRequestAmount = Number.isFinite(parsedAmount) && parsedAmount > 0
   const inlineCard = confirmingDelete || renaming || !!requestDraft
   return (
-    <div className="ww-panel">
+    <div className="ww-panel" ref={setPanel}>
       <div className="ww-chat__head">
         <GlassCircleButton ariaLabel="Back" onClick={back}>
           <Icon name="arrow-left" size={20} color="#fff" />
@@ -559,7 +570,7 @@ export function ContactDetailScreen() {
             <button
               type="button"
               className="zkm-btn-reset zkm-pressable ww-chat__glassbtn"
-              onClick={() => navigate("/deposit")}
+              onClick={() => guard("deposit", () => navigate("/deposit"))}
             >
               Receive
             </button>
@@ -567,9 +578,11 @@ export function ContactDetailScreen() {
               title="Send"
               style={{ flex: 1 }}
               onClick={() =>
-                navigate("/withdraw/existing", {
-                  state: { recipient: entry.address, alias: entry.name },
-                })
+                guard("withdraw", () =>
+                  navigate("/withdraw/existing", {
+                    state: { recipient: entry.address, alias: entry.name },
+                  }),
+                )
               }
             />
           </>
@@ -580,7 +593,7 @@ export function ContactDetailScreen() {
             <button
               type="button"
               className="zkm-btn-reset zkm-pressable ww-chat__glassbtn"
-              onClick={() => setRequestDraft({ amount: "", note: "" })}
+              onClick={() => guard("receive", () => setRequestDraft({ amount: "", note: "" }))}
             >
               Request
             </button>
@@ -588,16 +601,24 @@ export function ContactDetailScreen() {
               title="Send"
               style={{ flex: 1 }}
               onClick={() =>
-                navigate(`/contacts/${idOrTag}/send`, {
-                  state: { from: "detail", contact: entry, saved },
-                })
+                guard("send", () =>
+                  navigate(`/contacts/${idOrTag}/send`, {
+                    state: { from: "detail", contact: entry, saved },
+                  }),
+                )
               }
             />
           </>
         )}
 
         {requestDraft && (
-          <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12 }}>
+          <div
+            ref={requestForm}
+            onFocus={() => {
+              if (phone && requestForm.current) void revealAboveKeyboard(requestForm.current)
+            }}
+            style={{ flex: 1, display: "flex", flexDirection: "column", gap: 12 }}
+          >
             <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
               <TwoPartyAmountCard
                 role="youRequest"
@@ -694,7 +715,9 @@ export function ContactDetailScreen() {
               onSubmit={() => void saveRename()}
             />
             <div style={{ color: "var(--text-secondary)", fontSize: 13, marginTop: 8 }}>
-              {isL1 ? "Leave blank to show the address instead." : `Leave blank to show @${handle} instead.`}
+              {isL1
+                ? "Leave blank to show the address instead."
+                : `Leave blank to show @${handle} instead.`}
             </div>
             {renameError && (
               <p role="alert" className="ww-chat__unsaved-error">
@@ -722,9 +745,7 @@ export function ContactDetailScreen() {
 
         {confirmingDelete && !renaming && (
           <div style={{ flex: 1 }}>
-            <div style={{ fontWeight: 700, marginBottom: 6 }}>
-              Delete {header.title}?
-            </div>
+            <div style={{ fontWeight: 700, marginBottom: 6 }}>Delete {header.title}?</div>
             <div style={{ color: "var(--text-secondary)", fontSize: 13, marginBottom: 16 }}>
               This only removes them from your device.
             </div>

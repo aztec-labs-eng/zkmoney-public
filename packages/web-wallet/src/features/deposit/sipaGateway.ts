@@ -37,6 +37,7 @@ import {
   type Hex,
   type PublicClient,
 } from "viem"
+import { deriveMasterNullifierHidingSecretKey } from "@aztec/stdlib/keys"
 import { DEFAULT_DECIMALS, quotedDepositFee } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
@@ -46,7 +47,7 @@ import {
   buildDepositIntent,
   buildSipaSweepBroadcasts,
   OxideSipaIntent,
-  predictAccountAddress,
+  predictAccountAddressLocally,
   deriveSelfSipaSecret,
   chainEpochDay,
   DEFAULT_CONTRACTS,
@@ -55,9 +56,9 @@ import {
   ContractService,
   fetchSipaEvents,
   readSipaBroadcastTxHashes,
+  readSipaHoldingsAtHead,
   type ObsidionAccount,
   type ObsidionWallet,
-  readDepositFee,
   selfSipaNonce,
   type SelfResolvedSipa,
   type SipaIntent,
@@ -69,6 +70,8 @@ import {
 import {
   deploymentScanRange,
   depositSipaImplementation,
+  implementationDepositFee,
+  readResolverOperatorRecords,
   deriveSelfSipaKey,
   deriveStealthKey,
   deriveBootstrapKey,
@@ -88,6 +91,10 @@ import {
   type SIPADepositRecord,
   type SipaDepositSyncResult,
   isUnfundedSipaDeposit,
+  readResolverDeployments,
+  ResolverPaymentWatcher,
+  type ResolverDeployment,
+  type ResolverDeploymentSource,
 } from "@obsidion/front-core"
 import { getConfig, l1ChainFor } from "../../config/env"
 import { isDesktopL1SubmitActive, submitViaDesktopBridge } from "../../platform/desktopBridge"
@@ -115,6 +122,10 @@ import { InsufficientL1BalanceError, readL1DepositTokenBalance } from "./l1Depos
 import { sipaFundingTokens } from "./loadDepositFacts"
 import { readSipaDeployed } from "./sipaSweep"
 import { predictSipaCandidate } from "./sipaPredict"
+import { readPortalFrozen } from "../withdraw/portalFrozen"
+
+/** How long one read of the resolver deployments serves the watcher. */
+const RESOLVER_DEPLOYMENTS_TTL_MS = 15 * 60_000
 
 /** TestERC20 mint is minter-gated (sandbox faucet convenience; a real sender already holds funds). */
 const TEST_ERC20_MINT_ABI = parseAbi(["function mint(address to, uint256 amount)"])
@@ -434,8 +445,6 @@ export interface SipaDepositGateway {
     tag: string,
     maxAgeMs: number,
   ): Promise<{ address: Address; day: number } | null>
-  /** Puts an unfunded record back on the fresh scan lane, so funds just sent to it are seen soon. */
-  wakeDeposit(address: string): Promise<void>
   /**
    * Full self-initiated deposit: transfer `amountDisplay` of the token from the connected L1 wallet
    * to `target` (optionally minting first on the sandbox faucet token), once that address's
@@ -481,6 +490,13 @@ export interface SipaDepositGateway {
     tokenService: TokenService,
     opts?: { onProgress?: (done: number, total: number) => void },
   ): Promise<SipaDepositSyncResult | null>
+  /** An observe-only pass: L1 reads and record writes, no PXE work. Returns null while locked. */
+  observe(wallet: ObsidionWallet, recipient: string): Promise<SipaDepositSyncResult | null>
+  /**
+   * Polls the addresses the resolver can hand out for this wallet's account and records a funded one
+   * at once. `onFunded` runs after a tick recorded one.
+   */
+  resolverPayments(onFunded: () => void): Pick<ResolverPaymentWatcher, "tick">
   /** Token display metadata (read once off L1). */
   tokenMeta(): Promise<{ address: Address; symbol: string; decimals: number }>
   /** The quoted deposit fee in display units of the manifest token (e.g. "0.5"). */
@@ -604,7 +620,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   private async quotedFee(tuple: OxideEnvTuple): Promise<bigint> {
     const [fee, cut] = await Promise.all([
       this.depositImplementation(tuple).then((implementation) =>
-        readDepositFee(this.publicClient, implementation),
+        implementationDepositFee(this.publicClient, implementation),
       ),
       fpcFundingCut(this.publicClient, requireTupleField(tuple, "portal") as Address),
     ])
@@ -808,14 +824,12 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   }
 
   /**
-   * Put an address back on the deposit scanner's per-tick lane and stamp the feed time as now: on
-   * hand-out, and again when a screen sees funds at it. The record was created when the background
-   * broadcast was discovered, so `startTime` is the fill moment (the activity row would sort as if
-   * it were old) and, if it sat in the pool past the 10-minute fresh window, it has already dropped
-   * onto the 5-minute slow lane. Only the hidden unfunded shape is touched, whatever its phase; a
-   * record with any evidence of funds is the scanner's.
+   * Stamp the feed time as now on hand-out. The record was created when the background broadcast
+   * was discovered, so `startTime` is the fill moment, and the activity row would sort as if it
+   * were old and the sync would poll at its idle cadence. Only the hidden unfunded shape is touched,
+   * whatever its phase; a record with any evidence of funds is the rail's.
    */
-  async wakeDeposit(address: Address): Promise<void> {
+  private async wakeDeposit(address: Address): Promise<void> {
     try {
       await this.store.load()
       const record = this.store.get(address)
@@ -824,7 +838,6 @@ class RealSipaDepositGateway implements SipaDepositGateway {
         phase: record.phase,
         reorgEpoch: record.reorgEpoch,
         startTime: Date.now(),
-        lastScanAt: 0,
       })
     } catch (err) {
       console.warn("[sipaGateway] could not rearm the deposit record", err)
@@ -979,8 +992,7 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     } = await selfResolver.resolveAddress({
       protocol: tuple.sipaRecoveryProtocol ?? "legacy-eoa",
       user,
-      recoveryAccount: await predictAccountAddress(
-        this.publicClient,
+      recoveryAccount: predictAccountAddressLocally(
         requireTupleField(tuple, "accountFactory") as Address,
         deriveBootstrapKey(keys.msk).address,
       ),
@@ -1494,7 +1506,87 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       this.tokenMeta(),
       deploymentScanRange(this.publicClient, tuple),
       this.depositImplementation(tuple),
+      // The discovery setup the first pass waits on selects from these.
+      readResolverOperatorRecords(
+        this.publicClient,
+        requireTupleField(tuple, "accountMetadataRegistry") as Address,
+        tuple,
+      ),
     ])
+  }
+
+  /**
+   * An observe-only pass over `recipient`'s SIPAs: L1 reads and record writes, no PXE work and no
+   * account built. Null while locked.
+   */
+  async observe(wallet: ObsidionWallet, recipient: string): Promise<SipaDepositSyncResult | null> {
+    const msk = await getAuthService().getSecretKey()
+    if (!msk) return null
+    const tuple = await getOxideTuple(this.config)
+    const meta = await this.tokenMeta()
+    const token = {
+      address: requireTupleField(tuple, "token") as Address,
+      symbol: meta.symbol,
+      decimals: meta.decimals,
+    }
+    return this.serial(() =>
+      syncSipaDeposits({
+        ...this.syncDeps(wallet, tuple, token, msk, AztecAddress.fromStringUnsafe(recipient)),
+        observeOnly: true,
+      }),
+    )
+  }
+
+  // Passes write the same records and cursor, so one runs at a time.
+  private passes: Promise<unknown> = Promise.resolve()
+  private serial<T>(pass: () => Promise<T>): Promise<T> {
+    const next = this.passes.then(pass, pass)
+    this.passes = next.catch(() => {})
+    return next
+  }
+
+  /** What every pass shares, full or observe-only. */
+  private syncDeps(
+    wallet: ObsidionWallet,
+    tuple: OxideEnvTuple,
+    token: { address: Address; symbol: string; decimals: number },
+    msk: Fr,
+    recipient: AztecAddress,
+  ) {
+    return {
+      publicClient: this.publicClient,
+      node: wallet.node as never,
+      wallet,
+      store: this.store,
+      tuple,
+      recipient,
+      stealthPublicKey: deriveStealthKey(msk).publicKey,
+      masterNullifierHidingKey: deriveMasterNullifierHidingSecretKey(msk),
+      recoveryAccount: predictAccountAddressLocally(
+        requireTupleField(tuple, "accountFactory") as Address,
+        deriveBootstrapKey(msk).address,
+      ),
+      token,
+      fundingTokens: sipaFundingTokens(this.config.network, token),
+      l1ChainId: this.config.l1ChainId,
+      registrationScheduleFor: registrationScheduleForSipa,
+      onFundingWalletDetected: upsertDepositL1WalletContact,
+      onSweptAddressFunded: async (sipa: Address) => {
+        const since = Number(await wallet.node.getBlockNumber())
+        if (!(await getBroadcastLedger().republish(sipa, since)))
+          console.warn(
+            `[sipaGateway] ${sipa} has no landed broadcast to repeat; stuck exits remain`,
+          )
+      },
+      // Only this wallet's own broadcasts can be repeated; a resolver-published address cannot.
+      onSweepOverdue: async (sipa: Address) =>
+        getBroadcastLedger().republish(sipa, Number(await wallet.node.getBlockNumber())),
+      // The account has no on-chain creation block, and no deposit to it predates the deployment.
+      historyStartBlock: async (head: bigint) =>
+        (await deploymentScanRange(this.publicClient, tuple, head)).fromBlock,
+      fpcFundingCut: () =>
+        fpcFundingCut(this.publicClient, requireTupleField(tuple, "portal") as Address),
+    }
   }
 
   async sync(
@@ -1518,40 +1610,17 @@ class RealSipaDepositGateway implements SipaDepositGateway {
       decimals: meta.decimals,
     }
 
-    const result = await syncSipaDeposits({
-      publicClient: this.publicClient,
-      node: wallet.node as never,
-      wallet,
-      tokenService,
-      refreshBalance: () => WalletSyncCoordinator.refreshBalance(),
-      onProgress: opts.onProgress,
-      store: this.store,
-      tuple,
-      recipient: keys.account.getAddress(),
-      stealthPublicKey: deriveStealthKey(keys.msk).publicKey,
-      recoveryAccount: await predictAccountAddress(
-        this.publicClient,
-        requireTupleField(tuple, "accountFactory") as Address,
-        deriveBootstrapKey(keys.msk).address,
-      ),
-      token,
-      fundingTokens: sipaFundingTokens(this.config.network, token),
-      l1ChainId: this.config.l1ChainId,
-      registrationScheduleFor: registrationScheduleForSipa,
-      onFundingWalletDetected: upsertDepositL1WalletContact,
-      onSweptAddressFunded: async (sipa) => {
-        const since = Number(await wallet.node.getBlockNumber())
-        if (!(await getBroadcastLedger().republish(sipa, since)))
-          console.warn(
-            `[sipaGateway] ${sipa} has no landed broadcast to repeat; stuck exits remain`,
-          )
-      },
-      // The account has no on-chain creation block, and no deposit to it predates the deployment.
-      historyStartBlock: async () =>
-        (
-          await deploymentScanRange(this.publicClient, tuple)
-        ).fromBlock,
-    })
+    // A frozen portal's rollup never settles a sweep's message, so nothing is claimed or retried.
+    const portalFrozen = await readPortalFrozen().catch(() => false)
+    const result = await this.serial(() =>
+      syncSipaDeposits({
+        ...this.syncDeps(wallet, tuple, token, keys.msk, keys.account.getAddress()),
+        tokenService,
+        observeOnly: portalFrozen,
+        refreshBalance: () => WalletSyncCoordinator.refreshBalance(),
+        onProgress: opts.onProgress,
+      }),
+    )
     // This pass is what creates the records the funding hashes were waiting on.
     await drainFundingTxStash(this.store, this.pendingFundingTx)
     await this.markOwedFunded()
@@ -1575,6 +1644,64 @@ class RealSipaDepositGateway implements SipaDepositGateway {
     return result
   }
 
+  resolverPayments(onFunded: () => void): ResolverPaymentWatcher {
+    let cached: { at: number; deployments: Promise<ResolverDeployment[]> } | undefined
+    const deployments = () => {
+      if (!cached || Date.now() - cached.at > RESOLVER_DEPLOYMENTS_TTL_MS) {
+        const pending = this.resolverDeployments()
+        cached = { at: Date.now(), deployments: pending }
+        pending.catch(() => {
+          if (cached?.deployments === pending) cached = undefined
+        })
+      }
+      return cached.deployments
+    }
+    return new ResolverPaymentWatcher({
+      deployments,
+      keys: async () => {
+        const keys = await resolverPaymentKeys()
+        return (
+          keys && { stealthScalar: deriveStealthKey(keys.msk).scalar, recipient: keys.recipient }
+        )
+      },
+      readHoldings: (holdings) => readSipaHoldingsAtHead(this.publicClient, holdings),
+      store: this.store,
+      l1ChainId: this.config.l1ChainId,
+      onFunded,
+    })
+  }
+
+  /**
+   * The primary deployment with the tokens its SIPAs take. Only its portal: the sync pass claims
+   * there alone, so a payment watched on another portal could never be claimed.
+   */
+  private async resolverDeployments(): Promise<ResolverDeployment[]> {
+    const keys = await resolverPaymentKeys()
+    if (!keys) throw new Error("locked")
+    const tuple = await getOxideTuple(this.config)
+    const meta = await this.tokenMeta()
+    const sources: ResolverDeploymentSource[] = [
+      {
+        tuple,
+        tokens: sipaFundingTokens(this.config.network, {
+          address: requireTupleField(tuple, "token") as Address,
+          symbol: meta.symbol,
+          decimals: meta.decimals,
+        }),
+      },
+    ]
+    return readResolverDeployments({
+      publicClient: this.publicClient,
+      sources,
+      recoveryAccount: predictAccountAddressLocally(
+        requireTupleField(tuple, "accountFactory") as Address,
+        deriveBootstrapKey(keys.msk).address,
+      ),
+      recipient: keys.recipient,
+      stealthPublicKey: deriveStealthKey(keys.msk).publicKey,
+    })
+  }
+
   hydrate(): Promise<void> {
     return this.store.load()
   }
@@ -1586,6 +1713,16 @@ class RealSipaDepositGateway implements SipaDepositGateway {
   subscribe(listener: (records: SIPADepositRecord[]) => void): () => void {
     return this.store.onListChanged(listener)
   }
+}
+
+/**
+ * The master secret and the entered account's L2 address, or null while locked. Read without the
+ * PXE account, so polling never waits on or adds to PXE work.
+ */
+async function resolverPaymentKeys(): Promise<{ msk: Fr; recipient: AztecAddress } | null> {
+  const msk = await getAuthService().getSecretKey()
+  const address = loadWalletIdentity()?.address
+  return msk && address ? { msk, recipient: AztecAddress.fromStringUnsafe(address) } : null
 }
 
 /** A mined-but-reverted transfer funded nothing; it must never be stamped as a deposit. */

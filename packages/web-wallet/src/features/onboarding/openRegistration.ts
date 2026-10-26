@@ -89,6 +89,20 @@ export function useNameClaimPending(): boolean {
   })
 }
 
+/**
+ * The L2 account whose registration still has funds to move, from the address it shows until its
+ * deposit is credited. Read off the pending record alone, so a signup reloaded before it saved the
+ * wallet identity still has one. The deposit sync runs on signup for that long.
+ */
+export function useRegistrationInCustody(): string | null {
+  return useSyncExternalStore(subscribeRegistrationStage, () => {
+    const record = getPendingStore().current()
+    if (!record) return null
+    const stage = readRegistrationStage(record)
+    return stage !== "registered" && stage !== "failed" ? record.l2Address : null
+  })
+}
+
 /** Whether the active wallet's pending tag is already claimed on L1, so it can no longer be lost. */
 export function useNameClaimedOnL1(): boolean {
   return useSyncExternalStore(subscribeRegistrationStage, () => {

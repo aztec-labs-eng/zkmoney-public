@@ -21,6 +21,7 @@ interface Entry {
   portal: string
   l2Token: string
   timestamp: string
+  nameRegistry?: string
   rollupVersion?: string
   /** Absent on an entry published before withdraw-and-execute. */
   plainWithdrawalExecutor?: string | null
@@ -37,6 +38,7 @@ function deployment(entry: Entry) {
     gitSha: "deadbeef",
     rollupVersion: entry.rollupVersion ?? "7",
     chainId: "31337",
+    nameRegistry: entry.nameRegistry ?? "0x" + "11".repeat(20),
     token: "0x" + "cc".repeat(20),
     enclaveUrl: "https://tee.example.test/rpc",
     pcr0: "0x" + "dd".repeat(48),
@@ -191,9 +193,36 @@ describe("IntraRollupMigrationService.detectMigration", () => {
 })
 
 describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
-  it("returns current plus the other same-rollup entries, empty when the pin stands alone", async () => {
+  it("reads no historical L1 state without selected profile history", async () => {
+    const found = await IntraRollupMigrationService.detectHistoricDeployments({
+      publicClient: {
+        readContract: () => {
+          throw new Error("unexpected historical read")
+        },
+      } as unknown as PublicClient,
+      manifestUrl: MANIFEST_URL,
+      portal: PORTAL_B,
+      fetchImpl: fetchReturning(manifest(TUPLE_A, TUPLE_B, TUPLE_C)),
+    })
+    expect(found.current.portal).toBe(PORTAL_B)
+    expect(found.historic).toEqual([])
+  })
+
+  it("rejects a selected sibling with another name registry", async () => {
+    const found = await IntraRollupMigrationService.detectHistoricDeployments({
+      publicClient: sameUnderlying,
+      sourcePortals: new Set([PORTAL_A]),
+      manifestUrl: MANIFEST_URL,
+      portal: PORTAL_B,
+      fetchImpl: fetchReturning(manifest({ ...TUPLE_A, nameRegistry: "0x" + "22".repeat(20) }, TUPLE_B)),
+    })
+    expect(found.historic).toEqual([])
+  })
+
+  it("returns explicitly selected same-rollup entries, empty when the pin stands alone", async () => {
     const bare = await IntraRollupMigrationService.detectHistoricDeployments({
       publicClient: sameUnderlying,
+      sourcePortals: new Set([PORTAL_A, PORTAL_B, PORTAL_C]),
       manifestUrl: MANIFEST_URL,
       portal: PORTAL_B,
       fetchImpl: fetchReturning(manifest(TUPLE_B)),
@@ -203,6 +232,7 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
 
     const rolled = await IntraRollupMigrationService.detectHistoricDeployments({
       publicClient: sameUnderlying,
+      sourcePortals: new Set([PORTAL_A, PORTAL_B, PORTAL_C]),
       manifestUrl: MANIFEST_URL,
       portal: PORTAL_B,
       fetchImpl: fetchReturning(manifest(TUPLE_A, TUPLE_B)),
@@ -213,9 +243,10 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
     expect(rolled.historic[0]!.l2Token).toBe(L2_TOKEN_A)
   })
 
-  it("keeps every other deployment after two rolls (A → B → C)", async () => {
+  it("keeps every explicitly selected source after two rolls (A → B → C)", async () => {
     const twice = await IntraRollupMigrationService.detectHistoricDeployments({
       publicClient: sameUnderlying,
+      sourcePortals: new Set([PORTAL_A, PORTAL_B, PORTAL_C]),
       manifestUrl: MANIFEST_URL,
       portal: PORTAL_C,
       fetchImpl: fetchReturning(manifest(TUPLE_A, TUPLE_B, TUPLE_C)),
@@ -225,9 +256,10 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
     expect(twice.historic.map((t) => t.portal)).toEqual([PORTAL_A, PORTAL_B])
   })
 
-  it("leaves a deployment on another rollup out", async () => {
+  it("leaves an unselected deployment on another rollup out", async () => {
     const found = await IntraRollupMigrationService.detectHistoricDeployments({
       publicClient: sameUnderlying,
+      sourcePortals: new Set([PORTAL_A]),
       manifestUrl: MANIFEST_URL,
       portal: PORTAL_B,
       fetchImpl: fetchReturning(manifest(TUPLE_A, TUPLE_B, { ...TUPLE_C, rollupVersion: "8" })),
@@ -239,6 +271,7 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
   it("leaves an entry without a plain withdrawal executor out", async () => {
     const found = await IntraRollupMigrationService.detectHistoricDeployments({
       publicClient: sameUnderlying,
+      sourcePortals: new Set([PORTAL_A, PORTAL_B, PORTAL_C]),
       manifestUrl: MANIFEST_URL,
       portal: PORTAL_C,
       network: Network.SANDBOX,
@@ -253,6 +286,7 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
   it("leaves out an entry whose portal escrows another underlying", async () => {
     const found = await IntraRollupMigrationService.detectHistoricDeployments({
       publicClient: underlyings({ [PORTAL_C]: SUSDS }),
+      sourcePortals: new Set([PORTAL_A, PORTAL_B, PORTAL_C]),
       manifestUrl: MANIFEST_URL,
       portal: PORTAL_B,
       fetchImpl: fetchReturning(manifest(TUPLE_A, TUPLE_B, TUPLE_C)),
@@ -268,6 +302,7 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
     } as unknown as PublicClient
     const found = await IntraRollupMigrationService.detectHistoricDeployments({
       publicClient: noReads,
+      sourcePortals: new Set([PORTAL_A, PORTAL_B, PORTAL_C]),
       manifestUrl: MANIFEST_URL,
       portal: PORTAL_B,
       fetchImpl: fetchReturning(manifest(TUPLE_B)),
@@ -284,6 +319,7 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
     await expect(
       IntraRollupMigrationService.detectHistoricDeployments({
         publicClient: failing,
+        sourcePortals: new Set([PORTAL_A, PORTAL_B, PORTAL_C]),
         manifestUrl: MANIFEST_URL,
         portal: PORTAL_B,
         fetchImpl: fetchReturning(manifest(TUPLE_A, TUPLE_B)),
@@ -296,6 +332,7 @@ describe("IntraRollupMigrationService.detectHistoricDeployments", () => {
     await expect(
       IntraRollupMigrationService.detectHistoricDeployments({
         publicClient: sameUnderlying,
+        sourcePortals: new Set([PORTAL_A, PORTAL_B, PORTAL_C]),
         manifestUrl: MANIFEST_URL,
         portal: PORTAL_A,
         network: Network.SANDBOX,

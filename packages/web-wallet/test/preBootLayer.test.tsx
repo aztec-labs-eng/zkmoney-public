@@ -93,7 +93,7 @@ vi.mock("../src/features/operations/operations", async (importOriginal) => ({
 vi.mock("../src/features/onboarding/OnboardingScreen", () => ({ OnboardingScreen: () => null }))
 vi.mock("../src/features/paylink/ClaimToL1Modal", () => ({ ClaimToL1Modal: () => null }))
 vi.mock("../src/features/paylink/paylinkExit", () => ({ cashOutLink: vi.fn() }))
-vi.mock("../src/lib/analytics", () => ({ fireEvent: vi.fn() }))
+vi.mock("../src/lib/analytics", () => ({ fireEvent: vi.fn(), fireOnboardingEvent: vi.fn() }))
 
 import { PreBootLayer } from "../src/ui/PreBootLayer"
 import { PaylinkVisitorScreen } from "../src/features/paylink/PaylinkVisitorScreen"

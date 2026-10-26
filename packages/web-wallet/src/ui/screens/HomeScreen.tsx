@@ -1,6 +1,4 @@
 import { useEffect, useLayoutEffect, useState, useRef } from "react"
-import { parseUnits } from "viem"
-import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   Icon,
   LiquidGlassPill,
@@ -19,6 +17,7 @@ import {
 import { useLocation, useNavigate } from "react-router-dom"
 import { DepositArt } from "../DepositArt"
 import { HighGasNotice, HighL2FeeNotice } from "../HighGasNotice"
+import { MaintenanceNotice } from "../MaintenanceNotice"
 import { PhoneIcon } from "../PhoneIcon"
 import { usePhoneLayout } from "../usePhoneLayout"
 import { LostRegistrationNoticeCard } from "../../features/onboarding/LostRegistrationNoticeCard"
@@ -26,8 +25,11 @@ import { inviteLink, useInvite } from "../../features/invite/useInvite"
 import { RegisterNameCard } from "../../features/onboarding/SecureNameNoticeCard"
 import { ActivationHome } from "../../features/onboarding/ActivationHome"
 import { useNameClaimPending } from "../../features/onboarding/openRegistration"
+import { useActionGuard, useWalletFrozen } from "../../features/actionGate"
+import { fundsLeft, sharesUsd, useFrozenFunds } from "../../features/withdraw/frozenFunds"
 import { getConfig } from "../../config/env"
 import { healRegistrationDeposits } from "../../features/onboarding/registrationDepositSeed"
+import { discoverRegistrationDeposits } from "../../features/onboarding/registrationRederive"
 import { peekClaimStash } from "../../features/paylink/claimStash"
 import { takeClaimPromptRequest, useClaimPromptRequest } from "../../features/paylink/claimPrompt"
 import { useClaimLinkFlow } from "../../features/paylink/useClaimLinkFlow"
@@ -52,6 +54,9 @@ import { useActivityEntries } from "./useActivityEntries"
 import earnCoin from "../../assets/home/earn-coin.webp"
 import gift from "../../assets/home/gift.webp"
 import { UpgradeBanner } from "../../features/migration/UpgradeIntro"
+import { useOldVersionHoldings } from "../../features/migration/oldVersionBalance"
+import { useUpgradeLock } from "../../features/migration/upgradeLock"
+import { loadWalletIdentity } from "../../features/identity/walletIdentity"
 import iosApp from "../../assets/home/ios-app.webp"
 import quickFresh from "../../assets/home/quick-fresh.webp"
 import quickPaylink from "../../assets/home/quick-paylink.webp"
@@ -72,6 +77,7 @@ const QUICK_SLIDES = [
     body: "Withdraw to a new address and add gas simultaneously. Full onchain privacy.",
     art: quickFresh,
     path: "/withdraw/fresh",
+    action: "withdraw" as const,
   },
   {
     id: "paylink",
@@ -80,12 +86,14 @@ const QUICK_SLIDES = [
     body: "Generate a shareable paylink. You can pay anyone, no account needed.",
     art: quickPaylink,
     path: "/links/new",
+    action: "link" as const,
   },
 ]
 
 /** The rail's promo slides, one per view. The row scrolls natively; the arrows only move it. */
 function QuickActions() {
   const navigate = useNavigate()
+  const guard = useActionGuard()
   const row = useRef<HTMLDivElement>(null)
   const fresh = useFreshAddressAvailable() === true
   const savings = useSavings()
@@ -151,7 +159,11 @@ function QuickActions() {
             type="button"
             className={`zkm-btn-reset ww-banner ww-quick__slide ww-quick__slide--${slide.id}`}
             aria-label={slide.label}
-            onClick={() => navigate(slide.path)}
+            onClick={() =>
+              "action" in slide
+                ? guard(slide.action, () => navigate(slide.path))
+                : navigate(slide.path)
+            }
           >
             <span className="ww-banner__text">
               <span className="ww-banner__title">{slide.title}</span>
@@ -230,6 +242,7 @@ export function HomeScreen() {
       () => void healRegistrationDeposits(getConfig()).catch(() => {}),
       4_000,
     )
+    void discoverRegistrationDeposits(getConfig()).catch(() => {})
     return () => clearTimeout(timer)
   }, [])
 
@@ -243,7 +256,15 @@ export function HomeScreen() {
   // Share falls back to the clipboard where the Web Share API is absent, and says so.
   const { copied: inviteShared, share: shareInvite } = useLinkSharing(inviteUrl, "Invite friends")
 
-  const { walletBalance, balanceKnown, balanceSyncing, balanceSyncProgress } = useBalance()
+  const { walletAsset, balanceKnown, balanceSyncing, balanceSyncProgress } = useBalance()
+  // Exact, so funds on their way fold into it without moving a cent.
+  const mainAtomic = walletAsset?.balanceAtomic ?? 0n
+  // A first look at what old versions hold, with nothing recorded yet, could only show too little.
+  const oldHoldings = useOldVersionHoldings()
+  const address = loadWalletIdentity()?.address
+  const lock = useUpgradeLock(address)
+  // Held, Main stays at what the upgrade will land, with nothing from the new version.
+  const frozen = lock.state === "held"
   const [hideBal, setHideBal] = useHideBalances()
   const savings = useSavings()
   const { pathname } = useLocation()
@@ -253,8 +274,11 @@ export function HomeScreen() {
   const [sheet, setSheet] = useState<SavingsDirection | { amount?: string } | "calculator" | null>(
     null,
   )
+  const guard = useActionGuard()
   const openMove = (direction: SavingsDirection, amount?: string) =>
-    setSheet(direction === "in" && amount !== undefined ? { amount } : direction)
+    guard("savings", () =>
+      setSheet(direction === "in" && amount !== undefined ? { amount } : direction),
+    )
   const onSavings = account === "savings"
   const apy = savings.position?.apy
   const apyLabel = apy === undefined ? undefined : `${apyPercent(apy)} APY`
@@ -264,19 +288,35 @@ export function HomeScreen() {
     savingsHydrated,
     savingsLedger,
     arriving,
+    upgradesLoaded,
     hydrated,
     requestsUnavailable,
     detailModals,
   } = useActivityEntries()
+  const mainKnown =
+    lock.checked && (frozen || (balanceKnown && !oldHoldings.pending && upgradesLoaded))
+  // A frozen portal's scan says what is left: a refund leaves its notes in the balance.
+  const exitFunds = useFrozenFunds().funds
   // Funds on their way count where they land, flat: they neither tick nor earn until they arrive.
-  const mainShown = parseUnits(walletBalance, DEFAULT_DECIMALS) + arriving.main
-  const mainText = hideBal ? HIDDEN : usdAtomicFloor(mainShown)
+  const mainShown = frozen
+    ? lock.main
+    : exitFunds
+    ? fundsLeft(exitFunds.main)
+    : mainAtomic + arriving.main
+  const mainText = hideBal ? HIDDEN : mainShown === undefined ? "—" : usdAtomicFloor(mainShown)
   // The last read value; the ticking figures carry it to now in their own components.
   const estimate = useSavingsEstimate(savings.position, false)
-  const savingsShown = estimate.value === undefined ? undefined : estimate.value + arriving.savings
+  const sharePrice = savings.position?.sharePrice
+  const savingsShown = exitFunds?.savings
+    ? sharesUsd(fundsLeft(exitFunds.savings), sharePrice)
+    : estimate.value === undefined
+    ? undefined
+    : estimate.value + arriving.savings
   const savingsValueText = savingsShown === undefined ? undefined : usdAtomicFloor(savingsShown)
   const totalValue =
-    savingsShown !== undefined && balanceKnown ? mainShown + savingsShown : undefined
+    savingsShown !== undefined && mainKnown && mainShown !== undefined
+      ? mainShown + savingsShown
+      : undefined
   const savingsText = hideBal ? HIDDEN : savingsValueText ?? "—"
   // What the shares held now have earned: their value (ticking when it ticks) less what they cost.
   // Shown once the position's value is read, while there is a position or a counted move.
@@ -331,9 +371,10 @@ export function HomeScreen() {
   }, [hiddenKey])
   const totalText = hideBal ? HIDDEN : totalValue === undefined ? "—" : usdAtomicFloor(totalValue)
   const balanceText = onSavings ? savingsText : mainText
-  const balanceShown = onSavings ? savings.hydrated : balanceKnown
-  const syncing = !onSavings && balanceKnown && balanceSyncing
-  const openDeposit = () => navigate("/deposit")
+  const balanceShown = onSavings ? savings.hydrated : mainKnown
+  // A device catching up can be short on either account: a rebuilt move's deposit lands in either.
+  const syncing = balanceShown && balanceSyncing
+  const openDeposit = () => guard("deposit", () => navigate("/deposit"))
   // An inbound paylink stashed by /link — prompts until claimed or dismissed.
   const [claimFragment, setClaimFragment] = useState(peekClaimStash)
   // An activation surface asked for the claim of a link that funds the pending name: its review
@@ -358,42 +399,53 @@ export function HomeScreen() {
   const requestEntries = entries.filter((entry) => entry.incomingRequest)
   const feedEntries = entries.filter((entry) => !entry.incomingRequest)
 
+  // Frozen, only Withdraw stays open.
+  const closed = useWalletFrozen()
   const receive: HomeAction = {
     title: "Receive",
     icon: "arrow-down",
     phoneIcon: "arrow-down",
-    run: () => navigate("/receive"),
+    run: () => guard("receive", () => navigate("/receive")),
+    disabled: closed,
   }
   const send: HomeAction = {
     title: "Send",
     icon: "send",
     phoneIcon: "send",
-    run: () => navigate("/send"),
+    run: () => guard("send", () => navigate("/send")),
+    disabled: closed,
   }
   const withdraw: HomeAction = {
     title: "Withdraw",
     icon: "tray-withdraw",
     phoneIcon: "tray-withdraw",
-    run: () => navigate("/withdraw"),
+    run: () => guard("withdraw", () => navigate("/withdraw")),
   }
   const actions: HomeAction[] = onSavings
     ? [
-        { title: "Add to Savings", icon: "earn", phoneIcon: "earn", run: () => setSheet("in") },
+        {
+          title: "Add to Savings",
+          icon: "earn",
+          phoneIcon: "earn",
+          run: () => openMove("in"),
+          disabled: closed,
+        },
         {
           title: "Move to Main Account",
           icon: "payments-arrows-horizontal",
-          run: () => setSheet("out"),
+          run: () => openMove("out"),
+          disabled: closed,
         },
       ]
     : phone
     ? [
-        { title: "Deposit", icon: "coins", phoneIcon: "coins", run: openDeposit },
+        { title: "Deposit", icon: "coins", phoneIcon: "coins", run: openDeposit, disabled: closed },
         receive,
         send,
         withdraw,
       ]
     : [
-        { title: "Deposit", icon: "coins", phoneIcon: "coins", run: openDeposit },
+        { title: "Deposit", icon: "coins", phoneIcon: "coins", run: openDeposit, disabled: closed },
         send,
         receive,
         withdraw,
@@ -408,7 +460,7 @@ export function HomeScreen() {
             <AccountSwitcher
               selected={account}
               onSelect={setAccount}
-              mainBalance={balanceKnown ? mainText : "—"}
+              mainBalance={mainKnown ? mainText : "—"}
               savingsBalance={savingsText}
               total={totalText}
               apyLabel={apyLabel}
@@ -517,7 +569,7 @@ export function HomeScreen() {
         savingsHydrated && savingsEntries.length === 0 ? (
           <div className="ww-home__cta">
             <SavingsArt />
-            <PrimaryGradientButton title="Add to Savings" onClick={() => setSheet("in")} />
+            <PrimaryGradientButton title="Add to Savings" onClick={() => openMove("in")} />
           </div>
         ) : (
           <HomeTransactions
@@ -535,7 +587,12 @@ export function HomeScreen() {
                 {e.node}
               </div>
             ))}
-          {hydrated && feedEntries.length === 0 ? (
+          {/* Funds an upgrade still moves are the account's: no invitation to deposit over them. */}
+          {hydrated &&
+          feedEntries.length === 0 &&
+          !frozen &&
+          !oldHoldings.pending &&
+          oldHoldings.total === 0n ? (
             <div className="ww-home__cta">
               <DepositArt />
               <PrimaryGradientButton title="Deposit funds" onClick={openDeposit} />
@@ -554,6 +611,7 @@ export function HomeScreen() {
 
   return (
     <>
+      <MaintenanceNotice />
       <HighL2FeeNotice />
       <HighGasNotice />
       <LostRegistrationNoticeCard />
@@ -579,7 +637,7 @@ export function HomeScreen() {
             <button
               type="button"
               className="zkm-btn-reset ww-banner ww-banner--row"
-              onClick={() => navigate("/receive")}
+              onClick={() => guard("receive", () => navigate("/receive"))}
             >
               <img src={shareTag} alt="" />
               <span className="ww-banner__text">
@@ -663,7 +721,7 @@ export function HomeScreen() {
           apy={apy}
           balances={{
             savings: savings.position?.value,
-            main: balanceKnown ? parseUnits(walletBalance, DEFAULT_DECIMALS) : undefined,
+            main: balanceKnown ? mainAtomic : undefined,
           }}
           onMove={(amount) => openMove("in", String(amount))}
           onClose={() => setSheet(null)}

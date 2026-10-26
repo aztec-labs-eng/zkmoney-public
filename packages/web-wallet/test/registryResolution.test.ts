@@ -4,7 +4,6 @@
  * (add-contact confirm, handshake verifyTag) refetches — a manifest rotated between resolution and
  * commit surfaces as staleRollup instead of persisting the stale record.
  */
-import { GENERATIONS } from "@obsidion/core/constants"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const REGISTRY = "0x0b903b955dbc0c97252f1ce9e43f8c26e8f5635f"
@@ -104,14 +103,11 @@ vi.stubGlobal("fetch", async (url: string) => {
  * only what `resolveBootConfig` seeded.
  */
 function bootProfile() {
-  // The rollup gate compares against the compiled canonical generation; deriving it keeps this
-  // fixture valid across GENERATIONS bumps.
-  const canonical = GENERATIONS.find((g) => g.status === "canonical")!
   return {
     profileId: "sandbox",
     network: "sandbox",
     publishedAt: "2026-08-12T00:00:00.000Z",
-    shared: { l1ChainId: 31337, xmtpEnv: "local", rollupVersion: String(canonical.version) },
+    shared: { l1ChainId: 31337, xmtpEnv: "local", rollupVersion: "1821665230" },
     current: "0.0.1",
     versions: {
       "0.0.1": {

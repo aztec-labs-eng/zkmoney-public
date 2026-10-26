@@ -1,7 +1,7 @@
 import { floorToCents, parseAmount } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { useCallback, useEffect, useRef, useState } from "react"
-import { useLocation, useNavigate, useOutletContext, useParams } from "react-router-dom"
+import { useLocation, useNavigate, useParams } from "react-router-dom"
 import {
   ContactStorage,
   useAccountContext,
@@ -31,6 +31,7 @@ import { useBack, useProvingOutcome } from "../../ui/hooks"
 import { OperationHandOff } from "../operations/OperationHandOff"
 import { runContactPay, type PayStage } from "./contactPay"
 import { useUserFlowActive } from "../provingGate"
+import { useActionVerdict } from "../actionGate"
 import { findContactEntry } from "./contactsView"
 import { lookUpUnsavedContact } from "./unsavedContact"
 import { PayAmountForm } from "./PayAmountForm"
@@ -59,11 +60,6 @@ interface PayScreenState {
   /** The person the page already loaded, so the flow opens without looking them up again. */
   contact?: Contact
   saved?: boolean
-}
-
-/** What the contact route hands its Send flow: whether the sponsored rail check has cleared. */
-export interface ContactPayOutlet {
-  railReady: boolean
 }
 
 type Phase = "amount" | "confirm" | "working" | "sent"
@@ -141,7 +137,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   // Only a KNOWN shortfall blocks: a balance still loading reads 0 and would flag every amount.
   const overspent = isSend && assetsLoaded && parsed > (walletAsset?.balance ?? 0)
   const targetTag = entry?.tag ?? (isSend ? request?.tag : undefined)
-  const railReady = useOutletContext<ContactPayOutlet | undefined>()?.railReady ?? true
+  const railReady = useActionVerdict("send") === "open"
   const ready = isSend
     ? railReady && !!(obsidionWallet && obsidionAccount && tokenService && contractService)
     : !!tokenService
