@@ -11,7 +11,7 @@ Source of the zk.money web wallet and the zk.money Desktop app. This tree builds
 | `packages/core`, `contracts`, `sdk`, `front-core` | The wallet stack: shared types, Noir contracts, contract calls, and app logic. |
 | `packages/config-client`, `passkey-web`, `design-system`, `proving-progress`, `metrics-policy` | Libraries that the wallet imports. |
 | `packages/oxide-build` | Builds the vendored Oxide packages. |
-| `vendor/oxide` | The subset of Oxide that the wallet needs, the relayer source, and the refund and resolver circuits, at commit `20fcd8093`. |
+| `vendor/oxide` | The subset of Oxide that the wallet needs, the relayer source, and the refund and resolver circuits, at commit `3b5e1f7c8`. |
 
 ## Prerequisites
 
@@ -84,15 +84,15 @@ See [packages/web-wallet-desktop/README.md](packages/web-wallet-desktop/README.m
 
 ## Enclave host
 
-The wallet sends signature requests to the Oxide enclave at the `enclaveUrl` in the Oxide manifest. `vendor/oxide/yarn-project/tee-proxy` is the HTTP front end of an enclave host. This repository does not build the EIF (Enclave Image File) or contain the host tooling that starts it. They are in the Oxide repository, under `enclave/` and `tee-host/`, at commit `20fcd8093`.
+The wallet sends signature requests to the Oxide enclave at the `enclaveUrl` in the Oxide manifest. `vendor/oxide/yarn-project/tee-proxy` is the HTTP front end of an enclave host. This repository does not build the EIF (Enclave Image File) or contain the host tooling that starts it. They are in the Oxide repository, under `enclave/` and `tee-host/`, at commit `3b5e1f7c8`.
 
-The portal accepts an enclave only if the portal owner approved its PCR0. Each new enclave must also be registered: `OxidePortal.registerTee` on L1, then the L2 consume into the token's `approved_signers`. The Oxide repository does this in `yarn-project/tee-registrar`.
+The `TeeRegistry` contract on L1 accepts an enclave only if its PCR0 is the same as the `PCR0_HASH` that the contract got at deployment. Each new enclave must be registered with `TeeRegistry.registerTee`. The registration sends a message to L2, and each spend proves the inclusion of this message. The Oxide repository does this registration in `yarn-project/tee-registrar`.
 
 To make the wallet use your own host, set the enclave URL in the endpoint editor on the wallet's Settings page.
 
 ## Relayer
 
-`vendor/oxide/yarn-project/oxide-relayer` is the Oxide relayer. It completes L1 operations for users, so that users do not need ETH for gas. `vendor/oxide/yarn-project/telemetry` and `vendor/oxide/yarn-project/watcher-lib` are its Oxide dependencies. These packages are copies from Oxide commit `20fcd8093`, without the relayer `Dockerfile`.
+`vendor/oxide/yarn-project/oxide-relayer` is the Oxide relayer. It completes L1 operations for users, so that users do not need ETH for gas. `vendor/oxide/yarn-project/telemetry` and `vendor/oxide/yarn-project/watcher-lib` are its Oxide dependencies. These packages are copies from Oxide commit `3b5e1f7c8`, without the relayer `Dockerfile`.
 
 To build the relayer, clone the repository and run `pnpm install --frozen-lockfile` as in [Build](#build). Then run:
 
