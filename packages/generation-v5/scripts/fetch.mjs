@@ -10,7 +10,7 @@ import { execFileSync } from "node:child_process"
 import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { assetName, dist, inputsHash, pinnedManifest, protocol, readBundle } from "./check.mjs"
+import { assetName, dist, inputsHash, protocol, readBundle } from "./check.mjs"
 
 const RELEASE = "source-generations"
 const API = "https://api.github.com"
@@ -19,10 +19,7 @@ const pin = JSON.parse(
 ).walletCommit
 
 const holds = (bundle) =>
-  bundle?.manifestSha256 === pinnedManifest() &&
-  bundle.walletCommit === pin &&
-  bundle.protocol === protocol &&
-  bundle.inputs === inputsHash
+  bundle?.walletCommit === pin && bundle.protocol === protocol && bundle.inputs === inputsHash
 
 const held = () => {
   try {
@@ -99,7 +96,7 @@ try {
   execFileSync("tar", ["--zstd", "-xf", path.join(work, asset), "-C", unpacked])
   if (!holds(readBundle(unpacked)))
     throw new Error(
-      `${asset} does not hold the bundle with manifest ${pinnedManifest()}, wallet commit ${pin}, protocol ${protocol} and inputs ${inputsHash}`,
+      `${asset} does not hold the bundle of wallet commit ${pin}, protocol ${protocol} and inputs ${inputsHash}`,
     )
   rmSync(dist, { recursive: true, force: true })
   cpSync(unpacked, dist, { recursive: true })

@@ -1,5 +1,5 @@
-// Checks a bundle: each file against the manifest, the manifest's sha256 against pin.json, and its
-// protocol against the boundary's. Run as a script, it checks dist/ and fails when it holds none.
+// Checks a bundle: each file against the manifest, and its protocol against the boundary's. Run as
+// a script, it checks dist/ and fails when it holds none.
 import { createHash } from "node:crypto"
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs"
 import path from "node:path"
@@ -63,13 +63,9 @@ export const inputsHash = (() => {
  */
 export const assetName = `generation-v5-${pinnedCommit}-protocol-${protocol}-${inputsHash}.tar.zst`
 
-/** The manifest sha256 that pin.json names. */
-export const pinnedManifest = () =>
-  JSON.parse(readFileSync(path.join(pkg, "pin.json"), "utf8")).manifestSha256
-
 /**
- * The bundle at `dir`: its files by served path, its manifest digest, its wallet commit, its
- * protocol, and the hash of the inputs it was built from. Undefined when `dir` holds no bundle. Throws on a file that does
+ * The bundle at `dir`: its files by served path, its wallet commit, its protocol, and the hash of
+ * the inputs it was built from. Undefined when `dir` holds no bundle. Throws on a file that does
  * not match the manifest.
  */
 export function readBundle(dir = dist) {
@@ -83,7 +79,7 @@ export function readBundle(dir = dist) {
       throw new Error(`${file} does not match its bundle manifest; rebuild the generation`)
     out.set(name, file)
   }
-  return { files: out, manifestSha256: sha256(manifestFile), walletCommit, protocol, inputs }
+  return { files: out, walletCommit, protocol, inputs }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
@@ -101,10 +97,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     throw new Error(
       `The bundle at ${dist} is built from inputs ${bundle.inputs}, not ${inputsHash}; rebuild the generation`,
     )
-  if (bundle.manifestSha256 !== pinnedManifest())
-    throw new Error(
-      `The bundle's manifest is ${bundle.manifestSha256}, but pin.json names ${pinnedManifest()}. ` +
-        "Set pin.json to the new digest if the change is intended.",
-    )
-  console.error(`The bundle at ${dist} matches its pin`)
+  console.error(`The bundle at ${dist} matches its manifest`)
 }

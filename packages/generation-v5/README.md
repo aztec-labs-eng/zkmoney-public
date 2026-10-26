@@ -11,17 +11,13 @@ The build checks out the wallet commit in `source.json` at `.source/`, builds it
 
 To move the pin, change `walletCommit` to a v5 commit and rebuild. The adapter in `adapter/` compiles against that commit's packages, and the build typechecks it there.
 
-## Pin
+## Check
 
-`pin.json` names the sha256 of the bundle's `manifest.json`. The manifest holds the sha256 of every bundle file, so the pin fixes the whole bundle in git. The build prints the digest.
-
-- After a change to an input of the bundle, rebuild and set `manifestSha256` to the printed digest. The bundle CI fails until the pin matches its build.
-- `pnpm --filter @obsidion/generation-v5 check:bundle` checks `dist/` against the pin. It also checks that the manifest records the pinned wallet commit, this checkout's protocol and the hash of this checkout's bundle inputs.
-- The web wallet build serves only a pinned bundle when `REQUIRE_SOURCE_GENERATIONS=true`. A local build serves an unpinned bundle with a warning.
+The manifest holds the sha256 of every bundle file. `pnpm --filter @obsidion/generation-v5 check:bundle` checks `dist/` against it. It also checks that the manifest records the pinned wallet commit, this checkout's protocol and the hash of this checkout's bundle inputs. Nothing fixes the bundle's content in git.
 
 ## Publication
 
-A push to `next` or `v6` that changes the bundle publishes it to the `source-generations` release as `generation-v5-<wallet commit>-protocol-<protocol>-<inputs hash>.tar.zst` (`assetName` in `scripts/check.mjs`). The inputs hash is the first 12 hex digits of a sha256 over the files that the build takes from this checkout: `adapter/`, the boundary in `packages/core/src/types/sourceGeneration.ts`, `source.json` and `scripts/build.mjs` (`bundleInputs` in `scripts/check.mjs`). An adapter change can change the bundle at one wallet commit and one protocol, so the hash gives it a new name. The manifest records the hash as `inputs`. The CI never replaces a published bundle. The deploys run `fetch:bundle` to download the bundle of this name, and build it only when the release has none. `fetch:bundle` keeps or downloads a bundle only when its manifest matches the pin and records the same wallet commit, protocol and inputs hash. `pin.json` is not a bundle input, so a commit that only moves the pin keeps the asset name and the CI cache.
+A push to `next` or `v6` that changes the bundle publishes it to the `source-generations` release as `generation-v5-<wallet commit>-protocol-<protocol>-<inputs hash>.tar.zst` (`assetName` in `scripts/check.mjs`). The inputs hash is the first 12 hex digits of a sha256 over the files that the build takes from this checkout: `adapter/`, the boundary in `packages/core/src/types/sourceGeneration.ts`, `source.json` and `scripts/build.mjs` (`bundleInputs` in `scripts/check.mjs`). An adapter change can change the bundle at one wallet commit and one protocol, so the hash gives it a new name. The manifest records the hash as `inputs`. The CI never replaces a published bundle. The deploys run `fetch:bundle` to download the bundle of this name, and build it only when the release has none. `fetch:bundle` keeps `dist/` only when its manifest records the same wallet commit, protocol and inputs hash.
 
 `manifest.json` records `protocol`, the `SOURCE_GENERATION_PROTOCOL` that the bundle speaks. `check:bundle` and the web wallet refuse a bundle of another protocol. Change the constant in `packages/core/src/types/sourceGeneration.ts` on any boundary change that a built bundle cannot serve.
 

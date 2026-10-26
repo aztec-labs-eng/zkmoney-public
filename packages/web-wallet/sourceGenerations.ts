@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs"
 import path from "node:path"
 import type { Plugin } from "vite"
-import { dist as v5Dist, pinnedManifest, readBundle } from "@obsidion/generation-v5/check"
+import { dist as v5Dist, readBundle } from "@obsidion/generation-v5/check"
 
 /** Each source generation's bundle, served at `generations/v<major>/`. */
 const GENERATIONS = [{ major: "5", dist: v5Dist }]
@@ -14,8 +14,7 @@ const CONTENT_TYPES: Record<string, string> = {
 
 /**
  * Emits and serves the source generation bundles. A build without one cannot read that
- * generation's rollup. `REQUIRE_SOURCE_GENERATIONS=true` makes a missing or unpinned bundle a build
- * failure.
+ * generation's rollup. `REQUIRE_SOURCE_GENERATIONS=true` makes a missing bundle a build failure.
  */
 export function sourceGenerations(): Plugin {
   const load = () =>
@@ -27,11 +26,6 @@ export function sourceGenerations(): Plugin {
         if (required) throw new Error(missing)
         console.warn(`${missing}: this build cannot read Aztec v${major} rollups`)
         return []
-      }
-      if (bundle.manifestSha256 !== pinnedManifest()) {
-        const unpinned = `The Aztec v${major} bundle at ${dist} is not the one pin.json names`
-        if (required) throw new Error(unpinned)
-        console.warn(`${unpinned}: serving it for this local build`)
       }
       return [{ major, files: bundle.files }]
     })

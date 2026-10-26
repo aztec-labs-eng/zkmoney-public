@@ -4,13 +4,8 @@ export declare const protocol: number
 export declare const bundleInputs: string[]
 export declare const inputsHash: string
 export declare const assetName: string
-export declare function pinnedManifest(): string
-export declare function readBundle(dir?: string):
-  | {
-      files: Map<string, string>
-      manifestSha256: string
-      walletCommit: string
-      protocol: number
-      inputs: string
-    }
+export declare function readBundle(
+  dir?: string,
+):
+  | { files: Map<string, string>; walletCommit: string; protocol: number; inputs: string }
   | undefined
