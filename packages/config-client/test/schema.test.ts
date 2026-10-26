@@ -161,7 +161,6 @@ describe("versions", () => {
       "nodeUrl",
       "l1RpcUrl",
       "accountServiceUrl",
-      "zkmoneyApiUrl",
       "paylinkDomain",
     ]) {
       expect(version[field]).toMatch(/^https?:\/\//)
@@ -169,6 +168,8 @@ describe("versions", () => {
       expect(() => parseConfigProfile(doc)).toThrow(new RegExp(field))
       version[field] = "https://example.test"
     }
+    delete version.zkmoneyApiUrl
+    expect(() => parseConfigProfile(doc)).not.toThrow()
   })
 
   it("keeps only chain-fixed values in shared", () => {

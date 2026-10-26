@@ -198,6 +198,7 @@ export { encodeRegistrationProofs, encodeLegacyRegistrationProofs } from "@oxide
 export {
   buildSipaDeployAndSweepOperation,
   predictAccountAddress,
+  predictAccountAddressLocally,
   encodeAccountInitCode,
   depositPayoutTokenFor,
   SipaIntent as OxideSipaIntent,
@@ -226,7 +227,11 @@ export async function assertSubsidySweepsSipa(
 ): Promise<void> {
   const { depositSubsidy, deployArgs } = params
   const [portal, sipaFactory, rollupVersion] = await Promise.all([
-    publicClient.readContract({ address: depositSubsidy, abi: DepositSubsidyAbi, functionName: "PORTAL" }),
+    publicClient.readContract({
+      address: depositSubsidy,
+      abi: DepositSubsidyAbi,
+      functionName: "PORTAL",
+    }),
     publicClient.readContract({
       address: depositSubsidy,
       abi: DepositSubsidyAbi,
@@ -239,7 +244,9 @@ export async function assertSubsidySweepsSipa(
     }),
   ])
   const refuse = (reason: string) => {
-    throw new Error(`Deposit subsidy ${depositSubsidy} would not sweep SIPA ${params.sipa}: ${reason}`)
+    throw new Error(
+      `Deposit subsidy ${depositSubsidy} would not sweep SIPA ${params.sipa}: ${reason}`,
+    )
   }
   if (!sameAddress(portal, params.portal)) refuse(`it serves portal ${portal}`)
   if (!sameAddress(sipaFactory, params.sipaFactory)) refuse(`it deploys through ${sipaFactory}`)

@@ -1,13 +1,8 @@
-import { NO_FROM } from "@aztec/aztec.js/account"
-import { Contract } from "@aztec/aztec.js/contracts"
 import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import {
-  ContractService,
-  DEFAULT_CONTRACTS,
-  ensureContractRegisteredInPXE,
-} from "@obsidion/contracts"
+import { ContractService, DEFAULT_CONTRACTS } from "@obsidion/contracts"
 
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
+import { readPublicImmutable } from "../utils/publicImmutable.js"
 
 export class ClaimFpcCatalogUnavailableError extends Error {
   constructor(reason: string) {
@@ -148,6 +143,7 @@ export async function readClaimFpcIdentityBinding(
   )
 }
 
+/** Read through the node: a generation the PXE has never registered costs no class hash. */
 async function readConfig(
   wallet: ObsidionWallet,
   contractService: ContractService,
@@ -155,13 +151,13 @@ async function readConfig(
 ): Promise<ClaimFpcConfigFields> {
   const address = AztecAddress.fromStringUnsafe(fpcAddress)
   const artifact = await contractService.getArtifactForContract(DEFAULT_CONTRACTS.claimFpc, address)
-  await ensureContractRegisteredInPXE(wallet.pxe, wallet.node, address, () =>
-    Promise.resolve(artifact),
-  )
-  const sim = await Contract.at(address, artifact, wallet).methods.get_config!().simulate({
-    from: NO_FROM,
-  })
-  return sim.result as ClaimFpcConfigFields
+  return (await readPublicImmutable(
+    wallet.node,
+    address,
+    artifact,
+    "config",
+    "get_config",
+  )) as unknown as ClaimFpcConfigFields
 }
 
 /**

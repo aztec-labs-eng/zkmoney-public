@@ -81,7 +81,7 @@ vi.mock("../src/features/paylink/ticketContinuation", () => ({
 }))
 vi.mock("../src/features/paylink/chainTime", () => ({ usePolledChainSeconds: () => 10_000 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
-vi.mock("../src/lib/analytics", () => ({ fireEvent: vi.fn() }))
+vi.mock("../src/lib/analytics", () => ({ fireEvent: vi.fn(), fireOnboardingEvent: vi.fn() }))
 vi.mock("../src/features/paylink/ClaimProgressModal", () => ({
   ClaimProgressModal: () => null,
   hasClaimReceipt: () => false,

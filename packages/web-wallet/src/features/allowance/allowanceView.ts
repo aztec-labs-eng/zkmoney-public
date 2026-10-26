@@ -4,10 +4,6 @@ import {
   type SponsoredAllowanceState,
 } from "@obsidion/front-core"
 
-export const ALLOWANCE_SCOPE =
-  "zk.money pays the network fee for sends, payment links, withdrawals and deposit addresses. It " +
-  "counts transactions, not their value."
-
 export type AllowanceViewState =
   | SponsoredAllowanceState["kind"]
   | "signed-out"

@@ -34,6 +34,8 @@ import {
   type Transaction,
   type TransactionStatus,
   type TxContactDirectory,
+  type UpgradeRun,
+  upgradeRunStatus,
   DETECTING_AMOUNT,
   isRefundInFlight,
   failureReason,
@@ -168,8 +170,16 @@ export function depositRowAmount(record: SIPADepositRecord, exitable: boolean): 
  * The badge under a deposit row's amount, from front-core's `DEPOSIT_PHASE_COPY` so the row, the
  * detail sheet and the bell read the same word. A claimed deposit carries no badge.
  */
-export function depositRowStatusLabel(record: SIPADepositRecord): StatusLabel | undefined {
-  return depositPhaseCopy(record).pill as StatusLabel | undefined
+export function depositRowStatusLabel(
+  record: SIPADepositRecord,
+  portalFrozen = false,
+): StatusLabel | undefined {
+  return depositPhaseCopy(record, { portalFrozen }).pill as StatusLabel | undefined
+}
+
+/** An upgrade's row status (`upgradeRunStatus`), which the row draws a badge for. */
+export function upgradeRowStatusLabel(run: UpgradeRun): StatusLabel | undefined {
+  return upgradeRunStatus(run) as StatusLabel | undefined
 }
 
 /**

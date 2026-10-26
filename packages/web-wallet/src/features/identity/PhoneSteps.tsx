@@ -6,87 +6,19 @@ import {
   SIGN_IN_SHEET_COPY,
   SIGN_UP_SHEET_COPY,
   type PhoneReach,
+  type SheetReopen,
   type SignUpChoice,
   type SignUpOptions,
   type SignUpSheetLine,
   type StepsHero,
 } from "@obsidion/passkey-web"
-import { useEffect, useId, useRef, useState, type ReactNode } from "react"
+import { useId, useRef, useState, type ReactNode } from "react"
 import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import { PASSKEYS_DOCS_URL, TERMS_URL } from "../../lib/links"
+import { TipRow } from "../../ui/TipRow"
 import { PHONE_CREATION, type GateState } from "./ceremonyGate"
 import { SignUpChoiceSelect } from "./SignUpChoiceSelect"
 import { SIGN_UP_ICONS, signUpSheetOptions } from "./signUpSheetOptions"
-
-/**
- * A label whose tip opens above its row on a press; a second press, Escape, or a press or focus
- * elsewhere closes it. Never on hover: the pointer often rests here when the sheet appears.
- */
-function TipRow({
-  mark,
-  label,
-  testId,
-  children,
-}: {
-  mark: ReactNode
-  label: string
-  testId?: string
-  children: ReactNode
-}) {
-  const id = useId()
-  const [open, setOpen] = useState(false)
-  const row = useRef<HTMLDivElement>(null)
-  const button = useRef<HTMLButtonElement>(null)
-  useEffect(() => {
-    if (!open) return
-    const closeOutside = (event: Event) => {
-      if (!row.current?.contains(event.target as Node)) setOpen(false)
-    }
-    // Capture: the sheet around the tip closes on an Escape that reaches it.
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return
-      event.preventDefault()
-      event.stopPropagation()
-      setOpen(false)
-      button.current?.focus()
-    }
-    document.addEventListener("pointerdown", closeOutside)
-    document.addEventListener("keydown", closeOnEscape, true)
-    return () => {
-      document.removeEventListener("pointerdown", closeOutside)
-      document.removeEventListener("keydown", closeOnEscape, true)
-    }
-  }, [open])
-  return (
-    <div
-      ref={row}
-      className="ww-phone-steps__tiprow"
-      data-testid={testId}
-      data-open={open || undefined}
-      onBlur={(event) => {
-        // Focus moved to another control; text selected inside the tip moves it nowhere.
-        if (event.relatedTarget && !event.currentTarget.contains(event.relatedTarget)) {
-          setOpen(false)
-        }
-      }}
-    >
-      <button
-        ref={button}
-        type="button"
-        className="zkm-btn-reset ww-phone-steps__tiprow-label"
-        aria-describedby={id}
-        aria-expanded={open}
-        onClick={() => setOpen((was) => !was)}
-      >
-        {mark}
-        {label}
-      </button>
-      <div className="ww-phone-steps__tip" role="tooltip" id={id}>
-        {children}
-      </div>
-    </div>
-  )
-}
 
 /** Under Continue: the help page's list of the passkeys that work. */
 function DocsLink() {
@@ -176,6 +108,7 @@ function KeyWarningLine({ warning }: { warning: KeyWarning }) {
   return (
     <TipRow
       testId="phone-steps-key-warning"
+      className="ww-phone-steps__tiprow"
       mark={<Icon name="info-circle" size={14} />}
       label={warning.label}
     >
@@ -186,11 +119,11 @@ function KeyWarningLine({ warning }: { warning: KeyWarning }) {
   )
 }
 
-/** Over the picker: why the sheet opened where it did, or how to add 1Password. */
+/** Over the picker: why the sheet re-opened or opened where it did, or how to add 1Password. */
 function SheetLine({ line }: { line: SignUpSheetLine }) {
-  if (line.kind === "unfinished") {
+  if (line.kind === "unfinished" || line.kind === "blocked") {
     return (
-      <p className="ww-phone-steps__unfinished" role="alert" data-testid="phone-steps-unfinished">
+      <p className="ww-phone-steps__unfinished" role="alert" data-testid={`phone-steps-${line.kind}`}>
         {line.text}
       </p>
     )
@@ -246,7 +179,7 @@ export function PhoneSteps({
   reach,
   creation = PHONE_CREATION,
   openOn,
-  unfinished,
+  reopened,
   details,
   disabled,
   loading,
@@ -262,8 +195,8 @@ export function PhoneSteps({
   creation?: LaptopCreation
   /** The option to open on, where the probes still offer it. */
   openOn?: SignUpChoice
-  /** The sheet re-opens after the browser's prompt closed with nothing made. */
-  unfinished?: boolean
+  /** Why the sheet re-opens after a creation made nothing. */
+  reopened?: SheetReopen
   /** What the signup commits to, above the picker: a payment's split. */
   details?: ReactNode
   /** Nothing can start: what it would commit to is not priced yet, or cannot be afforded. */
@@ -280,7 +213,7 @@ export function PhoneSteps({
   const pickerLabel = useId()
   const sheet = useRef<SignUpOptions>(undefined)
   if (!loading && !busy && sheet.current === undefined) {
-    sheet.current = signUpSheetOptions({ creation, reach, preferred: openOn, unfinished })
+    sheet.current = signUpSheetOptions({ creation, reach, preferred: openOn, reopened })
   }
   const [picked, setPicked] = useState<SignUpChoice>()
   const tagPill = tag && (
@@ -507,7 +440,7 @@ export function GateStep({
       reach={state.reach}
       creation={state.creation}
       openOn={state.openOn}
-      unfinished={state.unfinished}
+      reopened={state.reopened}
       details={details}
       tag={tag}
     />

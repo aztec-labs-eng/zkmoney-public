@@ -113,13 +113,6 @@ describe("reorgNotificationInput", () => {
     expect(reorgNotificationInput(recovered, NOW)?.title).toBe("Payment confirmed")
   })
 
-  it("maps exit-required to a withdrawal-routed notice, never retry-framed", () => {
-    const exit = reorgNotificationInput({ type: "exit-required", txHash: TX }, NOW)
-    expect(exit?.id).toBe("reorg:exit:0xabc1")
-    expect(exit?.description).toContain("withdrawal")
-    expect(exit?.description).not.toMatch(/retry|try again/i)
-  })
-
   it("is silent for demoted and finalized", () => {
     expect(reorgNotificationInput({ type: "demoted", txHash: TX }, NOW)).toBeNull()
     expect(reorgNotificationInput({ type: "finalized", txHash: TX }, NOW)).toBeNull()

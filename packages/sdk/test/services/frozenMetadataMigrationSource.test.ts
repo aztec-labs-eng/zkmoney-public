@@ -20,6 +20,7 @@ const AMOUNTS: Record<string, bigint> = {
   medium: 8n * TIP,
   large: 20n * TIP,
   deposit: 30n * TIP,
+  link: 20n * TIP,
 }
 const note = (id: string, amount = AMOUNTS[id]!): Candidate => ({
   id,
@@ -119,6 +120,59 @@ describe("frozen refund batch selection", () => {
     expect(partition([60n, 50n, 45n], 50n, 10, 94n).batches).toEqual([50n, 60n])
   })
 
+  it("refunds a payment link's notes together, apart from the account's and another link's", () => {
+    const link = (id: string, owner: string, amount: bigint): Candidate => ({
+      id,
+      amount: String(amount),
+      kind: "escrow-note",
+      owner,
+    })
+    const candidates = [
+      note("small"),
+      link("a1", "0xa", 6n * TIP),
+      link("a2", "0xa", 6n * TIP),
+      link("b1", "0xb", 10n * TIP),
+    ]
+    const select = (left: Candidate[]) =>
+      selectFrozenBatch({
+        candidates: left,
+        maxNotesPerBatch: 10,
+        maxBatchAmount: 1000n * TIP,
+        minimumNetAmount: 5n * TIP,
+        tip: TIP,
+      })
+    expect(select(candidates)).toEqual({
+      kind: "escrow-note",
+      ids: ["a1", "a2"],
+      amount: 12n * TIP,
+    })
+    expect(select(candidates.filter((c) => c.owner !== "0xa"))).toEqual({
+      kind: "escrow-note",
+      ids: ["b1"],
+      amount: 10n * TIP,
+    })
+    expect(() => select([{ id: "x", amount: "1", kind: "escrow-note" }])).toThrow(
+      "Invalid frozen-source candidate",
+    )
+  })
+
+  it("takes a payment link's batch only once no deposit clears the minimum", () => {
+    const candidates: Candidate[] = [
+      { id: "l", amount: String(20n * TIP), kind: "escrow-note", owner: "0xa" },
+      { id: "d", amount: String(10n * TIP), kind: "frozen-deposit" },
+    ]
+    const select = (minimumNetAmount: bigint) =>
+      selectFrozenBatch({
+        candidates,
+        maxNotesPerBatch: 10,
+        maxBatchAmount: 1000n * TIP,
+        minimumNetAmount,
+        tip: TIP,
+      })
+    expect(select(5n * TIP)).toMatchObject({ kind: "frozen-deposit", ids: ["d"] })
+    expect(select(15n * TIP)).toMatchObject({ kind: "escrow-note", ids: ["l"] })
+  })
+
   it("refunds a deposit alone and never with notes", () => {
     const candidates: Candidate[] = [
       note("medium"),
@@ -162,6 +216,12 @@ describe("frozen migration batch selection and restart", () => {
       sourceSelection: ["large", "small"],
       sourceKind: "note",
     })
+  })
+
+  it("records what the batch's deposit pays on the destination", async () => {
+    const f = fixture()
+    const prepared = await f.make().prepare(f.recipient, 15n * TIP, undefined, 14n * TIP)
+    expect(f.saved.get(prepared.id)).toMatchObject({ depositFee: String(14n * TIP) })
   })
 
   it("takes a remainder too small to refund alone, and fills free slots with the smallest notes", async () => {
@@ -323,6 +383,26 @@ describe("frozen migration batch selection and restart", () => {
 
 describe("frozen migration quote", () => {
   const minimums = { first: 15n * TIP, later: ORDINARY_FEE + 1n }
+  const link: Candidate = {
+    id: "link",
+    amount: String(AMOUNTS.link),
+    kind: "escrow-note",
+    owner: "0xa",
+  }
+
+  it("counts no approval for a payment link's batch, which its fallback key signs", async () => {
+    const f = fixture([note("large"), link])
+    expect(await f.make().quote(minimums)).toMatchObject({ batches: 2, approvals: 1 })
+    f.saved.clear()
+    vi.mocked(f.runtime.candidates).mockResolvedValue({
+      maxNotesPerBatch: 2,
+      maxBatchAmount: 1000n * TIP,
+      candidates: [link],
+    })
+    const prepared = await f.make().prepare(f.recipient, 15n * TIP)
+    expect(prepared).toMatchObject({ asksApproval: false })
+    expect(await f.make().restore(prepared.id, f.recipient)).toMatchObject({ asksApproval: false })
+  })
 
   it("quotes every batch a run takes, and leaves what none can afford stranded", async () => {
     // Two notes per batch: dust rides along with the large note; the rest can't pay a batch.
@@ -332,6 +412,7 @@ describe("frozen migration quote", () => {
       stranded: 2n,
       waiting: 0n,
       batches: 1,
+      approvals: 1,
     })
   })
 
@@ -347,6 +428,7 @@ describe("frozen migration quote", () => {
       stranded: AMOUNTS.medium,
       waiting: 0n,
       batches: 0,
+      approvals: 0,
     })
     expect((await f.make().quote({ first: minimums.later, later: minimums.later })).movable).toBe(
       AMOUNTS.medium,
@@ -372,6 +454,7 @@ describe("frozen migration quote", () => {
       stranded: AMOUNTS.small,
       waiting: 7n * TIP,
       batches: 1,
+      approvals: 1,
     })
   })
 })

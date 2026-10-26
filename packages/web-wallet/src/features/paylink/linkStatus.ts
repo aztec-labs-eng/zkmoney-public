@@ -1,7 +1,9 @@
 import { formatUnits } from "viem"
 import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import { getConfig } from "../../config/env"
-import { peekTicketSignup } from "./claimStash"
+import { latestChainSeconds } from "./chainTime"
+import { peekClaimStash, peekTicketSignup } from "./claimStash"
+import { withExpiry } from "./claimWindow"
 import { linkIdentity } from "./linkIdentity"
 import { decodeLink, viewLink, type ViewLinkDeps } from "./sponsoredPaylink"
 import type { PaymentLink } from "./types"
@@ -145,5 +147,26 @@ export function watchLink(
   return () => {
     cancelled = true
     clearTimeout(timer)
+  }
+}
+
+/**
+ * The stashed link, read fresh, while it can still be claimed: a signup started with one opens on
+ * the link's own signup instead. Null with none stashed, a closed link, or a failed read.
+ */
+export async function openStashedLink(deps: ViewLinkDeps): Promise<string | null> {
+  const fragment = peekClaimStash()
+  if (!fragment) return null
+  try {
+    const [fresh, chainNow] = await Promise.all([
+      viewLink(deps, fragment),
+      latestChainSeconds(deps.wallet.node),
+    ])
+    const known = knownRead(fragment)
+    const missed = fresh.claimableFrom == null && known
+    const link = withExpiry(missed ? { ...fresh, ...known } : fresh, chainNow)
+    return link.status === "unclaimed" ? fragment : null
+  } catch {
+    return null
   }
 }

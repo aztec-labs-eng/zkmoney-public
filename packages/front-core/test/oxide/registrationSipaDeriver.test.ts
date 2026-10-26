@@ -32,25 +32,55 @@ const TUPLE = {
   sipaFactory: "0x0000000000000000000000000000000000000013",
 } as unknown as OxideEnvTuple
 
+const env = () =>
+  oxideEnvFromTuple(TUPLE, {
+    resolverOperator: RESOLVER,
+    l1ChainId: 11155111,
+    accountFactory: "0x0000000000000000000000000000000000000002",
+    namePortalRecipient: NO_NAME_PORTAL_RECIPIENT,
+  })
+const input = (fee: bigint) => ({
+  owner: "0x00000000000000000000000000000000000000c3" as Address,
+  nameHash: `0x${"0d".repeat(32)}` as const,
+  l2Address: `0x${"0e".repeat(32)}` as const,
+  fee,
+  beneficiary: "0x00000000000000000000000000000000000000f4" as Address,
+  masterSecret: new Fr(7n),
+})
+
 describe("createRegistrationSipaDeriver", () => {
   it("records the env's resolver operator in the user record without scanning operator logs", async () => {
-    const env = oxideEnvFromTuple(TUPLE, {
-      resolverOperator: RESOLVER,
-      l1ChainId: 11155111,
-      accountFactory: "0x0000000000000000000000000000000000000002",
-      namePortalRecipient: NO_NAME_PORTAL_RECIPIENT,
+    const derive = createRegistrationSipaDeriver({
+      publicClient: {} as never,
+      env: env(),
+      tuple: TUPLE,
     })
-    const derive = createRegistrationSipaDeriver({ publicClient: {} as never, env, tuple: TUPLE })
-    const derived = await derive({
-      owner: "0x00000000000000000000000000000000000000c3",
-      nameHash: `0x${"0d".repeat(32)}`,
-      l2Address: `0x${"0e".repeat(32)}`,
-      fee: 5n,
-      beneficiary: "0x00000000000000000000000000000000000000f4",
-      masterSecret: new Fr(7n),
-    })
+    const derived = await derive(input(5n))
     expect(derived.sipaAddress).toBe("0x00000000000000000000000000000000000000a1")
     expect(derived.recordData.toLowerCase()).toContain(RESOLVER.slice(2).toLowerCase())
     expect(h.fetchSipaResolverOperators).not.toHaveBeenCalled()
+  })
+
+  it("reads the registration implementation once for every fee it derives at", async () => {
+    h.readRegistrationSIPAImplementation.mockClear()
+    const derive = createRegistrationSipaDeriver({
+      publicClient: {} as never,
+      env: env(),
+      tuple: TUPLE,
+    })
+    await Promise.all([0n, 5n, 7n].map((fee) => derive(input(fee))))
+    expect(h.readRegistrationSIPAImplementation).toHaveBeenCalledOnce()
+  })
+
+  it("keeps no failed implementation read", async () => {
+    h.readRegistrationSIPAImplementation.mockClear().mockRejectedValueOnce(new Error("rpc down"))
+    const derive = createRegistrationSipaDeriver({
+      publicClient: {} as never,
+      env: env(),
+      tuple: TUPLE,
+    })
+    await expect(derive(input(5n))).rejects.toThrow("rpc down")
+    await expect(derive(input(5n))).resolves.toMatchObject({ sipaAddress: expect.any(String) })
+    expect(h.readRegistrationSIPAImplementation).toHaveBeenCalledTimes(2)
   })
 })

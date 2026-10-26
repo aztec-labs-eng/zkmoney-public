@@ -102,7 +102,7 @@ export function DepositAddressSheet({
   token: DepositTokenOption
   chainName: string
   phase: DepositSheetPhase
-  /** The address's broadcast has not landed; the ledger is publishing it. */
+  /** The address's broadcast has not landed. Shown only once funds wait on it. */
   publishing?: boolean
   /** Why the address is not here yet, when it is not just slow. */
   creatingNote?: string
@@ -210,9 +210,9 @@ export function DepositAddressSheet({
             address && <L1AddressText address={address} cut />,
           )}
         </DepositFact>
-        {publishing && address && (
+        {address && (
           <DepositFact label="Status">
-            <BroadcastStatusRow address={address} />
+            <span data-testid="deposit-status">Awaiting deposit</span>
           </DepositFact>
         )}
         {live}
@@ -251,7 +251,6 @@ export function DepositAddressSheet({
           "zkm-btn-reset ww-deposit-sheet__addr",
           address && <L1AddressText address={address} />,
         )}
-        {publishing && address && <BroadcastStatusRow address={address} />}
         {live}
       </div>
     )
@@ -267,7 +266,7 @@ export function DepositAddressSheet({
         <TopNavIconButton icon="x" ariaLabel="Close" onClick={onClose} />
       </div>
       <div className="ww-deposit-sheet__head">
-        {phase === "waiting" || phase === "creating" || publishing ? (
+        {phase === "waiting" || phase === "creating" ? (
           <span className="ww-deposit-sheet__coin-spin" aria-busy="true">
             <span
               className={`ww-deposit-sheet__coin-ring ${tabBound ? "is-tab-bound" : "is-safe"}`}
@@ -326,6 +325,8 @@ export function DepositAddressSheet({
             </span>
             {problem !== "limit" && <Spinner size={26} />}
           </div>
+          {/* Funds wait at the address until its broadcast lands. */}
+          {publishing && !problem && address && <BroadcastStatusRow address={address} />}
           <p className="ww-deposit-sheet__note">
             {problem === "limit"
               ? "Recovery sends the whole amount to an Ethereum address you choose. The deposit shows in Activity with a Recover button."

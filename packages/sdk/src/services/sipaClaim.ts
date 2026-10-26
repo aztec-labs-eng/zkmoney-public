@@ -1,29 +1,27 @@
 /**
- * SIPA claim-input reads + sweep-call builder — the contract-touching
- * primitives of the deposit claim path. The broadcast note carries the
- * `shared_secret_salt` + `resweepable` flag; the claim inputs (inbox leaf
- * index + the amount credited on L2) exist solely in the SIPA's L1 `Sweep`
- * event, and the
- * L1→L2 message key needed for the settlement check lives in the portal's
- * `Deposit` event inside the same sweep transaction. Everything here is a
- * read or a calldata builder; the one L2 write-shaped call
- * (`store_deposit`) is a TokenService method because the token
- * contract lives there.
+ * SIPA reads and sweep-call builders: the contract-touching primitives of the deposit claim path.
+ * The claim inputs (inbox index, credited amount, L1→L2 message key) come from the portal's
+ * `Deposit` event, which `sipaChain.ts` reads for every SIPA at once. The one L2 write-shaped call
+ * (`store_deposit`) is a TokenService method because the token contract lives there.
  */
 
 import type { Address, Hex, PublicClient } from "viem"
-import { decodeEventLog, encodeFunctionData, erc20Abi, multicall3Abi, zeroAddress } from "viem"
+import {
+  encodeFunctionData,
+  erc20Abi,
+  multicall3Abi,
+  toFunctionSelector,
+  zeroAddress,
+} from "viem"
 import { Fr } from "@aztec/aztec.js/fields"
-import { EthAddress, type AztecAddress } from "@aztec/aztec.js/addresses"
+import type { AztecAddress } from "@aztec/aztec.js/addresses"
 import type { AztecNode } from "@aztec/aztec.js/node"
 import type { GrumpkinScalar } from "@aztec/foundation/curves/grumpkin"
-import {
-  computeDepositMessageHash,
-  computeSiloedDepositMessageNullifier,
-} from "@oxide/oxide-lib/deposit_message_hashing.js"
+import { MAX_RPC_LEN } from "@aztec/stdlib/interfaces/api-limit"
+import { MerkleTreeId } from "@aztec/stdlib/trees"
+import { computeSiloedDepositMessageNullifier } from "@oxide/oxide-lib/deposit_message_hashing.js"
 import {
   SIPAAbi,
-  OxidePortalEventsAbi,
   encodeDeploySIPA,
   encodeRegistrationProofs,
   encodeLegacyRegistrationProofs,
@@ -58,47 +56,42 @@ export const MULTICALL3_ADDRESS = "0xcA11bde05977b3631167028862bE2a173976CA11" a
 /** Inner calls per Multicall3 `eth_call`: at ~8k gas each a batch stays far under node gas caps. */
 const BALANCE_CALLS_PER_MULTICALL = 1_000
 
+/** What every deposit of one recipient through one token shares in its consumed check. */
+export interface SipaDepositClaimScope {
+  l2Token: AztecAddress
+  masterNullifierHidingKey: GrumpkinScalar
+}
+
 /**
- * Chain-authoritative consumed check for one same-rollup SIPA sweep. The nullifier is derived from
- * the deposit message and the recipient's NHK, then looked up at the live rollup tip; no wallet
- * deposit record or local claimed-index list participates.
+ * Which deposits the chain has consumed, in order, by their L1→L2 message hashes: the `key` each
+ * portal `Deposit` log carries. Each nullifier is derived from that hash and the recipient's NHK,
+ * and they go to the node in batched `findLeavesIndexes` lookups, as many as one request takes,
+ * every request at once.
  */
-export async function isSipaDepositClaimed(
-  node: Pick<AztecNode, "getNullifierMembershipWitness">,
-  params: {
-    l1Portal: Address
-    l1ChainId: bigint
-    l2Token: AztecAddress
-    rollupVersion: bigint
-    recipient: AztecAddress
-    messageSecret: Fr
-    amount: bigint
-    inboxIndex: bigint
-    masterNullifierHidingKey: GrumpkinScalar
-  },
-): Promise<boolean> {
-  // oxide-lib currently resolves its Aztec value classes through a second workspace pin. The
-  // values are wire-identical; keep the nominal-version bridge at this package boundary.
-  const messageHash = await computeDepositMessageHash(
-    {
-      l1Portal: EthAddress.fromString(params.l1Portal),
-      l1ChainId: params.l1ChainId,
-      l2Portal: params.l2Token,
-      rollupVersion: params.rollupVersion,
-    } as never,
-    {
-      sharedSecretSalt: params.messageSecret,
-      recipient: params.recipient,
-      amount: params.amount,
-      messageLeafIndex: new Fr(params.inboxIndex),
-    } as never,
+export async function readSipaDepositsConsumed(
+  node: Pick<AztecNode, "findLeavesIndexes">,
+  scope: SipaDepositClaimScope,
+  messageHashes: readonly Hex[],
+): Promise<boolean[]> {
+  const nullifiers = await Promise.all(
+    messageHashes.map((hash) =>
+      computeSiloedDepositMessageNullifier(
+        scope.l2Token as never,
+        Fr.fromHexString(hash) as never,
+        scope.masterNullifierHidingKey as never,
+      ),
+    ),
   )
-  const nullifier = await computeSiloedDepositMessageNullifier(
-    params.l2Token as never,
-    messageHash,
-    params.masterNullifierHidingKey as never,
+  const batches: (typeof nullifiers)[] = []
+  for (let i = 0; i < nullifiers.length; i += MAX_RPC_LEN) {
+    batches.push(nullifiers.slice(i, i + MAX_RPC_LEN))
+  }
+  const found = await Promise.all(
+    batches.map((batch) =>
+      node.findLeavesIndexes("latest", MerkleTreeId.NULLIFIER_TREE, batch as never),
+    ),
   )
-  return (await node.getNullifierMembershipWitness("latest", nullifier as never)) !== undefined
+  return found.flat().map((leaf) => leaf !== undefined)
 }
 
 /** Cap on the backward sweep scan when no explicit `fromBlock` is given. ~7 days of Sepolia blocks. */
@@ -116,180 +109,6 @@ async function sweepScanWindow(
   const to = toBlock ?? (await publicClient.getBlockNumber({ cacheTime: 0 }))
   const from = fromBlock ?? (to > SWEEP_MAX_LOOKBACK_BLOCKS ? to - SWEEP_MAX_LOOKBACK_BLOCKS : 0n)
   return { from, to }
-}
-
-/** A SIPA `Sweep(index, amount)` event plus the tx that emitted it. */
-export interface SipaSweepEvent {
-  /** L1→L2 inbox leaf index — the claim's `inbox_index`. */
-  index: bigint
-  /** The amount credited on L2: gross minus the sweep fee and the portal's cut — the claim's
-   *  `amount`. */
-  amount: bigint
-  blockNumber: bigint
-  /** The deploy-and-sweep tx; its receipt carries the portal `Deposit` event. */
-  txHash: Hex
-}
-
-/**
- * Read a SIPA's `Sweep` events — the ONLY source of the claim inputs.
- *
- * Bounded and chunked rather than one `earliest → latest` sweep: an unbounded range is rejected by
- * every rate-limited RPC and is slow even where it is allowed. A SIPA can be topped up and re-swept,
- * so this returns EVERY sweep in the window, not just the newest — each inbox index claims
- * independently, and stopping at the first hit would strand the earlier ones.
- *
- * Pass `fromBlock` when the caller knows when the deposit was funded; the default look-back is
- * finite, so a sweep older than it is invisible here. Pass `toBlock` to pin the upper bound —
- * one head shared across many SIPAs, and the value a caller persists as scanned-through.
- */
-export async function readSweepEvents(
-  publicClient: PublicClient,
-  sipa: Address,
-  fromBlock?: bigint,
-  toBlock?: bigint,
-): Promise<SipaSweepEvent[]> {
-  const window = await sweepScanWindow(publicClient, fromBlock, toBlock)
-  const logs = await chunkedContractEvents(
-    publicClient,
-    { address: sipa, abi: SIPAAbi, eventName: "Sweep" },
-    window.from,
-    window.to,
-  )
-  return logs.map(toSweepEvent)
-}
-
-function toSweepEvent(log: unknown): SipaSweepEvent {
-  const { args, blockNumber, transactionHash } = log as {
-    args: { index: bigint; amount: bigint }
-    blockNumber: bigint
-    transactionHash: Hex
-  }
-  return { index: args.index, amount: args.amount, blockNumber, txHash: transactionHash }
-}
-
-/** One SIPA's scan start; without `fromBlock` it takes the finite look-back. */
-export interface SipaScanWindow {
-  sipa: Address
-  fromBlock?: bigint
-}
-
-/**
- * Logs for many SIPAs from one chunked `getLogs` over the union of their windows, grouped by the
- * SIPA `ownerOf` names. Each SIPA keeps only the logs inside its own window, so the result matches
- * one per-SIPA read each. Every window gets an entry, empty when nothing matched.
- */
-async function readLogsByWindow(
-  publicClient: PublicClient,
-  windows: readonly SipaScanWindow[],
-  toBlock: bigint,
-  request: (sipas: Address[]) => {
-    address: Address | Address[]
-    abi: unknown
-    eventName: string
-    args?: unknown
-  },
-  ownerOf: (log: { address: Address; args: Record<string, unknown> }) => unknown,
-): Promise<Map<string, unknown[]>> {
-  const out = new Map<string, unknown[]>()
-  const starts = new Map<string, bigint>()
-  for (const w of windows) {
-    const key = w.sipa.toLowerCase()
-    const { from } = await sweepScanWindow(publicClient, w.fromBlock, toBlock)
-    const known = starts.get(key)
-    starts.set(key, known === undefined || from < known ? from : known)
-    out.set(key, [])
-  }
-  if (starts.size === 0) return out
-  const from = [...starts.values()].reduce((min, b) => (b < min ? b : min))
-  // One address list per call: an RPC that caps filter lists fails the batch, and the caller
-  // reads per SIPA.
-  const logs = await chunkedContractEvents(
-    publicClient,
-    request(windows.map((w) => w.sipa)),
-    from,
-    toBlock,
-  )
-  for (const log of logs) {
-    const key = String(ownerOf(log as never)).toLowerCase()
-    const start = starts.get(key)
-    if (start !== undefined && (log as { blockNumber: bigint }).blockNumber >= start) {
-      out.get(key)!.push(log)
-    }
-  }
-  return out
-}
-
-/** `readSweepEvents` for many SIPAs in one scan, keyed by lowercased SIPA address. */
-export async function readSweepEventsMany(
-  publicClient: PublicClient,
-  windows: readonly SipaScanWindow[],
-  toBlock: bigint,
-): Promise<Map<string, SipaSweepEvent[]>> {
-  const logs = await readLogsByWindow(
-    publicClient,
-    windows,
-    toBlock,
-    (sipas) => ({ address: sipas, abi: SIPAAbi, eventName: "Sweep" }),
-    (log) => log.address,
-  )
-  return new Map([...logs].map(([sipa, l]) => [sipa, l.map(toSweepEvent)]))
-}
-
-export interface SipaRecoveredEvent {
-  /** The recovered token; `0x0` for the ETH path. */
-  token: Address
-  /** Where the funds went — the address the signature named, not the submitter. */
-  target: Address
-  amount: bigint
-  blockNumber: bigint
-  txHash: Hex
-}
-
-export async function readRecoveredEvents(
-  publicClient: PublicClient,
-  sipa: Address,
-  fromBlock?: bigint,
-  toBlock?: bigint,
-): Promise<SipaRecoveredEvent[]> {
-  const window = await sweepScanWindow(publicClient, fromBlock, toBlock)
-  const logs = await chunkedContractEvents(
-    publicClient,
-    { address: sipa, abi: SIPAAbi, eventName: "Recovered" },
-    window.from,
-    window.to,
-  )
-  return logs.map(toRecoveredEvent)
-}
-
-function toRecoveredEvent(log: unknown): SipaRecoveredEvent {
-  const { args, blockNumber, transactionHash } = log as {
-    args: { token: Address; target: Address; amount: bigint }
-    blockNumber: bigint
-    transactionHash: Hex
-  }
-  return {
-    token: args.token,
-    target: args.target,
-    amount: args.amount,
-    blockNumber,
-    txHash: transactionHash,
-  }
-}
-
-/** `readRecoveredEvents` for many SIPAs in one scan, keyed by lowercased SIPA address. */
-export async function readRecoveredEventsMany(
-  publicClient: PublicClient,
-  windows: readonly SipaScanWindow[],
-  toBlock: bigint,
-): Promise<Map<string, SipaRecoveredEvent[]>> {
-  const logs = await readLogsByWindow(
-    publicClient,
-    windows,
-    toBlock,
-    (sipas) => ({ address: sipas, abi: SIPAAbi, eventName: "Recovered" }),
-    (log) => log.address,
-  )
-  return new Map([...logs].map(([sipa, l]) => [sipa, l.map(toRecoveredEvent)]))
 }
 
 /** An ERC-20 `Transfer` into a SIPA — the funding-attribution source. */
@@ -344,23 +163,6 @@ function toFundingTransfer(log: unknown): SipaFundingTransfer {
   return { from: args.from, amount: args.value, blockNumber, txHash: transactionHash }
 }
 
-/** `readFundingTransfers` for many SIPAs in one scan (`to` is an OR filter), keyed by lowercased SIPA. */
-export async function readFundingTransfersMany(
-  publicClient: PublicClient,
-  token: Address,
-  windows: readonly SipaScanWindow[],
-  toBlock: bigint,
-): Promise<Map<string, SipaFundingTransfer[]>> {
-  const logs = await readLogsByWindow(
-    publicClient,
-    windows,
-    toBlock,
-    (sipas) => ({ address: token, abi: erc20Abi, eventName: "Transfer", args: { to: sipas } }),
-    (log) => log.args.to,
-  )
-  return new Map([...logs].map(([sipa, l]) => [sipa, l.map(toFundingTransfer)]))
-}
-
 /**
  * Every SIPA's balance of each token, plus its ETH under `zeroAddress`, through Multicall3. Keyed by
  * lowercased SIPA, then lowercased token. A failed read is absent, so the caller can retry it alone.
@@ -408,39 +210,87 @@ export async function readSipaBalancesMany(
 }
 
 /**
- * Extract the L1→L2 message key for one swept deposit from the sweep tx's
- * receipt: the portal's `Deposit` event whose inbox `index` matches the
- * `Sweep`'s. A relayer batch can carry several sweeps in one Multicall3 tx,
- * so matching on the leaf index (not "first event") is load-bearing.
- * Returns null when no matching event exists (wrong tx / wrong portal).
+ * Which of `sipas` are deployed clones, lowercased, through one Multicall3 call (`eth_getCode` cannot
+ * be batched into one). A call to an address without code succeeds with no data; a clone answers
+ * `intentHash()` or reverts. A sweep deploys its SIPA, so a deployed one was swept or recovered.
  */
-export async function readDepositMessageKey(
+export async function readSipaDeployedMany(
   publicClient: PublicClient,
-  portal: Address,
-  txHash: Hex,
-  inboxIndex: bigint,
-): Promise<Fr | null> {
-  const receipt = await publicClient.getTransactionReceipt({ hash: txHash })
-  for (const log of receipt.logs) {
-    if (log.address.toLowerCase() !== portal.toLowerCase()) continue
-    let decoded: { args: { key: Hex; index: bigint } }
-    try {
-      decoded = decodeEventLog({
-        abi: OxidePortalEventsAbi,
-        eventName: "Deposit",
-        topics: log.topics,
-        data: log.data,
-      }) as never as { args: { key: Hex; index: bigint } }
-    } catch {
-      // Not a Deposit event — skip. (Only the decode is guarded: a matching
-      // event with a key outside the field must throw, not vanish.)
-      continue
-    }
-    if (decoded.args.index === inboxIndex) {
-      return Fr.fromHexString(decoded.args.key)
-    }
-  }
-  return null
+  sipas: readonly Address[],
+  multicall3: Address = MULTICALL3_ADDRESS,
+): Promise<Set<string>> {
+  if (sipas.length === 0) return new Set()
+  const callData = toFunctionSelector("intentHash()")
+  const results = (await publicClient.readContract({
+    address: multicall3,
+    abi: multicall3Abi,
+    functionName: "aggregate3",
+    args: [sipas.map((target) => ({ target, allowFailure: true, callData }))],
+  } as never)) as readonly { success: boolean; returnData: Hex }[]
+  return new Set(
+    sipas
+      .filter((_, i) => !(results[i]!.success && results[i]!.returnData === "0x"))
+      .map((sipa) => sipa.toLowerCase()),
+  )
+}
+
+/** Addresses whose balances one {@link readSipaHoldingsAtHead} call reads, each with its own tokens. */
+export interface SipaHoldingRead {
+  sipa: Address
+  tokens: readonly Address[]
+}
+
+/**
+ * Each SIPA's balance of its own tokens plus its ETH under `zeroAddress`, and the block's timestamp,
+ * in exactly one Multicall3 `aggregate3` `eth_call` (up to `BALANCE_CALLS_PER_MULTICALL` inner
+ * calls; more throws). Keyed like {@link readSipaBalancesMany}. A failed timestamp read throws.
+ */
+export async function readSipaHoldingsAtHead(
+  publicClient: PublicClient,
+  holdings: readonly SipaHoldingRead[],
+  multicall3: Address = MULTICALL3_ADDRESS,
+): Promise<{ timestamp: bigint; balances: Map<string, Map<string, bigint>> }> {
+  const reads = holdings.flatMap(({ sipa, tokens }) => [
+    ...tokens.map((token) => ({
+      sipa,
+      token,
+      address: token,
+      abi: erc20Abi,
+      functionName: "balanceOf",
+      args: [sipa],
+    })),
+    {
+      sipa,
+      token: zeroAddress,
+      address: multicall3,
+      abi: multicall3Abi,
+      functionName: "getEthBalance",
+      args: [sipa],
+    },
+  ])
+  if (reads.length + 1 > BALANCE_CALLS_PER_MULTICALL)
+    throw new Error(`${reads.length + 1} balance reads exceed one Multicall3 call`)
+  const results = (await publicClient.multicall({
+    contracts: [
+      { address: multicall3, abi: multicall3Abi, functionName: "getCurrentBlockTimestamp" },
+      ...reads,
+    ],
+    multicallAddress: multicall3,
+    allowFailure: true,
+    // Zero turns viem's chunking off.
+    batchSize: 0,
+  } as never)) as { status: string; result?: unknown; error?: unknown }[]
+  const [stamp, ...answers] = results
+  if (stamp?.status !== "success") throw stamp?.error ?? new Error("block timestamp read failed")
+  const balances = new Map(
+    holdings.map(({ sipa }) => [sipa.toLowerCase(), new Map<string, bigint>()]),
+  )
+  reads.forEach(({ sipa, token }, i) => {
+    const answer = answers[i]
+    if (answer?.status === "success")
+      balances.get(sipa.toLowerCase())!.set(token.toLowerCase(), answer.result as bigint)
+  })
+  return { timestamp: stamp.result as bigint, balances }
 }
 
 /** Where a SIPA's current funding sits between the deposit floor and the per-transaction cap. */

@@ -423,19 +423,18 @@ describe("sharesFor", () => {
   })
 })
 
-describe("MoveFundsSheet, fees there and back", () => {
+describe("MoveFundsSheet, the fee to move in", () => {
   const PAYBACK =
-    /At 5\.5% APY it takes about (\d+ \w+) to earn back the \$4\.00 in fees to move to savings and back\./
-  it("warns when a move in takes over a year to earn back its fees there and back", async () => {
-    // Fees of $2 each way on top: $10 in lands $10, which earns $4 back in about six years at 5.5%.
+    /At 5\.5% APY it takes about (\d+ \w+) to earn back the \$2\.00 fee to move to savings\./
+  it("warns when a move in takes over a year to earn back its fee", async () => {
+    // A $2 fee on top: $10 in lands $10, which earns $2 back in about three years at 5.5%.
     act(() => root.render(<MoveFundsSheet direction="in" onClose={() => {}} />))
     type("10")
     await settle()
-    const back = (10n * ONE * ONE) / (105n * 10n ** 16n)
-    expect(state.quote).toHaveBeenCalledWith("out", back)
+    expect(state.quote).not.toHaveBeenCalledWith("out", expect.anything())
     const warning = host.querySelector(".ww-withdraw__warning")
     expect(warning?.textContent).toContain(
-      "At 5.5% APY it takes about 6 years to earn back the $4.00 in fees to move to savings and back.",
+      "At 5.5% APY it takes about 3 years to earn back the $2.00 fee to move to savings.",
     )
     expect(host.textContent).toContain("Current APY 5.5%.")
     expect(host.textContent).not.toContain("variable")

@@ -22,6 +22,7 @@ import {
   type AccountServiceClient,
 } from "@obsidion/front-core"
 import { proveGoldenTicketInBrowser, warmGoldenTicketProver } from "../paylink/goldenTicketProver"
+import { rememberTicketSpent } from "../paylink/ticketSpent"
 
 export type GoldenTicketOutcome =
   | "created"
@@ -168,6 +169,8 @@ export async function redeemGoldenTicketForLink(args: {
     // The service may have refused this root, so a retry reads the witness again.
     forgetPrepared(args.wallet, args.fragment)
     if (ticketsPaused(err)) return { status: "unavailable", amount }
+    if (err instanceof AccountServiceError && err.message.includes("ticket_spent"))
+      rememberTicketSpent(args.fragment)
     throw err
   }
 }

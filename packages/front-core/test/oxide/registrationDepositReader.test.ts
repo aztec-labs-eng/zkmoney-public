@@ -11,6 +11,8 @@ const DAI = 10n ** 18n
 const CUT = DAI / 4n
 /** The registration implementation's `depositFee()`: the relayer's take on a sweep. */
 const SWEEP = DAI / 2n
+/** The rail's store; the floor never reads it. */
+const STORE = { load: async () => {}, get: () => null }
 
 /** Chain stub: the schedule immutables, the portal's cut and the implementation's sweep fee. */
 function client(values: { min: bigint; fee: bigint; fail?: boolean; cutFail?: boolean }) {
@@ -34,6 +36,7 @@ describe("registration deposit floor", () => {
       registrationImplementation: REGISTRATION_IMPL,
       registry: REGISTRY,
       portal: PORTAL,
+      store: STORE,
     })
     // 5 DAI against the 11 floor is the bug this guards: min+fee, not the mirrored constants.
     expect(await reader.floor(TOKEN, "0xacc1")).toBe(11n * DAI)
@@ -46,6 +49,7 @@ describe("registration deposit floor", () => {
       registrationImplementation: REGISTRATION_IMPL,
       registry: REGISTRY,
       portal: PORTAL,
+      store: STORE,
       termsFor: (account) =>
         account === "0xsigned" ? { fee: SWEEP, minDeposit: 2n * DAI } : undefined,
     })
@@ -60,6 +64,7 @@ describe("registration deposit floor", () => {
       registrationImplementation: REGISTRATION_IMPL,
       registry: REGISTRY,
       portal: PORTAL,
+      store: STORE,
       termsFor: () => ({ fee: 1n * DAI, minDeposit: CUT }),
     })
     expect(await reader.floor(TOKEN, "0xwaived")).toBe(1n * DAI + CUT + 1n)
@@ -72,6 +77,7 @@ describe("registration deposit floor", () => {
       registrationImplementation: REGISTRATION_IMPL,
       registry: REGISTRY,
       portal: PORTAL,
+      store: STORE,
       termsFor: (account) =>
         account === "0xshort" ? { fee: SWEEP - 1n, minDeposit: 2n * DAI } : undefined,
     })
@@ -87,6 +93,7 @@ describe("registration deposit floor", () => {
       registrationImplementation: REGISTRATION_IMPL,
       registry: REGISTRY,
       portal: PORTAL,
+      store: STORE,
     })
     await reader.floor(TOKEN, "0xacc1")
     await reader.floor(TOKEN, "0xacc1")
@@ -107,6 +114,7 @@ describe("registration deposit floor", () => {
       registrationImplementation: REGISTRATION_IMPL,
       registry: REGISTRY,
       portal: PORTAL,
+      store: STORE,
     })
     expect(await reader.floor(TOKEN, "0xacc1")).toBeUndefined()
     values.cutFail = false
@@ -121,6 +129,7 @@ describe("registration deposit floor", () => {
       registrationImplementation: REGISTRATION_IMPL,
       registry: REGISTRY,
       portal: PORTAL,
+      store: STORE,
     })
     expect(await reader.floor(TOKEN, "0xacc1")).toBeUndefined()
     await expect(reader.scheduleFee()).rejects.toThrow()
@@ -130,24 +139,42 @@ describe("registration deposit floor", () => {
   })
 })
 
-describe("registration deposit balance", () => {
-  it("reads the address in whichever accepted token funds it, in fee-token units", async () => {
-    const USDC = "0x00000000000000000000000000000000000000c0"
-    const readContract = vi.fn(async ({ address }: { address: string }) =>
-      address === USDC ? 15_000_000n : 0n,
-    )
-    const reader = createRegistrationDepositReader({
-      publicClient: { readContract } as unknown as PublicClient,
+describe("registration deposit state", () => {
+  const SIPA = "0x0000000000000000000000000000000000005195"
+  const reader = (record: Record<string, unknown> | null) =>
+    createRegistrationDepositReader({
+      publicClient: {} as PublicClient,
       registrationImplementation: REGISTRATION_IMPL,
       registry: REGISTRY,
       portal: PORTAL,
-      fundingTokens: [
-        { address: TOKEN, symbol: "DAI", decimals: 18 },
-        { address: USDC, symbol: "USDC", decimals: 6 },
-      ],
+      store: { load: async () => {}, get: () => record as never },
     })
-    expect(await reader.readBalance("0x0000000000000000000000000000000000005195", TOKEN)).toBe(
+
+  it("reads the balance the rail last observed, in fee-token units", async () => {
+    expect(await reader({ heldBalance: (15n * DAI).toString() }).readBalance(SIPA, TOKEN)).toBe(
       15n * DAI,
     )
+  })
+
+  it("leaves the balance unread until the rail has observed the address", async () => {
+    await expect(reader({ phase: "broadcast" }).readBalance(SIPA, TOKEN)).rejects.toThrow(
+      "not observed",
+    )
+    await expect(reader(null).readBalance(SIPA, TOKEN)).rejects.toThrow("not observed")
+  })
+
+  it("reads the sweeps from the record's ledger, else its sweep tx, else none", async () => {
+    expect(
+      await reader({ sweeps: [{ sweepTxHash: "0x01" }, { sweepTxHash: "0x02" }] }).readSweeps(SIPA),
+    ).toEqual([{ txHash: "0x01" }, { txHash: "0x02" }])
+    expect(await reader({ sweepTxHash: "0x03" }).readSweeps(SIPA)).toEqual([{ txHash: "0x03" }])
+    expect(await reader(null).readSweeps(SIPA)).toEqual([])
+  })
+
+  it("names the funding transfer once the rail attributed it", async () => {
+    expect(
+      await reader({ fundingTxHash: "0xf0", heldBalance: "7" }).readFunding(SIPA, TOKEN),
+    ).toEqual([{ amount: 7n, txHash: "0xf0" }])
+    expect(await reader({ heldBalance: "7" }).readFunding(SIPA, TOKEN)).toEqual([])
   })
 })

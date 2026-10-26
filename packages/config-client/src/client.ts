@@ -225,14 +225,13 @@ export function resolveVersion(
 }
 
 /**
- * The node of every portal that left its rollup: each other supported version on another node, keyed by the
- * lowercase portals it names. A migration from such a portal reads its rollup through this node.
+ * Source nodes for portals explicitly named by other supported versions in this document.
+ * A previous-generation reference does not select sources in this reader.
  */
 export function retiredRollupNodes(profile: ConfigProfile): Map<string, string> {
-  const { nodeUrl } = resolveVersion(profile).version
   const nodes = new Map<string, string>()
   for (const [id, version] of Object.entries(profile.versions)) {
-    if (id === profile.current || !isSupportedVersion(version) || version.nodeUrl === nodeUrl) continue
+    if (id === profile.current || !isSupportedVersion(version)) continue
     for (const portal of [version.oxide.portal, ...(version.assets ?? []).map((a) => a.portal)])
       nodes.set(portal.toLowerCase(), version.nodeUrl)
   }

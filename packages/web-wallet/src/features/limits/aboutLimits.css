@@ -12,8 +12,10 @@
   gap: 8px;
   min-width: 0;
 }
+/* The 44px toggle already pads the title, so the space above the line makes up the difference. */
 .ww-about-limits__section + .ww-about-limits__section {
-  padding-top: 8px;
+  margin-top: 4px;
+  padding-top: 0;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
 }
 .ww-about-limits__title {
@@ -52,6 +54,7 @@
 .ww-about-limits__toggle:focus-visible,
 .ww-about-limits__status:focus-visible,
 .ww-about-limits__retry:focus-visible,
+.ww-about-limits__more:focus-visible,
 .ww-info-button:focus-visible {
   outline: 2px solid var(--accent-green, #6c9);
   outline-offset: 2px;
@@ -104,6 +107,17 @@
   color: var(--accent-green, #6c9);
   font-size: 14px;
   font-weight: 600;
+}
+.ww-about-limits__more {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 6px;
+  min-height: 44px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: underline;
 }
 
 /* Info icon after a limit or reason. It inherits the text's metrics: one line tall, glyph one em. */

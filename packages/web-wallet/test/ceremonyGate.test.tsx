@@ -55,6 +55,16 @@ const extension = (answers: boolean) => {
 }
 const MAC_SAFARI_UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.4 Safari/605.1.15"
+const WINDOWS_EDGE_UA =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0"
+const WINDOWS_EDGE: LaptopCreation = {
+  local: true,
+  os: "windows",
+  row: "windowsEdgeBrave",
+  managers: ["1password"],
+  withdrawn: [],
+  chromeTip: "gpm",
+}
 
 const h = vi.hoisted(() => ({
   probePhoneReach: vi.fn(async () => "unknown"),
@@ -347,7 +357,7 @@ describe("useCeremonyGate", () => {
           purpose: "create",
           unheld: PICKS.macComputer,
           openOn: "key",
-          unfinished: true,
+          reopened: "blocked",
         })
         .catch(() => {})
     })
@@ -356,7 +366,7 @@ describe("useCeremonyGate", () => {
     if (state.kind !== "awaiting-action") throw new Error("expected the sheet")
     // A way back to the sheet wins over the pick that was made before it.
     expect(state.openOn).toBe("key")
-    expect(state.unfinished).toBe(true)
+    expect(state.reopened).toBe("blocked")
     await act(async () => handle.cancel())
   })
 
@@ -425,6 +435,44 @@ describe("useCeremonyGate", () => {
     await act(async () => state.proceed("key"))
     await flush()
     expect(settled()).toMatchObject({ choice: "key", route: "security-key" })
+  })
+
+  describe("on Windows, where the phone and the key are one option", () => {
+    const phoneOrKey: UnheldPick = {
+      choice: "phone-or-key",
+      supported: [...PICKS.phone.supported, ...PICKS.key.supported],
+    }
+    beforeEach(() => {
+      vi.spyOn(navigator, "userAgent", "get").mockReturnValue(WINDOWS_EDGE_UA)
+      h.probePhoneReach.mockResolvedValue("ok")
+      h.probeLaptopCreation.mockResolvedValue(WINDOWS_EDGE)
+    })
+
+    it("a pick of that option behind the same managers passes", async () => {
+      await mount("laptop")
+      const result = await act(() => handle.gate({ purpose: "create", unheld: phoneOrKey }))
+      expect(result).toMatchObject({ choice: "phone-or-key", route: "phone" })
+      expect(container.textContent).toBe("idle")
+    })
+
+    it("a phone or key pick from a sheet that drew them apart holds the sheet on the one option", async () => {
+      await mount("laptop")
+      for (const unheld of [PICKS.phone, PICKS.key]) {
+        const { state } = await heldFor(unheld)
+        expect(state.openOn).toBe("phone-or-key")
+        await act(async () => handle.cancel())
+      }
+    })
+
+    it("that pick with no phone in reach holds the sheet on the key", async () => {
+      h.probePhoneReach.mockResolvedValue("no-hybrid")
+      await mount("laptop")
+      const { state, settled } = await heldFor(phoneOrKey)
+      expect(state.openOn).toBe("key")
+      await act(async () => state.proceed("key"))
+      await flush()
+      expect(settled()).toMatchObject({ choice: "key", route: "security-key" })
+    })
   })
 
   it("keeps the sheet's security-key pick where a phone is reachable", async () => {

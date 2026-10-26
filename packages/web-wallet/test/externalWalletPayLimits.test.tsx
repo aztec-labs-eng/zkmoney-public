@@ -10,6 +10,7 @@ import { parseUnits } from "viem"
 import type { RequestInlinePacket } from "@obsidion/front-core"
 import { shortL1Addr } from "../src/ui/format"
 import type { LinkDeployment } from "../src/features/requests/accountlessRequest"
+import * as copy from "../src/features/limits/limitsCopy"
 
 const SIPA = `0x${"aa".repeat(20)}`
 const L1_TOKEN = `0x${"22".repeat(20)}` as const
@@ -162,7 +163,7 @@ const gotIt = () =>
   )!
 const capacityWarning = () => document.querySelector("[data-testid='address-capacity-warning']")
 const panel = () => document.querySelector("[data-testid='funding-capacity-panel']")
-const aboutLimits = () => document.querySelector("dialog[aria-label='About limits']")
+const aboutLimits = () => document.querySelector(`dialog[aria-label="${copy.SHEET_TITLE}"]`)
 /** Opens the limit's details from `scope` and returns them. */
 const openLimit = async (scope: ParentNode = document) => {
   await click(
@@ -187,7 +188,7 @@ describe("ExternalWalletPayModal limits", () => {
     expect(maxSend(details)).toBe("2,500 TEST")
     // The credit at the maximum send, net of the current deposit fee.
     expect(maxCredit(details)).toBe("2,499.65 TEST")
-    expect(details.textContent).toContain("counts 1 TEST as $1")
+    expect(details.textContent).toContain(copy.LIMIT_NOTE)
     await act(async () => {
       details.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
     })
@@ -351,7 +352,7 @@ describe("ExternalWalletPayModal limits", () => {
       vi.spyOn(console, "warn").mockImplementation(() => {})
       await render(packet("100"))
       await click(panel()!.querySelector("[data-testid='about-limits-link']")!)
-      const sheet = document.querySelector("dialog[aria-label='About limits']")!
+      const sheet = document.querySelector(`dialog[aria-label="${copy.SHEET_TITLE}"]`)!
       expect(
         sheet
           .querySelector("[data-testid='about-limits-capacity-toggle']")!

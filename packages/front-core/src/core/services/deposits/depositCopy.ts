@@ -19,6 +19,8 @@ export interface DepositPhaseCopy {
 const AWAITING: DepositPhaseCopy = { pill: "Awaiting funds", status: "Awaiting funds" }
 const RECEIVING: DepositPhaseCopy = { pill: "Receiving", status: "Receiving", live: "Receiving" }
 const CREDITING: DepositPhaseCopy = { pill: "Crediting", status: "Crediting", live: "Crediting" }
+// A frozen portal never credits a swept deposit: it leaves only by refund, so nothing is in progress.
+const REFUNDABLE: DepositPhaseCopy = { pill: "Refundable", status: "Refund it with Withdraw" }
 
 export const DEPOSIT_PHASE_COPY: Readonly<Record<SIPADepositPhase, DepositPhaseCopy>> = {
   resolved: AWAITING,
@@ -34,6 +36,10 @@ export const DEPOSIT_PHASE_COPY: Readonly<Record<SIPADepositPhase, DepositPhaseC
 }
 
 /** A deposit address nobody has sent to yet is awaiting funds, whatever phase it was created in. */
-export function depositPhaseCopy(record: SIPADepositRecord): DepositPhaseCopy {
+export function depositPhaseCopy(
+  record: SIPADepositRecord,
+  opts: { portalFrozen?: boolean } = {},
+): DepositPhaseCopy {
+  if (opts.portalFrozen && record.phase === "pendingClaim") return REFUNDABLE
   return isUnfundedSipaDeposit(record) ? AWAITING : DEPOSIT_PHASE_COPY[record.phase]
 }

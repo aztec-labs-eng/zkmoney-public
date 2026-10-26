@@ -61,12 +61,6 @@ export interface ContractServiceOptions {
    * `oxide` pointer in profile mode, else no overlay.
    */
   oxideEnvProfile?: OxideEnvProfile | null
-  /**
-   * Generation seam for hardcoded artifacts: return the canonical generation's
-   * compiled artifact JSON for a contract, or null to use this branch's
-   * compilation.
-   */
-  resolveGenerationArtifact?: (contract: ContractName) => unknown | null
   resolveClassArtifact?: (classId: string) => Promise<ContractArtifact>
   /** Every class id the reviewed artifact manifest holds under an artifact name, e.g. "PaylinkDirect". */
   listClassIds?: (artifactName: string) => Promise<string[]>
@@ -463,9 +457,6 @@ export interface ZkProofClaimInput {
     public_inputs: string[]
   }
 }
-
-// ── Generation manifest ──────────────────────────────────────────────
-export type { GenerationStatus, GenerationManifestEntry, GenerationServices } from "./generations.js"
 
 export type {
   RegistrationIntent,

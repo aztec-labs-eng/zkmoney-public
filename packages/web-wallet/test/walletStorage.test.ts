@@ -272,6 +272,30 @@ describe("readFromOtherDatabases", () => {
     expect(dbs.db("111").held).toBe(false)
   })
 
+  it("fails a strict read on a database held elsewhere or one whose read fails, and closes it", async () => {
+    dbs.db("111").state.set("k", "one")
+    dbs.db("222").state.set("k", "two")
+    await reopen()
+    const held = await dbs.open("222", true)
+    try {
+      await expect(readFromOtherDatabases("k", { strict: true })).rejects.toBeDefined()
+    } finally {
+      await held.close()
+    }
+    const open = dbs.open.bind(dbs)
+    dbs.open = async (version, persistent) => {
+      const db = await open(version, persistent)
+      return version === "111" ? { ...db, get: async () => Promise.reject(new Error("disk")) } : db
+    }
+    try {
+      await expect(readFromOtherDatabases("k", { strict: true })).rejects.toThrow("disk")
+    } finally {
+      delete (dbs as { open?: unknown }).open
+    }
+    expect(dbs.db("111").held).toBe(false)
+    expect(await readFromOtherDatabases("k", { strict: true })).toEqual(["one", "two"])
+  })
+
   it("reads nothing, and opens nothing, from a store that is not persistent", async () => {
     dbs.db("111").state.set("k", "one")
     await reopen(ROLLUP, false)

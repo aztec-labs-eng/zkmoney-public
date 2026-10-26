@@ -24,6 +24,7 @@ import {
 import { showErrorModal, showReportableError } from "../../errors/errorModal"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { whenLabel } from "../../ui/detailRows"
+import { FROZEN_COPY, useWalletFrozen } from "../actionGate"
 import { useUserFlowActive } from "../provingGate"
 import { PAYLINK_WINDOW_MESSAGE } from "./claimWindow"
 import type { CreatorLinkAction } from "./creatorLinkActions"
@@ -86,6 +87,7 @@ export function LinkRecoverModal({
 }) {
   const copy = COPY[action]
   const busy = useUserFlowActive()
+  const frozen = useWalletFrozen()
   const busyLabel = useBusyLabel()
   const windowSec = action === "cancel" ? refundableUntilSec : untilClaimableSec
   const [phase, setPhase] = useState<"form" | "working">("form")
@@ -96,6 +98,10 @@ export function LinkRecoverModal({
   }
 
   const submit = async () => {
+    if (frozen) {
+      showErrorModal(FROZEN_COPY)
+      return
+    }
     if (!deps) {
       showReportableError(
         new Error("The wallet is still loading. Try again in a moment."),

@@ -12,7 +12,6 @@ import { SIPADepositStore } from "../../../src/core/services/deposits/SIPADeposi
 import { TransactionTracker } from "../../../src/core/services/transactions/TransactionTracker"
 import {
   ReorgMonitor,
-  runFreezeSweep,
   type ConfirmationOutcome,
   type ReorgMonitorDeps,
 } from "../../../src/core/services/coordination/ReorgMonitor"
@@ -513,18 +512,6 @@ describe("ReorgMonitor.runPass", () => {
     ])
   })
 
-  it("a frozen probe skips the pass entirely", async () => {
-    const { chain, deps } = setup()
-    await seedRow(TX, { status: "success", blockNumber: 42 })
-    chain.script(TX, { status: "dropped" })
-
-    const summary = await runPass({ ...deps, isFrozen: async () => true })
-
-    expect(summary).toBeNull()
-    expect(chain.calls).toEqual([])
-    expect((await rowByHash(TX)).status).toBe("success")
-  })
-
   it("requestPass triggers landing mid-pass coalesce into one trailing re-run", async () => {
     const { deps } = setup()
     let release!: () => void
@@ -553,64 +540,6 @@ describe("ReorgMonitor.runPass", () => {
     await new Promise((r) => setTimeout(r, 0))
     await new Promise((r) => setTimeout(r, 0))
     expect(passes).toBe(2)
-  })
-
-  it("runFreezeSweep terminal-fails non-finalized rows and emits exit-required, no receipt fetches", async () => {
-    const { chain, outcomes, deps } = setup()
-    await seedRow(TX, { status: "success", blockNumber: 42, networkId: "net-A" }) // at risk
-    await seedRow(TX2, { status: "pending", networkId: "net-A" }) // at risk
-    await seedRow(TX3, { status: "failed", networkId: "net-A" }) // already failed: nothing to exit
-    const finTx = "0x" + "44".repeat(32)
-    await seedRow(finTx, { status: "success" })
-    await TransactionStorage.get().updateTransaction(
-      (tx) => tx.txHash === finTx,
-      (tx) => {
-        tx.tier = "finalized"
-      },
-    )
-    const foreignTx = "0x" + "55".repeat(32)
-    await seedRow(foreignTx, { status: "success", networkId: "net-B" })
-
-    const adapter = new InMemoryStorageAdapter()
-    const withdrawals = WithdrawalStorage.get(adapter)
-    const wTx = ("0x" + "66".repeat(32)) as `0x${string}`
-    await withdrawals.create({
-      localId: "wdraw_f",
-      recipient: "0x" + "11".repeat(20),
-      recipientProvenance: "saved-recipient",
-      amount: "1",
-      tokenSymbol: "DAI",
-      phase: "submitting",
-      startTime: 1,
-      networkId: "net-A",
-    } as Parameters<typeof withdrawals.create>[0])
-    await withdrawals.markMined("wdraw_f", wTx, 42, "1000")
-
-    const result = await runFreezeSweep({
-      transactionStorage: TransactionStorage.get(),
-      withdrawalStorage: withdrawals,
-      networkId: "net-A",
-      onOutcome: (o) => outcomes.push(o),
-    })
-
-    expect(chain.calls).toEqual([])
-    expect((await rowByHash(TX)).status).toBe("failed")
-    expect((await rowByHash(TX)).reorgEpoch).toBe(1)
-    expect((await rowByHash(TX2)).status).toBe("failed")
-    expect((await rowByHash(finTx)).status).toBe("success")
-    expect((await rowByHash(foreignTx)).status).toBe("success")
-    const w = withdrawals.get("wdraw_f")
-    expect(w?.phase).toBe("failed")
-    expect(w?.error).toBe("Generation frozen — withdraw via exit flow")
-    expect(result.swept).toBe(3)
-    expect(outcomes).toEqual(
-      expect.arrayContaining([
-        { type: "exit-required", txHash: TX },
-        { type: "exit-required", txHash: TX2 },
-        { type: "exit-required", txHash: wTx },
-      ]),
-    )
-    expect(outcomes).toHaveLength(3)
   })
 
   it("withdrawal and SIPA records reconcile through their own demote paths", async () => {

@@ -7,7 +7,7 @@ import {
 import { CONFIG_STORAGE_KEY_PREFIX } from "@obsidion/core/constants"
 import { getActiveStorageId } from "./activeStorage"
 import { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX } from "./storageKeys"
-import { walletStorage } from "./walletStorage"
+import { readFromOtherDatabases, walletStorage } from "./walletStorage"
 
 export { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX }
 
@@ -49,6 +49,14 @@ export class WebStorageAdapter implements IStorageAdapter {
 
   async removeItem(key: string): Promise<void> {
     await walletStorage.commitRemove(this.scoped(key))
+  }
+
+  /**
+   * What this account kept under `key` in every other rollup's database. A database it cannot read
+   * fails the read (`readFromOtherDatabases`'s `strict`).
+   */
+  getItemFromOtherDatabases(key: string): Promise<string[]> {
+    return readFromOtherDatabases(this.scoped(key), { strict: true })
   }
 
   /** Wipes the active account's namespace, not other accounts' or the global keys. No-op without an account. */

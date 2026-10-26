@@ -80,6 +80,22 @@ describe("EarningsCalculator", () => {
     expect(onMove).toHaveBeenCalledWith(500)
   })
 
+  it("offers the top-up, not the start, once Savings holds the start", () => {
+    const onMove = vi.fn()
+    const add = () =>
+      [...host.querySelectorAll("button")].find((b) => b.textContent?.startsWith("Add "))
+    act(() =>
+      root.render(
+        <EarningsCalculator apy={0.055} balances={{ savings: 20n * 10n ** 18n }} onMove={onMove} />,
+      ),
+    )
+    expect(field("Starting amount").value).toBe("$20")
+    act(() => add()!.click())
+    expect(onMove).toHaveBeenCalledWith(50)
+    type(field("Monthly top-up"), "$0")
+    expect(add()).toBeUndefined()
+  })
+
   it("projects at the rate the user types, shown as typed until the field blurs", () => {
     act(() => root.render(<EarningsCalculator apy={0.055} onMove={() => {}} />))
     const atCurrent = dollars(total())

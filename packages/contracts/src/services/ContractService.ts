@@ -158,20 +158,6 @@ export class ContractService {
     ContractService.instance = null
   }
 
-  /**
-   * Adopt an externally-built instance as the singleton. The generation seam:
-   * on a v4-canonical device the platform builds the v4 ContractService (from
-   * the frozen v4 sdk, with v4 artifacts + node/PXE) and installs it here, so
-   * every `getInstance()` caller in the current stack — TokenService /
-   * ServiceBase registration, useAsset, etc. — operates on v4 data instead of
-   * loading v5 artifacts against a v4 node (which fails the bb VK size check).
-   * Idempotent-ish: a later `getInstance(...)` with args won't recreate while
-   * this is set.
-   */
-  public static adoptInstance(instance: ContractService): void {
-    ContractService.instance = instance
-  }
-
   private constructor(
     storage: IContractServiceStorage | undefined,
     node: AztecNode | undefined,
@@ -640,7 +626,7 @@ export class ContractService {
 
     // 4. The bundled artifact, which every name resolves against — throws when none is bundled.
     if (resolvedName) {
-      return getHardcodedArtifact(resolvedName, this.options)
+      return getHardcodedArtifact(resolvedName)
     }
 
     throw new Error(
@@ -662,7 +648,7 @@ export class ContractService {
     if (contractName) {
       const override = this.artifactOverrides.get(contractName)
       if (override && (await classIdOf(override)) === classId) return override
-      const bundled = await getHardcodedArtifact(contractName, this.options)
+      const bundled = await getHardcodedArtifact(contractName)
       if ((await classIdOf(bundled)) === classId) return bundled
     }
     if (!this.options.resolveClassArtifact) {
@@ -699,7 +685,7 @@ export class ContractService {
 
   private async listKnownClassIds(contractName: ContractName): Promise<string[]> {
     const override = this.artifactOverrides.get(contractName)
-    const bundled = await getHardcodedArtifact(contractName, this.options)
+    const bundled = await getHardcodedArtifact(contractName)
     const ids = [
       ...(override ? [await classIdOf(override)] : []),
       await classIdOf(bundled),

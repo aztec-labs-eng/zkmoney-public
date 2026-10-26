@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 const m = vi.hoisted(() => ({
-  entries: [] as { tag?: string; address: string }[],
+  entries: [] as { tag?: string; address: string; autoAdded?: boolean }[],
   typeAhead: vi.fn(),
   commit: vi.fn(),
   addContact: vi.fn(),
@@ -82,6 +82,13 @@ describe("saveUnsavedContact", () => {
     m.entries = [{ tag: "grace", address: ADDRESS }]
     expect(await saveUnsavedContact(unsavedContact("grace", ADDRESS))).toBe("added")
     expect(m.addContact).not.toHaveBeenCalled()
+  })
+
+  it("approves the row the wallet added for the tag", async () => {
+    m.commit.mockResolvedValue(resolved())
+    m.entries = [{ tag: "grace", address: ADDRESS, autoAdded: true }]
+    expect(await saveUnsavedContact(unsavedContact("grace", ADDRESS))).toBe("added")
+    expect(m.addContact).toHaveBeenCalledWith("grace", ADDRESS, undefined, undefined, "grace")
   })
 
   it("throws when storage refuses the write", async () => {

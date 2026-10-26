@@ -47,6 +47,10 @@ vi.mock("../src/features/contacts/contactPay", () => ({
   runContactPay: vi.fn(),
 }))
 vi.mock("../src/features/contacts/SendScreen", () => ({ SendScreen: () => null }))
+vi.mock("../src/features/actionGate", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/features/actionGate")>()),
+  useActionVerdict: () => "open",
+}))
 vi.mock("../src/features/identity/walletIdentity", () => ({
   loadOnboardedIdentity: () => ({ handle: "me" }),
   loadWalletIdentity: () => ({ handle: "me", address: "0xme", claimedAt: 1 }),

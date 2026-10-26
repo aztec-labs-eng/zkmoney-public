@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Outlet, useLocation, useNavigate } from "react-router-dom"
 import { AnalyticsConsentPrompt } from "../features/onboarding/AnalyticsConsentModal"
 import { useRegistrationDepositOwed } from "../features/onboarding/openRegistration"
+import { useActionGuard, useWalletFrozen, type WalletAction } from "../features/actionGate"
 import { useTagUnpicked } from "../features/onboarding/tagPick"
 import { TagSearchBar } from "../features/contacts/TagSearchBar"
 import { loadOnboardedIdentity, loadWalletIdentity } from "../features/identity/walletIdentity"
@@ -87,6 +88,14 @@ const navItems = (items: NavItem[], savings: boolean) =>
   items.filter((item) => item.path !== "/savings" || savings)
 /** Routes that move money: with a name still waiting for its deposit they lead to Deposit. */
 const ACTIVATION_GATED = new Set(["/deposit", "/send", REQUESTS_PATH, "/withdraw"])
+/** Nav items a frozen wallet closes. */
+const FROZEN_CLOSED = new Set(["/savings", "/deposit", "/send", REQUESTS_PATH])
+/** Nav items that start an action. */
+const NAV_ACTIONS: Record<string, WalletAction> = {
+  "/deposit": "deposit",
+  "/send": "send",
+  "/withdraw": "withdraw",
+}
 
 function activePath(pathname: string): string {
   // Receive and Contacts have no nav item: Requests is the way in.
@@ -140,6 +149,9 @@ export function SidebarLayout({
   const location = useLocation()
   const identity = loadWalletIdentity()
   const awaitingActivation = useRegistrationDepositOwed()
+  const guard = useActionGuard()
+  const frozen = useWalletFrozen()
+  const closed = (item: NavItem) => frozen && FROZEN_CLOSED.has(item.path)
   // An unpicked drawn tag is never shown: no account button and no share.
   const unpicked = useTagUnpicked()
   const active = activePath(location.pathname)
@@ -216,8 +228,10 @@ export function SidebarLayout({
     setOpen(false)
     setNotificationsOpen(false)
     if (awaitingActivation) navigate("/deposit")
-    else navigate("/receive")
-  }, [awaitingActivation, navigate, setNotificationsOpen])
+    // Locked, nothing can tell yet whether the upgrade comes first: the route asks once unlocked.
+    else if (!unlocked) navigate("/receive")
+    else guard("receive", () => navigate("/receive"))
+  }, [awaitingActivation, navigate, setNotificationsOpen, guard, unlocked])
   const openScanner = useCallback<ShellAction>(
     (event) => {
       if (!scannerAvailable) return
@@ -253,7 +267,10 @@ export function SidebarLayout({
 
   const go = (item: NavItem) => {
     setOpen(false)
-    navigate(awaitingActivation && ACTIVATION_GATED.has(item.path) ? "/deposit" : item.path)
+    if (awaitingActivation && ACTIVATION_GATED.has(item.path)) return navigate("/deposit")
+    const action = NAV_ACTIONS[item.path]
+    if (action && unlocked) guard(action, () => navigate(item.path))
+    else navigate(item.path)
   }
 
   const navButton = (item: NavItem) => (
@@ -264,6 +281,7 @@ export function SidebarLayout({
         .filter(Boolean)
         .join(" ")}
       aria-current={active === item.path ? "page" : undefined}
+      disabled={closed(item)}
       onClick={() => go(item)}
     >
       {phone ? <PhoneIcon name={item.icon} /> : <Icon name={item.icon} size={24} />}
@@ -396,6 +414,7 @@ export function SidebarLayout({
             .filter(Boolean)
             .join(" ")}
           aria-current={active === item.path ? "page" : undefined}
+          disabled={closed(item)}
           onClick={() => go(item)}
         >
           <PhoneIcon name={item.icon} />
@@ -417,13 +436,20 @@ export function SidebarLayout({
           .join(" ")}
       >
         <div className="ww-shell__glow" aria-hidden />
-        {phone
-          ? open && <MobileMenu onClose={() => setOpen(false)}>{navigation}</MobileMenu>
-          : navigation}
+        {phone ? (
+          <MobileMenu open={open} onClose={() => setOpen(false)}>
+            {navigation}
+          </MobileMenu>
+        ) : (
+          navigation
+        )}
         <main ref={main} className="ww-main">
           <div className="ww-content">
             {!pageHeader && (
-              <div className="ww-shell-header" data-stuck={(phone && stuck && !notificationsOpen) || undefined}>
+              <div
+                className="ww-shell-header"
+                data-stuck={(phone && stuck && !notificationsOpen) || undefined}
+              >
                 <div className="ww-topbar">
                   {(!phone || unlocked) && <TagSearchBar placeholder={phone ? "tag" : undefined} />}
                   {phone && !unlocked && <BrandLockup />}

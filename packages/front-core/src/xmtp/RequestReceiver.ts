@@ -6,6 +6,7 @@
  * throws — store errors become `deferred` for retry. Idempotency lives in the store.
  */
 
+import { plainText } from "@obsidion/core/text"
 import type { TokenTransaction } from "../types/transactions.js"
 import { hasAddress } from "./tagForwardResolver.js"
 import type {
@@ -93,7 +94,7 @@ export class RequestReceiver {
           tokenAddress: content.token,
           tokenSymbol: content.tokenSymbol,
           networkId: content.networkId,
-          note: content.note,
+          note: content.note && plainText(content.note),
           expiresAt: content.expiresAt,
         })
         return inserted ? { status: "accepted", kind: "request" } : { status: "duplicate" }

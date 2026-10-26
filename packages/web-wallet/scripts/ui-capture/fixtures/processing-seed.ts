@@ -40,7 +40,6 @@ export async function seedProcessing(kind: string) {
         tokenAddress: MAINNET_USDC,
         tokenDecimals: 6,
         startTime: Date.now() - 30_000,
-        lastScanAt: Date.now(),
       },
     )
     return
@@ -67,7 +66,6 @@ export async function seedProcessing(kind: string) {
         intent: "registration",
         registrationFee: record.fee ?? "0",
         startTime: Date.now() - 6 * 60_000,
-        lastScanAt: Date.now(),
       },
     )
     return

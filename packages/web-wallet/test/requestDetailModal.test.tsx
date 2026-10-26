@@ -2,6 +2,7 @@ import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { RemindState } from "../src/features/contacts/useRemind"
 
 vi.mock("@obsidion/web-ds", () => ({
   ConfirmationSheetDetailRow: ({ label, value }: { label: string; value: React.ReactNode }) => (
@@ -16,14 +17,17 @@ vi.mock("@obsidion/web-ds", () => ({
   PrimaryGradientButton: ({
     title,
     isDisabled,
+    isLoading,
     onClick,
   }: {
     title: string
     isDisabled?: boolean
+    isLoading?: boolean
     onClick: () => void
   }) => (
-    <button disabled={isDisabled} onClick={onClick}>
+    <button disabled={isDisabled || isLoading} onClick={onClick}>
       {title}
+      {isLoading && <span aria-label="Loading" />}
     </button>
   ),
   TopNavIconButton: ({ onClick }: { onClick: () => void }) => (
@@ -120,20 +124,20 @@ describe("RequestDetailModal", () => {
     expect(button("Cancel request")).toBeDefined()
   })
 
-  it("offers Remind beside Cancel on a sent request, once", async () => {
+  it("offers Remind beside Cancel on a sent request, with a spinner while it sends", async () => {
     const onRemind = vi.fn()
-    const view = (reminded: boolean) => (
-      <RequestDetailModal
-        requestId="req-1"
-        reminded={reminded}
-        onRemind={onRemind}
-        onClose={onClose}
-      />
+    const view = (remind: RemindState) => (
+      <RequestDetailModal requestId="req-1" remind={remind} onRemind={onRemind} onClose={onClose} />
     )
-    await act(async () => root.render(view(false)))
+    await act(async () => root.render(view("idle")))
     await act(async () => button("Remind")!.click())
     expect(onRemind).toHaveBeenCalledOnce()
-    await act(async () => root.render(view(true)))
+    await act(async () => root.render(view("sending")))
+    expect(button("Remind")!.disabled).toBe(true)
+    expect(button("Remind")!.querySelector("[aria-label=Loading]")).not.toBeNull()
+    await act(async () => root.render(view("failed")))
+    expect(button("Try again")!.disabled).toBe(false)
+    await act(async () => root.render(view("sent")))
     expect(button("Reminder sent")!.disabled).toBe(true)
     await act(async () => button("Cancel request")!.click())
     expect(container.textContent).toContain("Cancel request?")

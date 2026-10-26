@@ -190,8 +190,8 @@ describe("migration activity rows", () => {
     // The arrival sits directly above its exit and reads as what it brings. Nothing has reached the
     // address yet, so it offers no exit and never reads as stuck, however long the burn takes.
     expect(shown).toEqual([
-      "Upgrade | Arriving on new version | +$84.55 | Pending",
-      expect.stringMatching(/^Upgrade \| Leaving old version/),
+      "Upgrade | +$84.55 | Pending",
+      expect.stringMatching(/^Upgrade \| -\$85/),
     ])
     const [arrivalStamp, exitStamp] = stamps()
     expect(exitStamp).toBe(STUCK_SUBLINE)
@@ -202,7 +202,7 @@ describe("migration activity rows", () => {
     await withdrawals.create({ ...burn("l2_mined"), arrivalFee: undefined })
     await arrival()
     const shown = await rows()
-    expect(shown[0]).toBe("Upgrade | Arriving on new version | Pending")
+    expect(shown[0]).toBe("Upgrade | Pending")
   })
 
   it("keeps the released exit as a finished leg below the claimed arrival", async () => {
@@ -235,7 +235,7 @@ describe("migration activity rows", () => {
     await withdrawals.create(burn("failed"))
     await arrival({ phase: "recoverable", amount: "84.5" })
     const shown = await rows()
-    expect(shown).toContainEqual(expect.stringMatching(/^Upgrade \| Arriving on new version/))
+    expect(shown).toContainEqual("Upgrade | $84.50 | Needs recovery")
   })
 })
 
@@ -277,7 +277,8 @@ describe("an upgrade's row", () => {
     await batch("remaining-0", { broadcastTx: "0xa", sentAt: 1_500, received: true })
     await batch("remaining-1", { recipient: SECOND, broadcastTx: "0xb", sentAt: 1_600 })
     await arrival({ phase: "claimed", amount: "9.9", netAmount: (99n * 10n ** 17n).toString() })
-    expect(await rows()).toEqual(["Upgrade | 1 of 2 arrived | +$19.80 | Pending"])
+    // The row names the run's least advanced step: the second batch is still being released.
+    expect(await rows()).toEqual(["Upgrade | 1 of 2 arrived | +$19.80 | Releasing"])
   })
 
   it("never reads a deposit recovered to Ethereum as arrived", async () => {

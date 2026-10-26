@@ -105,6 +105,7 @@ const faster = vi.hoisted(() => ({
         standardEtaSeconds: number
         tippedEtaSeconds: number
         worstSpeedupSeconds: number
+        measured: boolean
       }
     | undefined,
   loading: false,
@@ -255,6 +256,7 @@ describe("WithdrawToWalletModal", () => {
       standardEtaSeconds: 44 * 60,
       tippedEtaSeconds: 12 * 60,
       worstSpeedupSeconds: 30 * 60,
+      measured: true,
     }
     const speed = () => container.querySelector('[aria-haspopup="listbox"]')?.textContent
     const settle = () =>
@@ -291,10 +293,12 @@ describe("WithdrawToWalletModal", () => {
       expect(submit.mock.calls[0]![7]).toBe(0n)
     })
 
-    it("lists both speeds with their ETAs and the tip, defaulting to Standard", async () => {
+    it("lists both speeds with their ETAs and the tip, defaulting to Faster", async () => {
       faster.offer = offer
-      await toConfirm("2")
-      expect(speed()).toBe("Standard")
+      balance.walletAsset = { balance: 10, balanceAtomic: parseUnits("10", 18) }
+      // The 0.5 DAI tip is 10% of this amount, the most Faster opens at.
+      await toConfirm("5")
+      expect(speed()).toBe("Faster")
       await act(async () => {
         container.querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]')!.click()
       })
@@ -304,6 +308,19 @@ describe("WithdrawToWalletModal", () => {
         "StandardAbout 44 min once confirmed",
         "FasterAbout 12 min once confirmed · 0.5 DAI",
       ])
+    })
+
+    it("drops the tip when Standard is chosen instead", async () => {
+      faster.offer = offer
+      await toConfirm("2")
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[aria-haspopup="listbox"]')!.click()
+      })
+      const standard = Array.from(container.querySelectorAll('[role="option"]')).find((o) =>
+        o.textContent?.startsWith("Standard"),
+      ) as HTMLButtonElement
+      await act(async () => standard.click())
+      expect(speed()).toBe("Standard")
       expect(row("Withdrawal fee")).toBe(`$${FEE}`)
       await clickConfirm()
       expect(submit.mock.calls[0]![7]).toBe(0n)

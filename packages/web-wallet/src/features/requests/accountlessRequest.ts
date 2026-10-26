@@ -18,6 +18,7 @@ import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
   depositSipaImplementation,
   type RegistryTagResolution,
+  sipaDeploymentTag,
   type RequestInlinePacket,
   type SipaLinkPreimage,
 } from "@obsidion/front-core"
@@ -49,16 +50,19 @@ export interface AccountlessResolveResult {
 }
 
 /**
- * `active`: the address is the active deployment's, re-predicted from the link's preimage or resolved
- * just now. `expired`: the preimage predicts another address, so the link's deployment is gone.
+ * `active`: the address is the active deployment's, re-predicted from the link's preimage, matched by
+ * a code's deployment tag, or resolved just now. `expired`: the link's deployment is gone.
  * `unproven`: a link minted without a preimage.
  */
 export type LinkDeployment = "active" | "expired" | "unproven"
 
 export async function linkDeployment(
-  packet: Pick<RequestInlinePacket, "sipaAddress" | "sipaPreimage">,
+  packet: Pick<RequestInlinePacket, "sipaAddress" | "sipaPreimage" | "sipaDeployment">,
   predict: (preimage: SipaLinkPreimage) => Promise<Address>,
+  activeTag: string,
 ): Promise<LinkDeployment> {
+  if (packet.sipaAddress && packet.sipaDeployment)
+    return packet.sipaDeployment === activeTag ? "active" : "expired"
   if (!packet.sipaAddress || !packet.sipaPreimage) return "unproven"
   const predicted = await predict(packet.sipaPreimage)
   return predicted.toLowerCase() === packet.sipaAddress.toLowerCase() ? "active" : "expired"
@@ -138,8 +142,15 @@ export async function resolveAccountlessRequest(
   const pin = await pinRequester(packet, deps)
   let sipaAddress = packet.sipaAddress as Address | undefined
   // A failed check leaves the address as unproven as a link without a preimage.
-  let deployment = await linkDeployment(packet, (preimage) =>
-    predictActiveSipa(deps.publicClient, deps.tuple, implementation, preimage),
+  const activeTag = sipaDeploymentTag({
+    sipaFactory: requireTupleField(deps.tuple, "sipaFactory"),
+    implementation,
+    rollupVersion: requireTupleField(deps.tuple, "rollupVersion"),
+  })
+  let deployment = await linkDeployment(
+    packet,
+    (preimage) => predictActiveSipa(deps.publicClient, deps.tuple, implementation, preimage),
+    activeTag,
   ).catch((err): LinkDeployment => {
     console.warn("[request] could not check the link's deployment", err)
     return "unproven"

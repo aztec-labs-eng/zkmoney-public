@@ -19,6 +19,16 @@ const m = vi.hoisted(() => ({
   lookUp: vi.fn(),
   save: vi.fn(),
   phone: false,
+  /** Actions that must wait for the upgrade, and every action a press asked for. */
+  upgrade: new Set<string>(),
+  asked: [] as string[],
+}))
+vi.mock("../src/features/actionGate", () => ({
+  useWalletFrozen: () => false,
+  useActionGuard: () => (action: string, run: () => void) => {
+    m.asked.push(action)
+    if (!m.upgrade.has(action)) run()
+  },
 }))
 vi.mock("@obsidion/front-core", async () => ({
   ...(await import("../../front-core/src/utils/validate")),
@@ -173,6 +183,8 @@ const unsaved = new Map([
 beforeEach(async () => {
   vi.clearAllMocks()
   m.phone = false
+  m.upgrade = new Set()
+  m.asked = []
   vi.spyOn(console, "warn").mockImplementation(() => {})
   m.entries = [ADA]
   m.lookUp.mockImplementation(async (idOrTag: string) => unsaved.get(idOrTag) ?? null)
@@ -206,6 +218,18 @@ afterEach(() => {
 })
 
 describe("Add contact on the person page", () => {
+  it("offers Add contact for a person the wallet added from a payment", async () => {
+    const added = { ...BOB, autoAdded: true }
+    m.entries = [ADA, added]
+    m.save.mockResolvedValue("added")
+    await goTo("bob")
+    expect(title()).toBe("@bob")
+    expect(unsavedStrip()).not.toBeNull()
+    expect(deleteButton()).toBeNull()
+    await clickAdd()
+    expect(m.save).toHaveBeenCalledWith(added)
+  })
+
   it("saves the person and shows them as saved", async () => {
     const save = deferred<SaveResult>()
     m.save.mockReturnValue(save.promise)
@@ -301,6 +325,20 @@ describe("Add contact on the person page", () => {
     expect(m.save).toHaveBeenCalledTimes(2)
     expect(unsavedStrip()).toBeNull()
     expect(deleteButton()).not.toBeNull()
+  })
+})
+
+describe("a person's actions wait for the upgrade", () => {
+  it("asks to upgrade before a request or a send, and stays on the page", async () => {
+    await goTo("ada")
+    m.upgrade = new Set(["receive", "send"])
+    for (const label of ["Request", "Send"])
+      await act(async () =>
+        [...container.querySelectorAll("button")].find((b) => b.textContent === label)!.click(),
+      )
+    expect(m.asked).toEqual(["receive", "send"])
+    expect(container.querySelector('input[aria-label="Request amount"]')).toBeNull()
+    expect(title()).toBe("@ada")
   })
 })
 

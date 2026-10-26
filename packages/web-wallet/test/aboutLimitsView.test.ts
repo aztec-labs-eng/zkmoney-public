@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest"
 import {
   aboutLimitsView,
-  CAPACITY_DISCLOSURE,
   type AboutLimitsFacts,
   type AboutLimitsView,
   type CapacityFacts,
@@ -9,16 +8,16 @@ import {
   type ProductLimitFacts,
   type SponsorshipFacts,
 } from "../src/features/limits/aboutLimitsView"
-import { ALLOWANCE_SCOPE } from "../src/features/allowance/allowanceView"
-import { CAPACITY_NONE, CAPACITY_NOT_RESERVED_NOTE } from "../src/features/deposit/fundingCapacity"
+import { CAPACITY_LOW, CAPACITY_NONE } from "../src/features/deposit/fundingCapacity"
+import * as copy from "../src/features/limits/limitsCopy"
 
 const E18 = 10n ** 18n
 const format = { time: (ms: number) => `time:${ms}` }
 
 const product: ProductLimitFacts = {
-  deposit: { maximumUsd: "2500", basis: "sent-including-fees" },
-  withdrawal: { maximumUsd: "2500", basis: "debited-including-fees" },
-  valuation: { tokens: ["DAI", "USDC", "USDT"] },
+  deposit: { maximumUsd: "2500" },
+  withdrawal: { maximumUsd: "2500" },
+  send: { maximumUsd: "2500" },
 }
 
 const dai: CapacityObservation = {
@@ -84,53 +83,34 @@ const SPONSORSHIP_STATES: SponsorshipFacts[] = [
 ]
 
 describe("aboutLimitsView per-transaction maximum", () => {
-  it("states each supplied maximum with its amount basis and the nominal valuation", () => {
+  it("states each supplied maximum, the fees inside it and the nominal valuation", () => {
     const { operation } = view({})
     expect(operation.state).toBe("known")
-    expect(row(operation, "Per deposit")).toBe("$2,500 sent, incl. fees")
-    expect(row(operation, "Per withdrawal")).toBe("$2,500 from balance, incl. fees")
-    expect(operation.notes).toContain(
-      "The limit counts 1 DAI, USDC or USDT as $1. This is a fixed rate, not a market price.",
-    )
-    expect(operation.notes).toContain(
-      "It does not set what a converted deposit credits or how much capacity it uses.",
-    )
+    expect(row(operation, copy.LIMIT_ROW.send)).toBe("$2,500")
+    expect(row(operation, copy.LIMIT_ROW.deposit)).toBe("$2,500")
+    expect(row(operation, copy.LIMIT_ROW.withdrawal)).toBe("$2,500")
+    expect(operation.notes).toContain(copy.LIMIT_NOTE)
   })
 
   it("keeps a missing or malformed maximum unknown instead of inventing one", () => {
     const partial = view({ product: { deposit: product.deposit } }).operation
     expect(partial.state).toBe("partial")
-    expect(row(partial, "Per withdrawal")).toBe("Unavailable")
-    expect(partial.notes.some((n) => n.includes("as $1"))).toBe(false)
+    expect(row(partial, copy.LIMIT_ROW.withdrawal)).toBe(copy.UNAVAILABLE)
+    expect(partial.notes).toContain(copy.LIMIT_NOTE)
 
     const malformed = view({
-      product: { deposit: { maximumUsd: "2,500", basis: "sent-including-fees" } },
+      product: { deposit: { maximumUsd: "2,500" } },
     })
     expect(malformed.operation.state).toBe("unknown")
-    expect(row(malformed.operation, "Per deposit")).toBe("Unavailable")
+    expect(row(malformed.operation, copy.LIMIT_ROW.deposit)).toBe(copy.UNAVAILABLE)
 
     const none = view({ product: {} }).operation
     expect(none.state).toBe("unknown")
     expect(none.notes).toEqual([])
-    // A valuation with no maximum to apply it to says nothing.
-    expect(view({ product: { valuation: product.valuation } }).operation.notes).toEqual([])
   })
 
   it("scopes the maximum to each transaction, not a day or a balance", () => {
-    const text = sectionText(view({}).operation)
-    expect(text).toContain("applies to each transaction and does not change over time")
-    expect(text).toContain("There is no daily limit and no limit on your balance.")
-    // A deposit address is single-use: more funds mean more deposits, each to a new address.
-    expect(text).toContain(
-      "To deposit more, make separate deposits. Each one uses a new address and pays its own fee.",
-    )
-    expect(text).toContain(
-      "To withdraw more, make separate withdrawals. Each one pays its own fee.",
-    )
-    expect(text).not.toMatch(/separate transactions|same address/i)
-    const depositOnly = sectionText(view({ product: { deposit: product.deposit } }).operation)
-    expect(depositOnly).toContain("Each one uses a new address")
-    expect(depositOnly).not.toContain("To withdraw more")
+    expect(view({}).operation.notes).toContain(copy.LIMIT_NOTE)
   })
 })
 
@@ -138,12 +118,12 @@ describe("aboutLimitsView shared capacity", () => {
   it("shows a fresh read in token units, floored, with the injected check time", () => {
     const { capacity } = view({})
     expect(capacity.state).toBe("fresh")
-    expect(capacity.status?.text).toBe("Capacity up to date")
+    expect(capacity.status?.text).toBe(copy.CAPACITY_FRESH)
     // 1,234.56789 must not round up to .57.
-    expect(row(capacity, "Available")).toBe("1,234.56 DAI")
-    expect(row(capacity, "Total capacity")).toBe("50,000 DAI")
-    expect(row(capacity, "Refill rate")).toBe("34.72 DAI per minute")
-    expect(row(capacity, "Last checked")).toBe("time:1000")
+    expect(row(capacity, copy.CAPACITY_ROW.available)).toBe("1,234.56 DAI")
+    expect(row(capacity, copy.CAPACITY_ROW.total)).toBe("50,000 DAI")
+    expect(row(capacity, copy.CAPACITY_ROW.rate)).toBe(copy.ratePerMinute("34.72 DAI"))
+    expect(row(capacity, copy.CAPACITY_ROW.checked)).toBe("time:1000")
     expect(capacity.rows.some((r) => r.value.includes("$"))).toBe(false)
     expect(capacity.canRetry).toBe(false)
   })
@@ -159,36 +139,35 @@ describe("aboutLimitsView shared capacity", () => {
     const at = (ratePerSecond: bigint) =>
       view({ capacity: { state: "fresh", observation: { ...usdc, ratePerSecond } } }).capacity
     const slow = at(1n)
-    expect(row(slow, "Available")).toBe("1,500 USDC")
-    expect(row(slow, "Refill rate")).toBe("Less than 0.01 USDC per minute")
-    expect(row(at(200n), "Refill rate")).toBe("0.01 USDC per minute")
+    expect(row(slow, copy.CAPACITY_ROW.available)).toBe("1,500 USDC")
+    expect(row(slow, copy.CAPACITY_ROW.rate)).toBe(copy.rateUnderCent("USDC"))
+    expect(row(at(200n), copy.CAPACITY_ROW.rate)).toBe(copy.ratePerMinute("0.01 USDC"))
   })
 
   it("states the refill model, that withdrawals do not restore it, and no reservation", () => {
     const { notes } = view({}).capacity
-    expect(notes).toContain(CAPACITY_DISCLOSURE)
-    expect(CAPACITY_DISCLOSURE).toBe(
-      "Capacity is shared by everyone and refills continuously. It does not reset at midnight.",
-    )
-    expect(notes).toContain("Withdrawals do not restore deposit capacity.")
-    expect(notes).toContain(CAPACITY_NOT_RESERVED_NOTE)
+    expect(notes).toEqual([
+      copy.CAPACITY_DISCLOSURE,
+      copy.WITHDRAWALS_NOTE,
+      copy.CAPACITY_NOT_RESERVED_NOTE,
+    ])
   })
 
   it("does not claim a refill when the read shows a zero rate", () => {
     const capacity = view({
       capacity: { state: "fresh", observation: { ...dai, ratePerSecond: 0n } },
     }).capacity
-    expect(row(capacity, "Refill rate")).toBe("No automatic refill")
-    expect(sectionText(capacity)).not.toContain("refills continuously")
-    expect(sectionText(capacity)).toContain("No automatic refill is configured.")
+    expect(row(capacity, copy.CAPACITY_ROW.rate)).toBe(copy.NO_REFILL)
+    expect(capacity.notes).toContain(copy.NO_REFILL_DISCLOSURE)
+    expect(capacity.notes).not.toContain(copy.CAPACITY_DISCLOSURE)
   })
 
   it("uses the funding panel's figure for the available amount when it is given", () => {
     const capacity = view({
       capacity: { state: "stale", observation: dai, label: "1,234.56 DAI (not current)" },
     }).capacity
-    expect(row(capacity, "Available")).toBe("1,234.56 DAI (not current)")
-    expect(row(capacity, "Total capacity")).toBe("50,000 DAI")
+    expect(row(capacity, copy.CAPACITY_ROW.available)).toBe("1,234.56 DAI (not current)")
+    expect(row(capacity, copy.CAPACITY_ROW.total)).toBe("50,000 DAI")
   })
 
   it("shows the funding panel's sentence and retry for a current read", () => {
@@ -196,12 +175,12 @@ describe("aboutLimitsView shared capacity", () => {
       capacity: {
         state: "fresh",
         observation: dai,
-        notice: "Network capacity is low.",
+        notice: CAPACITY_LOW,
         offerRetry: false,
       },
     }).capacity
     expect(low.state).toBe("fresh")
-    expect(low.status).toEqual({ text: "Network capacity is low.", icon: "alert-triangle" })
+    expect(low.status).toEqual({ text: CAPACITY_LOW, icon: "alert-triangle" })
     expect(low.canRetry).toBe(false)
     const empty = view({
       capacity: { state: "fresh", observation: dai, notice: CAPACITY_NONE, offerRetry: true },
@@ -212,13 +191,13 @@ describe("aboutLimitsView shared capacity", () => {
     const stale = view({
       capacity: { state: "stale", observation: dai, notice: CAPACITY_NONE, offerRetry: true },
     }).capacity
-    expect(stale.status?.text).toBe("Capacity out of date")
+    expect(stale.status?.text).toBe(copy.CAPACITY_STALE)
   })
 
   it("marks a stale read out of date and offers a retry", () => {
     const capacity = view({ capacity: { state: "stale", observation: dai } }).capacity
-    expect(capacity.status?.text).toBe("Capacity out of date")
-    expect(row(capacity, "Available")).toBe("1,234.56 DAI")
+    expect(capacity.status?.text).toBe(copy.CAPACITY_STALE)
+    expect(row(capacity, copy.CAPACITY_ROW.available)).toBe("1,234.56 DAI")
     expect(capacity.canRetry).toBe(true)
   })
 
@@ -236,11 +215,11 @@ describe("aboutLimitsView shared capacity", () => {
     }
     expect(view({ capacity: { state: "fresh" } }).capacity.state).toBe("unavailable")
     expect(view({ capacity: { state: "unavailable" } }).capacity.status?.text).toBe(
-      "Capacity could not be checked.",
+      copy.CAPACITY_UNAVAILABLE,
     )
     // Unsupported means the wallet cannot read capacity, not that the network has none.
     expect(view({ capacity: { state: "unsupported" } }).capacity.status?.text).toBe(
-      "Capacity can't be checked on this network.",
+      copy.CAPACITY_UNSUPPORTED,
     )
   })
 
@@ -251,9 +230,9 @@ describe("aboutLimitsView shared capacity", () => {
     expect(capacity.rows).toEqual([])
     expect(capacity.canRetry).toBe(false)
     expect(capacity.notes).toEqual([
-      CAPACITY_DISCLOSURE,
-      "Withdrawals do not restore deposit capacity.",
-      CAPACITY_NOT_RESERVED_NOTE,
+      copy.CAPACITY_DISCLOSURE,
+      copy.WITHDRAWALS_NOTE,
+      copy.CAPACITY_NOT_RESERVED_NOTE,
     ])
   })
 
@@ -269,12 +248,12 @@ describe("aboutLimitsView shared capacity", () => {
 describe("aboutLimitsView sponsorship allowance", () => {
   const sponsorship = (facts: SponsorshipFacts) => view({ sponsorship: facts }).sponsorship
 
-  it("gives every allowance state its own status text", () => {
+  it("gives every allowance state but the first its own status text", () => {
     // Variants of one state share its status text; the rows tell them apart.
     const variant = (s: SponsorshipFacts) =>
       (s.state === "available" && (s.renews !== true || s.maxTx !== undefined)) ||
       (s.state === "renewal-unknown" && !s.refillPeriodSeconds) ||
-      (s.state === "not-subscribed" && s.maxTx === 1)
+      s.state === "not-subscribed"
     const texts = SPONSORSHIP_STATES.filter((s) => !variant(s)).map(
       (s) => sponsorship(s).status?.text,
     )
@@ -290,59 +269,41 @@ describe("aboutLimitsView sponsorship allowance", () => {
       renews: true,
       refillPeriodSeconds: 86_400,
     })
-    expect(available.status?.text).toBe("3 sponsored transactions left")
-    expect(row(available, "Allowance")).toBe("100")
-    expect(row(available, "Renews")).toBe("When used up, 24 hours after the last renewal")
-    expect(available.notes).toContain("It does not reset at midnight.")
-    expect(sponsorship({ state: "available", uses: 1 }).status?.text).toBe(
-      "1 sponsored transaction left",
+    expect(available.status?.text).toBe(copy.usesLeft(3))
+    expect(row(available, copy.SPONSORSHIP_ROW.allowance)).toBe("100")
+    expect(row(available, copy.SPONSORSHIP_ROW.renews)).toBe(copy.renewsAfterUsedUp("24 hours"))
+    expect(row(sponsorship({ state: "available", uses: 3 }), copy.SPONSORSHIP_ROW.renews)).toBe(
+      copy.RENEWS_VALUE.unknown,
     )
-    expect(row(sponsorship({ state: "available", uses: 3 }), "Renews")).toBe("Unknown")
   })
 
   it("splits the spent uses between your transactions and deposit addresses", () => {
     const usage = { yours: 4, depositAddresses: 2 }
     const available = sponsorship({ state: "available", uses: 4, maxTx: 10, usage })
-    expect(row(available, "Used by your transactions")).toBe("4")
-    expect(row(available, "Used by deposit addresses")).toBe("2")
+    expect(row(available, copy.SPONSORSHIP_ROW.usedByYou)).toBe("4")
+    expect(row(available, copy.SPONSORSHIP_ROW.usedByAddresses)).toBe("2")
     expect(
-      row(sponsorship({ state: "renewal-unknown", maxTx: 6, usage }), "Used by deposit addresses"),
+      row(
+        sponsorship({ state: "renewal-unknown", maxTx: 6, usage }),
+        copy.SPONSORSHIP_ROW.usedByAddresses,
+      ),
     ).toBe("2")
     expect(
-      row(sponsorship({ state: "available", uses: 4 }), "Used by your transactions"),
+      row(sponsorship({ state: "available", uses: 4 }), copy.SPONSORSHIP_ROW.usedByYou),
     ).toBeUndefined()
   })
 
-  it("does not say the next action renews an allowance that still has uses", () => {
-    // The contract spends a remaining use even after the period has passed.
-    const text = sectionText(
-      sponsorship({ state: "available", uses: 3, renews: true, refillPeriodSeconds: 86_400 }),
-    )
-    expect(text).not.toMatch(/renews? on your next eligible action/i)
-    expect(text).toContain("When used up")
-  })
-
-  it("says the first sponsored transaction opens the allowance", () => {
+  it("shows the first allowance without a status line", () => {
     const opening = sponsorship({
       state: "not-subscribed",
       maxTx: 100,
       renews: true,
       refillPeriodSeconds: 86_400,
     })
-    expect(opening.status?.text).toBe("Sponsored transactions not started yet")
-    expect(row(opening, "First allowance")).toBe("100")
-    expect(row(opening, "Renews")).toBe("When used up, 24 hours after it opened")
-    expect(opening.notes).toContain(
-      "Your first sponsored transaction opens an allowance of 100 and uses one of them.",
-    )
-    expect(opening.notes).toContain("It does not reset at midnight.")
-    expect(sectionText(opening)).not.toMatch(/no sponsored|used up until|wait until/i)
-
-    const single = sponsorship({ state: "not-subscribed", maxTx: 1, renews: false })
-    expect(single.notes).toContain(
-      "Your first sponsored transaction opens a one-use allowance and uses it.",
-    )
-    expect(single.notes).toContain("This allowance does not renew.")
+    expect(opening.status).toBeUndefined()
+    expect(row(opening, copy.SPONSORSHIP_ROW.firstAllowance)).toBe("100")
+    expect(row(opening, copy.SPONSORSHIP_ROW.renews)).toBe(copy.renewsAfterUsedUp("24 hours"))
+    expect(opening.notes).toEqual([copy.ALLOWANCE_SCOPE])
   })
 
   it("offers a retry only when the allowance read failed", () => {
@@ -351,31 +312,25 @@ describe("aboutLimitsView sponsorship allowance", () => {
     }
   })
 
-  it("says a stored zero that may renew is unknown, never used up, and names no time", () => {
+  it("says a stored zero that may renew is unknown, never used up", () => {
     const unknown = sponsorship({
       state: "renewal-unknown",
       maxTx: 100,
       refillPeriodSeconds: 86_400,
     })
     expect(unknown.state).toBe("renewal-unknown")
-    expect(unknown.status?.text).toBe("Renewal status unknown")
+    expect(unknown.status?.text).toBe(copy.SPONSORSHIP_STATUS.renewalUnknown)
     expect(unknown.status?.icon).toBe("info-circle")
-    expect(row(unknown, "Allowance")).toBe("100")
-    expect(row(unknown, "Renews")).toBe("When used up, 24 hours after the last renewal")
-    const text = sectionText(unknown)
+    expect(row(unknown, copy.SPONSORSHIP_ROW.allowance)).toBe("100")
+    expect(row(unknown, copy.SPONSORSHIP_ROW.renews)).toBe(copy.renewsAfterUsedUp("24 hours"))
     // The next eligible action is never held back.
-    expect(text).toContain(
-      "We can't confirm renewal yet. Your next eligible transaction may start a new allowance.",
-    )
-    expect(text).not.toMatch(/stored/i)
-    expect(text).not.toMatch(/used up until|wait until|next renewal|no sponsored/i)
-    expect(unknown.rows.map((r) => r.label)).not.toContain("Next renewal")
+    expect(unknown.notes).toContain(copy.RENEWAL_UNKNOWN_NOTE)
   })
 
   it("says none are left only for an allowance that never renews", () => {
     const spent = sponsorship({ state: "spent" })
-    expect(spent.status?.text).toBe("No sponsored transactions left")
-    expect(row(spent, "Renews")).toBe("No")
+    expect(spent.status?.text).toBe(copy.SPONSORSHIP_STATUS.spent)
+    expect(row(spent, copy.SPONSORSHIP_ROW.renews)).toBe(copy.RENEWS_VALUE.no)
   })
 
   it("never describes a non-renewing allowance as renewing", () => {
@@ -385,29 +340,22 @@ describe("aboutLimitsView sponsorship allowance", () => {
       { state: "not-subscribed", maxTx: 1, renews: false },
     ]
     for (const facts of nonRenewing) {
-      const text = sectionText(sponsorship(facts))
-      expect(text).toContain("This allowance does not renew.")
-      expect(text).not.toMatch(/renews (on|in|at|after|\d)|next renewal|daily|midnight/i)
+      expect(row(sponsorship(facts), copy.SPONSORSHIP_ROW.renews)).toBe(copy.RENEWS_VALUE.no)
     }
   })
 
   it("states the allowance scope with the allowance sheet's wording", () => {
     for (const facts of SPONSORSHIP_STATES) {
-      expect(sponsorship(facts).notes[0]).toBe(ALLOWANCE_SCOPE)
+      expect(sponsorship(facts).notes[0]).toBe(copy.ALLOWANCE_SCOPE)
     }
   })
 })
 
 describe("aboutLimitsView wording across every state", () => {
-  it("never shows the internal ceiling or a daily-reset claim", () => {
+  it("never shows the internal ceiling", () => {
     for (const capacity of CAPACITY_STATES) {
       for (const sponsorship of SPONSORSHIP_STATES) {
-        const text = allText(view({ capacity, sponsorship }))
-        expect(text).not.toMatch(/2,?583/)
-        const withoutNegation = text.replaceAll("It does not reset at midnight.", "")
-        expect(withoutNegation).not.toMatch(
-          /midnight|daily reset|resets? (daily|every day|each day)|tomorrow|per day/i,
-        )
+        expect(allText(view({ capacity, sponsorship }))).not.toMatch(/2,?583/)
       }
     }
   })

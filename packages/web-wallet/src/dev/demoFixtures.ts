@@ -156,7 +156,6 @@ function depositFrom(spec: DepositSpec, now: number): SIPADepositRecord {
     sweepTxHash: spec.sweepTxHash,
     claimTxHash: spec.claimTxHash,
     recoveryTxHash: spec.recoveryTxHash,
-    lastScanAt: now,
   }
 }
 

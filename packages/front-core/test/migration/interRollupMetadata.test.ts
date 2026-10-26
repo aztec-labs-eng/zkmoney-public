@@ -30,9 +30,9 @@ import { L1OperationCondition } from "@oxide/oxide-lib/l1_operation_calldata.js"
 // and source proofs are synthetic. This does not implement or claim compatibility with Aztec v6.
 const chain = vi.hoisted(() => ({
   recurring: false,
-  messages: false,
   attestation: false,
-  sweeps: new Map<string, unknown[]>(),
+  /** The SIPAs whose every sweep the deposit rail has claimed. */
+  received: new Set<string>(),
   subscribe: vi.fn(async (args) => ({ calls: args.innerCalls, gate: args.gate })),
   sponsor: vi.fn(async (args) => ({ calls: args.innerCalls })),
 }))
@@ -47,17 +47,11 @@ vi.mock("../../../sdk/src/services/claimSponsor.js", () => ({
   claimFpcSubscriptionUses: async () => (chain.recurring ? 10 : 0),
   hasClaimFpcSubscription: async () => chain.recurring,
 }))
-vi.mock("@aztec/aztec.js/messaging", () => ({ isL1ToL2MessageReady: async () => chain.messages }))
 vi.mock("../../../sdk/src/services/registrationMessage.js", () => ({
   REGISTRATION_MESSAGE_SECRET: 1,
   registrationInbox: () => ({}),
   findRegistrationMessage: async () =>
     chain.attestation ? { status: "consumable", leafIndex: 3n } : undefined,
-}))
-vi.mock("../../../sdk/src/services/sipaClaim.js", async (original) => ({
-  ...(await original<typeof import("../../../sdk/src/services/sipaClaim.js")>()),
-  readSweepEvents: async (_client: unknown, address: string) => chain.sweeps.get(address) ?? [],
-  readDepositMessageKey: async () => Fr.ONE,
 }))
 const addr = (n: number) => `0x${n.toString(16).padStart(40, "0")}` as Address
 const field = (n: number) => `0x${n.toString(16).padStart(64, "0")}` as Hex
@@ -208,6 +202,9 @@ function fixture() {
   }
   const batches = new Map<string, MigrationFundingBatch>()
   const tokenService = { ensureSweptDeposit: vi.fn(async () => {}) }
+  const received = async (sipa: string) => chain.received.has(sipa)
+  // This chain claims a sweep as it lands.
+  const swept = received
   const registered = { user, fpcAddress, railId: 2, policy: {}, fpcArtifact: {} }
   const makeSource = () =>
     new FrozenMetadataMigrationSource({
@@ -222,6 +219,8 @@ function fixture() {
       tokenService,
       broadcaster: calls,
       registered,
+      received,
+      swept,
       batches: {
         get: async (id: string) => structuredClone(batches.get(id)),
         set: async (id: string, batch: MigrationFundingBatch) => {
@@ -242,6 +241,8 @@ function fixture() {
     tokenService,
     bootstrap: { ...registered, railId: 1 },
     registered,
+    received,
+    swept,
     nameClaim: async () => ({ kind: "nameClaim" }),
     bindingWitness: async () => ({}),
     signConsent,
@@ -284,8 +285,8 @@ function fixture() {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  chain.recurring = chain.messages = chain.attestation = false
-  chain.sweeps.clear()
+  chain.recurring = chain.attestation = false
+  chain.received.clear()
 })
 
 describe("inter-rollup wallet behavior against a synthetic future destination", () => {
@@ -336,17 +337,13 @@ describe("inter-rollup wallet behavior against a synthetic future destination", 
     f.spent.add("last")
     expect((await f.service.quote({ firstBatchSettled: true })).movable).toBe(30n * TIP)
     f.state.hash = userRecordStateHash(f.options.record)
-    chain.sweeps.set(metadataSipa, [{ index: 1n, amount: 24n, txHash: field(101) }])
-    chain.messages = true
+    chain.received.add(metadataSipa)
     await controller.advance()
     expect(f.sends).toHaveLength(1) // Deposit alone cannot activate registration.
     chain.attestation = true
     await controller.advance()
     expect(f.sends).toHaveLength(2)
     expect(f.sends[1].gate.kind).toBe("registration")
-    expect(f.tokenService.ensureSweptDeposit).toHaveBeenCalledWith(
-      expect.objectContaining({ amount: 24n, recipient: f.options.registered.user }),
-    )
     controller = f.make().controller
     await controller.load()
     await controller.advance()
@@ -373,13 +370,12 @@ describe("inter-rollup wallet behavior against a synthetic future destination", 
     // Every planned batch is sent; source spentness is not a receipt.
     expect(controller.getSnapshot()?.phase).toBe("arriving")
     expect(f.sends).toHaveLength(3)
-    chain.sweeps.set(depositSipa, [{ index: 2n, amount: 17n, txHash: field(102) }])
+    chain.received.add(depositSipa)
     await controller.advance()
     await controller.advance()
     expect(controller.getSnapshot()).toMatchObject({ phase: "done", allowance: "registered" })
-    expect(f.tokenService.ensureSweptDeposit).toHaveBeenCalledWith(
-      expect.objectContaining({ amount: 17n }),
-    )
+    // The rail claims; the migration only reads.
+    expect(f.tokenService.ensureSweptDeposit).not.toHaveBeenCalled()
     expect(f.batches.get("remaining-0")?.received).toBe(true)
     expect(f.readContract.mock.calls.some(([call]) => call.functionName === "userRecords")).toBe(
       false,

@@ -80,6 +80,8 @@ export const useAsset = (options?: UseAssetOptions) => {
   )
 
   const [assets, setAssets] = useState<Asset[] | null>(null)
+  // When each token's balance was last written, by lowercased address, zero balances included.
+  const [balanceReadAt, setBalanceReadAt] = useState<Record<string, number | undefined>>({})
   const [assetsLoading, setAssetsLoading] = useState(false)
 
   // Bumped when TokenService init fails so the effect below retries —
@@ -113,11 +115,13 @@ export const useAsset = (options?: UseAssetOptions) => {
       if (!account || cancelled) return
       const scope = balanceScope(currentNetwork.type, account.completeAddress)
       const balances: { [key: string]: bigint } = {}
+      const readAt: Record<string, number | undefined> = {}
       let live = false
       for (const record of cachedBalances) {
         if (record.scope !== scope) continue
         try {
           balances[record.tokenAddress] = BigInt(record.balance)
+          readAt[record.tokenAddress.toLowerCase()] = record.updatedAt
         } catch {
           continue // corrupt record — skip rather than poison the whole projection
         }
@@ -127,6 +131,8 @@ export const useAsset = (options?: UseAssetOptions) => {
       // scope's balance after an account or network switch.
       const tokens = Object.keys(balances).length ? await TokenStorage.get().getTokens() : []
       if (cancelled) return
+      // Set beside the assets, so a figure and its read time land in one render.
+      setBalanceReadAt(readAt)
       if (tokens.length === 0) {
         setAssets(null)
         setLiveAssetsLoaded(false)
@@ -493,6 +499,8 @@ export const useAsset = (options?: UseAssetOptions) => {
     /** True once a balance read from this session landed in the store; false while assets
      *  hold only cache-hydrated values. Balance-gated UI keys off this. */
     liveAssetsLoaded,
+    /** When each balance was last written, by lowercased token address; funds on their way count until then. */
+    balanceReadAt,
     globalTokens,
   }
 }

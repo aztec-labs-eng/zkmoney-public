@@ -34,6 +34,7 @@ import {
 import { DepositFact } from "./DepositFact"
 import { DepositHashFact } from "./DepositHashFact"
 import { DepositStatusValue } from "./DepositStatusValue"
+import { usePortalFrozen } from "../../features/withdraw/portalFrozen"
 
 /** The sheet's badge per phase; the word is front-core's `DEPOSIT_PHASE_COPY`. */
 const PHASE_BADGE: Record<SIPADepositPhase, StatusBadgeStyle> = {
@@ -49,11 +50,17 @@ const PHASE_BADGE: Record<SIPADepositPhase, StatusBadgeStyle> = {
   failed: "failed",
 }
 
-export function depositStatus(record: SIPADepositRecord): {
+export function depositStatus(
+  record: SIPADepositRecord,
+  portalFrozen = false,
+): {
   label: string
   badge: StatusBadgeStyle
 } {
-  return { label: depositPhaseCopy(record).status, badge: PHASE_BADGE[record.phase] }
+  return {
+    label: depositPhaseCopy(record, { portalFrozen }).status,
+    badge: PHASE_BADGE[record.phase],
+  }
 }
 
 export function DepositDetailModal({
@@ -76,7 +83,8 @@ export function DepositDetailModal({
   const amounts = depositAmounts(record)
   // A deposit that never credits L2 was charged no fee and receives nothing.
   const showBreakdown = !neverCreditsL2(record.phase) && amounts.feeKnown && amounts.netAtomic > 0n
-  const status = depositStatus(record)
+  const portalFrozen = usePortalFrozen()
+  const status = depositStatus(record, portalFrozen)
   const { fundingTxHash } = depositAttribution(record)
   const { title, address } = depositHeadline(record)
   const sentFigure = amounts.grossAtomic > 0n ? depositGrossFigure(record) : "--"

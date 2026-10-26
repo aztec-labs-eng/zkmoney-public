@@ -198,6 +198,7 @@ test("targeted wallet builds and default campaign builds emit validated publish 
         { VITE_METRICS_ENVIRONMENT: "production", VITE_ZKMONEY_API_URL: "/svc/usage" },
         "prod",
       ],
+      ["wallet", { VITE_METRICS_ENVIRONMENT: "staging", VITE_ZKMONEY_API_URL: "" }, "playground"],
       ["campaign", {}, "staging"],
     ]) {
       const plugin = metricsBuildPlugin(app)
@@ -208,6 +209,9 @@ test("targeted wallet builds and default campaign builds emit validated publish 
         },
       })
       assert.equal(checkMetricsArtifact(file, slot), slot === "prod" ? "production" : "staging")
+      if (slot === "playground") {
+        assert.throws(() => checkMetricsArtifact(file, "staging"), /analytics endpoint/)
+      }
     }
   } finally {
     rmSync(dir, { recursive: true })

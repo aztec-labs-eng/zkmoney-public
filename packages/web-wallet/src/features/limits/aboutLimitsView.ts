@@ -1,37 +1,25 @@
 /**
- * Copy for the About limits sheet. The sheet explains three separate controls: the per-transaction
+ * View model for the About limits sheet; its words live in `limitsCopy`. The sheet explains three separate controls: the per-transaction
  * product maximum, the deposit capacity every user shares, and the account's sponsored-transaction
  * allowance. Every value is supplied by its owner; a value that was not read stays unknown rather
  * than falling back to a default.
  */
 import type { AllowanceUsage } from "@obsidion/front-core"
 import type { IconName } from "@obsidion/web-ds"
-import { ALLOWANCE_SCOPE, formatPeriod } from "../allowance/allowanceView"
-import {
-  capacityAmount,
-  CAPACITY_CHECKING,
-  CAPACITY_NOT_RESERVED_NOTE,
-  CAPACITY_UNAVAILABLE,
-} from "../deposit/fundingCapacity"
-import { nominalValuationNote } from "./publicLimit"
+import { formatPeriod } from "../allowance/allowanceView"
+import { capacityAmount } from "../deposit/fundingCapacity"
+import * as copy from "./limitsCopy"
 
 /** Product maximum for one kind of transaction, as the product-limit policy defines it. */
 export interface OperationLimitFact {
-  /** Decimal USD string. */
+  /** Decimal USD string. Deposits count the value sent, withdrawals the balance debit; both include fees. */
   maximumUsd: string
-  /** Deposits count the value sent; withdrawals count the balance debit. Both include fees. */
-  basis: "sent-including-fees" | "debited-including-fees"
-}
-
-/** The tokens the policy values at a fixed $1 each. It is not a market price. */
-export interface NominalValuationFact {
-  tokens: string[]
 }
 
 export interface ProductLimitFacts {
+  send?: OperationLimitFact
   deposit?: OperationLimitFact
   withdrawal?: OperationLimitFact
-  valuation?: NominalValuationFact
 }
 
 export type CapacityReadState = "loading" | "fresh" | "stale" | "unavailable" | "unsupported"
@@ -128,14 +116,6 @@ export interface AboutLimitsView {
   sponsorship: LimitsSectionView<SponsorshipState> & { canRetry: boolean }
 }
 
-export const CAPACITY_DISCLOSURE =
-  "Capacity is shared by everyone and refills continuously. It does not reset at midnight."
-
-const NO_REFILL_DISCLOSURE =
-  "Capacity is shared by everyone. No automatic refill is configured. It does not reset at midnight."
-
-const UNAVAILABLE = "Unavailable"
-
 const group = (digits: string) => digits.replace(/\B(?=(\d{3})+(?!\d))/g, ",")
 
 function usdLabel(decimal: string): string | undefined {
@@ -146,65 +126,38 @@ function usdLabel(decimal: string): string | undefined {
 }
 
 function rateLabel({ ratePerSecond, decimals, tokenSymbol }: CapacityObservation): string {
-  if (ratePerSecond === 0n) return "No automatic refill"
+  if (ratePerSecond === 0n) return copy.NO_REFILL
   const perMinute = ratePerSecond * 60n
   const cent = 10n ** BigInt(Math.max(decimals - 2, 0))
   return perMinute < cent
-    ? `Less than 0.01 ${tokenSymbol} per minute`
-    : `${capacityAmount(perMinute, decimals, tokenSymbol)} per minute`
-}
-
-function orList(items: string[]): string {
-  return items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`
+    ? copy.rateUnderCent(tokenSymbol)
+    : copy.ratePerMinute(capacityAmount(perMinute, decimals, tokenSymbol))
 }
 
 function operationView(product: ProductLimitFacts): AboutLimitsView["operation"] {
-  const deposit = product.deposit && usdLabel(product.deposit.maximumUsd)
-  const withdrawal = product.withdrawal && usdLabel(product.withdrawal.maximumUsd)
-  const value = (label: string | undefined, fact: OperationLimitFact | undefined) =>
-    label
-      ? `${label} ${fact!.basis === "sent-including-fees" ? "sent" : "from balance"}, incl. fees`
-      : UNAVAILABLE
-  const notes: string[] = []
-  const tokens = product.valuation?.tokens ?? []
-  if ((deposit || withdrawal) && tokens.length > 0) {
-    notes.push(
-      nominalValuationNote(orList(tokens)),
-      "It does not set what a converted deposit credits or how much capacity it uses.",
-    )
-  }
-  if (deposit || withdrawal) {
-    notes.push(
-      "It applies to each transaction and does not change over time. There is no daily limit and no limit on your balance.",
-    )
-  }
-  // A deposit address is single-use, so a larger deposit is several deposits, not several transfers.
-  if (deposit) {
-    notes.push(
-      "To deposit more, make separate deposits. Each one uses a new address and pays its own fee.",
-    )
-  }
-  if (withdrawal)
-    notes.push("To withdraw more, make separate withdrawals. Each one pays its own fee.")
+  const kinds = ["send", "deposit", "withdrawal"] as const
+  const maxima = kinds.map((kind) => {
+    const fact = product[kind]
+    return fact && usdLabel(fact.maximumUsd)
+  })
+  const known = maxima.filter(Boolean).length
   return {
-    state: deposit && withdrawal ? "known" : deposit || withdrawal ? "partial" : "unknown",
-    rows: [
-      { label: "Per deposit", value: value(deposit, product.deposit) },
-      { label: "Per withdrawal", value: value(withdrawal, product.withdrawal) },
-    ],
-    notes,
+    state: known === kinds.length ? "known" : known > 0 ? "partial" : "unknown",
+    rows: kinds.map((kind, i) => ({
+      label: copy.LIMIT_ROW[kind],
+      value: maxima[i] ?? copy.UNAVAILABLE,
+    })),
+    notes: known > 0 ? [copy.LIMIT_NOTE] : [],
   }
 }
 
 const CAPACITY_STATUS: Record<CapacityReadState, { text: string; icon: LimitsStatusIcon }> = {
-  loading: { text: CAPACITY_CHECKING, icon: "hourglass" },
-  fresh: { text: "Capacity up to date", icon: "check-circle" },
-  stale: { text: "Capacity out of date", icon: "clock" },
-  unavailable: { text: CAPACITY_UNAVAILABLE, icon: "alert-triangle" },
-  unsupported: { text: "Capacity can't be checked on this network.", icon: "info-circle" },
+  loading: { text: copy.CAPACITY_CHECKING, icon: "hourglass" },
+  fresh: { text: copy.CAPACITY_FRESH, icon: "check-circle" },
+  stale: { text: copy.CAPACITY_STALE, icon: "clock" },
+  unavailable: { text: copy.CAPACITY_UNAVAILABLE, icon: "alert-triangle" },
+  unsupported: { text: copy.CAPACITY_UNSUPPORTED, icon: "info-circle" },
 }
-
-const WITHDRAWALS_NOTE = "Withdrawals do not restore deposit capacity."
 
 function capacityView(
   capacity: CapacityFacts | undefined,
@@ -214,7 +167,7 @@ function capacityView(
     return {
       state: "general",
       rows: [],
-      notes: [CAPACITY_DISCLOSURE, WITHDRAWALS_NOTE, CAPACITY_NOT_RESERVED_NOTE],
+      notes: [copy.CAPACITY_DISCLOSURE, copy.WITHDRAWALS_NOTE, copy.CAPACITY_NOT_RESERVED_NOTE],
       canRetry: false,
     }
   }
@@ -225,17 +178,17 @@ function capacityView(
   const rows = observation
     ? [
         {
-          label: "Available",
+          label: copy.CAPACITY_ROW.available,
           value:
             capacity.label ??
             capacityAmount(observation.available, observation.decimals, observation.tokenSymbol),
         },
         {
-          label: "Total capacity",
+          label: copy.CAPACITY_ROW.total,
           value: capacityAmount(observation.ceiling, observation.decimals, observation.tokenSymbol),
         },
-        { label: "Refill rate", value: rateLabel(observation) },
-        { label: "Last checked", value: format.time(observation.observedAt) },
+        { label: copy.CAPACITY_ROW.rate, value: rateLabel(observation) },
+        { label: copy.CAPACITY_ROW.checked, value: format.time(observation.observedAt) },
       ]
     : []
   const noRefill = observation?.ratePerSecond === 0n
@@ -247,129 +200,98 @@ function capacityView(
         : CAPACITY_STATUS[state],
     rows,
     notes: [
-      noRefill ? NO_REFILL_DISCLOSURE : CAPACITY_DISCLOSURE,
-      WITHDRAWALS_NOTE,
-      CAPACITY_NOT_RESERVED_NOTE,
+      noRefill ? copy.NO_REFILL_DISCLOSURE : copy.CAPACITY_DISCLOSURE,
+      copy.WITHDRAWALS_NOTE,
+      copy.CAPACITY_NOT_RESERVED_NOTE,
     ],
     canRetry:
       state === "stale" || state === "unavailable" || (state === "fresh" && !!capacity.offerRetry),
   }
 }
 
-const RENEWAL_NOTE = "It does not reset at midnight."
-
 // The contract renews only a used-up allowance, on the first eligible action once the period has
 // passed; while uses remain, each action spends one.
-function renewsRow(
-  renews: boolean | undefined,
-  refillPeriodSeconds: number | undefined,
-  since: string,
-) {
+function renewsRow(renews: boolean | undefined, refillPeriodSeconds: number | undefined) {
   const value =
     renews === undefined
-      ? "Unknown"
+      ? copy.RENEWS_VALUE.unknown
       : !renews
-      ? "No"
+      ? copy.RENEWS_VALUE.no
       : refillPeriodSeconds
-      ? `When used up, ${formatPeriod(refillPeriodSeconds)} after ${since}`
-      : "When used up"
-  return { label: "Renews", value }
+      ? copy.renewsAfterUsedUp(formatPeriod(refillPeriodSeconds))
+      : copy.RENEWS_VALUE.whenUsedUp
+  return { label: copy.SPONSORSHIP_ROW.renews, value }
 }
-
-const SCOPE_NOTE = ALLOWANCE_SCOPE
-
-const NO_RENEWAL_NOTE = "This allowance does not renew."
 
 const status = (text: string, icon: LimitsStatusIcon) => ({ text, icon })
 
 function usageRows(usage: AllowanceUsage | undefined): LimitsRow[] {
   if (!usage) return []
   return [
-    { label: "Used by your transactions", value: String(usage.yours) },
-    { label: "Used by deposit addresses", value: String(usage.depositAddresses) },
+    { label: copy.SPONSORSHIP_ROW.usedByYou, value: String(usage.yours) },
+    { label: copy.SPONSORSHIP_ROW.usedByAddresses, value: String(usage.depositAddresses) },
   ]
 }
 
 function sponsorshipView(sponsorship: SponsorshipFacts): AboutLimitsView["sponsorship"] {
   const section = (
-    text: string,
+    text: string | undefined,
     icon: LimitsStatusIcon,
     rows: LimitsRow[] = [],
     notes: string[] = [],
   ): AboutLimitsView["sponsorship"] => ({
     state: sponsorship.state,
-    status: status(text, icon),
+    status: text === undefined ? undefined : status(text, icon),
     rows,
-    notes: [SCOPE_NOTE, ...notes],
+    notes: [copy.ALLOWANCE_SCOPE, ...notes],
     canRetry: sponsorship.state === "unavailable",
   })
   switch (sponsorship.state) {
     case "loading":
-      return section("Checking sponsored transactions…", "hourglass")
+      return section(copy.SPONSORSHIP_STATUS.loading, "hourglass")
     case "unavailable":
-      return section("Sponsored transactions could not be checked.", "alert-triangle")
+      return section(copy.SPONSORSHIP_STATUS.unavailable, "alert-triangle")
     case "unsupported":
-      return section(
-        "Sponsored transaction details are not available for this deployment.",
-        "info-circle",
-      )
+      return section(copy.SPONSORSHIP_STATUS.unsupported, "info-circle")
     case "no-account":
-      return section("Sponsored transactions come with a zk.money account.", "info-circle")
+      return section(copy.SPONSORSHIP_STATUS.noAccount, "info-circle")
     case "not-subscribed": {
       // The first sponsored batch opens the allowance and spends one of its uses.
       const { maxTx, renews, refillPeriodSeconds } = sponsorship
-      return section(
-        "Sponsored transactions not started yet",
-        "info-circle",
-        [
-          { label: "First allowance", value: String(maxTx) },
-          renewsRow(renews, refillPeriodSeconds, "it opened"),
-        ],
-        [
-          maxTx === 1
-            ? "Your first sponsored transaction opens a one-use allowance and uses it."
-            : `Your first sponsored transaction opens an allowance of ${maxTx} and uses one of them.`,
-          ...(renews ? [RENEWAL_NOTE] : renews === false ? [NO_RENEWAL_NOTE] : []),
-        ],
-      )
+      return section(undefined, "info-circle", [
+        { label: copy.SPONSORSHIP_ROW.firstAllowance, value: String(maxTx) },
+        renewsRow(renews, refillPeriodSeconds),
+      ])
     }
     case "available": {
       const { uses, maxTx, renews, refillPeriodSeconds } = sponsorship
-      return section(
-        `${uses} sponsored ${uses === 1 ? "transaction" : "transactions"} left`,
-        "check-circle",
-        [
-          ...(maxTx === undefined ? [] : [{ label: "Allowance", value: String(maxTx) }]),
-          ...usageRows(sponsorship.usage),
-          renewsRow(renews, refillPeriodSeconds, "the last renewal"),
-        ],
-        renews ? [RENEWAL_NOTE] : renews === false ? [NO_RENEWAL_NOTE] : [],
-      )
+      return section(copy.usesLeft(uses), "check-circle", [
+        ...(maxTx === undefined
+          ? []
+          : [{ label: copy.SPONSORSHIP_ROW.allowance, value: String(maxTx) }]),
+        ...usageRows(sponsorship.usage),
+        renewsRow(renews, refillPeriodSeconds),
+      ])
     }
     case "renewal-unknown": {
       // A stored zero on a renewing rail never holds an action back: the chain decides.
       const { maxTx, refillPeriodSeconds } = sponsorship
       return section(
-        "Renewal status unknown",
+        copy.SPONSORSHIP_STATUS.renewalUnknown,
         "info-circle",
         [
-          { label: "Allowance", value: String(maxTx) },
+          { label: copy.SPONSORSHIP_ROW.allowance, value: String(maxTx) },
           ...usageRows(sponsorship.usage),
-          renewsRow(true, refillPeriodSeconds, "the last renewal"),
+          renewsRow(true, refillPeriodSeconds),
         ],
-        [
-          "We can't confirm renewal yet. Your next eligible transaction may start a new allowance.",
-          RENEWAL_NOTE,
-        ],
+        [copy.RENEWAL_UNKNOWN_NOTE],
       )
     }
     case "spent":
-      return section(
-        "No sponsored transactions left",
-        "x-circle",
-        [...usageRows(sponsorship.usage), { label: "Renews", value: "No" }],
-        [NO_RENEWAL_NOTE],
-      )
+      return section(copy.SPONSORSHIP_STATUS.spent, "x-circle", [
+        ...usageRows(sponsorship.usage),
+        { label: copy.SPONSORSHIP_ROW.renews, value: copy.RENEWS_VALUE.no },
+      ])
   }
 }
 

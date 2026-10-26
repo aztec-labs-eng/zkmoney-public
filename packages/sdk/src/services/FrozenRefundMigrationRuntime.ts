@@ -1,10 +1,11 @@
+import { NO_FROM } from "@aztec/aztec.js/account"
 import type { AztecNode } from "@aztec/aztec.js/node"
-import type { Contract } from "@aztec/aztec.js/contracts"
+import type { Contract, SimulateInteractionOptions } from "@aztec/aztec.js/contracts"
 import { AztecAddress, EthAddress } from "@aztec/aztec.js/addresses"
 import { Fr } from "@aztec/aztec.js/fields"
 import { InboxContract } from "@aztec/ethereum/contracts"
 import type { ViemClient } from "@aztec/ethereum/types"
-import { OxidePortalContract } from "@oxide/l1-contracts"
+import { OxidePortalAbi, OxidePortalContract } from "@oxide/l1-contracts"
 import { resolveFreezeArchive } from "@oxide/oxide-client/archive_ref.js"
 import {
   classifyDepositRefund,
@@ -12,6 +13,7 @@ import {
 } from "@oxide/oxide-client/deposit_refund_eligibility.js"
 import type {
   DepositSpendMetadata,
+  NullificationEffectData,
   SpendMetadataResolver,
 } from "@oxide/oxide-client/token_operations_collector.js"
 import { computeNoteNullifier } from "@oxide/oxide-lib/hash.js"
@@ -24,7 +26,16 @@ import {
   type RefundOwner,
 } from "@oxide/oxide-lib/refund_authorization.js"
 import type { TeeSigner } from "@oxide/oxide-lib/types.js"
-import { keccak256, toHex, type Address } from "viem"
+import {
+  erc20Abi,
+  keccak256,
+  parseEventLogs,
+  toHex,
+  type Address,
+  type Hex,
+  type PublicClient,
+} from "viem"
+import { chunkedContractEvents } from "./l1Logs.js"
 import type { FrozenDepositDescriptor, OxideEnvTuple } from "@obsidion/core/types"
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
 import type { ObsidionAccount } from "../obsidion/alpha/account/ObsidionAccount.js"
@@ -38,15 +49,25 @@ import {
   type FrozenMigrationRuntime,
   type FrozenRefundCandidates,
   type FrozenRefundSelection,
+  selectFrozenBatch,
 } from "./FrozenMetadataMigrationSource.js"
 import type { LiveMetadataMigrationSourceOptions } from "./LiveMetadataMigrationSource.js"
 import { TokenService } from "./TokenService.js"
+
+/** The Aztec major version this runtime proves refunds for. Older sources need their own SDK realm. */
+const SOURCE_AZTEC_MAJOR = "5"
 
 /** The source PXE a fresh scan syncs before it may establish completion. */
 type SourcePxe = Pick<ObsidionWallet["pxe"], "sync" | "getSyncedBlockHeader">
 
 /** The source rollup's L1 Inbox: the classifier's reads, the sibling path's, and its tree state. */
 type SourceInbox = DepositInbox & InboxMessageSource & Pick<InboxContract, "getState">
+
+/** A payment link's escrow the account created, as the owner its notes refund under. */
+export interface FrozenEscrow {
+  owner: RefundOwner
+  resolveSpendMetadata: SpendMetadataResolver
+}
 
 interface Options {
   node: AztecNode
@@ -61,6 +82,8 @@ interface Options {
   depositMetadata: DepositSpendMetadata
   /** The owner's swept deposits on the source portal. A failed or partial scan must throw. */
   depositDescriptors(opts: { fresh: boolean }): Promise<FrozenDepositDescriptor[]>
+  /** The account's payment link escrows on the source rollup. A failed or partial scan must throw. */
+  escrows?(opts: { fresh: boolean }): Promise<FrozenEscrow[]>
   teeSigner: TeeSigner
   /** The source deployment's plain withdrawal executor; it pays the tip and forwards the rest. */
   executor: EthAddress
@@ -124,6 +147,10 @@ export async function passkeyRefundOwner(
  */
 const refundCalldata = () => import("@oxide/oxide-client/atlatl/process_refund_requests.js")
 
+// A scan's concurrent reads share one import: vitest hands concurrent imports of a mocked module
+// the real one.
+let frozenNotes: Promise<typeof import("@oxide/oxide-client/frozen_notes.js")> | undefined
+
 /** The owner's frozen notes that are still refundable, keyed by refund nullifier. */
 export async function readRefundableFrozenNotes(o: {
   portal: OxidePortalContract
@@ -131,14 +158,19 @@ export async function readRefundableFrozenNotes(o: {
   node: AztecNode
   owner: AztecAddress
   resolveSpendMetadata: SpendMetadataResolver
+  /** How to reach the notes of an owner with no account entrypoint. */
+  simulateOptions?: SimulateInteractionOptions
 }) {
-  const { getRefundableFrozenNotes } = await import("@oxide/oxide-client/frozen_notes.js")
+  frozenNotes ??= import("@oxide/oxide-client/frozen_notes.js")
+  const { getRefundableFrozenNotes } = await frozenNotes
   const notes = await getRefundableFrozenNotes(
     o.portal,
     o.token,
     o.node,
     o.owner,
     o.resolveSpendMetadata,
+    undefined,
+    o.simulateOptions,
   )
   return Promise.all(
     notes.map(async (note) => ({
@@ -154,6 +186,28 @@ export async function readRefundableFrozenNotes(o: {
       ).toString(),
     })),
   )
+}
+
+/** The escrows' frozen notes that are still refundable, keyed by refund nullifier. */
+export async function readRefundableEscrowNotes(o: {
+  portal: OxidePortalContract
+  token: Contract
+  node: AztecNode
+  escrows: FrozenEscrow[]
+}) {
+  const read = await Promise.all(
+    o.escrows.map(async (escrow) => {
+      const owner = escrow.owner.address
+      const notes = await readRefundableFrozenNotes({
+        ...o,
+        owner,
+        resolveSpendMetadata: escrow.resolveSpendMetadata,
+        simulateOptions: { from: NO_FROM, additionalScopes: [owner] },
+      })
+      return notes.map((note) => ({ ...note, escrow }))
+    }),
+  )
+  return read.flat()
 }
 
 /**
@@ -244,6 +298,11 @@ export async function syncSourcePxe(o: {
     throw new Error("The source wallet did not sync to the source rollup's tip")
 }
 
+/** Whether `portal` is frozen: its rollup is retired, and funds leave it only by refund. */
+export function isPortalFrozen(client: unknown, portal: Address): Promise<boolean> {
+  return new OxidePortalContract(client as ViemClient, portal).isFrozen()
+}
+
 async function depositInbox(client: ViemClient, portal: OxidePortalContract) {
   return new InboxContract(client, await portal.getInbox())
 }
@@ -259,8 +318,11 @@ export async function frozenSourceSummary(o: {
   tuple: OxideEnvTuple
   /** Read only once the portal is known frozen. */
   depositDescriptors: () => Promise<FrozenDepositDescriptor[]>
+  /** The account's payment link escrows; read only once the portal is known frozen. */
+  escrows?: () => Promise<FrozenEscrow[]>
 }): Promise<
-  { notes: bigint; deposits: number; waiting: number; waitingAmount: bigint } | undefined
+  | { notes: bigint; links: bigint; deposits: number; waiting: number; waitingAmount: bigint }
+  | undefined
 > {
   const client = o.client as ViemClient
   const portal = new OxidePortalContract(client, o.tuple.portal as Address)
@@ -275,26 +337,35 @@ export async function frozenSourceSummary(o: {
     o.account,
     AztecAddress.fromStringUnsafe(o.tuple.l2Token),
   )
-  const [notes, deposits] = await Promise.all([
+  const token = await tokenService.getTokenContract()
+  // Inputs resolve before any read starts, so a failing input leaves no read unhandled.
+  const resolveSpendMetadata = await o.account.makeSpendMetadataResolver()
+  const escrows = (await o.escrows?.()) ?? []
+  const inbox = await depositInbox(client, portal)
+  const depositMetadata = await (
+    await o.account.makeDepositSpendMetadataResolver()
+  )(o.account.getAddress())
+  const descriptors = await o.depositDescriptors()
+  const [notes, links, deposits] = await Promise.all([
     readRefundableFrozenNotes({
       portal,
-      token: await tokenService.getTokenContract(),
+      token,
       node: o.wallet.node,
       owner: o.account.getAddress(),
-      resolveSpendMetadata: await o.account.makeSpendMetadataResolver(),
+      resolveSpendMetadata,
     }),
+    readRefundableEscrowNotes({ portal, token, node: o.wallet.node, escrows }),
     readRefundableFrozenDeposits({
       portal,
-      inbox: await depositInbox(client, portal),
+      inbox,
       node: o.wallet.node,
-      depositMetadata: await (
-        await o.account.makeDepositSpendMetadataResolver()
-      )(o.account.getAddress()),
-      descriptors: await o.depositDescriptors(),
+      depositMetadata,
+      descriptors,
     }),
   ])
   return {
     notes: notes.reduce((sum, { note }) => sum + note.amount.toBigInt(), 0n),
+    links: links.reduce((sum, { note }) => sum + note.amount.toBigInt(), 0n),
     deposits: deposits.filter((d) => !d.waits).length,
     waiting: deposits.filter((d) => d.waits).length,
     waitingAmount: deposits
@@ -307,12 +378,13 @@ export async function frozenSourceSummary(o: {
 export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
   readonly identity: string
   private descriptors?: Promise<FrozenDepositDescriptor[]>
+  private escrows?: Promise<FrozenEscrow[]>
 
   constructor(private readonly o: Options) {
     this.identity = keccak256(
       toHex(
         JSON.stringify({
-          generation: "aztec-5.2.0",
+          generation: `aztec-${SOURCE_AZTEC_MAJOR}`,
           portal: o.portal.address.toString(),
           rollup: o.rollup,
           version: String(o.rollupVersion),
@@ -350,7 +422,7 @@ export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
       o.portal.isFrozen(),
     ])
     if (
-      info.nodeVersion.replace(/^v/, "") !== "5.2.0" ||
+      info.nodeVersion.replace(/^v/, "").split(".")[0] !== SOURCE_AZTEC_MAJOR ||
       !frozen ||
       !token.equals(o.token.address) ||
       rollup.toString().toLowerCase() !== o.rollup.toLowerCase() ||
@@ -377,8 +449,23 @@ export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
     return this.descriptors
   }
 
+  private readEscrows(fresh: boolean) {
+    if (fresh || !this.escrows) {
+      const pending = this.o.escrows?.({ fresh }) ?? Promise.resolve([])
+      pending.catch(() => {
+        if (this.escrows === pending) this.escrows = undefined
+      })
+      this.escrows = pending
+    }
+    return this.escrows
+  }
+
   private notes() {
     return readRefundableFrozenNotes({ ...this.o, owner: this.o.owner.address })
+  }
+
+  private async escrowNotes(fresh = false) {
+    return readRefundableEscrowNotes({ ...this.o, escrows: await this.readEscrows(fresh) })
   }
 
   private async deposits(fresh = false) {
@@ -390,7 +477,11 @@ export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
 
   async candidates(opts: { fresh?: boolean } = {}): Promise<FrozenRefundCandidates> {
     if (opts.fresh) await syncSourcePxe(this.o)
-    const [notes, all] = await Promise.all([this.notes(), this.deposits(!!opts.fresh)])
+    const [notes, all, escrowNotes] = await Promise.all([
+      this.notes(),
+      this.deposits(!!opts.fresh),
+      this.escrowNotes(!!opts.fresh),
+    ])
     const deposits = all.filter((d) => !d.waits)
     return {
       maxNotesPerBatch: MAX_FROZEN_NOTES_PER_REFUND,
@@ -401,6 +492,12 @@ export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
           id,
           amount: String(note.amount.toBigInt()),
           kind: "note" as const,
+        })),
+        ...escrowNotes.map(({ id, note, escrow }) => ({
+          id,
+          amount: String(note.amount.toBigInt()),
+          kind: "escrow-note" as const,
+          owner: escrow.owner.address.toString(),
         })),
         ...deposits.map(({ id, kind, descriptor }) => ({ id, amount: descriptor.amount, kind })),
       ],
@@ -423,7 +520,7 @@ export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
     const ctx = { portal: o.portal, chain: o.node, signer: o.teeSigner, l2Token: o.token.address }
     let amount: bigint
     let calldata: `0x${string}`
-    if (kind === "note") {
+    if (kind === "note" || kind === "escrow-note") {
       if (
         !ids.length ||
         ids.length > MAX_FROZEN_NOTES_PER_REFUND ||
@@ -431,15 +528,22 @@ export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
       ) {
         throw new Error("Invalid frozen refund selection")
       }
-      const candidates = await this.notes()
-      const available = new Map<string, (typeof candidates)[number]["note"]>(
-        candidates.map(({ id, note }) => [id, note]),
-      )
-      const notes = ids.map((id) => {
-        const note = available.get(id)
-        if (!note) throw new Error("A selected frozen note is no longer refundable")
-        return note
+      const candidates: Array<{
+        id: string
+        note: NullificationEffectData
+        escrow?: FrozenEscrow
+      }> = kind === "note" ? await this.notes() : await this.escrowNotes()
+      const available = new Map(candidates.map((c) => [c.id, c]))
+      const picked = ids.map((id) => {
+        const candidate = available.get(id)
+        if (!candidate) throw new Error("A selected frozen note is no longer refundable")
+        return candidate
       })
+      // The circuit and the enclave refund one owner's notes at a time.
+      const escrow = picked[0]!.escrow
+      if (picked.some((c) => c.escrow !== escrow))
+        throw new Error("A frozen refund selection spans payment links")
+      const notes = picked.map((c) => c.note)
       amount = notes.reduce((sum, note) => sum + note.amount.toBigInt(), 0n)
       if (relayerTip < 0n || amount <= relayerTip)
         throw new Error("Frozen refund cannot cover its relayer tip")
@@ -447,8 +551,8 @@ export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
       calldata = await buildRefundFrozenNotesPortalCalldata(ctx, {
         executorCall: this.executorCall(recipient, relayerTip),
         notesToRefund: notes,
-        owner: o.owner,
-        resolveSpendMetadata: o.resolveSpendMetadata,
+        owner: escrow?.owner ?? o.owner,
+        resolveSpendMetadata: escrow?.resolveSpendMetadata ?? o.resolveSpendMetadata,
       })
     } else {
       const deposit =
@@ -494,6 +598,60 @@ export class FrozenRefundMigrationRuntime implements FrozenMigrationRuntime {
     }
   }
 
+  /** Refund nullifiers of the account's frozen notes, its escrows' included, that L1 refunded. */
+  async refundedNoteIds(): Promise<string[]> {
+    // The reader drops a note L1 refunded: through a portal that reports none, it lists them all.
+    const portal = Object.assign(Object.create(this.o.portal), {
+      isRefundNullifierSpent: async () => false,
+    }) as OxidePortalContract
+    const [notes, escrowNotes] = await Promise.all([
+      readRefundableFrozenNotes({ ...this.o, portal, owner: this.o.owner.address }),
+      readRefundableEscrowNotes({ ...this.o, portal, escrows: await this.readEscrows(false) }),
+    ])
+    const ids = [...notes, ...escrowNotes].map(({ id }) => id)
+    const spent = await Promise.all(
+      ids.map((id) => this.o.portal.isRefundNullifierSpent(Fr.fromString(id))),
+    )
+    return ids.filter((_, i) => spent[i])
+  }
+
+  /**
+   * The note refunds L1 already paid this account since `fromBlock`, from the portal's logs. A batch
+   * logs its first note's refund nullifier; its recipient is what the executor paid.
+   */
+  async refundsSent(client: PublicClient, fromBlock: bigint) {
+    const ids = await this.refundedNoteIds()
+    if (!ids.length) return []
+    const executor = this.o.executor.toString().toLowerCase()
+    const logs = (await chunkedContractEvents(
+      client,
+      {
+        address: this.o.portal.address.toString() as Address,
+        abi: OxidePortalAbi,
+        eventName: "WithdrawalOrRefund",
+        args: { nullifier: ids.map((id) => toHex(BigInt(id), { size: 32 })) },
+      },
+      fromBlock,
+      await client.getBlockNumber(),
+    )) as Array<{ transactionHash: Hex; blockNumber: bigint; args: { executionAmount: bigint } }>
+    return Promise.all(
+      logs.map(async (log) => {
+        const receipt = await client.getTransactionReceipt({ hash: log.transactionHash })
+        const paid = parseEventLogs({
+          abi: erc20Abi,
+          eventName: "Transfer",
+          logs: receipt.logs,
+        }).find((transfer) => transfer.args.from.toLowerCase() === executor)
+        return {
+          hash: log.transactionHash,
+          amount: log.args.executionAmount,
+          recipient: paid?.args.to,
+          blockNumber: log.blockNumber,
+        }
+      }),
+    )
+  }
+
   async refunded(ids: string[]): Promise<boolean> {
     return (
       ids.length > 0 &&
@@ -512,44 +670,101 @@ export async function createLocalMetadataMigrationSource(
     sourceChain?: { wallet: ObsidionWallet; account: ObsidionAccount }
     /** The source account's swept deposits on the source portal, read on the source rollup. */
     depositDescriptors(opts: { fresh: boolean }): Promise<FrozenDepositDescriptor[]>
+    /** The source account's payment link escrows, registered in the source chain's wallet. */
+    escrows?(opts: { fresh: boolean }): Promise<FrozenEscrow[]>
     wrapRefundSigner?: (sign: RefundChallengeSigner) => RefundChallengeSigner
-  },
+  } & Pick<ConstructorParameters<typeof FrozenMetadataMigrationSource>[0], "depositSettled">,
 ) {
   const client = options.client as unknown as ViemClient
   const tuple = options.source.tuple
-  const portal = new OxidePortalContract(client, tuple.portal as Address)
-  if (!(await portal.isFrozen())) {
+  if (!(await new OxidePortalContract(client, tuple.portal as Address).isFrozen())) {
     const { LiveMetadataMigrationSource } = await import("./LiveMetadataMigrationSource.js")
     return new LiveMetadataMigrationSource(options)
   }
-  if (!tuple.plainWithdrawalExecutor)
-    throw new Error("The frozen source has no withdrawal executor")
-  const chain = options.sourceChain ?? { wallet: options.wallet, account: options.account }
-  const info = await chain.wallet.node.getNodeInfo()
   const destination = new OxidePortalContract(client, options.destination.portal)
   return new FrozenMetadataMigrationSource({
     ...options,
     destinationAsset: (await destination.getUnderlying()).toString() as Address,
-    runtime: new FrozenRefundMigrationRuntime({
-      node: chain.wallet.node,
-      pxe: chain.wallet.pxe,
+    runtime: await createFrozenRefundRuntime({
+      client,
+      tuple,
+      chain: options.sourceChain ?? { wallet: options.wallet, account: options.account },
       token: await options.source.tokenService.getTokenContract(),
-      portal,
-      inbox: await depositInbox(client, portal),
-      rollup: info.l1ContractAddresses.rollupAddress.toString() as Address,
-      rollupVersion: BigInt(info.rollupVersion),
-      owner: await passkeyRefundOwner(chain.wallet, chain.account, options.wrapRefundSigner),
-      resolveSpendMetadata: await chain.account.makeSpendMetadataResolver(),
-      depositMetadata: await (
-        await chain.account.makeDepositSpendMetadataResolver()
-      )(chain.account.getAddress()),
-      depositDescriptors: options.depositDescriptors,
       teeSigner: options.teeSigner,
-      executor: EthAddress.fromString(tuple.plainWithdrawalExecutor),
-      withdrawalSubsidy: tuple.withdrawalSubsidy
-        ? EthAddress.fromString(tuple.withdrawalSubsidy)
-        : undefined,
+      depositDescriptors: options.depositDescriptors,
+      escrows: options.escrows,
+      wrapRefundSigner: options.wrapRefundSigner,
       tipRecipient: EthAddress.fromString(options.destination.operationExecutor),
     }),
   })
+}
+
+/** The refund runtime for `tuple`'s frozen portal and `chain`'s account on its rollup. */
+export async function createFrozenRefundRuntime(o: {
+  client: unknown
+  tuple: OxideEnvTuple
+  chain: { wallet: ObsidionWallet; account: ObsidionAccount }
+  token: Contract
+  teeSigner: TeeSigner
+  depositDescriptors: Options["depositDescriptors"]
+  escrows?: Options["escrows"]
+  wrapRefundSigner?: (sign: RefundChallengeSigner) => RefundChallengeSigner
+  tipRecipient: EthAddress
+}) {
+  const { tuple, chain } = o
+  if (!tuple.plainWithdrawalExecutor)
+    throw new Error("The frozen source has no withdrawal executor")
+  const client = o.client as ViemClient
+  const portal = new OxidePortalContract(client, tuple.portal as Address)
+  const info = await chain.wallet.node.getNodeInfo()
+  return new FrozenRefundMigrationRuntime({
+    node: chain.wallet.node,
+    pxe: chain.wallet.pxe,
+    token: o.token,
+    portal,
+    inbox: await depositInbox(client, portal),
+    rollup: info.l1ContractAddresses.rollupAddress.toString() as Address,
+    rollupVersion: BigInt(info.rollupVersion),
+    owner: await passkeyRefundOwner(chain.wallet, chain.account, o.wrapRefundSigner),
+    resolveSpendMetadata: await chain.account.makeSpendMetadataResolver(),
+    depositMetadata: await (
+      await chain.account.makeDepositSpendMetadataResolver()
+    )(chain.account.getAddress()),
+    depositDescriptors: o.depositDescriptors,
+    escrows: o.escrows,
+    teeSigner: o.teeSigner,
+    executor: EthAddress.fromString(tuple.plainWithdrawalExecutor),
+    withdrawalSubsidy: tuple.withdrawalSubsidy
+      ? EthAddress.fromString(tuple.withdrawalSubsidy)
+      : undefined,
+    tipRecipient: o.tipRecipient,
+  })
+}
+
+/**
+ * The next refund of a frozen portal that `recipient` submits itself, paid to it in full: no relayer
+ * tip, so the runtime must name `recipient` as its tip recipient to take the deployment's subsidy.
+ * None once nothing refundable is left; `waiting` is what the portal cannot refund yet.
+ */
+export async function nextFrozenSelfRefund(
+  runtime: Pick<FrozenMigrationRuntime, "candidates" | "build">,
+  recipient: Address,
+  opts: { fresh?: boolean } = {},
+) {
+  const candidates = await runtime.candidates(opts)
+  const waiting = candidates.waiting ?? 0n
+  const remaining = candidates.candidates.reduce((sum, c) => sum + BigInt(c.amount), 0n)
+  const batch = selectFrozenBatch({ ...candidates, minimumNetAmount: 1n, tip: 0n })
+  if (!batch) return { remaining, waiting }
+  const { amount, operation } = await runtime.build(batch, recipient, 0n)
+  return {
+    remaining,
+    waiting,
+    refund: {
+      ids: batch.ids,
+      amount,
+      to: operation.target.toString() as Address,
+      data: toHex(operation.calldata),
+    },
+  }
 }

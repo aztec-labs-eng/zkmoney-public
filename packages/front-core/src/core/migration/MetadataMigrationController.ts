@@ -4,6 +4,7 @@ import {
   newMetadataMigration,
   type MetadataMigrationRecord,
   type MetadataMigrationSteps,
+  type MetadataMigrationSummary,
 } from "./metadataMigrationFlow"
 import type { ApprovalGate } from "./savedApprovals"
 
@@ -42,17 +43,30 @@ export class MetadataMigrationController {
 
   /**
    * start=true is the user's initial action; subsequent calls reconcile the same saved plan.
-   * `observeOnly` never prepares, signs or sends; `onPrepared` fires once a start has approved and
-   * proven everything it needs. `prompts` (default `start`) off lets a start run on saved approvals.
+   * `observeOnly` never prepares, signs or sends, and `promptless` never prepares, signs or
+   * broadcasts a bootstrap; `onPrepared` fires once a start has approved and proven everything it
+   * needs. `prompts` (default `start`) off lets a start run on saved approvals. A start saves
+   * `summary`, what it was quoted, with the record. `exclusive` runs each step that sends one
+   * transaction.
    */
   advance(
     start = false,
     signal?: AbortSignal,
     {
       observeOnly = false,
+      promptless = false,
       onPrepared,
       prompts = start,
-    }: { observeOnly?: boolean; onPrepared?: () => void; prompts?: boolean } = {},
+      summary,
+      exclusive,
+    }: {
+      observeOnly?: boolean
+      promptless?: boolean
+      onPrepared?: () => void
+      prompts?: boolean
+      summary?: MetadataMigrationSummary
+      exclusive?: <T>(step: (operationId?: string) => Promise<T>) => Promise<T>
+    } = {},
   ): Promise<MetadataMigrationRecord | null> {
     if (this.running) return this.running
     const run = this.lock(async () => {
@@ -71,7 +85,7 @@ export class MetadataMigrationController {
           await this.storage.setItem(this.key, JSON.stringify(next))
           this.publish(next)
         },
-        { start, signal, observeOnly, onPrepared },
+        { start, signal, observeOnly, promptless, onPrepared, summary, exclusive },
       )
       this.publish(result)
       return result

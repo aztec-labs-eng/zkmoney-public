@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import { ApprovalNeededError, StalePlanError } from "@obsidion/sdk"
+import { provingProgress } from "@obsidion/proving-progress"
 import {
   advanceMetadataMigration,
   newMetadataMigration,
@@ -37,7 +38,7 @@ function fixture() {
     }),
     recoverRemaining: vi.fn(async () => {}),
   }
-  const drive = (opts?: { start?: boolean; signal?: AbortSignal; observeOnly?: boolean }) =>
+  const drive = (opts?: Parameters<typeof advanceMetadataMigration>[3]) =>
     advanceMetadataMigration(stored, steps, persist, opts)
   return { steps, observed, persist, drive, stored: () => stored }
 }
@@ -244,6 +245,24 @@ describe("shared metadata migration", () => {
     expect(steps.recoverRemaining).toHaveBeenCalledTimes(2)
   })
 
+  it("is done only once the balance holds what the run imported, observed or driven", async () => {
+    const { drive, steps, observed, stored } = fixture()
+    let held = false
+    steps.confirmBalance = vi.fn(async () => held)
+    steps.reconcileRemaining = vi.fn(async () => {})
+    observed.metadataSettled = true
+    observed.recurringSponsorship = true
+    observed.sent = true
+    observed.complete = true
+    await drive()
+    expect(stored().phase).toBe("arriving")
+    await drive({ observeOnly: true })
+    expect(stored().phase).toBe("arriving")
+    held = true
+    await drive({ observeOnly: true })
+    expect(stored().phase).toBe("done")
+  })
+
   it("observes a run the user did not start without preparing, signing or sending", async () => {
     const { drive, steps, observed, stored } = fixture()
     steps.reconcileRemaining = vi.fn(async () => {})
@@ -285,6 +304,169 @@ describe("shared metadata migration", () => {
     })
     await drive({ start: true })
     expect(stored().approvals).toEqual({ approved: 1, total: 3 })
+  })
+
+  it("saves what a start was quoted, and keeps it through later passes", async () => {
+    const { drive, stored } = fixture()
+    const summary = { fees: "1500000000000000000", approvals: 4 }
+    await drive({ start: true, summary })
+    expect(stored().summary).toEqual(summary)
+    await drive()
+    await drive({ start: true })
+    await drive({ observeOnly: true, summary: { fees: "1", approvals: 1 } })
+    expect(stored().summary).toEqual(summary)
+  })
+
+  it("saves a new start's quote before its approve step, so a cancel there keeps it", async () => {
+    const { drive, steps, observed, stored } = fixture()
+    observed.metadataSettled = true
+    observed.recurringSponsorship = true
+    observed.complete = true
+    await drive({ start: true, summary: { fees: "1", approvals: 3 } })
+    expect(stored().phase).toBe("done")
+    const cancel = new AbortController()
+    steps.ready = vi.fn(async () => {
+      cancel.abort()
+      throw new Error("rpc down")
+    })
+    await drive({ start: true, signal: cancel.signal, summary: { fees: "2", approvals: 5 } })
+    expect(stored().summary).toEqual({ fees: "2", approvals: 5 })
+  })
+
+  it("carries a published external run to the end without the user, sending each step exclusively", async () => {
+    const { drive, steps, observed, stored } = fixture()
+    await drive({ start: true })
+    vi.mocked(steps.prepare).mockClear()
+    vi.mocked(steps.broadcast).mockClear()
+    const exclusive = vi.fn(<T>(step: () => Promise<T>) => step())
+    const follow = () => drive({ promptless: true, exclusive })
+    observed.bootstrapStatus = "included"
+    observed.bootstrapSpent = true
+    await follow()
+    expect(stored().phase).toBe("awaitingMessages")
+    await follow() // A reload while the user's transfer is on its way.
+    expect(stored().phase).toBe("awaitingMessages")
+    observed.metadataSettled = true
+    observed.messagesReady = true
+    await follow()
+    await follow() // A reload after the subscription was submitted, before its receipt.
+    expect(steps.subscribe).toHaveBeenCalledTimes(1)
+    observed.subscriptionStatus = "included"
+    observed.recurringSponsorship = true
+    await follow()
+    observed.complete = true
+    await follow()
+    expect(stored().phase).toBe("done")
+    expect(steps.prepare).not.toHaveBeenCalled()
+    expect(steps.ready).not.toHaveBeenCalled()
+    expect(steps.broadcast).not.toHaveBeenCalled()
+    // The subscription: funding checks and an external run's recovery send nothing.
+    expect(exclusive).toHaveBeenCalledTimes(1)
+  })
+
+  it("names each single-transaction step's operation to the step, and announces its saved hash", async () => {
+    const { drive, steps, observed } = fixture()
+    const saved = vi.fn()
+    provingProgress.on("tx-hash-saved", saved)
+    try {
+      const exclusive = <T>(step: (operationId?: string) => Promise<T>) => step("op-step")
+      await drive({ start: true, exclusive })
+      expect(steps.broadcast).toHaveBeenCalledWith("signed-plan", expect.any(Function), "op-step")
+      observed.bootstrapStatus = "included"
+      observed.bootstrapSpent = true
+      observed.metadataSettled = true
+      observed.messagesReady = true
+      await drive({ promptless: true, exclusive })
+      expect(steps.subscribe).toHaveBeenCalledWith("signed-plan", expect.any(Function), "op-step")
+      expect(saved.mock.calls.map(([ev]) => ev)).toEqual([
+        expect.objectContaining({ operationId: "op-step", txHash: "bootstrap-hash" }),
+        expect.objectContaining({ operationId: "op-step", txHash: "subscription-hash" }),
+      ])
+    } finally {
+      provingProgress.off("tx-hash-saved", saved)
+    }
+  })
+
+  it("waits for an external transfer without reserving the prover", async () => {
+    const { drive, observed } = fixture()
+    await drive({ start: true })
+    observed.bootstrapStatus = "included"
+    observed.bootstrapSpent = true
+    const exclusive = vi.fn(<T>(step: (operationId?: string) => Promise<T>) => step())
+    await drive({ promptless: true, exclusive })
+    await drive({ promptless: true, exclusive })
+    expect(exclusive).not.toHaveBeenCalled()
+  })
+
+  it("keeps that the plan's address was swept", async () => {
+    const { drive, observed, stored } = fixture()
+    await drive({ start: true })
+    observed.bootstrapStatus = "included"
+    observed.bootstrapSpent = true
+    observed.swept = true
+    await drive({ promptless: true })
+    expect(stored().swept).toBe(true)
+  })
+
+  it("starts no step that was cancelled while it waited its turn", async () => {
+    const { drive, steps, observed } = fixture()
+    await drive({ start: true })
+    observed.bootstrapStatus = "included"
+    observed.bootstrapSpent = true
+    observed.metadataSettled = true
+    observed.messagesReady = true
+    const cancel = new AbortController()
+    await drive({
+      promptless: true,
+      signal: cancel.signal,
+      exclusive: async (step) => {
+        cancel.abort()
+        return step()
+      },
+    })
+    expect(steps.subscribe).not.toHaveBeenCalled()
+  })
+
+  describe("a promptless pass stops for the user", () => {
+    it("with no plan to carry", async () => {
+      const { drive, steps, stored } = fixture()
+      await drive({ promptless: true })
+      expect(stored().phase).toBe("needsApproval")
+      expect(steps.prepare).not.toHaveBeenCalled()
+    })
+
+    it("rather than broadcast a bootstrap", async () => {
+      const { drive, steps, stored } = fixture()
+      steps.broadcast = vi.fn(async () => {
+        throw new Error("node unavailable")
+      })
+      await drive({ start: true })
+      await drive({ promptless: true })
+      expect(stored().phase).toBe("needsApproval")
+      expect(steps.broadcast).toHaveBeenCalledTimes(1)
+    })
+
+    it("rather than prepare a stale plan again", async () => {
+      const { drive, steps, stored } = fixture()
+      steps.broadcast = vi.fn(async () => {
+        throw new StalePlanError("changed")
+      })
+      await drive({ start: true })
+      await drive({ promptless: true })
+      expect(stored()).toMatchObject({ phase: "needsApproval", plan: "signed-plan" })
+      expect(steps.prepare).toHaveBeenCalledTimes(1)
+    })
+
+    it("rather than prepare again once the network dropped its bootstrap", async () => {
+      const { drive, steps, observed, stored } = fixture()
+      await drive({ start: true })
+      observed.bootstrapStatus = "dropped"
+      await drive({ promptless: true })
+      await drive({ promptless: true })
+      expect(stored().phase).toBe("needsApproval")
+      expect(steps.prepare).toHaveBeenCalledTimes(1)
+      expect(steps.broadcast).toHaveBeenCalledTimes(1)
+    })
   })
 
   it("runs the user's approve step on every start, published or not", async () => {

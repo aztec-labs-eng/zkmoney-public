@@ -13,7 +13,8 @@ import {
   registrationOverLimit,
   useRegistrationFunding,
 } from "./steps/DepositAddress"
-import { ADDRESS_RECHECK_NOTE, AddressCapacityPanel } from "../deposit/AddressCapacity"
+import { AddressCapacityPanel } from "../deposit/AddressCapacity"
+import { ADDRESS_RECHECK_NOTE } from "../limits/limitsCopy"
 import { CheckAgainPill, WaitingBlock } from "../deposit/WaitingBlock"
 import { WalletAboutLimitsSheet } from "../limits/AboutLimitsSheet"
 import { sourceFromTarget } from "../limits/capacitySources"
@@ -73,7 +74,7 @@ export interface RegistrationSheetProps {
     tokenDecimals: number
     /** The reserved address, once the claim has returned one. */
     address?: Address
-    /** The address's broadcast has not landed: its status shows under it until the ledger lands it. */
+    /** The address's broadcast has not landed. Shown only once funds wait on it. */
     publishing?: boolean
     token?: Address
     chainId?: number
@@ -213,6 +214,12 @@ function RegistrationSheetPayment({
           <Icon name="check-circle" size={20} color="var(--accent-green)" />
           <span>Deposit received{seen ? `: ${got(seen)}` : ""}. Confirming your name.</span>
         </div>
+        {/* Funds wait at the address until its broadcast lands. */}
+        {publishing && address && (
+          <div data-testid="registration-address-publishing">
+            <BroadcastStatusRow address={address} fallback={PUBLISHING_NOTE} />
+          </div>
+        )}
         {check && (
           <div className="ww-send-to__note">
             <CheckAgainPill
@@ -314,12 +321,6 @@ function RegistrationSheetPayment({
               capacityHold={registration.hold}
               capacityWarning={registration.capacityWarning}
             />
-            {/* Safe to fund now: the ledger publishes it, and funds wait at the address until then. */}
-            {publishing && (
-              <div data-testid="registration-address-publishing">
-                <BroadcastStatusRow address={address} fallback={PUBLISHING_NOTE} />
-              </div>
-            )}
             <AddressCapacityPanel
               view={registration.view}
               onRetry={registration.capacity.retry}

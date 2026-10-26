@@ -64,6 +64,12 @@ function deps(over: Record<string, unknown> = {}) {
   } as never
 }
 
+/** A multicall that answers every SIPA's token balance with `balance`, and no ETH. */
+const balancesOf = (balance: bigint) =>
+  vi.fn(async ({ contracts }: { contracts: { functionName: string }[] }) =>
+    contracts.map((c) => ({ status: "success", result: c.functionName === "balanceOf" ? balance : 0n })),
+  )
+
 describe("probeHistoricResiduals", () => {
   it("reports a balance residual from the pinned historic token service", async () => {
     createMock.mockResolvedValueOnce({ getBalance: async () => 5n })
@@ -78,7 +84,13 @@ describe("probeHistoricResiduals", () => {
     createMock.mockClear()
     const [summary] = await probeHistoricResiduals(
       deps({
-        frozenSource: async () => ({ notes: 7n, deposits: 0, waiting: 0, waitingAmount: 0n }),
+        frozenSource: async () => ({
+          notes: 7n,
+          links: 0n,
+          deposits: 0,
+          waiting: 0,
+          waitingAmount: 0n,
+        }),
       }),
     )
     expect(summary).toMatchObject({
@@ -94,6 +106,48 @@ describe("probeHistoricResiduals", () => {
     createMock.mockResolvedValueOnce({ getBalance: async () => 5n })
     const [summary] = await probeHistoricResiduals(deps({ frozenSource: async () => undefined }))
     expect(summary).toMatchObject({ balance: 5n, frozen: false })
+  })
+
+  it("finds a frozen source holding only an open link, and starts no reclaim for its rows", async () => {
+    createMock.mockClear()
+    const [summary] = await probeHistoricResiduals(
+      deps({
+        frozenSource: async () => ({
+          notes: 0n,
+          links: 20n,
+          deposits: 0,
+          waiting: 0,
+          waitingAmount: 0n,
+        }),
+        rows: [
+          payRow({ txHash: "0xa", tokenAddress: HISTORIC_L2_TOKEN }),
+          // Legacy, pre-roll: attributed by its timestamp.
+          payRow({ txHash: "0xb", untilClaimable: 2e9 }),
+          payRow({ txHash: "0xc", tokenAddress: "0x" + "02".repeat(32) }),
+        ],
+      }),
+    )
+    expect(summary).toMatchObject({
+      balance: 20n,
+      frozen: true,
+      paylinkEscrows: 0,
+      lockedPaylinks: [],
+      paylinkCandidates: [],
+      hasResiduals: true,
+    })
+    expect(summary!.frozenLinks.map((row) => row.txHash)).toEqual(["0xa", "0xb"])
+  })
+
+  it("holds back the reclaims of a source whose frozen read failed", async () => {
+    createMock.mockClear()
+    const [summary] = await probeHistoricResiduals(
+      deps({
+        frozenSource: async () => Promise.reject(new Error("database held")),
+        rows: [payRow({ txHash: "0xa", tokenAddress: HISTORIC_L2_TOKEN })],
+      }),
+    )
+    expect(summary).toMatchObject({ incomplete: true, paylinkEscrows: 0, paylinkCandidates: [] })
+    expect(summary!.frozenLinks.map((row) => row.txHash)).toEqual(["0xa"])
   })
 
   it("marks a failed frozen-source read incomplete instead of empty", async () => {
@@ -135,7 +189,7 @@ describe("probeHistoricResiduals", () => {
     const getContractEvents = vi.fn(async () => [])
     const [summary] = await probeHistoricResiduals(
       deps({
-        publicClient: { getContractEvents } as never,
+        publicClient: { getContractEvents, multicall: balancesOf(55n) } as never,
         sipaDiscovery: {
           scanRange: async () => ({ fromBlock: 10n, toBlock: 20n }),
           sources: async () => [
@@ -143,11 +197,10 @@ describe("probeHistoricResiduals", () => {
               sipaAddress,
               recipientL2Address: account.getAddress().toString(),
               messageSecret: "0x01",
-              origin: "sipa-event",
+              recipientCommitment: "0x" + "0c".repeat(32),
             },
           ],
-          balance: async () => 55n,
-          claimed: async () => false,
+          consumed: async (_tuple: unknown, deposits: readonly unknown[]) => deposits.map(() => false),
         },
       }),
     )
@@ -164,16 +217,17 @@ describe("probeHistoricResiduals", () => {
   })
 
   it("counts a frozen portal's refundable deposits without the L2 claim check", async () => {
-    const claimed = vi.fn(async () => true)
+    const consumed = vi.fn(async (_tuple: unknown, deposits: readonly unknown[]) => deposits.map(() => true))
     const frozenSource = vi.fn(async (_tuple: unknown, descriptors: () => Promise<unknown[]>) => ({
       notes: 0n,
+      links: 0n,
       deposits: (await descriptors()).length + 2,
       waiting: 1,
       waitingAmount: 9n,
     }))
     const [summary] = await probeHistoricResiduals(
       deps({
-        publicClient: { getContractEvents: async () => [] } as never,
+        publicClient: { getContractEvents: async () => [], multicall: balancesOf(55n) } as never,
         frozenSource,
         sipaDiscovery: {
           scanRange: async () => ({ fromBlock: 0n, toBlock: 20n }),
@@ -182,11 +236,10 @@ describe("probeHistoricResiduals", () => {
               sipaAddress: "0x" + "77".repeat(20),
               recipientL2Address: account.getAddress().toString(),
               messageSecret: "0x01",
-              origin: "sipa-event",
+              recipientCommitment: "0x" + "0c".repeat(32),
             },
           ],
-          balance: async () => 55n,
-          claimed,
+          consumed,
         },
       }),
     )
@@ -200,13 +253,19 @@ describe("probeHistoricResiduals", () => {
       incomplete: false,
       hasResiduals: true,
     })
-    expect(claimed).not.toHaveBeenCalled()
+    expect(consumed).not.toHaveBeenCalled()
   })
 
   it("keeps a source whose only funds wait on an open Inbox tree as a residual", async () => {
     const [summary] = await probeHistoricResiduals(
       deps({
-        frozenSource: async () => ({ notes: 0n, deposits: 0, waiting: 1, waitingAmount: 9n }),
+        frozenSource: async () => ({
+          notes: 0n,
+          links: 0n,
+          deposits: 0,
+          waiting: 1,
+          waitingAmount: 9n,
+        }),
       }),
     )
     expect(summary).toMatchObject({ frozen: true, waitingDeposits: 1, hasResiduals: true })
@@ -216,7 +275,10 @@ describe("probeHistoricResiduals", () => {
     createMock.mockResolvedValue({ getBalance: async () => 0n })
     const [summary] = await probeHistoricResiduals(
       deps({
-        publicClient: { getContractEvents: async () => Promise.reject(new Error("429")) } as never,
+        publicClient: {
+          getContractEvents: async () => Promise.reject(new Error("429")),
+          multicall: balancesOf(0n),
+        } as never,
         sipaDiscovery: {
           scanRange: async () => ({ fromBlock: 0n, toBlock: 20n }),
           sources: async () => [
@@ -224,11 +286,10 @@ describe("probeHistoricResiduals", () => {
               sipaAddress: "0x" + "77".repeat(20),
               recipientL2Address: account.getAddress().toString(),
               messageSecret: "0x01",
-              origin: "sipa-event",
+              recipientCommitment: "0x" + "0c".repeat(32),
             },
           ],
-          balance: async () => 0n,
-          claimed: async () => false,
+          consumed: async (_tuple: unknown, deposits: readonly unknown[]) => deposits.map(() => false),
         },
       }),
     )

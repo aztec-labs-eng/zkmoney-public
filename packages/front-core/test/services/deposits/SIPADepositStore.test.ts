@@ -113,6 +113,8 @@ describe("SIPADepositStore", () => {
           inboxIndex: "7",
           claimedInboxIndexes: ["5", "7"],
           sweeps: [sweep("5"), sweep("7")],
+          observedFrom: "900",
+          rescanFrom: "800",
         },
         makeFallback(),
       )
@@ -125,6 +127,9 @@ describe("SIPADepositStore", () => {
       expect(demoted?.claimTxHash).toBe("0x" + "aa".repeat(32))
       expect(demoted?.claimedInboxIndexes).toEqual(["5"])
       expect(demoted?.sweeps).toEqual([sweep("5")])
+      // Its sweep sits behind the cursor: the record reads its history again.
+      expect(demoted?.observedFrom).toBeUndefined()
+      expect(demoted?.rescanFrom).toBeUndefined()
     })
 
     it("L1-derived terminals (recovered, failed) refuse demote", async () => {
@@ -239,6 +244,15 @@ describe("SIPADepositStore concurrent writers", () => {
     expect(await store.update(other, () => ({ phase: "sweeping" }))).toBeNull()
     expect(store.get(other)).toBeNull()
     expect(listener).not.toHaveBeenCalled()
+  })
+
+  it("create writes a new record and leaves one already there", async () => {
+    expect(await store.create(SIPA_ADDR, { ...makeFallback(), phase: "sweeping" })).toBeNull()
+    expect(store.get(SIPA_ADDR)?.phase).toBe("broadcast")
+    const other = ("0x" + "bb".repeat(20)) as Address
+    const created = await store.create(other, { ...makeFallback(), phase: "sweeping" })
+    expect(created).toMatchObject({ sipaAddress: other, phase: "sweeping", amount: "12.5" })
+    expect(store.get(other)).toEqual(created)
   })
 
   it("update keeps the reorg-epoch guard", async () => {

@@ -7,7 +7,6 @@ import {
   metadataMigrationContext,
   readNameClaimLog,
   SipaSelfResolver,
-  fetchSipaResolverOperators,
   resolverSelectionPolicy,
   selectManifestResolverOperator,
   type ContractService,
@@ -26,12 +25,16 @@ import {
   type MetadataConsentSigner,
 } from "../../oxide/metadataConsent"
 import { metadataMigrationBinding } from "../../oxide/metadataMigrationBinding"
-import { deploymentScanRange } from "../../oxide/deploymentScanRange"
+import { readResolverOperatorRecords } from "../../oxide/resolverOperatorRecords"
 import type { IStorageAdapter, StorageLock } from "../storages/adapter"
+import { sipaSweepsReceived, type SIPADepositStore } from "../services/deposits/SIPADepositStore"
 import { MetadataMigrationController } from "./MetadataMigrationController"
 import { MigrationFundingStore } from "./MigrationFundingStore"
 import { ApprovalGate, savedChallengeSigner, webAuthnAssertionCodec } from "./savedApprovals"
 import type { UpgradeActivity } from "./upgradeActivity"
+import { legSettled } from "./upgradeRuns"
+import type { SIPADepositRecord } from "../services/deposits/SIPADepositStore"
+import { logger } from "src/utils/logger"
 
 export interface MetadataMigrationSessionOptions {
   wallet: ObsidionWallet
@@ -48,6 +51,16 @@ export interface MetadataMigrationSessionOptions {
   passkey?: MetadataConsentSigner["passkey"]
   /** Told of every write, so activity lists this run's batches. */
   activity?: UpgradeActivity
+  /** The deposit rail's records: the rail observes and claims the migration's SIPAs. */
+  deposits: Pick<SIPADepositStore, "load" | "get">
+  /** Whether a balance read begun now is stored: a run is done only once it holds all it imported. */
+  confirmBalance?(): Promise<boolean>
+  /** Stores what the source holds; `anchor` is the L1 block its read began at, so no older read lands last. */
+  holdings?(amount: bigint, anchor: number): Promise<void>
+  /** A funding address is shown for the first time: seed it on the rail, as a registration address is. */
+  seedFunding?(sipa: Address, resolution: { messageSecret: Fr; recipientHash: Fr }): Promise<void>
+  /** The wallet's record of the deposit at a SIPA address, if it has one. */
+  deposit?(sipa: Address): Promise<SIPADepositRecord | null | undefined>
   source(
     context: Pick<
       MetadataMigrationServiceOptions,
@@ -58,8 +71,9 @@ export interface MetadataMigrationSessionOptions {
       | "token"
       | "owner"
       | "destination"
-      | "tokenService"
-    >,
+      | "received"
+      | "swept"
+    > & { tokenService: TokenService; depositSettled(recipient: Address): Promise<boolean> },
     batches: MigrationFundingStore,
     /** Wraps the source's refund signer so each approval is asked for once. */
     savedRefundSigner: (sign: RefundChallengeSigner) => RefundChallengeSigner,
@@ -74,10 +88,10 @@ export async function createMetadataMigrationSession(o: MetadataMigrationSession
     "../../oxide/oxideRegistrationDeps"
   )
   const destination = metadataDestination(o.current)
-  const records = await fetchSipaResolverOperators(
+  const records = await readResolverOperatorRecords(
     o.client,
     destination.metadataRegistry,
-    await deploymentScanRange(o.client, o.current),
+    o.current,
   )
   const resolver = selectManifestResolverOperator(records, {
     portal: destination.portal,
@@ -96,14 +110,37 @@ export async function createMetadataMigrationSession(o: MetadataMigrationSession
     owner,
     destination,
     tokenService: o.tokenService,
+    received: async (sipa: Address) => {
+      await o.deposits.load()
+      return sipaSweepsReceived(o.deposits.get(sipa))
+    },
+    swept: async (sipa: Address) => {
+      await o.deposits.load()
+      return !!o.deposits.get(sipa)?.sweepTxHash
+    },
   }
   const bindingWitness = (nameHash: Hex) =>
     metadataMigrationBinding(o.secretKey, o.account.getAddress().toString() as Hex, nameHash)
   const storage = o.activity ? o.activity.reporting(o.key, o.storage) : o.storage
   const approvals = `${o.key}/approvals`
   const gate = new ApprovalGate()
+  // A failed read leaves the last stored figure until a read succeeds.
+  const holdings = async (): Promise<boolean> => {
+    if (!o.holdings) return true
+    try {
+      const anchor = Number(await o.client.getBlockNumber({ cacheTime: 0 }))
+      const amount = await service.holdings()
+      if (amount !== undefined) await o.holdings(amount, anchor)
+      return true
+    } catch (error) {
+      logger.warn("[upgrade] holdings read failed:", error)
+      return false
+    }
+  }
+  const depositSettled = async (recipient: Address) =>
+    legSettled({ arrival: (await o.deposit?.(recipient)) ?? undefined })
   const source = await o.source(
-    context,
+    { ...context, depositSettled },
     new MigrationFundingStore(storage, `${o.key}/source`),
     (sign) => savedChallengeSigner(sign, o.storage, approvals, webAuthnAssertionCodec, gate),
   )
@@ -124,7 +161,8 @@ export async function createMetadataMigrationSession(o: MetadataMigrationSession
     source,
     client: o.client,
     wallet: o.wallet,
-    tokenService: o.tokenService,
+    confirmBalance: o.confirmBalance,
+    seedFunding: o.seedFunding,
     record: {
       l2Address: o.account.getAddress().toString() as Hex,
       rollupVersion: destination.rollupVersion,
@@ -150,5 +188,7 @@ export async function createMetadataMigrationSession(o: MetadataMigrationSession
   return {
     service,
     controller: new MetadataMigrationController(storage, service, o.key, o.lock, gate),
+    /** Reads and stores what the source holds; false when that failed. Never throws. */
+    holdings,
   }
 }

@@ -8,7 +8,7 @@ import { isPasskeyCancelled } from "@obsidion/passkey-web"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { getActiveStorageId, onActiveStorageIdChange } from "../../platform/storage/activeStorage"
 import { createExternalState } from "../../lib/externalState"
-import { runUserFlow } from "../provingGate"
+import { runUserFlow, trackBackgroundProve } from "../provingGate"
 import { flowCopy } from "./operationCopy"
 
 /** Named as the analytics `flow` prop, so events about an operation forward as they are. */
@@ -66,53 +66,78 @@ export function runOperation<T>(
   txHashOf?: (result: T) => string | undefined,
 ): Promise<T> {
   const store = getOperationStore()
-  const { operationId } = input
   const begun = store.begin({ ...input, scope: getActiveStorageId() })
   // Awaited inside the gate; this only keeps a failed write from reading as unhandled meanwhile.
   begun.catch(() => {})
   return runUserFlow(async () => {
     await begun
-    // On chain but unsettled. A hash the flow's record failed to save still takes it to `sent`.
-    const toChain = async (txHash: string | undefined) => {
-      if (txHash && store.get(operationId)?.state === "local")
-        await store.markSent(operationId, txHash).catch(console.warn)
-    }
-    let inFlight: { txHash: string | undefined } | undefined
-    try {
-      const result = await run({
-        operationId,
-        describe: (summary) => void store.describe(operationId, summary).catch(console.warn),
-        leaveToChain: (txHash) => void (inFlight = { txHash }),
-      })
-      if (inFlight) await toChain(inFlight.txHash)
-      else await store.settle(operationId, txHashOf?.(result)).catch(console.warn)
-      return result
-    } catch (err) {
-      const record = store.get(operationId)
-      const message = err instanceof Error ? err.message : String(err)
-      if (err instanceof TxInFlightError) {
-        await toChain(err.txHash)
-      } else if (record?.state === "sent") {
-        // The flow saw the chain turn it down: its message is the specific one.
-        await store.fail(operationId, message).catch(console.warn)
-      } else if (record?.state === "local") {
-        // Nothing was lost before the proof began (a closed passkey prompt, a failed read): the
-        // flow's screen reports it, and the record goes. Once the screen has handed off, the
-        // record is the only report left.
-        if (
-          isFlowCancelled(err) ||
-          (record.provingStartedAt === undefined && record.handedOffAt === undefined)
-        ) {
-          await store.remove(operationId).catch(console.warn)
-        } else {
-          await store.fail(operationId, message).catch(console.warn)
-        }
-      }
-      throw err
-    } finally {
-      store.release(operationId)
-    }
+    return operate(store, input.operationId, run, txHashOf)
   })
+}
+
+/**
+ * Run `run` as one automatic operation no user started, such as an upgrade's transaction step: it
+ * waits its turn on the background proving reservation, and its record is background, so nothing
+ * lists it and leaving the page loses nothing. It ends as a user operation would.
+ */
+export function runBackgroundOperation<T>(
+  input: OperationInput,
+  run: (op: OperationHandle) => Promise<T>,
+): Promise<T> {
+  const store = getOperationStore()
+  return trackBackgroundProve(async () => {
+    await store.begin({ ...input, scope: getActiveStorageId(), background: true })
+    return operate(store, input.operationId, run)
+  })
+}
+
+/** Runs a begun operation's flow and ends its record by how the flow ended. */
+async function operate<T>(
+  store: OperationStore,
+  operationId: string,
+  run: (op: OperationHandle) => Promise<T>,
+  txHashOf?: (result: T) => string | undefined,
+): Promise<T> {
+  // On chain but unsettled. A hash the flow's record failed to save still takes it to `sent`.
+  const toChain = async (txHash: string | undefined) => {
+    if (txHash && store.get(operationId)?.state === "local")
+      await store.markSent(operationId, txHash).catch(console.warn)
+  }
+  let inFlight: { txHash: string | undefined } | undefined
+  try {
+    const result = await run({
+      operationId,
+      describe: (summary) => void store.describe(operationId, summary).catch(console.warn),
+      leaveToChain: (txHash) => void (inFlight = { txHash }),
+    })
+    if (inFlight) await toChain(inFlight.txHash)
+    else await store.settle(operationId, txHashOf?.(result)).catch(console.warn)
+    return result
+  } catch (err) {
+    const record = store.get(operationId)
+    const message = err instanceof Error ? err.message : String(err)
+    if (err instanceof TxInFlightError) {
+      await toChain(err.txHash)
+    } else if (record?.state === "sent") {
+      // The flow saw the chain turn it down: its message is the specific one.
+      await store.fail(operationId, message).catch(console.warn)
+    } else if (record?.state === "local") {
+      // Nothing was lost before the proof began (a closed passkey prompt, a failed read): the
+      // flow's screen reports it, and the record goes. Once the screen has handed off, the
+      // record is the only report left.
+      if (
+        isFlowCancelled(err) ||
+        (record.provingStartedAt === undefined && record.handedOffAt === undefined)
+      ) {
+        await store.remove(operationId).catch(console.warn)
+      } else {
+        await store.fail(operationId, message).catch(console.warn)
+      }
+    }
+    throw err
+  } finally {
+    store.release(operationId)
+  }
 }
 
 /** This scope's operations that have not ended, newest first. */

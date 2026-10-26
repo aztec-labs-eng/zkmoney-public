@@ -5,7 +5,6 @@ import {
   SavingsFeeError,
   savingsMoveEta,
   savingsPaybackYears,
-  SHARE,
   useBalance,
   useSavings,
   type SavingsDirection,
@@ -64,7 +63,7 @@ function paybackLabel(years: number): string {
   return unit(Math.round(years), "year")
 }
 
-/** A move in pays fees there and back; the sheet says how long they take to earn back, and warns past a year. */
+/** The sheet says how long a move in takes to earn back its fee, and warns past a year. */
 const PAYBACK_WARNING_YEARS = 1
 
 /** What the confirm step says a move takes while the live timing has not loaded. */
@@ -112,8 +111,6 @@ export function MoveFundsSheet({
   const [priced, setPriced] = useState<{
     key: string
     quote?: SavingsQuote
-    /** This quote's fee plus the fee of moving its net back, for a move in with a priced position. */
-    roundTrip?: bigint
     error?: string
   } | null>(null)
   const [quoting, setQuoting] = useState(false)
@@ -204,16 +201,8 @@ export function MoveFundsSheet({
     const timer = setTimeout(() => {
       priceMove()
         .then(
-          async (result) => {
-            // Moving in pays fees there and back: the way back is quoted for the net that lands.
-            const roundTrip =
-              direction === "in" && position && position.sharePrice > 0n
-                ? await quote("out", (result.net * SHARE) / position.sharePrice).then(
-                    (back) => result.fee + back.fee,
-                    () => undefined,
-                  )
-                : undefined
-            if (!stale) setPriced({ key, quote: result, roundTrip })
+          (result) => {
+            if (!stale) setPriced({ key, quote: result })
           },
           (err: unknown) =>
             !stale &&
@@ -241,18 +230,18 @@ export function MoveFundsSheet({
   const grossLimitProblem =
     feeOnTop && quoted !== undefined ? withdrawalLimitProblem(quoted.amount) : undefined
   const payback =
-    direction === "in" && quoted && current?.roundTrip !== undefined && position?.apy !== undefined
-      ? savingsPaybackYears(quoted.net, current.roundTrip, position.apy)
+    direction === "in" && quoted && position?.apy !== undefined
+      ? savingsPaybackYears(quoted.net, quoted.fee, position.apy)
       : undefined
   const paybackLine =
     payback !== undefined &&
     Number.isFinite(payback) &&
     position?.apy !== undefined &&
-    current?.roundTrip !== undefined &&
-    current.roundTrip > 0n
+    quoted &&
+    quoted.fee > 0n
       ? `At ${apyPercent(position.apy)} APY it takes about ${paybackLabel(
           payback,
-        )} to earn back the ${usdAtomic(current.roundTrip)} in fees to move to savings and back.`
+        )} to earn back the ${usdAtomic(quoted.fee)} fee to move to savings.`
       : undefined
   const slowPayback = payback !== undefined && payback > PAYBACK_WARNING_YEARS
   const valid =
@@ -295,7 +284,7 @@ export function MoveFundsSheet({
       outcome.finish()
       if (e instanceof SavingsQuoteChangedError) {
         if (left.current) return
-        setPriced({ key, quote: e.quote, roundTrip: current?.roundTrip })
+        setPriced({ key, quote: e.quote })
         setRequoted(e.message)
         setPhase("confirm")
         return

@@ -45,6 +45,7 @@ import {
   type CreatorLinkAction,
 } from "../../features/paylink/creatorLinkActions"
 import { LinkRecoverModal } from "../../features/paylink/LinkRecoverModal"
+import { useWalletFrozen } from "../../features/actionGate"
 import { usePolledChainSeconds } from "../../features/paylink/chainTime"
 import { recheckPaylinkClaim } from "../../features/notifications/PaylinkClaimMount"
 import { usePaylinkDeps } from "../../features/paylink/usePaylinkDeps"
@@ -159,7 +160,10 @@ export function TxDetailModal({
   const paylinkBadgeStyle: StatusBadgeStyle = linkView?.statusLabel
     ? PAYLINK_BADGE_STYLE[linkView.statusLabel]
     : "awaitingClaim"
-  const recovery = linkView?.recovery ?? null
+  const walletFrozen = useWalletFrozen()
+  // Frozen, a cancel's new note is past the refund snapshot: the link leaves through Withdraw.
+  const recovery = walletFrozen ? null : linkView?.recovery ?? null
+  const frozenLink = walletFrozen && !!linkView?.recovery
 
   if (recovering) {
     return (
@@ -344,6 +348,9 @@ export function TxDetailModal({
                 }
               />
             </div>
+          )}
+          {frozenLink && (
+            <PrimaryGradientButton title="Withdraw" onClick={() => navigate("/withdraw")} />
           )}
           {recovery && fragment && row.paylinkRow && (
             <PrimaryGradientButton

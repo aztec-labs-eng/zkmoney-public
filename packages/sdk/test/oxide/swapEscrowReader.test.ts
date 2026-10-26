@@ -38,6 +38,7 @@ const client = (
     address: string
     eventName: string
     args?: { escrow?: string }
+    toBlock?: bigint
   }) => Promise<unknown>,
 ) =>
   ({
@@ -151,6 +152,22 @@ describe("L1SwapEscrowReader.executedTxHash", () => {
     )
     const reader = new L1SwapEscrowReader(c, { dai: DAI })
     await expect(reader.executedTxHash(FACTORY, ESCROW)).rejects.toThrow(/socket hang up/)
+  })
+
+  it("scans to the live head, not a cached one, so the latest block's execution is found", async () => {
+    const c = {
+      ...(client(
+        async () => ({}),
+        async ({ toBlock }) =>
+          toBlock !== undefined && toBlock >= 101n ? [{ transactionHash: "0x03" }] : [],
+      ) as object),
+      // viem answers from its cache unless told not to; the execution landed in block 101.
+      getBlockNumber: vi.fn(async (args?: { cacheTime?: number }) =>
+        args?.cacheTime === 0 ? 101n : 100n,
+      ),
+    } as never
+    const reader = new L1SwapEscrowReader(c, { dai: DAI })
+    await expect(reader.executedTxHash(FACTORY, ESCROW)).resolves.toBe("0x03")
   })
 })
 

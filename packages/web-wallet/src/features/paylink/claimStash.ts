@@ -7,18 +7,27 @@ export const CLAIM_STASH_KEY = "obsidion.pending-claim"
 
 /**
  * The link is paying for the signup it opened: the visitor chose "Receive to zk.money" on a
- * network that issues golden tickets. Only this marker turns a stashed link into a ticket-funded
- * registration; a link stashed for an ordinary claim on Home never does.
+ * network that issues golden tickets, or a signup elsewhere sent the link here to pick a name.
+ * Only this marker turns a stashed link into a link-funded registration; a link stashed for an
+ * ordinary claim on Home never does.
  */
 export const TICKET_STASH_KEY = "obsidion.pending-claim.ticket"
+
+/** Router state that opens a link's page on its signup: "Receive to zk.money" is chosen. */
+export const RECEIVE_TO_ACCOUNT = { receive: "account" } as const
+
+export const receivesToAccount = (state: unknown): boolean =>
+  (state as { receive?: unknown } | null)?.receive === RECEIVE_TO_ACCOUNT.receive
 
 export interface TicketSignupStash {
   fragment: string
   /** What the link must hold, base units, as `/domain/info` advertised it. Absent on a marker
    *  rebuilt from the terms the ticket bought (`boundTicketSignup`). */
   threshold?: string
-  /** The reduced schedule the ticket buys, base units. */
+  /** The reduced schedule the ticket buys, base units; for a `paid` signup, the name's own. */
   schedule: { fee: string; minDeposit: string }
+  /** No ticket: the link pays the name's own price, deposit and fees, when its note covers it. */
+  paid?: true
   /** The note's amount, base units, once the witness read it. */
   amount?: string
   memo?: string

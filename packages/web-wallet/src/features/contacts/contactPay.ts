@@ -255,7 +255,9 @@ async function sendResolved(
     tx.txHash = txHash
     tx.detailedStatus = QueueStatus.SUCCESS
   }).catch(console.warn)
+  // Paying someone makes them a contact whose requests show as a contact's.
   if (args.saveContact) void ContactStorage.get().addEntry(contact).catch(console.warn)
+  else void ContactStorage.get().approveAutoAdded(l2Address).catch(console.warn)
   return { txHash }
 }
 

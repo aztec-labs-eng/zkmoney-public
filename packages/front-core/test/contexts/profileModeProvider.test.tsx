@@ -58,8 +58,8 @@ const {
   const env = {
     network: "testnet" as string,
     client: null as any,
-    /** Preinstalled singleton — the v4 exit path's adoptInstance. */
-    adopted: null as any,
+    /** Instance already installed when a boot starts. */
+    preinstalled: null as any,
     singleton: null as any,
     constructionArgs: [] as unknown[][],
   }
@@ -142,13 +142,6 @@ vi.mock("src/core", async () => {
   }
 })
 
-vi.mock("../../src/core/migration/generationRegistry", async () => {
-  const actual = await vi.importActual<
-    typeof import("../../src/core/migration/generationRegistry")
-  >("../../src/core/migration/generationRegistry")
-  return actual
-})
-
 vi.mock("../../src/contexts/useAztecContext", () => {
   const value = {
     obsidionWallet: { _id: "wallet", node: { _id: "node" }, pxe: { _id: "pxe" } },
@@ -225,8 +218,7 @@ function boot(
   options: Record<string, unknown>,
   { strict = false, registerSponsorFpc }: { strict?: boolean; registerSponsorFpc?: boolean } = {},
 ) {
-  // A boot starts from whatever instance is already installed — normally none.
-  env.singleton = env.adopted
+  env.singleton = env.preinstalled
   const probe: { current: ReturnType<typeof useContractServiceContext> | null } = { current: null }
   const errors: Error[] = []
   const Probe = () => {
@@ -261,7 +253,7 @@ beforeEach(() => {
   storageStore.clear()
   env.network = "testnet"
   env.client = null
-  env.adopted = null
+  env.preinstalled = null
   env.singleton = null
   env.constructionArgs = []
   fetchMock.mockImplementation(async () => {
@@ -329,8 +321,8 @@ describe("profile mode construction", () => {
     await waitFor(() => expect(errors).toHaveLength(1))
     expect(errors[0].message).toMatch(/Mainnet oxide manifest is incompatible/)
   })
-  it("an adopted instance is used as-is, whatever the props say", async () => {
-    env.adopted = {
+  it("a preinstalled instance is used as-is, whatever the props say", async () => {
+    env.preinstalled = {
       getOxideClient: () => null,
       getNetwork: () => env.network,
       getContractAddress: async () => refs.toAddress!(ADDR.sponsorFPC),

@@ -14,7 +14,12 @@
  */
 
 import type { Address, Hex, PublicClient } from "viem"
-import { AccountMetadataRegistryAbi, readResolverOperator } from "@oxide/l1-contracts"
+import {
+  AccountMetadataRegistryAbi,
+  getUserRecord,
+  hasUserRecord,
+  readResolverOperator,
+} from "@oxide/l1-contracts"
 import { chunkedContractEvents } from "./l1Logs.js"
 import { Network } from "@obsidion/core/constants"
 import type { SipaK1Point } from "./sipaStealth.js"
@@ -78,6 +83,46 @@ export async function fetchSipaResolverOperators(
     }),
   )
   return records.filter((record) => record.url.length > 0)
+}
+
+/** What the resolver reads to derive an address for `account`: its user record and the operator it names. */
+export interface AccountResolution {
+  l2Address: Hex
+  rollupVersion: bigint
+  /** The account's registered stealth key. */
+  publicKey: SipaK1Point
+  operator: SipaResolverOperatorRecord
+}
+
+/**
+ * The user record of `account` and the operator entry it names, read the way the resolver gateway
+ * reads them before it derives an address. Null when `account` has no record (`getUserRecord`
+ * reverts on one).
+ */
+export async function readAccountResolution(
+  publicClient: PublicClient,
+  accountMetadataRegistry: Address,
+  account: Address,
+): Promise<AccountResolution | null> {
+  if (!(await hasUserRecord(publicClient, accountMetadataRegistry, account))) return null
+  const user = await getUserRecord(publicClient, accountMetadataRegistry, account)
+  const entry = await readResolverOperator(
+    publicClient,
+    accountMetadataRegistry,
+    user.resolverOperator,
+  )
+  return {
+    l2Address: user.l2Address,
+    rollupVersion: user.rollupVersion,
+    publicKey: user.publicKey,
+    operator: {
+      owner: user.resolverOperator,
+      l2Address: entry.l2Address,
+      url: entry.url,
+      oxidePortal: entry.oxidePortal,
+      resolverPublicKey: entry.publicKey,
+    },
+  }
 }
 
 /**

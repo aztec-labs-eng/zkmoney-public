@@ -2,6 +2,8 @@ import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AboutLimitsFacts } from "../src/features/limits/aboutLimitsView"
+import { LIMITS_DOCS_URL } from "../src/lib/links"
+import * as copy from "../src/features/limits/limitsCopy"
 
 vi.mock("@obsidion/web-ds", () => ({
   Icon: ({ name }: { name: string }) => <svg data-icon={name} />,
@@ -21,9 +23,9 @@ const observation = {
 }
 const facts = (overrides: Partial<AboutLimitsFacts> = {}): AboutLimitsFacts => ({
   product: {
-    deposit: { maximumUsd: "2500", basis: "sent-including-fees" },
-    withdrawal: { maximumUsd: "2500", basis: "debited-including-fees" },
-    valuation: { tokens: ["DAI", "USDC", "USDT"] },
+    deposit: { maximumUsd: "2500" },
+    withdrawal: { maximumUsd: "2500" },
+    send: { maximumUsd: "2500" },
   },
   capacity: { state: "fresh", observation },
   sponsorship: { state: "renewal-unknown", maxTx: 100, refillPeriodSeconds: 86_400 },
@@ -58,32 +60,34 @@ describe("AboutLimitsContent", () => {
       state: section.dataset.state,
     }))
     expect(regions).toEqual([
-      { name: "Maximum per transaction", testId: "about-limits-operation", state: "known" },
-      { name: "Shared deposit capacity", testId: "about-limits-capacity", state: "fresh" },
+      { name: copy.LIMIT_TITLE, testId: "about-limits-operation", state: "known" },
+      { name: copy.CAPACITY_TITLE, testId: "about-limits-capacity", state: "fresh" },
       {
-        name: "Sponsored transactions",
+        name: copy.SPONSORSHIP_TITLE,
         testId: "about-limits-sponsorship",
         state: "renewal-unknown",
       },
     ])
-    expect(byTestId("about-limits-sponsorship-state")?.textContent).toBe("Renewal status unknown")
+    expect(byTestId("about-limits-sponsorship-state")?.textContent).toBe(
+      copy.SPONSORSHIP_STATUS.renewalUnknown,
+    )
   })
 
   it("announces the capacity state without announcing the check time", async () => {
     await render({ facts: facts() })
     const status = byTestId("about-limits-capacity-state")!
     expect(status.getAttribute("role")).toBe("status")
-    expect(status.textContent).toBe("Capacity up to date")
+    expect(status.textContent).toBe(copy.CAPACITY_FRESH)
     expect(byTestId("about-limits-capacity")?.textContent).toContain("time:1000")
 
     const later = { ...observation, observedAt: 61_000 }
     await render({ facts: facts({ capacity: { state: "fresh", observation: later } }) })
     expect(byTestId("about-limits-capacity-state")).toBe(status)
-    expect(status.textContent).toBe("Capacity up to date")
+    expect(status.textContent).toBe(copy.CAPACITY_FRESH)
     expect(byTestId("about-limits-capacity")?.textContent).toContain("time:61000")
 
     await render({ facts: facts({ capacity: { state: "stale", observation } }) })
-    expect(status.textContent).toBe("Capacity out of date")
+    expect(status.textContent).toBe(copy.CAPACITY_STALE)
   })
 
   it("pairs every state label with an icon hidden from assistive technology", async () => {
@@ -95,9 +99,7 @@ describe("AboutLimitsContent", () => {
       expect(status.textContent?.trim()).not.toBe("")
       expect(status.querySelector('[aria-hidden="true"] svg[data-icon]')).not.toBeNull()
     }
-    expect(byTestId("about-limits-capacity-state")?.textContent).toBe(
-      "Capacity could not be checked.",
-    )
+    expect(byTestId("about-limits-capacity-state")?.textContent).toBe(copy.CAPACITY_UNAVAILABLE)
   })
 
   it("offers Check again for a failed read and calls the supplied retry", async () => {
@@ -106,7 +108,7 @@ describe("AboutLimitsContent", () => {
     const button = byTestId("about-limits-capacity-retry") as HTMLButtonElement
     expect(button.tagName).toBe("BUTTON")
     expect(button.type).toBe("button")
-    expect(button.textContent).toBe("Check again")
+    expect(button.textContent).toBe(copy.CHECK_AGAIN)
     expect(byTestId("about-limits-capacity")?.contains(button)).toBe(true)
     await act(async () => button.click())
     expect(retry).toHaveBeenCalledTimes(1)
@@ -153,14 +155,30 @@ describe("AboutLimitsContent", () => {
     expect(capacity.textContent).not.toMatch(/\d DAI/)
   })
 
+  it("ends with a link to the limits docs", async () => {
+    await render({ facts: facts() })
+    const link = byTestId("about-limits-more") as HTMLAnchorElement
+    expect(link.href).toBe(LIMITS_DOCS_URL)
+    expect(link.target).toBe("_blank")
+    expect(link.textContent).toBe(copy.MORE_INFO)
+    expect(container.firstElementChild!.lastElementChild).toBe(link)
+  })
+
+  it("leaves the capacity section out when asked", async () => {
+    await render({ facts: facts(), showCapacity: false })
+    expect(byTestId("about-limits-capacity")).toBeNull()
+    expect(container.querySelectorAll("section")).toHaveLength(2)
+  })
+
   it("presents rows as a description list", async () => {
     await render({ facts: facts() })
     const rows = [...byTestId("about-limits-operation")!.querySelectorAll("dl > div")].map(
       (row) => [row.querySelector("dt")?.textContent, row.querySelector("dd")?.textContent],
     )
     expect(rows).toEqual([
-      ["Per deposit", "$2,500 sent, incl. fees"],
-      ["Per withdrawal", "$2,500 from balance, incl. fees"],
+      [copy.LIMIT_ROW.send, "$2,500"],
+      [copy.LIMIT_ROW.deposit, "$2,500"],
+      [copy.LIMIT_ROW.withdrawal, "$2,500"],
     ])
   })
 
@@ -170,7 +188,7 @@ describe("AboutLimitsContent", () => {
     expect(capacity.dataset.state).toBe("general")
     expect(byTestId("about-limits-capacity-state")).toBeNull()
     expect(byTestId("about-limits-capacity-retry")).toBeNull()
-    expect(capacity.textContent).toContain("It does not reset at midnight.")
+    expect(capacity.textContent).toContain(copy.CAPACITY_DISCLOSURE)
   })
 
   it("offers Check again for a failed allowance read and keeps focus when it succeeds", async () => {
@@ -236,7 +254,7 @@ describe("AboutLimitsContent topics", () => {
     })
     expect(body("about-limits-capacity").hidden).toBe(true)
     expect(byTestId("about-limits-capacity-state")?.textContent).toContain(
-      "Capacity could not be checked.",
+      copy.CAPACITY_UNAVAILABLE,
     )
     await act(async () => byTestId("about-limits-capacity-retry")!.click())
     expect(retry).toHaveBeenCalledTimes(1)

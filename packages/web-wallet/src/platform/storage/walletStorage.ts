@@ -434,20 +434,27 @@ export function removeFromOtherDatabases(keys: readonly string[]): Promise<void>
 /**
  * Reads `key` from every other rollup's database: what this browser kept before the wallet moved to
  * another rollup. A database another document holds, one that fails to read, or one without the key
- * is skipped. A store that is not persistent has no other databases to read. Overlapping reads of
- * one key share a result, so neither finds a database the other holds.
+ * is skipped; with `strict`, the first two fail the read, so a caller that needs every copy never
+ * reads a partial set as whole. A store that is not persistent has no other databases to read.
+ * Overlapping reads of one key share a result, so neither finds a database the other holds.
  */
-export function readFromOtherDatabases(key: string): Promise<string[]> {
-  const id = `${store.generation}:${key}`
+export function readFromOtherDatabases(
+  key: string,
+  opts: { strict?: boolean } = {},
+): Promise<string[]> {
+  const strict = !!opts.strict
+  const id = `${store.generation}:${strict}:${key}`
   let read = otherReads.get(id)
   if (!read) {
-    read = onOtherDatabases(() => readOtherDatabases(key)).finally(() => otherReads.delete(id))
+    read = onOtherDatabases(() => readOtherDatabases(key, strict)).finally(() =>
+      otherReads.delete(id),
+    )
     otherReads.set(id, read)
   }
   return read
 }
 
-async function readOtherDatabases(key: string): Promise<string[]> {
+async function readOtherDatabases(key: string, strict: boolean): Promise<string[]> {
   if (!walletStoreIsPersistent()) return []
   const others = (await store.backend.list()).filter((version) => version !== store.version)
   const values: string[] = []
@@ -458,6 +465,7 @@ async function readOtherDatabases(key: string): Promise<string[]> {
       const value = await db.get(key)
       if (value !== undefined) values.push(value)
     } catch (error) {
+      if (strict) throw error
       if (!isWalletOpenElsewhere(error))
         console.warn(`[wallet-store] could not read wallet_${version}:`, error)
     } finally {

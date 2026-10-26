@@ -31,6 +31,12 @@ const sha256 = z.string().regex(/^[0-9a-f]{64}$/, "expected lowercase SHA-256 va
 const fullGitSha = z.string().regex(/^[0-9a-f]{40}$/, "expected full 40-char lowercase git sha")
 const isoInstant = z.iso.datetime({ offset: true })
 const httpUrl = z.url({ protocol: /^https?$/ })
+const immutableProfileUrl = httpUrl.pipe(
+  z.string().refine(
+    (value) => !new URL(value).pathname.endsWith("/current.json"),
+    "profile reference must not name mutable current.json",
+  ),
+)
 
 const profileId = z
   .string()
@@ -93,6 +99,8 @@ const sharedSchema = z.strictObject({
   xmtpEnv: z.enum(["local", "dev", "production"]),
   /** The rollup every version here runs on. A different rollup is a different document. */
   rollupVersion: z.string().regex(/^\d+$/, "on-chain rollupVersion as a decimal string"),
+  /** The final profile of the generation this one replaced. */
+  previousGenerationProfile: immutableProfileUrl.nullable().optional(),
 })
 
 /**
@@ -110,7 +118,7 @@ const versionSchema = z.strictObject({
   l1RpcUrl: httpUrl,
   /** Obsidion's own account-service. Oxide's manifest has a same-named field for their resolver-side service; these are different deployments. */
   accountServiceUrl: httpUrl,
-  zkmoneyApiUrl: httpUrl,
+  zkmoneyApiUrl: httpUrl.optional(),
   /** Origin the wallet composes claim/request links against, e.g. `https://paylink.test.zk.money`. */
   paylinkDomain: httpUrl,
   // Oxide by pointer, never copied. `expectedGitSha` is optional here but required on mainnet by
@@ -336,12 +344,15 @@ export const configProfileSchema = baseSchema.check((ctx) => {
   // `network` so a document cannot opt itself out via a self-declared tier.
   if (p.network !== "sandbox") {
     const urls: [string, string][] = []
+    if (p.shared.previousGenerationProfile) {
+      urls.push(["shared.previousGenerationProfile", p.shared.previousGenerationProfile])
+    }
     for (const [id, version] of Object.entries(p.versions)) {
       if (!isSupportedVersion(version)) continue
       urls.push([`versions.${id}.nodeUrl`, version.nodeUrl])
       urls.push([`versions.${id}.l1RpcUrl`, version.l1RpcUrl])
       urls.push([`versions.${id}.accountServiceUrl`, version.accountServiceUrl])
-      urls.push([`versions.${id}.zkmoneyApiUrl`, version.zkmoneyApiUrl])
+      if (version.zkmoneyApiUrl) urls.push([`versions.${id}.zkmoneyApiUrl`, version.zkmoneyApiUrl])
       urls.push([`versions.${id}.paylinkDomain`, version.paylinkDomain])
       urls.push([`versions.${id}.oxide.manifestUrl`, version.oxide.manifestUrl])
     }

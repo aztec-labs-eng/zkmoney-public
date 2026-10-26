@@ -16,6 +16,8 @@ export function validateRequestPacket(
   now: number = Date.now(),
 ): RequestLinkProblem | null {
   if (packet.expiresAt && now > packet.expiresAt) return "expired"
+  // A Receive code names no network or token: it is for the payer's own.
+  if (packet.compact) return null
   if (packet.networkId !== env.rollupAddress) return "wrongNetwork"
   if (packet.tokenAddress) {
     if (packet.tokenAddress.toLowerCase() !== env.l2Token.toLowerCase()) return "wrongToken"

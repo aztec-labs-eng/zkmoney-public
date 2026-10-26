@@ -3,11 +3,18 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import {
   createPublicClient,
   custom,
+  decodeFunctionData,
   encodeAbiParameters,
-  toEventSelector,
+  encodeEventTopics,
+  encodeFunctionResult,
+  erc20Abi,
+  multicall3Abi,
+  pad,
   toHex,
+  type Hex,
   type PublicClient,
 } from "viem"
+import { OxidePortalEventsAbi } from "@oxide/l1-contracts"
 import { sepolia } from "viem/chains"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { resetDeploymentScanRangeForTests } from "@obsidion/front-core"
@@ -21,12 +28,18 @@ const SEC_PER_BLOCK = 10
 
 const blockTime = (block: bigint) => CHAIN_START_SEC + Number(block) * SEC_PER_BLOCK
 
-const chunksFrom = (deployBlock: bigint) => Number((HEAD - deployBlock + CHUNK) / CHUNK)
+/**
+ * One observation per retired deployment, however many sources: its portal's `Deposit` logs by commitment and its
+ * token's `Transfer` logs from the SIPAs, each one request on an archive RPC, and one multicall of every balance.
+ */
+const LOG_READS_PER_DEPLOYMENT = 2
+const MULTICALL = "0xca11bde05977b3631167028862be2a173976ca11"
 
 interface LogRange {
-  address: string
+  address: string | string[]
   fromBlock: string
   toBlock: string
+  topics?: (Hex | Hex[] | null)[]
 }
 
 interface CountingClient {
@@ -36,26 +49,74 @@ interface CountingClient {
 }
 
 interface Chain {
+  /** A sweep of a source: its portal `Deposit` and the SIPA's `Transfer` out, in one transaction. */
   sweeps: { address: string; block: bigint }[]
   rejectGetCode?: boolean
   rejectGetBlock?: boolean
   rejectSources?: boolean
 }
 
-const SWEEP_TOPIC = toEventSelector("Sweep(uint256,uint256)")
+const log = (address: string, topics: Hex[], data: Hex, block: bigint, tx: Hex) => ({
+  address,
+  topics,
+  data,
+  blockNumber: toHex(block),
+  blockHash: "0x" + "1".repeat(64),
+  transactionHash: tx,
+  transactionIndex: "0x0",
+  logIndex: "0x0",
+  removed: false,
+})
+const sweepTx = (address: string) => pad(address as Hex, { size: 32 })
+const listed = (topic: Hex | Hex[] | null | undefined, value: Hex) =>
+  !topic || [topic].flat().some((t) => t.toLowerCase() === value.toLowerCase())
 
-function sweepLog(address: string, block: bigint) {
-  return {
-    address,
-    topics: [SWEEP_TOPIC],
-    data: encodeAbiParameters([{ type: "uint256" }, { type: "uint256" }], [7n, 100n]),
-    blockNumber: toHex(block),
-    blockHash: "0x" + "1".repeat(64),
-    transactionHash: "0x" + "2".repeat(64),
-    transactionIndex: "0x0",
-    logIndex: "0x0",
-    removed: false,
-  }
+/** Answers the observation's log queries: the portal's deposits by commitment, the token's transfers from SIPAs. */
+function logsFor(chain: Chain, filter: LogRange) {
+  const inRange = (block: bigint) => block >= BigInt(filter.fromBlock) && block <= BigInt(filter.toBlock)
+  const sweeps = chain.sweeps.filter((s) => inRange(s.block))
+  const [topic0, topic1] = filter.topics ?? []
+  const [deposit] = encodeEventTopics({ abi: OxidePortalEventsAbi, eventName: "Deposit" })
+  const [transfer] = encodeEventTopics({ abi: erc20Abi, eventName: "Transfer" })
+  if (topic0 === deposit)
+    return sweeps
+      .filter((s) => listed(topic1, commitmentOf(s.address)))
+      .map((s) =>
+        log(
+          [filter.address].flat()[0]!,
+          [deposit!, commitmentOf(s.address)],
+          encodeAbiParameters(
+            [{ type: "uint256" }, { type: "bytes32" }, { type: "uint256" }],
+            [100n, ("0x" + "ab".repeat(32)) as Hex, 7n],
+          ),
+          s.block,
+          sweepTx(s.address),
+        ),
+      )
+  if (topic0 === transfer)
+    return sweeps
+      .filter((s) => listed(topic1, pad(s.address as Hex, { size: 32 })))
+      .map((s) =>
+        log(
+          [filter.address].flat()[0]!,
+          [transfer!, pad(s.address as Hex, { size: 32 }), pad(PORTAL_OF_TUPLE_1, { size: 32 })],
+          encodeAbiParameters([{ type: "uint256" }], [100n]),
+          s.block,
+          sweepTx(s.address),
+        ),
+      )
+  return []
+}
+
+/** Answers Multicall3 with a zero balance for every call it batches. */
+function multicallResult(data: Hex) {
+  const { args } = decodeFunctionData({ abi: multicall3Abi, data })
+  const calls = (args?.[0] ?? []) as unknown[]
+  return encodeFunctionResult({
+    abi: multicall3Abi,
+    functionName: "aggregate3",
+    result: calls.map(() => ({ success: true, returnData: encodeAbiParameters([{ type: "uint256" }], [0n]) })),
+  })
 }
 
 function countingClient(chain: Chain): CountingClient {
@@ -66,7 +127,11 @@ function countingClient(chain: Chain): CountingClient {
       calls[method] = (calls[method] ?? 0) + 1
       if (method === "eth_chainId") return toHex(sepolia.id)
       if (method === "eth_blockNumber") return toHex(HEAD)
-      if (method === "eth_call") return "0x" + "0".repeat(64)
+      if (method === "eth_call") {
+        const [call] = params as [{ to: string; data: Hex }]
+        if (call.to.toLowerCase() === MULTICALL) return multicallResult(call.data)
+        return "0x" + "0".repeat(64)
+      }
       if (method === "eth_getCode") {
         if (chain.rejectGetCode) throw new Error("historical state unavailable")
         return "0x6001"
@@ -83,14 +148,7 @@ function countingClient(chain: Chain): CountingClient {
           fromBlock: filter.fromBlock,
           toBlock: filter.toBlock,
         })
-        return chain.sweeps
-          .filter(
-            (s) =>
-              s.address.toLowerCase() === filter.address.toLowerCase() &&
-              s.block >= BigInt(filter.fromBlock) &&
-              s.block <= BigInt(filter.toBlock),
-          )
-          .map((s) => sweepLog(s.address, s.block))
+        return logsFor(chain, filter)
       }
       throw new Error(`unmocked JSON-RPC method ${method}`)
     },
@@ -117,6 +175,7 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   PendingPaylinkMigrationService: class {
     reconcile = async () => []
     recordPending = async () => undefined
+    retire = async () => undefined
   },
   PendingPaylinkMigrationStore: { get: () => ({}) },
   AppNotificationStore: { get: () => ({}) },
@@ -131,9 +190,9 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   IntraRollupMigrationService: { detectHistoricDeployments: h.detect },
   getBroadcasterArtifact: async () => ({}),
   fetchSipaEvents: async () => [],
-  isSipaDepositClaimed: async () => false,
+  readSipaDepositsConsumed: async (_node: unknown, _scope: unknown, keys: unknown[]) =>
+    keys.map(() => false),
   readDepositSIPAImplementation: async () => "0x" + "dd".repeat(20),
-  readDepositMessageKey: async () => ({ toString: () => "0x" + "ab".repeat(32) }),
   TokenService: { create: async () => ({ getBalance: async () => h.balance.current }) },
 }))
 vi.mock("../src/config/env", () => ({
@@ -153,6 +212,7 @@ vi.mock("../src/platform/auth/useAuthenticator", () => ({
   getAuthService: () => ({ getSecretKey: async () => "0x01" }),
 }))
 vi.mock("../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
+vi.mock("../src/platform/storage/activeStorage", () => ({ getActiveStorageId: () => "acct" }))
 vi.mock("../src/features/paylink/chainTime", () => ({
   latestChainSeconds: async () => 1_700_000_000,
 }))
@@ -182,13 +242,20 @@ const account = {
   makeDepositSpendMetadataResolver: async () => async () => ({ masterNullifierHidingKey: 1 }),
 } as never
 
+const PORTAL_OF_TUPLE_1 = ("0x" + "1".padStart(40, "0")) as Hex
+/** Each source's portal commitment, derived from its address so the fake chain can answer by either. */
+const commitmentOf = (sipaAddress: string) => pad(sipaAddress as Hex, { size: 32, dir: "right" })
+
 function sourcesOf(count: number) {
-  return Array.from({ length: count }, (_, i) => ({
-    sipaAddress: "0x" + (i + 0x100).toString(16).padStart(40, "0"),
-    recipientL2Address: "0x" + "ee".repeat(32),
-    messageSecret: "0x01",
-    origin: "sipa-event" as const,
-  }))
+  return Array.from({ length: count }, (_, i) => {
+    const sipaAddress = "0x" + (i + 0x100).toString(16).padStart(40, "0")
+    return {
+      sipaAddress,
+      recipientL2Address: "0x" + "ee".repeat(32),
+      messageSecret: "0x01",
+      recipientCommitment: commitmentOf(sipaAddress),
+    }
+  })
 }
 
 interface BudgetRow {
@@ -241,7 +308,7 @@ beforeAll(() => {
   rmSync(ARTIFACT, { force: true })
 })
 
-describe("migration sweep-scan budget of one wallet boot", () => {
+describe("migration scan budget of one wallet boot", () => {
   it("no historic entry: no L1 call", async () => {
     const { l1 } = await boot("no-historic", [], 0)
     expect(l1.calls).toEqual({})
@@ -258,15 +325,15 @@ describe("migration sweep-scan budget of one wallet boot", () => {
   })
 
   it.each([1, 5, 20])(
-    "one historic entry, %i sources: chunks from the portal's deploy block per source",
+    "one historic entry, %i sources: one observation from the portal's deploy block, whatever the count",
     async (sources) => {
       const { l1 } = await boot(`historic-1-sources-${sources}`, [tuple(1)], sources)
-      expect(l1.calls.eth_getLogs).toBe(sources * chunksFrom(12_000n))
-      // One balanceOf per source, plus the portal's freeze check.
-      expect(l1.calls.eth_call).toBe(sources + 1)
+      expect(l1.calls.eth_getLogs).toBe(LOG_READS_PER_DEPLOYMENT)
+      // The portal's freeze check, and one multicall of every balance.
+      expect(l1.calls.eth_call).toBe(2)
       expect(l1.calls.eth_getCode).toBeUndefined()
       expect(l1.calls.eth_getBlockByNumber).toBeLessThanOrEqual(HEADER_READ_BUDGET_PER_TUPLE)
-      expect(l1.getLogs[0]).toMatchObject({ fromBlock: toHex(12_000n), toBlock: toHex(21_999n) })
+      expect(l1.getLogs[0]).toMatchObject({ fromBlock: toHex(12_000n), toBlock: toHex(HEAD) })
       expect(l1.getLogs.at(-1)).toMatchObject({ toBlock: toHex(HEAD) })
       expect(l1.getLogs.every((r) => BigInt(r.fromBlock) >= 12_000n)).toBe(true)
     },
@@ -274,14 +341,14 @@ describe("migration sweep-scan budget of one wallet boot", () => {
 
   it("two historic entries, 5 sources each: each portal scans from its own deploy block", async () => {
     const { l1 } = await boot("historic-2-sources-5", [tuple(1), tuple(2)], 5)
-    expect(l1.calls.eth_getLogs).toBe(5 * chunksFrom(12_000n) + 5 * chunksFrom(21_000n))
+    expect(l1.calls.eth_getLogs).toBe(2 * LOG_READS_PER_DEPLOYMENT)
     expect(l1.calls.eth_getBlockByNumber).toBeLessThanOrEqual(2 * HEADER_READ_BUDGET_PER_TUPLE)
     expect(l1.getLogs.some((r) => r.fromBlock === toHex(21_000n))).toBe(true)
   })
 
   it("after migration, notes still present: the bounded scan repeats at the same cost", async () => {
     const { l1 } = await boot("drained-sources-5", [tuple(1)], 5)
-    expect(l1.calls.eth_getLogs).toBe(5 * chunksFrom(12_000n))
+    expect(l1.calls.eth_getLogs).toBe(LOG_READS_PER_DEPLOYMENT)
   })
 
   it("second boot in the same session: the sweep scan repeats, the deployment-block search does not", async () => {
@@ -299,7 +366,7 @@ describe("migration sweep-scan budget of one wallet boot", () => {
     const pinned = { ...tuple(1), deployedAtBlock: String(DEPLOY_BLOCKS[1]) } as OxideEnvTuple
     const { l1 } = await boot("deployed-at-block-sources-5", [pinned], 5)
     expect(l1.calls.eth_getBlockByNumber).toBeUndefined()
-    expect(l1.calls.eth_getLogs).toBe(5 * chunksFrom(12_000n))
+    expect(l1.calls.eth_getLogs).toBe(LOG_READS_PER_DEPLOYMENT)
     expect(l1.getLogs[0]).toMatchObject({ fromBlock: toHex(12_000n) })
   })
 
@@ -358,11 +425,10 @@ describe("migration sweep-scan budget of one wallet boot", () => {
       JSON.stringify(
         {
           scope:
-            "probeAccountResiduals sweep scan: the portal's isFrozen eth_call, eth_blockNumber, eth_getBlockByNumber deployment-block search, balanceOf eth_call, Sweep eth_getLogs",
+            "probeAccountResiduals scan: the portal's isFrozen eth_call, eth_blockNumber, eth_getBlockByNumber deployment-block search, and one observation per deployment (portal Deposit and token Transfer eth_getLogs, one balance multicall)",
           outside: [
             "setupSipaDiscovery: the AccountMetadataRegistry log scan, chunked over the same range as the sweep scan, plus one eth_call per operator, per historic tuple",
             "readDepositSIPAImplementation: one eth_call per SIPA factory",
-            "readDepositMessageKey: one eth_getTransactionReceipt per sweep found",
           ],
           head: HEAD.toString(),
           chunkBlocks: CHUNK.toString(),

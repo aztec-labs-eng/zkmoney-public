@@ -10,6 +10,7 @@
     "clean": "rm -rf ./dist .tsbuildinfo",
     "test": "vitest run",
     "test:anvil": "vitest run -c vitest.anvil.config.ts",
+    "bench:sipa": "vitest run -c vitest.bench.config.ts",
     "test:testnet:tee-smoke": "vitest run -c vitest.testnet.config.ts",
     "test:e2e:reorg": "vitest run -c vitest.e2e.config.ts test/e2e/reorgSandbox.e2e.ts",
     "test:e2e:requests": "vitest run -c vitest.e2e.config.ts test/e2e/requestMetaFulfillment.e2e.ts",

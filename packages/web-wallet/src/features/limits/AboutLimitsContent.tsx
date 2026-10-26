@@ -8,6 +8,8 @@ import {
   type LimitsSectionView,
   type LimitsTopic,
 } from "./aboutLimitsView"
+import { LIMITS_DOCS_URL } from "../../lib/links"
+import * as copy from "./limitsCopy"
 import "./aboutLimits.css"
 
 /** Label and value rows in the sheet's style, for a caller's own detail. */
@@ -101,7 +103,7 @@ function LimitsSection({
             onRetry!()
           }}
         >
-          Check again
+          {copy.CHECK_AGAIN}
         </button>
       )}
       <div id={bodyId} className="ww-about-limits__body" hidden={!expanded}>
@@ -134,6 +136,7 @@ export function AboutLimitsContent({
   onRetryCapacity,
   onRetrySponsorship,
   format,
+  showCapacity = true,
 }: {
   facts: AboutLimitsFacts
   topic?: LimitsTopic
@@ -141,6 +144,8 @@ export function AboutLimitsContent({
   onRetryCapacity?: () => void
   onRetrySponsorship?: () => void
   format?: AboutLimitsFormat
+  /** False leaves the capacity section out. */
+  showCapacity?: boolean
 }) {
   const view = aboutLimitsView(facts, format)
   const [open, setOpen] = useState<ReadonlySet<LimitsTopic>>(() => new Set(topic ? [topic] : ORDER))
@@ -161,7 +166,7 @@ export function AboutLimitsContent({
           <LimitsSection
             key={key}
             testId="about-limits-operation"
-            title="Maximum per transaction"
+            title={copy.LIMIT_TITLE}
             view={view.operation}
             {...props}
           />
@@ -171,7 +176,7 @@ export function AboutLimitsContent({
           <LimitsSection
             key={key}
             testId="about-limits-capacity"
-            title="Shared deposit capacity"
+            title={copy.CAPACITY_TITLE}
             view={view.capacity}
             onRetry={onRetryCapacity}
             {...props}
@@ -182,7 +187,7 @@ export function AboutLimitsContent({
           <LimitsSection
             key={key}
             testId="about-limits-sponsorship"
-            title="Sponsored transactions"
+            title={copy.SPONSORSHIP_TITLE}
             view={view.sponsorship}
             onRetry={onRetrySponsorship}
             {...props}
@@ -190,6 +195,21 @@ export function AboutLimitsContent({
         )
     }
   }
-  const order = topic ? [topic, ...ORDER.filter((key) => key !== topic)] : ORDER
-  return <div className="ww-about-limits">{order.map(section)}</div>
+  const shown = showCapacity ? ORDER : ORDER.filter((key) => key !== "capacity")
+  const order = topic ? [topic, ...shown.filter((key) => key !== topic)] : shown
+  return (
+    <div className="ww-about-limits">
+      {order.map(section)}
+      <a
+        className="ww-about-limits__more"
+        href={LIMITS_DOCS_URL}
+        target="_blank"
+        rel="noreferrer"
+        data-testid="about-limits-more"
+      >
+        {copy.MORE_INFO}
+        <Icon name="link" size={14} />
+      </a>
+    </div>
+  )
 }

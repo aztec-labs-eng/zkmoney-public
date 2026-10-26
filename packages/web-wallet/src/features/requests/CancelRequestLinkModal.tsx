@@ -63,7 +63,7 @@ export function CancelRequestLinkModal({
         ) : (
           <>
             <p style={{ color: "var(--text-secondary)", fontSize: 13, lineHeight: 1.5, margin: 0 }}>
-              Anyone with the link can still pay it until it expires.
+              This will remove the request from your list and can't be undone.
             </p>
             <PrimaryGradientButton
               title={busy ? "Cancelling…" : "Cancel request"}

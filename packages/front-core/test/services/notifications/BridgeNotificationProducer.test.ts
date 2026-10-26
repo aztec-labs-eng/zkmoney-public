@@ -18,6 +18,7 @@ import { resetSingleton } from "../../__test-helpers__/resetSingleton"
 import { ActivityFeed } from "../../../src/core/services/bridge/BridgeActivityFeed"
 import { WithdrawalStorage } from "../../../src/core/services/bridge/WithdrawalStorage"
 import { SIPADepositStore } from "../../../src/core/services/deposits/SIPADepositStore"
+import { upgradeRunsOf } from "../../../src/core/migration/upgradeRuns"
 
 const SIPA_ADDRESS = "0x00000000000000000000000000000000000000Aa"
 const WALLET_ADDRESS = "0x0000000000000000000000000000000000000002"
@@ -377,7 +378,7 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
       feed.emit([exit("awaiting_proven")])
       await producer.flush()
       expect(notifications.list()).toMatchObject([
-        { title: "Upgrading", description: "$4 · Leaving old version", pending: true },
+        { title: "Upgrading", description: "$4 · Releasing to Ethereum", pending: true },
       ])
     })
 
@@ -422,10 +423,25 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
           amount: (10n * 10n ** 18n).toString(),
           exitFee: (10n ** 17n).toString(),
           state,
+          approved: true,
           startTime: 1_000,
         },
       })
       const shown = () => notifications.list().filter((e) => !e.dismissedAt)
+
+      it("reports a run as the shared projection joins it, as Activity does", async () => {
+        const items = [
+          batch("remaining-0", SIPA_ADDRESS, "received"),
+          batch("remaining-1", SECOND),
+          sipaDeposit({ phase: "claimed", endTime: 1_200 }),
+        ]
+        const [run] = upgradeRunsOf(items)
+        producer.start()
+        feed.emit(items)
+        await producer.flush()
+        expect(run).toMatchObject({ arrived: 1, total: 199n * 10n ** 17n })
+        expect(shown()[0]?.description).toBe("$19.90 · 1 of 2 arrived")
+      })
 
       it("is one live row until every batch has arrived, then one report", async () => {
         producer.start()
@@ -540,7 +556,7 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
       expect(titles).not.toContain("Deposit complete")
     })
 
-    it("walks the real feed from leaving to arriving to complete, one live row at a time", async () => {
+    it("walks the real feed from the exit's release to the arrival to complete, one live row at a time", async () => {
       resetSingleton(ActivityFeed as unknown as { instance: ActivityFeed | null })
       resetSingleton(SIPADepositStore as unknown as { instance: SIPADepositStore | null })
       resetSingleton(WithdrawalStorage as unknown as { instance: WithdrawalStorage | null })
@@ -571,17 +587,17 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
         await withdrawals.create(exit("awaiting_proven").record as WithdrawalRecord)
         await sipa.upsert(deposit.sipaAddress, { phase: "resolved" }, fallback)
         await real.flush()
-        expect(pending()).toEqual(["$4 · Leaving old version"])
+        expect(pending()).toEqual(["$4 · Releasing to Ethereum"])
 
         // Published and discovered, still unfunded: the exit's row alone says where the funds are.
         await sipa.upsert(deposit.sipaAddress, { phase: "broadcast", amount: "0" }, fallback)
         await real.flush()
-        expect(pending()).toEqual(["$4 · Leaving old version"])
+        expect(pending()).toEqual(["$4 · Releasing to Ethereum"])
 
         await withdrawals.patch("withdraw-local-id", { phase: "done", endTime: 1_100 })
         await sipa.upsert(deposit.sipaAddress, { phase: "sweeping", amount: "4" }, fallback)
         await real.flush()
-        expect(pending()).toEqual(["$4 · Arriving on new version"])
+        expect(pending()).toEqual(["$4 · Receiving"])
 
         await sipa.upsert(deposit.sipaAddress, { phase: "claimed", endTime: 1_200 }, fallback)
         await real.flush()
@@ -974,6 +990,24 @@ describe("BridgeNotificationProducer (SIPA — the only bridge source)", () => {
     expect(notifications.list().filter((e) => !e.dismissedAt)).toMatchObject([
       { title: "Deposit complete" },
     ])
+  })
+
+  it("retires a swept deposit's live row once its portal is frozen", async () => {
+    let frozen = false
+    const frozenAware = new BridgeNotificationProducer(feed, notifications, {
+      liveRows: true,
+      portalFrozen: () => frozen,
+    })
+    frozenAware.start()
+    feed.emit([sipaDeposit({ phase: "pendingClaim", endTime: undefined })])
+    await frozenAware.flush()
+    expect(notifications.list()).toMatchObject([{ description: "$10 · Crediting", pending: true }])
+
+    frozen = true
+    feed.emit([sipaDeposit({ phase: "pendingClaim", endTime: undefined })])
+    await frozenAware.flush()
+    expect(notifications.list().filter((e) => !e.dismissedAt)).toEqual([])
+    frozenAware.stop()
   })
 
   it("names an in-flight deposit's net once the fee is read, its gross until then", async () => {

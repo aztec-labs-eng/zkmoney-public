@@ -11,6 +11,7 @@ import { createPublicClient, http, type PublicClient } from "viem"
 import { extractPinnedOxideEnvTuple } from "@obsidion/core/oxide"
 import {
   fetchSipaResolverOperators,
+  readAccountResolution,
   selectManifestResolverOperator,
   type SipaResolverOperatorRecord,
 } from "../../src/services/sipaResolverDiscovery.js"
@@ -279,4 +280,48 @@ describe.runIf(process.env.LIVE_OXIDE === "1")("live dev.json resolver-operator 
     expect(chosen.l2Address).toBe(L2_LIVE)
     expect(chosen.url).toBe(tuple.resolverGatewayUrl)
   }, 60_000)
+})
+
+describe("readAccountResolution", () => {
+  const ACCOUNT = "0x4444444444444444444444444444444444444444"
+  const USER_L2 = "0x0aa1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f"
+
+  function recordClient(hasRecord: boolean): PublicClient {
+    return {
+      readContract: async (args: { functionName: string; args?: unknown[] }) => {
+        if (args.functionName === "hasUserRecord") return hasRecord
+        if (args.functionName === "getUserRecord") {
+          if (!hasRecord) throw new Error("reverted")
+          return {
+            l2Address: USER_L2,
+            rollupVersion: 4127419662n,
+            publicKey: { x: 5n, y: 6n },
+            resolverOperator: OWNER_LIVE,
+          }
+        }
+        if (args.functionName === "resolverOperators") return RECORDS[(args.args as [string])[0]]
+        throw new Error(`unexpected read: ${args.functionName}`)
+      },
+    } as unknown as PublicClient
+  }
+
+  it("returns the user record with the operator entry it names", async () => {
+    const resolution = await readAccountResolution(recordClient(true), METADATA_REGISTRY, ACCOUNT)
+    expect(resolution).toEqual({
+      l2Address: USER_L2,
+      rollupVersion: 4127419662n,
+      publicKey: { x: 5n, y: 6n },
+      operator: {
+        owner: OWNER_LIVE,
+        l2Address: L2_LIVE,
+        url: "https://gw.live/{sender}/{data}.json",
+        oxidePortal: PORTAL_LIVE,
+        resolverPublicKey: { x: 1n, y: 2n },
+      },
+    })
+  })
+
+  it("is null for an account with no record", async () => {
+    expect(await readAccountResolution(recordClient(false), METADATA_REGISTRY, ACCOUNT)).toBeNull()
+  })
 })

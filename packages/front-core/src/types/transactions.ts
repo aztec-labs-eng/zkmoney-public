@@ -122,8 +122,6 @@ export type PaylinkTransaction = BaseTransaction & {
   // The escrow's fallback secret, stamped once the create has its keys: the creator's migration
   // factor, never in the link.
   fallbackSecret?: string
-  /** v4-era rows only; the frozen v4 exit runtime reads it. */
-  taggingSecret?: string
   /**
    * Claim-window timestamps (unix seconds). Not encoded in the link, persisted here.
    */

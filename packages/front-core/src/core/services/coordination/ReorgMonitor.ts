@@ -33,7 +33,6 @@ export type ConfirmationOutcome = { txHash: string } & (
   | { type: "failed"; reorgEpoch?: number; incoming?: true; source?: "withdrawal" }
   | { type: "grace-expired"; reorgEpoch?: number; incoming?: true }
   | { type: "finalized" }
-  | { type: "exit-required" }
 )
 
 export type ConfirmationListener = (outcome: ConfirmationOutcome) => void
@@ -58,8 +57,6 @@ export interface ReorgMonitorDeps {
   rerunWithdrawalFinalization?: () => Promise<void>
   /** Invoked once after all record writes, on side-effect passes only. */
   kickPxeSync?: () => Promise<void>
-  /** Probed at pass start; true skips the pass (the mount owns freeze latching + the sweep). */
-  isFrozen?: () => Promise<boolean>
   /** Defaults to getActiveNetworkId(); records with a differing stamped networkId are skipped. */
   networkId?: string
   concurrency?: number
@@ -108,7 +105,6 @@ export class ReorgMonitor {
   private readonly grace = new Map<string, { deadline: number; alerted: boolean }>()
 
   private intervalHandle: ReturnType<typeof setInterval> | null = null
-  private frozen = false
   private passRunning = false
   private passQueued = false
   private queuedSideEffects = false
@@ -135,12 +131,6 @@ export class ReorgMonitor {
     if (!this.intervalHandle) return
     clearInterval(this.intervalHandle)
     this.intervalHandle = null
-  }
-
-  /** Freeze stand-down: no more passes. The freeze sweep (mount-owned) handles the persisted rows. */
-  setFrozen(frozen: boolean): void {
-    this.frozen = frozen
-    if (frozen) this.stop()
   }
 
   /**
@@ -196,9 +186,6 @@ export class ReorgMonitor {
   }
 
   private async doRunPass(sideEffects: boolean): Promise<ReorgPassSummary | null> {
-    if (this.frozen) return null
-    if (this.deps.isFrozen && (await this.deps.isFrozen().catch(() => this.frozen))) return null
-
     const summary: ReorgPassSummary = { checked: 0, demoted: 0, failed: 0, reConfirmed: 0 }
     const networkId = this.deps.networkId ?? getActiveNetworkId()
     // Ownership is positive: once the active network is known, an unstamped legacy record is
@@ -490,85 +477,4 @@ export class ReorgMonitor {
       await store.setBurnDroppedAt(row.localId, undefined)
     }
   }
-}
-
-export interface FreezeSweepDeps {
-  transactionStorage?: Pick<TransactionStorage, "getTransactions" | "demoteByTxHash">
-  withdrawalStorage?: Pick<WithdrawalStorage, "load" | "list" | "patch">
-  networkId?: string
-  onOutcome?: (outcome: ConfirmationOutcome) => void
-}
-
-export const GENERATION_FROZEN_ERROR = "Generation frozen — withdraw via exit flow"
-
-/**
- * Cold-launch freeze sweep: terminal-fail every persisted non-terminal txHash row on the
- * frozen network and emit exit-required per row. No receipt fetches — the generation is dead;
- * funds leave via the exit flow, not a retry.
- */
-export async function runFreezeSweep(deps: FreezeSweepDeps): Promise<{ swept: number }> {
-  const networkId = deps.networkId ?? getActiveNetworkId()
-  // Positive ownership, as in the reconcile pass: unstamped legacy rows (pre-dating the
-  // networkId stamp) are spared — sweeping them would rewrite finalized history as failed.
-  const isActiveNetwork = (recordNetworkId: string | undefined) =>
-    networkId === undefined || recordNetworkId === networkId
-  let swept = 0
-  const emit = (txHash: string) => {
-    try {
-      deps.onOutcome?.({ type: "exit-required", txHash })
-    } catch (err) {
-      console.warn("[runFreezeSweep] onOutcome threw:", err)
-    }
-  }
-
-  const txStore = deps.transactionStorage
-  if (txStore) {
-    const rows = (await txStore.getTransactions()).filter(
-      (tx) =>
-        !!tx.txHash &&
-        tx.tier !== TxStatus.FINALIZED &&
-        tx.status !== "failed" &&
-        tx.detailedStatus !== QueueStatus.CANCELLED &&
-        isActiveNetwork(tx.networkId),
-    )
-    for (const row of rows) {
-      try {
-        await txStore.demoteByTxHash(row.txHash, { terminal: "failed" })
-        swept++
-        emit(row.txHash)
-      } catch (err) {
-        console.warn("[runFreezeSweep] tx freeze demote failed:", err)
-      }
-    }
-  }
-
-  const withdrawalStore = deps.withdrawalStorage
-  if (withdrawalStore) {
-    await withdrawalStore.load()
-    const rows = withdrawalStore
-      .list()
-      .filter(
-        (r) =>
-          !!r.l2TxHash &&
-          r.phase !== "done" &&
-          r.phase !== "failed" &&
-          isActiveNetwork(r.networkId),
-      )
-    for (const row of rows) {
-      try {
-        // not a dropped burn: fail via patch, carrying the epoch past the stale-write fence
-        await withdrawalStore.patch(row.localId, {
-          phase: "failed",
-          error: GENERATION_FROZEN_ERROR,
-          reorgEpoch: row.reorgEpoch,
-        })
-        swept++
-        emit(row.l2TxHash as string)
-      } catch (err) {
-        console.warn("[runFreezeSweep] withdrawal freeze failed:", err)
-      }
-    }
-  }
-
-  return { swept }
 }

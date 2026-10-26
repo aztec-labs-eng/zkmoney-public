@@ -225,7 +225,7 @@ export const PHONE_STEPS_COPY = {
       "key keeps the only copy of what it holds. If a phone holds your passkey, open zk.money on a " +
       "computer that can reach it.",
   },
-  /** This computer's lines on the laptop sign-up sheet; `signUpOptionsFor` picks among them. */
+  /** The laptop sign-up sheet's lines; `signUpOptionsFor` picks among them. */
   local: {
     title: "Create your passkey",
     /** Under Continue, to the help page's list of the passkeys that work. */
@@ -237,6 +237,16 @@ export const PHONE_STEPS_COPY = {
     installExtension: "To use 1Password, install its browser extension and reload this page.",
     /** Shown when the sheet re-opens after the browser's prompt closed with nothing created. */
     unfinished: "Setup didn't finish. Try again, or use your phone.",
+    /** The same, re-opening on another device, where the phone is no alternative. */
+    unfinishedElsewhere: "Setup didn't finish. Try again.",
+    /** The sheet re-opens after the browser refused the request before a prompt could open. */
+    blocked:
+      "Your browser didn't open a passkey prompt. Close any passkey window open in another tab or " +
+      "browser, then try again.",
+    /** The same, on the second such refusal in a row. */
+    blockedAgain:
+      "Your browser still didn't open a passkey prompt. Close any passkey window open in another " +
+      "tab or browser, then try again, or try another browser.",
     /** Where a password manager's extension answers passkeys. */
     extension: "If a password manager pops up, dismiss it and use your browser's own prompt.",
     /** Added once a manager the row cannot use kept answering. */
@@ -313,7 +323,6 @@ export const PHONE_HELP_COPY = {
       "have one, open zk.money on your phone and sign up there.",
     retry: "Try again with my security key",
   },
-  windows: 'In the next prompt, choose "iPhone, iPad or Android device", not Windows Hello.',
   /** The title where an extension answers passkeys: its window, not the phone, may have ended it. */
   extensionTitle: "That didn't finish",
   tryAgain: "Try again",

@@ -1,7 +1,8 @@
 import type { ReactNode } from "react"
 import { Icon } from "@obsidion/web-ds"
 import { InfoButton } from "../limits/InfoButton"
-import { CAPACITY_CHECKING, type FundingCapacityView } from "./fundingCapacity"
+import type { FundingCapacityView } from "./fundingCapacity"
+import { CAPACITY_CHECKING } from "../limits/limitsCopy"
 
 const TONE_ICON: Record<FundingCapacityView["tone"], string | undefined> = {
   ok: "check-circle",

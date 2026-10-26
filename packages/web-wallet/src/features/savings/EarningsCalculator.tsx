@@ -180,6 +180,9 @@ export function EarningsCalculator({
   const [rateDraft, setRateDraft] = useState<string>()
   const [horizon, setHorizon] = useState<CalculatorHorizon>(5)
   const rows = calculatorSteps(start, monthly, horizon, rate ?? 0)
+  // Funds already in Savings are the start, so the next move is a top-up.
+  const saved = balances?.savings !== undefined && balances.savings >= CALCULATOR_DUST
+  const toAdd = saved ? monthly : start
   const barMin = horizon === 1 ? BAR_MIN_MONTH : BAR_MIN_YEAR
   // The chart's width decides how many bars it holds; until measured, a phone's five.
   const chart = useRef<HTMLDivElement>(null)
@@ -331,17 +334,18 @@ export function EarningsCalculator({
           </>
         )}
       </p>
-      <PrimaryGradientButton
-        title={`Add ${whole(start)} to Savings`}
-        isDisabled={start <= 0}
-        onClick={() => onMove(start)}
-        style={{ width: "100%" }}
-      />
+      {toAdd > 0 && (
+        <PrimaryGradientButton
+          title={`Add ${whole(toAdd)} to Savings`}
+          onClick={() => onMove(toAdd)}
+          style={{ width: "100%" }}
+        />
+      )}
     </div>
   )
 }
 
-/** The calculator's year-by-year sheet. `onMove` carries the start amount into a move. */
+/** The calculator's year-by-year sheet. `onMove` carries the amount to add into a move. */
 export function EarningsCalculatorSheet({
   apy,
   balances,

@@ -73,16 +73,30 @@ vi.mock("../src/features/deposit/StrandedRecoveryModal", () => ({
 // The wallet container reads the chain; the row only needs a real sheet to open and close.
 vi.mock("../src/features/limits/AboutLimitsSheet", async () => {
   const { Modal } = await import("../src/ui/Modal")
+  const { SHEET_TITLE } = await import("../src/features/limits/limitsCopy")
   return {
-    WalletAboutLimitsSheet: ({ onClose, topic }: { onClose: () => void; topic?: string }) => (
-      <Modal title="About limits" onClose={onClose}>
-        <div data-testid="about-limits-sheet" data-topic={topic ?? "all"} />
+    WalletAboutLimitsSheet: ({
+      onClose,
+      topic,
+      capacity,
+    }: {
+      onClose: () => void
+      topic?: string
+      capacity?: false
+    }) => (
+      <Modal title={SHEET_TITLE} onClose={onClose}>
+        <div
+          data-testid="about-limits-sheet"
+          data-topic={topic ?? "all"}
+          data-capacity={String(capacity ?? "shown")}
+        />
       </Modal>
     ),
   }
 })
 
 const { SettingsScreen } = await import("../src/ui/screens/SettingsScreen")
+const { SHEET_TITLE } = await import("../src/features/limits/limitsCopy")
 
 let root: Root
 let container: HTMLDivElement
@@ -116,7 +130,8 @@ afterEach(async () => {
 
 const row = () =>
   [...container.querySelectorAll("button")].find((el) => el.textContent === "Limits")!
-const dialog = () => document.querySelector<HTMLDialogElement>('dialog[aria-label="About limits"]')
+const dialog = () =>
+  document.querySelector<HTMLDialogElement>(`dialog[aria-label="${SHEET_TITLE}"]`)
 
 describe("SettingsScreen Limits row", () => {
   it("opens the About limits sheet and returns focus to the row on Escape", async () => {
@@ -183,14 +198,16 @@ describe("SettingsScreen Sponsored transactions row", () => {
     await act(async () => sponsored().click())
     const sheet = document.querySelector<HTMLElement>('[data-testid="about-limits-sheet"]')!
     expect(sheet.dataset.topic).toBe("sponsorship")
+    // Settings has no deposit in view, so neither entry shows capacity.
+    expect(sheet.dataset.capacity).toBe("false")
     await act(async () => {
       dialog()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
     })
     expect(document.activeElement).toBe(sponsored())
     await act(async () => row().click())
-    expect(
-      document.querySelector<HTMLElement>('[data-testid="about-limits-sheet"]')!.dataset.topic,
-    ).toBe("all")
+    const limits = document.querySelector<HTMLElement>('[data-testid="about-limits-sheet"]')!
+    expect(limits.dataset.topic).toBe("all")
+    expect(limits.dataset.capacity).toBe("false")
   })
 })
 

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("@obsidion/web-ds", () => ({
   Icon: () => null,
+  GradientSpinner: () => <i data-spinner />,
   PrimaryGradientButton: ({
     title,
     isDisabled,
@@ -91,11 +92,18 @@ const close = () => [...container.querySelectorAll("button")].find((b) => b.text
 const cardClose = () => container.querySelector<HTMLButtonElement>('[aria-label="Close card"]')
 
 describe("ClaimReviewStep", () => {
-  it("shows a claim that went out as its status, with no Claim and no error", () => {
-    render({ status: "This payment is already claimed.", settled: true })
-    expect(container.querySelector(".ww-claim-review__status")?.textContent).toBe(
-      "This payment is already claimed.",
+  it("shows a claim that went out as progress, with no warning, no Claim and no error", () => {
+    render({
+      status: "Registering @maple",
+      statusDetail: "Waiting for the network to sweep the deposit",
+      settled: true,
+    })
+    const status = container.querySelector('[role="status"]')
+    expect(status?.querySelector("[data-spinner]")).not.toBeNull()
+    expect(status?.textContent).toBe(
+      "Registering @mapleWaiting for the network to sweep the deposit",
     )
+    expect(container.querySelector(".ww-claim-review__status")).toBeNull()
     expect(container.querySelector('[role="alert"]')).toBeNull()
     expect(claim()).toBeUndefined()
   })
@@ -134,6 +142,18 @@ describe("ClaimReviewStep", () => {
       "This link was already claimed.",
     )
     expect(claim()?.disabled).toBe(true)
+  })
+})
+
+describe("the review's head", () => {
+  it("names the stored amount while the split is unpriced, never a bare payment", () => {
+    render({ quote: undefined, amount: 52n * 10n ** 18n, senderTag: "maple" })
+    expect(container.querySelector(".ww-paylink-summary__label")?.textContent).toBe(
+      "@maple sent you",
+    )
+    expect(container.querySelector('[data-testid="claim-review-amount"]')?.textContent).toBe(
+      "52.00 DAI",
+    )
   })
 })
 

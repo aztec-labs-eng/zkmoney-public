@@ -60,8 +60,8 @@ export interface BroadcastSchedulerDeps {
   /** The account scope whose jobs run. */
   scope(): string | null
   /**
-   * True while the user's own transaction runs: local proving is single-flight, so no attempt
-   * starts under it. The owner kicks the scheduler when it ends.
+   * True while the user's own transaction, or another background proof, runs: local proving is
+   * single-flight, so no attempt starts under it. The owner kicks the scheduler when it ends.
    */
   busy?(): boolean
   /** The operation a job's attempts run as; none for a job nobody has seen. */

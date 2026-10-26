@@ -1,7 +1,8 @@
 /**
- * The proving gate is what keeps a background SIPA broadcast from making a user's send/withdraw
- * throw `LocalProvingInFlight`: background proofs must not start while a user flow runs, and a
- * user flow must wait out a proof already in flight rather than collide with it.
+ * The proving gate is what keeps a background SIPA broadcast or upgrade step from making a user's
+ * send/withdraw, or another background proof, throw `LocalProvingInFlight`: background proofs run
+ * one at a time and must not start while a user flow runs, and a user flow must wait out a proof
+ * already in flight rather than collide with it.
  */
 import { describe, expect, it } from "vitest"
 import { runUserFlow, trackBackgroundProve, userFlowActive } from "../src/features/provingGate"
@@ -58,6 +59,48 @@ describe("provingGate", () => {
     proof.resolve()
     await flow
     expect(started).toBe(true)
+  })
+
+  it("runs background proofs one at a time, in the order they were reserved", async () => {
+    const first = deferred()
+    const second = deferred()
+    const started: string[] = []
+    const a = trackBackgroundProve(async () => {
+      started.push("a")
+      await first.promise
+    })
+    const b = trackBackgroundProve(async () => {
+      started.push("b")
+      await second.promise
+    })
+    const c = trackBackgroundProve(async () => void started.push("c"))
+    await Promise.resolve()
+    expect(started).toEqual(["a"])
+    first.reject(new Error("proof died"))
+    await expect(a).rejects.toThrow("proof died")
+    await Promise.resolve()
+    expect(started).toEqual(["a", "b"])
+    second.resolve()
+    await Promise.all([b, c])
+    expect(started).toEqual(["a", "b", "c"])
+  })
+
+  it("starts a waiting background proof only once a user flow raised before its turn has ended", async () => {
+    const proof = deferred()
+    const flow = deferred()
+    const started: string[] = []
+    void trackBackgroundProve(() => proof.promise)
+    const queued = trackBackgroundProve(async () => void started.push("background"))
+    const user = runUserFlow(async () => {
+      started.push("user")
+      await flow.promise
+    })
+    proof.resolve()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(started).toEqual(["user"])
+    flow.resolve()
+    await Promise.all([user, queued])
+    expect(started).toEqual(["user", "background"])
   })
 
   it("a failed background proof neither fails nor blocks the user flow", async () => {

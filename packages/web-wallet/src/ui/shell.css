@@ -182,6 +182,12 @@
 .ww-shell .ww-nav-item:hover {
   background: rgba(255, 255, 255, 0.03);
 }
+.ww-shell .ww-nav-item:disabled,
+.ww-shell .ww-tabbar__item:disabled {
+  opacity: 0.35;
+  cursor: default;
+  background: transparent;
+}
 .ww-shell .ww-nav-item--active {
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-primary);
@@ -2063,14 +2069,41 @@
     opacity: 1;
   }
 }
+/* Each route's page fades in as it mounts. Opacity only: a transform would trap its fixed overlays. */
+@media (prefers-reduced-motion: no-preference) {
+  .ww-content > :not(.ww-shell-header) {
+    animation: ww-fade-in 0.18s ease;
+  }
+}
 @keyframes ww-sheet-in {
   from {
-    opacity: 0;
-    transform: translateY(32px);
+    transform: translateY(100%);
   }
-  to {
-    opacity: 1;
+}
+/* The phone menu is a drawer: it slides in from the menu button's edge once shown, and back out. */
+@media (max-width: 640px) and (prefers-reduced-motion: no-preference) {
+  .ww-menu-dialog .ww-sidebar {
+    transform: translateX(100%);
+    transition: transform 0.25s cubic-bezier(0, 0, 0.2, 1);
+  }
+  .ww-menu-dialog[data-shown] .ww-sidebar {
     transform: none;
+  }
+  .ww-menu-dialog[data-closing] .ww-sidebar {
+    transform: translateX(100%);
+    transition-duration: 0.2s;
+    transition-timing-function: cubic-bezier(0.4, 0, 1, 1);
+  }
+  .ww-menu-dialog::backdrop {
+    animation: ww-fade-in 0.25s ease-out;
+  }
+  .ww-menu-dialog[data-closing]::backdrop {
+    animation: ww-fade-out 0.2s ease-in forwards;
+  }
+}
+@keyframes ww-fade-out {
+  to {
+    opacity: 0;
   }
 }
 
@@ -2116,9 +2149,20 @@
     /* The glow is wider than the screen. clip, not hidden, so the header can stick. */
     overflow-x: clip;
   }
+  /* clip, not hidden: opening focuses a button on the off-screen panel, and a hidden overflow still
+     scrolls to reveal it, so the slide would start from the wrong side. */
+  .ww-menu-dialog {
+    overflow: clip;
+  }
+  /* The panel covers the screen, so a blur would only show while it slides, at a full repaint a frame. */
+  .ww-menu-dialog::backdrop {
+    background: rgba(7, 7, 7, 0.5);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
   .ww-menu-dialog .ww-sidebar {
     position: static;
-    width: min(402px, 100%);
+    width: 100%;
     height: 100%;
     padding: calc(40px + var(--ww-safe-area-top)) calc(40px + var(--ww-safe-area-right))
       calc(24px + var(--ww-safe-area-bottom)) calc(40px + var(--ww-safe-area-left));
@@ -2242,15 +2286,15 @@
     opacity: 1;
     background: rgba(255, 255, 255, 0.2);
   }
-  /* Pinned. Margins cancel padding, so the pill keeps its place until it sticks. Once stuck, the
-     glass shows and the row shrinks by transform and opacity alone, so nothing re-lays out. */
+  /* Pinned from the first pixel: margins cancel the content's top padding, so the row never moves.
+     Once scrolled, only the glass fades in. */
   .ww-shell-header {
     position: sticky;
     top: 0;
     z-index: 10;
-    margin: calc(-6px - var(--ww-safe-area-top)) calc(-24px - var(--ww-safe-area-right)) -6px
+    margin: calc(-15px - var(--ww-safe-area-top)) calc(-24px - var(--ww-safe-area-right)) -6px
       calc(-24px - var(--ww-safe-area-left));
-    padding: calc(6px + var(--ww-safe-area-top)) calc(24px + var(--ww-safe-area-right)) 6px
+    padding: calc(15px + var(--ww-safe-area-top)) calc(24px + var(--ww-safe-area-right)) 6px
       calc(24px + var(--ww-safe-area-left));
   }
   .ww-shell-header::before {
@@ -2262,49 +2306,10 @@
     backdrop-filter: blur(24px);
     -webkit-backdrop-filter: blur(24px);
     opacity: 0;
-    transition:
-      opacity 200ms ease,
-      transform 200ms ease;
+    transition: opacity 200ms ease;
   }
-  .ww-shell-header :is(.ww-search, .ww-brand, .ww-topbar__actions) {
-    transition: transform 200ms ease;
-  }
-  /* The glass shows at once: a fast flick carries content under the header before a fade ends. */
   .ww-shell-header[data-stuck]::before {
     opacity: 1;
-    transform: translateY(-10px);
-    transition-duration: 0ms, 200ms;
-  }
-  /* Where supported the scroll position drives the glass. The stuck flag waits on scroll events,
-     which trail a fast flick by several frames. */
-  @supports (animation-timeline: scroll()) {
-    .ww-shell-header::before {
-      animation: ww-shell-glass linear both;
-      animation-timeline: scroll(nearest block);
-      animation-range: 0 8px;
-    }
-    @keyframes ww-shell-glass {
-      from {
-        opacity: 0;
-        transform: none;
-      }
-      to {
-        opacity: 1;
-        transform: translateY(-10px);
-      }
-    }
-  }
-  /* Full size while the search, the bell's panel or a toast is open, so none is scaled. */
-  .ww-shell-header[data-stuck]:not(:focus-within, :has(.ww-notifications__toast))
-    :is(.ww-search, .ww-brand, .ww-topbar__actions) {
-    transform: translateY(-5px) scale(0.8);
-  }
-  /* Each end shrinks toward its own edge, so the row stays edge to edge. */
-  .ww-shell-header :is(.ww-search, .ww-brand) {
-    transform-origin: left center;
-  }
-  .ww-shell-header .ww-topbar__actions {
-    transform-origin: right center;
   }
   .ww-topbar {
     position: relative;
@@ -2319,6 +2324,8 @@
   .ww-topbar .ww-notifications__anchor > button {
     position: relative;
   }
+  /* Row wide because the topbar is their containing block. A transform, filter or contain on the
+     actions group or the anchor would take that over and squeeze them to the bell's column. */
   .ww-shell .ww-topbar .ww-notifications,
   .ww-shell .ww-topbar .ww-notifications__toast {
     top: calc(100% + 12px);
@@ -2375,6 +2382,9 @@
   .ww-home__phone-actions .zkm-quick-action {
     min-width: 0;
   }
+  .ww-home__phone-actions .zkm-quick-action--disabled .zkm-quick-action__tile {
+    opacity: 0.35;
+  }
   /* "Add to Savings" and "Move to Main Account" run to two lines in a four-up row. */
   .ww-home__phone-actions .zkm-quick-action__caption {
     text-align: center;
@@ -2411,14 +2421,21 @@
   .ww-home-txns__tabs {
     gap: 20px;
   }
+  /* A plain dim: a blur would repaint the screen on every frame of the sheet's slide. The sheet scrolls
+     within itself, so the overlay is clipped: a dialog scrolls to reveal what it focuses, which would
+     pull a sheet that is still below the screen up and drop it back. */
   .ww-modal-overlay {
     align-items: flex-end;
+    overflow: clip;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
   }
+  /* The sheet pops up from the bottom edge. */
   .ww-modal {
     width: 100%;
     max-height: 92dvh;
     border-radius: var(--radius-32) var(--radius-32) 0 0;
-    animation: ww-sheet-in 0.26s ease;
+    animation: ww-sheet-in 0.25s cubic-bezier(0, 0, 0.2, 1);
   }
   /* Doubled class: sheets that set their own padding (.ww-pay, .ww-txd, .ww-modal--create) are
      declared later in the file and would silently drop the home-indicator inset. They opt into
@@ -5737,6 +5754,15 @@
   font-size: 12px;
   color: var(--text-secondary);
 }
+.ww-fund__label-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ww-fund__label b {
+  color: var(--text-primary);
+  font-weight: 600;
+}
 .ww-limits__note {
   margin: 0;
   font-size: 11px;
@@ -6078,6 +6104,143 @@
 .ww-withdraw__warning[data-tone="info"] .ww-withdraw__warning-chevron {
   margin-left: 0;
 }
+/* Frozen-portal withdraw: one centered step card. */
+.ww-frozen-exit {
+  align-items: center;
+  text-align: center;
+}
+.ww-frozen-exit > * {
+  width: 100%;
+  box-sizing: border-box;
+}
+.ww-frozen-exit .ww-withdraw__warning {
+  text-align: left;
+}
+.ww-frozen-exit > svg,
+.ww-frozen-exit > .ww-frozen-exit__eyebrow,
+.ww-frozen-exit > [class*="spinner"] {
+  width: auto;
+}
+.ww-frozen-exit__eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--purple-light, #b49cff);
+}
+.ww-frozen-exit__lead {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.ww-frozen-exit__label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-frozen-exit__routes,
+.ww-frozen-exit__to {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  text-align: left;
+}
+.ww-frozen-exit__route {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-frozen-exit__route b {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.ww-frozen-exit__route[aria-disabled] {
+  opacity: 0.45;
+}
+.ww-frozen-exit__route[data-selected] {
+  border-color: rgba(167, 92, 255, 0.7);
+  background: rgba(167, 92, 255, 0.12);
+}
+.ww-frozen-exit__fee {
+  margin-left: auto;
+  font-weight: 500;
+}
+.ww-frozen-exit__tag {
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.1);
+}
+.ww-frozen-exit__hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-frozen-exit__box {
+  margin: 0;
+  padding: 4px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  text-align: left;
+}
+.ww-frozen-exit__address {
+  padding: 12px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.ww-frozen-exit__address code {
+  font-size: 14px;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.ww-frozen-exit__steps {
+  padding: 12px 16px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ww-frozen-exit__step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+.ww-frozen-exit__step[data-state="done"] svg {
+  color: rgb(86, 231, 157);
+}
+.ww-frozen-exit__step[data-state="todo"] {
+  color: var(--text-secondary);
+}
+.ww-frozen-exit__dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  box-sizing: border-box;
+}
+.ww-frozen-exit__back {
+  padding: 8px;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
 .ww-withdraw__warning p {
   margin: 0;
 }
@@ -6110,6 +6273,10 @@ summary.ww-withdraw__warning-head::-webkit-details-marker {
 }
 details[open] .ww-withdraw__warning-chevron {
   transform: rotate(180deg);
+}
+.ww-withdraw__warning-dismiss {
+  display: flex;
+  flex-shrink: 0;
 }
 .ww-withdraw__warning-body {
   display: flex;
@@ -6444,83 +6611,30 @@ details[open] .ww-withdraw__warning-chevron {
 .ww-phone-steps__docs:hover {
   color: var(--text-primary);
 }
-/* Each tip opens over its own line, never against a far ancestor. */
-.ww-phone-steps__tiprow {
-  position: relative;
-  display: inline-flex;
-}
-.zkm-btn-reset.ww-phone-steps__tiprow-label {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
-  line-height: 1.3;
-  color: var(--text-secondary);
+/* The sign-up card's tips: a dotted label, over the card's green darkened to an opaque surface. */
+.ww-phone-steps__tiprow .ww-tiprow__label {
   text-decoration: underline dotted;
   text-underline-offset: 3px;
-  cursor: pointer;
 }
-.ww-phone-steps__tiprow-label > svg {
-  flex: none;
-}
-.ww-phone-steps__tiprow-label:hover,
-.ww-phone-steps__tiprow-label:focus-visible,
-.ww-phone-steps__tiprow-label[aria-expanded="true"] {
-  color: var(--text-primary);
-}
-.ww-phone-steps__tiprow-label:focus-visible {
-  outline: 2px solid #fff;
-  outline-offset: 2px;
-}
-.ww-phone-steps__tip {
-  position: absolute;
-  left: 0;
-  bottom: calc(100% + 8px);
-  z-index: 1;
-  width: 300px;
-  /* Never wider than the card, which a narrow sheet would otherwise clip it against. */
-  max-width: 100%;
+.ww-phone-steps__tiprow .ww-tiprow__tip {
   padding: 12px 14px;
-  /* The card's green, darkened to an opaque surface, so the tip reads as part of the card. */
   border: 1px solid rgba(86, 231, 157, 0.3);
   border-radius: 14px;
   background: linear-gradient(180deg, #1c2621 0%, #141a17 100%);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
-  font-size: 12px;
-  line-height: 1.45;
-  color: var(--text-primary);
-  visibility: hidden;
 }
-.ww-phone-steps__tip strong {
+.ww-phone-steps__tiprow .ww-tiprow__tip strong {
   display: block;
   margin-bottom: 6px;
   font-size: 13px;
   font-weight: 700;
   color: var(--accent-green);
 }
-.ww-phone-steps__tip p {
+.ww-phone-steps__tiprow .ww-tiprow__tip p {
   margin: 0;
   color: var(--text-secondary);
 }
-.ww-phone-steps__tip p + p {
+.ww-phone-steps__tiprow .ww-tiprow__tip p + p {
   margin-top: 6px;
-}
-.ww-phone-steps__tiprow[data-open] .ww-phone-steps__tip {
-  visibility: visible;
-  animation: ww-phone-steps-tip-in 140ms ease-out;
-}
-@keyframes ww-phone-steps-tip-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ww-phone-steps__tiprow[data-open] .ww-phone-steps__tip {
-    animation: none;
-  }
 }
 /* A sentence to act on in the browser's prompt: plain text, so it reads without a press. */
 .ww-phone-steps__note {
@@ -7020,12 +7134,18 @@ details[open] .ww-withdraw__warning-chevron {
   background: var(--surface-faint);
   box-shadow: inset 0 0 0 1px var(--border-hairline);
 }
-.ww-select {
-  position: relative;
+/* The select fills the box and shares its grid cell with the chevron, so a click anywhere opens it. */
+.zkm-field__box.ww-select {
+  display: grid;
+  align-items: center;
+  padding: 0;
+}
+.ww-select > * {
+  grid-area: 1 / 1;
 }
 .ww-select select {
-  flex: 1;
   height: 100%;
+  padding: 0 40px 0 16px;
   appearance: none;
   border: 0;
   background: transparent;
@@ -7036,6 +7156,11 @@ details[open] .ww-withdraw__warning-chevron {
 }
 .ww-select select:focus {
   outline: none;
+}
+.ww-select > svg {
+  justify-self: end;
+  margin-right: 16px;
+  pointer-events: none;
 }
 .ww-pay__protect {
   display: flex;
@@ -8547,6 +8672,11 @@ details[open] .ww-withdraw__warning-chevron {
   display: none;
 }
 @media (max-width: 959px) {
+  /* The intro is the dialog's own child, so it moves only when the dialog scrolls, as the sheet's
+     slide-in overflows it: nothing scrolls while the intro covers the screen. */
+  .ww-modal-overlay:has(> .ww-ticket-intro) {
+    overflow: clip;
+  }
   .ww-ticket-intro {
     position: fixed;
     inset: 0;

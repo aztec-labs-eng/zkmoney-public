@@ -155,9 +155,13 @@ describe("parseDeployment", () => {
 })
 
 describe("migrationSources", () => {
-  it("returns every other entry on the pinned rollup", () => {
+  it("returns explicitly selected entries on the pinned rollup", () => {
     const pinned = parseDeployment(V2).tuple
-    expect(migrationSources(fixture, pinned).map((t) => t.version)).toEqual(["v1"])
+    expect(
+      migrationSources(fixture, pinned, new Set([V1.portal.toLowerCase(), V2.portal.toLowerCase()])).map(
+        (t) => t.version,
+      ),
+    ).toEqual(["v1"])
   })
 
   it("never returns the pinned portal, compared lowercase", () => {
@@ -165,17 +169,25 @@ describe("migrationSources", () => {
       ...parseDeployment(V1).tuple,
       portal: V1.portal.toUpperCase().replace("0X", "0x"),
     }
-    expect(migrationSources(fixture, pinned).map((t) => t.portal)).toEqual([V2.portal])
+    expect(
+      migrationSources(fixture, pinned, new Set([V1.portal.toLowerCase(), V2.portal.toLowerCase()])).map(
+        (t) => t.portal,
+      ),
+    ).toEqual([V2.portal])
   })
 
   it("skips entries that predate withdraw and execute", () => {
     const pinned = parseDeployment(V2).tuple
     const legacy = entry("v0")
     expect(legacy.rollupVersion).toBe(V2.rollupVersion)
-    expect(migrationSources(fixture, pinned).map((t) => t.version)).not.toContain("v0")
+    expect(
+      migrationSources(fixture, pinned, new Set([legacy.portal.toLowerCase(), V1.portal.toLowerCase()])).map(
+        (t) => t.version,
+      ),
+    ).not.toContain("v0")
   })
 
-  it("adds an entry on another rollup only when its portal is reachable", () => {
+  it("adds an entry on another rollup only when its portal is selected", () => {
     const other = { ...clone(V1), rollupVersion: "999" }
     const doc = { ...clone(fixture), deployments: [other, clone(V2)] }
     const pinned = parseDeployment(V2).tuple
@@ -187,9 +199,10 @@ describe("migrationSources", () => {
 
   it("throws on a malformed known-schema entry instead of dropping it", () => {
     const broken = clone(fixture)
-    broken.deployments.find((d: { label: string }) => d.label === "v1").rollupVersion =
-      "not-a-number"
-    expect(() => migrationSources(broken, parseDeployment(V2).tuple)).toThrow(/rollupVersion/)
+    broken.deployments.find((d: { label: string }) => d.label === "v1").rollupVersion = "not-a-number"
+    expect(() => migrationSources(broken, parseDeployment(V2).tuple, new Set([V1.portal.toLowerCase()]))).toThrow(
+      /rollupVersion/,
+    )
   })
 })
 

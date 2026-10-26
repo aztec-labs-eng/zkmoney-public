@@ -51,7 +51,7 @@ describe("useRegistrationSpeed", () => {
     seen = useRegistrationSpeed({
       active: true,
       node: NODE,
-      noteAmount: dai(3),
+      noteAmount: dai(4),
       schedule: TICKET,
       cuts: CUTS,
       onCommit,
@@ -86,6 +86,15 @@ describe("useRegistrationSpeed", () => {
     expect(onCommit).toHaveBeenLastCalledWith(TIP, "faster")
     await render({ load, active: false })
     expect(seen.proverTip).toBe(TIP)
+  })
+
+  it("starts on Standard when the tip is over 10% of the note, and Faster can still be picked", async () => {
+    await render({ load: async () => loaded(600), noteAmount: dai(3) })
+    expect(seen.choice.speed).toBe("standard")
+    expect(onCommit).toHaveBeenLastCalledWith(0n, "standard")
+    await act(async () => seen.choice.setSpeed("faster"))
+    expect(seen.proverTip).toBe(TIP)
+    expect(onCommit).toHaveBeenLastCalledWith(TIP, "faster")
   })
 
   it("starts from the speed it committed before", async () => {

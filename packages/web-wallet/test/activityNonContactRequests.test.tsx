@@ -9,6 +9,15 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import type { ContactRow, PaymentRequest } from "@obsidion/front-core"
 
 const directory = vi.hoisted(() => ({ hydrated: true, failed: false }))
+/** Whether a send must wait for the upgrade, and every action a press asked for. */
+const gate = vi.hoisted(() => ({ upgrade: false, asked: [] as string[] }))
+vi.mock("../src/features/actionGate", () => ({
+  useWalletFrozen: () => false,
+  useActionGuard: () => (action: string, run: () => void) => {
+    gate.asked.push(action)
+    if (!gate.upgrade) run()
+  },
+}))
 
 const ada: ContactRow = {
   id: "ada",
@@ -191,6 +200,20 @@ it("pays from an open request sheet", async () => {
   await openAdaRequest()
   await send()
   expect([path(), sheet()]).toEqual(["/contacts/ada/send", null])
+})
+
+it("asks to upgrade before paying a request", async () => {
+  gate.upgrade = true
+  gate.asked = []
+  try {
+    await render()
+    await openAdaRequest()
+    await send()
+    expect(gate.asked).toEqual(["send"])
+    expect(path()).not.toBe("/contacts/ada/send")
+  } finally {
+    gate.upgrade = false
+  }
 })
 
 it("closes an open request sheet when a failed contacts read hides its row, and keeps it closed", async () => {

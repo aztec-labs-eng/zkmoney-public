@@ -21,6 +21,7 @@ import {
 import { TX_AMOUNT_CAP, type PortalCapacitySnapshot } from "@obsidion/sdk"
 import type { L1TokenBalance } from "../src/features/deposit/l1DepositTokenBalance"
 import type { DepositTokenOption } from "../src/features/deposit/loadDepositFacts"
+import * as copy from "../src/features/limits/limitsCopy"
 
 const ACCOUNT = "0x00000000000000000000000000000000000000aa" as Hex
 const balance: { current: L1TokenBalance | undefined } = { current: undefined }
@@ -326,10 +327,12 @@ describe("DepositFromWalletModal", () => {
     info.focus()
     await act(async () => info.click())
     await settleReads()
-    const sheet = container.querySelector<HTMLDialogElement>('dialog[aria-label="About limits"]')!
+    const sheet = container.querySelector<HTMLDialogElement>(
+      `dialog[aria-label="${copy.SHEET_TITLE}"]`,
+    )!
     expect(sheet.open).toBe(true)
     expect(byTestId("about-limits-operation-toggle")!.getAttribute("aria-expanded")).toBe("true")
-    expect(byTestId("about-limits-operation")!.textContent).toContain("$2,500 sent, incl. fees")
+    expect(byTestId("about-limits-operation")!.textContent).toContain(copy.LIMIT_NOTE)
     const section = byTestId("about-limits-capacity")!
     expect(section.dataset.state).toBe("fresh")
     await act(async () => byTestId("about-limits-capacity-toggle")!.click())
@@ -340,7 +343,7 @@ describe("DepositFromWalletModal", () => {
     await act(async () => {
       sheet.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))
     })
-    expect(container.querySelector('dialog[aria-label="About limits"]')).toBeNull()
+    expect(container.querySelector(`dialog[aria-label="${copy.SHEET_TITLE}"]`)).toBeNull()
     expect(document.activeElement).toBe(info)
     vi.restoreAllMocks()
   })
@@ -356,9 +359,9 @@ describe("DepositFromWalletModal", () => {
     expect(info.getAttribute("aria-label")).toBe("About network capacity")
     await act(async () => info.click())
     await settleReads()
-    const order = [...container.querySelectorAll('dialog[aria-label="About limits"] section')].map(
-      (section) => (section as HTMLElement).dataset.testid,
-    )
+    const order = [
+      ...container.querySelectorAll(`dialog[aria-label="${copy.SHEET_TITLE}"] section`),
+    ].map((section) => (section as HTMLElement).dataset.testid)
     expect(order[0]).toBe("about-limits-capacity")
     expect(byTestId("about-limits-capacity-toggle")!.getAttribute("aria-expanded")).toBe("true")
     expect(byTestId("about-limits-capacity")!.textContent).toContain("500 DAI")
@@ -373,6 +376,56 @@ describe("DepositFromWalletModal", () => {
     await type("9.5")
     expect(button("Deposit funds").disabled).toBe(false)
     expect(container.textContent).toContain("$10")
+  })
+
+  it("shows the wallet balance, and MAX enters it less the fee", async () => {
+    await render("0.5")
+    expect(container.textContent).toContain("Balance: $10")
+    await act(async () => button("MAX").click())
+    expect(container.querySelector("input")!.value).toBe("9.5")
+    expect(button("Deposit funds").disabled).toBe(false)
+  })
+
+  it("caps MAX at the published limit", async () => {
+    balance.current = holds("5000")
+    await render("0.5")
+    await act(async () => button("MAX").click())
+    expect(container.querySelector("input")!.value).toBe("2499.5")
+  })
+
+  it("offers no MAX when the balance does not cover the fee", async () => {
+    balance.current = holds("0")
+    await render("0.5")
+    expect(container.textContent).toContain("Balance: $0")
+    expect(button("MAX")).toBeUndefined()
+  })
+
+  it("unblocks once a later read finds the funds", async () => {
+    balance.current = holds("0")
+    await render("0.5")
+    await type("5")
+    expect(button("Deposit funds").disabled).toBe(true)
+    balance.current = holds("1000")
+    await render("0.5")
+    expect(container.textContent).toContain("Balance: $1,000")
+    expect(button("Deposit funds").disabled).toBe(false)
+  })
+
+  it("clears a rejected transfer's balance on the next read, even one that reads the same", async () => {
+    const { InsufficientL1BalanceError } = await import(
+      "../src/features/deposit/l1DepositTokenBalance"
+    )
+    deposit.mockRejectedValueOnce(new InsufficientL1BalanceError(holds("2")))
+    await render("0.5")
+    await type("5")
+    await act(async () => button("Deposit funds").click())
+    await act(async () => button("Confirm deposit").click())
+    await settleReads()
+    expect(container.textContent).toContain("Not enough funds")
+    expect(button("Deposit funds").disabled).toBe(true)
+    balance.current = holds("10")
+    await render("0.5")
+    expect(button("Deposit funds").disabled).toBe(false)
   })
 
   it("stays enabled when the balance could not be read", async () => {

@@ -16,24 +16,25 @@ import {
   type TeeSigner,
 } from "@obsidion/sdk"
 import {
+  balanceScope,
   buildSavingsMove,
   createOxideTeeSignerSource,
-  expectedSavingsNet,
   quoteSavingsMove,
   readSkyFactoryPortals,
   readSavingsApy,
-  readSavingsPosition,
+  readSavingsPrice,
   readSavingsVault,
   resolveSkyFactory,
   savingsValue,
   settleSavingsMoves,
   tupleField,
+  WalletSyncCoordinator,
   type SavingsDeployments,
   type SavingsDirection,
   type SavingsMoveRecord,
   type SavingsMoveStorage,
   type SavingsMoveStage,
-  type SavingsPosition,
+  type SavingsPrice,
   type SavingsQuote,
   type SavingsSource,
   type SkyFactory,
@@ -74,7 +75,7 @@ import {
 import { getSavingsMoveStore } from "./savingsMoveStore"
 import { SavingsQuoteChangedError } from "./quoteChanged"
 
-const SAVINGS_ASSET = "sUSDS"
+export const SAVINGS_ASSET = "sUSDS"
 
 const savingsAvailable = createExternalState(false)
 
@@ -123,13 +124,14 @@ export function useLiveSavingsApy(): LiveApy {
 }
 
 /**
- * The Savings token for the withdrawal rescan, with its deployment: a fresh device rebuilds its
- * moves back to Main from this token's burns. Undefined where the profile has no sUSDS deployment.
+ * The Savings token for the withdrawal rescan and the wallet's sync, with its deployment: a fresh
+ * device rebuilds its moves back to Main from this token's burns, and the sync reads its shares.
+ * Undefined where the profile has no sUSDS deployment.
  */
 export async function savingsRescanToken(
   wallet: ObsidionWallet,
   account: ObsidionAccount,
-): Promise<RescanToken | undefined> {
+): Promise<(RescanToken & { tokenService: TokenService }) | undefined> {
   const tuple = await getSavingsTuple(getConfig())
   if (!tuple) return undefined
   const tokenService = await savingsTokenService(wallet, account, tuple.l2Token)
@@ -146,10 +148,12 @@ export interface SavingsDeps {
   contractService: ContractService
   /** Main's token service: the source of a move in, and what claims a move out. */
   tokenService: TokenService
+  /** The network the wallet's balance store scopes its balances to. */
+  network: string
 }
 
-/** How long one position read answers for; Home and the Savings page read together. */
-const READ_TTL_MS = 5_000
+/** How long one price read answers for; Home and the move sheet read together. */
+const PRICE_TTL_MS = 5_000
 
 /** A promise kept until it fails, so one read serves every caller and a failure is retried. */
 function once<T>(make: () => Promise<T>): () => Promise<T> {
@@ -279,17 +283,19 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
   const vault = once<Address>(async () =>
     readSavingsVault(client, tupleField((await deployments()).savings, "portal")),
   )
-  let lastRead: { at: number; value: Promise<SavingsPosition> } | undefined
+  const balance = {
+    scope: balanceScope(deps.network, deps.account.getCompleteAddress().toString()),
+    tokenAddress: AztecAddress.fromStringUnsafe(savings.l2Token).toString(),
+  }
 
-  const read = () => {
+  let lastRead: { at: number; value: Promise<SavingsPrice> } | undefined
+
+  const readPrice = () => {
     const now = Date.now()
-    if (lastRead && now - lastRead.at < READ_TTL_MS) return lastRead.value
-    const value = (async () => {
-      const [token, address] = await Promise.all([savingsToken(), vault()])
-      return readSavingsPosition(client, address, await token.getBalance(), {
-        l1ChainId: config.l1ChainId,
-      })
-    })()
+    if (lastRead && now - lastRead.at < PRICE_TTL_MS) return lastRead.value
+    const value = vault().then((address) =>
+      readSavingsPrice(client, address, { l1ChainId: config.l1ChainId }),
+    )
     lastRead = { at: now, value }
     value.catch(() => {
       if (lastRead?.value === value) lastRead = undefined
@@ -418,8 +424,8 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
     // A move out burns shares; the tray names their dollar value at the vault's share price.
     const sharePrice =
       direction === "out"
-        ? await read().then(
-            (position) => position.sharePrice,
+        ? await readPrice().then(
+            (price) => price.sharePrice,
             () => undefined,
           )
         : undefined
@@ -478,13 +484,8 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
             txHash,
           ),
         masterSecret,
-        expectedNet: async (move, burn) =>
-          expectedSavingsNet(await quoteDeps(), move.direction, BigInt(move.amount), {
-            escrowTip: BigInt(burn.skyMove!.relayerTip),
-            ...(burn.fpcFundingCut !== undefined ? { sourceCut: BigInt(burn.fpcFundingCut) } : {}),
-            ...(burn.relayerTip !== undefined ? { releaseTip: BigInt(burn.relayerTip) } : {}),
-          }),
         recipient: deps.account.getAddress(),
+        refreshBalance: () => WalletSyncCoordinator.refreshBalance(),
         main: destination(main, async () => deps.tokenService),
         savings: destination(savings, savingsToken),
         destinationFor: async (move) => {
@@ -515,5 +516,5 @@ export function createSavingsSource(deps: SavingsDeps, savings: OxideEnvTuple): 
     )
   }
 
-  return { moves, read, quote, move, settle }
+  return { moves, balance, readPrice, quote, move, settle }
 }

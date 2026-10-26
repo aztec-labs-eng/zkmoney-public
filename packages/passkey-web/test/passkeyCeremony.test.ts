@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { hexToBytes } from "../src/ceremony/bytes.js"
 import { NATIVE_LOCK_KEY } from "../src/ceremony/nativeLock.js"
 import {
+  BLOCKED_PROMPT_MS,
   BrowserPasskeyCeremony,
   type CeremonyTiming,
   DEFAULT_CEREMONY_TIMING,
@@ -12,6 +13,7 @@ import {
   type PasskeyRequestHook,
   type PasskeyRequestSignal,
   decodePrfSlot,
+  isBlockedPromptError,
   isEvictedRequestError,
   isNoCredentialError,
   isUnsupportedAlgorithmError,
@@ -20,6 +22,7 @@ import {
   onPasskeyRequest,
   passkeyExtensionFor,
   passkeysSupported,
+  recordRequestHeld,
   requestHeldMs,
 } from "../src/ceremony/passkeyCeremony.js"
 import {
@@ -1301,7 +1304,7 @@ describe("FakePasskeyCeremony request hook", () => {
   })
 })
 
-describe("requestHeldMs", () => {
+describe("requestHeldMs and isBlockedPromptError", () => {
   beforeEach(() => {
     vi.spyOn(document, "hasFocus").mockReturnValue(false)
   })
@@ -1309,37 +1312,61 @@ describe("requestHeldMs", () => {
     vi.useRealTimers()
   })
 
-  it("times a rejection from the request's issue, not from the wait for focus before it", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] })
-    const dismissed = new DOMException("not allowed", "NotAllowedError")
-    const create = vi.fn(async () => {
-      vi.setSystemTime(Date.now() + 40)
-      throw dismissed
-    })
-    Object.defineProperty(navigator, "credentials", {
-      configurable: true,
-      value: { create, get: vi.fn() },
-    })
-    const result = new BrowserPasskeyCeremony({ ...timing, focusWaitMs: 5_000 })
-      .create({
-        rpId: "localhost",
-        rpName: "zk.money",
-        userName: "alice",
-        prfFirstSalt: new Uint8Array(32),
+  it.each([
+    [40, true],
+    [BLOCKED_PROMPT_MS, false],
+    [5_000, false],
+  ])(
+    "times a rejection from the request's issue, not from the wait for focus before it (%i ms)",
+    async (heldMs, blocked) => {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] })
+      const dismissed = new DOMException("not allowed", "NotAllowedError")
+      const create = vi.fn(async () => {
+        vi.setSystemTime(Date.now() + heldMs)
+        throw dismissed
       })
-      .then(
-        () => undefined,
-        (e: unknown) => e,
-      )
-    await vi.advanceTimersByTimeAsync(5_000)
-    expect(await result).toBe(dismissed)
-    expect(requestHeldMs(dismissed)).toBe(40)
-  })
+      Object.defineProperty(navigator, "credentials", {
+        configurable: true,
+        value: { create, get: vi.fn() },
+      })
+      const result = new BrowserPasskeyCeremony({ ...timing, focusWaitMs: 5_000 })
+        .create({
+          rpId: "localhost",
+          rpName: "zk.money",
+          userName: "alice",
+          prfFirstSalt: new Uint8Array(32),
+        })
+        .then(
+          () => undefined,
+          (e: unknown) => e,
+        )
+      await vi.advanceTimersByTimeAsync(5_000)
+      expect(await result).toBe(dismissed)
+      expect(requestHeldMs(dismissed)).toBe(heldMs)
+      expect(isBlockedPromptError(dismissed)).toBe(blocked)
+    },
+  )
 
   it("knows nothing of an error no request threw", () => {
     expect(requestHeldMs(new DOMException("not allowed", "NotAllowedError"))).toBeUndefined()
     expect(requestHeldMs("NotAllowedError")).toBeUndefined()
     expect(requestHeldMs(undefined)).toBeUndefined()
+    expect(isBlockedPromptError(new DOMException("not allowed", "NotAllowedError"))).toBe(false)
+  })
+
+  it("reads a recorded hold from the error or its cause, for a NotAllowedError alone", () => {
+    const fast = new DOMException("not allowed", "NotAllowedError")
+    recordRequestHeld(fast, 200)
+    expect(requestHeldMs(fast)).toBe(200)
+    expect(isBlockedPromptError(fast)).toBe(true)
+    const aborted = new DOMException("aborted", "AbortError")
+    recordRequestHeld(aborted, 40)
+    expect(isBlockedPromptError(aborted)).toBe(false)
+    const wrapped = Object.assign(new Error("wrapped"), { name: "NotAllowedError", cause: fast })
+    expect(isBlockedPromptError(wrapped)).toBe(true)
+    recordRequestHeld("NotAllowedError", 40)
+    expect(requestHeldMs("NotAllowedError")).toBeUndefined()
+    expect(isBlockedPromptError("NotAllowedError")).toBe(false)
   })
 })
 

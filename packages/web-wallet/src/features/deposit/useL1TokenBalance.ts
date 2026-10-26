@@ -4,9 +4,12 @@ import { readL1DepositTokenBalance, type L1TokenBalance } from "./l1DepositToken
 
 export type { L1TokenBalance }
 
+/** Funds can arrive from another tab or app, such as a faucet mint, while the form is open. */
+export const L1_BALANCE_REFRESH_MS = 15_000
+
 /**
- * Fetches the connected wallet's L1 balance of `token` (default: the manifest token) once per
- * account/chain/token. The receive form uses that value as the amount ceiling while typing.
+ * The connected wallet's L1 balance of `token` (default: the manifest token). It is read again
+ * while open and whenever the page regains focus. The receive form uses it as the amount ceiling.
  */
 export function useL1TokenBalance(opts: {
   account: Address | null
@@ -17,21 +20,35 @@ export function useL1TokenBalance(opts: {
   const [balance, setBalance] = useState<L1TokenBalance>()
 
   useEffect(() => {
-    if (!account || wrongChain) {
-      setBalance(undefined)
-      return
-    }
-    let live = true
     setBalance(undefined)
-    readL1DepositTokenBalance(account, token)
-      .then((next) => {
-        if (live) setBalance(next)
-      })
-      .catch(() => {
-        if (live) setBalance(undefined)
-      })
+    if (!account || wrongChain) return
+    let live = true
+    // Only the newest read lands, so a slow older one cannot undo it.
+    let latest = 0
+    const read = () => {
+      const id = ++latest
+      return (
+        readL1DepositTokenBalance(account, token)
+          .then((next) => {
+            // A new object on every read, so it clears any shortfall a rejected transfer reported.
+            if (live && id === latest) setBalance(next)
+          })
+          // A failed refresh keeps the last balance read.
+          .catch(() => {})
+      )
+    }
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void read()
+    }
+    void read()
+    const timer = setInterval(() => void read(), L1_BALANCE_REFRESH_MS)
+    window.addEventListener("focus", read)
+    document.addEventListener("visibilitychange", onVisible)
     return () => {
       live = false
+      clearInterval(timer)
+      window.removeEventListener("focus", read)
+      document.removeEventListener("visibilitychange", onVisible)
     }
   }, [account, wrongChain, token])
 

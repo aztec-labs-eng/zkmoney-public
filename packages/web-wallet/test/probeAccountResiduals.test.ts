@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 const h = vi.hoisted(() => ({
   reconcile: vi.fn(),
   recordPending: vi.fn(),
+  retire: vi.fn(),
   latestChainSeconds: vi.fn(),
   probe: vi.fn(),
   detect: vi.fn(),
@@ -10,15 +11,19 @@ const h = vi.hoisted(() => ({
   setupSipaDiscovery: vi.fn(),
   fetchSipaEvents: vi.fn(),
   frozenSourceSummary: vi.fn(),
+  sourceFrozenEscrows: vi.fn(),
   historicChain: vi.fn(),
-  isSipaDepositClaimed: vi.fn(),
+  readSipaDepositsConsumed: vi.fn(async (_node: unknown, _scope: unknown, _keys: unknown[]) => [false]),
   serviceDeps: [] as unknown[],
+  storageId: "acct" as string | null,
+  onSecretKey: () => {},
 }))
 
 vi.mock("@obsidion/front-core", () => ({
   PendingPaylinkMigrationService: class {
     reconcile = h.reconcile
     recordPending = h.recordPending
+    retire = h.retire
     constructor(deps: unknown) {
       h.serviceDeps.push(deps)
     }
@@ -36,7 +41,7 @@ vi.mock("@obsidion/sdk", () => ({
   getBroadcasterArtifact: async () => ({}),
   fetchSipaEvents: h.fetchSipaEvents,
   frozenSourceSummary: h.frozenSourceSummary,
-  isSipaDepositClaimed: h.isSipaDepositClaimed,
+  readSipaDepositsConsumed: h.readSipaDepositsConsumed,
 }))
 vi.mock("../src/config/env", () => ({
   getConfig: () => ({ oxideProfile: {}, network: "sandbox", l1ChainId: 1 }),
@@ -45,13 +50,22 @@ vi.mock("../src/config/oxideTuple", () => ({
   l1PublicClient: () => ({ getBlockNumber: async () => 1n, readContract: vi.fn() }),
 }))
 vi.mock("../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ getSecretKey: async () => "0x01" }),
+  getAuthService: () => ({
+    getSecretKey: async () => {
+      h.onSecretKey()
+      return "0x01"
+    },
+  }),
 }))
 vi.mock("../src/platform/storage/WebStorageAdapter", () => ({ webStorage: {} }))
+vi.mock("../src/platform/storage/activeStorage", () => ({ getActiveStorageId: () => h.storageId }))
 vi.mock("../src/features/migration/historicTokenContext", () => ({
   historicChain: h.historicChain,
 }))
 vi.mock("../src/features/paylink/chainTime", () => ({ latestChainSeconds: h.latestChainSeconds }))
+vi.mock("../src/features/migration/sourceFrozenEscrows", () => ({
+  sourceFrozenEscrows: h.sourceFrozenEscrows,
+}))
 vi.mock("../src/features/migration/historicResiduals", () => ({
   probeHistoricResiduals: h.probe,
   countPendingWithdrawals: () => 0,
@@ -78,6 +92,7 @@ const lockedSummary = {
   paylinkEscrows: 0,
   lockedPaylinks: [lockedRow],
   paylinkCandidates: [lockedRow],
+  frozenLinks: [],
   hasResiduals: true,
 }
 
@@ -107,7 +122,7 @@ describe("probeAccountResiduals — frozen sources", () => {
     expect(result?.residuals).toEqual([incomplete])
   })
 
-  it("reads a frozen source's refundable notes and deposits through the account", async () => {
+  it("reads a frozen source's refundable notes, deposits and links through the account", async () => {
     h.latestChainSeconds.mockResolvedValue(1234)
     h.detect.mockResolvedValue({ current, historic: [tuple] })
     h.probe.mockResolvedValue([])
@@ -120,6 +135,100 @@ describe("probeAccountResiduals — frozen sources", () => {
     expect(h.frozenSourceSummary).toHaveBeenCalledWith(
       expect.objectContaining({ wallet, account, tuple, depositDescriptors }),
     )
+    await h.frozenSourceSummary.mock.calls[0]![0].escrows()
+    expect(h.sourceFrozenEscrows).toHaveBeenCalledWith({
+      chain: { wallet, account },
+      tuple,
+      current,
+      masterSecret: "0x01",
+      storageId: "acct",
+    })
+  })
+
+  it("skips a probe whose account changed while it read the manifest", async () => {
+    h.latestChainSeconds.mockResolvedValue(1234)
+    h.detect.mockImplementation(async () => {
+      h.storageId = "other"
+      return { current, historic: [tuple] }
+    })
+    try {
+      expect(await probeAccountResiduals(wallet, account)).toBeNull()
+      expect(h.probe).not.toHaveBeenCalled()
+    } finally {
+      h.detect.mockReset()
+      h.storageId = "acct"
+    }
+  })
+
+  it("skips a probe whose account changed while its key was read", async () => {
+    h.latestChainSeconds.mockResolvedValue(1234)
+    h.detect.mockResolvedValue({ current, historic: [tuple] })
+    h.onSecretKey = () => {
+      h.storageId = "other"
+    }
+    try {
+      expect(await probeAccountResiduals(wallet, account)).toBeNull()
+      expect(h.probe).not.toHaveBeenCalled()
+    } finally {
+      h.onSecretKey = () => {}
+      h.storageId = "acct"
+    }
+  })
+
+  it("writes nothing when the account changes during the scan", async () => {
+    h.latestChainSeconds.mockResolvedValue(1234)
+    h.detect.mockResolvedValue({ current, historic: [tuple] })
+    h.probe.mockImplementation(async () => {
+      h.storageId = "other"
+      return [{ tuple, frozenLinks: [{ txHash: "0xa" }], paylinkCandidates: [{ txHash: "0xb" }] }]
+    })
+    try {
+      expect(await probeAccountResiduals(wallet, account)).toBeNull()
+      expect(h.recordPending).not.toHaveBeenCalled()
+      expect(h.retire).not.toHaveBeenCalled()
+    } finally {
+      h.probe.mockReset()
+      h.storageId = "acct"
+    }
+  })
+
+  it("skips the probe without an active account, whose link rows it could not read", async () => {
+    h.detect.mockResolvedValue({ current, historic: [tuple] })
+    h.storageId = null
+    try {
+      expect(await probeAccountResiduals(wallet, account)).toBeNull()
+      expect(h.probe).not.toHaveBeenCalled()
+    } finally {
+      h.storageId = "acct"
+    }
+  })
+
+  it("retires the pending reclaims of frozen sources' links", async () => {
+    h.latestChainSeconds.mockResolvedValue(1234)
+    h.detect.mockResolvedValue({ current, historic: [tuple] })
+    const summary = (frozenLinks: { txHash?: string }[]) => ({
+      tuple,
+      frozenLinks,
+      paylinkCandidates: [],
+      hasResiduals: false,
+      incomplete: false,
+    })
+    h.probe.mockResolvedValue([summary([{ txHash: "0xa" }, {}]), summary([{ txHash: "0xb" }])])
+    await probeAccountResiduals(wallet, account)
+    expect(h.retire).toHaveBeenCalledWith(["0xa", "0xb"])
+  })
+
+  it("keeps the reclaim of a legacy link a live source also claims", async () => {
+    h.latestChainSeconds.mockResolvedValue(1234)
+    h.detect.mockResolvedValue({ current, historic: [tuple] })
+    const legacy = { txHash: "0xa" }
+    h.probe.mockResolvedValue([
+      { tuple, frozenLinks: [legacy, { txHash: "0xb" }], paylinkCandidates: [] },
+      { tuple, frozenLinks: [], paylinkCandidates: [legacy] },
+    ])
+    await probeAccountResiduals(wallet, account)
+    expect(h.recordPending).toHaveBeenCalledWith([legacy])
+    expect(h.retire).toHaveBeenCalledWith(["0xb"])
   })
 
   it("reads deposits on another rollup through that rollup's wallet", async () => {
@@ -135,9 +244,10 @@ describe("probeAccountResiduals — frozen sources", () => {
       expect.objectContaining({ pxe: source.wallet.pxe, node: source.wallet.node }),
     )
     expect(h.fetchSipaEvents.mock.calls[0]![0]).toBe(source.wallet)
-    const deposit = { messageSecret: "0x05", amount: 1n, messageLeafIndex: 0n }
-    await sipaDiscovery.claimed({ ...tuple, rollupVersion: "2" }, deposit)
-    expect(h.isSipaDepositClaimed.mock.calls[0]![0]).toBe(source.wallet.node)
+    const deposit = { messageKey: "0x" + "05".repeat(32), amount: 1n, messageLeafIndex: 0n }
+    await sipaDiscovery.consumed({ ...tuple, rollupVersion: "2" }, [deposit])
+    expect(h.readSipaDepositsConsumed.mock.calls[0]![0]).toBe(source.wallet.node)
+    expect(h.readSipaDepositsConsumed.mock.calls[0]![2]).toEqual([deposit.messageKey])
   })
 })
 

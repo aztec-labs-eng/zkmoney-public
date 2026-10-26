@@ -1,11 +1,6 @@
 import { useEffect, useState } from "react"
 import type { SignInRoute } from "@obsidion/core/types"
-import {
-  AccountStorage,
-  NetworkStorage,
-  selectRecoveredMsk,
-  canonicalGenerationStack,
-} from "src/core"
+import { AccountStorage, NetworkStorage, selectRecoveredMsk } from "src/core"
 import {
   TESTNET_TIMEOUT,
   ObsidionAccount,
@@ -104,26 +99,21 @@ export const useAccount = (useAuthenticator: UseAuthenticator) => {
 
       // front-core's `CompleteAddress` is the v5 parser — the 288-byte
       // layout. A v4 (320-byte) address parsed here silently misaligns the
-      // publicKeys (→ off-curve `ivpkM`, a cryptic downstream crash). Gated on
-      // canonical stack: only the v5 stack parses 288B blobs and persists a
-      // rewrite; v4-canonical still skips a v5 misparse / re-derives via
-      // the live wallet but leaves AccountStorage alone.
-      const stack = canonicalGenerationStack()
+      // publicKeys (→ off-curve `ivpkM`, a cryptic downstream crash), so any
+      // other layout is re-derived via the live wallet and rewritten.
       let storedCompleteAddress: CompleteAddress | undefined = undefined
       const storedFormat = currentAccount.completeAddress
         ? completeAddressWireFormat(currentAccount.completeAddress)
         : "unknown"
-      if (stack === "v5" && currentAccount.completeAddress && storedFormat === "v5") {
+      if (currentAccount.completeAddress && storedFormat === "v5") {
         storedCompleteAddress = await CompleteAddress.fromString(currentAccount.completeAddress)
       } else if (currentAccount.completeAddress) {
-        // Do not pass the blob through the v5 parser (wrong size or v4-canonical).
-        if (stack === "v5") {
-          const byteLength = currentAccount.completeAddress.replace(/^0x/i, "").length / 2
-          console.log(
-            `[Account restore] stored completeAddress is ${storedFormat} (${byteLength}B) on canonical v5 — ` +
-              `re-deriving via the generation wallet instead of mis-parsing`,
-          )
-        }
+        // Do not pass the blob through the v5 parser (wrong size).
+        const byteLength = currentAccount.completeAddress.replace(/^0x/i, "").length / 2
+        console.log(
+          `[Account restore] stored completeAddress is ${storedFormat} (${byteLength}B) — ` +
+            `re-deriving via the wallet instead of mis-parsing`,
+        )
       }
 
       const obsidionAccount = await obsidionWallet.getObsidionAccountWallet(
@@ -139,7 +129,7 @@ export const useAccount = (useAuthenticator: UseAuthenticator) => {
         obsidionAccount?.getAddress().toString(),
       )
 
-      if (stack === "v5" && obsidionAccount && storedFormat !== "v5") {
+      if (obsidionAccount && storedFormat !== "v5") {
         const derived = obsidionAccount.getCompleteAddress().toString()
         if (derived !== currentAccount.completeAddress) {
           await AccountStorage.get().setAccount({

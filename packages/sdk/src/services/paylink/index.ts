@@ -25,6 +25,7 @@ export {
   type PaylinkVoucherDeps,
 } from "./paylinkVoucher.js"
 export { makePaylinkSpendMetadataResolver } from "./paylinkSpendMetadata.js"
+export { discoverFrozenEscrows, paylinkRefundOwner } from "./frozenEscrows.js"
 export {
   buildPaylinkNoteView,
   unpackPaylinkData,

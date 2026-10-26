@@ -49,6 +49,8 @@ export interface PaymentRequest {
   /** Self-broadcast L1 SIPA at mint time — rebuilt into the share URL. */
   sipaAddress?: string
   sipaPreimage?: SipaLinkPreimage
+  /** When the requester last sent the payer a reminder (epoch ms). */
+  remindedAt?: number
 }
 
 interface StoredShape {
@@ -204,6 +206,20 @@ export class RequestStorage {
         return { applied: false }
       }
       all[idx] = { ...row, status: "pending" }
+      await this.write(all)
+      return { applied: true }
+    })
+  }
+
+  /** Records a delivered reminder on a pending outgoing request. */
+  async markReminded(id: string, at: number): Promise<{ applied: boolean }> {
+    return this.mutate(async () => {
+      const all = await this.read()
+      const idx = all.findIndex((r) => r.id === id)
+      if (idx < 0 || all[idx].direction !== "outgoing" || all[idx].status !== "pending") {
+        return { applied: false }
+      }
+      all[idx] = { ...all[idx], remindedAt: at }
       await this.write(all)
       return { applied: true }
     })

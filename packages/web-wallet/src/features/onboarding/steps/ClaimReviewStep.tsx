@@ -1,9 +1,9 @@
 import { useRef, type ReactNode } from "react"
-import { Icon, PrimaryGradientButton } from "@obsidion/web-ds"
+import { GradientSpinner, Icon, PrimaryGradientButton } from "@obsidion/web-ds"
 import type { PaylinkSignupQuote } from "../../paylink/paylinkSignupQuote"
 import { OperationHandOff, type OperationHandOffHandle } from "../../operations/OperationHandOff"
 import { OnboardingCard } from "../OnboardingCard"
-import { formatTokenAmount } from "./DepositTermsRows"
+import { ticketAmountFigure } from "./GoldenTicketHead"
 import { PaylinkSignupRows } from "./PaylinkSignupRows"
 import { SignupStepper } from "./SignupStepper"
 import { senderLine } from "../../paylink/senderLine"
@@ -17,6 +17,8 @@ import { senderLine } from "../../paylink/senderLine"
  */
 export function ClaimReviewStep({
   quote,
+  amount,
+  statusDetail,
   tokenSymbol,
   tokenDecimals,
   memo,
@@ -34,6 +36,10 @@ export function ClaimReviewStep({
 }: {
   /** Absent while the portal cut that prices the split is unread: no claim until it lands. */
   quote?: PaylinkSignupQuote
+  /** The payment, base units, as stored: the head names it while the split is unpriced. */
+  amount?: bigint
+  /** The settled status's second line. */
+  statusDetail?: string
   /** The speed choice the split commits. */
   speed?: ReactNode
   tokenSymbol: string
@@ -57,7 +63,7 @@ export function ClaimReviewStep({
   onClaim: () => void
   onClose: () => void
 }) {
-  const amount = (v: bigint) => formatTokenAmount(v, tokenDecimals, tokenSymbol)
+  const shown = quote?.paylink ?? amount
   const working = useRef<OperationHandOffHandle>(null)
   const close = busy ? () => working.current?.leave() : onClose
   return (
@@ -67,7 +73,9 @@ export function ClaimReviewStep({
         <div className="ww-claim-review__payment">
           <span className="ww-paylink-summary__label">{senderLine(senderTag)}</span>
           <span className="ww-paylink-summary__amount" data-testid="claim-review-amount">
-            {quote?.paylink === undefined ? "a payment" : amount(quote.paylink)}
+            {shown === undefined
+              ? "a payment"
+              : `${ticketAmountFigure(shown, tokenDecimals)} ${tokenSymbol}`}
           </span>
           {memo && <span className="ww-paylink-summary__note">{memo}</span>}
         </div>
@@ -90,10 +98,18 @@ export function ClaimReviewStep({
           </p>
         )}
       </div>
-      <span className="ww-claim-review__status">
-        <Icon name="clock" size={14} color="var(--accent-yellow, #f5c542)" />
-        {status}
-      </span>
+      {settled ? (
+        <div className="ww-invite-spinner" role="status">
+          <GradientSpinner />
+          <span className="ww-invite-spinner__label">{status}</span>
+          {statusDetail && <p className="ww-reg-sheet__note">{statusDetail}</p>}
+        </div>
+      ) : (
+        <span className="ww-claim-review__status">
+          <Icon name="clock" size={14} color="var(--accent-yellow, #f5c542)" />
+          {status}
+        </span>
+      )}
       {error && (
         <p className="ww-invite-modal-error" role="alert">
           {error}

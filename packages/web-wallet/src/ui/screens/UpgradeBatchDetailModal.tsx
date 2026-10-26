@@ -4,7 +4,7 @@
  * the activity pairs with it.
  */
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
-import type { UpgradeBatchItem } from "@obsidion/front-core"
+import { upgradeBatchStatus, type UpgradeBatchItem } from "@obsidion/front-core"
 import { GradientText, Icon, type StatusBadgeStyle } from "@obsidion/web-ds"
 import { formatUnits } from "viem"
 import { getConfig } from "../../config/env"
@@ -16,11 +16,9 @@ import { DepositFact } from "./DepositFact"
 import { DepositHashFact } from "./DepositHashFact"
 import { DepositStatusValue } from "./DepositStatusValue"
 
-const STATUS: Record<UpgradeBatchItem["state"], { label: string; badge: StatusBadgeStyle }> = {
-  planned: { label: "Approved", badge: "pending" },
-  sent: { label: "On its way", badge: "pending" },
-  refunded: { label: "Released by the old version", badge: "pending" },
-  received: { label: "Arrived", badge: "awaitingClaim" },
+/** Where a batch stands before its deposit speaks for it. */
+export function batchStatus(batch: UpgradeBatchItem): { label: string; badge: StatusBadgeStyle } {
+  return { label: upgradeBatchStatus(batch), badge: "pending" }
 }
 
 export function UpgradeBatchDetailModal({
@@ -50,7 +48,7 @@ export function UpgradeBatchDetailModal({
       </div>
       <div className="ww-sheet__facts">
         <DepositFact label="Status">
-          <DepositStatusValue {...STATUS[batch.state]} />
+          <DepositStatusValue {...batchStatus(batch)} />
         </DepositFact>
         <DepositFact label="Relayer tip">
           <b>{figure(batch.exitFee)}</b>

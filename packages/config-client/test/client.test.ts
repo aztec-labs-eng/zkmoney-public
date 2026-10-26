@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest"
+import { describe, expect, it } from "vitest"
 import {
   ConfigProfileError,
   fetchConfigProfile,
@@ -429,16 +429,15 @@ describe("pinnedProfileUrl", () => {
 })
 
 describe("retiredRollupNodes", () => {
-  it("names the node of each portal a cutover moved off its rollup", () => {
+  it("maps historical portals to their configured nodes", () => {
     const doc = withVersions("0.0.3", "0.0.2", "0.0.1")
     doc.versions["0.0.2"].nodeUrl = "https://old.rpc.example"
     doc.versions["0.0.2"].oxide.portal = "0x" + "AB".repeat(20)
     doc.versions["0.0.1"].oxide.portal = "0x" + "cd".repeat(20)
     const nodes = retiredRollupNodes(parseConfigProfile(doc))
-    expect([...nodes]).toEqual([["0x" + "ab".repeat(20), "https://old.rpc.example"]])
-  })
-
-  it("names nothing when every version shares the current node", () => {
-    expect(retiredRollupNodes(parseConfigProfile(withVersions("0.0.2", "0.0.1"))).size).toBe(0)
+    expect([...nodes]).toEqual([
+      ["0x" + "ab".repeat(20), "https://old.rpc.example"],
+      ["0x" + "cd".repeat(20), "https://node.example"],
+    ])
   })
 })

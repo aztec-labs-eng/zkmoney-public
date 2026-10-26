@@ -3,6 +3,7 @@
  * connected deposit form, address surfaces and the limits sheet word the same state the same way.
  */
 import { formatUnits } from "viem"
+import { CAPACITY_CHECKING, CAPACITY_UNAVAILABLE } from "../limits/limitsCopy"
 import {
   evaluateCapacityEligibility,
   floorToTypeable,
@@ -92,10 +93,6 @@ export function fundingEligibility(
   return finding === "short" || finding === "unsupported" ? last : eligibility
 }
 
-export const CAPACITY_NOT_RESERVED_NOTE =
-  "Sending doesn't reserve capacity. If it runs out first, processing waits and your funds stay at the deposit address."
-export const CAPACITY_CHECKING = "Checking capacity…"
-export const CAPACITY_UNAVAILABLE = "Capacity could not be checked."
 export const CAPACITY_FITS = "Fits the current capacity."
 export const CAPACITY_LOW = "Network capacity is low."
 export const CAPACITY_NONE = "No network capacity is available right now."

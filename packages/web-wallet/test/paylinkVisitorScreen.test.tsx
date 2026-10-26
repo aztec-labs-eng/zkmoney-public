@@ -24,6 +24,7 @@ const bell: {
 } = {}
 const stashClaimLink = vi.fn()
 const fireEvent = vi.fn()
+const fireOnboardingEvent = vi.fn()
 
 vi.mock("../src/features/paylink/usePaylinkDeps", () => ({
   useLinkVoucher: () => voucher,
@@ -34,6 +35,8 @@ const stashTicketSignup = vi.fn()
 const clearTicketSignup = vi.fn()
 /** The ticket signup marker: set by stashTicketSignup, read back by the screen. */
 let ticketStashed = false
+/** A marker this tab saved before a reload. */
+const saved: { value: Record<string, unknown> | null } = { value: null }
 /** The network's offer: null = no tickets, undefined = still loading, or failed with a retry. */
 const offer: {
   value: { threshold: string; schedule: { fee: string; minDeposit: string } } | null | undefined
@@ -44,14 +47,16 @@ const offer: {
   failed: false,
   retry: vi.fn(),
 }
-vi.mock("../src/features/paylink/claimStash", () => ({
+vi.mock("../src/features/paylink/claimStash", async (importOriginal) => ({
+  receivesToAccount: (await importOriginal<typeof import("../src/features/paylink/claimStash")>())
+    .receivesToAccount,
   stashClaimLink,
   stashTicketSignup: (...args: unknown[]) => {
     ticketStashed = true
     return stashTicketSignup(...args)
   },
   clearTicketSignup,
-  peekTicketSignup: () => (ticketStashed ? { fragment: "frag" } : null),
+  peekTicketSignup: () => saved.value ?? (ticketStashed ? { fragment: "frag" } : null),
 }))
 vi.mock("../src/features/paylink/goldenTicketOffer", () => ({
   useGoldenTicketOffer: () => ({ offer: offer.value, failed: offer.failed, retry: offer.retry }),
@@ -60,6 +65,9 @@ vi.mock("../src/features/paylink/goldenTicketOffer", () => ({
 const committed = { value: false }
 /** Whether the link's ticket signup already has a registration or a saved account. */
 const resumable = { value: false }
+/** This browser already saw the link's ticket refused as spent. */
+const spent = { value: false }
+vi.mock("../src/features/paylink/ticketSpent", () => ({ ticketKnownSpent: () => spent.value }))
 vi.mock("../src/features/paylink/ticketContinuation", () => ({
   ticketSignupCommitted: () => committed.value,
   ticketSignupResumable: () => resumable.value,
@@ -73,7 +81,12 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAztecContext: () => aztec,
 }))
-vi.mock("react-router-dom", () => ({ useNavigate: () => vi.fn() }))
+/** The router state the page opened with: a signup elsewhere may have chosen its account. */
+const route = vi.hoisted(() => ({ state: null as unknown }))
+vi.mock("react-router-dom", () => ({
+  useNavigate: () => vi.fn(),
+  useLocation: () => ({ state: route.state }),
+}))
 vi.mock("../src/features/paylink/ClaimProgressModal", () => ({
   ClaimProgressModal: ({ record }: { record: { localId: string } }) => (
     <div data-testid="receipt">{record.localId}</div>
@@ -89,7 +102,7 @@ vi.mock("../src/ui/NotificationsBell", () => ({
     return <div data-testid="bell" />
   },
 }))
-vi.mock("../src/lib/analytics", () => ({ fireEvent }))
+vi.mock("../src/lib/analytics", () => ({ fireEvent, fireOnboardingEvent }))
 vi.mock("../src/features/paylink/paylinkExit", () => ({ cashOutLink: vi.fn() }))
 vi.mock("../src/ui/screens/WithdrawalDetailModal", () => ({
   withdrawalStatus: () => ({ label: "Releasing on Ethereum", badge: "pending" }),
@@ -183,8 +196,11 @@ beforeAll(() => {
 beforeEach(() => {
   vi.clearAllMocks()
   ticketStashed = false
+  saved.value = null
+  spent.value = false
   committed.value = false
   resumable.value = false
+  route.state = null
   offer.value = null
   offer.failed = false
   voucher.error = undefined
@@ -571,6 +587,100 @@ describe("PaylinkVisitorScreen", () => {
     expect(testId("signup")).toBeTruthy()
   })
 
+  describe("the ticket start on the signup stream", () => {
+    const TICKET_OFFER = { threshold: "1", schedule: { fee: "5", minDeposit: "0" } }
+    const starts = () =>
+      fireOnboardingEvent.mock.calls.filter(([event]) => event === "onboarding_started")
+
+    it("reports a redeemable offer once per mount, before any choice", () => {
+      voucher.uses = 1
+      offer.value = TICKET_OFFER
+      render({ link: link() })
+      expect(starts()).toEqual([["onboarding_started", { entry: "ticket", source: "direct" }]])
+      render({ link: link() })
+      act(() => button("Receive to zk.money")!.click())
+      expect(starts()).toHaveLength(1)
+    })
+
+    it("waits for the offer and the voucher to both say the link pays for an account", () => {
+      voucher.uses = undefined
+      offer.value = undefined
+      render({ link: link() })
+      offer.value = TICKET_OFFER
+      render({ link: link() })
+      expect(fireOnboardingEvent).not.toHaveBeenCalled()
+      voucher.uses = 1
+      render({ link: link() })
+      expect(starts()).toHaveLength(1)
+    })
+
+    it.each([
+      [
+        "no offer",
+        () => {
+          voucher.uses = 1
+          offer.value = null
+        },
+      ],
+      [
+        "a spent voucher",
+        () => {
+          voucher.uses = 0
+          offer.value = TICKET_OFFER
+        },
+      ],
+      [
+        "a note below the threshold",
+        () => {
+          voucher.uses = 1
+          offer.value = { ...TICKET_OFFER, threshold: (30n * 10n ** 18n).toString() }
+        },
+      ],
+      [
+        "a cash-out under way",
+        () => {
+          voucher.uses = 1
+          offer.value = TICKET_OFFER
+          withdrawal.record = { recipient: `0x${"dd".repeat(20)}`, phase: "submitting" }
+        },
+      ],
+    ])("reports nothing with %s", (_, arrange) => {
+      arrange()
+      render({ link: link() })
+      expect(fireOnboardingEvent).not.toHaveBeenCalled()
+    })
+
+    it("the return to a signup already under way reports no second start", () => {
+      voucher.uses = 1
+      offer.value = TICKET_OFFER
+      resumable.value = true
+      render({ link: link() })
+      expect(testId("ticket-signup")).toBeTruthy()
+      expect(fireOnboardingEvent).not.toHaveBeenCalled()
+    })
+
+    it("a link sent here that pays the name's own price reports its start once, as its signup opens", () => {
+      voucher.uses = 1
+      offer.value = null
+      route.state = { receive: "account" }
+      render({ link: link() })
+      expect(testId("ticket-signup")).toBeTruthy()
+      expect(starts()).toEqual([["onboarding_started", { entry: "ticket", source: "direct" }]])
+      render({ link: link() })
+      expect(starts()).toHaveLength(1)
+    })
+
+    it("a reload that resumes a paid signup reports no second start", () => {
+      voucher.uses = 1
+      offer.value = null
+      resumable.value = true
+      saved.value = { fragment: "frag", schedule: { fee: "5", minDeposit: "0" }, paid: true }
+      render({ link: link() })
+      expect(testId("ticket-signup")).toBeTruthy()
+      expect(fireOnboardingEvent).not.toHaveBeenCalled()
+    })
+  })
+
   describe("the ticket's threshold, checked before the signup starts", () => {
     const ONE = 10n ** 18n
     const ticketOffer = (threshold: bigint) => ({
@@ -689,6 +799,109 @@ describe("PaylinkVisitorScreen", () => {
         expect(testId("ticket-signup")).toBeTruthy()
       },
     )
+
+    it.each([
+      ["a paid signup, with a ticket now on offer", { paid: true }, () => {}],
+      ["a ticket signup, with no ticket now on offer", {}, () => (offer.value = null)],
+      ["a ticket signup, with the voucher now read as spent", {}, () => (voucher.uses = 0)],
+    ])("a reload resumes %s, in the mode it saved", (_, mode, arrange) => {
+      voucher.uses = 1
+      offer.value = ticketOffer(20n * ONE)
+      resumable.value = true
+      saved.value = { fragment: "frag", schedule: { fee: "5", minDeposit: "0" }, ...mode }
+      arrange()
+      render({ link: link() })
+      expect(stashTicketSignup).not.toHaveBeenCalled()
+      expect(clearTicketSignup).not.toHaveBeenCalled()
+      expect(testId("ticket-signup")).toBeTruthy()
+    })
+
+    it("with no ticket on offer, a link sent here waits for the voucher read before choosing", () => {
+      voucher.uses = undefined
+      offer.value = null
+      route.state = { receive: "account" }
+      render({ link: link() })
+      nothingStarted()
+      expect(button("Receive to zk.money")?.disabled).toBe(true)
+
+      voucher.uses = 1
+      render({ link: link() })
+      expect(stashTicketSignup).toHaveBeenCalledWith(expect.objectContaining({ paid: true }))
+      expect(testId("ticket-signup")).toBeTruthy()
+    })
+
+    it("a ticket known spent is no ticket: the account option opens the ordinary signup", () => {
+      voucher.uses = 1
+      offer.value = ticketOffer(20n * ONE)
+      spent.value = true
+      render({ link: link() })
+      expect(container.textContent).not.toContain("Instant. Your balance")
+      act(() => button("Receive to zk.money")!.click())
+      expect(stashTicketSignup).not.toHaveBeenCalled()
+      expect(testId("signup")).toBeTruthy()
+    })
+
+    it("a link sent here whose ticket is known spent opens at the name's own price", () => {
+      voucher.uses = 1
+      offer.value = ticketOffer(20n * ONE)
+      spent.value = true
+      route.state = { receive: "account" }
+      render({ link: link() })
+      expect(stashTicketSignup).toHaveBeenCalledWith(expect.objectContaining({ paid: true }))
+    })
+
+    it("a signup elsewhere that sent an eligible link here opens its ticket signup at once", () => {
+      voucher.uses = 1
+      offer.value = ticketOffer(20n * ONE)
+      route.state = { receive: "account" }
+      render({ link: link() })
+      expect(stashTicketSignup).toHaveBeenCalledOnce()
+      expect(testId("ticket-signup")).toBeTruthy()
+    })
+
+    it.each([
+      ["below the threshold", () => (offer.value = ticketOffer(30n * ONE))],
+      ["with no ticket on offer", () => (offer.value = null)],
+    ])(
+      "a link sent here with the note %s opens the same modal, at the name's own price",
+      (_, arrange) => {
+        voucher.uses = 1
+        offer.value = ticketOffer(20n * ONE)
+        route.state = { receive: "account" }
+        arrange()
+        render({ link: link() })
+        expect(stashTicketSignup).toHaveBeenCalledWith(
+          expect.objectContaining({
+            fragment: "frag",
+            paid: true,
+            amount: (25n * ONE).toString(),
+          }),
+        )
+        expect(stashTicketSignup.mock.calls[0][0]).not.toHaveProperty("threshold")
+        expect(testId("ticket-signup")).toBeTruthy()
+      },
+    )
+
+    it("a link sent here waits for its amount before choosing the signup", () => {
+      voucher.uses = 1
+      offer.value = ticketOffer(20n * ONE)
+      route.state = { receive: "account" }
+      render({ link: link({ amount: undefined }), statusSettled: false })
+      expect(testId("ticket-signup")).toBeNull()
+      expect(testId("signup")).toBeNull()
+    })
+
+    it("a link sent here with no ticket on offer waits for its amount before the paid signup", () => {
+      voucher.uses = 1
+      offer.value = null
+      route.state = { receive: "account" }
+      render({ link: link({ amount: undefined }), statusSettled: false })
+      nothingStarted()
+      render({ link: link() })
+      expect(stashTicketSignup).toHaveBeenCalledWith(
+        expect.objectContaining({ paid: true, amount: (25n * ONE).toString() }),
+      )
+    })
 
     it("without tickets on offer the ordinary signup needs no amount", () => {
       voucher.uses = 1

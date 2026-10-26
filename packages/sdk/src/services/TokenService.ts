@@ -273,7 +273,7 @@ export class TokenService extends ServiceContractBase {
    * `recipient`'s scope — no tx, no gas, no proving; the recipient's next
    * transfer/withdraw consumes it on-chain. It must run in the recipient's
    * PXE and fails until the message settles. The claim inputs (`inboxIndex`,
-   * net `amount`) come from the SIPA's L1 `Sweep` event (`readSweepEvents`);
+   * net `amount`) come from the portal's `Deposit` event for the sweep;
    * the contract reads its own portal binding, and re-storing an
    * already-claimed index is rejected by the contract's inbox-index dedup.
    */

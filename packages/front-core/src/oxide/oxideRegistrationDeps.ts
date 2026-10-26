@@ -32,19 +32,17 @@ import {
 import type { OxideEnvTuple, RegistrationIntent, RegistrationSchedule } from "@obsidion/core/types"
 import { registrationFloor } from "@obsidion/core/constants"
 import { requireNonZeroL1Address } from "@obsidion/core/oxide"
-import { deploymentScanRange } from "./deploymentScanRange"
-import { readFirstFunding, readSipaBalance, type SipaFundingToken } from "./sipaFunding"
+import { readResolverOperatorRecords } from "./resolverOperatorRecords"
+import type { SIPADepositStore } from "../core/services/deposits/SIPADepositStore"
 import {
   MAX_NONCE,
   deriveRecoveryAddress,
   Network,
   SipaSelfResolver,
   deriveSharedSecret,
-  fetchSipaResolverOperators,
   readDepositFee,
   readFpcFundingCut,
   readRegistrationSIPAImplementation,
-  readSweepEvents,
   resolverSelectionPolicy,
   selectManifestResolverOperator,
   type SipaK1Point,
@@ -95,10 +93,10 @@ export async function fetchSignupResolverRecord(
         "signup needs it to record a live resolver operator",
     )
   }
-  const records = await fetchSipaResolverOperators(
-    publicClient as Parameters<typeof fetchSipaResolverOperators>[0],
-    accountMetadataRegistry as Parameters<typeof fetchSipaResolverOperators>[1],
-    await deploymentScanRange(publicClient, tuple),
+  const records = await readResolverOperatorRecords(
+    publicClient,
+    accountMetadataRegistry as Address,
+    tuple,
   )
   const record = selectManifestResolverOperator(records, {
     portal,
@@ -214,6 +212,19 @@ export function createRegistrationSipaDeriver(deps: {
     throw new Error("oxide manifest lacks portal — registration SIPA derivation needs it")
   }
   const sipaFactory = requireNonZeroL1Address(deps.tuple.sipaFactory, "sipaFactory") as Address
+  // The factory writes each (portal, intent) pointer once, so one read serves every derivation.
+  let implementationRead: Promise<Address> | undefined
+  const registrationImplementation = () => {
+    const read = (implementationRead ??= readRegistrationSIPAImplementation(
+      deps.publicClient,
+      sipaFactory,
+      portal as Address,
+    ))
+    read.catch(() => {
+      if (implementationRead === read) implementationRead = undefined
+    })
+    return read
+  }
 
   return async (input) => {
     const stealth = deriveStealthKey(input.masterSecret)
@@ -248,11 +259,7 @@ export function createRegistrationSipaDeriver(deps: {
     // committed word is intentHash = keccak256(registrationData). Derivation is the deposit path's
     // (predictSIPA), delegating to the registration implementation and non-resweepable.
     const registration = registrationCommitment(intent)
-    const implementation = await readRegistrationSIPAImplementation(
-      deps.publicClient,
-      sipaFactory,
-      portal as Address,
-    )
+    const implementation = await registrationImplementation()
     const recoveryCommitment = resolution.recoveryCommitment.toString() as Hex
     const common = {
       implementation,
@@ -332,8 +339,9 @@ const REGISTRATION_IMMUTABLES_ABI = [
 ] as const
 
 /**
- * L1 deposit/sweep reads for the detection tick. The `floor` is the bar a registration sweep
- * accepts: the schedule (the signed terms when held, else the immutable one read from the chain)
+ * The detection tick's deposit reads. The address's balance, sweeps and funding come from its record
+ * in the deposit rail's store, which the rail's observation keeps current; nothing here reads them
+ * from L1. The `floor` is the bar a registration sweep accepts: the schedule (the signed terms when held, else the immutable one read from the chain)
  * priced against the portal's funding cut, so a deposit the sweep would refuse never reads funded.
  * The schedule, the portal's cut and the implementation's sweep fee are each read once and cached;
  * a failed read drops its cache, and until it lands the floor stays unknown. The floor is a
@@ -353,17 +361,12 @@ export function createRegistrationDepositReader(deps: {
   /** This account's signed-terms amounts when the wallet holds them (the record has no bearer
    *  material); undefined prices the floor off the immutable schedule. */
   termsFor?: (account: string) => { fee: bigint; minDeposit: bigint } | undefined
-  /** Every token the address may be funded with, the fee token among them. Defaults to the fee token. */
-  fundingTokens?: SipaFundingToken[]
+  /** The rail's records, one per SIPA, the registration address's among them. */
+  store: Pick<SIPADepositStore, "get" | "load">
 }): RegistrationDepositReader {
-  // The fee token first: the one balances are scaled into.
-  const acceptedTokens = (feeToken: Address): [SipaFundingToken, ...SipaFundingToken[]] => {
-    const listed = deps.fundingTokens ?? []
-    const fee = listed.find((t) => t.address.toLowerCase() === feeToken.toLowerCase())
-    return fee
-      ? [fee, ...listed.filter((t) => t !== fee)]
-      : // A lone token scales by 1 whatever its decimals.
-        [{ address: feeToken, symbol: "", decimals: 0 }]
+  const recordOf = async (sipa: Address) => {
+    await deps.store.load()
+    return deps.store.get(sipa)
   }
   const scheduleHolder = deps.registrationController ?? deps.registry
   let immutables: Promise<RegistrationSchedule | undefined> | undefined
@@ -410,13 +413,23 @@ export function createRegistrationDepositReader(deps: {
       },
     ))
   return {
-    readFunding: async (sipa, token) => {
-      const found = await readFirstFunding(deps.publicClient, sipa, acceptedTokens(token))
-      return found ? [{ amount: found.transfer.amount, txHash: found.transfer.txHash }] : []
+    readFunding: async (sipa) => {
+      const record = await recordOf(sipa)
+      return record?.fundingTxHash
+        ? [{ amount: BigInt(record.heldBalance ?? "0"), txHash: record.fundingTxHash }]
+        : []
     },
-    readBalance: (sipa, token) => readSipaBalance(deps.publicClient, sipa, acceptedTokens(token)),
-    readSweeps: async (sipa) =>
-      (await readSweepEvents(deps.publicClient, sipa)).map((s) => ({ txHash: s.txHash })),
+    // In fee-token units, the largest across the accepted tokens: what the rail last observed.
+    readBalance: async (sipa) => {
+      const record = await recordOf(sipa)
+      if (record?.heldBalance === undefined) throw new Error(`${sipa} not observed yet`)
+      return BigInt(record.heldBalance)
+    },
+    readSweeps: async (sipa) => {
+      const record = await recordOf(sipa)
+      if (record?.sweeps?.length) return record.sweeps.map((s) => ({ txHash: s.sweepTxHash }))
+      return record?.sweepTxHash ? [{ txHash: record.sweepTxHash }] : []
+    },
     floor: async (token, account) => {
       const terms = deps.termsFor?.(account)
       const [schedule, cut, sweep] = await Promise.all([

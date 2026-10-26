@@ -1,14 +1,10 @@
 /**
- * Refundable-deposit enumeration for migration.
- *
- * The same-rollup path is chain/PXE-derived: synced `SIPA` events supply SIPA identities and
- * L1 `Sweep` + portal `Deposit` events supply refundable deposits. It requires no wallet records.
- * The record input remains as a compatibility surface for existing record-based callers.
+ * Refundable-deposit enumeration for migration: synced `SIPA` events supply the SIPA identities, and
+ * one observation of the deployment's portal supplies every sweep's claim inputs and every balance.
  */
 import type { Address, Hex, PublicClient } from "viem"
 import type { FrozenDepositDescriptor } from "@obsidion/core/types"
-import { readDepositMessageKey, readSweepEvents } from "@obsidion/sdk"
-import type { SIPADepositPhase, SIPADepositRecord } from "./SIPADepositStore"
+import { observeSipas } from "../../../oxide/sipaObservation"
 
 /** The minimum secret-bearing identity needed to find refundable value on L1. */
 export interface RefundableSipaSource {
@@ -16,9 +12,8 @@ export interface RefundableSipaSource {
   recipientL2Address: string
   /** Fr hex. */
   messageSecret: string
-  origin: "sipa-event" | "legacy-record"
-  /** Used only by non-migration callers that deliberately retain local dedup policy. */
-  claimedInboxIndexes?: readonly string[]
+  /** What the SIPA's sweeps deposit to on the portal. */
+  recipientCommitment: string
 }
 
 /** Plain-data form of one `SIPA` event synced from this rollup's token. */
@@ -30,36 +25,15 @@ export interface RefundableSipaEvent {
   intentHash?: string
 }
 
-/** L1 readers pre-bound to the relevant portal and, for migration, an explicit scan range. */
-export interface RefundDepositL1Reads<TFr> {
-  readSweepEvents(
-    sipaAddress: string,
-  ): Promise<ReadonlyArray<{ index: bigint; amount: bigint; txHash: string; blockNumber?: bigint }>>
-  readDepositMessageKey(sweepTxHash: string, inboxIndex: bigint): Promise<TFr | null>
-}
-
-/** `RefundDepositL1Reads` over a viem client and the relevant portal, within an optional scan range. */
-export function createRefundDepositL1Reads(
-  publicClient: PublicClient,
-  portal: Address,
-  range?: { fromBlock: bigint; toBlock: bigint },
-): RefundDepositL1Reads<{ toString(): string }> {
-  return {
-    readSweepEvents: (sipaAddress) =>
-      readSweepEvents(publicClient, sipaAddress as Address, range?.fromBlock, range?.toBlock),
-    readDepositMessageKey: (sweepTxHash, inboxIndex) =>
-      readDepositMessageKey(publicClient, portal, sweepTxHash as Hex, inboxIndex),
-  }
-}
-
-export interface RefundableDeposit<TFr> {
+export interface RefundableDeposit {
   sipaAddress: string
   l2Recipient: string
   messageSecret: string
-  messageKey: TFr
+  /** The L1→L2 message hash. */
+  messageKey: Hex
   messageLeafIndex: bigint
   amount: bigint
-  sweepBlockNumber?: bigint
+  sweepBlockNumber: bigint
 }
 
 /** A broadcast SIPA that still holds L1 funds and has not yet been fully swept. */
@@ -68,165 +42,87 @@ export interface InTransitSipaDeposit {
   balance: bigint
 }
 
-export interface RefundableDepositScan<TFr> {
-  refundable: RefundableDeposit<TFr>[]
+export interface RefundableDepositScan {
+  refundable: RefundableDeposit[]
   inTransit: InTransitSipaDeposit[]
 }
 
-/** Legacy phase policy retained for record-based callers. */
-export function isSweptDepositRecord(record: SIPADepositRecord): boolean {
-  const phase: SIPADepositPhase = record.phase
-  if (phase === "pendingClaim" || phase === "claimed") return true
-  return phase === "sweeping" && !!record.sweepTxHash
+/** Where one retired deployment's observation reads: its portal, its token and its window. */
+export interface RefundScanTarget {
+  publicClient: PublicClient
+  portal: Address
+  token: Address
+  fromBlock: bigint
+  head: bigint
 }
 
-function legacySources(args: {
-  records: readonly SIPADepositRecord[]
-  recipientL2Address: string
-  includeLocallyClaimed?: boolean
-}): RefundableSipaSource[] {
-  const recipient = args.recipientL2Address.toLowerCase()
-  return args.records
-    .filter(
-      (record) =>
-        record.recipientL2Address.toLowerCase() === recipient &&
-        !!record.messageSecret &&
-        (args.includeLocallyClaimed || isSweptDepositRecord(record)),
+/**
+ * Every sweep of `sources` and every SIPA still holding the deployment's token, from one observation.
+ * A failed window or a deposit no derived SIPA sent throws, so a scan never reads as empty.
+ * `consumed` drops the deposits already spent on L2, in one batch.
+ */
+export async function scanRefundableDeposits(
+  target: RefundScanTarget,
+  sources: readonly RefundableSipaSource[],
+  consumed?: (deposits: readonly RefundableDeposit[]) => Promise<boolean[]>,
+): Promise<RefundableDepositScan> {
+  if (!sources.length) return { refundable: [], inTransit: [] }
+  const { observed, strays } = await observeSipas(target.publicClient, {
+    portal: target.portal,
+    tokens: [target.token],
+    head: target.head,
+    subjects: sources.map((source) => ({
+      address: source.sipaAddress as Address,
+      commitment: source.recipientCommitment as Hex,
+      fromBlock: target.fromBlock,
+      inflows: false,
+    })),
+  })
+  if (strays.length)
+    throw new Error(
+      `${strays.length} portal deposit(s) to this account came from SIPAs it did not derive`,
     )
-    .map((record) => ({
-      sipaAddress: record.sipaAddress,
-      recipientL2Address: record.recipientL2Address,
-      messageSecret: record.messageSecret,
-      origin: "legacy-record" as const,
-      claimedInboxIndexes: args.includeLocallyClaimed ? [] : record.claimedInboxIndexes,
-    }))
-}
-
-/**
- * Enumerate at `(SIPA identity × Sweep index)` granularity. Supplying `sources` is the same-rollup
- * migration path and never reads wallet storage: event-derived identities plus L1 events decide the
- * result. The `records` form preserves existing caller behavior.
- */
-export async function enumerateRefundableDeposits<TFr>(args: {
-  sources?: readonly RefundableSipaSource[]
-  records?: readonly SIPADepositRecord[]
-  l1Reads: RefundDepositL1Reads<TFr>
-  recipientL2Address?: string
-  includeLocallyClaimed?: boolean
-  readErrorsThrow?: boolean
-  onUnreadableMessageKey?: (sipaAddress: string) => void
-  /** Same-rollup chain check; true drops a sweep already consumed on L2. */
-  isClaimed?: (deposit: RefundableDeposit<TFr>) => Promise<boolean>
-}): Promise<RefundableDeposit<TFr>[]> {
-  return (await scanRefundableDeposits(args)).refundable
-}
-
-/**
- * Chain-only same-rollup scan. Besides swept/unclaimed deposits, reports broadcast SIPAs whose L1
- * token balance is still non-zero (funded/finalized but not yet fully swept). `readSipaBalance` and
- * `isClaimed` are injected so the caller can bind the retiring deployment's token and L2 node.
- */
-export async function scanRefundableDeposits<TFr>(args: {
-  sources?: readonly RefundableSipaSource[]
-  records?: readonly SIPADepositRecord[]
-  l1Reads: RefundDepositL1Reads<TFr>
-  recipientL2Address?: string
-  includeLocallyClaimed?: boolean
-  readErrorsThrow?: boolean
-  onUnreadableMessageKey?: (sipaAddress: string) => void
-  readSipaBalance?: (sipaAddress: string) => Promise<bigint>
-  isClaimed?: (deposit: RefundableDeposit<TFr>) => Promise<boolean>
-}): Promise<RefundableDepositScan<TFr>> {
-  const sources =
-    args.sources ??
-    legacySources({
-      records: args.records ?? [],
-      recipientL2Address: args.recipientL2Address ?? "",
-      includeLocallyClaimed: args.includeLocallyClaimed,
-    })
-  const out: RefundableDeposit<TFr>[] = []
+  const deposits: RefundableDeposit[] = []
   const inTransit: InTransitSipaDeposit[] = []
-
   for (const source of sources) {
-    if (args.readSipaBalance) {
-      try {
-        const balance = await args.readSipaBalance(source.sipaAddress)
-        if (balance > 0n) inTransit.push({ source, balance })
-      } catch (err) {
-        if (args.readErrorsThrow) throw err
-      }
-    }
-    let sweeps: Awaited<ReturnType<RefundDepositL1Reads<TFr>["readSweepEvents"]>>
-    try {
-      sweeps = await args.l1Reads.readSweepEvents(source.sipaAddress)
-    } catch (err) {
-      if (args.readErrorsThrow) throw err
-      continue
-    }
-    const claimed = new Set(source.claimedInboxIndexes ?? [])
-    for (const sweep of sweeps) {
-      if (claimed.has(sweep.index.toString())) continue
-      let messageKey: TFr | null
-      try {
-        messageKey = await args.l1Reads.readDepositMessageKey(sweep.txHash, sweep.index)
-      } catch (err) {
-        if (args.readErrorsThrow) throw err
-        continue
-      }
-      if (messageKey === null) {
-        args.onUnreadableMessageKey?.(source.sipaAddress)
-        continue
-      }
-      const deposit: RefundableDeposit<TFr> = {
+    const seen = observed.get(source.sipaAddress.toLowerCase())
+    if (!seen) throw new Error(`${source.sipaAddress} was not observed`)
+    const balance = seen.balances?.get(target.token.toLowerCase())
+    if (balance === undefined) throw new Error(`${source.sipaAddress}'s balance was not read`)
+    if (balance > 0n) inTransit.push({ source, balance })
+    for (const sweep of seen.sweeps)
+      deposits.push({
         sipaAddress: source.sipaAddress,
         l2Recipient: source.recipientL2Address,
         messageSecret: source.messageSecret,
-        messageKey,
+        messageKey: sweep.messageKey,
         messageLeafIndex: sweep.index,
         amount: sweep.amount,
         sweepBlockNumber: sweep.blockNumber,
-      }
-      try {
-        if (args.isClaimed && (await args.isClaimed(deposit))) continue
-      } catch (err) {
-        if (args.readErrorsThrow) throw err
-        continue
-      }
-      out.push(deposit)
-    }
+      })
   }
-  return { refundable: out, inTransit }
+  const spent = consumed && deposits.length ? await consumed(deposits) : []
+  return { refundable: deposits.filter((_, i) => !spent[i]), inTransit }
 }
 
 /**
  * Every swept deposit of `sources` as refund inputs, plus the SIPAs still holding L1 funds. For a
- * frozen source: no local records and no L2 claim check, since its refund classifier decides a
- * deposit's state at the freeze. Any gap throws, so a scan never reads as empty.
+ * frozen source there is no L2 claim check: its refund classifier decides a deposit's state at the
+ * freeze.
  */
-export async function scanSweptDeposits(args: {
-  sources: readonly RefundableSipaSource[]
-  l1Reads: RefundDepositL1Reads<{ toString(): string }>
-  readSipaBalance?: (sipaAddress: string) => Promise<bigint>
-}): Promise<{ descriptors: FrozenDepositDescriptor[]; inTransit: InTransitSipaDeposit[] }> {
-  const unreadable: string[] = []
-  const scan = await scanRefundableDeposits({
-    ...args,
-    readErrorsThrow: true,
-    onUnreadableMessageKey: (sipaAddress) => unreadable.push(sipaAddress),
-  })
-  if (unreadable.length)
-    throw new Error(`No portal deposit matches a sweep of ${unreadable.length} SIPA(s)`)
+export async function scanSweptDeposits(
+  target: RefundScanTarget,
+  sources: readonly RefundableSipaSource[],
+): Promise<{ descriptors: FrozenDepositDescriptor[]; inTransit: InTransitSipaDeposit[] }> {
+  const scan = await scanRefundableDeposits(target, sources)
   return {
-    descriptors: scan.refundable.map((deposit) => {
-      if (deposit.sweepBlockNumber === undefined) throw new Error("A sweep has no L1 block")
-      return {
-        messageKey: deposit.messageKey.toString(),
-        messageLeafIndex: String(deposit.messageLeafIndex),
-        l1BlockNumber: String(deposit.sweepBlockNumber),
-        sharedSecretSalt: deposit.messageSecret,
-        amount: String(deposit.amount),
-      }
-    }),
+    descriptors: scan.refundable.map((deposit) => ({
+      messageKey: deposit.messageKey,
+      messageLeafIndex: String(deposit.messageLeafIndex),
+      l1BlockNumber: String(deposit.sweepBlockNumber),
+      sharedSecretSalt: deposit.messageSecret,
+      amount: String(deposit.amount),
+    })),
     inTransit: scan.inTransit,
   }
 }

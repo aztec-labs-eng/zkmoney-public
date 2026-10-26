@@ -92,6 +92,7 @@ const faster = vi.hoisted(() => ({
         standardEtaSeconds: number
         tippedEtaSeconds: number
         worstSpeedupSeconds: number
+        measured: boolean
       }
     | undefined,
   loading: false,
@@ -497,7 +498,7 @@ describe("external-wallet claim — the per-withdrawal limit", () => {
       ),
     )
     expect(notice()).toBe(REFUSAL)
-    await click("Claim to zk.money instead. No fee.")
+    await click("Claim privately to zk.money instead.")
     expect(claimInstead).toHaveBeenCalledTimes(1)
   })
 
@@ -555,6 +556,7 @@ describe("external-wallet claim — speed", () => {
     standardEtaSeconds: 44 * 60,
     tippedEtaSeconds: 12 * 60,
     worstSpeedupSeconds: 30 * 60,
+    measured: true,
   }
   const factRow = (label: string) =>
     Array.from(container.querySelectorAll(".ww-deposit__fact")).find(
@@ -569,6 +571,10 @@ describe("external-wallet claim — speed", () => {
   const chooseFaster = async () => {
     const [, fasterOption] = await openSpeeds()
     await act(async () => fasterOption!.click())
+  }
+  const chooseStandard = async () => {
+    const [standardOption] = await openSpeeds()
+    await act(async () => standardOption!.click())
   }
   const submittedTip = () => m.confirm.mock.calls[0]![0].proverTip
 
@@ -590,18 +596,27 @@ describe("external-wallet claim — speed", () => {
     expect(submittedTip()).toBe(0n)
   })
 
-  it("lists both speeds on the review, defaulting to Standard", async () => {
+  it("lists both speeds on the review, defaulting to Faster", async () => {
     faster.offer = offer
     render()
     expect(trigger()).toBeNull()
     await review()
-    expect(trigger()!.textContent).toBe("Standard")
+    expect(trigger()!.textContent).toBe("Faster")
     expect((await openSpeeds()).map((o) => o.textContent)).toEqual([
       "StandardAbout 44 min once confirmed",
       "FasterAbout 12 min once confirmed · 0.5 DAI",
     ])
+  })
+
+  it("drops the tip from the fee and the burn when Standard is chosen", async () => {
+    faster.offer = offer
+    await review()
+    await chooseStandard()
+    expect(trigger()!.textContent).toBe("Standard")
     expect(fact("Network fee")).toBe("0.35")
     expect(fact("You receive")).toBe("24.65")
+    await click("Confirm and claim")
+    expect(submittedTip()).toBe(0n)
   })
 
   it("charges the tip in the fee and submits it when Faster is chosen", async () => {

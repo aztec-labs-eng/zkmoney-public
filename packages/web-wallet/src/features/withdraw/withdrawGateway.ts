@@ -240,6 +240,10 @@ async function rescanToken(
   if (rebuilt.length === 0) return rebuilt
   const tracker = await ensureWithdrawalTracker(wallet)
   for (const record of rebuilt) await tracker?.watch(record)
+  // Most rebuilt burns settled long ago; until a pass reads that, their rows show in progress.
+  tracker
+    ?.syncOnce()
+    .catch((err) => console.warn("[withdrawGateway] rebuilt withdrawals pass failed", err))
   return rebuilt
 }
 

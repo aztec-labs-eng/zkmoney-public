@@ -12,10 +12,12 @@ vi.mock("react-router-dom", async (importOriginal) => ({
 vi.mock("@obsidion/front-core", () => ({ useContactsDirectory: () => ({ contacts: [] }) }))
 vi.mock("../src/features/contacts/useContactActivity", () => ({ useContactActivity: () => ({}) }))
 vi.mock("../src/features/contacts/recentPeople", () => ({ recentPeople: () => [] }))
-vi.mock("../src/features/paylink/usePaylinkDeps", () => ({ usePaylinkDeps: () => undefined }))
+const deps = vi.hoisted(() => ({ current: undefined as object | undefined }))
+vi.mock("../src/features/paylink/usePaylinkDeps", () => ({ usePaylinkDeps: () => deps.current }))
 vi.mock("../src/features/paylink/sponsoredPaylink", () => ({ voucherAvailable: vi.fn() }))
 
 const { SendScreen } = await import("../src/features/contacts/SendScreen")
+const { voucherAvailable } = await import("../src/features/paylink/sponsoredPaylink")
 
 const TITLE = "Send funds via paylink"
 
@@ -29,9 +31,7 @@ describe("SendScreen paylink explainer", () => {
     )
   const checkbox = () => container.querySelector<HTMLInputElement>("input[type='checkbox']")
 
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    localStorage.clear()
+  const mount = async () => {
     container = document.createElement("div")
     document.body.appendChild(container)
     root = createRoot(container)
@@ -42,11 +42,47 @@ describe("SendScreen paylink explainer", () => {
         </MemoryRouter>,
       ),
     )
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    deps.current = undefined
+    await mount()
   })
 
   afterEach(async () => {
     await act(async () => root.unmount())
     container.remove()
+  })
+
+  it("never swaps the paylink copy while the allowance read is in flight", async () => {
+    await act(async () => root.unmount())
+    container.remove()
+    let settle!: (ok: boolean) => void
+    vi.mocked(voucherAvailable).mockReturnValue(new Promise((resolve) => (settle = resolve)))
+    deps.current = {}
+    await mount()
+
+    // StableCopy keeps every wording in the layout; the shown one is the only one not aria-hidden.
+    const shown = (root: Element | null) =>
+      [...(root?.querySelectorAll<HTMLElement>('span[style*="grid-area"]') ?? [])].filter(
+        (s) => !s.getAttribute("aria-hidden"),
+      )
+    const line = () => container.querySelector(".ww-send-option__text")
+    expect(shown(line())).toHaveLength(0)
+    await click("What is a paylink?")
+    const lead = () => container.querySelector(".ww-paylink-info__lead")
+    expect(shown(lead())).toHaveLength(0)
+    const leadHeightBox = lead()!.querySelector("span")!
+    expect(leadHeightBox.children).toHaveLength(2)
+
+    await act(async () => settle(true))
+    expect(shown(line()).map((s) => s.textContent)).toEqual([
+      "Pay anyone, no account needed. They claim to zk.money or any ETH address.",
+    ])
+    expect(shown(lead())[0]?.textContent).toContain("no zk.money account needed")
+    expect(lead()!.querySelector("span")).toBe(leadHeightBox)
   })
 
   it("fronts the first paylink send until Got it is pressed with the box checked", async () => {

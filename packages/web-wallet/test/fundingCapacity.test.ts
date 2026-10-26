@@ -10,12 +10,11 @@ import {
   type RequiredCredit,
 } from "@obsidion/front-core"
 import { SOURCE_OPERATION_CAP, type PortalCapacitySnapshot } from "@obsidion/sdk"
+import { CAPACITY_CHECKING, CAPACITY_UNAVAILABLE } from "../src/features/limits/limitsCopy"
 import {
-  CAPACITY_CHECKING,
   CAPACITY_FITS,
   CAPACITY_LOW,
   CAPACITY_NONE,
-  CAPACITY_UNAVAILABLE,
   capacityAllowsFunding,
   capacityAmount,
   capacityFinding,

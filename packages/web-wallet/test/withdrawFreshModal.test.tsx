@@ -101,6 +101,7 @@ const faster = vi.hoisted(() => ({
         standardEtaSeconds: number
         tippedEtaSeconds: number
         worstSpeedupSeconds: number
+        measured: boolean
       }
     | undefined,
   loading: false,
@@ -369,6 +370,7 @@ describe("WithdrawFreshModal", () => {
       standardEtaSeconds: 44 * 60,
       tippedEtaSeconds: 12 * 60,
       worstSpeedupSeconds: 30 * 60,
+      measured: true,
     }
     const speed = () => container.querySelector('[aria-haspopup="listbox"]')?.textContent
     const openSpeeds = async () => {
@@ -407,7 +409,7 @@ describe("WithdrawFreshModal", () => {
     it("prices Faster's tip into the one burn and submits it", async () => {
       faster.offer = offer
       await toReview()
-      expect(speed()).toBe("Standard")
+      expect(speed()).toBe("Faster")
       const options = await openSpeeds()
       expect(options.map((o) => o.textContent)).toEqual([
         "StandardAbout 44 min once confirmed",
@@ -651,6 +653,7 @@ describe("WithdrawFreshModal", () => {
           standardEtaSeconds: 44 * 60,
           tippedEtaSeconds: 12 * 60,
           worstSpeedupSeconds: 30 * 60,
+          measured: true,
         }
       })
       const openSpeeds = async () => {

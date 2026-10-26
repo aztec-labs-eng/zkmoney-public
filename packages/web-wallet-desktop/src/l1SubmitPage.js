@@ -215,6 +215,10 @@ button.addEventListener("click", async () => {
   try {
     const chainHex = "0x" + tx.chainId.toString(16)
     const [from] = await window.ethereum.request({ method: "eth_requestAccounts" })
+    // The funds return to the paying account, so no second address is linked.
+    if (tx.from && from.toLowerCase() !== tx.from.toLowerCase()) {
+      throw new Error("Switch your wallet to " + tx.from + ", the account that receives the funds.")
+    }
     if ((await window.ethereum.request({ method: "eth_chainId" })) !== chainHex) {
       await window.ethereum.request({
         method: "wallet_switchEthereumChain",

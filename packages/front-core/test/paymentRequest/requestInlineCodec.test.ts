@@ -5,6 +5,7 @@ import {
   decodeRequestInline,
   encodeRequestInline,
   RequestDecodeError,
+  randomCodeRequestId,
   RequestEncodeError,
   type RequestInlinePacket,
 } from "../../src/index.js"
@@ -129,6 +130,17 @@ describe("requestInlineCodec", () => {
       const format =
         decoded instanceof Map ? decoded.get(1) : (decoded as Record<string, unknown>)["1"]
       expect(format).toBe(3)
+    })
+
+    it("decodes a note without direction overrides or stacked marks", () => {
+      const note =
+        "ko " +
+        String.fromCharCode(0x202e) +
+        "olleh" +
+        "q" +
+        String.fromCharCode(0x301, 0x302, 0x303, 0x304)
+      const decoded = decodeRequestInline(encodeRequestInline({ ...fullPacket(), note }))
+      expect(decoded.note).toBe("ko olleh" + "q" + String.fromCharCode(0x301, 0x302, 0x303))
     })
 
     it("emits base64url (no +, /, =)", () => {
@@ -439,6 +451,74 @@ describe("requestInlineCodec", () => {
       } catch (err) {
         expect(err).toBeInstanceOf(RequestDecodeError)
       }
+    })
+  })
+
+  describe("compact Receive code (format 4)", () => {
+    const code = (over: Partial<RequestInlinePacket> = {}): RequestInlinePacket => ({
+      requestId: randomCodeRequestId(),
+      requesterTag: "alice",
+      amountAtomic: 0n,
+      networkId: "",
+      expiresAt: 1_750_000_000_000,
+      sipaAddress: SIPA_ADDRESS_HEX,
+      sipaDeployment: "0x0a0b0c0d",
+      compact: true,
+      ...over,
+    })
+
+    it("round-trips a blank code and a code with an amount and note", () => {
+      for (const packet of [
+        code(),
+        code({ amountAtomic: 12_500_000n, tokenDecimals: 6, note: "lunch" }),
+      ])
+        expect(decodeRequestInline(encodeRequestInline(packet))).toEqual(packet)
+    })
+
+    it("is a fraction of the full request it replaces", () => {
+      const blank = encodeRequestInline(code())
+      expect(blank.length).toBeLessThan(110)
+      expect(blank.length * 2).toBeLessThan(encodeRequestInline(fullPacket()).length)
+    })
+
+    it("carries the address only with its deployment tag", () => {
+      expect(() => encodeRequestInline(code({ sipaDeployment: undefined }))).toThrow(
+        RequestEncodeError,
+      )
+      expect(() =>
+        decodeRequestInline(
+          rawFragment([
+            [1, 4],
+            [2, Buffer.alloc(16, 1)],
+            [3, "alice"],
+            [12, Buffer.from(SIPA_ADDRESS_HEX.slice(2), "hex")],
+          ]),
+        ),
+      ).toThrow(RequestDecodeError)
+      expect(
+        decodeRequestInline(
+          encodeRequestInline(code({ sipaAddress: undefined, sipaDeployment: undefined })),
+        ).sipaAddress,
+      ).toBeUndefined()
+    })
+
+    it("refuses an id too wide for a code, and an amount without decimals", () => {
+      expect(() => encodeRequestInline(code({ requestId: REQUEST_ID_HEX }))).toThrow(
+        RequestEncodeError,
+      )
+      expect(() => encodeRequestInline(code({ amountAtomic: 1n }))).toThrow(RequestEncodeError)
+    })
+
+    it("rejects keys a code does not carry", () => {
+      const entries: [number, unknown][] = [
+        [1, 4],
+        [2, Buffer.alloc(16, 1)],
+        [3, "alice"],
+      ]
+      expect(decodeRequestInline(rawFragment(entries)).compact).toBe(true)
+      expect(() =>
+        decodeRequestInline(rawFragment([...entries, [10, fieldBytes(TOKEN_ADDRESS_HEX)]])),
+      ).toThrow(RequestDecodeError)
     })
   })
 })

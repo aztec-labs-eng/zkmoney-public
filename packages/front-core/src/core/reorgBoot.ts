@@ -1,14 +1,12 @@
 /**
  * Boot wiring for the reorg layer, shared by every client: one ReorgMonitor over the wallet's
- * node, every txHash-bearing store, and the generation-freeze stand-down. Outcomes default to
- * the in-app reorg notification producer. The caller owns the lifecycle (start/stop on
- * foreground/visibility, the boot pass).
+ * node and every txHash-bearing store. Outcomes default to the in-app reorg notification
+ * producer. The caller owns the lifecycle (start/stop on foreground/visibility, the boot pass).
  */
 
 import type { ObsidionWallet } from "@obsidion/sdk"
 import { TxHash } from "@aztec/stdlib/tx"
 import type { IStorageAdapter } from "./storages/adapter"
-import { isFrozenGenerationVersion } from "./migration"
 import {
   AppNotificationStore,
   bootPriority,
@@ -17,14 +15,13 @@ import {
   SIPADepositStore,
   WithdrawalStorage,
   WithdrawalTrackingService,
-  runFreezeSweep,
   type ConfirmationListener,
 } from "./services"
 import type { ReorgNodeLike } from "./services/chain/receiptTypes"
 import { TransactionStorage } from "./storages"
 
 export interface CreateReorgMonitorOptions {
-  wallet: Pick<ObsidionWallet, "node" | "pxe" | "getNodeIdentity">
+  wallet: Pick<ObsidionWallet, "node" | "pxe">
   storage: IStorageAdapter
   /** Defaults to the in-app reorg notification producer over `AppNotificationStore.get(storage)`. */
   onOutcome?: ConfirmationListener
@@ -56,46 +53,6 @@ export function createReorgMonitor({
         notificationStore: AppNotificationStore.get(storage),
       }).handleOutcome(outcome))
 
-  // Freeze probe: a rollupVersion the manifest lists as FROZEN means the active generation froze.
-  // The wallet answers with the identity boot pinned, else the node's. A version the manifest
-  // does not know (sandbox, staging previews, fresh deploys) is not a freeze. One hit only arms a
-  // pending signal (a lone bad read must not terminal-fail every watched payment); a second
-  // consecutive hit confirms — latched, no unfreeze — and runs the once-per-launch freeze sweep so
-  // persisted rows get terminal demotes + exit-required notices even on a cold launch into a
-  // frozen generation. A non-frozen probe disarms; a probe error keeps the latched state.
-  let frozen = false
-  let pendingFreezeSignal = false
-  let freezeSweepRan = false
-  const isFrozen = async (): Promise<boolean> => {
-    if (frozen) return true
-    try {
-      const { rollupVersion } = await wallet.getNodeIdentity()
-      if (!isFrozenGenerationVersion(Number(rollupVersion))) {
-        pendingFreezeSignal = false
-        return false
-      }
-      if (!pendingFreezeSignal) {
-        pendingFreezeSignal = true
-        return true // unconfirmed: skip the pass, don't freeze yet
-      }
-      frozen = true
-      monitor.setFrozen(true)
-      if (!freezeSweepRan) {
-        freezeSweepRan = true
-        await runFreezeSweep({
-          transactionStorage: TransactionStorage.get(storage),
-          withdrawalStorage: WithdrawalStorage.get(storage),
-          onOutcome: handleOutcome,
-        }).catch((err: unknown) => {
-          console.warn("[createReorgMonitor] freeze sweep failed:", err)
-        })
-      }
-    } catch {
-      // probe failed — keep the latched state
-    }
-    return frozen
-  }
-
   const monitor = new ReorgMonitor({
     node: receiptNode,
     transactionStorage: TransactionStorage.get(storage),
@@ -110,7 +67,6 @@ export function createReorgMonitor({
     kickPxeSync: async () => {
       if (bootPriority.isReady("reorgSync")) await wallet.pxe.sync()
     },
-    isFrozen,
     onOutcome: handleOutcome,
   })
   return monitor

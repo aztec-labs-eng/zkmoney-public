@@ -18,7 +18,7 @@ export function ChatBubble({
   /** Avatar seed for outgoing bubbles (the user). */
   rightName: string
   /** Open-request buttons, rendered left→right; the last one is the gradient primary. */
-  actions?: { label: string; onClick: () => void; disabled?: boolean }[]
+  actions?: { label: string; onClick: () => void; disabled?: boolean; loading?: boolean }[]
   onOpen: () => void
 }) {
   const view = bubbleViewOf(message.role)
@@ -80,10 +80,12 @@ export function ChatBubble({
                 type="button"
                 className="zkm-btn-reset ww-bubble__btn"
                 data-primary={i === actions.length - 1 || undefined}
-                disabled={a.disabled}
+                disabled={a.disabled || a.loading}
+                aria-busy={a.loading || undefined}
+                aria-label={a.loading ? a.label : undefined}
                 onClick={a.onClick}
               >
-                {a.label}
+                {a.loading ? <Spinner size={12} color="#fff" /> : a.label}
               </button>
             ))}
           </span>

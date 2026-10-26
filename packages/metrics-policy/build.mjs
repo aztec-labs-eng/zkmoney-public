@@ -81,7 +81,7 @@ export function metricsBuildPlugin(app) {
 }
 
 export function checkMetricsArtifact(file, slot) {
-  if (!["staging", "prod", "production", "preview", "dev"].includes(slot))
+  if (!["staging", "prod", "production", "preview", "dev", "playground"].includes(slot))
     throw new Error("Unknown deployment slot")
   const expected = ["prod", "production"].includes(slot)
     ? "production"
@@ -101,6 +101,8 @@ export function checkMetricsArtifact(file, slot) {
   ) {
     throw new Error(`Metrics artifact must target ${expected}`)
   }
+  if (slot === "playground" && target.app === "wallet" && target.analyticsUrl === "")
+    return expected
   if (typeof target.analyticsUrl !== "string" || !target.analyticsUrl) {
     throw new Error("Published builds must have an analytics endpoint")
   }

@@ -3,7 +3,7 @@ import { loadContractArtifact } from "@aztec/stdlib/abi"
 import { NoirCompiledContract } from "@aztec/stdlib/noir"
 import type { AztecAddress } from "@aztec/stdlib/aztec-address"
 import { DEFAULT_CONTRACTS } from "@obsidion/core/constants"
-import type { ContractServiceOptions, ContractName } from "@obsidion/core/types"
+import type { ContractName } from "@obsidion/core/types"
 
 // Artifacts are multi-MB JSON blobs, loaded through the wrapper modules in
 // ../artifacts/lazy/ so each becomes its own lazily-fetched chunk under Vite and only
@@ -55,6 +55,19 @@ export type CrossGenerationPXE = {
   getContractInstance?(address: unknown): Promise<unknown>
 }
 
+/** Registrations in flight per PXE: concurrent callers for one class or one address share one. */
+const inFlight = new WeakMap<object, Map<string, Promise<void>>>()
+
+function shared(pxe: object, key: string, run: () => Promise<void>): Promise<void> {
+  const byKey = inFlight.get(pxe) ?? new Map<string, Promise<void>>()
+  inFlight.set(pxe, byKey)
+  const pending = byKey.get(key)
+  if (pending) return pending
+  const started = run().finally(() => byKey.delete(key))
+  byKey.set(key, started)
+  return started
+}
+
 export const registerContractInPXE = async (
   pxe: CrossGenerationPXE,
   instance: unknown,
@@ -77,7 +90,10 @@ export const registerContractInPXE = async (
   }
 
   if (!classKnown) {
-    await pxe.registerContractClass(artifact)
+    const register = async () => {
+      await pxe.registerContractClass(artifact)
+    }
+    await (classId ? shared(pxe, `class:${String(classId)}`, register) : register())
   }
   try {
     await pxe.registerContract(instance)
@@ -95,13 +111,24 @@ export const registerContractInPXE = async (
  * has the instance and its class artifact this returns without the node
  * round-trip and without invoking `getArtifact` — so hot paths (fee rails
  * registering their FPC per transaction) pay nothing after the first call.
+ * Concurrent calls for one address share one registration.
  */
-export const ensureContractRegisteredInPXE = async (
+export const ensureContractRegisteredInPXE = (
   pxe: CrossGenerationPXE,
   node: { getContract(address: AztecAddress): Promise<unknown> },
   address: AztecAddress,
   getArtifact: () => Promise<ContractArtifact>,
-): Promise<void> => {
+): Promise<void> =>
+  shared(pxe, `contract:${address.toString().toLowerCase()}`, () =>
+    registerUnlessKnown(pxe, node, address, getArtifact),
+  )
+
+async function registerUnlessKnown(
+  pxe: CrossGenerationPXE,
+  node: { getContract(address: AztecAddress): Promise<unknown> },
+  address: AztecAddress,
+  getArtifact: () => Promise<ContractArtifact>,
+): Promise<void> {
   if (
     typeof pxe.getContractInstance === "function" &&
     typeof pxe.getContractArtifact === "function"
@@ -124,17 +151,7 @@ export const ensureContractRegisteredInPXE = async (
 /** Each bundled artifact, parsed once per page: a large one takes hundreds of ms on a phone. */
 const bundledArtifacts = new Map<ContractName, Promise<ContractArtifact>>()
 
-export const getHardcodedArtifact = async (
-  contract: ContractName,
-  options?: ContractServiceOptions,
-) => {
-  // Generation seam: the lazy table below is this branch's compilation; a
-  // dual-stack app injects the canonical generation's artifact instead.
-  const override = options?.resolveGenerationArtifact?.(contract)
-  if (override) {
-    return loadContractArtifact(override as NoirCompiledContract)
-  }
-
+export const getHardcodedArtifact = async (contract: ContractName) => {
   const loaded = bundledArtifacts.get(contract)
   if (loaded) return loaded
   const importArtifact = HARDCODED_ARTIFACT_IMPORTS[contract]

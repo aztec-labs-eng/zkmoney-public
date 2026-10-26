@@ -1,5 +1,5 @@
 /**
- * The intent implementations a portal's SIPAs clone, memoized.
+ * The intent implementations a portal's SIPAs clone, and their deposit fees, memoized.
  *
  * `SIPAFactory` keys its pointers on the portal and writes each slot once, so the answer is fixed
  * for as long as the portal lives and one read serves every caller. The portal — not the manifest's
@@ -13,7 +13,11 @@
  */
 
 import type { Address, PublicClient } from "viem"
-import { readDepositSIPAImplementation, readRegistrationSIPAImplementation } from "@obsidion/sdk"
+import {
+  readDepositFee,
+  readDepositSIPAImplementation,
+  readRegistrationSIPAImplementation,
+} from "@obsidion/sdk"
 
 type Read = (publicClient: PublicClient, sipaFactory: Address, portal: Address) => Promise<Address>
 
@@ -37,3 +41,26 @@ export const depositSipaImplementation = memoize(readDepositSIPAImplementation)
 
 /** `SIPAFactory.implementationFor(portal, Registration)`. */
 export const registrationSipaImplementation = memoize(readRegistrationSIPAImplementation)
+
+const fees = new Map<string, Promise<bigint>>()
+
+/** Clears the fee cache - for testing only. */
+export function resetDepositFeesForTests(): void {
+  fees.clear()
+}
+
+/** An implementation's `depositFee()`: a constant of its bytecode, so one read serves every caller. */
+export function implementationDepositFee(
+  publicClient: PublicClient,
+  implementation: Address,
+): Promise<bigint> {
+  const key = implementation.toLowerCase()
+  const cached = fees.get(key)
+  if (cached) return cached
+  const pending = readDepositFee(publicClient, implementation)
+  pending.catch(() => {
+    if (fees.get(key) === pending) fees.delete(key)
+  })
+  fees.set(key, pending)
+  return pending
+}

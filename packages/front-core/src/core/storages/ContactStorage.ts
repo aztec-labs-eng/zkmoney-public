@@ -72,8 +72,8 @@ export interface Contact {
   provenance?: ContactProvenance
   /**
    * Added by the wallet, not the user: from an incoming transfer, or while a send that pays this
-   * person's request is in flight. Its requests count as from a non-contact until the user adds it,
-   * or it pays one of the user's own requests.
+   * person's request is in flight. Its requests count as from a non-contact until the user adds or
+   * pays it, or it pays one of the user's own requests.
    */
   autoAdded?: boolean
   // L1-only (present iff addressKind === "ethereum-l1")

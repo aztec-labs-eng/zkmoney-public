@@ -58,6 +58,26 @@ describe("upgrade activity", () => {
     ])
   })
 
+  it("marks the first batch approved with its plan, and each later one by its own approval", async () => {
+    const s = storage()
+    s.items.set(
+      RUN,
+      JSON.stringify({ phase: "needsApproval", plan: JSON.stringify({ sourceBatch: "p" }) }),
+    )
+    s.items.set(`${RUN}/source/p`, JSON.stringify(batch()))
+    s.items.set(`${RUN}/source/remaining-0`, JSON.stringify(batch({ approved: true })))
+    s.items.set(`${RUN}/source/remaining-1`, JSON.stringify(batch()))
+    const activity = UpgradeActivity.get(s)
+
+    await activity.addRun(RUN)
+
+    expect(activity.items().map((i) => [i.id, i.approved])).toEqual([
+      ["p", true],
+      ["remaining-0", true],
+      ["remaining-1", false],
+    ])
+  })
+
   it("registers a run once and tells listeners of every change", async () => {
     const s = storage()
     const activity = UpgradeActivity.get(s)
@@ -106,6 +126,42 @@ describe("upgrade activity", () => {
     await activity.addRun(RUN)
 
     expect(activity.items()).toEqual([])
+  })
+
+  it("names every batch's deposit address, a live source's included", async () => {
+    const s = storage()
+    s.items.set(
+      RUN,
+      JSON.stringify({ phase: "arriving", plan: JSON.stringify({ sourceBatch: "0xhash" }) }),
+    )
+    const live = { binding: "b", amount: "100", exitFee: "1", fromBlock: "1" }
+    s.items.set(`${RUN}/source/0xhash`, JSON.stringify({ ...live, recipient: "0xMeta" }))
+    s.items.set(`${RUN}/source/remaining`, JSON.stringify({ ...live, recipient: "0xLater" }))
+    s.items.set(`${RUN}/source/remaining-1`, JSON.stringify({ ...live, recipient: "0xLast" }))
+    const activity = UpgradeActivity.get(s)
+
+    await activity.addRun(RUN)
+
+    expect([...activity.recipients()].sort()).toEqual(["0xlast", "0xlater", "0xmeta"])
+    expect(activity.items()).toEqual([])
+  })
+
+  it("lists a run before its record is written, and refuses the write when it cannot", async () => {
+    const s = storage()
+    const writes = UpgradeActivity.get(s).reporting(RUN, s)
+
+    await writes.setItem(RUN, JSON.stringify({ phase: "preparing" }))
+    expect(s.items.get("metadata-migration/runs")).toBe(JSON.stringify([RUN]))
+
+    const failing = storage()
+    const setItem = failing.setItem
+    failing.setItem = async (key, value) => {
+      if (key === "metadata-migration/runs") throw new Error("storage full")
+      return setItem(key, value)
+    }
+    const refused = UpgradeActivity.get(failing).reporting(RUN, failing)
+    await expect(refused.setItem(RUN, JSON.stringify({ phase: "preparing" }))).rejects.toThrow()
+    expect(failing.items.has(RUN)).toBe(false)
   })
 
   // A session's storage refuses another account's namespace, so a run never lands in its index.

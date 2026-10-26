@@ -314,7 +314,7 @@ export function NewLinkScreen() {
                 {handle && (
                   <div className="ww-pay__summary">
                     <div className="ww-pay__protect">
-                      <span>Show my @{handle}</span>
+                      <span>Show my tag</span>
                       <GradientToggle isOn={showTag} onChange={setShowTag} />
                     </div>
                   </div>

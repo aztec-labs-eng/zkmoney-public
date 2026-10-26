@@ -120,12 +120,14 @@ export class BalanceStorage {
     }
   }
 
+  /** False when a newer read is already stored. `strict` rejects when storage refuses the write. */
   public async updateBalance(
     scope: string,
     token: string,
     balance: bigint,
     anchorBlock?: number,
-  ): Promise<void> {
+    opts?: { strict?: boolean },
+  ): Promise<boolean> {
     await this.load()
     const key = recordKey(scope, token)
     const current = this.store.getByKey(key)
@@ -135,15 +137,20 @@ export class BalanceStorage {
       current?.anchorBlock !== undefined &&
       anchorBlock < current.anchorBlock
     ) {
-      return
+      return false
     }
-    await this.store.setRecord(key, {
-      scope,
-      tokenAddress: token,
-      balance: balance.toString(),
-      anchorBlock,
-      updatedAt: Date.now(),
-    })
+    await this.store.setRecord(
+      key,
+      {
+        scope,
+        tokenAddress: token,
+        balance: balance.toString(),
+        anchorBlock,
+        updatedAt: Date.now(),
+      },
+      opts,
+    )
+    return true
   }
 
   public async clear(): Promise<void> {

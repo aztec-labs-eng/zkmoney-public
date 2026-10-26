@@ -29,11 +29,11 @@ import {
   BroadcasterContract,
   OxideSipaIntent,
   ContractService,
+  ensureContractRegisteredInPXE,
   type ObsidionAccount,
   type ObsidionWallet,
 } from "@obsidion/sdk"
 import {
-  canonicalGenerationStack,
   composeWireNameHash,
   NameClaimStore,
   type RegistrationBroadcaster,
@@ -91,7 +91,7 @@ export async function cacheFreshClaim(
 /**
  * The PXE only simulates calls into contracts it holds an instance + artifact for, and at
  * onboarding nothing else has registered the broadcaster yet (the deposit-discovery mount does,
- * but only once the wallet is open). Upserts, so a repeat is free.
+ * but only once the wallet is open). A PXE that already holds it is not asked again.
  */
 async function registeredBroadcaster(
   wallet: ObsidionWallet,
@@ -101,16 +101,13 @@ async function registeredBroadcaster(
   const instance = await wallet.node.getContract(address)
   if (!instance) throw new Error(`Broadcaster instance not found at ${address}`)
   const artifact = await getWebBroadcasterArtifact(wallet, address, instance)
-  const pxe = wallet.pxe as never as {
-    registerContractClass: (a: unknown) => Promise<unknown>
-    registerContract: (c: unknown) => Promise<unknown>
-  }
-  if (canonicalGenerationStack() === "v4") {
-    await pxe.registerContract({ instance, artifact })
-  } else {
-    await pxe.registerContractClass(artifact)
-    await pxe.registerContract(instance)
-  }
+  // The instance is read once: the registration takes the one the artifact lookup used.
+  await ensureContractRegisteredInPXE(
+    wallet.pxe,
+    { getContract: async () => instance },
+    address,
+    async () => artifact,
+  )
   return BroadcasterContract.at(address, artifact, wallet as never)
 }
 

@@ -130,7 +130,11 @@ export function WithdrawToWalletModal({
   const [floor, setFloor] = useState(0n)
   const burnAtomic = sendAtomic !== undefined ? sendAtomic + floor : undefined
   // Kept through the working phase, so a failed or cancelled burn comes back to the same choice.
-  const speed = useSpeedChoice({ active: phase !== "amount", node: obsidionWallet?.node })
+  const speed = useSpeedChoice({
+    active: phase !== "amount",
+    node: obsidionWallet?.node,
+    amount: sendAtomic,
+  })
   // A swap simulation nets its own fees off its input, so it is priced on the burn.
   const quote = useSwapSimulation({
     receiveAsset,

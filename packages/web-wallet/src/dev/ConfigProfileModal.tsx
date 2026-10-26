@@ -254,7 +254,7 @@ export function ConfigProfileModal({ onClose }: { onClose: () => void }) {
                 <SummaryRow label="L2 RPC" value={version.nodeUrl} />
                 <SummaryRow label="Bundler RPC" value="Not in profile" />
                 <SummaryRow label="Account service" value={version.accountServiceUrl} />
-                <SummaryRow label="zk.money API" value={version.zkmoneyApiUrl} />
+                <SummaryRow label="zk.money API" value={version.zkmoneyApiUrl ?? "Disabled"} />
                 <SummaryRow label="Paylink domain" value={version.paylinkDomain} />
                 <SummaryRow label="Tokens" value={assets} />
                 <SummaryRow label="Oxide portal" value={version.oxide.portal} />

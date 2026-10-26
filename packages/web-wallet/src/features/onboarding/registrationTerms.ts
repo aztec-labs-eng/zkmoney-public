@@ -3,8 +3,7 @@ import { parseAbi, zeroAddress, type Address, type PublicClient } from "viem"
 import { Network } from "@obsidion/core/constants"
 import { walletStorage } from "../../platform/storage/walletStorage"
 import type { WebWalletConfig } from "../../config/env"
-import { readDepositFee } from "@obsidion/sdk"
-import { registrationSipaImplementation } from "@obsidion/front-core"
+import { implementationDepositFee, registrationSipaImplementation } from "@obsidion/front-core"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { fpcFundingCut } from "../fees/fpcFundingCut"
 import type { NameClaimResponse, RegistrationSchedule } from "@obsidion/core/types"
@@ -21,11 +20,12 @@ export {
   signedWithoutSchedule,
   termsUnpriced,
   ticketTagCharge,
+  wireTermsFundLink,
   wireTermsFundTicket,
   type RegistrationOffer,
   type RegistrationQuote,
 } from "./registrationAsk"
-import { registrationOffer, wireTermsFundTicket } from "./registrationAsk"
+import { registrationOffer, wireTermsFundLink, wireTermsFundTicket } from "./registrationAsk"
 
 /** Why a ticket signup cannot go on: its renewed quote is not one the link can pay. */
 export const PAYLINK_TICKET_REFUSED_MESSAGE =
@@ -58,6 +58,13 @@ export interface RegistrationTerms {
   feeWaived?: boolean
   /** A paylink's golden ticket bought this schedule; the link's claim funds the SIPA. */
   paylinkFunded?: boolean
+  /** The link pays the signed deposit as quoted: no ticket priced it, so a renewal it covers keeps
+   *  it bound. */
+  paylinkDeposit?: boolean
+  /** The link's note, base units, and its creator's tag: a review names them once the link reads
+   *  as claimed and its note no longer can. */
+  paylinkAmount?: string
+  paylinkSender?: string
   /** That link, as `linkIdentity` names it: never the fragment, whose secret spends the link. Only
    *  a stashed marker for this link continues the signup, on Home or on the pending step. */
   paylinkId?: string
@@ -148,7 +155,14 @@ function ticketBinding(
   terms: RegistrationTerms,
 ): Pick<
   RegistrationTerms,
-  "paylinkFunded" | "paylinkId" | "paylinkBlocked" | "proverTip" | "speed"
+  | "paylinkFunded"
+  | "paylinkId"
+  | "paylinkDeposit"
+  | "paylinkAmount"
+  | "paylinkSender"
+  | "paylinkBlocked"
+  | "proverTip"
+  | "speed"
 > {
   if (terms.paylinkFunded === false) return {}
   const funded = terms.paylinkFunded === true || previous?.paylinkFunded === true
@@ -156,21 +170,39 @@ function ticketBinding(
   const blocked = terms.paylinkBlocked ?? previous?.paylinkBlocked
   const proverTip = terms.proverTip ?? previous?.proverTip
   const speed = terms.speed ?? previous?.speed
+  const amount = terms.paylinkAmount ?? previous?.paylinkAmount
+  const sender = terms.paylinkSender ?? previous?.paylinkSender
   return {
     paylinkFunded: true,
     paylinkId: terms.paylinkId ?? previous?.paylinkId,
+    ...(terms.paylinkDeposit || previous?.paylinkDeposit ? { paylinkDeposit: true } : {}),
     ...(blocked === true ? { paylinkBlocked: true } : {}),
     ...(proverTip !== undefined ? { proverTip } : {}),
     ...(speed !== undefined ? { speed } : {}),
+    ...(amount !== undefined ? { paylinkAmount: amount } : {}),
+    ...(sender !== undefined ? { paylinkSender: sender } : {}),
   }
 }
 
 /** Readable at once; resolves once saved, for a caller that must not move on before then. */
 export function saveRegistrationTerms(terms: RegistrationTerms): Promise<void> {
   const previous = loadRegistrationTerms(terms.account, terms.tag)
-  const { paylinkFunded, paylinkId, paylinkBlocked, proverTip, speed, ...rest } = terms
+  const {
+    paylinkFunded,
+    paylinkId,
+    paylinkDeposit,
+    paylinkAmount,
+    paylinkSender,
+    paylinkBlocked,
+    proverTip,
+    speed,
+    ...rest
+  } = terms
+  void paylinkAmount
+  void paylinkSender
   void paylinkFunded
   void paylinkId
+  void paylinkDeposit
   void paylinkBlocked
   void proverTip
   void speed
@@ -230,7 +262,9 @@ export function rememberReissuedClaim(
 ): { ticketRefused: boolean } {
   const stored = loadRegistrationTerms(record.account, record.tag)
   const funded = registrationOffer(stored).funding === "paylink"
-  const fundable = wireTermsFundTicket(claim.terms)
+  const fundable = stored?.paylinkDeposit
+    ? wireTermsFundLink(claim.terms)
+    : wireTermsFundTicket(claim.terms)
   if (record.fee !== undefined && claim.terms && BigInt(claim.terms.fee) !== BigInt(record.fee)) {
     // Terms priced for another fee cannot register this address, so the stored quote stands; a
     // link-funded registration is blocked on them all the same, since its link cannot pay them.
@@ -564,7 +598,7 @@ export function useDepositSkim(
         requireTupleField(tuple, "sipaFactory") as Address,
         requireTupleField(tuple, "portal") as Address,
       )
-      return readDepositFee(publicClient, implementation)
+      return implementationDepositFee(publicClient, implementation)
     })
       .then((fee) => {
         if (live) setSkim(fee)

@@ -13,6 +13,7 @@ import {
   getOperationStore,
   getOperationsInProgress,
   leavingLosesTransaction,
+  runBackgroundOperation,
   runOperation,
   tabBoundOperation,
 } from "../src/features/operations/operations"
@@ -248,6 +249,45 @@ describe("a background operation", () => {
     } finally {
       await store.remove("op-bg")
     }
+  })
+})
+
+describe("runBackgroundOperation", () => {
+  const step = { operationId: "op-step", flow: "migration" as const, summary: "Upgrade" }
+
+  it("runs a background record outside the user's gate, and a user flow raised meanwhile waits it out", async () => {
+    const store = getOperationStore()
+    let release!: () => void
+    const running = runBackgroundOperation(step, () => new Promise<void>((r) => (release = r)))
+    await flush()
+    expect(store.get("op-step")).toMatchObject({ state: "local", background: true })
+    expect(userFlowActive()).toBe(false)
+    expect(leavingLosesTransaction()).toBe(false)
+    let sent = false
+    const user = runOperation({ operationId: "op-user", flow: "send", summary: "$1" }, async () => {
+      sent = true
+    })
+    await flush()
+    expect(sent).toBe(false)
+    release()
+    await Promise.all([running, user])
+    expect(sent).toBe(true)
+    expect(store.get("op-step")?.state).toBe("settled")
+  })
+
+  it("drops a step that failed before proving, and fails one a reload cut off while proving", async () => {
+    const store = getOperationStore()
+    await expect(
+      runBackgroundOperation(step, async () => {
+        throw new Error("relayer unavailable")
+      }),
+    ).rejects.toThrow("relayer unavailable")
+    expect(store.get("op-step")).toBeNull()
+    await store.begin({ ...step, scope: null, background: true }, 9_000)
+    await store.markProving("op-step")
+    store.release("op-step")
+    await recoverInterrupted(10_000, 20_000)
+    expect(store.get("op-step")).toMatchObject({ state: "failed", cause: "interrupted" })
   })
 })
 

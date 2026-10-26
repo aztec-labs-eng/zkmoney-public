@@ -58,11 +58,11 @@ import {
   getSponsoredFPCInstance,
   getSponsoredFeePaymentMethod,
   readDepositFee,
-  readSweepEvents,
   sendEmptyTxs,
   BroadcasterContract,
 } from "../../src/index.js"
 import { ObsidionWalletTest } from "../../src/obsidion/ObsidionWalletTest.js"
+import { readSweepEvents } from "../utils/sipaSweeps.js"
 
 const LIVE = process.env.OXIDE_LIVE_RELAYER_E2E === "1"
 

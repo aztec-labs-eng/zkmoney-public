@@ -8,9 +8,16 @@ import {
   useAztecContext,
   useCachedRecords,
 } from "@obsidion/front-core"
-import type { SIPADepositRecord, SipaDepositSyncResult } from "@obsidion/front-core"
+import type {
+  ResolverPaymentWatcher,
+  SIPADepositRecord,
+  SipaDepositSyncResult,
+} from "@obsidion/front-core"
+import { loadWalletIdentity } from "../identity/walletIdentity"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
+import { whenVisibilityChanges } from "../../platform/visibilityScheduler"
 import { fireEvent } from "../../lib/analytics"
+import { notePassLanded, observeDeposits } from "./depositPasses"
 import { getSipaDepositGateway } from "./sipaGateway"
 
 /** Poll cadence while a deposit is in flight. */
@@ -77,6 +84,44 @@ export function settlesBootBalance(result: SipaDepositSyncResult | null): boolea
 }
 
 /**
+ * Runs `watcher` on the delays its ticks return while the page is shown, and stops while it is
+ * hidden: what it finds is read on screen, and the sync pass keeps any recorded deposit moving.
+ * Showing the page ticks at once. Returns the stop.
+ */
+export function startResolverPaymentLoop(
+  watcher: Pick<ResolverPaymentWatcher, "tick">,
+  visibility: typeof whenVisibilityChanges = whenVisibilityChanges,
+): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let shown = false
+  let running = false
+  let stopped = false
+  const run = async () => {
+    if (running || stopped || !shown) return
+    running = true
+    clearTimeout(timer)
+    const delay = await watcher.tick()
+    running = false
+    if (!stopped && shown) timer = setTimeout(run, delay)
+  }
+  const unlisten = visibility({
+    onShow: () => {
+      shown = true
+      void run()
+    },
+    onHide: () => {
+      shown = false
+      clearTimeout(timer)
+    },
+  })
+  return () => {
+    stopped = true
+    clearTimeout(timer)
+    unlisten()
+  }
+}
+
+/**
  * Drives the browser SIPA deposit loop: discovery (once) + a claim sync pass
  * on an interval. Records render cache-first — the persisted store hydrates
  * immediately and the sync pass overwrites it as fresh chain state lands.
@@ -86,7 +131,8 @@ export function settlesBootBalance(result: SipaDepositSyncResult | null): boolea
  * Sync is a no-op while the wallet is locked (the claim path needs the
  * unlocked key), so a refreshed session starts crediting deposits as soon as
  * it unlocks. The first pass runs right after the boot balance's note sync, and
- * the first pass that runs clean settles the boot balance.
+ * the first pass that runs clean settles the boot balance. Resolver payments are polled beside it,
+ * and one that lands runs a pass at once.
  */
 export function useSipaDeposits(): void {
   const { obsidionWallet } = useAztecContext()
@@ -120,13 +166,22 @@ export function useSipaDeposits(): void {
   const reportFailures = useRef<ReturnType<typeof createSyncFailureReporter> | null>(null)
   reportFailures.current ??= createSyncFailureReporter()
 
+  // Runs a pass now unless one is running; a no-op until the loop below is up.
+  const wakeSync = useRef<() => void>(() => {})
+
   useEffect(() => {
     if (!obsidionWallet || !tokenService) return
     let cancelled = false
+    let running = false
+    // Past the boot wait: a pass waiting there has not listed its records yet.
+    let syncing = false
+    // A wake that arrived mid-pass: the pass may have listed its records before the new one.
+    let wokenMidPass = false
     let timer: ReturnType<typeof setTimeout>
     gateway.warm().catch((err) => console.warn("[sipa] warming the deposit sync failed:", err))
 
     const runOnce = async () => {
+      running = true
       // Fast unless a pass reports nothing in flight. A locked or failed pass reports
       // nothing at all, so it stays fast.
       let nextDelay = SYNC_INTERVAL_MS
@@ -134,12 +189,14 @@ export function useSipaDeposits(): void {
       try {
         await bootPriority.whenReady("deposits")
         if (cancelled) return
+        syncing = true
         const result = await gateway.sync(obsidionWallet, tokenService, {
           onProgress: (done, total) => bootPriority.depositProgress(done, total),
         })
         // Locked sessions return null; a healthy tick logs its counts so
         // silence always means "not running", never "ran and found nothing".
         if (result) console.debug("[sipaDeposits] sync:", result)
+        if (result) notePassLanded()
         // Per-note failures are swallowed by the pass so one bad note can't stop the others, which
         // leaves a deposit stuck with nothing said. Report the run, not each note.
         if (result) {
@@ -154,17 +211,75 @@ export function useSipaDeposits(): void {
         console.warn("[sipaDeposits] sync failed (will retry):", e)
         nextDelay = SYNC_INTERVAL_MS
       } finally {
+        running = false
+        syncing = false
         if (!cancelled) {
           if (clean) bootPriority.depositsReplayed()
+          if (wokenMidPass) nextDelay = 0
+          wokenMidPass = false
           timer = setTimeout(runOnce, nextDelay)
         }
       }
     }
     runOnce()
+    wakeSync.current = () => {
+      if (cancelled) return
+      if (running) {
+        if (syncing) wokenMidPass = true
+        return
+      }
+      clearTimeout(timer)
+      void runOnce()
+    }
 
     return () => {
       cancelled = true
       clearTimeout(timer)
+      wakeSync.current = () => {}
     }
   }, [gateway, obsidionWallet, tokenService])
+
+  // Watching screens observe the wallet's own account; L1 reads alone, so never behind the PXE.
+  const account = loadWalletIdentity()?.address
+  useEffect(
+    () => (obsidionWallet && account ? observeDeposits(obsidionWallet, account) : undefined),
+    [obsidionWallet, account],
+  )
+
+  useEffect(() => {
+    if (!obsidionWallet) return
+    let cancelled = false
+    let stop: (() => void) | undefined
+    void bootPriority.whenReady("resolverPayments").then(() => {
+      if (!cancelled)
+        stop = startResolverPaymentLoop(gateway.resolverPayments(() => wakeSync.current()))
+    })
+    return () => {
+      cancelled = true
+      stop?.()
+    }
+  }, [gateway, obsidionWallet])
+}
+
+/** The deposit sync loop as a component. */
+export function SipaDepositsMount() {
+  useSipaDeposits()
+  return null
+}
+
+/**
+ * Signup's deposit loop while `recipient`'s registration holds custody: observe-only passes that
+ * keep the registration address's record current with L1 reads alone. No PXE work, so the sponsored
+ * account setup it runs beside is never starved; the full loop claims once the wallet routes mount.
+ * Outside the asset layer, which signup stays out of for the same reason.
+ */
+export function useSignupDeposits(recipient: string | null): void {
+  const { obsidionWallet } = useAztecContext()
+  useEffect(
+    () =>
+      obsidionWallet && recipient
+        ? observeDeposits(obsidionWallet, recipient, SYNC_INTERVAL_MS)
+        : undefined,
+    [obsidionWallet, recipient],
+  )
 }

@@ -1,5 +1,12 @@
-import { PaylinkService, type PaylinkParams, type PaylinkWindow } from "@obsidion/sdk"
+import { Fr } from "@aztec/aztec.js/fields"
+import {
+  PaylinkService,
+  type CreatedPaylinkParams,
+  type PaylinkParams,
+  type PaylinkWindow,
+} from "@obsidion/sdk"
 import type { PaylinkTransaction, Transaction } from "src/types"
+import { isPaylinkTransaction } from "../notifications/PaylinkClaimedNotificationProducer"
 import { isRefundInFlight } from "./refundInFlight"
 
 /**
@@ -18,6 +25,27 @@ export async function refundParamsFromRow(row: PaylinkTransaction): Promise<Payl
   } catch {
     return null
   }
+}
+
+/**
+ * The links the creator's `rows` record, with the fallback secret each escrow's refund signs with. A
+ * row without that material or with a malformed link is skipped.
+ */
+export async function creatorLinksFromRows(
+  rows: readonly Transaction[],
+): Promise<CreatedPaylinkParams[]> {
+  const links: CreatedPaylinkParams[] = []
+  for (const row of rows) {
+    if (!isPaylinkTransaction(row)) continue
+    const params = await refundParamsFromRow(row)
+    if (!params) continue
+    try {
+      links.push({ ...params, fallbackSecret: Fr.fromString(row.fallbackSecret!) })
+    } catch {
+      // A malformed fallback secret recovers nothing.
+    }
+  }
+  return links
 }
 
 /**

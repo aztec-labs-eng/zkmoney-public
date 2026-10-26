@@ -86,7 +86,12 @@ export function registrationExecutor(
     landed: async (job) => {
       const record = recordOf(job)
       if (!record) return false
-      return registrationBroadcastSeen({ ...record, sipaAddress: job.address }, config, wallet)
+      return registrationBroadcastSeen(
+        { ...record, sipaAddress: job.address },
+        config,
+        wallet,
+        job.republishSince,
+      )
     },
     send: async (job, attempt) => {
       const record = recordOf(job)

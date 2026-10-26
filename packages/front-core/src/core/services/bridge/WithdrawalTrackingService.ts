@@ -60,6 +60,7 @@ import { swapEscrowTarget } from "./swapEscrowArgs"
 import { withdrawalRecipients } from "./withdrawalRecipients"
 import type { WithdrawalDeployment, WithdrawalPhase, WithdrawalRecord } from "./types"
 import { logger } from "src/utils/logger"
+import { makeLimiter } from "src/utils/makeLimiter"
 import { isFailedSubmission, trackSubmission } from "../transactions/trackSubmission"
 
 /** Records a live in-process submission owns, so this tracker stands off until it releases. */
@@ -131,6 +132,9 @@ export async function revivePendingWithdrawal(
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 20_000
+
+/** Records stepped at once. A restored device settles its whole history, each with several L1 reads. */
+const STEP_CONCURRENCY = 4
 
 /**
  * When a post-mine record has sat in its current phase longer than this, the UI
@@ -298,8 +302,10 @@ export class WithdrawalTrackingService {
   private now: () => number
 
   private intervalHandle: unknown = null
-  /** Non-overlap guard so a slow tick can't stack against the next interval. */
-  private syncing = false
+  /** The pass in flight, so a slow one can't stack against the next interval. */
+  private pass: Promise<void> | null = null
+  /** Asked for during the pass in flight, which may have listed the records too early. */
+  private rerun = false
 
   private constructor(options: WithdrawalTrackingServiceOptions) {
     this.store = options.store
@@ -395,8 +401,9 @@ export class WithdrawalTrackingService {
   /**
    * Resume watching after app launch. Backfills `phaseEnteredAt` on post-mine
    * records that lack it (so a resumed record's delayed timer starts fresh
-   * rather than firing off `startTime`), then arms the poll loop. Terminal and
-   * pre-mine records are left alone.
+   * rather than firing off `startTime`), then arms the poll loop and starts a
+   * pass without waiting for its first interval. Terminal and pre-mine records
+   * are left alone.
    */
   async resumeAll(): Promise<void> {
     await this.store.load()
@@ -404,6 +411,7 @@ export class WithdrawalTrackingService {
       await this.backfillPhaseEnteredAt(record)
     }
     this.ensureLoop()
+    this.kick()
   }
 
   /**
@@ -434,10 +442,13 @@ export class WithdrawalTrackingService {
 
   private ensureLoop(): void {
     if (this.intervalHandle !== null) return
-    this.intervalHandle = this.scheduler.setInterval(
-      () => void this.syncOnce(),
-      this.pollIntervalMs,
-    )
+    this.intervalHandle = this.scheduler.setInterval(() => {
+      if (!this.pass) this.kick()
+    }, this.pollIntervalMs)
+  }
+
+  private kick(): void {
+    this.syncOnce().catch((err) => logger.warn("[WithdrawalTracking] pass failed:", err))
   }
 
   private async backfillPhaseEnteredAt(record: WithdrawalRecord): Promise<void> {
@@ -454,35 +465,46 @@ export class WithdrawalTrackingService {
   /**
    * One pass over every armed record. Each step is isolated so one record's RPC
    * error (logged loud) doesn't abort the others; the failing record stays
-   * non-terminal and retries next pass.
+   * non-terminal and retries next pass. A call during a pass resolves after a
+   * pass that started after it.
    */
-  async syncOnce(): Promise<void> {
-    if (this.syncing) return
-    this.syncing = true
-    try {
-      await this.store.load()
-      for (const record of this.store.list()) {
-        if (isTerminalPhase(record.phase)) continue
-        if (!record.l2TxHash) continue // pre-mine — the hook owns it
-        try {
-          await this.step(record)
-        } catch (err) {
-          // Fail loud, stay non-terminal, retry next pass. A mined burn is
-          // never failed by a transient read error.
-          logger.warn(`[WithdrawalTracking] tick failed for ${record.l2TxHash}:`, err)
-        }
-      }
-    } finally {
-      this.syncing = false
+  syncOnce(): Promise<void> {
+    if (this.pass) {
+      this.rerun = true
+      return this.pass
     }
+    const pass = (async () => {
+      try {
+        do {
+          this.rerun = false
+          await this.stepAll()
+        } while (this.rerun)
+      } finally {
+        this.pass = null
+      }
+    })()
+    this.pass = pass
+    return pass
   }
 
-  /**
-   * Advance one record one step. Deriving `withdrawalId` gates the rest of the
-   * tick: until the burn's tx effect is indexed we cannot bind the finalization
-   * poll, and the tx is far too fresh to be proven anyway, so deferring the
-   * whole tick is harmless and keeps the record cleanly parked at its phase.
-   */
+  private async stepAll(): Promise<void> {
+    await this.store.load()
+    const limit = makeLimiter(STEP_CONCURRENCY)
+    await Promise.all(
+      this.store
+        .list()
+        // Pre-mine records without a hash are the hook's.
+        .filter((record) => !isTerminalPhase(record.phase) && record.l2TxHash)
+        .map((record) =>
+          limit(() => this.step(record)).catch((err) => {
+            // Fail loud, stay non-terminal, retry next pass. A mined burn is
+            // never failed by a transient read error.
+            logger.warn(`[WithdrawalTracking] tick failed for ${record.l2TxHash}:`, err)
+          }),
+        ),
+    )
+  }
+
   /** Reader + portal context for the deployment `record` burned on; boot-time pair when unstamped. */
   private bindingsFor(record: WithdrawalRecord): {
     reader: WithdrawalFinalizationReader
@@ -512,6 +534,13 @@ export class WithdrawalTrackingService {
     }
   }
 
+  /**
+   * Advance one record as far as chain allows. Deriving `withdrawalId` gates the
+   * rest of the tick: until the burn's tx effect is indexed we cannot bind the
+   * finalization poll, and the tx is far too fresh to be proven anyway, so
+   * deferring the whole tick is harmless and keeps the record cleanly parked at
+   * its phase.
+   */
   private async step(mutableRecord: WithdrawalRecord): Promise<void> {
     let record = mutableRecord
     const l2TxHash = record.l2TxHash!
@@ -570,12 +599,12 @@ export class WithdrawalTrackingService {
 
     if (record.phase === "l2_mined" || record.phase === "awaiting_proven") {
       const receipt = await this.node.getTxReceipt(txHash)
-      if (isAtLeastProven(receipt.status)) {
-        await this.advancePhase(record, "finalizing_l1")
-      } else if (record.phase === "l2_mined") {
-        await this.advancePhase(record, "awaiting_proven")
+      if (!isAtLeastProven(receipt.status)) {
+        if (record.phase === "l2_mined") await this.advancePhase(record, "awaiting_proven")
+        return
       }
-      return
+      // A burn proven long ago is likely released too, so read L1 in this tick.
+      record = await this.advancePhase(record, "finalizing_l1")
     }
 
     if (record.phase === "finalizing_l1") {
@@ -672,8 +701,11 @@ export class WithdrawalTrackingService {
     }
   }
 
-  private async advancePhase(record: WithdrawalRecord, phase: WithdrawalPhase): Promise<void> {
-    await this.store.patch(record.l2TxHash!, {
+  private async advancePhase(
+    record: WithdrawalRecord,
+    phase: WithdrawalPhase,
+  ): Promise<WithdrawalRecord> {
+    return this.store.patch(record.l2TxHash!, {
       phase,
       phaseEnteredAt: this.now(),
       reorgEpoch: record.reorgEpoch,

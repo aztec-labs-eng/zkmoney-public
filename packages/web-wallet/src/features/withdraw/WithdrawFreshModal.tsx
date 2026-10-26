@@ -149,7 +149,11 @@ export function WithdrawFreshModal({
   const direct = withdrawalReceiveAsset(fundsAsset).direct && daiForGas === 0n
 
   // Kept through the working phase, so a failed or cancelled flow comes back to the same choice.
-  const speed = useSpeedChoice({ active: phase !== "amount", node: obsidionWallet?.node })
+  const speed = useSpeedChoice({
+    active: phase !== "amount",
+    node: obsidionWallet?.node,
+    amount: fundsAtomic,
+  })
   const quote = useSwapSimulation({
     receiveAsset: fundsAsset,
     amountAtomic: charged !== undefined ? freshBurnAmount(charged, String(gas), floor) : undefined,

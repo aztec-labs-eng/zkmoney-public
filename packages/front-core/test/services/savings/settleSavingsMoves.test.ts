@@ -127,31 +127,66 @@ describe("settleSavingsMoves", () => {
     })
   })
 
+  it("stamps a claim stored now, then reads the balances once per claim", async () => {
+    const { store, deps } = harness()
+    await store.load()
+    await store.put(move())
+    await store.put(move({ withdrawalLocalId: "w2", direction: "out" }))
+    const storedAtRefresh: (number | undefined)[][] = []
+    const refreshBalance = vi.fn(async () => {
+      storedAtRefresh.push(store.list().map((m) => m.deposit?.storedAt))
+    })
+    await settleSavingsMoves(
+      store,
+      { ...deps, refreshBalance },
+      [],
+      () => {},
+      () => 7_000,
+    )
+    // Each claim is on record, stamped, before the read that should show it.
+    expect(storedAtRefresh).toEqual([
+      [7_000, undefined],
+      [7_000, 7_000],
+    ])
+  })
+
+  it("claims a deposit the token already holds without a stamp or a read", async () => {
+    const { store, deps } = harness()
+    await store.load()
+    await store.put(move())
+    const refreshBalance = vi.fn(async () => {})
+    const held = {
+      ...deps,
+      refreshBalance,
+      savings: {
+        ...deps.savings,
+        claimer: async () => ({
+          claimSweptDeposit: async () => {
+            throw new Error("Assertion failed: deposit already spent")
+          },
+        }),
+      },
+    }
+    await settleSavingsMoves(store, held, [])
+    expect(store.get("w1")?.deposit).toMatchObject({ claimed: true })
+    expect(store.get("w1")?.deposit?.storedAt).toBeUndefined()
+    expect(refreshBalance).not.toHaveBeenCalled()
+  })
+
+  it("re-reads no balance when the pass claimed nothing", async () => {
+    const { store, deps } = harness(false)
+    await store.load()
+    await store.put(move())
+    const refreshBalance = vi.fn(async () => {})
+    await settleSavingsMoves(store, { ...deps, refreshBalance }, [])
+    expect(refreshBalance).not.toHaveBeenCalled()
+  })
+
   it("adopts a burn the store does not know, from its Sky meta", async () => {
     const { store, deps, claims } = harness()
     await settleSavingsMoves(store, deps, [burn()])
     expect(store.get("w1")).toMatchObject({ direction: "out", escrow: ESCROW, startTime: 2_000 })
     expect(claims.main).toHaveBeenCalledTimes(1)
-  })
-
-  it("prices a move adopted without a quote from its burn, retrying a failed read, once", async () => {
-    const { store, deps } = harness(false)
-    const expectedNet = vi.fn().mockRejectedValueOnce(new Error("rpc down")).mockResolvedValue(7n)
-    const pass = (burns: WithdrawalRecord[]) =>
-      settleSavingsMoves(store, { ...deps, expectedNet }, burns)
-    await pass([burn()])
-    expect(store.get("w1")?.expectedNet).toBeUndefined()
-    await pass([burn()])
-    expect(store.get("w1")?.expectedNet).toBe("7")
-    expect(expectedNet).toHaveBeenLastCalledWith(
-      expect.objectContaining({ withdrawalLocalId: "w1", direction: "out" }),
-      expect.objectContaining({ localId: "w1" }),
-    )
-    // Priced once; a move with a quote is never priced.
-    await store.put(move({ withdrawalLocalId: "w2", net: "5" }))
-    await pass([burn(), burn({ localId: "w2" })])
-    expect(expectedNet).toHaveBeenCalledTimes(2)
-    expect(store.get("w2")?.expectedNet).toBeUndefined()
   })
 
   it("leaves a failed burn and a settled move alone", async () => {
@@ -204,7 +239,7 @@ describe("settleSavingsMoves", () => {
     expect(publicClient.getContractEvents).toHaveBeenCalledTimes(1)
   })
 
-  it("runs one pass at a time: a caller during a pass joins it", async () => {
+  it("runs one pass at a time: callers during a pass share one more, on the latest withdrawals", async () => {
     const { store, deps, claims } = harness()
     let release!: () => void
     const gate = new Promise<void>((resolve) => (release = resolve))
@@ -218,13 +253,19 @@ describe("settleSavingsMoves", () => {
     await store.put(move())
     const first = settleSavingsMoves(store, deps)
     const second = settleSavingsMoves(store, deps)
-    expect(second).toBe(first)
+    // A burn rebuilt while the first pass runs: the queued pass adopts it.
+    const third = settleSavingsMoves(store, deps, [burn({ localId: "w2" })])
+    expect(second).not.toBe(first)
+    expect(third).toBe(second)
+    expect(store.get("w2")).toBeNull()
     release()
-    await Promise.all([first, second])
+    await Promise.all([first, second, third])
     expect(claims.savings).toHaveBeenCalledTimes(1)
     expect(store.get("w1")?.deposit?.claimed).toBe(true)
-    // The next call after the pass is a new pass.
-    await store.put(move({ withdrawalLocalId: "w2" }))
+    expect(claims.main).toHaveBeenCalledTimes(1)
+    expect(store.get("w2")?.deposit?.claimed).toBe(true)
+    // The next call after the passes is a new pass.
+    await store.put(move({ withdrawalLocalId: "w3" }))
     await settleSavingsMoves(store, deps)
     expect(claims.savings).toHaveBeenCalledTimes(2)
   })
@@ -268,6 +309,7 @@ describe("settleSavingsMoves", () => {
       txHash: RUN_TX,
       blockNumber: "36",
       at: (1_000_000 - 64 * 12) * 1000,
+      storedAt: expect.any(Number),
     })
     expect(settled.vault).toEqual({ txHash: RUN_TX, assets: "33", shares: "34" })
     expect(publicClient.getTransactionReceipt).toHaveBeenCalledWith({ hash: RUN_TX })
@@ -492,7 +534,12 @@ describe("settleSavingsMoves", () => {
     await store.load()
     await store.put(move({ depositScanFrom: "90" }))
     await settleSavingsMoves(store, deps)
-    expect(store.get("w1")?.deposit).toEqual({ inboxIndex: "12", amount: "34", claimed: true })
+    expect(store.get("w1")?.deposit).toEqual({
+      inboxIndex: "12",
+      amount: "34",
+      claimed: true,
+      storedAt: expect.any(Number),
+    })
     expect(store.get("w1")?.depositScanFloor).toBe("0")
     // A cursor with its floor is trusted: the search goes on from it.
     await store.put(

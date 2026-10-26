@@ -11,7 +11,15 @@ const h = vi.hoisted(() => ({
   rescan: vi.fn(async (_wallet: unknown, _tokens: unknown[]) => [] as unknown[]),
   savingsToken: vi.fn(async (): Promise<unknown> => undefined),
   whenReady: vi.fn(async (_reader: string) => {}),
+  refreshBalance: vi.fn(async () => {}),
+  syncSource: undefined as unknown,
 }))
+
+/** The Savings token as the lookup answers it: its deployment's label and its service. */
+const savingsOf = (balance: bigint) => ({
+  label: "sUSDS",
+  tokenService: { tokenAddress: "0xsav", readBalanceAssumingSynced: async () => balance },
+})
 
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
@@ -29,10 +37,11 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   bootPriority: { whenReady: h.whenReady },
   startRequestFulfillmentReconciler: () => () => {},
   createTagForwardResolver: () => ({}),
-  createWalletSyncSource: () => ({}),
+  createWalletSyncSource: (deps: unknown) => ((h.syncSource = deps), {}),
   WalletSyncCoordinator: class {
     start = h.start
     stop = h.stop
+    static refreshBalance = h.refreshBalance
   },
   BalanceStorage: { get: () => ({}) },
   ContactStorage: { get: () => ({}) },
@@ -61,6 +70,9 @@ let root: Root
 
 beforeEach(() => {
   vi.clearAllMocks()
+  h.whenReady.mockImplementation(async () => {})
+  h.savingsToken.mockImplementation(async () => undefined)
+  h.syncSource = undefined
   // jsdom reports a hidden document; the mount only scans while visible.
   vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible")
   // The setup's Web Locks polyfill takes no options; without locks the mount scans directly.
@@ -93,48 +105,79 @@ describe("TransferScannerMount", () => {
     })
   })
 
-  it("rescans Main on its own, and Savings after it once Savings' deployment resolves", async () => {
-    let resolveSavings!: (token: unknown) => void
-    h.savingsToken.mockReturnValueOnce(new Promise((resolve) => (resolveSavings = resolve)))
+  it("rescans Main's withdrawals only; Savings' burns are rebuilt with its moves", async () => {
+    h.savingsToken.mockResolvedValue(savingsOf(0n))
     await act(async () => {
       root.render(<TransferScannerMount />)
     })
-    await vi.waitFor(() => expect(h.rescan).toHaveBeenCalledTimes(1))
-    expect(h.rescan.mock.calls[0][1]).toHaveLength(1)
-    const savings = { label: "sUSDS" }
-    await act(async () => resolveSavings(savings))
-    await vi.waitFor(() => expect(h.rescan).toHaveBeenCalledTimes(2))
-    expect(h.rescan.mock.calls[1][1]).toEqual([savings])
-  })
-
-  it("waits for the boot balance before either rescan, Savings token lookup included", async () => {
-    let release!: () => void
-    h.whenReady.mockReturnValueOnce(new Promise<void>((resolve) => (release = resolve)))
-    await act(async () => {
-      root.render(<TransferScannerMount />)
-    })
-    expect(h.whenReady).toHaveBeenCalledWith("withdrawalRescan")
-    expect(h.rescan).not.toHaveBeenCalled()
-    expect(h.savingsToken).not.toHaveBeenCalled()
-    await act(async () => release())
-    await vi.waitFor(() => expect(h.savingsToken).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(h.refreshBalance).toHaveBeenCalledTimes(1))
     expect(h.rescan).toHaveBeenCalledTimes(1)
+    expect(h.rescan.mock.calls[0][1]).toHaveLength(1)
+    expect(h.rescan.mock.calls[0][1]).not.toContainEqual(
+      expect.objectContaining({ label: "sUSDS" }),
+    )
   })
 
-  it("tries the Savings scan again after its lookup fails, without touching Main's", async () => {
+  it("looks Savings up at its boot stage and reads its shares, rescanning Main at its own stage", async () => {
+    const gates = new Map<string, () => void>()
+    h.whenReady.mockImplementation(
+      (reader: string) => new Promise<void>((resolve) => gates.set(reader, resolve)),
+    )
+    h.savingsToken.mockResolvedValue(savingsOf(7n))
+    await act(async () => {
+      root.render(<TransferScannerMount />)
+    })
+    expect(h.savingsToken).not.toHaveBeenCalled()
+    await act(async () => gates.get("savings")!())
+    await vi.waitFor(() => expect(h.refreshBalance).toHaveBeenCalledTimes(1))
+    expect(h.savingsToken).toHaveBeenCalledTimes(1)
+    expect(h.rescan).not.toHaveBeenCalled()
+    await vi.waitFor(() => expect(h.syncSource).toBeDefined())
+    const { readBalances } = h.syncSource as { readBalances: () => Promise<unknown> }
+    expect(await readBalances()).toEqual({ "0xtoken": 0n, "0xsav": 7n })
+    await act(async () => gates.get("withdrawalRescan")!())
+    await vi.waitFor(() => expect(h.rescan).toHaveBeenCalledTimes(1))
+    expect(h.savingsToken).toHaveBeenCalledTimes(1)
+  })
+
+  it("keeps Main's balance when the Savings shares cannot be read", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {})
+    h.savingsToken.mockResolvedValue({
+      label: "sUSDS",
+      tokenService: {
+        tokenAddress: "0xsav",
+        readBalanceAssumingSynced: async () => Promise.reject(new Error("not registered")),
+      },
+    })
+    await act(async () => {
+      root.render(<TransferScannerMount />)
+    })
+    await vi.waitFor(() => expect(h.refreshBalance).toHaveBeenCalled())
+    await vi.waitFor(() => expect(h.syncSource).toBeDefined())
+    const { readBalances } = h.syncSource as { readBalances: () => Promise<unknown> }
+    expect(await readBalances()).toEqual({ "0xtoken": 0n })
+    vi.mocked(console.warn).mockRestore()
+  })
+
+  it("tries the Savings lookup again while it fails, then reads Savings, Main's untouched", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     try {
       vi.spyOn(console, "warn").mockImplementation(() => {})
-      h.savingsToken.mockRejectedValueOnce(new Error("timed out after 20000ms"))
-      const savings = { label: "sUSDS" }
-      h.savingsToken.mockResolvedValueOnce(savings)
+      const savings = savingsOf(0n)
+      let up = false
+      h.savingsToken.mockImplementation(async () => {
+        if (!up) throw new Error("timed out after 20000ms")
+        return savings
+      })
       await act(async () => {
         root.render(<TransferScannerMount />)
       })
       await vi.waitFor(() => expect(h.rescan).toHaveBeenCalledTimes(1))
+      expect(h.refreshBalance).not.toHaveBeenCalled()
+      up = true
       await act(async () => void (await vi.advanceTimersByTimeAsync(30_000)))
-      await vi.waitFor(() => expect(h.rescan).toHaveBeenCalledTimes(2))
-      expect(h.rescan.mock.calls[1][1]).toEqual([savings])
+      await vi.waitFor(() => expect(h.refreshBalance).toHaveBeenCalledTimes(1))
+      expect(h.rescan).toHaveBeenCalledTimes(1)
       expect(h.savingsToken).toHaveBeenCalledTimes(2)
     } finally {
       vi.mocked(console.warn).mockRestore()

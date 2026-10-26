@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AllowanceSnapshot, PortalCapacityKey } from "@obsidion/front-core"
 import type { DepositTokenOption } from "../src/features/deposit/loadDepositFacts"
 import type { AboutLimitsFacts } from "../src/features/limits/aboutLimitsView"
+import * as copy from "../src/features/limits/limitsCopy"
 
 const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
@@ -41,8 +42,6 @@ vi.mock("@obsidion/web-ds", () => ({
   ),
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "mainnet", l1ChainId: 1 }) }))
-const tuple = vi.hoisted(() => ({ read: vi.fn() }))
-vi.mock("../src/config/oxideTuple", () => ({ getOxideTuple: tuple.read }))
 vi.mock("../src/features/deposit/loadDepositFacts", () => ({
   depositTokensFor: (): DepositTokenOption[] => [
     { symbol: "DAI", decimals: 18, icon: "" },
@@ -79,7 +78,6 @@ beforeEach(() => {
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
-  tuple.read.mockReset().mockResolvedValue({ token: DAI })
   allowance.refresh.mockReset()
   capacity.activeKey.mockReset().mockResolvedValue(ACTIVE_KEY)
   capacity.store.mockReset().mockReturnValue(freshStore)
@@ -94,12 +92,14 @@ afterEach(async () => {
 
 const facts: AboutLimitsFacts = {
   product: {
-    deposit: { maximumUsd: "2500", basis: "sent-including-fees" },
-    withdrawal: { maximumUsd: "2500", basis: "debited-including-fees" },
+    deposit: { maximumUsd: "2500" },
+    withdrawal: { maximumUsd: "2500" },
+    send: { maximumUsd: "2500" },
   },
   sponsorship: { state: "loading" },
 }
-const dialog = () => document.querySelector<HTMLDialogElement>('dialog[aria-label="About limits"]')
+const dialog = () =>
+  document.querySelector<HTMLDialogElement>(`dialog[aria-label="${copy.SHEET_TITLE}"]`)
 const byTestId = (id: string) => document.querySelector<HTMLElement>(`[data-testid="${id}"]`)
 
 describe("AboutLimitsSheet", () => {
@@ -108,7 +108,7 @@ describe("AboutLimitsSheet", () => {
     expect(dialog()?.open).toBe(true)
     expect(dialog()?.contains(byTestId("about-limits-sheet"))).toBe(true)
     expect(document.querySelectorAll('[data-testid="about-limits-sheet"] section')).toHaveLength(3)
-    expect(dialog()?.textContent).toContain("About limits")
+    expect(dialog()?.textContent).toContain(copy.SHEET_TITLE)
   })
 
   it("closes with Escape and with the Close button", async () => {
@@ -136,7 +136,7 @@ describe("AboutLimitsSheet", () => {
       ),
     )
     const close = dialog()!.querySelector<HTMLButtonElement>('[aria-label="Close"]')!
-    const last = byTestId("about-limits-sponsorship-retry")!
+    const last = byTestId("about-limits-more")!
     last.focus()
     await act(async () => {
       dialog()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true }))
@@ -146,8 +146,7 @@ describe("AboutLimitsSheet", () => {
 })
 
 describe("WalletAboutLimitsSheet", () => {
-  it("reads the allowance again on opening and shows the valuation matched by address", async () => {
-    tuple.read.mockResolvedValue({ token: DAI })
+  it("reads the allowance again on opening, with the active bucket's capacity", async () => {
     allowance.snapshot = {
       status: "ready",
       scope: "s",
@@ -161,28 +160,25 @@ describe("WalletAboutLimitsSheet", () => {
     } satisfies AllowanceSnapshot
     await act(async () => root.render(<WalletAboutLimitsSheet onClose={vi.fn()} />))
     expect(allowance.refresh).toHaveBeenCalledTimes(1)
-    expect(byTestId("about-limits-operation")?.textContent).toContain(
-      "The limit counts 1 DAI or USDC as $1. This is a fixed rate, not a market price.",
-    )
+    expect(byTestId("about-limits-operation")?.textContent).toContain(copy.LIMIT_NOTE)
     expect(byTestId("about-limits-sponsorship")?.dataset.state).toBe("not-subscribed")
-    // Settings and new funding show the active bucket from the shared registry.
     expect(capacity.store).toHaveBeenCalledWith(ACTIVE_KEY)
     expect(byTestId("about-limits-capacity")?.dataset.state).toBe("fresh")
     expect(byTestId("about-limits-capacity")?.textContent).toContain("12,400.5 DAI")
   })
 
-  it("leaves the valuation out when the deposit token cannot be read", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
-    tuple.read.mockRejectedValue(new Error("manifest down"))
-    await act(async () => root.render(<WalletAboutLimitsSheet onClose={vi.fn()} />))
-    const operation = byTestId("about-limits-operation")!
-    expect(operation.textContent).toContain("$2,500")
-    expect(operation.textContent).not.toContain("as $1")
-    expect(warn).toHaveBeenCalled()
+  it("leaves capacity out, and reads none, when the caller says so", async () => {
+    await act(async () =>
+      root.render(<WalletAboutLimitsSheet capacity={false} onClose={vi.fn()} />),
+    )
+    expect(byTestId("about-limits-capacity")).toBeNull()
+    expect(byTestId("about-limits-operation")).not.toBeNull()
+    expect(byTestId("about-limits-more")).not.toBeNull()
+    expect(capacity.store).not.toHaveBeenCalled()
+    expect(capacity.activeKey).not.toHaveBeenCalled()
   })
 
   it("retries a failed allowance read from the sheet", async () => {
-    tuple.read.mockResolvedValue({ token: DAI })
     allowance.snapshot = { status: "unavailable", scope: "s", error: new Error("pxe") }
     await act(async () => root.render(<WalletAboutLimitsSheet onClose={vi.fn()} />))
     await act(async () => byTestId("about-limits-sponsorship-retry")!.click())

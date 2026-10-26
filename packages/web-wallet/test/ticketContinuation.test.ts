@@ -25,11 +25,15 @@ import {
 } from "../src/features/onboarding/registrationTerms"
 import { stashClaimLink, stashTicketSignup } from "../src/features/paylink/claimStash"
 import {
+  bindLinkDeposit,
   boundTicketSignup,
+  fundingRefusalCopy,
+  releaseLinkDeposit,
   ticketActivation,
   ticketSignupCommitted,
   ticketSignupRegistration,
   ticketSignupContinuation,
+  unfundedRegistration,
 } from "../src/features/paylink/ticketContinuation"
 import { webStorage } from "../src/platform/storage/WebStorageAdapter"
 
@@ -231,6 +235,15 @@ describe("boundTicketSignup / ticketSignupCommitted", () => {
     expect(boundTicketSignup(bound)?.fragment).toBe("paylink-frag")
   })
 
+  it("rebuilds a deposit the link pays at the name's price as paid, never as a ticket", () => {
+    stashClaimLink("paylink-frag")
+    const paid = ticketBoundTerms({ account: ACCOUNT, deadline: 1, paylinkDeposit: true })
+    expect(boundTicketSignup(paid)).toMatchObject({ fragment: "paylink-frag", paid: true })
+    expect(
+      boundTicketSignup(ticketBoundTerms({ account: ACCOUNT, deadline: 1 })),
+    ).not.toHaveProperty("paid")
+  })
+
   it("selects the link's registration rather than a newer unrelated record, until it settles", async () => {
     const store = PendingRegistrationStore.get(webStorage)
     expect(ticketSignupCommitted("paylink-frag")).toBe(false)
@@ -322,5 +335,100 @@ describe("ticketActivation", () => {
     expect(ticketActivation(full(), loadRegistrationTerms(ACCOUNT, "taga"), [])).toMatchObject({
       state: "renew",
     })
+  })
+})
+
+describe("releaseLinkDeposit", () => {
+  it("asks a closed link's deposit of the user again, and leaves a ticket's binding alone", async () => {
+    stashClaimLink("paylink-frag")
+    const rec = record()
+    await PendingRegistrationStore.get(webStorage).upsert(ACCOUNT, {}, rec)
+    terms({ feeWaived: true, minDeposit: String(ONE), paylinkDeposit: true })
+    expect(ticketActivation(rec, loadRegistrationTerms(ACCOUNT, "taga"), [])?.state).toBe("ready")
+    releaseLinkDeposit(rec)
+    const released = loadRegistrationTerms(ACCOUNT, "taga")
+    expect(released).not.toHaveProperty("paylinkId")
+    expect(released).toMatchObject({ minDeposit: String(ONE), feeWaived: true })
+    expect(ticketActivation(rec, released, [])).toBeNull()
+
+    terms()
+    releaseLinkDeposit(rec)
+    expect(loadRegistrationTerms(ACCOUNT, "taga")).toMatchObject({ paylinkFunded: true })
+  })
+})
+
+describe("an entered account's registration a link funds", () => {
+  /** A drawn tag's live signed deposit, with nothing at its address yet. */
+  const waiting = async (over: Partial<PendingRegistrationRecord> = {}) => {
+    const rec = record(over)
+    await PendingRegistrationStore.get(webStorage).upsert(ACCOUNT, {}, rec)
+    saveRegistrationTerms({
+      account: ACCOUNT,
+      tag: "taga",
+      deadline: Math.floor(Date.now() / 1000) + 7200,
+      fee: String(ONE / 2n),
+      minDeposit: String(ONE),
+      feeWaived: true,
+    })
+    return rec
+  }
+
+  it("offers the registration still waiting for its deposit, at its signed schedule", async () => {
+    await waiting()
+    expect(unfundedRegistration(L2_ADDRESS, [])).toMatchObject({
+      record: { account: ACCOUNT, tag: "taga" },
+      schedule: { fee: ONE / 2n, min: ONE },
+    })
+  })
+
+  it.each([
+    ["funded already", { fundedAt: 1 }],
+    ["past its deposit", { phase: "confirmed" as const }],
+    [
+      "whose address can never be published",
+      { broadcast: false, replaced: { sipaAddress: SIPA, refunded: false, broadcastSpent: true } },
+    ],
+  ])("offers nothing for a registration %s", async (_, over) => {
+    await waiting(over)
+    expect(unfundedRegistration(L2_ADDRESS, [])).toBeNull()
+  })
+
+  it("offers nothing once a link funds it, and the binding makes Home's claim of that link fund it", async () => {
+    stashClaimLink("paylink-frag")
+    const rec = await waiting()
+    expect(ticketSignupContinuation("paylink-frag", L2_ADDRESS, [])).toBeNull()
+    await bindLinkDeposit(
+      rec,
+      { fragment: "paylink-frag", amount: 52n * ONE, senderTag: "maple" },
+      ONE / 10n,
+      "faster",
+    )
+    expect(unfundedRegistration(L2_ADDRESS, [])).toBeNull()
+    expect(loadRegistrationTerms(ACCOUNT, "taga")).toMatchObject({
+      paylinkFunded: true,
+      paylinkDeposit: true,
+      paylinkId: "id:paylink-frag",
+      proverTip: String(ONE / 10n),
+    })
+    // The hero reads it as claiming, not as waiting for a deposit.
+    expect(ticketActivation(rec, loadRegistrationTerms(ACCOUNT, "taga"), [])?.state).toBe("ready")
+    const continued = ticketSignupContinuation("paylink-frag", L2_ADDRESS, [])
+    expect(continued?.activation.state).toBe("ready")
+    // Who sent it and how much, kept with the binding for once the link reads as claimed.
+    expect(continued?.stash).toMatchObject({ amount: String(52n * ONE), senderTag: "maple" })
+  })
+})
+
+describe("fundingRefusalCopy", () => {
+  it("puts a funding refusal in words, and leaves other errors alone", () => {
+    const refusal = (reason: string) =>
+      Object.assign(new Error("raw"), { name: "RegistrationFundingError", reason })
+    expect(fundingRefusalCopy(refusal("unpublished"))).toBe(
+      "The registration's address is still being set up. Try again in a moment.",
+    )
+    expect(fundingRefusalCopy(refusal("uncovered"))).toBe(
+      "This payment cannot cover the account deposit.",
+    )
+    expect(fundingRefusalCopy(new Error("boom"))).toBeUndefined()
   })
 })

@@ -1,8 +1,8 @@
 import { Modal } from "../../ui/Modal"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { formatUnits, parseUnits, type Hex } from "viem"
 import { Network } from "@obsidion/sdk"
-import { depositLimits, type UsdValuation } from "@obsidion/front-core"
+import { depositLimits, floorToTypeable, type UsdValuation } from "@obsidion/front-core"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
 import { showReportableError } from "../../errors/errorModal"
@@ -25,6 +25,7 @@ import {
 import { isWalletRejection, type useL1Wallet } from "./l1Wallet"
 import { depositTokensFor, type DepositTokenOption } from "./loadDepositFacts"
 import { getSipaDepositGateway, type DepositAddress, type DepositStage } from "./sipaGateway"
+import type { DepositTarget } from "./depositTarget"
 import ethIcon from "../../assets/deposit/ethereum.webp"
 import { useL1TokenBalance } from "./useL1TokenBalance"
 import { FundingCapacityPanel } from "./FundingCapacityPanel"
@@ -89,7 +90,7 @@ export function DepositFromWalletModal({
   deposit,
   token,
   fee,
-  registration = false,
+  target,
   minimum: minimumToReceive,
   valuation,
   onClose,
@@ -109,10 +110,10 @@ export function DepositFromWalletModal({
   token: DepositTokenOption
   /** Protocol fee in display units; the modal cannot submit until it is known. */
   fee?: string
-  /** A registration address: `fee` is the registration's own, fixed by its record, not re-read. */
-  registration?: boolean
+  /** A target's address, such as a registration's: `fee` is the target's own, fixed, not re-read. */
+  target?: DepositTarget["kind"]
   /** The least to receive, in display units, when the address needs more than the usual $1: a
-   * registration's floor less what it already holds. */
+   * target's floor less its fee and what it already holds. */
   minimum?: string
   /** Prices `token` for the published limit; nothing can be sent without it. */
   valuation?: UsdValuation
@@ -160,6 +161,8 @@ export function DepositFromWalletModal({
     wrongChain: l1.wrongChain,
     token: token.address,
   })
+  // A later read supersedes the balance a rejected transfer reported.
+  useEffect(() => setShortfall(undefined), [balance])
   const { verdict, cleared, rescreen } = useScreenedAddress(l1.account, "deposit")
   const prompt = useWalletPrompt()
   const stalled = useWalletPromptStall(phase === "depositing" && stage === "sending")
@@ -202,6 +205,22 @@ export function DepositFromWalletModal({
   const ceiling = shortfall ?? balance
   const overspent =
     !isSandbox && !bridgeMode && !!charged && !!ceiling && amountExceedsBalance(charged, ceiling)
+  // The most the wallet can deposit: its balance less the fee, within the published limit.
+  const maxToReceive = (() => {
+    if (isSandbox || bridgeMode || fixedAmount || !ceiling || fee == null) return undefined
+    const feeAtomic = parseUnits(fee, token.decimals)
+    const spendable =
+      ceiling.raw > feeAtomic ? floorToTypeable(ceiling.raw - feeAtomic, token.decimals) : 0n
+    const cap = depositLimits({
+      receiveAtomic: 0n,
+      feeAtomic,
+      decimals: token.decimals,
+      valuation,
+      settlementCreditAtomic: token.address ? undefined : 0n,
+    }).maxReceiveAtomic
+    const atomic = cap !== undefined && cap < spendable ? cap : spendable
+    return atomic > 0n ? formatUnits(atomic, token.decimals) : undefined
+  })()
   const gatesPass = !!charged && !overspent && (bridgeMode || (cleared && !l1.wrongChain))
 
   // Shared capacity meters the portal credit, which equals the entered amount only on the settlement-token route.
@@ -266,7 +285,7 @@ export function DepositFromWalletModal({
             required,
             unknownCapacity: UNKNOWN_CAPACITY,
             shownFee: fee,
-            freshFee: registration ? fee : fresh.feeDisplay,
+            freshFee: target ? fee : fresh.feeDisplay,
           }),
         onSubmitted: (txHash) => {
           submitted = true
@@ -286,7 +305,7 @@ export function DepositFromWalletModal({
         duration_ms: elapsed(),
         funding: "wallet",
         amount_bucket: amountBucket(BigInt(Math.floor(parsed)), 0),
-        ...(registration && { registration: true }),
+        ...(target === "registration" && { registration: true }),
       })
     } catch (e) {
       if (e instanceof WalletPromptOpenError) {
@@ -429,7 +448,22 @@ export function DepositFromWalletModal({
               <div className="ww-fund__addr">{l1.account ? shortL1Addr(l1.account) : ""}</div>
             </div>
             <div className="ww-fund__fields">
-              <span className="ww-fund__label">{payee ? receiveLabel : "Amount to receive"}</span>
+              <div className="ww-fund__label-row">
+                <span className="ww-fund__label">{payee ? receiveLabel : "Amount to receive"}</span>
+                {!isSandbox && ceiling && (
+                  <span className="ww-fund__label">
+                    Balance:{" "}
+                    <b>
+                      {usdFigureGrouped(
+                        formatUnits(
+                          floorToTypeable(ceiling.raw, ceiling.decimals),
+                          ceiling.decimals,
+                        ),
+                      )}
+                    </b>
+                  </span>
+                )}
+              </div>
               <label className="ww-deposit__input ww-fund__amount">
                 <span>
                   <input
@@ -442,11 +476,20 @@ export function DepositFromWalletModal({
                   />
                   <small>
                     {overspent
-                      ? `Not enough funds — your wallet holds ${ceiling!.display}`
+                      ? "Not enough funds in your wallet"
                       : amountError(amount) ??
                         usdFigureGrouped(String(Number.isFinite(parsed) ? parsed : 0))}
                   </small>
                 </span>
+                {maxToReceive && (
+                  <button
+                    type="button"
+                    className="zkm-btn-reset ww-pay__max"
+                    onClick={() => enterAmount(maxToReceive)}
+                  >
+                    MAX
+                  </button>
+                )}
                 <span className="ww-deposit__pill">
                   <img src={token.icon} alt="" width={16} height={16} />
                   {token.symbol}

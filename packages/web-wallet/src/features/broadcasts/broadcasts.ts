@@ -15,7 +15,13 @@ import type { ObsidionWallet } from "@obsidion/sdk"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { getActiveStorageId } from "../../platform/storage/activeStorage"
 import { getOperationStore } from "../operations/operations"
-import { onUserFlowsIdle, trackBackgroundProve, userFlowActive } from "../provingGate"
+import {
+  backgroundProveReserved,
+  onBackgroundProvesEnded,
+  onUserFlowsIdle,
+  trackBackgroundProve,
+  userFlowActive,
+} from "../provingGate"
 import { broadcastState } from "./broadcastState"
 
 /** How long a broadcast waits for an unlock or a claim server before asking again. */
@@ -126,9 +132,12 @@ export function startBroadcasts(
     executors,
     txState: (txHash) => broadcastState(wallet, txHash),
     // Checked in the same synchronous block that registers the proof, so a user flow raised
-    // during the attempt's reads makes it wait instead of colliding with it.
+    // during the attempt's reads makes it wait instead of colliding with it. An attempt never waits
+    // its turn behind another background proof: it reads as proving, and a user flow may wait on it.
     runExclusive: async (_job, attempt) => {
       if (userFlowActive()) throw new BroadcastDeferred(Date.now(), "Waiting for your transaction")
+      if (backgroundProveReserved())
+        throw new BroadcastDeferred(Date.now(), "Waiting for another transaction")
       let txHash!: Awaited<ReturnType<typeof attempt>>
       await trackBackgroundProve(async () => {
         txHash = await attempt()
@@ -136,7 +145,7 @@ export function startBroadcasts(
       return txHash
     },
     scope: getActiveStorageId,
-    busy: userFlowActive,
+    busy: () => userFlowActive() || backgroundProveReserved(),
     describe: (job) =>
       job.kind === "pool"
         ? undefined
@@ -145,12 +154,14 @@ export function startBroadcasts(
   let stopped = false
   let stop: (() => void) | undefined
   const offIdle = onUserFlowsIdle(() => scheduler.kick())
+  const offEnded = onBackgroundProvesEnded(() => scheduler.kick())
   void scheduler.recover().then(() => {
     if (!stopped) stop = scheduler.start()
   })
   return () => {
     stopped = true
     offIdle()
+    offEnded()
     stop?.()
   }
 }

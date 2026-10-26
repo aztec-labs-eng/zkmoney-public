@@ -8,6 +8,11 @@ import {
 
 const REQUEST = { address: `0x${"11".repeat(20)}` as const, abi: [], eventName: "Ping" }
 
+/** What an RPC that caps ranges answers to a window wider than one chunk. */
+const refuseWide = (fromBlock: bigint, toBlock: bigint) => {
+  if (toBlock - fromBlock >= L1_LOG_RANGE_BLOCKS) throw new Error("block range too large")
+}
+
 /** A client whose chunks answer in reverse order of asking, recording each window and the peak in flight. */
 function slowClient() {
   const windows: [bigint, bigint][] = []
@@ -15,6 +20,7 @@ function slowClient() {
   let peak = 0
   const client = {
     getContractEvents: async ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) => {
+      refuseWide(fromBlock, toBlock)
       windows.push([fromBlock, toBlock])
       inFlight++
       peak = Math.max(peak, inFlight)
@@ -44,6 +50,18 @@ describe("chunkedContractEvents", () => {
     )
   })
 
+  it("reads a wide window in one request from an RPC that serves it", async () => {
+    const windows: [bigint, bigint][] = []
+    const client = {
+      getContractEvents: async ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) => {
+        windows.push([fromBlock, toBlock])
+        return [{ fromBlock }]
+      },
+    } as unknown as PublicClient
+    await chunkedContractEvents(client, REQUEST, 0n, 5_000_000n)
+    expect(windows).toEqual([[0n, 5_000_000n]])
+  })
+
   it("reads a window inside one chunk once", async () => {
     const { client, windows } = slowClient()
     await chunkedContractEvents(client, REQUEST, 7n, 9n)
@@ -55,7 +73,8 @@ describe("chunkedContractEvents", () => {
     let inFlight = 0
     let peakAfterRound = 0
     const client = {
-      getContractEvents: async ({ fromBlock }: { fromBlock: bigint }) => {
+      getContractEvents: async ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) => {
+        refuseWide(fromBlock, toBlock)
         calls++
         inFlight++
         if (calls > L1_LOG_CHUNK_CONCURRENCY) peakAfterRound = Math.max(peakAfterRound, inFlight)
@@ -85,7 +104,8 @@ describe("chunkedContractEvents", () => {
   it("fails the scan when a chunk fails even read alone", async () => {
     const bad = 3n * L1_LOG_RANGE_BLOCKS
     const client = {
-      getContractEvents: async ({ fromBlock }: { fromBlock: bigint }) => {
+      getContractEvents: async ({ fromBlock, toBlock }: { fromBlock: bigint; toBlock: bigint }) => {
+        refuseWide(fromBlock, toBlock)
         if (fromBlock === bad) throw new Error("rpc down")
         return []
       },

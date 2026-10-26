@@ -625,6 +625,9 @@
 .zkm-activity-action--gradient {
   background: var(--gradient-brand);
 }
+.zkm-activity-action:disabled:not([aria-busy]) {
+  opacity: 0.5;
+}
 
 .zkm-settings-row {
   display: flex;

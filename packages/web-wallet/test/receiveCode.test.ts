@@ -3,6 +3,7 @@ import type { Address } from "viem"
 import type { MintedRequestLink } from "@obsidion/front-core"
 import {
   CODE_LIFETIME_MS,
+  clearCode,
   currentCode,
   nextCode,
   openCode,
@@ -91,6 +92,16 @@ describe("receive code", () => {
     expect(opened).toMatchObject({ address: addr(5), amount: 0, note: undefined })
     expect(cancelled).toContain(priced.requestId)
     expect(await openCode(deps, NOW)).toEqual(opened)
+  })
+
+  it("clears a code's amount, cancelling the priced request and keeping the address", async () => {
+    const { deps, cancelled } = harness([{ address: addr(5), day: TODAY }])
+    await currentCode(deps, NOW)
+    const priced = await setCodeAmount(deps, { amountInput: "0.01", noteInput: "Lunch" }, NOW)
+    const cleared = await clearCode(deps, NOW)
+    expect(cleared).toMatchObject({ address: addr(5), amount: 0, note: undefined })
+    expect(cancelled).toContain(priced.requestId)
+    expect(unlistedCodeRequestIds().has(cleared.requestId.toLowerCase())).toBe(true)
   })
 
   it("moves to a new address after a payment and keeps the paid request", async () => {

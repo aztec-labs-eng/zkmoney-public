@@ -13,6 +13,9 @@ export const L1_LOG_CHUNK_CONCURRENCY = 8
  * `getContractEvents` over an explicit window, split into chunks an RPC serves. The window is the
  * caller's: how far back a scan must reach is a completeness decision, and each reader owns its
  * own. This owns the chunking alone. Logs come back in block order whatever order chunks answer in.
+ *
+ * A window wider than one chunk is asked for whole first: an archive RPC answers a filtered range of
+ * millions of blocks in one request, and one that refuses it is read in chunks.
  */
 export async function chunkedContractEvents(
   publicClient: PublicClient,
@@ -20,6 +23,17 @@ export async function chunkedContractEvents(
   fromBlock: bigint,
   toBlock: bigint,
 ): Promise<unknown[]> {
+  if (toBlock - fromBlock >= L1_LOG_RANGE_BLOCKS) {
+    try {
+      return (await publicClient.getContractEvents({
+        ...request,
+        fromBlock,
+        toBlock,
+      } as never)) as unknown[]
+    } catch {
+      // Over the RPC's range or result cap: read it in chunks.
+    }
+  }
   const ranges: { from: bigint; to: bigint }[] = []
   for (let from = fromBlock; from <= toBlock; from += L1_LOG_RANGE_BLOCKS) {
     const chunkEnd = from + L1_LOG_RANGE_BLOCKS - 1n

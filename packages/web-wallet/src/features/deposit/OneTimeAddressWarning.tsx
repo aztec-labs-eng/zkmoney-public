@@ -2,7 +2,7 @@ import { Modal } from "../../ui/Modal"
 import { deviceStorage } from "../../platform/storage/rollupStorage"
 import { useEffect, useState } from "react"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
-import { ADDRESS_RECHECK_NOTE } from "./AddressCapacity"
+import { ADDRESS_RECHECK_NOTE } from "../limits/limitsCopy"
 
 const HIDE_KEY = "webwallet.hide-one-time-address-warning"
 

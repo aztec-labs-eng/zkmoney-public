@@ -45,14 +45,20 @@ describe("validateRequestPacket", () => {
       "legacyUnverifiable",
     )
   })
+
+  it("a Receive code is for the payer's own network and token, and still expires", () => {
+    const code = packet({ compact: true, networkId: "", tokenAddress: undefined })
+    expect(validateRequestPacket(code, { ...env, requireTokenAddress: true }, NOW)).toBeNull()
+    expect(validateRequestPacket({ ...code, expiresAt: NOW - 1 }, env, NOW)).toBe("expired")
+  })
 })
 
 describe("requestAmountDisplay", () => {
   it("scales by the packet decimals, defaulting to 6", () => {
     expect(requestAmountDisplay(packet({ amountAtomic: 12_500_000n }))).toBe("12.5")
-    expect(requestAmountDisplay(packet({ amountAtomic: 5_000_000n, tokenDecimals: undefined }))).toBe(
-      "5",
-    )
+    expect(
+      requestAmountDisplay(packet({ amountAtomic: 5_000_000n, tokenDecimals: undefined })),
+    ).toBe("5")
   })
 
   it("returns empty for an any-amount link", () => {

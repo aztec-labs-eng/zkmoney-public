@@ -18,7 +18,7 @@ import {
   type RegistrationStage,
 } from "@obsidion/front-core"
 import { useRegistrationStage } from "./openRegistration"
-import { readSweepEvents } from "@obsidion/sdk"
+import { useSipaRecord } from "./useDepositWatch"
 import {
   ConfirmationSheetDetailRow,
   StatusBadge,
@@ -26,7 +26,6 @@ import {
   type StatusBadgeStyle,
 } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
-import { l1PublicClient } from "../../config/oxideTuple"
 import {
   AddressRow,
   CopyableValue,
@@ -68,7 +67,8 @@ import {
   registrationOverLimit,
   useRegistrationFunding,
 } from "./steps/DepositAddress"
-import { ADDRESS_RECHECK_NOTE, AddressCapacityPanel } from "../deposit/AddressCapacity"
+import { AddressCapacityPanel } from "../deposit/AddressCapacity"
+import { ADDRESS_RECHECK_NOTE } from "../limits/limitsCopy"
 import { PendingLimitsLink, WalletAboutLimitsSheet } from "../limits/AboutLimitsSheet"
 import { sourceFromTarget } from "../limits/capacitySources"
 import { DepositLimitRows, type DepositTerms } from "./steps/DepositTermsRows"
@@ -91,25 +91,10 @@ export function registrationDepositStatus(
   return { label: "Deposit received, waiting for the sweep", badge: "pending" }
 }
 
-/** The sweep that emptied the SIPA, read from its own Sweep log when the record never stamped it. */
+/** The sweep that emptied the SIPA: the record's, else the one the rail saw. */
 function useSweepTx(record: PendingRegistrationRecord) {
-  const [txHash, setTxHash] = useState<string>()
-  const sipa = record.sipaAddress
-  const known = record.sweepTxHash
-  useEffect(() => {
-    if (known) return
-    let live = true
-    readSweepEvents(l1PublicClient(getConfig()) as never, sipa as never)
-      .then((sweeps) => {
-        const first = sweeps[0]
-        if (live && first) setTxHash(first.txHash)
-      })
-      .catch((err) => console.warn("sweep read failed", err))
-    return () => {
-      live = false
-    }
-  }, [sipa, known])
-  return known ?? txHash
+  const rail = useSipaRecord(record.sipaAddress)
+  return record.sweepTxHash ?? rail?.sweepTxHash
 }
 
 /**
@@ -179,7 +164,9 @@ export function RegistrationDepositDetailModal({
   // The detail shows the address, so it owes the address's broadcast; one whose deposit must be
   // recovered instead is not published.
   useOweRegistrationBroadcast(record, !needsRefund)
+  // Only once funds wait on it.
   const publishing =
+    fundsIn(stage) &&
     !needsRefund &&
     !registrationAddressPublished(record) &&
     !isTerminalRegistrationPhase(record.phase) &&

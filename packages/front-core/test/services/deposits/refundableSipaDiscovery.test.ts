@@ -58,7 +58,8 @@ describe("deriveRefundableSipaSources", () => {
         sipaAddress: EXPECTED_SIPA,
         recipientL2Address: RECIPIENT.toString(),
         messageSecret: secret.toString(),
-        origin: "sipa-event",
+        // The commitment the (mocked) stealth hash gives, which its sweeps deposit to.
+        recipientCommitment: new Fr(8).toString(),
       },
     ])
   })

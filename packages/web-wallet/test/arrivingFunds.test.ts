@@ -123,12 +123,31 @@ describe("arrivingFunds", () => {
     expect(arrivingFunds({ ...none, burns: [migration("submitting")] }).main).toBe(0n)
   })
 
-  it("counts a move rebuilt without a quote at what its burn should land, never its gross", () => {
+  it("counts a move rebuilt without a quote only from its deposit, which may already be spent", () => {
     const out = move({ direction: "out", amount: (100n * E18).toString(), net: undefined })
-    // Unpriced yet: nothing, rather than the burned shares' full value.
     expect(arrivingFunds({ ...none, burns: mined, moves: [out] }).main).toBe(0n)
-    const priced = { ...out, expectedNet: ((1034n * E18) / 10n).toString() }
-    expect(arrivingFunds({ ...none, burns: mined, moves: [priced] }).main).toBe((1034n * E18) / 10n)
+    const found = {
+      ...out,
+      deposit: { inboxIndex: "1", amount: (103n * E18).toString(), claimed: false },
+    }
+    expect(arrivingFunds({ ...none, burns: mined, moves: [found] }).main).toBe(103n * E18)
+  })
+
+  it("keeps a claim this device stored on its way until its balance is read after it", () => {
+    const stored = move({
+      deposit: { inboxIndex: "1", amount: (10n * E18).toString(), claimed: true, storedAt: 500 },
+    })
+    const at = (savings?: number) =>
+      arrivingFunds({
+        ...none,
+        burns: mined,
+        moves: [stored],
+        sharePrice: E18,
+        balanceReadAt: { savings },
+      }).savings
+    expect(at()).toBe(10n * E18)
+    expect(at(499)).toBe(10n * E18)
+    expect(at(500)).toBe(0n)
   })
 
   it("stops counting a move once it is claimed, recovered, or its burn failed", () => {
@@ -145,5 +164,29 @@ describe("arrivingFunds", () => {
     expect(arrivingFunds({ ...none, transactions: [claim("pending")] }).main).toBe(25n * E18)
     expect(arrivingFunds({ ...none, transactions: [claim("success")] }).main).toBe(0n)
     expect(arrivingFunds({ ...none, transactions: [claim("pending", "send")] }).main).toBe(0n)
+  })
+})
+
+/** An upgrade's own deposits never count: the upgrade lock holds Home's figure until the balance holds them. */
+describe("arrivingFunds beside an upgrade", () => {
+  const NET = 99n * E18
+  const swept = (patch: Partial<SIPADepositRecord>) =>
+    deposit({ phase: "pendingClaim", netAmount: NET.toString(), ...patch })
+
+  it("counts no deposit an upgrade pays, whether its first or a later batch's", () => {
+    const funds = arrivingFunds({
+      ...none,
+      deposits: [
+        swept({ sipaAddress: `0x${"a1".repeat(20)}`, intent: "metadata" }),
+        swept({ sipaAddress: `0x${"b2".repeat(20)}` }),
+      ],
+      upgradeRecipients: new Set([`0x${"b2".repeat(20)}`]),
+    })
+
+    expect(funds.main).toBe(0n)
+  })
+
+  it("counts an ordinary deposit and what old versions hold", () => {
+    expect(arrivingFunds({ ...none, deposits: [swept({})], oldVersions: E18 }).main).toBe(NET + E18)
   })
 })
