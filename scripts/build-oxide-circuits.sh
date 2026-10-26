@@ -1,32 +1,33 @@
 #!/usr/bin/env bash
-# Compiles the vendored Oxide circuits and checks them against their L1 verifiers.
+# Compiles the vendored Oxide refund circuits and checks them against their L1 verifiers.
 # Invoked via `pnpm build:oxide-circuits`.
 #
-# For each circuit in vendor/oxide/noir-projects, the script does the same steps as Oxide's
-# verifier build:
+# For each refund circuit in vendor/oxide/noir-projects, the script does the same steps as Oxide's
+# refund verifier build (deployer/src/bridge/build_refund_verifiers.ts in Oxide):
 #   1. `aztec-nargo compile` writes target/<circuit>.json. @oxide/refund-proof imports the
 #      refund circuits from there.
-#   2. `aztec-bb write_vk` writes the EVM-targeted Honk vk to target/keys/vk.
-#   3. `aztec-bb write_solidity_verifier` writes a Solidity verifier from the vk.
-#      The script compares it with the verifier in vendor/oxide/l1-contracts/src/ that the L1
-#      contracts use: OxidePortal for the refund proofs, the Resolver module for the resolver
-#      proofs. A difference fails the build.
+#   2. `aztec-bb write_vk -t evm` writes the vk to target/keys/vk.
+#   3. `aztec-bb write_solidity_verifier -t evm --optimized` writes a Solidity verifier from the vk.
+#      The script compares it with the verifier in vendor/oxide/l1-contracts/src/generated/ that
+#      OxidePortal uses. A difference fails the build.
+#
+# The script does not check resolver_circuit. Its verifier, l1-contracts/src/pinned/PinnedResolverVerifier.sol,
+# is pinned to the circuit that the deployed Resolver module uses. The Aztec 6.0.0 toolchain compiles the
+# vendored resolver source to a different vk.
 set -euo pipefail
 
 REPO_ROOT=$(git rev-parse --show-toplevel)
 NOIR_PROJECTS="$REPO_ROOT/vendor/oxide/noir-projects"
 L1_CONTRACTS="$REPO_ROOT/vendor/oxide/l1-contracts"
 
-# circuit package : verifier path under vendor/oxide/l1-contracts : extra `write_solidity_verifier` flags.
-# The refund verifiers use --disable_zk. The resolver verifier keeps zk on.
+# circuit package : verifier path under vendor/oxide/l1-contracts
 CIRCUITS=(
-  "frozen_notes_refund:src/generated/FrozenNotesRefundVerifier.sol:--disable_zk"
-  "frozen_deposit_refund:src/generated/FrozenDepositRefundVerifier.sol:--disable_zk"
-  "unprocessed_deposit_refund:src/generated/UnprocessedDepositRefundVerifier.sol:--disable_zk"
-  "resolver_circuit:src/pinned/PinnedResolverVerifier.sol:"
+  "frozen_notes_refund:src/generated/FrozenNotesRefundVerifier.sol"
+  "frozen_deposits_refund:src/generated/FrozenDepositsRefundVerifier.sol"
+  "unprocessed_deposit_refund:src/generated/UnprocessedDepositRefundVerifier.sol"
 )
 
-for tool in aztec-nargo aztec-bb jq; do
+for tool in aztec-nargo aztec-bb; do
   command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool not found on PATH. Install the Aztec toolchain 6.0.0." >&2; exit 1; }
 done
 
@@ -34,7 +35,7 @@ WORK_DIR=$(mktemp -d)
 trap 'rm -r "$WORK_DIR"' EXIT
 
 for entry in "${CIRCUITS[@]}"; do
-  IFS=: read -r name verifier extra_flags <<<"$entry"
+  IFS=: read -r name verifier <<<"$entry"
   dir="$NOIR_PROJECTS/$name"
 
   echo "==> aztec-nargo compile $name"
@@ -44,13 +45,10 @@ for entry in "${CIRCUITS[@]}"; do
   [[ -f "$json" ]] || { echo "ERROR: aztec-nargo did not write $json" >&2; exit 1; }
 
   mkdir -p "$dir/target/keys"
-  jq -r '.bytecode' "$json" | base64 -d | gunzip \
-    | aztec-bb write_vk --scheme ultra_honk --oracle_hash keccak -b - -o "$dir/target/keys"
+  aztec-bb write_vk -t evm -b "$json" -o "$dir/target/keys"
 
   generated="$WORK_DIR/$(basename "$verifier")"
-  # $extra_flags is empty or one flag, so it is not quoted.
-  # shellcheck disable=SC2086
-  aztec-bb write_solidity_verifier --scheme ultra_honk $extra_flags -k "$dir/target/keys/vk" -o "$generated"
+  aztec-bb write_solidity_verifier -t evm --optimized -k "$dir/target/keys/vk" -o "$generated"
   if ! cmp -s "$generated" "$L1_CONTRACTS/$verifier"; then
     echo "ERROR: the $name vk does not match vendor/oxide/l1-contracts/$verifier" >&2
     exit 1

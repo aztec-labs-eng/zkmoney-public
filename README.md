@@ -111,19 +111,23 @@ For the relayer configuration, see [vendor/oxide/yarn-project/oxide-relayer/READ
 | Circuit | L1 verifier | Contract that uses the verifier |
 | --- | --- | --- |
 | `frozen_notes_refund` | `src/generated/FrozenNotesRefundVerifier.sol` | `OxidePortal` |
-| `frozen_deposit_refund` | `src/generated/FrozenDepositRefundVerifier.sol` | `OxidePortal` |
+| `frozen_deposits_refund` | `src/generated/FrozenDepositsRefundVerifier.sol` | `OxidePortal` |
 | `unprocessed_deposit_refund` | `src/generated/UnprocessedDepositRefundVerifier.sol` | `OxidePortal` |
 | `resolver_circuit` | `src/pinned/PinnedResolverVerifier.sol` | The Resolver module |
 
 The verifier paths are in `vendor/oxide/l1-contracts`.
 
-To compile the circuits and check them against the verifiers, run [Build](#build) to `pnpm build-contracts`, then run:
+To compile the refund circuits and check them against their verifiers, run [Build](#build) to `pnpm build-contracts`, then run:
 
 ```shell
 pnpm build:oxide-circuits
 ```
 
-For each circuit, the script writes `target/<circuit>.json` and the vk in `target/keys/vk`. It then generates a Solidity verifier from the vk. The script fails if this verifier is not the same as the verifier in the table. `@oxide/refund-proof` reads the compiled refund circuits from `target/`. `OXIDE_REFUND_CIRCUITS=required pnpm build:web-deps` also compiles the refund circuits, but it does not compare them with the verifiers.
+For each refund circuit, the script writes `target/<circuit>.json` and the vk in `target/keys/vk`. It then generates a Solidity verifier from the vk, with the same `aztec-bb` settings as Oxide's verifier build. The script fails if this verifier is not the same as the verifier in the table.
+
+The script does not check `resolver_circuit`. `src/pinned/PinnedResolverVerifier.sol` is pinned to the circuit that the deployed Resolver module uses. The Aztec 6.0.0 toolchain compiles the vendored resolver source to a different vk.
+
+`@oxide/refund-proof` reads the compiled refund circuits from `target/`. `OXIDE_REFUND_CIRCUITS=required pnpm build:web-deps` also compiles the refund circuits, but it does not compare them with the verifiers.
 
 ## Tests
 
