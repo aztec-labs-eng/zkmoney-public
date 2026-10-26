@@ -4,6 +4,7 @@
     "**/*.test.ts",
     "src/broadcaster.ts",
     "src/sipa_events.ts",
+    "src/token.ts",
     "src/index.ts"
   ]
 }

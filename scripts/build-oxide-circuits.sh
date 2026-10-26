@@ -27,7 +27,7 @@ CIRCUITS=(
 )
 
 for tool in aztec-nargo aztec-bb jq; do
-  command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool not found on PATH. Install the Aztec toolchain 5.2.0." >&2; exit 1; }
+  command -v "$tool" >/dev/null 2>&1 || { echo "ERROR: $tool not found on PATH. Install the Aztec toolchain 6.0.0." >&2; exit 1; }
 done
 
 WORK_DIR=$(mktemp -d)

@@ -1,6 +1,6 @@
 # zk.money wallet
 
-Source of the zk.money web wallet and the zk.money Desktop app. This tree builds the release that runs on mainnet today: config profile `prod-v5`, Oxide label v6 (Oxide commit `20fcd8093`), Aztec `5.2.0`.
+Source of the zk.money web wallet and the zk.money Desktop app. This tree builds the wallet for the v6 rollup: config profile `prod-v6`, Oxide commit `3b5e1f7c8`, Aztec `6.0.0`.
 
 ## Layout
 
@@ -21,7 +21,7 @@ Source of the zk.money web wallet and the zk.money Desktop app. This tree builds
 | pnpm | 9.14.4 (`corepack enable`) |
 | Yarn | 4 (`corepack` supplies it for `vendor/oxide/l1-contracts`) |
 | Foundry (`forge`) | 1.4 or later |
-| Aztec toolchain | 5.2.0 (`aztec`, `aztec-nargo`, `aztec-bb`) |
+| Aztec toolchain | 6.0.0 (`aztec`, `aztec-nargo`, `aztec-bb`) |
 | jq | any |
 | rsync, bash | any; macOS and Linux have them |
 | Google Chrome | any; the desktop app opens the installed Chrome (or set `CHROME_PATH`) |
@@ -36,9 +36,12 @@ cd zkmoney-public
 pnpm install --frozen-lockfile
 pnpm build-contracts        # Noir contracts, Oxide build, then the contracts package
 OXIDE_REFUND_CIRCUITS=required pnpm build:web-deps
+GH_TOKEN=$(gh auth token) pnpm --filter @obsidion/generation-v5 fetch:bundle
 ```
 
 `OXIDE_REFUND_CIRCUITS=required` compiles the three Oxide refund circuits. The wallet uses them to move funds out of a frozen deployment, and it refuses a stub. Without the variable, the dependency build writes stubs. The tests can use the stubs.
+
+The wallet reads and upgrades v5 accounts through a pinned build of the v5 wallet. `fetch:bundle` downloads it from this repository's `source-generations` release into `packages/generation-v5/dist`, and `pin.json` fixes its hash. It needs any GitHub token. A build without the bundle cannot read v5 accounts; `REQUIRE_SOURCE_GENERATIONS=true` makes that a build error.
 
 You must supply three values yourself: an Aztec mainnet node URL (`VITE_NODE_URL`), its API key if the node needs one (`VITE_NODE_API_KEY`), and an Ethereum mainnet RPC URL (`VITE_L1_RPC_URL`). The example files hold all other mainnet values.
 
@@ -50,7 +53,7 @@ cp packages/web-wallet/.env.mainnet.example packages/web-wallet/.env.production
 pnpm --filter @obsidion/web-wallet build
 ```
 
-The build fetches the `prod-v5` config profile and bakes it into the bundle. The build fails if the profile, the network, or the Oxide pointer does not agree. The output is in `packages/web-wallet/dist`.
+The build fetches the `prod-v6` config profile and bakes it into the bundle. The build fails if the profile, the network, or the Oxide pointer does not agree. The output is in `packages/web-wallet/dist`.
 
 ### Desktop app
 
