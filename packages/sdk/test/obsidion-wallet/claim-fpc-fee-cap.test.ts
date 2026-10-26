@@ -1,7 +1,7 @@
-import { NO_FROM } from "@aztec/aztec.js/account"
-import { Fr } from "@aztec/aztec.js/fields"
-import { GasFees } from "@aztec/stdlib/gas"
-import { ExecutionPayload } from "@aztec/stdlib/tx"
+import { NO_FROM } from "@aztec-labs/aztec.js/account"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { GasFees } from "@aztec-labs/stdlib/gas"
+import { ExecutionPayload } from "@aztec-labs/stdlib/tx"
 import { expect, it } from "vitest"
 import {
   CLAIM_FPC_MAX_FEES_PER_GAS as CAP,

@@ -16,23 +16,22 @@
 import { erc20Abi, type Address, type Hex, type PublicClient } from "viem"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
-  depositSipaImplementation,
+  deploymentSipaRoute,
   type RegistryTagResolution,
   sipaDeploymentTag,
   type RequestInlinePacket,
   type SipaLinkPreimage,
 } from "@obsidion/front-core"
-import { quotedDepositFee } from "@obsidion/core/constants"
 import {
-  Network,
   readDepositFee,
+  readDepositSIPAImplementation,
   resolveSipaAddress,
   SELF_BROADCAST_RESWEEPABLE,
+  SipaNameUndepositableError,
 } from "@obsidion/sdk"
 import { requireTupleField } from "../../config/oxideTuple"
-import { sipaFundingTokens } from "../deposit/loadDepositFacts"
+import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
 import { predictSipaCandidate } from "../deposit/sipaPredict"
-import { fpcFundingCut } from "../fees/fpcFundingCut"
 import { buildErc20TransferUri, buildErc20TransferUriWithoutAmount } from "./eip681"
 
 export interface AccountlessResolveResult {
@@ -94,7 +93,11 @@ function predictActiveSipa(
       : {
           protocol: "account",
           sipaFactory,
-          args: { ...common, recoveryCommitment: preimage.recovery as Hex },
+          args: {
+            ...common,
+            recoveryCommitment: preimage.recovery as Hex,
+            forwardingTable: requireTupleField(tuple, "forwardingTable") as Address,
+          },
         },
   )
 }
@@ -106,6 +109,14 @@ export class RequestDecimalsMismatchError extends Error {
   }
 }
 
+/** The requester's tag is still on a retired rollup, so nothing can deposit to it yet. */
+export class RequesterNotUpgradedError extends Error {
+  constructor(readonly tag: string) {
+    super(recipientNotUpgradedCopy.title(tag))
+    this.name = "RequesterNotUpgradedError"
+  }
+}
+
 export async function resolveAccountlessRequest(
   packet: RequestInlinePacket,
   deps: {
@@ -113,22 +124,20 @@ export async function resolveAccountlessRequest(
     publicClient: PublicClient
     resolveRequester(tag: string): Promise<RegistryTagResolution>
     chainId: number
-    /** Picks the tokens a SIPA accepts, so a payment in any of them marks its address used. */
-    network: Network
+    /** Every token a SIPA of the table accepts, so a payment in any of them marks its address used. */
+    acceptedTokens: readonly Address[]
     timeoutMs?: number
   },
 ): Promise<AccountlessResolveResult> {
   const token = requireTupleField(deps.tuple, "token") as Address
   // The payee is a deposit SIPA either way — embedded or CCIP-resolved — so the amount this URI
-  // asks for is priced off what its sweep costs: this portal's sweep fee and its cut.
-  const implementation = await depositSipaImplementation(
-    deps.publicClient,
-    requireTupleField(deps.tuple, "sipaFactory") as Address,
-    requireTupleField(deps.tuple, "portal") as Address,
-  )
-  const [relayerFee, cut, decimals] = await Promise.all([
-    readDepositFee(deps.publicClient, implementation),
-    fpcFundingCut(deps.publicClient, requireTupleField(deps.tuple, "portal") as Address),
+  // asks for is priced off what its sweep costs: the deployment's deposit row fee.
+  const [implementation, feeAtomic, decimals] = await Promise.all([
+    readDepositSIPAImplementation(
+      deps.publicClient,
+      requireTupleField(deps.tuple, "sipaFactory") as Address,
+    ),
+    readDepositFee(deps.publicClient, deploymentSipaRoute(deps.tuple)),
     deps.publicClient.readContract({ address: token, abi: erc20Abi, functionName: "decimals" }),
   ])
   const fixed = packet.amountAtomic > 0n
@@ -137,7 +146,6 @@ export async function resolveAccountlessRequest(
   // as 6, as the codec defines. An any-amount URI carries no amount to scale.
   const declared = packet.tokenDecimals ?? 6
   if (fixed && declared !== decimals) throw new RequestDecimalsMismatchError(declared, decimals)
-  const feeAtomic = quotedDepositFee(relayerFee, cut)
 
   const pin = await pinRequester(packet, deps)
   let sipaAddress = packet.sipaAddress as Address | undefined
@@ -161,13 +169,14 @@ export async function resolveAccountlessRequest(
     deployment !== "expired" &&
     !(await isUnpaid(
       deps.publicClient,
-      sipaFundingTokens(deps.network, token).map((t) => t.address),
+      [token, ...deps.acceptedTokens.filter((t) => t.toLowerCase() !== token.toLowerCase())],
       sipaAddress,
     ))
   )
     sipaAddress = undefined
   if (!sipaAddress) {
     // A CCIP address is derived from the live tag, so an unresolvable tag has no payee at all.
+    if (pin.notUpgraded) throw new RequesterNotUpgradedError(packet.requesterTag)
     if (pin.error) throw new Error(pin.error)
     sipaAddress = await resolveSipaViaCcip(packet, deps)
     deployment = "active"
@@ -238,6 +247,10 @@ async function resolveSipaViaCcip(
       resolveSipaAddress(deps.publicClient, sipaResolver, `${packet.requesterTag}.${ensDomain}`),
       deadline,
     ])
+  } catch (e) {
+    if (e instanceof SipaNameUndepositableError)
+      throw new RequesterNotUpgradedError(packet.requesterTag)
+    throw e
   } finally {
     clearTimeout(timer)
   }
@@ -246,9 +259,12 @@ async function resolveSipaViaCcip(
 async function pinRequester(
   packet: RequestInlinePacket,
   deps: { resolveRequester(tag: string): Promise<RegistryTagResolution> },
-): Promise<{ error?: string }> {
+): Promise<{ error?: string; notUpgraded?: true }> {
   try {
     const resolution = await deps.resolveRequester(packet.requesterTag)
+    if (resolution.status === "staleRollup") {
+      return { error: recipientNotUpgradedCopy.title(packet.requesterTag), notUpgraded: true }
+    }
     if (resolution.status !== "resolved") {
       return { error: `@${packet.requesterTag} is no longer registered` }
     }

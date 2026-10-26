@@ -67,19 +67,6 @@ impl AssertedNote {
     }
 }
 
-/// Slot under which we record the creation tx hash of a discovered note, keyed by the
-/// note's unique note hash. Written during recipient sync, read by
-/// `emit_nullification_effect` so spending paths can include the creator tx hash in
-/// the offchain effect.
-pub global OXIDE_TOKEN_NOTE_CREATION_TX_HASH_CAPSULE_SLOT: Field =
-    sha256_to_field("OXIDE_TOKEN::NOTE_CREATION_TX_HASH".as_bytes());
-
-pub unconstrained fn note_creation_tx_hash_slot(unique_note_hash: Field) -> Field {
-    poseidon2_hash(
-        [OXIDE_TOKEN_NOTE_CREATION_TX_HASH_CAPSULE_SLOT, unique_note_hash],
-    )
-}
-
 pub global OXIDE_TOKEN_NOTE_SIGNATURE_CAPSULE_SLOT: Field = sha256_to_field("OXIDE_TOKEN::NOTE_SIGNATURE".as_bytes());
 
 unconstrained fn load_signature(contract_address: AztecAddress, randomness: Field) -> Signature {

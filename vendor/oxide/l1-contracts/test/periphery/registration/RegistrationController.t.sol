@@ -52,6 +52,7 @@ contract RegistrationControllerTest is RegistrationTestBase {
 
   function test_wrongFeeTokenReverts() external {
     TestERC20 other = new TestERC20("Other", "OTH", address(this));
+    _listInTable(address(other));
     bytes memory registrationData = _registrationData(NAME_HASH, defaultOwner);
     SIPABase sipa = _deployRegistrationSIPA(registrationData);
     other.mint(address(sipa), DEPOSIT);
@@ -102,7 +103,7 @@ contract RegistrationControllerTest is RegistrationTestBase {
 
   function test_addBeneficiaryAssignsSequentialIds() external {
     address funder2 = makeAddr("funder2");
-    vm.prank(regDomainOwner);
+    vm.prank(OWNER);
     uint256 id = registrationController.addBeneficiary(funder2);
     assertEq(id, 1);
     assertEq(registrationController.beneficiaries(1), funder2);
@@ -111,7 +112,7 @@ contract RegistrationControllerTest is RegistrationTestBase {
   }
 
   function test_addBeneficiaryRejectsZeroAddress() external {
-    vm.prank(regDomainOwner);
+    vm.prank(OWNER);
     vm.expectRevert(Errors.RegistrationController__ZeroBeneficiary.selector);
     registrationController.addBeneficiary(address(0));
   }
@@ -139,7 +140,7 @@ contract RegistrationControllerTest is RegistrationTestBase {
 
   function test_feeRoutesToAllowlistedBeneficiary() external {
     address funder2 = makeAddr("funder2");
-    vm.prank(regDomainOwner);
+    vm.prank(OWNER);
     registrationController.addBeneficiary(funder2);
 
     bytes memory registrationData = _registrationDataFull(

@@ -5,7 +5,7 @@
  * account installed is the credential's own, so the sign-in takes one assertion and adopts that
  * key; a nameless account is not read, and the second assertion recovers the same one.
  */
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { AnchorTier, CandidateProbe } from "@obsidion/front-core"
 import { getContractAddress } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
@@ -69,11 +69,19 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
     readNameOf: h.readNameOf,
     getCode: h.getCode,
     readAuthKeys: h.readAuthKeys,
+    readAuthKeysCounted: async (account: string, max: number) => {
+      const entries = await h.readAuthKeys(account, max)
+      return { entries, authKeyCount: entries.length }
+    },
   }),
 }))
 
 const { enterWithPasskey } = await import("../src/features/onboarding/oxideOnboarding")
-const { credentialIdToMetadata } = await import("@obsidion/front-core")
+const { credentialIdToMetadata, deriveBootstrapKey } = await import("@obsidion/front-core")
+const { predictAccountAddressLocally } = await import("@oxide/l1-contracts")
+/** The L1 account the installed-key read predicts for a master key under the catalog's factory. */
+const accountOf = (secret: Fr) =>
+  predictAccountAddressLocally(FACTORY, deriveBootstrapKey(secret).address)
 
 const ADDR = `0x${"aa".repeat(32)}`
 const account = {
@@ -119,7 +127,7 @@ async function freshBrowserWithPasskey(manager: "icloud" | "gpm" = "icloud") {
   ceremony.asserts.length = 0
   const createObsidionAccount = vi.fn(async () => account)
   // Only the passkey's own master key AND its own signing key derive the account.
-  const deriveAccountAddress = vi.fn(async (msk: Fr, pubkeyHex: string) => ({
+  const deriveAccountAddress = vi.fn(async (msk: Fr, [pubkeyHex]: readonly string[]) => ({
     toString: () =>
       msk.equals(created.secretKey) && pubkeyHex === created.pubkey ? ADDR : `0x${"bb".repeat(32)}`,
   }))
@@ -155,21 +163,27 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     return [{ name: "campaign", probes: [probe] }]
   }
 
+  const authKey = (pubkey: string) => ({
+    key: { qx: `0x${pubkey.slice(0, 64)}`, qy: `0x${pubkey.slice(64)}` },
+    metadata: `0x${"07".repeat(16)}`,
+  })
   /** The credential's own key, as registration installs it on the L1 account. */
   const installed = (created: { pubkey: string; credentialId: string }) => {
     h.getCode.mockResolvedValue("0x6080")
     h.readAuthKeys.mockResolvedValue([
-      {
-        key: { qx: `0x${created.pubkey.slice(0, 64)}`, qy: `0x${created.pubkey.slice(64)}` },
-        metadata: credentialIdToMetadata(created.credentialId),
-      },
+      { ...authKey(created.pubkey), metadata: credentialIdToMetadata(created.credentialId) },
     ])
   }
+  /** Only the passkey's own master key names an account; the signature's sibling candidate does not. */
+  const namesOnly = (secret: Fr) =>
+    h.readNameOf.mockImplementation(async (_registry: string, at: string) =>
+      at === accountOf(secret) ? NAME : NAMELESS,
+    )
 
   it("a named account's installed key settles the sign-in in one assertion", async () => {
     const { ceremony, created, wallet, createObsidionAccount, deriveAccountAddress } =
       await freshBrowserWithPasskey()
-    h.readNameOf.mockResolvedValue(NAME)
+    namesOnly(created.secretKey)
     installed(created)
     const { gate } = gateFor()
     const result = await enterWithPasskey(wallet as never, config, undefined, {
@@ -182,7 +196,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     expect(h.readAuthKeys).toHaveBeenCalled()
     expect(ceremony.asserts).toHaveLength(1)
     expect(gate).toHaveBeenCalledTimes(1)
-    expect(new Set(deriveAccountAddress.mock.calls.map(([, key]) => key))).toEqual(
+    expect(new Set(deriveAccountAddress.mock.calls.map(([, [key]]) => key))).toEqual(
       new Set([created.pubkey]),
     )
     expect(createObsidionAccount).toHaveBeenCalledWith(created.secretKey, expect.anything())
@@ -191,6 +205,32 @@ describe("a sign-in anchored only by the master key adopts the credential's real
       `${ADDR}:complete`,
       expect.objectContaining({ credentialId: created.credentialId, pubkey: created.pubkey }),
     )
+  })
+
+  it("two named accounts holding the key with different sets: ambiguous before any second assertion", async () => {
+    const { ceremony, created, wallet, createObsidionAccount } = await freshBrowserWithPasskey()
+    h.readNameOf.mockResolvedValue(NAME)
+    h.getCode.mockResolvedValue("0x6080")
+    h.readAuthKeys.mockImplementation(async (at: string) =>
+      at === accountOf(created.secretKey)
+        ? [authKey(created.pubkey)]
+        : [authKey(created.pubkey), authKey("ef".repeat(64))],
+    )
+    const { gate } = gateFor()
+    const before = held()
+    await expect(
+      enterWithPasskey(wallet as never, config, undefined, {
+        contractService: {} as never,
+        gate,
+        tiers: masterKeyOnly(created.secretKey),
+        chooser: true,
+      }),
+    ).rejects.toMatchObject({ name: "AmbiguousPasskeyError" })
+    expect(ceremony.asserts).toHaveLength(1)
+    expect(gate).toHaveBeenCalledTimes(1)
+    expect(createObsidionAccount).not.toHaveBeenCalled()
+    expect(h.addWebauthnAccount).not.toHaveBeenCalled()
+    expect(held()).toBe(before)
   })
 
   it("a nameless account's installed key is not read: the second assertion recovers the same key", async () => {
@@ -209,7 +249,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     expect(h.readAuthKeys).not.toHaveBeenCalled()
     expect(ceremony.asserts).toHaveLength(2)
     expect(gate).toHaveBeenCalledTimes(2)
-    expect(new Set(deriveAccountAddress.mock.calls.map(([, key]) => key))).toEqual(
+    expect(new Set(deriveAccountAddress.mock.calls.map(([, [key]]) => key))).toEqual(
       new Set([created.pubkey]),
     )
     expect(createObsidionAccount).toHaveBeenCalledWith(created.secretKey, expect.anything())
@@ -275,7 +315,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
     expect(result).toMatchObject({ entered: false, reason: "unclaimed" })
     expect(ceremony.asserts).toHaveLength(2)
     expect(gate).toHaveBeenCalledTimes(2)
-    expect(new Set(deriveAccountAddress.mock.calls.map(([, key]) => key))).toEqual(
+    expect(new Set(deriveAccountAddress.mock.calls.map(([, [key]]) => key))).toEqual(
       new Set([created.pubkey]),
     )
     expect(h.addWebauthnAccount).toHaveBeenCalledWith(
@@ -436,12 +476,13 @@ describe("a sign-in anchored only by the master key adopts the credential's real
         const { ceremony, created, wallet, createObsidionAccount } = await laptopSignIn(
           "cross-device",
         )
+        const asked = ceremony.assertRequests.length
         const result = await phoneSignIn(wallet, masterKeyOnly(created.secretKey), {
           credentialId: created.credentialId,
-          pubkeyHex: created.pubkey,
         })
         expect(result).toMatchObject({ entered: false, reason: "unclaimed" })
-        const request = ceremony.assertRequests.at(-1)!
+        // The pinned request; the key-settling second one is deliberately unsteered.
+        const request = ceremony.assertRequests[asked]!
         expect(request.hints).toEqual(PHONE_HINTS)
         expect(request.transports).toEqual(["hybrid", "usb", "nfc", "ble", "smart-card"])
         await committedTheAccount(created, createObsidionAccount)
@@ -454,10 +495,7 @@ describe("a sign-in anchored only by the master key adopts the credential's real
         )
         ceremony.creds.get(created.credentialId)!.secret = new Uint8Array(32).fill(7)
         const before = held()
-        for (const hints of [
-          undefined,
-          { credentialId: created.credentialId, pubkeyHex: created.pubkey },
-        ]) {
+        for (const hints of [undefined, { credentialId: created.credentialId }]) {
           const result = await phoneSignIn(wallet, masterKeyOnly(created.secretKey), hints)
           expect(result).toMatchObject({ entered: false, reason: "unknown" })
         }

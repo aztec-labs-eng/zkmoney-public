@@ -13,13 +13,13 @@
     "./*": "./dest/*"
   },
   "dependencies": {
-    "@aztec/foundation": "5.2.0",
+    "@aztec-labs/foundation": "6.0.0",
     "@oxide/l1-contracts": "workspace:^",
     "@oxide/oxide-client": "workspace:^",
-    "viem": "npm:@aztec/viem@2.38.2"
+    "viem": "2.57.1"
   },
   "devDependencies": {
-    "@aztec/aztec.js": "5.2.0",
+    "@aztec-labs/aztec.js": "6.0.0",
     "@jest/globals": "^30.0.0",
     "@oxide/oxide-lib": "workspace:^",
     "@swc/core": "^1.10.12",

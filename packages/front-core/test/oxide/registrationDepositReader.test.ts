@@ -1,29 +1,32 @@
 import { describe, expect, it, vi } from "vitest"
 import type { PublicClient } from "viem"
+import { SipaIntent } from "@oxide/l1-contracts"
 import { createRegistrationDepositReader } from "../../src/oxide/oxideRegistrationDeps"
 
 const REGISTRY = "0x0000000000000000000000000000000000000e40"
-const REGISTRATION_IMPL = "0x0000000000000000000000000000000000000fee"
-const PORTAL = "0x0000000000000000000000000000000000000b0a"
+const TABLE = "0x0000000000000000000000000000000000000fb1"
+const PORTAL = "0x0000000000000000000000000000000000000a01"
 const TOKEN = "0x00000000000000000000000000000000000000da"
 const DAI = 10n ** 18n
-/** `OxidePortal.FPC_FUNDING_CUT`. */
-const CUT = DAI / 4n
-/** The registration implementation's `depositFee()`: the relayer's take on a sweep. */
+/** The registration row's sweep tip: the relayer's take on a sweep. */
 const SWEEP = DAI / 2n
+const ROUTE = { forwardingTable: TABLE, token: TOKEN, intent: SipaIntent.Registration } as const
 /** The rail's store; the floor never reads it. */
 const STORE = { load: async () => {}, get: () => null }
 
-/** Chain stub: the schedule immutables, the portal's cut and the implementation's sweep fee. */
-function client(values: { min: bigint; fee: bigint; fail?: boolean; cutFail?: boolean }) {
+/** Chain stub: the schedule immutables, the table's registration row and its portal's cap. */
+function client(values: { min: bigint; fee: bigint; fail?: boolean; sweepFail?: boolean }) {
   const readContract = vi.fn(async ({ address, functionName }: never) => {
     if ((address as string).toLowerCase() === REGISTRY) {
       if (values.fail) throw new Error("registry read refused")
       return functionName === "REGISTRATION_MIN" ? values.min : values.fee
     }
-    if ((address as string).toLowerCase() === REGISTRATION_IMPL) return SWEEP
-    if (values.cutFail) throw new Error("portal read refused")
-    return CUT
+    if ((address as string).toLowerCase() === TABLE) {
+      if (values.sweepFail) throw new Error("table read refused")
+      return [PORTAL, `0x${"0".repeat(40)}`, 0n, SWEEP]
+    }
+    if ((address as string).toLowerCase() === PORTAL) return 10n ** 30n
+    throw new Error(`unexpected read of ${address}`)
   })
   return { client: { readContract } as unknown as PublicClient, readContract }
 }
@@ -33,9 +36,8 @@ describe("registration deposit floor", () => {
     const { client: publicClient } = client({ min: 10n * DAI, fee: 1n * DAI })
     const reader = createRegistrationDepositReader({
       publicClient,
-      registrationImplementation: REGISTRATION_IMPL,
+      registrationRoute: ROUTE,
       registry: REGISTRY,
-      portal: PORTAL,
       store: STORE,
     })
     // 5 DAI against the 11 floor is the bug this guards: min+fee, not the mirrored constants.
@@ -46,9 +48,8 @@ describe("registration deposit floor", () => {
     const { client: publicClient } = client({ min: 10n * DAI, fee: 1n * DAI })
     const reader = createRegistrationDepositReader({
       publicClient,
-      registrationImplementation: REGISTRATION_IMPL,
+      registrationRoute: ROUTE,
       registry: REGISTRY,
-      portal: PORTAL,
       store: STORE,
       termsFor: (account) =>
         account === "0xsigned" ? { fee: SWEEP, minDeposit: 2n * DAI } : undefined,
@@ -57,26 +58,12 @@ describe("registration deposit floor", () => {
     expect(await reader.floor(TOKEN, "0xother")).toBe(11n * DAI)
   })
 
-  it("the cut binds the floor once the minimum falls to it", async () => {
-    const { client: publicClient } = client({ min: 10n * DAI, fee: 1n * DAI })
-    const reader = createRegistrationDepositReader({
-      publicClient,
-      registrationImplementation: REGISTRATION_IMPL,
-      registry: REGISTRY,
-      portal: PORTAL,
-      store: STORE,
-      termsFor: () => ({ fee: 1n * DAI, minDeposit: CUT }),
-    })
-    expect(await reader.floor(TOKEN, "0xwaived")).toBe(1n * DAI + CUT + 1n)
-  })
-
   it("gives no floor for a schedule whose fee cannot pay the sweep", async () => {
     const { client: publicClient } = client({ min: 0n, fee: 0n })
     const reader = createRegistrationDepositReader({
       publicClient,
-      registrationImplementation: REGISTRATION_IMPL,
+      registrationRoute: ROUTE,
       registry: REGISTRY,
-      portal: PORTAL,
       store: STORE,
       termsFor: (account) =>
         account === "0xshort" ? { fee: SWEEP - 1n, minDeposit: 2n * DAI } : undefined,
@@ -86,13 +73,12 @@ describe("registration deposit floor", () => {
     expect(await reader.floor(TOKEN, "0xshort")).toBeNull()
   })
 
-  it("caches the immutables and the portal's cut after the first read", async () => {
+  it("caches the immutables and the sweep fee after the first read", async () => {
     const { client: publicClient, readContract } = client({ min: 10n * DAI, fee: 1n * DAI })
     const reader = createRegistrationDepositReader({
       publicClient,
-      registrationImplementation: REGISTRATION_IMPL,
+      registrationRoute: ROUTE,
       registry: REGISTRY,
-      portal: PORTAL,
       store: STORE,
     })
     await reader.floor(TOKEN, "0xacc1")
@@ -102,22 +88,20 @@ describe("registration deposit floor", () => {
         ([{ address }]: never[]) => (address as string).toLowerCase() === target,
       ).length
     expect(reads(REGISTRY)).toBe(2)
-    expect(reads(PORTAL)).toBe(1)
-    expect(reads(REGISTRATION_IMPL)).toBe(1)
+    expect(reads(TABLE)).toBe(1)
   })
 
-  it("gives no floor while the portal's cut is unreadable", async () => {
-    const values = { min: 10n * DAI, fee: 1n * DAI, cutFail: true }
+  it("gives no floor while the sweep fee is unreadable", async () => {
+    const values = { min: 10n * DAI, fee: 1n * DAI, sweepFail: true }
     const { client: publicClient } = client(values)
     const reader = createRegistrationDepositReader({
       publicClient,
-      registrationImplementation: REGISTRATION_IMPL,
+      registrationRoute: ROUTE,
       registry: REGISTRY,
-      portal: PORTAL,
       store: STORE,
     })
     expect(await reader.floor(TOKEN, "0xacc1")).toBeUndefined()
-    values.cutFail = false
+    values.sweepFail = false
     expect(await reader.floor(TOKEN, "0xacc1")).toBe(11n * DAI)
   })
 
@@ -126,9 +110,8 @@ describe("registration deposit floor", () => {
     const { client: publicClient } = client(values)
     const reader = createRegistrationDepositReader({
       publicClient,
-      registrationImplementation: REGISTRATION_IMPL,
+      registrationRoute: ROUTE,
       registry: REGISTRY,
-      portal: PORTAL,
       store: STORE,
     })
     expect(await reader.floor(TOKEN, "0xacc1")).toBeUndefined()
@@ -144,9 +127,8 @@ describe("registration deposit state", () => {
   const reader = (record: Record<string, unknown> | null) =>
     createRegistrationDepositReader({
       publicClient: {} as PublicClient,
-      registrationImplementation: REGISTRATION_IMPL,
+      registrationRoute: ROUTE,
       registry: REGISTRY,
-      portal: PORTAL,
       store: { load: async () => {}, get: () => record as never },
     })
 

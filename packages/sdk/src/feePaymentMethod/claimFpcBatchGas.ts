@@ -29,8 +29,8 @@
  * declaration it is the whitelist ceiling's own refusal (the fee assert would reject the batch),
  * moved earlier and made explicit.
  */
-import { Gas, GasFees } from "@aztec/stdlib/gas"
-import type { FunctionCall } from "@aztec/stdlib/abi"
+import { Gas, GasFees } from "@aztec-labs/stdlib/gas"
+import type { FunctionCall } from "@aztec-labs/stdlib/abi"
 import {
   CLAIM_FPC_MAX_BATCH_DA_GAS,
   CLAIM_FPC_MAX_BATCH_L2_GAS,
@@ -95,8 +95,7 @@ const MARGINAL_BY_FUNCTION: Record<string, keyof ReturnType<typeof deriveClaimFp
 const GATE_MARGINAL: Record<ClaimFpcGateKind, ClaimFpcMeasuredTx> = {
   // Two signature checks and a CREATE2 derivation, all in-circuit: no side effects, no gas.
   nameClaim: { daGas: 0, l2Gas: 0 },
-  // The consumed L1->L2 message's nullifier and the account authwit's the gate makes `subscribe`
-  // collect.
+  // A key proof and a message existence check, both in-circuit: no side effects either.
   registration: privateSideEffectGas(registrationGateEffects()),
   // No gate runs: a rail entered by gift alone refuses every subscribe.
   none: { daGas: 0, l2Gas: 0 },

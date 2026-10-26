@@ -3,7 +3,7 @@ pragma solidity >=0.8.27;
 
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
+import {IForwardingTable} from "./interfaces/IForwardingTable.sol";
 import {SIPABase} from "./SIPABase.sol";
 import {RecoveryCommitmentLib} from "./RecoveryCommitmentLib.sol";
 import {Errors} from "@periphery/Errors.sol";
@@ -11,35 +11,35 @@ import {Errors} from "@periphery/Errors.sol";
 contract SIPAFactory is Ownable {
   uint256 private constant CLONE_IMPLEMENTATION_OFFSET = 10;
   uint256 private constant CLONE_RUNTIME_PREFIX = 45;
+  uint256 private constant ARGS_LENGTH = 5 * 32;
 
   mapping(address implementation => SIPABase.Intent intent) public intentOf;
 
-  mapping(address portal => mapping(SIPABase.Intent intent => address implementation)) public implementationFor;
+  mapping(SIPABase.Intent intent => address implementation) public implementationFor;
 
-  event ImplementationBlessed(
-    address indexed portal, address indexed implementation, uint256 rollupVersion, SIPABase.Intent intent
-  );
+  mapping(address table => bool approved) public approvedTable;
+
+  event ImplementationBlessed(address indexed implementation, SIPABase.Intent indexed intent);
+
+  event TableBlessed(address indexed table);
 
   constructor(address owner) Ownable(owner) {}
 
-  function bless(address implementation) external onlyOwner {
+  function blessImplementation(address implementation) external onlyOwner {
     require(implementation != address(0), Errors.SIPAFactory__ZeroImplementation());
-
     SIPABase.Intent intent = SIPABase(implementation).INTENT();
     require(intent != SIPABase.Intent.None, Errors.SIPAFactory__ZeroImplementation());
 
-    IOxidePortal portal = SIPABase(implementation).PORTAL();
-    address portalAddress = address(portal);
-    require(
-      implementationFor[portalAddress][intent] == address(0),
-      Errors.SIPAFactory__PortalIntentAlreadyPointed(
-        portalAddress, uint8(intent), implementationFor[portalAddress][intent]
-      )
-    );
-
     intentOf[implementation] = intent;
-    implementationFor[portalAddress][intent] = implementation;
-    emit ImplementationBlessed(portalAddress, implementation, portal.ROLLUP_VERSION(), intent);
+    implementationFor[intent] = implementation;
+    emit ImplementationBlessed(implementation, intent);
+  }
+
+  function blessTable(IForwardingTable table) external onlyOwner {
+    require(address(table) != address(0), Errors.SIPAFactory__ZeroTable());
+
+    approvedTable[address(table)] = true;
+    emit TableBlessed(address(table));
   }
 
   function sipaIntentOf(address caller) public view returns (SIPABase.Intent) {
@@ -50,12 +50,15 @@ contract SIPAFactory is Ownable {
     SIPABase.Intent intent = intentOf[implementation];
     if (intent == SIPABase.Intent.None) return SIPABase.Intent.None;
 
+    bytes memory args = Clones.fetchCloneArgs(caller);
+    if (args.length != ARGS_LENGTH) return SIPABase.Intent.None;
+
     bool derives =
-      caller
-      == Clones.predictDeterministicAddressWithImmutableArgs(
-        implementation, Clones.fetchCloneArgs(caller), bytes32(0), address(this)
-      );
-    return derives ? intent : SIPABase.Intent.None;
+      caller == Clones.predictDeterministicAddressWithImmutableArgs(implementation, args, bytes32(0), address(this));
+    if (!derives) return SIPABase.Intent.None;
+
+    if (!approvedTable[address(abi.decode(args, (SIPABase.Args)).table)]) return SIPABase.Intent.None;
+    return intent;
   }
 
   function isBlessed(address caller) external view returns (bool) {
@@ -75,10 +78,11 @@ contract SIPAFactory is Ownable {
     bytes32 intentHash,
     bytes32 recoveryCommitment,
     uint256 rollupVersion,
-    bool resweepable
+    bool resweepable,
+    IForwardingTable table
   ) external view returns (address) {
     return Clones.predictDeterministicAddressWithImmutableArgs(
-      implementation, _args(intentHash, recoveryCommitment, rollupVersion, resweepable), bytes32(0)
+      implementation, _args(intentHash, recoveryCommitment, rollupVersion, resweepable, table), bytes32(0)
     );
   }
 
@@ -87,18 +91,21 @@ contract SIPAFactory is Ownable {
     bytes32 intentHash,
     bytes32 recoveryCommitment,
     uint256 rollupVersion,
-    bool resweepable
+    bool resweepable,
+    IForwardingTable table
   ) external returns (address) {
     return Clones.cloneDeterministicWithImmutableArgs(
-      implementation, _args(intentHash, recoveryCommitment, rollupVersion, resweepable), bytes32(0)
+      implementation, _args(intentHash, recoveryCommitment, rollupVersion, resweepable, table), bytes32(0)
     );
   }
 
-  function _args(bytes32 intentHash, bytes32 recoveryCommitment, uint256 rollupVersion, bool resweepable)
-    private
-    pure
-    returns (bytes memory)
-  {
+  function _args(
+    bytes32 intentHash,
+    bytes32 recoveryCommitment,
+    uint256 rollupVersion,
+    bool resweepable,
+    IForwardingTable table
+  ) private pure returns (bytes memory) {
     require(
       RecoveryCommitmentLib.fitsL2Field(recoveryCommitment),
       Errors.SIPAFactory__RecoveryCommitmentTooLarge(recoveryCommitment)
@@ -108,7 +115,8 @@ contract SIPAFactory is Ownable {
         intentHash: intentHash,
         recoveryCommitment: recoveryCommitment,
         rollupVersion: rollupVersion,
-        resweepable: resweepable
+        resweepable: resweepable,
+        table: table
       })
     );
   }

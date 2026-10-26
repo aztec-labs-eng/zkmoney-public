@@ -17,6 +17,8 @@ import {EntryPoint} from "@account-abstraction/contracts/core/EntryPoint.sol";
 import {PackedUserOperation} from "@account-abstraction/contracts/interfaces/PackedUserOperation.sol";
 import {ERC4337Utils} from "@openzeppelin/contracts/account/utils/draft-ERC4337Utils.sol";
 import {AccountSignatures} from "@test/helpers/AccountSignatures.sol";
+import {ForwardingTableFixture} from "@test/helpers/ForwardingTableFixture.sol";
+import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 
 abstract contract RegistrationTestBase is OxidePortalBase {
   uint256 internal constant G_X = 0x79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798;
@@ -59,7 +61,6 @@ abstract contract RegistrationTestBase is OxidePortalBase {
 
   function setUp() public virtual override {
     super.setUp();
-    _initialize();
 
     (regDomainOwner, regDomainOwnerKey) = makeAddrAndKey("regDomainOwner");
     vm.prank(OWNER);
@@ -327,15 +328,31 @@ abstract contract RegistrationTestBase is OxidePortalBase {
   function _deployRegistrationSIPA(bytes memory registrationData) internal returns (SIPABase) {
     return SIPABase(
       sipaFactory.deploySIPA(
-        address(registrationSIPAImplementation), keccak256(registrationData), regRecovery, ROLLUP_VERSION, true
+        address(registrationSIPAImplementation),
+        keccak256(registrationData),
+        regRecovery,
+        ROLLUP_VERSION,
+        true,
+        forwardingTable
       )
     );
   }
 
   function _predictRegistrationSIPA(bytes memory registrationData) internal view returns (address) {
     return sipaFactory.predictSIPA(
-      address(registrationSIPAImplementation), keccak256(registrationData), regRecovery, ROLLUP_VERSION, true
+      address(registrationSIPAImplementation),
+      keccak256(registrationData),
+      regRecovery,
+      ROLLUP_VERSION,
+      true,
+      forwardingTable
     );
+  }
+
+  function _listInTable(address token) internal {
+    IOxidePortal tokenPortal = IOxidePortal(address(_buildPortal(token)));
+    vm.prank(OWNER);
+    forwardingTable.addRow(token, tokenPortal, ForwardingTableFixture.standardIntents());
   }
 
   function _deployAndFund(bytes memory registrationData, uint256 amount) internal returns (SIPABase sipa) {

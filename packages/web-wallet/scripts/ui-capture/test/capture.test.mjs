@@ -5,7 +5,7 @@ import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:f
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { chromium } from "@playwright/test"
-import { PHONE_PRESETS, selectedViewports } from "../plan.mjs"
+import { PHONE_PRESETS, routeFile, selectedViewports } from "../plan.mjs"
 import { externalOutputDir, outputDirectory, outputPath, writeOutputFile } from "../output.mjs"
 import { installCaptureGuard, verificationErrors, localBaseUrl } from "../capture-support.mjs"
 import { startVideo, videoDimensions } from "../video.mjs"
@@ -23,8 +23,18 @@ const close = (server) => new Promise((resolve) => server.close(resolve))
 test("phone batch includes the short viewport and rejects ambiguous dimensions", () => {
   assert.deepEqual(selectedViewports("all").map(({ width, height }) => `${width}x${height}`), PHONE_PRESETS)
   assert.deepEqual(selectedViewports(undefined, "1280x832"), [{ width: 1280, height: 832 }])
+  assert.deepEqual(selectedViewports(undefined, "402x874,1280x832"), [{ width: 402, height: 874 }, { width: 1280, height: 832 }])
+  assert.throws(() => selectedViewports(undefined, "402x874,"))
   assert.throws(() => selectedViewports("390x844", "1280x832"))
   assert.throws(() => selectedViewports("phone"))
+})
+
+test("each direct route gets its own screenshot name", () => {
+  assert.equal(routeFile("/withdraw?cap=w-review"), "withdraw-cap-w-review")
+  assert.equal(routeFile("/"), "root")
+  const long = routeFile(`/request#${"a".repeat(400)}`)
+  assert.equal(long.length, 80)
+  assert.notEqual(long, routeFile(`/request#${"a".repeat(399)}b`))
 })
 
 test("invalid source destinations create no directories, including through ancestor symlinks", async () => {

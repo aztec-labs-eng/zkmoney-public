@@ -1,8 +1,8 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
 import { FleetSigner } from '@oxide/oxide-client/fleet_signer.js';
-import type { TeeSigner } from '@oxide/oxide-lib/types.js';
+import type { RegisteredTeeSigner } from '@oxide/oxide-client/types.js';
 
 import type { PublicClient } from 'viem';
 
@@ -17,7 +17,7 @@ import { OxideProverClaimRewardCollector } from './prover_claim/oxide_prover_cla
  * cover their own gas.
  *
  * The relayer's signer is the prover. `claimProverTips` credits `msg.sender`, and the Portal pays only the
- * address recorded in `$firstProver`, so the collector can only collect what this same key proved.
+ * rollup's recorded first prover, so the collector can only collect what this same key proved.
  *
  * Claims are finalized by `teeSigner` when one is given, else by the enclave fleet the manifest publishes.
  */
@@ -27,7 +27,7 @@ export async function startProverClaimCollector(
   client: PublicClient,
   l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address' | 'maxFeePerGasCap'>,
   priceOracle: PriceOracle,
-  teeSigner?: TeeSigner,
+  teeSigner?: RegisteredTeeSigner,
 ): Promise<OxideProverClaimRewardCollector> {
   const missing = deployments.find(({ publicConfig }) => !publicConfig.enclaveUrl);
   if (!teeSigner && missing) {
@@ -42,6 +42,7 @@ export async function startProverClaimCollector(
     deployments.map(async ({ publicConfig }) => ({
       portalAddress: publicConfig.portal,
       proverSubsidyAddress: publicConfig.proverSubsidy,
+      broadcasterAddress: publicConfig.broadcaster,
       signer:
         teeSigner ??
         (await FleetSigner.connect(publicConfig.enclaveUrl, new OxidePortalContract(client, publicConfig.portal))),

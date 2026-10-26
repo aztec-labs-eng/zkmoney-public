@@ -1,11 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 
-const { fetchRecordsMock, selectResolverMock, FAKE_ARTIFACT } = vi.hoisted(() => ({
-  fetchRecordsMock: vi.fn(),
-  selectResolverMock: vi.fn(),
-  FAKE_ARTIFACT: { name: "Broadcaster", functions: [] },
-}))
+const { fetchRecordsMock, historicalRecordsMock, selectResolverMock, FAKE_ARTIFACT } = vi.hoisted(
+  () => ({
+    fetchRecordsMock: vi.fn(),
+    historicalRecordsMock: vi.fn(),
+    selectResolverMock: vi.fn(),
+    FAKE_ARTIFACT: { name: "Broadcaster", functions: [] },
+  }),
+)
 
 // package; the bundled artifact loader needs no real artifact here. AztecAddress
 // gets a minimal fromString/toString fake, and the per-network policy is stubbed so
@@ -15,6 +18,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ensureContractRegisteredInPXE: (await importOriginal<typeof import("@obsidion/sdk")>())
     .ensureContractRegisteredInPXE,
   fetchSipaResolverOperators: fetchRecordsMock,
+  fetchHistoricalSipaResolverOperators: historicalRecordsMock,
   selectManifestResolverOperator: selectResolverMock,
   getBroadcasterArtifact: () => FAKE_ARTIFACT,
   resolverSelectionPolicy: (network: string) =>
@@ -26,7 +30,7 @@ vi.mock("@obsidion/sdk", async (importOriginal) => ({
         },
   Network: { TESTNET: "testnet", SANDBOX: "sandbox", MAINNET: "mainnet" },
 }))
-vi.mock("@aztec/aztec.js/addresses", () => ({
+vi.mock("@aztec-labs/aztec.js/addresses", () => ({
   AztecAddress: {
     fromStringUnsafe: (value: string) => ({ toString: () => value.toLowerCase() }),
   },
@@ -45,6 +49,7 @@ const DEPLOYED_AT = new Date(Number(DEPLOY_BLOCK) * BLOCK_SEC * 1000).toISOStrin
 const TUPLE = {
   deployedAt: DEPLOYED_AT,
   portal: "0x2c5a54e7fff0593778371ee02a8b31e39c0cf8fc",
+  forwardingTable: "0xfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfbfb",
   registry: "0x0b903b955dbc0c97252f1ce9e43f8c26e8f5635f",
   accountMetadataRegistry: "0x1c903b955dbc0c97252f1ce9e43f8c26e8f5635f",
   l2Broadcaster: "0x29c4d02a2e26828eb5efb19467719a8430b7993ce18f4a6506f79f6ce072f796",
@@ -82,6 +87,7 @@ function makeNode(instance: unknown = INSTANCE) {
 beforeEach(() => {
   resetResolverOperatorRecordsForTests()
   fetchRecordsMock.mockReset().mockResolvedValue([RESOLVER_RECORD])
+  historicalRecordsMock.mockReset().mockResolvedValue([RESOLVER_RECORD])
   selectResolverMock.mockReset().mockReturnValue(RESOLVER_RECORD)
 })
 
@@ -103,7 +109,7 @@ describe("setupSipaDiscovery", () => {
       toBlock: HEAD,
     })
     expect(selectResolverMock).toHaveBeenCalledWith([RESOLVER_RECORD], {
-      portal: TUPLE.portal,
+      forwardingTable: TUPLE.forwardingTable,
       resolverGatewayUrl: TUPLE.resolverGatewayUrl,
       preferredOwner: PREFERRED_RESOLVER_OWNER,
       failOnAmbiguousMatch: false,
@@ -172,33 +178,53 @@ describe("setupSipaDiscovery", () => {
     expect(getBlockNumber).not.toHaveBeenCalled()
   })
 
-  it("falls back to the live tuple's resolver when none matches a retired tuple", async () => {
-    const live = { ...TUPLE, portal: "0x" + "bb".repeat(20) } as unknown as OxideEnvTuple
-    selectResolverMock
-      .mockImplementationOnce(() => {
-        throw new Error("no resolver record matches the manifest portal")
-      })
-      .mockReturnValueOnce(RESOLVER_RECORD)
-
-    const result = await setupSipaDiscovery({
-      pxe: makePxe(),
+  it("registers every historical sender without reading the current operator record", async () => {
+    const rotated = { ...RESOLVER_RECORD, l2Address: "0x" + "12".repeat(32) }
+    historicalRecordsMock.mockResolvedValue([RESOLVER_RECORD, rotated])
+    const pxe = makePxe()
+    await setupSipaDiscovery({
+      pxe,
       node: makeNode(),
       publicClient: CLIENT,
       tuple: TUPLE,
       network: SANDBOX,
-      resolverFallbackTuple: live,
+      historical: true,
     })
-
-    expect(selectResolverMock).toHaveBeenCalledTimes(2)
-    expect(selectResolverMock.mock.calls[1]![1]).toMatchObject({ portal: live.portal })
-    expect(result.resolver).toBe(RESOLVER_RECORD)
-    // Discovery still targets the RETIRED deployment's Broadcaster.
-    expect(result.broadcaster.toString()).toBe(TUPLE.l2Broadcaster)
+    expect(
+      pxe.registerSender.mock.calls.map(([sender]) =>
+        (sender as { toString(): string }).toString(),
+      ),
+    ).toEqual([RESOLVER_RECORD.l2Address, rotated.l2Address])
+    expect(fetchRecordsMock).not.toHaveBeenCalled()
+    expect(selectResolverMock).not.toHaveBeenCalled()
+    expect(historicalRecordsMock).toHaveBeenCalledWith(
+      CLIENT,
+      TUPLE.accountMetadataRegistry,
+      { fromBlock: DEPLOY_BLOCK, toBlock: HEAD },
+      expect.objectContaining({ forwardingTable: TUPLE.forwardingTable }),
+    )
   })
 
-  it("without a fallback, a non-matching tuple still throws", async () => {
+  it("does not substitute a current sender when historical discovery fails", async () => {
+    historicalRecordsMock.mockRejectedValue(new Error("no historical resolver matches"))
+    const pxe = makePxe()
+    await expect(
+      setupSipaDiscovery({
+        pxe,
+        node: makeNode(),
+        publicClient: CLIENT,
+        tuple: TUPLE,
+        network: SANDBOX,
+        historical: true,
+      }),
+    ).rejects.toThrow("no historical resolver matches")
+    expect(fetchRecordsMock).not.toHaveBeenCalled()
+    expect(pxe.registerSender).not.toHaveBeenCalled()
+  })
+
+  it("rejects a non-matching current tuple", async () => {
     selectResolverMock.mockImplementation(() => {
-      throw new Error("no resolver record matches the manifest portal")
+      throw new Error("no resolver record matches the manifest forwarding table")
     })
     await expect(
       setupSipaDiscovery({
@@ -227,6 +253,16 @@ describe("setupSipaDiscovery", () => {
       expect(pxe.registerSender).not.toHaveBeenCalled()
       expect(pxe.registerContract).not.toHaveBeenCalled()
     }
+  })
+
+  it("throws on a tuple that names no forwarding table, registering no sender", async () => {
+    const pxe = makePxe()
+    const tuple = { ...TUPLE, forwardingTable: undefined } as unknown as OxideEnvTuple
+    await expect(
+      setupSipaDiscovery({ pxe, node: makeNode(), publicClient: CLIENT, tuple, network: SANDBOX }),
+    ).rejects.toThrow(/lacks forwardingTable/)
+    expect(selectResolverMock).not.toHaveBeenCalled()
+    expect(pxe.registerSender).not.toHaveBeenCalled()
   })
 
   it("throws when the node has no instance at l2Broadcaster; the Broadcaster stays unregistered", async () => {

@@ -4,9 +4,9 @@
  * allowance and refill period. A stored zero on a rail that refills cannot say whether the next
  * batch renews it; only the batch itself finds out.
  */
-import { Contract } from "@aztec/aztec.js/contracts"
-import type { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
+import { Contract } from "@aztec-labs/aztec.js/contracts"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
 
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
 import { claimFpcSubscriptionUses, hasClaimFpcSubscription } from "./claimSponsor.js"

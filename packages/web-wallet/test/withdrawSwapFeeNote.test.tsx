@@ -17,10 +17,17 @@ import {
 import type { FakeSwapControl } from "./fixtures/fakeSwapSimulator"
 
 const control = vi.hoisted<FakeSwapControl>(() => ({ relayerTip: 3n * 10n ** 18n, calls: [] }))
-// What the mocked portal reads back as FPC_FUNDING_CUT.
-const CUT = vi.hoisted(() => 250_000_000_000_000_000n)
 const submit = vi.hoisted(() => vi.fn())
 
+// The executor's withdrawal fee is priced in its own suites; here it costs nothing.
+vi.mock("../src/features/withdraw/withdrawalFee", () => ({
+  withdrawalExecutorFee: async () => 0n,
+  activeWithdrawalFee: async () => 0n,
+  activeWithdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutorAt: async () => ({ fee: 0n }),
+  useActiveWithdrawalFee: () => 0n,
+}))
 vi.mock("@obsidion/sdk", async (importOriginal) => {
   const sdk = await importOriginal<typeof import("@obsidion/sdk")>()
   const { fakeSwapSimulator } = await import("./fixtures/fakeSwapSimulator")
@@ -54,7 +61,10 @@ vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
     swapEscrowFactoryV2: `0x${"fa".repeat(20)}`,
     operationExecutor: `0x${"e0".repeat(20)}`,
   }),
-  l1PublicClient: () => ({ readContract: async () => CUT }),
+  l1PublicClient: () => ({}),
+}))
+vi.mock("../src/features/token/useTxAmountCap", () => ({
+  useTxAmountCap: () => 5166n * 10n ** 18n,
 }))
 vi.mock("../src/lib/analytics", () => ({
   fireEvent: vi.fn(),
@@ -194,17 +204,17 @@ describe("WithdrawToWalletModal — swap fee note", () => {
     // The typed 50 reaches the escrow whole, and the fake pays 99% of it.
     expect(row("Send")).toBe("$50 ≈ 49.5 USDC")
     expect(row("Token")).toBe("USDC")
-    expect(row("Sending total")).toBe("$53.35")
+    expect(row("Sending total")).toBe("$53.10")
     await act(async () => button("Confirm withdrawal")!.click())
 
     expect(submit).toHaveBeenCalledTimes(1)
     const [, recipient, charged, , , receiveAsset, swapCommit] = submit.mock.calls[0]!
     expect(recipient).toBe(RECIPIENT)
-    // The burn is what was typed plus the 3.35 floor on top.
-    expect(charged).toBe("53.35")
+    // The burn is what was typed plus the 3.10 floor on top.
+    expect(charged).toBe("53.1")
     expect(receiveAsset).toBe("USDC")
-    // The fake pays (burn - withdrawal tip - portal cut - swap tip) * 0.99 in 6-dp USDC.
-    const swapInput = parseUnits("53.35", 18) - WITHDRAW_RELAYER_TIP - CUT - 3n * 10n ** 18n
+    // The fake pays (burn - withdrawal tip - swap tip) * 0.99 in 6-dp USDC.
+    const swapInput = parseUnits("53.1", 18) - WITHDRAW_RELAYER_TIP - 3n * 10n ** 18n
     expect(swapCommit).toEqual({
       relayerTip: 3n * 10n ** 18n,
       amountOut: (swapInput * 99n) / 100n / 10n ** 12n,
@@ -252,7 +262,7 @@ describe("WithdrawToWalletModal — swap fee note", () => {
       }
       const burns = new Set(control.calls.slice(priced).map((c) => c.amount.toString()))
       expect(burns.size).toBe(1)
-      expect(row("Sending total")).toBe("$53.35")
+      expect(row("Sending total")).toBe("$53.10")
     } finally {
       vi.useRealTimers()
     }

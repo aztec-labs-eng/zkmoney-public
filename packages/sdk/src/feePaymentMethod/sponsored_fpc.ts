@@ -1,11 +1,11 @@
-import { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { getContractInstanceFromInstantiationParams } from "@aztec/stdlib/contract"
-import { SPONSORED_FPC_SALT } from "@aztec/constants"
-import { PXE } from "@aztec/pxe/client/lazy"
-import { SponsoredFeePaymentMethod } from "@aztec/aztec.js/fee"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { getContractInstanceFromInstantiationParams } from "@aztec-labs/stdlib/contract"
+import { SPONSORED_FPC_SALT } from "@aztec-labs/constants"
+import { PXE } from "@aztec-labs/pxe/client/lazy"
+import { SponsoredFeePaymentMethod } from "@aztec-labs/aztec.js/fee"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 
 export async function getSponsoredFeePaymentMethod(pxe: PXE) {
   const paymentContract = await getDeployedSponsoredFPCAddress(pxe)
@@ -16,7 +16,7 @@ export async function getSponsoredFeePaymentMethod(pxe: PXE) {
 // fee paths touch — keep it out of the entry chunk.
 let _sponsoredFpcArtifact: Promise<ContractArtifact> | null = null
 const getSponsoredFpcArtifact = (): Promise<ContractArtifact> => {
-  _sponsoredFpcArtifact ??= import("@aztec/noir-contracts.js/SponsoredFPC").then(
+  _sponsoredFpcArtifact ??= import("@aztec-labs/noir-contracts.js/SponsoredFPC").then(
     (m) => m.SponsoredFPCContract.artifact,
   )
   return _sponsoredFpcArtifact

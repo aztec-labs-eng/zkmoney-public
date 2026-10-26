@@ -1,6 +1,6 @@
 /**
  * The withdraw modal's money path: the typed amount is what the recipient receives and the whole
- * fee (the relayer tip and the portal's cut) is burned on top of it, MAX is the balance less the
+ * fee (the relayer tip) is burned on top of it, MAX is the balance less the
  * fee in exact token units, and only amounts the decimal-safe parse accepts can reach the gateway.
  * Plus the hand-off: the modal holds the user through the prepare and sign beats, then closes and
  * lets the burn finish without it.
@@ -13,20 +13,22 @@ import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import { fireEvent } from "../src/lib/analytics"
 import { provingProgress } from "@obsidion/proving-progress"
 import { asOperation, endSigningAndHandOff } from "./support/handOff"
+import { LIMIT, LIMIT_USD, grouped, typed } from "./support/publicLimit"
 
 const submit = vi.fn()
-// What the mocked portal reads back as FPC_FUNDING_CUT, so the fee is the tip plus a quarter.
-const CUT = vi.hoisted(() => 250_000_000_000_000_000n)
-const FEE = "0.35"
+// The direct route's fee: the withdrawal relayer tip.
+const FEE = "0.10"
 const balance = { walletAsset: null as { balance: number; balanceAtomic: bigint } | null }
-// The cut is cached per portal, so a case wanting a different read names its own portal.
-const DEFAULT_PORTAL = `0x${"70".repeat(20)}`
-const portalControl = vi.hoisted(() => ({
-  address: `0x${"70".repeat(20)}`,
-  cut: 250_000_000_000_000_000n,
-  fail: false,
-}))
 
+// The executor's withdrawal fee is priced in its own suites; here it costs nothing.
+vi.mock("../src/features/withdraw/withdrawalFee", () => ({
+  withdrawalExecutorFee: async () => 0n,
+  activeWithdrawalFee: async () => 0n,
+  activeWithdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutorAt: async () => ({ fee: 0n }),
+  useActiveWithdrawalFee: () => 0n,
+}))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
   useAccountContext: () => ({ obsidionAccount: {} }),
@@ -39,18 +41,14 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 vi.mock("../src/features/withdraw/withdrawGateway", () => ({ submitSponsoredWithdrawal: submit }))
 // Config resolves only after boot; the sandbox network is what the quote path below expects.
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "sandbox" }) }))
-// A tuple with the portal alone prices the direct route off the mocked FPC_FUNDING_CUT read and
-// leaves the swap simulation's own fields missing, so a swap route is deterministically unavailable
-// with no network fetch.
+// A tuple with the portal alone leaves the swap simulation's own fields missing, so a swap route is
+// deterministically unavailable with no network fetch.
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
-  getOxideTuple: async () => ({ portal: portalControl.address }),
-  l1PublicClient: () => ({
-    readContract: async () => {
-      if (portalControl.fail) throw new Error("portal read refused")
-      return portalControl.cut
-    },
-  }),
+  getOxideTuple: async () => ({ portal: `0x${"70".repeat(20)}` }),
+}))
+vi.mock("../src/features/token/useTxAmountCap", () => ({
+  useTxAmountCap: () => 5166n * 10n ** 18n,
 }))
 vi.mock("../src/lib/analytics", () => ({
   fireEvent: vi.fn(),
@@ -116,7 +114,6 @@ vi.mock("../src/features/withdraw/useFasterWithdrawal", async (importOriginal) =
     active ? { offer: faster.offer, loading: faster.loading } : { loading: false },
 }))
 
-const { FEE_UNAVAILABLE_COPY } = await import("../src/features/withdraw/withdrawQuote")
 const { WithdrawToWalletModal } = await import("../src/features/withdraw/WithdrawToWalletModal")
 
 declare global {
@@ -178,9 +175,6 @@ describe("WithdrawToWalletModal", () => {
     onClose.mockReset()
     onDone.mockReset()
     balance.walletAsset = { balance: 4.11, balanceAtomic: parseUnits("4.11", 18) }
-    portalControl.address = DEFAULT_PORTAL
-    portalControl.cut = CUT
-    portalControl.fail = false
     faster.offer = undefined
     faster.loading = false
     container = document.createElement("div")
@@ -232,7 +226,7 @@ describe("WithdrawToWalletModal", () => {
     const [, recipient, charged, , alias] = submit.mock.calls[0]
     expect(recipient).toBe(RECIPIENT)
     // The fee rides on top, so the burn is what was typed plus the fee.
-    expect(charged).toBe("2.35")
+    expect(charged).toBe("2.1")
     expect(alias).toBe("Rainbow")
   })
 
@@ -244,7 +238,7 @@ describe("WithdrawToWalletModal", () => {
     expect(row("Token")).toBe("DAI")
     expect(row("Send")).toBe("$2")
     expect(row("Withdrawal fee")).toBe(`$${FEE}`)
-    expect(row("Sending total")).toBe("$2.35")
+    expect(row("Sending total")).toBe("$2.10")
     expect(row("Network")).toBe("Ethereum · 1 withdrawal")
     expect(container.textContent).toContain("up to 40 minutes")
   })
@@ -327,14 +321,13 @@ describe("WithdrawToWalletModal", () => {
     })
 
     it("charges the tip in the fee and burns it when Faster is chosen", async () => {
-      portalControl.address = `0x${"74".repeat(20)}`
       faster.offer = offer
       await toConfirm("2")
       await chooseFaster()
       expect(speed()).toBe("Faster")
-      expect(row("Withdrawal fee")).toBe("$0.85")
+      expect(row("Withdrawal fee")).toBe("$0.60")
       expect(row("Send")).toBe("$2")
-      expect(row("Sending total")).toBe("$2.85")
+      expect(row("Sending total")).toBe("$2.60")
       await clickConfirm()
       expect(submit.mock.calls[0]![7]).toBe(TIP)
     })
@@ -343,7 +336,7 @@ describe("WithdrawToWalletModal", () => {
       faster.offer = offer
       await toConfirm("2")
       await chooseFaster()
-      expect(row("Withdrawal fee")).toBe("$0.85")
+      expect(row("Withdrawal fee")).toBe("$0.60")
       faster.offer = undefined
       // The tree the sheet was opened with, so it re-renders in place instead of remounting.
       await act(async () => {
@@ -374,8 +367,8 @@ describe("WithdrawToWalletModal", () => {
     }
 
     it("disables Faster when the balance cannot cover the tip on top", async () => {
-      // A 2 DAI tip on a 2 DAI send with the 0.35 fee needs 4.35; the balance is 4.11.
-      faster.offer = { ...offer, proverTip: parseUnits("2", 18) }
+      // A 2.5 DAI tip on a 2 DAI send with the 0.10 fee needs 4.60; the balance is 4.11.
+      faster.offer = { ...offer, proverTip: parseUnits("2.5", 18) }
       await toConfirm("2")
       expect(speed()).toBe("Standard")
       const [, fasterOption] = await openSpeeds()
@@ -386,14 +379,14 @@ describe("WithdrawToWalletModal", () => {
     it("keeps a MAX amount and greys Faster out: no tip fits on top of MAX", async () => {
       faster.offer = offer
       await click("MAX")
-      expect(input().value).toBe("3.76")
+      expect(input().value).toBe("4.01")
       await click("Review")
       await settle()
       expect(speed()).toBe("Standard")
       const [, fasterOption] = await openSpeeds()
       expect(fasterOption!.disabled).toBe(true)
       expect(fasterOption!.textContent).toBe("FasterYour balance can't cover the tip")
-      expect(row("Send")).toBe("$3.76")
+      expect(row("Send")).toBe("$4.01")
       expect(row("Sending total")).toBe("$4.11")
     })
 
@@ -419,34 +412,14 @@ describe("WithdrawToWalletModal", () => {
     expect(quotedAmounts.at(-1)).toBe(parseUnits("2", 18))
   })
 
-  it("keeps the $1 minimum whatever the fee, which rides on top", async () => {
-    portalControl.address = `0x${"72".repeat(20)}`
-    portalControl.cut = parseUnits("2", 18)
-    await type("1.5")
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 50))
-    })
-
+  it("keeps the $1 minimum on the amount sent, with the fee on top", async () => {
+    await type("1")
     expect(input().placeholder).toBe("Minimum $1")
-    expect(row("Withdrawal fee")).toBe("$2.10")
+    expect(row("Withdrawal fee")).toBe(`$${FEE}`)
     expect(button("Review").disabled).toBe(false)
     await click("Review")
-    expect(row("Send")).toBe("$1.50")
-    expect(row("Sending total")).toBe("$3.60")
-  })
-
-  it("says why the direct route has no figure when the portal's cut cannot be read", async () => {
-    portalControl.address = `0x${"73".repeat(20)}`
-    portalControl.fail = true
-    await type("2")
-    // The read is retried twice more before it is reported.
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 1_800))
-    })
-
-    expect(row("Withdrawal fee")).toBe("$--")
-    expect(container.textContent).toContain(FEE_UNAVAILABLE_COPY)
-    expect(button("Review").disabled).toBe(true)
+    expect(row("Send")).toBe("$1")
+    expect(row("Sending total")).toBe("$1.10")
   })
 
   it("closes a swap route whose fee cannot be simulated instead of guessing one", async () => {
@@ -472,7 +445,7 @@ describe("WithdrawToWalletModal", () => {
 
   it("MAX is the balance less the fee, and is not overspent", async () => {
     await click("MAX")
-    expect(input().value).toBe("3.76")
+    expect(input().value).toBe("4.01")
     expect(container.textContent).not.toContain("Balance not enough")
     expect(button("Review").disabled).toBe(false)
     await click("Review")
@@ -480,48 +453,48 @@ describe("WithdrawToWalletModal", () => {
   })
 
   it("says when the fee leaves less than the minimum of the balance", async () => {
-    balance.walletAsset = { balance: 1.2, balanceAtomic: parseUnits("1.2", 18) }
+    balance.walletAsset = { balance: 1.05, balanceAtomic: parseUnits("1.05", 18) }
     await click("MAX")
     expect(container.textContent).toContain(
-      "Your balance can't cover the withdrawal fee ($0.35) plus the $1 minimum.",
+      "Your balance can't cover the withdrawal fee ($0.10) plus the $1 minimum.",
     )
     expect(button("Review").disabled).toBe(true)
   })
 
-  it("MAX on a 5,000 balance is the $2,500 limit less the fee, not the balance", async () => {
-    balance.walletAsset = { balance: 5000, balanceAtomic: parseUnits("5000", 18) }
+  it("MAX on a balance twice the limit is the limit less the fee, not the balance", async () => {
+    balance.walletAsset = { balance: 2 * LIMIT, balanceAtomic: parseUnits(String(2 * LIMIT), 18) }
     await type("1")
     await click("MAX")
-    expect(input().value).toBe("2499.65")
+    expect(input().value).toBe(typed(LIMIT - 0.1))
     expect(button("Review").disabled).toBe(false)
   })
 
   it("shows the field, its maximum and the stated $1 basis before anything is typed", async () => {
     expect(container.textContent).toContain("Amount to send")
     const limits = container.querySelector('[data-testid="operation-limits"]')!.textContent
-    expect(limits).toBe("Min $1 · Max from balance: $2,500 incl. fees")
+    expect(limits).toBe(`Min $1 · Max from balance: ${LIMIT_USD} incl. fees`)
     expect(limits).not.toMatch(/daily|per day|balance limit/i)
   })
 
-  it("refuses a burn one cent over $2,500 and offers the maximum, without changing the amount itself", async () => {
-    balance.walletAsset = { balance: 5000, balanceAtomic: parseUnits("5000", 18) }
+  it(`refuses a burn one cent over ${LIMIT_USD} and offers the maximum, without changing the amount itself`, async () => {
+    balance.walletAsset = { balance: 2 * LIMIT, balanceAtomic: parseUnits(String(2 * LIMIT), 18) }
     // The fee is burned on top, so the typed amount can reach the limit less the fee.
-    await type("2499.65")
+    await type(typed(LIMIT - 0.1))
     expect(button("Review").disabled).toBe(false)
     expect(container.querySelector('[data-testid="limit-notice"]')).toBeNull()
 
-    await type("2499.66")
+    await type(typed(LIMIT - 0.09))
     expect(button("Review").disabled).toBe(true)
     const notice = container.querySelector('[data-testid="limit-notice"]')!.textContent
-    expect(notice).toContain("Over the $2,500 limit")
+    expect(notice).toContain(`Over the ${LIMIT_USD} limit`)
     // Said once: the field keeps its figure instead of repeating the reason.
     expect(container.querySelector(".ww-fund__amount small")!.textContent).not.toMatch(
       /limit|maximum/i,
     )
-    expect(input().value).toBe("2499.66")
+    expect(input().value).toBe(typed(LIMIT - 0.09))
 
-    await click("Use maximum ($2,499.65)")
-    expect(input().value).toBe("2499.65")
+    await click(`Use maximum ($${grouped(LIMIT - 0.1, true)})`)
+    expect(input().value).toBe(typed(LIMIT - 0.1))
     expect(button("Review").disabled).toBe(false)
   })
 
@@ -532,14 +505,14 @@ describe("WithdrawToWalletModal", () => {
     expect(container.textContent).toContain("Balance not enough")
     expect(container.querySelector('[data-testid="limit-notice"]')).toBeNull()
     await click("MAX")
-    expect(input().value).toBe("2399.65")
+    expect(input().value).toBe("2399.9")
     expect(container.textContent).not.toContain("Balance not enough")
   })
 
   it("blocks a burn above the balance by one atomic unit", async () => {
     balance.walletAsset = { balance: 4.11, balanceAtomic: parseUnits("4.11", 18) - 1n }
-    // 3.76 plus the 0.35 fee is the 4.11 the balance is one unit short of.
-    await type("3.76")
+    // 4.01 plus the 0.10 fee is the 4.11 the balance is one unit short of.
+    await type("4.01")
     expect(button("Review").disabled).toBe(true)
   })
 

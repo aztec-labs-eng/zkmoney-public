@@ -39,6 +39,9 @@ export const CHROMIUM_VIRTUAL_AUTHENTICATOR_AAGUID = "01020304-0506-0708-0102-03
 /** The name a refusal gives Windows' own passkey store; its copy is about Windows' prompt. */
 export const WINDOWS_HELLO = "Windows Hello"
 
+/** The name a refusal gives Proton Pass; its iPhone app has copy of its own. */
+export const PROTON_PASS = "Proton Pass"
+
 /**
  * The providers a refusal might have to name, and the slug telemetry counts each under.
  * Best-effort: an id absent here yields generic copy rather than an invented name.
@@ -66,7 +69,7 @@ const PROVIDERS: Readonly<Record<string, { name: string; slug: PasskeyProvider }
   [YUBIKEY_5_SERIES_AAGUID]: { name: "YubiKey 5 series", slug: "yubikey" },
   "f8a011f3-8c0a-4d15-8006-17111f9edc7d": { name: "Security Key by Yubico", slug: "yubikey" },
   "531126d6-e717-415c-9320-3d9aa6981239": { name: "Dashlane", slug: "dashlane" },
-  "50726f74-6f6e-5061-7373-50726f746f6e": { name: "Proton Pass", slug: "proton_pass" },
+  "50726f74-6f6e-5061-7373-50726f746f6e": { name: PROTON_PASS, slug: "proton_pass" },
   "53414d53-554e-4700-0000-000000000000": { name: "Samsung Pass", slug: "samsung_pass" },
 }
 
@@ -78,7 +81,8 @@ export function providerNameFor(aaguid: string | undefined): string | undefined 
   if (!aaguid) return undefined
   const id = aaguid.toLowerCase()
   if (id === ZERO_AAGUID) return undefined
-  return PROVIDERS[id]?.name ?? (SECURITY_KEY_AAGUIDS.has(id) ? "YubiKey" : undefined)
+  if (Object.hasOwn(PROVIDERS, id)) return PROVIDERS[id]!.name
+  return SECURITY_KEY_AAGUIDS.has(id) ? "YubiKey" : undefined
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/

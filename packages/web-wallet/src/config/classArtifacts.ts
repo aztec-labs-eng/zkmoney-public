@@ -8,7 +8,7 @@ import {
   type ContractService,
   type ObsidionWallet,
 } from "@obsidion/sdk"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 
 export type WebClassArtifactResolver = ReturnType<typeof createClassArtifactResolver>
 

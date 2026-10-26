@@ -3,13 +3,13 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useSearchParams } from "react-router-dom"
 import type { Hex } from "viem"
 import {
+  PasskeyEnvelopeError,
   StoredAddressMismatchError,
   composeWireNameHash,
   normalizeTag,
   useAccountContext,
   useAztecContext,
   useContractServiceContext,
-  type PasskeyCredentialCandidate,
 } from "@obsidion/front-core"
 import type { ObsidionAccount } from "@obsidion/sdk"
 import { getConfig } from "../../config/env"
@@ -51,6 +51,7 @@ import {
   isPasskeyNotOffered,
   REGISTRY_UNANCHORED,
   RESERVED_REGISTRATION,
+  SET_UNREAD,
   STORED_ADDRESS_MISMATCH,
   promptCauses,
   type RouteRefusal,
@@ -84,6 +85,7 @@ import {
 } from "./findPasskeyByTag"
 import {
   PasskeyMismatchError,
+  PasskeySetUnreadError,
   checkpointRegistrationTerms,
   claimTag,
   collectOnboardingKeys,
@@ -94,6 +96,7 @@ import {
   reservedTagMatch,
   type EnteredClaim,
   type EnterResult,
+  type SignInHints,
 } from "./oxideOnboarding"
 import { boundNameGrantOwner, reservedNameHashes } from "./recoveryProbes"
 import { confirmRegistrationTag } from "./openRegistration"
@@ -105,12 +108,12 @@ import { OnboardingSpinnerBody } from "./OnboardingCard"
 import { ConfirmTagModal, type ByTagNotice } from "./steps/ConfirmTagModal"
 import { CreateWalletStep } from "./steps/CreateWalletStep"
 
-/** The tag's passkey as L1 or this browser's record names it, held until a tap pins it. */
+/** What a tap pins the sign-in to: the tag's account and keys as L1 lists them, or a remembered credential. */
 type Found = {
   tag: string
-  candidate: PasskeyCredentialCandidate
   l2Address: string
-  /** The L1 read found more keys than the one pinned; unset on a remembered account, which had no read. */
+  hints: SignInHints
+  /** The L1 read found keys beyond the first; unset on a remembered account, which had no read. */
   moreKeys?: boolean
 }
 
@@ -164,6 +167,7 @@ const NO_RETRY = new Set<string>([
   NOT_REPRODUCED_HERE,
   INCONCLUSIVE,
   NO_PASSKEY_RECORDED,
+  SET_UNREAD,
 ])
 
 /**
@@ -215,7 +219,7 @@ function missDiagnosisCard(diagnosis: MissDiagnosis, tag: string): Refusal | und
     case "DIFFERENT_PASSKEY":
       return {
         name: DIFFERENT_PASSKEY,
-        message: `This isn't a passkey on @${tag}'s account. Go back and check the tag, or choose Show passkeys to pick the passkey you registered with.`,
+        message: `This isn't a passkey on @${tag}'s account. Go back and check the tag, or choose Show passkeys to pick one of @${tag}'s passkeys.`,
       }
     case "INCONCLUSIVE":
       return {
@@ -354,7 +358,9 @@ export function EnterAppScreen() {
   }
   // A recovered-but-unnamed claim + its rebuilt account, threaded to the confirm step.
   const claimRef = useRef<EnteredClaim | undefined>(undefined)
-  const accountRef = useRef<ObsidionAccount | undefined>(undefined)
+  const accountRef = useRef<{ account: ObsidionAccount; held: () => boolean } | undefined>(
+    undefined,
+  )
   // Set instead of the two above when the confirm step names a reservation rather than a claim.
   const [reserved, setReserved] = useState<Reserved>()
   const lastAction = useRef<LastAction>({ kind: "probe" })
@@ -527,11 +533,13 @@ export function EnterAppScreen() {
    * claim that cannot be replayed leaves the card whose way on is the signup itself.
    */
   const resumeClaim = async (result: Unclaimed, tag: string, entry: Entry) => {
-    const live = () => !entry.op.signal.aborted
+    const live = () => !entry.op.signal.aborted && result.held()
     const address = result.account.getAddress().toString()
     let outcome: Awaited<ReturnType<typeof claimTag>>
     try {
+      if (!live()) return
       const keys = await collectOnboardingKeys(result.account)
+      if (!live()) return
       outcome = await claimTag(tag, keys, config, obsidionWallet!)
     } catch (e) {
       if (!live()) return
@@ -539,6 +547,9 @@ export function EnterAppScreen() {
       setRefusal(reservedCard(tag))
       return
     }
+    // A claim the server replayed for an attempt since cancelled or a session since replaced is
+    // replayed again by the next sign-in; nothing of it is kept here.
+    if (!live()) return
     if (outcome.kind === "custody") {
       await finish(result.account, { handle: tag, address }, live)
       return
@@ -567,11 +578,12 @@ export function EnterAppScreen() {
   const resumeReservation = async (result: Unclaimed, entry: Entry): Promise<boolean> => {
     // In test mode a key has its own way on, so only a reservation the attempt or passkey names resumes.
     const mayConfirm = !config.accountServiceTestMode
+    const live = () => !entry.op.signal.aborted && result.held()
     let nameHashes: Hex[]
     try {
       nameHashes = await reservedNameHashes(result.bootstrap)
     } catch (e) {
-      if (entry.op.signal.aborted) return true
+      if (!live()) return true
       // The lookup is the way in, so its failure is the committed error with a retry.
       if (!mayConfirm) return false
       const { tag, action, l2Address } = entry
@@ -579,7 +591,7 @@ export function EnterAppScreen() {
       setRefusal({ name: "error", message: NETWORK_MESSAGE, committed: true })
       throw e
     }
-    if (entry.op.signal.aborted) return true
+    if (!live()) return true
     if (nameHashes.length === 0) return false
     // The attempt's own tag, the tag this browser remembers, then the name the passkey carries: each
     // names the reservation only where it hashes to one the ledger holds, so a tag that hashes to
@@ -688,17 +700,11 @@ export function EnterAppScreen() {
   }
 
   /**
-   * Read `tag` on L1 as it is typed. Only the current generation's answer lands, so an older read
-   * can neither repopulate the field after an edit nor overwrite a newer notice; nothing here starts
-   * a prompt, and nothing here touches the sign-in operation.
+   * Read `tag` on L1. Only the current generation's answer lands, so an older read can neither
+   * repopulate the field after an edit nor overwrite a newer notice; nothing here starts a prompt,
+   * and nothing here touches the sign-in operation.
    */
-  const resolve = (tag: string) => {
-    dropResolve()
-    // A tag the list shows is that row's sign-in: nothing is read, and the row is the way in.
-    if (candidates.some((c) => c.usertag === tag)) {
-      setNotice({ kind: "listed", tag })
-      return
-    }
+  const readTag = (tag: string) => {
     const gen = resolveGen.current
     setResolving(true)
     void lookupPasskeyByTag(tag, { resolveTag: resolveSignInTag }).then(
@@ -709,14 +715,14 @@ export function EnterAppScreen() {
           setNotice(undefined)
           setFound({
             tag,
-            candidate: read.candidate,
             l2Address: read.l2Address,
+            hints: { account: read.account, l2Address: read.l2Address, keys: read.keys },
             moreKeys: read.moreKeys,
           })
           return
         }
         setFound(undefined)
-        failByTag(read.kind)
+        failByTag(read.kind === "inconclusive" ? "INCONCLUSIVE" : read.kind)
         if (read.kind !== "notFound") {
           setNotice({ kind: read.kind, tag })
           return
@@ -738,6 +744,24 @@ export function EnterAppScreen() {
         setNotice({ kind: "lookupFailed", tag })
       },
     )
+  }
+
+  /** Read `tag` as it is typed. A tag the list shows is that row's sign-in: nothing is read. */
+  const resolve = (tag: string) => {
+    dropResolve()
+    if (candidates.some((c) => c.usertag === tag)) {
+      setNotice({ kind: "listed", tag })
+      return
+    }
+    readTag(tag)
+  }
+
+  /** A remembered tag's way in with a passkey its row does not hold: read like any other tag. */
+  const onDifferentPasskey = () => {
+    if (notice?.kind !== "listed") return
+    dropResolve()
+    setNotice(undefined)
+    readTag(notice.tag)
   }
 
   const onTagChange = (value: string) => {
@@ -798,9 +822,10 @@ export function EnterAppScreen() {
     if (reloadIfSwitched(entry, named)) return
     const live = () => !entry.op.signal.aborted
     // An entry is committed by the time it is reported; the identity save and the move into the
-    // wallet are still the attempt's, and stop at its cancel.
+    // wallet are still the attempt's, and stop at its cancel or when its session was replaced.
     if (result.entered) {
-      await finish(result.account, { handle: result.handle, address: result.address }, live)
+      const { account, handle, address } = result
+      await finish(account, { handle, address }, () => live() && result.held())
       return
     }
     if (!live()) return
@@ -861,7 +886,7 @@ export function EnterAppScreen() {
       refuse(new NoWalletForPasskeyError(), entry.action, macHelpFor(result.observed, true))
     } else if (result.reason === "confirm") {
       claimRef.current = result.claim
-      accountRef.current = result.account
+      accountRef.current = { account: result.account, held: result.held }
       setReserved(undefined)
       setConfirming(true)
     } else {
@@ -1012,6 +1037,12 @@ export function EnterAppScreen() {
           setRefusal(mismatchRefusal(e))
           return
         }
+        // A backup record's envelope did not open, or the passkey's account holds more keys than
+        // the sign-in could read: the wallet's own cards.
+        if (e instanceof PasskeyEnvelopeError || e instanceof PasskeySetUnreadError) {
+          refuse(e, "enter")
+          return
+        }
         if (isPasskeyPolicyError(e)) {
           refuse(e, "enter")
           return
@@ -1043,14 +1074,7 @@ export function EnterAppScreen() {
   const pinned = (target: Found, phone = false) => {
     const attempt = passkeyTelemetry.begin({ ceremony: "sign_in", flow: "enter" })
     const op = startOp(attempt)
-    lastAction.current = {
-      kind: "pinned",
-      tag: target.tag,
-      candidate: target.candidate,
-      l2Address: target.l2Address,
-      ...(target.moreKeys !== undefined ? { moreKeys: target.moreKeys } : {}),
-      phone,
-    }
+    lastAction.current = { kind: "pinned", ...target, phone }
     setSelectedTag(target.tag)
     setRefusal(undefined)
     setStart(false)
@@ -1064,7 +1088,7 @@ export function EnterAppScreen() {
                 contractService: contractService!,
                 ...(boundGrantToken ? { grantToken: boundGrantToken } : {}),
                 gate: promptGate,
-                hints: target.candidate,
+                hints: target.hints,
                 ...(phone ? { phone } : {}),
                 signal: op.signal,
                 restoreCache: false,
@@ -1093,7 +1117,13 @@ export function EnterAppScreen() {
             setRefusal({ name: e.name, message: e.message })
             return
           }
-          if (isPasskeyPolicyError(e)) {
+          // A backup passkey's envelope did not open, or the account holds more keys than the
+          // sign-in could read: the wallet's own cards.
+          if (
+            e instanceof PasskeyEnvelopeError ||
+            e instanceof PasskeySetUnreadError ||
+            isPasskeyPolicyError(e)
+          ) {
             refuse(e, "enter:by-tag")
             return
           }
@@ -1167,8 +1197,8 @@ export function EnterAppScreen() {
     dropResolve()
     pinned({
       tag: account.usertag,
-      candidate: { credentialId: account.credentialId, pubkeyHex: account.pubkeyHex },
       l2Address: account.l2Address,
+      hints: { credentialId: account.credentialId },
     })
   }
   const login = () => {
@@ -1221,7 +1251,8 @@ export function EnterAppScreen() {
       return
     }
     const op = opRef.current
-    void finish(accountRef.current!, entered, () => !op?.signal.aborted).catch(() =>
+    const adopted = accountRef.current!
+    void finish(adopted.account, entered, () => !op?.signal.aborted && adopted.held()).catch(() =>
       setError("Couldn't finish signing in. Try again."),
     )
   }
@@ -1314,6 +1345,9 @@ export function EnterAppScreen() {
                 ? { title: PHONE_STEPS_COPY.noPhone.back, onClick: usePhone, testId: "enter-phone" }
                 : wrongKey
                 ? { title: "Show passkeys", onClick: showPasskeys, testId: "enter-show-passkeys" }
+                : refusal.name === SET_UNREAD
+                ? // Back to the screen, where the tag field takes focus; no prompt opens.
+                  { title: "Type your @tag", onClick: back, testId: "enter-type-tag" }
                 : resumeTag
                 ? {
                     title: "Continue signing up",
@@ -1398,6 +1432,7 @@ export function EnterAppScreen() {
               value: typed,
               onTagChange,
               onTagBlur,
+              onDifferentPasskey,
               submitReady,
               resolving,
               prepared,

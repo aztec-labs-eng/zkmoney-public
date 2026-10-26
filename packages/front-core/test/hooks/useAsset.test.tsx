@@ -5,11 +5,9 @@ import { render, act, waitFor } from "@testing-library/react"
 // ---------------------------------------------------------------------------
 // Hoisted mock state. Each test resets these in `beforeEach`.
 //
-// The TEE connect is now source-driven: useAsset is environment-agnostic and
-// simply drives whatever `TeeSignerSource` is injected (load / subscribe /
-// refresh). The oxide-vs-sandbox decision lives in the source factories,
-// covered separately in `teeSignerSource.test.ts`. These tests assert the
-// hook's orchestration contract against a fake source.
+// useAsset drives whatever `TeeSignerSource` is injected (load / subscribe /
+// refresh); the source factories are covered in `teeSignerSource.test.ts`.
+// These tests assert the hook's orchestration contract against a fake source.
 // ---------------------------------------------------------------------------
 
 const {
@@ -50,8 +48,7 @@ const {
       tokens: [] as any[],
       /** Seeded rows read as cache-hydrated (no `updatedAt`); `updateBalance` writes stamp one. */
       balances: {} as Record<string, bigint>,
-      liveKeys: new Set<string>(),
-      writtenAt: new Map<string, number>(),
+      updatedAt: new Map<string, number>(),
       listeners: new Set<(records: unknown[]) => void>(),
       contractAddress: undefined as { toString(): string } | undefined,
     },
@@ -69,6 +66,12 @@ const tokenServiceStub = {
   setAccount: setAccountMock,
   setTeeSigner: setTeeSignerMock,
   tokenAddress: undefined as { toString(): string } | undefined,
+  fetchTokenInformation: vi.fn(async () => ({
+    address: "0xtok",
+    name: "Dai",
+    symbol: "DAI",
+    decimals: 18,
+  })),
 }
 
 vi.mock("@obsidion/sdk", async () => {
@@ -108,9 +111,7 @@ vi.mock("src/core", async () => {
           scope: key.slice(0, sep),
           tokenAddress: key.slice(sep + 1),
           balance: balance.toString(),
-          updatedAt: mockStorageState.liveKeys.has(key)
-            ? (mockStorageState.writtenAt.get(key) ?? Date.now())
-            : undefined,
+          updatedAt: mockStorageState.updatedAt.get(key),
         }
       }),
     ),
@@ -121,8 +122,7 @@ vi.mock("src/core", async () => {
     updateBalance: vi.fn(async (scope: string, addr: string, balance: bigint) => {
       const key = `${scope}:${addr}`
       mockStorageState.balances[key] = balance
-      mockStorageState.liveKeys.add(key)
-      mockStorageState.writtenAt.set(key, Date.now())
+      mockStorageState.updatedAt.set(key, Date.now())
       const records = balanceStorageStub.list()
       mockStorageState.listeners.forEach((l) => l(records))
     }),
@@ -173,9 +173,6 @@ vi.mock("src/utils", async () => {
 })
 
 import { useAsset, type UseAssetOptions } from "../../src/hooks/useAsset"
-import { TeeSignerNotApprovedError, reportTeeSignerRefused } from "@obsidion/sdk"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { EthAddress } from "@aztec/foundation/eth-address"
 import { BalanceStorage } from "src/core"
 import type { TeeSignerSource } from "../../src/tee/teeSignerSource"
 
@@ -194,13 +191,11 @@ function renderHook(options?: UseAssetOptions) {
 }
 
 const FAKE_SIGNER = {
-  publicKey: { x: 0n, y: 0n },
-  ethAddress: { toString: () => "0xenclave-eth-addr" },
-  encryptionPublicKey: {},
+  teeRegistry: { toString: () => "0xtee-registry" },
   signTokenOperation: vi.fn(),
   signWithdrawalFinalization: vi.fn(),
   signFrozenNotesRefundFinalization: vi.fn(),
-  signFrozenDepositRefundFinalization: vi.fn(),
+  signFrozenDepositsRefundFinalization: vi.fn(),
   signUnprocessedDepositRefundFinalization: vi.fn(),
 } as any
 
@@ -223,6 +218,7 @@ function makeFakeSource(overrides: Partial<TeeSignerSource> = {}) {
 describe("useAsset background-connect", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.spyOn(Date, "now").mockReturnValue(Date.now())
     setTeeSignerMock.mockReset()
     mockAztecState.obsidionWallet = mockObsidionWallet
     mockAztecState.currentNetwork = { type: "sandbox" }
@@ -230,8 +226,7 @@ describe("useAsset background-connect", () => {
     mockStorageState.completeAddress = "0xcomplete"
     mockStorageState.tokens = []
     mockStorageState.balances = {}
-    mockStorageState.liveKeys.clear()
-    mockStorageState.writtenAt.clear()
+    mockStorageState.updatedAt.clear()
     mockStorageState.listeners.clear()
     mockStorageState.contractAddress = undefined
     tokenServiceStub.tokenAddress = undefined
@@ -281,7 +276,7 @@ describe("useAsset background-connect", () => {
 
     expect(logSpy).toHaveBeenCalledWith(
       "[useAsset] TEE signer connected",
-      expect.objectContaining({ ethAddress: "0xenclave-eth-addr", source: "fake-source" }),
+      expect.objectContaining({ teeRegistry: "0xtee-registry", source: "fake-source" }),
     )
     unmount()
   })
@@ -302,7 +297,7 @@ describe("useAsset background-connect", () => {
   })
 
   it("reconnects when the source's subscribe fires (e.g. a manifest roll)", async () => {
-    const SIGNER_B = { ...FAKE_SIGNER, ethAddress: { toString: () => "0xenclave-B" } } as any
+    const SIGNER_B = { ...FAKE_SIGNER, teeRegistry: { toString: () => "0xtee-registry-B" } } as any
     const load = vi.fn(async () => FAKE_SIGNER)
     const { source, emit } = makeFakeSource({ load })
 
@@ -326,7 +321,7 @@ describe("useAsset background-connect", () => {
   it("asks the source to refresh on a load() failure; signer stays cleared", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
     const { source } = makeFakeSource({
-      load: vi.fn(async () => Promise.reject(new Error("PCR0 not approved"))),
+      load: vi.fn(async () => Promise.reject(new Error("enclave not registered"))),
     })
 
     const { result, unmount } = renderHook({ teeSignerSource: source })
@@ -361,91 +356,6 @@ describe("useAsset background-connect", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(4_000)
     })
-    expect(result.current.teeSigner).toBe(FAKE_SIGNER)
-    expect(result.current.teeSignerError).toBeNull()
-    unmount()
-  })
-
-  it("names the refused enclave when the token has not approved the pinned key", async () => {
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {})
-    const refusal = new TeeSignerNotApprovedError(
-      AztecAddress.fromStringUnsafe("0x" + "11".repeat(31) + "01"),
-      EthAddress.fromString("0x" + "ab".repeat(20)),
-      "0x01",
-    )
-    const { source } = makeFakeSource({ load: vi.fn(async () => Promise.reject(refusal)) })
-
-    const { result, unmount } = renderHook({ teeSignerSource: source })
-
-    await waitFor(() => expect(result.current.teeSignerError).toBe(refusal))
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("enclave not approved on the token"),
-      expect.objectContaining({ enclave: "0x" + "ab".repeat(20) }),
-    )
-    expect(result.current.teeSigner).toBeUndefined()
-    unmount()
-  })
-
-  it("drops a signer the finalizer refused at sign time and reconnects until an approved enclave lands", async () => {
-    vi.useFakeTimers()
-    vi.spyOn(console, "warn").mockImplementation(() => {})
-    const refusal = new TeeSignerNotApprovedError(
-      AztecAddress.fromStringUnsafe("0x" + "11".repeat(31) + "01"),
-      EthAddress.fromString("0x" + "bb".repeat(20)),
-      "0x02",
-    )
-    const SIGNER_C = { ...FAKE_SIGNER, ethAddress: { toString: () => "0xenclave-c" } }
-    // A connects; the fleet then hands out the unapproved B once more before C.
-    const load = vi
-      .fn()
-      .mockResolvedValueOnce(FAKE_SIGNER)
-      .mockRejectedValueOnce(refusal)
-      .mockResolvedValue(SIGNER_C)
-    const { source } = makeFakeSource({ load, subscribe: undefined })
-
-    const { result, unmount } = renderHook({ teeSignerSource: source })
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(50)
-    })
-    expect(result.current.teeSigner).toBe(FAKE_SIGNER)
-    setTeeSignerMock.mockClear()
-
-    // `signTokenOperation` re-pinned A's FleetSigner to B, and the finalizer refused B's key.
-    await act(async () => {
-      reportTeeSignerRefused(FAKE_SIGNER, refusal)
-      await vi.advanceTimersByTimeAsync(50)
-    })
-    expect(result.current.teeSigner).toBeUndefined()
-    expect(setTeeSignerMock).toHaveBeenCalledWith(undefined)
-    expect(result.current.teeSignerError).toBe(refusal)
-    expect(load).toHaveBeenCalledTimes(2)
-
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(4_000)
-    })
-    expect(load).toHaveBeenCalledTimes(3)
-    expect(result.current.teeSigner).toBe(SIGNER_C)
-    expect(result.current.teeSignerError).toBeNull()
-    expect(setTeeSignerMock).toHaveBeenLastCalledWith(SIGNER_C)
-    unmount()
-  })
-
-  it("ignores a sign-time refusal of a signer it no longer holds", async () => {
-    vi.spyOn(console, "warn").mockImplementation(() => {})
-    const refusal = new TeeSignerNotApprovedError(
-      AztecAddress.fromStringUnsafe("0x" + "11".repeat(31) + "01"),
-      EthAddress.fromString("0x" + "bb".repeat(20)),
-      "0x02",
-    )
-    const { source } = makeFakeSource()
-    const { result, unmount } = renderHook({ teeSignerSource: source })
-    await waitFor(() => expect(result.current.teeSigner).toBe(FAKE_SIGNER))
-
-    // An op that started on a signer a manifest roll already replaced.
-    await act(async () => {
-      reportTeeSignerRefused({ ...FAKE_SIGNER }, refusal)
-    })
-    expect(source.load).toHaveBeenCalledTimes(1)
     expect(result.current.teeSigner).toBe(FAKE_SIGNER)
     expect(result.current.teeSignerError).toBeNull()
     unmount()
@@ -586,7 +496,7 @@ describe("useAsset background-connect", () => {
     mockAztecState.obsidionWallet = null
     mockStorageState.tokens = [{ address: "0xtok", symbol: "DAI", name: "DAI", decimals: 2 }]
     mockStorageState.balances = { "sandbox:0xcomplete:0xtok": 12345n }
-    mockStorageState.liveKeys.add("sandbox:0xcomplete:0xtok")
+    mockStorageState.updatedAt.set("sandbox:0xcomplete:0xtok", Date.now())
 
     const { result, rerender, unmount } = renderHook()
     await waitFor(() => expect(result.current.assets).not.toBeNull())
@@ -605,12 +515,12 @@ describe("useAsset background-connect", () => {
     async (balanceState) => {
       mockStorageState.tokens = [{ address: "0xtok", symbol: "DAI", name: "DAI", decimals: 2 }]
       mockStorageState.balances = { "sandbox:0xcomplete:0xtok": 12345n }
-      mockStorageState.liveKeys.add("sandbox:0xcomplete:0xtok")
+      mockStorageState.updatedAt.set("sandbox:0xcomplete:0xtok", Date.now())
       if (balanceState !== "empty") {
         mockStorageState.balances["sandbox:0xother-account:0xtok"] = 999n
       }
       if (balanceState === "live") {
-        mockStorageState.liveKeys.add("sandbox:0xother-account:0xtok")
+        mockStorageState.updatedAt.set("sandbox:0xother-account:0xtok", Date.now())
       }
 
       const { result, rerender, unmount } = renderHook()
@@ -682,6 +592,7 @@ describe("useAsset background-connect", () => {
     await act(async () => {
       await BalanceStorage.get().updateBalance("sandbox:0xcomplete", "0xtok", 777n, 12)
     })
+    vi.mocked(Date.now).mockReturnValue(Date.now() + 1)
     const written = BalanceStorage.get().list()[0]!.updatedAt!
 
     await waitFor(() => expect(result.current.assets?.[0]?.balance).toBeGreaterThan(0))

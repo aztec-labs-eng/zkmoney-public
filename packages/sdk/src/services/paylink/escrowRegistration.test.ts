@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 
 const { registerPaylinkContractWithKeys, registerEscrowTagSecret, findEscrowDepositTx, instance } =
   vi.hoisted(() => ({

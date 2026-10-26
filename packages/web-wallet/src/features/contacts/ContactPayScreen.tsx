@@ -2,6 +2,8 @@ import { floorToCents, parseAmount } from "../../ui/format"
 import { Modal } from "../../ui/Modal"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useLocation, useNavigate, useParams } from "react-router-dom"
+import { parseUnits } from "viem"
+import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   ContactStorage,
   useAccountContext,
@@ -26,10 +28,11 @@ import { MessagingBanner } from "../../platform/xmtp/MessagingBanner"
 import { fireRequestOpened } from "../requests/requestOpened"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { PayModalChrome } from "../../ui/PayModalChrome"
-import { TeeSignerNotice } from "../../ui/TeeSignerNotice"
 import { useBack, useProvingOutcome } from "../../ui/hooks"
 import { OperationHandOff } from "../operations/OperationHandOff"
-import { runContactPay, type PayStage } from "./contactPay"
+import { RecipientNotUpgradedError, runContactPay, type PayStage } from "./contactPay"
+import { useRecipientUpgraded } from "./useRecipientUpgraded"
+import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
 import { useUserFlowActive } from "../provingGate"
 import { useActionVerdict } from "../actionGate"
 import { findContactEntry } from "./contactsView"
@@ -37,6 +40,7 @@ import { lookUpUnsavedContact } from "./unsavedContact"
 import { PayAmountForm } from "./PayAmountForm"
 import { PayConfirmForm } from "./PayConfirmForm"
 import { PayWorking } from "./PayWorking"
+import { sendLimitError } from "../limits/withdrawalLimit"
 
 /** Router state: a fulfilling send carries the request (activity-row Send, or a decoded request
  *  link via its pay page); `from` marks entry from the contact detail, which stays as the backdrop
@@ -136,7 +140,24 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
   const isSend = mode === "send"
   // Only a KNOWN shortfall blocks: a balance still loading reads 0 and would flag every amount.
   const overspent = isSend && assetsLoaded && parsed > (walletAsset?.balance ?? 0)
+  const decimals = walletAsset?.decimals ?? DEFAULT_DECIMALS
+  // A request over the limit is one its payer can't send.
+  const limitError = validAmount
+    ? sendLimitError(parseUnits(amount, decimals), decimals)
+    : undefined
   const targetTag = entry?.tag ?? (isSend ? request?.tag : undefined)
+  // A recipient still on a retired rollup can't be paid or asked. Found before the amount is typed,
+  // their chat keeps the history and says why.
+  const upgraded = useRecipientUpgraded(targetTag)
+  useEffect(() => {
+    if (upgraded !== false) return
+    if (routerState?.from === "detail") navigate(-1)
+    else navigate(`/contacts/${idOrTag}`, { replace: true })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- leaves once, on the answer
+  }, [upgraded])
+  // Found at send time, from a fresh manifest the chat's cached read may not agree with: the sheet
+  // says why itself.
+  const [refused, setRefused] = useState(false)
   const railReady = useActionVerdict("send") === "open"
   const ready = isSend
     ? railReady && !!(obsidionWallet && obsidionAccount && tokenService && contractService)
@@ -264,6 +285,12 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
         return
       }
       outcome.finish()
+      // Nothing was sent and nothing failed: the sheet shows the hint.
+      if (e instanceof RecipientNotUpgradedError) {
+        setRefused(true)
+        setPhase("confirm")
+        return
+      }
       fireEvent("action_failed", {
         action: isSend ? "contact:send" : "contact:request",
         code: failureCode(e),
@@ -275,9 +302,11 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
     }
   }
 
-  if (entry === undefined && !request) return null
+  if ((entry === undefined && !request) || upgraded === false) return null
 
   const notFound = entry === null && !request
+  const checking = upgraded === undefined
+  const blocked = notFound || checking || refused
   const handle = targetTag ?? (entry ? entry.tag ?? entry.name : "")
   // Paying a request or a pay page.
   const paying = isSend && !!request
@@ -319,11 +348,12 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
           />
           {/* Requests hard-fail without a live XMTP leader; surface the state before submit. */}
           {!isSend && <MessagingBanner />}
-          {isSend && <TeeSignerNotice />}
 
           {notFound && <div className="ww-pay__handle">Contact not found.</div>}
+          {checking && <div className="ww-pay__handle">Checking @{handle}…</div>}
+          {refused && <p className="ww-pay__hint">{recipientNotUpgradedCopy.payHint(handle)}</p>}
 
-          {!notFound && phase === "amount" && (
+          {!blocked && phase === "amount" && (
             <PayAmountForm
               amount={amount}
               note={note}
@@ -335,6 +365,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
                   : undefined
               }
               overspent={overspent}
+              limitError={limitError}
               validAmount={validAmount}
               onAmount={setAmount}
               onNote={setNote}
@@ -343,7 +374,7 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
             />
           )}
 
-          {!notFound && phase === "confirm" && (
+          {!blocked && phase === "confirm" && (
             <PayConfirmForm
               title={title}
               amount={parsed}
@@ -351,12 +382,13 @@ function ContactPayFlow({ mode }: { mode: "send" | "request" }) {
               ready={ready}
               busy={busy}
               overspent={overspent}
+              limitError={limitError}
               isSend={isSend}
               payee={paying ? { tag: handle, savesContact: savesPayee } : undefined}
               onConfirm={submit}
             />
           )}
-          {!notFound && phase === "confirm" && request?.source === "link" && request.link && (
+          {!blocked && phase === "confirm" && request?.source === "link" && request.link && (
             <button
               type="button"
               className="zkm-btn-reset ww-claim-modal__alt"

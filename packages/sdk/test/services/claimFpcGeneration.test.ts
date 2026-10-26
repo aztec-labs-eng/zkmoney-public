@@ -9,7 +9,7 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { ContractService } from "@obsidion/contracts"
 import { loadClaimFpcPolicyAt } from "../../src/services/claimSponsor.js"
 

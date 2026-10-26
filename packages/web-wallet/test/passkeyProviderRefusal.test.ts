@@ -51,11 +51,9 @@ describe("creation admits only the measured providers", () => {
     await expect(laptop({ aaguid: GPM_AAGUID }).service.createPasskey("@a")).resolves.toMatchObject(
       { prfAaguid: GPM_AAGUID, prfSlot: "first" },
     )
-    // The fake echoes whatever id it is given; the real wrapper reports zeros as no id at all.
-    // Either way the allowlist admits it, which is what this pins.
     await expect(
       laptop({ aaguid: ZERO_AAGUID }).service.createPasskey("@a"),
-    ).resolves.toMatchObject({ prfAaguid: ZERO_AAGUID, prfSlot: "first" })
+    ).resolves.toMatchObject({ prfAaguid: undefined, prfSlot: "first" })
     await expect(laptop({}).service.createPasskey("@a")).resolves.toMatchObject({
       prfAaguid: undefined,
       prfSlot: "first",

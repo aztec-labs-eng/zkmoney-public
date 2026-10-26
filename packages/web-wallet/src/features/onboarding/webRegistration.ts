@@ -16,7 +16,7 @@ import {
   createRegistrationDepositReader,
   isRegistrationEscalated,
   isTerminalRegistrationPhase,
-  registrationSipaImplementation,
+  deploymentSipaRoute,
   registrationUiState,
   resumeOxideRegistration,
   type NameClaimRecord,
@@ -26,7 +26,7 @@ import {
   type RegistrationScheduleAnswer,
   type ResumeOptions,
 } from "@obsidion/front-core"
-import { readNameClaimLog } from "@obsidion/sdk"
+import { OxideSipaIntent, readNameClaimLog } from "@obsidion/sdk"
 import { loadRegistrationTerms, scheduleSource, signedSchedule } from "./registrationTerms"
 import { claimPublishesAddress } from "../paylink/ticketContinuation"
 import type { Address, Hex, PublicClient } from "viem"
@@ -199,13 +199,8 @@ export async function buildWebDetectionDeps(
     publicClient,
     deposits: createRegistrationDepositReader({
       publicClient,
-      registrationImplementation: await registrationSipaImplementation(
-        publicClient,
-        requireTupleField(tuple, "sipaFactory") as `0x${string}`,
-        requireTupleField(tuple, "portal") as `0x${string}`,
-      ),
+      registrationRoute: deploymentSipaRoute(tuple, OxideSipaIntent.Registration),
       registry: requireTupleField(tuple, "registry") as `0x${string}`,
-      portal: requireTupleField(tuple, "portal") as `0x${string}`,
       // Resolved from the registry, not the manifest: an absent or stale pin makes front-core
       // fall back to the registry, whose controller-era build has no schedule immutables.
       registrationController: await scheduleSource(config, publicClient as never),

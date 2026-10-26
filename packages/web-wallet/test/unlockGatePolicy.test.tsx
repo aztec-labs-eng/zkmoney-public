@@ -24,15 +24,15 @@ declare global {
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 vi.setConfig({ testTimeout: 30_000 })
 
-/** A wallet whose derivation depends on `this` and takes the signing key, like the real one. */
+/** A wallet whose derivation depends on `this` and takes the passkey set, like the real one. */
 class FakeWallet {
   readonly tag = "wallet"
-  async deriveAccountAddress(msk: { toString(): string }, pubkeyHex: string) {
-    return { toString: () => `${this.tag}:${msk.toString()}:${pubkeyHex}` }
+  async deriveAccountAddress(msk: { toString(): string }, passkeys: readonly string[]) {
+    return { toString: () => `${this.tag}:${msk.toString()}:${passkeys.join(",")}` }
   }
 }
 
-type Derive = (msk: { toString(): string }, pubkeyHex: string) => Promise<string>
+type Derive = (msk: { toString(): string }, passkeys: readonly string[]) => Promise<string>
 
 const h = vi.hoisted(() => ({
   unlock: vi.fn(
@@ -190,7 +190,7 @@ describe("UnlockGate", () => {
     const [derive, opts] = h.unlock.mock.calls[0]! as [Derive, { signal: AbortSignal }]
     expect(opts.signal).toBeInstanceOf(AbortSignal)
     // Called detached from the wallet, the way the service calls it, with the record's key.
-    await expect(derive({ toString: () => "msk" }, "ab")).resolves.toBe("wallet:msk:ab")
+    await expect(derive({ toString: () => "msk" }, ["ab"])).resolves.toBe("wallet:msk:ab")
     expect(h.retryUnlock).toHaveBeenCalledTimes(1)
   })
 
@@ -233,6 +233,25 @@ describe("UnlockGate", () => {
     expect(h.clear).toHaveBeenCalledTimes(1)
     expect(getActiveCredentialId()).toBeNull()
     expect(h.assign).toHaveBeenCalledWith("/enter?choose=1")
+  })
+
+  it("a backup record whose envelope did not open shows the wallet's card by name, with a retry", async () => {
+    const { PasskeyEnvelopeError } = await import("@obsidion/front-core")
+    h.wallet = new FakeWallet()
+    await render()
+    // The pane names no particular passkey: a backup one unlocks too.
+    expect(container.textContent).toContain("Unlock with one of this wallet's passkeys")
+    expect(container.textContent).not.toContain("signed up with")
+    h.unlock.mockRejectedValueOnce(new PasskeyEnvelopeError("decrypt"))
+    await tapUnlock()
+    expect(byTestId("unlock-refused")?.dataset.reason).toBe("PasskeyEnvelopeError")
+    expect(container.textContent).toContain("can't open the wallet on this device")
+    expect(byTestId("unlock-retry")).not.toBeNull()
+    expect(h.fireEvent).toHaveBeenCalledWith("action_failed", {
+      action: "identity:unlock",
+      code: "err",
+    })
+    expect(h.retryUnlock).not.toHaveBeenCalled()
   })
 
   it("a certain wrong-key mismatch shows the wrong-key card: Show passkeys, no retry, the failing credential avoided", async () => {

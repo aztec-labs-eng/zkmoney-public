@@ -1,6 +1,7 @@
-import { BlockNumber } from '@aztec/foundation/branded-types';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { createProverNodeAdminClient } from '@aztec/stdlib/interfaces/server';
+import type { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { BlockNumber } from '@aztec-labs/foundation/branded-types';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { createProverNodeAdminClient } from '@aztec-labs/stdlib/interfaces/server';
 
 import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
 import type {
@@ -26,10 +27,10 @@ export interface ProfitablePartialEpochProofStarterConfig {
   proverNodeApiKey?: string;
   /**
    * The portals whose claims make a proof profitable. They must all settle on the rollup that the prover node
-   * proves, and the prover node must submit through a submitter that records a first-prover capture on each of them.
-   * The first one tells which checkpoints are already proven.
+   * proves. The rollup records the first prover of a proof once for all of them. The first one gives the rollup.
+   * `broadcasterAddress` is the Broadcaster that the finalization requests of the portal come through.
    */
-  portals: { portalAddress: EthAddress; proverSubsidyAddress: EthAddress }[];
+  portals: { portalAddress: EthAddress; proverSubsidyAddress: EthAddress; broadcasterAddress: AztecAddress }[];
   l1Client: PublicClient;
   priceOracle: PriceOracle;
   /** Epoch-level early-submit thresholds for the whole partial epoch. */
@@ -61,7 +62,12 @@ export class ProfitablePartialEpochProofStarter {
     const contracts = config.portals.map(entry => new OxidePortalContract(config.l1Client, entry.portalAddress));
     const portals = await Promise.all(
       config.portals.map((entry, i) =>
-        createPortalConfig({ portal: contracts[i], proverSubsidy: entry.proverSubsidyAddress }),
+        createPortalConfig({
+          portal: contracts[i],
+          proverSubsidy: entry.proverSubsidyAddress,
+          node,
+          broadcaster: entry.broadcasterAddress,
+        }),
       ),
     );
 

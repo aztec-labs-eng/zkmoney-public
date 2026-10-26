@@ -2,12 +2,14 @@ import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { AllowanceSnapshot, PortalCapacityKey } from "@obsidion/front-core"
-import type { DepositTokenOption } from "../src/features/deposit/loadDepositFacts"
+import type { DepositTokenOption, DepositTokens } from "../src/features/deposit/loadDepositFacts"
 import type { AboutLimitsFacts } from "../src/features/limits/aboutLimitsView"
 import * as copy from "../src/features/limits/limitsCopy"
+import { LIMIT } from "./support/publicLimit"
 
 const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48"
+const SUSDS = "0xa3931d71877C0E7a3148CB7Eb4463524FEc27fbD"
 const ACTIVE_KEY = { chainId: 1, portal: "0x1111111111111111111111111111111111111111", token: DAI }
 const freshState = {
   status: "fresh",
@@ -42,11 +44,37 @@ vi.mock("@obsidion/web-ds", () => ({
   ),
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ network: "mainnet", l1ChainId: 1 }) }))
+const DAI_OPTION: DepositTokenOption = {
+  symbol: "DAI",
+  address: DAI,
+  decimals: 18,
+  icon: "",
+  settlesIn: DAI,
+  swapped: false,
+}
+const USDC_OPTION: DepositTokenOption = {
+  symbol: "USDC",
+  address: USDC,
+  decimals: 6,
+  icon: "",
+  settlesIn: DAI,
+  swapped: true,
+}
+/** sUSDS is Savings' row: accepted, but not Main's to offer. */
+const SUSDS_OPTION: DepositTokenOption = {
+  ...DAI_OPTION,
+  symbol: "sUSDS",
+  address: SUSDS,
+  settlesIn: SUSDS,
+}
+const ACCEPTED: DepositTokens = {
+  options: [DAI_OPTION, USDC_OPTION, SUSDS_OPTION],
+  offered: [DAI_OPTION, USDC_OPTION],
+  settlement: DAI_OPTION,
+}
+const tokens = vi.hoisted(() => ({ read: undefined as unknown }))
 vi.mock("../src/features/deposit/loadDepositFacts", () => ({
-  depositTokensFor: (): DepositTokenOption[] => [
-    { symbol: "DAI", decimals: 18, icon: "" },
-    { symbol: "USDC", address: USDC, decimals: 6, icon: "" },
-  ],
+  useDepositTokens: () => tokens.read,
 }))
 const allowance = vi.hoisted(() => ({
   snapshot: { status: "loading", scope: "s" } as unknown,
@@ -78,6 +106,7 @@ beforeEach(() => {
   container = document.createElement("div")
   document.body.appendChild(container)
   root = createRoot(container)
+  tokens.read = ACCEPTED
   allowance.refresh.mockReset()
   capacity.activeKey.mockReset().mockResolvedValue(ACTIVE_KEY)
   capacity.store.mockReset().mockReturnValue(freshStore)
@@ -92,9 +121,9 @@ afterEach(async () => {
 
 const facts: AboutLimitsFacts = {
   product: {
-    deposit: { maximumUsd: "2500" },
-    withdrawal: { maximumUsd: "2500" },
-    send: { maximumUsd: "2500" },
+    deposit: { maximumUsd: String(LIMIT) },
+    withdrawal: { maximumUsd: String(LIMIT) },
+    send: { maximumUsd: String(LIMIT) },
   },
   sponsorship: { state: "loading" },
 }
@@ -153,6 +182,7 @@ describe("WalletAboutLimitsSheet", () => {
       read: {
         fpcAddress: "0xfpc",
         railId: 1,
+        payer: "0xacc",
         allowance: { subscribed: false, uses: 0, maxTx: 100, refillPeriod: 86_400 },
       },
       state: { kind: "not-subscribed", maxTx: 100, renews: true },

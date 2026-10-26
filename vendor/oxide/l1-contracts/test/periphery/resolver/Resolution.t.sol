@@ -4,15 +4,16 @@ import {IVerifier} from "@aztec/core/interfaces/IVerifier.sol";
 
 import {AccountMetadataRegistry} from "@periphery/AccountMetadataRegistry.sol";
 import {Resolver} from "@periphery/Resolver.sol";
-import {SIPAFactory} from "@periphery/SIPAFactory.sol";
+import {DepositSIPA} from "@periphery/DepositSIPA.sol";
+import {SIPABase} from "@periphery/SIPABase.sol";
+import {ForwardingTable} from "@periphery/ForwardingTable.sol";
+import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
-import {INameRegistry} from "@periphery/interfaces/INameRegistry.sol";
 import {RecoveryCommitmentLib} from "@periphery/RecoveryCommitmentLib.sol";
-import {RegistrationSIPA, REGISTRATION_SWEEP_FEE} from "@periphery/RegistrationSIPA.sol";
-import {DepositSIPA, DEPOSIT_FEE} from "@periphery/DepositSIPA.sol";
 import {RegistriesTestBase} from "@test/periphery/registries/RegistriesTestBase.sol";
 import {Errors} from "@periphery/Errors.sol";
 import {MockPortal} from "@test/mocks/MockPortal.sol";
+import {ForwardingTableFixture} from "@test/helpers/ForwardingTableFixture.sol";
 
 contract ResolutionTest is RegistriesTestBase {
   uint256 internal constant SECONDS_PER_DAY = 86_400;
@@ -77,7 +78,8 @@ contract ResolutionTest is RegistriesTestBase {
       keccak256(abi.encode(FIXTURE_RECIPIENT_COMMITMENT)),
       fixtureRecoveryCommitment,
       rollupVersion,
-      true
+      true,
+      forwardingTable
     );
   }
 
@@ -133,7 +135,7 @@ contract ResolutionTest is RegistriesTestBase {
   }
 
   function test_resolve_revertsOnRollupVersionMismatch() public {
-    mockPortal.setRollupVersion(ROLLUP_VERSION + 1);
+    _pointOperatorAt(address(_emptyTable(ROLLUP_VERSION + 1)));
 
     vm.expectRevert(
       abi.encodeWithSelector(Errors.Resolver__RollupVersionMismatch.selector, ROLLUP_VERSION + 1, ROLLUP_VERSION)
@@ -226,7 +228,8 @@ contract ResolutionTest is RegistriesTestBase {
         keccak256(abi.encode(FIXTURE_RECIPIENT_COMMITMENT)),
         fixtureRecoveryCommitment,
         ROLLUP_VERSION,
-        true
+        true,
+        forwardingTable
       ),
       sipa
     );
@@ -240,7 +243,7 @@ contract ResolutionTest is RegistriesTestBase {
 
   function test_resolveWithProof_revertsOnRollupVersionMismatch() public {
     bytes memory response = _response(_validResolution());
-    mockPortal.setRollupVersion(ROLLUP_VERSION + 1);
+    _pointOperatorAt(address(_emptyTable(ROLLUP_VERSION + 1)));
 
     vm.expectRevert(
       abi.encodeWithSelector(Errors.Resolver__RollupVersionMismatch.selector, ROLLUP_VERSION + 1, ROLLUP_VERSION)
@@ -349,36 +352,33 @@ contract ResolutionTest is RegistriesTestBase {
       keccak256(abi.encode(resolution.recipientCommitment)),
       ownerBound,
       ROLLUP_VERSION,
-      true
+      true,
+      forwardingTable
     );
     bytes memory result =
       resolver.resolveWithProof(abi.encode(PROOF, _serialize(resolution), expected), abi.encode(NAME_HASH_2, false));
     assertEq(abi.decode(result, (address)), expected);
   }
 
-  function test_resolveWithProof_derivesAgainstTheOperatorsPoolImplementation() public {
+  function test_resolveWithProof_derivesAgainstTheOperatorsTable() public {
     Resolver.ResolutionPublicInputs memory resolution = _validResolution();
     bytes memory staleResponse = _response(resolution);
     address before = abi.decode(resolver.resolveWithProof(staleResponse, abi.encode(NAME_HASH, false)), (address));
     address funded = _sipaDeployed(ROLLUP_VERSION);
     assertEq(funded, before, "the first resolution's address is the one a payer funds");
 
-    MockPortal nextPortal = new MockPortal(mockUnderlying, ROLLUP_VERSION);
-    DepositSIPA nextDeposit = new DepositSIPA(IOxidePortal(address(nextPortal)), DEPOSIT_FEE);
+    ForwardingTable nextTable = _tableFor(new MockPortal(mockUnderlying, ROLLUP_VERSION));
     vm.prank(registryOwner);
-    sipaFactory.bless(address(nextDeposit));
-
-    AccountMetadataRegistry.ResolverOperator memory updated = _resolverOperatorFixture();
-    updated.oxidePortal = address(nextPortal);
-    vm.prank(resolverOperatorAddr);
-    metadataRegistry.setResolverOperator(updated);
+    sipaFactory.blessTable(nextTable);
+    _pointOperatorAt(address(nextTable));
 
     address next = sipaFactory.predictSIPA(
-      address(nextDeposit),
+      address(depositSIPAImplementation),
       keccak256(abi.encode(FIXTURE_RECIPIENT_COMMITMENT)),
       fixtureRecoveryCommitment,
       ROLLUP_VERSION,
-      true
+      true,
+      nextTable
     );
     assertNotEq(next, before);
     bytes memory freshResponse = _response(resolution, next);
@@ -386,56 +386,99 @@ contract ResolutionTest is RegistriesTestBase {
     resolver.resolveWithProof(staleResponse, abi.encode(NAME_HASH, false));
     assertEq(abi.decode(resolver.resolveWithProof(freshResponse, abi.encode(NAME_HASH, false)), (address)), next);
 
-    assertTrue(sipaFactory.isBlessed(funded), "the funded SIPA's implementation stays blessed");
+    assertTrue(sipaFactory.isBlessed(funded), "the funded SIPA's table stays blessed");
   }
 
   function test_resolveWithProof_revertsWhenRollupVersionChangedAfterPrediction() public {
     Resolver.ResolutionPublicInputs memory resolution = _validResolution();
     bytes memory response = _response(resolution);
 
-    MockPortal nextPortal = new MockPortal(mockUnderlying, ROLLUP_VERSION + 1);
-    DepositSIPA nextDeposit = new DepositSIPA(IOxidePortal(address(nextPortal)), DEPOSIT_FEE);
-    RegistrationSIPA nextRegistration = new RegistrationSIPA(
-      IOxidePortal(address(nextPortal)), INameRegistry(address(nameRegistry)), REGISTRATION_SWEEP_FEE
-    );
-    vm.startPrank(registryOwner);
-    sipaFactory.bless(address(nextDeposit));
-    sipaFactory.bless(address(nextRegistration));
-    vm.stopPrank();
-    AccountMetadataRegistry.ResolverOperator memory rolled = _resolverOperatorFixture();
-    rolled.oxidePortal = address(nextPortal);
-    vm.prank(resolverOperatorAddr);
-    metadataRegistry.setResolverOperator(rolled);
+    ForwardingTable nextTable = _tableFor(new MockPortal(mockUnderlying, ROLLUP_VERSION + 1));
+    vm.prank(registryOwner);
+    sipaFactory.blessTable(nextTable);
+    _pointOperatorAt(address(nextTable));
     vm.prank(userAddr);
     metadataRegistry.updateL2Address(userAddr, USER_L2_ADDRESS, ROLLUP_VERSION + 1);
 
     address predicted = _sipaWith(ROLLUP_VERSION);
-    address live = SIPAFactory(sipaFactory)
-      .predictSIPA(
-        address(nextDeposit),
-        keccak256(abi.encode(FIXTURE_RECIPIENT_COMMITMENT)),
-        fixtureRecoveryCommitment,
-        ROLLUP_VERSION + 1,
-        true
-      );
+    address live = sipaFactory.predictSIPA(
+      address(depositSIPAImplementation),
+      keccak256(abi.encode(FIXTURE_RECIPIENT_COMMITMENT)),
+      fixtureRecoveryCommitment,
+      ROLLUP_VERSION + 1,
+      true,
+      nextTable
+    );
     vm.expectRevert(abi.encodeWithSelector(Errors.Resolver__SIPAMismatch.selector, predicted, live));
     resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
 
-    assertTrue(sipaFactory.isBlessed(_sipaDeployed(ROLLUP_VERSION)), "an older implementation must stay blessed");
+    assertTrue(sipaFactory.isBlessed(_sipaDeployed(ROLLUP_VERSION)), "an older table must stay blessed");
   }
 
-  function test_resolveWithProof_revertsWhenNoImplementationServesThePool() public {
+  function test_resolveWithProof_revertsWhenTheTableIsNotApproved() public {
     Resolver.ResolutionPublicInputs memory resolution = _validResolution();
     bytes memory response = _response(resolution);
 
-    address unpointed = address(new MockPortal(mockUnderlying, ROLLUP_VERSION));
+    address unapproved = address(_emptyTable(ROLLUP_VERSION));
+    _pointOperatorAt(unapproved);
+
+    vm.expectRevert(abi.encodeWithSelector(Errors.Resolver__TableNotApproved.selector, unapproved));
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
+  }
+
+  function test_resolveWithProof_revertsWhenNoDepositImplementationIsBlessed() public {
+    Resolver.ResolutionPublicInputs memory resolution = _validResolution();
+    bytes memory response = _response(resolution);
+    vm.mockCall(
+      address(sipaFactory),
+      abi.encodeWithSelector(sipaFactory.implementationFor.selector, SIPABase.Intent.Deposit),
+      abi.encode(address(0))
+    );
+
+    vm.expectRevert(Errors.Resolver__NoDepositImplementation.selector);
+    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
+  }
+
+  function test_resolveWithProof_followsANewDepositImplementation() public {
+    Resolver.ResolutionPublicInputs memory resolution = _validResolution();
+    address funded = _sipaDeployed(ROLLUP_VERSION);
+
+    address nextImplementation = address(new DepositSIPA());
+    vm.prank(registryOwner);
+    sipaFactory.blessImplementation(nextImplementation);
+
+    address next = sipaFactory.predictSIPA(
+      nextImplementation,
+      keccak256(abi.encode(FIXTURE_RECIPIENT_COMMITMENT)),
+      fixtureRecoveryCommitment,
+      ROLLUP_VERSION,
+      true,
+      forwardingTable
+    );
+    assertNotEq(next, funded);
+    assertEq(
+      abi.decode(resolver.resolveWithProof(_response(resolution, next), abi.encode(NAME_HASH, false)), (address)), next
+    );
+    assertTrue(sipaFactory.isBlessed(funded), "a SIPA of the earlier implementation stays blessed");
+  }
+
+  function _tableFor(MockPortal _portal) internal returns (ForwardingTable) {
+    return ForwardingTableFixture.deploy(registryOwner, IOxidePortal(address(_portal)), makeAddr("tableBeneficiary"));
+  }
+
+  function _emptyTable(uint256 _rollupVersion) internal returns (ForwardingTable) {
+    return new ForwardingTable(
+      ForwardingTableFixture.args(
+        registryOwner, _rollupVersion, makeAddr("tableBeneficiary"), new IForwardingTable.InitialRow[](0)
+      )
+    );
+  }
+
+  function _pointOperatorAt(address _table) internal {
     AccountMetadataRegistry.ResolverOperator memory updated = _resolverOperatorFixture();
-    updated.oxidePortal = unpointed;
+    updated.oxidePortal = _table;
     vm.prank(resolverOperatorAddr);
     metadataRegistry.setResolverOperator(updated);
-
-    vm.expectRevert(abi.encodeWithSelector(Errors.Resolver__NoImplementationForPortal.selector, unpointed));
-    resolver.resolveWithProof(response, abi.encode(NAME_HASH, false));
   }
 
   function _sipaDeployed(uint256 rollupVersion) internal returns (address) {
@@ -444,7 +487,8 @@ contract ResolutionTest is RegistriesTestBase {
       keccak256(abi.encode(FIXTURE_RECIPIENT_COMMITMENT)),
       fixtureRecoveryCommitment,
       rollupVersion,
-      true
+      true,
+      forwardingTable
     );
   }
 

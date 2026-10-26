@@ -4,40 +4,33 @@
 // when the ABI is an `as const` literal the TS compiler can see.
 
 export { CertManagerAbi, CertManagerBytecode } from './abis/CertManager.js';
+export { FrozenNotesRefundVerifierAbi, FrozenNotesRefundVerifierBytecode } from './abis/FrozenNotesRefundVerifier.js';
 export {
-  FrozenNotesRefundVerifierAbi,
-  FrozenNotesRefundVerifierBytecode,
-  FrozenNotesRefundVerifierLinkReferences,
-} from './abis/FrozenNotesRefundVerifier.js';
-export {
-  FrozenDepositRefundVerifierAbi,
-  FrozenDepositRefundVerifierBytecode,
-  FrozenDepositRefundVerifierLinkReferences,
-} from './abis/FrozenDepositRefundVerifier.js';
+  FrozenDepositsRefundVerifierAbi,
+  FrozenDepositsRefundVerifierBytecode,
+} from './abis/FrozenDepositsRefundVerifier.js';
 export {
   UnprocessedDepositRefundVerifierAbi,
   UnprocessedDepositRefundVerifierBytecode,
-  UnprocessedDepositRefundVerifierLinkReferences,
 } from './abis/UnprocessedDepositRefundVerifier.js';
-export { FrozenNotesRelationsLibAbi, FrozenNotesRelationsLibBytecode } from './abis/FrozenNotesRelationsLib.js';
-export { FrozenDepositRelationsLibAbi, FrozenDepositRelationsLibBytecode } from './abis/FrozenDepositRelationsLib.js';
-export {
-  UnprocessedDepositRelationsLibAbi,
-  UnprocessedDepositRelationsLibBytecode,
-} from './abis/UnprocessedDepositRelationsLib.js';
 export { MockCertManagerAbi, MockCertManagerBytecode } from './abis/MockCertManager.js';
 export { MockNitroValidatorAbi, MockNitroValidatorBytecode } from './abis/MockNitroValidator.js';
-export { TestERC20Abi } from '@aztec/l1-artifacts/TestERC20Abi';
-export { TestERC20Bytecode } from '@aztec/l1-artifacts/TestERC20Bytecode';
+export { TestERC20Abi } from '@aztec-foundation/l1-artifacts/TestERC20Abi';
+export { TestERC20Bytecode } from '@aztec-foundation/l1-artifacts/TestERC20Bytecode';
 export { NitroValidatorAbi, NitroValidatorBytecode } from './abis/NitroValidator.js';
+export { TeeRegistryAbi, TeeRegistryBytecode } from './abis/TeeRegistry.js';
 export { PlainWithdrawalExecutorAbi, PlainWithdrawalExecutorBytecode } from './abis/PlainWithdrawalExecutor.js';
 export { FirstProverProofSubmitterAbi, FirstProverProofSubmitterBytecode } from './abis/FirstProverProofSubmitter.js';
 export { DepositSubsidyAbi, DepositSubsidyBytecode } from './abis/DepositSubsidy.js';
 export { IFPCFunderAbi } from './abis/IFPCFunder.js';
 export { ErrorsAbi } from './abis/Errors.js';
-export { WithdrawalSubsidyAbi, WithdrawalSubsidyBytecode } from './abis/WithdrawalSubsidy.js';
+export { PlainWithdrawalSubsidyAbi, PlainWithdrawalSubsidyBytecode } from './abis/PlainWithdrawalSubsidy.js';
+export { MigrationExecutorAbi, MigrationExecutorBytecode } from './abis/MigrationExecutor.js';
+export { MigrationSubsidyAbi, MigrationSubsidyBytecode } from './abis/MigrationSubsidy.js';
 export { ProverSubsidyAbi, ProverSubsidyBytecode } from './abis/ProverSubsidy.js';
 export { OxidePortalAbi, OxidePortalBytecode } from './abis/OxidePortal.js';
+export { PortalFactoryAbi, PortalFactoryBytecode } from './abis/PortalFactory.js';
+export { MockRollupAbi, MockRollupBytecode } from './abis/MockRollup.js';
 export { TestCertManagerAbi, TestCertManagerBytecode } from './abis/TestCertManager.js';
 
 // Periphery: name registry + stealth-deposit resolver.
@@ -45,6 +38,7 @@ export { MockPortalAbi, MockPortalBytecode } from './abis/MockPortal.js';
 export { MockLegacyDepositPoolAbi, MockLegacyDepositPoolBytecode } from './abis/MockLegacyDepositPool.js';
 export { MockVerifierAbi, MockVerifierBytecode } from './abis/MockVerifier.js';
 export { MockV3AggregatorAbi, MockV3AggregatorBytecode } from './abis/MockV3Aggregator.js';
+export { MintableTokenAbi, MintableTokenBytecode } from './abis/MintableToken.js';
 export { NameRegistryAbi, NameRegistryBytecode } from './abis/NameRegistry.js';
 export { AccountMetadataRegistryAbi, AccountMetadataRegistryBytecode } from './abis/AccountMetadataRegistry.js';
 export { RegistrationControllerAbi, RegistrationControllerBytecode } from './abis/RegistrationController.js';
@@ -52,13 +46,15 @@ export { NamePortalAbi, NamePortalBytecode } from './abis/NamePortal.js';
 export { SIPAAbi, SIPABytecode } from './abis/SIPA.js';
 export { DepositSIPAAbi, DepositSIPABytecode } from './abis/DepositSIPA.js';
 export { RegistrationSIPAAbi, RegistrationSIPABytecode } from './abis/RegistrationSIPA.js';
-export { UpdateMetadataSIPAAbi, UpdateMetadataSIPABytecode } from './abis/UpdateMetadataSIPA.js';
+export { UserOpSIPAAbi, UserOpSIPABytecode } from './abis/UserOpSIPA.js';
 export { AccountMetadataControllerAbi } from './abis/AccountMetadataController.js';
 export { SIPAFactoryAbi, SIPAFactoryBytecode } from './abis/SIPAFactory.js';
+export { ForwardingTableAbi, ForwardingTableBytecode } from './abis/ForwardingTable.js';
 export { SIPAResolverAbi, SIPAResolverBytecode } from './abis/SIPAResolver.js';
 export { OperationExecutorAbi, OperationExecutorBytecode } from './abis/OperationExecutor.js';
 export { MockOperationAbi, MockOperationBytecode } from './abis/MockOperation.js';
 export { MockCatchingOperationAbi, MockCatchingOperationBytecode } from './abis/MockCatchingOperation.js';
+export { MockOncePerBlockOperationAbi, MockOncePerBlockOperationBytecode } from './abis/MockOncePerBlockOperation.js';
 export { FPCFunderTestnetAbi, FPCFunderTestnetBytecode } from './abis/FPCFunderTestnet.js';
 export { FPCFunderDAIAbi, FPCFunderDAIBytecode } from './abis/FPCFunderDAI.js';
 export { MockSwapRouterAbi, MockSwapRouterBytecode } from './abis/MockSwapRouter.js';

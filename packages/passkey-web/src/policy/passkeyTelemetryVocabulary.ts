@@ -61,6 +61,7 @@ export const PASSKEY_FAILURE_REASONS = [
   "signer_mismatch",
   "session_lost",
   "registry_unconfirmed",
+  "backup_envelope",
   "request_failed",
   "after_prompt",
 ] as const

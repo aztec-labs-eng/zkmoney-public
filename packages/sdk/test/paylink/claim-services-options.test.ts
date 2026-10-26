@@ -12,15 +12,15 @@
  *
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Fr } from "@aztec/aztec.js/fields"
-import { TxHash } from "@aztec/stdlib/tx"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { TxHash } from "@aztec-labs/stdlib/tx"
 import { PaylinkDirectClaimService } from "../../src/services/paylink/claimServices/PaylinkDirectClaimService.js"
 import { PaylinkEmailClaimService } from "../../src/services/paylink/claimServices/PaylinkEmailClaimService.js"
 import type { ClaimSubmitContext } from "../../src/services/paylink/types.js"
 import type { TokenService } from "../../src/services/TokenService.js"
-import type { TeeSigner } from "@oxide/oxide-lib/types.js"
-import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
+import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
+import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
 
 // Stub `ClaimSubmitContext` for the spy-based dispatch tests. The leaves call
 // `preparePaylinkClaimSubmit(...)` BEFORE `this.sendAndWait(...)`, and the
@@ -33,8 +33,8 @@ const TEE_CTX_STUB: ClaimSubmitContext = {
   tokenService: {
     getTokenContract: async () => undefined as any,
   } as unknown as TokenService,
-  teeSigner: {} as unknown as TeeSigner,
-  paylinkSecret: Fr.fromString("0x0"),
+  teeSigner: {} as unknown as RegisteredTeeSigner,
+  paylinkKeys: {} as ClaimSubmitContext["paylinkKeys"],
   paylinkInstance: {
     address: AztecAddress.fromBigIntUnsafe(99n),
   } as unknown as ContractInstanceWithAddress,

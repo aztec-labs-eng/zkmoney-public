@@ -1,6 +1,6 @@
 /**
  * Live processing reasons for the deposits waiting for a sweep. Each deposit is read against its own portal (from its
- * implementation's `PORTAL()`), through the shared capacity store for that bucket, so a pending deposit and the
+ * forwarding-table row), through the shared capacity store for that bucket, so a pending deposit and the
  * funding screen see the same observation. The observer only reads: it never writes a deposit record, never starts a
  * recovery and never sends a transaction.
  *
@@ -8,7 +8,7 @@
  * it until a later read shows it is gone. The memory lives for the session.
  */
 import { parseUnits, type Address } from "viem"
-import { SOURCE_OPERATION_CAP, type OperationCapFact, type SipaPortalTerms } from "@obsidion/sdk"
+import type { SipaPortalTerms } from "@obsidion/sdk"
 import {
   isUnfundedSipaDeposit,
   type SIPADepositRecord,
@@ -30,6 +30,7 @@ import {
   type PortalCapacityStore,
 } from "./portalCapacityStore"
 import { sipaProcessingReason, sipaRequiredCredit } from "./sipaProcessingReason"
+import { sipaRecordRoute, sipaRouteKey, type SipaRecordRoute } from "./sipaRoute"
 
 /** How long a failed terms read waits before another pass may try again. `retry` does not wait. */
 const TERMS_RETRY_MS = 15_000
@@ -38,11 +39,10 @@ export interface SipaProcessingObserverOptions {
   deposits: Pick<SIPADepositStore, "get" | "list" | "onListChanged">
   /** The one shared store for a capacity bucket. */
   capacity: (key: PortalCapacityKey) => PortalCapacityStore
-  /** Usually `(implementation) => readSipaPortalTerms(client, implementation)` on the configured L1 client. */
-  readTerms: (implementation: Address) => Promise<SipaPortalTerms>
+  /** Usually `readSipaPortalTerms` on the configured L1 client, for the deployment's settlement token. */
+  readTerms: (route: SipaRecordRoute) => Promise<SipaPortalTerms>
   /** The configured L1 chain. A deposit recorded on another chain has no portal here. */
   l1ChainId: number
-  operationCap?: OperationCapFact
   now?: () => number
 }
 
@@ -167,7 +167,6 @@ export function createSipaProcessingObserver(
   options: SipaProcessingObserverOptions,
 ): SipaProcessingObserver {
   const now = options.now ?? Date.now
-  const operationCap = options.operationCap ?? SOURCE_OPERATION_CAP
   const terms = new Map<string, TermsEntry>()
   const blockers = new Map<string, SipaSweepBlocker>()
   /** The largest funding a manual sweep read, per deposit, kept in memory while it can be newer than the store. */
@@ -179,36 +178,40 @@ export function createSipaProcessingObserver(
   /** Bumped when a portal lookup settles, so a key change reaches subscribers even for a deposit with no reason. */
   let lookups = 0
 
-  const loadTerms = (implementation: string): TermsEntry => {
-    const promise = options.readTerms(implementation as Address).then(
+  const loadTerms = (route: SipaRecordRoute): TermsEntry => {
+    const id = sipaRouteKey(route)
+    const promise = options.readTerms(route).then(
       (value) => {
-        terms.set(implementation, { status: "ready", terms: value })
+        terms.set(id, { status: "ready", terms: value })
         lookups += 1
       },
       () => {
-        terms.set(implementation, { status: "failed", at: now() })
+        terms.set(id, { status: "failed", at: now() })
         lookups += 1
       },
     )
     const entry: TermsEntry = { status: "pending", promise }
-    terms.set(implementation, entry)
+    terms.set(id, entry)
     void promise.then(() => update())
     return entry
   }
 
-  const termsFor = (implementation: string, force = false): TermsEntry => {
-    const id = implementation.toLowerCase()
-    const known = terms.get(id)
-    if (!known) return loadTerms(id)
+  const termsFor = (route: SipaRecordRoute, force = false): TermsEntry => {
+    const known = terms.get(sipaRouteKey(route))
+    if (!known) return loadTerms(route)
     if (known.status === "failed" && (force || now() - known.at >= TERMS_RETRY_MS)) {
-      return loadTerms(id)
+      return loadTerms(route)
     }
     return known
   }
 
+  const routeOf = (record: SipaSweepSubject) =>
+    record.l1ChainId === options.l1ChainId ? sipaRecordRoute(record) : undefined
+
   const portalOf = (record: SipaSweepSubject): Portal => {
-    if (record.l1ChainId !== options.l1ChainId || !record.origin) return "unresolved"
-    const entry = termsFor(record.origin.implementation)
+    const route = routeOf(record)
+    if (!route) return "unresolved"
+    const entry = termsFor(route)
     if (entry.status === "pending") return "pending"
     if (entry.status === "failed") return "failed"
     const key = portalCapacityKey({
@@ -244,7 +247,7 @@ export function createSipaProcessingObserver(
         evaluateCapacityEligibility({
           state: store.getState(),
           required: sipaRequiredCredit(record, portal.terms),
-          operationCap,
+          txAmountCap: portal.terms.txAmountCap,
           now: at,
           staleAfterMs: store.policy.staleAfterMs,
         }),
@@ -316,8 +319,9 @@ export function createSipaProcessingObserver(
     const record = subjectOf(sipaAddress, true)
     if (!record) return undefined
     // The portal lookup serves the key of any recorded deposit, so a failed one is repeated first.
-    if (record.origin && record.l1ChainId === options.l1ChainId) {
-      const entry = termsFor(record.origin.implementation, true)
+    const route = routeOf(record)
+    if (route) {
+      const entry = termsFor(route, true)
       if (entry.status === "pending") await entry.promise
       const portal = portalOf(record)
       if (typeof portal === "object" && isAwaitingSweep(record)) {

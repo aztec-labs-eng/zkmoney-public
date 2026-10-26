@@ -94,10 +94,10 @@ export function SavingsProvider({
             shares,
             value: savingsValue(shares, price.sharePrice),
             ...price,
-            sharesReadAt: record?.updatedAt,
+            sharesReadAt: record?.readAt ?? record?.updatedAt,
           }
         : null,
-    [price, shares, record?.updatedAt],
+    [price, shares, record?.readAt, record?.updatedAt],
   )
   const value = useMemo(
     () => ({ source, position, hydrated, refresh }),

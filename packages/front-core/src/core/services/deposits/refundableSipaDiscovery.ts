@@ -1,8 +1,8 @@
 /** Reconstruct SIPA identities from `SIPA` events within the same rollup/deployment version. */
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { keccak256 } from "@aztec/foundation/crypto/keccak"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { keccak256 } from "@aztec-labs/foundation/crypto/keccak"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { isAllZeroHex } from "@obsidion/core/oxide"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
@@ -20,16 +20,17 @@ import type { RefundableSipaEvent, RefundableSipaSource } from "./refundableDepo
  * This helper is intentionally intra-rollup: the events, tuple, deposit implementation and address
  * formula must all belong to the same deployed version.
  *
- * The implementations come from the tuple and nowhere else. `SIPAFactory.implementationFor`
- * is keyed by rollup version, and several generations share one version, so it names the newest
- * generation's implementation rather than the one a retired generation's addresses commit to —
- * reading it here would derive an address no deposit was ever sent to. A tuple that publishes no
- * implementation predates the version-scoped scheme, so its SIPAs have a different address preimage
- * and are not derivable by this formula either: fail loudly rather than report zero balances.
+ * The implementations and the forwarding table come from the tuple and nowhere else.
+ * `SIPAFactory.implementationFor` names the implementation the owner points new SIPAs at, not the
+ * one a retired generation's addresses commit to — reading it here would derive an address no
+ * deposit was ever sent to. A tuple that publishes no implementation has SIPAs with a different
+ * address preimage, not derivable by this formula either: fail loudly rather than report zero
+ * balances.
  *
  * The tuple's `sipaRecoveryProtocol` selects the address preimage: a legacy-eoa deployment commits
  * to the stealth recovery address, an account deployment commits to the recovery commitment of
- * the owner's L1 account, which the caller supplies as `recoveryAccount`.
+ * the owner's L1 account, which the caller supplies as `recoveryAccount`, and to its forwarding
+ * table.
  */
 export async function deriveRefundableSipaSources(args: {
   events: readonly RefundableSipaEvent[]
@@ -49,6 +50,13 @@ export async function deriveRefundableSipaSources(args: {
   if (!sipaFactory || !/^\d+$/.test(rollupVersion)) {
     throw new Error("oxide tuple lacks sipaFactory / numeric rollupVersion")
   }
+  const { forwardingTable } = args.tuple
+  if (accountProtocol && (!forwardingTable || isAllZeroHex(forwardingTable))) {
+    throw new Error(
+      `oxide tuple for portal ${args.tuple.portal} publishes no forwardingTable — its SIPA ` +
+        "addresses cannot be derived",
+    )
+  }
   if (!depositSIPAImplementation || isAllZeroHex(depositSIPAImplementation)) {
     throw new Error(
       `oxide tuple for portal ${args.tuple.portal} publishes no depositSIPAImplementation — its ` +
@@ -59,13 +67,10 @@ export async function deriveRefundableSipaSources(args: {
 
   const recipient = AztecAddress.fromStringUnsafe(args.recipientL2Address)
   const depositImplementation = EthAddress.fromString(depositSIPAImplementation)
-  // Registration and metadata updates are the other intents the wallet announces to itself.
-  const otherImplementations = [
-    args.tuple.registrationSIPAImplementation,
-    args.tuple.updateMetadataSIPAImplementation,
-  ]
-    .filter((address): address is string => !!address && !isAllZeroHex(address))
-    .map((address) => EthAddress.fromString(address))
+  // Registration is the other intent the wallet announces to itself.
+  const registration = args.tuple.registrationSIPAImplementation
+  const otherImplementations =
+    registration && !isAllZeroHex(registration) ? [EthAddress.fromString(registration)] : []
   const seen = new Set<string>()
   const out: RefundableSipaSource[] = []
   for (const event of args.events) {
@@ -83,8 +88,8 @@ export async function deriveRefundableSipaSources(args: {
       : otherImplementations
     if (!derivations.length) {
       throw new Error(
-        `oxide tuple for portal ${args.tuple.portal} publishes no registration or metadata-update ` +
-          "SIPA implementation, so a SIPA announced with another intent cannot be derived",
+        `oxide tuple for portal ${args.tuple.portal} publishes no registration SIPA ` +
+          "implementation, so a SIPA announced with another intent cannot be derived",
       )
     }
     for (const implementation of derivations) {
@@ -103,6 +108,7 @@ export async function deriveRefundableSipaSources(args: {
                 secret,
                 EthAddress.fromString(args.recoveryAccount!),
               ),
+              forwardingTable: EthAddress.fromString(forwardingTable!),
             })
           : computeSIPAAddress({
               ...common,

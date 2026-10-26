@@ -13,18 +13,18 @@
     "./*": "./dest/*"
   },
   "dependencies": {
-    "@aztec/accounts": "5.2.0",
-    "@aztec/aztec.js": "5.2.0",
-    "@aztec/blob-lib": "5.2.0",
-    "@aztec/constants": "5.2.0",
-    "@aztec/ethereum": "5.2.0",
-    "@aztec/foundation": "5.2.0",
-    "@aztec/stdlib": "5.2.0",
+    "@aztec-labs/accounts": "6.0.0",
+    "@aztec-labs/aztec.js": "6.0.0",
+    "@aztec-labs/blob-lib": "6.0.0",
+    "@aztec-labs/constants": "6.0.0",
+    "@aztec-labs/ethereum": "6.0.0",
+    "@aztec-labs/foundation": "6.0.0",
+    "@aztec-labs/stdlib": "6.0.0",
     "@oxide/l1-contracts": "workspace:^",
     "@oxide/noir-contracts.js": "workspace:^",
     "@oxide/oxide-lib": "workspace:^",
     "@oxide/refund-proof": "workspace:^",
-    "viem": "npm:@aztec/viem@2.38.2"
+    "viem": "2.57.1"
   },
   "devDependencies": {
     "@jest/globals": "^30.0.0",

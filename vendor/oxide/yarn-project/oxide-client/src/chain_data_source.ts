@@ -1,4 +1,4 @@
-import type { AztecNode } from '@aztec/stdlib/interfaces/client';
+import type { AztecNode } from '@aztec-labs/stdlib/interfaces/client';
 
 /**
  * The chain data the oxide flows read: block and tx lookups plus world-state membership witnesses. A live node
@@ -13,6 +13,7 @@ export type ChainDataSource = Pick<
   | 'getTxEffect'
   | 'getTxReceipt'
   | 'getBlockHashMembershipWitness'
+  | 'getBlockHashMembershipWitnessAtArchive'
   | 'getPublicDataWitness'
   | 'getL2ToL1Messages'
   | 'getL2ToL1MembershipWitness'

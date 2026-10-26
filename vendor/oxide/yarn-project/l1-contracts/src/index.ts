@@ -3,8 +3,8 @@ export {
   CertManagerBytecode,
   FrozenNotesRefundVerifierAbi,
   FrozenNotesRefundVerifierBytecode,
-  FrozenDepositRefundVerifierAbi,
-  FrozenDepositRefundVerifierBytecode,
+  FrozenDepositsRefundVerifierAbi,
+  FrozenDepositsRefundVerifierBytecode,
   UnprocessedDepositRefundVerifierAbi,
   UnprocessedDepositRefundVerifierBytecode,
   MockCertManagerAbi,
@@ -15,50 +15,59 @@ export {
   TestERC20Bytecode,
   NitroValidatorAbi,
   NitroValidatorBytecode,
+  TeeRegistryAbi,
+  TeeRegistryBytecode,
   FirstProverProofSubmitterAbi,
   FirstProverProofSubmitterBytecode,
   DepositSubsidyAbi,
   DepositSubsidyBytecode,
   IFPCFunderAbi,
   ErrorsAbi,
-  WithdrawalSubsidyAbi,
-  WithdrawalSubsidyBytecode,
+  PlainWithdrawalSubsidyAbi,
+  PlainWithdrawalSubsidyBytecode,
   ProverSubsidyAbi,
   ProverSubsidyBytecode,
   PlainWithdrawalExecutorAbi,
   PlainWithdrawalExecutorBytecode,
+  MigrationExecutorAbi,
+  MigrationExecutorBytecode,
+  MigrationSubsidyAbi,
+  MigrationSubsidyBytecode,
   OxidePortalAbi,
   OxidePortalBytecode,
+  PortalFactoryAbi,
+  PortalFactoryBytecode,
   TestCertManagerAbi,
   TestCertManagerBytecode,
 } from './artifacts.js';
 export {
   type PortalRefundVerifiers,
-  type DeployOxidePortalArgs,
+  type DeployPortalFactoryArgs,
   deployFrozenNotesRefundVerifier,
-  deployFrozenDepositRefundVerifier,
+  deployFrozenDepositsRefundVerifier,
   deployUnprocessedDepositRefundVerifier,
   deployNitroValidator,
+  type DeployTeeRegistryArgs,
+  deployTeeRegistry,
   deployFirstProverProofSubmitter,
   deployDepositSubsidy,
-  deployWithdrawalSubsidy,
   deployProverSubsidy,
   deployPlainWithdrawalExecutor,
-  deployOxidePortal,
+  type DeployMigrationExecutorArgs,
+  deployMigrationExecutor,
+  deployPortalFactory,
 } from './deploy/index.js';
 export { OxidePortalEventsAbi } from './events.js';
 export {
   type DepositEvent,
-  type TEEAddedEvent,
-  type TEEBinding,
-  type TEEKeys,
   type ProverClaim,
   type ProverClaimArgs,
   type ExecutorCall,
   encodeExecutorCall,
   OxidePortalContract,
-  encodeWithdrawalBroadcast,
 } from './oxide_portal.js';
+export { type PortalArgs, PortalFactoryContract } from './portal_factory.js';
+export { type TEEKeys, TeeRegistryContract } from './tee_registry.js';
 
 // Periphery: name registry + stealth-deposit resolver.
 export {
@@ -72,6 +81,8 @@ export {
   MockVerifierBytecode,
   MockV3AggregatorAbi,
   MockV3AggregatorBytecode,
+  MintableTokenAbi,
+  MintableTokenBytecode,
   OxideAccountAbi,
   OxideAccountFactoryAbi,
   OxideAccountFactoryBytecode,
@@ -94,6 +105,8 @@ export {
   SIPABytecode,
   SIPAFactoryAbi,
   SIPAFactoryBytecode,
+  ForwardingTableAbi,
+  ForwardingTableBytecode,
   SIPAResolverAbi,
   SIPAResolverBytecode,
   OperationExecutorAbi,
@@ -102,6 +115,8 @@ export {
   MockOperationBytecode,
   MockCatchingOperationAbi,
   MockCatchingOperationBytecode,
+  MockOncePerBlockOperationAbi,
+  MockOncePerBlockOperationBytecode,
   FPCFunderTestnetAbi,
   FPCFunderTestnetBytecode,
   MockSwapRouterAbi,
@@ -122,9 +137,12 @@ export {
   deployRegistrationController,
   deployDepositSIPA,
   deployRegistrationSIPA,
+  DEFAULT_FORWARDING_TABLE_INTENTS,
   DEPOSIT_SWEEP_FEE,
   REGISTRATION_SWEEP_FEE,
+  deployForwardingTable,
   deploySIPAImplementations,
+  blessForwardingTable,
   blessSIPAImplementation,
   deployNamePortal,
   deploySIPAFactory,
@@ -134,10 +152,17 @@ export {
   deployOperationExecutor,
   linkBytecode,
 } from './deploy/index.js';
-export type { LinkLibraries, LinkReferences, SIPAImplementations } from './deploy/index.js';
+export type {
+  ForwardingTableInitialRow,
+  ForwardingTableIntentFees,
+  LinkLibraries,
+  LinkReferences,
+  SIPAImplementations,
+} from './deploy/index.js';
 export {
   addBeneficiary,
   readIsBeneficiary,
+  readMetadataStateHash,
   readR1InstallGas,
   readRegistrationFee,
   readRegistrationMin,
@@ -170,6 +195,8 @@ export {
   readResolverOperator,
   setUserRecord,
   setResolverOperator,
+  encodeUserRecordMetadata,
+  userRecordStateHash,
 } from './account_metadata_registry.js';
 export type { K1PointArg, UserRecordArg, ResolverOperatorArg } from './account_metadata_registry.js';
 export { callResolve, encodeResolve, resolveName, resolveWithProof } from './sipa_resolver.js';
@@ -177,6 +204,7 @@ export {
   SipaIntent,
   encodeDeploySIPA,
   predictSIPA,
+  readApprovedTable,
   readBlessedIntent,
   readSIPAImplementation,
 } from './sipa_factory.js';
@@ -197,6 +225,7 @@ export {
   encodeAddAuthKey,
   encodeExecuteBatch,
   encodeR1UserOpSignature,
+  encodeRemoveAuthKey,
   encodeSetData,
   getAccountData,
   getAuthKeys,
@@ -232,14 +261,10 @@ export {
   getPaymasterHash,
   packPaymasterAndData,
 } from './paymaster.js';
-export {
-  encodeDeployAndSweepForSubsidy,
-  encodeSweep,
-  encodeSweepForSubsidy,
-  getSipaSweeps,
-  readSipaPlumbing,
-} from './sipa.js';
+export { encodeDeployAndSweepForSubsidy, encodeSweep, encodeSweepForSubsidy, getSipaSweeps } from './sipa.js';
 export type { SubsidizedDeployArgs, SweepArgs, SweepEvent } from './sipa.js';
+export { readForwardingTableRow } from './forwarding_table.js';
+export type { ForwardingTableRow } from './forwarding_table.js';
 export {
   MULTICALL3_ADDRESS,
   buildSipaDeployAndSweepOperation,
@@ -257,6 +282,8 @@ export type {
   SipaSweepTarget,
   SubsidizedDeployAndSweep,
 } from './sipa_sweep_operation.js';
+export { classifyL1Operation } from './l1_operation_kind.js';
+export type { L1OperationKind } from './l1_operation_kind.js';
 export {
   encodeEscrowRecoverERC20,
   encodeEscrowRecoverETH,
@@ -264,11 +291,13 @@ export {
   escrowETHRecoveryDigest,
   findEscrowExecutionTx,
 } from './escrow.js';
+export * from './migration.js';
 export * from './swap_on_withdraw.js';
 export * from './cctp_bridge_on_withdraw.js';
 export * from './across_bridge_on_withdraw.js';
-export * from './metadata_update.js';
-export { UpdateMetadataSIPAAbi, UpdateMetadataSIPABytecode, AccountMetadataControllerAbi } from './artifacts.js';
+export * from './user_op_intent.js';
+export { AccountMetadataControllerAbi } from './artifacts.js';
+export { UserOpSIPAAbi, UserOpSIPABytecode } from './artifacts.js';
 export {
   EMPTY_SIGNED_TERMS,
   encodeDepositIntentData,
@@ -300,4 +329,5 @@ export {
   depositTokensFor,
 } from './deposit_tokens.js';
 
-export { deployUpdateMetadataSIPA, METADATA_UPDATE_SWEEP_FEE } from './deploy/deploy_sipa_implementations.js';
+export { deployUserOpSIPA } from './deploy/deploy_sipa_implementations.js';
+export { USER_OP_SWEEP_FEE } from './deploy/deploy_forwarding_table.js';

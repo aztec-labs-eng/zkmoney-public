@@ -1,12 +1,12 @@
-import type { Fr } from '@aztec/aztec.js/fields';
-import { DomainSeparator } from '@aztec/constants';
-import { keccak256 } from '@aztec/foundation/crypto/keccak';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { EventSelector, FunctionSelector } from '@aztec/stdlib/abi';
-import type { AztecAddress } from '@aztec/stdlib/aztec-address';
-import { computeLogTag } from '@aztec/stdlib/hash';
-import { Tag } from '@aztec/stdlib/logs';
-import type { Tx, TxHash } from '@aztec/stdlib/tx';
+import type { Fr } from '@aztec-labs/aztec.js/fields';
+import { DomainSeparator } from '@aztec-labs/constants';
+import { keccak256 } from '@aztec-labs/foundation/crypto/keccak';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { EventSelector, FunctionSelector } from '@aztec-labs/stdlib/abi';
+import type { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
+import { computeLogTag } from '@aztec-labs/stdlib/hash';
+import { Tag } from '@aztec-labs/stdlib/logs';
+import type { Tx, TxHash } from '@aztec-labs/stdlib/tx';
 
 import { BYTES_PER_FIELD, packBytesToFields, unpackFieldsToBytes } from './field_bytes.js';
 import {
@@ -135,7 +135,7 @@ export async function l1OperationLogTag(): Promise<Tag> {
 
 /**
  * The L1 operations that `broadcaster` enqueued in the tx. One tx can also carry the broadcasts of another deployment,
- * and that deployment's relayer settles them. Malformed candidates (e.g. a garbage byte length) are skipped.
+ * and that deployment's relayer executes them. Malformed candidates (e.g. a garbage byte length) are skipped.
  */
 export function extractL1Operations(
   tx: Tx,
@@ -181,7 +181,7 @@ export function extractL1Operations(
 
 export function computeL1OperationId(operation: BroadcastL1Operation, sourceTxHash?: TxHash): `0x${string}` {
   if (operation.condition.kind === L1OperationConditionKind.MessageInOutbox && !sourceTxHash) {
-    throw new Error('A withdrawal operation ID requires its burn transaction hash.');
+    throw new Error('A withdrawal operation ID requires its initiation transaction hash.');
   }
   const { kind, token, recipient } = operation.condition;
   const packed = Buffer.concat([

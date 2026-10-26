@@ -21,6 +21,7 @@ import { getActiveCredentialId } from "../../platform/storage/activeStorage"
 import { useAsyncAction } from "../../ui/hooks"
 import { BootSplash } from "../../ui/PxeBoot"
 import {
+  BACKUP_ENVELOPE,
   PasskeyRefusal,
   STORED_ADDRESS_MISMATCH,
   isPasskeyNotOffered,
@@ -86,9 +87,9 @@ export function UnlockGate({ children }: { children: ReactNode }) {
       try {
         await tracked.run((own) =>
           getAuthService().unlock(
-            (msk, pubkeyHex) =>
+            (msk, passkeys) =>
               obsidionWallet
-                .deriveAccountAddress(msk, pubkeyHex)
+                .deriveAccountAddress(msk, passkeys)
                 .then((address) => address.toString()),
             { signal: controller.signal, own, ...(phone ? { phone } : {}) },
           ),
@@ -122,7 +123,8 @@ export function UnlockGate({ children }: { children: ReactNode }) {
           })
           return
         }
-        if (isPasskeyPolicyError(e)) {
+        // A backup record's envelope did not open, or the policy refused: the card by name.
+        if (isPasskeyPolicyError(e) || (e instanceof Error && e.name === BACKUP_ENVELOPE)) {
           fireEvent("action_failed", { action: "identity:unlock", code: failureCode(e) })
           setRefusal({ name: e.name, message: e.message })
           return
@@ -218,8 +220,7 @@ export function UnlockGate({ children }: { children: ReactNode }) {
             Welcome back
           </h1>
           <p style={{ color: "var(--text-secondary)", fontSize: 14, lineHeight: 1.45, margin: 0 }}>
-            Unlock with the passkey you signed up with. Transactions are approved with it
-            afterwards.
+            Unlock with one of this wallet's passkeys. Transactions are approved with it afterwards.
           </p>
           {installFailed && (
             <p

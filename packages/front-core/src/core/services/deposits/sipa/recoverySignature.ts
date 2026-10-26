@@ -8,9 +8,9 @@
  * Pure compute — signing only; submission goes through an L1 wallet channel.
  */
 
-import { toBufferBE } from "@aztec/foundation/bigint-buffer"
-import { keccak256 } from "@aztec/foundation/crypto/keccak"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { toBufferBE } from "@aztec-labs/foundation/bigint-buffer"
+import { keccak256 } from "@aztec-labs/foundation/crypto/keccak"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { secp256k1 } from "@noble/curves/secp256k1"
 
 const ETH_SIGNED_MESSAGE_PREFIX = Buffer.from("\x19Ethereum Signed Message:\n32", "utf8")

@@ -3,7 +3,7 @@ import {
   setupFetchInterceptor,
   updateInterceptorConfig,
   restoreFetch,
-} from "./customizableFetchInterceptor"
+} from "./customizableFetchInterceptor.js"
 
 describe("Customizable Fetch Interceptor Example", () => {
   // Set up the fetch interceptor before all tests with default configuration
@@ -54,7 +54,7 @@ describe("Customizable Fetch Interceptor Example", () => {
   it("should allow dynamic responses based on URL", async () => {
     // Update the interceptor to return different responses based on the URL
     updateInterceptorConfig({
-      mockResponse: (url) => {
+      mockResponse: (url: string) => {
         if (url.includes("/users")) {
           return { type: "users", count: 5 }
         } else if (url.includes("/products")) {
@@ -106,7 +106,7 @@ describe("Customizable Fetch Interceptor Example", () => {
   it("should allow selective interception", async () => {
     // Update the interceptor to only intercept certain URLs
     updateInterceptorConfig({
-      shouldIntercept: (url) => url.includes("intercept-me"),
+      shouldIntercept: (url: string) => url.includes("intercept-me"),
       mockResponse: { intercepted: true },
     })
 

@@ -9,11 +9,8 @@ import { Modal } from "./Modal"
 
 export { customEndpointsLabel } from "./endpointsEditor"
 
-const CONFIG_KEYS: Record<EndpointKind, "nodeUrl" | "l1RpcUrl" | "enclaveUrl"> = {
-  node: "nodeUrl",
-  l1Rpc: "l1RpcUrl",
-  enclave: "enclaveUrl",
-}
+/** The config field each dialed default comes from; the old network's node shows no host. */
+const CONFIG_KEYS = { node: "nodeUrl", l1Rpc: "l1RpcUrl", enclave: "enclaveUrl" } as const
 const BUSY =
   "A transaction is still being sent, and saving reloads the wallet. Wait for it to finish."
 
@@ -47,7 +44,7 @@ function EndpointsDialog({
 
   // A custom URL hides the default it replaced.
   const defaults: Partial<Record<EndpointKind, string>> = {}
-  for (const kind of Object.keys(CONFIG_KEYS) as EndpointKind[]) {
+  for (const kind of Object.keys(CONFIG_KEYS) as (keyof typeof CONFIG_KEYS)[]) {
     const host = config.endpoints[kind].isDefault
       ? defaultHost(config[CONFIG_KEYS[kind]])
       : undefined

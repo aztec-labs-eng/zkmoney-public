@@ -2,7 +2,7 @@ import { QueueStatus, TokenActionEnum, createNode } from "@obsidion/sdk"
 import { PaylinkActionEnum } from "@obsidion/core/constants"
 import { getActiveGenerationNode } from "../activeGenerationNode.js"
 import { getNodeApiKey } from "../nodeApiKey.js"
-import { TxHash, TxStatus } from "@aztec/stdlib/tx"
+import { TxHash, TxStatus } from "@aztec-labs/stdlib/tx"
 import { assert } from "ts-essentials"
 import {
   Transaction,
@@ -125,6 +125,25 @@ export const INTERRUPTED_ERRORS = {
 export const INTERRUPTED_SEND_ERROR =
   "This payment was interrupted before it was sent. The amount is still in your balance."
 
+/** The reason a row carried over unfinished from a retired version shows. */
+export const HISTORIC_UNFINISHED_ERROR =
+  "It was left unfinished on an earlier version of the wallet."
+
+/** A retired version's row as this store keeps it: nothing here can finish it, and no queue here owns it. */
+function historicRow(row: Transaction): Transaction {
+  const kept = { ...row }
+  delete kept.queueId
+  if (kept.status !== TRANSACTION_STATUS.PENDING) return kept
+  return {
+    ...kept,
+    status: TRANSACTION_STATUS.FAILED as TransactionStatus,
+    detailedStatus: QueueStatus.FAILED,
+    progress: TRANSACTION_PROGRESS.COMPLETE,
+    endTime: kept.endTime ?? kept.timestamp,
+    error: HISTORIC_UNFINISHED_ERROR,
+  }
+}
+
 function interruptedErrorFor(tx: Transaction): string {
   if (tx.action === "send") return INTERRUPTED_ERRORS.send
   if (tx.action === PaylinkActionEnum.PAY) return INTERRUPTED_ERRORS.paylinkCreate
@@ -144,13 +163,27 @@ const FAILED_ERRORS: Partial<Record<string, string>> = {
   [PaylinkActionEnum.CLAIM]: "It didn't go through.",
 }
 
+/** The opening of the reason a transaction or a move a reorg took back shows. */
+export const REORGED_ERROR = "Reverted by the network."
+
+/** Why a row a reorg took back failed, by its action; `REORGED_ERROR` for any other. */
+const REORGED_ERRORS: Partial<Record<string, string>> = {
+  receive: `${REORGED_ERROR} It isn't in your balance.`,
+  send: `${REORGED_ERROR} The amount is still in your balance.`,
+  [PaylinkActionEnum.PAY]: `${REORGED_ERROR} The amount is still in your balance.`,
+}
+
 /**
- * A failed row's reason in its action's words: the tab-close text, else a plain line for the user's
- * own send, link or claim. Undefined for anything else, such as a receive the network took back.
+ * A failed row's reason in its action's words: the tab-close text, the reorg that took back a
+ * landed row, else a plain line for the user's own send, link or claim.
  */
 export function failureReason(tx: Transaction): string | undefined {
   if (tx.status !== TRANSACTION_STATUS.FAILED) return
   if (INTERRUPTED_TEXTS.has(tx.error ?? "")) return interruptedErrorFor(tx)
+  // Only the reorg layer bumps the epoch; a block anchor means the row had landed before it failed.
+  if ((tx.reorgEpoch ?? 0) > 0 && tx.blockNumber !== undefined) {
+    return REORGED_ERRORS[tx.action] ?? REORGED_ERROR
+  }
   return FAILED_ERRORS[tx.action]
 }
 
@@ -294,6 +327,38 @@ export class TransactionStorage {
    */
   public async getTransactions(): Promise<Transaction[]> {
     return await this.loadTransactions()
+  }
+
+  /**
+   * Rows from a retired version's database, as `historicRow` keeps them. A row already here by hash,
+   * or a link row by link, is skipped, and so is one with neither. Rows keep the network they were
+   * stamped with. Returns how many were added.
+   */
+  public async importHistoricRows(rows: readonly Transaction[]): Promise<number> {
+    return this.withSerializedTransactions(
+      (transactions) => {
+        const hashes = new Set<string>()
+        const links = new Set<string>()
+        const index = (tx: Transaction) => {
+          if (tx.txHash) hashes.add(normalizeTxHash(tx.txHash))
+          if (isPaylinkRow(tx) && tx.paylink) links.add(tx.paylink)
+        }
+        transactions.forEach(index)
+        let added = 0
+        for (const row of rows) {
+          const hash = row.txHash ? normalizeTxHash(row.txHash) : undefined
+          const link = isPaylinkRow(row) ? row.paylink : undefined
+          if (!hash && !link) continue
+          if ((hash && hashes.has(hash)) || (link && links.has(link))) continue
+          const kept = historicRow(row)
+          index(kept)
+          transactions.push(kept)
+          added++
+        }
+        return added
+      },
+      (added) => added > 0,
+    )
   }
 
   public async clearTransactions(): Promise<void> {

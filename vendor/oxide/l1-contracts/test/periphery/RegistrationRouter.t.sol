@@ -4,8 +4,9 @@ import {RegistrationTestBase} from "@test/periphery/registration/RegistrationTes
 import {RegistrationRouter} from "@periphery/RegistrationRouter.sol";
 import {INameRegistry} from "@periphery/interfaces/INameRegistry.sol";
 import {SIPABase} from "@periphery/SIPABase.sol";
-import {REGISTRATION_SWEEP_FEE} from "@periphery/RegistrationSIPA.sol";
+import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
 import {Errors} from "@periphery/Errors.sol";
+import {REGISTRATION_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
 
 contract RegistrationRouterTest is RegistrationTestBase {
   uint256 internal constant DEPOSIT = 100 ether;
@@ -26,7 +27,7 @@ contract RegistrationRouterTest is RegistrationTestBase {
     returns (RegistrationRouter.RegisterParams memory p)
   {
     p.recoveryCommitment = _recoveryCommitment("recovery");
-    p.portal = address(portal);
+    p.forwardingTable = forwardingTable;
     p.resweepable = true;
     p.token = address(underlying);
     p.amount = amount;
@@ -50,7 +51,7 @@ contract RegistrationRouterTest is RegistrationTestBase {
 
     assertEq(nameRegistry.ownerOf(NAME_HASH), defaultOwner);
     assertEq(underlying.balanceOf(FEE_BENEFICIARY), REGISTRATION_FUNDER_CUT);
-    assertEq(underlying.balanceOf(caller), callerBefore - DEPOSIT + REGISTRATION_SWEEP_FEE);
+    assertEq(underlying.balanceOf(caller), callerBefore - DEPOSIT + REGISTRATION_SWEEP_TIP);
     assertEq(underlying.balanceOf(address(portal)) - portalBefore, DEPOSIT - REGISTRATION_FEE);
     assertEq(underlying.balanceOf(sipa), 0);
   }
@@ -85,6 +86,32 @@ contract RegistrationRouterTest is RegistrationTestBase {
     router.register(p);
   }
 
+  function test_aTableThatIsNotApprovedReverts() external {
+    bytes memory registrationData = _registrationData(NAME_HASH, defaultOwner);
+    RegistrationRouter.RegisterParams memory p = _params(registrationData, DEPOSIT);
+    p.forwardingTable = IForwardingTable(makeAddr("unapprovedTable"));
+
+    vm.prank(caller);
+    vm.expectRevert(
+      abi.encodeWithSelector(Errors.RegistrationRouter__TableNotApproved.selector, address(p.forwardingTable))
+    );
+    router.register(p);
+  }
+
+  function test_noRegistrationImplementationReverts() external {
+    bytes memory registrationData = _registrationData(NAME_HASH, defaultOwner);
+    RegistrationRouter.RegisterParams memory p = _params(registrationData, DEPOSIT);
+    vm.mockCall(
+      address(sipaFactory),
+      abi.encodeWithSelector(sipaFactory.implementationFor.selector, SIPABase.Intent.Registration),
+      abi.encode(address(0))
+    );
+
+    vm.prank(caller);
+    vm.expectRevert(Errors.RegistrationRouter__NoRegistrationImplementation.selector);
+    router.register(p);
+  }
+
   function test_routerCommitsSIPAToRegistrationData() external {
     bytes memory registrationData = _registrationData(NAME_HASH, defaultOwner);
     RegistrationRouter.RegisterParams memory p = _params(registrationData, DEPOSIT);
@@ -93,5 +120,6 @@ contract RegistrationRouterTest is RegistrationTestBase {
     address sipa = router.register(p);
 
     assertEq(SIPABase(sipa).intentHash(), keccak256(registrationData));
+    assertEq(address(SIPABase(sipa).forwardingTable()), address(forwardingTable));
   }
 }

@@ -1,5 +1,6 @@
-import { Fr } from '@aztec/foundation/curves/bn254';
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { RollupContract } from '@aztec-labs/ethereum/contracts/rollup';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
 import type {
@@ -42,6 +43,7 @@ export interface ProfitablePartialEpochPolicyOptions extends Omit<
 > {
   binding: Binding;
   portal: OxidePortalContract;
+  rollup: RollupContract;
 }
 
 /**
@@ -56,7 +58,7 @@ export class ProfitablePartialEpochPolicy implements PartialProofPolicy {
 
     this.tracker = new EpochProfitTracker({
       discoverer,
-      portal: options.portal,
+      rollup: options.rollup,
       portals: options.portals,
       priceOracle: options.priceOracle,
       getEffectiveGasPriceWei: () => options.portal.client.getGasPrice(),
@@ -70,7 +72,6 @@ export class ProfitablePartialEpochPolicy implements PartialProofPolicy {
         options.earlySubmitPolicy?.provingCostPerCheckpoint ?? config.EARLY_SUBMIT_POLICY__PROVING_COST_PER_CHECKPOINT,
       submitEpochProofGasModel: options.submitEpochProofGasModel ?? config.ROLLUP__SUBMIT_EPOCH_PROOF_GAS_MODEL,
       claimProverTipsGasModel: options.claimProverTipsGasModel ?? config.PORTAL__CLAIM_PROVER_TIPS_GAS_MODEL,
-      firstProverCaptureGas: config.PORTAL__FIRST_PROVER_CAPTURE_GAS,
     });
   }
 
@@ -102,6 +103,7 @@ export class ProfitablePartialEpochPolicy implements PartialProofPolicy {
     return new ProfitablePartialEpochPolicy({
       ...options,
       portal,
+      rollup,
       binding,
     });
   }

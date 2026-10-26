@@ -8,7 +8,7 @@ import { createRoot, type Root } from "react-dom/client"
 import { MemoryRouter } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { walletStorage } from "../src/platform/storage/walletStorage"
-import { TxStatus } from "@aztec/stdlib/tx"
+import { TxStatus } from "@aztec-labs/stdlib/tx"
 import { provingProgress } from "@obsidion/proving-progress"
 import {
   AppNotificationStore,
@@ -230,6 +230,7 @@ describe("the panel", () => {
         recipientProvenance: "saved-recipient",
         amount: "25",
         tokenSymbol: "DAI",
+        tokenDecimals: 18,
         phase: "submitting",
         startTime: 1,
       })

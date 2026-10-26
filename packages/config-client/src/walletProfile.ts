@@ -2,14 +2,18 @@
 // is unreachable or the consumer forces it), verify identity, resolve the version `current` names,
 // compare the bundled zkJWT vkey hash.
 
-import type { ContractServiceConfig } from "@obsidion/core/types"
+import type { ContractServiceConfig, SourceArtifactManifest } from "@obsidion/core/types"
 import {
   ConfigProfileError,
   type ConfigProfileErrorCode,
+  type FetchProfileOptions,
   fetchConfigProfile,
   isExpired,
   parseServedProfile,
+  retiredRollupVersion,
+  retiredRollupVersions,
   resolveVersion,
+  type RetiredRollupVersion,
 } from "./client.js"
 import type { ConfigProfile, ConfigVersion } from "./schema.js"
 import { toContractServiceConfig } from "./toContractServiceConfig.js"
@@ -21,21 +25,14 @@ export type WalletProfileErrorCode =
   | "UNSUPPORTED_VERSION"
 
 export class WalletProfileError extends Error {
-  constructor(
-    readonly code: WalletProfileErrorCode,
-    message: string,
-  ) {
+  constructor(readonly code: WalletProfileErrorCode, message: string) {
     super(message)
     this.name = "WalletProfileError"
   }
 }
 
 export class ProfileNetworkMismatchError extends WalletProfileError {
-  constructor(
-    readonly profileNetwork: string,
-    readonly activeNetwork: string,
-    profileId: string,
-  ) {
+  constructor(readonly profileNetwork: string, readonly activeNetwork: string, profileId: string) {
     super(
       "NETWORK_MISMATCH",
       `profile "${profileId}" is for network "${profileNetwork}" but this build is on "${activeNetwork}"`,
@@ -57,9 +54,9 @@ export interface ResolveWalletProfileInput {
    */
   bakedProfile?: unknown
   /**
-   * Boot from `bakedProfile` without fetching, and past the snapshot's own expiry. Identity,
-   * network and version checks still run. For a consumer whose user has chosen the shipped
-   * configuration over a profile nobody publishes anymore.
+   * Boot from `bakedProfile` without fetching the active profile, and past the snapshot's own
+   * expiry. Identity, network and version checks still run. For a consumer whose user has chosen
+   * the shipped configuration over a profile nobody publishes anymore.
    */
   forceBakedProfile?: boolean
   fetchImpl?: typeof fetch
@@ -73,13 +70,29 @@ export interface WalletProfileBoot {
   version: ConfigVersion
   snapshot: ContractServiceConfig
   nodeUrl: string
+  /** Rollups named by embedded versions and previous-generation profiles. */
+  sourceRollups: readonly WalletSourceRollup[]
+  /** Historical references that could not supply a migration source. */
+  sourceRollupIssues: readonly WalletSourceRollupIssue[]
   zkJwtVkeySkew: boolean
   /** `bakedProfile` booted the wallet: the live fetch was unreachable, or `forceBakedProfile` asked. */
   bootedFromBakedProfile: boolean
-  /** The live failure a snapshot boot stood in for. Absent on a forced boot, which never fetches. */
+  /** The live failure a snapshot boot stood in for. Absent when the active fetch was skipped. */
   liveFailure?: { code: ConfigProfileErrorCode; message: string }
   /** A forced boot's snapshot has passed its `expiresAt`. */
   bakedProfileExpired?: boolean
+}
+
+export interface WalletSourceRollup extends RetiredRollupVersion {
+  contracts: ContractServiceConfig
+  /** A previous generation's artifact manifest; a version of the active generation shares its own. */
+  artifacts?: SourceArtifactManifest
+}
+
+export interface WalletSourceRollupIssue {
+  profileUrl: string
+  code: ConfigProfileErrorCode | WalletProfileErrorCode | "UNKNOWN"
+  message: string
 }
 
 /** What a consumer expects of the document it boots from. `source` names it in errors. */
@@ -120,7 +133,10 @@ export function resolveWalletProfileDocument(
     throw new ProfileNetworkMismatchError(profile.network, expect.network, profile.profileId)
   }
 
-  if (expect.expectedRollupVersion && profile.shared.rollupVersion !== expect.expectedRollupVersion) {
+  if (
+    expect.expectedRollupVersion &&
+    profile.shared.rollupVersion !== expect.expectedRollupVersion
+  ) {
     throw new WalletProfileError(
       "UNSUPPORTED_VERSION",
       `profile "${profile.profileId}" is scoped to rollup ${profile.shared.rollupVersion}; this ` +
@@ -137,7 +153,118 @@ export function resolveWalletProfileDocument(
     version,
     snapshot: toContractServiceConfig(profile),
     nodeUrl: version.nodeUrl,
+    sourceRollups: retiredRollupVersions(profile).map((source) => ({
+      ...source,
+      contracts: toContractServiceConfig(profile, source.versionId),
+    })),
+    sourceRollupIssues: [],
     zkJwtVkeySkew: hasVkeySkew(version, expect.expectedZkJwtVkeyHash),
+  }
+}
+
+interface PreviousGenerationOptions
+  extends Pick<FetchProfileOptions, "fetchImpl" | "now" | "timeoutMs"> {
+  network: string
+  activeNodeUrl: string
+}
+
+const sourceRollupKey = (source: WalletSourceRollup) =>
+  [
+    source.nodeUrl,
+    source.manifestUrl,
+    ...source.pins.map((pin) => `${pin.portal.toLowerCase()}\n${pin.expectedGitSha ?? ""}`).sort(),
+  ].join("\n")
+
+function distinctSourceRollups(sources: readonly WalletSourceRollup[]): WalletSourceRollup[] {
+  const found = new Map<string, WalletSourceRollup>()
+  for (const source of sources) {
+    const key = sourceRollupKey(source)
+    if (!found.has(key)) found.set(key, source)
+  }
+  return [...found.values()]
+}
+
+/** Read previous generations without blocking active-profile boot. */
+async function resolvePreviousGenerations(
+  profile: ConfigProfile,
+  options: PreviousGenerationOptions,
+): Promise<{
+  sourceRollups: WalletSourceRollup[]
+  issues: WalletSourceRollupIssue[]
+}> {
+  let profileUrl = profile.shared.previousGenerationProfile
+  const seen = new Set<string>()
+  const sourceRollups: WalletSourceRollup[] = []
+  const issues: WalletSourceRollupIssue[] = []
+  while (profileUrl && !seen.has(profileUrl)) {
+    const currentUrl = profileUrl
+    seen.add(currentUrl)
+    if (seen.size > 64) {
+      issues.push({
+        profileUrl: currentUrl,
+        code: "INVALID_PROFILE",
+        message: "previous-generation history exceeds 64 profiles",
+      })
+      break
+    }
+
+    try {
+      const sourceProfile = await fetchConfigProfile(currentUrl, options)
+      if (sourceProfile.network !== options.network) {
+        throw new ProfileNetworkMismatchError(
+          sourceProfile.network,
+          options.network,
+          sourceProfile.profileId,
+        )
+      }
+      const source = resolveVersion(sourceProfile)
+      const retired = retiredRollupVersion(source.versionId, source.version, options.activeNodeUrl)
+      if (retired) {
+        sourceRollups.push({
+          ...retired,
+          contracts: toContractServiceConfig(sourceProfile, source.versionId),
+          artifacts: {
+            profileUrl: currentUrl,
+            profileId: sourceProfile.profileId,
+            versionId: source.versionId,
+            expectedSha256: source.version.artifactManifestSha256,
+          },
+        })
+      }
+
+      profileUrl = sourceProfile.shared.previousGenerationProfile
+    } catch (error) {
+      issues.push(sourceRollupIssue(currentUrl, error))
+      break
+    }
+  }
+  return { sourceRollups: distinctSourceRollups(sourceRollups), issues }
+}
+
+function sourceRollupIssue(profileUrl: string, error: unknown): WalletSourceRollupIssue {
+  const code =
+    error instanceof ConfigProfileError || error instanceof WalletProfileError
+      ? error.code
+      : "UNKNOWN"
+  const message = error instanceof Error ? error.message : String(error)
+  return { profileUrl, code, message }
+}
+
+async function withPreviousGenerations(
+  resolved: ResolvedWalletProfile,
+  input: ResolveWalletProfileInput,
+): Promise<ResolvedWalletProfile> {
+  const referenced = await resolvePreviousGenerations(resolved.profile, {
+    network: input.network,
+    activeNodeUrl: resolved.nodeUrl,
+    fetchImpl: input.fetchImpl,
+    now: input.now,
+    ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
+  })
+  return {
+    ...resolved,
+    sourceRollups: distinctSourceRollups([...resolved.sourceRollups, ...referenced.sourceRollups]),
+    sourceRollupIssues: referenced.issues,
   }
 }
 
@@ -175,8 +302,12 @@ export async function resolveWalletProfile(
       )
     }
     const baked = parseServedProfile(input.bakedProfile, { now, ignoreExpiry: true })
+    const resolved = await withPreviousGenerations(
+      resolveWalletProfileDocument(baked, { ...expectations, source: "the baked profile" }),
+      input,
+    )
     return {
-      ...resolveWalletProfileDocument(baked, { ...expectations, source: "the baked profile" }),
+      ...resolved,
       bootedFromBakedProfile: true,
       bakedProfileExpired: isExpired(baked, now()),
     }
@@ -195,17 +326,24 @@ export async function resolveWalletProfile(
     const liveFailure = { code: e.code, message: e.message }
     try {
       const baked = parseServedProfile(input.bakedProfile, { now: input.now })
-      const resolved = resolveWalletProfileDocument(baked, {
-        ...expectations,
-        source: "the baked profile",
-      })
+      const resolved = await withPreviousGenerations(
+        resolveWalletProfileDocument(baked, {
+          ...expectations,
+          source: "the baked profile",
+        }),
+        input,
+      )
       return { ...resolved, bootedFromBakedProfile: true, liveFailure }
     } catch (snapshotError) {
       throw withLiveFailure(snapshotError, e)
     }
   }
 
-  return { ...resolveWalletProfileDocument(profile, expectations), bootedFromBakedProfile: false }
+  const resolved = await withPreviousGenerations(
+    resolveWalletProfileDocument(profile, expectations),
+    input,
+  )
+  return { ...resolved, bootedFromBakedProfile: false }
 }
 
 /**

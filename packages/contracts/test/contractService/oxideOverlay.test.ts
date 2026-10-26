@@ -21,7 +21,7 @@ import {
   OxideTupleUnresolvedError,
 } from "../../src"
 import type { ContractServiceConfig, FetchFunction, OxideEnvProfile } from "@obsidion/core/types"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -238,9 +238,7 @@ describe("ContractService oxide overlay", () => {
       config: makeConfig(),
       manifest: new Error("manifest unreachable"),
     })
-    await expect(
-      service.getContractAddress(DEFAULT_CONTRACTS.oxideToken),
-    ).resolves.toBeUndefined()
+    await expect(service.getContractAddress(DEFAULT_CONTRACTS.oxideToken)).resolves.toBeUndefined()
     ContractService.resetInstance()
   })
 

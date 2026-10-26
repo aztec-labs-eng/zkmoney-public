@@ -16,10 +16,10 @@
  * the other probes found. A failed balance read or SIPA scan is reported as `incomplete`, so an
  * unread source never reads as an empty one.
  */
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import type { FrozenDepositDescriptor, OxideEnvTuple } from "@obsidion/core/types"
 import { TokenService, type ObsidionWallet } from "@obsidion/sdk"
-import type { Account } from "@aztec/aztec.js/account"
+import type { Account } from "@aztec-labs/aztec.js/account"
 import {
   scanRefundableDeposits,
   scanSweptDeposits,
@@ -51,10 +51,12 @@ export interface HistoricResidualSummary {
   inTransitDeposits: number
   /** What those SIPAs hold (raw units). */
   inTransitAmount: bigint
-  /** Unprocessed deposits a frozen portal refunds once the old network closes their Inbox tree. */
+  /** Deposits a frozen portal refunds once their L1 block is final. */
   waitingDeposits: number
   /** What those deposits hold (raw units). */
   waitingAmount: bigint
+  /** Savings moves this device cannot verify. Listed, but not residuals on their own. */
+  unverifiedMoves?: number
   /** Creator paylink escrows on the historic token the creator can refund now. */
   paylinkEscrows: number
   /** Creator paylinks on the historic token still inside their claim window — not refundable yet. */
@@ -68,6 +70,38 @@ export interface HistoricResidualSummary {
   paylinkCandidates: PaylinkTransaction[]
   incomplete: boolean
   hasResiduals: boolean
+  /** On another Aztec generation's live portal: only a freeze lets this build move it. */
+  awaitingFreeze: boolean
+  /**
+   * On a frozen portal whose destination publishes no usable migration feature yet: the upgrade
+   * does not offer it until the manifest lists one. Absent reads as false.
+   */
+  awaitingFeature?: boolean
+}
+
+/** A live deployment of another generation: its balance, which moves once its portal freezes. */
+export function awaitingFreezeResidual(
+  tuple: OxideEnvTuple,
+  balance: bigint,
+  incomplete: boolean,
+): HistoricResidualSummary {
+  return {
+    tuple,
+    balance,
+    frozen: false,
+    sweptDeposits: 0,
+    inTransitDeposits: 0,
+    inTransitAmount: 0n,
+    waitingDeposits: 0,
+    waitingAmount: 0n,
+    paylinkEscrows: 0,
+    lockedPaylinks: [],
+    frozenLinks: [],
+    paylinkCandidates: [],
+    incomplete,
+    hasResiduals: balance > 0n,
+    awaitingFreeze: true,
+  }
 }
 
 export interface HistoricResidualDeps {
@@ -82,7 +116,14 @@ export interface HistoricResidualDeps {
     tuple: OxideEnvTuple,
     depositDescriptors: () => Promise<FrozenDepositDescriptor[]>,
   ): Promise<
-    | { notes: bigint; links: bigint; deposits: number; waiting: number; waitingAmount: bigint }
+    | {
+        notes: bigint
+        links: bigint
+        deposits: number
+        waiting: number
+        waitingAmount: bigint
+        unverifiedMoves?: number
+      }
     | undefined
   >
   /**
@@ -131,6 +172,7 @@ export async function probeHistoricResiduals(
       let inTransitAmount = 0n
       let waitingDeposits = 0
       let waitingAmount = 0n
+      let unverifiedMoves = 0
       // One observation of the deployment's portal over its whole life.
       const target = async () => {
         const range = await deps.sipaDiscovery!.scanRange(tuple)
@@ -161,6 +203,7 @@ export async function probeHistoricResiduals(
           sweptDeposits = refundable.deposits
           waitingDeposits = refundable.waiting
           waitingAmount = refundable.waitingAmount
+          unverifiedMoves = refundable.unverifiedMoves ?? 0
           const { inTransit } = await sweptScan()
           inTransitDeposits = inTransit.length
           inTransitAmount = inTransit.reduce((sum, d) => sum + d.balance, 0n)
@@ -249,11 +292,13 @@ export async function probeHistoricResiduals(
         inTransitAmount,
         waitingDeposits,
         waitingAmount,
+        unverifiedMoves,
         paylinkEscrows,
         lockedPaylinks,
         paylinkCandidates,
         frozenLinks,
         incomplete,
+        awaitingFreeze: false,
         hasResiduals:
           balance > 0n ||
           sweptDeposits > 0 ||

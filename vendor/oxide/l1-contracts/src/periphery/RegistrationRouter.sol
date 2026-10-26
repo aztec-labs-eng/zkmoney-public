@@ -3,7 +3,7 @@ pragma solidity >=0.8.27;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
+import {IForwardingTable} from "./interfaces/IForwardingTable.sol";
 import {SIPAFactory} from "./SIPAFactory.sol";
 import {SIPABase} from "./SIPABase.sol";
 import {INameRegistry, DomainAuth} from "./interfaces/INameRegistry.sol";
@@ -22,7 +22,7 @@ contract RegistrationRouter {
 
   struct RegisterParams {
     bytes32 recoveryCommitment;
-    address portal;
+    IForwardingTable forwardingTable;
     bool resweepable;
     address token;
     uint256 amount;
@@ -39,14 +39,19 @@ contract RegistrationRouter {
 
     IRegistrationController controller = IRegistrationController(NAME_REGISTRY.registrationController());
     SIPAFactory factory = SIPAFactory(controller.SIPA_FACTORY());
-    address implementation = factory.implementationFor(p.portal, SIPABase.Intent.Registration);
-    require(implementation != address(0), Errors.RegistrationRouter__NoImplementationForPortal(p.portal));
+    require(
+      factory.approvedTable(address(p.forwardingTable)),
+      Errors.RegistrationRouter__TableNotApproved(address(p.forwardingTable))
+    );
+    address implementation = factory.implementationFor(SIPABase.Intent.Registration);
+    require(implementation != address(0), Errors.RegistrationRouter__NoRegistrationImplementation());
     sipa = factory.deploySIPA(
       implementation,
       keccak256(p.registrationData),
       p.recoveryCommitment,
-      IOxidePortal(p.portal).ROLLUP_VERSION(),
-      p.resweepable
+      p.forwardingTable.ROLLUP_VERSION(),
+      p.resweepable,
+      p.forwardingTable
     );
 
     IERC20(p.token).safeTransferFrom(msg.sender, sipa, p.amount);

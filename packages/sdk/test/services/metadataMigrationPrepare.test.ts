@@ -4,18 +4,19 @@ const chain = vi.hoisted(() => ({
   state: "0xsigned-over" as string,
   uses: 0,
   order: [] as string[],
-  prepareMetadataUpdate: vi.fn(),
+  prepareRecordUpdate: vi.fn(),
+  check: vi.fn(),
+  bootstrap: vi.fn(async (..._args: unknown[]) => ({ payload: { built: true }, sendOptions: {} })),
 }))
 vi.mock("../../src/services/metadataMigration.js", async (original) => ({
   ...(await original<typeof import("../../src/services/metadataMigration.js")>()),
-  readMetadataUpdateFee: async () => 5n,
-  readOrdinaryDepositFee: async () => 2n,
   readMetadataDestinationState: async () => chain.state,
-  assertMetadataUpdateFresh: async () => {},
-  prepareMetadataUpdate: chain.prepareMetadataUpdate,
+  prepareRecordUpdate: chain.prepareRecordUpdate,
+  restoreRecordUpdate: async (raw: string) => JSON.parse(raw),
+  checkRecordUpdate: chain.check,
 }))
 vi.mock("../../src/services/migrationBootstrap.js", () => ({
-  prepareMigrationBootstrap: async () => ({ payload: {}, sendOptions: {} }),
+  prepareMigrationBootstrap: chain.bootstrap,
   claimFpcIdentitySubscribed: async () => false,
 }))
 vi.mock("../../src/services/claimSponsor.js", () => ({
@@ -26,20 +27,8 @@ vi.mock("@oxide/l1-contracts", async (original) => ({
   ...(await original<typeof import("@oxide/l1-contracts")>()),
   encodeUserRecordMetadata: () => "0xrecord",
   userRecordStateHash: () => "0xcurrent",
-  decodeMetadataUpdateProofs: () => "0xconsent",
-  decodeMetadataUpdateIntentData: () => ({
-    metadata: "0xrecord",
-    owner: OWNER,
-    metadataRegistry: REGISTRY,
-    recipientCommitment: "0xrecipient",
-    namePortalRecipient: FPC,
-    namePortal: NAME_PORTAL,
-    rollupVersion: 7n,
-    expectedStateHash: "0xsigned-over",
-  }),
 }))
 
-import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import { StalePlanError } from "../../src/services/metadataMigration.js"
 import {
   MetadataMigrationService,
@@ -50,101 +39,117 @@ const OWNER = "0x00000000000000000000000000000000000000a1"
 const REGISTRY = "0x00000000000000000000000000000000000000a2"
 const NAME_PORTAL = "0x00000000000000000000000000000000000000a3"
 const FPC = "0x00000000000000000000000000000000000000a4"
-const SIPA = "0x00000000000000000000000000000000000000a5"
+const PASSKEY = { qx: "0x01", qy: "0x02" }
 
+type Progress = (approved: number, total: number) => Promise<void>
+
+/** The registration run's source is this version: it holds nothing to move. */
 function fixture(options: object = {}) {
   const fpc = { equals: () => true, toString: () => FPC }
   const source = {
-    identity: "frozen-source",
-    state: vi.fn(async () => "frozen" as const),
-    prepare: vi.fn(
-      async (_sipa: string, _minimum: bigint, onSelected?: (id: string) => Promise<void>) => {
-        await onSelected?.("batch-1")
-        chain.order.push("batch approval")
-        return { id: "batch-1", netAmount: 10n, operation: { proven: true } }
-      },
-    ),
-    restore: vi.fn(async () => {
-      chain.order.push("batch rebuilt")
-      return { netAmount: 10n, operation: { proven: true } }
-    }),
-    prepareRemaining: vi.fn(async () => {
-      chain.order.push("later batches")
-    }),
+    identity: "no-source-deployment",
+    state: vi.fn(async (): Promise<"frozen" | "empty"> => "empty"),
   }
-  const resolve = vi.fn(async () => ({
-    recipientHash: { toString: () => "0xrecipient" },
-    recoveryCommitment: { toString: () => "0xrecovery" },
-    messageSecret: { toString: () => "0xsecret" },
-  }))
+  const signRecordUpdate = vi.fn(async (_userOpHash: string, _stateHash: string) => "0xassertion")
+  const sendTx = vi.fn(
+    async (_payload: unknown, opts: { onTxHash(hash: string): Promise<void> }) => {
+      await opts.onTxHash("0xtx")
+    },
+  )
   const service = new MetadataMigrationService({
     source: source as unknown as MetadataMigrationSource,
     owner: OWNER,
     record: { rollupVersion: 7n },
     destination: {
+      token: "0x00000000000000000000000000000000000000b0",
       rollupVersion: 7n,
       metadataRegistry: REGISTRY,
       namePortal: NAME_PORTAL,
-      implementation: SIPA,
     },
     bootstrap: { fpcAddress: fpc, user: fpc, railId: 0 },
     registered: { fpcAddress: fpc, user: fpc, railId: 1 },
-    selfResolver: { resolve },
-    wallet: { node: { getNodeInfo: async () => ({ rollupVersion: 7 }) } },
+    wallet: { node: { getNodeInfo: async () => ({ rollupVersion: 7 }) }, sendTx },
     client: { getBlockNumber: async () => 100n },
     nameClaim: async () => ({ kind: "nameClaim" }),
-    signConsent: async () => "0xconsent",
+    recordPasskey: PASSKEY,
+    signRecordUpdate,
     ...options,
   } as never)
-  const drafts: string[] = []
   const saveDraft = vi.fn(async (draft: string) => {
-    drafts.push(draft)
     chain.order.push(`draft ${Object.keys(JSON.parse(draft)).join(",")}`)
   })
-  return { service, source, resolve, drafts, saveDraft }
+  return { service, source, fpc, signRecordUpdate, sendTx, saveDraft }
+}
+
+/** A frozen source moves only funds, by its own batches. */
+function fundsOnly(options: object = {}) {
+  const f = fixture(options)
+  const prepareRemaining = vi.fn(async (opts: { signal?: AbortSignal; onApproval?: Progress }) => {
+    opts.signal?.throwIfAborted()
+    chain.order.push("batches")
+  })
+  Object.assign(f.source, { identity: "frozen-source", fundsOnly: true, prepareRemaining })
+  f.source.state.mockResolvedValue("frozen")
+  return { ...f, prepareRemaining }
 }
 
 beforeEach(() => {
   chain.state = "0xsigned-over"
   chain.uses = 0
   chain.order = []
-  chain.prepareMetadataUpdate.mockReset()
-  chain.prepareMetadataUpdate.mockImplementation(
-    async (args: { signConsent(d: string): unknown }) => {
-      chain.order.push("consent")
-      await args.signConsent("0xdigest")
-      return { sipa: SIPA, fee: 5n, intentData: "0xintent", proofs: "0xproofs" }
+  chain.bootstrap.mockClear()
+  chain.prepareRecordUpdate.mockReset()
+  chain.prepareRecordUpdate.mockImplementation(
+    async (args: { sign(userOpHash: string, stateHash: string): Promise<unknown> }) => {
+      chain.order.push("record update")
+      const assertion = await args.sign("0xophash", chain.state)
+      return {
+        update: { userOpHash: "0xophash" },
+        expectedStateHash: chain.state,
+        assertion,
+        operation: { built: true },
+      }
+    },
+  )
+  chain.check.mockReset()
+  chain.check.mockImplementation(
+    async (_client: unknown, _destination: unknown, signed: { expectedStateHash: string }) => {
+      chain.order.push("check")
+      if (signed.expectedStateHash !== chain.state)
+        throw new StalePlanError("The account's record changed; prepare the upgrade again")
+      return { ...signed, operation: { built: true } }
     },
   )
 })
 
-describe("preparing an upgrade", () => {
-  it("saves its coordinates before the consent and its batch before that batch's approval", async () => {
-    const { service, saveDraft } = fixture()
+describe("preparing the registration run", () => {
+  it("saves its coordinates, then signs the record update that its bootstrap broadcasts", async () => {
+    const { service, saveDraft, signRecordUpdate, fpc } = fixture()
 
-    await service.prepare(undefined, saveDraft)
+    const plan = JSON.parse(await service.prepare(undefined, saveDraft))
 
-    expect(chain.order).toEqual([
-      "draft day,nonce",
-      "consent",
-      "draft day,nonce,sourceBatch",
-      "batch approval",
-      "later batches",
-    ])
+    expect(chain.order).toEqual(["draft day,nonce", "record update"])
+    expect(chain.prepareRecordUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: OWNER, fpc, passkey: PASSKEY }),
+    )
+    expect(signRecordUpdate).toHaveBeenCalledWith("0xophash", "0xsigned-over")
+    expect(plan).toMatchObject({ sourceState: "empty", fromBlock: "100" })
+    expect(plan).not.toHaveProperty("recoveryOnly")
+    expect(JSON.parse(plan.recordUpdate)).toMatchObject({
+      update: { userOpHash: "0xophash" },
+      expectedStateHash: "0xsigned-over",
+      assertion: "0xassertion",
+    })
+    expect(chain.bootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        recordUpdate: expect.objectContaining({ assertion: "0xassertion" }),
+        sponsorship: { kind: "bootstrap", gate: { kind: "nameClaim" } },
+      }),
+    )
   })
 
-  it("counts every approval before the first, the consent first", async () => {
-    const { service, source } = fixture()
-    Object.assign(source, {
-      quote: async () => ({ movable: 30n, stranded: 0n, waiting: 0n, batches: 3 }),
-    })
-    source.prepareRemaining.mockImplementation(
-      async (_minimum: bigint, opts: { onApproval(a: number, t: number): Promise<void> }) => {
-        await opts.onApproval(0, 2)
-        await opts.onApproval(1, 2)
-        await opts.onApproval(2, 2)
-      },
-    )
+  it("counts the record update as its one approval", async () => {
+    const { service } = fixture()
     const progress: [number, number][] = []
 
     await service.prepare(
@@ -158,227 +163,245 @@ describe("preparing an upgrade", () => {
     )
 
     expect(progress).toEqual([
-      [0, 4],
-      [1, 4],
-      [2, 4],
-      [2, 4],
-      [3, 4],
-      [4, 4],
+      [0, 1],
+      [1, 1],
     ])
   })
 
-  it("quotes the approvals and fees preparing then asks for", async () => {
-    const { service, source } = fixture()
-    Object.assign(source, {
-      quote: async () => ({ movable: 30n, stranded: 0n, waiting: 0n, batches: 3 }),
-    })
-    const totals: number[] = []
-
-    const quote = await service.quote()
-    await service.prepare(
-      undefined,
-      async () => {},
-      undefined,
-      async (_approved, total) => {
-        totals.push(total)
-      },
-    )
-
-    // The metadata fee on the first deposit, the ordinary fee on the other two, a tip on each.
-    expect(quote).toMatchObject({ approvals: 4, fees: 3n * WITHDRAW_RELAYER_TIP + 5n + 2n * 2n })
-    expect(totals[0]).toBe(quote.approvals)
-    expect(await service.quote({ firstBatchSettled: true })).toMatchObject({
-      approvals: 3,
-      fees: 3n * WITHDRAW_RELAYER_TIP + 3n * 2n,
-    })
-  })
-
-  it("counts no approval for a batch that asks none", async () => {
-    const { service, source } = fixture()
-    Object.assign(source, {
-      quote: async () => ({ movable: 30n, stranded: 0n, waiting: 0n, batches: 2, approvals: 1 }),
-    })
-    source.prepare.mockImplementation(async (_sipa, _minimum, onSelected) => {
-      await onSelected?.("batch-1")
-      return { id: "batch-1", netAmount: 10n, operation: { proven: true }, asksApproval: false }
-    })
-    source.prepareRemaining.mockImplementation(
-      async (_minimum: bigint, opts: { onApproval(a: number, t: number): Promise<void> }) => {
-        await opts.onApproval(0, 1)
-        await opts.onApproval(1, 1)
-      },
-    )
-    const progress: [number, number][] = []
-
-    const quote = await service.quote()
-    await service.prepare(
-      undefined,
-      async () => {},
-      undefined,
-      async (approved, total) => void progress.push([approved, total]),
-    )
-
-    expect(quote.approvals).toBe(2)
-    expect(progress).toEqual([
-      [0, 2],
-      [1, 2],
-      [1, 2],
-      [1, 2],
-      [2, 2],
-    ])
-  })
-
-  it("counts no consent approval for an account that signs it with its bootstrap key", async () => {
-    const { service, source } = fixture({ consentPrompts: async () => false })
-    Object.assign(source, {
-      quote: async () => ({ movable: 30n, stranded: 0n, waiting: 0n, batches: 3 }),
-    })
-    const progress: [number, number][] = []
-
-    const quote = await service.quote()
-    await service.prepare(
-      undefined,
-      async () => {},
-      undefined,
-      async (approved, total) => {
-        progress.push([approved, total])
-      },
-    )
-
-    expect(quote.approvals).toBe(3)
-    expect(progress.slice(0, 3)).toEqual([
-      [0, 3],
-      [0, 3],
-      [1, 3],
-    ])
-  })
-
-  it("quotes every deposit at the ordinary fee when the destination record is current", async () => {
+  it("signs no record update while the record is current with recurring sponsorship", async () => {
     chain.uses = 1
     chain.state = "0xcurrent"
-    const { service, source } = fixture()
-    Object.assign(source, {
-      quote: async () => ({ movable: 30n, stranded: 0n, waiting: 0n, batches: 3 }),
-    })
-    const totals: number[] = []
+    const { service, signRecordUpdate } = fixture()
+    const progress: [number, number][] = []
 
-    const quote = await service.quote()
-    await service.prepare(
-      undefined,
-      async () => {},
-      undefined,
-      async (_approved, total) => {
-        totals.push(total)
-      },
+    const plan = JSON.parse(
+      await service.prepare(
+        undefined,
+        async () => {},
+        undefined,
+        async (approved, total) => void progress.push([approved, total]),
+      ),
     )
 
-    expect(quote).toMatchObject({ approvals: 4, fees: 3n * WITHDRAW_RELAYER_TIP + 3n * 2n })
-    expect(totals[0]).toBe(quote.approvals)
+    expect(progress).toEqual([
+      [0, 0],
+      [0, 0],
+    ])
+    expect(plan).not.toHaveProperty("recordUpdate")
+    expect(chain.prepareRecordUpdate).not.toHaveBeenCalled()
+    expect(signRecordUpdate).not.toHaveBeenCalled()
+    expect(chain.bootstrap).not.toHaveBeenCalled()
   })
 
-  it("proves every later batch beside the first batch and the plan's own coordinates", async () => {
+  // The registration run quotes no source, so its sheet counts the record update alone.
+  it("counts the record update as one approval until the record is current with recurring sponsorship", async () => {
+    expect(await fixture().service.consentApprovals()).toBe(1)
+    chain.state = "0xcurrent"
+    expect(await fixture().service.consentApprovals()).toBe(1)
+    chain.uses = 1
+    expect(await fixture().service.consentApprovals()).toBe(0)
+    chain.state = "0xstale"
+    expect(await fixture().service.consentApprovals()).toBe(1)
+  })
+
+  it("resumes a draft at its coordinates", async () => {
+    const { service, saveDraft } = fixture()
+
+    const plan = await service.prepare(JSON.stringify({ day: 3, nonce: 9 }), saveDraft)
+
+    expect(saveDraft).not.toHaveBeenCalled()
+    expect(JSON.parse(plan)).toMatchObject({ day: 3, nonce: 9 })
+  })
+
+  it("stops before its bootstrap is built once cancelled", async () => {
+    const { service, saveDraft } = fixture()
+    const cancel = new AbortController()
+    chain.prepareRecordUpdate.mockImplementationOnce(async () => {
+      cancel.abort()
+      return { update: {}, expectedStateHash: chain.state, assertion: "0x", operation: {} }
+    })
+
+    await expect(service.prepare(undefined, saveDraft, cancel.signal)).rejects.toThrow()
+
+    expect(chain.bootstrap).not.toHaveBeenCalled()
+  })
+
+  it("refuses to update the record from a frozen source, which moves only funds", async () => {
     const { service, source } = fixture()
+    source.state.mockResolvedValue("frozen")
 
-    const plan = JSON.parse(await service.prepare(undefined, async () => {}))
+    await expect(service.prepare()).rejects.toThrow("moves only funds")
 
-    // Each batch learns the fee its deposit pays: the update's for the first, the ordinary one after.
-    expect(source.prepare).toHaveBeenCalledWith(expect.anything(), 6n, expect.any(Function), 5n)
-    expect(source.prepareRemaining).toHaveBeenCalledWith(3n, {
-      depositFee: 2n,
-      exclude: "batch-1",
+    expect(chain.prepareRecordUpdate).not.toHaveBeenCalled()
+  })
+})
+
+describe("a saved registration plan", () => {
+  const plan = (service: MetadataMigrationService) => service.prepare(undefined, async () => {})
+
+  it("is stale before publication once the destination record moved", async () => {
+    const raw = await plan(fixture().service)
+    const fresh = fixture()
+    chain.bootstrap.mockClear()
+    chain.state = "0xmoved"
+
+    await expect(fresh.service.ready(raw)).rejects.toBeInstanceOf(StalePlanError)
+
+    expect(chain.bootstrap).not.toHaveBeenCalled()
+  })
+
+  it("after publication, does not check its record update again", async () => {
+    const raw = await plan(fixture().service)
+    const fresh = fixture()
+    chain.state = "0xpublished"
+
+    await fresh.service.ready(raw, undefined, true)
+
+    expect(chain.check).not.toHaveBeenCalled()
+  })
+
+  it("is rebuilt from its signed record update before publication, once, and checked each time", async () => {
+    const fresh = fixture()
+    const raw = await plan(fixture().service)
+    chain.bootstrap.mockClear()
+
+    await fresh.service.ready(raw)
+    await fresh.service.ready(raw)
+
+    expect(chain.check).toHaveBeenCalledTimes(2)
+    expect(chain.bootstrap).toHaveBeenCalledOnce()
+  })
+
+  it("is stale before publication once the record moved after it was prepared here", async () => {
+    const { service } = fixture()
+    const raw = await plan(service)
+    chain.state = "0xmoved"
+
+    await expect(service.ready(raw)).rejects.toBeInstanceOf(StalePlanError)
+  })
+
+  it("broadcasts its prepared transaction, checking the record update again at the hash", async () => {
+    const { service, sendTx } = fixture()
+    const raw = await plan(service)
+    const onTxHash = vi.fn(async (hash: string) => void chain.order.push(`hash ${hash}`))
+    chain.order = []
+
+    await service.broadcast(raw, onTxHash)
+
+    expect(sendTx).toHaveBeenCalledWith({ built: true }, expect.anything())
+    expect(chain.order).toEqual(["check", "check", "hash 0xtx"])
+  })
+
+  it("records no hash once the record update went stale during the send", async () => {
+    const { service, sendTx } = fixture()
+    const raw = await plan(service)
+    sendTx.mockImplementationOnce(async (_payload, opts) => {
+      chain.state = "0xmoved"
+      await opts.onTxHash("0xtx")
+    })
+    const onTxHash = vi.fn(async () => {})
+
+    await expect(service.broadcast(raw, onTxHash)).rejects.toBeInstanceOf(StalePlanError)
+
+    expect(onTxHash).not.toHaveBeenCalled()
+  })
+
+  it("is stale to broadcast once it holds no record update", async () => {
+    chain.uses = 1
+    chain.state = "0xcurrent"
+    const { service } = fixture()
+    const raw = await plan(service)
+
+    await expect(service.broadcast(raw, async () => {})).rejects.toBeInstanceOf(StalePlanError)
+  })
+
+  it("is stale when an earlier version prepared it with a metadata-update SIPA", async () => {
+    const { service } = fixture()
+    const raw = JSON.stringify({
+      binding: await service.binding(),
+      day: 1,
+      nonce: 2,
+      fromBlock: "100",
+      intentData: "0x1234",
+      proofs: "0x5678",
+      sourceState: "empty",
+    })
+
+    await expect(service.ready(raw)).rejects.toBeInstanceOf(StalePlanError)
+    await expect(service.broadcast(raw, async () => {})).rejects.toBeInstanceOf(StalePlanError)
+    await expect(service.observe({ plan: raw })).rejects.toBeInstanceOf(StalePlanError)
+  })
+
+  it("refuses a plan for another account or deployment", async () => {
+    const { service } = fixture()
+    const raw = JSON.stringify({ ...JSON.parse(await plan(service)), binding: "0xother" })
+
+    const ready = service.ready(raw)
+    await expect(ready).rejects.toThrow("account or deployment changed")
+    await expect(ready).rejects.not.toBeInstanceOf(StalePlanError)
+  })
+})
+
+describe("a funds-only run", () => {
+  it("plans its source's batches by the source's own terms, with no record update", async () => {
+    const f = fundsOnly()
+
+    const plan = JSON.parse(await f.service.prepare())
+
+    expect(plan).toMatchObject({ recoveryOnly: true, sourceState: "frozen" })
+    expect(plan).not.toHaveProperty("recordUpdate")
+    expect(chain.prepareRecordUpdate).not.toHaveBeenCalled()
+    expect(chain.bootstrap).not.toHaveBeenCalled()
+    // The run passes the source only the plan's own coordinates.
+    expect(f.prepareRemaining).toHaveBeenCalledWith({
       reserved: [{ day: plan.day, nonce: plan.nonce }],
       signal: undefined,
       onApproval: undefined,
     })
   })
 
-  it("resumes a draft at its coordinates and rebuilds its saved batch", async () => {
-    const { service, source, resolve, saveDraft } = fixture()
-
-    const plan = await service.prepare(
-      JSON.stringify({ day: 3, nonce: 9, sourceBatch: "batch-1" }),
-      saveDraft,
-    )
-
-    expect(resolve).toHaveBeenCalledWith(expect.anything(), 3, 9, expect.anything())
-    expect(source.restore).toHaveBeenCalledWith("batch-1", SIPA)
-    expect(source.prepare).not.toHaveBeenCalled()
-    expect(saveDraft).not.toHaveBeenCalled()
-    expect(JSON.parse(plan)).toMatchObject({ day: 3, nonce: 9, sourceBatch: "batch-1" })
-  })
-
-  it("selects again when the draft's batch no longer holds", async () => {
-    const { service, source, saveDraft } = fixture()
-    source.restore.mockRejectedValueOnce(new StalePlanError("already been refunded"))
-
-    await service.prepare(JSON.stringify({ day: 3, nonce: 9, sourceBatch: "gone" }), saveDraft)
-
-    expect(source.prepare).toHaveBeenCalledOnce()
-  })
-
-  it("stops before the next approval once cancelled", async () => {
-    const { service, source, saveDraft } = fixture()
-    const cancel = new AbortController()
-    chain.prepareMetadataUpdate.mockImplementationOnce(async () => {
-      cancel.abort()
-      return { sipa: SIPA, fee: 5n, intentData: "0xintent", proofs: "0xproofs" }
+  it("collects Savings approvals before registration without signing a record update", async () => {
+    const f = fundsOnly({
+      depositDestination: { token: "0x00000000000000000000000000000000000000b1" },
     })
-
-    await expect(service.prepare(undefined, saveDraft, cancel.signal)).rejects.toThrow()
-
-    expect(source.prepare).not.toHaveBeenCalled()
-  })
-})
-
-describe("a saved plan", () => {
-  const plan = (service: MetadataMigrationService) => service.prepare(undefined, async () => {})
-
-  it("is stale before its consent is checked once the destination state moved", async () => {
-    const { service } = fixture()
-    const raw = await plan(service)
-    const fresh = fixture().service
-    chain.prepareMetadataUpdate.mockClear()
-    chain.state = "0xmoved"
-
-    await expect(fresh.ready(raw)).rejects.toBeInstanceOf(StalePlanError)
-
-    expect(chain.prepareMetadataUpdate).not.toHaveBeenCalled()
+    const plan = JSON.parse(await f.service.prepare())
+    expect(plan).toMatchObject({ recoveryOnly: true, sourceState: "frozen" })
+    expect(chain.prepareRecordUpdate).not.toHaveBeenCalled()
+    expect(f.prepareRemaining).toHaveBeenCalledOnce()
   })
 
-  it("after publication, approves what is missing without checking its consent again", async () => {
-    const { service } = fixture()
-    const raw = await service.prepare(undefined, async () => {})
-    const fresh = fixture()
-    chain.prepareMetadataUpdate.mockClear()
-    chain.state = "0xpublished"
-
-    await fresh.service.ready(raw, undefined, true)
-
-    expect(chain.prepareMetadataUpdate).not.toHaveBeenCalled()
-    expect(fresh.source.restore).not.toHaveBeenCalled()
-    expect(fresh.source.prepareRemaining).toHaveBeenCalledOnce()
+  it("prepares a queue follower that registration may overtake without going stale", async () => {
+    const f = fundsOnly({ recoveryOnly: true })
+    const raw = await f.service.prepare()
+    expect(JSON.parse(raw)).not.toHaveProperty("recordUpdate")
+    chain.state = "0xcurrent"
+    chain.uses = 1
+    await f.service.ready(raw)
+    expect(chain.check).not.toHaveBeenCalled()
+    await expect(f.service.broadcast(raw, async () => {})).rejects.toThrow(
+      "Asset recovery cannot broadcast",
+    )
   })
 
-  it("approves funds that reached a source that was empty when it was prepared", async () => {
-    const { service, source } = fixture()
-    source.state.mockResolvedValue("empty" as never)
-    const raw = await service.prepare(undefined, async () => {})
-    expect(JSON.parse(raw).sourceState).toBe("empty")
-
-    await service.ready(raw, undefined, true)
-
-    expect(source.prepareRemaining).toHaveBeenCalledOnce()
+  it("rejects a follower whose source is not frozen", async () => {
+    const f = fundsOnly({ recoveryOnly: true })
+    f.source.state.mockResolvedValue("empty")
+    await expect(f.service.prepare()).rejects.toThrow("requires a frozen source")
   })
 
-  it("is rebuilt from saved approvals before publication, once", async () => {
-    const { service, source } = fixture()
-    const raw = await plan(service)
-    const fresh = fixture()
+  it("passes the cancel signal and the send gate to the source's reconcile, which can send a due broadcast again", async () => {
+    const f = fundsOnly()
+    const reconcileRemaining = vi.fn(async (_signal?: AbortSignal, _gate?: unknown) => {})
+    Object.assign(f.source, { reconcileRemaining })
+    const restore = vi.fn(async () => ({}))
+    Object.assign(f.service, { restore })
+    const cancel = new AbortController()
 
-    await fresh.service.ready(raw)
-    await fresh.service.ready(raw)
+    const gate = <T>(step: (operationId?: string) => Promise<T>) => step()
 
-    expect(fresh.source.restore).toHaveBeenCalledOnce()
-    expect(source.restore).not.toHaveBeenCalled()
+    await f.service.reconcileRemaining("signed-plan", cancel.signal, gate)
+
+    expect(restore).toHaveBeenCalledWith("signed-plan")
+    expect(reconcileRemaining).toHaveBeenCalledWith(cancel.signal, gate)
   })
 })

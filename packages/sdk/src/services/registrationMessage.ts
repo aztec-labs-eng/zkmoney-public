@@ -1,64 +1,36 @@
-/**
- * The L1->L2 message oxide's NamePortal emits for a registered user, from the client side.
- *
- * `NamePortal.notify` reads the AccountRegistry's `nameOf` and attests that an L1 OxideAccount
- * holds a name. That is all the message says: it names no L2 address, so consuming one admits
- * nobody by itself — the gate derives the same account from a bootstrap key and takes that key's
- * signature over the L2 address being subscribed. Both message witnesses are public (the secret is
- * a published constant, the leaf index comes from the Inbox's `MessageSent` logs) and the key
- * re-derives from the master secret, so a wallet restored on a new device rebuilds the whole set.
- *
- * `notify` is permissionless and repeatable, so a message is not a one-shot admission ticket: a
- * second one for the same owner is equally consumable, which is how the rail re-opens after an FPC
- * roll or a rollup migration. The rail's one-subscription-per-identity nullifier is the limiter.
- *
- * MESSAGE LAYOUT: `abi.encodeWithSignature` over the handler signature — a 4-byte keccak selector
- * then 32-byte big-endian arguments — sha256-compressed to a field. `registration.nr` mirrors it,
- * and the pinned cross-language vector in both test suites is what keeps the two in step.
- */
-import { Fr } from "@aztec/aztec.js/fields"
-import type { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { EthAddress } from "@aztec/foundation/eth-address"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import { isL1ToL2MessageReady, waitForL1ToL2MessageReady } from "@aztec/aztec.js/messaging"
-import { InboxContract } from "@aztec/ethereum/contracts"
-import type { ViemClient } from "@aztec/ethereum/types"
-import { keccak256 } from "@aztec/foundation/crypto/keccak"
-import { sha256ToField } from "@aztec/foundation/crypto/sha256"
-import { computeSecretHash } from "@aztec/stdlib/hash"
-import {
-  getNonNullifiedL1ToL2MessageWitness,
-  L1Actor,
-  L1ToL2Message,
-  L2Actor,
-} from "@aztec/stdlib/messaging"
+/** Recovers NamePortal attestations for a bootstrap address and its registered name. */
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { EthAddress } from "@aztec-labs/foundation/eth-address"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import { isL1ToL2MessageReady, waitForL1ToL2MessageReady } from "@aztec-labs/aztec.js/messaging"
+import { InboxContract } from "@aztec-labs/ethereum/contracts"
+import type { ViemClient } from "@aztec-labs/ethereum/types"
+import { sha256ToField } from "@aztec-labs/foundation/crypto/sha256"
+import { computeSecretHash } from "@aztec-labs/stdlib/hash"
+import { L1Actor, L1ToL2Message, L2Actor } from "@aztec-labs/stdlib/messaging"
 import type { Hex, PublicClient } from "viem"
 
-/** The L2-side handler signature the portal's message content commits to. */
-const NAME_OWNERSHIP_SIGNATURE = "name_ownership_verified(address,bytes32)"
-
 /**
- * The message's spending secret. PUBLIC BY DESIGN: it gates nothing — the message is a public
- * attestation about public L1 state, and what admits a user is the bootstrap signature the gate
- * checks beside it — and a secret would only cost the phone-in-the-ocean recovery.
+ * The secret NamePortal sends every message with. PUBLIC BY DESIGN: the gate proves the message
+ * exists and never consumes it, so the secret gates nothing.
  */
 export const REGISTRATION_MESSAGE_SECRET = Fr.ZERO
 
-/** Content of the message attesting that `owner` holds `nameHash`. Mirrored by `registration.nr`. */
-export function nameOwnershipMessageContent(owner: EthAddress, nameHash: Buffer): Fr {
+/** Content of the message attesting that `bootstrap` holds `nameHash`. Mirrored by `registration.nr`. */
+export function nameOwnershipMessageContent(bootstrap: EthAddress, nameHash: Buffer): Fr {
   if (nameHash.length !== 32) throw new Error("a name hash is 32 bytes")
-  const selector = keccak256(Buffer.from(NAME_OWNERSHIP_SIGNATURE)).subarray(0, 4)
-  return sha256ToField([Buffer.concat([selector, owner.toBuffer32(), nameHash])])
+  return sha256ToField([Buffer.concat([bootstrap.toBuffer(), nameHash])])
 }
 
 /** The deployment and L1 identity a message has to name to be this account's. */
 export interface RegistrationMessageTarget {
-  /** The ClaimFPC the message is addressed to — the gate consumes it as that contract. */
+  /** The ClaimFPC the message is addressed to — the gate proves it as that contract. */
   fpc: AztecAddress
   /** The L1 NamePortal the gate's config pins as the only accepted sender. */
   namePortal: EthAddress
-  /** The user's OxideAccount — what the portal attests about, and what the gate re-derives. */
-  owner: EthAddress
+  /** The bootstrap address the portal reads from the registered OxideAccount. */
+  bootstrap: EthAddress
   /** The name that account holds, as the registry stores it. */
   nameHash: Buffer
   /** Rollup version the message is bound to; a migration re-emits against the new one. */
@@ -69,57 +41,64 @@ export interface RegistrationMessageTarget {
 
 /**
  * Where a found message stands: not yet imported into the L1-to-L2 tree (a subscribe cannot prove
- * against it), importable and unspent, or already consumed by this FPC (the account's note is what
- * sponsors from here on).
+ * against it), or imported. A message is never used up.
  */
-export type RegistrationMessageStatus = "pending" | "consumable" | "consumed"
+export type RegistrationMessageStatus = "pending" | "ready"
 
 /** A registration message found in the Inbox. */
 export interface RegistrationMessage {
   /** The gate's `message_leaf_index` witness. */
   leafIndex: bigint
-  /** The Inbox leaf — what the readiness and consumption checks key on. */
+  /** The Inbox leaf — what the readiness check keys on. */
   messageHash: Fr
   status: RegistrationMessageStatus
 }
 
-export type RegistrationMessageNode = Pick<
-  AztecNode,
-  | "getBlockData"
-  | "getL1ToL2MessageCheckpoint"
-  | "getL1ToL2MessageMembershipWitness"
-  | "findLeavesIndexes"
->
+export type RegistrationMessageNode = Pick<AztecNode, "getBlockData" | "getL1ToL2MessageIndex">
 
-/** Minimal Inbox surface — `InboxContract` at the portal's `INBOX()` satisfies it; tests pass fakes. */
-export interface InboxMessageSource {
+/** The Inbox slice the scan reads; `InboxContract` satisfies it, tests pass fakes. */
+export interface RegistrationInbox {
+  address: string
   client: { getBlockNumber(): Promise<bigint | number> }
-  getMessageSentEvents(fromBlock: bigint, toBlock: bigint): Promise<InboxMessageSentLog[]>
+  getMessageSentEvents(
+    fromBlock: bigint,
+    toBlock: bigint,
+  ): Promise<{ args: { index: bigint; leaf: Fr } }[]>
 }
 
-export interface InboxMessageSentLog {
-  args: { index: bigint; checkpointNumber: bigint | number; leaf?: unknown; hash?: unknown }
-}
-
-/** The canonical Inbox reader over an L1 client; `InboxMessageSource` is the slice the scan needs. */
+/** The canonical Inbox reader over an L1 client. */
 export function registrationInbox(
   client: PublicClient,
   inbox: EthAddress | Hex,
-): InboxMessageSource {
+): RegistrationInbox {
   return new InboxContract(client as unknown as ViemClient, inbox)
 }
 
-// Public RPCs cap eth_getLogs ranges (commonly 10k blocks or less), so the scan walks back from the
-// head in chunks under that cap. A message worth looking for is recent: a held note makes the scan
-// unnecessary, so only a just-registered (or just-migrated) user ever reaches it.
+// Public RPCs cap eth_getLogs ranges (commonly 10k blocks or less). A scan with no floor walks back from the head in
+// chunks under that cap, within a budget.
 const SCAN_CHUNK_BLOCKS = 9_000n
 const SCAN_CHUNK_BUDGET = 30
+/** Chunks in flight when a window with a floor is read in chunks. */
+const SCAN_CHUNK_CONCURRENCY = 6
+/** Blocks a scan re-reads below where the last one stopped, so a reorged log is found again. */
+const SCAN_REORG_OVERLAP_BLOCKS = 128n
 
 export interface FindRegistrationMessageOptions {
-  /** Oldest L1 block worth scanning (e.g. the registry's deployment); defaults to genesis. */
+  /**
+   * The first L1 block a message to the target can be in, such as the start of the rollup's first deployment. With it,
+   * the scan reads the whole window and later scans read only the blocks past it. Without it, the scan walks back from
+   * the head within `chunkBudget`.
+   */
   fromBlock?: bigint
-  /** How many chunks back from the head to look before giving up. */
+  /** How many chunks back from the head a scan with no floor looks before giving up. */
   chunkBudget?: number
+}
+
+/** The head each complete scan that found nothing read to, by Inbox, target and floor. */
+const scannedThrough = new Map<string, bigint>()
+
+export function resetRegistrationMessageScansForTests(): void {
+  scannedThrough.clear()
 }
 
 /**
@@ -128,69 +107,97 @@ export interface FindRegistrationMessageOptions {
  * An Inbox leaf is the hash of the whole message, index included, so there is no hash to filter
  * logs by: each candidate leaf is recomputed from the target instead, which binds sender, recipient,
  * rollup version and content at once — a message from another L1 address, to another ClaimFPC, or
- * about another account never produces this leaf. Newest first, so a re-emitted message wins over
- * a spent one.
+ * about another account never produces this leaf. Newest first, so a re-emitted message wins.
  */
 export async function findRegistrationMessage(
-  inbox: InboxMessageSource,
+  inbox: RegistrationInbox,
   node: RegistrationMessageNode,
   target: RegistrationMessageTarget,
   opts: FindRegistrationMessageOptions = {},
 ): Promise<RegistrationMessage | undefined> {
   const sender = new L1Actor(target.namePortal, target.l1ChainId)
   const recipient = new L2Actor(target.fpc, target.rollupVersion)
-  const content = nameOwnershipMessageContent(target.owner, target.nameHash)
+  const content = nameOwnershipMessageContent(target.bootstrap, target.nameHash)
   const secretHash = await computeSecretHash(REGISTRATION_MESSAGE_SECRET)
   const leafFor = (index: bigint) =>
     new L1ToL2Message(sender, recipient, content, secretHash, new Fr(index)).hash()
-
-  const floor = opts.fromBlock ?? 0n
-  let to = BigInt(await inbox.client.getBlockNumber())
-  for (let i = 0; i < (opts.chunkBudget ?? SCAN_CHUNK_BUDGET) && to >= floor; i++) {
-    const from = to - SCAN_CHUNK_BLOCKS + 1n > floor ? to - SCAN_CHUNK_BLOCKS + 1n : floor
-    const logs = (await inbox.getMessageSentEvents(from, to)).sort((a, b) =>
-      Number(b.args.index - a.args.index),
-    )
-    for (const log of logs) {
-      const leaf = log.args.leaf ?? log.args.hash
-      if (leaf === undefined) continue
-      const actual = typeof leaf === "string" ? Fr.fromString(leaf) : (leaf as Fr)
-      const expected = leafFor(log.args.index)
-      if (!actual.equals(expected)) continue
-      return {
-        leafIndex: log.args.index,
-        messageHash: expected,
-        status: await registrationMessageStatus(node, target.fpc, expected),
+  const newest = (logs: Awaited<ReturnType<RegistrationInbox["getMessageSentEvents"]>>) =>
+    logs
+      .sort((a, b) => Number(b.args.index - a.args.index))
+      .find((log) => log.args.leaf.equals(leafFor(log.args.index)))
+  const walk = async (floor: bigint, head: bigint, budget: number) => {
+    let to = head
+    for (let i = 0; i < budget && to >= floor; i++) {
+      const from = to - SCAN_CHUNK_BLOCKS + 1n > floor ? to - SCAN_CHUNK_BLOCKS + 1n : floor
+      const log = newest(await inbox.getMessageSentEvents(from, to))
+      if (log) return log
+      to = from - 1n
+    }
+    return undefined
+  }
+  // Every chunk of the window, a few at a time: the window is read whole, so there is no early exit to keep.
+  const readChunks = async (floor: bigint, head: bigint) => {
+    const ranges: [bigint, bigint][] = []
+    for (let to = head; to >= floor; to -= SCAN_CHUNK_BLOCKS) {
+      const from = to - SCAN_CHUNK_BLOCKS + 1n > floor ? to - SCAN_CHUNK_BLOCKS + 1n : floor
+      ranges.push([from, to])
+    }
+    const logs: Awaited<ReturnType<RegistrationInbox["getMessageSentEvents"]>> = []
+    let next = 0
+    const worker = async () => {
+      while (next < ranges.length) {
+        const [from, to] = ranges[next++]!
+        logs.push(...(await inbox.getMessageSentEvents(from, to)))
       }
     }
-    to = from - 1n
+    await Promise.all(Array.from({ length: Math.min(SCAN_CHUNK_CONCURRENCY, ranges.length) }, worker))
+    return newest(logs)
   }
-  return undefined
+
+  const head = BigInt(await inbox.client.getBlockNumber())
+  let log
+  if (opts.fromBlock === undefined) {
+    log = await walk(0n, head, opts.chunkBudget ?? SCAN_CHUNK_BUDGET)
+  } else {
+    const key = [
+      inbox.address.toLowerCase(),
+      target.l1ChainId,
+      target.namePortal.toString(),
+      target.rollupVersion,
+      target.fpc.toString(),
+      content.toString(),
+      opts.fromBlock,
+    ].join(":")
+    const through = scannedThrough.get(key)
+    const resume = through === undefined ? opts.fromBlock : through + 1n - SCAN_REORG_OVERLAP_BLOCKS
+    const from = resume > opts.fromBlock ? resume : opts.fromBlock
+    if (head - from >= SCAN_CHUNK_BLOCKS) {
+      try {
+        log = newest(await inbox.getMessageSentEvents(from, head))
+      } catch {
+        // Over the RPC's range or result cap: read it in chunks.
+        log = await readChunks(from, head)
+      }
+    } else {
+      log = await readChunks(from, head)
+    }
+    if (!log) scannedThrough.set(key, head)
+  }
+  if (!log) return undefined
+  const messageHash = leafFor(log.args.index)
+  return {
+    leafIndex: log.args.index,
+    messageHash,
+    status: await registrationMessageStatus(node, messageHash),
+  }
 }
 
-/**
- * Whether the rollup has imported the message and whether this FPC has consumed it yet. The
- * consumption check derives the same nullifier the gate's `consume_l1_to_l2_message` emits, siloed
- * to the FPC — the canonical stdlib check for a message spendable with a known secret.
- */
+/** Whether the rollup has imported the message, so a subscribe can prove it exists. */
 export async function registrationMessageStatus(
   node: RegistrationMessageNode,
-  fpc: AztecAddress,
   messageHash: Fr,
 ): Promise<RegistrationMessageStatus> {
-  const aztecNode = node as AztecNode
-  if (!(await isL1ToL2MessageReady(aztecNode, messageHash))) return "pending"
-  try {
-    await getNonNullifiedL1ToL2MessageWitness(
-      aztecNode,
-      fpc,
-      messageHash,
-      REGISTRATION_MESSAGE_SECRET,
-    )
-    return "consumable"
-  } catch {
-    return "consumed"
-  }
+  return (await isL1ToL2MessageReady(node as unknown as AztecNode, messageHash)) ? "ready" : "pending"
 }
 
 /** Block until the rollup imports the message (a few L1 blocks after the registry sends it). */
@@ -199,5 +206,5 @@ export function waitForRegistrationMessage(
   messageHash: Fr,
   opts: { timeoutSeconds: number },
 ): Promise<boolean> {
-  return waitForL1ToL2MessageReady(node as AztecNode, messageHash, opts)
+  return waitForL1ToL2MessageReady(node, messageHash, opts)
 }

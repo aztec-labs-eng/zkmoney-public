@@ -1,4 +1,4 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 
@@ -115,8 +115,8 @@ function quoteArgs(escrowFunding: bigint, relayerTip = 0n): AcrossBridgeQuoteArg
   return {
     amount: escrowFunding,
     withdrawalRelayerTip: 0n,
+    plainWithdrawalExecutor: { address: EthAddress.random(), fee: 0n },
     proverTip: 0n,
-    fpcFundingCut: 0n,
     relayerTip,
     route: {
       acrossInputToken: USDT,

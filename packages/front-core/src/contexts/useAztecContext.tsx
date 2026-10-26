@@ -1,7 +1,7 @@
 import { createContext, useContext, ReactNode, useEffect, useState } from "react"
 
-import type { AztecNode } from "@aztec/aztec.js/node"
-import type { ExtendedViemWalletClient } from "@aztec/ethereum/types"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { ExtendedViemWalletClient } from "@aztec-labs/ethereum/types"
 import {
   ObsidionWallet,
   ObsidionAlphaTestWallet,
@@ -18,12 +18,12 @@ import {
   getNodeApiKey,
 } from "src/core"
 import { assert } from "ts-essentials"
-import { PXE } from "@aztec/pxe/client/lazy"
-import { getPXEConfig } from "@aztec/pxe/config"
-import { createLogger } from "@aztec/foundation/log"
-import type { PrivateKernelProver } from "@aztec/stdlib/interfaces/client"
-import type { AztecAsyncKVStore } from "@aztec/kv-store"
-import type { CircuitSimulator } from "@aztec/simulator/client"
+import { PXE } from "@aztec-labs/pxe/client/lazy"
+import { getPXEConfig } from "@aztec-labs/pxe/config"
+import { createLogger } from "@aztec-labs/foundation/log"
+import type { PrivateKernelProver } from "@aztec-labs/stdlib/interfaces/client"
+import type { AztecAsyncKVStore } from "@aztec-labs/kv-store"
+import type { CircuitSimulator } from "@aztec-labs/simulator/client"
 import { logger } from "src/utils/logger"
 
 /** Options for {@link AztecContextProps.initializePXE}: build the wallet over the node the caller owns. */

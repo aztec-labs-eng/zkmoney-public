@@ -7,9 +7,9 @@
  *   merged `sendOptions`, and omits both when the caller passes neither.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Fr } from "@aztec/aztec.js/fields"
-import { TxHash } from "@aztec/stdlib/tx"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { TxHash } from "@aztec-labs/stdlib/tx"
 import { PaylinkService } from "../../src/services/PaylinkService.js"
 import { DEFAULT_CONTRACTS } from "@obsidion/contracts"
 
@@ -32,7 +32,7 @@ vi.mock("../../src/services/paylink/paylinkClaimSubmit.js", async (importOrigina
 // Stub paylink key derivation — these tests only care that
 // `reconstructPaylinkContract` runs, not real crypto.
 vi.mock("../../src/services/paylink/paylinkKeys.js", async (importOriginal) => {
-  const { Fr } = await import("@aztec/aztec.js/fields")
+  const { Fr } = await import("@aztec-labs/aztec.js/fields")
   const actual = await importOriginal<typeof import("../../src/services/paylink/paylinkKeys.js")>()
   return {
     ...actual,
@@ -210,5 +210,3 @@ describe("PaylinkService.refundPaylink — option spread", () => {
     expect(sendCalls[0].kind).toBeUndefined()
   })
 })
-
-

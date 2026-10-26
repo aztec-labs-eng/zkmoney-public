@@ -1,5 +1,5 @@
-import { Fr } from "@aztec/aztec.js/fields"
-import { poseidon2HashWithSeparator } from "@aztec/foundation/crypto/poseidon"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
 
 import { DOMAIN_SEPARATORS } from "./derived-key-domains"
 

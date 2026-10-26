@@ -1,21 +1,13 @@
-import type { Address } from "viem"
-import { l1ChainIdForNetwork, Network } from "@obsidion/core/constants"
 import { depositTokenValuation, type UsdValuation } from "@obsidion/front-core"
-import { isDemoMode } from "../../dev/demoFlag"
-import type { DepositTokenOption } from "./loadDepositFacts"
+import type { DepositTokenOption, DepositTokens } from "./loadDepositFacts"
 
-/**
- * The picked token's USD valuation for the published limit, matched by address. The dev demo
- * offers the mainnet USDC and USDT on any chain (`depositTokensFor`), so only there does a token
- * this chain does not accept fall back to its mainnet identity.
- */
+/** The picked token's USD valuation for the published limit: nominal for every token Main offers. */
 export function depositValuation(
-  token: DepositTokenOption,
-  manifestToken: Address,
-  chainId: number,
+  token: Pick<DepositTokenOption, "address">,
+  tokens: Pick<DepositTokens, "offered">,
 ): UsdValuation | undefined {
-  const identity = { portalToken: manifestToken, token: token.address ?? manifestToken }
-  const valuation = depositTokenValuation({ chainId, ...identity })
-  if (valuation || !import.meta.env.DEV || !isDemoMode()) return valuation
-  return depositTokenValuation({ chainId: l1ChainIdForNetwork(Network.MAINNET), ...identity })
+  return depositTokenValuation({
+    accepted: tokens.offered.map((t) => t.address),
+    token: token.address,
+  })
 }

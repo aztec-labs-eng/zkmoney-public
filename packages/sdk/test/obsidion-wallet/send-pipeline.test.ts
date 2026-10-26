@@ -6,11 +6,11 @@
  * required. The mock `proveTx` resolves on a controllable trigger, so a second
  * send can be started at a chosen point in the first one's lifetime.
  */
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { NO_WAIT } from "@aztec/aztec.js/contracts"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { ExecutionPayload } from "@aztec/stdlib/tx"
-import { Gas, GasSettings } from "@aztec/stdlib/gas"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { NO_WAIT } from "@aztec-labs/aztec.js/contracts"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { ExecutionPayload } from "@aztec-labs/stdlib/tx"
+import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { stubNodeInfo } from "../utils/obsidionWalletStubs.js"
 import { stubSimulateTx } from "../utils/stubSimulateTx.js"

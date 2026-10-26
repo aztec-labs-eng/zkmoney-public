@@ -20,7 +20,7 @@ import {
   type Hex,
   type PublicClient,
 } from "viem"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { extractPinnedOxideEnvTuple } from "@obsidion/core/oxide"
 import { predictSIPA, readDepositSIPAImplementation } from "@obsidion/sdk"
 import { computeSIPAAddress } from "../../../../src/core/services/deposits/sipa"

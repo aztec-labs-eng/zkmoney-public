@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from "vitest"
 import { isWalletOpenElsewhere } from "../src/platform/storage/walletStorage"
 
 const { open } = vi.hoisted(() => ({ open: vi.fn() }))
-vi.mock("@aztec/kv-store/sqlite-opfs", async () => ({
-  ...(await vi.importActual<object>("@aztec/kv-store/sqlite-opfs")),
+vi.mock("@aztec-labs/kv-store/sqlite-opfs", async () => ({
+  ...(await vi.importActual<object>("@aztec-labs/kv-store/sqlite-opfs")),
   AztecSQLiteOPFSStore: { open },
 }))
 

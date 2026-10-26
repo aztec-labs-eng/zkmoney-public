@@ -18,6 +18,15 @@ vi.mock("../src/lib/explorer", () => ({
     `https://etherscan.invalid/address/${address}`,
   l2TxUrl: () => undefined,
 }))
+vi.mock("../src/features/token/useTxAmountCap", () => ({
+  useTxAmountCap: () => 5166n * 10n ** 18n,
+  useRowTxAmountCap: () => 5166n * 10n ** 18n,
+}))
+// A two-row table: DAI and USDC each settle on their own row.
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, twoRowTokens } = await import("./support/depositTokens")
+  return mockLoadDepositFacts(importOriginal, () => twoRowTokens())
+})
 vi.mock("@obsidion/web-ds", () => ({
   GradientText: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
   Icon: () => null,
@@ -29,6 +38,7 @@ vi.mock("@obsidion/web-ds", () => ({
 const { sentDepositRecord } = await import("../src/features/deposit/sentDepositRecord")
 const { DepositDetailModal } = await import("../src/ui/screens/DepositDetailModal")
 const { usdFigure } = await import("../src/ui/format")
+const { ROW_DAI, ROW_USDC } = await import("./support/depositTokens")
 
 declare global {
   // eslint-disable-next-line no-var
@@ -41,19 +51,21 @@ const FUNDING_TX = `0x${"e6".repeat(32)}` as Hash
 const SWEEP_TX = `0x${"5e".repeat(32)}` as Hash
 const WALLET = `0x${"a1".repeat(20)}` as Hex
 
-/** 0.25 relayer sweep fee + 0.10 portal funding cut, base units. */
+/** The 0.25 relayer sweep fee. */
 const FACTS = {
-  fee: "0.35",
+  fee: "0.25",
   token: `0x${"bb".repeat(20)}` as Address,
   sweepFeeAtomic: 250_000_000_000_000_000n,
-  fpcFundingCutAtomic: 100_000_000_000_000_000n,
+  txAmountCap: 5166n * 10n ** 18n,
 }
 
 const SENT = {
   address: SIPA,
   txHash: FUNDING_TX,
-  amount: "100.35",
+  amount: "100.25",
   tokenSymbol: "DAI",
+  tokenAddress: ROW_DAI,
+  tokenDecimals: 18,
   walletName: "Rainbow",
   walletAddress: WALLET,
 }
@@ -79,8 +91,7 @@ describe("sentDepositRecord", () => {
     const merged = sentDepositRecord(SENT, placeholder(), L1_CHAIN_ID, FACTS)!
 
     expect(merged.amount).toBe(SENT.amount)
-    expect(merged.fee).toBe("350000000000000000")
-    expect(merged.fpcFundingCut).toBe(FACTS.fpcFundingCutAtomic.toString())
+    expect(merged.fee).toBe("250000000000000000")
     expect(merged.fundingTxHash).toBe(FUNDING_TX)
     expect(merged.walletName).toBe(SENT.walletName)
   })
@@ -111,11 +122,14 @@ describe("sentDepositRecord", () => {
       tokenAddress: `0x${"da".repeat(20)}` as Address,
     })
 
-    const merged = sentDepositRecord({ ...SENT, tokenSymbol: "USDC" }, pooled, L1_CHAIN_ID, FACTS)!
+    const usdc = { ...SENT, tokenSymbol: "USDC", tokenAddress: ROW_USDC, tokenDecimals: 6 }
+    const merged = sentDepositRecord(usdc, pooled, L1_CHAIN_ID, FACTS)!
 
     expect(merged.tokenSymbol).toBe("USDC")
-    expect(merged.tokenDecimals).toBeUndefined()
-    expect(merged.tokenAddress).toBeUndefined()
+    expect(merged.tokenDecimals).toBe(6)
+    expect(merged.tokenAddress).toBe(ROW_USDC)
+    // The row's fee, in the row token's base units.
+    expect(merged.fee).toBe(FACTS.sweepFeeAtomic.toString())
     expect(merged.phase).toBe("funding")
   })
 
@@ -212,9 +226,52 @@ describe("DepositDetailModal on a just-sent deposit", () => {
       root.render(<DepositDetailModal record={merged} onClose={vi.fn()} />)
     })
 
-    expect(valueOf("Sent")).toBe(usdFigure("100.35"))
-    expect(valueOf("Fee")).toBe(usdFigure("0.35"))
-    expect(valueOf("Received")).toBe(usdFigure("100"))
+    expect(valueOf("Sent")).toBe(usdFigure("100.25"))
+    expect(valueOf("Fee")).toBe("0.25 DAI")
+    expect(valueOf("Received")).toBe("100 DAI")
     expect(valueOf("Tx hash")).not.toBe("--")
+  })
+
+  it("reads a swept USDC record's amounts in USDC's own decimals", async () => {
+    const swept = placeholder({
+      phase: "claimed",
+      amount: "99.9",
+      netAmount: "99900000",
+      fee: "100000",
+      tokenSymbol: "USDC",
+      tokenAddress: ROW_USDC,
+      tokenDecimals: 6,
+    })
+    await act(async () => {
+      root.render(<DepositDetailModal record={swept} onClose={vi.fn()} />)
+    })
+
+    expect(valueOf("Fee")).toBe("0.10 USDC")
+    expect(valueOf("Received")).toBe("99.90 USDC")
+    expect(valueOf("Sent")).toBe(usdFigure("100"))
+  })
+
+  it("prices a USDC row's deposit in USDC, its own units, and names no DAI", async () => {
+    const sent = {
+      ...SENT,
+      amount: "10.1",
+      tokenSymbol: "USDC",
+      tokenAddress: ROW_USDC,
+      tokenDecimals: 6,
+    }
+    const facts = {
+      fee: "0.1",
+      token: ROW_USDC,
+      sweepFeeAtomic: 100_000n,
+      txAmountCap: 2_583n * 10n ** 6n,
+    }
+    const merged = sentDepositRecord(sent, undefined, L1_CHAIN_ID, facts)!
+    await act(async () => {
+      root.render(<DepositDetailModal record={merged} onClose={vi.fn()} />)
+    })
+
+    expect(valueOf("Fee")).toBe("0.10 USDC")
+    expect(valueOf("Received")).toBe("10 USDC")
+    expect(container.textContent).not.toContain("DAI")
   })
 })

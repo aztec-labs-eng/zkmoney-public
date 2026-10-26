@@ -1,7 +1,7 @@
 import { EventEmitter } from "eventemitter3"
 import { ContractService, ContractName } from "@obsidion/contracts"
 import { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
   BatchCall,
   Contract,
@@ -14,20 +14,17 @@ import {
   SendInteractionOptions,
   SimulateInteractionOptions,
   NO_WAIT,
-} from "@aztec/aztec.js/contracts"
-import { Account } from "@aztec/aztec.js/account"
-import { TxReceipt, TxHash, TxProfileResult } from "@aztec/stdlib/tx"
-import { waitForTx } from "@aztec/aztec.js/node"
+} from "@aztec-labs/aztec.js/contracts"
+import { Account } from "@aztec-labs/aztec.js/account"
+import { TxReceipt, TxHash, TxProfileResult } from "@aztec-labs/stdlib/tx"
+import { waitForTx } from "@aztec-labs/aztec.js/node"
 import { TESTNET_TIMEOUT } from "../utils/constants.js"
 import { QueueStatus, TransactionProgress } from "@obsidion/core/constants"
 import { createAsyncTransaction } from "../utils/helper.js"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 import type { OriginalFlowKind } from "@obsidion/proving-progress"
-import { type TeeSigner } from "@oxide/oxide-lib/types.js"
-import {
-  type BuildTeeOperationSendOpts,
-  dedupeByAddressString,
-} from "./teeOperation.js"
+import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
+import { type BuildTeeOperationSendOpts, dedupeByAddressString } from "./teeOperation.js"
 
 /**
  * Base options for all service methods that interact with contracts
@@ -100,9 +97,9 @@ export class ServiceBase extends EventEmitter {
    * extends ServiceBase directly but still dispatches via `buildTeeOperation`
    * — can hold its own signer without brokering through TokenService.
    */
-  private _teeSigner?: TeeSigner
+  private _teeSigner?: RegisteredTeeSigner
 
-  constructor(wallet: ObsidionWallet, teeSigner?: TeeSigner) {
+  constructor(wallet: ObsidionWallet, teeSigner?: RegisteredTeeSigner) {
     super()
     this.wallet = wallet
     this._teeSigner = teeSigner
@@ -120,7 +117,7 @@ export class ServiceBase extends EventEmitter {
    * see a config change (network switch, account change) that invalidates
    * the previously-fanned-in signer.
    */
-  public setTeeSigner(teeSigner?: TeeSigner): void {
+  public setTeeSigner(teeSigner?: RegisteredTeeSigner): void {
     this._teeSigner = teeSigner
   }
 
@@ -130,7 +127,7 @@ export class ServiceBase extends EventEmitter {
    * through `buildTeeOperation` call this; methods that don't need a signer
    * never touch it.
    */
-  protected getTeeSigner(): TeeSigner {
+  protected getTeeSigner(): RegisteredTeeSigner {
     if (!this._teeSigner) {
       throw new Error(
         `[${this.constructor.name}] TEE signer not wired. Pass \`teeSigner\` to the constructor / static \`create(...)\` or call \`setTeeSigner(...)\` before invoking a flow that requires oxide's submit().`,
@@ -427,7 +424,7 @@ export abstract class ServiceContractBase extends ServiceBase {
     contractAddress?: AztecAddress,
     deployer?: Account,
     contractService?: ContractService,
-    teeSigner?: TeeSigner,
+    teeSigner?: RegisteredTeeSigner,
   ) {
     super(wallet, teeSigner)
     this.contractService = contractService ?? ContractService.getInstance()

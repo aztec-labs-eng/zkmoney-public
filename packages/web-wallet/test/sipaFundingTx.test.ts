@@ -8,7 +8,6 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Address, Hex } from "viem"
 import { formatUnits, parseUnits } from "viem"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
-import { TX_AMOUNT_CAP } from "@obsidion/sdk"
 import {
   depositWindowError,
   drainFundingTxStash,
@@ -18,10 +17,28 @@ import {
 } from "../src/features/deposit/sipaGateway"
 import { seedBootConfig } from "./seedBootConfig"
 
+const { TX_AMOUNT_CAP, ROW_TOKEN } = vi.hoisted(() => ({
+  TX_AMOUNT_CAP: 5166n * 10n ** 18n,
+  ROW_TOKEN: `0x${"ee".repeat(20)}` as Address,
+}))
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
-  getOxideTuple: async () => ({ token: `0x${"ee".repeat(20)}` }),
+  getOxideTuple: async () => ({ token: ROW_TOKEN, portal: `0x${"70".repeat(20)}` }),
 }))
+// The row quotes a 0.25 DAI fee.
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, singleToken } = await import("./support/depositTokens")
+  return mockLoadDepositFacts(
+    importOriginal,
+    () => singleToken(ROW_TOKEN),
+    async () => ({
+      fee: "0.25",
+      token: ROW_TOKEN,
+      sweepFeeAtomic: 250_000_000_000_000_000n,
+      txAmountCap: TX_AMOUNT_CAP,
+    }),
+  )
+})
 
 const SIPA = `0x${"ab".repeat(20)}` as Address
 /** The same address as a wallet or an explorer hands it back. */
@@ -142,29 +159,39 @@ describe("stampFundingTx", () => {
 describe("depositWindowError", () => {
   const CAP = formatUnits(TX_AMOUNT_CAP, DEFAULT_DECIMALS)
   const dai = (display: string) => parseUnits(display, 18)
-  const FEE = dai("0.35")
+  const FEE = dai("0.25")
 
   it("refuses a send at or below the quoted fee", () => {
-    expect(depositWindowError(FEE, FEE, 18, "DAI")).toContain(
-      "must exceed the deposit fee (0.35 DAI)",
+    expect(depositWindowError(FEE, FEE, 18, "DAI", TX_AMOUNT_CAP, 18)).toContain(
+      "must exceed the deposit fee (0.25 DAI)",
     )
-    expect(depositWindowError(dai("0.34"), FEE, 18, "DAI")).toBeDefined()
+    expect(depositWindowError(dai("0.24"), FEE, 18, "DAI", TX_AMOUNT_CAP, 18)).toBeDefined()
   })
 
   it("refuses a send whose credited amount would exceed the cap, without naming the internal ceiling", () => {
     // The fee rides on top of what the portal meters, so the cap plus the fee is still accepted.
-    expect(depositWindowError(dai(CAP) + FEE, FEE, 18, "DAI")).toBeUndefined()
-    const over = depositWindowError(dai(CAP) + FEE + 1n, FEE, 18, "DAI")
+    expect(depositWindowError(dai(CAP) + FEE, FEE, 18, "DAI", TX_AMOUNT_CAP, 18)).toBeUndefined()
+    const over = depositWindowError(dai(CAP) + FEE + 1n, FEE, 18, "DAI", TX_AMOUNT_CAP, 18)
     expect(over).toBe("This amount is over the network's maximum per deposit")
     expect(over).not.toContain(CAP)
   })
 
-  it("measures a 6-decimal token in its own units", () => {
+  it("measures a send to a 6-decimal row against that row's own cap", () => {
     const usdc = (display: string) => parseUnits(display, 6)
-    const fee = usdc("0.35")
-    expect(depositWindowError(usdc("100"), fee, 6, "USDC")).toBeUndefined()
-    expect(depositWindowError(usdc(CAP) + fee, fee, 6, "USDC")).toBeUndefined()
-    expect(depositWindowError(usdc(CAP) + fee + 1n, fee, 6, "USDC")).toBe(
+    const fee = usdc("0.25")
+    const cap = usdc("1000")
+    expect(depositWindowError(usdc("1000") + fee, fee, 6, "USDC", cap, 6)).toBeUndefined()
+    expect(depositWindowError(usdc("1000") + fee + 1n, fee, 6, "USDC", cap, 6)).toBe(
+      "This amount is over the network's maximum per deposit",
+    )
+  })
+
+  it("measures a 6-decimal token swapped into an 18-decimal row in its own units", () => {
+    const usdc = (display: string) => parseUnits(display, 6)
+    const fee = usdc("0.25")
+    expect(depositWindowError(usdc("100"), fee, 6, "USDC", TX_AMOUNT_CAP, 18)).toBeUndefined()
+    expect(depositWindowError(usdc(CAP) + fee, fee, 6, "USDC", TX_AMOUNT_CAP, 18)).toBeUndefined()
+    expect(depositWindowError(usdc(CAP) + fee + 1n, fee, 6, "USDC", TX_AMOUNT_CAP, 18)).toBe(
       "This amount is over the network's maximum per deposit",
     )
   })
@@ -177,11 +204,9 @@ describe("the deposit window gate, over a send in another token", () => {
   it("names the sent token in the refusal", async () => {
     const gateway = getSipaDepositGateway() as unknown as {
       tokenMeta: () => Promise<{ address: Address; symbol: string; decimals: number }>
-      quotedFee: () => Promise<bigint>
       deposit: (params: Record<string, unknown>) => Promise<unknown>
     }
     gateway.tokenMeta = async () => ({ address: OTHER, symbol: "DAI", decimals: 18 })
-    gateway.quotedFee = async () => parseUnits("0.35", 18)
 
     await expect(
       gateway.deposit({
@@ -190,17 +215,15 @@ describe("the deposit window gate, over a send in another token", () => {
         tokenSymbol: "USDC",
         token: { address: OTHER, decimals: 6 },
       }),
-    ).rejects.toThrow("Amount must exceed the deposit fee (0.35 USDC)")
+    ).rejects.toThrow("Amount must exceed the deposit fee (0.25 USDC)")
   })
 
   it("sends nothing to an address whose broadcast could not be owed", async () => {
     const gateway = getSipaDepositGateway() as unknown as {
       tokenMeta: () => Promise<{ address: Address; symbol: string; decimals: number }>
-      quotedFee: () => Promise<bigint>
       deposit: (params: Record<string, unknown>) => Promise<unknown>
     }
     gateway.tokenMeta = async () => ({ address: OTHER, symbol: "DAI", decimals: 18 })
-    gateway.quotedFee = async () => parseUnits("0.35", 18)
     const publish = vi.fn(async () => {})
 
     await expect(

@@ -48,7 +48,7 @@ import type { TokenInTxService } from "../../../types/tokens"
 import type {
   ScannedTransferEvent,
   TransferEventSource,
-  WalletBalances,
+  WalletBalanceRead,
   WalletSyncSource,
 } from "@obsidion/sdk"
 import type {
@@ -87,6 +87,15 @@ function cursorKey(ctx: ScanScope & Pick<TransferScanContext, "endpointScope">):
 
 function joinedKey(ctx: ScanScope): string {
   return `${JOINED_STORAGE_KEY}/${ctx.networkId}/${ctx.accountAddress.toLowerCase()}`
+}
+
+/** Every cursor an account's scans kept starts with this; `transferScanNetworkOf` reads the network off one. */
+export const TRANSFER_SCAN_CURSOR_PREFIX = `${CURSOR_STORAGE_KEY}/`
+
+/** The network a stored scan cursor's key names, or undefined for any other key. */
+export function transferScanNetworkOf(key: string): string | undefined {
+  if (!key.startsWith(TRANSFER_SCAN_CURSOR_PREFIX)) return undefined
+  return key.slice(TRANSFER_SCAN_CURSOR_PREFIX.length).split("/")[0] || undefined
 }
 
 async function loadBlock(storage: IStorageAdapter, key: string): Promise<number | undefined> {
@@ -140,7 +149,7 @@ export interface TransferEventScannerOptions {
   contacts: ContactsByL2
   token: { address: string; symbol: string; decimals: number }
   /** Publishes each chunk's validated snapshot before event attribution or persistence. */
-  onSynced?: (anchorBlock: number, balances?: WalletBalances) => Promise<void>
+  onSynced?: (anchorBlock: number, read?: Partial<WalletBalanceRead>) => Promise<void>
   /** Each pass that read every chunk up to head. */
   onCaughtUp?: () => void
   pollIntervalMs?: number
@@ -332,7 +341,7 @@ export class TransferEventScanner {
       anchor = snapshot.anchorBlock
       // Publish the balance before attribution or persistence can defer an event. The bounded
       // snapshot has no side effects: a late result after timeout/stop can never publish here.
-      const balanceComplete = await this.synced(ctx, anchor, snapshot.balances)
+      const balanceComplete = await this.synced(ctx, anchor, snapshot)
       const complete = await this.ingestEvents(ctx, snapshot.events)
       if (!this.running || this.context !== ctx) return true
       if (!complete || !balanceComplete) return false
@@ -350,11 +359,11 @@ export class TransferEventScanner {
   private async synced(
     ctx: TransferScanContext,
     anchor: number,
-    balances?: WalletBalances,
+    read: Partial<WalletBalanceRead>,
   ): Promise<boolean> {
     if (!this.opts.onSynced || !this.running || this.context !== ctx) return true
     try {
-      await this.bounded(this.opts.onSynced(anchor, balances), "onSynced")
+      await this.bounded(this.opts.onSynced(anchor, read), "onSynced")
       return true
     } catch (err) {
       logger.warn(`${LOG_PREFIX} onSynced failed:`, err)

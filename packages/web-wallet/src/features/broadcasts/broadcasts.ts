@@ -82,6 +82,34 @@ export async function oweRegistrationBroadcast(
 }
 
 /**
+ * Owe a backup passkey rotation's deposit-address broadcast; the record under `owner` rebuilds it.
+ * `republishSince`, for an address paid again: only a landing at or past that block settles the job.
+ */
+export async function oweRotationBroadcast(
+  owner: string,
+  sipaAddress: string,
+  republishSince?: number,
+): Promise<void> {
+  await getBroadcastLedger().enqueue({
+    address: sipaAddress.toLowerCase(),
+    kind: "deposit",
+    scope: getActiveStorageId(),
+    source: { type: "rotation", owner },
+    ...(republishSince === undefined ? {} : { republishSince }),
+  })
+}
+
+/**
+ * Resolves once the address's broadcast landed, through however many failed attempts; rejects once
+ * the job is gone without landing.
+ */
+export async function broadcastLanded(address: string): Promise<void> {
+  while (!(await broadcastSettled(address))) {
+    if (!getBroadcastLedger().get(address)) throw new Error("the address's broadcast was dropped")
+  }
+}
+
+/**
  * Resolves true once the address's broadcast landed, false once an attempt at it fails or the job
  * ends without one.
  */
@@ -149,7 +177,11 @@ export function startBroadcasts(
     describe: (job) =>
       job.kind === "pool"
         ? undefined
-        : { flow: "deposit", summary: "Deposit address", background: true },
+        : {
+            flow: "deposit",
+            summary: job.source.type === "rotation" ? "Backup passkey" : "Deposit address",
+            background: true,
+          },
   })
   let stopped = false
   let stop: (() => void) | undefined

@@ -23,6 +23,7 @@ function deferred<T>() {
 const read = (allowance: Partial<ClaimFpcAllowance>): AllowanceRead => ({
   fpcAddress: "0xf9c",
   railId: 1,
+  payer: "0xalice",
   allowance: { subscribed: true, uses: 0, maxTx: 100, refillPeriod: 86_400, ...allowance },
 })
 

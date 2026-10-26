@@ -1,6 +1,6 @@
-import { Logger, createLogger } from '@aztec/foundation/log';
-import { SerialQueue } from '@aztec/foundation/queue';
-import { sleep } from '@aztec/foundation/sleep';
+import { Logger, createLogger } from '@aztec-labs/foundation/log';
+import { SerialQueue } from '@aztec-labs/foundation/queue';
+import { sleep } from '@aztec-labs/foundation/sleep';
 
 import { OxidePortalAbi } from '@oxide/l1-contracts';
 import { ProverClaim, toProverTipClaim } from '@oxide/l1-contracts/oxide_portal.js';
@@ -15,7 +15,7 @@ const DEFAULT_CONFIRMATION_POLL_INTERVAL_MS = 2_000;
 export interface BatchPublisherOptions {
   client: Pick<PublicClient, 'estimateGas' | 'getBlockNumber' | 'getTransactionReceipt'>;
   // Must sign with the prover's key: `claimProverTips` credits `msg.sender`, and `ProverClaimLib` requires it
-  // to be the address captured in `$firstProver`.
+  // to be the rollup's first prover for each claim.
   l1TxQueue: Pick<L1TxQueue, 'enqueue' | 'address'>;
   // Block depth a claim tx must reach before its `confirmed` promise resolves. 0n confirms at the first mined receipt
   // (dev/e2e).

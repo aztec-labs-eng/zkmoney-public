@@ -5,7 +5,7 @@
  * terms, else the RegistrationController's immutable schedule — and its floor decides only whether
  * a deposit is accepted. The ask is what the wallets tell a user to deposit; it sits above the
  * floor so a deposit swapped from another token still clears it, and a depositor of the ask is
- * credited `ask - fee - fpcFundingCut`.
+ * credited `ask - fee`.
  *
  * Code and tests read both from here. Places that restate them by hand:
  *
@@ -49,18 +49,16 @@ export const REGISTRATION_SIGNED_FEES: readonly bigint[] = [
 /**
  * The least a deposit on this schedule may be for the chain to take it.
  *
- * Three contracts price a deposit `D` against a schedule of minimum `M` and fee `F`, and the
- * portal's `FPC_FUNDING_CUT` `C`:
+ * Three contracts price a deposit `D` against a schedule of minimum `M` and fee `F`:
  *
  * - `RegistrationController._checkPayment` requires `D >= M + F`
  * - the SIPA sweep requires `D > F`, the sweep fee being carved out of `F`
- * - `OxidePortal.deposit` requires `D - F > C`
+ * - `OxidePortal.deposit` requires `D - F > 0`
  *
- * So a deposit is accepted exactly when it reaches `F + max(M, C + 1)`.
+ * So a deposit is accepted exactly when it reaches `F + max(M, 1)`.
  */
-export function registrationFloor(schedule: RegistrationSchedule, fpcFundingCut: bigint): bigint {
-  const overCut = fpcFundingCut + 1n
-  return schedule.fee + (schedule.min > overCut ? schedule.min : overCut)
+export function registrationFloor(schedule: RegistrationSchedule): bigint {
+  return schedule.fee + (schedule.min > 1n ? schedule.min : 1n)
 }
 
 /**
@@ -72,12 +70,12 @@ export const SIPA_SWAP_MAX_SLIPPAGE_BPS = 100n
 
 /**
  * The deductions a golden-ticket registration pays beyond its schedule. The link's note is burned
- * to L1 through the registration SIPA, and Oxide takes a portal cut on that withdrawal and a
- * second one on the return deposit; the tips pay the withdrawal's relayer and prover.
+ * to L1 through the registration SIPA; the executor takes its fee and the tips pay the withdrawal's
+ * relayer and prover.
  */
 export interface GoldenTicketDeductions {
-  withdrawalCut: bigint
-  depositCut: bigint
+  /** The plain withdrawal executor's `FEE()`. */
+  withdrawalFee: bigint
   relayerTip: bigint
   proverTip: bigint
   bridgeRemainder: bigint
@@ -86,7 +84,7 @@ export interface GoldenTicketDeductions {
 /**
  * What a ticket registration moves: `sipaTarget` is what the SIPA must receive after the
  * withdrawal leg, `burn` the gross L2 amount that gets it there, and `returned` the L2 deposit the
- * sweep sends back after the fee and the deposit cut.
+ * sweep sends back after the fee.
  */
 export interface GoldenTicketQuote {
   sipaTarget: bigint
@@ -96,19 +94,19 @@ export interface GoldenTicketQuote {
 
 /**
  * Sizes a ticket registration off the signed schedule and the live deductions, in base units.
- * The SIPA target is the larger of the schedule floor at the deposit cut and the fee plus that cut
- * plus the bridge remainder, so a minimum above the cut is funded once, never on top of the cut.
+ * The SIPA target is the larger of the schedule floor and the fee plus the bridge remainder, so a
+ * minimum above the remainder is funded once, never on top of it.
  */
 export function goldenTicketQuote(
   schedule: RegistrationSchedule,
   deductions: GoldenTicketDeductions,
 ): GoldenTicketQuote {
-  const floor = registrationFloor(schedule, deductions.depositCut)
-  const withRemainder = schedule.fee + deductions.depositCut + deductions.bridgeRemainder
+  const floor = registrationFloor(schedule)
+  const withRemainder = schedule.fee + deductions.bridgeRemainder
   const sipaTarget = floor > withRemainder ? floor : withRemainder
   return {
     sipaTarget,
-    burn: sipaTarget + deductions.withdrawalCut + deductions.relayerTip + deductions.proverTip,
-    returned: sipaTarget - schedule.fee - deductions.depositCut,
+    burn: sipaTarget + deductions.withdrawalFee + deductions.relayerTip + deductions.proverTip,
+    returned: sipaTarget - schedule.fee,
   }
 }

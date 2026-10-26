@@ -1,5 +1,5 @@
 // Mirror of `ThreePoolLib.sol`'s mainnet token constants. Keep in lockstep.
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 export const MAINNET_CHAIN_ID = 1n;
 
@@ -19,9 +19,10 @@ export function depositTokensFor(chainId: bigint, portalToken: EthAddress): EthA
 
 /**
  * The token a sweep of `sentToken` pays its fee and its subsidy in, and so the payout token of the L1 operation
- * that sweeps it. Mirrors `Pool.relayedDeposit`: the sent token where the Pool has a portal for it, DAI where the
- * Pool swaps it first (mainnet USDC and USDT). The deposit subsidy pays in the same token.
+ * that sweeps it. Every SIPA swaps: on mainnet it swaps USDC and USDT to DAI before it routes the funds. Every other
+ * sweep pays in the sent token. The deposit subsidy pays in the same token.
  */
 export function depositPayoutTokenFor(chainId: bigint, sentToken: EthAddress): EthAddress {
-  return chainId === MAINNET_CHAIN_ID && !sentToken.equals(MAINNET_DAI) ? MAINNET_DAI : sentToken;
+  const swapped = chainId === MAINNET_CHAIN_ID && (sentToken.equals(MAINNET_USDC) || sentToken.equals(MAINNET_USDT));
+  return swapped ? MAINNET_DAI : sentToken;
 }

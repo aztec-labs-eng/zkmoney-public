@@ -1,5 +1,5 @@
-import type { AztecAddress } from '@aztec/aztec.js/addresses';
-import type { PrivateEventFilter, Wallet } from '@aztec/aztec.js/wallet';
+import type { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import type { PrivateEventFilter, Wallet } from '@aztec-labs/aztec.js/wallet';
 
 import { OxideTokenContract } from '@oxide/noir-contracts.js/OxideToken';
 

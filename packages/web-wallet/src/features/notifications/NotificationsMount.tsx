@@ -3,7 +3,7 @@
  * transfer-receive, paylink-claimed, reorg) and runs the reorg monitor while the tab is visible.
  */
 
-import { useEffect } from "react"
+import { useEffect, useRef } from "react"
 import {
   AppNotificationStore,
   BridgeNotificationProducer,
@@ -19,16 +19,32 @@ import {
   getActiveNetworkId,
   loadTransferScanJoined,
   useAztecContext,
+  useSavingsSource,
+  useSavingsPosition,
+  upgradeRunValue,
+  type UpgradePricing,
 } from "@obsidion/front-core"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { whenVisibilityChanges } from "../../platform/visibilityScheduler"
 import { bridgeActivityFeed, sipaProcessingObserver } from "../deposit/sipaProcessing"
+import { useDepositTokens } from "../deposit/loadDepositFacts"
 import { getWithdrawalStore } from "../withdraw/withdrawGateway"
-import { portalFrozenNow, subscribe as subscribePortalFrozen } from "../withdraw/portalFrozen"
+import { upgradeRunToken } from "../migration/upgradeRunAccount"
 
 export function NotificationsMount(): null {
   const { obsidionWallet } = useAztecContext()
+  const tokens = useDepositTokens()
+  const savings = useSavingsSource()
+  const { position } = useSavingsPosition()
+  const pricing = useRef<UpgradePricing>({})
+  pricing.current = {
+    mainToken: tokens?.settlement.address,
+    savingsToken: savings?.assetAddress,
+    sharePrice: position?.sharePrice,
+    runToken: (run) =>
+      upgradeRunToken(run, { main: tokens?.settlement.address, savings: savings?.assetAddress }),
+  }
 
   useEffect(() => {
     const notificationStore = AppNotificationStore.get(webStorage)
@@ -40,11 +56,9 @@ export function NotificationsMount(): null {
     producers.register(
       BridgeNotificationProducer.get(bridgeActivityFeed(), notificationStore, {
         liveRows: true,
-        portalFrozen: portalFrozenNow,
+        upgradeValue: (run) => upgradeRunValue(run, pricing.current),
       }),
     )
-    // A swept deposit's live row retires once its portal is seen frozen.
-    const unsubFrozen = subscribePortalFrozen(() => bridgeActivityFeed().refresh())
     const joined = async () => {
       const identity = loadWalletIdentity()
       const networkId = getActiveNetworkId()
@@ -73,11 +87,12 @@ export function NotificationsMount(): null {
       }),
     )
     producers.start()
-    return () => {
-      unsubFrozen()
-      producers.stop()
-    }
+    return () => producers.stop()
   }, [])
+
+  useEffect(() => {
+    void BridgeNotificationProducer.get().refresh()
+  }, [tokens, savings, position?.sharePrice])
 
   useEffect(() => {
     if (!obsidionWallet) return

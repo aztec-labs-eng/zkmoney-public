@@ -14,20 +14,10 @@ contract MockInbox is IInbox {
   Call[] public calls;
   bytes32 public nextKey;
   uint256 public nextIndex;
-  uint64 internal inProgressCheckpoint;
-  mapping(uint256 checkpointNumber => bytes32 root) internal roots;
 
   function primeNext(bytes32 _key, uint256 _index) external {
     nextKey = _key;
     nextIndex = _index;
-  }
-
-  function setInProgress(uint64 _inProgress) external {
-    inProgressCheckpoint = _inProgress;
-  }
-
-  function setRoot(uint256 _checkpointNumber, bytes32 _root) external {
-    roots[_checkpointNumber] = _root;
   }
 
   function sendL2Message(DataStructures.L2Actor memory _recipient, bytes32 _content, bytes32 _secretHash)
@@ -49,18 +39,10 @@ contract MockInbox is IInbox {
     return calls.length;
   }
 
-  function consume(uint256) external pure returns (bytes32) {
-    return bytes32(0);
-  }
-
-  function catchUp(uint256) external pure {}
+  function markProvenConsumed(uint64) external pure {}
 
   function getFeeAssetPortal() external pure returns (address) {
     return address(0);
-  }
-
-  function getRoot(uint256 _checkpointNumber) external view returns (bytes32) {
-    return roots[_checkpointNumber];
   }
 
   function getState() external pure returns (InboxState memory state) {
@@ -71,7 +53,23 @@ contract MockInbox is IInbox {
     return 0;
   }
 
-  function getInProgress() external view returns (uint64) {
-    return inProgressCheckpoint;
+  function getCurrentBucketSeq() external pure returns (uint64) {
+    return 0;
+  }
+
+  function getBucket(uint256) external pure returns (InboxBucket memory bucket) {
+    return bucket;
+  }
+
+  function getBucketAtOrBeforeTotal(uint64) external pure returns (uint64, InboxBucket memory bucket) {
+    return (0, bucket);
+  }
+
+  function getProvenConsumedBucketSeq() external pure returns (uint64) {
+    return 0;
+  }
+
+  function getRingHeadroom() external pure returns (uint256) {
+    return type(uint256).max;
   }
 }

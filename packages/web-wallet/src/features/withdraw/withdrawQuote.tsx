@@ -6,20 +6,25 @@ import {
   SwapTipExceedsInputError,
   type RelayerTipEstimate,
   type SwapEscrowOutput,
+  type WithdrawalExecutor,
 } from "@obsidion/sdk"
 import { formatUnits, type Address, type PublicClient } from "viem"
 import { Warning } from "../../ui/Warning"
 import { getConfig } from "../../config/env"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
-import { currentFpcFundingCut, fpcFundingCut } from "../fees/fpcFundingCut"
-import { tokenAmount, usdFigure } from "../../ui/format"
+import { shortL1Addr, tokenAmount, usdFigure } from "../../ui/format"
 import { withdrawalReceiveAsset, type WithdrawalReceiveAsset } from "./withdrawAssets"
+import { activeWithdrawalExecutor, withdrawalExecutor } from "./withdrawalFee"
 
 /** The market fee a swap's relayer tip was priced at. */
 export type SwapGas = Pick<RelayerTipEstimate, "baseFee" | "priorityFee">
 
 /** The DAI a route takes off the burn, priced live. */
 export interface WithdrawalFee {
+  /** What the plain withdrawal executor keeps from the burn. */
+  withdrawalFee: bigint
+  /** Who the executor pays `withdrawalFee` to. Absent when it names nobody. */
+  feeBeneficiary?: Address
   /** What the plain withdrawal executor pays whoever finalizes the release on L1. */
   withdrawalRelayerTip: bigint
   /** DAI the escrow commits to paying whoever runs the swap: 1.1x the relayer's simulated floor.
@@ -27,8 +32,6 @@ export interface WithdrawalFee {
   swapRelayerTip: bigint
   /** The fee `swapRelayerTip` was priced at. Absent on the direct route. */
   swapGas?: SwapGas
-  /** `OxidePortal.FPC_FUNDING_CUT`. */
-  fpcFundingCut: bigint
   /** What the portal pays the first prover of the burn's checkpoint. */
   proverTip: bigint
   /** Every component summed: the whole fee, and the atomic floor an amount has to clear. */
@@ -45,9 +48,9 @@ export interface SwapEstimate {
 }
 
 /**
- * `status` tracks the estimate; the fee is priced on its own. The direct route answers its estimate
- * outright, so it is "ready" before the portal's cut is read and `fee` is undefined until then. Every
- * figure and gate reads `fee` for that reason, never `status` alone.
+ * `status` tracks the estimate; the fee is priced on its own. The direct route answers both outright.
+ * A swap route's `fee` is undefined until its first simulation, so every figure and gate reads `fee`,
+ * never `status` alone.
  */
 export interface WithdrawalQuoteState {
   status: "idle" | "loading" | "ready" | "unavailable"
@@ -120,15 +123,23 @@ function swapSimulator(client: PublicClient, tuple: OxideEnvTuple): SwapOnWithdr
   return simulatorCache.simulator
 }
 
-function routeFee(cut: bigint, proverTip: bigint, tip?: RelayerTipEstimate): WithdrawalFee {
+/** The executor terms a quote prices: its fee, and who receives it. */
+export type ExecutorTerms = Pick<WithdrawalExecutor, "fee" | "beneficiary">
+
+function routeFee(
+  proverTip: bigint,
+  { fee: withdrawalFee, beneficiary }: ExecutorTerms,
+  tip?: RelayerTipEstimate,
+): WithdrawalFee {
   const swapRelayerTip = tip?.relayerTip ?? 0n
   return {
+    withdrawalFee,
+    ...(beneficiary ? { feeBeneficiary: beneficiary } : {}),
     withdrawalRelayerTip: WITHDRAW_RELAYER_TIP,
     swapRelayerTip,
     ...(tip ? { swapGas: { baseFee: tip.baseFee, priorityFee: tip.priorityFee } } : {}),
-    fpcFundingCut: cut,
     proverTip,
-    floorAtomic: WITHDRAW_RELAYER_TIP + cut + proverTip + swapRelayerTip,
+    floorAtomic: withdrawalFee + WITHDRAW_RELAYER_TIP + proverTip + swapRelayerTip,
   }
 }
 
@@ -144,25 +155,24 @@ export async function simulateSwapForTuple(
   args: Parameters<SimulateSwap>[0],
   tuple: OxideEnvTuple,
 ): Promise<SwapQuote> {
-  const config = getConfig()
-  const client = l1PublicClient(config)
-  const cut = await fpcFundingCut(client, requireTupleField(tuple, "portal") as Address)
-  const simulator = swapSimulator(client, tuple)
+  const simulator = swapSimulator(l1PublicClient(getConfig()), tuple)
   const proverTip = args.proverTip ?? 0n
   const daiForGas = args.daiForGas ?? 0n
-  const fee = (tip: RelayerTipEstimate): WithdrawalFee => routeFee(cut, proverTip, tip)
-  // An amount the portal's own deductions and the gas swap consume cannot be simulated; price the
-  // route instead.
+  const executor = await withdrawalExecutor(tuple)
+  const withdrawalFee = executor.fee
+  const fee = (tip: RelayerTipEstimate): WithdrawalFee => routeFee(proverTip, executor, tip)
+  // An amount the withdrawal's fee, its tips and the gas swap consume cannot be simulated; price
+  // the route instead.
   const exact =
     args.amountAtomic !== undefined &&
-    args.amountAtomic > WITHDRAW_RELAYER_TIP + cut + proverTip + daiForGas
+    args.amountAtomic > withdrawalFee + WITHDRAW_RELAYER_TIP + proverTip + daiForGas
       ? args.amountAtomic
       : undefined
   try {
     const simulation = await simulator.simulate({
       output: args.output,
       amount: exact ?? REFERENCE_AMOUNT,
-      deductions: { withdrawalRelayerTip: WITHDRAW_RELAYER_TIP, proverTip, fpcFundingCut: cut },
+      deductions: { withdrawalFee, withdrawalRelayerTip: WITHDRAW_RELAYER_TIP, proverTip },
       recipient: args.recipient ?? REFERENCE_RECIPIENT,
       daiForGas,
     })
@@ -185,8 +195,8 @@ export async function simulateSwapForTuple(
 
 /**
  * Live pricing for one receive asset: the route's fee and, for an amount, its output estimate. The
- * direct route needs only the portal's cut, so it is priced off that one read. A swap route, and DAI
- * with a gas swap, runs the simulator on the debounced amount and re-runs it every
+ * direct route's fee is the executor's fee and the fixed tips, so it reads only the executor's fee. A swap route, and DAI with a gas swap,
+ * runs the simulator on the debounced amount and re-runs it every
  * {@link SWAP_QUOTE_REFRESH_MS} while it stays selected. A simulation that fails leaves the route
  * unavailable — there is no fallback tip to offer the relayer.
  */
@@ -197,7 +207,7 @@ export function useSwapSimulation({
   network,
   sourceKey = "active",
   simulate = simulateSwap,
-  readCut = currentFpcFundingCut,
+  readExecutor = activeWithdrawalExecutor,
   proverTip = 0n,
   daiForGas = 0n,
   debounceMs = 300,
@@ -210,8 +220,8 @@ export function useSwapSimulation({
   network: Network
   sourceKey?: string
   simulate?: SimulateSwap
-  /** The direct route's one live pricing input. */
-  readCut?: () => Promise<bigint>
+  /** The source executor's fee and beneficiary. */
+  readExecutor?: () => Promise<ExecutorTerms>
   /** Offered on the burn; every route's fee includes it. */
   proverTip?: bigint
   /** DAI the escrow swaps to ETH for the recipient; the route then always rides an escrow. */
@@ -232,13 +242,35 @@ export function useSwapSimulation({
     scope,
   ])
   // A fee and a tip belong to the asset that priced them: another asset's route never inherits
-  // them, so a swap's relayer tip cannot be charged on the direct route while its cut is read.
+  // them, so a swap's relayer tip is never charged on the direct route.
   const [snapshot, setSnapshot] = useState<{
     key: string
     scope: string
     route: string
     state: WithdrawalQuoteState
   }>({ key: requestKey, scope, route, state: { status: "idle" } })
+  const [executorRead, setExecutorRead] = useState<{ scope: string; executor?: ExecutorTerms }>()
+  useEffect(() => {
+    let active = true
+    readExecutor().then(
+      (executor) => active && setExecutorRead({ scope, executor }),
+      () => active && setExecutorRead({ scope }),
+    )
+    return () => {
+      active = false
+    }
+  }, [readExecutor, scope])
+  const feeRead = executorRead?.scope === scope ? executorRead : undefined
+  const directState = (amount?: bigint): WithdrawalQuoteState =>
+    !feeRead
+      ? { status: "loading" }
+      : feeRead.executor === undefined
+      ? { status: "unavailable" }
+      : {
+          status: "ready",
+          fee: routeFee(proverTip, feeRead.executor),
+          estimate: echoEstimate(amount),
+        }
 
   useEffect(() => {
     const setState = (state: WithdrawalQuoteState) =>
@@ -247,28 +279,9 @@ export function useSwapSimulation({
       current.scope === scope && current.route === route ? current.state.fee : undefined
     const amount = amountAtomic !== undefined && amountAtomic > 0n ? amountAtomic : undefined
     if (direct) {
-      let live = true
-      const estimate = echoEstimate(amount)
-      // The typed amount is what lands, so the estimate is answered outright and only the fee waits
-      // on the portal's cut.
-      setSnapshot((current) => ({
-        key: requestKey,
-        scope,
-        route,
-        state: { status: "ready", fee: carriedFee(current), estimate },
-      }))
-      void readCut().then(
-        (cut) => {
-          if (!live) return
-          setState({ status: "ready", fee: routeFee(cut, proverTip), estimate })
-        },
-        () => {
-          if (live) setState({ status: "unavailable", estimate })
-        },
-      )
-      return () => {
-        live = false
-      }
+      // The typed amount is what lands and the fee is the executor's fee plus the fixed tips.
+      setState(directState(amount))
+      return
     }
     // Testnet has no swap stack; sandbox and mainnet both deploy one.
     if (network !== Network.MAINNET && network !== Network.SANDBOX) {
@@ -315,9 +328,9 @@ export function useSwapSimulation({
     daiForGas,
     debounceMs,
     direct,
+    feeRead,
     network,
     proverTip,
-    readCut,
     receiveAsset,
     recipient,
     refreshMs,
@@ -329,17 +342,16 @@ export function useSwapSimulation({
 
   // Effects in consumers run before this hook's state reset is rendered. Never expose a ready
   // quote from the previous inputs during that render, even if its simulation already finished.
-  // The direct route's estimate is the new amount itself, so it answers without waiting.
+  // The direct route's quote is the new inputs themselves, so it answers without waiting.
+  if (direct) return directState(amountAtomic)
   if (snapshot.key === requestKey) return snapshot.state
   const fee = snapshot.scope === scope && snapshot.route === route ? snapshot.state.fee : undefined
-  return direct
-    ? { status: "ready", fee, estimate: echoEstimate(amountAtomic) }
-    : { status: "loading", fee }
+  return { status: "loading", fee }
 }
 
 /**
- * The atomic floor an amount has to clear to leave anything behind: the withdrawal relayer tip, the
- * prover tip and the portal's cut on any route, plus the relayer tip a swap commits to, so `planSwapOnWithdraw`
+ * The atomic floor an amount has to clear to leave anything behind: the executor's fee, the withdrawal
+ * relayer tip and the prover tip on any route, plus the relayer tip a swap commits to, so `planSwapOnWithdraw`
  * has something left to swap. Zero until the route is priced — the form then only applies its own
  * minimum, and a too-small swap would still be caught at plan time.
  */
@@ -390,6 +402,27 @@ export function SwapFeeNote({ state }: { state: WithdrawalQuoteState }) {
       Includes {tip} for L1 gas{swapGasDetail(state.fee.swapGas)}.
     </small>
   )
+}
+
+/** The executor's protocol fee inside a quoted fee, and who receives it; nothing when it takes none. */
+export function ProtocolFeeNote({ fee, beneficiary }: { fee?: bigint; beneficiary?: Address }) {
+  if (!fee) return null
+  return (
+    <small className="ww-withdraw__fee-note">
+      Includes a {usdFigure(formatUnits(fee, DEFAULT_DECIMALS))} protocol fee
+      {beneficiary && (
+        <>
+          {" "}
+          paid to <span title={beneficiary}>{shortL1Addr(beneficiary)}</span>
+        </>
+      )}
+      .
+    </small>
+  )
+}
+
+export function ExecutorFeeNote({ state }: { state: WithdrawalQuoteState }) {
+  return <ProtocolFeeNote fee={state.fee?.withdrawalFee} beneficiary={state.fee?.feeBeneficiary} />
 }
 
 export function SwapGasWarning({

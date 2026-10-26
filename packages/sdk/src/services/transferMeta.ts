@@ -31,8 +31,8 @@
  * old readers.
  */
 
-import { Fr } from "@aztec/aztec.js/fields"
-import type { FieldLike } from "@aztec/aztec.js/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { FieldLike } from "@aztec-labs/aztec.js/abi"
 import { MAX_TAG_LENGTH, TRANSFER_META_LEN } from "@obsidion/core/constants"
 import { plainText } from "@obsidion/core/text"
 import { BYTES_PER_FIELD, metaCapacity, packMetaFields, unpackMetaFields } from "./metaFields.js"

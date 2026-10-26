@@ -14,14 +14,10 @@
  *     not produce standalone signed authwits through this API.
  *   - `authProvider.createAuthWit` is NOT invoked.
  */
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import {
-  FunctionCall,
-  FunctionSelector,
-  FunctionType,
-} from "@aztec/stdlib/abi"
-import { computeAuthWitMessageHash } from "@aztec/aztec.js/authorization"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { FunctionCall, FunctionSelector, FunctionType } from "@aztec-labs/stdlib/abi"
+import { computeAuthWitMessageHash } from "@aztec-labs/aztec.js/authorization"
 import { describe, expect, it, vi } from "vitest"
 
 import { ObsidionAccount } from "../../src/obsidion/alpha/account/ObsidionAccount.js"
@@ -63,18 +59,12 @@ async function buildIntent(): Promise<{ caller: AztecAddress; call: FunctionCall
   const selector = await FunctionSelector.fromSignature("transfer((Field),(Field),u128,Field)")
   const call = FunctionCall.from({
     name: "transfer",
-    args: [
-      caller.toField(),
-      target.toField(),
-      new Fr(100n),
-      Fr.ZERO,
-    ],
+    args: [caller.toField(), target.toField(), new Fr(100n), Fr.ZERO],
     selector,
     type: FunctionType.PRIVATE,
     hideMsgSender: false,
     isStatic: false,
     to: target,
-    returnTypes: [],
   })
   return { caller, call }
 }
@@ -112,7 +102,9 @@ describe("ObsidionAccount.createAuthWit — witness-less intent path", () => {
     const authProvider = makeStubAuthProvider()
     const account = makeAccount(authProvider)
 
-    await expect(account.createAuthWit(new Fr(0xdeadbeefn))).rejects.toThrow(/raw-hash input not supported/)
+    await expect(account.createAuthWit(new Fr(0xdeadbeefn))).rejects.toThrow(
+      /raw-hash input not supported/,
+    )
     expect(authProvider.createAuthWit).not.toHaveBeenCalled()
   })
 
@@ -120,7 +112,9 @@ describe("ObsidionAccount.createAuthWit — witness-less intent path", () => {
     const authProvider = makeStubAuthProvider()
     const account = makeAccount(authProvider)
 
-    await expect(account.createAuthWit(Buffer.alloc(32))).rejects.toThrow(/raw-hash input not supported/)
+    await expect(account.createAuthWit(Buffer.alloc(32))).rejects.toThrow(
+      /raw-hash input not supported/,
+    )
     expect(authProvider.createAuthWit).not.toHaveBeenCalled()
   })
 })

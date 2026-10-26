@@ -14,6 +14,7 @@ import {
   getOperationsInProgress,
   leavingLosesTransaction,
   runBackgroundOperation,
+  runListedOperation,
   runOperation,
   tabBoundOperation,
 } from "../src/features/operations/operations"
@@ -288,6 +289,38 @@ describe("runBackgroundOperation", () => {
     store.release("op-step")
     await recoverInterrupted(10_000, 20_000)
     expect(store.get("op-step")).toMatchObject({ state: "failed", cause: "interrupted" })
+  })
+})
+
+describe("runListedOperation", () => {
+  it("lists the operation and keeps the tab, but raises no user flow, so a background step inside runs", async () => {
+    const store = getOperationStore()
+    const steps: boolean[] = []
+    await runListedOperation(
+      { operationId: "op-listed", flow: "migration", summary: "Upgrade" },
+      async () => {
+        expect(userFlowActive()).toBe(false)
+        expect(store.get("op-listed")).toMatchObject({ state: "local" })
+        expect(store.get("op-listed")?.background).toBeFalsy()
+        expect(leavingLosesTransaction()).toBe(true)
+        await runBackgroundOperation(
+          { operationId: "op-step", flow: "migration", summary: "Upgrade" },
+          async () => void steps.push(userFlowActive()),
+        )
+      },
+    )
+    expect(steps).toEqual([false])
+    expect(store.get("op-listed")?.state).toBe("settled")
+  })
+
+  it("removes the record of a flow that stopped before anything was proven", async () => {
+    const store = getOperationStore()
+    await expect(
+      runListedOperation({ operationId: "op-stop", flow: "migration", summary: "Upgrade" }, () =>
+        Promise.reject(new Error("stopped")),
+      ),
+    ).rejects.toThrow("stopped")
+    expect(store.get("op-stop")).toBeNull()
   })
 })
 

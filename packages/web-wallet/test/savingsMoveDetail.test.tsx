@@ -37,6 +37,10 @@ vi.mock("../src/config/env", () => ({
   getConfig: () => ({ network: "sandbox", nodeUrl: "http://node", l1ChainId: 31337 }),
 }))
 vi.mock("../src/features/operations/TabLine", () => ({ TabLine: () => null }))
+const sources = vi.hoisted(() => ({ list: [] as { savings: boolean }[] }))
+vi.mock("../src/features/migration/oldVersionWithdraw", () => ({
+  useWithdrawableSources: () => sources.list,
+}))
 import { SavingsMoveDetailModal } from "../src/features/savings/SavingsMoveDetailModal"
 import { SavingsMoveRow } from "../src/features/savings/SavingsMoveRow"
 
@@ -68,9 +72,61 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   host.remove()
+  sources.list = []
 })
 
 describe("SavingsMoveDetailModal", () => {
+  it.each([
+    ["no old Savings source", [], undefined],
+    ["an escrow that never ran", [{ savings: true }], undefined],
+    [
+      "a Main source for a move into Savings",
+      [{ savings: false }],
+      { inboxIndex: "1", amount: "1", claimed: false },
+    ],
+  ])(
+    "says an old version closed before the move finished, without Withdraw for %s",
+    (_, list, deposit) => {
+      sources.list = list
+      act(() =>
+        root.render(
+          <SavingsMoveDetailModal
+            move={move({ retired: true, deposit })}
+            burn={burn("done")}
+            onWithdraw={() => {}}
+            onClose={() => {}}
+          />,
+        ),
+      )
+      expect(host.textContent).toContain("Didn't finish")
+      expect(host.textContent).toContain("This version can't return them yet.")
+      expect([...host.querySelectorAll("button")].map((b) => b.textContent)).not.toContain(
+        "Withdraw",
+      )
+    },
+  )
+
+  it("offers Withdraw for a stranded move whose deposit reached an old Savings portal", () => {
+    sources.list = [{ savings: true }]
+    const onWithdraw = vi.fn()
+    const deposit = { inboxIndex: "1", amount: "1", claimed: false }
+    act(() =>
+      root.render(
+        <SavingsMoveDetailModal
+          move={move({ retired: true, deposit })}
+          burn={burn("done")}
+          onWithdraw={onWithdraw}
+          onClose={() => {}}
+        />,
+      ),
+    )
+    expect(host.textContent).toContain("Withdraw sends them to an Ethereum address.")
+    act(() =>
+      [...host.querySelectorAll("button")].find((b) => b.textContent === "Withdraw")!.click(),
+    )
+    expect(onWithdraw).toHaveBeenCalled()
+  })
+
   it("shows a recovered move as finished: where it went and the recovery tx, no wait and no check", () => {
     const onCheckAgain = vi.fn()
     act(() =>
@@ -185,39 +241,52 @@ describe("SavingsMoveDetailModal", () => {
 })
 
 describe("SavingsMoveDetailModal, failed", () => {
-  it("says why the burn failed: a drop by the network, or a local error, and when", () => {
-    const dropped = {
+  const reason = () => host.querySelector(".ww-status-reason > small")?.textContent
+
+  it("says why the burn failed under Failed: a reorg, another drop by the network, or a local error", () => {
+    const reorged = {
       ...burn("failed"),
       droppedBurn: true,
-      burnDroppedAt: 1_700_000_200_000,
       endTime: 1_700_000_260_000,
+      error: "Withdrawal transaction dropped in a reorg",
+    } as WithdrawalRecord
+    act(() =>
+      root.render(<SavingsMoveDetailModal move={move()} burn={reorged} onClose={() => {}} />),
+    )
+    expect(host.querySelector(".ww-status-reason b")?.textContent).toContain("Failed")
+    expect(reason()).toBe("Reverted by the network. Your funds are still in Main Account.")
+    expect(host.querySelectorAll(".ww-sheet__note")).toHaveLength(0)
+    expect(host.textContent).not.toContain("Check again")
+
+    const dropped = {
+      ...burn("failed"),
+      burnDroppedAt: 1_700_000_200_000,
       error: `Tx dropped by P2P node: 0x${"17".repeat(32)}\n    at sendTx (…)`,
     } as WithdrawalRecord
     act(() =>
       root.render(<SavingsMoveDetailModal move={move()} burn={dropped} onClose={() => {}} />),
     )
-    const note = [...host.querySelectorAll(".ww-sheet__note")].map((n) => n.textContent)
-    expect(
-      note.some((n) =>
-        /^Dropped by the network .*: Tx dropped by P2P node: 0x1717…1717$/.test(n ?? ""),
+    expect(reason()).toBe("Tx dropped by P2P node: 0x1717…1717")
+    act(() =>
+      root.render(
+        <SavingsMoveDetailModal
+          move={move()}
+          burn={{ ...dropped, error: undefined } as WithdrawalRecord}
+          onClose={() => {}}
+        />,
       ),
-    ).toBe(true)
-    expect(host.textContent).toContain("Failed")
-    expect(host.textContent).not.toContain("Check again")
+    )
+    expect(reason()).toBe("Dropped by the network.")
 
     const local = {
       ...burn("failed"),
       error: "Balance not enough",
     } as WithdrawalRecord
     act(() => root.render(<SavingsMoveDetailModal move={move()} burn={local} onClose={() => {}} />))
-    const notes = [...host.querySelectorAll(".ww-sheet__note")].map((n) => n.textContent)
-    expect(notes.some((n) => /^Failed .*: Balance not enough$/.test(n ?? ""))).toBe(true)
-    expect(host.textContent).not.toContain("Dropped")
+    expect(reason()).toBe("Balance not enough")
   })
 
   it("says nothing moved when the burn was never sent, naming the account the funds stayed in", () => {
-    const note = () =>
-      [...host.querySelectorAll(".ww-sheet__note")].map((n) => n.textContent).join("\n")
     const neverSent = {
       ...burn("failed"),
       l2TxHash: undefined,
@@ -228,8 +297,8 @@ describe("SavingsMoveDetailModal, failed", () => {
     act(() =>
       root.render(<SavingsMoveDetailModal move={move()} burn={neverSent} onClose={() => {}} />),
     )
-    expect(note()).toMatch(
-      /^Failed .*: This move didn't start, so nothing moved\. Your funds are still in Main Account\.$/m,
+    expect(reason()).toBe(
+      "This move didn't start, so nothing moved. Your funds are still in Main Account.",
     )
     expect(host.textContent).not.toContain("withdrawal")
     act(() =>
@@ -241,8 +310,8 @@ describe("SavingsMoveDetailModal, failed", () => {
         />,
       ),
     )
-    expect(note()).toMatch(
-      /^Failed .*: This move didn't start, so nothing moved\. Your funds are still in Savings\.$/m,
+    expect(reason()).toBe(
+      "This move didn't start, so nothing moved. Your funds are still in Savings.",
     )
 
     const takenOver = {
@@ -252,8 +321,8 @@ describe("SavingsMoveDetailModal, failed", () => {
     act(() =>
       root.render(<SavingsMoveDetailModal move={move()} burn={takenOver} onClose={() => {}} />),
     )
-    expect(note()).toMatch(
-      /^Failed .*: Another zk\.money tab took over before this move was sent, so nothing moved\. Your funds are still in Main Account\.$/m,
+    expect(reason()).toBe(
+      "Another zk.money tab took over before this move was sent, so nothing moved. Your funds are still in Main Account.",
     )
     act(() =>
       root.render(
@@ -264,8 +333,8 @@ describe("SavingsMoveDetailModal, failed", () => {
         />,
       ),
     )
-    expect(note()).toMatch(
-      /^Failed .*: Another zk\.money tab took over before this move was sent, so nothing moved\. Your funds are still in Savings\.$/m,
+    expect(reason()).toBe(
+      "Another zk.money tab took over before this move was sent, so nothing moved. Your funds are still in Savings.",
     )
     expect(host.textContent).not.toContain("revoked")
     // A burn without a hash but with no error at all reads the same: it never started.
@@ -278,7 +347,9 @@ describe("SavingsMoveDetailModal, failed", () => {
         />,
       ),
     )
-    expect(note()).toMatch(/^Failed .*: This move didn't start, so nothing moved\./m)
+    expect(reason()).toBe(
+      "This move didn't start, so nothing moved. Your funds are still in Main Account.",
+    )
   })
 })
 

@@ -5,6 +5,7 @@ import type { PaymentLink } from "../src/features/paylink/types"
 
 import { fireEvent } from "../src/lib/analytics"
 import { asOperation, endSigningAndHandOff } from "./support/handOff"
+import { LIMIT, LIMIT_USD } from "./support/publicLimit"
 
 vi.mock("../src/lib/analytics", () => ({ fireEvent: vi.fn(), failureCode: vi.fn() }))
 
@@ -55,8 +56,8 @@ vi.mock("../src/ui/screening", () => ({
 }))
 vi.mock("../src/features/deposit/l1Wallet", () => ({ useL1Wallet: () => ({}) }))
 vi.mock("../src/features/withdraw/WithdrawScreen", () => ({ useSavedL1Wallets: () => [] }))
-// A priced direct route: the withdrawal relayer tip plus the portal's cut, and no swap. `route` switches it
-// to the two states where the fee is missing — still being read, and reported as unreadable.
+// A priced direct route with no swap. `route` switches it to the two states where the fee is
+// missing — still being read, and reported as unreadable.
 const DIRECT_FEE = vi.hoisted(() => 350_000_000_000_000_000n)
 const route = vi.hoisted(() => ({ state: "ready" as "ready" | "pending" | "unavailable" }))
 const FEE_COPY = "The fee can't be read right now. Check your connection and try again."
@@ -72,8 +73,7 @@ vi.mock("../src/features/withdraw/withdrawQuote", async () => {
         ? {
             status: "ready",
             fee: {
-              withdrawalRelayerTip: 100_000_000_000_000_000n,
-              fpcFundingCut: 250_000_000_000_000_000n,
+              withdrawalRelayerTip: DIRECT_FEE,
               swapRelayerTip: 0n,
               proverTip,
               floorAtomic: DIRECT_FEE + proverTip,
@@ -452,20 +452,22 @@ describe("email external-wallet claim modal", () => {
 
 describe("external-wallet claim — the per-withdrawal limit", () => {
   // The burn spends the whole escrow, so the link's amount is the withdrawal the limit counts.
-  const REFUSAL =
-    "This link holds more than the $2,500 withdrawal limit, so it cannot be claimed to an Ethereum wallet."
-  const ONE_UNIT_OVER = "2500.000000000000000001"
+  const REFUSAL = `This link holds more than the ${LIMIT_USD} withdrawal limit, so it cannot be claimed to an Ethereum wallet.`
+  const ONE_UNIT_OVER = `${LIMIT}.000000000000000001`
   const notice = () => container.querySelector('[data-testid="limit-notice"]')?.textContent
 
-  it.each(["email", "direct"] as const)("claims a %s link of exactly $2,500", async (flavor) => {
-    link.flavor = flavor
-    link.amount = "2500"
-    await review()
-    expect(notice()).toBeUndefined()
-    if (flavor === "email") await click("Verify email with Google")
-    await click("Confirm and claim")
-    expect(m.confirm).toHaveBeenCalledTimes(1)
-  })
+  it.each(["email", "direct"] as const)(
+    `claims a %s link of exactly ${LIMIT_USD}`,
+    async (flavor) => {
+      link.flavor = flavor
+      link.amount = String(LIMIT)
+      await review()
+      expect(notice()).toBeUndefined()
+      if (flavor === "email") await click("Verify email with Google")
+      await click("Confirm and claim")
+      expect(m.confirm).toHaveBeenCalledTimes(1)
+    },
+  )
 
   it.each(["email", "direct"] as const)(
     "refuses a %s link one atomic unit over before review, email proof or burn",
@@ -483,7 +485,7 @@ describe("external-wallet claim — the per-withdrawal limit", () => {
 
   it("keeps the claim into zk.money on offer for a link over the limit", async () => {
     const claimInstead = vi.fn()
-    link.amount = "3000"
+    link.amount = String(LIMIT + 100)
     act(() =>
       root.render(
         <ClaimToL1Modal
@@ -521,7 +523,7 @@ describe("external-wallet claim — the per-withdrawal limit", () => {
 
   it("still screens the address of a link within the limit", async () => {
     m.screening.cleared = false
-    link.amount = "2500"
+    link.amount = String(LIMIT)
     await review()
     expect(container.textContent).toContain("Screening")
     expect(button("Claim").disabled).toBe(true)
@@ -529,7 +531,7 @@ describe("external-wallet claim — the per-withdrawal limit", () => {
 })
 
 describe("external-wallet claim — the direct route's fee", () => {
-  it("waits on the portal's cut rather than naming a figure it does not have", async () => {
+  it("waits on the fee rather than naming a figure it does not have", async () => {
     route.state = "pending"
     await review()
 
@@ -538,7 +540,7 @@ describe("external-wallet claim — the direct route's fee", () => {
     expect(container.textContent).not.toContain(FEE_COPY)
   })
 
-  it("says why there is no figure once the cut is reported unreadable", async () => {
+  it("says why there is no figure once the fee is reported unreadable", async () => {
     route.state = "unavailable"
     await review()
 

@@ -4,30 +4,36 @@
  * recipient before it was ever signed. The call names who takes the relayer tip the burn offered,
  * plus the deployment's withdrawal subsidy: the channel's `target`.
  *
- * The sdk owns the calldata (`buildWithdrawFinalizationCall`); this file supplies the browser
- * collaborators — the manifest-derived portal identity and executor, the pre-submit
- * already-released read, and the submission channel it shares with the deposit exits.
+ * The sdk owns the calldata (`buildWithdrawFinalizationCall`), from the burn's recovery events;
+ * this file supplies the browser collaborators — the portal domain and the record's executor, the
+ * pre-submit already-released read, and the submission channel it shares with the deposit exits. A
+ * paylink cash-out's burn is the link escrow's and carries no recovery data, so only a relayer
+ * releases it.
  *
  * Unlike the deposit exits this module exposes no `getConfig()`-shaped entry of its own: the node
  * and the TEE signer live in React context, so the call site hands them in — or hands in nothing,
  * which is what a locked or still-connecting wallet looks like from here.
  */
-import type { AztecNode } from "@aztec/aztec.js/node"
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { Wallet } from "@aztec-labs/aztec.js/wallet"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { createPublicClient, type Address, type Hex, type PublicClient } from "viem"
 import {
   buildWithdrawFinalizationCall,
   isWithdrawalSpent,
   WithdrawFinalizationError,
-  type TeeSigner,
-  type WithdrawalPortalContext,
+  type PortalDomain,
+  type RegisteredTeeSigner,
   type WithdrawFinalizationCall,
 } from "@obsidion/sdk"
 import {
+  isEscrowBurn,
   resolveWithdrawalWiring,
   withdrawalRecipients,
   type WithdrawalRecord,
   type WithdrawalStorage,
+  type WithdrawalWiring,
 } from "@obsidion/front-core"
 import { getConfig, l1Transport, type WebWalletConfig } from "../../config/env"
 import { getOxideTuple } from "../../config/oxideTuple"
@@ -39,6 +45,7 @@ import {
   type L1ExitStage,
 } from "../deposit/sipaRecovery"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
+import { portalDomain } from "../token/oxideToken"
 import { getWithdrawalStore } from "./withdrawGateway"
 
 /** Said whenever the withdrawal turns out to be released already, from either check. */
@@ -48,7 +55,11 @@ const ALREADY_RELEASED =
 /** The wallet the finalization needs, held in React context rather than reachable from a module. */
 export interface FinalizeWallet {
   node: AztecNode
-  signer: TeeSigner
+  signer: RegisteredTeeSigner
+  /** Reads the burn's recovery events. */
+  wallet: Pick<Wallet, "getPrivateEvents">
+  /** The account the burn spent from. */
+  owner: AztecAddress
 }
 
 /** The calldata builder, already bound to whatever chain access it needs. */
@@ -60,7 +71,8 @@ export type FinalizationBuilder = (
 export interface SelfFinalizeDeps {
   channel: L1ExitChannel
   build: FinalizationBuilder
-  portalContext: WithdrawalPortalContext
+  /** The L1 portal that releases the withdrawal. */
+  portal: Address
   l1: PublicClient
   store: Pick<WithdrawalStorage, "patch" | "get">
   /** Injectable for tests. */
@@ -71,9 +83,9 @@ export interface SelfFinalizeDeps {
 export function walletFinalizationBuilder(
   wallet: FinalizeWallet,
   ctx: {
-    portalContext: WithdrawalPortalContext
-    plainWithdrawalExecutor: Hex
-    withdrawalSubsidy?: Hex
+    portal: PortalDomain
+    /** The executor the burn's record names. */
+    executor: Hex
     l1: PublicClient
   },
 ): FinalizationBuilder {
@@ -81,12 +93,17 @@ export function walletFinalizationBuilder(
     buildWithdrawFinalizationCall(
       {
         node: wallet.node,
+        wallet: wallet.wallet,
         signer: wallet.signer,
-        portalContext: ctx.portalContext,
-        plainWithdrawalExecutor: ctx.plainWithdrawalExecutor,
+        portal: ctx.portal,
+        executor: ctx.executor,
         l1: ctx.l1,
       },
-      { burnTxHash, tipRecipient, withdrawalSubsidy: ctx.withdrawalSubsidy },
+      {
+        burnTxHash,
+        owner: wallet.owner,
+        tipRecipient,
+      },
     )
 }
 
@@ -106,10 +123,7 @@ export async function selfFinalizeWithdrawal(
     )
   }
   const isSpent = deps.isSpent ?? isWithdrawalSpent
-  if (
-    record.withdrawalId &&
-    (await isSpent(deps.l1, deps.portalContext.l1Portal, record.withdrawalId))
-  ) {
+  if (record.withdrawalId && (await isSpent(deps.l1, deps.portal, record.withdrawalId))) {
     throw new Error(ALREADY_RELEASED)
   }
 
@@ -123,7 +137,7 @@ export async function selfFinalizeWithdrawal(
   const hash = await deps.channel.sendTransaction(call.to, call.data)
   if (!(await deps.channel.waitForReceipt(hash))) {
     // A relayer that released it while this transaction was in flight is the likely revert.
-    if (await isSpent(deps.l1, deps.portalContext.l1Portal, call.withdrawalId).catch(() => false)) {
+    if (await isSpent(deps.l1, deps.portal, call.withdrawalId).catch(() => false)) {
       throw new Error(ALREADY_RELEASED)
     }
     throw new Error(
@@ -227,20 +241,22 @@ export async function selfFinalize(
 ): Promise<Hex> {
   const config = getConfig()
   const publicClient = createPublicClient({ transport: l1Transport(config) })
-  const wiring = resolveWithdrawalWiring(
-    opts.tuple ?? (await getOxideTuple(config)),
-    BigInt(config.l1ChainId),
-  )
+  const wiring =
+    recordWiring(record) ??
+    legacyWiring(record, resolveWithdrawalWiring(opts.tuple ?? (await getOxideTuple(config))))
   if (!wiring) {
     throw new Error("Finalizing by hand isn't available on this network.")
   }
-  const ctx = { portalContext: wiring.portalContext, l1: publicClient }
+  if (isEscrowBurn(record)) {
+    throw new Error("A relayer releases a link's withdrawal. Try again in a little while.")
+  }
+  const ctx = { portal: wiring.portal, l1: publicClient }
   const build =
     (await demoBuilder(wiring.portal)) ??
     walletFinalizationBuilder(needWallet(wallet), {
-      ...ctx,
-      plainWithdrawalExecutor: wiring.plainWithdrawalExecutor,
-      withdrawalSubsidy: wiring.withdrawalSubsidy,
+      portal: await portalDomain(wiring.portal),
+      executor: wiring.plainWithdrawalExecutor,
+      l1: publicClient,
     })
   const channel = await finalizeChannel({ config, record, publicClient, opts })
 
@@ -250,6 +266,34 @@ export async function selfFinalize(
     ...ctx,
     store: getWithdrawalStore(),
   })
+}
+
+/** The deployment and executor the record's burn paid, which release it whatever the bridge lists now. */
+function recordWiring(record: WithdrawalRecord): WithdrawalWiring | null {
+  const deployment = record.deployment
+  if (!deployment?.executor) return null
+  return {
+    portal: deployment.portal,
+    l2Token: deployment.l2Token,
+    plainWithdrawalExecutor: deployment.executor,
+  }
+}
+
+/**
+ * A record from before executor stamps paid the executor its bridge listed. Only `listed`'s portal can
+ * release it, so a burn on another deployment is refused before the enclave signs.
+ */
+function legacyWiring(
+  record: WithdrawalRecord,
+  listed: WithdrawalWiring | null,
+): WithdrawalWiring | null {
+  const portal = record.deployment?.portal
+  if (listed && portal && portal.toLowerCase() !== listed.portal.toLowerCase()) {
+    throw new Error(
+      "This withdrawal was made on an earlier deployment, so it can't be finalized by hand here.",
+    )
+  }
+  return listed
 }
 
 function needWallet(wallet: FinalizeWallet | null): FinalizeWallet {

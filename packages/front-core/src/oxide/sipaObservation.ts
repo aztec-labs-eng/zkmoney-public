@@ -8,6 +8,7 @@ import type { Address, Hex, PublicClient } from "viem"
 import {
   readPortalDeposits,
   readSipaBalancesMany,
+  readSweepEmitters,
   readTokenTransfers,
   type PortalDeposit,
   type TokenTransfer,
@@ -23,16 +24,24 @@ export interface SipaSubject {
   fromBlock: bigint
   /** Whether to read what funded it. */
   inflows: boolean
+  /**
+   * A direct deposit's record, not a SIPA: `address` holds nothing on L1, and its commitment alone
+   * names its deposits.
+   */
+  direct?: boolean
 }
 
 /** A sweep of one SIPA, with its claim inputs. */
 export interface ObservedSweep {
+  /** The portal whose `Deposit` the sweep made: it names the row the sweep settled on. */
+  portal: Address
   index: bigint
   /** The amount credited on L2. */
   amount: bigint
   /** The L1→L2 message hash. */
   messageKey: Hex
   blockNumber: bigint
+  blockHash: Hex
   txHash: Hex
 }
 
@@ -49,7 +58,7 @@ export interface SipaObserved {
 }
 
 /**
- * Observes `subjects` through `head`. Subjects that share a commitment are read from the earliest of
+ * Observes `subjects` through `head`, on every one of `portals`. Subjects that share a commitment are read from the earliest of
  * their starts, so a deposit to that commitment always meets the outflow that names its SIPA. Each
  * window is read on its own: a subject whose window failed is missing from the result, and the rest
  * are observed.
@@ -57,7 +66,7 @@ export interface SipaObserved {
 export async function observeSipas(
   publicClient: PublicClient,
   params: {
-    portal: Address
+    portals: readonly Address[]
     tokens: readonly Address[]
     subjects: readonly SipaSubject[]
     head: bigint
@@ -67,7 +76,7 @@ export async function observeSipas(
   /** Deposits to a tracked commitment that no tracked SIPA sent: their SIPAs are not tracked yet. */
   strays: PortalDeposit[]
 }> {
-  const { portal, tokens, head } = params
+  const { portals, tokens, head } = params
   const subjects = dedupe(params.subjects)
   const startOf = new Map<string, bigint>()
   for (const s of subjects) {
@@ -84,11 +93,11 @@ export async function observeSipas(
   const [settled, balances] = await Promise.all([
     Promise.allSettled(
       [...windows].map(async ([from, group]) => {
-        const addresses = group.map((s) => s.address)
+        const addresses = group.filter((s) => !s.direct).map((s) => s.address)
         const [deposits, outflows, inflows] = await Promise.all([
           readPortalDeposits(
             publicClient,
-            portal,
+            portals,
             group.map((s) => s.commitment),
             from,
             head,
@@ -98,7 +107,7 @@ export async function observeSipas(
             publicClient,
             tokens,
             "to",
-            group.filter((s) => s.inflows).map((s) => s.address),
+            group.filter((s) => s.inflows && !s.direct).map((s) => s.address),
             from,
             head,
           ),
@@ -108,7 +117,7 @@ export async function observeSipas(
     ),
     readSipaBalancesMany(
       publicClient,
-      subjects.map((s) => s.address),
+      subjects.filter((s) => !s.direct).map((s) => s.address),
       tokens,
     ).catch((err: unknown) => {
       logger.warn("[sipaObservation] holdings read failed:", err)
@@ -129,7 +138,8 @@ export async function observeSipas(
       outflows: [],
       recoveries: [],
       ...(s.inflows ? { inflows: [] } : {}),
-      balances: balances?.get(key),
+      // A direct deposit's key holds nothing, so it is never read.
+      balances: s.direct ? new Map() : balances?.get(key),
     })
   }
   const deposits = new Map<string, PortalDeposit>()
@@ -146,20 +156,46 @@ export async function observeSipas(
     byCommitment.set(key, [...(byCommitment.get(key) ?? []), s])
   }
   const strays: PortalDeposit[] = []
+  // Senders in a transaction whose Sweep logs could not be read: unobserved this pass.
+  const unread = new Set<string>()
+  // One sender swept the deposit. Several in one transaction are told apart by the Sweep log each
+  // emits: the deposit is the sender that emitted one (any contract can emit the log, so an emitter
+  // that is no sender proves nothing), a stray when no sender did, and left for the next pass, with
+  // its senders unobserved, when the receipt cannot be read.
   for (const deposit of [...deposits.values()].sort(byPosition)) {
-    const owner = ownerOf(deposit, byCommitment.get(deposit.recipientCommitment) ?? [], out)
+    const senders = sendersOf(deposit, byCommitment.get(deposit.recipientCommitment) ?? [], out)
+    let owner: string | undefined = senders[0]
+    if (senders.length > 1) {
+      const emitters = await readSweepEmitters(publicClient, deposit.txHash, deposit.index).catch(
+        (err: unknown) => {
+          logger.warn(
+            `[sipaObservation] could not read which SIPA swept deposit ${deposit.index}:`,
+            err,
+          )
+          return null
+        },
+      )
+      if (emitters === null) {
+        for (const key of senders) unread.add(key)
+        continue
+      }
+      owner = senders.find((key) => emitters.some((emitter) => emitter.toLowerCase() === key))
+    }
     if (!owner) {
       strays.push(deposit)
       continue
     }
     out.get(owner)!.sweeps.push({
+      portal: deposit.portal,
       index: deposit.index,
       amount: deposit.amount,
       messageKey: deposit.key,
       blockNumber: deposit.blockNumber,
+      blockHash: deposit.blockHash,
       txHash: deposit.txHash,
     })
   }
+  for (const key of unread) out.delete(key)
   for (const observed of out.values()) {
     const swept = new Set(observed.sweeps.map((s) => s.txHash.toLowerCase()))
     observed.recoveries = observed.outflows.filter((flow) => !swept.has(flow.txHash.toLowerCase()))
@@ -168,19 +204,22 @@ export async function observeSipas(
 }
 
 /**
- * The tracked SIPA a deposit swept: the one with that commitment that sent tokens in the deposit's
- * transaction, as every sweep does. Commitment alone is not enough: addresses that share a salt,
- * such as one name's registrations at two fees, share it.
+ * The tracked SIPAs with the deposit's commitment that sent tokens in its transaction, as every
+ * sweep does. Commitment alone is not enough: addresses that share a salt, such as one name's
+ * registrations at two fees, share it.
+ * A direct deposit has no SIPA, and its commitment alone names its record.
  */
-function ownerOf(
+function sendersOf(
   deposit: PortalDeposit,
   candidates: readonly SipaSubject[],
   observed: Map<string, SipaObserved>,
-): string | undefined {
+): string[] {
+  const direct = candidates.find((s) => s.direct)
+  if (direct) return [direct.address.toLowerCase()]
   const tx = deposit.txHash.toLowerCase()
   return candidates
     .map((s) => s.address.toLowerCase())
-    .find((key) => observed.get(key)?.outflows.some((flow) => flow.txHash.toLowerCase() === tx))
+    .filter((key) => observed.get(key)?.outflows.some((flow) => flow.txHash.toLowerCase() === tx))
 }
 
 function dedupe(subjects: readonly SipaSubject[]): SipaSubject[] {

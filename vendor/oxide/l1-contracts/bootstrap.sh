@@ -15,7 +15,7 @@ deps() {
 }
 
 ensure_deps() {
-  if [ ! -f node_modules/@aztec/l1-artifacts/package.json ] ||
+  if [ ! -f node_modules/@aztec-foundation/l1-artifacts/package.json ] ||
      [ ! -f .deps/nitro-validator/src/NitroValidator.sol ] ||
      [ ! -f .deps/solidity-lib/contracts/libs/crypto/ECDSA384.sol ]; then
     deps
@@ -31,9 +31,9 @@ build() {
 generate() {
   ensure_deps
   require_aztec_toolchain aztec-bb
-  [ -d "$ROOT/yarn-project/node_modules/@aztec/foundation" ] ||
+  [ -d "$ROOT/yarn-project/node_modules/@aztec-labs/foundation" ] ||
     (cd "$ROOT/yarn-project" && corepack yarn install --immutable)
-  node "$ROOT/yarn-project/oxide-lib/scripts/gen_constants.mjs"
+  node "$ROOT/yarn-project/oxide-lib-tee/scripts/gen_constants.mjs"
 
   # Current deployment tooling reproduces the committed refund verifiers under
   # dist/refund_verifiers and checks their bytes without changing tracked sources.

@@ -1,5 +1,5 @@
-import { BlockNumber, CheckpointNumber, EpochNumber } from '@aztec/foundation/branded-types';
-import { TxHash } from '@aztec/stdlib/tx';
+import { BlockNumber, CheckpointNumber, EpochNumber } from '@aztec-labs/foundation/branded-types';
+import { TxHash } from '@aztec-labs/stdlib/tx';
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 

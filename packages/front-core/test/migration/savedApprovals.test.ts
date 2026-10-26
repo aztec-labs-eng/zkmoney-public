@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest"
-import { ApprovalNeededError } from "@obsidion/sdk"
+import { ApprovalNeededError, ApprovalSavedError } from "@obsidion/sdk"
 import {
   ApprovalGate,
+  approvalsPrefix,
   savedChallengeSigner,
   webAuthnAssertionCodec,
 } from "../../src/core/migration/savedApprovals"
@@ -50,6 +51,31 @@ describe("saved approvals", () => {
     await savedChallengeSigner(sign, storage, "run-a")("0xbb")
     await savedChallengeSigner(sign, storage, "run-b")("0xaa")
     expect(sign).toHaveBeenCalledTimes(3)
+  })
+
+  it("keeps one run's approvals apart by the passkey that signs them", async () => {
+    const storage = memory()
+    const sign = vi.fn(async (_challenge: `0x${string}`) => ({ signature: "0x01" }))
+    const alice = { qx: "0xAB", qy: "0xCD" }
+    const bob = { qx: "0xab", qy: "0xef" }
+    expect(approvalsPrefix("run", alice)).toBe(approvalsPrefix("run", { qx: "0xab", qy: "0xcd" }))
+    expect(approvalsPrefix("run")).toBe("run/approvals")
+    await savedChallengeSigner(sign, storage, approvalsPrefix("run", alice))("0xaa")
+    await savedChallengeSigner(sign, storage, approvalsPrefix("run", bob))("0xaa")
+    await savedChallengeSigner(sign, storage, approvalsPrefix("run", alice))("0xaa")
+    expect(sign).toHaveBeenCalledTimes(2)
+  })
+
+  it("stops an approval pass's build once the approval is saved, new or not", async () => {
+    const storage = memory()
+    const gate = new ApprovalGate()
+    const sign = vi.fn(async (_challenge: `0x${string}`) => ({ signature: "0x01" }))
+    const saved = savedChallengeSigner(sign, storage, "run", undefined, gate)
+
+    await expect(gate.approvalPass(() => saved("0xaa"))).rejects.toThrow(ApprovalSavedError)
+    await expect(gate.approvalPass(() => saved("0xaa"))).rejects.toThrow(ApprovalSavedError)
+    expect(await saved("0xaa")).toEqual({ signature: "0x01" })
+    expect(sign).toHaveBeenCalledOnce()
   })
 
   it("asks no one once its run is cancelled, but still returns a saved approval", async () => {

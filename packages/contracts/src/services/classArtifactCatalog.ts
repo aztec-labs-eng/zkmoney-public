@@ -1,11 +1,11 @@
-import { jsonParseWithSchema } from "@aztec/foundation/json-rpc"
+import { jsonParseWithSchema } from "@aztec-labs/foundation/json-rpc"
 import {
   ContractArtifactSchema,
   loadContractArtifact,
   type ContractArtifact,
-} from "@aztec/stdlib/abi"
-import type { NoirCompiledContract } from "@aztec/stdlib/noir"
-import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
+} from "@aztec-labs/stdlib/abi"
+import type { NoirCompiledContract } from "@aztec-labs/stdlib/noir"
+import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
 
 export interface ClassArtifactPin {
   url: string
@@ -72,10 +72,10 @@ export function createClassArtifactResolver(
 export async function resolveInstanceArtifact(
   node: {
     getContract(
-      address: import("@aztec/stdlib/aztec-address").AztecAddress,
+      address: import("@aztec-labs/stdlib/aztec-address").AztecAddress,
     ): Promise<{ currentContractClassId: { toString(): string } } | undefined>
   },
-  address: import("@aztec/stdlib/aztec-address").AztecAddress,
+  address: import("@aztec-labs/stdlib/aztec-address").AztecAddress,
   fallback: () => Promise<ContractArtifact>,
   resolve?: (classId: string) => Promise<ContractArtifact>,
 ): Promise<ContractArtifact> {

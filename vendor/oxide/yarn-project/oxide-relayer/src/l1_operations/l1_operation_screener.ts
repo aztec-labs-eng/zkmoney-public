@@ -1,4 +1,4 @@
-import { EthAddress } from '@aztec/aztec.js/addresses';
+import { EthAddress } from '@aztec-labs/aztec.js/addresses';
 
 import { addressKey } from '@oxide/watcher-lib/address-key';
 import type { SanctionsList } from '@oxide/watcher-lib/sanctions';

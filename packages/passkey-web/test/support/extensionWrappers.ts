@@ -47,6 +47,14 @@ export const LASTPASS_CREATE =
 export const PROTON_PASS_CREATE =
   'e=>h(async(t,r)=>{var n;if(!(null==e?void 0:e.publicKey)||!N.getState().connected)return t(u(e));if(null==(n=e.signal)?void 0:n.aborted)return r(new c(e.signal.reason,"AbortError"));let o=await N.sendMessage({type:d.PASSKEY_CREATE,payload:{request:JSON.stringify(l(e.publicKey))}},{timeout:e.publicKey.timeout,signal:e.signal});if("error"===o.type)return P({data:o,onReject:r,onFallback:()=>t(u(e))});if(!o.intercept)return T.debug("[WebAuthn] Intercept cancelled for `create`"),t(u(e));let i=(e=>{let{response:t}=e;return Object.setPrototypeOf({attestationObject:new a(t.attestation_object).buffer,clientDataJSON:new a(t.client_data_json).buffer,getAuthenticatorData:()=>new a(t.authenticator_data).buffer,getPublicKey:()=>t.public_key?new a(t.public_key).buffer:null,getPublicKeyAlgorithm:()=>t.public_key_algorithm,getTransports:()=>(null==t?void 0:t.transports)??[]},AuthenticatorAttestationResponse.prototype)})(o.response.credential);return t(C(_(o.response.credential,i,C)))})'
 
+/**
+ * Proton Pass 1.42.0's `get`, read from the page script (`webauthn.js`) in the package the Chrome
+ * Web Store served on 2026-10-24. Chromium assigns the arrow itself, so `toString` prints this text;
+ * the same build's `create` is the capture above.
+ */
+export const PROTON_PASS_GET =
+  'e=>h(async(t,r)=>{var n;let o;if(!(null==e?void 0:e.publicKey)||!N.getState().connected)return t(E(e));if(null==(n=e.signal)?void 0:n.aborted)return r(new c(e.signal.reason,"AbortError"));let i=await N.sendMessage({type:d.PASSKEY_GET,payload:{request:JSON.stringify(l(e.publicKey))}},{timeout:e.publicKey.timeout,signal:e.signal});if("error"===i.type)return P({data:i,onReject:r,onFallback:()=>t(E(e))});if(!i.intercept)return T.debug("[WebAuthn] Intercept cancelled for `get`"),t(E(e));let s=Object.setPrototypeOf({clientDataJSON:new a((o=i.response.credential).response.client_data_json).buffer,authenticatorData:new a(o.response.authenticator_data).buffer,signature:new a(o.response.signature).buffer,userHandle:o.response.user_handle?new a(o.response.user_handle).buffer:null},AuthenticatorAssertionResponse.prototype);t(C(_(i.response.credential,s,C)))})'
+
 /** Real natives with the methods' own names: they print as `function create() { [native code] }`. */
 export const NATIVE_CREATE: unknown = Object.create
 export const NATIVE_GET: unknown = Reflect.get

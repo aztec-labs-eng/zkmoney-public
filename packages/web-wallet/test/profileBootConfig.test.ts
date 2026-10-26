@@ -122,6 +122,31 @@ describe("profile mode", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
+  it("warns and boots when a historical migration profile is unavailable", async () => {
+    const profile = sandboxProfile() as Record<string, any>
+    const historicalUrl = "https://config.example/profiles/v5/0.0.1.json"
+    profile.shared.previousGenerationProfile = historicalUrl
+    const fetchImpl = vi.fn(async (request: string | URL | Request) => {
+      const url =
+        typeof request === "string"
+          ? request
+          : request instanceof URL
+          ? request.toString()
+          : request.url
+      return url === PROFILE_URL
+        ? { ok: true, status: 200, json: async () => profile }
+        : { ok: false, status: 404, json: async () => ({}) }
+    }) as unknown as typeof fetch
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
+
+    const result = await boot(PROFILE_ENV, fetchImpl)
+
+    expect(result.config.nodeUrl).toBe("http://profile-node.test")
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(`migration source unavailable at ${historicalUrl} (NOT_FOUND:`),
+    )
+  })
+
   it("exposes the version's assets, and none where the document lists none", async () => {
     expect((await boot(PROFILE_ENV, serve(sandboxProfile()))).config.assets).toEqual([])
     const profile = sandboxProfile()
@@ -738,7 +763,12 @@ describe("endpoint overrides", () => {
     expect(config.nodeUrl).toBe("http://profile-node.test")
     expect(config.l1RpcUrl).toBe("http://profile-l1.test")
     expect(config.enclaveUrl).toBe("/svc/enclave")
-    expect(config.endpoints).toEqual({ node: DEFAULT, l1Rpc: DEFAULT, enclave: DEFAULT })
+    expect(config.endpoints).toEqual({
+      node: DEFAULT,
+      sourceNode: DEFAULT,
+      l1Rpc: DEFAULT,
+      enclave: DEFAULT,
+    })
     expect(config.nodeApiKey).toBe("gateway-key")
     expect(config.nodeEndpointDigest).toBeUndefined()
   })
@@ -794,7 +824,12 @@ describe("endpoint overrides", () => {
     expect(config.nodeUrl).toBe("https://n.example")
     expect(config.l1RpcUrl).toBe("https://l1.example")
     expect(config.enclaveUrl).toBe("https://e.example")
-    expect(config.endpoints).toEqual({ node: CUSTOM, l1Rpc: CUSTOM, enclave: CUSTOM })
+    expect(config.endpoints).toEqual({
+      node: CUSTOM,
+      sourceNode: DEFAULT,
+      l1Rpc: CUSTOM,
+      enclave: CUSTOM,
+    })
     expect(config.nodeApiKey).toBeUndefined()
     expect(config.nodeEndpointDigest).toBe(digestOf("https://n.example"))
   })
@@ -913,6 +948,44 @@ describe("endpoint overrides", () => {
     expect(config.nodeUrl).toBe("http://profile-node.test")
     expect(config.l1RpcUrl).toBe("http://profile-l1.test")
     expect(config.enclaveUrl).toBe("/svc/enclave")
+  })
+})
+
+describe("the v5 archive node", () => {
+  /** The live version plus a retired one on another node: the rollup a cutover left. */
+  function withRetiredRollup() {
+    const profile = sandboxProfile()
+    profile.versions["0.0.2"] = { ...profile.versions["0.0.1"] }
+    profile.versions["0.0.1"].nodeUrl = "http://retired-node.test"
+    profile.current = "0.0.2"
+    return profile
+  }
+
+  it("reads the retired rollup through the archive node the build names", async () => {
+    const { config } = await boot(
+      {
+        ...PROFILE_ENV,
+        VITE_NODE_API_KEY: "active-key",
+        VITE_V5_ARCHIVE_NODE_URL: "https://archive.example",
+        VITE_V5_ARCHIVE_NODE_API_KEY: "archive-key",
+      },
+      serve(withRetiredRollup()),
+    )
+    expect(config.nodeUrl).toBe("http://profile-node.test")
+    expect(config.nodeApiKey).toBe("active-key")
+    expect(config.sourceRollupApiKey).toBe("archive-key")
+    expect(config.sourceRollups?.map((rollup) => rollup.nodeUrl)).toEqual([
+      "https://archive.example",
+    ])
+    expect(config.sourceRollupNodes?.get(PORTAL.toLowerCase())).toBe("https://archive.example")
+  })
+
+  it("keeps the retired rollup's own node when the build names none", async () => {
+    const { config } = await boot(PROFILE_ENV, serve(withRetiredRollup()))
+    expect(config.sourceRollups?.map((rollup) => rollup.nodeUrl)).toEqual([
+      "http://retired-node.test",
+    ])
+    expect(config.sourceRollupNodes?.get(PORTAL.toLowerCase())).toBe("http://retired-node.test")
   })
 })
 

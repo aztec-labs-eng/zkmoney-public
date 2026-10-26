@@ -14,16 +14,16 @@ const h = vi.hoisted(() => ({
   backends: [] as unknown[],
 }))
 
-vi.mock("@aztec/noir-acvm_js/web/acvm_js.js", () => ({
+vi.mock("@aztec-foundation/noir-acvm_js/web/acvm_js.js", () => ({
   default: h.initACVM,
   compressWitness: () => new Uint8Array([1]),
   executeCircuit: async () => new Map(),
 }))
-vi.mock("@aztec/noir-noirc_abi/web/noirc_abi_wasm.js", () => ({
+vi.mock("@aztec-foundation/noir-noirc_abi/web/noirc_abi_wasm.js", () => ({
   default: h.initABI,
   abiEncode: () => new Map(),
 }))
-vi.mock("@aztec/bb.js", () => ({
+vi.mock("@aztec-foundation/bb.js", () => ({
   Barretenberg: { initSingleton: h.initSingleton, new: h.newInstance },
   UltraHonkBackend: class {
     constructor(_bytecode: string, api: unknown) {

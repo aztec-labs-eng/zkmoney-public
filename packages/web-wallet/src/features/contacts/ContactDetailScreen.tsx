@@ -72,6 +72,8 @@ import { declineRequestById, resolveXmtpAddress } from "./requestActions"
 import { REMIND_TITLE, useRemind } from "./useRemind"
 import { announceOutgoingRequest, newOutgoingRequest } from "./requestFlow"
 import { RequestDetailModal } from "./RequestDetailModal"
+import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
+import { useRecipientUpgraded } from "./useRecipientUpgraded"
 import { lookUpUnsavedContact, saveUnsavedContact } from "./unsavedContact"
 
 /** Contact detail: identity header, delete, the payments chat — the chronological R15 record
@@ -317,8 +319,18 @@ export function ContactDetailScreen() {
 
   // Compose: persist the outgoing row (the chat subscription renders the "Owes you" bubble
   // immediately), then announce over XMTP in the background — delivery is best-effort.
+  // A person still on an older zk.money keeps their history here but can't be paid or asked. A
+  // request waits for the answer, and a form opened before it closes.
+  const upgraded = useRecipientUpgraded(
+    entry?.addressKind === "ethereum-l1" ? undefined : entry?.tag,
+  )
+  const notUpgraded = upgraded === false
+  useEffect(() => {
+    if (notUpgraded) setRequestDraft(undefined)
+  }, [notUpgraded])
+
   const submitRequest = async () => {
-    if (!entry?.tag || !requestDraft || submitting) return
+    if (!entry?.tag || !requestDraft || submitting || upgraded !== true) return
     setSubmitting(true)
     try {
       const config = getConfig()
@@ -400,11 +412,15 @@ export function ContactDetailScreen() {
   // Open-request buttons: incoming → Decline / Send, outgoing → Cancel / Remind. Cancel runs
   // through the detail modal's confirm step.
   const requestActions = (m: ChatMessage) => {
-    if (m.role === "request-in")
-      return [
-        { label: "Decline", onClick: () => void declineRequestById(m.id).catch(console.warn) },
-        { label: "Send", onClick: () => void payRequest(m).catch(console.warn) },
-      ]
+    if (m.role === "request-in") {
+      const decline = {
+        label: "Decline",
+        onClick: () => void declineRequestById(m.id).catch(console.warn),
+        secondary: true,
+      }
+      if (notUpgraded) return [decline]
+      return [decline, { label: "Send", onClick: () => void payRequest(m).catch(console.warn) }]
+    }
     if (m.role === "request-out") {
       const state = remindStateOf(m.id, sources.requests?.find((r) => r.id === m.id)?.remindedAt)
       return [
@@ -453,10 +469,11 @@ export function ContactDetailScreen() {
   const avatarName = isL1 ? header.title : l2ContactLabel(entry) ?? handle
   const renamable = saved && (isL1 || Boolean(entry.tag))
   const ownHandle = loadWalletIdentity()?.handle ?? "me"
-  // Payment rails need a completed handshake (payable L2 address) and a registered tag to
-  // resolve against. L1 contacts are the bridge counterparty — Deposit + Withdraw only.
+  // Payment rails need a completed handshake (payable L2 address) and a tag registered on the
+  // current zk.money. L1 contacts are the bridge counterparty — Deposit + Withdraw only.
   const selected = selectedContactOf(entry)
-  const payable = selected.addressKind === "aztec-l2" && Boolean(selected.address && entry.tag)
+  const payable =
+    !notUpgraded && selected.addressKind === "aztec-l2" && Boolean(selected.address && entry.tag)
   const parsedAmount = parseAmount(requestDraft?.amount ?? "")
   const validRequestAmount = Number.isFinite(parsedAmount) && parsedAmount > 0
   const inlineCard = confirmingDelete || renaming || !!requestDraft
@@ -510,14 +527,16 @@ export function ContactDetailScreen() {
       {!saved && (
         <div className="ww-chat__unsaved">
           <span>Not in your contacts</span>
-          <button
-            type="button"
-            className="zkm-btn-reset zkm-pressable ww-chat__unsaved-add"
-            disabled={adding}
-            onClick={() => void addToContacts()}
-          >
-            {adding ? "Adding…" : "Add contact"}
-          </button>
+          {!notUpgraded && (
+            <button
+              type="button"
+              className="zkm-btn-reset zkm-pressable ww-chat__unsaved-add"
+              disabled={adding}
+              onClick={() => void addToContacts()}
+            >
+              {adding ? "Adding…" : "Add contact"}
+            </button>
+          )}
         </div>
       )}
       {addError && (
@@ -565,6 +584,13 @@ export function ContactDetailScreen() {
       )}
 
       <div className="ww-chat__foot" ref={chatFooter}>
+        {notUpgraded && !inlineCard && (
+          <div role="status" className="ww-chat__not-upgraded">
+            <strong>{recipientNotUpgradedCopy.title(handle)}</strong>
+            <span>{recipientNotUpgradedCopy.chatHint}</span>
+          </div>
+        )}
+
         {isL1 && !inlineCard && (
           <>
             <button
@@ -696,7 +722,7 @@ export function ContactDetailScreen() {
               <PrimaryGradientButton
                 title={submitting ? "Requesting…" : "Request"}
                 style={{ flex: 1 }}
-                isDisabled={!validRequestAmount || submitting}
+                isDisabled={!validRequestAmount || submitting || upgraded !== true}
                 onClick={() => void submitRequest()}
               />
             </div>

@@ -5,7 +5,7 @@
  */
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { AUTH_TYPE } from "@obsidion/sdk"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -97,7 +97,7 @@ describe("useAuthenticator and the cached key", () => {
   })
 
   it("with the wallet mounted, the first key read restores from the cache with no ceremony", async () => {
-    const deriveAccountAddress = vi.fn(async (candidate: Fr, pubkeyHex: string) => ({
+    const deriveAccountAddress = vi.fn(async (candidate: Fr, [pubkeyHex]: readonly string[]) => ({
       toString: () =>
         candidate.toString() === msk.toString() && pubkeyHex === PUBKEY ? ADDR : "0xother",
     }))
@@ -107,7 +107,7 @@ describe("useAuthenticator and the cached key", () => {
     expect(getAuthService().isUnlocked()).toBe(true)
     expect(readCachedMsk()).not.toBeNull()
     // The cached key is proved under the record's signing key.
-    expect(deriveAccountAddress).toHaveBeenCalledWith(msk, PUBKEY)
+    expect(deriveAccountAddress).toHaveBeenCalledWith(msk, [PUBKEY])
   })
 
   it("a wallet deriving another address drops the cache and stays locked", async () => {
@@ -119,12 +119,34 @@ describe("useAuthenticator and the cached key", () => {
 
   it("an address that exists only under another signing key drops the cache", async () => {
     h.wallet = {
-      deriveAccountAddress: async (_candidate: Fr, pubkeyHex: string) => ({
+      deriveAccountAddress: async (_candidate: Fr, [pubkeyHex]: readonly string[]) => ({
         toString: () => (pubkeyHex === "ff".repeat(64) ? ADDR : "0xother"),
       }),
     }
     await render()
     expect(await getAuthService().getSecretKey()).toBeUndefined()
     expect(readCachedMsk()).toBeNull()
+  })
+
+  it("a record with a key set proves the cached key under that set", async () => {
+    const passkeys = ["cd".repeat(64), PUBKEY]
+    await new WebPasskeyIdentityMap(webStorage, "localhost").upsert({
+      credentialId: CRED,
+      l2Address: ADDR,
+      pubkey: PUBKEY,
+      prfSlot: "first",
+      isMskRoot: true,
+      passkeySet: passkeys,
+    })
+    const deriveAccountAddress = vi.fn(async (candidate: Fr, keys: readonly string[]) => ({
+      toString: () =>
+        candidate.toString() === msk.toString() && keys.join() === passkeys.join()
+          ? ADDR
+          : "0xother",
+    }))
+    h.wallet = { deriveAccountAddress }
+    await render()
+    expect((await getAuthService().getSecretKey())?.toString()).toBe(msk.toString())
+    expect(deriveAccountAddress).toHaveBeenCalledWith(msk, passkeys)
   })
 })

@@ -17,10 +17,8 @@ const { UpgradeBatchDetailModal } = await import("../src/ui/screens/UpgradeBatch
 const batch: UpgradeBatchItem = {
   run: "run",
   id: "remaining-0",
-  first: false,
   recipient: `0x${"5a".repeat(20)}`,
   amount: (10n * 10n ** 18n).toString(),
-  exitFee: (10n ** 17n).toString(),
   state: "refunded",
   approved: true,
   tx: `0x${"b0".repeat(32)}`,
@@ -28,7 +26,7 @@ const batch: UpgradeBatchItem = {
 }
 
 describe("upgrade batch details", () => {
-  it("shows the refund's state, its tip, where it went and the send that carried it", async () => {
+  it("shows the refund's state and the send that carried it, with no tip and no deposit address", async () => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
     const container = document.createElement("div")
     document.body.appendChild(container)
@@ -37,8 +35,8 @@ describe("upgrade batch details", () => {
     const text = document.body.textContent ?? ""
     expect(text).toContain("$10")
     expect(text).toContain("Releasing")
-    expect(text).toContain("Relayer tip$0.10")
-    expect(text).toContain("Paid to")
+    expect(text).not.toContain("Relayer tip")
+    expect(text).not.toContain("Paid to")
     expect(text).toContain("Sent in")
     await act(async () => root.unmount())
     container.remove()

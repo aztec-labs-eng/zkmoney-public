@@ -1,6 +1,6 @@
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { FunctionCall, FunctionSelector, FunctionType } from "@aztec/stdlib/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { FunctionCall, FunctionSelector, FunctionType } from "@aztec-labs/stdlib/abi"
 import { describe, expect, it } from "vitest"
 import type { ContractService } from "@obsidion/contracts"
 
@@ -69,7 +69,6 @@ function call(to: Fr, selector: Fr, type = FunctionType.PRIVATE): FunctionCall {
     isStatic: false,
     hideMsgSender: false,
     args: [],
-    returnTypes: [],
   })
 }
 

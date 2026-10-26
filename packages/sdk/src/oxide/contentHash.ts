@@ -1,5 +1,5 @@
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { computeRecipientCommitment } from "@oxide/oxide-lib/recipient_commitment.js"
 import type { Hex } from "viem"
 

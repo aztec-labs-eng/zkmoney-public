@@ -1,26 +1,29 @@
-import { Fr } from '@aztec/aztec.js/fields';
-import { MAX_L2_TO_L1_MSGS_PER_TX, MAX_NOTE_HASHES_PER_TX, MAX_NULLIFIERS_PER_TX } from '@aztec/constants';
-import { Buffer32 } from '@aztec/foundation/buffer';
-import { poseidon2Hash } from '@aztec/foundation/crypto/poseidon';
-import { sha256 } from '@aztec/foundation/crypto/sha256';
-import type { EthAddress } from '@aztec/foundation/eth-address';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
-import { BlockHash } from '@aztec/stdlib/block';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { MAX_L2_TO_L1_MSGS_PER_TX, MAX_NOTE_HASHES_PER_TX, MAX_NULLIFIERS_PER_TX } from '@aztec-labs/constants';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
+import { poseidon2Hash } from '@aztec-labs/foundation/crypto/poseidon';
+import { sha256 } from '@aztec-labs/foundation/crypto/sha256';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
+import { BlockHash } from '@aztec-labs/stdlib/block';
 
 import {
+  MAX_FROZEN_DEPOSITS_PER_REFUND,
   MAX_FROZEN_NOTES_PER_REFUND,
-  TEE_SIG_DOMAIN_FROZEN_DEPOSIT_REFUND,
+  TEE_SIG_DOMAIN_FROZEN_DEPOSITS_REFUND,
   TEE_SIG_DOMAIN_FROZEN_NOTES_REFUND,
   TEE_SIG_DOMAIN_NOTE,
   TEE_SIG_DOMAIN_UNPROCESSED_DEPOSIT_REFUND,
   TEE_SIG_DOMAIN_WITHDRAWAL,
   TEE_SIG_DOMAIN_WITHDRAWAL_FINALIZED,
-} from '@oxide/oxide-lib/oxide_constants.gen.js';
-import { type PortalContext, TeeSignedData } from '@oxide/oxide-lib/types.js';
+} from '@oxide/oxide-lib-tee/oxide_constants.gen.js';
+import { type PortalDomain, TeeSignedData } from '@oxide/oxide-lib-tee/types.js';
 
 type OperationDigestInput = {
   anchorBlockHash: BlockHash;
   tokenAddress: AztecAddress;
+  l1Portal: EthAddress;
+  teeRegistry: EthAddress;
   requiredNullifiers: Fr[];
   siloedNoteHashes: Fr[];
   withdrawalMessageHashes: Fr[];
@@ -47,6 +50,8 @@ async function buildOperationDigest(
     domain,
     input.anchorBlockHash,
     input.tokenAddress,
+    input.l1Portal,
+    input.teeRegistry,
     input.signedCommitment,
     input.requiredNullifiers,
     input.siloedNoteHashes,
@@ -73,6 +78,11 @@ export function buildWithdrawalOperationDigest(
 
 export function buildWithdrawalFinalDigest(input: {
   /**
+   * `TeeRegistry` that the enclave proved the signer's registration against.
+   * L1 uses the portal's `TEE_REGISTRY` here, so a digest that names another registry fails.
+   */
+  teeRegistry: EthAddress;
+  /**
    * Archive root that contains the first-phase operation anchor block hash.
    * L1 derives this from `Rollup.archiveAt(checkpointNumber)`.
    */
@@ -87,6 +97,7 @@ export function buildWithdrawalFinalDigest(input: {
 }): Buffer32 {
   const preimage = Buffer.concat([
     Buffer.of(TEE_SIG_DOMAIN_WITHDRAWAL_FINALIZED),
+    input.teeRegistry.toBuffer(),
     input.archiveRoot.toBuffer(),
     input.withdrawalId.toBuffer(),
     input.messageHash.toBuffer(),
@@ -100,11 +111,20 @@ export function buildWithdrawalFinalDigest(input: {
 // The public-input arrays below are baked-in three places that must agree byte-for-byte: this
 // builder, the `OxidePortal.withdraw{FrozenNotes,FrozenDeposit}` Solidity code that rebuilds
 // publicInputs at finalization, and the Noir circuit's `pub` parameter ordering. The digest is
-// `sha256(domain_byte || publicInputs)` — same domain byte the L1 portal prepends.
+// `sha256(domain_byte || publicInputs)` — same domain byte the L1 portal prepends. The
+// frozen-notes digest also hashes the `TeeRegistry` right after the domain byte.
 // ---------------------------------------------------------------------------
 
+/** Pads `nullifiers` with zeros to `slots` entries. */
+function padNullifierSlots(nullifiers: Fr[], slots: number, label: string): Fr[] {
+  if (nullifiers.length > slots) {
+    throw new Error(`${label} public inputs: ${nullifiers.length} nullifiers exceeds slot count ${slots}`);
+  }
+  return nullifiers.concat(Array(slots - nullifiers.length).fill(Fr.zero()));
+}
+
 export function buildFrozenNotesRefundFinalDigest(input: {
-  portal: PortalContext;
+  portalDomain: PortalDomain;
   frozenArchiveRoot: Fr;
   amount: bigint;
   executor: EthAddress;
@@ -114,17 +134,12 @@ export function buildFrozenNotesRefundFinalDigest(input: {
   publicInputs: Fr[];
   finalDigest: Buffer32;
 } {
-  if (input.nullifiers.length > MAX_FROZEN_NOTES_PER_REFUND) {
-    throw new Error(
-      `Frozen-notes public inputs: ${input.nullifiers.length} nullifiers exceeds slot count ${MAX_FROZEN_NOTES_PER_REFUND}`,
-    );
-  }
-  const padded = input.nullifiers.concat(Array(MAX_FROZEN_NOTES_PER_REFUND - input.nullifiers.length).fill(Fr.zero()));
+  const padded = padNullifierSlots(input.nullifiers, MAX_FROZEN_NOTES_PER_REFUND, 'Frozen-notes');
   const publicInputs = [
-    new Fr(input.portal.l1ChainId),
-    new Fr(input.portal.rollupVersion),
-    input.portal.l1Portal.toField(),
-    input.portal.l2Portal.toField(),
+    new Fr(input.portalDomain.l1ChainId),
+    new Fr(input.portalDomain.rollupVersion),
+    input.portalDomain.l1Portal.toField(),
+    input.portalDomain.l2Token.toField(),
     input.frozenArchiveRoot,
     new Fr(input.amount),
     input.executor.toField(),
@@ -133,41 +148,43 @@ export function buildFrozenNotesRefundFinalDigest(input: {
   ];
   const preimage = Buffer.concat([
     Buffer.of(TEE_SIG_DOMAIN_FROZEN_NOTES_REFUND),
+    input.portalDomain.teeRegistry.toBuffer(),
     ...publicInputs.map(pi => pi.toBuffer()),
   ]);
   return { publicInputs, finalDigest: new Buffer32(sha256(preimage)) };
 }
 
-export function buildFrozenDepositRefundFinalDigest(input: {
-  portal: PortalContext;
+export function buildFrozenDepositsRefundFinalDigest(input: {
+  portalDomain: PortalDomain;
   frozenArchiveRoot: Fr;
   amount: bigint;
   executor: EthAddress;
   userPayloadHash: Fr;
-  siloedNullifier: Fr;
+  nullifiers: Fr[];
 }): {
   publicInputs: Fr[];
   finalDigest: Buffer32;
 } {
+  const padded = padNullifierSlots(input.nullifiers, MAX_FROZEN_DEPOSITS_PER_REFUND, 'Frozen-deposit');
   const publicInputs = [
-    new Fr(input.portal.l1ChainId),
-    new Fr(input.portal.rollupVersion),
-    input.portal.l1Portal.toField(),
+    new Fr(input.portalDomain.l1ChainId),
+    new Fr(input.portalDomain.rollupVersion),
+    input.portalDomain.l1Portal.toField(),
     input.frozenArchiveRoot,
     new Fr(input.amount),
     input.executor.toField(),
     input.userPayloadHash,
-    input.siloedNullifier,
+    ...padded,
   ];
   const preimage = Buffer.concat([
-    Buffer.of(TEE_SIG_DOMAIN_FROZEN_DEPOSIT_REFUND),
+    Buffer.of(TEE_SIG_DOMAIN_FROZEN_DEPOSITS_REFUND),
     ...publicInputs.map(pi => pi.toBuffer()),
   ]);
   return { publicInputs, finalDigest: new Buffer32(sha256(preimage)) };
 }
 
 export function buildUnprocessedDepositRefundFinalDigest(input: {
-  portal: PortalContext;
+  portalDomain: PortalDomain;
   frozenArchiveRoot: Fr;
   amount: bigint;
   executor: EthAddress;
@@ -180,9 +197,9 @@ export function buildUnprocessedDepositRefundFinalDigest(input: {
   finalDigest: Buffer32;
 } {
   const publicInputs = [
-    new Fr(input.portal.l1ChainId),
-    new Fr(input.portal.rollupVersion),
-    input.portal.l1Portal.toField(),
+    new Fr(input.portalDomain.l1ChainId),
+    new Fr(input.portalDomain.rollupVersion),
+    input.portalDomain.l1Portal.toField(),
     input.frozenArchiveRoot,
     new Fr(input.amount),
     input.executor.toField(),

@@ -5,27 +5,27 @@
  * ("Failed to get a note" in the entrypoint — breakage that currently affects the shared harness
  * on a fresh sandbox), while alpha accounts handle them fine.
  *
- * Shape: L1 Nitro/TEE portal stack, fresh alpha relayer + sender on PXE A, OxideToken deploy,
+ * Shape: fresh alpha relayer + sender on PXE A, L1 Nitro/TEE portal stack with its OxideToken,
  * TEE signer registration, L1 deposit → L2 claim funding the sender, then PXE B with a fresh
  * recipient and the token registered. `publishHandshakeRegistry` is for the constrained-delivery
  * stretch: under the flip even the deploy/claim sends route through the registry, so it must be
  * published before the first send.
  */
-import { AztecAddress, EthAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecNode } from "@aztec/aztec.js/node"
-import { EthAddress as TeeEthAddress } from "@aztec/foundation/eth-address"
+import { AztecAddress, EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecNode } from "@aztec-labs/aztec.js/node"
 import { LocalTeeSigner } from "@oxide/tee-enclave/signer.js"
 import type { SpendMetadataResolver } from "@oxide/oxide-client/token_operations_collector.js"
-import { L1_CHAIN_ID } from "@obsidion/core/constants"
 import { parseUnits } from "viem"
-import { DEFAULT_CONTRACTS, ObsidionAccount, TokenService } from "../../src/index.js"
+import { DEFAULT_CONTRACTS, Network, ObsidionAccount, TokenService } from "../../src/index.js"
 import { setupTest, setupAdditionalPXE } from "../utils/helper.js"
 import {
-  initializePortalAndRegisterTeeForOxideToken,
   l1DepositAndClaimPrivateBalance,
+  linkSandboxTeeSigner,
+  publishThrough,
   tryDeploySandboxTeePortalStack,
 } from "../utils/oxideTokenSandbox.js"
+import { awaitTeeRegistrationMessage } from "../utils/tee/registerTeeSigner.js"
 import { ObsidionWalletTest } from "../../src/obsidion/ObsidionWalletTest.js"
 import { createFreshAccount, ensureHandshakeRegistryPublished, TxTally } from "./helpers.js"
 
@@ -55,22 +55,6 @@ export async function bringUpOxideTokenSpike(options: {
   const node = setup.node
   const { contractService, sponsoredFeePaymentMethod } = setup
 
-  // L1 half: Nitro portal stack (no L2 sends involved).
-  const rollupVersion = BigInt((await node.getNodeInfo()).rollupVersion)
-  let teeSigner = await LocalTeeSigner.random({
-    l1Portal: TeeEthAddress.ZERO,
-    l1ChainId: BigInt(L1_CHAIN_ID.LOCAL),
-    l2Portal: AztecAddress.ZERO,
-    rollupVersion,
-  })
-  const oxideStack = await tryDeploySandboxTeePortalStack(node, teeSigner)
-  if (!oxideStack) {
-    throw new Error(
-      "OxideToken spike requires Anvil on L1 (part of `aztec start --local-network`).",
-    )
-  }
-  recordInfra("L1 oxide stack: Nitro + TEEPortal deploy (one-time)")
-
   // Fresh alpha accounts drive every L2 send: a relayer/deployer plus the sender under test.
   const { account: relayerAlpha } = await createFreshAccount(walletA)
   const { account: sender } = await createFreshAccount(walletA)
@@ -81,38 +65,35 @@ export async function bringUpOxideTokenSpike(options: {
     recordInfra("HandshakeRegistry publish (one-time, idempotent)")
   }
 
-  const senderTokenService = await TokenService.create(walletA, sender, undefined, teeSigner)
-  const tokenContract = await senderTokenService.deployToken(
-    EthAddress.fromString(oxideStack.l1Deployment.tokenPortal),
-    "USD Coin",
-    "USDC",
-    SPIKE_DECIMALS,
-    { deployerAccount: relayerAlpha },
-  )
-  recordInfra("OxideToken deploy (one-time, alpha-signed, sponsored)")
-
-  teeSigner = teeSigner.withPortalContext({
-    l1Portal: TeeEthAddress.fromString(oxideStack.l1Deployment.tokenPortal),
-    l1ChainId: BigInt(L1_CHAIN_ID.LOCAL),
-    l2Portal: tokenContract.address,
-    rollupVersion,
+  const senderTokenService = await TokenService.create(walletA, sender)
+  const unlinked = LocalTeeSigner.random({
+    l1Portal: EthAddress.ZERO,
+    l2Token: AztecAddress.ZERO,
+    teeRegistry: EthAddress.ZERO,
   })
-  senderTokenService.setTeeSigner(teeSigner)
+  const publisher = publishThrough(senderTokenService, relayerAlpha)
+  const oxideStack = await tryDeploySandboxTeePortalStack(node, unlinked, {
+    publishL2Token: publisher.publishL2Token,
+    tokenName: "USD Coin",
+    tokenSymbol: "USDC",
+  })
+  if (!oxideStack) {
+    throw new Error(
+      "OxideToken spike requires Anvil on L1 (part of `aztec start --local-network`).",
+    )
+  }
+  const tokenContract = publisher.published()
+  recordInfra("L1 oxide stack + OxideToken publish + TEE registration on L1 (one-time)")
+
   await contractService.setContractAddress(DEFAULT_CONTRACTS.oxideToken, tokenContract.address)
-
-  const bridgeArtifact = await contractService.getArtifactForContract(
-    DEFAULT_CONTRACTS.oxideToken,
-  )
-  await initializePortalAndRegisterTeeForOxideToken({
-    teeSigner,
-    oxideStack,
-    l2BridgeAddress: tokenContract.address,
+  await awaitTeeRegistrationMessage({
     wallet: walletA,
-    relayerAccount: relayerAlpha as never,
-    feePaymentMethod: sponsoredFeePaymentMethod,
-    bridgeArtifact,
+    registration: oxideStack.teeRegistration,
+    network: Network.SANDBOX,
   })
-  recordInfra("TEE signer registration on L2 (one-time)")
+  const { teeSigner } = linkSandboxTeeSigner(unlinked, oxideStack)
+  senderTokenService.setTeeSigner(teeSigner)
+  recordInfra("TEE registration message on L2 (one-time)")
 
   // Fund the fresh sender through the production path: L1 deposit + L2 claim.
   await l1DepositAndClaimPrivateBalance({
@@ -121,8 +102,6 @@ export async function bringUpOxideTokenSpike(options: {
     recipient: sender.getAddress(),
     amount: parseUnits(options.fundHuman, SPIKE_DECIMALS),
     sharedSecretFr: Fr.random(),
-    l1ChainId: BigInt(L1_CHAIN_ID.LOCAL),
-    teeSigner,
     tokenContract,
   })
   recordInfra("L1 deposit + L2 claim funding the fresh sender (one-time)")
@@ -141,6 +120,7 @@ export async function bringUpOxideTokenSpike(options: {
   if (!tokenInstance) {
     throw new Error("deployed OxideToken instance not found on the node")
   }
+  const bridgeArtifact = await contractService.getArtifactForContract(DEFAULT_CONTRACTS.oxideToken)
   await walletB.pxe.registerContractClass(bridgeArtifact)
   await walletB.pxe.registerContract(tokenInstance)
   const recipientTokenService = await TokenService.create(

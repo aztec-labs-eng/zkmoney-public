@@ -9,12 +9,14 @@ import {
   type NavigateFunction,
 } from "react-router-dom"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import type { Address } from "viem"
 import type { ChainIdentity } from "@obsidion/core/types"
 import {
   encodeRequestInline,
   getActiveNetworkId,
   type RequestInlinePacket,
 } from "@obsidion/front-core"
+import { mockLoadDepositFacts, singleToken } from "./support/depositTokens"
 
 const SIPA = `0x${"aa".repeat(20)}`
 const L1_TOKEN = `0x${"22".repeat(20)}`
@@ -83,6 +85,9 @@ vi.mock("../src/config/oxideTuple", () => ({
   requireTupleField: (tuple: Record<string, unknown>, key: string) => tuple[key],
   l1PublicClient: () => "l1-client",
 }))
+vi.mock("../src/features/deposit/loadDepositFacts", (importOriginal) =>
+  mockLoadDepositFacts(importOriginal, () => singleToken(L1_TOKEN as Address)),
+)
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
   readPortalChainIdentity: portal,
@@ -228,6 +233,16 @@ describe("RequestLandingScreen accountless landing", () => {
     resolve.mockRejectedValue(new RequestDecimalsMismatchError(6, 18))
     await render(fragmentFor())
     expect(container.textContent).toContain("for a token this wallet doesn't support")
+    expect(container.textContent).not.toContain("Try again")
+  })
+
+  it("tells the payer a requester who hasn't upgraded can be paid once they do", async () => {
+    const { RequesterNotUpgradedError } = await import(
+      "../src/features/requests/accountlessRequest"
+    )
+    resolve.mockRejectedValue(new RequesterNotUpgradedError("alice"))
+    await render(fragmentFor())
+    expect(container.textContent).toContain("You can pay them once they upgrade")
     expect(container.textContent).not.toContain("Try again")
   })
 
@@ -524,6 +539,14 @@ describe("RequestLandingScreen accountless landing", () => {
       expect(container.textContent).toContain("Pay @alice")
       expect(container.textContent).toContain("$1")
       expect(resolve.mock.calls[0][0].requestId).toBe(`0x${"0a".repeat(32)}`)
+    })
+
+    it("says the payee hasn't upgraded rather than that there is no account", async () => {
+      tagLookup.mockResolvedValue({ status: "staleRollup" })
+      resolve.mockReturnValue(new Promise(() => {}))
+      await render("", false, undefined, "/pay/alice")
+      expect(container.textContent).toContain("You can pay them once they upgrade")
+      expect(container.textContent).not.toContain("no zk.money account")
     })
 
     it("refuses a request whose payee is not the page's", async () => {

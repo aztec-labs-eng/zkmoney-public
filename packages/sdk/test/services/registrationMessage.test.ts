@@ -9,22 +9,22 @@
  * content, so a message from another sender, to another FPC, or about another L1 account is simply
  * not this one.
  */
-import { describe, expect, it } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { EthAddress } from "@aztec/foundation/eth-address"
-import { L1Actor, L1ToL2Message, L2Actor } from "@aztec/stdlib/messaging"
-import { computeSecretHash } from "@aztec/stdlib/hash"
-import type {
-  InboxMessageSentLog,
-  InboxMessageSource,
-} from "../../src/services/registrationMessage.js"
+import { beforeEach, describe, expect, it } from "vitest"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
+import { L1Actor, L1ToL2Message, L2Actor } from "@aztec-labs/stdlib/messaging"
+import { computeSecretHash } from "@aztec-labs/stdlib/hash"
 import {
   REGISTRATION_MESSAGE_SECRET,
   findRegistrationMessage,
   nameOwnershipMessageContent,
+  resetRegistrationMessageScansForTests,
+  type RegistrationInbox,
   type RegistrationMessageNode,
 } from "../../src/services/registrationMessage.js"
+
+type InboxMessageSentLog = Awaited<ReturnType<RegistrationInbox["getMessageSentEvents"]>>[number]
 
 const CHAIN_ID = 31337
 const OTHER_CHAIN_ID = 11155111
@@ -41,7 +41,7 @@ const NAME_HASH = Buffer.from(
 const OTHER_OWNER = EthAddress.fromString("0x1111111111111111111111111111111111111111")
 
 /** Pinned in `claim_fpc/src/registration.nr::content_hash_matches_the_typescript_mirror`. */
-const PINNED_CONTENT_HASH = "0x0076965bb2b826b57030fd020a5c87ab48ca8086410dbb797d788534438ae5c6"
+const PINNED_CONTENT_HASH = "0x00430fd1ec5d12a2bc57833acc01e9d48e7127e07fc06e6eaebfd92b5885eb4b"
 
 async function inboxLeaf(over: {
   sender?: EthAddress
@@ -61,47 +61,54 @@ async function inboxLeaf(over: {
   // One leaf per L1 block, at block 1000 + index, so chunk bounds are easy to reason about.
   return {
     l1BlockNumber: 1000n + over.index,
-    args: { index: over.index, checkpointNumber: 1n, leaf: message.hash() },
-  }
-}
-
-/** An Inbox at `head` whose logs answer range queries by block, recording the ranges asked. */
-function fakeInbox(
-  logs: (InboxMessageSentLog & { l1BlockNumber: bigint })[],
-  head = 100_000n,
-): InboxMessageSource & { ranges: [bigint, bigint][] } {
-  const ranges: [bigint, bigint][] = []
-  return {
-    ranges,
-    client: { getBlockNumber: async () => head },
-    getMessageSentEvents: async (from, to) => {
-      ranges.push([from, to])
-      return logs.filter((l) => l.l1BlockNumber >= from && l.l1BlockNumber <= to)
-    },
+    args: { index: over.index, leaf: message.hash() },
   }
 }
 
 /**
- * A node that has imported every checkpoint up to `syncedCheckpoint`, and in which the given
- * siloed nullifiers already exist (a consumed message leaves one). It answers no chain id: the
- * target carries it.
+ * An Inbox at `head` whose logs answer range queries by block, recording the ranges asked. With `maxRange`, it refuses
+ * a wider query, as a capped RPC does.
  */
-function fakeNode(syncedCheckpoint: number, consumed = false): RegistrationMessageNode {
+function fakeInbox(
+  logs: (InboxMessageSentLog & { l1BlockNumber: bigint })[],
+  head = 100_000n,
+  maxRange?: bigint,
+): RegistrationInbox & { ranges: [bigint, bigint][]; head: bigint } {
+  const ranges: [bigint, bigint][] = []
+  const inbox = {
+    address: "0x00000000000000000000000000000000000001b0",
+    ranges,
+    head,
+    client: { getBlockNumber: async () => inbox.head },
+    getMessageSentEvents: async (from: bigint, to: bigint) => {
+      ranges.push([from, to])
+      if (maxRange !== undefined && to - from >= maxRange) throw new Error("range too wide")
+      return logs.filter((l) => l.l1BlockNumber >= from && l.l1BlockNumber <= to)
+    },
+  }
+  return inbox
+}
+
+/**
+ * A node that has synced the message at leaf 42, whose latest block has inserted it when `imported`.
+ * It answers no chain id: the target carries it.
+ */
+function fakeNode(imported: boolean): RegistrationMessageNode {
   return {
     getChainId: async () => {
       throw new Error("the node was asked for the chain id")
     },
-    getL1ToL2MessageCheckpoint: async () => 1,
-    getBlockData: async () => ({ checkpointNumber: syncedCheckpoint }),
-    getL1ToL2MessageMembershipWitness: async () => (syncedCheckpoint >= 1 ? [42n, []] : undefined),
-    findLeavesIndexes: async () => [consumed ? { index: 7n } : undefined],
+    getL1ToL2MessageIndex: async () => 42n,
+    getBlockData: async () => ({
+      header: { state: { l1ToL2MessageTree: { nextAvailableLeafIndex: imported ? 43 : 42 } } },
+    }),
   } as never
 }
 
 const target = {
   fpc: FPC,
   namePortal: NAME_PORTAL,
-  owner: OWNER,
+  bootstrap: OWNER,
   nameHash: NAME_HASH,
   rollupVersion: ROLLUP_VERSION,
   l1ChainId: CHAIN_ID,
@@ -124,9 +131,11 @@ describe("name ownership message content", () => {
 })
 
 describe("finding the registration message in the inbox", () => {
+  beforeEach(() => resetRegistrationMessageScansForTests())
+
   it("returns the leaf index and hash of the portal's message for this account", async () => {
     const leaf = await inboxLeaf({ index: 42n })
-    const found = await findRegistrationMessage(fakeInbox([leaf]), fakeNode(1), target)
+    const found = await findRegistrationMessage(fakeInbox([leaf]), fakeNode(true), target)
     expect(found?.leafIndex).toBe(42n)
     expect(found?.messageHash.toString()).toBe((leaf.args.leaf as Fr).toString())
   })
@@ -138,21 +147,21 @@ describe("finding the registration message in the inbox", () => {
         sender: EthAddress.fromString("0x00000000000000000000000000000000000eeee2"),
       }),
     ])
-    expect(await findRegistrationMessage(inbox, fakeNode(1), target)).toBeUndefined()
+    expect(await findRegistrationMessage(inbox, fakeNode(true), target)).toBeUndefined()
   })
 
   it("ignores a message addressed to another recipient", async () => {
     const inbox = fakeInbox([
       await inboxLeaf({ index: 42n, recipient: AztecAddress.fromFieldUnsafe(new Fr(0x0f9cn)) }),
     ])
-    expect(await findRegistrationMessage(inbox, fakeNode(1), target)).toBeUndefined()
+    expect(await findRegistrationMessage(inbox, fakeNode(true), target)).toBeUndefined()
   })
 
   it("ignores a message about another L1 account", async () => {
     const inbox = fakeInbox([
       await inboxLeaf({ index: 42n, content: nameOwnershipMessageContent(OTHER_OWNER, NAME_HASH) }),
     ])
-    expect(await findRegistrationMessage(inbox, fakeNode(1), target)).toBeUndefined()
+    expect(await findRegistrationMessage(inbox, fakeNode(true), target)).toBeUndefined()
   })
 
   it("ignores a message about another name of the same account", async () => {
@@ -162,19 +171,19 @@ describe("finding the registration message in the inbox", () => {
         content: nameOwnershipMessageContent(OWNER, Buffer.alloc(32, 0x22)),
       }),
     ])
-    expect(await findRegistrationMessage(inbox, fakeNode(1), target)).toBeUndefined()
+    expect(await findRegistrationMessage(inbox, fakeNode(true), target)).toBeUndefined()
   })
 
   it("ignores a message bound to another rollup version", async () => {
     const inbox = fakeInbox([await inboxLeaf({ index: 42n, version: ROLLUP_VERSION + 1 })])
-    expect(await findRegistrationMessage(inbox, fakeNode(1), target)).toBeUndefined()
+    expect(await findRegistrationMessage(inbox, fakeNode(true), target)).toBeUndefined()
   })
 
   it("binds the L1 sender to the target's chain id, never the node's", async () => {
     const leaf = await inboxLeaf({ index: 42n, chainId: OTHER_CHAIN_ID })
     const inbox = fakeInbox([leaf])
-    expect(await findRegistrationMessage(inbox, fakeNode(1), target)).toBeUndefined()
-    const found = await findRegistrationMessage(inbox, fakeNode(1), {
+    expect(await findRegistrationMessage(inbox, fakeNode(true), target)).toBeUndefined()
+    const found = await findRegistrationMessage(inbox, fakeNode(true), {
       ...target,
       l1ChainId: OTHER_CHAIN_ID,
     })
@@ -187,31 +196,55 @@ describe("finding the registration message in the inbox", () => {
       await inboxLeaf({ index: 41n, sender: EthAddress.ZERO }),
       await inboxLeaf({ index: 42n }),
     ])
-    expect((await findRegistrationMessage(inbox, fakeNode(1), target))?.leafIndex).toBe(42n)
+    expect((await findRegistrationMessage(inbox, fakeNode(true), target))?.leafIndex).toBe(42n)
   })
 
   it("prefers the newest of several messages for the same account", async () => {
     // `notify` is repeatable, and a migration re-emits; the spent original must not shadow it.
     const inbox = fakeInbox([await inboxLeaf({ index: 42n }), await inboxLeaf({ index: 900n })])
-    expect((await findRegistrationMessage(inbox, fakeNode(1), target))?.leafIndex).toBe(900n)
+    expect((await findRegistrationMessage(inbox, fakeNode(true), target))?.leafIndex).toBe(900n)
   })
 
-  it("walks back from the head in capped chunks and stops at the floor", async () => {
+  it("reads the window from the floor in one request", async () => {
     const inbox = fakeInbox([await inboxLeaf({ index: 42n })], 20_000n)
     expect(
-      await findRegistrationMessage(inbox, fakeNode(1), target, { fromBlock: 5_000n }),
+      await findRegistrationMessage(inbox, fakeNode(true), target, { fromBlock: 5_000n }),
     ).toBeUndefined()
-    // Two chunks cover [5000, 20000]; none reaches below the floor.
+    expect(inbox.ranges).toEqual([[5_000n, 20_000n]])
+  })
+
+  it("reads a refused window in chunks covering it down to the floor", async () => {
+    const inbox = fakeInbox([await inboxLeaf({ index: 42n })], 30_000n, 10_000n)
+    const found = await findRegistrationMessage(inbox, fakeNode(true), target, { fromBlock: 0n })
+    expect(found?.leafIndex).toBe(42n)
+    expect(inbox.ranges[0]).toEqual([0n, 30_000n])
+    expect(inbox.ranges.slice(1).sort((a, b) => Number(a[0] - b[0]))).toEqual([
+      [0n, 3_000n],
+      [3_001n, 12_000n],
+      [12_001n, 21_000n],
+      [21_001n, 30_000n],
+    ])
+  })
+
+  it("reads only the blocks past an empty scan, and finds a message sent after it", async () => {
+    const leaf = await inboxLeaf({ index: 42n })
+    const logs: (typeof leaf)[] = []
+    const inbox = fakeInbox(logs, 20_000n)
+    const scan = () => findRegistrationMessage(inbox, fakeNode(true), target, { fromBlock: 0n })
+    expect(await scan()).toBeUndefined()
+    inbox.head = 20_500n
+    logs.push({ ...leaf, l1BlockNumber: 20_400n })
+    expect((await scan())?.leafIndex).toBe(42n)
     expect(inbox.ranges).toEqual([
-      [11_001n, 20_000n],
-      [5_000n, 11_000n],
+      [0n, 20_000n],
+      [20_001n - 128n, 20_500n],
     ])
   })
 
   it("gives up after the chunk budget", async () => {
     const inbox = fakeInbox([await inboxLeaf({ index: 42n })], 100_000n)
     expect(
-      await findRegistrationMessage(inbox, fakeNode(1), target, { chunkBudget: 2 }),
+      await findRegistrationMessage(inbox, fakeNode(true), target, { chunkBudget: 2 }),
     ).toBeUndefined()
     expect(inbox.ranges).toHaveLength(2)
   })
@@ -220,18 +253,11 @@ describe("finding the registration message in the inbox", () => {
 describe("where a found message stands", () => {
   it("is pending while the rollup has not imported it", async () => {
     const inbox = fakeInbox([await inboxLeaf({ index: 42n })])
-    expect((await findRegistrationMessage(inbox, fakeNode(0), target))?.status).toBe("pending")
+    expect((await findRegistrationMessage(inbox, fakeNode(false), target))?.status).toBe("pending")
   })
 
-  it("is consumable once imported and not yet spent by this FPC", async () => {
+  it("is ready once imported, and stays ready: the gate never consumes it", async () => {
     const inbox = fakeInbox([await inboxLeaf({ index: 42n })])
-    expect((await findRegistrationMessage(inbox, fakeNode(1), target))?.status).toBe("consumable")
-  })
-
-  it("is consumed once the FPC's nullifier for it exists", async () => {
-    const inbox = fakeInbox([await inboxLeaf({ index: 42n })])
-    expect((await findRegistrationMessage(inbox, fakeNode(1, true), target))?.status).toBe(
-      "consumed",
-    )
+    expect((await findRegistrationMessage(inbox, fakeNode(true), target))?.status).toBe("ready")
   })
 })

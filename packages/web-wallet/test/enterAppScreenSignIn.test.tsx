@@ -86,6 +86,12 @@ vi.mock("../src/features/onboarding/oxideOnboarding", async () => {
         super("that isn't the passkey this claim was started with")
       }
     },
+    PasskeySetUnreadError: class PasskeySetUnreadError extends Error {
+      name = "PasskeySetUnreadError"
+      constructor() {
+        super("this passkey's account holds more keys than the sign-in could read")
+      }
+    },
   }
 })
 vi.mock("../src/features/onboarding/recoveryProbes", () => ({
@@ -206,6 +212,14 @@ vi.mock("../src/features/onboarding/steps/ConfirmTagModal", () => ({
           onBlur={start.onTagBlur}
         />
         {start.notice && <p data-testid={`by-tag-${start.notice.kind}`}>{start.notice.tag}</p>}
+        {start.notice?.kind === "listed" && (
+          <button
+            type="button"
+            data-testid="by-tag-different-passkey"
+            disabled={start.busy}
+            onClick={start.onDifferentPasskey}
+          />
+        )}
         {start.prepared === "failed" && (
           <button
             type="button"
@@ -234,6 +248,10 @@ vi.mock("../src/features/onboarding/steps/ConfirmTagModal", () => ({
   },
 }))
 vi.mock("../src/features/onboarding/steps/InvitationStep", () => ({ InvitationStep: () => null }))
+// The backdrop behind the modals mounts the boot splash, whose fade timer outlives the file.
+vi.mock("../src/features/onboarding/steps/CreateWalletStep", () => ({
+  CreateWalletStep: () => null,
+}))
 vi.mock("@obsidion/web-ds", () => ({
   PrimaryGradientButton: ({
     title,
@@ -278,7 +296,7 @@ async function render(path = "/enter", strictMode = false) {
 
 type EnterOptions = {
   gate: () => Promise<{ signal: AbortSignal; route?: string; reach: string }>
-  hints?: { credentialId: string; pubkeyHex: string }
+  hints?: { account: string; l2Address?: string; keys: unknown[] } | { credentialId: string }
   strictTag?: boolean
   signal?: AbortSignal
   chooser?: boolean
@@ -332,23 +350,44 @@ const resolvedEvents = () =>
 
 const L2 = `0x${"ac".repeat(32)}`
 const OTHER = `0x${"bd".repeat(32)}`
+const ACCOUNT = `0x${"11".repeat(20)}`
 const CANDIDATE = { credentialId: "cred-alice", pubkeyHex: "ab".repeat(64) }
+/** @alice's one installed key, as the L1 read lists it. */
+const KEYS = [
+  {
+    pubkeyHex: CANDIDATE.pubkeyHex,
+    metadata: `0x${"07".repeat(16)}`,
+    parsed: { kind: "credential-id" as const, credentialId: CANDIDATE.credentialId },
+  },
+]
+/** What Login pins: the tag's account and its keys. */
+const FOUND = { account: ACCOUNT, l2Address: L2, keys: KEYS }
+/** What a remembered row pins: its credential. */
+const ROW = { credentialId: CANDIDATE.credentialId }
 const closed = () => new DOMException("closed", "NotAllowedError")
-const named = (handle = "alice") => ({ entered: true, handle, address: L2, account: {} })
+const named = (handle = "alice") => ({
+  entered: true,
+  handle,
+  address: L2,
+  account: {},
+  held: () => true,
+})
 const needsCeremony = () =>
   h.enterWithPasskey.mockResolvedValueOnce({ entered: false, reason: "ceremony-required" })
 const resolvedLookup = (tag = "alice", moreKeys = false) =>
   h.lookup.mockResolvedValueOnce({
     kind: "resolved",
     tag,
-    candidate: CANDIDATE,
+    account: ACCOUNT,
     l2Address: L2,
+    keys: KEYS,
     moreKeys,
   })
 const nameless = () => ({
   entered: false,
   reason: "unclaimed",
   account: { getAddress: () => ({ toString: () => L2 }) },
+  held: () => true,
   bootstrap: {
     address: "0xE0A0000000000000000000000000000000000001",
     signMessage: async () => "0xsig",
@@ -478,7 +517,7 @@ describe("the arrival", () => {
       expect.anything(),
       "alice",
       expect.objectContaining({
-        hints: CANDIDATE,
+        hints: FOUND,
         restoreCache: false,
         signal: expect.any(AbortSignal),
       }),
@@ -672,6 +711,34 @@ describe("the field", () => {
     expect(login().disabled).toBe(true)
   })
 
+  it("an account with more keys than the read covers is inconclusive: Login stays off, with its own code", async () => {
+    await arrive()
+    h.lookup.mockResolvedValueOnce({ kind: "inconclusive", tag: "alice", account: ACCOUNT })
+    await type("alice")
+    await blur()
+    expect(byTestId("by-tag-inconclusive")?.textContent).toBe("alice")
+    expect(login().disabled).toBe(true)
+    expect(refused()).toBeNull()
+    expect(failures().at(-1)).toEqual(["enter:by-tag", "bytag_inconclusive"])
+  })
+
+  it("a listed tag's way in with a different passkey reads the tag; Login then pins the account's keys", async () => {
+    remember("cred-alice", "alice")
+    await arrive()
+    await type("alice")
+    await blur()
+    expect(h.lookup).not.toHaveBeenCalled()
+    resolvedLookup("alice")
+    await click("by-tag-different-passkey")
+    expect(h.lookup).toHaveBeenCalledWith("alice", expect.anything())
+    expect(byTestId("by-tag-listed")).toBeNull()
+    expect(login().disabled).toBe(false)
+    h.enterWithPasskey.mockResolvedValueOnce(named())
+    await click("sign-in-login")
+    expect(lastOptions().hints).toEqual(FOUND)
+    expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+  })
+
   it.each([
     ["notFound", "bytag_tag_not_found"],
     ["staleRollup", "bytag_stale_rollup"],
@@ -753,7 +820,7 @@ describe("the field", () => {
     await blur()
     expect(byTestId("by-tag-notFound")?.textContent).toBe("alicex")
     await act(async () =>
-      releaseA({ kind: "resolved", tag: "alice", candidate: CANDIDATE, l2Address: L2 }),
+      releaseA({ kind: "resolved", tag: "alice", account: ACCOUNT, l2Address: L2, keys: KEYS }),
     )
     await flush()
     expect(login().disabled).toBe(true)
@@ -808,10 +875,7 @@ describe("the remembered accounts", () => {
       expect.anything(),
       expect.anything(),
       "alice",
-      expect.objectContaining({
-        hints: { credentialId: "cred-alice", pubkeyHex: "ab".repeat(64) },
-        restoreCache: false,
-      }),
+      expect.objectContaining({ hints: ROW, restoreCache: false }),
     )
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
   })
@@ -841,7 +905,7 @@ describe("the remembered accounts", () => {
     await click("sign-in-account")
     const signal = lastOptions().signal!
     await act(async () =>
-      release({ kind: "resolved", tag: "zed", candidate: CANDIDATE, l2Address: L2 }),
+      release({ kind: "resolved", tag: "zed", account: ACCOUNT, l2Address: L2, keys: KEYS }),
     )
     await flush()
     expect(signal.aborted).toBe(false)
@@ -858,6 +922,7 @@ describe("the remembered accounts", () => {
       reason: "confirm",
       claim: {},
       account: { getAddress: () => ({ toString: () => L2 }) },
+      held: () => true,
     })
     await click("sign-in-account")
     expect(byTestId("confirm-tag")?.dataset.handle).toBe("alice")
@@ -911,7 +976,7 @@ describe("the accounts from earlier rollups", () => {
       expect.anything(),
       expect.anything(),
       "bob",
-      expect.objectContaining({ hints: { credentialId: "cred-bob", pubkeyHex: "cd".repeat(64) } }),
+      expect.objectContaining({ hints: { credentialId: "cred-bob" } }),
     )
     expect(walletStorage.getItem(MAP_KEY)).toBeNull()
   })
@@ -954,6 +1019,33 @@ describe("Show passkeys and the cancels", () => {
     expect(lastOptions()).toMatchObject({ chooser: true, restoreCache: false })
     expect(lastOptions().hints).toBeUndefined()
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+  })
+
+  it("a passkey whose account holds more keys than the sign-in could read is sent to the tag field, no retry", async () => {
+    const { PasskeySetUnreadError } = await import("../src/features/onboarding/oxideOnboarding")
+    await arrive()
+    h.enterWithPasskey.mockRejectedValueOnce(new PasskeySetUnreadError())
+    await click("sign-in-show-passkeys")
+    expect(refused()?.dataset.reason).toBe("PasskeySetUnreadError")
+    expect(container.textContent).toContain("more passkeys than this sign-in could read")
+    expect(byTestId("enter-retry")).toBeNull()
+    expect(byTestId("enter-type-tag")).not.toBeNull()
+    await click("enter-type-tag")
+    expect(refused()).toBeNull()
+    expect(screen()).not.toBeNull()
+    expect(h.enterWithPasskey).toHaveBeenCalledTimes(2)
+  })
+
+  it("a backup passkey whose envelope did not open gets the wallet's card with a retry, under its own code", async () => {
+    const { PasskeyEnvelopeError } = await import("@obsidion/front-core")
+    await arrive()
+    h.enterWithPasskey.mockRejectedValueOnce(new PasskeyEnvelopeError("decrypt"))
+    await click("sign-in-show-passkeys")
+    expect(refused()?.dataset.reason).toBe("PasskeyEnvelopeError")
+    expect(container.textContent).toContain("can't open the wallet on this device")
+    expect(failures().at(-1)).toEqual(["enter", "backup_envelope_failed"])
+    expect(byTestId("enter-retry")).not.toBeNull()
+    expect(byTestId("enter-back")).not.toBeNull()
   })
 
   it("the screen's close hands back to /claim", async () => {
@@ -1059,7 +1151,7 @@ describe("the pinned sign-in", () => {
       expect.anything(),
       expect.anything(),
       "alice",
-      expect.objectContaining({ hints: CANDIDATE, signal: expect.any(AbortSignal) }),
+      expect.objectContaining({ hints: FOUND, signal: expect.any(AbortSignal) }),
     )
     expect(lastOptions().signal?.aborted).toBe(false)
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
@@ -1112,6 +1204,48 @@ describe("the pinned sign-in", () => {
     expect(byTestId("confirm-tag")).toBeNull()
     expect(h.claimTag.mock.calls[0]![0]).toBe("carol")
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
+  })
+
+  it("a reservation found for a session since replaced is neither replayed nor kept", async () => {
+    const { namehash } = await import("viem/ens")
+    const { loadWalletIdentity } = await import("../src/features/identity/walletIdentity")
+    await arrive()
+    h.enterWithPasskey.mockResolvedValueOnce({
+      ...nameless(),
+      userHandle: "carol",
+      held: () => false,
+    })
+    h.reservedNameHashes.mockResolvedValueOnce([namehash("carol.zk.money")])
+    await click("sign-in-show-passkeys")
+    expect(h.claimTag).not.toHaveBeenCalled()
+    expect(h.saveTerms).not.toHaveBeenCalled()
+    expect(loadWalletIdentity()).toBeNull()
+    expect(refused()).toBeNull()
+    expect(navigatedTo("/")).toBe(false)
+  })
+
+  it("a claim replayed for a session replaced meanwhile is kept nowhere and enters nothing", async () => {
+    const { namehash } = await import("viem/ens")
+    const { loadWalletIdentity } = await import("../src/features/identity/walletIdentity")
+    await arrive()
+    let held = true
+    h.enterWithPasskey.mockResolvedValueOnce({
+      ...nameless(),
+      userHandle: "carol",
+      held: () => held,
+    })
+    h.reservedNameHashes.mockResolvedValueOnce([namehash("carol.zk.money")])
+    const outcome = await h.claimTag.getMockImplementation()!()
+    h.claimTag.mockImplementationOnce(async () => {
+      held = false
+      return outcome
+    })
+    await click("sign-in-show-passkeys")
+    expect(h.claimTag).toHaveBeenCalledTimes(1)
+    expect(h.saveTerms).not.toHaveBeenCalled()
+    expect(loadWalletIdentity()).toBeNull()
+    expect(refused()).toBeNull()
+    expect(navigatedTo("/")).toBe(false)
   })
 
   it("a passkey name no reservation hashes to still asks for the tag", async () => {
@@ -1403,7 +1537,7 @@ describe("the pinned sign-in", () => {
     h.enterWithPasskey.mockResolvedValueOnce(named())
     await click("enter-retry")
     expect(h.lookup).toHaveBeenCalledTimes(1)
-    expect(lastOptions().hints).toEqual(CANDIDATE)
+    expect(lastOptions().hints).toEqual(FOUND)
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
   })
 
@@ -1486,7 +1620,7 @@ describe("the pinned sign-in", () => {
       expect(byTestId("enter-show-passkeys")).not.toBeNull()
       h.enterWithPasskey.mockResolvedValueOnce(named())
       await click("enter-phone")
-      expect(lastOptions()).toMatchObject({ hints: CANDIDATE, phone: true })
+      expect(lastOptions()).toMatchObject({ hints: FOUND, phone: true })
     })
 
     it("a dismissed phone attempt offers a retry that stays on the phone, twice over", async () => {
@@ -1499,7 +1633,7 @@ describe("the pinned sign-in", () => {
       expect(refused()?.dataset.reason).toBe("PasskeyNotOnDeviceError")
       h.enterWithPasskey.mockRejectedValueOnce(closed())
       await click("enter-retry")
-      expect(lastOptions()).toMatchObject({ hints: CANDIDATE, phone: true })
+      expect(lastOptions()).toMatchObject({ hints: FOUND, phone: true })
       expect(refused()?.dataset.reason).toBe("PasskeyNotOnDeviceError")
       expect(byTestId("enter-retry")).not.toBeNull()
     })
@@ -1549,7 +1683,22 @@ describe("the pinned sign-in", () => {
     h.enterWithPasskey.mockResolvedValueOnce(named())
     await click("enter-retry")
     expect(h.lookup).toHaveBeenCalledTimes(1)
-    expect(lastOptions().hints).toEqual(CANDIDATE)
+    expect(lastOptions().hints).toEqual(FOUND)
+  })
+
+  it("a backup passkey whose envelope did not open on the pinned path keeps its retry and Back", async () => {
+    const { PasskeyEnvelopeError } = await import("@obsidion/front-core")
+    await reachFound()
+    h.enterWithPasskey.mockRejectedValueOnce(new PasskeyEnvelopeError("unverified"))
+    await click("sign-in-login")
+    expect(refused()?.dataset.reason).toBe("PasskeyEnvelopeError")
+    expect(failures().at(-1)).toEqual(["enter:by-tag", "backup_envelope_failed"])
+    expect(byTestId("enter-retry")).not.toBeNull()
+    expect(byTestId("enter-back")).not.toBeNull()
+    h.enterWithPasskey.mockResolvedValueOnce(named())
+    await click("enter-retry")
+    expect(h.lookup).toHaveBeenCalledTimes(1)
+    expect(lastOptions().hints).toEqual(FOUND)
   })
 
   it("a passkey that answered but is not the tag's keeps its row, Back, and is counted as the wrong credential", async () => {
@@ -1571,6 +1720,7 @@ describe("the pinned sign-in", () => {
       reason: "confirm",
       claim: {},
       account: { getAddress: () => ({ toString: () => L2 }) },
+      held: () => true,
     })
     await click("sign-in-login")
     expect(screen()).toBeNull()
@@ -1588,6 +1738,7 @@ describe("the pinned sign-in", () => {
       reason: "confirm",
       claim: {},
       account: { getAddress: () => ({ toString: () => L2 }) },
+      held: () => true,
     })
     await click("sign-in-login")
     const signal = lastOptions().signal!
@@ -1620,6 +1771,7 @@ describe("the pinned sign-in", () => {
       reason: "confirm",
       claim: {},
       account: { getAddress: () => ({ toString: () => L2 }) },
+      held: () => true,
     })
     await click("sign-in-account")
     expect(byTestId("confirm-tag")).not.toBeNull()
@@ -1631,7 +1783,7 @@ describe("the pinned sign-in", () => {
     h.enterWithPasskey.mockResolvedValueOnce(named())
     await click("sign-in-account")
     expect(lastOptions().chooser).toBeUndefined()
-    expect(lastOptions().hints).toEqual({ credentialId: "cred-alice", pubkeyHex: "ab".repeat(64) })
+    expect(lastOptions().hints).toEqual(ROW)
     expect(h.navigate).toHaveBeenCalledWith("/", { replace: true })
   })
 })
@@ -1680,6 +1832,19 @@ describe("the completion writes", () => {
     expect(usertagFor("localhost", CREDENTIAL)).toBeUndefined()
     expect(navigatedTo("/")).toBe(false)
   })
+
+  it("an entry whose session was replaced while its account was saved installs nothing and navigates nowhere", async () => {
+    await seedSession()
+    const { usertagFor } = await import("../src/platform/auth/WebPasskeyIdentityMap")
+    await reachFound()
+    // The sign-in reports an account whose session a sign-out or a newer commit has since replaced.
+    h.enterWithPasskey.mockResolvedValueOnce({ ...named(), held: () => false })
+    await click("sign-in-login")
+    await flush()
+    expect(walletStorage.getItem("webwallet.identity")).toBeNull()
+    expect(usertagFor("localhost", CREDENTIAL)).toBeUndefined()
+    expect(navigatedTo("/")).toBe(false)
+  })
 })
 
 describe("the reload guard", () => {
@@ -1714,6 +1879,7 @@ describe("the reload guard", () => {
       reason: "confirm",
       claim: {},
       account: { getAddress: () => ({ toString: () => L2 }) },
+      held: () => true,
     })
     await render("/enter?handle=bob&strict=1")
     expect(lastOptions().strictTag).toBe(true)

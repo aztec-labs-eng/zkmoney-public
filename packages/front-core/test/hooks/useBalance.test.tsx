@@ -48,7 +48,7 @@ describe("useBalance", () => {
     bootPriority.depositsReplayed()
     // A catching-up device's balance also waits for its Savings moves.
     bootPriority.movesReplayed()
-    await bootPriority.whenReady("migrationProbe")
+    await bootPriority.whenReady("paylinkRescan")
     expect(render(ctx).balanceSyncing).toBe(false)
     const again = globalEventEmitter.beginSyncCatchUp()
     expect(render(ctx).balanceSyncing).toBe(false)

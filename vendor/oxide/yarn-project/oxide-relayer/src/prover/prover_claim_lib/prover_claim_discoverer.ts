@@ -1,9 +1,9 @@
-import { asyncMap } from '@aztec/foundation/async-map';
-import { EpochNumber } from '@aztec/foundation/branded-types';
-import { Logger, createLogger } from '@aztec/foundation/log';
-import { Checkpoint } from '@aztec/stdlib/checkpoint';
-import { computeL2ToL1MessageHash } from '@aztec/stdlib/hash';
-import { getL2ToL1MessageLeafId } from '@aztec/stdlib/messaging';
+import { asyncMap } from '@aztec-labs/foundation/async-map';
+import { EpochNumber } from '@aztec-labs/foundation/branded-types';
+import { Logger, createLogger } from '@aztec-labs/foundation/log';
+import { Checkpoint } from '@aztec-labs/stdlib/checkpoint';
+import { computeL2ToL1MessageHash } from '@aztec-labs/stdlib/hash';
+import { getL2ToL1MessageLeafId } from '@aztec-labs/stdlib/messaging';
 
 import { L2ToL1MessageIndexer } from '../l2_to_l1_message_indexer.js';
 import { Binding, ObservedTx, portalId } from '../types.js';
@@ -49,10 +49,10 @@ export class ProverClaimDiscoverer {
   ): Promise<DiscoveredClaim[]> {
     const id = portalId(portal.context.l1Portal);
     try {
-      const claims = await portal.adaptor.buildProverClaims(tx, portal.context);
+      const claims = await portal.adaptor.buildProverClaims(tx);
       return claims.map(({ content, proverTip, withdrawalIndex, messageIndexInTx }) => {
         const message = computeL2ToL1MessageHash({
-          l2Sender: portal.context.l2Portal,
+          l2Sender: portal.context.l2Token,
           l1Recipient: portal.context.l1Portal,
           content,
           rollupVersion: this.options.binding.rollupVersion,

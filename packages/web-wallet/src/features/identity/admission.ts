@@ -26,27 +26,19 @@ function depositEntry(record: DepositEntryRecord): string {
  * What a deposit must reach to buy entry to the wallet: the lower of this registration's own
  * signed floor and what an earned tag is asked to deposit. A deposit the sweep would take admits,
  * and so does one at the figure the campaign asked for, whatever the signed schedule prices.
- * `fpcFundingCut` may be undefined while the read is out; the asked figure stands until it lands.
  */
-export function admissionFloor(
-  record: Pick<PendingRegistrationRecord, "account" | "tag">,
-  fpcFundingCut: bigint | undefined,
-): bigint {
+export function admissionFloor(record: Pick<PendingRegistrationRecord, "account" | "tag">): bigint {
   const ask = askedTotal("earned_tag")
   const signed = signedSchedule(loadRegistrationTerms(record.account, record.tag))
-  // The ask stands wherever the floor cannot be priced: no usable signed schedule, or no portal cut.
-  if (signed === undefined || fpcFundingCut === undefined) return ask
-  const floor = registrationFloor(signed, fpcFundingCut)
+  // Without a usable signed schedule the ask stands.
+  if (signed === undefined) return ask
+  const floor = registrationFloor(signed)
   return floor < ask ? floor : ask
 }
 
 /** Records pending wallet access after an L1 read, without changing sweep readiness or pricing. */
-export function recordDepositAdmission(
-  record: DepositEntryRecord,
-  observed: bigint,
-  fpcFundingCut?: bigint,
-): boolean {
-  if (observed < admissionFloor(record, fpcFundingCut)) return false
+export function recordDepositAdmission(record: DepositEntryRecord, observed: bigint): boolean {
+  if (observed < admissionFloor(record)) return false
   walletStorage.setItem(DEPOSIT_ENTRY_KEY, depositEntry(record))
   window.dispatchEvent(new Event(DEPOSIT_ENTRY_CHANGED))
   return true
@@ -91,9 +83,8 @@ export function hasDepositAdmission(record: PendingRegistrationRecord): boolean 
 export function refundedEntry(
   record: Pick<PendingRegistrationRecord, "account" | "tag" | "sipaAddress">,
   refund: { amount: bigint; txHash: Hex },
-  fpcFundingCut?: bigint,
 ): PendingRegistrationRecord["refundedEntry"] {
-  if (refund.amount < admissionFloor(record, fpcFundingCut)) return undefined
+  if (refund.amount < admissionFloor(record)) return undefined
   return {
     sipaAddress: record.sipaAddress,
     recoveryTxHash: refund.txHash,

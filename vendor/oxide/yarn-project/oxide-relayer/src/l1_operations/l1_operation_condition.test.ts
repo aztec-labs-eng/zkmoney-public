@@ -1,5 +1,5 @@
-import { AztecAddress, EthAddress } from '@aztec/aztec.js/addresses';
-import { TxHash } from '@aztec/stdlib/tx';
+import { AztecAddress, EthAddress } from '@aztec-labs/aztec.js/addresses';
+import { TxHash } from '@aztec-labs/stdlib/tx';
 
 import { L1OperationCondition } from '@oxide/oxide-lib/l1_operation_calldata.js';
 
@@ -322,7 +322,7 @@ describe('OutboxWatcher', () => {
       const waiting = operation(IN_OUTBOX);
       await store.upsertPendingL1Operation(waiting);
 
-      const completion = fakeCompletion(['waiting']);
+      const completion = fakeCompletion([{ status: 'waiting' }]);
       await expect(new OutboxWatcher({ completion, store }).runOnce()).resolves.toBe(0);
       await expect(store.getPendingL1Operation(waiting.operationId)).resolves.toMatchObject({ status: 'waiting' });
     });
@@ -333,7 +333,7 @@ describe('OutboxWatcher', () => {
       const waiting = operation(IN_OUTBOX);
       await store.upsertPendingL1Operation(waiting);
 
-      const completion = fakeCompletion(['ready']);
+      const completion = fakeCompletion([{ status: 'ready' }]);
       await expect(new OutboxWatcher({ completion, store }).runOnce()).resolves.toBe(1);
       await expect(store.getPendingL1Operation(waiting.operationId)).resolves.toMatchObject({ status: 'pending' });
     });
@@ -344,7 +344,7 @@ describe('OutboxWatcher', () => {
       const waiting = operation(IN_OUTBOX);
       await store.upsertPendingL1Operation(waiting);
 
-      const completion = fakeCompletion(['unrecoverable']);
+      const completion = fakeCompletion([{ status: 'unrecoverable', reason: 'malformed request' }]);
       await expect(new OutboxWatcher({ completion, store }).runOnce()).resolves.toBe(0);
       await expect(store.getPendingL1Operation(waiting.operationId)).resolves.toMatchObject({ status: 'dropped' });
     });

@@ -20,10 +20,10 @@
  * stubbed — only the dispatch options and the tag-secret plumbing are under test.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Fr } from "@aztec/aztec.js/fields"
-import { NO_FROM } from "@aztec/aztec.js/account"
-import { EthAddress } from "@aztec/aztec.js/addresses"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { NO_FROM } from "@aztec-labs/aztec.js/account"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 import { getUserPayloadHash } from "@oxide/oxide-lib/content_hash.js"
 
 const INSTANCE_ADDR = AztecAddress.fromBigIntUnsafe(33n)
@@ -31,10 +31,10 @@ const USER_ADDR = AztecAddress.fromBigIntUnsafe(11n)
 const TOKEN_ADDR = AztecAddress.fromBigIntUnsafe(44n)
 const FPC_ADDR = AztecAddress.fromBigIntUnsafe(55n)
 
-const { depositSpy, claimSpy, claimToL1Spy, releaseSpy, syncNoteSpy, TAG_SECRET, FBPK, CLASS_ID } =
+const { depositSpy, claimSpy, claimToL1Spy, syncNoteSpy, BROADCASTER, TAG_SECRET, FBPK, CLASS_ID } =
   vi.hoisted(() => ({
     depositSpy: vi.fn(() => ({ __fake: "depositInteraction" })),
-    releaseSpy: vi.fn(() => ({ __fake: "releaseBroadcast" })),
+    BROADCASTER: { __fake: "broadcaster" },
     claimSpy: vi.fn(() => ({ __fake: "claimInteraction" })),
     claimToL1Spy: vi.fn(() => ({ __fake: "claimToL1Interaction" })),
     // A 3-token escrow note: `data` packs the amount in its top 16 bytes.
@@ -60,18 +60,16 @@ const { depositSpy, claimSpy, claimToL1Spy, releaseSpy, syncNoteSpy, TAG_SECRET,
     },
   }))
 
-// The deployment's broadcaster: registration is a PXE write, and the release rides the smallest tier.
+// The deployment's broadcaster: registration is a PXE write; the burn's finalization request names it.
 vi.mock("@obsidion/contracts", async (importActual) => ({
   ...(await importActual<typeof import("@obsidion/contracts")>()),
   ensureContractRegisteredInPXE: vi.fn(async () => undefined),
-  BroadcasterContract: {
-    at: vi.fn(() => ({ methods: { broadcast_l1_operation_2k: releaseSpy } })),
-  },
+  BroadcasterContract: { at: vi.fn(() => BROADCASTER) },
 }))
 
 // The escrow contract handle: `deposit` on create, `claim` on claim.
-vi.mock("@aztec/aztec.js/contracts", async (importActual) => {
-  const actual = await importActual<typeof import("@aztec/aztec.js/contracts")>()
+vi.mock("@aztec-labs/aztec.js/contracts", async (importActual) => {
+  const actual = await importActual<typeof import("@aztec-labs/aztec.js/contracts")>()
   return {
     ...actual,
     Contract: {
@@ -82,6 +80,7 @@ vi.mock("@aztec/aztec.js/contracts", async (importActual) => {
           deposit: depositSpy,
           claim: claimSpy,
           claim_to_l1: claimToL1Spy,
+          refund: vi.fn(() => ({ __fake: "refundInteraction" })),
           sync_note: syncNoteSpy,
         },
       })),
@@ -91,8 +90,8 @@ vi.mock("@aztec/aztec.js/contracts", async (importActual) => {
 
 // Counterfactual address derivation — a fake instance stands in for the real
 // class-id/public-keys computation.
-vi.mock("@aztec/stdlib/contract", async (importActual) => {
-  const actual = await importActual<typeof import("@aztec/stdlib/contract")>()
+vi.mock("@aztec-labs/stdlib/contract", async (importActual) => {
+  const actual = await importActual<typeof import("@aztec-labs/stdlib/contract")>()
   return {
     ...actual,
     getContractInstanceFromInstantiationParams: vi.fn(async () => ({
@@ -122,6 +121,7 @@ vi.mock("../../src/services/claimSponsor.js", () => ({
   linkChainInfo: vi.fn(async () => ({ chainId: 31337, rollupVersion: 1 })),
   contractClassWitness: vi.fn(async () => ({ __fake: "classWitness" })),
   registerSponsorFpc: vi.fn(async () => ({ __fake: "fpcArtifact" })),
+  giftVoucherInteraction: vi.fn(() => ({ __fake: "giftInteraction" })),
   authorizeSponsoredBatch: vi.fn(async () => ({
     accountCall: { __fake: "accountCall" },
     intentHashes: [],
@@ -145,10 +145,11 @@ vi.mock("../../src/feePaymentMethod/sponsoredCall.js", () => ({
   MAX_SPONSORED_CALLS: 5,
 }))
 
-vi.mock("@aztec/aztec.js/authorization", () => ({
+vi.mock("@aztec-labs/aztec.js/authorization", () => ({
   computeAuthWitMessageHash: vi.fn(async () => Fr.fromString("0xa11ce")),
 }))
 
+import type { ClaimSponsorContext } from "../../src/services/claimSponsor.js"
 import { ClaimBatchFullError, PaylinkService } from "../../src/services/PaylinkService.js"
 import { KIND_BY_ANY } from "../../src/feePaymentMethod/claimSponsoredCall.js"
 import { ObsidionAccount } from "../../src/obsidion/alpha/account/ObsidionAccount.js"
@@ -158,8 +159,8 @@ import {
 } from "../../src/services/paylink/paylinkKeys.js"
 import { DEFAULT_CONTRACTS } from "@obsidion/contracts"
 import { buildSponsoredTeeOperation } from "../../src/services/sponsoredTeeOperation.js"
-import { authorizeSponsoredBatch } from "../../src/services/claimSponsor.js"
-import { Contract } from "@aztec/aztec.js/contracts"
+import { authorizeSponsoredBatch, giftVoucherInteraction } from "../../src/services/claimSponsor.js"
+import { Contract } from "@aztec-labs/aztec.js/contracts"
 import { plainUserPayload, type WithdrawalOptions } from "../../src/services/plainWithdrawal.js"
 
 function paylinkKeyMaterial() {
@@ -222,8 +223,9 @@ function makeService() {
   return { service, sendTx }
 }
 
-const sponsor = {
+const sponsor: ClaimSponsorContext = {
   railId: 0,
+  gate: "nameClaim",
   fpcAddress: FPC_ADDR,
   fpcArtifact: { __fake: "fpcArtifact" } as any,
   policy: { __fake: "policy" } as any,
@@ -241,6 +243,8 @@ const linkParams = {
 
 const EXECUTOR = EthAddress.fromString(`0x${"33".repeat(20)}`)
 const withdrawal: WithdrawalOptions = {
+  // An executor that takes no fee.
+  l1: { readContract: async () => 0n } as never,
   tuple: {
     portal: `0x${"11".repeat(20)}`,
     token: `0x${"22".repeat(20)}`,
@@ -248,7 +252,6 @@ const withdrawal: WithdrawalOptions = {
     plainWithdrawalExecutor: EXECUTOR.toString(),
     l2Broadcaster: AztecAddress.fromBigIntUnsafe(66n).toString(),
   },
-  portal: { fpcFundingCut: 0n, frozen: false },
 }
 
 describe("sponsored paylink dispatch — tag sender", () => {
@@ -358,7 +361,23 @@ describe("sponsored paylink dispatch — tag sender", () => {
     )
     expect(claimSpy).not.toHaveBeenCalled()
     const args = vi.mocked(buildSponsoredTeeOperation).mock.calls[0]![1]
-    expect(args.teeUnsignedInteractions).toEqual([{ __fake: "releaseBroadcast" }])
+    // A plain burn broadcasts nothing of its own; the TEE batch appends its finalization request.
+    expect(args.teeUnsignedInteractions).toEqual([])
+    expect(args.plainWithdrawal).toEqual({ executor: EXECUTOR, fee: 0n })
+    expect(args.operations[0]).toMatchObject({
+      kind: "outerCall",
+      withdrawals: [
+        {
+          kind: "withdraw",
+          from: INSTANCE_ADDR,
+          executor: EXECUTOR,
+          userPayload: plainUserPayload(l1Recipient),
+          amount: 3_000_000_000_000_000_000n,
+          proverTip: 5n,
+          finalizationRequestBroadcastParams: { broadcaster: BROADCASTER },
+        },
+      ],
+    })
     const opts = sendTx.mock.calls[0]![1] as any
     expect(opts.sendMessagesAs).toBe(USER_ADDR)
     expect(opts.additionalScopes).toEqual([USER_ADDR, INSTANCE_ADDR])
@@ -457,12 +476,13 @@ describe("sponsored paylink dispatch — tag sender", () => {
       return sendTx
     }
 
-    it("rides between the release and publish_da, unsigned by the enclave", async () => {
+    it("rides before the finalization request and publish_da, unsigned by the enclave", async () => {
       const sendTx = await claim(openSponsor)
       const args = vi.mocked(buildSponsoredTeeOperation).mock.calls[0]![1]
-      // [claim_with_withdrawal, release, notify_sipa_recipient, sweep, publish_da]: five calls.
+      // [claim_with_withdrawal, notify_sipa_recipient, sweep, finalization request, publish_da]:
+      // five calls. The TEE batch appends the finalization request after the unsigned calls.
       expect(args.operations).toHaveLength(1)
-      expect(args.teeUnsignedInteractions).toEqual([{ __fake: "releaseBroadcast" }, notify, sweep])
+      expect(args.teeUnsignedInteractions).toEqual([notify, sweep])
       expect(args.user).toBe(INSTANCE_ADDR)
       expect(authorizeSponsoredBatch).not.toHaveBeenCalled()
       expect(sendTx).toHaveBeenCalledOnce()
@@ -496,5 +516,72 @@ describe("sponsored paylink dispatch — tag sender", () => {
     await service.claimSponsoredPaylink({ ...linkParams, escrowTagSecret: undefined }, sponsor)
 
     expect(registerEscrowTagSecret).not.toHaveBeenCalled()
+  })
+})
+
+describe("sponsored paylink legs paid by another account's note", () => {
+  const PAYER_ADDR = AztecAddress.fromBigIntUnsafe(22n)
+  const paid: ClaimSponsorContext = { ...sponsor, payer: PAYER_ADDR }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  const sent = (sendTx: ReturnType<typeof makeService>["sendTx"]) => sendTx.mock.calls[0]![1] as any
+  const built = () => vi.mocked(buildSponsoredTeeOperation).mock.calls[0]![1]
+
+  it("a create spends the payer's note, gifts from it, and acts as the creator", async () => {
+    const { service, sendTx } = makeService()
+    await service.createSponsoredPaylink(
+      {
+        amount: 3_000_000_000_000_000_000n,
+        token: TOKEN_ADDR,
+        window: { fromClaimable: 0n, untilClaimable: 86_400n, refundableUntil: 0n },
+        masterSecret: Fr.fromString("0x99"),
+        voucher: { railId: 1 },
+      },
+      paid,
+    )
+
+    expect(built().user).toBe(PAYER_ADDR)
+    expect(built().intentsAccount).toBe(USER_ADDR)
+    expect(giftVoucherInteraction).toHaveBeenCalledWith(
+      expect.anything(),
+      paid,
+      PAYER_ADDR,
+      INSTANCE_ADDR,
+      1,
+    )
+    expect(sent(sendTx).sendMessagesAs).toBe(USER_ADDR)
+    expect(sent(sendTx).additionalScopes).toEqual([PAYER_ADDR, USER_ADDR, INSTANCE_ADDR])
+  })
+
+  it("a claim spends the payer's note and acts as the claimer", async () => {
+    const { service, sendTx } = makeService()
+    await service.claimSponsoredPaylink(linkParams, paid)
+
+    expect(built().user).toBe(PAYER_ADDR)
+    expect(built().intentsAccount).toBe(USER_ADDR)
+    expect(sent(sendTx).sendMessagesAs).toBe(USER_ADDR)
+    expect(sent(sendTx).additionalScopes).toEqual([PAYER_ADDR, USER_ADDR, INSTANCE_ADDR])
+  })
+
+  it("a refund spends the payer's note and acts as the sender", async () => {
+    const { service, sendTx } = makeService()
+    await service.refundSponsoredPaylink(linkParams, paid)
+
+    expect(built().user).toBe(PAYER_ADDR)
+    expect(built().intentsAccount).toBe(USER_ADDR)
+    expect(sent(sendTx).sendMessagesAs).toBe(USER_ADDR)
+    expect(sent(sendTx).additionalScopes).toEqual([PAYER_ADDR, USER_ADDR, INSTANCE_ADDR])
+  })
+
+  it("a voucher claim still spends the escrow's note", async () => {
+    const { service, sendTx } = makeService()
+    await service.claimSponsoredPaylink(linkParams, paid, { voucher: { railId: paid.railId } })
+
+    expect(built().user).toBe(INSTANCE_ADDR)
+    expect(built().intentsAccount).toBe(USER_ADDR)
+    expect(sent(sendTx).additionalScopes).toEqual([USER_ADDR, INSTANCE_ADDR])
   })
 })

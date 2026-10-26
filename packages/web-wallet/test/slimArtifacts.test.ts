@@ -7,9 +7,9 @@
 import { createHash } from "node:crypto"
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs"
 import { join, resolve } from "node:path"
-import { BarretenbergSync } from "@aztec/bb.js"
-import { loadContractArtifact } from "@aztec/stdlib/abi"
-import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
+import { BarretenbergSync } from "@aztec-foundation/bb.js"
+import { loadContractArtifact } from "@aztec-labs/stdlib/abi"
+import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
 import { beforeAll, describe, expect, it } from "vitest"
 import type { Plugin, UserConfig } from "vite"
 import {
@@ -37,7 +37,7 @@ function slimmedFiles(): { aztec: string[]; ours: string[] } {
   const store = join(REPO, "node_modules/.pnpm")
   const aztec = dirs(store).flatMap((entry) =>
     AZTEC_PACKAGES.flatMap((name) => {
-      const root = join(store, entry.name, "node_modules/@aztec", name)
+      const root = join(store, entry.name, "node_modules/@aztec-labs", name)
       return dirs(root)
         .filter((d) => d.name.startsWith("artifacts"))
         .flatMap((d) => jsonIn(join(root, d.name)))
@@ -87,7 +87,7 @@ describe("slim contract artifacts", () => {
     expect(files.aztec.map(name).join("\n")).toMatch(
       /protocol-contracts\/artifacts\/FeeJuice\.json/,
     )
-    expect(files.aztec.map(name).join("\n")).toMatch(/standard-contracts\/artifacts-historical\//)
+    expect(files.aztec.map(name).join("\n")).toMatch(/standard-contracts\/artifacts\//)
   })
 
   it.each([...files.ours, ...files.aztec].map((file) => [name(file), file]))(

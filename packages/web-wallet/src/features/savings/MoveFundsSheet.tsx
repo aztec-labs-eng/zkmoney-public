@@ -41,7 +41,7 @@ import { SavingsTermsAccept } from "./SavingsTerms"
 import { useBusyLabel } from "../operations/operations"
 import { OperationHandOff } from "../operations/OperationHandOff"
 import { useUserFlowActive } from "../provingGate"
-import { FEE_UNAVAILABLE_COPY } from "../withdraw/withdrawQuote"
+import { FEE_UNAVAILABLE_COPY, ProtocolFeeNote } from "../withdraw/withdrawQuote"
 import { LimitNotice, usdFigureGrouped } from "../limits/publicLimit"
 import {
   sharesBurnLimitProblem,
@@ -52,6 +52,9 @@ import {
 import { apyPercent } from "./EarningsCalculator"
 import { SavingsQuoteChangedError } from "./quoteChanged"
 import { savingsEtaCopy, useSavingsMoveTiming } from "./savingsMoveTiming"
+import { useTxAmountCap } from "../token/useTxAmountCap"
+import { getConfig } from "../../config/env"
+import { getSavingsTuple } from "./savingsGateway"
 
 const QUOTE_DEBOUNCE_MS = 400
 
@@ -92,6 +95,8 @@ export function sharesFor(
  * ceremony is the last beat needing the user: `OperationHandOff` then closes the sheet while the
  * proof and the send carry on under the bell. Cancel is honored only while the burn is still building.
  */
+const savingsDeployment = () => getSavingsTuple(getConfig())
+
 export function MoveFundsSheet({
   direction: initialDirection,
   initialAmount = "",
@@ -101,6 +106,8 @@ export function MoveFundsSheet({
   initialAmount?: string
   onClose: () => void
 }) {
+  const txAmountCap = useTxAmountCap()
+  const savingsCap = useTxAmountCap(savingsDeployment)
   const { position, quote, move } = useSavings()
   const { walletAsset, assetsLoaded } = useBalance()
   const [direction, setDirection] = useState(initialDirection)
@@ -134,11 +141,11 @@ export function MoveFundsSheet({
   const parsed = parseAmount(amount)
   const valueAtomic =
     !amountError(amount) && parsed > 0 ? parseUnits(amount, DEFAULT_DECIMALS) : undefined
-  const maxShares = position ? sharesBurnMax(position.shares) : undefined
+  const maxShares = position ? sharesBurnMax(position.shares, savingsCap) : undefined
   // MAX moving in stops at Main's withdrawal limit; moving out, at the per-burn share maximum.
   const maxValue =
     direction === "in"
-      ? withdrawalMaxAtomic(available) ?? 0n
+      ? withdrawalMaxAtomic(available, txAmountCap) ?? 0n
       : position && maxShares !== undefined && position.shares > 0n
       ? (position.value * maxShares) / position.shares
       : available
@@ -169,8 +176,8 @@ export function MoveFundsSheet({
     burnAtomic === undefined
       ? undefined
       : direction === "in"
-      ? withdrawalLimitProblem(burnAtomic)
-      : sharesBurnLimitProblem(burnAtomic)
+      ? withdrawalLimitProblem(burnAtomic, txAmountCap)
+      : sharesBurnLimitProblem(burnAtomic, savingsCap)
   const key =
     burnAtomic === undefined ? "" : `${direction}:${burnAtomic}:${feeOnTop ? "top" : "off"}`
 
@@ -228,7 +235,9 @@ export function MoveFundsSheet({
   const feeOverspent =
     feeOnTop && availableKnown && quoted !== undefined && quoted.amount > available
   const grossLimitProblem =
-    feeOnTop && quoted !== undefined ? withdrawalLimitProblem(quoted.amount) : undefined
+    feeOnTop && quoted !== undefined
+      ? withdrawalLimitProblem(quoted.amount, txAmountCap)
+      : undefined
   const payback =
     direction === "in" && quoted && position?.apy !== undefined
       ? savingsPaybackYears(quoted.net, quoted.fee, position.apy)
@@ -404,6 +413,10 @@ export function MoveFundsSheet({
               <span>L1 fee</span>
               <b style={{ fontSize: 14 }}>{figure(quoted?.fee)}</b>
             </div>
+            <ProtocolFeeNote
+              fee={quoting ? undefined : quoted?.withdrawalFee}
+              beneficiary={quoted?.feeBeneficiary}
+            />
             <div className="ww-deposit__input ww-sheet__fact">
               {feeOnTop ? (
                 <>
@@ -465,6 +478,10 @@ export function MoveFundsSheet({
               <DepositFact label="L1 fee">
                 <b>{exact(quoted?.fee)}</b>
               </DepositFact>
+              <ProtocolFeeNote
+                fee={quoting ? undefined : quoted?.withdrawalFee}
+                beneficiary={quoted?.feeBeneficiary}
+              />
               <hr className="ww-divider" />
               {feeOnTop ? (
                 <DepositFact label={`${from} pays`}>

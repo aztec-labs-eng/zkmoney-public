@@ -1,4 +1,4 @@
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { ContractService, DEFAULT_CONTRACTS } from "@obsidion/contracts"
 
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"

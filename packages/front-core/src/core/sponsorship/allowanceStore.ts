@@ -6,6 +6,8 @@ import type { AllowanceUsage } from "./allowanceUsage"
 export interface AllowanceRead {
   fpcAddress: string
   railId: number
+  /** The account whose notes hold the allowance: the batches' payer. */
+  payer: string
   allowance: ClaimFpcAllowance
   /** Absent when the split could not be read; the count still stands. */
   usage?: AllowanceUsage

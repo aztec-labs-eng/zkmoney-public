@@ -1,23 +1,25 @@
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { EthAddress } from "@aztec/foundation/eth-address"
-import { PublicKeys } from "@aztec/stdlib/keys"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { EthAddress } from "@aztec-labs/foundation/eth-address"
+import { PublicKeys } from "@aztec-labs/stdlib/keys"
 import {
   ContractArtifact,
   FunctionCall,
   FunctionSelector,
   FunctionType,
   encodeArguments,
-} from "@aztec/stdlib/abi"
-import type { AuthWitness } from "@aztec/stdlib/auth-witness"
-import { ExecutionPayload, HashedValues, type Capsule } from "@aztec/stdlib/tx"
-import { poseidon2HashWithSeparator } from "@aztec/foundation/crypto/poseidon"
+  getFunctionReturnType,
+} from "@aztec-labs/stdlib/abi"
+import type { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
+import { ExecutionPayload, HashedValues, type Capsule } from "@aztec-labs/stdlib/tx"
+import { poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
 import {
   MAX_SPONSORED_CALLS,
   buildIntentCapsule,
   buildSponsoredCallBatch,
   padIntentHashes,
 } from "./sponsoredCall.js"
+import type { BootstrapKeyProof } from "./bootstrapKeyWitness.js"
 
 /** Mirrors claim_fpc's fixed binary policy tree. */
 export const CLAIM_FPC_POLICY_DEPTH = 6
@@ -205,8 +207,7 @@ export function gateArgs(user: AztecAddress, gate: ClaimFpcGateWitness): unknown
       Array.from(gate.nameHash),
       Array.from(gate.bootstrapPubKeyX),
       Array.from(gate.bootstrapPubKeyY),
-      Array.from(gate.bindingSig),
-      gate.secret,
+      Array.from(gate.keyWitness),
       gate.leafIndex,
     ]
   }
@@ -512,13 +513,13 @@ export interface NameClaimWitness extends OxideAccountBinding {
 }
 
 /**
- * The registration gate's witnesses: the binding, plus the NamePortal message naming the same
- * account and name. Both message witnesses are public — the secret by design, the leaf index from
- * the Inbox's logs — so `findRegistrationMessage` (services/registrationMessage.ts) rebuilds them
- * for a wallet restored on a fresh device.
+ * The registration gate's witnesses: the bootstrap key proof, plus the leaf of the NamePortal
+ * message naming that key's address and the name. The key derives from the master secret and the
+ * leaf index comes from the Inbox's logs (`findRegistrationMessage`, services/registrationMessage.ts),
+ * so a wallet restored on a fresh device rebuilds them.
  */
-export interface RegistrationWitness extends OxideAccountBinding {
-  secret: Fr
+export interface RegistrationWitness extends BootstrapKeyProof {
+  nameHash: Uint8Array // 32
   leafIndex: Fr
 }
 
@@ -660,7 +661,7 @@ async function buildPayload(
     isStatic: false,
     hideMsgSender: false,
     args,
-    returnTypes: abi.returnTypes,
+    returnType: getFunctionReturnType(abi),
   })
 
   return new ExecutionPayload(

@@ -3,14 +3,14 @@
  * at least `threshold` sits under a recent note-tree root, siloed to a paylink escrow, bound to one
  * L1 owner. The wallet proves it; the account-service verifies it and grants the reduced schedule.
  */
-import type { EthAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { poseidon2HashWithSeparator } from "@aztec/foundation/crypto/poseidon"
-import type { NotesFilter, PXE } from "@aztec/pxe/client/lazy"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
-import { computeUniqueNoteHash, siloNoteHash } from "@aztec/stdlib/hash"
-import type { NoteDao } from "@aztec/stdlib/note"
+import type { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
+import type { NotesFilter, PXE } from "@aztec-labs/pxe/client/lazy"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
+import { computeUniqueNoteHash, siloNoteHash } from "@aztec-labs/stdlib/hash"
+import type { NoteDao } from "@aztec-labs/stdlib/note"
 import { type ContractName, type ContractService, DEFAULT_CONTRACTS } from "@obsidion/contracts"
 import { DOM_SEP__GOLDEN_TICKET } from "@obsidion/core/constants"
 import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
@@ -108,7 +108,7 @@ export function goldenTicketPublicInputVector(p: GoldenTicketPublicInputs, nulli
 
 /**
  * The escrow's settled paylink note as the PXE stores it, read through `PXE.debug.getNotes`, the one
- * note-preimage read `@aztec/pxe` 5.2.0 exposes. Upstream marks it debug-only because a note layout
+ * note-preimage read `@aztec-labs/pxe` 5.2.0 exposes. Upstream marks it debug-only because a note layout
  * is a contract's implementation detail; here the escrow contract and its note layout are
  * wallet-owned, the read runs inside the PXE job queue behind its block sync and the escrow's own
  * `sync_state`, and the `NotesFilter` / `NoteDao` types make a rename at the next repin a build

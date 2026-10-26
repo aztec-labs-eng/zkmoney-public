@@ -46,6 +46,9 @@ vi.mock("../src/features/onboarding/openRegistration", () => ({
 vi.mock("../src/features/onboarding/ChooseNameSheet", () => ({ ChooseNameSheet: () => null }))
 vi.mock("../src/lib/analytics", () => ({ appVersion: "0.0.0" }))
 vi.mock("../src/ui/prefs", () => ({ useHideBalances: () => [false, vi.fn()] }))
+vi.mock("../src/features/backupPasskey/backupRotationStore", () => ({
+  useBackupRotation: () => null,
+}))
 vi.mock("../src/features/requests/useNonContactRequests", () => ({
   useNonContactRequests: () => ({ requests: [], allowed: true, setAllowed: vi.fn() }),
 }))
@@ -67,6 +70,13 @@ vi.mock("../src/features/limits/AboutLimitsSheet", () => ({
 vi.mock("../src/ui/ContractAddressesModal", () => ({
   ContractAddressesModal: ({ onClose }: { onClose: () => void }) => (
     <div data-testid="contract-addresses">
+      <button onClick={onClose}>close</button>
+    </div>
+  ),
+}))
+vi.mock("../src/ui/PasskeysModal", () => ({
+  PasskeysModal: ({ onClose }: { onClose: () => void }) => (
+    <div data-testid="passkeys">
       <button onClick={onClose}>close</button>
     </div>
   ),
@@ -136,6 +146,15 @@ describe("SettingsScreen Advanced section", () => {
     expect(
       container.querySelector<HTMLElement>('[data-testid="about-limits-sheet"]')?.dataset.topic,
     ).toBe("sponsorship")
+  })
+
+  it("opens and closes the passkeys sheet from General", async () => {
+    await mount()
+    expect(container.querySelector('[data-testid="passkeys"]')).toBeNull()
+    await act(async () => row("Passkeys")!.click())
+    expect(container.querySelector('[data-testid="passkeys"]')).not.toBeNull()
+    await act(async () => button("close")!.click())
+    expect(container.querySelector('[data-testid="passkeys"]')).toBeNull()
   })
 
   it("sends Clear local data to the reset page", async () => {

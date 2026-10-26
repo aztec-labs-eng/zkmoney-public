@@ -12,8 +12,8 @@ import { createReorgMonitor, type CreateReorgMonitorOptions } from "../../src/co
 import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
 import { resetSingleton } from "../__test-helpers__/resetSingleton"
 
-vi.mock("@aztec/aztec.js/node", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@aztec/aztec.js/node")>()
+vi.mock("@aztec-labs/aztec.js/node", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@aztec-labs/aztec.js/node")>()
   return { ...actual, createAztecNodeClient: vi.fn() }
 })
 

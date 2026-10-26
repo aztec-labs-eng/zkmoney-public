@@ -33,10 +33,15 @@ type TupleNonAddress =
   | "frozenDepositRefundVkSha256"
   | "fpcBeneficiarySalt"
   | "sipaRecoveryProtocol"
+  | "bridgeKey"
+  | "bridgeId"
+  | "features"
+  | "l2TokenImmutables"
 
 const OXIDE_CHAIN = {
   portal: "L1",
   token: "L1",
+  underlying: "L1",
   l2Token: "L2",
   registry: "L1",
   accountMetadataRegistry: "L1",
@@ -50,11 +55,12 @@ const OXIDE_CHAIN = {
   resolverProofVerifier: "L1",
   depositSIPAImplementation: "L1",
   registrationSIPAImplementation: "L1",
+  forwardingTable: "L1",
+  feeToken: "L1",
   depositSubsidy: "L1",
   withdrawalSubsidy: "L1",
   proverSubsidy: "L1",
   plainWithdrawalExecutor: "L1",
-  updateMetadataSIPAImplementation: "L1",
   swapEscrowFactoryV2: "L1",
   skyEscrowFactory: "L1",
   operationExecutor: "L1",
@@ -149,6 +155,15 @@ export function ContractAddressesModal({ onClose }: { onClose: () => void }) {
           value: text(tuple?.[field as keyof typeof OXIDE_CHAIN]),
         }),
       )
+      const featureRows = (tuple?.features ?? []).flatMap((feature) =>
+        Object.entries(feature.contracts).map(
+          ([name, address]): Row => ({
+            label: `${feature.id} ${name}`,
+            chain: "L1",
+            value: text(address),
+          }),
+        ),
+      )
       const nodeRows: Row[] = [
         ...Object.entries(NODE_L1).map(
           ([label, key]): Row => ({
@@ -165,7 +180,7 @@ export function ContractAddressesModal({ onClose }: { onClose: () => void }) {
       ]
       setGroups([
         { title: "zk.money contracts", rows: l2Rows },
-        { title: "Oxide deployment", rows: oxideRows },
+        { title: "Oxide deployment", rows: [...oxideRows, ...featureRows] },
         { title: "Aztec protocol", rows: nodeRows },
       ])
     })()

@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   WebPasskeyIdentityMap,
+  hasOpeningBreadcrumb,
   hasRecordFor,
   listRetiredUsertagCandidates,
   listUsertagCandidates,
@@ -24,6 +25,7 @@ const entry = (credentialId: string) => ({
   pubkey: "ab".repeat(64),
   isMskRoot: true,
 })
+const BACKUP = { account: `0x${"11".repeat(20)}`, envelope: `01${"00".repeat(61)}` }
 /** The raw stored entry, timestamp included. */
 const stored = (credentialId: string) =>
   JSON.parse(walletStorage.getItem("obsidion.obsidion_web_passkey_identity_map")!).entries[
@@ -148,17 +150,19 @@ describe("WebPasskeyIdentityMap under concurrent writers", () => {
     await new Promise((resolve) => setTimeout(resolve, 2))
     await map.upsert(entry("new"))
     await map.setInferredTransports("old", ["usb"])
-    expect((await map.getMskRoot())?.credentialId).toBe("new")
+    expect((await map.getOpeningRecord())?.credentialId).toBe("new")
   })
 
-  it("the root for an account is the one that opened it, not the newest; none when this browser has no root for it", async () => {
+  it("the record for an account is the one that opened it, not the newest; none when this browser has none for it", async () => {
     const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
     await map.upsert(entry("old"))
     await new Promise((resolve) => setTimeout(resolve, 2))
     await map.upsert(entry("new"))
-    expect((await map.getMskRoot(entry("old").l2Address))?.credentialId).toBe("old")
-    expect((await map.getMskRoot(entry("old").l2Address.toUpperCase()))?.credentialId).toBe("old")
-    expect(await map.getMskRoot(`0x${"ff".repeat(32)}`)).toBeUndefined()
+    expect((await map.getOpeningRecord(entry("old").l2Address))?.credentialId).toBe("old")
+    expect((await map.getOpeningRecord(entry("old").l2Address.toUpperCase()))?.credentialId).toBe(
+      "old",
+    )
+    expect(await map.getOpeningRecord(`0x${"ff".repeat(32)}`)).toBeUndefined()
   })
 
   it("a creation list that lands first vetoes a heal issued against an older snapshot", async () => {
@@ -209,7 +213,11 @@ describe("the remembered accounts a sign-in screen lists", () => {
   beforeEach(() => localStorage.clear())
 
   /** Upsert `credentialId` at a fixed clock, so the newest-first order is deterministic. */
-  const upsertAt = async (map: WebPasskeyIdentityMap, at: number, meta = entry("x")) => {
+  const upsertAt = async (
+    map: WebPasskeyIdentityMap,
+    at: number,
+    meta: Parameters<WebPasskeyIdentityMap["upsert"]>[0] = entry("x"),
+  ) => {
     const now = vi.spyOn(Date, "now").mockReturnValue(at)
     try {
       await map.upsert(meta)
@@ -226,8 +234,37 @@ describe("the remembered accounts a sign-in screen lists", () => {
     await rememberUsertag(RP, "a", "alice")
     await rememberUsertag(RP, "c", "carol")
     expect(listUsertagCandidates(RP)).toEqual([
-      { credentialId: "c", usertag: "carol", l2Address: entry("c").l2Address, pubkeyHex: "ab".repeat(64) },
-      { credentialId: "a", usertag: "alice", l2Address: entry("a").l2Address, pubkeyHex: "ab".repeat(64) },
+      {
+        credentialId: "c",
+        usertag: "carol",
+        l2Address: entry("c").l2Address,
+        pubkeyHex: "ab".repeat(64),
+        backup: false,
+      },
+      {
+        credentialId: "a",
+        usertag: "alice",
+        l2Address: entry("a").l2Address,
+        pubkeyHex: "ab".repeat(64),
+        backup: false,
+      },
+    ])
+  })
+
+  it("a backup record with a tag is listed and says so; a rotated signing record is not", async () => {
+    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    await upsertAt(map, 1000, { ...entry("b"), isMskRoot: false, backup: BACKUP })
+    await rememberUsertag(RP, "b", "bob")
+    await upsertAt(map, 2000, { ...entry("r"), isMskRoot: false })
+    await rememberUsertag(RP, "r", "rotated")
+    expect(listUsertagCandidates(RP)).toEqual([
+      {
+        credentialId: "b",
+        usertag: "bob",
+        l2Address: entry("b").l2Address,
+        pubkeyHex: "ab".repeat(64),
+        backup: true,
+      },
     ])
   })
 
@@ -259,6 +296,57 @@ describe("the remembered accounts a sign-in screen lists", () => {
 
   it("an empty browser lists nothing", () => {
     expect(listUsertagCandidates(RP)).toEqual([])
+  })
+})
+
+describe("records that open the wallet", () => {
+  beforeEach(() => localStorage.clear())
+
+  it("a backup record opens it: found, counted as a breadcrumb; a rotated record does neither", async () => {
+    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    await map.upsert({ ...entry("rotated"), isMskRoot: false })
+    expect(await map.getOpeningRecord()).toBeUndefined()
+    expect(await map.getOpeningRecord(entry("rotated").l2Address)).toBeUndefined()
+    expect(hasOpeningBreadcrumb(RP)).toBe(false)
+    await map.upsert({ ...entry("backup"), isMskRoot: false, backup: BACKUP })
+    expect((await map.getOpeningRecord())?.credentialId).toBe("backup")
+    expect((await map.getOpeningRecord(entry("backup").l2Address))?.credentialId).toBe("backup")
+    expect(hasOpeningBreadcrumb(RP)).toBe(true)
+  })
+
+  it("the set and the envelope round-trip; a backup write is stored as a non-root", async () => {
+    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    const passkeySet = ["ab".repeat(64), "cd".repeat(64)]
+    await map.upsert({ ...entry("b"), passkeySet, backup: BACKUP })
+    expect(await map.get("b")).toMatchObject({ passkeySet, backup: BACKUP, isMskRoot: false })
+  })
+
+  it("a write without an envelope drops a stored one, root or not; the record then opens nothing", async () => {
+    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    await map.upsert({ ...entry("b"), isMskRoot: false, backup: BACKUP })
+    expect((await map.getOpeningRecord())?.credentialId).toBe("b")
+    await map.upsert({ ...entry("b"), isMskRoot: false })
+    expect(stored("b")).not.toHaveProperty("backup")
+    expect(await map.getOpeningRecord()).toBeUndefined()
+    await map.upsert({ ...entry("b"), backup: BACKUP })
+    expect(await map.get("b")).toMatchObject({ backup: BACKUP, isMskRoot: false })
+    await map.upsert(entry("b"))
+    expect(stored("b")).not.toHaveProperty("backup")
+    expect((await map.get("b"))?.isMskRoot).toBe(true)
+  })
+
+  it("a set that lacks the record's own key is refused, and nothing is written", async () => {
+    const map = new WebPasskeyIdentityMap(new WebStorageAdapter(), RP)
+    await expect(map.upsert({ ...entry("a"), passkeySet: ["cd".repeat(64)] })).rejects.toThrow(
+      "passkey set",
+    )
+    expect(await map.get("a")).toBeUndefined()
+    await map.upsert({
+      ...entry("a"),
+      pubkey: `0x${"AB".repeat(64)}`,
+      passkeySet: ["ab".repeat(64)],
+    })
+    expect((await map.get("a"))?.passkeySet).toEqual(["ab".repeat(64)])
   })
 })
 
@@ -317,7 +405,7 @@ describe("remembered accounts on earlier rollups", () => {
     usertag,
   })
 
-  it("lists another rollup's tagged root records, skipping a malformed map or entry", async () => {
+  it("lists another rollup's tagged root records, skipping a backup, a malformed map or entry", async () => {
     await closeWalletStore()
     await openWalletStore(sandboxProfile().shared.rollupVersion, { persistent: true })
     const dbs = testWalletDbs()
@@ -329,6 +417,7 @@ describe("remembered accounts on earlier rollups", () => {
           c: remembered("c", "carol", 1),
           x: remembered("x", 7, 2),
           t: { ...remembered("t", "tom", 3), createdAt: { toString: 0 } },
+          b: { ...remembered("b", "bob", 4), isMskRoot: false, backup: BACKUP },
         },
       }),
     )
@@ -340,6 +429,7 @@ describe("remembered accounts on earlier rollups", () => {
         usertag: "carol",
         l2Address: entry("c").l2Address,
         pubkeyHex: "ab".repeat(64),
+        backup: false,
       },
       // An unreadable creation time sorts last rather than failing the read.
       {
@@ -347,6 +437,7 @@ describe("remembered accounts on earlier rollups", () => {
         usertag: "tom",
         l2Address: entry("t").l2Address,
         pubkeyHex: "ab".repeat(64),
+        backup: false,
       },
     ])
     expect(listUsertagCandidates(RP)).toEqual([])

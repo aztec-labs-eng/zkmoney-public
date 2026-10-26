@@ -7,7 +7,7 @@ import {
 import { CONFIG_STORAGE_KEY_PREFIX } from "@obsidion/core/constants"
 import { getActiveStorageId } from "./activeStorage"
 import { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX } from "./storageKeys"
-import { readFromOtherDatabases, walletStorage } from "./walletStorage"
+import { loadFromOtherDatabases, readFromOtherDatabases, walletStorage } from "./walletStorage"
 
 export { PASSKEY_IDENTITY_MAP_KEY, WEB_STORAGE_PREFIX }
 
@@ -57,6 +57,33 @@ export class WebStorageAdapter implements IStorageAdapter {
    */
   getItemFromOtherDatabases(key: string): Promise<string[]> {
     return readFromOtherDatabases(this.scoped(key), { strict: true })
+  }
+
+  /**
+   * This account's part of every other rollup's database, each read whole under one open and handed
+   * to `read`: `get` is one of the account's keys there, `keys` lists them under a prefix. A database
+   * it cannot read fails the read.
+   */
+  readOtherDatabases<T>(
+    read: (db: {
+      version: string
+      get(key: string): string | undefined
+      keys(prefix: string): string[]
+    }) => T,
+  ): Promise<T[]> {
+    return loadFromOtherDatabases(
+      ({ version, state }) =>
+        read({
+          version,
+          get: (key) => state.get(this.scoped(key)),
+          keys: (prefix) => {
+            const scoped = this.scoped(prefix)
+            const base = scoped.length - prefix.length
+            return [...state.keys()].filter((k) => k.startsWith(scoped)).map((k) => k.slice(base))
+          },
+        }),
+      { strict: true },
+    )
   }
 
   /** Wipes the active account's namespace, not other accounts' or the global keys. No-op without an account. */

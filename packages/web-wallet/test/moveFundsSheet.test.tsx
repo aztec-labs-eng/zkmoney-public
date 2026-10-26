@@ -51,10 +51,17 @@ vi.mock("@obsidion/front-core", () => ({
 vi.mock("@obsidion/passkey-web", () => ({ isPasskeyCancelled: () => false }))
 // A small per-burn maximum and Main's dollar limit, so both are reachable in a test.
 const limits = vi.hoisted(() => ({ cap: 10n ** 30n, dollars: 10n ** 30n }))
+vi.mock("../src/features/token/useTxAmountCap", () => ({ useTxAmountCap: () => limits.cap }))
+vi.mock("../src/features/savings/savingsGateway", () => ({
+  getSavingsTuple: async () => undefined,
+}))
+vi.mock("../src/config/env", () => ({ getConfig: () => ({}) }))
 vi.mock("../src/features/limits/withdrawalLimit", () => ({
   withdrawalLimitProblem: (debit: bigint) => (debit > limits.dollars ? "public" : undefined),
-  sharesBurnLimitProblem: (shares: bigint) => (shares > limits.cap ? "protocol" : undefined),
-  sharesBurnMax: (shares: bigint) => (shares > limits.cap ? limits.cap : shares),
+  sharesBurnLimitProblem: (shares: bigint, cap?: bigint) =>
+    cap !== undefined && shares > cap ? "protocol" : undefined,
+  sharesBurnMax: (shares: bigint, cap?: bigint) =>
+    cap !== undefined && shares > cap ? cap : shares,
   withdrawalMaxAtomic: (balance: bigint) => (balance > limits.dollars ? limits.dollars : balance),
 }))
 vi.mock("../src/features/limits/publicLimit", () => ({

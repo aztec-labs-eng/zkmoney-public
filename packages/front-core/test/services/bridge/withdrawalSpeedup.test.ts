@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
-import type { L1RollupConstants } from "@aztec/stdlib/epoch-helpers"
-import { MAX_RPC_CHECKPOINTS_DATA_LEN } from "@aztec/stdlib/interfaces/api-limit"
+import type { L1RollupConstants } from "@aztec-labs/stdlib/epoch-helpers"
+import { MAX_RPC_CHECKPOINTS_DATA_LEN } from "@aztec-labs/stdlib/interfaces/api-limit"
 import type { PublicClient } from "viem"
 
 import {

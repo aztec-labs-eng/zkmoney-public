@@ -33,7 +33,7 @@
     {
       "action": "fill",
       "selector": ".ww-fund__amount input",
-      "value": "2499.66"
+      "value": "4999.76"
     },
     {
       "action": "waitFor",
@@ -51,13 +51,13 @@
     {
       "action": "press",
       "role": "button",
-      "name": "Use maximum ($2,499.65)",
+      "name": "Use maximum ($4,999.75)",
       "exact": true,
       "key": "Enter"
     },
     {
       "action": "waitFor",
-      "selector": ".ww-fund__amount input[value=\"2499.65\"]"
+      "selector": ".ww-fund__amount input[value=\"4999.75\"]"
     },
     {
       "action": "waitFor",

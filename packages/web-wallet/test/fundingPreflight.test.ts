@@ -40,6 +40,7 @@ const snapshot = (availableAtomic: bigint, blockAgeS = 0): PortalCapacitySnapsho
   rateAtomicPerSecond: DAI,
   globalLimitAtomic: 50_000n * DAI,
   availableAtomic,
+  txAmountCapAtomic: 5166n * DAI,
 })
 const storeWith = (read: Read): PortalCapacityStore =>
   createPortalCapacityStore(KEY, {
@@ -220,17 +221,16 @@ describe("runFundingPreflight under proceed", () => {
     expect(error).toMatchObject({ reason: "capacity", eligibility: { kind } })
   })
 
-  it("stops an amount above the per-operation cap, even when the read fails", async () => {
-    const failing = storeWith(async () => {
-      throw new Error("rpc down")
-    })
-    for (const store of [available(50_000n * DAI), failing]) {
-      const error = await refusal(proceed(store, known(3_000n)))
-      expect(error).toMatchObject({
-        reason: "capacity",
-        eligibility: { kind: "exceeds-operation-cap" },
-      })
-    }
+  it("stops an amount above the per-operation cap, even when the read after it fails", async () => {
+    const overCap = { reason: "capacity", eligibility: { kind: "exceeds-operation-cap" } }
+    expect(await refusal(proceed(available(50_000n * DAI), known(6_000n)))).toMatchObject(overCap)
+    const { store, pending } = controlled()
+    void store.refresh()
+    const check = refusal(proceed(store, known(6_000n)))
+    pending[0]!.resolve(snapshot(50_000n * DAI))
+    await Promise.resolve()
+    pending[1]!.reject(new Error("rpc down"))
+    expect(await check).toMatchObject(overCap)
   })
 
   it("stops a node that follows another chain, but not a node that has not synced", async () => {

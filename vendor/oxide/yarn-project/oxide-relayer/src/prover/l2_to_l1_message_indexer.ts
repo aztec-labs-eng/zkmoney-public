@@ -1,7 +1,7 @@
-import { OUT_HASH_TREE_LEAF_COUNT } from '@aztec/constants';
-import { Fr } from '@aztec/foundation/curves/bn254';
-import { SiblingPath, UnbalancedMerkleTreeCalculator, computeUnbalancedShaRoot } from '@aztec/foundation/trees';
-import { Checkpoint } from '@aztec/stdlib/checkpoint';
+import { OUT_HASH_TREE_LEAF_COUNT } from '@aztec-labs/constants';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { SiblingPath, UnbalancedMerkleTreeCalculator, computeUnbalancedShaRoot } from '@aztec-labs/foundation/trees';
+import { Checkpoint } from '@aztec-labs/stdlib/checkpoint';
 
 import { ObservedTx } from './types.js';
 
@@ -48,14 +48,13 @@ export class L2ToL1MessageIndexer {
     );
   }
 
-  getLeafIndex(tx: ObservedTx, message: Fr, messageIndexInTx?: number): bigint {
+  getLeafIndex(tx: ObservedTx, message: Fr, messageIndexInTx: number): bigint {
     const targetTx = this.txs.get(txKey(tx.blockNumber, tx.txIndexInBlock));
     if (!targetTx) {
       throw new Error(`Tx ${tx.txEffect.txHash} is not in the indexed checkpoint set`);
     }
 
-    const messagesInTx = tx.txEffect.l2ToL1Msgs;
-    const resolvedMessageIndex = resolveMessageIndex(messagesInTx, message, messageIndexInTx);
+    assertMessageAtIndex(tx.txEffect.l2ToL1Msgs, message, messageIndexInTx);
     const { checkpointIndex, blockIndex, txIndex, messageTree } = targetTx;
     if (!messageTree) {
       throw new Error(`Target tx has no L2 to L1 messages`);
@@ -64,7 +63,7 @@ export class L2ToL1MessageIndexer {
     const blockTree = this.blockTrees[checkpointIndex][blockIndex];
     const checkpointTree = this.checkpointTrees[checkpointIndex];
 
-    const messageLeafPosition = messageTree.getLeafLocation(resolvedMessageIndex);
+    const messageLeafPosition = messageTree.getLeafLocation(messageIndexInTx);
     const txLeafPosition = blockTree.getLeafLocation(txIndex);
     const blockLeafPosition = checkpointTree.getLeafLocation(blockIndex);
     const checkpointLeafPosition = this.epochTree.getLeafLocation(checkpointIndex);
@@ -76,20 +75,19 @@ export class L2ToL1MessageIndexer {
     return BigInt(numLeavesInLeftTxs + messageLeafPosition.index);
   }
 
-  getSiblingPath(tx: ObservedTx, message: Fr, messageIndexInTx?: number): SiblingPath<number> {
+  getSiblingPath(tx: ObservedTx, message: Fr, messageIndexInTx: number): SiblingPath<number> {
     const indexedTx = this.txs.get(txKey(tx.blockNumber, tx.txIndexInBlock));
     if (!indexedTx) {
       throw new Error(`Tx ${tx.txEffect.txHash} is not in the indexed checkpoint set`);
     }
 
-    const messagesInTx = tx.txEffect.l2ToL1Msgs;
-    const resolvedMessageIndex = resolveMessageIndex(messagesInTx, message, messageIndexInTx);
+    assertMessageAtIndex(tx.txEffect.l2ToL1Msgs, message, messageIndexInTx);
     const { checkpointIndex, blockIndex, txIndex, messageTree } = indexedTx;
     if (!messageTree) {
       throw new Error(`Indexed tx has no L2 to L1 messages`);
     }
     const combinedPath = messageTree
-      .getSiblingPathByLeafIndex(resolvedMessageIndex)
+      .getSiblingPathByLeafIndex(messageIndexInTx)
       .toBufferArray()
       .concat(this.blockTrees[checkpointIndex][blockIndex].getSiblingPathByLeafIndex(txIndex).toBufferArray())
       .concat(this.checkpointTrees[checkpointIndex].getSiblingPathByLeafIndex(blockIndex).toBufferArray())
@@ -99,31 +97,10 @@ export class L2ToL1MessageIndexer {
   }
 }
 
-function resolveMessageIndex(messagesInTx: Fr[], message: Fr, messageIndexInTx?: number): number {
-  if (messageIndexInTx !== undefined) {
-    if (!messagesInTx[messageIndexInTx]?.equals(message)) {
-      throw new Error(`Message at index ${messageIndexInTx} in tx does not match the expected message ${message}`);
-    }
-    return messageIndexInTx;
+function assertMessageAtIndex(messagesInTx: Fr[], message: Fr, messageIndexInTx: number) {
+  if (!messagesInTx[messageIndexInTx]?.equals(message)) {
+    throw new Error(`Message at index ${messageIndexInTx} in tx does not match the expected message ${message}`);
   }
-
-  const indices = messagesInTx.reduce<number[]>((acc, msg, i) => {
-    if (msg.equals(message)) {
-      acc.push(i);
-    }
-    return acc;
-  }, []);
-
-  if (indices.length === 0) {
-    throw new Error('The L2ToL1Message you are trying to prove inclusion of does not exist');
-  }
-  if (indices.length > 1) {
-    throw new Error(
-      `Multiple messages with the same value ${message} found in tx (indices: ${indices.join(', ')}). ` +
-        `Provide messageIndexInTx to disambiguate.`,
-    );
-  }
-  return indices[0];
 }
 
 function buildCompressedTree(leaves: Buffer[]) {

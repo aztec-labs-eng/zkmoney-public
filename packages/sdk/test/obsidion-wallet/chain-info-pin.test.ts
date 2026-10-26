@@ -3,22 +3,20 @@
  * authwit hash, account build and link stamp to that pair, whatever the node answers afterwards;
  * a wallet built without it takes the node's answer. Mock PXE / mock node — no sandbox.
  */
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { NO_FROM } from "@aztec/aztec.js/account"
-import { computeAuthWitMessageHash } from "@aztec/aztec.js/authorization"
-import { AccountFeePaymentMethodOptions } from "@aztec/entrypoints/account"
-import type { FeeOptions } from "@aztec/wallet-sdk/base-wallet"
-import { FunctionCall, FunctionSelector, FunctionType } from "@aztec/stdlib/abi"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { CompleteAddress } from "@aztec/stdlib/contract"
-import { ExecutionPayload, SimulationOverrides } from "@aztec/stdlib/tx"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { NO_FROM } from "@aztec-labs/aztec.js/account"
+import { computeAuthWitMessageHash } from "@aztec-labs/aztec.js/authorization"
+import { AccountFeePaymentMethodOptions } from "@aztec-labs/entrypoints/account"
+import type { FeeOptions } from "@aztec-labs/wallet-sdk/base-wallet"
+import { FunctionCall, FunctionSelector, FunctionType } from "@aztec-labs/stdlib/abi"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { CompleteAddress } from "@aztec-labs/stdlib/contract"
+import { ExecutionPayload, SimulationOverrides } from "@aztec-labs/stdlib/tx"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { stubGasSettingsFallback, stubNodeInfo } from "../utils/obsidionWalletStubs.js"
 
 import { ObsidionWallet, type WalletChainInfo } from "../../src/obsidion/ObsidionWallet.js"
-import {
-  ObsidionAccountContractManager,
-} from "../../src/obsidion/alpha/account/ObsidionAccountContractManager.js"
+import { ObsidionAccountContractManager } from "../../src/obsidion/alpha/account/ObsidionAccountContractManager.js"
 import { StubAlphaAuthProvider } from "../../src/obsidion/alpha/auth/StubAlphaAuthProvider.js"
 import { chainInfoFields, linkChainInfo } from "../../src/services/claimSponsor.js"
 
@@ -66,7 +64,6 @@ function privateCallPayload() {
     hideMsgSender: false,
     isStatic: false,
     args: [],
-    returnTypes: [],
   })
   return new ExecutionPayload([call], [], [], [])
 }

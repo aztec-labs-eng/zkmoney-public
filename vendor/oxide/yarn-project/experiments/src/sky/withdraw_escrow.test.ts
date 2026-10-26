@@ -1,9 +1,9 @@
-import { AztecAddress, EthAddress } from '@aztec/aztec.js/addresses';
-import { Fr } from '@aztec/aztec.js/fields';
+import { AztecAddress, EthAddress } from '@aztec-labs/aztec.js/addresses';
+import { Fr } from '@aztec-labs/aztec.js/fields';
 
 import { fakeBroadcaster } from '@oxide/oxide-client/withdraw_escrows/test_helpers.js';
 import { L1OperationCondition } from '@oxide/oxide-lib/l1_operation_calldata.js';
-import { decodePlainWithdrawalPayload } from '@oxide/oxide-lib/plain_withdrawal.js';
+import { decodePlainWithdrawalPayload } from '@oxide/oxide-lib/plain_withdrawal_executor.js';
 import { deriveRecoveryCommitment } from '@oxide/oxide-lib/sipa_recovery.js';
 
 import { describe, expect, it } from '@jest/globals';
@@ -17,15 +17,15 @@ async function skyArgs(): Promise<SkyEscrowWithdrawalArgs> {
     skyEscrowFactory: EthAddress.random(),
     dai: EthAddress.random(),
     from: await AztecAddress.random(),
-    withdrawalExecutor: EthAddress.random(),
+    withdrawalExecutor: { address: EthAddress.random(), fee: 7n },
     amount: 1_000n,
     withdrawalRelayerTip: 10n,
     proverTip: 0n,
-    fpcFundingCut: 0n,
     route: SkyRoute.Stake,
     recipientCommitment: Fr.random().toString(),
     recoveryAccount: EthAddress.random(),
     relayerTip: 20n,
+    portal: EthAddress.random(),
   };
 }
 
@@ -57,7 +57,7 @@ describe('buildSkyEscrowWithdrawal', () => {
     if (operation.kind !== 'withdraw') {
       throw new Error('expected a withdraw operation');
     }
-    expect(operation.executor.equals(args.withdrawalExecutor)).toBe(true);
+    expect(operation.executor.equals(args.withdrawalExecutor.address)).toBe(true);
     const payload = decodePlainWithdrawalPayload(operation.userPayload);
     expect(payload.recipient.equals(escrow)).toBe(true);
     expect(payload.relayerTip).toBe(args.withdrawalRelayerTip);

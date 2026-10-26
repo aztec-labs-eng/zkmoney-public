@@ -1,5 +1,5 @@
-import { AztecAddress, EthAddress } from '@aztec/aztec.js/addresses';
-import { Fr } from '@aztec/aztec.js/fields';
+import { AztecAddress, EthAddress } from '@aztec-labs/aztec.js/addresses';
+import { Fr } from '@aztec-labs/aztec.js/fields';
 
 import { encodeAcrossBridgeEscrowDeploy, predictAcrossBridgeEscrowAddressLocally } from '@oxide/l1-contracts';
 import { MAINNET_USDC, MAINNET_USDT } from '@oxide/l1-contracts/deposit_tokens.js';
@@ -99,7 +99,7 @@ describe('buildAcrossBridgeOnWithdraw', () => {
     const args = await bridgeArgs();
 
     expect(() => buildAcrossBridgeOnWithdraw({ ...args, relayerTip: ESCROW_FUNDING })).toThrow(
-      `relayerTip (${ESCROW_FUNDING}) must be below the escrow funding of amount - proverTip - fpcFundingCut - withdrawalRelayerTip (${ESCROW_FUNDING})`,
+      `relayerTip (${ESCROW_FUNDING}) must be below the escrow funding of amount - proverTip - withdrawalFee - withdrawalRelayerTip (${ESCROW_FUNDING})`,
     );
   });
 
@@ -156,12 +156,6 @@ describe('quoteAcrossBridge', () => {
     });
   });
 
-  it('funds the escrow with the withdrawal less the portal FPC funding cut', () => {
-    const withCut = { ...quoteArgs(100n * DAI, 1n * DAI), fpcFundingCut: 1n * DAI };
-
-    expect(quoteAcrossBridge(withCut, fees)).toEqual(quoteAcrossBridge(quoteArgs(99n * DAI, 1n * DAI), fees));
-  });
-
   it('rejects route decimals that differ from the Across output token', () => {
     expect(() => quoteAcrossBridge(quoteArgs(1_000n * DAI), { ...fees, acrossOutputTokenDecimals: 18 })).toThrow(
       "the route's acrossOutputTokenDecimals (6) must match Across (18)",
@@ -210,16 +204,16 @@ async function bridgeArgs(): Promise<AcrossBridgeOnWithdrawArgs> {
     acrossBridgeEscrowFactory: EthAddress.random(),
     dai: EthAddress.random(),
     from: await AztecAddress.random(),
-    plainWithdrawalExecutor: EthAddress.random(),
+    plainWithdrawalExecutor: { address: EthAddress.random(), fee: 0n },
     amount: 100n * DAI,
     withdrawalRelayerTip: 1n * DAI,
     proverTip: 1n * DAI,
-    fpcFundingCut: 0n,
     route: ROUTE,
     recipient: EthAddress.random(),
     acrossFee: 100_000n,
     recoveryAccount: EthAddress.random(),
     relayerTip: 3n * DAI,
+    portal: EthAddress.random(),
   };
 }
 
@@ -227,8 +221,8 @@ function quoteArgs(escrowFunding: bigint, relayerTip = 0n): AcrossBridgeQuoteArg
   return {
     amount: escrowFunding,
     withdrawalRelayerTip: 0n,
+    plainWithdrawalExecutor: { address: EthAddress.random(), fee: 0n },
     proverTip: 0n,
-    fpcFundingCut: 0n,
     relayerTip,
     route: ROUTE,
   };

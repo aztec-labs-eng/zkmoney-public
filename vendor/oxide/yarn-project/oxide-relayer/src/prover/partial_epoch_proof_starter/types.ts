@@ -1,5 +1,5 @@
-import { EpochNumber } from '@aztec/foundation/branded-types';
-import { Checkpoint } from '@aztec/stdlib/checkpoint';
+import { EpochNumber } from '@aztec-labs/foundation/branded-types';
+import { Checkpoint } from '@aztec-labs/stdlib/checkpoint';
 
 export interface PartialProofPolicyInput {
   epoch: EpochNumber;

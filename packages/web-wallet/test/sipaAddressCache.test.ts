@@ -5,11 +5,18 @@
  * trustworthy at all, and whether two derivations can be mistaken for one another.
  */
 import { beforeEach, describe, expect, it } from "vitest"
-import { walletStorage } from "../src/platform/storage/walletStorage"
+import { setActiveRollup } from "../src/platform/storage/rollupStorage"
+import {
+  closeWalletStore,
+  openWalletStore,
+  walletStorage,
+} from "../src/platform/storage/walletStorage"
+import { sandboxProfile } from "./fixtures/sandboxProfile"
 import { testWalletDbs } from "./support/fakeWalletDb"
 import type { Address } from "viem"
 import {
   appendToSipaPool,
+  drainRetiredSipaPools,
   nextSelfSipaNonce,
   readCachedSipa,
   readSipaPool,
@@ -30,6 +37,9 @@ const entry = (over: Partial<Parameters<typeof writeCachedSipa>[1]> = {}) => ({
   published: false,
   ...over,
 })
+const DEPLOYMENT = "1:0xportal"
+const pooled = (over: Partial<Parameters<typeof writeCachedSipa>[1]> = {}) =>
+  entry({ deployment: DEPLOYMENT, ...over }) as ReturnType<typeof entry> & { deployment: string }
 
 describe("readCachedSipa", () => {
   beforeEach(() => localStorage.clear())
@@ -77,10 +87,10 @@ describe("sipa pool", () => {
   beforeEach(() => localStorage.clear())
 
   it("round-trips broadcast entries and reads empty when absent", () => {
-    expect(readSipaPool(KEY)).toEqual([])
-    appendToSipaPool(KEY, entry({ nonce: 1, published: true }))
-    appendToSipaPool(KEY, entry({ nonce: 2, address: OTHER, published: true }))
-    expect(readSipaPool(KEY).map((e) => e.nonce)).toEqual([1, 2])
+    expect(readSipaPool(KEY, DEPLOYMENT)).toEqual([])
+    appendToSipaPool(KEY, pooled({ nonce: 1, published: true }))
+    appendToSipaPool(KEY, pooled({ nonce: 2, address: OTHER, published: true }))
+    expect(readSipaPool(KEY, DEPLOYMENT).map((e) => e.nonce)).toEqual([1, 2])
   })
 
   it("drops malformed and unbroadcast entries instead of failing the read", () => {
@@ -89,52 +99,114 @@ describe("sipa pool", () => {
     walletStorage.setItem(
       `${KEY}.pool`,
       JSON.stringify([
-        entry({ nonce: 1, published: true }),
-        entry({ nonce: 2, published: false }),
-        { address: ADDR, day: DAY, published: true },
+        pooled({ nonce: 1, published: true }),
+        pooled({ nonce: 2, published: false }),
+        { address: ADDR, day: DAY, published: true, deployment: DEPLOYMENT },
       ]),
     )
-    expect(readSipaPool(KEY).map((e) => e.nonce)).toEqual([1])
+    expect(readSipaPool(KEY, DEPLOYMENT).map((e) => e.nonce)).toEqual([1])
     walletStorage.setItem(`${KEY}.pool`, "{not json")
-    expect(readSipaPool(KEY)).toEqual([])
+    expect(readSipaPool(KEY, DEPLOYMENT)).toEqual([])
   })
 
   it("drops an entry older than the relayer keeps its broadcast", () => {
-    appendToSipaPool(KEY, entry({ nonce: 1, day: DAY - 14, published: true }))
-    appendToSipaPool(KEY, entry({ nonce: 2, day: DAY - 13, address: OTHER, published: true }))
-    expect(readSipaPool(KEY).map((e) => e.nonce)).toEqual([2])
+    appendToSipaPool(KEY, pooled({ nonce: 1, day: DAY - 14, published: true }))
+    appendToSipaPool(KEY, pooled({ nonce: 2, day: DAY - 13, address: OTHER, published: true }))
+    expect(readSipaPool(KEY, DEPLOYMENT).map((e) => e.nonce)).toEqual([2])
   })
 
   it("take pops oldest-first into the slot and removes what it hands out", async () => {
-    appendToSipaPool(KEY, entry({ nonce: 1, published: true }))
-    appendToSipaPool(KEY, entry({ nonce: 2, address: OTHER, published: true }))
-    expect((await takeFromSipaPool(KEY))?.nonce).toBe(1)
+    appendToSipaPool(KEY, pooled({ nonce: 1, published: true }))
+    appendToSipaPool(KEY, pooled({ nonce: 2, address: OTHER, published: true }))
+    expect((await takeFromSipaPool(KEY, DEPLOYMENT))?.nonce).toBe(1)
     expect(readCachedSipa(KEY)?.nonce).toBe(1)
     // The popped one is gone — a second take must never hand the same address out twice.
-    expect((await takeFromSipaPool(KEY))?.nonce).toBe(2)
+    expect((await takeFromSipaPool(KEY, DEPLOYMENT))?.nonce).toBe(2)
     expect(readCachedSipa(KEY)?.nonce).toBe(2)
-    expect(await takeFromSipaPool(KEY)).toBeNull()
+    expect(await takeFromSipaPool(KEY, DEPLOYMENT)).toBeNull()
   })
 
   it("take with an age bound skips older entries and leaves them pooled", async () => {
-    appendToSipaPool(KEY, entry({ nonce: 1, day: DAY - 5, published: true }))
-    appendToSipaPool(KEY, entry({ nonce: 2, address: OTHER, published: true }))
-    expect((await takeFromSipaPool(KEY, 2 * 86_400_000))?.nonce).toBe(2)
-    expect(await takeFromSipaPool(KEY, 2 * 86_400_000)).toBeNull()
-    expect(readSipaPool(KEY).map((e) => e.nonce)).toEqual([1])
+    appendToSipaPool(KEY, pooled({ nonce: 1, day: DAY - 5, published: true }))
+    appendToSipaPool(KEY, pooled({ nonce: 2, address: OTHER, published: true }))
+    expect((await takeFromSipaPool(KEY, DEPLOYMENT, 2 * 86_400_000))?.nonce).toBe(2)
+    expect(await takeFromSipaPool(KEY, DEPLOYMENT, 2 * 86_400_000)).toBeNull()
+    expect(readSipaPool(KEY, DEPLOYMENT).map((e) => e.nonce)).toEqual([1])
   })
 
   it("hands out no address when its move from the pool to the slot is not saved", async () => {
-    appendToSipaPool(KEY, entry({ nonce: 1, published: true }))
+    appendToSipaPool(KEY, pooled({ nonce: 1, published: true }))
     await walletStorage.flush()
     testWalletDbs().onApply = () => {
       throw new Error("disk")
     }
-    await expect(takeFromSipaPool(KEY)).rejects.toThrow("disk")
+    await expect(takeFromSipaPool(KEY, DEPLOYMENT)).rejects.toThrow("disk")
     testWalletDbs().onApply = undefined
     // Neither side moved: the pool keeps the entry and the slot stays empty.
-    expect(readSipaPool(KEY).map((e) => e.nonce)).toEqual([1])
+    expect(readSipaPool(KEY, DEPLOYMENT).map((e) => e.nonce)).toEqual([1])
     expect(readCachedSipa(KEY)).toBeNull()
+  })
+  it("serves only the deployment an entry was broadcast on", async () => {
+    appendToSipaPool(KEY, pooled({ nonce: 1, published: true, deployment: "1:0xretired" }))
+    appendToSipaPool(KEY, pooled({ nonce: 2, address: OTHER, published: true }))
+    expect(readSipaPool(KEY, DEPLOYMENT).map((e) => e.nonce)).toEqual([2])
+    // An entry written before entries named their deployment belongs to none.
+    walletStorage.setItem(`${KEY}.pool`, JSON.stringify([entry({ nonce: 3, published: true })]))
+    expect(await takeFromSipaPool(KEY, DEPLOYMENT)).toBeNull()
+  })
+})
+
+describe("drainRetiredSipaPools", () => {
+  const PREFIX = "webwallet.sipa.address.sandbox."
+  beforeEach(() => localStorage.clear())
+
+  it("drops this account's pooled entries of every other deployment, whichever table keyed them", async () => {
+    const oldTable = `${PREFIX}0xoldtable.0xacct.alice`
+    const newTable = `${PREFIX}0xnewtable.0xacct.alice`
+    appendToSipaPool(oldTable, pooled({ nonce: 1, published: true, deployment: "1:0xretired" }))
+    walletStorage.setItem(
+      `${newTable}.pool`,
+      JSON.stringify([
+        pooled({ nonce: 2, published: true, deployment: "1:0xretired" }),
+        pooled({ nonce: 3, address: OTHER, published: true }),
+      ]),
+    )
+    await drainRetiredSipaPools("sandbox", "0xacct", DEPLOYMENT)
+    expect(walletStorage.getItem(`${oldTable}.pool`)).toBeNull()
+    expect(
+      JSON.parse(walletStorage.getItem(`${newTable}.pool`)!).map((e: { nonce: number }) => e.nonce),
+    ).toEqual([3])
+  })
+
+  it("drains the account's pools that another rollup's database kept", async () => {
+    const pool = `${PREFIX}0xtable.0xacct.alice.pool`
+    const othersPool = `${PREFIX}0xtable.0xother.alice.pool`
+    const retired = testWalletDbs().db("111").state
+    retired.set(pool, JSON.stringify([pooled({ published: true, deployment: "111:0xold" })]))
+    retired.set(othersPool, "[]")
+    await closeWalletStore()
+    setActiveRollup("222")
+    try {
+      await openWalletStore("222", { persistent: true })
+      await drainRetiredSipaPools("sandbox", "0xacct", "222:0xnew")
+      expect(retired.has(pool)).toBe(false)
+      expect(retired.has(othersPool)).toBe(true)
+    } finally {
+      setActiveRollup(sandboxProfile().shared.rollupVersion)
+    }
+  })
+
+  it("leaves slots, other accounts and other networks alone", async () => {
+    // A tag named "pool" is a slot, not a pool.
+    writeCachedSipa(`${PREFIX}0xtable.0xacct.pool`, entry({ published: true }))
+    const other = `${PREFIX}0xtable.0xother.alice`
+    const testnet = "webwallet.sipa.address.testnet.0xtable.0xacct.alice"
+    appendToSipaPool(other, pooled({ published: true, deployment: "1:0xretired" }))
+    appendToSipaPool(testnet, pooled({ published: true, deployment: "1:0xretired" }))
+    await drainRetiredSipaPools("sandbox", "0xacct", DEPLOYMENT)
+    expect(readCachedSipa(`${PREFIX}0xtable.0xacct.pool`)).toMatchObject({ published: true })
+    expect(readSipaPool(other, "1:0xretired")).toHaveLength(1)
+    expect(readSipaPool(testnet, "1:0xretired")).toHaveLength(1)
   })
 })
 
@@ -185,7 +257,7 @@ describe("readUnpublishedSlots", () => {
     // A tag literally named "pool" is a slot; only the `.pool` suffix marks a pool.
     writeCachedSipa(`${PREFIX}pool`, entry({ nonce: 3 }))
     writeCachedSipa(`${PREFIX}carol`, entry({ published: true }))
-    appendToSipaPool(`${PREFIX}alice`, entry({ published: true, nonce: 9 }))
+    appendToSipaPool(`${PREFIX}alice`, pooled({ published: true, nonce: 9 }))
     writeCachedSipa("webwallet.sipa.address.sandbox.0xpool.0xother.alice", entry())
     localStorage.setItem(`${PREFIX}mallory`, "{not json")
 

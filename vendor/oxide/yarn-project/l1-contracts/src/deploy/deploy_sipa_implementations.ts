@@ -6,66 +6,40 @@ import {
   RegistrationSIPAAbi,
   RegistrationSIPABytecode,
   SIPAFactoryAbi,
-  UpdateMetadataSIPAAbi,
-  UpdateMetadataSIPABytecode,
+  UserOpSIPAAbi,
+  UserOpSIPABytecode,
 } from '../artifacts.js';
 import { deployContract } from './deploy_contract.js';
-
-/**
- * The sender-funded sweep fee each intent implementation pins, mirroring the Solidity file-level constants in
- * `DepositSIPA.sol` and `RegistrationSIPA.sol`. They are constructor arguments rather than ABI members, so a
- * deployer has to supply them; `l1_verify` reads `depositFee()` back off each implementation to catch drift.
- *
- * The two differ because the two sweeps do: a registration writes two registries, deploys the owner's 4337 account
- * and notifies the name portal, where a plain bridge does none of it. The registration figure is the relayer's cut
- * of the registration fee; the remainder reaches the FPC funder.
- */
-export const DEPOSIT_SWEEP_FEE = 250_000_000_000_000_000n;
-export const REGISTRATION_SWEEP_FEE = 500_000_000_000_000_000n;
-export const METADATA_UPDATE_SWEEP_FEE = 500_000_000_000_000_000n;
 
 /** One rollup version's intent implementations, as deployed and blessed. */
 export interface SIPAImplementations {
   depositSIPAImplementation: Address;
   registrationSIPAImplementation: Address;
-  updateMetadataSIPAImplementation: Address;
+  userOpSIPAImplementation: Address;
 }
 
-/** The deposit-intent implementation for one rollup version. `portal` is that version's Portal; the portal and the
- *  fee both become implementation immutables, so every clone settles into the one and charges the other. */
-export function deployDepositSIPA(
-  walletClient: WalletClient,
-  publicClient: PublicClient,
-  portal: Address,
-  fee: bigint = DEPOSIT_SWEEP_FEE,
-): Promise<Address> {
-  return deployContract(walletClient, publicClient, DepositSIPAAbi, DepositSIPABytecode, [portal, fee]);
+/** The deposit-intent implementation. It has no immutables: each clone reads its portal and its tip from the
+ *  forwarding table in its args. */
+export function deployDepositSIPA(walletClient: WalletClient, publicClient: PublicClient): Promise<Address> {
+  return deployContract(walletClient, publicClient, DepositSIPAAbi, DepositSIPABytecode, []);
 }
 
-/** The registration-intent implementation for one rollup version; the deposit one's sibling over the same portal, on
- *  its own fee. It also pins the environment's NameRegistry, which it reads the registration controller off at sweep
- *  time. */
+/** The registration-intent implementation. It pins the environment's NameRegistry, from which it reads the
+ *  registration controller at sweep time. */
 export function deployRegistrationSIPA(
   walletClient: WalletClient,
   publicClient: PublicClient,
-  portal: Address,
   nameRegistry: Address,
-  fee: bigint = REGISTRATION_SWEEP_FEE,
 ): Promise<Address> {
-  return deployContract(walletClient, publicClient, RegistrationSIPAAbi, RegistrationSIPABytecode, [
-    portal,
-    nameRegistry,
-    fee,
-  ]);
+  return deployContract(walletClient, publicClient, RegistrationSIPAAbi, RegistrationSIPABytecode, [nameRegistry]);
 }
 
 /**
- * Add one implementation to the factory's blessed set, and point new resolutions against its `(portal, intent)` pair
- * at it.
+ * Add one implementation to the factory's blessed set, and point new SIPAs of its intent to it.
  *
- * Add-only, so this never takes an earlier version's implementation out of the set and never strands a SIPA already
- * funded against one. `walletClient` must sign as the factory's owner. Neither key is passed: the factory reads the
- * portal and the intent off the implementation itself.
+ * The factory reads the intent from the implementation. A new pointing changes the address of every new SIPA of that
+ * intent. The blessed set is add-only, so a SIPA of an earlier implementation stays blessed and can still sweep.
+ * `walletClient` must sign as the factory's owner.
  */
 export async function blessSIPAImplementation(
   walletClient: WalletClient,
@@ -76,71 +50,62 @@ export async function blessSIPAImplementation(
   const hash = await walletClient.writeContract({
     address: sipaFactory,
     abi: SIPAFactoryAbi,
-    functionName: 'bless',
+    functionName: 'blessImplementation',
     args: [implementation],
   } as never);
   const receipt = await publicClient.waitForTransactionReceipt({ hash });
   if (receipt.status !== 'success') {
-    throw new Error(`SIPAFactory.bless(${implementation}) reverted in tx ${hash}`);
+    throw new Error(`SIPAFactory.blessImplementation(${implementation}) reverted in tx ${hash}`);
   }
 }
 
-/** Deploy the account-update adapter for one destination portal. */
-export function deployUpdateMetadataSIPA(
+/**
+ * Approve `forwardingTable`, so the factory recognizes SIPAs on it. Approval is add-only. `walletClient` must sign as
+ * the factory's owner.
+ */
+export async function blessForwardingTable(
   walletClient: WalletClient,
   publicClient: PublicClient,
-  portal: Address,
-  nameRegistry: Address,
-  fee: bigint = METADATA_UPDATE_SWEEP_FEE,
-): Promise<Address> {
-  return deployContract(walletClient, publicClient, UpdateMetadataSIPAAbi, UpdateMetadataSIPABytecode, [
-    portal,
-    nameRegistry,
-    fee,
-  ]);
+  sipaFactory: Address,
+  forwardingTable: Address,
+): Promise<void> {
+  const hash = await walletClient.writeContract({
+    address: sipaFactory,
+    abi: SIPAFactoryAbi,
+    functionName: 'blessTable',
+    args: [forwardingTable],
+  } as never);
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  if (receipt.status !== 'success') {
+    throw new Error(`SIPAFactory.blessTable(${forwardingTable}) reverted in tx ${hash}`);
+  }
 }
 
-/** Deploy and bless all three intent implementations on a factory that supports metadata updates. */
+export function deployUserOpSIPA(walletClient: WalletClient, publicClient: PublicClient): Promise<Address> {
+  return deployContract(walletClient, publicClient, UserOpSIPAAbi, UserOpSIPABytecode, []);
+}
+
+/** Deploy all three intent implementations, bless them, and approve `forwardingTable`. */
 export async function deploySIPAImplementations(
   walletClient: WalletClient,
   publicClient: PublicClient,
   args: {
     sipaFactory: Address;
-    portal: Address;
+    forwardingTable: Address;
     nameRegistry: Address;
-    depositFee?: bigint;
-    registrationFee?: bigint;
-    metadataUpdateFee?: bigint;
   },
 ): Promise<SIPAImplementations> {
-  const depositSIPAImplementation = await deployDepositSIPA(
-    walletClient,
-    publicClient,
-    args.portal,
-    args.depositFee ?? DEPOSIT_SWEEP_FEE,
-  );
-  const registrationSIPAImplementation = await deployRegistrationSIPA(
-    walletClient,
-    publicClient,
-    args.portal,
-    args.nameRegistry,
-    args.registrationFee ?? REGISTRATION_SWEEP_FEE,
-  );
-
-  const updateMetadataSIPAImplementation = await deployUpdateMetadataSIPA(
-    walletClient,
-    publicClient,
-    args.portal,
-    args.nameRegistry,
-    args.metadataUpdateFee,
-  );
-  for (const implementation of [
-    depositSIPAImplementation,
-    registrationSIPAImplementation,
-    updateMetadataSIPAImplementation,
-  ]) {
+  const depositSIPAImplementation = await deployDepositSIPA(walletClient, publicClient);
+  const registrationSIPAImplementation = await deployRegistrationSIPA(walletClient, publicClient, args.nameRegistry);
+  const userOpSIPAImplementation = await deployUserOpSIPA(walletClient, publicClient);
+  for (const implementation of [depositSIPAImplementation, registrationSIPAImplementation, userOpSIPAImplementation]) {
     await blessSIPAImplementation(walletClient, publicClient, args.sipaFactory, implementation);
   }
+  await blessForwardingTable(walletClient, publicClient, args.sipaFactory, args.forwardingTable);
 
-  return { depositSIPAImplementation, registrationSIPAImplementation, updateMetadataSIPAImplementation };
+  return {
+    depositSIPAImplementation,
+    registrationSIPAImplementation,
+    userOpSIPAImplementation,
+  };
 }

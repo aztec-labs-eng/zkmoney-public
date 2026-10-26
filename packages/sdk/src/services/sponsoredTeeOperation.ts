@@ -14,43 +14,27 @@
  *     they are keyed by (contract, slot), so per-call attachment was never
  *     load-bearing.
  *
- * Batch layout (MAX_SPONSORED_CALLS = 5): [account auth?, ...ops,
- * ...teeUnsignedInteractions, publish_da].
+ * Batch layout (MAX_SPONSORED_CALLS = 5): [account auth?, ...ops, ...teeUnsignedInteractions,
+ * ...finalization requests, publish_da].
  */
-import { Contract, ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import { Capsule, ExecutionPayload } from "@aztec/stdlib/tx"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractArtifact, FunctionCall } from "@aztec/stdlib/abi"
-import type { AuthWitness } from "@aztec/stdlib/auth-witness"
-import { Fr } from "@aztec/aztec.js/fields"
-import { createLogger } from "@aztec/foundation/log"
-import {
-  buildNoteSignatureCapsule,
-  buildPlainExecutorUserPayloadCapsules,
-  buildSeedCapsule,
-  buildStrictModeCapsule,
-  buildTeeMetadataCapsule,
-  buildTeeNotesCapsule,
-  buildTeeRequiredNullifiersCapsule,
-  buildTeeWithdrawalMessageHashesCapsule,
-  buildWithdrawalSignatureCapsule,
-} from "@oxide/oxide-client/capsules.js"
-import { assertPlainWithdrawals } from "@oxide/oxide-client/l2_operations.js"
-import { declaredWithdrawals, type PlainWithdrawalContext } from "../oxide/plainWithdrawal.js"
-import { TEEMetadata, type SpentDeposit, type TeeSigner } from "@oxide/oxide-lib/types.js"
-import type { AztecNode } from "@aztec/aztec.js/node"
+import { Contract, ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import { Capsule, ExecutionPayload } from "@aztec-labs/stdlib/tx"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractArtifact, FunctionCall } from "@aztec-labs/stdlib/abi"
+import type { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { createLogger } from "@aztec-labs/foundation/log"
+import { buildSeedCapsule } from "@oxide/oxide-client/capsules.js"
+import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
+import type { WithdrawalFinalizationData } from "@oxide/oxide-lib/withdrawal_finalization_data.js"
+import type { PlainWithdrawalContext } from "../oxide/plainWithdrawal.js"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import {
   type Operation,
   type SpendMetadataResolver,
   type DepositSpendMetadataResolver,
-  buildTokenOperation,
-  collectAccountingEffects,
 } from "../oxide/index.js"
-import {
-  priceDeclaredEffectDeltas,
-  type FinalizedPayload,
-  type PayloadFinalizer,
-} from "../obsidion/stagedExecution.js"
+import { type FinalizedPayload, type PayloadFinalizer } from "../obsidion/stagedExecution.js"
 import {
   MAX_SPONSORED_CALLS,
   buildClaimSponsorPayload,
@@ -60,13 +44,17 @@ import {
   type ClaimFpcPolicy,
   type ClassWitnessInput,
 } from "../feePaymentMethod/index.js"
-import { computePublishDaLogEmittedLengths } from "../oxide/publishDaLogs.js"
-import { dedupeByAddressString } from "./teeOperation.js"
-import { assertSigningKeyApproved } from "./teeSignerApproval.js"
+import {
+  assertTeeBatchWithdrawals,
+  buildTeeBatchCalls,
+  dedupeByAddressString,
+  signTeeBatch,
+  simulationFinalizationData,
+  type OperationCallBuilder,
+} from "./teeOperation.js"
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
 import type { BenchmarkFlow } from "@obsidion/core/types"
 import { benchmarkRegistry } from "../obsidion/benchmark/benchmarkRegistry.js"
-import { benchNow } from "../obsidion/benchmark/proveTimingExtract.js"
 import { readTimingBenchFlag } from "../obsidion/proving-progress-helpers.js"
 
 const log = createLogger("wallet-sdk:sponsored-tee-operation")
@@ -89,9 +77,9 @@ export interface SponsoredTeeOperationArgs {
   /** Owner of the intent capsule when the account authorizing the ops is not the paying `user`. */
   intentsAccount?: AztecAddress
   tokenContract: Contract
-  signer: TeeSigner
+  signer: RegisteredTeeSigner
   operations: Operation[]
-  buildOperationCall: (op: Operation, capsules: Capsule[]) => ContractFunctionInteraction
+  buildOperationCall: OperationCallBuilder
   resolveSpendMetadata?: SpendMetadataResolver
   /** Metadata (address preimage + nullifier hiding key) for deposits the batch spends. */
   resolveDepositSpendMetadata?: DepositSpendMetadataResolver
@@ -114,7 +102,7 @@ export interface SponsoredTeeOperationArgs {
    * that holds less than the link claims.
    */
   expectedWithdrawalAmount?: bigint
-  /** The deployment's plain withdrawal executor and portal state. Required when the batch withdraws. */
+  /** The deployment's plain withdrawal executor. Required when the batch withdraws. */
   plainWithdrawal?: PlainWithdrawalContext
   intentHashes?: Fr[]
   combinedAuthWitness?: AuthWitness
@@ -146,44 +134,13 @@ export async function buildSponsoredTeeOperation(
   args: SponsoredTeeOperationArgs,
 ): Promise<SponsoredTeeOperationResult> {
   const { node } = ctx
-  // Time-perf benchmark TEE-leg span, same gate as `buildTeeOperation`: flag on
-  // AND a caller-threaded operationId. `contributeTee` never throws into the flow.
+  // Same gate as `buildTeeOperation`: flag on AND a caller-threaded operationId.
   const timingBench = readTimingBenchFlag() && ctx.operationId !== undefined
-  const {
-    fpcAddress,
-    fpcArtifact,
-    user,
-    tokenContract,
-    signer,
-    operations,
-    buildOperationCall,
-    resolveSpendMetadata,
-    resolveDepositSpendMetadata,
-    operationClassWitnesses,
-  } = args
+  const { fpcAddress, fpcArtifact, user, tokenContract, operations, operationClassWitnesses } = args
   if (operations.length === 0) {
     throw new Error("buildSponsoredTeeOperation called with no operations")
   }
-  const declared = declaredWithdrawals(operations)
-  if (declared.length > 0 && !args.plainWithdrawal) {
-    throw new Error(
-      "buildSponsoredTeeOperation: a withdrawal needs the deployment's plain withdrawal executor",
-    )
-  }
-  assertPlainWithdrawals(declared, {
-    plainWithdrawalExecutor: args.plainWithdrawal?.executor,
-    fpcFundingCut: args.plainWithdrawal?.fpcFundingCut,
-    portalFrozen: args.plainWithdrawal?.frozen,
-  })
-  const teeUnsigned = await Promise.all((args.teeUnsignedInteractions ?? []).map(toCallAndCapsules))
-  const fixedCalls = (args.accountCall ? 1 : 0) + teeUnsigned.length + 1 // auth? + unsigned + publish_da
-  if (operations.length + fixedCalls > MAX_SPONSORED_CALLS) {
-    throw new Error(
-      `sponsored TEE batch would need ${
-        operations.length + fixedCalls
-      } calls; the FPC dispatches at most ${MAX_SPONSORED_CALLS}`,
-    )
-  }
+  const declared = assertTeeBatchWithdrawals(operations, args.plainWithdrawal)
   for (const op of operations) {
     if (op.kind === "outerCall" && op.authwits?.length) {
       throw new Error(
@@ -199,36 +156,46 @@ export async function buildSponsoredTeeOperation(
     ),
   ])
 
-  const seedCapsule = buildSeedCapsule(tokenContract.address)
-
   const assembleSponsored = async (
     opCapsules: Capsule[],
-    tail: { call: FunctionCall; classWitness?: undefined }[],
-    extraCapsules: Capsule[],
+    finalizationData: WithdrawalFinalizationData[],
+    publishDa?: ContractFunctionInteraction,
   ): Promise<{ payload: ExecutionPayload; innerCalls: FunctionCall[] }> => {
+    const { operationCalls, tail } = await buildTeeBatchCalls({
+      tokenContract,
+      operations,
+      buildOperationCall: args.buildOperationCall,
+      capsules: opCapsules,
+      teeUnsignedInteractions: args.teeUnsignedInteractions ?? [],
+      declared,
+      finalizationData,
+    })
     const innerCalls: FunctionCall[] = []
     const classWitnesses: (ClassWitnessInput | undefined)[] = []
+    const capsules: Capsule[] = []
+    const push = async (
+      interaction: ContractFunctionInteraction,
+      classWitness?: ClassWitnessInput,
+    ) => {
+      const { call, capsules: callCapsules } = await toCallAndCapsules(interaction)
+      innerCalls.push(call)
+      classWitnesses.push(classWitness)
+      capsules.push(...callCapsules)
+    }
     if (args.accountCall) {
       innerCalls.push(args.accountCall.call)
       classWitnesses.push(args.accountCall.classWitness)
     }
-    const collectedOpCapsules: Capsule[] = []
-    for (let i = 0; i < operations.length; i++) {
-      const { call, capsules } = await toCallAndCapsules(
-        buildOperationCall(operations[i]!, opCapsules),
+    for (let i = 0; i < operationCalls.length; i++) {
+      await push(operationCalls[i]!, operationClassWitnesses[i])
+    }
+    for (const interaction of [...tail, ...(publishDa ? [publishDa] : [])]) await push(interaction)
+    if (innerCalls.length + (publishDa ? 0 : 1) > MAX_SPONSORED_CALLS) {
+      throw new Error(
+        `sponsored TEE batch would need ${
+          innerCalls.length + (publishDa ? 0 : 1)
+        } calls; the FPC dispatches at most ${MAX_SPONSORED_CALLS}`,
       )
-      innerCalls.push(call)
-      classWitnesses.push(operationClassWitnesses[i])
-      collectedOpCapsules.push(...capsules)
-    }
-    for (const t of teeUnsigned) {
-      innerCalls.push(t.call)
-      classWitnesses.push(undefined)
-      collectedOpCapsules.push(...t.capsules)
-    }
-    for (const t of tail) {
-      innerCalls.push(t.call)
-      classWitnesses.push(undefined)
     }
     const common = {
       fpcAddress,
@@ -241,7 +208,7 @@ export async function buildSponsoredTeeOperation(
       classWitnesses,
       intentHashes: args.intentHashes,
       combinedAuthWitness: args.combinedAuthWitness,
-      extraCapsules: dedupeCapsules([...collectedOpCapsules, ...extraCapsules]),
+      extraCapsules: dedupeCapsules([...opCapsules, ...capsules]),
     }
     const payload = args.gate
       ? await buildClaimSubscribePayload({ ...common, gate: args.gate })
@@ -249,201 +216,49 @@ export async function buildSponsoredTeeOperation(
     return { payload, innerCalls }
   }
 
-  // Simulation shape: [auth?, ...ops, ...unsigned] with only the seed capsule —
-  // the wallet's single internal sim is both the gas source and the effects feed
-  // the TEE attests over.
-  const { payload, innerCalls } = await assembleSponsored([seedCapsule], [], [seedCapsule])
+  // Simulation shape: [auth?, ...ops, ...tail] with only the seed capsule — the wallet's single
+  // internal sim is both the gas source and the effects feed the TEE attests over.
+  const seedCapsule = buildSeedCapsule(tokenContract.address)
+  const { payload, innerCalls } = await assembleSponsored(
+    [seedCapsule],
+    simulationFinalizationData(declared),
+  )
 
   const finalize: PayloadFinalizer = async (simResult): Promise<FinalizedPayload> => {
-    const anchorBlockHeader = simResult.publicInputs.constants.anchorBlockHeader
-    const anchorBlockHash = await anchorBlockHeader.hash()
-
-    const collected = collectAccountingEffects(tokenContract.address, simResult.offchainEffects)
-
-    if (args.expectedWithdrawalAmount !== undefined) {
-      const burned = collected.withdrawals.reduce((sum, w) => sum + w.amount, 0n)
-      if (burned !== args.expectedWithdrawalAmount) {
-        // No amounts in the message: the simulated burn is private and errors get reported.
-        throw new Error(
-          "buildSponsoredTeeOperation: withdrawal amount does not match the expected amount",
-        )
-      }
-    }
-
-    const deposits: SpentDeposit[] = []
-    if (collected.deposits.length > 0 && !resolveDepositSpendMetadata) {
-      throw new Error(
-        `buildSponsoredTeeOperation: produced ${collected.deposits.length} spent deposit(s) but no resolveDepositSpendMetadata was supplied`,
-      )
-    }
-    for (const spent of collected.deposits) {
-      const witness = await node.getL1ToL2MessageMembershipWitness(
-        anchorBlockHash,
-        spent.messageHash,
-      )
-      if (!witness) {
-        throw new Error(`No L1->L2 membership witness for deposit message ${spent.messageHash}`)
-      }
-      const [witnessLeafIndex, siblingPath] = witness
-      if (witnessLeafIndex !== spent.inboxIndex) {
-        throw new Error(
-          `Deposit witness leaf index ${witnessLeafIndex} does not match deposit effect leaf index ${spent.inboxIndex}`,
-        )
-      }
-      const metadata = await resolveDepositSpendMetadata!(spent.recipient)
-      deposits.push({
-        recipient: spent.recipient,
-        recipientAddressPreimage: metadata.ownerAddressPreimage,
-        masterNullifierHidingKey: metadata.masterNullifierHidingKey,
-        amount: spent.amount,
-        sharedSecretSalt: spent.sharedSecretSalt,
-        messageLeafIndex: spent.inboxIndex,
-        siblingPath: siblingPath.toTuple(),
-      })
-    }
-
-    let spendMetadata: Awaited<ReturnType<SpendMetadataResolver>>[] = []
-    if (collected.nullifiedNotes.length > 0) {
-      if (!resolveSpendMetadata) {
-        throw new Error(
-          `buildSponsoredTeeOperation: ${collected.nullifiedNotes.length} nullified note(s) but no resolveSpendMetadata`,
-        )
-      }
-      spendMetadata = await Promise.all(collected.nullifiedNotes.map(resolveSpendMetadata))
-    }
-
-    const tokenOperation = await buildTokenOperation(
+    const signed = await signTeeBatch({
       node,
-      tokenContract.address,
-      anchorBlockHeader,
-      collected,
-      spendMetadata,
-      { deposits },
-    )
-    log.info("requesting TEE signature (sponsored)", {
-      tokenContract: tokenContract.address.toString(),
-      user: user.toString(),
-      operationKinds: operations.map((op) => op.kind),
-      createdNotes: tokenOperation.createdNotes.length,
-      nullifiedNotes: collected.nullifiedNotes.length,
-      deposits: deposits.length,
-    })
-    const t_enclave = timingBench ? benchNow() : 0
-    const signOutput = await signer.signTokenOperation(tokenOperation)
-    const enclaveMs = timingBench ? benchNow() - t_enclave : 0
-    const {
-      signatures,
-      requiredNullifiers,
-      teeNotes,
-      withdrawalMessageHashes,
-      withdrawalSignatures,
-    } = signOutput
-    const { createdNotes, withdrawals } = tokenOperation
-
-    // The key that signed, checked before any capsule or payload exists; the recipient's PXE would
-    // drop every note signed by an unapproved key. The TEE metadata capsule carries this same key.
-    const signerPublicKey = await assertSigningKeyApproved({
-      signer,
-      node,
-      tokenAddress: tokenContract.address,
-      blockHash: anchorBlockHash,
-    })
-
-    const sigCapsules = await Promise.all(
-      createdNotes.map((note, j) =>
-        buildNoteSignatureCapsule(tokenContract.address, note.randomness, signatures[j]!),
-      ),
-    )
-    const dummyCapsules = await Promise.all(
-      collected.squashedTransientNotes.map((note) =>
-        buildNoteSignatureCapsule(tokenContract.address, note.randomness, {
-          sLo: Fr.zero(),
-          sHi: Fr.zero(),
-          rLo: Fr.zero(),
-          rHi: Fr.zero(),
-        }),
-      ),
-    )
-    const withdrawalSigCapsules = await Promise.all(
-      withdrawals.map((withdrawal, k) =>
-        buildWithdrawalSignatureCapsule(
-          tokenContract.address,
-          withdrawal,
-          withdrawalSignatures[k]!,
-        ),
-      ),
-    )
-    // The relayer rebuilds each withdrawal's user payload from the recipient and relayer tip these
-    // capsules publish (TEMPORARY upstream, OX-1700).
-    if (declared.length === 0 && withdrawals.length > 0) {
-      throw new Error(
-        "buildSponsoredTeeOperation: the batch withdraws without declaring its user payloads",
-      )
-    }
-    const userPayloadCapsules = await buildPlainExecutorUserPayloadCapsules(
-      tokenContract.address,
-      withdrawals,
-      declared.map((withdrawal) => withdrawal.userPayload),
-      args.plainWithdrawal?.executor,
-    )
-    const realCallCapsules = [
+      tokenContract,
+      signer: args.signer,
+      simResult,
       seedCapsule,
-      buildStrictModeCapsule(tokenContract.address),
-      ...sigCapsules,
-      ...dummyCapsules,
-      ...withdrawalSigCapsules,
-      ...userPayloadCapsules,
-    ]
-
-    const teeMetadata = TEEMetadata.fromPublicKey(signerPublicKey, anchorBlockHash)
-    const publishDa = await toCallAndCapsules(
-      tokenContract.methods.publish_da!().with({
-        capsules: [
-          buildTeeNotesCapsule(tokenContract.address, teeNotes),
-          buildTeeRequiredNullifiersCapsule(tokenContract.address, requiredNullifiers),
-          buildTeeMetadataCapsule(tokenContract.address, teeMetadata),
-          buildTeeWithdrawalMessageHashesCapsule(tokenContract.address, withdrawalMessageHashes),
-        ],
-      }),
-    )
-
-    const { payload: finalizedPayload } = await assembleSponsored(
-      realCallCapsules,
-      [{ call: publishDa.call }],
-      [...realCallCapsules, ...publishDa.capsules],
-    )
-
-    const publishDaLogLengths = computePublishDaLogEmittedLengths({
-      teeNotes: teeNotes.length,
-      requiredNullifiers: requiredNullifiers.length,
-      withdrawalMessageHashes: withdrawalMessageHashes.length,
-      metadataFields: teeMetadata.toFields().length,
+      declared,
+      resolveSpendMetadata: args.resolveSpendMetadata,
+      resolveDepositSpendMetadata: args.resolveDepositSpendMetadata,
+      expectedWithdrawalAmount: args.expectedWithdrawalAmount,
+      timingBench,
+      logLabel: "buildSponsoredTeeOperation",
     })
-    const gasDelta = priceDeclaredEffectDeltas({ privateLogEmittedLengths: publishDaLogLengths })
+    const { payload: finalizedPayload, innerCalls: finalizedCalls } = await assembleSponsored(
+      signed.capsules,
+      signed.finalizationData,
+      signed.publishDa,
+    )
 
     log.info("assembled sponsored exec payload", {
-      callLayout: [
-        ...(args.accountCall ? ["account-auth"] : []),
-        ...operations.map((op) => `op:${op.kind}`),
-        ...teeUnsigned.map((t) => `unsigned:${t.call.name}`),
-        "publish_da",
-      ],
-      sigCapsules: sigCapsules.length,
-      dummyCapsules: dummyCapsules.length,
-      gasDelta: { daGas: gasDelta.daGas, l2Gas: gasDelta.l2Gas },
+      callLayout: finalizedCalls.map((call) => call.name),
+      gasDelta: { daGas: signed.gasDelta.daGas, l2Gas: signed.gasDelta.l2Gas },
     })
 
-    // Benchmark TEE-leg contribution, at the END of the finalizer so a throw
-    // anywhere above leaves no partial in the registry (same as `buildTeeOperation`).
+    // At the END of the finalizer, so a throw above leaves no partial in the registry.
     if (timingBench && ctx.operationId) {
       benchmarkRegistry.contributeTee(ctx.operationId, {
         flow: ctx.benchmarkFlow ?? "send",
-        enclave: enclaveMs,
-        notesUsed: collected.nullifiedNotes.length,
+        enclave: signed.enclaveMs,
+        notesUsed: signed.collected.nullifiedNotes.length,
       })
     }
 
-    return { payload: finalizedPayload, gasDelta }
+    return { payload: finalizedPayload, gasDelta: signed.gasDelta }
   }
 
   // Priced as sent: the finalized batch appends `publish_da`.

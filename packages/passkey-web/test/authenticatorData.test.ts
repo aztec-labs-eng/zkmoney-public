@@ -51,10 +51,17 @@ describe("parseAuthenticatorDataFlags", () => {
     // UP | UV | BE | BS
     const flags = parseAuthenticatorDataFlags(authData(0x1d))
     expect(flags).toEqual({
+      userVerified: true,
       backupEligible: true,
       backupState: true,
       attestedCredentialData: false,
     })
+  })
+
+  it("reads UV apart from user presence", () => {
+    expect(parseAuthenticatorDataFlags(authData(0x05)).userVerified).toBe(true)
+    // UP | BE, no UV
+    expect(parseAuthenticatorDataFlags(authData(0x09)).userVerified).toBe(false)
   })
 
   it("distinguishes eligible-but-not-yet-backed-up from backed-up", () => {
@@ -66,6 +73,11 @@ describe("parseAuthenticatorDataFlags", () => {
       backupEligible: false,
       backupState: false,
     })
+  })
+
+  it("reads UV apart from user presence", () => {
+    expect(parseAuthenticatorDataFlags(authData(0x05)).userVerified).toBe(true)
+    expect(parseAuthenticatorDataFlags(authData(0x09)).userVerified).toBe(false)
   })
 
   it("reports attested credential data on a registration response", () => {

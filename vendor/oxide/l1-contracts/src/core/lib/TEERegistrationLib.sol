@@ -1,8 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity >=0.8.27;
-import {IInbox} from "@aztec/core/interfaces/messagebridge/IInbox.sol";
-import {Hash} from "@aztec/core/libraries/crypto/Hash.sol";
-import {DataStructures} from "@aztec/core/libraries/DataStructures.sol";
 import {ICertManager} from "@nitro-validator/ICertManager.sol";
 import {CborElement, LibCborElement} from "@nitro-validator/CborDecode.sol";
 import {Errors} from "@core/lib/Errors.sol";
@@ -44,20 +41,6 @@ library TEERegistrationLib {
     bytes32 encPubKeyY;
   }
 
-  struct TEEBinding {
-    bytes32 pcr0Hash;
-    TEEKeys keys;
-  }
-
-  struct RegistrationContext {
-    INitroValidator validator;
-    IInbox inbox;
-    bytes32 l2Recipient;
-    uint256 rollupVersion;
-    bytes32 constantSecretHash;
-    uint256 maxAttestationAge;
-  }
-
   struct UserDataBinding {
     bytes32 pubKeyX;
     bytes32 pubKeyY;
@@ -65,16 +48,6 @@ library TEERegistrationLib {
     bytes32 encPubKeyY;
   }
 
-  event TEEAdded(
-    address indexed tee,
-    bytes32 pubKeyX,
-    bytes32 pubKeyY,
-    bytes32 encPubKeyX,
-    bytes32 encPubKeyY,
-    bytes32 messageKey,
-    uint256 index
-  );
-  event TEEPcr0Approved(bytes32 indexed pcr0Hash);
   event TEECACertVerified(bytes32 indexed certHash, bytes32 indexed parentCertHash);
   event TEEClientCertVerified(bytes32 indexed certHash, bytes32 indexed parentCertHash);
   event TEEAttestationHashStaged(bytes32 indexed attestationTbsKeccak);
@@ -83,12 +56,6 @@ library TEERegistrationLib {
   function validatePcr0Hash(bytes32 _pcr0Hash) internal pure {
     require(_pcr0Hash != bytes32(0), Errors.TEERegistration__ZeroTEEPcr0Hash());
     require(_pcr0Hash != DEBUG_MODE_PCR0_HASH, Errors.TEERegistration__DebugModeTEEPcr0Hash());
-  }
-
-  function approvePcr0(mapping(bytes32 pcr0Hash => bool approved) storage _approvedPcr0, bytes32 _pcr0Hash) internal {
-    validatePcr0Hash(_pcr0Hash);
-    _approvedPcr0[_pcr0Hash] = true;
-    emit TEEPcr0Approved(_pcr0Hash);
   }
 
   function verifyCACert(ICertManager _certManager, bytes calldata _cert, bytes32 _parentCertHash)
@@ -126,20 +93,6 @@ library TEERegistrationLib {
     emit TEEAttestationSigVerified(_attestationTbsKeccak, _leafCertHash);
   }
 
-  function registerTee(
-    bytes calldata _attestationTbs,
-    bytes calldata _signature,
-    mapping(bytes32 pcr0Hash => bool approved) storage _approvedPcr0,
-    mapping(address tee => TEEBinding binding) storage _bindings,
-    RegistrationContext memory _ctx,
-    TEEKeys memory _keys
-  ) internal returns (address tee, bytes32 key, uint256 index) {
-    tee = teeAddress(_keys);
-    bytes32 pcr0Hash = validateAttestation(_ctx.validator, _ctx.maxAttestationAge, _attestationTbs, _signature, _keys);
-    require(_approvedPcr0[pcr0Hash], Errors.TEERegistration__UnapprovedTEEPcr0(pcr0Hash));
-    (key, index) = _recordBinding(_bindings, _ctx, tee, _keys, pcr0Hash);
-  }
-
   function validateAttestation(
     INitroValidator _validator,
     uint256 _maxAttestationAge,
@@ -158,29 +111,6 @@ library TEERegistrationLib {
         pubKeyX: _keys.pubKeyX, pubKeyY: _keys.pubKeyY, encPubKeyX: _keys.encPubKeyX, encPubKeyY: _keys.encPubKeyY
       })
     );
-  }
-
-  function _recordBinding(
-    mapping(address tee => TEEBinding binding) storage _bindings,
-    RegistrationContext memory _ctx,
-    address _tee,
-    TEEKeys memory _keys,
-    bytes32 _pcr0Hash
-  ) private returns (bytes32 key, uint256 index) {
-    require(_bindings[_tee].pcr0Hash == bytes32(0), Errors.TEERegistration__AlreadyRegistered());
-    _bindings[_tee] = TEEBinding({pcr0Hash: _pcr0Hash, keys: _keys});
-
-    bytes32 contentHash =
-      Hash.sha256ToField(abi.encodeWithSignature("register_signer(bytes32,bytes32)", _keys.pubKeyX, _keys.pubKeyY));
-
-    (key, index) = _ctx.inbox
-      .sendL2Message(
-        DataStructures.L2Actor({actor: _ctx.l2Recipient, version: _ctx.rollupVersion}),
-        contentHash,
-        _ctx.constantSecretHash
-      );
-
-    emit TEEAdded(_tee, _keys.pubKeyX, _keys.pubKeyY, _keys.encPubKeyX, _keys.encPubKeyY, key, index);
   }
 
   function teeAddress(TEEKeys memory _keys) internal pure returns (address tee) {

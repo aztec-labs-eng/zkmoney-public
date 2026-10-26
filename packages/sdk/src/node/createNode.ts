@@ -1,6 +1,6 @@
-import { createAztecNodeClient, type AztecNode } from "@aztec/aztec.js/node"
-import { BlockNumber } from "@aztec/foundation/branded-types"
-import { defaultFetch } from "@aztec/foundation/json-rpc/client"
+import { createAztecNodeClient, type AztecNode } from "@aztec-labs/aztec.js/node"
+import { BlockNumber } from "@aztec-labs/foundation/branded-types"
+import { defaultFetch } from "@aztec-labs/foundation/json-rpc/client"
 import { AZTEC_API_KEY_HEADER } from "@obsidion/core/constants"
 
 /**
@@ -76,5 +76,5 @@ export function createNode(url: string, apiKey?: string, batchWindowMS?: number)
         defaultFetch(host, body, { ...extraHeaders, [AZTEC_API_KEY_HEADER]: apiKey }, noRetry)
     : undefined
 
-  return withNodeMemo(createAztecNodeClient(url, undefined, fetch, batchWindowMS))
+  return withNodeMemo(createAztecNodeClient(url, { fetch, batchWindowMS }))
 }

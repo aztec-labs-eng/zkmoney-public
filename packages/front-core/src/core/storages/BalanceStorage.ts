@@ -18,6 +18,8 @@ export interface BalanceRecord {
   anchorBlock?: number
   /** Wall-clock ms of the write; lets a session tell a live read from a cache-hydrated row. */
   updatedAt?: number
+  /** Wall-clock ms the read resolved; a Savings claim stored after it is missing from `balance`. */
+  readAt?: number
 }
 
 export const balanceScope = (network: string | undefined, accountCompleteAddress: string) =>
@@ -126,7 +128,7 @@ export class BalanceStorage {
     token: string,
     balance: bigint,
     anchorBlock?: number,
-    opts?: { strict?: boolean },
+    opts?: { strict?: boolean; readAt?: number },
   ): Promise<boolean> {
     await this.load()
     const key = recordKey(scope, token)
@@ -139,6 +141,7 @@ export class BalanceStorage {
     ) {
       return false
     }
+    const now = Date.now()
     await this.store.setRecord(
       key,
       {
@@ -146,9 +149,10 @@ export class BalanceStorage {
         tokenAddress: token,
         balance: balance.toString(),
         anchorBlock,
-        updatedAt: Date.now(),
+        updatedAt: now,
+        readAt: opts?.readAt ?? now,
       },
-      opts,
+      { strict: opts?.strict },
     )
     return true
   }

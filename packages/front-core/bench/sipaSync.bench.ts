@@ -27,15 +27,16 @@ import {
   parseAbi,
   toFunctionSelector,
   toHex,
+  zeroAddress,
   type Address,
   type Hex,
 } from "viem"
 import { mainnet } from "viem/chains"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { EthAddress } from "@aztec/foundation/eth-address"
-import { keccak256 } from "@aztec/foundation/crypto/keccak"
-import { deriveMasterNullifierHidingSecretKey } from "@aztec/stdlib/keys"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
+import { keccak256 } from "@aztec-labs/foundation/crypto/keccak"
+import { deriveMasterNullifierHidingSecretKey } from "@aztec-labs/stdlib/keys"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 
 const LATENCY_MS = Number(process.env.SIPA_BENCH_LATENCY_MS ?? 200)
@@ -69,18 +70,20 @@ const DAI = "0x6b175474e89094c44da98b954eedeac495271d0f" as Address
 const PORTAL = "0x92308ce04e2416f20b03e941a14f9238c3603334" as Address
 const FACTORY = "0x239474855dff1eb58dca3ee877d599e3c6bd0bd2" as Address
 const IMPLEMENTATION = "0x39dd57b9f2b16e5c9e9e35e18b73c8a2a5d1f7c4" as Address
+const TABLE = "0x00000000000000000000000000000000000000d1" as Address
 const RELAYER = "0x00000000000000000000000000000000000000e1" as Address
-const FPC_FUNDER = "0x00000000000000000000000000000000000000e2" as Address
 const FUNDER = "0x00000000000000000000000000000000000000f1" as Address
 const MULTICALL3 = "0xca11bde05977b3631167028862be2a173976ca11" as Address
 const ROLLUP_VERSION = 4127419662n
 const DEPOSIT_FEE = 25n * 10n ** 16n
-const CUT = 10n ** 16n
+const TX_AMOUNT_CAP = 5166n * 10n ** 18n
 const RECIPIENT = AztecAddress.fromBigIntUnsafe(0xbeefn)
 const STEALTH = deriveStealthKey(new Fr(7n)).publicKey
 const TUPLE = {
   sipaFactory: FACTORY,
   portal: PORTAL,
+  forwardingTable: TABLE,
+  token: DAI,
   rollupVersion: ROLLUP_VERSION.toString(),
   l2Token: "0x0000000000000000000000000000000000000000000000000000000000001234",
 } as unknown as OxideEnvTuple
@@ -154,13 +157,11 @@ async function buildHistory() {
       const funded = DEPLOYED + 1_000n + BigInt(i) * 15_000n
       emit(nextTx(), funded, DAI, "Transfer", { from: FUNDER, to: sipa }, uint(gross))
       const sweep = nextTx()
-      const bridged = gross - DEPOSIT_FEE
-      const credited = bridged - CUT
+      const credited = gross - DEPOSIT_FEE
       const index = BigInt(1_000 + i)
       const key = pad(toHex(0x5000 + i), { size: 32 })
       emit(sweep, funded + 20n, DAI, "Transfer", { from: sipa, to: RELAYER }, uint(DEPOSIT_FEE))
-      emit(sweep, funded + 20n, DAI, "Transfer", { from: sipa, to: PORTAL }, uint(bridged))
-      emit(sweep, funded + 20n, DAI, "Transfer", { from: PORTAL, to: FPC_FUNDER }, uint(CUT))
+      emit(sweep, funded + 20n, DAI, "Transfer", { from: sipa, to: PORTAL }, uint(credited))
       emit(
         sweep,
         funded + 20n,
@@ -204,9 +205,9 @@ const stats = { http: 0, calls: new Map<string, number>() }
 const selectors = {
   balanceOf: toFunctionSelector("balanceOf(address)"),
   getEthBalance: toFunctionSelector("getEthBalance(address)"),
-  implementationFor: toFunctionSelector("implementationFor(address,uint8)"),
-  depositFee: toFunctionSelector("depositFee()"),
-  cut: toFunctionSelector("FPC_FUNDING_CUT()"),
+  implementationFor: toFunctionSelector("implementationFor(uint8)"),
+  rowFor: toFunctionSelector("rowFor(address,uint8)"),
+  txAmountCap: toFunctionSelector("TX_AMOUNT_CAP()"),
 }
 const word = (hex: string) => `0x${hex.slice(2).padStart(64, "0")}` as Hex
 
@@ -215,8 +216,13 @@ function answerCall(to: string, data: Hex): Hex {
   if (selector === selectors.balanceOf) return uint(balances.get(`0x${data.slice(34, 74)}`) ?? 0n)
   if (selector === selectors.getEthBalance) return uint(0n)
   if (selector === selectors.implementationFor) return word(IMPLEMENTATION)
-  if (selector === selectors.depositFee) return uint(DEPOSIT_FEE)
-  if (selector === selectors.cut) return uint(CUT)
+  // The deposit row: the tip is the whole fee.
+  if (selector === selectors.rowFor)
+    return encodeAbiParameters(
+      [{ type: "address" }, { type: "address" }, { type: "uint256" }, { type: "uint256" }],
+      [PORTAL, zeroAddress, 0n, DEPOSIT_FEE],
+    )
+  if (selector === selectors.txAmountCap) return uint(TX_AMOUNT_CAP)
   throw new Error(`unanswered call ${selector} to ${to}`)
 }
 
@@ -467,7 +473,7 @@ async function pass(
     publicClient: publicClient as never,
     node: node as never,
     wallet: {} as never,
-    tokenService: tokenService as never,
+    tokenServiceFor: async () => tokenService as never,
     refreshBalance: async () => {
       l2.calls += 1
       await sleep(LATENCY_MS)
@@ -477,7 +483,15 @@ async function pass(
     recipient: RECIPIENT,
     stealthPublicKey: STEALTH,
     masterNullifierHidingKey: deriveMasterNullifierHidingSecretKey(new Fr(7n)),
-    token: { address: DAI, symbol: "DAI", decimals: 18 },
+    rows: [
+      {
+        portal: PORTAL,
+        l2Token: TUPLE.l2Token,
+        token: { address: DAI, symbol: "DAI", decimals: 18 },
+        swapped: [],
+        intents: ["deposit", "registration", "metadata"],
+      },
+    ],
     l1ChainId: 1,
     historyStartBlock: async () => DEPLOYED,
     ...opts,

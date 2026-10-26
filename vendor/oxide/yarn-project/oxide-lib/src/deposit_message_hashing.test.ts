@@ -7,10 +7,10 @@
 //   OXIDE_GENERATE_TEST_DATA=1 yarn workspace @oxide/oxide-lib test deposit_message_hashing
 //
 // Then `cd noir-projects/oxide_token_lib && aztec-nargo test` to verify the Noir side matches.
-import { Fr } from '@aztec/foundation/curves/bn254';
-import { GrumpkinScalar } from '@aztec/foundation/curves/grumpkin';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { GrumpkinScalar } from '@aztec-labs/foundation/curves/grumpkin';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
 
 import { describe, expect, it } from '@jest/globals';
 
@@ -50,7 +50,8 @@ describe('deposit_message_hashing TS ↔ Noir parity', () => {
     const portal = {
       l1Portal: FIXTURE_L1_PORTAL,
       l1ChainId: FIXTURE_CHAIN_ID,
-      l2Portal: FIXTURE_L2_TOKEN,
+      l2Token: FIXTURE_L2_TOKEN,
+      teeRegistry: EthAddress.ZERO,
       rollupVersion: FIXTURE_ROLLUP_VERSION,
     };
     const messageHash = await computeDepositMessageHash(portal, {

@@ -1,11 +1,13 @@
 import { describe, expect, it, vi } from "vitest"
-import type { PublicClient } from "viem"
+import { ContractFunctionRevertedError, type PublicClient } from "viem"
+import { SipaIntent } from "@oxide/l1-contracts"
 
 import { readSipaPortalTerms } from "../../src/oxide/sipaPortalTerms.js"
 
-const implementation = `0x${"aa".repeat(20)}` as const
+const forwardingTable = `0x${"aa".repeat(20)}` as const
 const portal = `0x${"11".repeat(20)}` as const
 const token = `0x${"22".repeat(20)}` as const
+const route = { forwardingTable, token, intent: SipaIntent.Deposit }
 
 function client(values: Record<string, unknown>) {
   const readContract = vi.fn(
@@ -20,31 +22,37 @@ function client(values: Record<string, unknown>) {
 }
 
 describe("readSipaPortalTerms", () => {
-  it("reads the portal, token and fee off the implementation and the cut off that portal", async () => {
+  it("reads the portal and fee off the table's row and the cap off that portal", async () => {
     const { client: c, readContract } = client({
-      [`${implementation}.PORTAL`]: portal,
-      [`${implementation}.DEPOSIT_FEE`]: 5n,
-      [`${implementation}.UNDERLYING`]: token,
-      [`${portal}.FPC_FUNDING_CUT`]: 2n,
+      [`${forwardingTable}.rowFor`]: [portal, `0x${"33".repeat(20)}`, 2n, 5n],
+      [`${portal}.TX_AMOUNT_CAP`]: 9n,
     })
 
-    await expect(readSipaPortalTerms(c, implementation)).resolves.toEqual({
+    await expect(readSipaPortalTerms(c, route)).resolves.toEqual({
       portal,
       token,
-      depositFee: 5n,
-      fpcFundingCut: 2n,
+      depositFee: 7n,
+      txAmountCap: 9n,
     })
-    const cut = readContract.mock.calls.find(([call]) => call.functionName === "FPC_FUNDING_CUT")
-    expect(cut?.[0].address).toBe(portal)
+    const row = readContract.mock.calls.find(([call]) => call.functionName === "rowFor")
+    expect((row?.[0] as unknown as { args: unknown[] }).args).toEqual([token, SipaIntent.Deposit])
+  })
+
+  it("refuses a token or intent the table does not route", async () => {
+    const { client: c } = client({
+      [`${forwardingTable}.rowFor`]: new ContractFunctionRevertedError({
+        abi: [],
+        functionName: "rowFor",
+      }),
+    })
+    await expect(readSipaPortalTerms(c, route)).rejects.toThrow("routes no sweep")
   })
 
   it("rejects when a read fails", async () => {
     const { client: c } = client({
-      [`${implementation}.PORTAL`]: portal,
-      [`${implementation}.DEPOSIT_FEE`]: 5n,
-      [`${implementation}.UNDERLYING`]: new Error("rpc down"),
-      [`${portal}.FPC_FUNDING_CUT`]: 2n,
+      [`${forwardingTable}.rowFor`]: [portal, `0x${"33".repeat(20)}`, 0n, 5n],
+      [`${portal}.TX_AMOUNT_CAP`]: new Error("rpc down"),
     })
-    await expect(readSipaPortalTerms(c, implementation)).rejects.toThrow("rpc down")
+    await expect(readSipaPortalTerms(c, route)).rejects.toThrow("rpc down")
   })
 })

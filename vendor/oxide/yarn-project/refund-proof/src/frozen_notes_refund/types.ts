@@ -1,17 +1,17 @@
-import type { AztecAddress } from '@aztec/aztec.js/addresses';
-import { Fr, type GrumpkinScalar } from '@aztec/aztec.js/fields';
-import { ARCHIVE_HEIGHT, NOTE_HASH_TREE_HEIGHT, NULLIFIER_TREE_HEIGHT } from '@aztec/constants';
-import type { EthAddress } from '@aztec/foundation/eth-address';
-import type { Logger } from '@aztec/foundation/log';
-import type { Tuple } from '@aztec/foundation/serialize';
-import { MembershipWitness } from '@aztec/foundation/trees';
-import type { PublicKeys } from '@aztec/stdlib/keys';
-import { NullifierLeafPreimage } from '@aztec/stdlib/trees';
-import type { BlockHeader } from '@aztec/stdlib/tx';
+import type { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { Fr, type GrumpkinScalar } from '@aztec-labs/aztec.js/fields';
+import { ARCHIVE_HEIGHT, NOTE_HASH_TREE_HEIGHT, NULLIFIER_TREE_HEIGHT } from '@aztec-labs/constants';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
+import type { Logger } from '@aztec-labs/foundation/log';
+import type { Tuple } from '@aztec-labs/foundation/serialize';
+import { MembershipWitness } from '@aztec-labs/foundation/trees';
+import type { PublicKeys } from '@aztec-labs/stdlib/keys';
+import { NullifierLeafPreimage } from '@aztec-labs/stdlib/trees';
+import type { BlockHeader } from '@aztec-labs/stdlib/tx';
 
 import type { AccountInstancePreimage } from '@oxide/oxide-lib/account_address.js';
+import type { MigrationSignature } from '@oxide/oxide-lib/migration_signature.js';
 import { MAX_FROZEN_NOTES_PER_REFUND } from '@oxide/oxide-lib/oxide_constants.gen.js';
-import type { RefundAuthorization } from '@oxide/oxide-lib/refund_authorization.js';
 
 export { MAX_FROZEN_NOTES_PER_REFUND };
 
@@ -69,7 +69,7 @@ export interface FrozenNotesRefundProofInput {
   ownerPublicKeys: PublicKeys;
   ownerInstance: AccountInstancePreimage;
   ownerNhkM: GrumpkinScalar;
-  auth: RefundAuthorization;
+  migrationSignature: MigrationSignature;
 }
 
 export interface FrozenNotesRefundProofOptions {

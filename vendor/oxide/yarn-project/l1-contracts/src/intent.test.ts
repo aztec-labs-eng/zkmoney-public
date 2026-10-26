@@ -88,6 +88,7 @@ function sweepBundle(intentData: Hex, proofs: Hex): Buffer {
       recoveryCommitment: RECOVERY_COMMITMENT,
       rollupVersion: 4n,
       resweepable: false,
+      forwardingTable: BENEFICIARY,
     },
     sweepArgs: { token: OWNER, relayer: OWNER, intentData, proofs },
     depositSubsidy: BENEFICIARY,
@@ -148,13 +149,13 @@ describe('intent codec', () => {
   });
 
   // Pinned so a codec change that inflates the bundle shows up here rather than as a costlier broadcast.
-  test('the largest registration bundle measures 1796 bytes, 58 of the 2k tier 67 fields', () => {
+  test('the largest registration bundle measures 1828 bytes, 59 of the 2k tier 67 fields', () => {
     const registration = sweepBundle(
       encodeRegistrationIntentData(INTENT),
       encodeRegistrationProofs(SIGNED_TERMS_PROOFS),
     );
-    expect(registration.length).toBe(1796);
-    expect(Math.ceil(registration.length / 31)).toBe(58);
+    expect(registration.length).toBe(1828);
+    expect(Math.ceil(registration.length / 31)).toBe(59);
     expect(TIER_2K.fields).toBe(67);
   });
 

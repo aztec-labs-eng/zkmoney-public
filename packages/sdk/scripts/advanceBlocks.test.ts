@@ -1,7 +1,7 @@
 import { describe, it } from "vitest"
 import { ContractService } from "../src/services/index.js"
-import { createAztecNodeClient, createPXEClient } from "@aztec/aztec.js"
-import { getInitialTestAccountsData } from "@aztec/accounts/testing"
+import { createAztecNodeClient, createPXEClient } from "@aztec-labs/aztec.js"
+import { getInitialTestAccountsData } from "@aztec-labs/accounts/testing"
 import { sendEmptyTx } from "../src/index.js"
 import { AZTEC_NODE_URL } from "@obsidion/core/constants"
 

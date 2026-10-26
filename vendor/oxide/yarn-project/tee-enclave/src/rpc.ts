@@ -1,22 +1,17 @@
-import type { AttestationData } from '@oxide/oxide-lib/attestation/attestation_data.js';
+import type { BlockHeader } from '@aztec-labs/stdlib/tx';
+
 import {
   type RpcMethod,
+  type RpcParams,
   decodeRequest,
   encodeEncryptedResponse,
   encodeErrorResponse,
   encodeOkResponse,
   parseParams,
-} from '@oxide/oxide-lib/codec.js';
-import { type EnclaveEncryptionKeypair, openRequest } from '@oxide/oxide-lib/encryption.js';
-import { FrameReader, frame } from '@oxide/oxide-lib/framing.js';
-import type {
-  FrozenDepositRefundFinalizationInput,
-  FrozenNotesRefundFinalizationInput,
-  PortalContext,
-  TokenOperation,
-  UnprocessedDepositRefundFinalizationInput,
-  WithdrawalFinalizationInput,
-} from '@oxide/oxide-lib/types.js';
+} from '@oxide/oxide-lib-tee/codec.js';
+import { openRequest } from '@oxide/oxide-lib-tee/encryption.js';
+import { FrameReader, frame } from '@oxide/oxide-lib-tee/framing.js';
+import { type PortalDomain, PortalLink } from '@oxide/oxide-lib-tee/types.js';
 
 import * as net from 'node:net';
 
@@ -25,9 +20,17 @@ import { LocalTeeSigner } from './signer.js';
 import type { EnclaveKeyMaterial } from './worker_data.js';
 
 export interface EnclaveDispatcher {
-  handle(method: RpcMethod, params: unknown): Promise<unknown>;
+  handle(
+    method: RpcMethod,
+    params: unknown,
+    link: PortalLink | undefined,
+    disclosedDomain?: PortalDomain,
+  ): Promise<unknown>;
   isPlaintextAllowed(method: RpcMethod): boolean;
-  openEncryptedPayload(payload: Buffer): Promise<{
+  openEncryptedPayload(
+    payload: Buffer,
+    disclosedDomain?: PortalDomain,
+  ): Promise<{
     innerPlaintext: Buffer;
     sealResponse: (innerPlaintext: Buffer) => Promise<Buffer>;
   }>;
@@ -40,60 +43,49 @@ export interface EnclaveDispatcher {
 const PLAINTEXT_METHODS: ReadonlySet<RpcMethod> = new Set(['getAttestation']);
 
 /**
- * Per-worker dispatcher over the shared enclave key material: ephemeral signer + boot
- * attestation. The portal context comes from process env vars baked into the EIF at build time,
- * so it ends up inside PCR0. There is no `init` RPC; clients only see `getAttestation` + the
- * `sign*` methods.
+ * Per-worker dispatcher over the shared enclave key material.
  */
 export class EnclaveSession implements EnclaveDispatcher {
-  private constructor(
-    private readonly signer: LocalTeeSigner,
-    private readonly encryptionKeypair: EnclaveEncryptionKeypair,
-    private readonly attestation: AttestationData,
+  constructor(
+    private readonly material: EnclaveKeyMaterial,
+    private readonly budget: SignatureBudget,
   ) {}
-
-  static fromKeyMaterial(
-    material: EnclaveKeyMaterial,
-    portalContext: PortalContext,
-    budget: SignatureBudget,
-  ): EnclaveSession {
-    return new EnclaveSession(
-      new LocalTeeSigner(material.signingKey, portalContext, budget),
-      material.encryptionKeypair,
-      material.attestation,
-    );
-  }
 
   isPlaintextAllowed(method: RpcMethod): boolean {
     return PLAINTEXT_METHODS.has(method);
   }
 
-  openEncryptedPayload(payload: Buffer): Promise<{
+  openEncryptedPayload(
+    payload: Buffer,
+    disclosedDomain?: PortalDomain,
+  ): Promise<{
     innerPlaintext: Buffer;
     sealResponse: (innerPlaintext: Buffer) => Promise<Buffer>;
   }> {
-    return openRequest(this.encryptionKeypair, payload);
+    return openRequest(this.material.encryptionKeypair, payload, disclosedDomain);
   }
 
-  async handle(method: RpcMethod, rawParams: unknown): Promise<unknown> {
-    const params = await parseParams(method, rawParams);
-    switch (method) {
-      case 'getAttestation':
-        return this.attestation;
-      case 'signTokenOperation': {
-        return await this.signer.signTokenOperation(params as TokenOperation);
-      }
-      case 'signWithdrawalFinalization':
-        return await this.signer.signWithdrawalFinalization(params as WithdrawalFinalizationInput);
-      case 'signFrozenNotesRefundFinalization':
-        return await this.signer.signFrozenNotesRefundFinalization(params as FrozenNotesRefundFinalizationInput);
-      case 'signFrozenDepositRefundFinalization':
-        return await this.signer.signFrozenDepositRefundFinalization(params as FrozenDepositRefundFinalizationInput);
-      case 'signUnprocessedDepositRefundFinalization':
-        return await this.signer.signUnprocessedDepositRefundFinalization(
-          params as UnprocessedDepositRefundFinalizationInput,
-        );
+  /** @dev `link` is optional only for `getAttestation`. Every other method throws without one.
+   *  A disclosed domain, when present, must match the sealed link and the request's anchor header. */
+  async handle(
+    method: RpcMethod,
+    rawParams: unknown,
+    link: PortalLink | undefined,
+    disclosedDomain?: PortalDomain,
+  ): Promise<unknown> {
+    if (method === 'getAttestation') {
+      return this.material.attestation;
     }
+    if (!link) {
+      throw new Error(`${method} requires a portal link in the sealed request`);
+    }
+    if (disclosedDomain && !PortalLink.from(disclosedDomain).equals(link)) {
+      throw new Error('disclosed domain does not name the sealed portal link');
+    }
+    const params = await parseParams(method, rawParams);
+    assertDisclosedDomainMatchesBlockHeader(disclosedDomain, method, params);
+    const signer = new LocalTeeSigner(this.material.signingKey, link, this.budget);
+    return await signer[method](params as never);
   }
 }
 
@@ -181,24 +173,28 @@ async function dispatchFrame(dispatcher: EnclaveDispatcher, payload: Buffer): Pr
     if (!dispatcher.isPlaintextAllowed(req.method)) {
       throw new Error(`method not allowed in plaintext: ${req.method}`);
     }
-    const result = await dispatcher.handle(req.method, req.params);
+    const result = await dispatcher.handle(req.method, req.params, undefined);
     return encodeOkResponse(result);
   }
-  // Encrypted: open the outer payload, dispatch the inner JSON-RPC, and seal the response.
-  const opened = await dispatcher.openEncryptedPayload(req.payload);
+  // The disclosed plaintext domain is the payload's AAD, so opening fails if the sender did not seal under it.
+  const opened = await dispatcher.openEncryptedPayload(req.payload, req.domain);
   const innerJson = opened.innerPlaintext.toString('utf8');
-  const innerResponseJson = await dispatchInner(dispatcher, innerJson);
+  const innerResponseJson = await dispatchInner(dispatcher, innerJson, req.domain);
   const sealed = await opened.sealResponse(Buffer.from(innerResponseJson, 'utf8'));
   return encodeEncryptedResponse(sealed);
 }
 
-async function dispatchInner(dispatcher: EnclaveDispatcher, innerJson: string): Promise<string> {
+async function dispatchInner(
+  dispatcher: EnclaveDispatcher,
+  innerJson: string,
+  disclosedDomain: PortalDomain | undefined,
+): Promise<string> {
   try {
     const inner = await decodeRequest(innerJson);
     if (inner.kind !== 'plaintext') {
       throw new Error('encrypted-in-encrypted requests are not allowed');
     }
-    const result = await dispatcher.handle(inner.method, inner.params);
+    const result = await dispatcher.handle(inner.method, inner.params, inner.link, disclosedDomain);
     return encodeOkResponse(result);
   } catch (err) {
     logEnclaveError('inner', err);
@@ -233,3 +229,36 @@ export function logEnclaveError(stage: string, err: unknown): void {
   }
   console.error(`[oxide-tee enclave] ${stage} error:`, detail);
 }
+
+/**
+ * Rejects a disclosed domain whose chain id or rollup version disagrees with the block header the request anchors
+ * on.
+ */
+function assertDisclosedDomainMatchesBlockHeader<M extends SigningMethod>(
+  disclosed: PortalDomain | undefined,
+  method: M,
+  params: RpcParams<M>,
+): void {
+  if (!disclosed) {
+    return;
+  }
+  const { chainId, version } = ANCHOR_HEADER[method](params).globalVariables;
+  if (disclosed.l1ChainId !== chainId.toBigInt() || disclosed.rollupVersion !== version.toBigInt()) {
+    throw new Error(
+      `disclosed domain names chain id ${disclosed.l1ChainId} and rollup version ` +
+        `${disclosed.rollupVersion}, but the block header names ` +
+        `${chainId.toBigInt()} and ${version.toBigInt()}`,
+    );
+  }
+}
+
+type SigningMethod = Exclude<RpcMethod, 'getAttestation'>;
+
+/** Where each signing request carries the block header its signatures anchor on. */
+const ANCHOR_HEADER: { [M in SigningMethod]: (params: RpcParams<M>) => BlockHeader } = {
+  signTokenOperation: params => params.anchorBlockHeader,
+  signWithdrawalFinalization: params => params.hints.txEffectsHints.txBlockHeader,
+  signFrozenNotesRefundFinalization: params => params.frozenTip,
+  signFrozenDepositsRefundFinalization: params => params.frozenTip,
+  signUnprocessedDepositRefundFinalization: params => params.frozenTip,
+};

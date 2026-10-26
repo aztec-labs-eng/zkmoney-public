@@ -1,68 +1,26 @@
-import { SpongeBlob } from '@aztec/blob-lib';
-import { encodeBlockBlobData, makeBlockBlobData } from '@aztec/blob-lib/encoding';
-import { ARCHIVE_HEIGHT, DomainSeparator } from '@aztec/constants';
-import { makeTuple } from '@aztec/foundation/array';
-import { BlockNumber, SlotNumber } from '@aztec/foundation/branded-types';
-import { poseidon2HashWithSeparator } from '@aztec/foundation/crypto/poseidon';
-import { Fr } from '@aztec/foundation/curves/bn254';
-import { jsonStringify } from '@aztec/foundation/json-rpc';
-import { MembershipWitness } from '@aztec/foundation/trees';
-import { AppendOnlyTreeSnapshot } from '@aztec/stdlib/trees';
-import { BlockHeader, GlobalVariables, TxEffect } from '@aztec/stdlib/tx';
+import { ARCHIVE_HEIGHT, DomainSeparator } from '@aztec-labs/constants';
+import { makeTuple } from '@aztec-labs/foundation/array';
+import { BlockNumber, SlotNumber, TreeLeafIndex } from '@aztec-labs/foundation/branded-types';
+import { poseidon2HashWithSeparator } from '@aztec-labs/foundation/crypto/poseidon';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { jsonStringify } from '@aztec-labs/foundation/json-rpc';
+import { MembershipWitness } from '@aztec-labs/foundation/trees';
+import { RevertCode } from '@aztec-labs/stdlib/avm';
+import { AppendOnlyTreeSnapshot } from '@aztec-labs/stdlib/trees';
+import { BlockHeader, GlobalVariables, TxEffect, computeTxEffectMembershipWitness } from '@aztec-labs/stdlib/tx';
 
-import { type Constrained, testConstrained } from '@oxide/oxide-lib/constrained.js';
-import { type TxEffectsHints, TxEffectsHintsSchema } from '@oxide/oxide-lib/types.js';
+import type { TeeTxEffect } from '@oxide/oxide-lib-tee/tx_effect_hint.js';
+import { type TxEffectHintData, type TxEffectsHints, TxEffectsHintsSchema } from '@oxide/oxide-lib-tee/types.js';
+import { testConstrained } from '@oxide/oxide-lib/constrained.js';
+import { toTxEffectHintData } from '@oxide/oxide-lib/tx_effect_hint.js';
 
 import { describe, expect, it } from '@jest/globals';
 
 import {
   verifyAndDecodeArchivedTxEffects,
-  verifyAndDecodeBlockBlobFields,
   verifyAndDecodeTxEffectsAtAnchor,
+  verifyTxEffectInBlock,
 } from './verify_and_decode_tx_effects.js';
-
-function initSponge(): Constrained<SpongeBlob> {
-  return testConstrained(SpongeBlob.init());
-}
-
-async function spongeHash(fields: Fr[]): Promise<Constrained<Fr>> {
-  const sponge = SpongeBlob.init();
-  await sponge.absorb(fields);
-  return testConstrained(await sponge.squeeze());
-}
-
-describe('verifyAndDecodeBlockBlobFields', () => {
-  const blockBlobData = makeBlockBlobData({ numTxs: 2, isFirstBlock: true });
-  const fields = encodeBlockBlobData(blockBlobData);
-
-  it('decodes a stream that matches the expected sponge blob hash', async () => {
-    const decoded = await verifyAndDecodeBlockBlobFields(initSponge(), fields, true, await spongeHash(fields));
-    expect(decoded.txs.length).toBe(2);
-    expect(encodeBlockBlobData(decoded)).toEqual(fields);
-  });
-
-  it('rejects a stream whose sponge blob hash does not match', async () => {
-    await expect(
-      verifyAndDecodeBlockBlobFields(initSponge(), fields, true, testConstrained(Fr.random())),
-    ).rejects.toThrow('Sponge blob hash mismatch');
-  });
-
-  it('rejects trailing fields even when the sponge blob hash matches', async () => {
-    // squeeze() does not bind the absorbed field count, so a hash over a zero-extended stream can collide with the
-    // committed one; the exhaustion check must reject the extension regardless.
-    const extended = [...fields, Fr.ZERO];
-    await expect(
-      verifyAndDecodeBlockBlobFields(initSponge(), extended, true, await spongeHash(extended)),
-    ).rejects.toThrow('trailing fields');
-  });
-
-  it('rejects a truncated stream with a decode error', async () => {
-    const truncated = fields.slice(0, -1);
-    await expect(
-      verifyAndDecodeBlockBlobFields(initSponge(), truncated, true, await spongeHash(truncated)),
-    ).rejects.toThrow('Failed to decode verified block blob fields');
-  });
-});
 
 /** Makes a real archive proof with one selected leaf and fixed siblings. */
 async function archiveProof(header: BlockHeader) {
@@ -78,48 +36,48 @@ async function archiveProof(header: BlockHeader) {
   return { root, witness: new MembershipWitness(ARCHIVE_HEIGHT, leafIndex, siblingPath) };
 }
 
-async function makeHints(firstInCheckpoint = false, opaquePrefixLength = 0) {
-  const precedingBlocks = [
-    makeBlockBlobData({ numTxs: 1, isFirstBlock: true, seed: 1 }),
-    makeBlockBlobData({ numTxs: 1, isFirstBlock: false, seed: 2 }),
-  ];
-  const previousBlocksBlobFields = firstInCheckpoint
-    ? []
-    : opaquePrefixLength > 0
-      ? Array.from({ length: opaquePrefixLength }, (_, i) => new Fr(i + 1))
-      : precedingBlocks.flatMap(encodeBlockBlobData);
-  const blockBlobData = makeBlockBlobData({
-    numTxs: 2,
-    isFirstBlock: firstInCheckpoint,
-    seed: 3,
-    blockEndMarker: { blockNumber: BlockNumber(3), numTxs: 2 },
-  });
-  blockBlobData.txs = await Promise.all(
-    [0, 1].map(async () => (await TxEffect.random({ maxEffects: 2, numPublicCallsPerTx: 0 })).toTxBlobData()),
-  );
-  const blockBlobFields = encodeBlockBlobData(blockBlobData);
-  const previousBlockHeader = BlockHeader.empty({
-    globalVariables: GlobalVariables.empty({
-      blockNumber: BlockNumber(2),
-      slotNumber: SlotNumber(firstInCheckpoint ? 1 : 2),
-    }),
-    spongeBlobHash: await spongeHash(previousBlocksBlobFields),
-  });
-  const previousProof = await archiveProof(previousBlockHeader);
+const FULL_TX_SHAPE = {
+  numNoteHashes: 2,
+  numNullifiers: 2,
+  numL2ToL1Msgs: 1,
+  numPublicDataWrites: 1,
+  numPrivateLogs: 2,
+  numPublicCallsPerTx: 1,
+  numPublicLogsPerCall: 1,
+  numContractClassLogs: 1,
+};
+
+/** Makes a block of txs and the hints for the tx at `txIndex`. */
+async function makeBlockOf(txs: TxEffect[], txIndex: number) {
+  const witness = await computeTxEffectMembershipWitness(txs, txIndex);
   const txBlockHeader = BlockHeader.empty({
-    lastArchive: new AppendOnlyTreeSnapshot(previousProof.root, 3),
+    txEffectsTreeRoot: witness.root,
     globalVariables: GlobalVariables.empty({ blockNumber: BlockNumber(3), slotNumber: SlotNumber(2) }),
-    spongeBlobHash: await spongeHash([...previousBlocksBlobFields, ...blockBlobFields]),
   });
   const hints: TxEffectsHints = {
     txBlockHeader,
-    previousBlockHeader,
-    previousBlockArchiveMembershipWitness: previousProof.witness,
-    checkpointBlobFields: [...previousBlocksBlobFields, ...blockBlobFields],
-    txBlockStartOffset: previousBlocksBlobFields.length,
-    txIndexInBlock: 0,
+    txEffect: await toTxEffectHintData(txs[txIndex]),
+    leafIndex: witness.leafIndex,
+    siblingPath: witness.siblingPath.toFields(),
   };
-  return { hints, blockBlobData };
+  return { txs, hints };
+}
+
+async function makeBlock(numTxs: number, txIndex: number, shape: Parameters<typeof TxEffect.random>[0] = {}) {
+  const txs = await Promise.all(
+    Array.from({ length: numTxs }, () => TxEffect.random({ maxEffects: 2, numPublicCallsPerTx: 0, ...shape })),
+  );
+  return makeBlockOf(txs, txIndex);
+}
+
+function expectSameEffect(actual: TeeTxEffect, expected: TxEffect) {
+  expect(actual.txHash).toEqual(expected.txHash);
+  expect(actual.noteHashes).toEqual(expected.noteHashes);
+  expect(actual.nullifiers).toEqual(expected.nullifiers);
+  expect(actual.l2ToL1Msgs).toEqual(expected.l2ToL1Msgs);
+  expect(actual.privateLogs.map(log => log.toBlobFields())).toEqual(
+    expected.privateLogs.map(log => log.toBlobFields()),
+  );
 }
 
 function verifyAtAnchor(hints: TxEffectsHints) {
@@ -129,148 +87,180 @@ function verifyAtAnchor(hints: TxEffectsHints) {
   );
 }
 
-describe('checkpoint replay for tx effects', () => {
-  it.each([true, false])('verifies target effects at the anchor (first in checkpoint: %s)', async first => {
-    const { hints, blockBlobData } = await makeHints(first);
+function verifyInBlock(hints: TxEffectsHints) {
+  return verifyTxEffectInBlock(hints, testConstrained(hints.txBlockHeader));
+}
+
+function withEffect(hints: TxEffectsHints, patch: Partial<TxEffectHintData>): TxEffectsHints {
+  return { ...hints, txEffect: { ...hints.txEffect, ...patch } };
+}
+
+describe('tx effects tree proof', () => {
+  it.each([
+    { numTxs: 1, txIndex: 0 },
+    { numTxs: 2, txIndex: 1 },
+    { numTxs: 5, txIndex: 0 },
+    { numTxs: 5, txIndex: 4 },
+  ])('verifies tx $txIndex of a $numTxs-tx block at the anchor', async ({ numTxs, txIndex }) => {
+    const { txs, hints } = await makeBlock(numTxs, txIndex);
     const parsed = await TxEffectsHintsSchema.parseAsync(JSON.parse(jsonStringify(hints)));
-    const effect = await verifyAtAnchor(parsed);
-    expect(effect.toBuffer()).toEqual(TxEffect.fromTxBlobData(blockBlobData.txs[0]).toBuffer());
+    expectSameEffect(await verifyAtAnchor(parsed), txs[txIndex]);
   });
 
-  it('does not decode the preceding fields', async () => {
-    const { hints, blockBlobData } = await makeHints(false, 3);
-    const effect = await verifyAtAnchor(hints);
-    expect(effect.toBuffer()).toEqual(TxEffect.fromTxBlobData(blockBlobData.txs[0]).toBuffer());
+  it('verifies a tx with every effect category populated', async () => {
+    const { txs, hints } = await makeBlock(3, 1, FULL_TX_SHAPE);
+    const parsed = await TxEffectsHintsSchema.parseAsync(JSON.parse(jsonStringify(hints)));
+    expectSameEffect(await verifyAtAnchor(parsed), txs[1]);
+  });
+
+  it('verifies a reverted tx', async () => {
+    const reverted = TxEffect.from({ ...(await TxEffect.random(FULL_TX_SHAPE)), revertCode: RevertCode.fromNumber(1) });
+    const { txs, hints } = await makeBlockOf([await TxEffect.random(), reverted], 1);
+    expectSameEffect(await verifyAtAnchor(hints), txs[1]);
   });
 
   it('verifies effects through both archive-proof entry points', async () => {
-    const { hints, blockBlobData } = await makeHints();
-    // Put the two headers at adjacent archive leaves and give them a shared path above their parent.
-    const previousHash = new Fr((await hints.previousBlockHeader.hash()).toBuffer());
-    const txHash = new Fr((await hints.txBlockHeader.hash()).toBuffer());
-    let root = await poseidon2HashWithSeparator([previousHash, txHash], DomainSeparator.MERKLE_HASH);
-    let index = 1n;
-    for (let level = 1; level < ARCHIVE_HEIGHT; level++) {
-      const pair = (index & 1n) === 0n ? [root, Fr.ZERO] : [Fr.ZERO, root];
-      root = await poseidon2HashWithSeparator(pair, DomainSeparator.MERKLE_HASH);
-      index >>= 1n;
-    }
-    hints.previousBlockArchiveMembershipWitness = new MembershipWitness(
-      ARCHIVE_HEIGHT,
-      2n,
-      makeTuple(ARCHIVE_HEIGHT, i => (i === 0 ? txHash : Fr.ZERO)),
-    );
-    const witness = new MembershipWitness(
-      ARCHIVE_HEIGHT,
-      3n,
-      makeTuple(ARCHIVE_HEIGHT, i => (i === 0 ? previousHash : Fr.ZERO)),
-    );
-    const archived = await verifyAndDecodeArchivedTxEffects(
-      { txEffectsHints: hints, archiveMembershipWitness: witness },
-      testConstrained(root),
-    );
-    expect(archived.txEffect.toBuffer()).toEqual(TxEffect.fromTxBlobData(blockBlobData.txs[0]).toBuffer());
-    const anchor = BlockHeader.empty({ lastArchive: new AppendOnlyTreeSnapshot(root, 4) });
-    const ancestor = await verifyAndDecodeTxEffectsAtAnchor(
+    const { txs, hints } = await makeBlock(3, 2);
+    const proof = await archiveProof(hints.txBlockHeader);
+    const anchorBlockHeader = BlockHeader.empty({
+      lastArchive: new AppendOnlyTreeSnapshot(proof.root, TreeLeafIndex(4)),
+      globalVariables: GlobalVariables.empty({ blockNumber: BlockNumber(4), slotNumber: SlotNumber(3) }),
+    });
+
+    const atAnchor = await verifyAndDecodeTxEffectsAtAnchor(
       {
         txEffectsHints: hints,
-        anchorRelation: { kind: 'txBlockIsAncestorOfAnchor', archiveMembershipWitness: witness },
+        anchorRelation: { kind: 'txBlockIsAncestorOfAnchor', archiveMembershipWitness: proof.witness },
       },
-      testConstrained(anchor),
+      testConstrained(anchorBlockHeader),
     );
-    expect(ancestor.toBuffer()).toEqual(archived.txEffect.toBuffer());
-  });
+    expectSameEffect(atAnchor, txs[2]);
 
-  it.each([1, 2])('rejects an altered first transaction field at offset %s', async offset => {
-    const { hints } = await makeHints();
-    expect(hints.txBlockStartOffset % 3).toBe(0);
-    hints.checkpointBlobFields[hints.txBlockStartOffset + offset] = hints.checkpointBlobFields[
-      hints.txBlockStartOffset + offset
-    ].add(Fr.ONE);
-    await expect(verifyAtAnchor(hints)).rejects.toThrow('Sponge blob hash mismatch');
-  });
-
-  it('rejects altered preceding fields', async () => {
-    const { hints } = await makeHints();
-    hints.checkpointBlobFields[1] = Fr.ZERO;
-    await expect(verifyAtAnchor(hints)).rejects.toThrow('Previous blocks blob hash mismatch');
-  });
-
-  it('rejects an omitted checkpoint prefix', async () => {
-    const { hints } = await makeHints();
-    hints.checkpointBlobFields = hints.checkpointBlobFields.slice(hints.txBlockStartOffset);
-    hints.txBlockStartOffset = 0;
-    await expect(verifyAtAnchor(hints)).rejects.toThrow('Previous blocks blob hash mismatch');
-  });
-
-  it('rejects a changed split even when the combined field stream is unchanged', async () => {
-    const { hints } = await makeHints();
-    hints.txBlockStartOffset++;
-    await expect(verifyAtAnchor(hints)).rejects.toThrow('Previous blocks blob hash mismatch');
-  });
-
-  it('rejects zero extension of the prefix even if the predecessor hash is unchanged', async () => {
-    const { hints } = await makeHints(false, 1);
-    hints.checkpointBlobFields.splice(hints.txBlockStartOffset, 0, Fr.ZERO);
-    hints.txBlockStartOffset++;
-    // The squeeze does not bind the field count. The target hash must still match after continuation.
-    expect(await spongeHash(hints.checkpointBlobFields.slice(0, hints.txBlockStartOffset))).toEqual(
-      hints.previousBlockHeader.spongeBlobHash,
+    const archived = await verifyAndDecodeArchivedTxEffects(
+      { archiveMembershipWitness: proof.witness, txEffectsHints: hints },
+      testConstrained(proof.root),
     );
-    await expect(verifyAtAnchor(hints)).rejects.toThrow('Sponge blob hash mismatch');
+    expectSameEffect(archived.txEffect, txs[2]);
+    expect(archived.txBlockHeader).toBe(hints.txBlockHeader);
   });
 
-  it('requires an empty prefix at the start of a checkpoint', async () => {
-    const { hints } = await makeHints(true);
-    hints.txBlockStartOffset = 1;
-    await expect(verifyAtAnchor(hints)).rejects.toThrow('must have txBlockStartOffset 0');
-  });
-
-  it('rejects an unauthenticated predecessor header', async () => {
-    const { hints } = await makeHints();
-    hints.previousBlockHeader = BlockHeader.empty();
-    await expect(verifyAtAnchor(hints)).rejects.toThrow('Membership witness verification failed');
-  });
-
-  it('rejects a valid archive proof for a non-immediate predecessor', async () => {
-    const { hints } = await makeHints();
-    hints.previousBlockHeader = BlockHeader.empty({
-      globalVariables: GlobalVariables.empty({ blockNumber: BlockNumber(1), slotNumber: SlotNumber(2) }),
+  it('rejects a tx block that is neither the anchor nor its ancestor', async () => {
+    const { hints } = await makeBlock(2, 0);
+    const other = BlockHeader.empty({
+      globalVariables: GlobalVariables.empty({ blockNumber: BlockNumber(9), slotNumber: SlotNumber(9) }),
     });
-    const proof = await archiveProof(hints.previousBlockHeader);
-    hints.previousBlockArchiveMembershipWitness = proof.witness;
+    await expect(
+      verifyAndDecodeTxEffectsAtAnchor(
+        { txEffectsHints: hints, anchorRelation: { kind: 'txBlockIsAnchor' } },
+        testConstrained(other),
+      ),
+    ).rejects.toThrow('differs from the anchor block hash');
+    const proof = await archiveProof(other);
+    await expect(
+      verifyAndDecodeArchivedTxEffects(
+        { archiveMembershipWitness: proof.witness, txEffectsHints: hints },
+        testConstrained(proof.root),
+      ),
+    ).rejects.toThrow('Membership witness verification failed for block hash');
+  });
+
+  it('rejects a header whose tx effects tree root differs', async () => {
+    const { hints } = await makeBlock(2, 0);
     hints.txBlockHeader = BlockHeader.empty({
-      ...hints.txBlockHeader,
-      lastArchive: new AppendOnlyTreeSnapshot(proof.root, 3),
+      txEffectsTreeRoot: Fr.random(),
+      globalVariables: hints.txBlockHeader.globalVariables,
     });
-    await expect(verifyAtAnchor(hints)).rejects.toThrow('not the immediate predecessor');
+    await expect(verifyInBlock(hints)).rejects.toThrow('tx effects tree leaf');
   });
 
-  it.each([-1, 2])('rejects an out-of-range transaction index %s', async txIndexInBlock => {
-    const { hints } = await makeHints();
-    hints.txIndexInBlock = txIndexInBlock;
-    await expect(verifyAtAnchor(hints)).rejects.toThrow('is out of range');
+  it('rejects a tampered scalar, field or opaque category hash', async () => {
+    const { hints } = await makeBlock(2, 0, FULL_TX_SHAPE);
+    const e = hints.txEffect;
+    const bump = (f: Fr) => f.add(Fr.ONE);
+    const tampered: Record<string, Partial<TxEffectHintData>> = {
+      txStartMarker: { txStartMarker: bump(e.txStartMarker) },
+      txHash: { txHash: bump(e.txHash) },
+      transactionFee: { transactionFee: bump(e.transactionFee) },
+      noteHashes: { noteHashes: [bump(e.noteHashes[0]), ...e.noteHashes.slice(1)] },
+      nullifiers: { nullifiers: [bump(e.nullifiers[0]), ...e.nullifiers.slice(1)] },
+      l2ToL1Msgs: { l2ToL1Msgs: [bump(e.l2ToL1Msgs[0]), ...e.l2ToL1Msgs.slice(1)] },
+      privateLogs: {
+        privateLogs: [
+          [e.privateLogs[0][0], bump(e.privateLogs[0][1]), ...e.privateLogs[0].slice(2)],
+          ...e.privateLogs.slice(1),
+        ],
+      },
+      publicDataWritesHash: { publicDataWritesHash: bump(e.publicDataWritesHash) },
+      publicLogsHash: { publicLogsHash: bump(e.publicLogsHash) },
+      contractClassLogHash: { contractClassLogHash: bump(e.contractClassLogHash) },
+    };
+    const accepted: string[] = [];
+    for (const [name, patch] of Object.entries(tampered)) {
+      await verifyInBlock(withEffect(hints, patch)).then(
+        () => accepted.push(name),
+        () => undefined,
+      );
+    }
+    expect(accepted).toEqual([]);
   });
 
-  it.each([-1, 0.5, NaN, Infinity, 2 ** 32])('rejects invalid target offset %s', async txBlockStartOffset => {
-    const { hints } = await makeHints();
-    hints.txBlockStartOffset = txBlockStartOffset;
-    await expect(verifyAtAnchor(hints)).rejects.toThrow('txBlockStartOffset');
-    await expect(TxEffectsHintsSchema.parseAsync(JSON.parse(jsonStringify(hints)))).rejects.toThrow();
-  });
-
-  it('rejects a target offset at the end of the array', async () => {
-    const { hints } = await makeHints();
-    hints.txBlockStartOffset = hints.checkpointBlobFields.length;
-    await expect(verifyAtAnchor(hints)).rejects.toThrow('txBlockStartOffset');
-  });
-
-  it('does not deserialize a legacy sponge-state hint', async () => {
-    const { hints } = await makeHints();
-    const parsed = await TxEffectsHintsSchema.parseAsync(
-      JSON.parse(jsonStringify({ ...hints, previousBlockEndSpongeBlob: { invalid: true } })),
+  it('rejects counts that disagree with the start marker', async () => {
+    const { hints } = await makeBlock(2, 0, FULL_TX_SHAPE);
+    const e = hints.txEffect;
+    await expect(verifyInBlock(withEffect(hints, { nullifiers: e.nullifiers.slice(1) }))).rejects.toThrow(
+      'Failed to decode tx effect hint: nullifiers',
     );
-    expect(parsed).not.toHaveProperty('previousBlockEndSpongeBlob');
+    await expect(verifyInBlock(withEffect(hints, { privateLogs: [...e.privateLogs, [Fr.ONE]] }))).rejects.toThrow(
+      'Failed to decode tx effect hint: privateLogs',
+    );
+    await expect(verifyInBlock(withEffect(hints, { txStartMarker: Fr.random() }))).rejects.toThrow(
+      'invalid tx start marker',
+    );
+  });
+
+  it('rejects the effects of one tx with the path of another', async () => {
+    const { txs, hints } = await makeBlock(3, 1);
+    await expect(verifyInBlock({ ...hints, txEffect: await toTxEffectHintData(txs[2]) })).rejects.toThrow(
+      'tx effects tree leaf',
+    );
+  });
+
+  it('rejects a shortened path that presents an internal node as the root', async () => {
+    const { hints } = await makeBlock(4, 0);
+    expect(hints.siblingPath.length).toBe(2);
+    await expect(verifyInBlock({ ...hints, siblingPath: hints.siblingPath.slice(0, -1) })).rejects.toThrow(
+      'tx effects tree leaf',
+    );
+    await expect(
+      verifyInBlock({ ...hints, siblingPath: hints.siblingPath.slice(1), leafIndex: hints.leafIndex >> 1n }),
+    ).rejects.toThrow('tx effects tree leaf');
+  });
+
+  it('rejects a leaf index outside the path range', async () => {
+    const { hints } = await makeBlock(4, 0);
+    const outside = 1n << BigInt(hints.siblingPath.length);
+    await expect(verifyInBlock({ ...hints, leafIndex: hints.leafIndex + outside })).rejects.toThrow('out of range');
+    await expect(verifyInBlock({ ...hints, leafIndex: -1n })).rejects.toThrow('out of range');
+  });
+
+  it('rejects a mismatched leaf index for a valid path', async () => {
+    const { hints } = await makeBlock(4, 0);
+    await expect(verifyInBlock({ ...hints, leafIndex: hints.leafIndex ^ 1n })).rejects.toThrow('tx effects tree leaf');
+  });
+
+  it('does not deserialize legacy hints', async () => {
+    const { txs, hints } = await makeBlock(2, 1);
+    const legacy = {
+      ...hints,
+      txBlobFields: txs[1].toBlobFields(),
+      checkpointBlobFields: [Fr.ONE],
+      previousBlockHeader: hints.txBlockHeader,
+      txBlockStartOffset: 0,
+      txIndexInBlock: 1,
+    };
+    const parsed = await TxEffectsHintsSchema.parseAsync(JSON.parse(jsonStringify(legacy)));
+    expect(parsed).not.toHaveProperty('txBlobFields');
+    expect(parsed).not.toHaveProperty('checkpointBlobFields');
     await expect(verifyAtAnchor(parsed)).resolves.toBeDefined();
   });
 });

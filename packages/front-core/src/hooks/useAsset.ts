@@ -13,10 +13,7 @@ import {
   ContractService,
   ContractName,
   Network,
-  TeeSignerNotApprovedError,
-  onTeeSignerRefused,
-  tokenDecimalsForNetwork,
-  type TeeSigner,
+  type RegisteredTeeSigner,
 } from "@obsidion/sdk"
 import { type TeeSignerSource } from "src/tee/teeSignerSource"
 import { Asset } from "src/types"
@@ -66,7 +63,7 @@ export const useAsset = (options?: UseAssetOptions) => {
   const assetConstants = resolveAssetConstants(currentNetwork?.type ?? Network.SANDBOX)
 
   const [tokenService, setTokenService] = useState<TokenService | null>(null)
-  const [teeSigner, setTeeSignerState] = useState<TeeSigner | undefined>(undefined)
+  const [teeSigner, setTeeSignerState] = useState<RegisteredTeeSigner | undefined>(undefined)
   // Last connect failure; cleared by the next successful connect so the UI can say why payments
   // are unavailable while the retry loop runs.
   const [teeSignerError, setTeeSignerError] = useState<Error | null>(null)
@@ -101,6 +98,10 @@ export const useAsset = (options?: UseAssetOptions) => {
   // re-reads TokenStorage (web never populates it otherwise).
   const [tokenRowsVersion, setTokenRowsVersion] = useState(0)
 
+  // The token service has not yet confirmed the active token's persisted decimals against its
+  // immutables. No balance counts as live meanwhile.
+  const [decimalsPending, setDecimalsPending] = useState(false)
+
   // Store-driven assets: BalanceStorage is written by WalletSyncCoordinator on every synced tick
   // and hydrates from cache on cold start, so a returning user sees their previous balance while
   // wallet/PXE init and the first tick are in flight. The hook only projects the store.
@@ -121,7 +122,7 @@ export const useAsset = (options?: UseAssetOptions) => {
         if (record.scope !== scope) continue
         try {
           balances[record.tokenAddress] = BigInt(record.balance)
-          readAt[record.tokenAddress.toLowerCase()] = record.updatedAt
+          readAt[record.tokenAddress.toLowerCase()] = record.readAt ?? record.updatedAt
         } catch {
           continue // corrupt record — skip rather than poison the whole projection
         }
@@ -144,12 +145,19 @@ export const useAsset = (options?: UseAssetOptions) => {
           .filter((asset) => asset.balance > 0)
           .sort((a, b) => a.symbol.localeCompare(b.symbol)),
       )
-      setLiveAssetsLoaded(live)
+      setLiveAssetsLoaded(live && !decimalsPending)
     })()
     return () => {
       cancelled = true
     }
-  }, [balancesHydrated, cachedBalances, currentNetwork, obsidionAccount, tokenRowsVersion])
+  }, [
+    balancesHydrated,
+    cachedBalances,
+    currentNetwork,
+    obsidionAccount,
+    tokenRowsVersion,
+    decimalsPending,
+  ])
 
   // Initialize services and persist the wallet token's row
   useEffect(() => {
@@ -187,11 +195,6 @@ export const useAsset = (options?: UseAssetOptions) => {
             options?.relayerUrl,
             options?.relayerHeaders,
           )
-      setTokenService(newTokenService)
-
-      // Correct stale persisted decimals before the row is read by the projection above — see
-      // refreshStalePersistedTokenDecimals.
-      await refreshStalePersistedTokenDecimals()
       const tokenStorage = TokenStorage.get()
       const stored = await tokenStorage.getTokens()
       for (const symbol of options?.initialTokensToLoad ?? []) {
@@ -212,6 +215,8 @@ export const useAsset = (options?: UseAssetOptions) => {
           decimals: constEntry.decimals,
         })
       }
+      // Published once the rows exist: the decimals repair it starts checks the row this loop writes.
+      setTokenService(newTokenService)
       if (!cancelled) setTokenRowsVersion((v) => v + 1)
     }
 
@@ -251,8 +256,6 @@ export const useAsset = (options?: UseAssetOptions) => {
   // change. In-flight signing ops resolve lazily via `getTeeSigner()`, so an op mid-proving when a
   // roll lands fails at submit and the user retries — accepted (rolls are rare).
   const teeSignerSource = options?.teeSignerSource
-  // The connect effect's `connect`, for a reconnect requested outside it.
-  const reconnectRef = useRef<(() => void) | null>(null)
   useEffect(() => {
     setTeeSignerState(undefined)
     setTeeSignerError(null)
@@ -279,10 +282,9 @@ export const useAsset = (options?: UseAssetOptions) => {
         )
         if (!active || gen !== generation || !signer) return
         retryAttempt = 0
-        // Non-secret connect log for smoke debugging (the signer's eth
-        // address is public via the on-chain portal binding).
+        // Non-secret connect log for smoke debugging (the registry is public on L1).
         logger.log("[useAsset] TEE signer connected", {
-          ethAddress: signer.ethAddress.toString(),
+          teeRegistry: signer.teeRegistry.toString(),
           source: teeSignerSource.label,
         })
         setTeeSignerState(signer)
@@ -292,16 +294,7 @@ export const useAsset = (options?: UseAssetOptions) => {
         const delay = Math.min(4000 * 2 ** retryAttempt, 60_000)
         retryAttempt += 1
         setTeeSignerError(err instanceof Error ? err : new Error(String(err)))
-        if (err instanceof TeeSignerNotApprovedError) {
-          logger.warn(
-            `[useAsset] TEE signer refused: enclave not approved on the token; retrying in ${
-              delay / 1000
-            }s`,
-            { enclave: err.enclaveAddress.toString(), token: err.tokenAddress.toString() },
-          )
-        } else {
-          logger.warn(`[useAsset] TEE signer connect failed; retrying in ${delay / 1000}s:`, err)
-        }
+        logger.warn(`[useAsset] TEE signer connect failed; retrying in ${delay / 1000}s:`, err)
         // teeSigner stays undefined until a retry lands; signing ops throw
         // via getTeeSigner(). Also ask the source to re-fetch (single-flight)
         // so the retry connects against a fresh snapshot.
@@ -311,32 +304,13 @@ export const useAsset = (options?: UseAssetOptions) => {
     }
 
     void connect()
-    reconnectRef.current = () => void connect()
     const unsubscribe = teeSignerSource.subscribe?.(() => void connect())
     return () => {
       active = false
-      reconnectRef.current = null
       if (retryTimer) clearTimeout(retryTimer)
       unsubscribe?.()
     }
   }, [teeSignerSource])
-
-  // `signTokenOperation` re-pins to another enclave when the pinned one goes away, and the finalizer
-  // refuses the replacement when the token has not approved it. Nothing else refuses this signer
-  // again (its signing calls succeed), so the refusal drops it here: submissions fail closed until
-  // the connect loop, with its approval check and backoff, lands an approved enclave.
-  useEffect(() => {
-    if (!teeSigner) return
-    return onTeeSignerRefused((signer, err) => {
-      if (signer !== teeSigner) return
-      logger.warn("[useAsset] TEE signer refused at sign time: enclave not approved on the token", {
-        enclave: err.enclaveAddress.toString(),
-        token: err.tokenAddress.toString(),
-      })
-      setTeeSignerError(err)
-      reconnectRef.current?.()
-    })
-  }, [teeSigner])
 
   // Fan the connected signer into the token service; the cleanup drops it from the service that
   // held it, so a stale signer never survives a reconnect or a service reused after a config switch.
@@ -368,7 +342,7 @@ export const useAsset = (options?: UseAssetOptions) => {
         return {
           // Token's own decimals win, matching createAssetWithBalance so effective
           // decimals don't depend on which path built the asset. The active token's
-          // persisted decimals are refreshed to the live resolver value on init (see
+          // persisted decimals are refreshed to its immutables' decimals on init (see
           // refreshStalePersistedTokenDecimals); an old-address record keeps its real (possibly 6-dp) scale.
           ...constAssetParams,
           ...token,
@@ -379,14 +353,13 @@ export const useAsset = (options?: UseAssetOptions) => {
     loadGlobalTokens()
   }, [tokenService])
 
-  // Correct stale persisted DECIMALS for the ACTIVE token before it is read into
-  // the asset set. An upgraded install can carry a pre-cutover row against the
+  // Correct stale persisted DECIMALS for the ACTIVE token, and say whether it
+  // rewrote the row. An upgraded install can carry a pre-cutover row against the
   // current token address with 6-dp decimals (it touched staging on a 6-dp
   // build); left alone that wins in createAssetWithBalance and mis-scales
   // paylink escrow amounts by 10^12. Scoped to the active oxideToken address
   // ONLY — a symbol/name match would wrongly rewrite a legitimately different
-  // old-address record. Best-effort: any failure (address unresolved, storage
-  // error) is swallowed so a refresh can never block asset loading.
+  // old-address record. Throws when the metadata or storage cannot be read.
   //
   // Display identity is deliberately NOT repaired here. createAssetWithBalance
   // takes name/symbol/logo from the asset constant, so a row naming an older
@@ -394,22 +367,47 @@ export const useAsset = (options?: UseAssetOptions) => {
   // change into a silent migration of stored records. Decimals are different:
   // they are arithmetic, not presentation, and the row's value legitimately
   // wins downstream, so a wrong one has to be corrected at the source.
-  const refreshStalePersistedTokenDecimals = async () => {
-    const network = currentNetwork?.type
-    if (!network) return
-    try {
-      const activeAddress = await ContractService.getInstance().getContractAddress("oxideToken")
-      if (!activeAddress) return
-      const addressStr = activeAddress.toString()
-      const liveDecimals = tokenDecimalsForNetwork(network)
-      const persisted = (await TokenStorage.get().getTokens()).find((t) => t.address === addressStr)
-      if (persisted && persisted.decimals !== liveDecimals) {
-        await TokenStorage.get().addToken({ ...persisted, decimals: liveDecimals })
-      }
-    } catch (error) {
-      logger.warn("[useAsset] persisted token-row refresh skipped:", error)
-    }
+  const refreshStalePersistedTokenDecimals = async (service: TokenService): Promise<boolean> => {
+    const activeAddress = await ContractService.getInstance().getContractAddress("oxideToken")
+    if (!activeAddress) return false
+    const addressStr = activeAddress.toString()
+    const liveDecimals = (await service.fetchTokenInformation()).decimals
+    const persisted = (await TokenStorage.get().getTokens()).find((t) => t.address === addressStr)
+    if (!persisted || persisted.decimals === liveDecimals) return false
+    await TokenStorage.get().addToken({ ...persisted, decimals: liveDecimals })
+    return true
   }
+
+  // The rows render without waiting on the token's metadata read; a repaired row re-renders. A
+  // failed read retries with the init effect's backoff.
+  useEffect(() => {
+    setDecimalsPending(Boolean(tokenService))
+    if (!tokenService) return
+    let active = true
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
+    const repair = (attempt: number) =>
+      refreshStalePersistedTokenDecimals(tokenService).then(
+        (repaired) => {
+          if (!active) return
+          if (repaired) setTokenRowsVersion((v) => v + 1)
+          setDecimalsPending(false)
+        },
+        (error) => {
+          if (!active) return
+          const delay = Math.min(4000 * 2 ** attempt, 60_000)
+          logger.warn(
+            `[useAsset] token decimals check failed; retrying in ${delay / 1000}s:`,
+            error,
+          )
+          retryTimer = setTimeout(() => void repair(attempt + 1), delay)
+        },
+      )
+    void repair(0)
+    return () => {
+      active = false
+      clearTimeout(retryTimer)
+    }
+  }, [tokenService])
 
   /** Sync the chain view now; the balance lands through the store projection above. */
   const loadAssets = useCallback(async () => {
@@ -426,9 +424,9 @@ export const useAsset = (options?: UseAssetOptions) => {
     const balanceAtomic = balances[token.address] ?? 0n
     // A token's own decimals win over the network-derived constants, so each
     // token renders at its real scale. The active token's persisted decimals are
-    // refreshed to the live resolver value on init (see
-    // refreshStalePersistedTokenDecimals) before this runs, so an upgraded install's
-    // stale 6-dp row can't shadow the 18-dp source here.
+    // refreshed to its immutables' decimals on init (see
+    // refreshStalePersistedTokenDecimals), which re-renders a stale row once
+    // repaired.
     const decimals = token.decimals ?? constAssetParams?.decimals ?? 0
     const balance = decimals > 0 ? Number(balanceAtomic) / 10 ** decimals : Number(balanceAtomic)
 

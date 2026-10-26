@@ -1,5 +1,5 @@
-import { GasFees } from "@aztec/stdlib/gas"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { GasFees } from "@aztec-labs/stdlib/gas"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { describe, expect, it, vi } from "vitest"
 import { stubNodeInfo } from "../utils/obsidionWalletStubs.js"
 

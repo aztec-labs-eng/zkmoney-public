@@ -16,7 +16,7 @@
 import { readFileSync, existsSync } from "fs"
 import { resolve } from "path"
 import { fileURLToPath, pathToFileURL } from "url"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 // Core constants is a leaf module (type-only @aztec imports), so importing
 // the TS source directly lets this developer CLI run without building another package.
 import { ZKJWT_VKEY_HASH, ZKJWT_VK_BASE64 } from "../../core/src/constants/index.js"
@@ -84,7 +84,7 @@ export async function checkVkeyHash(args: {
     )
   }
   const expected = assertHexAddress(args.expected, "ZKJWT_VKEY_HASH")
-  const { poseidon2Hash } = await import("@aztec/foundation/crypto/poseidon")
+  const { poseidon2Hash } = await import("@aztec-labs/foundation/crypto/poseidon")
   const fields: Fr[] = []
   for (let i = 0; i < vkBuffer.length; i += 32) {
     fields.push(Fr.fromBuffer(vkBuffer.subarray(i, i + 32)))

@@ -1,11 +1,10 @@
 /**
  * Each address route states its own send and credit. The published limit counts what is sent, fees
  * included; the protocol ceiling counts what the portal credits. Registration takes the schedule
- * fee and the funding cut, not the plain deposit fee.
+ * fee, not the plain deposit fee.
  */
 import { describe, expect, it } from "vitest"
 import { parseUnits } from "viem"
-import { TX_AMOUNT_CAP } from "@obsidion/sdk"
 import {
   addressAmountBasis,
   addressShareDecision,
@@ -15,6 +14,7 @@ import {
   maximumSendForCapacity,
 } from "../../../src/core/services/limits/addressLimits"
 import type { CapacityEligibility } from "../../../src/oxide/portalCapacityEligibility"
+import { PUBLIC_TX_LIMIT_USD } from "@obsidion/core/constants"
 import {
   NOMINAL_USD_VALUATION,
   type UsdValuation,
@@ -22,12 +22,16 @@ import {
 
 const dai = (v: string) => parseUnits(v, 18)
 const usdc = (v: string) => parseUnits(v, 6)
-/** Two tokens to the dollar: the published limit (5,000 tokens) then sits above the ceiling. */
-const HALF_USD: UsdValuation = {
+/** Four tokens to the dollar, so the published limit in tokens sits above the ceiling. */
+const QUARTER_USD: UsdValuation = {
   source: "test",
-  usdPerToken: { numerator: 1n, denominator: 2n },
+  usdPerToken: { numerator: 1n, denominator: 4n },
 }
 const FEE = dai("0.35")
+const LIMIT = String(PUBLIC_TX_LIMIT_USD)
+/** The portal's `TX_AMOUNT_CAP()`, as a route carries it once read. */
+const TX_AMOUNT_CAP = dai("5166")
+const cap = { txAmountCap: TX_AMOUNT_CAP } as const
 
 describe("amount basis per route", () => {
   it("leaves the amount to the sender on a deposit address", () => {
@@ -64,34 +68,29 @@ describe("amount basis per route", () => {
     expect(basis.creditAtomic).toBeUndefined()
   })
 
-  it("credits a registration after its schedule fee and funding cut, not the deposit fee", () => {
+  it("credits a registration after its schedule fee, not the deposit fee", () => {
     const basis = addressAmountBasis({
       kind: "registration",
       decimals: 18,
       askAtomic: dai("15"),
       scheduleFeeAtomic: dai("5"),
-      fpcCutAtomic: dai("0.25"),
     })
-    expect(basis.creditAtomic).toBe(dai("9.75"))
-    // The plain-deposit formula would credit the ask less the relayer fee and cut only.
-    expect(basis.creditAtomic).not.toBe(dai("15") - dai("0.5") - dai("0.25"))
+    expect(basis.creditAtomic).toBe(dai("10"))
+    // The plain-deposit formula would credit the ask less the relayer fee only.
+    expect(basis.creditAtomic).not.toBe(dai("15") - dai("0.5"))
   })
 
-  it("holds a registration credit until both deductions are read", () => {
+  it("holds a registration credit until its schedule fee is read", () => {
     const route = { kind: "registration", decimals: 18, askAtomic: dai("15") } as const
-    expect(
-      addressAmountBasis({ ...route, scheduleFeeAtomic: dai("5") }).creditAtomic,
-    ).toBeUndefined()
-    expect(addressAmountBasis({ ...route, fpcCutAtomic: dai("0.25") }).creditAtomic).toBeUndefined()
+    expect(addressAmountBasis(route).creditAtomic).toBeUndefined()
   })
 
-  it("credits nothing when a registration's deductions reach its ask", () => {
+  it("credits nothing when a registration's schedule fee reaches its ask", () => {
     const basis = addressAmountBasis({
       kind: "registration",
       decimals: 18,
       askAtomic: dai("5"),
       scheduleFeeAtomic: dai("5"),
-      fpcCutAtomic: dai("0.25"),
     })
     expect(basis.creditAtomic).toBe(0n)
   })
@@ -99,13 +98,18 @@ describe("amount basis per route", () => {
 
 describe("maximum send amount", () => {
   it("is the published limit for the settlement token at the nominal rate", () => {
+    const route = { kind: "deposit", decimals: 18, swap: false, feeAtomic: FEE, ...cap } as const
+    expect(maximumSendAtomic(route, NOMINAL_USD_VALUATION)).toBe(dai(LIMIT))
+  })
+
+  it("cannot be established for the settlement token before the portal's cap is read", () => {
     const route = { kind: "deposit", decimals: 18, swap: false, feeAtomic: FEE } as const
-    expect(maximumSendAtomic(route, NOMINAL_USD_VALUATION)).toBe(dai("2500"))
+    expect(maximumSendAtomic(route, NOMINAL_USD_VALUATION)).toBeUndefined()
   })
 
   it("is the published limit for a 6-decimal swapped token", () => {
     const route = { kind: "deposit", decimals: 6, swap: true } as const
-    expect(maximumSendAtomic(route, NOMINAL_USD_VALUATION)).toBe(usdc("2500"))
+    expect(maximumSendAtomic(route, NOMINAL_USD_VALUATION)).toBe(usdc(LIMIT))
   })
 
   it("cannot be established without a valuation", () => {
@@ -114,47 +118,47 @@ describe("maximum send amount", () => {
   })
 
   it("stops at the ceiling plus the route's deductions when that is lower", () => {
-    const deposit = { kind: "deposit", decimals: 18, swap: false, feeAtomic: FEE } as const
-    expect(maximumSendAtomic(deposit, HALF_USD)).toBe(TX_AMOUNT_CAP + FEE)
+    const deposit = { kind: "deposit", decimals: 18, swap: false, feeAtomic: FEE, ...cap } as const
+    expect(maximumSendAtomic(deposit, QUARTER_USD)).toBe(TX_AMOUNT_CAP + FEE)
     const registration = {
       kind: "registration",
       decimals: 18,
       scheduleFeeAtomic: dai("5"),
-      fpcCutAtomic: dai("0.25"),
+      ...cap,
     } as const
-    expect(maximumSendAtomic(registration, HALF_USD)).toBe(TX_AMOUNT_CAP + dai("5.25"))
+    expect(maximumSendAtomic(registration, QUARTER_USD)).toBe(TX_AMOUNT_CAP + dai("5"))
   })
 
   it("cannot be established above the ceiling before the deductions are read", () => {
-    const route = { kind: "deposit", decimals: 18, swap: false } as const
-    expect(maximumSendAtomic(route, HALF_USD)).toBeUndefined()
+    const route = { kind: "deposit", decimals: 18, swap: false, ...cap } as const
+    expect(maximumSendAtomic(route, QUARTER_USD)).toBeUndefined()
   })
 
   it("applies only the published limit to a swapped token", () => {
     const route = { kind: "deposit", decimals: 6, swap: true } as const
-    expect(maximumSendAtomic(route, HALF_USD)).toBe(usdc("5000"))
+    expect(maximumSendAtomic(route, QUARTER_USD)).toBe(usdc(LIMIT) * 4n)
   })
 })
 
 describe("maximum credit", () => {
   it("is the maximum send less the current deposit fee on the settlement token", () => {
-    const route = { kind: "deposit", decimals: 18, swap: false, feeAtomic: FEE } as const
-    expect(maximumCreditAtomic(route, NOMINAL_USD_VALUATION)).toBe(dai("2499.65"))
+    const route = { kind: "deposit", decimals: 18, swap: false, feeAtomic: FEE, ...cap } as const
+    expect(maximumCreditAtomic(route, NOMINAL_USD_VALUATION)).toBe(dai(LIMIT) - FEE)
   })
 
   it("is the maximum send less the fee on an open request", () => {
-    const route = { kind: "open-request", decimals: 18, feeAtomic: FEE } as const
-    expect(maximumCreditAtomic(route, NOMINAL_USD_VALUATION)).toBe(dai("2499.65"))
+    const route = { kind: "open-request", decimals: 18, feeAtomic: FEE, ...cap } as const
+    expect(maximumCreditAtomic(route, NOMINAL_USD_VALUATION)).toBe(dai(LIMIT) - FEE)
   })
 
-  it("nets a registration's schedule fee and funding cut", () => {
+  it("nets a registration's schedule fee", () => {
     const route = {
       kind: "registration",
       decimals: 18,
       scheduleFeeAtomic: dai("5"),
-      fpcCutAtomic: dai("0.25"),
+      ...cap,
     } as const
-    expect(maximumCreditAtomic(route, NOMINAL_USD_VALUATION)).toBe(dai("2494.75"))
+    expect(maximumCreditAtomic(route, NOMINAL_USD_VALUATION)).toBe(dai(LIMIT) - dai("5"))
   })
 
   it("is unknown for a swapped token, whose credit the swap sets", () => {
@@ -163,7 +167,7 @@ describe("maximum credit", () => {
   })
 
   it("is unknown before the fee is read", () => {
-    const route = { kind: "deposit", decimals: 18, swap: false } as const
+    const route = { kind: "deposit", decimals: 18, swap: false, ...cap } as const
     expect(maximumCreditAtomic(route, NOMINAL_USD_VALUATION)).toBeUndefined()
   })
 
@@ -175,38 +179,46 @@ describe("maximum credit", () => {
 
 describe("fixed amount limits", () => {
   const request = (requested: bigint, decimals = 18, feeAtomic = FEE) =>
-    ({ kind: "fixed-request", decimals, requestedAtomic: requested, feeAtomic } as const)
+    ({ kind: "fixed-request", decimals, requestedAtomic: requested, feeAtomic, ...cap } as const)
 
-  it("accepts a request whose send, fee included, is exactly $2,500", () => {
-    const limits = fixedAmountLimits(request(dai("2499.65")), NOMINAL_USD_VALUATION)
+  it("accepts a request whose send, fee included, is exactly the limit", () => {
+    const limits = fixedAmountLimits(request(dai(LIMIT) - FEE), NOMINAL_USD_VALUATION)
     expect(limits).toEqual({ publicLimit: "within", protocolCeiling: "within" })
   })
 
   it("refuses one base unit more", () => {
-    const limits = fixedAmountLimits(request(dai("2499.65") + 1n), NOMINAL_USD_VALUATION)
+    const limits = fixedAmountLimits(request(dai(LIMIT) - FEE + 1n), NOMINAL_USD_VALUATION)
     expect(limits?.publicLimit).toBe("over")
     expect(limits?.over).toBe("public")
   })
 
   it("draws the same line for a 6-decimal token", () => {
     const fee = usdc("0.35")
-    expect(fixedAmountLimits(request(usdc("2499.65"), 6, fee), NOMINAL_USD_VALUATION)?.over).toBe(
+    expect(fixedAmountLimits(request(usdc(LIMIT) - fee, 6, fee), NOMINAL_USD_VALUATION)?.over).toBe(
       undefined,
     )
     expect(
-      fixedAmountLimits(request(usdc("2499.65") + 1n, 6, fee), NOMINAL_USD_VALUATION)?.over,
+      fixedAmountLimits(request(usdc(LIMIT) - fee + 1n, 6, fee), NOMINAL_USD_VALUATION)?.over,
     ).toBe("public")
   })
 
   it("checks the credit against the protocol ceiling apart from the published limit", () => {
-    expect(fixedAmountLimits(request(TX_AMOUNT_CAP), HALF_USD)).toEqual({
+    expect(fixedAmountLimits(request(TX_AMOUNT_CAP), QUARTER_USD)).toEqual({
       publicLimit: "within",
       protocolCeiling: "within",
     })
-    expect(fixedAmountLimits(request(TX_AMOUNT_CAP + 1n), HALF_USD)).toEqual({
+    expect(fixedAmountLimits(request(TX_AMOUNT_CAP + 1n), QUARTER_USD)).toEqual({
       publicLimit: "within",
       protocolCeiling: "over",
       over: "protocol",
+    })
+  })
+
+  it("leaves the protocol ceiling open before the portal's cap is read", () => {
+    const { txAmountCap: _, ...uncapped } = request(dai("100"))
+    expect(fixedAmountLimits(uncapped, NOMINAL_USD_VALUATION)).toEqual({
+      publicLimit: "within",
+      protocolCeiling: "credit-unknown",
     })
   })
 
@@ -230,19 +242,17 @@ describe("fixed amount limits", () => {
         decimals: 18,
         askAtomic: ask,
         scheduleFeeAtomic: dai("5"),
-        fpcCutAtomic: dai("0.25"),
+        ...cap,
       } as const)
-    expect(fixedAmountLimits(registration(dai("2500")), NOMINAL_USD_VALUATION)?.over).toBe(
-      undefined,
-    )
-    expect(fixedAmountLimits(registration(dai("2500") + 1n), NOMINAL_USD_VALUATION)?.over).toBe(
+    expect(fixedAmountLimits(registration(dai(LIMIT)), NOMINAL_USD_VALUATION)?.over).toBe(undefined)
+    expect(fixedAmountLimits(registration(dai(LIMIT) + 1n), NOMINAL_USD_VALUATION)?.over).toBe(
       "public",
     )
   })
 
-  it("leaves a registration's ceiling open until its deductions are read", () => {
+  it("leaves a registration's ceiling open until its schedule fee is read", () => {
     const limits = fixedAmountLimits(
-      { kind: "registration", decimals: 18, askAtomic: dai("15") },
+      { kind: "registration", decimals: 18, askAtomic: dai("15"), ...cap },
       NOMINAL_USD_VALUATION,
     )
     expect(limits).toEqual({ publicLimit: "within", protocolCeiling: "credit-unknown" })
@@ -250,32 +260,32 @@ describe("fixed amount limits", () => {
 })
 
 describe("maximum send for current capacity", () => {
-  const deposit = { kind: "deposit", decimals: 18, swap: false, feeAtomic: FEE } as const
+  const deposit = { kind: "deposit", decimals: 18, swap: false, feeAtomic: FEE, ...cap } as const
 
   it("is the available capacity plus the route's deductions", () => {
     expect(maximumSendForCapacity(deposit, dai("500"), NOMINAL_USD_VALUATION)).toBe(dai("500.35"))
   })
 
   it("never exceeds the per-deposit maximum", () => {
-    expect(maximumSendForCapacity(deposit, dai("50000"), NOMINAL_USD_VALUATION)).toBe(dai("2500"))
+    expect(maximumSendForCapacity(deposit, dai(LIMIT) * 20n, NOMINAL_USD_VALUATION)).toBe(
+      dai(LIMIT),
+    )
   })
 
-  it("adds a registration's schedule fee and funding cut", () => {
+  it("adds a registration's schedule fee", () => {
     const registration = {
       kind: "registration",
       decimals: 18,
       scheduleFeeAtomic: dai("5"),
-      fpcCutAtomic: dai("0.25"),
+      ...cap,
     } as const
-    expect(maximumSendForCapacity(registration, dai("100"), NOMINAL_USD_VALUATION)).toBe(
-      dai("105.25"),
-    )
+    expect(maximumSendForCapacity(registration, dai("100"), NOMINAL_USD_VALUATION)).toBe(dai("105"))
   })
 
   it("is unknown for a swapped token and before the fee is read", () => {
     const swapped = { kind: "deposit", decimals: 6, swap: true, feeAtomic: FEE } as const
     expect(maximumSendForCapacity(swapped, dai("500"), NOMINAL_USD_VALUATION)).toBeUndefined()
-    const unread = { kind: "deposit", decimals: 18, swap: false } as const
+    const unread = { kind: "deposit", decimals: 18, swap: false, ...cap } as const
     expect(maximumSendForCapacity(unread, dai("500"), NOMINAL_USD_VALUATION)).toBeUndefined()
   })
 
@@ -296,8 +306,9 @@ describe("address share decision", () => {
       blockNumber: 1n,
       blockTimestamp: 1n,
       rateAtomicPerSecond: 0n,
-      globalLimitAtomic: dai("50000"),
+      globalLimitAtomic: dai("100000"),
       availableAtomic: 0n,
+      txAmountCapAtomic: TX_AMOUNT_CAP,
     },
     fetchedAt: 0,
   } as const
@@ -317,10 +328,7 @@ describe("address share decision", () => {
     ).toBe("block")
     expect(
       addressShareDecision(
-        e({
-          kind: "exceeds-operation-cap",
-          operationCap: { status: "unverified", sourceAtomic: 1n },
-        }),
+        e({ kind: "exceeds-operation-cap", requiredAtomic: 2n, txAmountCap: 1n }),
         true,
       ),
     ).toBe("block")

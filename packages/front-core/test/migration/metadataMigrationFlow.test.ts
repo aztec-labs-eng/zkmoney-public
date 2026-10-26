@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
-import { ApprovalNeededError, StalePlanError } from "@obsidion/sdk"
+import { ApprovalNeededError, MigrationSubsidyNotReadyError, StalePlanError } from "@obsidion/sdk"
 import { provingProgress } from "@obsidion/proving-progress"
 import {
   advanceMetadataMigration,
@@ -31,7 +31,6 @@ function fixture() {
       await onTxHash("bootstrap-hash")
       expect(stored.bootstrapTx).toBe("bootstrap-hash")
     }),
-    fund: vi.fn(async () => {}),
     subscribe: vi.fn(async (_plan, onTxHash) => {
       await onTxHash("subscription-hash")
       expect(stored.subscriptionTx).toBe("subscription-hash")
@@ -64,7 +63,11 @@ describe("shared metadata migration", () => {
     observed.subscriptionStatus = "included"
     observed.recurringSponsorship = true
     await drive()
-    expect(steps.recoverRemaining).toHaveBeenCalledWith("signed-plan", true, undefined)
+    expect(steps.recoverRemaining).toHaveBeenCalledWith(
+      "signed-plan",
+      undefined,
+      expect.any(Function),
+    )
     observed.complete = true
     await drive()
     expect(stored().phase).toBe("done")
@@ -77,11 +80,30 @@ describe("shared metadata migration", () => {
     observed.recurringSponsorship = true
     await drive()
     expect(steps.broadcast).not.toHaveBeenCalled()
-    expect(steps.recoverRemaining).toHaveBeenCalledWith("signed-plan", false, undefined)
+    expect(steps.recoverRemaining).toHaveBeenCalledWith(
+      "signed-plan",
+      undefined,
+      expect.any(Function),
+    )
     expect(stored().phase).toBe("recovering")
     observed.complete = true
     await drive()
     expect(stored().phase).toBe("done")
+  })
+
+  it("records that funds may have left the source once a funds send starts", async () => {
+    const { drive, steps, observed, stored } = fixture()
+    observed.metadataSettled = true
+    observed.recurringSponsorship = true
+    await drive()
+    expect(stored().fundsSent).toBeUndefined()
+    vi.mocked(steps.recoverRemaining).mockImplementationOnce(async (_plan, _signal, gate) => {
+      await gate!(async () => {
+        throw new Error("receipt lost")
+      }).catch(() => {})
+    })
+    await drive()
+    expect(stored().fundsSent).toBe(true)
   })
 
   it("recovers funds that reach the source after the migration completed", async () => {
@@ -280,9 +302,127 @@ describe("shared metadata migration", () => {
     observed.sent = true
     await drive({ observeOnly: true })
     expect(stored().phase).toBe("arriving")
-    expect(steps.reconcileRemaining).toHaveBeenCalledWith("signed-plan")
+    expect(steps.reconcileRemaining).toHaveBeenCalledWith(
+      "signed-plan",
+      undefined,
+      expect.any(Function),
+    )
     expect(steps.recoverRemaining).not.toHaveBeenCalled()
     expect(steps.broadcast).not.toHaveBeenCalled()
+  })
+
+  it("waits, with no stop, for another run's registration before a funds-only run sends", async () => {
+    const { drive, steps, observed, stored } = fixture()
+    Object.assign(steps, { waitsForRegistration: true })
+    await drive({ start: true })
+    expect(stored()).toMatchObject({ phase: "waiting", plan: "signed-plan" })
+    // The registration run spent the bootstrap allowance; its subscription is not there yet.
+    observed.bootstrapSpent = true
+    await drive({ promptless: true })
+    expect(stored().phase).toBe("waiting")
+    expect(stored().error).toBeUndefined()
+    observed.metadataSettled = true
+    await drive({ promptless: true })
+    expect(stored().phase).toBe("waiting")
+    expect(steps.broadcast).not.toHaveBeenCalled()
+    expect(steps.subscribe).not.toHaveBeenCalled()
+    expect(steps.recoverRemaining).not.toHaveBeenCalled()
+    observed.recurringSponsorship = true
+    await drive({ promptless: true })
+    expect(stored().phase).toBe("recovering")
+    expect(steps.recoverRemaining).toHaveBeenCalledWith(
+      "signed-plan",
+      undefined,
+      expect.any(Function),
+    )
+  })
+
+  it("waits for the migration subsidy with its reason, and goes on once it pays", async () => {
+    const { drive, steps, observed, stored, persist } = fixture()
+    observed.metadataSettled = true
+    observed.recurringSponsorship = true
+    const notReady = new MigrationSubsidyNotReadyError(["price feed is stale"])
+    steps.recoverRemaining = vi.fn(async () => {
+      throw notReady
+    })
+    await drive()
+    expect(stored()).toMatchObject({ phase: "waiting", waitReason: notReady.message })
+    expect(stored().error).toBeUndefined()
+    // Each pass keeps the reason: the run does not read as sending between them.
+    persist.mockClear()
+    await drive({ promptless: true })
+    expect(persist.mock.calls.map(([record]) => record.phase)).not.toContain("recovering")
+    expect(stored()).toMatchObject({ phase: "waiting", waitReason: notReady.message })
+    vi.mocked(steps.recoverRemaining).mockResolvedValue(undefined)
+    await drive({ promptless: true })
+    expect(stored().phase).toBe("recovering")
+    expect(stored().waitReason).toBeUndefined()
+  })
+
+  it("sends a late batch again from an observe pass, and waits when the subsidy does not pay", async () => {
+    const { drive, steps, observed, stored } = fixture()
+    observed.metadataSettled = true
+    observed.recurringSponsorship = true
+    observed.sent = true
+    const signal = new AbortController().signal
+    steps.reconcileRemaining = vi.fn(async () => {
+      throw new MigrationSubsidyNotReadyError(["subsidy balance is low"])
+    })
+    await drive({ start: true })
+    await drive({ observeOnly: true, signal })
+    expect(steps.reconcileRemaining).toHaveBeenCalledWith(
+      "signed-plan",
+      signal,
+      expect.any(Function),
+    )
+    expect(stored()).toMatchObject({
+      phase: "waiting",
+      waitReason: "The fund that pays for moves is low. Try again later.",
+    })
+    vi.mocked(steps.reconcileRemaining).mockResolvedValue(undefined)
+    await drive({ observeOnly: true, signal })
+    expect(stored().phase).toBe("arriving")
+  })
+
+  it("sends each funds transaction through `exclusive`, from a recovery pass and an observe pass", async () => {
+    const { drive, steps, observed } = fixture()
+    observed.metadataSettled = true
+    observed.recurringSponsorship = true
+    const sends: (string | undefined)[] = []
+    const send = async (gate?: <T>(step: (id?: string) => Promise<T>) => Promise<T>) => {
+      await gate!(async (operationId) => void sends.push(operationId))
+    }
+    steps.recoverRemaining = vi.fn(async (_plan, _signal, gate) => send(gate))
+    steps.reconcileRemaining = vi.fn(async (_plan, _signal, gate) => send(gate))
+    let ids = 0
+    const exclusive = vi.fn(<T>(step: (operationId?: string) => Promise<T>) => step(`op-${++ids}`))
+    await drive({ start: true, exclusive })
+    await drive({ observeOnly: true, exclusive })
+    expect(steps.recoverRemaining).toHaveBeenCalledOnce()
+    expect(steps.reconcileRemaining).toHaveBeenCalledOnce()
+    expect(exclusive).toHaveBeenCalledTimes(2)
+    expect(sends).toEqual(["op-1", "op-2"])
+  })
+
+  it("never starts a funds send that was cancelled while it waited its turn", async () => {
+    const { drive, steps, observed } = fixture()
+    observed.metadataSettled = true
+    observed.recurringSponsorship = true
+    const cancel = new AbortController()
+    const sent = vi.fn()
+    steps.reconcileRemaining = vi.fn(async (_plan, _signal, gate) => {
+      await gate!(async () => sent())
+    })
+    await drive({ start: true })
+    await drive({
+      observeOnly: true,
+      signal: cancel.signal,
+      exclusive: (step) => {
+        cancel.abort()
+        return step()
+      },
+    })
+    expect(sent).not.toHaveBeenCalled()
   })
 
   it("stops for the user's approval instead of prompting from a background pass", async () => {
@@ -304,6 +444,42 @@ describe("shared metadata migration", () => {
     })
     await drive({ start: true })
     expect(stored().approvals).toEqual({ approved: 1, total: 3 })
+  })
+
+  it("waits on beforeApproval, after saving the count, while another approval is next", async () => {
+    const { drive, steps, stored } = fixture()
+    const seen: [number, number, unknown][] = []
+    steps.prepare = vi.fn(async (_draft, _save, _signal, onApproval) => {
+      await onApproval!(0, 2)
+      await onApproval!(1, 2)
+      await onApproval!(2, 2)
+      return "signed-plan"
+    })
+    await drive({
+      start: true,
+      beforeApproval: async (approved, total) => {
+        seen.push([approved, total, stored().approvals])
+      },
+    })
+    expect(seen).toEqual([
+      [0, 2, { approved: 0, total: 2 }],
+      [1, 2, { approved: 1, total: 2 }],
+    ])
+  })
+
+  it("asks for no approval once beforeApproval rejects", async () => {
+    const { drive, steps } = fixture()
+    const sign = vi.fn()
+    steps.prepare = vi.fn(async (_draft, _save, _signal, onApproval) => {
+      await onApproval!(0, 1)
+      sign()
+      return "signed-plan"
+    })
+    await drive({
+      start: true,
+      beforeApproval: () => Promise.reject(new Error("Cancelled")),
+    }).catch(() => {})
+    expect(sign).not.toHaveBeenCalled()
   })
 
   it("saves what a start was quoted, and keeps it through later passes", async () => {
@@ -333,7 +509,7 @@ describe("shared metadata migration", () => {
     expect(stored().summary).toEqual({ fees: "2", approvals: 5 })
   })
 
-  it("carries a published external run to the end without the user, sending each step exclusively", async () => {
+  it("carries a published registration run to the end without the user, sending each step exclusively", async () => {
     const { drive, steps, observed, stored } = fixture()
     await drive({ start: true })
     vi.mocked(steps.prepare).mockClear()
@@ -344,7 +520,7 @@ describe("shared metadata migration", () => {
     observed.bootstrapSpent = true
     await follow()
     expect(stored().phase).toBe("awaitingMessages")
-    await follow() // A reload while the user's transfer is on its way.
+    await follow() // A reload while the record update is on its way.
     expect(stored().phase).toBe("awaitingMessages")
     observed.metadataSettled = true
     observed.messagesReady = true
@@ -360,7 +536,7 @@ describe("shared metadata migration", () => {
     expect(steps.prepare).not.toHaveBeenCalled()
     expect(steps.ready).not.toHaveBeenCalled()
     expect(steps.broadcast).not.toHaveBeenCalled()
-    // The subscription: funding checks and an external run's recovery send nothing.
+    // The subscription; a registration run's recovery sends nothing.
     expect(exclusive).toHaveBeenCalledTimes(1)
   })
 
@@ -387,7 +563,7 @@ describe("shared metadata migration", () => {
     }
   })
 
-  it("waits for an external transfer without reserving the prover", async () => {
+  it("waits for the record update without reserving the prover", async () => {
     const { drive, observed } = fixture()
     await drive({ start: true })
     observed.bootstrapStatus = "included"
@@ -396,16 +572,6 @@ describe("shared metadata migration", () => {
     await drive({ promptless: true, exclusive })
     await drive({ promptless: true, exclusive })
     expect(exclusive).not.toHaveBeenCalled()
-  })
-
-  it("keeps that the plan's address was swept", async () => {
-    const { drive, observed, stored } = fixture()
-    await drive({ start: true })
-    observed.bootstrapStatus = "included"
-    observed.bootstrapSpent = true
-    observed.swept = true
-    await drive({ promptless: true })
-    expect(stored().swept).toBe(true)
   })
 
   it("starts no step that was cancelled while it waited its turn", async () => {
@@ -457,7 +623,7 @@ describe("shared metadata migration", () => {
       expect(steps.prepare).toHaveBeenCalledTimes(1)
     })
 
-    it("rather than prepare again once the network dropped its bootstrap", async () => {
+    it("rather than send a bootstrap the network dropped again", async () => {
       const { drive, steps, observed, stored } = fixture()
       await drive({ start: true })
       observed.bootstrapStatus = "dropped"
@@ -515,7 +681,6 @@ describe("shared metadata migration", () => {
       halt: "reverted",
     })
     expect(steps.broadcast).toHaveBeenCalledTimes(1)
-    expect(steps.fund).not.toHaveBeenCalled()
   })
 
   it("does not renew an allowance when the destination registry changes", async () => {
@@ -535,19 +700,76 @@ describe("shared metadata migration", () => {
     expect(steps.recoverRemaining).not.toHaveBeenCalled()
   })
 
-  it("reprepares only after a definitive drop and an unspent allowance", async () => {
+  it("sends a dropped bootstrap again from the same plan", async () => {
     const { drive, observed, steps, stored } = fixture()
     await drive()
     observed.bootstrapStatus = "dropped"
     await drive()
-    expect(stored().phase).toBe("preparing")
-    observed.bootstrapStatus = undefined
+    expect(steps.prepare).toHaveBeenCalledTimes(1)
+    expect(steps.broadcast).toHaveBeenCalledTimes(2)
+    expect(stored()).toMatchObject({ plan: "signed-plan", bootstrapTx: "bootstrap-hash" })
+  })
+
+  it("follows a dropped bootstrap that landed after all to its subscription", async () => {
+    const { drive, observed, steps, stored } = fixture()
     await drive()
+    observed.bootstrapStatus = "dropped"
+    await drive()
+    // The first bootstrap lands, so its resend is dropped.
+    observed.bootstrapSpent = true
+    await drive()
+    expect(steps.broadcast).toHaveBeenCalledTimes(2)
+    expect(stored()).toMatchObject({ phase: "broadcasting", plan: "signed-plan" })
+    observed.metadataSettled = true
+    observed.messagesReady = true
+    await drive()
+    expect(steps.subscribe).toHaveBeenCalledTimes(1)
+    expect(steps.prepare).toHaveBeenCalledTimes(1)
+  })
+
+  it("prepares again once a dropped bootstrap's plan went stale", async () => {
+    const { drive, observed, steps, stored } = fixture()
+    await drive()
+    observed.bootstrapStatus = "dropped"
+    vi.mocked(steps.broadcast).mockRejectedValueOnce(new StalePlanError("changed"))
+    await drive()
+    expect(stored()).toMatchObject({ phase: "needsAttention", stale: true, plan: "signed-plan" })
+    await drive()
+    expect(stored().phase).toBe("needsApproval")
+    vi.mocked(steps.prepare).mockResolvedValueOnce("replacement-plan")
+    await drive({ start: true })
+    expect(steps.prepare).toHaveBeenCalledTimes(2)
+    expect(steps.broadcast).toHaveBeenCalledTimes(3)
+    expect(vi.mocked(steps.broadcast).mock.calls[2][0]).toBe("replacement-plan")
+    expect(stored()).toMatchObject({ plan: "replacement-plan", bootstrapTx: "bootstrap-hash" })
+    expect(stored().stale).toBeUndefined()
+  })
+
+  it("keeps a stale plan's dropped bootstrap until a replacement is saved", async () => {
+    const { drive, observed, steps, stored } = fixture()
+    await drive()
+    observed.bootstrapStatus = "dropped"
+    vi.mocked(steps.broadcast).mockRejectedValueOnce(new StalePlanError("changed"))
+    await drive()
+    // The first bootstrap lands while the replacement is prepared, so its allowance refuses it.
+    vi.mocked(steps.prepare).mockImplementationOnce(async () => {
+      observed.bootstrapSpent = true
+      observed.bootstrapStatus = "included"
+      throw new Error("The registration-broadcast allowance is already spent")
+    })
+    await drive({ start: true })
+    expect(stored()).toMatchObject({
+      plan: "signed-plan",
+      bootstrapTx: "bootstrap-hash",
+      stale: true,
+    })
+    await drive({ start: true })
+    expect(stored().phase).toBe("awaitingMessages")
     expect(steps.prepare).toHaveBeenCalledTimes(2)
     expect(steps.broadcast).toHaveBeenCalledTimes(2)
   })
 
-  it("does not call source funding or a transaction when the account binding changed", async () => {
+  it("sends no transaction when the account binding changed", async () => {
     const { drive, steps, stored } = fixture()
     steps.binding = vi.fn(async () => "different-account")
     await drive()
@@ -556,7 +778,7 @@ describe("shared metadata migration", () => {
     expect(steps.broadcast).not.toHaveBeenCalled()
   })
 
-  it("keeps the zero-old-funds flow waiting until metadata and the deposit reach the destination", async () => {
+  it("keeps a registration run waiting until its record update reaches the destination", async () => {
     const { drive, observed, stored } = fixture()
     await drive()
     observed.bootstrapStatus = "included"
@@ -565,4 +787,31 @@ describe("shared metadata migration", () => {
     await drive()
     expect(stored().phase).toBe("awaitingMessages")
   })
+})
+
+it.each([
+  ["needsApproval", new ApprovalNeededError()],
+  ["needsAttention", Object.assign(new Error("closed"), { name: "NotAllowedError" })],
+] as const)("a prepare-only retry clears a %s stop once ready", async (phase, error) => {
+  const f = fixture()
+  vi.mocked(f.steps.ready).mockRejectedValueOnce(error)
+  await f.drive({ start: true, prepareOnly: true })
+  await f.drive({ start: true, prepareOnly: true })
+  expect(f.stored()).toMatchObject({ phase, plan: "signed-plan" })
+  await f.drive({ start: true, prepareOnly: true })
+  expect(f.stored()).toMatchObject({ phase: "broadcasting", plan: "signed-plan" })
+  expect(f.stored().error).toBeUndefined()
+})
+
+it("persists all preparation before a queue authorizes any transaction", async () => {
+  const f = fixture()
+  await f.drive({ start: true, prepareOnly: true })
+  expect(f.stored().plan).toBe("signed-plan")
+  expect(f.steps.observe).not.toHaveBeenCalled()
+  expect(f.steps.broadcast).not.toHaveBeenCalled()
+  expect(f.steps.recoverRemaining).not.toHaveBeenCalled()
+  await f.drive({ start: true })
+  expect(f.steps.prepare).toHaveBeenCalledTimes(1)
+  expect(f.steps.ready).toHaveBeenCalledWith("signed-plan", undefined, false, expect.any(Function))
+  expect(f.steps.broadcast).toHaveBeenCalledTimes(1)
 })

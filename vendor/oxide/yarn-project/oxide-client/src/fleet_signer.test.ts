@@ -2,10 +2,15 @@
  * `FleetSigner` against a scripted fake fleet: what it verifies before pinning, and which failures
  * resend the same sealed bytes, which re-pin, and which stop.
  */
-import { Buffer32 } from '@aztec/foundation/buffer';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { promiseWithResolvers } from '@aztec-labs/foundation/promise';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
 
-import type { OxidePortalContract, TEEBinding } from '@oxide/l1-contracts/oxide_portal.js';
+import type { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
+import type { TEEKeys } from '@oxide/l1-contracts/tee_registry.js';
 import type { AttestationData } from '@oxide/oxide-lib/attestation/attestation_data.js';
+import { ethAddressFromSecpPublicKey } from '@oxide/oxide-lib/attestation/user_data.js';
 import {
   decodeRequest,
   encodeEncryptedResponse,
@@ -14,7 +19,7 @@ import {
 } from '@oxide/oxide-lib/codec.js';
 import { type EnclaveEncryptionKeypair, generateEncryptionKeypair, openRequest } from '@oxide/oxide-lib/encryption.js';
 import { FrameReader, frame } from '@oxide/oxide-lib/framing.js';
-import type { TokenOperation } from '@oxide/oxide-lib/types.js';
+import type { SignTokenOperationOutput, TokenOperation } from '@oxide/oxide-lib/types.js';
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from '@jest/globals';
 import * as http from 'node:http';
@@ -32,12 +37,8 @@ interface Request {
   teeHeader?: string;
 }
 
-/** A router or enclave answer. Omitting `status` serves `json` (or an authenticated sealed refusal). */
-interface Reply {
-  status?: number;
-  routerCode?: string;
-  json?: string;
-}
+/** A router failure, or the enclave's result (none means refusal). */
+type Reply = { status: number; routerCode?: string } | { result?: unknown };
 
 /**
  * Answers whatever the test's `respond` returns and records what was asked. `n` counts requests of
@@ -45,7 +46,7 @@ interface Reply {
  */
 class FakeFleet {
   readonly seen: Request[] = [];
-  respond: (kind: Kind, n: number) => Reply = () => ({});
+  respond: (kind: Kind, n: number) => Reply | Promise<Reply> = () => ({});
   url = '';
 
   private readonly server = http.createServer((req, res) => void this.handle(req, res));
@@ -83,44 +84,92 @@ class FakeFleet {
     const n = this.seen.filter(r => r.kind === kind).length;
     this.seen.push({ kind, body, teeHeader: req.headers[TEE_ID_HEADER] as string | undefined });
 
-    const reply = this.respond(kind, n);
-    if (reply.status) {
+    const reply = await this.respond(kind, n);
+    if ('status' in reply) {
       res.writeHead(reply.status, reply.routerCode ? { 'x-oxide-router-error': reply.routerCode } : {});
       res.end('scripted failure');
       return;
     }
 
-    let replyJson = reply.json;
-    if (replyJson === undefined && decoded.kind === 'encrypted') {
-      const opened = await openRequest(this.keypair, decoded.payload);
-      const sealed = await opened.sealResponse(Buffer.from(encodeErrorResponse(new Error('scripted refusal')), 'utf8'));
+    let replyJson =
+      reply.result === undefined ? encodeErrorResponse(new Error('scripted refusal')) : encodeOkResponse(reply.result);
+    if (decoded.kind === 'encrypted') {
+      const opened = await openRequest(this.keypair, decoded.payload, decoded.domain);
+      const sealed = await opened.sealResponse(Buffer.from(replyJson, 'utf8'));
       replyJson = encodeEncryptedResponse(sealed);
     }
 
     res.writeHead(200, { 'content-type': 'application/octet-stream' });
-    res.end(frame(replyJson ?? encodeErrorResponse(new Error('scripted refusal'))));
+    res.end(frame(replyJson));
   }
 }
 
 const TIMEOUTS = { attestationMs: 2_000, operationMs: 2_000 };
 const OPERATION = {} as unknown as TokenOperation;
+const EMPTY_OUTPUT: SignTokenOperationOutput = {
+  signatures: [],
+  withdrawalSignatures: [],
+  requiredNullifiers: [],
+  teeNotes: [],
+  withdrawalMessageHashes: [],
+};
+const REGISTRATION_LEAF_INDEX = 7n;
+const TEE_REGISTRY = EthAddress.fromString('0x2222222222222222222222222222222222222222');
 
 let attestation: AttestationData;
-let attestationReply: string;
-let binding: TEEBinding;
 let fleet: FakeFleet;
 
 /** Serves the one enclave this suite's portal stub knows about. */
-const healthyFleet = (kind: Kind): Reply => (kind === 'attestation' ? { json: attestationReply } : {});
+const healthyFleet = (kind: Kind): Reply => (kind === 'attestation' ? { result: attestation } : {});
 
-function stubPortal(overrides: Partial<TEEBinding> = {}, pcr0Approved = true): OxidePortalContract {
+const addressOf = ({ userData }: AttestationData) =>
+  ethAddressFromSecpPublicKey({ x: userData.publicKeyX, y: userData.publicKeyY });
+
+const keysOf = ({ userData }: AttestationData): TEEKeys => ({
+  pubKeyX: userData.publicKeyX,
+  pubKeyY: userData.publicKeyY,
+  encPubKeyX: userData.encPubKeyX,
+  encPubKeyY: userData.encPubKeyY,
+});
+
+type ReadArgs = { address: string; functionName: string; args: [string] };
+
+/** `enclaves` are registered on the registry with `keyOverrides`, at leaf indices from `REGISTRATION_LEAF_INDEX` on. */
+function stubPortal(keyOverrides: Partial<TEEKeys> = {}, enclaves = [attestation]): OxidePortalContract {
+  const indexOf = (tee: EthAddress) => enclaves.findIndex(enclave => addressOf(enclave).equals(tee));
+  const zero = `0x${'00'.repeat(32)}`;
+  // Serves `$registrationMessages` and `$teeKeys` only for the registered enclaves on the domain's registry.
+  const readContract = ({ address, functionName, args }: ReadArgs) => {
+    const index = EthAddress.fromString(address).equals(TEE_REGISTRY) ? indexOf(EthAddress.fromString(args[0])) : -1;
+    if (functionName === '$registrationMessages') {
+      return Promise.resolve(
+        index >= 0 ? [`0x${'0a'.repeat(32)}`, REGISTRATION_LEAF_INDEX + BigInt(index)] : [zero, 0n],
+      );
+    }
+    if (functionName !== '$teeKeys') {
+      throw new Error(`Unexpected read: ${functionName}`);
+    }
+    const keys = index >= 0 ? { ...keysOf(enclaves[index]), ...keyOverrides } : undefined;
+    return Promise.resolve(
+      keys
+        ? [keys.pubKeyX, keys.pubKeyY, keys.encPubKeyX, keys.encPubKeyY].map(k => k.toString())
+        : [zero, zero, zero, zero],
+    );
+  };
   return {
-    getTeeBinding: () => Promise.resolve({ ...binding, ...overrides }),
-    isPcr0Approved: () => Promise.resolve(pcr0Approved),
+    address: EthAddress.fromString('0x1111111111111111111111111111111111111111'),
+    client: { readContract },
+    getPortalDomain: async () => ({
+      l1Portal: EthAddress.fromString('0x1111111111111111111111111111111111111111'),
+      l1ChainId: 31337n,
+      l2Token: await AztecAddress.random(),
+      teeRegistry: TEE_REGISTRY,
+      rollupVersion: 1n,
+    }),
   } as unknown as OxidePortalContract;
 }
 
-const connect = (portal = stubPortal()) => FleetSigner.connect(fleet.url, portal, { timeouts: TIMEOUTS });
+const connect = (portal = stubPortal(), timeouts = TIMEOUTS) => FleetSigner.connect(fleet.url, portal, { timeouts });
 
 beforeAll(async () => {
   const encryption = await generateEncryptionKeypair();
@@ -131,16 +180,6 @@ beforeAll(async () => {
       publicKeyY: Buffer32.fromString(`0x${'22'.repeat(32)}`),
       encPubKeyX: encryption.publicKey.x,
       encPubKeyY: encryption.publicKey.y,
-    },
-  };
-  attestationReply = encodeOkResponse(attestation);
-  binding = {
-    pcr0Hash: Buffer32.fromString(`0x${'ab'.repeat(32)}`),
-    keys: {
-      pubKeyX: attestation.userData.publicKeyX,
-      pubKeyY: attestation.userData.publicKeyY,
-      encPubKeyX: attestation.userData.encPubKeyX,
-      encPubKeyY: attestation.userData.encPubKeyY,
     },
   };
   fleet = await new FakeFleet(encryption).start();
@@ -159,23 +198,21 @@ describe('FleetSigner.connect', () => {
     fleet.respond = healthyFleet;
   });
 
-  it('pins the enclave the portal registered these exact keys for', async () => {
+  it('pins the enclave the registry registered these exact keys for', async () => {
     const signer = await connect();
-    expect(signer.encryptionPublicKey.x).toEqual(attestation.userData.encPubKeyX);
-    expect(signer.ethAddress).toEqual(signer.enclave.ethAddress);
+    expect(signer.enclave.encryptionPublicKey.x).toEqual(attestation.userData.encPubKeyX);
+    expect(signer.enclave.ethAddress).toEqual(addressOf(attestation));
+    expect(signer.enclave.registrationLeafIndex).toBe(REGISTRATION_LEAF_INDEX);
   });
 
-  it('refuses an enclave with no registration binding', async () => {
-    await expect(connect(stubPortal({ pcr0Hash: Buffer32.ZERO }))).rejects.toThrow(/not registered/);
-  });
-
-  it('refuses an enclave whose PCR0 is not approved', async () => {
-    await expect(connect(stubPortal({}, false))).rejects.toThrow(/PCR0 not approved/);
+  it('refuses an enclave that the registry did not register', async () => {
+    await expect(connect(stubPortal({}, []))).rejects.toThrow(/not registered/);
   });
 
   it('refuses an enclave whose attested keys differ from the registered ones', async () => {
-    const keys = { ...binding.keys, encPubKeyX: Buffer32.fromString(`0x${'99'.repeat(32)}`) };
-    await expect(connect(stubPortal({ keys }))).rejects.toThrow(/does not match/);
+    await expect(connect(stubPortal({ encPubKeyX: Buffer32.fromString(`0x${'99'.repeat(32)}`) }))).rejects.toThrow(
+      /does not match/,
+    );
   });
 });
 
@@ -186,7 +223,7 @@ describe('FleetSigner addressing', () => {
     await expect(signer.signTokenOperation(OPERATION)).rejects.toThrow(EnclaveRejected);
 
     expect(fleet.seen[0]).toMatchObject({ kind: 'attestation', teeHeader: undefined });
-    expect(fleet.seen[1]).toMatchObject({ kind: 'sealed', teeHeader: signer.ethAddress.toString() });
+    expect(fleet.seen[1]).toMatchObject({ kind: 'sealed', teeHeader: signer.enclave.ethAddress.toString() });
   });
 });
 
@@ -211,7 +248,7 @@ describe('FleetSigner retry policy', () => {
   it('re-pins when the fleet no longer knows the pinned enclave', async () => {
     fleet.respond = (kind, n) => {
       if (kind === 'attestation') {
-        return { json: attestationReply };
+        return { result: attestation };
       }
       return n === 0 ? { status: 404, routerCode: 'tee-unknown' } : {};
     };
@@ -222,7 +259,7 @@ describe('FleetSigner retry policy', () => {
   });
 
   it('resends the identical sealed bytes once after a transport failure', async () => {
-    fleet.respond = (kind, n) => (kind === 'sealed' && n === 0 ? { status: 500 } : {});
+    fleet.respond = (kind, n): Reply => (kind === 'sealed' && n === 0 ? { status: 500 } : {});
 
     await expect(signer.signTokenOperation(OPERATION)).rejects.toThrow(EnclaveRejected);
     expect(fleet.kinds()).toEqual(['sealed', 'sealed']);
@@ -236,5 +273,47 @@ describe('FleetSigner retry policy', () => {
     expect(err).toBeInstanceOf(EnclaveUnavailable);
     expect((err as EnclaveUnavailable).message).toMatch(/failed after 3 attempts/);
     expect(fleet.kinds()).toEqual(['sealed', 'sealed', 'attestation']);
+  });
+
+  it('names the enclave that signed even after a concurrent call re-pins', async () => {
+    // The first call waits on the second's whole re-pin, so it gets more than the suite's operation timeout.
+    // Same encryption key, so the fake fleet can open its requests.
+    const otherAttestation = {
+      attestation: Buffer.alloc(0),
+      userData: {
+        ...attestation.userData,
+        publicKeyX: Buffer32.fromString(`0x${'33'.repeat(32)}`),
+        publicKeyY: Buffer32.fromString(`0x${'44'.repeat(32)}`),
+      },
+    };
+    const patientSigner = await connect(stubPortal({}, [attestation, otherAttestation]), {
+      ...TIMEOUTS,
+      operationMs: 30_000,
+    });
+    const firstArrived = promiseWithResolvers<void>();
+    const releaseFirst = promiseWithResolvers<void>();
+    fleet.respond = async (kind, n) => {
+      if (kind === 'attestation') {
+        return { result: otherAttestation };
+      }
+      if (n === 0) {
+        firstArrived.resolve();
+        await releaseFirst.promise;
+        return { result: EMPTY_OUTPUT };
+      }
+      return n === 1 ? { status: 404, routerCode: 'tee-unknown' } : {};
+    };
+
+    const first = patientSigner.signTokenOperation(OPERATION);
+    try {
+      await firstArrived.promise;
+      await expect(patientSigner.signTokenOperation(OPERATION)).rejects.toThrow(EnclaveRejected);
+      expect(patientSigner.enclave.ethAddress).toEqual(addressOf(otherAttestation));
+    } finally {
+      releaseFirst.resolve();
+    }
+    const output = await first;
+    expect(output.publicKey).toEqual({ x: attestation.userData.publicKeyX, y: attestation.userData.publicKeyY });
+    expect(output.registrationLeafIndex).toBe(REGISTRATION_LEAF_INDEX);
   });
 });

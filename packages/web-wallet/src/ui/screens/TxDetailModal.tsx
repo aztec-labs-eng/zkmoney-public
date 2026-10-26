@@ -42,10 +42,10 @@ import { getConfig } from "../../config/env"
 import { l2TxUrl } from "../../lib/explorer"
 import {
   creatorLinkAction,
+  isOtherRollupLink,
   type CreatorLinkAction,
 } from "../../features/paylink/creatorLinkActions"
 import { LinkRecoverModal } from "../../features/paylink/LinkRecoverModal"
-import { useWalletFrozen } from "../../features/actionGate"
 import { usePolledChainSeconds } from "../../features/paylink/chainTime"
 import { recheckPaylinkClaim } from "../../features/notifications/PaylinkClaimMount"
 import { usePaylinkDeps } from "../../features/paylink/usePaylinkDeps"
@@ -53,6 +53,7 @@ import { useTabLine } from "../../features/operations/operations"
 import { HashRow } from "../detailRows"
 import { useCopy } from "../hooks"
 import { linkFragmentOf, type ActivityRowView } from "./activityView"
+import { StatusWithReason } from "./DepositStatusValue"
 
 // Styles match the feed row's STATUS_STYLE for the same labels, so one state never wears two colors.
 const PAYLINK_BADGE_STYLE: Record<PaylinkRowStatusLabel, StatusBadgeStyle> = {
@@ -153,6 +154,7 @@ export function TxDetailModal({
             : null,
         refundStatus: row.refundStatus,
         refundStarting: isRefundInFlight(row.paylinkRow.payToEmailSecret ?? ""),
+        retired: isOtherRollupLink(row.paylinkRow),
         nowSec: chainNow ?? Math.floor(Date.now() / 1000),
       })
     : undefined
@@ -160,10 +162,7 @@ export function TxDetailModal({
   const paylinkBadgeStyle: StatusBadgeStyle = linkView?.statusLabel
     ? PAYLINK_BADGE_STYLE[linkView.statusLabel]
     : "awaitingClaim"
-  const walletFrozen = useWalletFrozen()
-  // Frozen, a cancel's new note is past the refund snapshot: the link leaves through Withdraw.
-  const recovery = walletFrozen ? null : linkView?.recovery ?? null
-  const frozenLink = walletFrozen && !!linkView?.recovery
+  const recovery = linkView?.recovery ?? null
 
   if (recovering) {
     return (
@@ -224,7 +223,7 @@ export function TxDetailModal({
       "--"
     )
 
-  const status = linkStatus ? (
+  const badge = linkStatus ? (
     <StatusBadge label={statusLabel} badgeStyle={paylinkBadgeStyle} />
   ) : pending ? (
     <StatusBadge label="Pending" badgeStyle="pending" />
@@ -233,6 +232,7 @@ export function TxDetailModal({
   ) : (
     <StatusBadge label="Completed" badgeStyle="paid" />
   )
+  const status = <StatusWithReason status={badge} reason={row.error} />
 
   return (
     <Modal
@@ -301,7 +301,6 @@ export function TxDetailModal({
           <hr className="ww-divider" />
           <ConfirmationSheetDetailRow label="Amount" value={amountFace} />
           <ConfirmationSheetDetailRow label="Status" value={status} />
-          {row.error && <ConfirmationSheetDetailRow label="Reason" value={row.error} />}
           {row.status !== "failed" && (
             <ConfirmationSheetDetailRow
               label="Link expiry"
@@ -320,7 +319,6 @@ export function TxDetailModal({
           )}
           <hr className="ww-divider" />
           <ConfirmationSheetDetailRow label="Status" value={status} />
-          {row.error && <ConfirmationSheetDetailRow label="Reason" value={row.error} />}
         </div>
       )}
 
@@ -348,9 +346,6 @@ export function TxDetailModal({
                 }
               />
             </div>
-          )}
-          {frozenLink && (
-            <PrimaryGradientButton title="Withdraw" onClick={() => navigate("/withdraw")} />
           )}
           {recovery && fragment && row.paylinkRow && (
             <PrimaryGradientButton

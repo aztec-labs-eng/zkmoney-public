@@ -4,9 +4,14 @@ import {
   HTTP_ROUTE,
   L1_OBSERVER_CHECK_NAME,
   L1_OBSERVER_DEPLOYMENT_LABEL,
+  L1_OBSERVER_MIGRATION_FLOW,
+  L1_OBSERVER_OPERATION_KIND,
+  L1_OBSERVER_PORTAL,
   L1_OBSERVER_TOKEN_SYMBOL,
   RELAYER_DEFER_REASON,
+  RELAYER_OPERATION_KIND,
   RELAYER_OUTCOME,
+  RELAYER_SKIP_REASON,
   RELAYER_STREAM,
   RELAYER_SUBSYSTEM,
   RESOLVER_BROADCAST_OUTCOME,
@@ -134,11 +139,21 @@ export const TEE_REGISTRAR_HOSTS_WITHOUT_ROUTABLE_IDENTITY = defineMetric({
 export const RELAYER_L1_OPERATION_COUNT = defineMetric({
   kind: 'counter',
   name: 'oxide.relayer.l1_operation.count',
-  description: 'L1 operation work item checks, by outcome.',
+  description: 'L1 operation work item checks, by outcome and operation kind.',
   unit: '{operation}',
   valueType: 'int',
-  requiredAttributes: [RELAYER_OUTCOME] as const,
+  requiredAttributes: [RELAYER_OUTCOME, RELAYER_OPERATION_KIND] as const,
   optionalAttributes: [RELAYER_DEFER_REASON] as const,
+});
+
+export const RELAYER_L1_OPERATION_SKIPPED = defineMetric({
+  kind: 'counter',
+  name: 'oxide.relayer.l1_operation.skipped',
+  description: 'L1 operations found on L2 that the relayer did not store, by reason and operation kind.',
+  unit: '{operation}',
+  valueType: 'int',
+  requiredAttributes: [RELAYER_SKIP_REASON, RELAYER_OPERATION_KIND] as const,
+  optionalAttributes: [],
 });
 
 export const RELAYER_L1_OPERATION_PENDING = defineMetric({
@@ -292,6 +307,16 @@ export const RESOLVER_RESOLUTIONS = defineMetric({
   optionalAttributes: [],
 });
 
+export const RESOLVER_SIPA_FUNDED_OLDEST_AGE = defineMetric({
+  kind: 'observable-gauge',
+  name: 'oxide.resolver.sipa.funded_oldest_age',
+  description: 'Time since the oldest funded resolution that is not broadcast was funded. 0 when there is none.',
+  unit: 's',
+  valueType: 'double',
+  requiredAttributes: [],
+  optionalAttributes: [],
+});
+
 export const RESOLVER_SIPA_EXPIRED = defineMetric({
   kind: 'counter',
   name: 'oxide.resolver.sipa.expired',
@@ -409,6 +434,77 @@ export const L1_OBSERVER_FPC_FUNDER_BOUNTY = defineMetric({
   unit: '{token}',
   valueType: 'double',
   requiredAttributes: [L1_OBSERVER_TOKEN_SYMBOL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_LABEL_PORTAL_ESCROW_BALANCE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.label.portal_escrow_balance',
+  description: 'Balance held by the portals of one manifest label, in underlying token units.',
+  unit: '{token}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_TOKEN_SYMBOL, L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_PORTAL_ESCROW_UNEXPLAINED = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.portal.escrow_unexplained',
+  description:
+    'Escrow change of one portal over the finalized blocks of the last scan, less deposits, plus withdrawals, refunds, released tips and FPC funding cuts. Zero when the escrow balances.',
+  unit: '{token}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_TOKEN_SYMBOL, L1_OBSERVER_DEPLOYMENT_LABEL, L1_OBSERVER_PORTAL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_LABEL_DEPOSIT_SUBSIDY_BALANCE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.label.deposit_subsidy.balance',
+  description: 'Token balance of the deposit subsidy contracts of one manifest label.',
+  unit: '{token}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_TOKEN_SYMBOL, L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_LABEL_WITHDRAWAL_SUBSIDY_BALANCE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.label.withdrawal_subsidy.balance',
+  description: 'Token balance of the withdrawal subsidy contracts of one manifest label.',
+  unit: '{token}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_TOKEN_SYMBOL, L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_LABEL_PROVER_SUBSIDY_BALANCE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.label.prover_subsidy.balance',
+  description: 'Token balance of the prover subsidy contracts of one manifest label.',
+  unit: '{token}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_TOKEN_SYMBOL, L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_LABEL_FPC_FUNDER_BALANCE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.label.fpc_funder.balance',
+  description: 'Input-token balance of the FPC funders of one manifest label.',
+  unit: '{token}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_TOKEN_SYMBOL, L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_LABEL_FPC_FUNDER_BOUNTY = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.label.fpc_funder.bounty',
+  description: 'Caller bounty that the FPC funders of one manifest label offer.',
+  unit: '{token}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_TOKEN_SYMBOL, L1_OBSERVER_DEPLOYMENT_LABEL] as const,
   optionalAttributes: [],
 });
 
@@ -557,27 +653,70 @@ export const L1_OBSERVER_WITHDRAWAL_UNCLAIMED = defineMetric({
   kind: 'gauge',
   name: 'oxide.l1_observer.withdrawal.unclaimed',
   description:
-    'Number of proven L2 burns of a manifest entry whose withdrawal is not claimed on L1 after the stuck threshold.',
+    'Number of withdrawals of a manifest entry whose initiation is proven on L2 and that are not claimed on L1 after the stuck threshold.',
   unit: '{withdrawal}',
   valueType: 'int',
   requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
   optionalAttributes: [],
 });
 
-export const L1_OBSERVER_WITHDRAWAL_UNCLAIMED_VOLUME = defineMetric({
-  kind: 'gauge',
-  name: 'oxide.l1_observer.withdrawal.unclaimed_volume',
-  description: 'Total amount of the unclaimed withdrawals of a manifest entry, in underlying token units.',
-  unit: '{token}',
-  valueType: 'double',
-  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL, L1_OBSERVER_TOKEN_SYMBOL] as const,
-  optionalAttributes: [],
-});
-
 export const L1_OBSERVER_WITHDRAWAL_UNCLAIMED_OLDEST_AGE = defineMetric({
   kind: 'gauge',
   name: 'oxide.l1_observer.withdrawal.unclaimed_oldest_age',
-  description: 'Age of the oldest unclaimed withdrawal of a manifest entry, from its burn block timestamp.',
+  description: 'Age of the oldest unclaimed withdrawal of a manifest entry, from its initiation block timestamp.',
+  unit: 's',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_WITHDRAWAL_UNMATCHED = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.withdrawal.unmatched',
+  description:
+    'Number of withdrawals that the portals of one manifest label paid in the finalized blocks of the last scan, with no L2 burn in the withdrawal lookback.',
+  unit: '{withdrawal}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_WITHDRAWAL_UNPROVEN = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.withdrawal.unproven',
+  description: 'Number of withdrawals of a manifest entry whose initiation is above the proven L2 tip.',
+  unit: '{withdrawal}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_WITHDRAWAL_UNPROVEN_OLDEST_AGE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.withdrawal.unproven_oldest_age',
+  description: 'Age of the oldest unproven withdrawal of a manifest entry, from its initiation block timestamp.',
+  unit: 's',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_WITHDRAWAL_CLAIMABLE_UNCLAIMED = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.withdrawal.claimable_unclaimed',
+  description:
+    'Number of proven withdrawals of a manifest entry that are not claimed on L1 after the stuck threshold from their proof.',
+  unit: '{withdrawal}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_WITHDRAWAL_CLAIMABLE_UNCLAIMED_OLDEST_AGE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.withdrawal.claimable_unclaimed_oldest_age',
+  description:
+    'Age of the oldest claimable unclaimed withdrawal of a manifest entry, from the L1 proof of its checkpoint.',
   unit: 's',
   valueType: 'double',
   requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
@@ -637,10 +776,181 @@ export const L1_OBSERVER_SIPA_SWEEP_UNSWEPT_OLDEST_AGE = defineMetric({
   optionalAttributes: [],
 });
 
+export const L1_OBSERVER_SWAP_ESCROW_UNEXECUTED = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.swap_escrow.unexecuted',
+  description:
+    'Number of swap and bridge escrows of a manifest entry that are funded, would run, have a relayer tip that covers the gas, and are not executed after the stuck threshold.',
+  unit: '{escrow}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_SWAP_ESCROW_UNEXECUTED_OLDEST_AGE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.swap_escrow.unexecuted_oldest_age',
+  description: 'Age of the oldest unexecuted swap or bridge escrow of a manifest entry, from when it was first funded.',
+  unit: 's',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_SWAP_ESCROW_CAPPED = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.swap_escrow.capped',
+  description:
+    'Number of tracked swap and bridge escrow rows of a manifest entry that the observer dropped in the last run because the entry has more rows than the cap.',
+  unit: '{escrow}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_SWAP_ESCROW_FACTORIES = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.swap_escrow.factories',
+  description:
+    'Number of swap and bridge escrow factories that the deployment manifest lists for a manifest entry. Zero means that the escrow check tracks no escrows for the entry.',
+  unit: '{factory}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_MIGRATION_REFUND_PENDING = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.migration.refund_pending',
+  description:
+    'Number of refund operations on the portal of a manifest entry, or through its migration subsidy, that are broadcast, have no spent nullifier, and whose last simulation runs or reverts on an unregistered TEE or a cap.',
+  unit: '{operation}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_MIGRATION_REFUND_PENDING_OLDEST_AGE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.migration.refund_pending_oldest_age',
+  description:
+    'Age of the oldest pending refund operation of a manifest entry, from the block timestamp of its broadcast. Zero when no refund is pending.',
+  unit: 's',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_MIGRATION_COUNT = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.migration.count',
+  description:
+    'Number of Migrated events of the migration executors whose destination is a manifest entry, by exit flow of the old portal, from the deploy block of the entry.',
+  unit: '{migration}',
+  valueType: 'int',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL, L1_OBSERVER_MIGRATION_FLOW] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_MIGRATION_VOLUME = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.migration.volume',
+  description:
+    'Amount that the migration executors of a manifest entry deposited into its portal, by exit flow of the old portal, from the deploy block of the entry. The relayer tip is not included.',
+  unit: '{token}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL, L1_OBSERVER_TOKEN_SYMBOL, L1_OBSERVER_MIGRATION_FLOW] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_MIGRATION_TIP_VOLUME = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.migration.tip_volume',
+  description:
+    'Relayer tips that the migration executors of a manifest entry paid from the migrated amount, from the deploy block of the entry.',
+  unit: '{token}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL, L1_OBSERVER_TOKEN_SYMBOL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_MIGRATION_SUBSIDY_BALANCE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.migration.subsidy_balance',
+  description: 'Payout token balance of the migration subsidies whose destination is a manifest entry.',
+  unit: '{token}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL, L1_OBSERVER_TOKEN_SYMBOL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_L1_BASE_FEE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.l1.base_fee_gwei',
+  description: 'Base fee per gas of the latest L1 block.',
+  unit: '{gwei}',
+  valueType: 'double',
+  requiredAttributes: [],
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_L1_PRIORITY_FEE = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.l1.priority_fee_gwei',
+  description: 'Max priority fee per gas that the L1 RPC estimates.',
+  unit: '{gwei}',
+  valueType: 'double',
+  requiredAttributes: [],
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_RELAYER_BREAK_EVEN = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.relayer.break_even_gwei',
+  description: 'Highest L1 base fee at which the sweep tip and the subsidy of a SIPA intent pay the relayer gas.',
+  unit: '{gwei}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL, L1_OBSERVER_TOKEN_SYMBOL, L1_OBSERVER_OPERATION_KIND] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_RELAYER_MIN_TIP = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.relayer.min_tip',
+  description:
+    'Lowest relayer tip at which the tip and the subsidy of a withdrawal flow pay the relayer gas at the current L1 base fee.',
+  unit: '{token}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL, L1_OBSERVER_TOKEN_SYMBOL, L1_OBSERVER_OPERATION_KIND] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_L2_MIN_FEE_PER_MANA = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.l2.min_fee_per_mana',
+  description:
+    'Highest current or predicted min fee per mana of the rollup of a manifest entry, in fee juice base units.',
+  unit: '{fee_juice_base_unit}',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
+export const L1_OBSERVER_CLAIM_FPC_FEE_HEADROOM = defineMetric({
+  kind: 'gauge',
+  name: 'oxide.l1_observer.claim_fpc.fee_headroom',
+  description:
+    'ClaimFPC max fee per gas divided by the padded highest L2 or DA min fee of the rollup of a manifest entry.',
+  unit: '1',
+  valueType: 'double',
+  requiredAttributes: [L1_OBSERVER_DEPLOYMENT_LABEL] as const,
+  optionalAttributes: [],
+});
+
 export const L1_OBSERVER_CHECK_FAILED = defineMetric({
   kind: 'counter',
   name: 'oxide.l1_observer.check.failed',
-  description: 'Number of L1 observer runs in which an L2 check failed for at least one label or did not finish.',
+  description: 'Number of L1 observer runs in which a check failed for at least one label or did not finish.',
   unit: '{failure}',
   valueType: 'int',
   requiredAttributes: [L1_OBSERVER_CHECK_NAME] as const,
@@ -669,6 +979,7 @@ export const METRIC_DEFINITIONS = [
   TEE_REGISTRAR_EXPIRING_LEASES,
   TEE_REGISTRAR_HOSTS_WITHOUT_ROUTABLE_IDENTITY,
   RELAYER_L1_OPERATION_COUNT,
+  RELAYER_L1_OPERATION_SKIPPED,
   RELAYER_L1_OPERATION_PENDING,
   RELAYER_L1_OPERATION_WAITING,
   RELAYER_WATCHER_AGE,
@@ -683,6 +994,7 @@ export const METRIC_DEFINITIONS = [
   RESOLVER_SIPA_FUNDED,
   RESOLVER_BROADCAST_COUNT,
   RESOLVER_RESOLUTIONS,
+  RESOLVER_SIPA_FUNDED_OLDEST_AGE,
   RESOLVER_SIPA_EXPIRED,
   RESOLVER_FEE_JUICE_BALANCE,
   RESOLVER_SDN_LIST_AGE,
@@ -695,6 +1007,13 @@ export const METRIC_DEFINITIONS = [
   L1_OBSERVER_PROVER_SUBSIDY_BALANCE,
   L1_OBSERVER_FPC_FUNDER_BALANCE,
   L1_OBSERVER_FPC_FUNDER_BOUNTY,
+  L1_OBSERVER_LABEL_PORTAL_ESCROW_BALANCE,
+  L1_OBSERVER_PORTAL_ESCROW_UNEXPLAINED,
+  L1_OBSERVER_LABEL_DEPOSIT_SUBSIDY_BALANCE,
+  L1_OBSERVER_LABEL_WITHDRAWAL_SUBSIDY_BALANCE,
+  L1_OBSERVER_LABEL_PROVER_SUBSIDY_BALANCE,
+  L1_OBSERVER_LABEL_FPC_FUNDER_BALANCE,
+  L1_OBSERVER_LABEL_FPC_FUNDER_BOUNTY,
   L1_OBSERVER_DEPOSIT_COUNT,
   L1_OBSERVER_DEPOSIT_VOLUME,
   L1_OBSERVER_WITHDRAWAL_COUNT,
@@ -710,13 +1029,33 @@ export const METRIC_DEFINITIONS = [
   L1_OBSERVER_L2_FINALIZED_TIP_AGE,
   L1_OBSERVER_L2_PROVEN_TIP_BLOCK,
   L1_OBSERVER_WITHDRAWAL_UNCLAIMED,
-  L1_OBSERVER_WITHDRAWAL_UNCLAIMED_VOLUME,
   L1_OBSERVER_WITHDRAWAL_UNCLAIMED_OLDEST_AGE,
+  L1_OBSERVER_WITHDRAWAL_UNMATCHED,
+  L1_OBSERVER_WITHDRAWAL_UNPROVEN,
+  L1_OBSERVER_WITHDRAWAL_UNPROVEN_OLDEST_AGE,
+  L1_OBSERVER_WITHDRAWAL_CLAIMABLE_UNCLAIMED,
+  L1_OBSERVER_WITHDRAWAL_CLAIMABLE_UNCLAIMED_OLDEST_AGE,
   L1_OBSERVER_SIPA_SWEEP_OPEN,
   L1_OBSERVER_SIPA_SWEEP_UNSWEPT,
   L1_OBSERVER_SIPA_SWEEP_DUST,
   L1_OBSERVER_SIPA_SWEEP_STRANDED,
   L1_OBSERVER_SIPA_SWEEP_UNSWEPT_OLDEST_AGE,
+  L1_OBSERVER_SWAP_ESCROW_UNEXECUTED,
+  L1_OBSERVER_SWAP_ESCROW_UNEXECUTED_OLDEST_AGE,
+  L1_OBSERVER_SWAP_ESCROW_CAPPED,
+  L1_OBSERVER_SWAP_ESCROW_FACTORIES,
+  L1_OBSERVER_MIGRATION_REFUND_PENDING,
+  L1_OBSERVER_MIGRATION_REFUND_PENDING_OLDEST_AGE,
+  L1_OBSERVER_MIGRATION_COUNT,
+  L1_OBSERVER_MIGRATION_VOLUME,
+  L1_OBSERVER_MIGRATION_TIP_VOLUME,
+  L1_OBSERVER_MIGRATION_SUBSIDY_BALANCE,
+  L1_OBSERVER_L1_BASE_FEE,
+  L1_OBSERVER_L1_PRIORITY_FEE,
+  L1_OBSERVER_RELAYER_BREAK_EVEN,
+  L1_OBSERVER_RELAYER_MIN_TIP,
+  L1_OBSERVER_L2_MIN_FEE_PER_MANA,
+  L1_OBSERVER_CLAIM_FPC_FEE_HEADROOM,
   L1_OBSERVER_CHECK_FAILED,
   TELEMETRY_E2E_VERIFICATION,
 ] as const;

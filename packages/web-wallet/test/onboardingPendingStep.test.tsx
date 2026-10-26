@@ -162,6 +162,15 @@ const h = vi.hoisted(() => ({
   },
 }))
 
+// The executor's withdrawal fee is priced in its own suites; here it costs nothing.
+vi.mock("../src/features/withdraw/withdrawalFee", () => ({
+  withdrawalExecutorFee: async () => 0n,
+  activeWithdrawalFee: async () => 0n,
+  activeWithdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutorAt: async () => ({ fee: 0n }),
+  useActiveWithdrawalFee: () => 0n,
+}))
 vi.mock("react-router-dom", async (importOriginal) => {
   const actual = await importOriginal<typeof import("react-router-dom")>()
   return {
@@ -202,14 +211,12 @@ vi.mock("../src/features/onboarding/nameAvailability", async (importOriginal) =>
 }))
 vi.mock("../src/platform/auth/WebPasskeyIdentityMap", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/platform/auth/WebPasskeyIdentityMap")>()),
-  hasMskRootBreadcrumb: () => h.hasRootBreadcrumb,
+  hasOpeningBreadcrumb: () => h.hasRootBreadcrumb,
 }))
 vi.mock("../src/features/onboarding/registrationTerms", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/features/onboarding/registrationTerms")>()),
   // A disabled read never lands, as in the real hooks.
   useDepositSkim: (_config: unknown, enabled = true) => (enabled ? h.skim : undefined),
-  useSweepDeductions: (_config: unknown, _token: unknown, enabled = true) =>
-    enabled ? { skim: h.skim, fpcCut: 250_000_000_000_000_000n } : undefined,
 }))
 vi.mock("../src/lib/analytics", () => ({
   fireEvent: h.fireEvent,
@@ -475,6 +482,13 @@ vi.mock("../src/features/paylink/registrationProverTip", async () => {
     },
   }
 })
+// The registration's table lists only the fixtures' deposit token.
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, singleToken } = await import("./support/depositTokens")
+  return mockLoadDepositFacts(importOriginal, () =>
+    singleToken("0x00000000000000000000000000000000000000d4"),
+  )
+})
 // The real buildRetrySignDeps (below) fetches the registration env; stub it so the unit test needs
 // no L1. The tuple carries portal/sipaFactory/token/accountMetadataRegistry so the SIPA deriver
 // constructs offline.
@@ -499,6 +513,7 @@ vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
       registry: "0x00000000000000000000000000000000000000e4",
       accountMetadataRegistry: "0x00000000000000000000000000000000000000e8",
       sipaFactory: "0x00000000000000000000000000000000000000e7",
+      forwardingTable: "0x00000000000000000000000000000000000000e9",
       rollupVersion: "3",
       ensDomain: "zk.money",
     },
@@ -2419,12 +2434,15 @@ describe("reusePasskeyAccount — pre-commit expectedL2Address verification", ()
   })
 
   it("a matching passkey proceeds to adoption", async () => {
-    const commitSecret = vi.fn()
+    const commitSecret = vi.fn(async () => 1)
     const recordRecoveryMetadata = vi.fn()
     h.getAuthService.mockReturnValue({
       beginRecovery: async () => recovered(),
       recoverFromCache: async () => undefined,
       commitSecret,
+      sessionHeld: () => true,
+      sessionAddress: async () => undefined,
+      markRecordsStale: () => {},
       recordRecoveryMetadata,
     })
     const addWebauthnAccount = vi.fn()
@@ -3222,13 +3240,12 @@ describe("pending step — the deposit gate (registration-fee.md Campaign)", () 
     const text = container.textContent!
     expect(text).toContain("Tag priceWaived")
     expect(termsValue("network-fee")).toBeUndefined()
-    const funding = 75n * 10n ** 16n
-    expect(termsValue("network-funding")).toBe(usd(funding))
-    expect(termsValue("opening-balance")).toBe(usd(RANDOM_ASK - funding))
+    expect(termsValue("network-funding")).toBe(usd(h.skim))
+    expect(termsValue("opening-balance")).toBe(usd(RANDOM_ASK - RANDOM.fee))
     expect(termsValue("total")).toBe(ask("earned_tag"))
     expect(summary()).toContain(
       `Send at least ${ask("earned_tag")} to activate your account. The tag is free, and ${usd(
-        funding,
+        h.skim,
       )} is network funding.`,
     )
     // The ask, never the signed floor.
@@ -6376,6 +6393,7 @@ describe("deposit terms step — before any passkey prompt", () => {
         recipientProvenance: "saved-recipient",
         amount: "0.61",
         tokenSymbol: "DAI",
+        tokenDecimals: 18,
         phase: "submitting",
         startTime: Date.now(),
       })
@@ -6408,6 +6426,7 @@ describe("deposit terms step — before any passkey prompt", () => {
         recipientProvenance: "saved-recipient",
         amount: "1.7",
         tokenSymbol: "DAI",
+        tokenDecimals: 18,
         phase: "submitting",
         startTime: Date.now(),
       })
@@ -6931,6 +6950,7 @@ describe("deposit terms step — before any passkey prompt", () => {
           paylinkId: "id:paylink-frag",
           amount: "19.65",
           tokenSymbol: "DAI",
+          tokenDecimals: 18,
           phase: "l2_mined",
           l2TxHash: BURN_HASH,
           startTime: Date.now(),

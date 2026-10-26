@@ -1,9 +1,10 @@
-import { Fr } from '@aztec/aztec.js/fields';
-import { ARCHIVE_HEIGHT, DomainSeparator } from '@aztec/constants';
-import { BlockNumber } from '@aztec/foundation/branded-types';
-import { AppendOnlyTreeSnapshot } from '@aztec/stdlib/trees';
-import { BlockHeader, GlobalVariables, type StateReference } from '@aztec/stdlib/tx';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { ARCHIVE_HEIGHT, DomainSeparator } from '@aztec-labs/constants';
+import { BlockNumber, TreeLeafIndex } from '@aztec-labs/foundation/branded-types';
+import { AppendOnlyTreeSnapshot } from '@aztec-labs/stdlib/trees';
+import { BlockHeader, GlobalVariables, type StateReference } from '@aztec-labs/stdlib/tx';
 
+import type { PortalDomain } from '../types.js';
 import { SparseTree } from './sparse_tree.js';
 
 /** The block number of the frozen tip. Earlier blocks come before it, so its sibling path has left siblings. */
@@ -12,14 +13,19 @@ const TIP_BLOCK_NUMBER = 7;
 /**
  * A frozen archive whose block 7 is `frozenTip`, with `state` as the tip's state and random earlier blocks. With no
  * `laterBlocks`, the tip is the latest block. Each later block is a random leaf after the tip, which keeps the tip a
- * member of the archive but not its latest block.
+ * member of the archive but not its latest block. A `domain` sets the chain id and rollup version of the tip.
  */
-export async function frozenTipFixture(opts: { state?: StateReference; laterBlocks?: number } = {}) {
+export async function frozenTipFixture(
+  opts: { state?: StateReference; laterBlocks?: number; domain?: PortalDomain } = {},
+) {
   const earlierBlocks = Array.from({ length: TIP_BLOCK_NUMBER }, () => Fr.random());
   const lastArchive = await SparseTree.build(ARCHIVE_HEIGHT, earlierBlocks, DomainSeparator.MERKLE_HASH);
   const frozenTip = BlockHeader.empty({
-    lastArchive: new AppendOnlyTreeSnapshot(lastArchive.root, TIP_BLOCK_NUMBER),
-    globalVariables: GlobalVariables.empty({ blockNumber: BlockNumber(TIP_BLOCK_NUMBER) }),
+    lastArchive: new AppendOnlyTreeSnapshot(lastArchive.root, TreeLeafIndex(TIP_BLOCK_NUMBER)),
+    globalVariables: GlobalVariables.empty({
+      blockNumber: BlockNumber(TIP_BLOCK_NUMBER),
+      ...(opts.domain ? { chainId: new Fr(opts.domain.l1ChainId), version: new Fr(opts.domain.rollupVersion) } : {}),
+    }),
     ...(opts.state ? { state: opts.state } : {}),
   });
   const blockHash = new Fr((await frozenTip.hash()).toBuffer());

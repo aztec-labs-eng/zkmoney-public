@@ -1,7 +1,17 @@
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 // @vitest-environment node
 import { APPLE_ICLOUD_AAGUID, GPM_AAGUID } from "@obsidion/core/constants"
-import { StoredAddressMismatchError, selectRecoveredMsk } from "@obsidion/front-core"
+import type { PrfSlot } from "@obsidion/core/types"
+import {
+  type InstalledPasskey,
+  PasskeyEnvelopeError,
+  StoredAddressMismatchError,
+  credentialIdHash,
+  credentialIdToMetadata,
+  parseKeyMetadata,
+  sealMasterKey,
+  selectRecoveredMsk,
+} from "@obsidion/front-core"
 import { deriveMskFromPrfOutput } from "@obsidion/sdk"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { walletStorage } from "../src/platform/storage/walletStorage"
@@ -17,8 +27,10 @@ import {
   type UserAgentInfo,
   parseUserAgent,
 } from "@obsidion/passkey-web"
+import type { BackupCreationDriver } from "../src/platform/auth/backupCreation"
 import { localRefusalCount, noteLocalRefusal } from "../src/platform/auth/localRefusals"
 import { statusForAttempt } from "../src/platform/auth/passkeyAttemptScope"
+import { UNASKED_PASSKEY_MESSAGE } from "../src/platform/auth/unaskedPasskey"
 import { WebAlphaAuthService, isUnsettled } from "../src/platform/auth/WebAlphaAuthService"
 import { WebPasskeyIdentityMap } from "../src/platform/auth/WebPasskeyIdentityMap"
 import {
@@ -34,9 +46,15 @@ import {
 import {
   FakePasskeyCeremony,
   type FakeCeremonyOptions,
+  type FakeRoute,
   MemoryStorage,
 } from "./support/fakePasskeyCeremony"
 import { testWalletDbs } from "./support/fakeWalletDb"
+
+const h = vi.hoisted(() => ({ noteBackupSignIn: vi.fn() }))
+vi.mock("../src/features/onboarding/backupSignIn", () => ({
+  noteBackupSignIn: h.noteBackupSignIn,
+}))
 
 type ServiceOptions = FakeCeremonyOptions & {
   posture?: DevicePosture
@@ -81,15 +99,70 @@ const MAC_CHROME_UA =
 const IPHONE_SAFARI_UA =
   "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.0 Mobile/15E148 Safari/604.1"
 
-/** Address derivation that recognises exactly one master key under exactly one signing key. */
+const sameKeys = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((key, i) => key === b[i])
+
+/** Address derivation that recognises exactly one master key under exactly one key set, in order. */
 const deriveFor =
-  (expected: { secretKey: Fr; pubkey: string }, address: string) =>
-  async (candidate: Fr, pubkeyHex: string) =>
-    candidate.toString() === expected.secretKey.toString() && pubkeyHex === expected.pubkey
+  (expected: { secretKey: Fr; pubkey: string }, address: string, passkeys = [expected.pubkey]) =>
+  async (candidate: Fr, keys: readonly string[]) =>
+    candidate.toString() === expected.secretKey.toString() && sameKeys(keys, passkeys)
       ? address
       : "0xother"
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+type Passkey = Awaited<ReturnType<WebAlphaAuthService["createPasskey"]>>
+/** The L1 account a tag read names; the envelopes below are bound to it. */
+const ACCOUNT = `0x${"11".repeat(20)}` as const
+/** The chain's entry for a sign-up key: its raw credential id as metadata. */
+const rootKey = (created: Passkey): InstalledPasskey => {
+  const metadata = credentialIdToMetadata(created.credentialId)
+  return { pubkeyHex: created.pubkey, metadata, parsed: parseKeyMetadata(metadata) }
+}
+/** The chain's entry for a backup key: oxide's prefix over the id's hash, the envelope, then the raw id. */
+const backupKey = (created: Passkey, envelope: Uint8Array): InstalledPasskey => {
+  const metadata = `${backupKeyUnnamed(created, envelope).metadata}${credentialIdToMetadata(
+    created.credentialId,
+  ).slice(2)}` as const
+  return { pubkeyHex: created.pubkey, metadata, parsed: parseKeyMetadata(metadata) }
+}
+/** A backup entry with no appended id: the prefix and the envelope alone. */
+const backupKeyUnnamed = (created: Passkey, envelope: Uint8Array): InstalledPasskey => {
+  const metadata = `0x01${credentialIdHash(created.credentialId).slice(2)}${Buffer.from(
+    envelope,
+  ).toString("hex")}` as const
+  return { pubkeyHex: created.pubkey, metadata, parsed: parseKeyMetadata(metadata) }
+}
+/** The same passkey under `credentialId`, as an authenticator with its own id format mints it. */
+const rekeyed = (
+  ceremony: FakePasskeyCeremony,
+  created: Passkey,
+  credentialId: string,
+): Passkey => {
+  ceremony.creds.set(credentialId, ceremony.creds.get(created.credentialId)!)
+  ceremony.creds.delete(created.credentialId)
+  return { ...created, credentialId }
+}
+/** What a tag read hands `adoptAccountPasskey`: the account and its listed keys. */
+const accountOf = (...keys: InstalledPasskey[]) => ({ account: ACCOUNT, keys })
+/** `masterKey` sealed for `holder`, under the PRF the fake returns for it on `route`. */
+const sealFor = (
+  ceremony: FakePasskeyCeremony,
+  holder: Passkey,
+  masterKey: Fr,
+  slot: PrfSlot = "first",
+  route?: FakeRoute,
+  account: `0x${string}` = ACCOUNT,
+) =>
+  sealMasterKey({
+    masterKey: new Uint8Array(masterKey.toBuffer()),
+    prfOutput: ceremony.prfFor(holder.credentialId, slot, route),
+    slot,
+    account,
+    credentialId: holder.credentialId,
+  })
+const hex = (bytes: Uint8Array) => `0x${Buffer.from(bytes).toString("hex")}`
 
 describe("metadata consent challenge", () => {
   it("passes the exact digest to the active credential without PRF or another signing prefix", async () => {
@@ -192,6 +265,21 @@ describe("WebAlphaAuthService user handle", () => {
     const handle = bytesToBase64Url(ceremony.creds.get(created.credentialId)!.handle)
     const map = new WebPasskeyIdentityMap(storage, "localhost")
     expect((await map.get(created.credentialId))?.userHandle).toBe(handle)
+  })
+
+  it("records a creation the driver judged a security key as one, beside its platform type", async () => {
+    const { service, storage } = laptop(KEY)
+    const created = await service.createPasskey("alice")
+    await record(service, created, "0xabc")
+    const entry = await new WebPasskeyIdentityMap(storage, "localhost").get(created.credentialId)
+    expect(entry?.securityKey).toBe(true)
+    expect(entry?.authenticatorType).toBeUndefined()
+
+    const synced = phone()
+    const other = await synced.service.createPasskey("alice")
+    await record(synced.service, other, "0xabc")
+    const map = new WebPasskeyIdentityMap(synced.storage, "localhost")
+    expect((await map.get(other.credentialId))?.securityKey).toBeUndefined()
   })
 })
 
@@ -310,7 +398,11 @@ describe("WebAlphaAuthService signing steering", () => {
       pubkey: created.pubkey,
       isMskRoot: true,
     })
-    const passkey = { credentialId: created.credentialId, pubkeyHex: created.pubkey }
+    const passkey = {
+      credentialId: created.credentialId,
+      pubkeyHex: created.pubkey,
+      passkeys: [created.pubkey],
+    }
     await signWith(fresh.providerFor(passkey))
     expect(ceremony.assertRequests.at(-1)!).not.toHaveProperty("transports")
     await flush()
@@ -368,6 +460,7 @@ describe("WebAlphaAuthService signing steering", () => {
     const provider = fresh.providerFor({
       credentialId: created.credentialId,
       pubkeyHex: created.pubkey,
+      passkeys: [created.pubkey],
     })
     await signWith(provider)
     await flush()
@@ -390,6 +483,7 @@ describe("WebAlphaAuthService signing steering", () => {
     const provider = fresh.providerFor({
       credentialId: created.credentialId,
       pubkeyHex: created.pubkey,
+      passkeys: [created.pubkey],
     })
 
     await signWith(provider)
@@ -414,7 +508,11 @@ describe("WebAlphaAuthService signing steering", () => {
   it("a clear the store holds or refuses still leaves the next attempt unsteered", async () => {
     const { ceremony, state, last } = refusable(KEY)
     const created = await freshOver(ceremony).createPasskey("@alice")
-    const passkey = { credentialId: created.credentialId, pubkeyHex: created.pubkey }
+    const passkey = {
+      credentialId: created.credentialId,
+      pubkeyHex: created.pubkey,
+      passkeys: [created.pubkey],
+    }
 
     // Refused: the clear never lands, so the stored inference outlives this session.
     const storage = new GatedStorage()
@@ -507,7 +605,11 @@ describe("WebAlphaAuthService learns transports from sign-in", () => {
         PHYSICAL,
       )
       await signWith(
-        service.providerFor({ credentialId: created.credentialId, pubkeyHex: created.pubkey }),
+        service.providerFor({
+          credentialId: created.credentialId,
+          pubkeyHex: created.pubkey,
+          passkeys: [created.pubkey],
+        }),
       )
       expect(ceremony.assertRequests.at(-1)!.transports).toEqual(PHYSICAL)
     } finally {
@@ -593,7 +695,11 @@ describe("WebAlphaAuthService learns transports from sign-in", () => {
         secretKey: created.secretKey,
         authProvider: created.authProvider,
       })
-      const passkey = { credentialId: created.credentialId, pubkeyHex: created.pubkey }
+      const passkey = {
+        credentialId: created.credentialId,
+        pubkeyHex: created.pubkey,
+        passkeys: [created.pubkey],
+      }
       const provider = service.providerFor(passkey)
       await signWith(provider)
       await flush()
@@ -813,7 +919,11 @@ describe("WebAlphaAuthService learns where a synced passkey answered", () => {
     })
     storage.gate = () => Promise.reject(new Error("QuotaExceededError"))
     await signWith(
-      fresh.providerFor({ credentialId: created.credentialId, pubkeyHex: created.pubkey }),
+      fresh.providerFor({
+        credentialId: created.credentialId,
+        pubkeyHex: created.pubkey,
+        passkeys: [created.pubkey],
+      }),
     )
     await flush()
     expect(await answered(storage, created.credentialId)).toBeUndefined()
@@ -1980,7 +2090,7 @@ describe("WebAlphaAuthService.unlock", () => {
       const derive = vi.fn(deriveFor(created, "0xacct"))
       await service.unlock(derive, {})
       expect(derive).toHaveBeenCalled()
-      for (const [, pubkeyHex] of derive.mock.calls) expect(pubkeyHex).toBe(created.pubkey)
+      for (const [, passkeys] of derive.mock.calls) expect(passkeys).toEqual([created.pubkey])
     } finally {
       restore()
     }
@@ -2274,85 +2384,90 @@ describe("WebAlphaAuthService — one prompt, no picker", () => {
     expect(begun.credentialId).toBe(other.credentialId)
   })
 
-  it("adoptKnownPasskey: one assertion on the hinted credential, key checked against the signature", async () => {
+  it("adoptAccountPasskey: one assertion on the listed credential, key checked against the signature", async () => {
     const { service, ceremony } = laptop()
     const created = await service.createPasskey("@alice")
     service.clear()
     ceremony.asserts = []
 
-    const adopted = await service.adoptKnownPasskey({
-      credentialId: created.credentialId,
-      pubkeyHex: created.pubkey,
-    })
+    const adopted = await service.adoptAccountPasskey(accountOf(rootKey(created)))
     expect(ceremony.asserts).toEqual([[created.credentialId]])
     expect(adopted.pubkey).toBe(created.pubkey)
     expect(adopted.candidates.first?.toString()).toBe(created.secretKey.toString())
     expect(adopted.candidates.second).toBeDefined()
+    expect(adopted.passkeys).toEqual([created.pubkey])
+    expect(adopted.backup).toBeUndefined()
 
+    // The list names the credential under another key: not the one its signature recovers.
     const other = await service.createPasskey("@bob")
     await expect(
-      service.adoptKnownPasskey({
-        credentialId: created.credentialId,
-        pubkeyHex: other.pubkey,
-      }),
+      service.adoptAccountPasskey(accountOf({ ...rootKey(created), pubkeyHex: other.pubkey })),
     ).rejects.toMatchObject({ name: "HintedKeyMismatchError" })
+    // A credential the list does not name answers: the same refusal.
+    ceremony.opts.assertOverride = () => other.credentialId
+    await expect(service.adoptAccountPasskey(accountOf(rootKey(created)))).rejects.toMatchObject({
+      name: "HintedKeyMismatchError",
+    })
   })
 
-  it("adoptKnownPasskey refuses a device-bound passkey on the device that holds it", async () => {
+  it("adoptAccountPasskey holds the sheet to every raw id and adopts the one that answers", async () => {
+    const { service, ceremony } = laptop()
+    const a = await service.createPasskey("@alice")
+    const b = await service.createPasskey("@alice")
+    service.clear()
+    ceremony.asserts = []
+    ceremony.opts.assertOverride = () => b.credentialId
+    const adopted = await service.adoptAccountPasskey(accountOf(rootKey(a), rootKey(b)))
+    expect(ceremony.asserts).toEqual([[a.credentialId, b.credentialId]])
+    expect(adopted.credentialId).toBe(b.credentialId)
+    expect(adopted.pubkey).toBe(b.pubkey)
+    expect(adopted.candidates.first?.toString()).toBe(b.secretKey.toString())
+    expect(adopted.passkeys).toEqual([a.pubkey, b.pubkey])
+  })
+
+  it("adoptAccountPasskey refuses a device-bound passkey on the device that holds it", async () => {
     const { service, ceremony } = phone()
     const created = await service.createPasskey("@alice")
     ceremony.opts.backupEligible = false
-    await expect(
-      service.adoptKnownPasskey({ credentialId: created.credentialId, pubkeyHex: created.pubkey }),
-    ).rejects.toMatchObject({ name: "DeviceBoundPasskeyError" })
+    await expect(service.adoptAccountPasskey(accountOf(rootKey(created)))).rejects.toMatchObject({
+      name: "DeviceBoundPasskeyError",
+    })
   })
 
-  it("adoptKnownPasskey accepts a security key, which reports no backup", async () => {
+  it("adoptAccountPasskey accepts a security key, which reports no backup", async () => {
     const { service } = laptop({
       manager: "security-key",
       transports: ["usb"],
       backupEligible: false,
     })
     const created = await service.createPasskey("@alice")
-    const adopted = await service.adoptKnownPasskey({
-      credentialId: created.credentialId,
-      pubkeyHex: created.pubkey,
-    })
+    const adopted = await service.adoptAccountPasskey(accountOf(rootKey(created)))
     expect(adopted.candidates.first?.toString()).toBe(created.secretKey.toString())
   })
 
-  it("adoptKnownPasskey sends a recorded hardware key's transports on a laptop, so the sheet opens on the key", async () => {
+  it("adoptAccountPasskey sends a recorded hardware key's transports on a laptop, so the sheet opens on the key", async () => {
     const { service, ceremony } = laptop(KEY)
     const created = await service.createPasskey("@alice")
     await record(service, created, "0xalice")
     service.clear()
-    await service.adoptKnownPasskey({
-      credentialId: created.credentialId,
-      pubkeyHex: created.pubkey,
-    })
+    await service.adoptAccountPasskey(accountOf(rootKey(created)))
     expect(ceremony.assertRequests.at(-1)!.transports).toEqual(["usb"])
   })
 
-  it("adoptKnownPasskey sends nothing for a synced record on a laptop: a hybrid list would hide the local copy", async () => {
+  it("adoptAccountPasskey sends nothing for a synced record on a laptop: a hybrid list would hide the local copy", async () => {
     const { service, ceremony } = laptop({ transports: ["hybrid", "internal"] })
     const created = await service.createPasskey("@alice")
     await record(service, created, "0xalice")
     service.clear()
-    await service.adoptKnownPasskey({
-      credentialId: created.credentialId,
-      pubkeyHex: created.pubkey,
-    })
+    await service.adoptAccountPasskey(accountOf(rootKey(created)))
     expect(ceremony.assertRequests.at(-1)!.transports).toBeUndefined()
   })
 
-  it("adoptKnownPasskey sends nothing for a credential with no record, or with only an inferred list", async () => {
+  it("adoptAccountPasskey sends nothing for a credential with no record, or with only an inferred list", async () => {
     const { service, ceremony, storage } = laptop(KEY)
     const created = await service.createPasskey("@alice")
     service.clear()
-    await service.adoptKnownPasskey({
-      credentialId: created.credentialId,
-      pubkeyHex: created.pubkey,
-    })
+    await service.adoptAccountPasskey(accountOf(rootKey(created)))
     expect(ceremony.assertRequests.at(-1)!.transports).toBeUndefined()
 
     await service.recordRecoveryMetadata({
@@ -2368,24 +2483,18 @@ describe("WebAlphaAuthService — one prompt, no picker", () => {
       ["usb"],
     )
     service.clear()
-    await service.adoptKnownPasskey({
-      credentialId: created.credentialId,
-      pubkeyHex: created.pubkey,
-    })
+    await service.adoptAccountPasskey(accountOf(rootKey(created)))
     // The inference steers signatures (`steeringFor`); the recovery assertion sends only a creation list.
     expect(ceremony.assertRequests.at(-1)!.transports).toBeUndefined()
   })
 
-  it("adoptKnownPasskey names a security key on a laptop only for a credential known to be one", async () => {
+  it("adoptAccountPasskey names a security key on a laptop only for a credential known to be one", async () => {
     // A recorded hardware key: named, so the sheet keeps its row and a manager's extension stands aside.
     const key = laptop(KEY)
     const created = await key.service.createPasskey("@alice")
     await record(key.service, created, "0xalice")
     key.service.clear()
-    await key.service.adoptKnownPasskey({
-      credentialId: created.credentialId,
-      pubkeyHex: created.pubkey,
-    })
+    await key.service.adoptAccountPasskey(accountOf(rootKey(created)))
     expect(key.ceremony.assertRequests.at(-1)!.hints).toEqual(["client-device", "security-key"])
 
     // A synced record: not named, so the extension may answer from its copy.
@@ -2393,64 +2502,702 @@ describe("WebAlphaAuthService — one prompt, no picker", () => {
     const made = await synced.service.createPasskey("@alice")
     await record(synced.service, made, "0xalice")
     synced.service.clear()
-    await synced.service.adoptKnownPasskey({
-      credentialId: made.credentialId,
-      pubkeyHex: made.pubkey,
-    })
+    await synced.service.adoptAccountPasskey(accountOf(rootKey(made)))
     expect(synced.ceremony.assertRequests.at(-1)!.hints).toEqual(["client-device"])
 
     // No record: not named either. The key that answers teaches the session, so the next request names one.
     const unseen = laptop(KEY)
     const fresh = await unseen.service.createPasskey("@alice")
     unseen.service.clear()
-    await unseen.service.adoptKnownPasskey({
-      credentialId: fresh.credentialId,
-      pubkeyHex: fresh.pubkey,
-    })
+    await unseen.service.adoptAccountPasskey(accountOf(rootKey(fresh)))
     expect(unseen.ceremony.assertRequests.at(-1)!.hints).toEqual(["client-device"])
-    await unseen.service.adoptKnownPasskey({
-      credentialId: fresh.credentialId,
-      pubkeyHex: fresh.pubkey,
-    })
+    await unseen.service.adoptAccountPasskey(accountOf(rootKey(fresh)))
     expect(unseen.ceremony.assertRequests.at(-1)!.hints).toEqual(["client-device", "security-key"])
   })
 
-  it("adoptKnownPasskey on a phone passes a record's list through, as beginRecovery does", async () => {
+  it("adoptAccountPasskey on a phone passes a record's list through, as beginRecovery does", async () => {
     const { service, ceremony } = phone({ transports: ["hybrid", "internal"] })
     const created = await service.createPasskey("@alice")
     await record(service, created, "0xalice")
     service.clear()
-    await service.adoptKnownPasskey({
-      credentialId: created.credentialId,
-      pubkeyHex: created.pubkey,
-    })
+    await service.adoptAccountPasskey(accountOf(rootKey(created)))
     expect(ceremony.assertRequests.at(-1)!.transports).toEqual(["hybrid", "internal"])
   })
 
-  it("adoptKnownPasskey honours this browser's record: its address anchors, a rotated credential is refused", async () => {
+  it("adoptAccountPasskey honours this browser's record: its address anchors, a record under another key is refused", async () => {
     const { service } = laptop()
     const created = await service.createPasskey("@alice")
     await record(service, created, "0xalice")
     service.clear()
-    const hint = {
-      credentialId: created.credentialId,
-      pubkeyHex: created.pubkey,
-    }
+    const hint = accountOf(rootKey(created))
 
-    const adopted = await service.adoptKnownPasskey(hint)
+    const adopted = await service.adoptAccountPasskey(hint)
     expect(adopted.expectedAddress).toBe("0xalice")
     expect(adopted.preferredSlot).toBe("first")
     expect(adopted.hasPersistedSlot).toBe(true)
 
+    const other = await service.createPasskey("@bob")
     await service.recordRecoveryMetadata({
       credentialId: created.credentialId,
       l2Address: "0xalice",
-      pubkey: created.pubkey,
+      pubkey: other.pubkey,
+      isMskRoot: true,
+    })
+    await expect(service.adoptAccountPasskey(hint)).rejects.toMatchObject({
+      name: "HintedKeyMismatchError",
+    })
+  })
+})
+
+describe("WebAlphaAuthService backup passkeys", () => {
+  const ADDR = `0x${"aa".repeat(32)}`
+  beforeEach(() => h.noteBackupSignIn.mockClear())
+
+  it("a backup key's assertion opens its envelope: the sheet names both ids, the master key is the envelope's", async () => {
+    const { service, ceremony } = phone()
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey, "second")
+    service.clear()
+    ceremony.asserts = []
+    ceremony.opts.assertOverride = () => backup.credentialId
+    const adopted = await service.adoptAccountPasskey(
+      accountOf(rootKey(root), backupKey(backup, envelope)),
+    )
+    expect(ceremony.asserts).toEqual([[root.credentialId, backup.credentialId]])
+    expect(adopted.credentialId).toBe(backup.credentialId)
+    expect(adopted.pubkey).toBe(backup.pubkey)
+    expect(adopted.candidates.first).toBeUndefined()
+    expect(adopted.candidates.second?.toString()).toBe(root.secretKey.toString())
+    expect(adopted.passkeys).toEqual([root.pubkey, backup.pubkey])
+    expect(adopted.backup).toEqual({ account: ACCOUNT, envelope: hex(envelope) })
+    expect(adopted.backupFacts).toEqual({ backupEligible: true })
+    expect(h.noteBackupSignIn).not.toHaveBeenCalled()
+  })
+
+  it("a backup whose metadata carries no id is named by its whole metadata beside the root, which answers", async () => {
+    const { service, ceremony } = phone()
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    const unnamed = backupKeyUnnamed(backup, envelope)
+    service.clear()
+    ceremony.asserts = []
+    ceremony.opts.assertOverride = () => root.credentialId
+    const adopted = await service.adoptAccountPasskey(accountOf(rootKey(root), unnamed))
+    expect(ceremony.asserts).toEqual([
+      [root.credentialId, bytesToBase64Url(Buffer.from(unnamed.metadata.slice(2), "hex"))],
+    ])
+    expect(adopted.credentialId).toBe(root.credentialId)
+    expect(adopted.candidates[root.prfSlot ?? "first"]?.toString()).toBe(root.secretKey.toString())
+    expect(adopted.backup).toBeUndefined()
+  })
+
+  it("a root whose raw id begins with 0x01, even shaped like an envelope, is named, alone and beside a backup, and derives from its PRF", async () => {
+    const { service, ceremony } = phone()
+    const made = await service.createPasskey("@alice")
+    // 95 bytes: prefix-shaped, with a well-formed envelope header where a backup's would sit.
+    const raw95 = new Uint8Array(95).map((_, i) => (i * 37 + 11) & 0xff)
+    raw95[0] = 0x01
+    raw95[33] = 0x01
+    raw95[34] = 0x00
+    const root = rekeyed(ceremony, made, bytesToBase64Url(raw95))
+    const backup = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    service.clear()
+    ceremony.asserts = []
+    const slot = root.prfSlot ?? "first"
+    ceremony.opts.assertOverride = () => root.credentialId
+    const alone = await service.adoptAccountPasskey(accountOf(rootKey(root)))
+    expect(alone.candidates[slot]?.toString()).toBe(root.secretKey.toString())
+    ceremony.opts.assertOverride = () => root.credentialId
+    const beside = await service.adoptAccountPasskey(
+      accountOf(rootKey(root), backupKey(backup, envelope)),
+    )
+    expect(ceremony.asserts).toEqual([
+      [root.credentialId],
+      [root.credentialId, backup.credentialId],
+    ])
+    expect(beside.credentialId).toBe(root.credentialId)
+    expect(beside.candidates[slot]?.toString()).toBe(root.secretKey.toString())
+    expect(beside.backup).toBeUndefined()
+  })
+
+  it("one listed key whose id is on chain is pinned: this browser's record steers it, as for a root", async () => {
+    const { service, ceremony } = phone({ transports: ["hybrid", "internal"] })
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    await service.recordRecoveryMetadata({
+      credentialId: backup.credentialId,
+      l2Address: ADDR,
+      pubkey: backup.pubkey,
       isMskRoot: false,
+      backup: { account: ACCOUNT, envelope: hex(envelope) },
+      transports: backup.transports,
     })
-    await expect(service.adoptKnownPasskey(hint)).rejects.toMatchObject({
-      name: "RotatedCredentialError",
+    service.clear()
+    ceremony.asserts = []
+    const adopted = await service.adoptAccountPasskey(accountOf(backupKey(backup, envelope)))
+    expect(ceremony.asserts).toEqual([[backup.credentialId]])
+    expect(ceremony.assertRequests.at(-1)!.transports).toEqual(["hybrid", "internal"])
+    expect(adopted.expectedAddress).toBe(ADDR)
+  })
+
+  it("an assertion without a user handle still signs in, for a named root and a named backup", async () => {
+    const { service, ceremony } = phone({ assertHandle: false })
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    service.clear()
+    const listed = accountOf(rootKey(root), backupKey(backup, envelope))
+    ceremony.opts.assertOverride = () => root.credentialId
+    const asRoot = await service.adoptAccountPasskey(listed)
+    expect(asRoot.userHandle).toBeUndefined()
+    expect(asRoot.candidates[root.prfSlot ?? "first"]?.toString()).toBe(root.secretKey.toString())
+    ceremony.opts.assertOverride = () => backup.credentialId
+    const asBackup = await service.adoptAccountPasskey(listed)
+    expect(asBackup.userHandle).toBeUndefined()
+    expect(asBackup.candidates.first?.toString()).toBe(root.secretKey.toString())
+  })
+
+  it("a sign-in by tag steered to the phone keeps the cross-device routes with the ids named", async () => {
+    const { service, ceremony } = laptop()
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    service.clear()
+    ceremony.asserts = []
+    ceremony.opts.assertOverride = () => root.credentialId
+    const adopted = await service.adoptAccountPasskey({
+      ...accountOf(rootKey(root), backupKey(backup, envelope)),
+      phone: true,
     })
+    expect(ceremony.asserts).toEqual([[root.credentialId, backup.credentialId]])
+    expect(ceremony.assertRequests.at(-1)!.hints).toEqual(["hybrid", "security-key"])
+    expect(ceremony.assertRequests.at(-1)!.transports).toEqual([
+      "hybrid",
+      "usb",
+      "nfc",
+      "ble",
+      "smart-card",
+    ])
+    expect(adopted.candidates.first?.toString()).toBe(root.secretKey.toString())
+  })
+
+  it("a key the chain lists twice is one member of the set", async () => {
+    const { service, ceremony } = phone()
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    service.clear()
+    ceremony.opts.assertOverride = () => backup.credentialId
+    const adopted = await service.adoptAccountPasskey(
+      accountOf(rootKey(root), backupKey(backup, envelope), rootKey(root)),
+    )
+    expect(adopted.passkeys).toEqual([root.pubkey, backup.pubkey])
+  })
+
+  it("the root key answering the same list derives from its PRF, as it always did", async () => {
+    const { service, ceremony } = phone()
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    service.clear()
+    ceremony.opts.assertOverride = () => root.credentialId
+    const adopted = await service.adoptAccountPasskey(
+      accountOf(rootKey(root), backupKey(backup, envelope)),
+    )
+    expect(adopted.credentialId).toBe(root.credentialId)
+    expect(adopted.candidates[root.prfSlot ?? "first"]?.toString()).toBe(root.secretKey.toString())
+    expect(adopted.backup).toBeUndefined()
+    expect(adopted.passkeys).toEqual([root.pubkey, backup.pubkey])
+  })
+
+  it("a device-bound backup opens on its device, where a device-bound root is refused", async () => {
+    const { service, ceremony } = phone()
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    service.clear()
+    ceremony.opts.backupEligible = false
+    const keys = accountOf(rootKey(root), backupKey(backup, envelope))
+    ceremony.opts.assertOverride = () => backup.credentialId
+    const adopted = await service.adoptAccountPasskey(keys)
+    expect(adopted.candidates.first?.toString()).toBe(root.secretKey.toString())
+    expect(adopted.backupFacts).toEqual({ backupEligible: false })
+    ceremony.opts.assertOverride = () => root.credentialId
+    await expect(service.adoptAccountPasskey(keys)).rejects.toMatchObject({
+      name: "DeviceBoundPasskeyError",
+    })
+  })
+
+  it("an answer without user verification does not open the envelope: failed, observed", async () => {
+    const { service, ceremony } = phone({ userVerified: false })
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    service.clear()
+    ceremony.opts.assertOverride = () => backup.credentialId
+    const err = await service
+      .adoptAccountPasskey(accountOf(rootKey(root), backupKey(backup, envelope)))
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(PasskeyEnvelopeError)
+    expect(err).toMatchObject({
+      reason: "unverified",
+      observed: { credentialId: backup.credentialId, attachment: "platform" },
+    })
+    expect(h.noteBackupSignIn).toHaveBeenCalledWith("failed", { backupEligible: true })
+  })
+
+  it("an envelope for another account, or sealed under another passkey's PRF, does not open", async () => {
+    const { service, ceremony } = phone()
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    service.clear()
+    const elsewhere = await sealFor(
+      ceremony,
+      backup,
+      root.secretKey,
+      "first",
+      undefined,
+      `0x${"22".repeat(20)}`,
+    )
+    ceremony.opts.assertOverride = () => backup.credentialId
+    await expect(
+      service.adoptAccountPasskey(accountOf(rootKey(root), backupKey(backup, elsewhere))),
+    ).rejects.toMatchObject({ name: "PasskeyEnvelopeError", reason: "decrypt" })
+    const rootsPrf = await sealFor(ceremony, root, root.secretKey)
+    ceremony.opts.assertOverride = () => backup.credentialId
+    await expect(
+      service.adoptAccountPasskey(accountOf(rootKey(root), backupKey(backup, rootsPrf))),
+    ).rejects.toMatchObject({ name: "PasskeyEnvelopeError", reason: "decrypt" })
+    expect(h.noteBackupSignIn).toHaveBeenCalledTimes(2)
+  })
+
+  it("an entry naming the credential by hash under a key the signature does not carry is refused before the envelope opens", async () => {
+    const { service, ceremony } = phone()
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const other = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    service.clear()
+    // The chain lists the backup's credential hash beside another key.
+    const forged = { ...backupKey(backup, envelope), pubkeyHex: other.pubkey }
+    ceremony.opts.assertOverride = () => backup.credentialId
+    await expect(
+      service.adoptAccountPasskey(accountOf(rootKey(root), forged)),
+    ).rejects.toMatchObject({ name: "HintedKeyMismatchError" })
+    expect(h.noteBackupSignIn).not.toHaveBeenCalled()
+    expect(service.isUnlocked()).toBe(false)
+  })
+
+  it("a local copy whose PRF diverges from the one the envelope was sealed under does not open it", async () => {
+    const { service, ceremony } = laptop({ routeFromRequest: true, divergent: true })
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    // Sealed where the backup was added: on the phone, over the cross-device route.
+    const envelope = await sealFor(ceremony, backup, root.secretKey, "first", "cross-device")
+    service.clear()
+    ceremony.opts.assertOverride = () => backup.credentialId
+    await expect(
+      service.adoptAccountPasskey(accountOf(rootKey(root), backupKey(backup, envelope))),
+    ).rejects.toMatchObject({ name: "PasskeyEnvelopeError", reason: "decrypt" })
+  })
+
+  it("a backup made on the phone opens a laptop's sign-in by tag: both ids named, this computer admitted or the phone steered", async () => {
+    const { service, ceremony } = laptop({
+      routeFromRequest: true,
+      transports: ["hybrid", "internal"],
+    })
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    // Sealed where the backup was added: on the phone, over the cross-device route.
+    const envelope = await sealFor(ceremony, backup, root.secretKey, "first", "cross-device")
+    const keys = accountOf(rootKey(root), backupKey(backup, envelope))
+    for (const phone of [false, true]) {
+      service.clear()
+      ceremony.opts.assertOverride = () => backup.credentialId
+      const adopted = await service.adoptAccountPasskey({ ...keys, phone })
+      const request = ceremony.assertRequests.at(-1)!
+      expect(request.credentialIds).toEqual([root.credentialId, backup.credentialId])
+      expect(request.transports).toEqual(
+        phone ? ["hybrid", "usb", "nfc", "ble", "smart-card"] : undefined,
+      )
+      expect(request.hints).toEqual(phone ? ["hybrid", "security-key"] : ["client-device"])
+      expect(adopted.credentialId).toBe(backup.credentialId)
+      expect(adopted.candidates.first?.toString()).toBe(root.secretKey.toString())
+      expect(adopted.backup).toEqual({ account: ACCOUNT, envelope: hex(envelope) })
+    }
+  })
+
+  it("a backup made on the phone opens a laptop's unlock: pinned to its record, this computer admitted or the phone steered", async () => {
+    const restore = stubLocalStorage()
+    try {
+      for (const transports of [["hybrid", "internal"], ["hybrid"]]) {
+        const { service, ceremony } = laptop({ routeFromRequest: true, transports })
+        const root = await service.createPasskey("@alice")
+        const backup = await service.createPasskey("@alice")
+        const passkeys = [root.pubkey, backup.pubkey]
+        const envelope = await sealFor(ceremony, backup, root.secretKey, "first", "cross-device")
+        await service.recordRecoveryMetadata({
+          credentialId: backup.credentialId,
+          l2Address: ADDR,
+          pubkey: backup.pubkey,
+          prfSlot: "first",
+          isMskRoot: false,
+          backup: { account: ACCOUNT, envelope: hex(envelope) },
+          passkeySet: passkeys,
+          transports,
+        })
+        await service.commitSecret({
+          secretKey: root.secretKey,
+          authProvider: service.providerFor({
+            credentialId: backup.credentialId,
+            pubkeyHex: backup.pubkey,
+            passkeys,
+          }),
+        })
+        const derive = deriveFor(root, ADDR, passkeys)
+        for (const phone of [false, true]) {
+          service.clear()
+          await service.unlock(derive, { phone })
+          expect(service.isUnlocked()).toBe(true)
+          const request = ceremony.assertRequests.at(-1)!
+          expect(request.credentialIds).toEqual([backup.credentialId])
+          expect(request.transports).toEqual(phone ? ["hybrid"] : undefined)
+          expect(request.hints).toEqual(phone ? ["hybrid", "security-key"] : ["client-device"])
+        }
+      }
+    } finally {
+      restore()
+    }
+  })
+
+  it("a record strictly ahead of the chain's list wins the set; otherwise the list does", async () => {
+    const { service, ceremony } = phone()
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const later = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    const listed = accountOf(rootKey(root), backupKey(backup, envelope))
+    ceremony.opts.assertOverride = () => backup.credentialId
+    await service.recordRecoveryMetadata({
+      credentialId: backup.credentialId,
+      l2Address: ADDR,
+      pubkey: backup.pubkey,
+      isMskRoot: false,
+      backup: { account: ACCOUNT, envelope: hex(envelope) },
+      passkeySet: [root.pubkey, backup.pubkey, later.pubkey],
+    })
+    const ahead = await service.adoptAccountPasskey(listed)
+    expect(ahead.passkeys).toEqual([root.pubkey, backup.pubkey, later.pubkey])
+    expect(ahead.staleSet).toBeUndefined()
+    // A record of the same size, or one missing a listed key, is not ahead of the chain.
+    await service.recordRecoveryMetadata({
+      credentialId: backup.credentialId,
+      l2Address: ADDR,
+      pubkey: backup.pubkey,
+      isMskRoot: false,
+      backup: { account: ACCOUNT, envelope: hex(envelope) },
+      passkeySet: [backup.pubkey, later.pubkey],
+    })
+    ceremony.opts.assertOverride = () => backup.credentialId
+    expect((await service.adoptAccountPasskey(listed)).passkeys).toEqual([
+      root.pubkey,
+      backup.pubkey,
+    ])
+  })
+
+  it("a record the chain's list is strictly ahead of is stale: it keeps the anchor, the list is the set", async () => {
+    const { service, ceremony } = phone()
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const later = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    const listed = accountOf(rootKey(root), backupKey(backup, envelope))
+    await service.recordRecoveryMetadata({
+      credentialId: root.credentialId,
+      l2Address: ADDR,
+      pubkey: root.pubkey,
+      isMskRoot: true,
+    })
+    ceremony.opts.assertOverride = () => root.credentialId
+    const stale = await service.adoptAccountPasskey(listed)
+    expect(stale.passkeys).toEqual([root.pubkey, backup.pubkey])
+    expect(stale.staleSet).toEqual([root.pubkey])
+    expect(stale.expectedAddress).toBe(ADDR)
+    // A record differing in any other way is neither ahead nor behind: the list is the set, anchored
+    // on the record.
+    await service.recordRecoveryMetadata({
+      credentialId: root.credentialId,
+      l2Address: ADDR,
+      pubkey: root.pubkey,
+      isMskRoot: true,
+      passkeySet: [root.pubkey, later.pubkey],
+    })
+    ceremony.opts.assertOverride = () => root.credentialId
+    const differing = await service.adoptAccountPasskey(listed)
+    expect(differing.passkeys).toEqual([root.pubkey, backup.pubkey])
+    expect(differing.staleSet).toBeUndefined()
+    expect(differing.expectedAddress).toBe(ADDR)
+  })
+
+  it("a backup record the chain's list is ahead of is stale too: the envelope opens, the list is the set", async () => {
+    const { service, ceremony } = phone()
+    const root = await service.createPasskey("@alice")
+    const backup = await service.createPasskey("@alice")
+    const later = await service.createPasskey("@alice")
+    const envelope = await sealFor(ceremony, backup, root.secretKey)
+    const laterEnvelope = await sealFor(ceremony, later, root.secretKey)
+    await service.recordRecoveryMetadata({
+      credentialId: backup.credentialId,
+      l2Address: ADDR,
+      pubkey: backup.pubkey,
+      isMskRoot: false,
+      backup: { account: ACCOUNT, envelope: hex(envelope) },
+      passkeySet: [root.pubkey, backup.pubkey],
+    })
+    ceremony.opts.assertOverride = () => backup.credentialId
+    const stale = await service.adoptAccountPasskey(
+      accountOf(rootKey(root), backupKey(backup, envelope), backupKey(later, laterEnvelope)),
+    )
+    expect(stale.candidates.first?.toString()).toBe(root.secretKey.toString())
+    expect(stale.passkeys).toEqual([root.pubkey, backup.pubkey, later.pubkey])
+    expect(stale.staleSet).toEqual([root.pubkey, backup.pubkey])
+    expect(stale.expectedAddress).toBe(ADDR)
+    expect(stale.backup).toEqual({ account: ACCOUNT, envelope: hex(envelope) })
+  })
+
+  it("an unlock on a backup record: a device-bound passkey still opens, a wrong PRF is the failed event, a root record reports nothing", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const { service, ceremony } = phone()
+      const root = await service.createPasskey("@alice")
+      const backup = await service.createPasskey("@alice")
+      const passkeys = [root.pubkey, backup.pubkey]
+      const derive = deriveFor(root, ADDR, passkeys)
+      const recordBackup = (envelope: Uint8Array) =>
+        service.recordRecoveryMetadata({
+          credentialId: backup.credentialId,
+          l2Address: ADDR,
+          pubkey: backup.pubkey,
+          prfSlot: "first",
+          isMskRoot: false,
+          backup: { account: ACCOUNT, envelope: hex(envelope) },
+          passkeySet: passkeys,
+        })
+      const session = async () => {
+        await service.commitSecret({
+          secretKey: root.secretKey,
+          authProvider: service.providerFor({
+            credentialId: backup.credentialId,
+            pubkeyHex: backup.pubkey,
+            passkeys,
+          }),
+        })
+        service.clear()
+        h.noteBackupSignIn.mockClear()
+      }
+
+      await recordBackup(await sealFor(ceremony, backup, root.secretKey))
+      await session()
+      ceremony.opts.backupEligible = false
+      await service.unlock(derive, {})
+      expect(service.isUnlocked()).toBe(true)
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("succeeded", { backupEligible: false })
+      ceremony.opts.backupEligible = true
+
+      // Sealed under the root's PRF: the backup's assertion cannot open it.
+      await recordBackup(await sealFor(ceremony, root, root.secretKey))
+      await session()
+      await expect(service.unlock(derive, {})).rejects.toMatchObject({
+        name: "PasskeyEnvelopeError",
+        reason: "decrypt",
+      })
+      expect(service.isUnlocked()).toBe(false)
+      expect(h.noteBackupSignIn).toHaveBeenCalledTimes(1)
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("failed", { backupEligible: true })
+
+      await service.recordRecoveryMetadata({
+        credentialId: root.credentialId,
+        l2Address: ADDR,
+        pubkey: root.pubkey,
+        prfSlot: root.prfSlot,
+        isMskRoot: true,
+      })
+      await service.commitSecret({ secretKey: root.secretKey, authProvider: root.authProvider })
+      service.clear()
+      h.noteBackupSignIn.mockClear()
+      await service.unlock(deriveFor(root, ADDR), {})
+      expect(service.isUnlocked()).toBe(true)
+      expect(h.noteBackupSignIn).not.toHaveBeenCalled()
+    } finally {
+      restore()
+    }
+  })
+
+  it("an unlock on a backup record ends in one outcome: a cancel after the envelope opened, a record the key does not reproduce", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const { service, ceremony } = phone()
+      const root = await service.createPasskey("@alice")
+      const backup = await service.createPasskey("@alice")
+      const passkeys = [root.pubkey, backup.pubkey]
+      const envelope = await sealFor(ceremony, backup, root.secretKey)
+      await service.recordRecoveryMetadata({
+        credentialId: backup.credentialId,
+        l2Address: ADDR,
+        pubkey: backup.pubkey,
+        prfSlot: "first",
+        isMskRoot: false,
+        backup: { account: ACCOUNT, envelope: hex(envelope) },
+        passkeySet: passkeys,
+      })
+      await service.commitSecret({
+        secretKey: root.secretKey,
+        authProvider: service.providerFor({
+          credentialId: backup.credentialId,
+          pubkeyHex: backup.pubkey,
+          passkeys,
+        }),
+      })
+      service.clear()
+      h.noteBackupSignIn.mockClear()
+      const cancel = new AbortController()
+      const derive = deriveFor(root, ADDR, passkeys)
+      const cancelling = async (msk: Fr, keys: readonly string[]) => {
+        cancel.abort()
+        return derive(msk, keys)
+      }
+      await expect(service.unlock(cancelling, { signal: cancel.signal })).rejects.toMatchObject({
+        name: "AbortError",
+      })
+      expect(h.noteBackupSignIn).toHaveBeenCalledTimes(1)
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("cancelled", { backupEligible: true })
+      expect(service.isUnlocked()).toBe(false)
+
+      h.noteBackupSignIn.mockClear()
+      await expect(
+        service.unlock(deriveFor(root, "0xelsewhere", passkeys), {}),
+      ).rejects.toBeInstanceOf(StoredAddressMismatchError)
+      expect(h.noteBackupSignIn).toHaveBeenCalledTimes(1)
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("failed", { backupEligible: true })
+      expect(service.isUnlocked()).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it("an unlock on a backup record cancelled inside the commit is the cancelled outcome", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const { service, ceremony } = phone()
+      const root = await service.createPasskey("@alice")
+      const backup = await service.createPasskey("@alice")
+      const passkeys = [root.pubkey, backup.pubkey]
+      const envelope = await sealFor(ceremony, backup, root.secretKey)
+      await service.recordRecoveryMetadata({
+        credentialId: backup.credentialId,
+        l2Address: ADDR,
+        pubkey: backup.pubkey,
+        prfSlot: "first",
+        isMskRoot: false,
+        backup: { account: ACCOUNT, envelope: hex(envelope) },
+        passkeySet: passkeys,
+      })
+      await service.commitSecret({
+        secretKey: root.secretKey,
+        authProvider: service.providerFor({
+          credentialId: backup.credentialId,
+          pubkeyHex: backup.pubkey,
+          passkeys,
+        }),
+      })
+      service.clear()
+      h.noteBackupSignIn.mockClear()
+      const cancel = new AbortController()
+      const inner = service as unknown as {
+        commit: (input: unknown, owns?: () => boolean) => Promise<number | false>
+      }
+      const commit = inner.commit.bind(service)
+      vi.spyOn(inner, "commit").mockImplementationOnce(async (input, owns) => {
+        cancel.abort()
+        return commit(input, owns)
+      })
+      await expect(
+        service.unlock(deriveFor(root, ADDR, passkeys), { signal: cancel.signal }),
+      ).rejects.toMatchObject({ name: "AbortError" })
+      expect(h.noteBackupSignIn).toHaveBeenCalledTimes(1)
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("cancelled", { backupEligible: true })
+      expect(service.isUnlocked()).toBe(false)
+      expect(getActiveCredentialId()).toBe(backup.credentialId)
+    } finally {
+      restore()
+    }
+  })
+
+  it("an unlock on a backup record opens the envelope under the record's set and reports the sign-in", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const { service, ceremony } = phone({ aaguid: GPM_AAGUID })
+      const root = await service.createPasskey("@alice")
+      const backup = await service.createPasskey("@alice")
+      const envelope = await sealFor(ceremony, backup, root.secretKey)
+      const passkeys = [root.pubkey, backup.pubkey]
+      await service.recordRecoveryMetadata({
+        credentialId: backup.credentialId,
+        l2Address: ADDR,
+        pubkey: backup.pubkey,
+        prfSlot: "first",
+        prfAaguid: GPM_AAGUID,
+        isMskRoot: false,
+        backup: { account: ACCOUNT, envelope: hex(envelope) },
+        passkeySet: passkeys,
+      })
+      await service.commitSecret({
+        secretKey: root.secretKey,
+        authProvider: service.providerFor({
+          credentialId: backup.credentialId,
+          pubkeyHex: backup.pubkey,
+          passkeys,
+        }),
+      })
+      service.clear()
+      ceremony.asserts = []
+      const derive = vi.fn(deriveFor(root, ADDR, passkeys))
+      await service.unlock(derive, {})
+      expect(service.isUnlocked()).toBe(true)
+      expect(ceremony.asserts).toEqual([[backup.credentialId]])
+      expect(derive).toHaveBeenCalledWith(root.secretKey, passkeys)
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("succeeded", {
+        backupEligible: true,
+        aaguid: GPM_AAGUID,
+      })
+
+      service.clear()
+      h.noteBackupSignIn.mockClear()
+      ceremony.opts.assertOverride = () => {
+        throw new DOMException("Dismissed", "NotAllowedError")
+      }
+      await expect(service.unlock(derive, {})).rejects.toBeDefined()
+      expect(h.noteBackupSignIn).toHaveBeenCalledWith("cancelled", { aaguid: GPM_AAGUID })
+    } finally {
+      restore()
+    }
+  })
+
+  it("a sheet held to one credential refuses another's answer", async () => {
+    const { service, ceremony } = phone()
+    const alice = await service.createPasskey("@alice")
+    const bob = await service.createPasskey("@bob")
+    await record(service, alice, ADDR)
+    service.clear()
+    ceremony.opts.assertOverride = () => bob.credentialId
+    await expect(service.recoverPasskey({ credentialId: alice.credentialId })).rejects.toThrow(
+      UNASKED_PASSKEY_MESSAGE,
+    )
+    expect(service.isUnlocked()).toBe(false)
   })
 })
 
@@ -2458,7 +3205,7 @@ describe("WebAlphaAuthService cached key restore", () => {
   const ADDR = `0x${"aa".repeat(32)}`
 
   /** Pause a restore at address derivation so a commit or sign-out can land first. */
-  function hangDerive(answer: (msk: Fr, pubkeyHex: string) => string = () => ADDR) {
+  function hangDerive(answer: (msk: Fr, passkeys: readonly string[]) => string = () => ADDR) {
     let release!: () => void
     let started!: () => void
     const ready = new Promise<void>((resolve) => {
@@ -2466,9 +3213,9 @@ describe("WebAlphaAuthService cached key restore", () => {
     })
     return {
       ready,
-      derive: (msk: Fr, pubkeyHex: string) =>
+      derive: (msk: Fr, passkeys: readonly string[]) =>
         new Promise<string>((resolve) => {
-          release = () => resolve(answer(msk, pubkeyHex))
+          release = () => resolve(answer(msk, passkeys))
           started()
         }),
       release: () => release(),
@@ -2496,7 +3243,7 @@ describe("WebAlphaAuthService cached key restore", () => {
     }
     const inject = (
       over: {
-        derive?: (msk: Fr, pubkeyHex: string) => Promise<string>
+        derive?: (msk: Fr, passkeys: readonly string[]) => Promise<string>
         read?: () => Promise<typeof snapshot | null | { kind: "other" }>
       } = {},
     ) => {
@@ -2535,8 +3282,31 @@ describe("WebAlphaAuthService cached key restore", () => {
       const [x, y] = await provider!.getPubkeys()
       expect(Buffer.concat([x, y]).toString("hex")).toBe(created.pubkey)
       expect(ceremonies()).toBe(before)
-      // The cached key is proved under the record's signing key.
-      expect(derive).toHaveBeenCalledWith(created.secretKey, created.pubkey)
+      // The cached key is proved under the record's key set: the signing key alone when none was recorded.
+      expect(derive).toHaveBeenCalledWith(created.secretKey, [created.pubkey])
+    } finally {
+      restore()
+    }
+  })
+
+  it("a signer handed out before the key could be proved stays the session's signer", async () => {
+    const { restore, created, fresh, inject, snapshot } = await committed()
+    try {
+      // The account reader fails once (a database still opening): the first read signs with the
+      // record's key and leaves the cache for the next attempt, which proves it.
+      let reads = 0
+      inject({
+        read: async () => {
+          if (reads++ === 0) throw new Error("opening")
+          return snapshot
+        },
+      })
+      const early = await fresh.getAuthProvider()
+      expect(early).toBeDefined()
+      expect(fresh.isUnlocked()).toBe(false)
+      expect((await fresh.getSecretKey())?.toString()).toBe(created.secretKey.toString())
+      expect((await fresh.sessionKeys())!.authProvider).toBe(early)
+      expect(await fresh.getAuthProvider()).toBe(early)
     } finally {
       restore()
     }
@@ -2546,7 +3316,7 @@ describe("WebAlphaAuthService cached key restore", () => {
     const { restore, fresh, inject } = await committed()
     try {
       inject({
-        derive: async (_msk, pubkeyHex) => (pubkeyHex === "ff".repeat(64) ? ADDR : "0xother"),
+        derive: async (_msk, passkeys) => (passkeys.includes("ff".repeat(64)) ? ADDR : "0xother"),
       })
       expect(await fresh.getSecretKey()).toBeUndefined()
       expect(walletStorage.getItem("webwallet.msk")).toBeNull()
@@ -2568,13 +3338,13 @@ describe("WebAlphaAuthService cached key restore", () => {
       const newer = await other.createPasskey("@bob")
       await record(other, newer, `0x${"bb".repeat(32)}`)
       // Before the wallet exists a recorded root is all the service has to sign with; the proved
-      // cache replaces it.
+      // cache keeps it.
       const early = await fresh.getAuthProvider()
       expect(early).toBeDefined()
       expect(fresh.isUnlocked()).toBe(false)
       inject()
       const provider = await fresh.getAuthProvider()
-      expect(provider).not.toBe(early)
+      expect(provider).toBe(early)
       const [x, y] = await provider!.getPubkeys()
       expect(Buffer.concat([x, y]).toString("hex")).toBe(created.pubkey)
       expect(created.pubkey).not.toBe(newer.pubkey)
@@ -2750,6 +3520,7 @@ describe("WebAlphaAuthService cached key restore", () => {
         authProvider: fresh.providerFor({
           credentialId: newer.credentialId,
           pubkeyHex: newer.pubkey,
+          passkeys: [newer.pubkey],
         }),
       })
       hung.release()
@@ -2811,6 +3582,7 @@ describe("WebAlphaAuthService cached key restore", () => {
         authProvider: fresh.providerFor({
           credentialId: created.credentialId,
           pubkeyHex: created.pubkey,
+          passkeys: [created.pubkey],
         }),
       })
       fresh.clear()
@@ -2966,6 +3738,501 @@ describe("WebAlphaAuthService cached key restore", () => {
     } finally {
       restore()
     }
+  })
+})
+
+describe("WebAlphaAuthService and the account's key set", () => {
+  type Created = Awaited<ReturnType<WebAlphaAuthService["createPasskey"]>>
+  const ADDR = `0x${"aa".repeat(32)}`
+  const OTHER = "cd".repeat(64)
+  const BACKUP = { account: `0x${"11".repeat(20)}`, envelope: `01${"00".repeat(61)}` }
+
+  const pubkeyOf = async (provider: { getPubkeys: () => Promise<[Uint8Array, Uint8Array]> }) => {
+    const [x, y] = await provider.getPubkeys()
+    return Buffer.concat([x, y]).toString("hex")
+  }
+
+  /** `created`'s record on `service`, with the fields a set-aware caller writes. */
+  const recordWith = (
+    service: WebAlphaAuthService,
+    created: Created,
+    extra: Partial<Parameters<WebAlphaAuthService["recordRecoveryMetadata"]>[0]> = {},
+  ) =>
+    service.recordRecoveryMetadata({
+      credentialId: created.credentialId,
+      l2Address: ADDR,
+      pubkey: created.pubkey,
+      prfSlot: created.prfSlot,
+      isMskRoot: true,
+      ...extra,
+    })
+
+  /** A second instance over the same storage, with the wallet's deriver and account reader injected. */
+  const restorer = (
+    base: { ceremony: FakePasskeyCeremony; storage: MemoryStorage },
+    created: Created,
+    derive: (msk: Fr, passkeys: readonly string[]) => Promise<string>,
+  ) => {
+    const fresh = freshOver(base.ceremony, base.storage)
+    fresh.setAddressDeriver(derive)
+    fresh.setAccountReader(async () => ({
+      kind: "webauthn",
+      credentialId: created.credentialId,
+      pubkey: created.pubkey,
+      address: ADDR,
+    }))
+    return fresh
+  }
+
+  it("a session opened under a two-key set is recorded with it, and its cache proves under it", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const base = laptop()
+      const created = await base.service.createPasskey("@alice")
+      const passkeys = [created.pubkey, OTHER]
+      const authProvider = base.service.providerFor({
+        credentialId: created.credentialId,
+        pubkeyHex: created.pubkey,
+        passkeys,
+      })
+      await recordWith(base.service, created, { passkeySet: passkeys })
+      await base.service.commitSecret({ secretKey: created.secretKey, authProvider })
+      const derive = vi.fn(deriveFor(created, ADDR, passkeys))
+      const fresh = restorer(base, created, derive)
+      expect((await fresh.getSecretKey())?.toString()).toBe(created.secretKey.toString())
+      expect(derive).toHaveBeenCalledWith(created.secretKey, passkeys)
+      expect(await pubkeyOf((await fresh.getAuthProvider())!)).toBe(created.pubkey)
+      // The key alone derives another address: the record's set is what the cache is proved under.
+      const alone = restorer(base, created, deriveFor(created, ADDR))
+      expect(await alone.getSecretKey()).toBeUndefined()
+      expect(walletStorage.getItem("webwallet.msk")).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  it("a backup record restores its cache and signs with the backup key; the held result names the envelope", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const base = laptop()
+      const created = await base.service.createPasskey("@alice")
+      const passkeys = [OTHER, created.pubkey]
+      await recordWith(base.service, created, {
+        isMskRoot: false,
+        backup: BACKUP,
+        passkeySet: [`0x${OTHER.toUpperCase()}`, created.pubkey],
+      })
+      await base.service.commitSecret({
+        secretKey: created.secretKey,
+        authProvider: base.service.providerFor({
+          credentialId: created.credentialId,
+          pubkeyHex: created.pubkey,
+          passkeys,
+        }),
+      })
+      const derive = vi.fn(deriveFor(created, ADDR, passkeys))
+      const fresh = restorer(base, created, derive)
+      expect((await fresh.getSecretKey())?.toString()).toBe(created.secretKey.toString())
+      // The set reaches the wallet in the candidate form, whatever form the record carried.
+      expect(derive).toHaveBeenCalledWith(created.secretKey, passkeys)
+      const held = await fresh.recoverFromCache()
+      expect(held).toMatchObject({
+        pubkey: created.pubkey,
+        passkeys,
+        backup: BACKUP,
+        expectedAddress: ADDR,
+      })
+      expect(await pubkeyOf(held!.authProvider)).toBe(created.pubkey)
+    } finally {
+      restore()
+    }
+  })
+
+  it("a record that is neither root nor backup never restores the cache", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const base = laptop()
+      const created = await base.service.createPasskey("@alice")
+      await recordWith(base.service, created, { isMskRoot: false })
+      await base.service.commitSecret({
+        secretKey: created.secretKey,
+        authProvider: created.authProvider,
+      })
+      const fresh = restorer(base, created, deriveFor(created, ADDR))
+      expect(await fresh.getSecretKey()).toBeUndefined()
+      expect(walletStorage.getItem("webwallet.msk")).toBeNull()
+    } finally {
+      restore()
+    }
+  })
+
+  it("a signer outside its account's set is refused before it can sign; 0x and case do not matter", async () => {
+    const { service } = laptop()
+    const created = await service.createPasskey("@alice")
+    const hint = { credentialId: created.credentialId, pubkeyHex: created.pubkey }
+    expect(() => service.providerFor({ ...hint, passkeys: [OTHER] })).toThrow(/passkey set/)
+    const provider = service.providerFor({
+      ...hint,
+      passkeys: [OTHER, `0x${created.pubkey.toUpperCase()}`],
+    })
+    expect(await pubkeyOf(provider)).toBe(created.pubkey)
+  })
+
+  it("the session signs with its own record's key, not the newest record's", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const { service, ceremony, storage } = laptop()
+      const alice = await service.createPasskey("@alice")
+      await recordWith(service, alice)
+      await service.commitSecret({ secretKey: alice.secretKey, authProvider: alice.authProvider })
+      // The account's backup passkey, recorded later on this browser.
+      const bob = await freshOver(ceremony).createPasskey("@alice")
+      await new Promise((resolve) => setTimeout(resolve, 2))
+      await recordWith(service, bob, {
+        isMskRoot: false,
+        backup: BACKUP,
+        passkeySet: [alice.pubkey, bob.pubkey],
+      })
+      const fresh = freshOver(ceremony, storage)
+      expect(await pubkeyOf((await fresh.getAuthProvider())!)).toBe(alice.pubkey)
+      // With no session open, the newest opening record stands in.
+      clearActiveStorage()
+      await walletStorage.flush()
+      const idle = freshOver(ceremony, storage)
+      expect(await pubkeyOf((await idle.getAuthProvider())!)).toBe(bob.pubkey)
+    } finally {
+      restore()
+    }
+  })
+
+  /** The next identity-map read waits until `release` is called, then reads for real. */
+  const holdNextRead = () => {
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    const read = WebPasskeyIdentityMap.prototype.get
+    const spy = vi
+      .spyOn(WebPasskeyIdentityMap.prototype, "get")
+      .mockImplementationOnce(async function (this: WebPasskeyIdentityMap, id: string) {
+        await held
+        return read.call(this, id)
+      })
+    return { release, restore: () => spy.mockRestore() }
+  }
+
+  it("a record read the backup's commit overtakes does not put the root's signer back", async () => {
+    const restore = stubLocalStorage()
+    let read: ReturnType<typeof holdNextRead> | undefined
+    try {
+      const { service, ceremony, storage } = laptop()
+      const alice = await service.createPasskey("@alice")
+      await recordWith(service, alice)
+      await service.commitSecret({ secretKey: alice.secretKey, authProvider: alice.authProvider })
+      const bob = await freshOver(ceremony).createPasskey("@alice")
+      const passkeys = [alice.pubkey, bob.pubkey]
+      await recordWith(service, bob, { isMskRoot: false, backup: BACKUP, passkeySet: passkeys })
+      // A locked instance reads the root session's record for its signer; the backup commits meanwhile.
+      const fresh = freshOver(ceremony, storage)
+      read = holdNextRead()
+      const reading = fresh.getAuthProvider()
+      await fresh.commitSecret({
+        secretKey: alice.secretKey,
+        authProvider: fresh.providerFor({
+          credentialId: bob.credentialId,
+          pubkeyHex: bob.pubkey,
+          passkeys,
+        }),
+      })
+      read.release()
+      expect(await pubkeyOf((await reading)!)).toBe(bob.pubkey)
+      expect(await pubkeyOf((await fresh.getAuthProvider())!)).toBe(bob.pubkey)
+    } finally {
+      read?.restore()
+      restore()
+    }
+  })
+
+  it("the cache source read across the backup's commit names the backup, not the root it started under", async () => {
+    const restore = stubLocalStorage()
+    let read: ReturnType<typeof holdNextRead> | undefined
+    try {
+      const { service, ceremony } = laptop()
+      const alice = await service.createPasskey("@alice")
+      await recordWith(service, alice)
+      await service.commitSecret({ secretKey: alice.secretKey, authProvider: alice.authProvider })
+      const bob = await freshOver(ceremony).createPasskey("@alice")
+      const passkeys = [alice.pubkey, bob.pubkey]
+      await recordWith(service, bob, { isMskRoot: false, backup: BACKUP, passkeySet: passkeys })
+      read = holdNextRead()
+      const reading = service.recoverFromCache()
+      await service.commitSecret({
+        secretKey: alice.secretKey,
+        authProvider: service.providerFor({
+          credentialId: bob.credentialId,
+          pubkeyHex: bob.pubkey,
+          passkeys,
+        }),
+      })
+      read.release()
+      const held = await reading
+      expect(held).toMatchObject({
+        credentialId: bob.credentialId,
+        pubkey: bob.pubkey,
+        passkeys,
+        backup: BACKUP,
+      })
+      expect(await pubkeyOf(held!.authProvider)).toBe(bob.pubkey)
+    } finally {
+      read?.restore()
+      restore()
+    }
+  })
+
+  /** Holds the next session write between its pointers landing and its commit's return. */
+  const holdNextPublication = () => {
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    let reached!: () => void
+    const published = new Promise<void>((resolve) => (reached = resolve))
+    const batch = walletStorage.batch.bind(walletStorage)
+    const spy = vi.spyOn(walletStorage, "batch").mockImplementationOnce((write) =>
+      batch(write).then(async () => {
+        reached()
+        await held
+      }),
+    )
+    return { published, release, restore: () => spy.mockRestore() }
+  }
+
+  /** Holds the next session write before its pointers land, so the commit is saving but not saved. */
+  const holdNextWrite = () => {
+    let release!: () => void
+    const held = new Promise<void>((resolve) => (release = resolve))
+    let reach!: () => void
+    const reached = new Promise<void>((resolve) => (reach = resolve))
+    const batch = walletStorage.batch.bind(walletStorage)
+    const spy = vi.spyOn(walletStorage, "batch").mockImplementationOnce(async (write) => {
+      reach()
+      await held
+      return batch(write)
+    })
+    return { reached, release, restore: () => spy.mockRestore() }
+  }
+
+  /** A root session, and the account's backup recorded on the same browser. */
+  const rootWithBackup = async () => {
+    const { service, ceremony } = laptop()
+    const alice = await service.createPasskey("@alice")
+    await recordWith(service, alice)
+    await service.commitSecret({ secretKey: alice.secretKey, authProvider: alice.authProvider })
+    const bob = await freshOver(ceremony).createPasskey("@alice")
+    const passkeys = [alice.pubkey, bob.pubkey]
+    await recordWith(service, bob, { isMskRoot: false, backup: BACKUP, passkeySet: passkeys })
+    const backupProvider = () =>
+      service.providerFor({ credentialId: bob.credentialId, pubkeyHex: bob.pubkey, passkeys })
+    return { service, alice, bob, passkeys, backupProvider }
+  }
+
+  it("a consent prompt asked for while the backup's commit is saving goes to no one", async () => {
+    const restore = stubLocalStorage()
+    let hold: ReturnType<typeof holdNextWrite> | undefined
+    try {
+      const { service, alice, backupProvider } = await rootWithBackup()
+      const provider = backupProvider()
+      const sign = vi.spyOn(provider as unknown as { signChallenge(): unknown }, "signChallenge")
+      hold = holdNextWrite()
+      const committing = service.commitSecret({
+        secretKey: alice.secretKey,
+        authProvider: provider,
+      })
+      await hold.reached
+      expect(getActiveCredentialId()).toBe(alice.credentialId)
+      // The root's pointers still stand, and the signer read waits for the backup's commit.
+      const asked = service.signMetadataChallenge(`0x${"42".repeat(32)}`)
+      hold.release()
+      await committing
+      await expect(asked).rejects.toMatchObject({ name: "SessionChangedError" })
+      expect(sign).not.toHaveBeenCalled()
+    } finally {
+      hold?.restore()
+      restore()
+    }
+  })
+
+  it("a signer asked for while the backup's pointers are saved, before its commit returns, is the backup's", async () => {
+    const restore = stubLocalStorage()
+    let hold: ReturnType<typeof holdNextPublication> | undefined
+    try {
+      const { service, alice, bob, backupProvider } = await rootWithBackup()
+      hold = holdNextPublication()
+      const committing = service.commitSecret({
+        secretKey: alice.secretKey,
+        authProvider: backupProvider(),
+      })
+      await hold.published
+      expect(getActiveCredentialId()).toBe(bob.credentialId)
+      // The root's signer is the one in memory; the answer waits for the commit's turn to end.
+      const asked = service.getAuthProvider()
+      hold.release()
+      await committing
+      expect(await pubkeyOf((await asked)!)).toBe(bob.pubkey)
+    } finally {
+      hold?.restore()
+      restore()
+    }
+  })
+
+  it("the cache source read while the backup's pointers are saved, before its commit returns, is the backup's", async () => {
+    const restore = stubLocalStorage()
+    let hold: ReturnType<typeof holdNextPublication> | undefined
+    try {
+      const { service, alice, bob, passkeys, backupProvider } = await rootWithBackup()
+      hold = holdNextPublication()
+      const committing = service.commitSecret({
+        secretKey: alice.secretKey,
+        authProvider: backupProvider(),
+      })
+      await hold.published
+      const cached = service.recoverFromCache()
+      // The record lands while the commit's turn is still open.
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      hold.release()
+      await committing
+      const held = await cached
+      expect(held).toMatchObject({ credentialId: bob.credentialId, pubkey: bob.pubkey, passkeys })
+      expect(await pubkeyOf(held!.authProvider)).toBe(bob.pubkey)
+    } finally {
+      hold?.restore()
+      restore()
+    }
+  })
+
+  /** Alice's root session, and Bob's own account with its own key, ready to commit over it. */
+  const twoAccounts = async () => {
+    const { service, ceremony } = laptop()
+    const alice = await service.createPasskey("@alice")
+    await recordWith(service, alice)
+    await service.commitSecret({ secretKey: alice.secretKey, authProvider: alice.authProvider })
+    const bob = await freshOver(ceremony).createPasskey("@bob")
+    await recordWith(service, bob)
+    const bobProvider = () =>
+      service.providerFor({
+        credentialId: bob.credentialId,
+        pubkeyHex: bob.pubkey,
+        passkeys: [bob.pubkey],
+      })
+    return { service, alice, bob, bobProvider }
+  }
+
+  it("the pair read while another account's pointers are saved is the newcomer's key with the newcomer's signer", async () => {
+    const restore = stubLocalStorage()
+    let hold: ReturnType<typeof holdNextPublication> | undefined
+    try {
+      const { service, bob, bobProvider } = await twoAccounts()
+      hold = holdNextPublication()
+      const committing = service.commitSecret({
+        secretKey: bob.secretKey,
+        authProvider: bobProvider(),
+      })
+      await hold.published
+      const asked = service.sessionKeys()
+      hold.release()
+      await committing
+      const keys = await asked
+      expect(keys!.secretKey.toString()).toBe(bob.secretKey.toString())
+      expect(await pubkeyOf(keys!.authProvider)).toBe(bob.pubkey)
+    } finally {
+      hold?.restore()
+      restore()
+    }
+  })
+
+  it("a session is held until the pointers of another are saved, and never again after", async () => {
+    const restore = stubLocalStorage()
+    let hold: ReturnType<typeof holdNextPublication> | undefined
+    try {
+      const { service, alice, bob, bobProvider } = await twoAccounts()
+      const generation = await service.commitSecret(
+        { secretKey: alice.secretKey, authProvider: alice.authProvider },
+        () => true,
+      )
+      if (generation === false) throw new Error("not committed")
+      expect(service.sessionHeld(generation)).toBe(true)
+      hold = holdNextPublication()
+      const committing = service.commitSecret({
+        secretKey: bob.secretKey,
+        authProvider: bobProvider(),
+      })
+      await hold.published
+      expect(service.sessionHeld(generation)).toBe(false)
+      hold.release()
+      await committing
+      expect(service.sessionHeld(generation)).toBe(false)
+    } finally {
+      hold?.release()
+      hold?.restore()
+      restore()
+    }
+  })
+
+  it("an unlock proves the key under the record's set", async () => {
+    const restore = stubLocalStorage()
+    try {
+      const { service } = laptop()
+      const created = await service.createPasskey("@alice")
+      const passkeys = [OTHER, created.pubkey]
+      await recordWith(service, created, { passkeySet: passkeys })
+      await service.commitSecret({
+        secretKey: created.secretKey,
+        authProvider: created.authProvider,
+      })
+      service.clear()
+      await expect(service.unlock(deriveFor(created, ADDR), {})).rejects.toBeInstanceOf(
+        StoredAddressMismatchError,
+      )
+      service.clear()
+      const derive = vi.fn(deriveFor(created, ADDR, passkeys))
+      await service.unlock(derive, {})
+      expect(service.isUnlocked()).toBe(true)
+      expect(derive).toHaveBeenCalledWith(created.secretKey, passkeys)
+    } finally {
+      restore()
+    }
+  })
+
+  it("a recovery carries the record's set and envelope; a fresh browser's settle takes the set it is given", async () => {
+    const { service, ceremony } = laptop()
+    const created = await service.createPasskey("@alice")
+    const passkeys = [OTHER, created.pubkey]
+    const sealed = await sealFor(ceremony, created, created.secretKey)
+    const backup = { account: ACCOUNT, envelope: hex(sealed) }
+    await recordWith(service, created, {
+      isMskRoot: false,
+      backup,
+      passkeySet: [`0x${OTHER.toUpperCase()}`, created.pubkey],
+    })
+    service.clear()
+    const recovered = await service.recoverPasskey({ credentialId: created.credentialId })
+    expect(recovered.passkeys).toEqual(passkeys)
+    expect(recovered.backup).toEqual(backup)
+    expect(recovered.candidates.first?.toString()).toBe(created.secretKey.toString())
+    const hint = accountOf(rootKey(created))
+    const hinted = await service.adoptAccountPasskey(hint)
+    expect(hinted.passkeys).toEqual(passkeys)
+    expect(hinted.backup).toEqual(backup)
+
+    const fresh = freshOver(ceremony)
+    const begun = await fresh.beginRecovery({})
+    if (!isUnsettled(begun)) throw new Error("expected an unsettled recovery")
+    const withSet = await begun.settle(created.pubkey, undefined, [
+      `0x${OTHER.toUpperCase()}`,
+      created.pubkey,
+    ])
+    expect(withSet.passkeys).toEqual(passkeys)
+    expect(withSet.backup).toBeUndefined()
+    await expect(begun.settle(created.pubkey, undefined, [OTHER])).rejects.toThrow(/passkey set/)
+    expect((await begun.settle(created.pubkey)).passkeys).toEqual([created.pubkey])
+    expect((await begun.settle()).passkeys).toEqual([created.pubkey])
+    expect((await fresh.adoptAccountPasskey(hint)).passkeys).toEqual([created.pubkey])
   })
 })
 
@@ -3225,12 +4492,9 @@ describe("the wallet's own checks around the shared ceremony sequence", () => {
       ).rejects.toMatchObject({
         name: "RotatedCredentialError",
       })
-      await expect(
-        service.adoptKnownPasskey({
-          credentialId: created.credentialId,
-          pubkeyHex: created.pubkey,
-        }),
-      ).rejects.toMatchObject({ name: "RotatedCredentialError" })
+      await expect(service.adoptAccountPasskey(accountOf(rootKey(created)))).rejects.toMatchObject({
+        name: "RotatedCredentialError",
+      })
     }
   })
 })
@@ -3399,9 +4663,7 @@ describe("WebAlphaAuthService early-refusal observation", () => {
       isMskRoot: true,
     })
     service.clear()
-    const err = await service
-      .adoptKnownPasskey({ credentialId: created.credentialId, pubkeyHex: created.pubkey })
-      .catch((e) => e)
+    const err = await service.adoptAccountPasskey(accountOf(rootKey(created))).catch((e) => e)
     expect(err).toBeInstanceOf(NoPrfError)
     expect((err as { observed?: unknown }).observed).toEqual({
       credentialId: created.credentialId,
@@ -3693,11 +4955,7 @@ describe("WebAlphaAuthService steered to the phone", () => {
       isMskRoot: true,
       transports: ["internal", "hybrid"],
     })
-    await service.adoptKnownPasskey({
-      credentialId: created.credentialId,
-      pubkeyHex: created.pubkey,
-      phone: true,
-    })
+    await service.adoptAccountPasskey({ ...accountOf(rootKey(created)), phone: true })
     expect(ceremony.assertRequests.at(-1)!.transports).toEqual(["hybrid"])
 
     const fresh = new WebAlphaAuthService({
@@ -3708,11 +4966,7 @@ describe("WebAlphaAuthService steered to the phone", () => {
       trustsAttachmentLabel: () => true,
       misreportsCrossDevice: () => false,
     })
-    await fresh.adoptKnownPasskey({
-      credentialId: created.credentialId,
-      pubkeyHex: created.pubkey,
-      phone: true,
-    })
+    await fresh.adoptAccountPasskey({ ...accountOf(rootKey(created)), phone: true })
     expect(ceremony.assertRequests.at(-1)!.transports).toEqual([
       "hybrid",
       "usb",
@@ -3848,5 +5102,82 @@ describe("WebAlphaAuthService attempt scope", () => {
     } finally {
       restore()
     }
+  })
+})
+
+describe("WebAlphaAuthService.createBackupPasskey", () => {
+  /** A driver that creates on the fake and keeps what it was told. */
+  const recording = () => {
+    const seen: Parameters<BackupCreationDriver>[1][] = []
+    const driver: BackupCreationDriver = async (c, options) => {
+      seen.push(options)
+      const created = await c.create({
+        rpId: options.rpId,
+        rpName: options.rpName,
+        userName: options.userName,
+        prfFirstSalt: new Uint8Array(32).fill(3),
+      })
+      return {
+        created,
+        slot: "first",
+        prfOutput: created.prfFirst!,
+        securityKey: false,
+        facts: { provider: "unknown" },
+      }
+    }
+    return { seen, driver }
+  }
+
+  it("runs the driver for this relying party, device and pick, and keeps the passkey's handle", async () => {
+    const { service, ceremony, storage } = laptop({
+      userAgent: async () => parseUserAgent({ userAgent: MAC_CHROME_UA }),
+    })
+    const { seen, driver } = recording()
+    const observe = () => {}
+    const creation = await service.createBackupPasskey(driver, ceremony, {
+      userName: "brave-otter-42",
+      choice: "phone",
+      observe,
+    })
+    expect(seen).toHaveLength(1)
+    expect(seen[0]).toMatchObject({
+      posture: "laptop",
+      rpId: "localhost",
+      userName: "brave-otter-42",
+      choice: "phone",
+      observe,
+    })
+    expect(seen[0].userAgent?.osFamily).toBe("macos")
+    expect(await seen[0].challengeForChained()).toHaveLength(32)
+    expect(ceremony.creates[0].userName).toBe("brave-otter-42")
+
+    await service.recordRecoveryMetadata({
+      credentialId: creation.created.credentialId,
+      l2Address: "0xabc",
+      pubkey: Buffer.from(creation.created.pubkey).toString("hex"),
+      isMskRoot: false,
+      backup: { account: ACCOUNT, envelope: "00".repeat(62) },
+    })
+    const handle = bytesToBase64Url(ceremony.creds.get(creation.created.credentialId)!.handle)
+    const map = new WebPasskeyIdentityMap(storage, "localhost")
+    expect((await map.get(creation.created.credentialId))?.userHandle).toBe(handle)
+  })
+
+  it("hands the driver no pick when the caller made none", async () => {
+    const { service, ceremony } = laptop()
+    const { seen, driver } = recording()
+    await service.createBackupPasskey(driver, ceremony, { userName: "brave-otter-42" })
+    expect(seen[0]).not.toHaveProperty("choice")
+  })
+
+  it("sends nothing once the caller has left", async () => {
+    const { service, ceremony } = laptop()
+    const driver = vi.fn<BackupCreationDriver>()
+    const abort = new AbortController()
+    abort.abort()
+    await expect(
+      service.createBackupPasskey(driver, ceremony, { userName: "x", signal: abort.signal }),
+    ).rejects.toThrow()
+    expect(driver).not.toHaveBeenCalled()
   })
 })

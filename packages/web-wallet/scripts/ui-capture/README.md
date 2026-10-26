@@ -11,13 +11,16 @@ pnpm ui:capture --plan scripts/ui-capture/plans/registration.json --preset all -
 pnpm ui:capture --plan scripts/ui-capture/plans/create.json --viewport 600x844
 pnpm ui:capture --plan scripts/ui-capture/plans/home.json --viewport 1280x832
 pnpm ui:capture --plan scripts/ui-capture/plans/registration.json --safe-area 20,12,34,12
+pnpm ui:capture --scenario fresh --path /withdraw?cap=review --path /withdraw?cap=done --viewport 402x874,1280x832
 ```
+
+Each run starts a Vite server, a browser and the app, which costs about 20 seconds before the first screenshot. Capture several states in one run: repeat `--path`, and list the sizes in `--viewport`. Each extra route costs one page load, about 5 seconds. Each route is saved as its own file, for example `402x874/withdraw-cap-review.png`. A single `--path` keeps the name `final.png`. Several `--path` values cannot run plan steps.
 
 The command owns its loopback server and stops it afterward. Port 5499 is the default; choose another with `--port`. An occupied port fails rather than reusing an unrelated server. Local `.env` files and ambient `VITE_*` settings are excluded. The server serves a synthetic config profile through the normal config-client validation path, and its `/svc/*` proxies are disabled.
 
 ## Viewports and output
 
-The phone presets are **390×844**, **402×879**, and **390×667** CSS pixels. `--preset all` runs each in a separate clean browser context. `--viewport WIDTHxHEIGHT` supports breakpoint and desktop checks. These dimensions describe the browser content viewport. They do not include a device frame, address bar, share strip, browser toolbar, or report captions.
+The phone presets are **390×844**, **402×879**, and **390×667** CSS pixels. `--preset all` runs each in a separate clean browser context. `--viewport WIDTHxHEIGHT` supports breakpoint and desktop checks, and a comma-separated list runs each size in turn. These dimensions describe the browser content viewport. They do not include a device frame, address bar, share strip, browser toolbar, or report captions.
 
 Screenshots capture the visible viewport by default. Use `--full-page`, plan `fullPage: true`, or screenshot-step `fullPage: true` for supplemental scroll content. This does not change the viewport recorded in the report. Each viewport has its own directory containing screenshots and `report.json`; the parent `report.json` collects the batch. The default output is a unique directory under the system temporary directory. `--output-dir` must point outside the repository and be new or empty. Source destinations are rejected before creating directories. Symlinked descendants and existing output files are rejected, so reruns need a new directory and screenshot steps need unique filenames.
 

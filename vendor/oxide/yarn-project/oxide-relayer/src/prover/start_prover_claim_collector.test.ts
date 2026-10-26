@@ -1,6 +1,6 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
-import type { TeeSigner } from '@oxide/oxide-lib/types.js';
+import type { RegisteredTeeSigner } from '@oxide/oxide-client/types.js';
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import type { PublicClient } from 'viem';
@@ -10,9 +10,9 @@ import type { ResolvedManifestDeployment } from '../config/deployment_env_manife
 import type { L1TxQueue } from '../l1/l1_tx_queue.js';
 import type { PriceOracle } from '../price_oracle/price_oracle.js';
 
-const connect = jest.fn((_enclaveUrl: string, _portal: unknown) => Promise.resolve({} as TeeSigner));
+const connect = jest.fn((_enclaveUrl: string, _portal: unknown) => Promise.resolve({} as RegisteredTeeSigner));
 jest.unstable_mockModule('@oxide/oxide-client/fleet_signer.js', () => ({ FleetSigner: { connect } }));
-const create = jest.fn((_args: { portals: { signer: TeeSigner }[] }) =>
+const create = jest.fn((_args: { portals: { signer: RegisteredTeeSigner }[] }) =>
   Promise.resolve({ start: () => Promise.resolve() }),
 );
 jest.unstable_mockModule('./prover_claim/oxide_prover_claim_reward_collector.js', () => ({
@@ -39,7 +39,7 @@ describe('startProverClaimCollector', () => {
   });
 
   it('finalizes claims with an injected signer and needs no enclave', async () => {
-    const signer = {} as TeeSigner;
+    const signer = {} as RegisteredTeeSigner;
 
     await startProverClaimCollector(config, [deployment(''), deployment('')], client, l1TxQueue, priceOracle, signer);
 

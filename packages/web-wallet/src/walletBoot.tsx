@@ -5,6 +5,8 @@ import { profileFetch } from "./config/profilePrefetch"
 import { demoScenario } from "./dev/demoFlag"
 import { markInAppBrowser } from "./features/identity/inAppHost"
 import { warmBoot } from "./bootWarmup"
+import { setSponsorAccountsResolver } from "./features/onboarding/claimSponsorship"
+import { sessionSponsorAccounts } from "./features/onboarding/sponsorAccounts"
 import { prefetchLiveSavingsApy } from "./features/savings/savingsGateway"
 
 // Design-system styles + the Sen brand font (source CSS; the vite alias maps the
@@ -14,6 +16,7 @@ import "../../design-system/src/styles/cards-modals.css"
 
 void warmBoot(location.pathname)
 markInAppBrowser()
+setSponsorAccountsResolver(sessionSponsorAccounts)
 
 /**
  * Profile first, fixtures last: `seedDemo` reads `getConfig()`, which exists only once

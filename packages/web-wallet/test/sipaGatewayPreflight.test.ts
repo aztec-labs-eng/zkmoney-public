@@ -12,6 +12,7 @@ import {
   runFundingPreflight,
 } from "../src/features/deposit/fundingPreflight"
 import { seedBootConfig } from "./seedBootConfig"
+import { mockLoadDepositFacts, tokenOption } from "./support/depositTokens"
 
 const TOKEN = `0x${"ee".repeat(20)}` as Address
 const SIPA = `0x${"ab".repeat(20)}` as Address
@@ -20,14 +21,38 @@ const order = vi.hoisted(() => [] as string[])
 /** Each wallet write: the contract called and its arguments. */
 const writes = vi.hoisted(() => [] as { address: string; args: unknown[] }[])
 const bridge = vi.hoisted(() => ({ active: false, submit: vi.fn() }))
+const TX_AMOUNT_CAP = vi.hoisted(() => 5166n * 10n ** 18n)
+const USDC = `0x${"a0".repeat(20)}` as Address
+const USDT = `0x${"da".repeat(20)}` as Address
 
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
-  getOxideTuple: async () => ({ token: `0x${"ee".repeat(20)}` }),
+  getOxideTuple: async () => ({ token: `0x${"ee".repeat(20)}`, portal: `0x${"70".repeat(20)}` }),
   l1PublicClient: () => ({
     waitForTransactionReceipt: async () => ({ status: "success" }),
   }),
 }))
+// The DAI row, with the USDC and USDT its SIPA swaps into DAI.
+vi.mock("../src/features/deposit/loadDepositFacts", (importOriginal) =>
+  mockLoadDepositFacts(
+    importOriginal,
+    () => {
+      const settlement = tokenOption("DAI", TOKEN)
+      const options = [
+        settlement,
+        tokenOption("USDC", USDC, 6, TOKEN),
+        tokenOption("USDT", USDT, 6, TOKEN),
+      ]
+      return { options, offered: options, settlement }
+    },
+    async () => ({
+      fee: "0.5",
+      token: TOKEN,
+      sweepFeeAtomic: parseUnits("0.5", 18),
+      txAmountCap: TX_AMOUNT_CAP,
+    }),
+  ),
+)
 vi.mock("../src/platform/desktopBridge", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/platform/desktopBridge")>()),
   isDesktopL1SubmitActive: () => bridge.active,
@@ -57,7 +82,6 @@ vi.mock("../src/features/deposit/l1Wallet", async (importOriginal) => ({
 
 type Gateway = {
   tokenMeta: () => Promise<{ address: Address; symbol: string; decimals: number }>
-  quotedFee: () => Promise<bigint>
   stampFunding: () => Promise<void>
   deposit: (params: Record<string, unknown>) => Promise<unknown>
 }
@@ -68,7 +92,6 @@ beforeAll(async () => {
   const { getSipaDepositGateway } = await import("../src/features/deposit/sipaGateway")
   gateway = getSipaDepositGateway() as unknown as Gateway
   gateway.tokenMeta = async () => ({ address: TOKEN, symbol: "DAI", decimals: 18 })
-  gateway.quotedFee = async () => parseUnits("0.5", 18)
   gateway.stampFunding = async () => {}
 })
 
@@ -168,8 +191,8 @@ describe("sipaGateway deposit preflight", () => {
 })
 
 describe.each([
-  ["USDC", `0x${"a0".repeat(20)}`],
-  ["USDT", `0x${"da".repeat(20)}`],
+  ["USDC", USDC],
+  ["USDT", USDT],
 ] as const)("sipaGateway deposit of %s with the connected-deposit check", (symbol, token) => {
   const KEY = { chainId: 1, portal: `0x${"11".repeat(20)}`, token: TOKEN } as const
   const storeReading = (read: () => Promise<PortalCapacitySnapshot>) =>
@@ -190,6 +213,7 @@ describe.each([
       rateAtomicPerSecond: 10n ** 18n,
       globalLimitAtomic: 50_000n * 10n ** 18n,
       availableAtomic: 0n,
+      txAmountCapAtomic: TX_AMOUNT_CAP,
     }))
   // What the connected deposit form passes: a conversion credit is not known before the swap.
   const connectedCheck = (store?: PortalCapacityStore) => (fresh: { feeDisplay: string }) =>
@@ -206,7 +230,7 @@ describe.each([
       amountDisplay: "2.5",
       from: `0x${"aa".repeat(20)}`,
       tokenSymbol: symbol,
-      token: { address: token, decimals: 6 },
+      token: { address: token, decimals: 6, settlesIn: TOKEN },
       preflight,
       beforeApprove: async () => {},
     })

@@ -1,5 +1,5 @@
-import { AztecAddress, EthAddress } from '@aztec/aztec.js/addresses';
-import type { AztecNode } from '@aztec/aztec.js/node';
+import { AztecAddress, EthAddress } from '@aztec-labs/aztec.js/addresses';
+import type { AztecNode } from '@aztec-labs/aztec.js/node';
 
 import { L1OperationCondition } from '@oxide/oxide-lib/l1_operation_calldata.js';
 import type { SanctionsList } from '@oxide/watcher-lib/sanctions';
@@ -12,12 +12,21 @@ import type { PublicClient } from 'viem';
 
 import { FpcFunderCaller, type FpcFunderCallerConfig } from './fpc_funding/fpc_funder_caller.js';
 import { L1OperationRelayer } from './l1_operations/l1_operation_relayer.js';
+import type { L1OperationOwnership } from './l1_operations/l1_operation_router.js';
+import type { PayoutTokenFilter } from './l1_operations/payout_token_registry.js';
 import type { WithdrawalCompletion } from './l1_operations/withdrawal_completion.js';
 import { LogRecorder, OPERATOR_LEVELS } from './log_recorder.js';
-import type { ChainlinkPriceOracle } from './price_oracle/chainlink_price_oracle.js';
+import { fixedPriceOracle } from './price_oracle/fixed_price_oracle.js';
 import { openSqliteStateStore } from './state/sqlite_store.js';
 import { TEST_RELAYER_DEPLOYMENT } from './state/test_fixtures.js';
 import type { StateStore } from './state/types.js';
+
+/** A worker that is alone on its Broadcaster, so it handles every operation. */
+const OWNS_ALL: L1OperationOwnership = { owns: () => true, givesWayTo: () => Promise.resolve(undefined) };
+/** A payout-token filter that accepts exactly `tokens`. */
+function acceptsOnly(...tokens: EthAddress[]): PayoutTokenFilter {
+  return { accepts: token => tokens.some(accepted => accepted.equals(token)) };
+}
 
 /** Idle poll cycles the measurement drives, after one warm-up cycle settles the start-up work. */
 const CYCLES = 10;
@@ -98,10 +107,10 @@ function unprofitableOperationClient(): PublicClient {
 const CLEAN_LIST: SanctionsList = { isListed: () => false };
 /** The cycled operation is unconditioned, so no withdrawal is ever polled or completed. */
 const NO_WITHDRAWALS = {
-  outboxStatus: () => Promise.resolve('waiting' as const),
+  outboxStatus: () => Promise.resolve({ status: 'waiting' }),
   resolveCalldata: () => Promise.reject(new Error('unexpected withdrawal completion')),
 } as unknown as WithdrawalCompletion;
-const IDENTITY_ORACLE = { weiToUSD: (wei: bigint) => Promise.resolve(wei) } as unknown as ChainlinkPriceOracle;
+const IDENTITY_ORACLE = fixedPriceOracle();
 
 async function withStore(run: (store: StateStore) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'oxide-idle-logs-'));
@@ -143,10 +152,12 @@ describe('idle-cycle logging', () => {
         publicClient: unprofitableOperationClient(),
         store,
         broadcaster: BROADCASTER,
-        payoutTokens: [TOKEN],
+        ownership: OWNS_ALL,
+        payoutTokens: acceptsOnly(TOKEN),
         watchedTokens: [TOKEN],
         l1OperationsSubmission: { retryBackoffMs: 0, maxPendingAgeMs: 48 * 60 * 60_000 },
         executor: EXECUTOR,
+        executorVersion: 'gas-to-cover',
         l1TxQueue: passThroughL1TxQueue(),
         sanctionsList: CLEAN_LIST,
         withdrawalCompletion: NO_WITHDRAWALS,
@@ -177,6 +188,7 @@ describe('idle-cycle logging', () => {
     const caller = FpcFunderCaller.create({
       fpcFunder: FUNDER,
       executor: EXECUTOR,
+      executorVersion: 'gas-to-cover',
       client: fakeFunderClient(),
       l1TxQueue: passThroughL1TxQueue(),
       priceOracle: IDENTITY_ORACLE,

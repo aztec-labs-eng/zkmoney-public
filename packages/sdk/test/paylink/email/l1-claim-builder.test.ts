@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest"
-import { EthAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { poseidon2Hash } from "@aztec/foundation/crypto/poseidon"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { poseidon2Hash } from "@aztec-labs/foundation/crypto/poseidon"
 import { getUserPayloadHash } from "@oxide/oxide-lib/content_hash.js"
-import { decodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal.js"
+import { decodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal_executor.js"
 import {
   DEFAULT_CONTRACTS,
   PROOF_FIELD_COUNT,

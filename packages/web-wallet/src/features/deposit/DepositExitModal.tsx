@@ -64,7 +64,13 @@ import { DepositProcessingNotice } from "./DepositProcessingNotice"
 import { useSipaProcessing } from "./sipaProcessing"
 import { heldDepositLine } from "./processingCopy"
 import { PendingLimitsLink } from "../limits/AboutLimitsSheet"
-import { depositTokensFor } from "./loadDepositFacts"
+import {
+  settlementDecimals,
+  settlementSymbol,
+  settlementToken,
+  useDepositTokens,
+} from "./loadDepositFacts"
+import { useRowTxAmountCap } from "../token/useTxAmountCap"
 
 /** Which exit the user is running. */
 type ExitAction = "sweep" | "recover"
@@ -135,6 +141,9 @@ export function DepositExitModal({
   onClose: () => void
 }) {
   const config = getConfig()
+  const depositTokens = useDepositTokens()
+  const settled = settlementSymbol(depositTokens, record.tokenAddress, record.tokenSymbol)
+  const txAmountCap = useRowTxAmountCap(settlementToken(depositTokens, record.tokenAddress))
   const bridgeMode = isDesktopL1SubmitActive()
   const l1 = useL1Wallet({ expectedChainId: config.l1ChainId, rpcUrl: config.l1RpcUrl })
   const { obsidionWallet } = useAztecContext()
@@ -194,7 +203,10 @@ export function DepositExitModal({
   // The paid address — the connected account or the typed destination — is screened like the
   // deposit source and withdrawal recipient are.
   const { verdict, cleared, rescreen } = useScreenedAddress(target, "deposit-exit")
-  const gross = depositAmounts(record).grossDisplay
+  const gross = depositAmounts(
+    record,
+    settlementDecimals(depositTokens, record.tokenAddress),
+  ).grossDisplay
   const amount = stranded
     ? `${stranded.balance} ${stranded.token.symbol}`
     : `${gross} ${record.tokenSymbol}`
@@ -368,14 +380,12 @@ export function DepositExitModal({
             <DepositProcessingNotice
               sipaAddress={record.sipaAddress}
               state={processing}
-              symbol={depositTokensFor(config.network)[0]?.symbol ?? record.tokenSymbol}
+              symbol={settled}
               help={(detail) => (
                 <PendingLimitsLink
                   sipaAddress={record.sipaAddress}
                   capacityKey={capacityKey}
-                  settlementSymbol={
-                    depositTokensFor(config.network)[0]?.symbol ?? record.tokenSymbol
-                  }
+                  settlementSymbol={settled}
                   detail={detail}
                 />
               )}
@@ -389,7 +399,11 @@ export function DepositExitModal({
               : reason === "registration-quote"
               ? "This address uses the old registration price. Recover this deposit to your connected Ethereum wallet, then request a new address at the earned price. Recovery requires ETH for gas. Your zk.money wallet stays open."
               : reason === "unsweepable"
-              ? unsweepableCopy(record)
+              ? unsweepableCopy(
+                  record,
+                  txAmountCap,
+                  settlementDecimals(depositTokens, record.tokenAddress),
+                )
               : stranded
               ? STRANDED_COPY
               : permanent

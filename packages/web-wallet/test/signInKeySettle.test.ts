@@ -7,7 +7,7 @@
  * address. A cancelled attempt stops before the adoption; nothing is written before the key is
  * settled and the anchor named.
  */
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { RecoverPasskeyResult } from "@obsidion/sdk"
 import type { AnchorTier, CandidateProbe } from "@obsidion/front-core"
 import { PhoneUnreachableError } from "@obsidion/passkey-web"
@@ -17,9 +17,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const h = vi.hoisted(() => ({
   beginRecovery: vi.fn(),
-  adoptKnownPasskey: vi.fn(),
+  adoptAccountPasskey: vi.fn(),
   recoverFromCache: vi.fn(),
-  commitSecret: vi.fn(async () => true),
+  commitSecret: vi.fn(async (): Promise<number | false> => 1),
   recordRecoveryMetadata: vi.fn(),
   addWebauthnAccount: vi.fn(),
   readNameOf: vi.fn(),
@@ -35,9 +35,12 @@ vi.mock("../src/platform/auth/useAuthenticator", () => ({
   getAuthService: () => ({
     rpId: "localhost",
     beginRecovery: h.beginRecovery,
-    adoptKnownPasskey: h.adoptKnownPasskey,
+    adoptAccountPasskey: h.adoptAccountPasskey,
     recoverFromCache: h.recoverFromCache,
     commitSecret: h.commitSecret,
+    sessionHeld: () => true,
+    sessionAddress: async () => undefined,
+    markRecordsStale: () => {},
     recordRecoveryMetadata: h.recordRecoveryMetadata,
   }),
 }))
@@ -90,14 +93,17 @@ vi.mock("@obsidion/front-core", async (importOriginal) => {
       readNameOf: h.installedNameOf,
       getCode: h.getCode,
       readAuthKeys: h.readAuthKeys,
+      readAuthKeysCounted: async (account: string, max: number) => {
+        const entries = await h.readAuthKeys(account, max)
+        return { entries, authKeyCount: entries.length }
+      },
     }),
     readInstalledPasskeyKey: h.readInstalledPasskeyKey,
   }
 })
 
-const { enterWithPasskey, reusePasskeyAccount, PasskeyMismatchError } = await import(
-  "../src/features/onboarding/oxideOnboarding"
-)
+const { enterWithPasskey, reusePasskeyAccount, PasskeyMismatchError, isCommittedFailure } =
+  await import("../src/features/onboarding/oxideOnboarding")
 const { GateCancelledError, isGateCancelled } = await import(
   "../src/features/identity/ceremonyGate"
 )
@@ -108,6 +114,9 @@ const sibling = Fr.random()
 const ADDR = `0x${"aa".repeat(32)}`
 const REAL = "ab".repeat(64)
 const WRONG = "cd".repeat(64)
+/** Another key of the real account, in its set beside the passkey's. */
+const OTHER = "ef".repeat(64)
+const BACKUP = { account: `0x${"11".repeat(20)}`, envelope: `01${"00".repeat(61)}` }
 const NAME = `0x${"ab".repeat(32)}`
 const NAMELESS = `0x${"0".repeat(64)}`
 /** The L1 account the installed-key read predicts for a master key under the catalog's factory. */
@@ -118,10 +127,10 @@ const account = {
   getCompleteAddress: () => ({ toString: () => `${ADDR}:complete` }),
 }
 const createObsidionAccount = vi.fn(async () => account)
-/** The account address is a function of the master key AND the signing key: only the real pair derives it. */
-const deriveAccountAddress = vi.fn(async (candidate: Fr, pubkeyHex: string) => ({
+/** The account address is a function of the master key AND the key set: only a set holding the real key derives it. */
+const deriveAccountAddress = vi.fn(async (candidate: Fr, passkeys: readonly string[]) => ({
   toString: () =>
-    candidate.toString() === msk.toString() && pubkeyHex === REAL ? ADDR : "0xother",
+    candidate.toString() === msk.toString() && passkeys.includes(REAL) ? ADDR : "0xother",
 }))
 const wallet = { deriveAccountAddress, createObsidionAccount } as never
 const config = { rpId: "localhost" } as never
@@ -135,15 +144,17 @@ const authKey = (pubkeyHex: string) => ({
   metadata: `0x${"07".repeat(16)}`,
 })
 
-/** Both master keys' predicted accounts are named, deployed and hold `pubkeyHex`. */
+/** The real master key's predicted account is named, deployed and holds `pubkeyHex`; the sibling's is nameless. */
 function installs(pubkeyHex: string) {
-  h.installedNameOf.mockResolvedValue(NAME)
+  h.installedNameOf.mockImplementation(async (_registry: string, at: string) =>
+    at === accountOf(msk) ? NAME : NAMELESS,
+  )
   h.getCode.mockResolvedValue("0x6080")
   h.readAuthKeys.mockResolvedValue([authKey(pubkeyHex)])
 }
 
-/** A settled recovery for `pubkey`, as `settle` produces. */
-function settled(pubkey: string): RecoverPasskeyResult {
+/** A settled recovery for `pubkey`, as `settle` produces; `passkeys` is the set it was settled with. */
+function settled(pubkey: string, passkeys?: readonly string[]): RecoverPasskeyResult {
   return {
     authProvider: {
       getPubkeys: async () => [
@@ -153,6 +164,7 @@ function settled(pubkey: string): RecoverPasskeyResult {
     } as never,
     credentialId: "cred",
     pubkey,
+    ...(passkeys ? { passkeys } : {}),
     candidates: { first: msk, second: sibling },
     preferredSlot: "first",
     hasPersistedSlot: false,
@@ -163,12 +175,14 @@ function settled(pubkey: string): RecoverPasskeyResult {
 
 /** What `beginRecovery` returns on a fresh browser: both keys, and a settle step to spy on. */
 function unsettled() {
-  const settle = vi.fn(async (pubkey?: string) => {
-    if (pubkey !== undefined && ![REAL, WRONG].includes(pubkey)) {
-      throw new Error("That key is not a candidate of this sign-in's signature")
-    }
-    return settled(pubkey ?? REAL)
-  })
+  const settle = vi.fn(
+    async (pubkey?: string, _attempt?: AbortSignal, passkeys?: readonly string[]) => {
+      if (pubkey !== undefined && ![REAL, WRONG].includes(pubkey)) {
+        throw new Error("That key is not a candidate of this sign-in's signature")
+      }
+      return settled(pubkey ?? REAL, passkeys)
+    },
+  )
   return {
     credentialId: "cred",
     candidates: { first: msk, second: sibling },
@@ -214,8 +228,8 @@ const expectNothingAdopted = () => {
   expect(h.addWebauthnAccount).not.toHaveBeenCalled()
 }
 
-/** The signing keys the wallet was asked to derive under. */
-const keysDerivedUnder = () => new Set(deriveAccountAddress.mock.calls.map(([, key]) => key))
+/** Every key of the sets the wallet was asked to derive under. */
+const keysDerivedUnder = () => new Set(deriveAccountAddress.mock.calls.flatMap(([, keys]) => keys))
 
 /** A promise and the functions that settle it. */
 function deferred<T>() {
@@ -290,11 +304,17 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
       signal: expect.anything(),
     })
     expect(gate).toHaveBeenCalledTimes(1)
-    expect(begun.settle).toHaveBeenCalledWith(REAL)
+    expect(begun.settle).toHaveBeenCalledWith(REAL, undefined, [REAL])
     expect(h.recordRecoveryMetadata).toHaveBeenCalledWith(
-      expect.objectContaining({ pubkey: REAL }),
+      expect.objectContaining({
+        pubkey: REAL,
+        passkeySet: [REAL],
+        l2Address: ADDR,
+        isMskRoot: true,
+      }),
       expect.any(Function),
     )
+    expect(h.recordRecoveryMetadata.mock.calls[0]![0]).not.toHaveProperty("backup")
     expect(h.commitSecret).toHaveBeenCalledWith(
       expect.objectContaining({ secretKey: msk }),
       expect.any(Function),
@@ -316,6 +336,7 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
       config,
       expect.objectContaining({ rollupVersion: "1" }),
       undefined,
+      expect.any(Function),
     )
   })
 
@@ -327,7 +348,7 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     await enter(gate)
     expect(h.beginRecovery).toHaveBeenCalledWith({ discover: true, signal: expect.anything() })
     expect(gate).toHaveBeenCalledTimes(1)
-    expect(begun.settle).toHaveBeenCalledWith(REAL)
+    expect(begun.settle).toHaveBeenCalledWith(REAL, undefined, [REAL])
     expect(h.installedNameOf).toHaveBeenCalledWith(REGISTRY, accountOf(sibling))
     expect(h.getCode).toHaveBeenCalledWith(accountOf(msk))
   })
@@ -356,7 +377,7 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
       order.push("settle")
       return settled(REAL)
     })
-    deriveAccountAddress.mockImplementationOnce(async (candidate, key) => {
+    deriveAccountAddress.mockImplementationOnce(async (candidate, [key]) => {
       order.push("derive")
       return { toString: () => (candidate.equals(msk) && key === REAL ? ADDR : "0xother") }
     })
@@ -382,7 +403,7 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
     expect(begun.settle).toHaveBeenCalledWith(undefined, expect.anything())
   })
 
-  it("the two accounts naming different possible keys: asked again", async () => {
+  it("the two accounts naming different possible keys: ambiguous, no second prompt, nothing written", async () => {
     const begun = unsettled()
     h.beginRecovery.mockResolvedValue(begun)
     h.installedNameOf.mockResolvedValue(NAME)
@@ -391,9 +412,76 @@ describe("enterWithPasskey settles the key from the L1 accounts", () => {
       authKey(at === accountOf(msk) ? REAL : WRONG),
     ])
     const { gate } = gateFor()
+    await expect(enter(gate)).rejects.toMatchObject({ name: "AmbiguousPasskeyError" })
+    expect(gate).toHaveBeenCalledTimes(1)
+    expect(begun.settle).not.toHaveBeenCalled()
+    expectNothingAdopted()
+  })
+
+  it("two accounts holding the key with different sets: ambiguous, no second prompt, nothing written", async () => {
+    const begun = unsettled()
+    h.beginRecovery.mockResolvedValue(begun)
+    h.installedNameOf.mockResolvedValue(NAME)
+    h.getCode.mockResolvedValue("0x6080")
+    h.readAuthKeys.mockImplementation(async (at: string) =>
+      at === accountOf(msk) ? [authKey(REAL)] : [authKey(REAL), authKey("ef".repeat(64))],
+    )
+    const { gate } = gateFor()
+    await expect(enter(gate)).rejects.toMatchObject({ name: "AmbiguousPasskeyError" })
+    expect(gate).toHaveBeenCalledTimes(1)
+    expect(begun.settle).not.toHaveBeenCalled()
+    expectNothingAdopted()
+  })
+
+  it("a holding account with more keys than the read returned: set unread, no second prompt, nothing written", async () => {
+    const begun = unsettled()
+    h.beginRecovery.mockResolvedValue(begun)
+    installs(REAL)
+    h.readInstalledPasskeyKey.mockResolvedValueOnce({ kind: "incomplete" })
+    const { gate } = gateFor()
+    await expect(enter(gate)).rejects.toMatchObject({ name: "PasskeySetUnreadError" })
+    expect(gate).toHaveBeenCalledTimes(1)
+    expect(begun.settle).not.toHaveBeenCalled()
+    expectNothingAdopted()
+  })
+
+  it("a two-key account settles with the matched key in one prompt, and derives under both keys", async () => {
+    const begun = unsettled()
+    h.beginRecovery.mockResolvedValue(begun)
+    installs(REAL)
+    h.readAuthKeys.mockResolvedValue([authKey(OTHER), authKey(REAL)])
+    const { gate } = gateFor()
     await enter(gate)
-    expect(gate).toHaveBeenCalledTimes(2)
-    expect(begun.settle).toHaveBeenCalledWith(undefined, expect.anything())
+    expect(gate).toHaveBeenCalledTimes(1)
+    expect(begun.settle).toHaveBeenCalledWith(REAL, undefined, [OTHER, REAL])
+    expect(deriveAccountAddress).toHaveBeenCalledWith(msk, [OTHER, REAL])
+    expect(h.recordRecoveryMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({ pubkey: REAL, passkeySet: [OTHER, REAL], isMskRoot: true }),
+      expect.any(Function),
+    )
+  })
+
+  it("a recovery settled by a backup record is recorded as one, with its set and envelope", async () => {
+    h.beginRecovery.mockResolvedValue({
+      ...settled(REAL, [OTHER, REAL]),
+      backup: BACKUP,
+      expectedAddress: ADDR,
+    })
+    const { gate } = gateFor()
+    const result = await enter(gate)
+    expect(result).toMatchObject({ entered: false, reason: "unclaimed" })
+    expect(h.readAuthKeys).not.toHaveBeenCalled()
+    expect(deriveAccountAddress).toHaveBeenCalledWith(msk, [OTHER, REAL])
+    expect(h.recordRecoveryMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pubkey: REAL,
+        passkeySet: [OTHER, REAL],
+        l2Address: ADDR,
+        isMskRoot: false,
+        backup: BACKUP,
+      }),
+      expect.any(Function),
+    )
   })
 
   it("the L1 read's key derives no anchored address: unknown, nothing adopted, no second prompt", async () => {
@@ -652,7 +740,7 @@ describe("a key read still running when the wait ends", () => {
       const second = gateFor()
       await expect(enter(second.gate)).resolves.toMatchObject({ reason: "unclaimed" })
       expect(second.gate).toHaveBeenCalledTimes(1)
-      expect(fresh.settle).toHaveBeenCalledWith(REAL)
+      expect(fresh.settle).toHaveBeenCalledWith(REAL, undefined, [REAL])
       expect(h.commitSecret).toHaveBeenCalledTimes(1)
       expect(stale.settle).not.toHaveBeenCalled()
     })
@@ -747,7 +835,7 @@ describe("a cancelled attempt stops before the adoption", () => {
     const second = gateFor()
     await expect(enter(second.gate)).resolves.toMatchObject({ reason: "unclaimed" })
     expect(second.gate).toHaveBeenCalledTimes(1)
-    expect(fresh.settle).toHaveBeenCalledWith(REAL)
+    expect(fresh.settle).toHaveBeenCalledWith(REAL, undefined, [REAL])
 
     staleCode.resolve("0x6080")
     await drain()
@@ -983,11 +1071,77 @@ describe("reusePasskeyAccount settles before the address match", () => {
     const { gate, controller } = gateFor()
     h.commitSecret.mockImplementationOnce(async () => {
       controller.abort()
-      return true
+      return 1
     })
     await expect(reusePasskeyAccount(wallet, ADDR, undefined, gate)).rejects.toSatisfy(
       isGateCancelled,
     )
     expect(h.commitSecret).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe("adoption builds the account only after the commit", () => {
+  it("records the set against the derived address, commits, then builds and persists the account", async () => {
+    h.beginRecovery.mockResolvedValue(unsettled())
+    installs(REAL)
+    const order: string[] = []
+    h.recordRecoveryMetadata.mockImplementationOnce(async () => void order.push("record"))
+    h.commitSecret.mockImplementationOnce(async () => {
+      order.push("commit")
+      return 1
+    })
+    createObsidionAccount.mockImplementationOnce(async () => {
+      order.push("account")
+      return account
+    })
+    h.addWebauthnAccount.mockImplementationOnce(async () => void order.push("persist"))
+    const { gate } = gateFor()
+    await enter(gate)
+    expect(order).toEqual(["record", "commit", "account", "persist"])
+  })
+
+  it("a commit the store refuses builds no account", async () => {
+    h.beginRecovery.mockResolvedValue(unsettled())
+    installs(REAL)
+    h.commitSecret.mockResolvedValueOnce(false)
+    const { gate } = gateFor()
+    await expect(enter(gate)).rejects.toSatisfy(isGateCancelled)
+    expect(createObsidionAccount).not.toHaveBeenCalled()
+    expect(h.addWebauthnAccount).not.toHaveBeenCalled()
+  })
+
+  it("a wallet failure after the commit is reported as committed", async () => {
+    h.beginRecovery.mockResolvedValue(unsettled())
+    installs(REAL)
+    createObsidionAccount.mockRejectedValueOnce(new Error("pxe down"))
+    const { gate } = gateFor()
+    await expect(enter(gate)).rejects.toSatisfy(isCommittedFailure)
+    expect(h.commitSecret).toHaveBeenCalledTimes(1)
+    expect(h.addWebauthnAccount).not.toHaveBeenCalled()
+  })
+
+  it("the reuse of a known account takes the same path", async () => {
+    h.beginRecovery.mockResolvedValue(unsettled())
+    const order: string[] = []
+    h.commitSecret.mockImplementationOnce(async () => {
+      order.push("commit")
+      return 1
+    })
+    createObsidionAccount.mockImplementationOnce(async () => {
+      order.push("account")
+      return account
+    })
+    const { gate } = gateFor()
+    await reusePasskeyAccount(wallet, ADDR, undefined, gate)
+    expect(order).toEqual(["commit", "account"])
+    expect(h.recordRecoveryMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pubkey: REAL,
+        passkeySet: [REAL],
+        l2Address: ADDR,
+        isMskRoot: true,
+      }),
+      expect.any(Function),
+    )
   })
 })

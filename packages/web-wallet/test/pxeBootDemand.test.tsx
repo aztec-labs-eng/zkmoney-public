@@ -5,8 +5,8 @@
 import { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { BrowserRouter, useNavigate, type NavigateFunction } from "react-router-dom"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import type { AztecSQLiteOPFSStore } from "@aztec/kv-store/sqlite-opfs"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { AztecSQLiteOPFSStore } from "@aztec-labs/kv-store/sqlite-opfs"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { resetModulesAsActiveTab } from "./support/activeTab"
 

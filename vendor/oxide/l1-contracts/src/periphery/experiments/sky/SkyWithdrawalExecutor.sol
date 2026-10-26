@@ -7,7 +7,8 @@ import {SafeERC20} from "@oz/token/ERC20/utils/SafeERC20.sol";
 import {TransientSlot} from "@oz/utils/TransientSlot.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {IExecutor} from "@core/interfaces/IExecutor.sol";
-import {IWithdrawalSubsidy} from "@periphery/interfaces/IWithdrawalSubsidy.sol";
+import {PlainWithdrawalSubsidy} from "@periphery/PlainWithdrawalSubsidy.sol";
+import {AggregatorV3Interface} from "@periphery/interfaces/AggregatorV3Interface.sol";
 import {IDaiUsds} from "@periphery/experiments/sky/interfaces/IDaiUsds.sol";
 import {SkyRoute} from "@periphery/experiments/sky/SkyTypes.sol";
 import {SkyErrors} from "@periphery/experiments/sky/SkyErrors.sol";
@@ -18,7 +19,7 @@ contract SkyWithdrawalExecutor is IExecutor {
   using TransientSlot for TransientSlot.AddressSlot;
 
   uint256 internal constant USER_PAYLOAD_BYTES = 2 * 32;
-  uint256 internal constant RELAYER_PAYLOAD_BYTES = 2 * 32;
+  uint256 internal constant RELAYER_PAYLOAD_BYTES = 20;
 
   bytes32 internal constant SHARES_CALLER_SLOT = keccak256("oxide.SkyWithdrawalExecutor.sharesCaller");
 
@@ -28,10 +29,11 @@ contract SkyWithdrawalExecutor is IExecutor {
   IERC20 public immutable USDS;
   IERC4626 public immutable SUSDS;
   IDaiUsds public immutable DAI_USDS;
+  PlainWithdrawalSubsidy public immutable SUBSIDY;
 
   event SharesSettlement(IExecutor.Flow indexed flow, address indexed recipient, uint256 shares);
 
-  constructor(IOxidePortal _portal, SkyRoute memory _route) {
+  constructor(IOxidePortal _portal, SkyRoute memory _route, address _subsidyOwner, AggregatorV3Interface _priceFeed) {
     require(address(_portal).code.length > 0, SkyErrors.SkyWithdrawalExecutor__InvalidPortal());
     require(address(_route.dai) != address(0), SkyErrors.SkyWithdrawalExecutor__ZeroSkyRoute());
     require(address(_route.usds) != address(0), SkyErrors.SkyWithdrawalExecutor__ZeroSkyRoute());
@@ -47,6 +49,9 @@ contract SkyWithdrawalExecutor is IExecutor {
     USDS = _route.usds;
     SUSDS = _route.sUsds;
     DAI_USDS = _route.daiUsds;
+    // solhint-disable-next-line oxide/no-comments
+    // TODO: replace PlainWithdrawalSubsidy with the Sky withdrawal subsidy contract once it exists.
+    SUBSIDY = new PlainWithdrawalSubsidy(_subsidyOwner, _route.dai, address(this), _priceFeed);
 
     _route.usds.forceApprove(address(_route.daiUsds), type(uint256).max);
   }
@@ -59,7 +64,7 @@ contract SkyWithdrawalExecutor is IExecutor {
     require(_relayerPayload.length == RELAYER_PAYLOAD_BYTES, SkyErrors.SkyWithdrawalExecutor__InvalidRelayerPayload());
 
     (address recipient, uint256 relayerTip) = _decodeUserPayload(_userPayload);
-    (address tipRecipient, address withdrawalSubsidy) = _decodeRelayerPayload(_relayerPayload);
+    address tipRecipient = address(bytes20(_relayerPayload));
     require(recipient != address(0), SkyErrors.SkyWithdrawalExecutor__ZeroRecipient());
 
     address sharesCaller = SHARES_CALLER_SLOT.asAddress().tload();
@@ -83,8 +88,8 @@ contract SkyWithdrawalExecutor is IExecutor {
     }
     ASSET.safeTransfer(recipient, daiAmount - relayerTip);
 
-    if (withdrawalSubsidy != address(0)) {
-      IWithdrawalSubsidy(withdrawalSubsidy).paySubsidy(_flow, tipRecipient);
+    if (tipRecipient != address(0)) {
+      SUBSIDY.paySubsidy(_flow, tipRecipient);
     }
   }
 
@@ -120,24 +125,5 @@ contract SkyWithdrawalExecutor is IExecutor {
     }
     require(recipientWord == uint160(recipientWord), SkyErrors.SkyWithdrawalExecutor__InvalidUserPayload());
     recipient = address(uint160(recipientWord));
-  }
-
-  function _decodeRelayerPayload(bytes calldata _payload)
-    private
-    pure
-    returns (address tipRecipient, address withdrawalSubsidy)
-  {
-    uint256 tipRecipientWord;
-    uint256 withdrawalSubsidyWord;
-    assembly {
-      tipRecipientWord := calldataload(_payload.offset)
-      withdrawalSubsidyWord := calldataload(add(_payload.offset, 32))
-    }
-    require(
-      tipRecipientWord == uint160(tipRecipientWord) && withdrawalSubsidyWord == uint160(withdrawalSubsidyWord),
-      SkyErrors.SkyWithdrawalExecutor__InvalidRelayerPayload()
-    );
-    tipRecipient = address(uint160(tipRecipientWord));
-    withdrawalSubsidy = address(uint160(withdrawalSubsidyWord));
   }
 }

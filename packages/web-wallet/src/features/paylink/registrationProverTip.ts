@@ -6,11 +6,7 @@
  */
 import { useEffect, useRef } from "react"
 import type { RegistrationSchedule } from "@obsidion/core/types"
-import {
-  goldenTicketCoverage,
-  type GoldenTicketCuts,
-  type WithdrawalSpeedupNode,
-} from "@obsidion/front-core"
+import { goldenTicketCoverage, type WithdrawalSpeedupNode } from "@obsidion/front-core"
 import {
   useSpeedChoice,
   useSpeedOutcome,
@@ -46,7 +42,7 @@ export function useRegistrationSpeed({
   node,
   noteAmount,
   schedule,
-  cuts,
+  withdrawalFee,
   initialSpeed,
   onCommit,
   commitKey,
@@ -56,7 +52,8 @@ export function useRegistrationSpeed({
   node?: WithdrawalSpeedupNode
   noteAmount?: bigint
   schedule?: RegistrationSchedule
-  cuts?: GoldenTicketCuts
+  /** The source executor's withdrawal fee. */
+  withdrawalFee?: bigint
   initialSpeed?: WithdrawalSpeed
   onCommit: (tip: bigint, speed: WithdrawalSpeed) => void
   commitKey?: string
@@ -72,12 +69,11 @@ export function useRegistrationSpeed({
   })
   const offer = choice.offer
   const covers =
-    offer && noteAmount !== undefined && schedule && cuts
-      ? goldenTicketCoverage(noteAmount, schedule, cuts, offer.proverTip).covers
+    offer && noteAmount !== undefined && schedule && withdrawalFee !== undefined
+      ? goldenTicketCoverage(noteAmount, schedule, offer.proverTip, withdrawalFee).covers
       : undefined
   const outcome = useSpeedOutcome(choice, covers, REGISTRATION_TIP_BLOCKED_COPY)
-  const unread =
-    !schedule || !cuts || choice.loading || (offer !== undefined && noteAmount === undefined)
+  const unread = !schedule || choice.loading || (offer !== undefined && noteAmount === undefined)
   const tip = unread ? undefined : outcome.proverTip
   const committed = useRef<bigint>(undefined)
   useEffect(() => {

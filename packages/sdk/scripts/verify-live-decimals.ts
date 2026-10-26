@@ -25,8 +25,8 @@
  *   SEPOLIA_RPC_URL=<live-rpc> AZTEC_NODE_URL=<testnet-node> OXIDE_PORTAL=<portal> \
  *   pnpm --filter @obsidion/sdk verify-live-decimals
  */
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { createAztecNodeClient } from "@aztec/aztec.js/node"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { createAztecNodeClient } from "@aztec-labs/aztec.js/node"
 import { extractPinnedOxideEnvTuple, getHardcodedArtifact } from "@obsidion/contracts"
 import { DEFAULT_CONTRACTS } from "@obsidion/core/constants"
 import { createPublicClient, http } from "viem"

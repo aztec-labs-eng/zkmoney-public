@@ -3,18 +3,19 @@ import type { Address, Hex, PublicClient } from "viem"
 import { encodeAbiParameters, encodeEventTopics, parseAbiItem } from "viem"
 import {
   readPortalDeposits,
-  readSweptSipa,
+  readSweepEmitters,
   readTokenTransfers,
   SIPA_TOPICS_PER_FILTER,
 } from "../../src/services/sipaChain.js"
 
 const PORTAL = "0x92308cE04e2416f20b03e941a14F9238C3603334" as Address
+const OTHER_PORTAL = "0x00000000000000000000000000000000000000a2" as Address
 const DAI = "0x00000000000000000000000000000000000000d1" as Address
 const USDC = "0x00000000000000000000000000000000000000d2" as Address
 const hex = (n: number, size: number) => `0x${n.toString(16).padStart(size * 2, "0")}` as Hex
 
 describe("readPortalDeposits", () => {
-  it("filters the portal by commitment topic, one filter per chunk, and returns logs in chain order", async () => {
+  it("filters every portal by commitment topic, one filter per chunk, and returns logs in chain order", async () => {
     const commitments = Array.from({ length: SIPA_TOPICS_PER_FILTER + 1 }, (_, i) => hex(i + 1, 32))
     const getContractEvents = vi.fn(async (request: { args: { recipientCommitment: Hex[] } }) =>
       request.args.recipientCommitment.length === 1
@@ -28,15 +29,17 @@ describe("readPortalDeposits", () => {
                 index: 3n,
               },
               blockNumber: 10n,
+              blockHash: hex(0xb1, 32),
               transactionHash: hex(1, 32),
               logIndex: 4,
             },
           ]
         : [
             {
-              address: PORTAL,
+              address: OTHER_PORTAL,
               args: { recipientCommitment: commitments[0], amount: 5n, key: hex(8, 32), index: 2n },
               blockNumber: 10n,
+              blockHash: hex(0xb1, 32),
               transactionHash: hex(2, 32),
               logIndex: 1,
             },
@@ -44,12 +47,12 @@ describe("readPortalDeposits", () => {
     )
     const client = { getContractEvents } as unknown as PublicClient
 
-    const deposits = await readPortalDeposits(client, PORTAL, commitments, 1n, 20n)
+    const deposits = await readPortalDeposits(client, [PORTAL, OTHER_PORTAL], commitments, 1n, 20n)
 
     expect(getContractEvents).toHaveBeenCalledTimes(2)
     for (const [request] of getContractEvents.mock.calls) {
       expect(request).toMatchObject({
-        address: PORTAL,
+        address: [PORTAL, OTHER_PORTAL],
         eventName: "Deposit",
         fromBlock: 1n,
         toBlock: 20n,
@@ -59,9 +62,9 @@ describe("readPortalDeposits", () => {
       SIPA_TOPICS_PER_FILTER,
       1,
     ])
-    expect(deposits.map((d) => [d.index, d.amount, d.key])).toEqual([
-      [2n, 5n, hex(8, 32)],
-      [3n, 9n, hex(7, 32)],
+    expect(deposits.map((d) => [d.portal, d.index, d.amount, d.key, d.blockHash])).toEqual([
+      [OTHER_PORTAL, 2n, 5n, hex(8, 32), hex(0xb1, 32)],
+      [PORTAL, 3n, 9n, hex(7, 32), hex(0xb1, 32)],
     ])
   })
 })
@@ -109,7 +112,7 @@ describe("readTokenTransfers", () => {
   })
 })
 
-describe("readSweptSipa", () => {
+describe("readSweepEmitters", () => {
   const sweepEvent = parseAbiItem("event Sweep(uint256 index, uint256 amount)")
   const sweepLog = (address: Address, index: bigint) => ({
     address,
@@ -123,14 +126,17 @@ describe("readSweptSipa", () => {
     removed: false,
   })
 
-  it("names the SIPA whose Sweep carries the deposit's index", async () => {
+  it("lists every emitter of a Sweep carrying the deposit's index, in log order", async () => {
     const a = hex(0xaa, 20) as Address
     const b = hex(0xbb, 20) as Address
+    const forger = hex(0xff, 20) as Address
     const client = {
-      getTransactionReceipt: vi.fn(async () => ({ logs: [sweepLog(a, 3n), sweepLog(b, 4n)] })),
+      getTransactionReceipt: vi.fn(async () => ({
+        logs: [sweepLog(a, 3n), sweepLog(forger, 4n), sweepLog(b, 4n)],
+      })),
     } as unknown as PublicClient
 
-    expect(await readSweptSipa(client, hex(9, 32), 4n)).toBe(b)
-    expect(await readSweptSipa(client, hex(9, 32), 5n)).toBeUndefined()
+    expect(await readSweepEmitters(client, hex(9, 32), 4n)).toEqual([forger, b])
+    expect(await readSweepEmitters(client, hex(9, 32), 5n)).toEqual([])
   })
 })

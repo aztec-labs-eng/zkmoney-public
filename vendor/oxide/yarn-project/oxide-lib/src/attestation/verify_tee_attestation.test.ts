@@ -3,7 +3,7 @@
 // pins the gen script's `user_data` against this package's `computeAttestationUserData` because
 // the wrapper recomputes the preimage from the supplied `UserData` and compares it to the parsed
 // attestation byte-for-byte.
-import { Buffer32 } from '@aztec/foundation/buffer';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
 
 import { readFileSync } from 'node:fs';
 

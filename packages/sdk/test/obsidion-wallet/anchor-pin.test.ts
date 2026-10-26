@@ -11,17 +11,17 @@
  * `pending-tx-store-di.test.ts`, plus a gate on `proveTx` so a send can be
  * held mid-flight deterministically.
  */
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { ExecutionPayload } from "@aztec/stdlib/tx"
-import { Gas, GasSettings } from "@aztec/stdlib/gas"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { ExecutionPayload } from "@aztec-labs/stdlib/tx"
+import { Gas, GasSettings } from "@aztec-labs/stdlib/gas"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { stubNodeInfo } from "../utils/obsidionWalletStubs.js"
 import { stubSimulateTx } from "../utils/stubSimulateTx.js"
 
 import { ObsidionWallet } from "../../src/obsidion/ObsidionWallet.js"
-import { BaseWallet } from "@aztec/wallet-sdk/base-wallet"
-import { NO_FROM } from "@aztec/aztec.js/account"
+import { BaseWallet } from "@aztec-labs/wallet-sdk/base-wallet"
+import { NO_FROM } from "@aztec-labs/aztec.js/account"
 import { provingProgress } from "@obsidion/proving-progress"
 
 function makeStubWallet(opts?: { proveTxThrows?: unknown }) {
@@ -178,10 +178,69 @@ describe("ObsidionWallet anchor pin", () => {
     expect(stubPxe.sync).not.toHaveBeenCalled()
   })
 
+  it("a read entering mid-snapshot skips its sync, so the snapshot's anchor holds", async () => {
+    const { wallet, stubPxe } = makeStubWallet()
+    let block = 100
+    stubPxe.sync = vi.fn(async () => {
+      block++
+    })
+    stubPxe.getSyncedBlockHeader = vi.fn(async () => ({
+      hash: async () => new Fr(block),
+      globalVariables: { blockNumber: block },
+    }))
+    const snapshot = await wallet.getSnapshot(async () => {
+      await wallet.executeUtility({} as any, {} as any)
+      return 7n
+    })
+    expect(snapshot).toEqual({ value: 7n, anchorBlock: 101 })
+    expect(stubPxe.sync).toHaveBeenCalledTimes(1)
+
+    await wallet.executeUtility({} as any, {} as any)
+    expect(stubPxe.sync).toHaveBeenCalledTimes(2)
+  })
+
+  it("a snapshot asked for mid-snapshot syncs after the first one ends", async () => {
+    const { wallet, stubPxe } = makeStubWallet()
+    let block = 100
+    stubPxe.sync = vi.fn(async () => {
+      block++
+    })
+    stubPxe.getSyncedBlockHeader = vi.fn(async () => ({
+      hash: async () => new Fr(block),
+      globalVariables: { blockNumber: block },
+    }))
+    let second: Promise<{ value: bigint; anchorBlock: number }> | undefined
+    const first = await wallet.getSnapshot(async () => {
+      second = wallet.getSnapshot(async () => 8n)
+      await new Promise((r) => setTimeout(r, 5))
+      return 7n
+    })
+    expect(first).toEqual({ value: 7n, anchorBlock: 101 })
+    expect(await second).toEqual({ value: 8n, anchorBlock: 102 })
+    expect(stubPxe.sync).toHaveBeenCalledTimes(2)
+  })
+
+  it("a failed snapshot frees the queue and the read syncs", async () => {
+    const { wallet, stubPxe } = makeStubWallet()
+    stubPxe.getSyncedBlockHeader = vi.fn(async () => ({
+      hash: async () => new Fr(1),
+      globalVariables: { blockNumber: 10 },
+    }))
+    const failed = wallet.getSnapshot(async () => {
+      throw new Error("read failed")
+    })
+    const next = wallet.getSnapshot(async () => 8n)
+    await expect(failed).rejects.toThrow("read failed")
+    expect(await next).toEqual({ value: 8n, anchorBlock: 10 })
+    stubPxe.sync.mockClear()
+    await wallet.executeUtility({} as any, {} as any)
+    expect(stubPxe.sync).toHaveBeenCalledTimes(1)
+  })
+
   it("a read entering mid-send skips its sync; after the send it syncs again", async () => {
     const { wallet, stubPxe, releaseProve } = makeStubWallet()
     const from = await AztecAddress.random()
-    const NO_WAIT_TOKEN = (await import("@aztec/aztec.js/contracts")).NO_WAIT
+    const NO_WAIT_TOKEN = (await import("@aztec-labs/aztec.js/contracts")).NO_WAIT
 
     const sendPromise = wallet.sendTx(new ExecutionPayload([], [], [], []), {
       from,
@@ -244,7 +303,7 @@ describe("ObsidionWallet anchor pin", () => {
   it("back-to-back sends each adopt a fresh anchor (pin does not outlive a send)", async () => {
     const { wallet, stubPxe, releaseProve } = makeStubWallet()
     const from = await AztecAddress.random()
-    const NO_WAIT_TOKEN = (await import("@aztec/aztec.js/contracts")).NO_WAIT
+    const NO_WAIT_TOKEN = (await import("@aztec-labs/aztec.js/contracts")).NO_WAIT
 
     releaseProve() // no need to hold mid-flight here
     await wallet.sendTx(new ExecutionPayload([], [], [], []), {
@@ -261,7 +320,7 @@ describe("ObsidionWallet anchor pin", () => {
   it("a concurrent second send rides the first send's anchor (no re-sync) and rejects", async () => {
     const { wallet, stubPxe, releaseProve } = makeStubWallet()
     const from = await AztecAddress.random()
-    const NO_WAIT_TOKEN = (await import("@aztec/aztec.js/contracts")).NO_WAIT
+    const NO_WAIT_TOKEN = (await import("@aztec-labs/aztec.js/contracts")).NO_WAIT
 
     const sendA = wallet.sendTx(new ExecutionPayload([], [], [], []), {
       from,
@@ -316,15 +375,19 @@ describe("ObsidionWallet anchor pin", () => {
   it("releases the pin on a NO_FROM send", async () => {
     const { wallet, stubPxe, releaseProve } = makeStubWallet()
     releaseProve()
-    const NO_WAIT_TOKEN = (await import("@aztec/aztec.js/contracts")).NO_WAIT
+    const NO_WAIT_TOKEN = (await import("@aztec-labs/aztec.js/contracts")).NO_WAIT
 
     // NO_FROM (signerless deploys, FPC-sponsored batches) rides the same send
     // path as an account send, but builds its request through upstream's
     // DefaultEntrypoint. Stub that leg so the pin is what the test exercises,
     // not upstream's entrypoint plumbing.
+    // Protected upstream, so the spy reaches it through a structural view of the prototype.
+    const base = BaseWallet.prototype as unknown as {
+      createTxExecutionRequestFromPayloadAndFee: (...args: unknown[]) => Promise<unknown>
+    }
     const superBuildRequest = vi
-      .spyOn(BaseWallet.prototype, "createTxExecutionRequestFromPayloadAndFee")
-      .mockResolvedValue({ _stub: "txRequest" } as any)
+      .spyOn(base, "createTxExecutionRequestFromPayloadAndFee")
+      .mockResolvedValue({ _stub: "txRequest" })
 
     await wallet.sendTx(new ExecutionPayload([], [], [], []), {
       from: NO_FROM,

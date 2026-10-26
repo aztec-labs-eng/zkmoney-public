@@ -13,8 +13,8 @@ import {
   parseAbiParameters,
   recoverAddress,
 } from "viem"
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { secp256k1 } from "@noble/curves/secp256k1"
 import {
   buildRecoverErc20Digest,

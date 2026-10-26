@@ -1,6 +1,6 @@
-import type { FieldLike } from "@aztec/aztec.js/abi"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import type { FieldLike } from "@aztec-labs/aztec.js/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 
 /** Unpacked `PaylinkNote.data` — amount + claim window timestamps. */
 export type PaylinkNoteData = {

@@ -1,13 +1,18 @@
 export { deployFrozenNotesRefundVerifier } from './deploy_frozen_notes_refund_verifier.js';
-export { deployFrozenDepositRefundVerifier } from './deploy_frozen_deposit_refund_verifier.js';
+export { deployFrozenDepositsRefundVerifier } from './deploy_frozen_deposits_refund_verifier.js';
 export { deployUnprocessedDepositRefundVerifier } from './deploy_unprocessed_deposit_refund_verifier.js';
 export { deployNitroValidator } from './deploy_nitro_validator.js';
+export { type DeployTeeRegistryArgs, deployTeeRegistry } from './deploy_tee_registry.js';
 export { deployFirstProverProofSubmitter } from './deploy_first_prover_proof_submitter.js';
 export { deployDepositSubsidy } from './deploy_deposit_subsidy.js';
-export { deployWithdrawalSubsidy } from './deploy_withdrawal_subsidy.js';
 export { deployProverSubsidy } from './deploy_prover_subsidy.js';
 export { deployPlainWithdrawalExecutor } from './deploy_plain_withdrawal_executor.js';
-export { type PortalRefundVerifiers, type DeployOxidePortalArgs, deployOxidePortal } from './deploy_oxide_portal.js';
+export { type DeployMigrationExecutorArgs, deployMigrationExecutor } from './deploy_migration_executor.js';
+export {
+  type PortalRefundVerifiers,
+  type DeployPortalFactoryArgs,
+  deployPortalFactory,
+} from './deploy_portal_factory.js';
 
 // Periphery: name registry + stealth-deposit resolver.
 export { deployContract } from './deploy_contract.js';
@@ -23,14 +28,21 @@ export { deployNamePortal } from './deploy_name_portal.js';
 export { deployResolverVerifierAndZkTranscriptLib } from './deploy_resolver_verifier.js';
 export { deploySIPAFactory } from './deploy_sipa_factory.js';
 export {
+  DEFAULT_FORWARDING_TABLE_INTENTS,
   DEPOSIT_SWEEP_FEE,
   REGISTRATION_SWEEP_FEE,
-  METADATA_UPDATE_SWEEP_FEE,
+  USER_OP_SWEEP_FEE,
+  type ForwardingTableInitialRow,
+  type ForwardingTableIntentFees,
+  deployForwardingTable,
+} from './deploy_forwarding_table.js';
+export {
   type SIPAImplementations,
+  blessForwardingTable,
   blessSIPAImplementation,
   deployDepositSIPA,
   deployRegistrationSIPA,
-  deployUpdateMetadataSIPA,
+  deployUserOpSIPA,
   deploySIPAImplementations,
 } from './deploy_sipa_implementations.js';
 export { deploySIPAResolver } from './deploy_sipa_resolver.js';

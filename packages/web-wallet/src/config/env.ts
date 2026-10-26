@@ -2,9 +2,10 @@ import { selectWebPasskeyRpId } from "@obsidion/passkey-web"
 import { Network, createClassArtifactResolver } from "@obsidion/sdk"
 import {
   createArtifactCatalog,
-  resolveWalletProfile,
   retiredRollupNodes,
+  resolveWalletProfile,
   type ConfigProfileErrorCode,
+  type WalletSourceRollup,
   type ConfigVersion,
   type WalletProfileBoot,
   type ResolveWalletProfileInput,
@@ -21,9 +22,8 @@ import {
 } from "./endpointOverrides"
 import { getDesktopL1Bridge } from "../platform/desktopBridge"
 import {
-  DEFAULT_FPC_REFUEL_THRESHOLD,
+  CLAIM_FPC_FUNDING,
   l1ChainIdForNetwork,
-  MAINNET_CLAIM_FPC_FLOAT,
   PASSKEY_RP_NAME,
   ZKJWT_VKEY_HASH,
 } from "@obsidion/core/constants"
@@ -55,6 +55,11 @@ export type WebWalletConfig = {
    */
   nodeApiKey?: string
   /**
+   * The build's key alone, for the profile's retired rollup nodes: they sit behind the same gateway
+   * as the default node, and a Settings key never leaves the node it was saved beside.
+   */
+  sourceRollupApiKey?: string
+  /**
    * Per endpoint, provenance and default-equality. `source` drives the recovery actions; the
    * node's `isDefault` also decides its PXE store and scan cursors, and whether it takes the build's
    * API key.
@@ -62,7 +67,9 @@ export type WebWalletConfig = {
   endpoints: Record<EndpointKind, EndpointProvenance>
   /** Digest of the node's normalized endpoint; set only when the node is not the default. */
   nodeEndpointDigest?: string
-  /** The profile's `shared.rollupVersion`, read only by the rollup-skew report. */
+  /** The same for the old network's node, for the source rollup's PXE store. */
+  sourceNodeEndpointDigest?: string
+  /** The profile's `shared.rollupVersion`: checked by the rollup-skew report; a paylink from any other is retired. */
   profileRollupVersion: string
   /**
    * The oxide env-registry profile EVERY consumer must use — ContractService's
@@ -70,8 +77,13 @@ export type WebWalletConfig = {
    * Resolved once here so no call site re-derives a manifest URL.
    */
   oxideProfile: OxideEnvProfile
-  /** Source node for each lowercase portal selected by supported profile history. */
+  /**
+   * Source node for each lowercase portal selected by supported profile history. A saved old-network
+   * node replaces the node of every rollup a cutover left.
+   */
   sourceRollupNodes?: ReadonlyMap<string, string>
+  /** The rollups a cutover left, each with its version's contracts. */
+  sourceRollups?: readonly WalletSourceRollup[]
   /** L1 chain the accounts and the Registry live on. */
   l1ChainId: number
   /** Viem chain for `l1ChainId` (TEE signer source, injected-wallet clients). */
@@ -98,12 +110,10 @@ export type WebWalletConfig = {
    */
   accountServiceTestMode: boolean
   /**
-   * TEE enclave base URL (co-signer for oxide-token operations); `/rpc` is
-   * appended. Empty means "use the manifest's own enclaveUrl verbatim".
+   * Base URL of the enclave fleet that co-signs every token's operations; `/rpc` is appended. Empty
+   * means "use each deployment's manifest enclaveUrl verbatim".
    */
   enclaveUrl: string
-  /** The Savings deployment's enclave base URL, the same way; it has its own TEE. */
-  savingsEnclaveUrl: string
   /** Real WASM proving in the browser (overrides the per-network default). */
   proverEnabled: boolean
   /** XMTP network from the selected config profile. */
@@ -166,14 +176,6 @@ function resolveAccountServiceTestMode(
  */
 function defaultEnclaveUrl(env: Record<string, string | undefined>, network: Network): string {
   return env.VITE_ENCLAVE_URL ?? (network === Network.SANDBOX ? "/svc/enclave" : "")
-}
-
-/** Savings' enclave, by the same rule: sandbox's mock Sky TEE rides its own `/svc/enclave-sky` proxy. */
-function defaultSavingsEnclaveUrl(
-  env: Record<string, string | undefined>,
-  network: Network,
-): string {
-  return env.VITE_SAVINGS_ENCLAVE_URL ?? (network === Network.SANDBOX ? "/svc/enclave-sky" : "")
 }
 
 /**
@@ -301,6 +303,7 @@ export function loadConfig(
     network,
     nodeUrl: env.VITE_NODE_URL ?? "http://localhost:8080",
     nodeApiKey: env.VITE_NODE_API_KEY || undefined,
+    sourceRollupApiKey: env.VITE_V5_ARCHIVE_NODE_API_KEY || env.VITE_NODE_API_KEY || undefined,
     l1ChainId,
     l1Chain: l1ChainFor(l1ChainId),
     rpId: selectWebPasskeyRpId(env),
@@ -309,16 +312,13 @@ export function loadConfig(
     // Whole fee-juice units (1 FJ = 1e18 wei).
     fpcRefuelThreshold: env.VITE_FPC_REFUEL_THRESHOLD
       ? BigInt(env.VITE_FPC_REFUEL_THRESHOLD) * 10n ** 18n
-      : network === Network.MAINNET
-      ? MAINNET_CLAIM_FPC_FLOAT
-      : DEFAULT_FPC_REFUEL_THRESHOLD,
+      : CLAIM_FPC_FUNDING[network].refuelBelow,
     // Same-origin dev-server proxy (vite.config.ts) — browsers refuse the raw
     // 5060 port (SIP, restricted).
     accountServiceUrl: "/svc/account",
     campaignUrl: "",
     accountServiceTestMode: resolveAccountServiceTestMode(env, network),
     enclaveUrl: defaultEnclaveUrl(env, network),
-    savingsEnclaveUrl: defaultSavingsEnclaveUrl(env, network),
     proverEnabled: env.VITE_PROVER_ENABLED !== "false",
     googleClientId: env.VITE_GOOGLE_CLIENT_ID || undefined,
     predicate: resolvePredicateConfig(env, network),
@@ -410,26 +410,55 @@ function mergeProfileConfig(
   const node = resolveEndpoint(stored.node, env.VITE_NODE_URL || boot.nodeUrl)
   const l1Rpc = resolveEndpoint(stored.l1Rpc, env.VITE_L1_RPC_URL || boot.version.l1RpcUrl)
   const enclave = resolveEndpoint(stored.enclave, defaultEnclaveUrl(env, base.network))
+  // The retired rollup is read through the old-network node saved in Settings, else the v5 archive
+  // node the build names, over the node its profile document recorded: anchor-block reads need a
+  // node that keeps all historical state. The saved node is the default when it matches the one
+  // node the retired rollups would otherwise share.
+  const archiveNode = env.VITE_V5_ARCHIVE_NODE_URL || undefined
+  const sharedSourceNode = new Set(
+    boot.sourceRollups.map((source) => archiveNode ?? source.nodeUrl),
+  )
+  const sourceNode = resolveEndpoint(
+    stored.sourceNode,
+    sharedSourceNode.size === 1 ? [...sharedSourceNode][0] : "",
+  )
+  const sourceNodeUrl = stored.sourceNode ?? archiveNode
+  const sourceRollups = sourceNodeUrl
+    ? boot.sourceRollups.map((source) => ({ ...source, nodeUrl: sourceNodeUrl }))
+    : boot.sourceRollups
+  const sourceRollupNodes = retiredRollupNodes(boot.profile)
+  for (const source of sourceRollups) {
+    for (const { portal } of source.pins)
+      sourceRollupNodes.set(portal.toLowerCase(), source.nodeUrl)
+  }
   return {
     ...base,
     nodeUrl: node.url,
     nodeApiKey:
       (node.provenance.source === "settings" ? stored.nodeApiKey : undefined) ??
       (node.provenance.isDefault ? env.VITE_NODE_API_KEY || undefined : undefined),
+    sourceRollupApiKey: sourceNode.provenance.isDefault
+      ? env.VITE_V5_ARCHIVE_NODE_API_KEY || env.VITE_NODE_API_KEY || undefined
+      : undefined,
     l1RpcUrl: l1Rpc.url,
     enclaveUrl: enclave.url,
-    endpoints: { node: node.provenance, l1Rpc: l1Rpc.provenance, enclave: enclave.provenance },
+    endpoints: {
+      node: node.provenance,
+      sourceNode: sourceNode.provenance,
+      l1Rpc: l1Rpc.provenance,
+      enclave: enclave.provenance,
+    },
     // A stored URL the normalizer refuses still gets a stable digest; the dial fails later.
-    nodeEndpointDigest: node.provenance.isDefault
-      ? undefined
-      : endpointDigest(tryNormalizeEndpoint(node.url) ?? node.url),
+    nodeEndpointDigest: customDigest(node),
+    sourceNodeEndpointDigest: customDigest(sourceNode),
     profileRollupVersion: boot.profile.shared.rollupVersion,
     // A loopback origin keeps `loadConfig`'s value — sandbox's browser-restricted port needs the
     // same-origin proxy, which a document (absolute URLs only) cannot express.
     accountServiceUrl: accountServiceFrom(boot),
     xmtpEnv: boot.profile.shared.xmtpEnv,
     oxideProfile,
-    sourceRollupNodes: retiredRollupNodes(boot.profile),
+    sourceRollupNodes,
+    sourceRollups,
     claimFpcAddress: boot.snapshot.contracts.claimFpc?.address,
     assets: boot.version.assets ?? [],
   }
@@ -453,6 +482,10 @@ function resolveEndpoint(
     source === "default" ||
     (defaultNormalized !== undefined && tryNormalizeEndpoint(url) === defaultNormalized)
   return { url, provenance: { source, isDefault } }
+}
+
+function customDigest({ url, provenance }: { url: string; provenance: EndpointProvenance }) {
+  return provenance.isDefault ? undefined : endpointDigest(tryNormalizeEndpoint(url) ?? url)
 }
 
 /** Browser-restricted SIP ports reach the profile's local service through the app proxy. */
@@ -512,6 +545,12 @@ export async function resolveBootConfig(
     console.error(
       `[bootConfig] zkJWT vkey skew: profile "${boot.profile.profileId}" serves ` +
         `${boot.version.vkeys?.zkJwtVkeyHash}, this build bundles ${ZKJWT_VKEY_HASH}`,
+    )
+  }
+  for (const issue of boot.sourceRollupIssues) {
+    console.warn(
+      `[bootConfig] migration source unavailable at ${issue.profileUrl} ` +
+        `(${issue.code}: ${issue.message})`,
     )
   }
   const bakedProfile: WebBootConfig["bakedProfile"] = boot.bootedFromBakedProfile

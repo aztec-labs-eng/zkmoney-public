@@ -1,22 +1,19 @@
 import { describe, expect, it, vi } from "vitest"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { EthAddress } from "@aztec/foundation/eth-address"
-import { Fr } from "@aztec/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { IntraRollupMigrationDeps } from "../../src/services/IntraRollupMigrationService.js"
 import type { WithdrawalOptions } from "../../src/services/plainWithdrawal.js"
 
-vi.mock("@oxide/l1-contracts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@oxide/l1-contracts")>()),
-  OxidePortalContract: class {
-    async getUnderlying() {
-      return EthAddress.fromString(`0x${"11".repeat(20)}`)
-    }
-  },
-}))
-vi.mock("../../src/services/sipaClaim.js", () => ({ readDepositFee: async () => 1n }))
-vi.mock("../../src/services/sipaIntents.js", () => ({
-  readDepositSIPAImplementation: async () => `0x${"22".repeat(20)}`,
-}))
+const readSipaPortalTerms = vi.hoisted(() =>
+  vi.fn(async (_client: unknown, _route: { token: string }) => ({
+    portal: `0x${"44".repeat(20)}`,
+    token: `0x${"11".repeat(20)}`,
+    depositFee: 1n,
+    txAmountCap: 10n ** 24n,
+  })),
+)
+vi.mock("../../src/oxide/sipaPortalTerms.js", () => ({ readSipaPortalTerms }))
 
 import { IntraRollupMigrationService } from "../../src/services/IntraRollupMigrationService.js"
 import { planPayout } from "../../src/services/plainWithdrawal.js"
@@ -61,7 +58,7 @@ describe("migration withdrawal source", () => {
         ),
       )
       const readContract = vi.fn(async ({ functionName }: { functionName: string }) =>
-        functionName === "ROLLUP_VERSION" ? 5n : functionName === "FPC_FUNDING_CUT" ? 5n : false,
+        functionName === "ROLLUP_VERSION" ? 5n : functionName === "FEE" ? 0n : false,
       )
       const broadcastSipa = vi.fn(async () => {})
       // The node reports a different rollup version than the destination tuple carries.
@@ -91,7 +88,12 @@ describe("migration withdrawal source", () => {
           ) => exit(options),
         },
         from: source,
-        to: { portal: live.portal, sipaFactory: recipient.toString(), rollupVersion: "5" },
+        to: {
+          portal: live.portal,
+          sipaFactory: recipient.toString(),
+          forwardingTable: `0x${"88".repeat(20)}`,
+          rollupVersion: "5",
+        },
         selfResolver: { resolveAddress },
         publicClient: { readContract },
       } as unknown as IntraRollupMigrationDeps
@@ -102,6 +104,7 @@ describe("migration withdrawal source", () => {
           amount: 20n,
           nonceForDay: () => 0,
           broadcastSipa,
+          resolveSpendMetadata: vi.fn(),
           ...(sponsored ? { sponsor: async () => ({} as never) } : {}),
         }),
       ).rejects.toBe(accepted)
@@ -112,13 +115,14 @@ describe("migration withdrawal source", () => {
       expect(exit).toHaveBeenCalledOnce()
       const { withdrawal } = exit.mock.calls[0]![0]
       expect(withdrawal.tuple).toBe(source)
-      // The destination portal confirms the version; the relayer-tip check reads the source.
-      expect(withdrawal.portal).toEqual({ fpcFundingCut: 5n, frozen: false })
+      // The destination portal confirms the version and the source's executor answers its fee; the
+      // source portal is not read.
       expect(readContract.mock.calls.map(([call]) => (call as any).address)).toEqual([
         live.portal,
-        source.portal,
-        source.portal,
+        source.plainWithdrawalExecutor,
       ])
+      // The destination row is read for the source bridge's own asset.
+      expect(readSipaPortalTerms.mock.calls[0]![1].token).toBe(source.token)
       expect(getArtifactForInstance.mock.calls[0]![0]).toEqual(
         AztecAddress.fromStringUnsafe(source.l2Broadcaster),
       )
@@ -133,7 +137,12 @@ describe("migration withdrawal source", () => {
       node: { getBlock: async () => ({ header: { globalVariables: { timestamp: 86400n } } }) },
       fromTokenService: { tokenAddress: oldToken, exitToL1Private: exit },
       from: source,
-      to: { portal: live.portal, sipaFactory: recipient.toString(), rollupVersion: "5" },
+      to: {
+        portal: live.portal,
+        sipaFactory: recipient.toString(),
+        forwardingTable: `0x${"88".repeat(20)}`,
+        rollupVersion: "5",
+      },
       selfResolver: { resolveAddress: vi.fn() },
       publicClient: { readContract },
     } as unknown as IntraRollupMigrationDeps
@@ -143,6 +152,7 @@ describe("migration withdrawal source", () => {
         amount: 20n,
         nonceForDay: () => 0,
         broadcastSipa,
+        resolveSpendMetadata: vi.fn(),
       }),
     ).rejects.toThrow(/manifest says rollupVersion 5.*says 6/)
     expect(broadcastSipa).not.toHaveBeenCalled()

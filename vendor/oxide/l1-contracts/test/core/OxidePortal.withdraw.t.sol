@@ -39,37 +39,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     );
   }
 
-  function test_GivenPortalIsUninitialized_WhenWithdrawIsCalled() external {
-    bytes32[] memory path = new bytes32[](0);
-
-    vm.expectRevert(Errors.OxidePortal__Uninitialized.selector);
-    portal.withdraw(
-      IOxidePortal.WithdrawArgs({
-        content: IOxidePortal.WithdrawContent({
-          executor: address(plainWithdrawalExecutor),
-          userPayloadHash: 0x00933e6c511ad85168d59c39a333286a8fec3f69d5448bb2ba1d3582c9e39f30,
-          amount: 1 ether,
-          proverTip: 0,
-          randomness: 0
-        }),
-        userPayload: abi.encode(USER, 0),
-        relayerPayload: abi.encode(address(0), address(0)),
-        epochNumber: 0,
-        numCheckpointsInEpoch: 1,
-        leafIndex: 0,
-        path: path,
-        checkpointNumber: 0,
-        withdrawalId: bytes32(0),
-        teeSignature: ""
-      })
-    );
-  }
-
-  function test_GivenValidWithdrawal_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-happy")
-  {
+  function test_GivenValidWithdrawal_WhenWithdrawIsCalled() external givenTeeIsRegistered("tee-happy") {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes32[] memory path = _dummyPath();
     underlying.mint(address(portal), p.amount);
@@ -97,7 +67,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
       uint256 calledLeafIndex,
       uint256 pathLength
     ) = outbox.calls(0);
-    assertEq(senderActor, L2_PORTAL);
+    assertEq(senderActor, L2_TOKEN);
     assertEq(senderVersion, ROLLUP_VERSION);
     assertEq(recipientActor, address(portal));
     assertEq(recipientChainId, block.chainid);
@@ -108,11 +78,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     assertEq(pathLength, path.length);
   }
 
-  function test_GivenWithdrawalDigestIsAlreadySpent_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-replay")
-  {
+  function test_GivenWithdrawalDigestIsAlreadySpent_WhenWithdrawIsCalled() external givenTeeIsRegistered("tee-replay") {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes32[] memory path = _dummyPath();
     underlying.mint(address(portal), p.amount * 2);
@@ -124,7 +90,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     _withdraw(p, path, sig);
   }
 
-  function test_GivenSignerIsUnregistered_WhenWithdrawIsCalled() external givenPortalIsInitialized {
+  function test_GivenSignerIsUnregistered_WhenWithdrawIsCalled() external {
     (, uint256 unregisteredPk) = makeAddrAndKey("tee-unreg");
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes32[] memory path = _dummyPath();
@@ -135,7 +101,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     _withdraw(p, path, sig);
   }
 
-  function test_GivenZeroExecutor_WhenWithdrawIsCalled() external givenPortalIsInitialized {
+  function test_GivenZeroExecutor_WhenWithdrawIsCalled() external {
     WithdrawParams memory p = _defaultWithdrawParams();
     p.executor = address(0);
 
@@ -143,7 +109,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     _withdraw(p, _dummyPath(), "");
   }
 
-  function test_GivenCodelessExecutor_WhenWithdrawIsCalled() external givenPortalIsInitialized {
+  function test_GivenCodelessExecutor_WhenWithdrawIsCalled() external {
     WithdrawParams memory p = _defaultWithdrawParams();
     p.executor = USER;
 
@@ -151,7 +117,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     _withdraw(p, _dummyPath(), "");
   }
 
-  function test_GivenPayloadHashDoesNotMatch_WhenWithdrawIsCalled() external givenPortalIsInitialized {
+  function test_GivenPayloadHashDoesNotMatch_WhenWithdrawIsCalled() external {
     WithdrawParams memory p = _defaultWithdrawParams();
     p.userPayloadHash = bytes32(uint256(1));
 
@@ -159,7 +125,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     _withdraw(p, _dummyPath(), "");
   }
 
-  function test_GivenProverTipExceedsAmount_WhenWithdrawIsCalled() external givenPortalIsInitialized {
+  function test_GivenProverTipExceedsAmount_WhenWithdrawIsCalled() external {
     WithdrawParams memory p = _defaultWithdrawParams();
     p.proverTip = p.amount + 1;
 
@@ -167,11 +133,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     _withdraw(p, _dummyPath(), "");
   }
 
-  function test_GivenExecutorReverts_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-executor-revert")
-  {
+  function test_GivenExecutorReverts_WhenWithdrawIsCalled() external givenTeeIsRegistered("tee-executor-revert") {
     WithdrawParams memory p = _defaultWithdrawParams();
     p.executor = address(new RevertingWithdrawalExecutor());
     p.userPayloadHash = Hash.sha256ToField(_userPayload(p));
@@ -185,11 +147,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     assertEq(outbox.callCount(), 0);
   }
 
-  function test_GivenRecipientWasTampered_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-tamper-recipient")
-  {
+  function test_GivenRecipientWasTampered_WhenWithdrawIsCalled() external givenTeeIsRegistered("tee-tamper-recipient") {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes32[] memory path = _dummyPath();
     underlying.mint(address(portal), p.amount);
@@ -219,11 +177,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     );
   }
 
-  function test_GivenAmountWasTampered_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-tamper-amount")
-  {
+  function test_GivenAmountWasTampered_WhenWithdrawIsCalled() external givenTeeIsRegistered("tee-tamper-amount") {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes32[] memory path = _dummyPath();
     underlying.mint(address(portal), p.amount);
@@ -240,7 +194,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
           randomness: p.randomness
         }),
         userPayload: _userPayload(p),
-        relayerPayload: _relayerPayload(address(this), address(0)),
+        relayerPayload: _relayerPayload(address(this)),
         epochNumber: p.epochNumber,
         numCheckpointsInEpoch: 1,
         leafIndex: p.leafIndex,
@@ -252,13 +206,9 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     );
   }
 
-  function test_GivenAmountExceedsTxLimit_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-over-cap")
-  {
+  function test_GivenAmountExceedsTxLimit_WhenWithdrawIsCalled() external givenTeeIsRegistered("tee-over-cap") {
     WithdrawParams memory p = _defaultWithdrawParams();
-    p.amount = OxideConstants.TX_AMOUNT_CAP + 1;
+    p.amount = TX_AMOUNT_CAP + 1;
     bytes32[] memory path = _dummyPath();
     bytes memory sig = _signTee(teePk, _finalDigest(p));
 
@@ -268,7 +218,6 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
 
   function test_GivenWithdrawalDigestWasTampered_WhenWithdrawIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-tamper-digest")
   {
     WithdrawParams memory p = _defaultWithdrawParams();
@@ -287,7 +236,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
           randomness: p.randomness
         }),
         userPayload: _userPayload(p),
-        relayerPayload: _relayerPayload(address(this), address(0)),
+        relayerPayload: _relayerPayload(address(this)),
         epochNumber: p.epochNumber,
         numCheckpointsInEpoch: 1,
         leafIndex: p.leafIndex,
@@ -299,9 +248,29 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     );
   }
 
+  function test_GivenDigestBindsAnotherTeeRegistry_WhenWithdrawIsCalled()
+    external
+    givenTeeIsRegistered("tee-other-registry")
+  {
+    WithdrawParams memory p = _defaultWithdrawParams();
+    bytes32[] memory path = _dummyPath();
+    underlying.mint(address(portal), p.amount);
+    bytes32 digest = sha256(
+      abi.encodePacked(
+        OxideConstants.TEE_SIG_DOMAIN_WITHDRAWAL_FINALIZED,
+        address(0xBEEF),
+        p.archiveRoot,
+        p.withdrawalId,
+        _messageHash(p)
+      )
+    );
+
+    vm.expectRevert(Errors.OxidePortal__UnregisteredTEE.selector);
+    _withdraw(p, path, _signTee(teePk, digest));
+  }
+
   function test_GivenCheckpointNumberWasTampered_WhenWithdrawIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-tamper-anchor")
   {
     WithdrawParams memory p = _defaultWithdrawParams();
@@ -319,7 +288,6 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
 
   function test_GivenCheckpointIsUnknown_WhenWithdrawIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-unknown-checkpoint")
   {
     WithdrawParams memory p = _defaultWithdrawParams();
@@ -333,7 +301,6 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
 
   function test_GivenCheckpointIsUnproven_WhenWithdrawIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-unproven-checkpoint")
   {
     WithdrawParams memory p = _defaultWithdrawParams();
@@ -348,11 +315,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     _withdrawWithCheckpoint(p, path, unprovenCheckpointNumber, sig);
   }
 
-  function test_GivenOutboxReverts_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-outbox-revert")
-  {
+  function test_GivenOutboxReverts_WhenWithdrawIsCalled() external givenTeeIsRegistered("tee-outbox-revert") {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes32[] memory path = _dummyPath();
     underlying.mint(address(portal), p.amount);
@@ -364,11 +327,7 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     _withdraw(p, path, sig);
   }
 
-  function test_GivenPortalIsFrozenAndEpochAfterFreeze_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenPortalIsFrozen
-  {
+  function test_GivenPortalIsFrozenAndEpochAfterFreeze_WhenWithdrawIsCalled() external givenPortalIsFrozen {
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes32[] memory path = _dummyPath();
 
@@ -378,13 +337,12 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
 
   function test_GivenPortalIsFrozenAndEpochBeforeFreeze_WhenWithdrawIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-frozen-earlier-epoch")
   {
     WithdrawParams memory p = _defaultWithdrawParams();
     p.epochNumber = 1;
     _setCheckpoint(2);
-    _freezeAsOwner();
+    _freeze();
 
     bytes32[] memory path = _dummyPath();
     underlying.mint(address(portal), p.amount);
@@ -399,42 +357,8 @@ contract OxidePortalWithdrawTest is OxidePortalBase {
     (,,,,, uint256 epoch,,,) = outbox.calls(0);
     assertEq(epoch, p.epochNumber);
   }
-}
 
-contract OxidePortalWithdrawFpcCutTest is OxidePortalBase {
-  uint256 internal constant CUT = 10e16;
-
-  function setUp() public override {
-    fpcFundingCut = CUT;
-    super.setUp();
-  }
-
-  function test_GivenValidWithdrawal_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-cut-happy")
-  {
-    WithdrawParams memory p = _defaultWithdrawParams();
-    bytes32[] memory path = _dummyPath();
-    underlying.mint(address(portal), p.amount);
-    uint256 userBalanceBefore = underlying.balanceOf(p.recipient);
-    bytes memory sig = _signTee(teePk, _finalDigest(p));
-
-    vm.expectEmit(true, true, true, true, address(portal));
-    emit WithdrawalOrRefund(IExecutor.Flow.Withdrawal, p.withdrawalId, p.executor, p.amount - CUT);
-
-    _withdraw(p, path, sig);
-
-    assertEq(underlying.balanceOf(p.recipient), userBalanceBefore + p.amount - CUT);
-    assertEq(underlying.balanceOf(FPC_FUNDER), CUT);
-    assertEq(underlying.balanceOf(address(portal)), 0);
-  }
-
-  function test_GivenProverTip_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-cut-tip")
-  {
+  function test_GivenProverTip_WhenWithdrawIsCalled() external givenTeeIsRegistered("tee-prover-tip") {
     WithdrawParams memory p = _defaultWithdrawParams();
     p.proverTip = 2 ether;
     bytes32[] memory path = _dummyPath();
@@ -442,53 +366,12 @@ contract OxidePortalWithdrawFpcCutTest is OxidePortalBase {
     uint256 userBalanceBefore = underlying.balanceOf(p.recipient);
     bytes memory sig = _signTee(teePk, _finalDigest(p));
 
-    _withdraw(p, path, sig);
-
-    assertEq(underlying.balanceOf(p.recipient), userBalanceBefore + p.amount - p.proverTip - CUT);
-    assertEq(underlying.balanceOf(FPC_FUNDER), CUT);
-    assertEq(underlying.balanceOf(address(portal)), p.proverTip);
-  }
-
-  function test_GivenNetBelowCut_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-cut-dust")
-  {
-    WithdrawParams memory p = _defaultWithdrawParams();
-    p.amount = CUT / 2;
-    bytes32[] memory path = _dummyPath();
-    underlying.mint(address(portal), p.amount);
-    uint256 userBalanceBefore = underlying.balanceOf(p.recipient);
-    bytes memory sig = _signTee(teePk, _finalDigest(p));
-
     vm.expectEmit(true, true, true, true, address(portal));
-    emit WithdrawalOrRefund(IExecutor.Flow.Withdrawal, p.withdrawalId, p.executor, 0);
+    emit WithdrawalOrRefund(IExecutor.Flow.Withdrawal, p.withdrawalId, p.executor, p.amount - p.proverTip);
 
     _withdraw(p, path, sig);
 
-    assertEq(underlying.balanceOf(p.recipient), userBalanceBefore);
-    assertEq(underlying.balanceOf(FPC_FUNDER), p.amount);
-    assertTrue(portal.$isWithdrawalSpent(p.withdrawalId));
-  }
-
-  function test_GivenPortalIsFrozen_WhenWithdrawIsCalled()
-    external
-    givenPortalIsInitialized
-    givenTeeIsRegistered("tee-cut-frozen")
-  {
-    WithdrawParams memory p = _defaultWithdrawParams();
-    p.epochNumber = 1;
-    _setCheckpoint(2);
-    _freezeAsOwner();
-
-    bytes32[] memory path = _dummyPath();
-    underlying.mint(address(portal), p.amount);
-    uint256 userBalanceBefore = underlying.balanceOf(p.recipient);
-    bytes memory sig = _signTee(teePk, _finalDigest(p));
-
-    _withdraw(p, path, sig);
-
-    assertEq(underlying.balanceOf(p.recipient), userBalanceBefore + p.amount);
-    assertEq(underlying.balanceOf(FPC_FUNDER), 0);
+    assertEq(underlying.balanceOf(p.recipient), userBalanceBefore + p.amount - p.proverTip);
+    assertEq(underlying.balanceOf(address(portal)), p.proverTip);
   }
 }

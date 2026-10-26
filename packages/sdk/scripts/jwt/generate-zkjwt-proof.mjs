@@ -15,7 +15,7 @@
  *   target/proof/proof.json        — { proof: string[] hex }
  *   target/proof/public_inputs.json — { public_inputs: string[] hex }
  *
- * Proving goes through @aztec/bb.js UltraHonkBackend (msgpack FFI). The `bb` CLI's on-disk proof serializer in
+ * Proving goes through @aztec-foundation/bb.js UltraHonkBackend (msgpack FFI). The `bb` CLI's on-disk proof serializer in
  * 4.3.0-nightly.20260421 trips `field_conversion.hpp` bigfield-limb asserts
  * for these circuits; the direct bbapi path returns raw field bytes and works.
  */
@@ -24,7 +24,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "fs"
 import { join, dirname } from "path"
 import { fileURLToPath } from "url"
 import { execSync } from "child_process"
-import { Barretenberg, UltraHonkBackend } from "@aztec/bb.js"
+import { Barretenberg, UltraHonkBackend } from "@aztec-foundation/bb.js"
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const CIRCUIT_DIR = join(__dirname, "../../../contracts/circuits/zkJWT")
@@ -70,10 +70,7 @@ async function proveViaBbjs(circuitName, targetDir) {
     for (let i = 0; i < proof.length; i += 32) {
       proofHex.push(uint8ToHex(proof.subarray(i, i + 32)))
     }
-    writeFileSync(
-      join(proofDir, "proof.json"),
-      JSON.stringify({ proof: proofHex }, null, 2),
-    )
+    writeFileSync(join(proofDir, "proof.json"), JSON.stringify({ proof: proofHex }, null, 2))
     writeFileSync(
       join(proofDir, "public_inputs.json"),
       JSON.stringify({ public_inputs: publicInputs }, null, 2),

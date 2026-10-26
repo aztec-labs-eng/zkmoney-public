@@ -6,9 +6,9 @@ import { predictLegacySIPA, type LegacySipaDeployArgs } from "@oxide/l1-contract
  */
 
 import { type Address, type Hex, type PublicClient, zeroAddress } from "viem"
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { EthAddress } from "@aztec/foundation/eth-address"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
   type AuthKeyEntry,
   type R1PublicKeyArg,
@@ -31,7 +31,7 @@ import {
 } from "@oxide/l1-contracts"
 import type { OxideEnvTuple, RegistrationIntent, RegistrationSchedule } from "@obsidion/core/types"
 import { registrationFloor } from "@obsidion/core/constants"
-import { requireNonZeroL1Address } from "@obsidion/core/oxide"
+import { requireNonZeroL1Address, sipaIntentToken } from "@obsidion/core/oxide"
 import { readResolverOperatorRecords } from "./resolverOperatorRecords"
 import type { SIPADepositStore } from "../core/services/deposits/SIPADepositStore"
 import {
@@ -41,7 +41,7 @@ import {
   SipaSelfResolver,
   deriveSharedSecret,
   readDepositFee,
-  readFpcFundingCut,
+  type SipaRoute,
   readRegistrationSIPAImplementation,
   resolverSelectionPolicy,
   selectManifestResolverOperator,
@@ -69,7 +69,7 @@ import { pubkeyToR1KeyArg } from "./oxideWebAuthn"
 /**
  * The operator EOA to record into `UserRecord.resolverOperator` at signup, read from the live
  * AccountMetadataRegistry: the `ResolverOperatorUpdated` history → the record matching the
- * manifest's portal (+ gateway URL), preferring the known operator EOA among matches.
+ * manifest's forwarding table (+ gateway URL), preferring the known operator EOA among matches.
  * Same selection the SIPA discovery path uses, so signup and discovery always agree on the operator.
  */
 export async function fetchSignupResolverOperator(
@@ -86,10 +86,10 @@ export async function fetchSignupResolverRecord(
   tuple: OxideEnvTuple,
   network: Network,
 ): Promise<SipaResolverOperatorRecord> {
-  const { accountMetadataRegistry, portal } = tuple
-  if (!accountMetadataRegistry || !portal) {
+  const { accountMetadataRegistry, forwardingTable } = tuple
+  if (!accountMetadataRegistry || !forwardingTable) {
     throw new Error(
-      "oxide manifest lacks the resolver-selection surface (accountMetadataRegistry / portal) — " +
+      "oxide manifest lacks the resolver-selection surface (accountMetadataRegistry / forwardingTable) — " +
         "signup needs it to record a live resolver operator",
     )
   }
@@ -99,7 +99,7 @@ export async function fetchSignupResolverRecord(
     tuple,
   )
   const record = selectManifestResolverOperator(records, {
-    portal,
+    forwardingTable,
     resolverGatewayUrl: tuple.resolverGatewayUrl,
     ...resolverSelectionPolicy(network),
   })
@@ -144,10 +144,12 @@ export function oxideEnvFromTuple(
     namePortalRecipient: Hex
   },
 ): OxideRegistrationEnv {
-  const { registry, entryPoint, ensDomain, token } = tuple
-  if (!registry || !opts.accountFactory || !ensDomain || !token) {
+  const { registry, entryPoint, ensDomain } = tuple
+  // Registrations settle on the fee token's row.
+  const feeToken = sipaIntentToken(tuple, "registration", tuple.token)
+  if (!registry || !opts.accountFactory || !ensDomain || !feeToken) {
     throw new Error(
-      "oxide manifest lacks the registration shared block (registry / accountFactory / ensDomain / token) — " +
+      "oxide manifest lacks the registration shared block (registry / accountFactory / ensDomain / feeToken) — " +
         "deposit registration requires a dev.json-shaped deployment",
     )
   }
@@ -168,7 +170,7 @@ export function oxideEnvFromTuple(
     resolverOperator: opts.resolverOperator,
     rollupVersion: BigInt(tuple.rollupVersion),
     l1ChainId: opts.l1ChainId,
-    feeToken: token as Address,
+    feeToken: feeToken as Address,
     namePortalRecipient: opts.namePortalRecipient,
   }
 }
@@ -207,18 +209,17 @@ export function createRegistrationSipaDeriver(deps: {
   env: OxideRegistrationEnv
   tuple: OxideEnvTuple
 }): RegistrationSipaDeriver {
-  const { portal } = deps.tuple
-  if (!portal) {
-    throw new Error("oxide manifest lacks portal — registration SIPA derivation needs it")
-  }
   const sipaFactory = requireNonZeroL1Address(deps.tuple.sipaFactory, "sipaFactory") as Address
-  // The factory writes each (portal, intent) pointer once, so one read serves every derivation.
+  const forwardingTable = requireNonZeroL1Address(
+    deps.tuple.forwardingTable,
+    "forwardingTable",
+  ) as Address
+  // One read serves every derivation this deriver makes.
   let implementationRead: Promise<Address> | undefined
   const registrationImplementation = () => {
     const read = (implementationRead ??= readRegistrationSIPAImplementation(
       deps.publicClient,
       sipaFactory,
-      portal as Address,
     ))
     read.catch(() => {
       if (implementationRead === read) implementationRead = undefined
@@ -276,7 +277,7 @@ export function createRegistrationSipaDeriver(deps: {
               resolution.messageSecret,
             ).toString() as Address,
           }
-        : { ...common, recoveryCommitment }
+        : { ...common, recoveryCommitment, forwardingTable }
     const sipaAddress =
       "recoveryAddress" in sipaArgs
         ? await predictLegacySIPA(deps.publicClient, sipaFactory, sipaArgs)
@@ -288,6 +289,7 @@ export function createRegistrationSipaDeriver(deps: {
             recoveryCommitment,
             deps.env.rollupVersion,
             false,
+            forwardingTable,
           )
     return {
       sipaAddress,
@@ -341,20 +343,18 @@ const REGISTRATION_IMMUTABLES_ABI = [
 /**
  * The detection tick's deposit reads. The address's balance, sweeps and funding come from its record
  * in the deposit rail's store, which the rail's observation keeps current; nothing here reads them
- * from L1. The `floor` is the bar a registration sweep accepts: the schedule (the signed terms when held, else the immutable one read from the chain)
- * priced against the portal's funding cut, so a deposit the sweep would refuse never reads funded.
- * The schedule, the portal's cut and the implementation's sweep fee are each read once and cached;
+ * from L1. The `floor` is the bar a registration sweep accepts: the schedule (the signed terms when
+ * held, else the immutable one read from the chain), so a deposit the sweep would refuse never reads
+ * funded. The schedule and the implementation's sweep fee are each read once and cached;
  * a failed read drops its cache, and until it lands the floor stays unknown. The floor is a
  * progress signal — the Registry read is the authoritative confirmation.
  */
 export function createRegistrationDepositReader(deps: {
   publicClient: PublicClient
-  /** The blessed RegistrationSIPA implementation, the one a registration address derives from. */
-  registrationImplementation: Address
+  /** The forwarding-table row a registration sweep pays. */
+  registrationRoute: SipaRoute
   /** NameRegistry. Deployments older than the RegistrationController keep the schedule immutables here. */
   registry: Address
-  /** OxidePortal, for the funding cut the floor is priced against. */
-  portal: Address
   /** The blessed RegistrationController, which holds the schedule immutables on deployments that
    *  have one. */
   registrationController?: Address
@@ -392,26 +392,15 @@ export function createRegistrationDepositReader(deps: {
         return undefined
       },
     ))
-  let fundingCut: Promise<bigint | undefined> | undefined
-  const portalFundingCut = () =>
-    (fundingCut ??= readFpcFundingCut(deps.publicClient, deps.portal).catch((err) => {
-      fundingCut = undefined
-      logger.warn("portal funding cut read failed; the floor stays unknown", {
+  let sweepFee: Promise<bigint | undefined> | undefined
+  const implementationSweepFee = () =>
+    (sweepFee ??= readDepositFee(deps.publicClient, deps.registrationRoute).catch((err) => {
+      sweepFee = undefined
+      logger.warn("registration sweep fee read failed; the floor stays unknown", {
         error: String(err),
       })
       return undefined
     }))
-  let sweepFee: Promise<bigint | undefined> | undefined
-  const implementationSweepFee = () =>
-    (sweepFee ??= readDepositFee(deps.publicClient, deps.registrationImplementation).catch(
-      (err) => {
-        sweepFee = undefined
-        logger.warn("registration sweep fee read failed; the floor stays unknown", {
-          error: String(err),
-        })
-        return undefined
-      },
-    ))
   return {
     readFunding: async (sipa) => {
       const record = await recordOf(sipa)
@@ -432,16 +421,15 @@ export function createRegistrationDepositReader(deps: {
     },
     floor: async (token, account) => {
       const terms = deps.termsFor?.(account)
-      const [schedule, cut, sweep] = await Promise.all([
+      const [schedule, sweep] = await Promise.all([
         terms
           ? Promise.resolve({ min: terms.minDeposit, fee: terms.fee })
           : registrationImmutables(),
-        portalFundingCut(),
         implementationSweepFee(),
       ])
-      if (schedule === undefined || cut === undefined || sweep === undefined) return undefined
+      if (schedule === undefined || sweep === undefined) return undefined
       if (schedule.fee < sweep) return null
-      return registrationFloor(schedule, cut)
+      return registrationFloor(schedule)
     },
     scheduleFee: () =>
       registrationImmutables().then((schedule) => {

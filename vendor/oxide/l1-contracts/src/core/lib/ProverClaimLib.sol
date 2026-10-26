@@ -25,7 +25,7 @@ library ProverClaimLib {
     IRollup rollup;
     IOutbox outbox;
     uint256 rollupVersion;
-    bytes32 l2Portal;
+    bytes32 l2Token;
     address portal;
   }
 
@@ -34,13 +34,12 @@ library ProverClaimLib {
     ProverClaim calldata _claim,
     bytes32 _messageContent,
     ChainEnv memory _env,
-    mapping(uint256 => mapping(uint256 => bool)) storage _claimed,
-    mapping(uint256 => address) storage _firstProver
+    mapping(uint256 => mapping(uint256 => bool)) storage _claimed
   ) internal {
     uint256 checkpointIndexInEpoch = _checkpointIndexInEpoch(_claim);
     _assertCheckpointBinding(_claim, _env.rollup, checkpointIndexInEpoch);
     uint256 messagePosition = checkpointIndexInEpoch + 1;
-    _assertProverEligibleInRange(_claim, messagePosition, _prover, _env.rollup, _firstProver);
+    _assertProverEligible(_claim, messagePosition, _prover, _env.rollup);
     _verifyOutboxInclusion(_claim, _messageContent, _env);
 
     uint256 leafId = (1 << _claim.path.length) + _claim.messageLeafIndex;
@@ -58,7 +57,7 @@ library ProverClaimLib {
     bytes32 epochRoot = _env.outbox.getRootData(Epoch.wrap(_claim.epochNumber), _claim.proofLength);
     require(epochRoot != bytes32(0), Errors.ProverClaim__UnprovenEpoch(_claim.epochNumber));
     DataStructures.L2ToL1Msg memory message = DataStructures.L2ToL1Msg({
-      sender: DataStructures.L2Actor({actor: _env.l2Portal, version: _env.rollupVersion}),
+      sender: DataStructures.L2Actor({actor: _env.l2Token, version: _env.rollupVersion}),
       recipient: DataStructures.L1Actor({actor: _env.portal, chainId: block.chainid}),
       content: _messageContent
     });
@@ -104,33 +103,18 @@ library ProverClaimLib {
     );
   }
 
-  function _assertProverEligibleInRange(
+  function _assertProverEligible(
     ProverClaim calldata _claim,
     uint256 _messagePosition,
     address _prover,
-    IRollup _rollup,
-    mapping(uint256 => address) storage _firstProver
+    IRollup _rollup
   ) private view {
     require(
       _claim.proofLength >= _messagePosition,
       Errors.ProverClaim__ProofLengthBelowMessageCheckpoint(_claim.proofLength, _messagePosition)
     );
 
-    uint256 proofCheckpointNumber = _claim.checkpointNumber + _claim.proofLength - _messagePosition;
-    require(
-      Epoch.unwrap(_rollup.getEpochForCheckpoint(proofCheckpointNumber)) == _claim.epochNumber,
-      Errors.ProverClaim__ProofCheckpointNotInEpoch(proofCheckpointNumber, _claim.epochNumber)
-    );
-
-    for (uint256 i = _claim.checkpointNumber; i <= proofCheckpointNumber; i++) {
-      address registered = _firstProver[i];
-      if (registered != address(0)) {
-        require(registered == _prover, Errors.ProverClaim__NotFirstProver(i, registered));
-
-        return;
-      }
-    }
-
-    revert Errors.ProverClaim__NoFirstProverInRange(_claim.checkpointNumber, proofCheckpointNumber);
+    address recordedProver = _rollup.getFirstProvenBy(_claim.checkpointNumber);
+    require(recordedProver == _prover, Errors.ProverClaim__NotFirstProver(_claim.checkpointNumber, recordedProver));
   }
 }

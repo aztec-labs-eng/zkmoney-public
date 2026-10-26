@@ -21,13 +21,14 @@ import {
   SwapRoute,
   predictSwapEscrowAddressLocally,
 } from "@oxide/l1-contracts"
-import { weiToUSD } from "@oxide/oxide-client/eth_usd_price_feed.js"
+import { ETH_USD_MAX_PRICE_AGE_SECONDS, weiToUSD } from "@oxide/oxide-client/eth_usd_price_feed.js"
 import {
-  GAS_COST_ARGS_CALLDATA_GAS,
+  UINT256_EXTRA_CALLDATA_GAS,
   SIMULATED_SENDER_BALANCE,
   WEI_PER_ETH,
   estimateL1OperationFeeValues,
   gasCostAtQuotePrice,
+  relayerGasCost,
 } from "@oxide/oxide-client/l1_operation_quote.js"
 import { L1_OPERATION_TIP_MARGIN_BPS } from "@obsidion/core/constants"
 import { MULTICALL3_ADDRESS } from "../../src/services/sipaClaim.js"
@@ -69,7 +70,7 @@ function tokenWithBalanceSlot(slot: bigint | undefined) {
 }
 
 describe("findBalanceOfSlot", () => {
-  it("finds OpenZeppelin's slot 0 (the sandbox TestERC20) in one call", async () => {
+  it("finds OpenZeppelin's slot 0 (the sandbox MintableToken) in one call", async () => {
     const client = tokenWithBalanceSlot(0n)
     await expect(
       findBalanceOfSlot(client, "0x000000000000000000000000000000000000da1a"),
@@ -188,7 +189,7 @@ describe("SwapOnWithdrawSimulator", () => {
           },
         ]
       }),
-      call: vi.fn(async () => ({
+      call: vi.fn(async (_params: unknown) => ({
         data: encodeFunctionResult({
           abi: multicall3Abi,
           functionName: "aggregate3",
@@ -202,8 +203,16 @@ describe("SwapOnWithdrawSimulator", () => {
   /** The `aggregate3` calls inside a Multicall3 `eth_call`. */
   const multicallCalls = (data: Hex) => {
     const decoded = decodeFunctionData({ abi: multicall3Abi, data })
-    expect(decoded.functionName).toBe("aggregate3")
+    if (decoded.functionName !== "aggregate3") throw new Error(`decoded ${decoded.functionName}`)
     return decoded.args[0]
+  }
+
+  /** The escrow args of a factory `deployAndExecute` call. */
+  const deployedEscrowArgs = (data: Hex) => {
+    const deploy = decodeFunctionData({ abi: SwapEscrowFactoryAbi, data })
+    if (deploy.functionName !== "deployAndExecute")
+      throw new Error(`decoded ${deploy.functionName}`)
+    return deploy.args[0]
   }
 
   const simulator = (client: ReturnType<typeof fakeClient>) =>
@@ -214,15 +223,17 @@ describe("SwapOnWithdrawSimulator", () => {
     })
 
   const deductions = {
+    withdrawalFee: 2n * 10n ** 17n,
     withdrawalRelayerTip: 10n ** 17n,
     proverTip: 0n,
-    fpcFundingCut: 25n * 10n ** 16n,
   }
+  /** What the executor keeps from the burn before the escrow sees it. */
+  const EXECUTOR_DEDUCTIONS = deductions.withdrawalFee + deductions.withdrawalRelayerTip
   const AMOUNT = 100n * 10n ** 18n
-  const FUNDING = AMOUNT - deductions.withdrawalRelayerTip - deductions.fpcFundingCut
+  const FUNDING = AMOUNT - EXECUTOR_DEDUCTIONS
 
   const minPayout = gasCostAtQuotePrice(
-    GAS_USED + GAS_COST_ARGS_CALLDATA_GAS,
+    GAS_USED + 2n * UINT256_EXTRA_CALLDATA_GAS,
     { number: 7n, baseFeePerGas: BASE_FEE },
     FEES,
     weiToUSD(WEI_PER_ETH, ETH_USD),
@@ -259,9 +270,7 @@ describe("SwapOnWithdrawSimulator", () => {
     ]
     expect(target).toBe(FACTORY)
     expect(payoutToken).toBe(DAI)
-    const deploy = decodeFunctionData({ abi: SwapEscrowFactoryAbi, data: deployCalldata })
-    expect(deploy.functionName).toBe("deployAndExecute")
-    const escrowArgs = deploy.args[0]
+    const escrowArgs = deployedEscrowArgs(deployCalldata)
     // Like the relayer's gas run, the simulation demands the committed tip as its payout.
     expect(minPayoutArg).toBe(escrowArgs.relayerTip)
     return { ...call, escrowArgs, stateOverride: blocks[0]!.stateOverrides }
@@ -317,8 +326,7 @@ describe("SwapOnWithdrawSimulator", () => {
     expect(before).toEqual(after)
     expect(before!.target.toLowerCase()).toBe(USDC)
     expect(before!.allowFailure).toBe(false)
-    const finalArgs = decodeFunctionData({ abi: SwapEscrowFactoryAbi, data: deploy!.callData })
-      .args[0]
+    const finalArgs = deployedEscrowArgs(deploy!.callData)
     expect(finalArgs.relayerTip).toBe(expectedTip.relayerTip)
     expect(deploy!.target.toLowerCase()).toBe(FACTORY)
     expect(payout.stateOverride[0]!.stateDiff![0]!.slot).toBe(
@@ -377,14 +385,12 @@ describe("SwapOnWithdrawSimulator", () => {
     expect(routeBefore!.target.toLowerCase()).toBe(DAI)
     expect(ethBefore!.callData.startsWith("0x4d2301cc")).toBe(true) // getEthBalance(address)
     expect([routeAfter, ethAfter]).toEqual([routeBefore, ethBefore])
-    expect(
-      decodeFunctionData({ abi: SwapEscrowFactoryAbi, data: deploy!.callData }).args[0],
-    ).toMatchObject({ daiForGas, minEthForGas: 0n })
+    expect(deployedEscrowArgs(deploy!.callData)).toMatchObject({ daiForGas, minEthForGas: 0n })
   })
 
   it("refuses a gas share the escrow funding cannot cover, before and after the tip", async () => {
     const daiForGas = 5n * 10n ** 18n
-    const fees = deductions.withdrawalRelayerTip + deductions.fpcFundingCut
+    const fees = EXECUTOR_DEDUCTIONS
     await expect(
       simulator(fakeClient()).simulate({
         output: "USDC",
@@ -413,7 +419,22 @@ describe("SwapOnWithdrawSimulator", () => {
       deductions,
       recipient: RECIPIENT,
     })
-    expect(simulation).toEqual({ ...expectedTip, amountOut: 99_000_000n, decimals: 6, gasOut: 0n })
+    // A legacy executor takes a fixed floor, which the relayer prices at the max fee per gas.
+    const legacyMinPayout = relayerGasCost(
+      "legacy",
+      GAS_USED + 2n * UINT256_EXTRA_CALLDATA_GAS,
+      { number: 7n, baseFeePerGas: BASE_FEE },
+      FEES,
+      weiToUSD(WEI_PER_ETH, ETH_USD),
+    )
+    expect(simulation).toEqual({
+      ...expectedTip,
+      minPayout: legacyMinPayout,
+      relayerTip: ceilDiv(legacyMinPayout * L1_OPERATION_TIP_MARGIN_BPS, 10_000n),
+      amountOut: 99_000_000n,
+      decimals: 6,
+      gasOut: 0n,
+    })
     expect(simulatedCall(client, 4).to).toBe(OPERATION_EXECUTOR)
   })
 
@@ -431,8 +452,7 @@ describe("SwapOnWithdrawSimulator", () => {
 
   it("reports the tip when the amount leaves nothing to swap after paying it", async () => {
     const client = fakeClient()
-    const amount =
-      deductions.withdrawalRelayerTip + deductions.fpcFundingCut + expectedTip.relayerTip
+    const amount = EXECUTOR_DEDUCTIONS + expectedTip.relayerTip
     const attempt = simulator(client).simulate({
       output: "USDC",
       amount,
@@ -452,7 +472,7 @@ describe("SwapOnWithdrawSimulator", () => {
     await expect(
       simulator(client).simulate({
         output: "USDC",
-        amount: deductions.withdrawalRelayerTip + deductions.fpcFundingCut,
+        amount: EXECUTOR_DEDUCTIONS,
         deductions,
         recipient: RECIPIENT,
       }),
@@ -461,7 +481,7 @@ describe("SwapOnWithdrawSimulator", () => {
   })
 
   it("refuses to price off a stale feed", async () => {
-    const client = fakeClient({ feedUpdatedAt: NOW - 60n * 60n - 1n })
+    const client = fakeClient({ feedUpdatedAt: NOW - ETH_USD_MAX_PRICE_AGE_SECONDS - 1n })
     await expect(
       simulator(client).simulate({
         output: "USDC",

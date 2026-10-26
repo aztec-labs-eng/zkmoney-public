@@ -2,8 +2,8 @@ import {
   ContractFunctionInteraction,
   DeployMethod,
   SimulateInteractionOptions,
-} from "@aztec/aztec.js/contracts"
-import { TxProfileResult } from "@aztec/stdlib/tx"
+} from "@aztec-labs/aztec.js/contracts"
+import { TxProfileResult } from "@aztec-labs/stdlib/tx"
 
 export interface ExecutionStep {
   id: number

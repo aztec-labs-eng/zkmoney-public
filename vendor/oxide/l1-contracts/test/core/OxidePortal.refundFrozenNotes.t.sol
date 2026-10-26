@@ -11,7 +11,6 @@ import {Errors} from "@core/lib/Errors.sol";
 contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
   function test_GivenPortalIsNotFrozen_WhenRefundFrozenNotesIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-forced-not-frozen")
   {
     WithdrawParams memory p = _defaultWithdrawParams();
@@ -25,7 +24,6 @@ contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
 
   function test_GivenValidFrozenNotesWithdrawal_WhenRefundFrozenNotesIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-forced")
     givenPortalIsFrozen
   {
@@ -37,7 +35,7 @@ contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
     assertEq(publicInputs[0], bytes32(block.chainid));
     assertEq(publicInputs[1], bytes32(portal.ROLLUP_VERSION()));
     assertEq(publicInputs[2], bytes32(uint256(uint160(address(portal)))));
-    assertEq(publicInputs[3], portal.$l2Portal());
+    assertEq(publicInputs[3], portal.L2_TOKEN());
     assertEq(publicInputs[4], portal.$freezeArchive());
     assertEq(publicInputs[5], bytes32(p.amount));
     assertEq(publicInputs[6], bytes32(uint256(uint160(p.executor))));
@@ -63,14 +61,47 @@ contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
     assertFalse(portal.$isRefundNullifierSpent(bytes32(0)));
   }
 
+  function test_GivenFullBatchOfNotes_WhenRefundFrozenNotesIsCalled()
+    external
+    givenTeeIsRegistered("tee-forced-full")
+    givenPortalIsFrozen
+  {
+    WithdrawParams memory p = _defaultWithdrawParams();
+    bytes32[] memory nullifiers = new bytes32[](OxideConstants.MAX_FROZEN_NOTES_PER_REFUND);
+    for (uint256 i = 0; i < nullifiers.length; i++) {
+      nullifiers[i] = bytes32(uint256(0xF0 + i));
+    }
+    bytes memory proof = hex"c0ffee";
+    bytes32[] memory publicInputs = _frozenNotesRefundPublicInputs(p.executor, p.userPayloadHash, p.amount, nullifiers);
+    assertEq(publicInputs.length, OxideConstants.FROZEN_NOTES_REFUND_PUBLIC_INPUT_COUNT);
+    for (uint256 i = 0; i < nullifiers.length; i++) {
+      assertEq(publicInputs[i + 8], nullifiers[i]);
+    }
+    assertEq(publicInputs[OxideConstants.FROZEN_NOTES_REFUND_PUBLIC_INPUT_COUNT - 1], nullifiers[nullifiers.length - 1]);
+    frozenNotesRefundVerifier.setExpected(proof, publicInputs);
+
+    underlying.mint(address(portal), p.amount);
+    uint256 userBalanceBefore = underlying.balanceOf(p.recipient);
+    bytes memory sig = _signTee(teePk, _frozenNotesRefundFinalDigest(p, nullifiers));
+
+    vm.expectEmit(true, true, true, true, address(portal));
+    emit WithdrawalOrRefund(IExecutor.Flow.FrozenNotesRefund, nullifiers[0], p.executor, p.amount);
+
+    _refundFrozenNotes(p, nullifiers, proof, sig);
+
+    assertEq(underlying.balanceOf(p.recipient), userBalanceBefore + p.amount);
+    for (uint256 i = 0; i < nullifiers.length; i++) {
+      assertTrue(portal.$isRefundNullifierSpent(nullifiers[i]));
+    }
+  }
+
   function test_GivenAmountExceedsTxLimit_WhenRefundFrozenNotesIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-forced-over-cap")
     givenPortalIsFrozen
   {
     WithdrawParams memory p = _defaultWithdrawParams();
-    p.amount = OxideConstants.TX_AMOUNT_CAP + 1;
+    p.amount = TX_AMOUNT_CAP + 1;
     bytes32[] memory nullifiers = _defaultFrozenNotesRefundNullifiers();
     bytes memory sig = _signTee(teePk, _frozenNotesRefundFinalDigest(p, nullifiers));
 
@@ -80,7 +111,6 @@ contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
 
   function test_GivenPortalWasFrozenAfterRollupReplacement_WhenRefundFrozenNotesIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-forced-replaced-rollup")
     givenRollupIsNonCanonical
   {
@@ -106,7 +136,6 @@ contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
 
   function test_GivenNoNullifiers_WhenRefundFrozenNotesIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-forced-empty")
     givenPortalIsFrozen
   {
@@ -121,7 +150,6 @@ contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
 
   function test_GivenTooManyNullifiers_WhenRefundFrozenNotesIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-forced-too-many")
     givenPortalIsFrozen
   {
@@ -138,7 +166,6 @@ contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
 
   function test_GivenZeroNullifier_WhenRefundFrozenNotesIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-forced-zero")
     givenPortalIsFrozen
   {
@@ -154,7 +181,6 @@ contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
 
   function test_GivenDuplicateNullifier_WhenRefundFrozenNotesIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-forced-duplicate")
     givenPortalIsFrozen
   {
@@ -172,7 +198,6 @@ contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
 
   function test_GivenVerifierRejectsProof_WhenRefundFrozenNotesIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-forced-invalid-proof")
     givenPortalIsFrozen
   {
@@ -190,11 +215,7 @@ contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
     assertFalse(portal.$isRefundNullifierSpent(nullifiers[0]));
   }
 
-  function test_GivenTeeSignatureIsInvalid_WhenRefundFrozenNotesIsCalled()
-    external
-    givenPortalIsInitialized
-    givenPortalIsFrozen
-  {
+  function test_GivenTeeSignatureIsInvalid_WhenRefundFrozenNotesIsCalled() external givenPortalIsFrozen {
     (, uint256 unregisteredPk) = makeAddrAndKey("tee-forced-unregistered");
     WithdrawParams memory p = _defaultWithdrawParams();
     bytes32[] memory nullifiers = _defaultFrozenNotesRefundNullifiers();
@@ -209,7 +230,6 @@ contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
 
   function test_GivenWithdrawalSignature_WhenRefundFrozenNotesIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-forced-wrong-domain")
     givenPortalIsFrozen
   {
@@ -224,9 +244,25 @@ contract OxidePortalRefundFrozenNotesTest is OxidePortalBase {
     _refundFrozenNotes(p, nullifiers, proof, sig);
   }
 
+  function test_GivenDigestBindsAnotherTeeRegistry_WhenRefundFrozenNotesIsCalled()
+    external
+    givenTeeIsRegistered("tee-frozen-other-registry")
+    givenPortalIsFrozen
+  {
+    WithdrawParams memory p = _defaultWithdrawParams();
+    bytes32[] memory nullifiers = _defaultFrozenNotesRefundNullifiers();
+    bytes memory proof = hex"c0ffee";
+    bytes32[] memory publicInputs = _frozenNotesRefundPublicInputs(p.executor, p.userPayloadHash, p.amount, nullifiers);
+    frozenNotesRefundVerifier.setExpected(proof, publicInputs);
+    bytes32 digest =
+      sha256(abi.encodePacked(OxideConstants.TEE_SIG_DOMAIN_FROZEN_NOTES_REFUND, address(0xBEEF), publicInputs));
+
+    vm.expectRevert(Errors.OxidePortal__UnregisteredTEE.selector);
+    _refundFrozenNotes(p, nullifiers, proof, _signTee(teePk, digest));
+  }
+
   function test_GivenNullifierIsAlreadySpent_WhenRefundFrozenNotesIsCalled()
     external
-    givenPortalIsInitialized
     givenTeeIsRegistered("tee-forced-replay")
     givenPortalIsFrozen
   {

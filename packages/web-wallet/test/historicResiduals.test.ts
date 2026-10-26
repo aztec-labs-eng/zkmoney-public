@@ -102,6 +102,27 @@ describe("probeHistoricResiduals", () => {
     expect(createMock).not.toHaveBeenCalled()
   })
 
+  it("keeps a frozen scan with unverified Savings moves complete, without residuals", async () => {
+    const [summary] = await probeHistoricResiduals(
+      deps({
+        frozenSource: async () => ({
+          notes: 0n,
+          links: 0n,
+          deposits: 0,
+          waiting: 0,
+          waitingAmount: 0n,
+          unverifiedMoves: 1,
+        }),
+      }),
+    )
+    expect(summary).toMatchObject({
+      frozen: true,
+      incomplete: false,
+      hasResiduals: false,
+      unverifiedMoves: 1,
+    })
+  })
+
   it("reads the token balance while the portal is live", async () => {
     createMock.mockResolvedValueOnce({ getBalance: async () => 5n })
     const [summary] = await probeHistoricResiduals(deps({ frozenSource: async () => undefined }))
@@ -256,7 +277,7 @@ describe("probeHistoricResiduals", () => {
     expect(consumed).not.toHaveBeenCalled()
   })
 
-  it("keeps a source whose only funds wait on an open Inbox tree as a residual", async () => {
+  it("keeps a source whose only funds wait on L1 finality as a residual", async () => {
     const [summary] = await probeHistoricResiduals(
       deps({
         frozenSource: async () => ({

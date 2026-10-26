@@ -14,10 +14,10 @@ import { getWebBroadcasterArtifact, getWebOxideToken } from "../../config/classA
  * (it can't be recovered from the `NameClaimed` log before registration).
  */
 import type { Address } from "viem"
-import { NO_FROM } from "@aztec/aztec.js/account"
-import type { ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Fr } from "@aztec/aztec.js/fields"
+import { NO_FROM } from "@aztec-labs/aztec.js/account"
+import type { ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
   assertSubsidySweepsSipa,
   buildClaimSponsorPayload,
@@ -42,9 +42,16 @@ import {
 
 import { claimSponsorContext } from "./claimSponsorship"
 import { RAIL_REGISTRATION_BROADCAST } from "./rails"
-import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import {
+  getFeeTokenBridgeTuple,
+  getOxideTuple,
+  l1PublicClient,
+  requireTupleField,
+} from "../../config/oxideTuple"
 import { readSipaDeployed } from "../deposit/sipaSweep"
+import { getSipaSweepRoutes } from "../deposit/sipaSweepRoutes"
 import type { WebWalletConfig } from "../../config/env"
+import { bridgeUnderlying } from "@obsidion/core/oxide"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 
 export interface WebRegistrationBroadcasterDeps {
@@ -93,7 +100,7 @@ export async function cacheFreshClaim(
  * onboarding nothing else has registered the broadcaster yet (the deposit-discovery mount does,
  * but only once the wallet is open). A PXE that already holds it is not asked again.
  */
-async function registeredBroadcaster(
+export async function registeredBroadcaster(
   wallet: ObsidionWallet,
   tuple: OxideEnvTuple,
 ): Promise<BroadcasterContract> {
@@ -112,23 +119,30 @@ async function registeredBroadcaster(
 }
 
 /**
- * The calls that publish a registration SIPA: the token's `SIPA` event to the account and the
- * sweep the relayer runs. Its own broadcast sends them, and so does a ticket claim batch that
- * carries them. Refuses an address the subsidy would not sweep.
+ * The calls that publish a registration SIPA: the `SIPA` event to the account and the sweeps the
+ * relayer runs. Its own broadcast sends them, and so does a ticket claim batch that carries them.
+ * Refuses an address the subsidy would not sweep.
  */
 export async function registrationBroadcastCalls(
   deps: Omit<WebRegistrationBroadcasterDeps, "account" | "handle">,
   payload: RegistrationBroadcastPayload,
 ): Promise<ContractFunctionInteraction[]> {
   const { wallet, contractService, config } = deps
-  const tuple = await getOxideTuple(config)
+  // A registration settles on the fee token's row, so it sweeps through that bridge.
+  const tuple = await getFeeTokenBridgeTuple(config)
   const l1 = l1PublicClient(config)
-  const [deployed, broadcaster, token] = await Promise.all([
+  const routes = getSipaSweepRoutes(
+    config,
+    tuple,
+    payload.sipaArgs,
+    "registration",
+    bridgeUnderlying(tuple),
+  )
+  const [deployed, broadcaster, token, sweepRoutes] = await Promise.all([
     readSipaDeployed(l1, payload.sipaAddress).then(async (deployed) => {
       if (!deployed && !("recoveryAddress" in payload.sipaArgs)) {
         await assertSubsidySweepsSipa(l1, {
-          depositSubsidy: requireTupleField(tuple, "depositSubsidy") as Address,
-          portal: requireTupleField(tuple, "portal") as Address,
+          routes: await routes,
           sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
           intent: OxideSipaIntent.Registration,
           deployArgs: payload.sipaArgs,
@@ -140,6 +154,7 @@ export async function registrationBroadcastCalls(
     }),
     registeredBroadcaster(wallet, tuple),
     getWebOxideToken(wallet, contractService, requireTupleField(tuple, "l2Token")),
+    routes,
   ])
   return buildSipaSweepBroadcasts(token, broadcaster, {
     recipient: AztecAddress.fromStringUnsafe(payload.recipient),
@@ -162,11 +177,8 @@ export async function registrationBroadcastCalls(
       r1Install: payload.r1Install,
     }),
     operationExecutor: requireTupleField(tuple, "operationExecutor") as Address,
-    depositSubsidy: requireTupleField(tuple, "depositSubsidy") as Address,
     chainId: BigInt(config.l1ChainId),
-    // TODO(benesjan): the relayer copies this sweep for each other token it accepts.
-    // https://linear.app/aztec-labs/issue/OX-1877/for-v6-handle-multi-token-balance-condition-l1-operations-properly
-    tokens: [requireTupleField(tuple, "token") as Address],
+    routes: sweepRoutes,
   })
 }
 

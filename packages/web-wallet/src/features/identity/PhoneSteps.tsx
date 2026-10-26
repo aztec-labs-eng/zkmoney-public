@@ -1,6 +1,5 @@
 import {
   APPROVE_AGAIN_COPY,
-  type KeyWarning,
   type LaptopCreation,
   PHONE_STEPS_COPY,
   SIGN_IN_SHEET_COPY,
@@ -39,7 +38,7 @@ function DocsLink() {
 }
 
 /** One sentence the user acts on in the browser's prompt, shown only where it applies. */
-function StepsNote({ testId, children }: { testId?: string; children: ReactNode }) {
+export function StepsNote({ testId, children }: { testId?: string; children: ReactNode }) {
   return (
     <p className="ww-phone-steps__note" data-testid={testId}>
       <Icon name="info-circle" size={14} />
@@ -104,7 +103,11 @@ function WarningMark() {
 }
 
 /** What a key means for the wallet, behind a line like the advice above it. */
-function KeyWarningLine({ warning }: { warning: KeyWarning }) {
+export function KeyWarningLine({
+  warning,
+}: {
+  warning: { label: string; note: string; models: string }
+}) {
   return (
     <TipRow
       testId="phone-steps-key-warning"

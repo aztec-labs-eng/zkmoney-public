@@ -98,6 +98,12 @@ export interface ProgressSpinnerProps {
   size?: number
   /** Default secondary text color. */
   color?: string
+  /** Fills the done arc with the brand gradient; `color` then paints the track only. */
+  gradient?: boolean
+  /** Ring width. Default 12% of `size`. */
+  thickness?: number
+  /** Ends of the done arc. Default round. */
+  cap?: "round" | "butt"
 }
 
 /** `Spinner`'s stroke as a determinate ring: a faint track filled clockwise from the top. */
@@ -105,8 +111,12 @@ export function ProgressSpinner({
   progress,
   size = 10,
   color = "var(--text-secondary)",
+  gradient = false,
+  thickness,
+  cap = "round",
 }: ProgressSpinnerProps) {
-  const strokeWidth = Math.max(1.5, size * 0.12)
+  const gradId = `zkm-progress-grad-${useId().replace(/:/g, "")}`
+  const strokeWidth = thickness ?? Math.max(1.5, size * 0.12)
   const r = (size - strokeWidth) / 2
   const circumference = 2 * Math.PI * r
   const done = Math.min(1, Math.max(0, progress))
@@ -121,6 +131,14 @@ export function ProgressSpinner({
       aria-valuemax={100}
       aria-valuenow={Math.round(done * 100)}
     >
+      {gradient && (
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0" stopColor="#a000ff" />
+            <stop offset="1" stopColor="#0099ff" />
+          </linearGradient>
+        </defs>
+      )}
       <circle
         cx={size / 2}
         cy={size / 2}
@@ -133,9 +151,9 @@ export function ProgressSpinner({
         cx={size / 2}
         cy={size / 2}
         r={r}
-        stroke={color}
+        stroke={gradient ? `url(#${gradId})` : color}
         strokeWidth={strokeWidth}
-        strokeLinecap="round"
+        strokeLinecap={cap}
         strokeDasharray={`${circumference * done} ${circumference}`}
         transform={`rotate(-90 ${size / 2} ${size / 2})`}
         style={{ transition: "stroke-dasharray 300ms ease-out" }}

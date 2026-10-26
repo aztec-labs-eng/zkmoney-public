@@ -1,8 +1,8 @@
 use aztec::{
-    authwit::{auth::compute_authwit_message_hash, account::AccountFeePaymentMethodOptions},
+    authwit::{auth::compute_authwit_message_hash, account::{AccountFeePaymentMethodOptions, compute_tx_nullifier}},
     context::PrivateContext,
     protocol::{
-        constants::{DOM_SEP__SIGNATURE_PAYLOAD, DOM_SEP__TX_NULLIFIER},
+        constants::DOM_SEP__SIGNATURE_PAYLOAD,
         hash::poseidon2_hash_with_separator,
         address::AztecAddress,
         traits::{FromField, Hash},
@@ -35,7 +35,7 @@ pub fn set_as_fee_payer(context: &mut PrivateContext, fee_payment_method: u8) {
 /// Spends the payload's nonce, so a signed payload executes at most once: a second tx reusing it
 /// emits the same nullifier and is rejected.
 pub fn push_tx_nonce_nullifier(context: &mut PrivateContext, tx_nonce: Field) {
-    context.push_nullifier_unsafe(poseidon2_hash_with_separator([tx_nonce], DOM_SEP__TX_NULLIFIER));
+    context.push_nullifier_unsafe(compute_tx_nullifier(tx_nonce));
 }
 
 /// The outer hash the account's signature covers: the inner signature payload bound to this
@@ -82,7 +82,7 @@ pub fn compute_intents_hash_from_inner_hash(context: &mut PrivateContext, inner_
 
     let capsule: [Field; COMBINED_PAYLOADS_AND_INTENTS_HASH_INPUT_LEN] = unsafe {
         // Capsules from TS-side `new Capsule(addr, slot, data)` default to scope=ZERO
-        // (see @aztec/stdlib Capsule ctor -- `scope` is the optional 4th arg).
+        // (see @aztec-labs/stdlib Capsule ctor -- `scope` is the optional 4th arg).
         capsules::load(context.this_address(), CAPSULE_SLOT, AztecAddress::zero()).unwrap()
     };
     let capsuled_intent_hashes: [Field; INTENT_HASHES_LEN] = [capsule[1], capsule[2], capsule[3], capsule[4]];

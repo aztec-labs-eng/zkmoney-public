@@ -28,7 +28,12 @@ const OPTIONS: SignUpChoiceOption[] = [
     label: "Your phone",
     description: "Scan a QR code to save it on your phone",
   },
-  { id: "key", icon: "key", label: "Security key", description: "A YubiKey 5 you plug in or tap" },
+  {
+    id: "key",
+    icon: "key",
+    label: "Security key",
+    description: "A YubiKey 5, Trezor or Ledger you plug in or tap",
+  },
 ]
 const LABEL = "Where should your passkey live?"
 

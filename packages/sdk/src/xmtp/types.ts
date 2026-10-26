@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { TRANSFER_MEMO_MAX_BYTES } from "../services/transferMeta.js"
 
 /**

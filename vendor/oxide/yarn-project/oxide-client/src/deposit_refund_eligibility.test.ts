@@ -1,24 +1,25 @@
-import { AztecAddress, EthAddress } from '@aztec/aztec.js/addresses';
-import { Fr, type GrumpkinScalar } from '@aztec/aztec.js/fields';
-import { L1_TO_L2_MSG_TREE_HEIGHT } from '@aztec/constants';
-import { BlockNumber, CheckpointNumber } from '@aztec/foundation/branded-types';
-import { SiblingPath } from '@aztec/foundation/trees';
-import { CompleteAddress } from '@aztec/stdlib/contract';
-import { deriveKeys } from '@aztec/stdlib/keys';
-import { AppendOnlyTreeSnapshot } from '@aztec/stdlib/trees';
-import { BlockHeader, PartialStateReference, StateReference } from '@aztec/stdlib/tx';
+import { AztecAddress, EthAddress } from '@aztec-labs/aztec.js/addresses';
+import { Fr, type GrumpkinScalar } from '@aztec-labs/aztec.js/fields';
+import { L1_TO_L2_MSG_TREE_HEIGHT } from '@aztec-labs/constants';
+import { BlockNumber, CheckpointNumber, TreeLeafIndex } from '@aztec-labs/foundation/branded-types';
+import { SiblingPath } from '@aztec-labs/foundation/trees';
+import { CompleteAddress } from '@aztec-labs/stdlib/contract';
+import { deriveKeys } from '@aztec-labs/stdlib/keys';
+import { AppendOnlyTreeSnapshot } from '@aztec-labs/stdlib/trees';
+import { BlockHeader, PartialStateReference, StateReference } from '@aztec-labs/stdlib/tx';
 
 import {
   computeDepositMessageHash,
   computeSiloedDepositMessageNullifier,
 } from '@oxide/oxide-lib/deposit_message_hashing.js';
+import type { PortalDomain } from '@oxide/oxide-lib/types.js';
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import type { Hex } from 'viem';
 
 import type { ArchiveRef } from './archive_ref.js';
 import type { ChainDataSource } from './chain_data_source.js';
 import {
-  type DepositInbox,
   type DepositRefundCandidate,
   type DepositRefundPortal,
   classifyDepositRefund,
@@ -27,11 +28,6 @@ import { PermanentError } from './errors.js';
 
 const NEXT_AVAILABLE_LEAF_INDEX = 2048;
 const ABSORBED_LEAF_INDEX = 1029n;
-
-interface InboxMessage {
-  leaf: Fr;
-  l1BlockNumber: bigint;
-}
 
 interface Account {
   completeAddress: CompleteAddress;
@@ -49,14 +45,14 @@ async function account(): Promise<Account> {
 function frozenTipWith(nextAvailableLeafIndex: number): BlockHeader {
   return BlockHeader.empty({
     state: new StateReference(
-      new AppendOnlyTreeSnapshot(Fr.random(), nextAvailableLeafIndex),
+      new AppendOnlyTreeSnapshot(Fr.random(), TreeLeafIndex(nextAvailableLeafIndex)),
       PartialStateReference.empty(),
     ),
   });
 }
 
 describe('classifyDepositRefund', () => {
-  let l2Portal: AztecAddress;
+  let portalDomain: PortalDomain;
   let freezeArchiveRoot: Fr;
   let frozenTip: BlockHeader;
   let archive: ArchiveRef;
@@ -66,10 +62,11 @@ describe('classifyDepositRefund', () => {
   let findLeavesIndexes: jest.Mock<ChainDataSource['findLeavesIndexes']>;
   let getBlockData: jest.Mock<ChainDataSource['getBlockData']>;
   let chain: ChainDataSource;
-  let inboxMessages: InboxMessage[];
-  let getMessageSentEvents: jest.Mock<(fromBlock: bigint, toBlock: bigint) => Promise<unknown>>;
-  let finalizedL1Block: bigint;
-  let inbox: DepositInbox;
+  let latestDepositIndexes: Map<string, bigint>;
+  let finalizedDepositIndexes: Map<string, bigint>;
+  let depositMessageIndex: jest.Mock<
+    (args: readonly [Hex], options?: { blockTag?: 'latest' | 'finalized' }) => Promise<bigint>
+  >;
 
   async function depositAt(messageLeafIndex: bigint): Promise<DepositRefundCandidate> {
     const recipient = await account();
@@ -79,35 +76,30 @@ describe('classifyDepositRefund', () => {
       amount: 1_000n,
       messageLeafIndex: new Fr(messageLeafIndex),
     };
-    const messageKey = await computeDepositMessageHash(
-      {
-        l1Portal: portal.address,
-        l1ChainId: portal.getChainId(),
-        l2Portal,
-        rollupVersion: await portal.getRollupVersion(),
-      },
-      preimage,
-    );
+    const messageKey = await computeDepositMessageHash(portalDomain, preimage);
     return {
       ...preimage,
       recipient: recipient.completeAddress,
       messageKey,
       messageLeafIndex,
-      l1BlockNumber: 500n + messageLeafIndex,
       recipientMasterNullifierHidingKey: recipient.masterNullifierHidingKey,
     };
   }
 
   function nullifierOf(deposit: DepositRefundCandidate): Promise<Fr> {
     return computeSiloedDepositMessageNullifier(
-      l2Portal,
+      portalDomain.l2Token,
       deposit.messageKey,
       deposit.recipientMasterNullifierHidingKey,
     );
   }
 
-  function sendToInbox(deposit: DepositRefundCandidate) {
-    inboxMessages.push({ leaf: deposit.messageKey, l1BlockNumber: deposit.l1BlockNumber });
+  function recordInPortal(deposit: DepositRefundCandidate, opts: { final: boolean } = { final: true }) {
+    const key = deposit.messageKey.toString();
+    latestDepositIndexes.set(key, deposit.messageLeafIndex + 1n);
+    if (opts.final) {
+      finalizedDepositIndexes.set(key, deposit.messageLeafIndex + 1n);
+    }
   }
 
   function holdMessageAt(leafIndex: bigint) {
@@ -115,51 +107,47 @@ describe('classifyDepositRefund', () => {
   }
 
   beforeEach(async () => {
-    l2Portal = await AztecAddress.random();
+    portalDomain = {
+      l1Portal: EthAddress.random(),
+      l1ChainId: 31337n,
+      l2Token: await AztecAddress.random(),
+      teeRegistry: EthAddress.random(),
+      rollupVersion: 7n,
+    };
     freezeArchiveRoot = Fr.random();
     frozenTip = frozenTipWith(NEXT_AVAILABLE_LEAF_INDEX);
     archive = {
       root: freezeArchiveRoot,
       checkpointNumber: CheckpointNumber(2),
       checkpointEndBlockHeader: frozenTip,
-      witnessReferenceBlockNumber: BlockNumber(5),
     };
     isRefundNullifierSpent = jest.fn<(nullifier: Fr) => Promise<boolean>>().mockResolvedValue(false);
+    latestDepositIndexes = new Map();
+    finalizedDepositIndexes = new Map();
+    depositMessageIndex = jest.fn((args: readonly [Hex], options?: { blockTag?: 'latest' | 'finalized' }) => {
+      const indexes = options?.blockTag === 'finalized' ? finalizedDepositIndexes : latestDepositIndexes;
+      return Promise.resolve(indexes.get(args[0]) ?? 0n);
+    });
     portal = {
-      address: EthAddress.random(),
-      getChainId: () => 31337n,
-      getL2Portal: () => Promise.resolve(l2Portal),
-      getRollupVersion: () => Promise.resolve(7n),
+      getPortalDomain: () => Promise.resolve(portalDomain),
       getFreezeArchive: () => Promise.resolve(freezeArchiveRoot),
       isRefundNullifierSpent,
+      getContract: () => ({ read: { $depositMessageIndex: depositMessageIndex } }),
     };
     getL1ToL2MessageMembershipWitness = jest.fn<ChainDataSource['getL1ToL2MessageMembershipWitness']>();
     findLeavesIndexes = jest.fn<ChainDataSource['findLeavesIndexes']>().mockResolvedValue([undefined]);
     getBlockData = jest.fn<ChainDataSource['getBlockData']>();
     chain = { getL1ToL2MessageMembershipWitness, findLeavesIndexes, getBlockData } as unknown as ChainDataSource;
-    inboxMessages = [];
-    getMessageSentEvents = jest.fn((fromBlock: bigint, toBlock: bigint) =>
-      Promise.resolve(
-        inboxMessages
-          .filter(m => m.l1BlockNumber >= fromBlock && m.l1BlockNumber <= toBlock)
-          .map(m => ({ args: { leaf: m.leaf } })),
-      ),
-    );
-    finalizedL1Block = 10_000n;
-    inbox = {
-      getMessageSentEvents,
-      client: { getBlock: () => Promise.resolve({ number: finalizedL1Block }) },
-    } as unknown as DepositInbox;
   });
 
   it('classifies an absorbed deposit whose nullifier the frozen tip does not have as a frozen deposit', async () => {
     const deposit = await depositAt(ABSORBED_LEAF_INDEX);
     holdMessageAt(ABSORBED_LEAF_INDEX);
 
-    const eligibility = await classifyDepositRefund(portal, inbox, chain, deposit, archive);
+    const eligibility = await classifyDepositRefund(portal, chain, deposit, archive);
 
     expect(eligibility).toEqual({ kind: 'frozen-deposit', nullifier: await nullifierOf(deposit) });
-    expect(getMessageSentEvents).not.toHaveBeenCalled();
+    expect(depositMessageIndex).not.toHaveBeenCalled();
     const frozenTipHash = await frozenTip.hash();
     expect(getL1ToL2MessageMembershipWitness).toHaveBeenCalledWith(frozenTipHash, deposit.messageKey);
     expect(findLeavesIndexes).toHaveBeenCalledWith(frozenTipHash, expect.anything(), [eligibility.nullifier]);
@@ -172,7 +160,7 @@ describe('classifyDepositRefund', () => {
       { l2BlockNumber: BlockNumber(3), l2BlockHash: await frozenTip.hash(), data: 64n },
     ]);
 
-    expect(await classifyDepositRefund(portal, inbox, chain, deposit, archive)).toEqual({
+    expect(await classifyDepositRefund(portal, chain, deposit, archive)).toEqual({
       kind: 'consumed',
       nullifier: await nullifierOf(deposit),
     });
@@ -180,9 +168,9 @@ describe('classifyDepositRefund', () => {
 
   it('classifies a deposit at the next available leaf index of the frozen tip as unprocessed', async () => {
     const deposit = await depositAt(BigInt(NEXT_AVAILABLE_LEAF_INDEX));
-    sendToInbox(deposit);
+    recordInPortal(deposit);
 
-    expect(await classifyDepositRefund(portal, inbox, chain, deposit, archive)).toEqual({
+    expect(await classifyDepositRefund(portal, chain, deposit, archive)).toEqual({
       kind: 'unprocessed-deposit',
       nullifier: await nullifierOf(deposit),
     });
@@ -197,12 +185,12 @@ describe('classifyDepositRefund', () => {
       const nullifier = await nullifierOf(deposit);
       isRefundNullifierSpent.mockImplementation(n => Promise.resolve(n.equals(nullifier)));
 
-      expect(await classifyDepositRefund(portal, inbox, chain, deposit, archive)).toEqual({
+      expect(await classifyDepositRefund(portal, chain, deposit, archive)).toEqual({
         kind: 'refunded',
         nullifier,
       });
       expect(getL1ToL2MessageMembershipWitness).not.toHaveBeenCalled();
-      expect(getMessageSentEvents).not.toHaveBeenCalled();
+      expect(depositMessageIndex).not.toHaveBeenCalled();
     },
   );
 
@@ -211,7 +199,7 @@ describe('classifyDepositRefund', () => {
     const deposit = await depositAt(ABSORBED_LEAF_INDEX);
     holdMessageAt(ABSORBED_LEAF_INDEX);
 
-    expect((await classifyDepositRefund(portal, inbox, chain, deposit)).kind).toBe('frozen-deposit');
+    expect((await classifyDepositRefund(portal, chain, deposit)).kind).toBe('frozen-deposit');
     expect(getBlockData).toHaveBeenCalledWith({ archive: freezeArchiveRoot });
   });
 
@@ -219,14 +207,14 @@ describe('classifyDepositRefund', () => {
     freezeArchiveRoot = Fr.ZERO;
     const deposit = await depositAt(ABSORBED_LEAF_INDEX);
 
-    await expect(classifyDepositRefund(portal, inbox, chain, deposit)).rejects.toThrow(/not frozen/);
+    await expect(classifyDepositRefund(portal, chain, deposit)).rejects.toThrow(/not frozen/);
     expect(isRefundNullifierSpent).not.toHaveBeenCalled();
   });
 
   it('rejects a preimage that does not hash to the message key', async () => {
     const deposit = { ...(await depositAt(ABSORBED_LEAF_INDEX)), amount: 999n };
 
-    const error = await classifyDepositRefund(portal, inbox, chain, deposit, archive).catch(e => e);
+    const error = await classifyDepositRefund(portal, chain, deposit, archive).catch(e => e);
     expect(error).toBeInstanceOf(PermanentError);
     expect(error.message).toMatch(`expected message key ${deposit.messageKey}`);
   });
@@ -255,49 +243,49 @@ describe('classifyDepositRefund', () => {
         ),
       );
 
-      await expect(classifyDepositRefund(portal, inbox, chain, withOtherKey, archive)).rejects.toBeInstanceOf(
-        PermanentError,
-      );
+      await expect(classifyDepositRefund(portal, chain, withOtherKey, archive)).rejects.toBeInstanceOf(PermanentError);
     });
 
     it('for a deposit that the portal refunded', async () => {
       isRefundNullifierSpent.mockImplementation(n => Promise.resolve(n.equals(nullifier)));
 
-      await expect(classifyDepositRefund(portal, inbox, chain, withOtherKey, archive)).rejects.toBeInstanceOf(
-        PermanentError,
-      );
+      await expect(classifyDepositRefund(portal, chain, withOtherKey, archive)).rejects.toBeInstanceOf(PermanentError);
     });
   });
 
-  it('reads the L1 Inbox only in the L1 block of the deposit', async () => {
+  it('reads the deposit record of the portal at the finalized L1 block', async () => {
     const deposit = await depositAt(BigInt(NEXT_AVAILABLE_LEAF_INDEX));
-    sendToInbox(deposit);
+    recordInPortal(deposit);
 
-    await classifyDepositRefund(portal, inbox, chain, deposit, archive);
+    await classifyDepositRefund(portal, chain, deposit, archive);
 
-    expect(getMessageSentEvents).toHaveBeenCalledTimes(1);
-    expect(getMessageSentEvents).toHaveBeenCalledWith(deposit.l1BlockNumber, deposit.l1BlockNumber);
+    expect(depositMessageIndex).toHaveBeenCalledTimes(1);
+    expect(depositMessageIndex).toHaveBeenCalledWith([deposit.messageKey.toString()], { blockTag: 'finalized' });
   });
 
-  it('rejects an unprocessed deposit whose message the L1 Inbox does not have', async () => {
+  it('rejects an unprocessed deposit whose message the portal did not record', async () => {
     const deposit = await depositAt(BigInt(NEXT_AVAILABLE_LEAF_INDEX) + 5n);
 
-    await expect(classifyDepositRefund(portal, inbox, chain, deposit, archive)).rejects.toStrictEqual(
+    await expect(classifyDepositRefund(portal, chain, deposit, archive)).rejects.toStrictEqual(
       new PermanentError(
-        `The L1 Inbox does not have deposit message ${deposit.messageKey} in L1 block ${deposit.l1BlockNumber}`,
+        `The portal did not record deposit message ${deposit.messageKey} at leaf index ${deposit.messageLeafIndex}`,
       ),
     );
   });
 
+  it('rejects an unprocessed deposit that the portal recorded at another leaf index', async () => {
+    const deposit = await depositAt(BigInt(NEXT_AVAILABLE_LEAF_INDEX));
+    recordInPortal({ ...deposit, messageLeafIndex: deposit.messageLeafIndex + 1n });
+
+    await expect(classifyDepositRefund(portal, chain, deposit, archive)).rejects.toBeInstanceOf(PermanentError);
+  });
+
   it('refuses to judge an unprocessed deposit until its L1 block is final', async () => {
     const deposit = await depositAt(BigInt(NEXT_AVAILABLE_LEAF_INDEX));
-    sendToInbox(deposit);
-    finalizedL1Block = deposit.l1BlockNumber - 1n;
+    recordInPortal(deposit, { final: false });
 
-    await expect(classifyDepositRefund(portal, inbox, chain, deposit, archive)).rejects.toStrictEqual(
-      new Error(
-        `Deposit L1 block ${deposit.l1BlockNumber} is not final. The finalized L1 block is ${finalizedL1Block}`,
-      ),
+    await expect(classifyDepositRefund(portal, chain, deposit, archive)).rejects.toStrictEqual(
+      new Error(`The portal recorded deposit message ${deposit.messageKey} in an L1 block that is not final`),
     );
   });
 
@@ -305,7 +293,7 @@ describe('classifyDepositRefund', () => {
     const deposit = await depositAt(ABSORBED_LEAF_INDEX);
     getL1ToL2MessageMembershipWitness.mockResolvedValue(undefined);
 
-    await expect(classifyDepositRefund(portal, inbox, chain, deposit, archive)).rejects.toStrictEqual(
+    await expect(classifyDepositRefund(portal, chain, deposit, archive)).rejects.toStrictEqual(
       new PermanentError(
         `Frozen tip ${await frozenTip.hash()} absorbed leaf index ${ABSORBED_LEAF_INDEX}, but does not have deposit message ${deposit.messageKey}`,
       ),
@@ -319,21 +307,21 @@ describe('classifyDepositRefund', () => {
       isRefundNullifierSpent.mockRejectedValue(failure);
       const deposit = await depositAt(BigInt(NEXT_AVAILABLE_LEAF_INDEX));
 
-      await expect(classifyDepositRefund(portal, inbox, chain, deposit, archive)).rejects.toBe(failure);
+      await expect(classifyDepositRefund(portal, chain, deposit, archive)).rejects.toBe(failure);
     });
 
     it('when the L1-to-L2 message witness read fails', async () => {
       getL1ToL2MessageMembershipWitness.mockRejectedValue(failure);
       const deposit = await depositAt(ABSORBED_LEAF_INDEX);
 
-      await expect(classifyDepositRefund(portal, inbox, chain, deposit, archive)).rejects.toBe(failure);
+      await expect(classifyDepositRefund(portal, chain, deposit, archive)).rejects.toBe(failure);
     });
 
-    it('when the L1 Inbox read fails', async () => {
-      getMessageSentEvents.mockRejectedValue(failure);
+    it('when the portal deposit record read fails', async () => {
+      depositMessageIndex.mockRejectedValue(failure);
       const deposit = await depositAt(BigInt(NEXT_AVAILABLE_LEAF_INDEX));
 
-      await expect(classifyDepositRefund(portal, inbox, chain, deposit, archive)).rejects.toBe(failure);
+      await expect(classifyDepositRefund(portal, chain, deposit, archive)).rejects.toBe(failure);
     });
 
     it('when the nullifier tree read fails', async () => {
@@ -341,7 +329,7 @@ describe('classifyDepositRefund', () => {
       const deposit = await depositAt(ABSORBED_LEAF_INDEX);
       holdMessageAt(ABSORBED_LEAF_INDEX);
 
-      await expect(classifyDepositRefund(portal, inbox, chain, deposit, archive)).rejects.toBe(failure);
+      await expect(classifyDepositRefund(portal, chain, deposit, archive)).rejects.toBe(failure);
     });
   });
 });

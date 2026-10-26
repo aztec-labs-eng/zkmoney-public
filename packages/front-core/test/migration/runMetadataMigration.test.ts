@@ -57,6 +57,44 @@ describe("authorized migration run", () => {
     expect(onPrepared).toHaveBeenCalledTimes(1)
   })
 
+  it("tries a failed prepare-only pass again with no prompt, and returns what it prepared", async () => {
+    vi.useFakeTimers()
+    const onPrepared = vi.fn()
+    const advance = vi
+      .fn()
+      .mockResolvedValueOnce({ phase: "needsAttention", error: "source node down" })
+      .mockImplementationOnce(async (_start, _signal, opts) => {
+        opts.onPrepared()
+        return { phase: "broadcasting", plan: "signed" }
+      })
+    const run = runMetadataMigration({ advance } as unknown as MetadataMigrationController, {
+      signal: new AbortController().signal,
+      pollMs: 10,
+      prepareOnly: true,
+      retry: true,
+      onPrepared,
+    })
+    await vi.advanceTimersByTimeAsync(10)
+    expect(await run).toMatchObject({ phase: "broadcasting" })
+    expect(
+      advance.mock.calls.map(([start, , opts]) => [start, opts.prepareOnly, opts.prompts]),
+    ).toEqual([
+      [true, true, undefined],
+      [true, true, false],
+    ])
+    expect(onPrepared).toHaveBeenCalledTimes(1)
+  })
+
+  it("ends a prepare-only pass on a stop with no retry left", async () => {
+    const advance = vi.fn().mockResolvedValue({ phase: "needsAttention", error: "refused" })
+    const record = await runMetadataMigration(
+      { advance } as unknown as MetadataMigrationController,
+      { signal: new AbortController().signal, pollMs: 10, prepareOnly: true },
+    )
+    expect(record).toMatchObject({ phase: "needsAttention" })
+    expect(advance).toHaveBeenCalledTimes(1)
+  })
+
   it("carries a run promptless, never as a start, retrying a failed pass and stopping for the user", async () => {
     vi.useFakeTimers()
     const exclusive = <T>(step: () => Promise<T>) => step()
@@ -135,6 +173,23 @@ describe("authorized migration run", () => {
       [false, expect.any(AbortSignal), { observeOnly: true, promptless: false }],
       [false, expect.any(AbortSignal), { observeOnly: true, promptless: false }],
     ])
+  })
+
+  it("observes a waiting run again until it goes on", async () => {
+    vi.useFakeTimers()
+    const advance = vi
+      .fn()
+      .mockResolvedValueOnce({ phase: "waiting", waitReason: "Price data is out of date." })
+      .mockResolvedValueOnce({ phase: "waiting" })
+      .mockResolvedValueOnce({ phase: "done" })
+    const run = runMetadataMigration({ advance } as unknown as MetadataMigrationController, {
+      signal: new AbortController().signal,
+      pollMs: 10,
+      observeOnly: true,
+    })
+    await vi.advanceTimersByTimeAsync(20)
+    expect(await run).toMatchObject({ phase: "done" })
+    expect(advance).toHaveBeenCalledTimes(3)
   })
 
   it("pauses after an in-flight step without starting another transaction", async () => {

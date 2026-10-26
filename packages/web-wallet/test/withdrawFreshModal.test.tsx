@@ -11,6 +11,7 @@ import { fireEvent } from "../src/lib/analytics"
 import { asOperation, endSigningAndHandOff } from "./support/handOff"
 import type { WithdrawalQuoteState } from "../src/features/withdraw/withdrawQuote"
 import type { WithdrawStage } from "../src/features/withdraw/withdrawGateway"
+import { LIMIT, LIMIT_USD, grouped, typed } from "./support/publicLimit"
 
 type Asset = "USDC" | "USDT" | "ETH" | "DAI"
 /** DAI with a gas share rides an escrow on the DAI route, priced apart from direct DAI. */
@@ -78,7 +79,6 @@ vi.mock("../src/features/withdraw/withdrawQuote", async (importOriginal) => ({
     const floorAtomic = floor + proverTip
     const fee = {
       withdrawalRelayerTip: 0n,
-      fpcFundingCut: 0n,
       swapRelayerTip,
       swapGas: key === "DAI" ? undefined : SWAP_GAS,
       proverTip,
@@ -556,16 +556,16 @@ describe("WithdrawFreshModal", () => {
   })
 
   describe("the per-withdrawal limit", () => {
-    // The burn, gas share and floor included, is one withdrawal of at most $2,500.
+    // The burn, gas share and floor included, is one withdrawal of at most the published limit.
     const notice = () => container.querySelector('[data-testid="limit-notice"]')?.textContent
-    const OVER = "Over the $2,500 limit"
+    const OVER = `Over the ${LIMIT_USD} limit`
     const rerender = async () => {
       await click("$10")
       await click("$5")
     }
 
     beforeEach(async () => {
-      walletAsset.balanceAtomic = parseUnits("10000", 18)
+      walletAsset.balanceAtomic = parseUnits(String(2 * LIMIT), 18)
       await mount()
     })
     afterEach(() => {
@@ -574,21 +574,21 @@ describe("WithdrawFreshModal", () => {
 
     it("names the limit per withdrawal beside the amount, with its explanation", async () => {
       const line = container.querySelector('[data-testid="operation-limits"]')!
-      expect(line.textContent).toBe("Min $1 · Max per withdrawal: $2,500 incl. fees")
+      expect(line.textContent).toBe(`Min $1 · Max per withdrawal: ${LIMIT_USD} incl. fees`)
       const info = line.querySelector('[data-testid="about-limits-link"]')!
       expect(info.getAttribute("aria-label")).toBe("About the withdrawal limit")
     })
 
     it.each([
-      ["DAI", "DAI_GAS", "2494.6"],
-      ["USDC", "USDC", "2494.65"],
+      ["DAI", "DAI_GAS", typed(LIMIT - 5.4)],
+      ["USDC", "USDC", typed(LIMIT - 5.35)],
     ] as const)(
-      "MAX on a large balance stops the %s burn, gas share and floor included, at $2,500",
+      `MAX on a large balance stops the %s burn, gas share and floor included, at ${LIMIT_USD}`,
       async (asset, route, max) => {
         await pick(asset)
         await click("MAX")
         expect(input().value).toBe(max)
-        expect(amountsOf(route).at(-1)).toBe(parseUnits("2500", 18))
+        expect(amountsOf(route).at(-1)).toBe(parseUnits(String(LIMIT), 18))
         expect(notice()).toBeUndefined()
         await click("Review")
         await click("Withdraw privately")
@@ -596,40 +596,40 @@ describe("WithdrawFreshModal", () => {
       },
     )
 
-    it("takes a burn of exactly $2,500 and refuses one cent more, offering the maximum", async () => {
-      await type("2494.6")
+    it(`takes a burn of exactly ${LIMIT_USD} and refuses one cent more, offering the maximum`, async () => {
+      await type(typed(LIMIT - 5.4))
       expect(notice()).toBeUndefined()
       expect(button("Review").disabled).toBe(false)
 
-      await type("2494.61")
+      await type(typed(LIMIT - 5.39))
       expect(notice()).toContain(OVER)
       expect(button("Review").disabled).toBe(true)
-      await click("Use maximum ($2,494.60)")
-      expect(input().value).toBe("2494.6")
+      await click(`Use maximum ($${grouped(LIMIT - 5.4, true)})`)
+      expect(input().value).toBe(typed(LIMIT - 5.4))
       expect(button("Review").disabled).toBe(false)
     })
 
     it("keeps MAX within the limit as the floor moves, and flags a typed amount it pushes over", async () => {
       await pick("USDC")
       await click("MAX")
-      expect(input().value).toBe("2494.65")
+      expect(input().value).toBe(typed(LIMIT - 5.35))
       routes.USDC.floor = parseUnits("0.5", 18)
       await rerender()
-      expect(input().value).toBe("2494.5")
+      expect(input().value).toBe(typed(LIMIT - 5.5))
       expect(notice()).toBeUndefined()
 
       // A typed amount, not MAX: the field must change for the edit to register.
-      await type("2494")
-      await type("2494.5")
+      await type(typed(LIMIT - 6))
+      await type(typed(LIMIT - 5.5))
       routes.USDC.floor = parseUnits("0.6", 18)
       await rerender()
-      expect(input().value).toBe("2494.5")
+      expect(input().value).toBe(typed(LIMIT - 5.5))
       expect(notice()).toContain(OVER)
       expect(button("Review").disabled).toBe(true)
     })
 
     it("says a moved fee put the reviewed burn over the limit, and holds Confirm", async () => {
-      await type("2494.6")
+      await type(typed(LIMIT - 5.4))
       await click("Review")
       routes.DAI_GAS.floor = parseUnits("0.5", 18)
       // The same sheet renders again, as it does when its quotes refresh.
@@ -640,7 +640,7 @@ describe("WithdrawFreshModal", () => {
           </ScreeningProvider>,
         ),
       )
-      expect(row("Send")).toBe("$2494.60")
+      expect(row("Send")).toBe(`$${(LIMIT - 5.4).toFixed(2)}`)
       expect(notice()).toContain(OVER)
       expect(button("Withdraw privately").disabled).toBe(true)
     })
@@ -662,7 +662,7 @@ describe("WithdrawFreshModal", () => {
       }
 
       it("is blocked when its tip would put a typed amount's burn over the limit", async () => {
-        await type("2494.6")
+        await type(typed(LIMIT - 5.4))
         await click("Review")
         const [, fasterOption] = await openSpeeds()
         expect(fasterOption!.disabled).toBe(true)
@@ -674,12 +674,12 @@ describe("WithdrawFreshModal", () => {
 
       it("keeps a maxed amount and refuses the tip that would put it over the limit", async () => {
         await click("MAX")
-        expect(input().value).toBe("2494.6")
+        expect(input().value).toBe(typed(LIMIT - 5.4))
         await click("Review")
         const [, fasterOption] = await openSpeeds()
         expect(fasterOption!.disabled).toBe(true)
         expect(fasterOption!.textContent).toBe(`Faster${speedCopy.LIMIT_TIP_BLOCKED_COPY}`)
-        expect(row("Send")).toBe("$2494.60")
+        expect(row("Send")).toBe(`$${(LIMIT - 5.4).toFixed(2)}`)
       })
     })
 
@@ -699,7 +699,7 @@ describe("WithdrawFreshModal", () => {
         }),
       }
       await mount(blocked)
-      await type("2494.6")
+      await type(typed(LIMIT - 5.4))
       expect(container.textContent).toContain("Sanctioned address")
       expect(button("Review").disabled).toBe(true)
     })

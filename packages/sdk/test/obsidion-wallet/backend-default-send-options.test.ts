@@ -9,8 +9,8 @@
  *
  * Mock PXE / node in the style of `get-default-send-options.test.ts`.
  */
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { GasSettings } from "@aztec/stdlib/gas"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { GasSettings } from "@aztec-labs/stdlib/gas"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { ObsidionWalletBackend } from "../../src/obsidion/ObsidionWalletBackend.js"

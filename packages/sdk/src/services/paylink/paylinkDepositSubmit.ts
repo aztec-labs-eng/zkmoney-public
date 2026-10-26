@@ -1,9 +1,13 @@
-import type { BatchCall, Contract, ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import type { AuthWitness } from "@aztec/aztec.js/authorization"
-import type { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import type { TeeSigner } from "@oxide/oxide-lib/types.js"
+import type {
+  BatchCall,
+  Contract,
+  ContractFunctionInteraction,
+} from "@aztec-labs/aztec.js/contracts"
+import type { AuthWitness } from "@aztec-labs/aztec.js/authorization"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
 
 import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
 import { type MethodOptions } from "../ServiceBase.js"
@@ -63,7 +67,7 @@ export async function prepareDepositSubmit(args: {
   wallet: ObsidionWallet
   node: AztecNode
   sender: AztecAddress
-  teeSigner: TeeSigner
+  teeSigner: RegisteredTeeSigner
   tokenContract: Contract
   depositInteraction: ContractFunctionInteraction
   paylinkInstance: ContractInstanceWithAddress

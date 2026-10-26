@@ -1,4 +1,4 @@
-import { Gas, GasFees, GasSettings } from "@aztec/stdlib/gas"
+import { Gas, GasFees, GasSettings } from "@aztec-labs/stdlib/gas"
 
 /** Node-advertised per-tx gas admission limits for wallet unit-test stubs. */
 export const STUB_TXS_LIMITS_GAS = { daGas: 500_000, l2Gas: 500_000 }
@@ -13,10 +13,7 @@ export function stubNodeInfo(overrides?: Partial<{ l1ChainId: number; rollupVers
 }
 
 /** v5 `GasSettings.fallback` requires explicit `gasLimits`. */
-export function stubGasSettingsFallback(overrides?: {
-  maxFeesPerGas?: GasFees
-  gasLimits?: Gas
-}) {
+export function stubGasSettingsFallback(overrides?: { maxFeesPerGas?: GasFees; gasLimits?: Gas }) {
   return GasSettings.fallback({
     gasLimits: overrides?.gasLimits ?? Gas.from(STUB_TXS_LIMITS_GAS),
     maxFeesPerGas: overrides?.maxFeesPerGas ?? GasFees.empty(),

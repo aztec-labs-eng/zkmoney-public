@@ -7,10 +7,10 @@
 // raw-byte field encoding, base64url output, fail-closed decode behind a hard size cap.
 
 import { encode as cborEncode, decode as cborDecode } from "cbor-x"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { Buffer } from "buffer"
 import type { PaylinkParams } from "../PaylinkService.js"
-import { Point } from "@aztec/foundation/curves/grumpkin"
+import { Point } from "@aztec-labs/foundation/curves/grumpkin"
 
 // Bump when the packet layout changes. Decode rejects any other value, so a bump bricks
 // older links (acceptable under the hard-cut, no-back-compat posture). Adding an optional key

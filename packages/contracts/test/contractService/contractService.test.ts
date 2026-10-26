@@ -31,14 +31,14 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from "vitest"
 import { ContractService, NodeContractServiceStorage, DEFAULT_CONTRACTS, Network } from "../../src"
 import type { ContractName, ContractServiceConfig, FetchFunction } from "@obsidion/core/types"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
-import { Fr } from "@aztec/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
   getContractClassFromArtifact,
   getContractInstanceFromInstantiationParams,
-} from "@aztec/stdlib/contract"
-import { deriveKeys } from "@aztec/stdlib/keys"
+} from "@aztec-labs/stdlib/contract"
+import { deriveKeys } from "@aztec-labs/stdlib/keys"
 
 const explodingFetch: FetchFunction = async (url) => {
   throw new Error(`Unexpected network call (${url}): test expected zero HTTP traffic`)

@@ -68,7 +68,7 @@ import { WebStorageAdapter } from "../../platform/storage/WebStorageAdapter"
 import { getL1Clients } from "./l1Wallet"
 import { AlreadySweptError, readSipaDeployed, UNTRACKED_TOKEN_ZERO } from "./sipaSweep"
 import { predictSipaCandidate } from "./sipaPredict"
-import { sipaFundingTokens } from "./loadDepositFacts"
+import { recoveryProbeTokens } from "./loadDepositFacts"
 
 /** The stuck-sweep clock the activity feed and both exits share. */
 export { isStuckSweep, STUCK_SWEEP_MS }
@@ -104,7 +104,7 @@ export interface L1ExitChannel {
 export interface RecoveryDeps {
   channel: L1ExitChannel
   chainId: number
-  /** Every token the address accepts, the manifest token first. */
+  /** Every token any row of the table accepts, the manifest token first. */
   tokens: [SipaFundingToken, ...SipaFundingToken[]]
   readBalance: (sipa: Address, token: Address) => Promise<bigint>
   readEthBalance: (sipa: Address) => Promise<bigint>
@@ -378,12 +378,10 @@ export async function recoverDeposit(
     channel = await injectedWalletChannel(config, { from: opts.from, onStage: opts.onStage })
   }
 
-  const auth = getAuthService()
-  const secret = await auth.getSecretKey()
-  if (!secret) throw new Error("Unlock the wallet before recovery")
-  const bootstrap = deriveBootstrapKey(secret)
-  const provider = await auth.getAuthProvider()
-  const passkey = provider ? await oxideAccountPasskey(provider) : undefined
+  const keys = await getAuthService().sessionKeys()
+  if (!keys) throw new Error("Unlock the wallet before recovery")
+  const bootstrap = deriveBootstrapKey(keys.secretKey)
+  const passkey = await oxideAccountPasskey(keys.authProvider)
   const reader = createOxideL1Reader(publicClient)
   let accountInitCode: Hex | undefined
   if (record.origin?.protocol === "account") {
@@ -402,7 +400,7 @@ export async function recoverDeposit(
   return await recoverSipaDeposit(record, {
     channel,
     chainId: config.l1ChainId,
-    tokens: sipaFundingTokens(config.network, token),
+    tokens: await recoveryProbeTokens(config, token),
     readBalance: (sipa, token) =>
       publicClient.readContract({
         address: token,
@@ -450,11 +448,9 @@ async function recoveryDeployment(
         continue
       const implementation =
         (candidate.depositSIPAImplementation as Address | undefined) ??
-        (await readDepositSIPAImplementation(
-          publicClient,
-          candidate.sipaFactory as Address,
-          candidate.portal as Address,
-        ).catch(() => undefined))
+        (await readDepositSIPAImplementation(publicClient, candidate.sipaFactory as Address).catch(
+          () => undefined,
+        ))
       if (implementation)
         deployments.push({
           sipaFactory: candidate.sipaFactory as Address,

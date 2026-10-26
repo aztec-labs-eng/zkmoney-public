@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { PaylinkService, type PaylinkParams } from "@obsidion/sdk"
 import {
   creatorLinksFromRows,

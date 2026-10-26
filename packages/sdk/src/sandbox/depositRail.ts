@@ -1,8 +1,8 @@
-import type { AztecAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { isL1ToL2MessageReady } from "@aztec/aztec.js/messaging"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import { createExtendedL1Client } from "@aztec/ethereum/client"
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { isL1ToL2MessageReady } from "@aztec-labs/aztec.js/messaging"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import { createExtendedL1Client } from "@aztec-labs/ethereum/client"
 import { OxidePortalContract } from "@oxide/l1-contracts/oxide_portal.js"
 import { computeRecipientCommitment } from "@oxide/oxide-lib/recipient_commitment.js"
 import {

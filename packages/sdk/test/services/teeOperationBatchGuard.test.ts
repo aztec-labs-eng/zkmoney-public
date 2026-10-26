@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { ACCOUNT_MAX_CALLS, buildTeeOperation } from "../../src/services/teeOperation.js"
 
 // Guard math: [...ops, publish_da] + 1 wallet-merged fee call must fit ACCOUNT_MAX_CALLS.
@@ -8,12 +9,10 @@ const op = { kind: "transfer" } as any
 
 function build(opCount: number) {
   return buildTeeOperation({} as any, {} as any, {
-    tokenContract: {} as any,
+    tokenContract: { address: AztecAddress.fromNumberUnsafe(3) } as any,
     signer: {} as any,
     operations: Array(opCount).fill(op),
-    buildOperationCall: () => {
-      throw new Error("buildOperationCall should not run for an oversized batch")
-    },
+    buildOperationCall: () => ({} as any),
   })
 }
 

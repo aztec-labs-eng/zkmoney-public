@@ -1,9 +1,10 @@
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react"
 import { erc20Abi, formatUnits, type Address, type Hex } from "viem"
+import { tokenDecimalsForNetwork } from "@obsidion/core/constants"
 import {
   addressShareDecision,
-  depositTokenValuation,
   fixedAmountLimits,
+  NOMINAL_USD_VALUATION,
   isCapacityAffirmative,
   type PortalCapacityStore,
   type RequiredCredit,
@@ -30,7 +31,8 @@ import {
   isWrongNetwork,
   useL1Wallet,
 } from "../../deposit/l1Wallet"
-import { depositTokensFor, type DepositTokenOption } from "../../deposit/loadDepositFacts"
+import { useDepositTokensRead, type DepositTokenOption } from "../../deposit/loadDepositFacts"
+import { DepositTokensStatus } from "../../deposit/DepositCoinModal"
 import {
   capacityHold,
   registrationRequiredCredit,
@@ -143,15 +145,13 @@ export function registrationOverLimit(input: {
   decimals: number
   askAtomic?: bigint
   scheduleFeeAtomic?: bigint
-  fpcCutAtomic?: bigint
+  txAmountCap?: bigint
 }): OverLimit | undefined {
-  const { token, chainId, decimals, askAtomic, scheduleFeeAtomic, fpcCutAtomic } = input
-  const valuation =
-    token && chainId !== undefined
-      ? depositTokenValuation({ chainId, portalToken: token, token })
-      : undefined
+  const { token, chainId, decimals, askAtomic, scheduleFeeAtomic, txAmountCap } = input
+  // The ask is in the fee token, which the table always accepts.
+  const valuation = token && chainId !== undefined ? NOMINAL_USD_VALUATION : undefined
   return fixedAmountLimits(
-    { kind: "registration", decimals, askAtomic, scheduleFeeAtomic, fpcCutAtomic },
+    { kind: "registration", decimals, askAtomic, scheduleFeeAtomic, txAmountCap },
     valuation,
   )?.over
 }
@@ -321,9 +321,19 @@ function ConnectedWalletPay({
   const state = payment?.state ?? "idle"
   // The last check refused this payment; nothing was sent.
   const [refusal, setRefusal] = useState<string>()
-  // First entry is the fee token; a non-mainnet network lists only it.
-  const tokens = depositTokensFor(getConfig().network)
-  const [picked, setPicked] = useState<DepositTokenOption>(tokens[0])
+  // The fee token, and the tokens the sweep swaps into it. Nothing is paid before they are read.
+  const tokensRead = useDepositTokensRead("registration")
+  const registrationTokens = tokensRead.tokens
+  const feeToken = registrationTokens?.settlement ?? {
+    address: token,
+    symbol: "",
+    decimals: tokenDecimalsForNetwork(getConfig().network),
+    icon: ethIcon,
+    settlesIn: token,
+    swapped: false,
+  }
+  const tokens = registrationTokens?.offered ?? [feeToken]
+  const [picked, setPicked] = useState<DepositTokenOption>()
   const [confirming, setConfirming] = useState(false)
   const prompt = useWalletPrompt()
   const stalled = useWalletPromptStall(state === "sending")
@@ -334,12 +344,11 @@ function ConnectedWalletPay({
     setConfirming(false)
   }
   const held = heldToken
-    ? tokens.find((t) => (t.address ?? token).toLowerCase() === heldToken.toLowerCase())
+    ? tokens.find((t) => t.address.toLowerCase() === heldToken.toLowerCase())
     : undefined
-  const pick = held ?? picked
-  // By symbol: off mainnet the list is rebuilt each render.
-  const swapped = pick.symbol !== tokens[0].symbol
-  const amount = pickedAmount(total, tokens[0].decimals, pick)
+  const pick = held ?? picked ?? feeToken
+  const swapped = pick.swapped
+  const amount = pickedAmount(total, feeToken.decimals, pick)
 
   const pay = async () => {
     const current = payments.get(key)
@@ -361,7 +370,7 @@ function ConnectedWalletPay({
       if (config.l1ChainId !== chainId) throw new Error("Switch to the registration network first.")
       const publicClient = l1PublicClient(config)
       if (!hash) {
-        const balance = await readL1DepositTokenBalance(l1.account!, pick.address ?? token)
+        const balance = await readL1DepositTokenBalance(l1.account!, pick.address)
         if (balance.raw < amount) {
           setPayment(key, undefined)
           setRefusal(
@@ -381,7 +390,7 @@ function ConnectedWalletPay({
         setPayment(key, { state: "sending" })
         const { walletClient, account, chain } = await getL1Clients(chainId, l1.account!)
         hash = await walletClient.writeContract({
-          address: pick.address ?? token,
+          address: pick.address,
           abi: erc20Abi,
           functionName: "transfer",
           args: [address, amount],
@@ -440,7 +449,7 @@ function ConnectedWalletPay({
       ? "Connect your wallet"
       : total === 0n
       ? "Wallet connected"
-      : `Pay ${formatDepositDue(total, tokens[0].decimals)} from ${l1.walletName ?? "wallet"}`
+      : `Pay ${formatDepositDue(total, feeToken.decimals)} from ${l1.walletName ?? "wallet"}`
   const subtitle = !l1.account
     ? "Use Rainbow, MetaMask, Rabby, or WalletConnect"
     : total === 0n
@@ -451,7 +460,7 @@ function ConnectedWalletPay({
     state !== "check" &&
     (state !== "idle" ||
       !!overLimit ||
-      (!!l1.account && (!cleared || total === 0n || !funding.canFund)))
+      (!!l1.account && (!cleared || total === 0n || !funding.canFund || !registrationTokens)))
   const reason =
     state === "holding"
       ? WALLET_HOLDING
@@ -500,6 +509,9 @@ function ConnectedWalletPay({
           <Icon name="chevron-right" size={16} color="var(--text-secondary)" />
         )}
       </button>
+      {l1.account && !registrationTokens && state === "idle" && (
+        <DepositTokensStatus failed={tokensRead.failed} onRetry={tokensRead.retry} />
+      )}
       {!confirming && stallNote}
       {reason && (
         <p className="ww-capacity__reason" role="status" data-testid="registration-pay-reason">
@@ -516,12 +528,12 @@ function ConnectedWalletPay({
         </button>
       )}
       {/* Once the transfer is broadcast the row tracks it; the modal is only the ask. */}
-      {confirming && l1.account && state in PAY_STAGE_LABEL && (
+      {confirming && l1.account && registrationTokens && state in PAY_STAGE_LABEL && (
         <PayConfirmModal
           from={`${l1.walletName ?? "Wallet"} · ${shortL1Addr(l1.account)}`}
           to={address}
           total={total}
-          feeToken={tokens[0]}
+          feeToken={feeToken}
           tokens={held ? [held] : tokens}
           pick={pick}
           onPick={setPicked}

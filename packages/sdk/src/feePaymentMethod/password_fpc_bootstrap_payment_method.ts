@@ -1,7 +1,7 @@
-import { FeePaymentMethod } from "@aztec/aztec.js/fee"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { GasSettings } from "@aztec/stdlib/gas"
-import { ExecutionPayload } from "@aztec/stdlib/tx"
+import { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { GasSettings } from "@aztec-labs/stdlib/gas"
+import { ExecutionPayload } from "@aztec-labs/stdlib/tx"
 
 /**
  * Names a not-yet-deployed PasswordFPC as fee payer, contributing NO call of its own.
@@ -12,10 +12,7 @@ import { ExecutionPayload } from "@aztec/stdlib/tx"
  * already-deployed FPC uses {@link PasswordFPCPaymentMethod} instead.
  */
 export class PasswordFPCBootstrapPaymentMethod implements FeePaymentMethod {
-  constructor(
-    private paymentContract: AztecAddress,
-    private gasSettings: GasSettings,
-  ) {}
+  constructor(private paymentContract: AztecAddress, private gasSettings: GasSettings) {}
 
   getExecutionPayload(): Promise<ExecutionPayload> {
     return Promise.resolve(new ExecutionPayload([], [], [], [], this.paymentContract))

@@ -7,7 +7,7 @@ vi.mock("../src/errors/errorModal", () => ({ showReportableError: h.showReportab
 vi.mock("../src/platform/auth/useAuthenticator", () => ({ peekAuthService: () => undefined }))
 vi.mock("../src/config/env", () => ({ getConfig: () => ({ rpId: "localhost" }) }))
 vi.mock("../src/platform/auth/WebPasskeyIdentityMap", () => ({
-  hasMskRootBreadcrumb: () => false,
+  hasOpeningBreadcrumb: () => false,
   rememberUsertag: () => Promise.resolve(),
 }))
 vi.mock("../src/features/identity/admission", () => ({ clearAdmission: () => {} }))

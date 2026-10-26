@@ -3,22 +3,22 @@ import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vite
 import { PaylinkInitParams, PaylinkService } from "../../src/services/PaylinkService.js"
 import { derivePaylinkKeys } from "../../src/services/paylink/paylinkKeys.js"
 import { buildTransferMeta, buildTransferMetaForSend } from "../../src/services/transferMeta.js"
-import { TxHash } from "@aztec/stdlib/tx"
-import { Fr } from "@aztec/aztec.js/fields"
-import { Grumpkin } from "@aztec/foundation/crypto/grumpkin"
-import { NO_FROM } from "@aztec/aztec.js/account"
+import { TxHash } from "@aztec-labs/stdlib/tx"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { Grumpkin } from "@aztec-labs/foundation/crypto/grumpkin"
+import { NO_FROM } from "@aztec-labs/aztec.js/account"
 import { Buffer } from "buffer"
 import { readFileSync } from "fs"
 import { resolve } from "path"
-import { loadContractArtifact } from "@aztec/stdlib/abi"
-import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
-import type { NoirCompiledContract } from "@aztec/stdlib/noir"
-import type { ContractArtifact } from "@aztec/aztec.js/abi"
+import { loadContractArtifact } from "@aztec-labs/stdlib/abi"
+import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
+import type { NoirCompiledContract } from "@aztec-labs/stdlib/noir"
+import type { ContractArtifact } from "@aztec-labs/aztec.js/abi"
 import { EMAIL_LEN, poseidon2HashPackedString } from "../../src/email/utils.js"
 import { DEFAULT_CONTRACTS, hashAndTruncate } from "../../src/index.js"
 import type { ContractName, ContractService } from "../../src/index.js"
-import { ZKJWT_VKEY_HASH } from "../../../core/src/constants/index.js"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
+import { ZKJWT_VKEY_HASH } from "@obsidion/core/constants"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
 
 describe("PaylinkService Encryption and URL Tests", () => {
   const mockPaylinkParams = {
@@ -102,9 +102,15 @@ describe("PaylinkService Encryption and URL Tests", () => {
         instance: { address: escrow },
         depositTxHash: txHash ? TxHash.fromString(txHash) : undefined,
       } as never)
+      // The token's registration reaches the PXE and its L1 portal; this test reads events only.
+      vi.spyOn(
+        service as unknown as { registerToken: () => Promise<void> },
+        "registerToken",
+      ).mockResolvedValue()
       const result = await service.readDepositMeta({
         secret: Fr.random(),
         paylinkType: DEFAULT_CONTRACTS.paylinkDirect,
+        fallbackKeyHash: Fr.ZERO,
         classId: Fr.ZERO,
         chainId: 31337,
         rollupVersion: 1,
@@ -150,6 +156,7 @@ describe("PaylinkService Encryption and URL Tests", () => {
     const resolved = await service.resolveLink({
       secret: Fr.random(),
       paylinkType: DEFAULT_CONTRACTS.paylinkDirect,
+      fallbackKeyHash: Fr.ZERO,
       classId: Fr.ZERO,
       chainId: 31337,
       rollupVersion: 1,

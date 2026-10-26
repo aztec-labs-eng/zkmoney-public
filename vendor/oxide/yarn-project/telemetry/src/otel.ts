@@ -1,4 +1,4 @@
-import { type Logger, createLogger } from '@aztec/foundation/log';
+import { type Logger, createLogger } from '@aztec-labs/foundation/log';
 
 import { type Attributes as OtelAttributes, type Meter as OtelMeter, ValueType } from '@opentelemetry/api';
 import { AggregationTemporalityPreference, OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';

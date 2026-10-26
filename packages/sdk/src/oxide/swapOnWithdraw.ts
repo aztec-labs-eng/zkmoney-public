@@ -1,9 +1,8 @@
-import type { Fr } from "@aztec/foundation/curves/bn254"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import type { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import {
   LegacySwapEscrowFactoryAbi,
   MAX_DAI_FOR_GAS,
-  OxidePortalAbi,
   SwapEscrowFactoryAbi,
   SwapRoute,
   encodeEscrowRecoverERC20,
@@ -113,31 +112,27 @@ export function swapOutputForRoute(route: number): SwapEscrowOutput | undefined 
 
 /** Everything the portal, the executor and the escrow take out of a burn before the swap runs. */
 export interface SwapDeductions {
+  /** The plain withdrawal executor's `FEE()`. */
+  withdrawalFee: bigint
   /** The relayer tip the plain withdrawal executor pays out of the burn. */
   withdrawalRelayerTip: bigint
   proverTip: bigint
-  /**
-   * `OxidePortal.FPC_FUNDING_CUT` — skimmed to `FPC_FUNDER` on release, so the escrow never sees
-   * it. Read it off the portal (`readFpcFundingCut`); the value is capped at the net amount and
-   * zeroed once the portal is frozen, so using it uncapped only ever understates the output.
-   */
-  fpcFundingCut: bigint
   /** DAI the escrow pays whoever completes the swap. */
   relayerTip: bigint
 }
 
 /**
  * What the escrow actually swaps: the burn minus every deduction ahead of it. The portal takes the
- * prover tip and the FPC cut, the executor pays the withdrawal relayer tip, then the escrow holds
+ * prover tip, the executor takes its fee and pays the withdrawal relayer tip, then the escrow holds
  * back its own relayer tip, so this — not the typed amount — is the quote's exact input and the
  * amount the route must be able to fill.
  */
 export function swapInputAmount(amount: bigint, deductions: SwapDeductions): bigint {
   return (
     amount -
+    deductions.withdrawalFee -
     deductions.withdrawalRelayerTip -
     deductions.proverTip -
-    deductions.fpcFundingCut -
     deductions.relayerTip
   )
 }
@@ -153,9 +148,9 @@ export function planSwapOnWithdraw(args: {
   recovery: SwapRecovery
   /** The gross burn amount, raw token units. */
   amount: bigint
+  withdrawalFee: bigint
   withdrawalRelayerTip: bigint
   proverTip: bigint
-  fpcFundingCut: bigint
   /** DAI the escrow pays whoever completes the swap. */
   relayerTip: bigint
   /**
@@ -170,8 +165,8 @@ export function planSwapOnWithdraw(args: {
   const swapInput = swapInputAmount(args.amount, args)
   if (swapInput <= daiForGas) {
     throw new Error(
-      `planSwapOnWithdraw: nothing left to swap — amount ${args.amount} minus withdrawalRelayerTip ` +
-        `${args.withdrawalRelayerTip}, proverTip ${args.proverTip}, fpcFundingCut ${args.fpcFundingCut} ` +
+      `planSwapOnWithdraw: nothing left to swap — amount ${args.amount} minus withdrawalFee ` +
+        `${args.withdrawalFee}, withdrawalRelayerTip ${args.withdrawalRelayerTip}, proverTip ${args.proverTip} ` +
         `and relayerTip ${args.relayerTip} leaves ${swapInput}, with ${daiForGas} of it for gas`,
     )
   }
@@ -262,19 +257,4 @@ export function buildSwapEscrowRecoverCall(params: {
     to: params.multicall3 ?? MULTICALL3_ADDRESS,
     data: encodeFunctionData({ abi: multicall3Abi, functionName: "aggregate3", args: [calls] }),
   }
-}
-
-/**
- * The portal's FPC funding cut, one of the deductions a swap quote has to net out. An immutable, so
- * this is a one-time read per deployment.
- */
-export async function readFpcFundingCut(
-  publicClient: PublicClient,
-  portal: Address,
-): Promise<bigint> {
-  return (await publicClient.readContract({
-    address: portal,
-    abi: OxidePortalAbi,
-    functionName: "FPC_FUNDING_CUT",
-  })) as bigint
 }

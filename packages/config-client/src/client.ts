@@ -225,17 +225,57 @@ export function resolveVersion(
 }
 
 /**
- * Source nodes for portals explicitly named by other supported versions in this document.
- * A previous-generation reference does not select sources in this reader.
+ * Source nodes for portals explicitly named by other supported versions, including sources on the current rollup.
  */
 export function retiredRollupNodes(profile: ConfigProfile): Map<string, string> {
   const nodes = new Map<string, string>()
   for (const [id, version] of Object.entries(profile.versions)) {
     if (id === profile.current || !isSupportedVersion(version)) continue
-    for (const portal of [version.oxide.portal, ...(version.assets ?? []).map((a) => a.portal)])
+    for (const { portal } of [version.oxide, ...(version.assets ?? [])])
       nodes.set(portal.toLowerCase(), version.nodeUrl)
   }
   return nodes
+}
+
+/** A supported version on another node than the current one: a rollup a cutover left. */
+export interface RetiredRollupVersion {
+  versionId: string
+  nodeUrl: string
+  manifestUrl: string
+  /** Its deployments: the oxide pin and each asset's. */
+  pins: { portal: string; expectedGitSha?: string }[]
+}
+
+/** Turn one referenced deployment into the source-rollup shape consumed by migration readers. */
+export function retiredRollupVersion(
+  versionId: string,
+  version: ConfigVersion,
+  activeNodeUrl: string,
+): RetiredRollupVersion | undefined {
+  if (version.nodeUrl === activeNodeUrl) return undefined
+  const pins = new Map<string, RetiredRollupVersion["pins"][number]>()
+  for (const { portal, expectedGitSha } of [version.oxide, ...(version.assets ?? [])]) {
+    if (pins.has(portal.toLowerCase())) continue
+    pins.set(portal.toLowerCase(), {
+      portal,
+      ...(expectedGitSha ? { expectedGitSha } : {}),
+    })
+  }
+  return {
+    versionId,
+    nodeUrl: version.nodeUrl,
+    manifestUrl: version.oxide.manifestUrl,
+    pins: [...pins.values()],
+  }
+}
+
+export function retiredRollupVersions(profile: ConfigProfile): RetiredRollupVersion[] {
+  const { nodeUrl } = resolveVersion(profile).version
+  return Object.entries(profile.versions).flatMap(([versionId, version]) => {
+    if (versionId === profile.current || !isSupportedVersion(version)) return []
+    const retired = retiredRollupVersion(versionId, version, nodeUrl)
+    return retired ? [retired] : []
+  })
 }
 
 /**

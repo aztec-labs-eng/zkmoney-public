@@ -1,4 +1,4 @@
-import { createPXEClient, waitForPXE } from "@aztec/aztec.js"
+import { createPXEClient, waitForPXE } from "@aztec-labs/aztec.js"
 import { describe, it } from "vitest"
 import { AZTEC_NODE_URL } from "@obsidion/core/constants"
 

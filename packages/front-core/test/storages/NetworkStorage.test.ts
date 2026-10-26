@@ -18,7 +18,7 @@ import {
 } from "../../src/core/storages/index"
 import { setActiveGenerationNode } from "../../src/core/activeGenerationNode"
 
-vi.mock("@aztec/aztec.js/node", () => ({
+vi.mock("@aztec-labs/aztec.js/node", () => ({
   createAztecNodeClient: () => ({
     getBlock: async () => ({ hash: async () => ({ toString: () => "0xtestblockhash" }) }),
   }),

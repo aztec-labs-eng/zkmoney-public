@@ -19,10 +19,10 @@ vi.mock("../../src/core/services/deposits/sipa/stealth", () => ({
 vi.mock("@obsidion/sdk", () => ({
   buildSipaRecoverCall: mocks.buildSipaRecoverCall,
 }))
-vi.mock("@aztec/aztec.js/fields", () => ({
+vi.mock("@aztec-labs/aztec.js/fields", () => ({
   Fr: { fromHexString: (value: string) => ({ toString: () => value }) },
 }))
-vi.mock("@aztec/foundation/eth-address", () => ({
+vi.mock("@aztec-labs/foundation/eth-address", () => ({
   EthAddress: { fromString: (value: string) => ({ toString: () => value.toLowerCase() }) },
 }))
 

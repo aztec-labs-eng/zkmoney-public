@@ -182,12 +182,6 @@
 .ww-shell .ww-nav-item:hover {
   background: rgba(255, 255, 255, 0.03);
 }
-.ww-shell .ww-nav-item:disabled,
-.ww-shell .ww-tabbar__item:disabled {
-  opacity: 0.35;
-  cursor: default;
-  background: transparent;
-}
 .ww-shell .ww-nav-item--active {
   background: rgba(255, 255, 255, 0.05);
   color: var(--text-primary);
@@ -2069,9 +2063,10 @@
     opacity: 1;
   }
 }
-/* Each route's page fades in as it mounts. Opacity only: a transform would trap its fixed overlays. */
+/* Each route's page fades in as it mounts. Opacity only: a transform would trap its fixed overlays.
+   A cutover page covers the page under it, so it shows opaque at once: a fade would show that page. */
 @media (prefers-reduced-motion: no-preference) {
-  .ww-content > :not(.ww-shell-header) {
+  .ww-content > :not(.ww-shell-header, .ww-cutover) {
     animation: ww-fade-in 0.18s ease;
   }
 }
@@ -2381,9 +2376,6 @@
   }
   .ww-home__phone-actions .zkm-quick-action {
     min-width: 0;
-  }
-  .ww-home__phone-actions .zkm-quick-action--disabled .zkm-quick-action__tile {
-    opacity: 0.35;
   }
   /* "Add to Savings" and "Move to Main Account" run to two lines in a four-up row. */
   .ww-home__phone-actions .zkm-quick-action__caption {
@@ -3255,6 +3247,12 @@
 }
 .ww-account-row__domain {
   color: var(--text-secondary);
+}
+.ww-account-row__note {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 400;
 }
 .ww-account-row__go {
   color: var(--text-secondary);
@@ -4312,6 +4310,24 @@
 }
 .ww-chat__foot:empty {
   display: none;
+}
+.ww-chat__not-upgraded {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 14px;
+  color: var(--text-secondary);
+}
+.ww-chat__not-upgraded strong {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
 }
 .ww-shell .ww-chat__glassbtn {
   flex: 1;
@@ -5726,11 +5742,34 @@
   line-height: 1.5;
   color: var(--text-secondary);
 }
-/* A check or failure line under the facts: aligned with them, wrapping anywhere a long error needs. */
+/* A check line under the facts: aligned with them, wrapping anywhere a long error needs. */
 .ww-sheet__note--check {
   width: 100%;
   text-align: left;
   overflow-wrap: anywhere;
+}
+/* A status with its reason beneath, right-aligned in a fact or detail row. */
+.ww-status-reason {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+  text-align: right;
+}
+.ww-status-reason > small {
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.ww-sheet__fact:has(> .ww-status-reason) {
+  align-items: flex-start;
+}
+/* Unlike the fact's label span, the reason wraps. */
+.ww-sheet__fact > .ww-status-reason {
+  flex-shrink: 1;
 }
 
 .ww-fund {
@@ -9437,6 +9476,10 @@ details[open] .ww-withdraw__warning-chevron {
 .ww-receive__error {
   font-size: 12px;
   color: var(--accent-pink);
+}
+.ww-receive__hint {
+  font-size: 12px;
+  color: var(--text-secondary);
 }
 .ww-receive__muted {
   margin-top: -4px;

@@ -1,6 +1,6 @@
-import { BlockNumber, CheckpointNumber, EpochNumber } from '@aztec/foundation/branded-types';
-import { Checkpoint } from '@aztec/stdlib/checkpoint';
-import { AztecNode, ProverNodeApi } from '@aztec/stdlib/interfaces/server';
+import { BlockNumber, CheckpointNumber, EpochNumber } from '@aztec-labs/foundation/branded-types';
+import { Checkpoint } from '@aztec-labs/stdlib/checkpoint';
+import { AztecNode, ProverNodeApi } from '@aztec-labs/stdlib/interfaces/server';
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 

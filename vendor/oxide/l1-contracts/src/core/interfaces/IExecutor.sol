@@ -9,7 +9,7 @@ interface IExecutor {
   enum Flow {
     Withdrawal,
     FrozenNotesRefund,
-    FrozenDepositRefund,
+    FrozenDepositsRefund,
     UnprocessedDepositRefund
   }
 

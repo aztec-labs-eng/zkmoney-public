@@ -9,7 +9,7 @@ import path from "node:path"
 import { performance } from "node:perf_hooks"
 import { startCaptureServer, walletDir } from "./server.mjs"
 import { loadChromium, localBaseUrl, urlAtOrigin, installCaptureGuard, verificationErrors } from "./capture-support.mjs"
-import { selectedViewports, FIXTURE_TIME, locatorFor, runStep, settle } from "./plan.mjs"
+import { selectedViewports, FIXTURE_TIME, locatorFor, routeFile, runStep, settle } from "./plan.mjs"
 import { installCameraFixture } from "./camera.mjs"
 import { startVideo, requireVideoTools } from "./video.mjs"
 import { externalOutputDir, outputDirectory, writeOutputFile } from "./output.mjs"
@@ -23,11 +23,11 @@ From packages/web-wallet:
   pnpm ui:capture --plan scripts/ui-capture/plans/registration.json --preset all --record
 
 Options:
-  --path PATH            Direct route after fixture bootstrap
+  --path PATH            Direct route after fixture bootstrap; repeat to capture several routes in one run
   --scenario NAME        ${scenarioNames.join(", ")} (default: activity)
   --plan FILE            JSON interaction plan; CLI values override plan values
   --preset SIZE|all      390x844 (default), 402x879, 390x667, or all three
-  --viewport WIDTHxHEIGHT  Custom CSS viewport (e.g. 1280x832); excludes --preset
+  --viewport WIDTHxHEIGHT  Custom CSS viewport (e.g. 1280x832, or 402x874,1280x832); excludes --preset
   --record               Exact-size WebM recording; requires ffmpeg and ffprobe
   --full-page            Supplemental full-page screenshots (default: viewport only)
   --output-dir DIR       Output outside the repository; default: a unique /tmp directory
@@ -56,7 +56,8 @@ function safeArea(value) {
 
 async function main() {
   const { values: args } = parseArgs({ options: Object.fromEntries([
-    ...["path", "scenario", "plan", "preset", "viewport", "output-dir", "port", "ready", "safe-area", "color-scheme", "fixture-time", "browser-cache"].map((key) => [key, { type: "string" }]),
+    ["path", { type: "string", multiple: true }],
+    ...["scenario", "plan", "preset", "viewport", "output-dir", "port", "ready", "safe-area", "color-scheme", "fixture-time", "browser-cache"].map((key) => [key, { type: "string" }]),
     ...["record", "full-page", "headed", "help"].map((key) => [key, { type: "boolean" }]),
   ]) })
   if (args.help) { process.stdout.write(HELP); return }
@@ -78,6 +79,11 @@ async function main() {
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error("Port must be an integer from 1024 to 65535")
   const steps = plan.steps ?? []
   if (!Array.isArray(steps)) throw new Error("Plan steps must be an array")
+  const targets = args.path ?? (plan.path ? [plan.path] : [])
+  if (targets.length > 1 && steps.length) throw new Error("Several --path values capture direct routes and cannot run plan steps")
+  const files = targets.map(routeFile)
+  const clash = files.find((file, i) => files.indexOf(file) !== i)
+  if (targets.length > 1 && clash) throw new Error(`Two --path values share the screenshot name ${clash}`)
   const repo = path.resolve(walletDir, "../..")
   const outputDir = await externalOutputDir(args["output-dir"] ?? await mkdtemp(path.join(tmpdir(), "web-wallet-ui-")), repo)
   const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim()
@@ -155,12 +161,14 @@ async function main() {
         report.bootstrap = bootstrap
         await page.goto(urlAtOrigin(base, bootstrap), { waitUntil: "domcontentloaded", timeout })
         await page.locator(scenario === "onboarding" ? ".ww-invite" : ".ww-shell").waitFor({ state: "visible" })
-        const target = args.path ?? plan.path
-        if (target && page.url() !== urlAtOrigin(base, target)) {
-          await page.goto(urlAtOrigin(base, target), { waitUntil: "domcontentloaded", timeout })
-        }
         const ready = args.ready ? { selector: args.ready } : plan.ready ?? { selector: scenario === "onboarding" ? '[role="dialog"]' : ".ww-shell" }
-        await locatorFor(page, ready).waitFor({ state: "visible" })
+        const visit = async (target) => {
+          if (target && page.url() !== urlAtOrigin(base, target)) {
+            await page.goto(urlAtOrigin(base, target), { waitUntil: "domcontentloaded", timeout })
+          }
+          await locatorFor(page, ready).waitFor({ state: "visible" })
+        }
+        await visit(targets[0])
         const shot = async (file, state, fullPage = args["full-page"] ?? plan.fullPage ?? false) => {
           await settle(page)
           const extension = path.extname(file).toLowerCase()
@@ -191,7 +199,12 @@ async function main() {
           await runStep(page, step, { base, timeout, shot })
           entry.ok = true
         }
-        if (plan.finalScreenshot !== false) await shot("final.png", plan.state ?? target ?? bootstrap)
+        if (targets.length > 1) {
+          for (const target of targets) {
+            await visit(target)
+            await shot(`${routeFile(target)}.png`, target)
+          }
+        } else if (plan.finalScreenshot !== false) await shot("final.png", plan.state ?? targets[0] ?? bootstrap)
         report.finalUrl = page.url()
         report.ok = verificationErrors(report).length === 0
       } catch (error) {

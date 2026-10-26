@@ -11,16 +11,30 @@ import { ScreeningProvider, passThroughScreener } from "@obsidion/front-core"
 import type { Hex } from "viem"
 
 const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
-const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb"
+const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb" as Hex
 
 const loadDepositDisplayFacts = vi.hoisted(() => vi.fn())
-const demo = vi.hoisted(() => ({ on: false }))
+const demo = vi.hoisted(() => ({
+  on: false,
+  /** A two-row table: DAI and USDC each settle on their own row. */
+  rows: false,
+  /** A Sky table: DAI on Main and sUSDS on Savings. */
+  savings: false,
+  /** A Sky table pinned on its sUSDS row; `offersNone` when Main is offered no row. */
+  pinnedSavings: false,
+  offersNone: false,
+  /** The accepted tokens are not read yet; `failed` once a read failed. */
+  unread: false,
+  failed: false,
+  retry: vi.fn(),
+}))
 
 // Plenty of shared capacity, read from a fake bucket instead of the network.
 const capacity = vi.hoisted(() => ({
   availableAtomic: 40_000n * 10n ** 18n,
   readFails: false,
   epoch: 0,
+  rowTokens: [] as (string | undefined)[],
 }))
 vi.mock("../src/features/deposit/capacityStore", async () =>
   (await import("./fakeCapacity")).fakeCapacityStore(capacity),
@@ -42,10 +56,38 @@ const gateway = {
   depositAddress: vi.fn(async () => ({ address: "0xp001ed", name: "alice.oxide.eth" })),
 }
 vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
-vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/deposit/loadDepositFacts")>()),
-  loadDepositDisplayFacts,
-}))
+// The sandbox's one coin, or the mainnet coins (DAI settling) in the demo.
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const {
+    mainnetTokens,
+    mockLoadDepositFacts,
+    pinnedSavingsRowTokens,
+    savingsRowTokens,
+    singleToken,
+    twoRowTokens,
+  } = await import("./support/depositTokens")
+  const sandbox = singleToken(MANIFEST_TOKEN, "TEST")
+  const mainnet = mainnetTokens(MANIFEST_TOKEN)
+  const twoRows = twoRowTokens()
+  const savings = savingsRowTokens()
+  return mockLoadDepositFacts(
+    importOriginal,
+    () =>
+      demo.unread
+        ? undefined
+        : demo.pinnedSavings
+        ? pinnedSavingsRowTokens(!demo.offersNone)
+        : demo.savings
+        ? savings
+        : demo.rows
+        ? twoRows
+        : demo.on
+        ? mainnet
+        : sandbox,
+    loadDepositDisplayFacts,
+    () => ({ failed: demo.failed, retry: demo.retry }),
+  )
+})
 vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
 vi.mock("../src/lib/analytics", () => ({
   fireEvent: vi.fn(),
@@ -102,13 +144,15 @@ const { saveWalletIdentity } = await import("../src/features/identity/walletIden
 const { depositCapacityStore } = await import("../src/features/deposit/capacityStore")
 const { FAKE_ACTIVE_KEY } = await import("./fakeCapacity")
 import { seedBootConfig } from "./seedBootConfig"
+import { ROW_USDC } from "./support/depositTokens"
 import * as copy from "../src/features/limits/limitsCopy"
+import { LIMIT, LIMIT_USD, grouped } from "./support/publicLimit"
 
 const FACTS = {
-  fee: "0.35",
+  fee: "0.25",
   token: MANIFEST_TOKEN,
   sweepFeeAtomic: 250_000_000_000_000_000n,
-  fpcFundingCutAtomic: 100_000_000_000_000_000n,
+  txAmountCap: 5166n * 10n ** 18n,
 }
 
 describe("DepositScreen limits in the address sheet", () => {
@@ -159,6 +203,16 @@ describe("DepositScreen limits in the address sheet", () => {
         </MemoryRouter>,
       )
     })
+  const renderOverHome = () =>
+    act(async () => {
+      root.render(
+        <MemoryRouter>
+          <ScreeningProvider screener={passThroughScreener}>
+            <DepositScreen onClose={() => {}} />
+          </ScreeningProvider>
+        </MemoryRouter>,
+      )
+    })
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -167,6 +221,13 @@ describe("DepositScreen limits in the address sheet", () => {
     capacity.epoch += 1
     Object.assign(navigator, { clipboard: { writeText: vi.fn().mockResolvedValue(undefined) } })
     demo.on = false
+    demo.rows = false
+    demo.savings = false
+    demo.pinnedSavings = false
+    demo.offersNone = false
+    demo.unread = false
+    demo.failed = false
+    capacity.rowTokens = []
     localStorage.clear()
     localStorage.setItem("webwallet.hide-deposit-privacy-disclaimer", "true")
     saveWalletIdentity({ handle: "alice", address: L2_ADDRESS, claimedAt: 1 })
@@ -187,19 +248,19 @@ describe("DepositScreen limits in the address sheet", () => {
     await render()
     await openSheet()
 
-    expect(limits()?.textContent).toBe("Limits and feesUp to $2,500 right now")
+    expect(limits()?.textContent).toBe(`Limits and feesUp to ${LIMIT_USD} right now`)
     // The address comes first, then its limit.
     const address = byTestId("deposit-address")!
     expect(
       address.compareDocumentPosition(limits()!) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy()
     await openDrawer()
-    expect(limitNow()).toBe("$2,500 incl. fees")
+    expect(limitNow()).toBe(`${LIMIT_USD} incl. fees`)
     const details = await openLimit()
     expect(details.textContent).toContain(copy.LIMIT_NOTE)
-    expect(maxSend(details)).toBe("2,500 TEST")
-    // Net of the current fee: 0.25 sweep fee + 0.1 funding cut.
-    expect(maxCredit(details)).toBe("2,499.65 TEST")
+    expect(maxSend(details)).toBe(`${grouped(LIMIT)} TEST`)
+    // Net of the current 0.25 sweep fee.
+    expect(maxCredit(details)).toBe(`${grouped(LIMIT - 0.25)} TEST`)
   })
 
   it("puts the limits right under the QR code, and hands focus back to the drawer", async () => {
@@ -216,7 +277,7 @@ describe("DepositScreen limits in the address sheet", () => {
     const info = limits()!.querySelector<HTMLButtonElement>("[data-testid='about-limits-link']")!
     info.focus()
     const details = await openLimit()
-    expect(maxSend(details)).toBe("2,500 TEST")
+    expect(maxSend(details)).toBe(`${grouped(LIMIT)} TEST`)
     await closeLimit()
     expect(aboutLimits()).toBeNull()
     expect(document.activeElement).toBe(info)
@@ -237,7 +298,7 @@ describe("DepositScreen limits in the address sheet", () => {
     await render()
     await openSheet()
 
-    expect(limits()?.textContent).toContain("$2,500")
+    expect(limits()?.textContent).toContain(LIMIT_USD)
     expect(copyButton()?.disabled).toBe(true)
     expect(document.querySelector("[aria-label='Deposit address QR code']")).toBeNull()
     await openDrawer()
@@ -253,9 +314,12 @@ describe("DepositScreen limits in the address sheet", () => {
     await openSheet("USDC")
     await openDrawer()
 
-    expect(byTestId("deposit-swap-note")?.textContent).toContain("Your balance is stored in DAI.")
+    expect(byTestId("deposit-swap-note")?.textContent).toBe(
+      "USDC is swapped to DAI at the market rate, so the DAI credited can differ.",
+    )
+    expect(byTestId("deposit-fee")?.textContent).toContain("0.25 DAI")
     const details = await openLimit()
-    expect(maxSend(details)).toBe("2,500 USDC")
+    expect(maxSend(details)).toBe(`${grouped(LIMIT)} USDC`)
     // The swap sets the DAI credited, so no credit is stated.
     expect(maxCredit(details)).toBe(copy.UNAVAILABLE)
     expect(details.textContent).toContain(copy.swapCreditNote("USDC", "DAI"))
@@ -268,7 +332,7 @@ describe("DepositScreen limits in the address sheet", () => {
       await openSheet()
       await openDrawer()
       expect(capacityNote()).toBeNull()
-      expect(limitNow()).toBe("$2,500 incl. fees")
+      expect(limitNow()).toBe(`${LIMIT_USD} incl. fees`)
       await act(async () => byTestId("about-capacity-link")!.click())
       for (let i = 0; i < 3; i++) await act(async () => {})
       const capacitySection = aboutLimits()!.querySelector<HTMLElement>(
@@ -301,9 +365,9 @@ describe("DepositScreen limits in the address sheet", () => {
       loadDepositFacts()
       await render()
       await openSheet()
-      expect(limits()?.textContent).toBe("Limits and feesUp to $500.35 right now")
+      expect(limits()?.textContent).toBe("Limits and feesUp to $500.25 right now")
       await openDrawer()
-      expect(limitNow()).toBe("$500.35 incl. fees")
+      expect(limitNow()).toBe("$500.25 incl. fees")
     })
 
     it("copies at once while capacity is zero; the note states the reason", async () => {
@@ -356,12 +420,125 @@ describe("DepositScreen limits in the address sheet", () => {
       await openSheet("USDC")
       await openDrawer()
       // No figure fits a swap; the reason is in the capacity details, not on the sheet.
-      expect(limitNow()).toBe("$2,500 incl. fees")
+      expect(limitNow()).toBe(`${LIMIT_USD} incl. fees`)
       await act(async () => byTestId("about-capacity-link")!.click())
       for (let i = 0; i < 3; i++) await act(async () => {})
       expect(
         aboutLimits()!.querySelector("[data-testid='address-capacity-swap']")?.textContent,
       ).toBe(copy.swapCapacityNote("DAI", "USDC"))
+    })
+  })
+
+  describe("a two-row table", () => {
+    const usdcFacts = {
+      fee: "0.1",
+      token: ROW_USDC,
+      sweepFeeAtomic: 100_000n,
+      txAmountCap: 5_166n * 10n ** 6n,
+    }
+    const sheet = () => document.querySelector("dialog[aria-label='Deposit address']")!
+
+    it("says the USDC row credits USDC, prices its fee in USDC and names no DAI", async () => {
+      demo.rows = true
+      loadDepositDisplayFacts.mockImplementation(async (token?: { settlesIn: string }) =>
+        token?.settlesIn === ROW_USDC ? usdcFacts : FACTS,
+      )
+      await render()
+      await openSheet("USDC")
+      await openDrawer()
+
+      expect(byTestId("deposit-fee")?.textContent).toContain("0.10 USDC")
+      expect(byTestId("deposit-credit-note")?.textContent).toBe(
+        "Each USDC you send is credited as 1 USDC, less the fee.",
+      )
+      expect(byTestId("deposit-swap-note")).toBeNull()
+      expect(sheet().textContent).not.toContain("DAI")
+      const details = await openLimit()
+      expect(maxCredit(details)).toBe(`${grouped(LIMIT - 0.1)} USDC`)
+      // Nothing says a USDC deposit is converted.
+      expect(details.textContent).toContain(copy.LIMIT_NOTE)
+      expect(details.textContent).not.toContain("converted")
+      expect(details.textContent).not.toContain("swapped")
+      // The quote, the cap and the capacity bucket are the USDC row's.
+      expect(loadDepositDisplayFacts).toHaveBeenLastCalledWith(
+        expect.objectContaining({ settlesIn: ROW_USDC }),
+        "deposit",
+      )
+      expect(capacity.rowTokens).toContain(ROW_USDC)
+    })
+  })
+
+  describe("a table with a Savings row", () => {
+    it("offers and values only Main's DAI, never sUSDS", async () => {
+      demo.savings = true
+      loadDepositFacts()
+      await render()
+
+      expect(byTestId("deposit-coin-DAI")).not.toBeNull()
+      expect(byTestId("deposit-coin-sUSDS")).toBeNull()
+      expect(container.textContent).not.toContain("sUSDS")
+      await openSheet("DAI")
+      await openDrawer()
+      const details = await openLimit()
+      expect(details.textContent).toContain(copy.LIMIT_NOTE)
+      expect(details.textContent).not.toContain("sUSDS")
+    })
+
+    it("starts the coin pick on Main's DAI when the profile pins sUSDS", async () => {
+      demo.pinnedSavings = true
+      loadDepositFacts()
+      await renderOverHome()
+      expect(byTestId("deposit-coin-select")?.textContent).toContain("DAI")
+      expect(container.ownerDocument.body.textContent).not.toContain("sUSDS")
+    })
+
+    it("offers nothing to deposit when Main is offered no row", async () => {
+      demo.pinnedSavings = true
+      demo.offersNone = true
+      await renderOverHome()
+      expect(byTestId("deposit-tokens-failed")).not.toBeNull()
+      expect(byTestId("deposit-coin-select")).toBeNull()
+    })
+  })
+
+  describe("before the accepted tokens are read", () => {
+    it("says it is loading and names no token", async () => {
+      demo.unread = true
+      await render()
+      expect(byTestId("deposit-tokens-loading")?.textContent).toContain(
+        "Loading the tokens you can deposit",
+      )
+      expect(byTestId("deposit-coin-TEST")).toBeNull()
+      expect(container.textContent).not.toContain("DAI")
+    })
+
+    it("says the read failed, and Retry reads again", async () => {
+      demo.unread = true
+      demo.failed = true
+      await render()
+      expect(byTestId("deposit-tokens-loading")).toBeNull()
+      expect(byTestId("deposit-tokens-failed")?.textContent).toContain(
+        "Couldn't load the tokens you can deposit",
+      )
+      await act(async () => byTestId("deposit-tokens-retry")!.click())
+      expect(demo.retry).toHaveBeenCalledOnce()
+    })
+
+    it("shows the same states over Home", async () => {
+      demo.unread = true
+      demo.failed = true
+      await act(async () => {
+        root.render(
+          <MemoryRouter>
+            <ScreeningProvider screener={passThroughScreener}>
+              <DepositScreen onClose={() => {}} />
+            </ScreeningProvider>
+          </MemoryRouter>,
+        )
+      })
+      const modal = document.querySelector("dialog[aria-label='Deposit funds']")!
+      expect(modal.querySelector("[data-testid='deposit-tokens-failed']")).not.toBeNull()
+      expect(modal.querySelector("[data-testid='deposit-coin-continue']")).toBeNull()
     })
   })
 })

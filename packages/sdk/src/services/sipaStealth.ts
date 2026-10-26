@@ -15,14 +15,14 @@
  * Pure compute only — no contract call, no RPC, no storage.
  */
 
-import { toBufferBE } from "@aztec/foundation/bigint-buffer"
-import { DomainSeparator } from "@aztec/constants"
-import { keccak256 } from "@aztec/foundation/crypto/keccak"
-import { poseidon2HashWithSeparator } from "@aztec/foundation/crypto/poseidon"
-import { sha256ToField } from "@aztec/foundation/crypto/sha256"
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { EthAddress } from "@aztec/foundation/eth-address"
-import type { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { toBufferBE } from "@aztec-labs/foundation/bigint-buffer"
+import { DomainSeparator } from "@aztec-labs/constants"
+import { keccak256 } from "@aztec-labs/foundation/crypto/keccak"
+import { poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
+import { sha256ToField } from "@aztec-labs/foundation/crypto/sha256"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { secp256k1 } from "@noble/curves/secp256k1"
 
 // Constants copied from oxide's generated source

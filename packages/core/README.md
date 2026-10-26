@@ -8,7 +8,7 @@ Shared type aliases and constants belong here, along with narrowly scoped domain
 
 ## Why
 
-Other obsidion packages (`@obsidion/contracts`, `@obsidion/sdk`, `@obsidion/front-core`) include heavy artifact JSON, `@aztec/pxe` runtime entry points, and Noir circuit data through their barrel exports. Backend services that only need a handful of primitives (`Network`, `ContractName`, `FPCPaymentType`, `L1_CHAIN_ID`, registry URLs, transaction-result types, …) used to either pay the full artifact-build cost at typecheck time or build CI workarounds around it.
+Other obsidion packages (`@obsidion/contracts`, `@obsidion/sdk`, `@obsidion/front-core`) include heavy artifact JSON, `@aztec-labs/pxe` runtime entry points, and Noir circuit data through their barrel exports. Backend services that only need a handful of primitives (`Network`, `ContractName`, `FPCPaymentType`, `L1_CHAIN_ID`, registry URLs, transaction-result types, …) used to either pay the full artifact-build cost at typecheck time or build CI workarounds around it.
 
 `@obsidion/core` is the leaf those services depend on instead. It is artifact-free, has zero workspace or runtime dependencies, and references `@aztec/*` only through `import type` (declared as `devDependencies`, so they do not enter a consumer's production dependency tree). A backend package that needs only shared foundations can avoid dependencies on `@obsidion/sdk` and `@obsidion/contracts`.
 

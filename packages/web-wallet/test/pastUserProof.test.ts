@@ -4,9 +4,9 @@ import { createRequire } from "node:module"
 import { beforeAll, describe, expect, it } from "vitest"
 import { privateKeyToAccount } from "viem/accounts"
 import { hexToBytes, numberToHex, type Hex } from "viem"
-import initACVM from "@aztec/noir-acvm_js/web/acvm_js.js"
-import initABI from "@aztec/noir-noirc_abi/web/noirc_abi_wasm.js"
-import { Barretenberg, BarretenbergSync, UltraHonkVerifierBackend } from "@aztec/bb.js"
+import initACVM from "@aztec-foundation/noir-acvm_js/web/acvm_js.js"
+import initABI from "@aztec-foundation/noir-noirc_abi/web/noirc_abi_wasm.js"
+import { Barretenberg, BarretenbergSync, UltraHonkVerifierBackend } from "@aztec-foundation/bb.js"
 import { ELIGIBILITY_SIGN_MESSAGE, ELIGIBILITY_VK_BASE64 } from "@obsidion/core/constants"
 import circuit from "../../contracts/src/artifacts/target/eligibility/eligibility.json"
 import { proveNoirCircuit } from "../src/platform/noirProver"
@@ -33,8 +33,8 @@ describe("past-user proof", () => {
 
   beforeAll(async () => {
     await Promise.all([
-      initACVM(wasm("@aztec/noir-acvm_js/web/acvm_js_bg.wasm")),
-      initABI(wasm("@aztec/noir-noirc_abi/web/noirc_abi_wasm_bg.wasm")),
+      initACVM(wasm("@aztec-foundation/noir-acvm_js/web/acvm_js_bg.wasm")),
+      initABI(wasm("@aztec-foundation/noir-noirc_abi/web/noirc_abi_wasm_bg.wasm")),
       BarretenbergSync.initSingleton(),
     ])
     const addresses = [3n, 4n, 5n, 6n].map((n) => privateKeyToAccount(field(n)).address)

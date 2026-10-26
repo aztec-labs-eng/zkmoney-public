@@ -160,7 +160,7 @@ export async function installWasmInterceptor(profiler: Profiler): Promise<() => 
   const restores: (() => void)[] = []
 
   try {
-    const bbMod = await import("@aztec/bb.js")
+    const bbMod = await import("@aztec-foundation/bb.js")
     const singletons: [any, string][] = [
       [(bbMod as any).BarretenbergSync, "bb_sync"],
       [(bbMod as any).Barretenberg, "bb_async"],
@@ -191,7 +191,7 @@ export async function installWasmInterceptor(profiler: Profiler): Promise<() => 
       }
     }
   } catch {
-    // @aztec/bb.js not available — no WASM profiling
+    // @aztec-foundation/bb.js not available — no WASM profiling
   }
 
   return () => restores.forEach((r) => r())
@@ -282,7 +282,7 @@ function wrapOracleCallback(callback: any, profiler: Profiler): any {
 
 /**
  * Patch the circuit simulator's prototype by reaching through the PXE instance, which avoids
- * importing @aztec/simulator or @aztec/pxe/server (both carry node deps that break the browser
+ * importing @aztec-labs/simulator or @aztec-labs/pxe/server (both carry node deps that break the browser
  * build).
  *
  * `executeUserCircuit` records the circuit execution and wraps the oracle callback so every oracle

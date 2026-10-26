@@ -83,7 +83,9 @@ vi.mock("../src/platform/desktopBridge", () => ({
   isDesktopL1SubmitActive: () => h.bridgeActive.current,
 }))
 vi.mock("../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ getAuthProvider: async () => h.provider }),
+  getAuthService: () => ({
+    sessionKeys: async () => ({ secretKey: SECRET, authProvider: h.provider }),
+  }),
 }))
 vi.mock("../src/platform/auth/oxideAccountPasskey", () => ({
   oxideAccountPasskey: h.oxideAccountPasskey,
@@ -123,9 +125,9 @@ const planFor = (account: Address, secret = SECRET) =>
     l1Recipient: RECIPIENT,
     recovery: { account, salt: deriveSwapEscrowRecoverySalt(secret, NONCE) },
     amount: 210n * 10n ** 18n,
+    withdrawalFee: 0n,
     withdrawalRelayerTip: 0n,
     proverTip: 0n,
-    fpcFundingCut: 0n,
     relayerTip: RELAYER_TIP,
     nonce: NONCE,
   })
@@ -139,6 +141,7 @@ const record = (patch: Partial<WithdrawalRecord> = {}): WithdrawalRecord => ({
   recipientProvenance: "saved-recipient",
   amount: "210",
   tokenSymbol: "DAI",
+  tokenDecimals: 18,
   phase: "swapping",
   startTime: NOW - SWAP_STUCK_THRESHOLD_MS,
   phaseEnteredAt: NOW - SWAP_STUCK_THRESHOLD_MS,
@@ -236,7 +239,7 @@ describe("executeSwapWithdrawal", () => {
 describe("recoverSwapWithdrawal", () => {
   it("pays the withdrawal's own recipient by default, as this wallet's Oxide account", async () => {
     await expect(recoverSwapWithdrawal(record(), { from: WALLET })).resolves.toBe(HASH)
-    expect(h.ownSwapRecoverer).toHaveBeenCalledWith({ token: TOKEN })
+    expect(h.ownSwapRecoverer).toHaveBeenCalledWith({ token: TOKEN }, SECRET)
     expect(h.runSwapEscrowRecovery).toHaveBeenCalledWith(
       expect.objectContaining({
         target: RECIPIENT,

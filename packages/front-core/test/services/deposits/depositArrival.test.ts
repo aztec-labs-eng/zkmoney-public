@@ -4,13 +4,13 @@ import {
   depositArrivalSeconds,
 } from "../../../src/core/services/deposits/depositArrival"
 
-const grid = { l1GenesisTime: 0, slotDuration: 36, inboxLag: 2 }
+const grid = { l1GenesisTime: 0, slotDuration: 36 }
 
 describe("depositArrivalSeconds", () => {
-  it("counts sweep, lag checkpoints, the sync tick, the proof and the mining slot", () => {
-    // sweep lands at 1120, in slot 31 (1116..1151); the message is filed under checkpoint 33,
-    // available at the end of its slot, 34 * 36 = 1224; tick 12 + proof 60 + one slot 36 = 1332.
-    expect(depositArrivalSeconds({ nowSeconds: 1000, ...grid })).toBe(1332 - 1000)
+  it("counts sweep, the next slot, the sync tick, the proof and the mining slot", () => {
+    // sweep lands at 1120, in slot 31 (1116..1151); the message is available at the next slot,
+    // 32 * 36 = 1152; tick 12 + proof 60 + one slot 36 = 1260.
+    expect(depositArrivalSeconds({ nowSeconds: 1000, ...grid })).toBe(1260 - 1000)
   })
 
   it("moves the credit by one slot when the sweep lands just after a slot boundary", () => {
@@ -18,7 +18,7 @@ describe("depositArrivalSeconds", () => {
     const after = 1116 - 120 + 1
     const creditedBefore = before + depositArrivalSeconds({ nowSeconds: before, ...grid })
     const creditedAfter = after + depositArrivalSeconds({ nowSeconds: after, ...grid })
-    expect(creditedBefore).toBe(1296)
+    expect(creditedBefore).toBe(1224)
     expect(creditedAfter - creditedBefore).toBe(grid.slotDuration)
   })
 
@@ -30,8 +30,8 @@ describe("depositArrivalSeconds", () => {
       syncTickSeconds: 0,
       claimProofSeconds: 0,
     })
-    // slot 27 (972..1007); checkpoint 29 available at 30 * 36 = 1080; mined by 1116.
-    expect(seconds).toBe(1116 - 1000)
+    // slot 27 (972..1007); available at 28 * 36 = 1008; mined by 1044.
+    expect(seconds).toBe(1044 - 1000)
   })
 })
 

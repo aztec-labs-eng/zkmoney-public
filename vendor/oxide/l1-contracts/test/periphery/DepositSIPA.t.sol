@@ -12,13 +12,16 @@ import {SIPABase} from "@periphery/SIPABase.sol";
 import {RecoveryCommitmentLib} from "@periphery/RecoveryCommitmentLib.sol";
 import {OxideAccount} from "@periphery/OxideAccount.sol";
 import {OxideAccountFactory} from "@periphery/OxideAccountFactory.sol";
-import {DepositSIPA, DEPOSIT_FEE} from "@periphery/DepositSIPA.sol";
+import {DepositSIPA} from "@periphery/DepositSIPA.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {Errors} from "@periphery/Errors.sol";
 import {DAI, USDC, USDT, THREE_POOL} from "@periphery/ThreePoolLib.sol";
+import {ForwardingTable} from "@periphery/ForwardingTable.sol";
+import {IForwardingTable} from "@periphery/interfaces/IForwardingTable.sol";
 import {StablecoinMocks} from "@test/helpers/StablecoinMocks.sol";
 import {MockCurve3Pool} from "@test/mocks/MockCurve3Pool.sol";
 import {MintableToken} from "@test/mocks/MintableToken.sol";
+import {ForwardingTableFixture, DEPOSIT_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
 
 contract MockDepositPortal {
   IERC20 public immutable UNDERLYING;
@@ -50,9 +53,7 @@ contract MockDepositPortal {
 }
 
 contract FeeRoutingSIPA is SIPABase {
-  constructor(IOxidePortal portal_, uint256 fee) SIPABase(portal_, fee) {}
-
-  function INTENT() external pure override returns (Intent) {
+  function INTENT() public pure override returns (Intent) {
     return Intent.Deposit;
   }
 
@@ -84,8 +85,9 @@ contract DepositSIPATest is Test {
 
   TestERC20 internal token;
   MockDepositPortal internal portal;
+  ForwardingTable internal table;
   DepositSIPA internal implementation;
-  uint256 internal fee = DEPOSIT_FEE;
+  uint256 internal fee = DEPOSIT_SWEEP_TIP;
 
   address internal relayer = makeAddr("relayer");
   address internal depositSubsidy = makeAddr("depositSubsidy");
@@ -99,7 +101,15 @@ contract DepositSIPATest is Test {
   function setUp() public {
     token = new TestERC20("Test", "TST", address(this));
     portal = new MockDepositPortal(IERC20(address(token)), ROLLUP_VERSION);
-    implementation = new DepositSIPA(IOxidePortal(address(portal)), fee);
+    table = new ForwardingTable(
+      ForwardingTableFixture.args(
+        address(this),
+        ROLLUP_VERSION,
+        makeAddr("tableBeneficiary"),
+        ForwardingTableFixture.standardRows(IOxidePortal(address(portal)))
+      )
+    );
+    implementation = new DepositSIPA();
 
     accountFactory = new OxideAccountFactory();
     (bootstrap, bootstrapKey) = makeAddrAndKey("bootstrap");
@@ -185,7 +195,8 @@ contract DepositSIPATest is Test {
         intentHash: keccak256(_intentData(RECIPIENT_HASH)),
         recoveryCommitment: recoveryCommitment,
         rollupVersion: rollupVersion,
-        resweepable: resweepable
+        resweepable: resweepable,
+        table: table
       })
     );
     return DepositSIPA(Clones.cloneWithImmutableArgs(address(implementation), args));
@@ -274,44 +285,53 @@ contract DepositSIPATest is Test {
     _sweep(deposit);
   }
 
-  function test_plumbingIsTheImplementationsNotTheClones() public {
+  function test_theCloneReadsItsPlumbingFromItsTable() public {
     DepositSIPA deposit = _deploy(keccak256("recovery"));
-    assertEq(address(deposit.portal()), address(portal));
-    assertEq(deposit.depositFee(), fee);
-    assertEq(address(implementation.PORTAL()), address(portal));
-    assertEq(address(implementation.UNDERLYING()), address(token));
-    assertEq(implementation.DEPOSIT_FEE(), fee);
+    assertEq(address(deposit.forwardingTable()), address(table));
+    (IOxidePortal portal_, uint256 sweepTip, uint256 beneficiaryFee) = deposit.route(address(token));
+    assertEq(address(portal_), address(portal));
+    assertEq(sweepTip, fee);
+    assertEq(beneficiaryFee, 0);
   }
 
-  function test_sweepRevertsWhenTheRoutedFeeCannotCoverTheRelayerCut() public {
-    uint256 relayerCut = 100;
-    FeeRoutingSIPA feeImplementation = new FeeRoutingSIPA(IOxidePortal(address(portal)), relayerCut);
-    bytes memory intentData = abi.encode(RECIPIENT_HASH, makeAddr("funder"), relayerCut - 1);
-    SIPABase sipa = SIPABase(
+  function test_aRoutedFeePaysTheTipToTheRelayerAndTheRestToTheFeeRecipient() public {
+    address funder = makeAddr("funder");
+    uint256 routedFee = fee + 3 ether;
+    bytes memory intentData = abi.encode(RECIPIENT_HASH, funder, routedFee);
+    SIPABase sipa = _feeRoutingSIPA(intentData);
+    token.mint(address(sipa), DEPOSIT_AMOUNT);
+
+    sipa.sweep(address(token), relayer, intentData, "");
+
+    assertEq(token.balanceOf(funder), routedFee - fee, "the fee recipient gets the fee minus the tip");
+    assertEq(token.balanceOf(relayer), fee, "the relayer gets the tip");
+    assertEq(portal.escrowed(), DEPOSIT_AMOUNT - routedFee);
+  }
+
+  function test_sweepRevertsWhenTheRoutedFeeCannotCoverTheTip() public {
+    bytes memory intentData = abi.encode(RECIPIENT_HASH, makeAddr("funder"), fee - 1);
+    SIPABase sipa = _feeRoutingSIPA(intentData);
+    token.mint(address(sipa), DEPOSIT_AMOUNT);
+
+    vm.expectRevert(abi.encodeWithSelector(Errors.SIPA__FeeBelowSweepTip.selector, fee - 1, fee));
+    sipa.sweep(address(token), relayer, intentData, "");
+  }
+
+  function _feeRoutingSIPA(bytes memory intentData) internal returns (SIPABase) {
+    return SIPABase(
       Clones.cloneWithImmutableArgs(
-        address(feeImplementation),
+        address(new FeeRoutingSIPA()),
         abi.encode(
           SIPABase.Args({
             intentHash: keccak256(intentData),
             recoveryCommitment: keccak256("recovery"),
             rollupVersion: ROLLUP_VERSION,
-            resweepable: true
+            resweepable: true,
+            table: table
           })
         )
       )
     );
-    token.mint(address(sipa), DEPOSIT_AMOUNT);
-
-    vm.expectRevert(abi.encodeWithSelector(Errors.SIPA__FeeBelowDepositFee.selector, relayerCut - 1, relayerCut));
-    sipa.sweep(address(token), relayer, intentData, "");
-  }
-
-  function test_implementationRejectsZeroPlumbing() public {
-    vm.expectRevert(Errors.SIPA__ZeroPortal.selector);
-    new DepositSIPA(IOxidePortal(address(0)), fee);
-
-    vm.expectRevert(Errors.SIPA__ZeroDepositFee.selector);
-    new DepositSIPA(IOxidePortal(address(portal)), 0);
   }
 
   function test_implementationRevertsAsNotClone() public {
@@ -511,9 +531,11 @@ contract DepositSIPAStableSettleTest is Test {
   uint256 internal constant AMOUNT_6DEC = 1000e6;
   uint256 internal constant STABLE_TO_DAI_DECIMAL_SCALE = 1e12;
   uint256 internal constant PAR_RATE = STABLE_TO_DAI_DECIMAL_SCALE * 1e18;
+  uint128 internal constant USDC_SWEEP_TIP = 25e4;
 
   MockCurve3Pool internal threePool;
   MockDepositPortal internal daiPortal;
+  ForwardingTable internal table;
   DepositSIPA internal implementation;
 
   address internal relayer = makeAddr("relayer");
@@ -525,19 +547,27 @@ contract DepositSIPAStableSettleTest is Test {
     MintableToken(address(DAI)).mint(address(THREE_POOL), 1_000_000e18);
 
     daiPortal = new MockDepositPortal(DAI, ROLLUP_VERSION);
-    implementation = new DepositSIPA(IOxidePortal(address(daiPortal)), DEPOSIT_FEE);
+    table = new ForwardingTable(
+      ForwardingTableFixture.args(
+        address(this),
+        ROLLUP_VERSION,
+        makeAddr("tableBeneficiary"),
+        ForwardingTableFixture.standardRows(IOxidePortal(address(daiPortal)))
+      )
+    );
+    implementation = new DepositSIPA();
   }
 
   function test_usdcSweepSwapsIntoDaiBeforeTheDeposit() public {
-    DepositSIPA sipa = _sipaOf(implementation);
+    DepositSIPA sipa = _sipa();
     MintableToken(address(USDC)).mint(address(sipa), AMOUNT_6DEC);
 
     vm.expectEmit(true, true, true, true, address(sipa));
-    emit SIPABase.Sweep(0, AMOUNT_6DEC * STABLE_TO_DAI_DECIMAL_SCALE - DEPOSIT_FEE);
+    emit SIPABase.Sweep(0, AMOUNT_6DEC * STABLE_TO_DAI_DECIMAL_SCALE - DEPOSIT_SWEEP_TIP);
     sipa.sweep(address(USDC), relayer, _intent(), "");
 
-    assertEq(DAI.balanceOf(relayer), DEPOSIT_FEE, "the relayer must be paid in DAI");
-    assertEq(daiPortal.escrowed(), AMOUNT_6DEC * STABLE_TO_DAI_DECIMAL_SCALE - DEPOSIT_FEE);
+    assertEq(DAI.balanceOf(relayer), DEPOSIT_SWEEP_TIP, "the relayer must be paid in DAI");
+    assertEq(daiPortal.escrowed(), AMOUNT_6DEC * STABLE_TO_DAI_DECIMAL_SCALE - DEPOSIT_SWEEP_TIP);
     assertEq(threePool.lastI(), 1);
     assertEq(threePool.lastJ(), 0);
     assertEq(threePool.lastDx(), AMOUNT_6DEC);
@@ -547,31 +577,31 @@ contract DepositSIPAStableSettleTest is Test {
   }
 
   function test_usdtSweepSwapsIntoDaiBeforeTheDeposit() public {
-    DepositSIPA sipa = _sipaOf(implementation);
+    DepositSIPA sipa = _sipa();
     MintableToken(address(USDT)).mint(address(sipa), AMOUNT_6DEC);
 
     sipa.sweep(address(USDT), relayer, _intent(), "");
 
-    assertEq(daiPortal.escrowed(), AMOUNT_6DEC * STABLE_TO_DAI_DECIMAL_SCALE - DEPOSIT_FEE);
+    assertEq(daiPortal.escrowed(), AMOUNT_6DEC * STABLE_TO_DAI_DECIMAL_SCALE - DEPOSIT_SWEEP_TIP);
     assertEq(threePool.lastI(), 2);
     assertEq(USDT.balanceOf(address(sipa)), 0);
   }
 
   function test_idleDaiIsSweptAlongWithTheSwapOutput() public {
-    DepositSIPA sipa = _sipaOf(implementation);
+    DepositSIPA sipa = _sipa();
     uint256 idleDai = 5e18;
     MintableToken(address(DAI)).mint(address(sipa), idleDai);
     MintableToken(address(USDC)).mint(address(sipa), AMOUNT_6DEC);
 
     sipa.sweep(address(USDC), relayer, _intent(), "");
 
-    assertEq(daiPortal.escrowed(), AMOUNT_6DEC * STABLE_TO_DAI_DECIMAL_SCALE + idleDai - DEPOSIT_FEE);
+    assertEq(daiPortal.escrowed(), AMOUNT_6DEC * STABLE_TO_DAI_DECIMAL_SCALE + idleDai - DEPOSIT_SWEEP_TIP);
     assertEq(DAI.balanceOf(address(sipa)), 0, "the sweep settles the whole balance in the settled token");
   }
 
   function test_swapBelowTheMinOutReverts() public {
     threePool.setRate(address(DAI), (PAR_RATE * 9899) / 10_000);
-    DepositSIPA sipa = _sipaOf(implementation);
+    DepositSIPA sipa = _sipa();
     MintableToken(address(USDC)).mint(address(sipa), AMOUNT_6DEC);
 
     vm.expectRevert("Exchange resulted in fewer coins than expected");
@@ -579,60 +609,84 @@ contract DepositSIPAStableSettleTest is Test {
   }
 
   function test_emptyStableBalanceReverts() public {
-    DepositSIPA sipa = _sipaOf(implementation);
+    DepositSIPA sipa = _sipa();
     vm.expectRevert(Errors.SIPA__EmptyBalance.selector);
     sipa.sweep(address(USDC), relayer, _intent(), "");
   }
 
-  function test_tokenOutsideTheRouteIsPassedThroughAndRejectedByTheSIPA() public {
-    DepositSIPA sipa = _sipaOf(implementation);
+  function test_tokenWithoutARowIsNotSwappedAndStaysForRecovery() public {
+    DepositSIPA sipa = _sipa();
     TestERC20 other = new TestERC20("Other", "OTH", address(this));
     other.mint(address(sipa), AMOUNT_6DEC);
     MintableToken(address(DAI)).mint(address(sipa), 100e18);
 
-    vm.expectRevert(abi.encodeWithSelector(Errors.SIPA__TokenNotPortalUnderlying.selector, address(other)));
+    vm.expectRevert(abi.encodeWithSelector(Errors.ForwardingTable__TokenNotListed.selector, address(other)));
     sipa.sweep(address(other), relayer, _intent(), "");
     assertEq(threePool.callCount(), 0);
-    assertEq(DAI.balanceOf(address(sipa)), 100e18, "the stray token must not bridge the SIPA's underlying");
+    assertEq(other.balanceOf(address(sipa)), AMOUNT_6DEC);
+    assertEq(DAI.balanceOf(address(sipa)), 100e18, "the stray token must not bridge the DAI in the SIPA");
     assertEq(daiPortal.escrowed(), 0);
   }
 
-  function test_offMainnetUsdcIsPassedThroughUnchanged() public {
-    vm.chainId(31_337);
-    DepositSIPA sipa = _sipaOf(implementation);
+  function test_onMainnetAUsdcRowIsBypassedByTheSwap() public {
+    MockDepositPortal usdcPortal = _listUsdc();
+    DepositSIPA sipa = _sipa();
     MintableToken(address(USDC)).mint(address(sipa), AMOUNT_6DEC);
 
-    vm.expectRevert(abi.encodeWithSelector(Errors.SIPA__TokenNotPortalUnderlying.selector, address(USDC)));
     sipa.sweep(address(USDC), relayer, _intent(), "");
+
+    assertEq(daiPortal.escrowed(), AMOUNT_6DEC * STABLE_TO_DAI_DECIMAL_SCALE - DEPOSIT_SWEEP_TIP);
+    assertEq(usdcPortal.escrowed(), 0);
+    assertEq(threePool.callCount(), 1);
+  }
+
+  function test_offMainnetUsdcWithoutARowIsNotSwapped() public {
+    vm.chainId(31_337);
+    DepositSIPA sipa = _sipa();
+    MintableToken(address(USDC)).mint(address(sipa), AMOUNT_6DEC);
+
+    vm.expectRevert(abi.encodeWithSelector(Errors.ForwardingTable__TokenNotListed.selector, address(USDC)));
+    sipa.sweep(address(USDC), relayer, _intent(), "");
+    assertEq(threePool.callCount(), 0);
+    assertEq(USDC.balanceOf(address(sipa)), AMOUNT_6DEC);
+  }
+
+  function test_offMainnetAUsdcRowTakesTheDirectPath() public {
+    vm.chainId(31_337);
+    MockDepositPortal usdcPortal = _listUsdc();
+    DepositSIPA sipa = _sipa();
+    MintableToken(address(USDC)).mint(address(sipa), AMOUNT_6DEC);
+
+    sipa.sweep(address(USDC), relayer, _intent(), "");
+
+    assertEq(usdcPortal.escrowed(), AMOUNT_6DEC - USDC_SWEEP_TIP);
+    assertEq(USDC.balanceOf(relayer), USDC_SWEEP_TIP);
+    assertEq(daiPortal.escrowed(), 0);
     assertEq(threePool.callCount(), 0);
   }
 
-  function test_offMainnetAPortalForUsdcTakesTheDirectPath() public {
-    vm.chainId(31_337);
-    MockDepositPortal usdcPortal = new MockDepositPortal(USDC, ROLLUP_VERSION);
-    DepositSIPA sipa = _sipaOf(new DepositSIPA(IOxidePortal(address(usdcPortal)), 25e4));
-    MintableToken(address(USDC)).mint(address(sipa), AMOUNT_6DEC);
-
-    sipa.sweep(address(USDC), relayer, _intent(), "");
-
-    assertEq(usdcPortal.escrowed(), AMOUNT_6DEC - 25e4);
-    assertEq(USDC.balanceOf(relayer), 25e4);
-    assertEq(threePool.callCount(), 0);
+  function _listUsdc() internal returns (MockDepositPortal usdcPortal) {
+    usdcPortal = new MockDepositPortal(USDC, ROLLUP_VERSION);
+    IForwardingTable.IntentFees[] memory intents = new IForwardingTable.IntentFees[](1);
+    intents[0] =
+      IForwardingTable.IntentFees({intent: SIPABase.Intent.Deposit, beneficiaryFee: 0, sweepTip: USDC_SWEEP_TIP});
+    table.addRow(address(USDC), IOxidePortal(address(usdcPortal)), intents);
   }
 
   function _intent() internal pure returns (bytes memory) {
     return abi.encode(RECIPIENT_HASH);
   }
 
-  function _sipaOf(DepositSIPA _implementation) internal returns (DepositSIPA) {
+  function _sipa() internal returns (DepositSIPA) {
     bytes memory args = abi.encode(
       SIPABase.Args({
         intentHash: keccak256(_intent()),
         recoveryCommitment: keccak256("recovery"),
         rollupVersion: ROLLUP_VERSION,
-        resweepable: true
+        resweepable: true,
+        table: table
       })
     );
-    return DepositSIPA(Clones.cloneWithImmutableArgs(address(_implementation), args));
+    return DepositSIPA(Clones.cloneWithImmutableArgs(address(implementation), args));
   }
 }

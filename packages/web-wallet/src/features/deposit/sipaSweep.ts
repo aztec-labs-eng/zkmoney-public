@@ -23,8 +23,9 @@ import {
   type Hex,
   type PublicClient,
 } from "viem"
-import { Fr } from "@aztec/aztec.js/fields"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { depositPayoutTokenFor } from "@oxide/l1-contracts"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   buildDepositIntent,
@@ -32,8 +33,8 @@ import {
   classifyPortalCapError,
   readDepositSIPAImplementation,
   readSipaFundingStatus,
+  readSipaPortalTerms,
   SELF_BROADCAST_RESWEEPABLE,
-  TX_AMOUNT_CAP,
   type PortalCapErrorKind,
   type SipaSweepDeployArgs,
   type SipaFundingStatus,
@@ -43,6 +44,9 @@ import {
   computeAccountSIPAAddress,
   depositAmounts,
   SIPADepositStore,
+  sipaIntentName,
+  sipaRecordIntent,
+  sipaRecordRoute,
   sipaSweepAllowed,
   type SIPADepositRecord,
   type SipaProcessingState,
@@ -50,12 +54,18 @@ import {
   type SipaSweepSubject,
 } from "@obsidion/front-core"
 import type { OxideEnvTuple } from "@obsidion/core/types"
+import { bridgeUnderlying } from "@obsidion/core/oxide"
 import { getConfig, l1Transport, type WebWalletConfig } from "../../config/env"
 import { getOxideTuple, requireTupleField } from "../../config/oxideTuple"
 import { isDesktopL1SubmitActive } from "../../platform/desktopBridge"
-import { fpcFundingCut } from "../fees/fpcFundingCut"
 import { WebStorageAdapter } from "../../platform/storage/WebStorageAdapter"
 import { sipaProcessingObserver } from "./sipaProcessing"
+import {
+  loadDepositTokens,
+  settlementOf,
+  tokenMetadata,
+  type DepositTokens,
+} from "./loadDepositFacts"
 import {
   desktopBridgeChannel,
   injectedWalletChannel,
@@ -170,9 +180,10 @@ export function revertedSweepMessage(
 /** The manifest surface the derivation and the sweep bind to. */
 export interface SweepManifest {
   sipaFactory: Address
-  /** The portal the factory serves this generation's implementations under. */
+  /** The deployment's ForwardingTable: part of the CREATE2 preimage, and its rows route the sweep. */
+  forwardingTable: Address
   portal: Address
-  /** Part of the CREATE2 preimage, so it stays even though the implementation is keyed on the portal. */
+  /** Part of the CREATE2 preimage. */
   rollupVersion: bigint
   token: Address
 }
@@ -180,8 +191,10 @@ export interface SweepManifest {
 export interface SweepDeps {
   channel: L1ExitChannel
   manifest: SweepManifest
-  /** The deposit implementation this portal is served by (`SIPAFactory.implementationFor`). */
+  /** The deposit implementation new SIPAs clone (`SIPAFactory.implementationFor`). */
   implementation: Address
+  /** The row portal's `TX_AMOUNT_CAP()`. */
+  txAmountCap: bigint
   /** Non-empty `getCode` — a deployed SIPA is swept directly, an undeployed one deploy-and-swept. */
   readDeployed: (sipa: Address) => Promise<boolean>
   readFunding: (sipa: Address, token: Address) => Promise<SipaFundingStatus>
@@ -222,7 +235,11 @@ export function sweepDeployArgs(
       resweepable: origin.resweepable,
     }
     return origin.protocol === "account"
-      ? { ...common, recoveryCommitment: origin.recoveryCommitment }
+      ? {
+          ...common,
+          recoveryCommitment: origin.recoveryCommitment,
+          forwardingTable: origin.forwardingTable,
+        }
       : { ...common, recoveryAddress: origin.recoveryAddress }
   }
   const { intentHash } = buildDepositIntent({
@@ -256,10 +273,10 @@ export async function selfSweepDeposit(record: SIPADepositRecord, deps: SweepDep
     throw record.tokenAddress ? new AlreadySweptError() : new Error(UNTRACKED_TOKEN_ZERO)
   }
   if (!funding.sweepable) {
-    // The fee and the portal's cut come off first, and the ceiling measures what is forwarded after
-    // them. `scaledBalance` is the balance in the fee's denomination.
+    // The fee comes off first, and the ceiling measures what is forwarded after it. `scaledBalance`
+    // is the balance in the fee's denomination.
     throw new SweepRefusedError(
-      funding.scaledBalance - funding.fee - funding.fpcFundingCut > TX_AMOUNT_CAP
+      funding.scaledBalance - funding.fee > deps.txAmountCap
         ? BLOCKED["operation-cap"]
         : `This deposit is at or below the network's deposit fee, so it can't be moved into your private balance. ${RECOVER_INSTEAD}`,
     )
@@ -337,6 +354,7 @@ export function sweepManifestFrom(tuple: OxideEnvTuple): SweepManifest {
   }
   return {
     sipaFactory: requireTupleField(tuple, "sipaFactory") as Address,
+    forwardingTable: requireTupleField(tuple, "forwardingTable") as Address,
     portal: requireTupleField(tuple, "portal") as Address,
     rollupVersion: BigInt(rollupVersion),
     token: requireTupleField(tuple, "token") as Address,
@@ -389,6 +407,42 @@ export async function sweepChannel(params: {
   })
 }
 
+/** The row a sweep of one token reads, and the factor that scales its balance into the row token's units. */
+export interface SweepRow {
+  rowToken: Address
+  /** The swept token's decimals. */
+  decimals: number
+  balanceScale: bigint
+}
+
+/** The row a sweep of `token` settles on; undefined for a token the table routes no sweep of for this intent. */
+export function sweepRowOf(tokens: DepositTokens, token: Address): SweepRow | undefined {
+  const sent = tokens.options.find((t) => t.address.toLowerCase() === token.toLowerCase())
+  if (!sent) return undefined
+  const row = settlementOf(tokens, sent)
+  return {
+    rowToken: sent.settlesIn,
+    decimals: sent.decimals,
+    balanceScale: 10n ** BigInt(Math.max(row.decimals - sent.decimals, 0)),
+  }
+}
+
+/**
+ * The row a sweep of `token` settles on in a recorded table, which the current one may no longer list: the token's
+ * own, or the row token Oxide's SIPA swaps it into on `chainId`.
+ */
+export async function recordedSweepRow(
+  chainId: number | bigint,
+  token: Address,
+  decimalsOf: (token: Address) => Promise<number>,
+): Promise<SweepRow> {
+  const sent = EthAddress.fromString(token)
+  const payout = depositPayoutTokenFor(BigInt(chainId), sent)
+  const rowToken = payout.equals(sent) ? token : (payout.toString() as Address)
+  const [decimals, rowDecimals] = await Promise.all([decimalsOf(token), decimalsOf(rowToken)])
+  return { rowToken, decimals, balanceScale: 10n ** BigInt(Math.max(rowDecimals - decimals, 0)) }
+}
+
 /** Self-sweep `record` over whichever channel this build has. Resolves to the L1 sweep tx hash. */
 export async function selfSweep(
   record: SIPADepositRecord,
@@ -397,29 +451,52 @@ export async function selfSweep(
   const config = getConfig()
   const publicClient = createPublicClient({ transport: l1Transport(config) })
   const tuple = await getOxideTuple(config)
-  const manifest = sweepManifestFrom(tuple)
-  const [implementation, cut] = await Promise.all([
+  // A record that predates token tracking holds the pinned bridge's row token.
+  const manifest = { ...sweepManifestFrom(tuple), token: bridgeUnderlying(tuple) as Address }
+  const recorded = sipaRecordRoute(record)
+  const route = recorded ?? {
+    forwardingTable: manifest.forwardingTable,
+    intent: sipaRecordIntent(record.intent),
+  }
+  // The swept token's own row prices the sweep and caps it, in the table the address was made under.
+  const token = record.tokenAddress ?? manifest.token
+  const row = recorded
+    ? await recordedSweepRow(config.l1ChainId, token, (t) =>
+        tokenMetadata(config, t).then((m) => m.decimals),
+      )
+    : sweepRowOf(await loadDepositTokens(config, sipaIntentName(route.intent)), token)
+  if (!row) {
+    throw new SweepRefusedError(
+      `The network has no route for ${
+        record.tokenSymbol || "this token"
+      }, so it can't be swept. ${RECOVER_INSTEAD}`,
+    )
+  }
+  const [implementation, terms] = await Promise.all([
     record.origin
       ? Promise.resolve(record.origin.implementation)
-      : readDepositSIPAImplementation(publicClient, manifest.sipaFactory, manifest.portal),
-    fpcFundingCut(publicClient, manifest.portal),
+      : readDepositSIPAImplementation(publicClient, manifest.sipaFactory),
+    readSipaPortalTerms(publicClient, { ...route, token: row.rowToken }),
   ])
+  const cap = terms.txAmountCap
   const channel = await sweepChannel({ config, record, publicClient, opts })
 
-  return await selfSweepDeposit(record, {
+  // The row names the swept token's decimals where the record does not.
+  const swept = { ...record, tokenDecimals: record.tokenDecimals ?? row.decimals }
+  return await selfSweepDeposit(swept, {
     channel,
     manifest,
     implementation,
+    txAmountCap: cap,
     readDeployed: (sipa) => readSipaDeployed(publicClient, sipa),
-    // A 6-dec stable on the SIPA is measured against the 18-dec DAI fee it swaps into.
+    // A swapped token's balance is measured against its row token's fee.
     readFunding: (sipa, token) =>
       readSipaFundingStatus(publicClient, {
         sipa,
         token,
-        implementation,
-        fpcFundingCut: cut,
-        balanceScale:
-          10n ** BigInt(Math.max(DEFAULT_DECIMALS - (record.tokenDecimals ?? DEFAULT_DECIMALS), 0)),
+        fee: terms.depositFee,
+        txAmountCap: cap,
+        balanceScale: row.balanceScale,
       }),
     predict: (args) =>
       Promise.resolve(
@@ -454,6 +531,7 @@ function sipaAddressFromArgs(sipaFactory: Address, args: SipaSweepDeployArgs): A
       : computeAccountSIPAAddress({
           ...common,
           recoveryCommitment: Fr.fromString(args.recoveryCommitment),
+          forwardingTable: EthAddress.fromString(args.forwardingTable),
         })
   ).toString() as Address
 }

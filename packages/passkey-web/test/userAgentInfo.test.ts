@@ -11,6 +11,7 @@ import {
   macosSyncedCopyReadsRight,
   parseUserAgent,
   versionBelow,
+  windowsReleaseFromHints,
 } from "../src/policy/userAgentInfo.js"
 
 const cases: [string, string, ReturnType<typeof parseUserAgent>][] = [
@@ -493,5 +494,59 @@ describe("iosBelowFloor", () => {
     expect(iosBelowFloor(ios("26.0"))).toBe(false)
     expect(iosBelowFloor(ios("unknown"))).toBe(false)
     expect(iosBelowFloor({ osFamily: "macos", osVersionReported: "10.15.7" })).toBe(false)
+  })
+})
+
+describe("windowsReleaseFromHints", () => {
+  const chrome =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+    "Chrome/155.0.0.0 Safari/537.36"
+  const hinted = (platformVersion: string) =>
+    parseUserAgent({ userAgent: chrome, userAgentData: { platform: "Windows", platformVersion } })
+
+  it("reads Windows 11 from 13 up and Windows 10 below it", () => {
+    expect(windowsReleaseFromHints(hinted("13.0.0"))).toBe("11")
+    expect(windowsReleaseFromHints(hinted("19.0.0"))).toBe("11")
+    expect(windowsReleaseFromHints(hinted("10.0.0"))).toBe("10")
+    expect(windowsReleaseFromHints(hinted("1.0.0"))).toBe("10")
+  })
+
+  it("says nothing for an older Windows, a user-agent string alone, or another OS", () => {
+    expect(windowsReleaseFromHints(hinted("0.3.0"))).toBeUndefined()
+    expect(windowsReleaseFromHints(parseUserAgent({ userAgent: chrome }))).toBeUndefined()
+    const firefox =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:157.0) Gecko/20100101 Firefox/157.0"
+    expect(windowsReleaseFromHints(parseUserAgent({ userAgent: firefox }))).toBeUndefined()
+    expect(
+      windowsReleaseFromHints({
+        osFamily: "macos",
+        osVersionReported: "15.0.0",
+        osVersionFromHints: true,
+      }),
+    ).toBeUndefined()
+  })
+
+  it("reads the hinted platform over a user-agent string that names another", () => {
+    const linux = parseUserAgent({
+      userAgent: chrome,
+      userAgentData: { platform: "Linux", platformVersion: "6.1.0" },
+    })
+    expect(linux).toMatchObject({
+      osFamily: "linux",
+      osVersionReported: "6.1.0",
+      osVersionFromHints: true,
+    })
+    expect(windowsReleaseFromHints(linux)).toBeUndefined()
+    expect(
+      parseUserAgent({
+        userAgent: chrome,
+        userAgentData: { platform: "Chrome OS", platformVersion: "16181.0.0" },
+      }).osFamily,
+    ).toBe("chromeos")
+    expect(hinted("10.0.0").osFamily).toBe("windows")
+    expect(parseUserAgent({ userAgent: chrome }).osFamily).toBe("windows")
+    expect(
+      parseUserAgent({ userAgent: chrome, userAgentData: { platform: "Unknown" } }).osFamily,
+    ).toBe("windows")
   })
 })

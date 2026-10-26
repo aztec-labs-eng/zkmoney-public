@@ -12,7 +12,7 @@ contract MockRollup {
   mapping(uint256 checkpointNumber => uint256 epoch) internal epochs;
   uint256 internal provenCheckpointNumber;
   uint256 internal pendingCheckpointNumber;
-  mapping(uint256 epoch => mapping(uint256 length => mapping(address prover => bool))) internal hasSubmitted;
+  mapping(uint256 checkpointNumber => uint256 encodedProverId) internal firstProvenBy;
   IInbox internal inbox;
   IOutbox internal outbox;
   IERC20 internal feeAsset;
@@ -47,12 +47,31 @@ contract MockRollup {
     return pendingCheckpointNumber;
   }
 
-  function setHasSubmitted(uint256 _epoch, uint256 _length, address _prover, bool _submitted) external {
-    hasSubmitted[_epoch][_length][_prover] = _submitted;
+  function proveRange(uint256 _start, uint256 _end, address _prover) external {
+    _proveRange(_start, _end, _prover);
   }
 
-  function getHasSubmitted(Epoch _epoch, uint256 _length, address _prover) external view returns (bool) {
-    return hasSubmitted[Epoch.unwrap(_epoch)][_length][_prover];
+  function getFirstProvenBy(uint256 _checkpointNumber) external view returns (address) {
+    uint256 proven = provenCheckpointNumber;
+    require(
+      0 < _checkpointNumber && _checkpointNumber <= proven,
+      Errors.Rollup__CheckpointNotProven(proven, _checkpointNumber)
+    );
+    for (uint256 i = _checkpointNumber; i <= proven; i++) {
+      uint256 encodedProverId = firstProvenBy[i];
+      if (encodedProverId != 0) {
+        return address(uint160(encodedProverId));
+      }
+    }
+    revert Errors.Rollup__CheckpointNotProven(proven, _checkpointNumber);
+  }
+
+  function _proveRange(uint256 _start, uint256 _end, address _prover) internal {
+    require(_start <= _end && _start <= provenCheckpointNumber + 1, "MockRollup: proof leaves a gap");
+    if (_end > provenCheckpointNumber) {
+      provenCheckpointNumber = _end;
+      firstProvenBy[_end] = uint256(uint160(_prover)) | (1 << 160);
+    }
   }
 
   function setInbox(IInbox _inbox) external {

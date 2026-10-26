@@ -1,4 +1,4 @@
-import { BackendType, Barretenberg, BarretenbergSync } from '@aztec/bb.js';
+import { BackendType, Barretenberg, BarretenbergSync } from '@aztec-foundation/bb.js';
 
 import { type MessagePort, parentPort, workerData } from 'node:worker_threads';
 
@@ -11,11 +11,11 @@ async function main(port: MessagePort): Promise<void> {
   await BarretenbergSync.initSingleton({ backend: BackendType.Wasm });
 
   // Exiting here takes the whole enclave down via the pool's exit handler, killing the key with it.
-  const { material, portalContext, budget } = fromWorkerData(workerData as EnclaveWorkerData, () => {
+  const { material, budget } = fromWorkerData(workerData as EnclaveWorkerData, () => {
     console.error('[oxide-tee enclave] signature budget exhausted; shutting down');
     setImmediate(() => process.exit(1));
   });
-  const session = EnclaveSession.fromKeyMaterial(material, portalContext, budget);
+  const session = new EnclaveSession(material, budget);
 
   port.on('message', (msg: WorkerRequest) => {
     // processFrame never throws; every request gets exactly one response message.

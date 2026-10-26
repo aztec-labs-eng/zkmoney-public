@@ -1,6 +1,6 @@
-import { CheckpointNumber, EpochNumber } from '@aztec/foundation/branded-types';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { Checkpoint } from '@aztec/stdlib/checkpoint';
+import { CheckpointNumber, EpochNumber } from '@aztec-labs/foundation/branded-types';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { Checkpoint } from '@aztec-labs/stdlib/checkpoint';
 
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 
@@ -13,16 +13,16 @@ describe('EpochProfitTracker', () => {
   const l1Portal = EthAddress.random();
   const token = EthAddress.random();
   let discover: jest.Mock<() => Promise<DiscoveredClaim[]>>;
-  // Checkpoint -> L1 block the first-prover record landed in; absent means uncovered. Mutated per test to model
-  // reorgs and fresh captures.
-  let covered: Map<number, bigint>;
+  // Proven tips the rollup reached, each with the L1 block its proof landed in. A tip is visible only at or
+  // after that block. Mutated per test to model reorgs and fresh proofs.
+  let provenTips: { checkpoint: number; atBlock: bigint }[];
 
-  // A single claim on portal `p`; only `rewardContext.tip` is priced. Its checkpoint sits above the (zero) covered
-  // watermark so it survives filtering.
-  const claimFor = (p: EarlySubmitPortalConfig, tip = REWARD): DiscoveredClaim =>
+  // A single claim on portal `p`; only `rewardContext.tip` is priced. By default its checkpoint sits above the
+  // (zero) proven tip so it survives filtering.
+  const claimFor = (p: EarlySubmitPortalConfig, tip = REWARD, checkpoint = 1): DiscoveredClaim =>
     ({
       portalId: portalId(p.context.l1Portal),
-      checkpointNumber: CheckpointNumber(1),
+      checkpointNumber: CheckpointNumber(checkpoint),
       rewardContext: { tip } as any,
       txRef: {} as any,
       withdrawalIndex: 0,
@@ -30,7 +30,7 @@ describe('EpochProfitTracker', () => {
     }) as DiscoveredClaim;
 
   // A claim on the shared portal.
-  const claim = (tip: bigint): DiscoveredClaim => claimFor(portal, tip);
+  const claim = (tip: bigint, checkpoint = 1): DiscoveredClaim => claimFor(portal, tip, checkpoint);
 
   // A portal of its own, for the cases with more than one portal.
   const makePortal = (
@@ -41,7 +41,7 @@ describe('EpochProfitTracker', () => {
       context: {
         l1Portal: EthAddress.random(),
         token: portalToken,
-        l2Portal: undefined,
+        l2Token: undefined,
         proverSubsidy: EthAddress.random(),
       },
       adaptor: {},
@@ -60,7 +60,7 @@ describe('EpochProfitTracker', () => {
   let quotedClaimCounts: bigint[];
 
   const portal = {
-    context: { l1Portal, token, l2Portal: undefined, proverSubsidy: EthAddress.random() },
+    context: { l1Portal, token, l2Token: undefined, proverSubsidy: EthAddress.random() },
     adaptor: {},
     quoteProverSubsidy: (numClaims: bigint) => {
       quotedClaimCounts.push(numClaims);
@@ -106,8 +106,6 @@ describe('EpochProfitTracker', () => {
   const NO_CLAIM_GAS_MODEL = { baseGas: 0n, gasPerClaim: 0n };
   // 10_000 gas for each claim transaction and 5_000 for each claim in it.
   const CLAIM_GAS_MODEL = { baseGas: 10_000n, gasPerClaim: 5_000n };
-  // Most cases leave the extra first-prover captures out. The capture-gas case sets a figure of its own.
-  const NO_CAPTURE_GAS = 0n;
 
   // The same gas, priced through the rates above: 640_000 gas at 1 gwei is 0.00064 ETH, or 1.28 USD at 2_000 USD
   // per ETH.
@@ -119,16 +117,15 @@ describe('EpochProfitTracker', () => {
   // from the chain, and each test sets its own.
   const PROFIT_BEFORE_PROVING = usd(98n, 72n);
 
-  // Serves `firstProver` from `covered`, honoring the pinned read block: a record is visible only at or after
-  // the block it landed in.
+  // Serves the proven tip from `provenTips`, honoring a pinned read block: a tip is visible only at or after the
+  // block its proof landed in. An unpinned read sees the head.
   const HEAD = 1_000n;
-  const portalContract = {
+  const rollupContract = {
     client: { getBlockNumber: () => Promise.resolve(HEAD) },
-    firstProver: (checkpointNumber: CheckpointNumber, { blockNumber }: { blockNumber: bigint }) => {
-      const recordedAt = covered.get(Number(checkpointNumber));
-      return Promise.resolve(
-        recordedAt !== undefined && recordedAt <= blockNumber ? EthAddress.random() : EthAddress.ZERO,
-      );
+    getProvenCheckpointNumber: ({ blockNumber }: { blockNumber?: bigint } = {}) => {
+      const readAt = blockNumber ?? HEAD;
+      const visible = provenTips.filter(t => t.atBlock <= readAt).map(t => t.checkpoint);
+      return Promise.resolve(CheckpointNumber(Math.max(0, ...visible)));
     },
   } as any;
 
@@ -137,13 +134,12 @@ describe('EpochProfitTracker', () => {
     submitEpochProofGasModel = EPOCH_GAS_MODEL,
     claimProverTipsGasModel = NO_CLAIM_GAS_MODEL,
     portals = [portal],
-    firstProverCaptureGas = NO_CAPTURE_GAS,
     priceOracle = oracleWith(),
     maxFeePerGasCap?: bigint,
   ) =>
     new EpochProfitTracker({
       discoverer: { discover } as any,
-      portal: portalContract,
+      rollup: rollupContract,
       portals,
       priceOracle,
       getEffectiveGasPriceWei,
@@ -151,7 +147,6 @@ describe('EpochProfitTracker', () => {
       maxFeePerGasCap,
       submitEpochProofGasModel,
       claimProverTipsGasModel,
-      firstProverCaptureGas,
       minEpochProfit: 0n,
       minEpochProfitMarginBps: 0n,
       provingCostPerCheckpoint,
@@ -159,7 +154,7 @@ describe('EpochProfitTracker', () => {
     } satisfies EpochProfitTrackerOptions);
 
   beforeEach(() => {
-    covered = new Map();
+    provenTips = [];
     quotedClaimCounts = [];
     ethPriceReads = 0;
     tokenPriceReads = 0;
@@ -226,17 +221,17 @@ describe('EpochProfitTracker', () => {
     expect(decision.reason).toBe('no claimable tips');
   });
 
-  it('excludes a claim whose checkpoint an on-chain first prover already covers', async () => {
-    covered.set(1, 900n);
+  it('excludes a claim at or below the proven tip, since its first prover is already recorded', async () => {
+    provenTips = [{ checkpoint: 1, atBlock: 900n }];
     const decision = await makeTracker(0n).evaluate(EpochNumber(1), checkpoints(1));
     expect(decision.submit).toBe(false);
     expect(decision.reason).toBe('no claimable tips');
   });
 
-  it('respects a first-prover record landed in the newest head block', async () => {
-    // A capture in the head block itself must suppress submission: lagging the read behind the head would spend
-    // proving compute on an already-captured prefix.
-    covered.set(1, HEAD);
+  it('respects a proof that moved the tip in the newest head block', async () => {
+    // A proof in the head block itself must suppress submission: lagging the read behind the head would spend
+    // proving compute on an already-proven prefix.
+    provenTips = [{ checkpoint: 1, atBlock: HEAD }];
     const decision = await makeTracker(0n).evaluate(EpochNumber(1), checkpoints(1));
     expect(decision.submit).toBe(false);
     expect(decision.reason).toBe('no claimable tips');
@@ -259,17 +254,26 @@ describe('EpochProfitTracker', () => {
     expect(afterReorg.details?.profit).toBe(usd(48n, 72n));
   });
 
-  it('re-includes the claim once a reorg drops the first-prover coverage', async () => {
+  it('prices a claim above the proven tip', async () => {
+    // Checkpoint 1 is proven, so its claim is out; the claim at checkpoint 2 is the only income.
+    provenTips = [{ checkpoint: 1, atBlock: 900n }];
+    discover.mockImplementation(() => Promise.resolve([claim(REWARD, 1), claim(REWARD, 2)]));
+    const decision = await makeTracker(0n).evaluate(EpochNumber(1), checkpoints(2));
+    expect(decision.submit).toBe(true);
+    expect(decision.details?.profit).toBe(PROFIT_BEFORE_PROVING);
+  });
+
+  it('re-includes the claim once a reorg rolls the proven tip back', async () => {
     const tracker = makeTracker(0n);
 
-    // First-prover coverage suppresses the only claim, so the prefix looks unprofitable.
-    covered.set(1, 900n);
+    // The proven tip covers the only claim, so the prefix looks unprofitable.
+    provenTips = [{ checkpoint: 1, atBlock: 900n }];
     const suppressed = await tracker.evaluate(EpochNumber(1), checkpoints(1));
     expect(suppressed.submit).toBe(false);
 
-    // An L1 reorg drops the FirstProverRecorded event without touching the checkpoints themselves. The next
-    // evaluation must re-read coverage and re-expose the cached claim rather than stay suppressed.
-    covered.delete(1);
+    // An L1 reorg drops the proof without touching the checkpoints themselves. The next evaluation must re-read
+    // the proven tip and re-expose the cached claim rather than stay suppressed.
+    provenTips = [];
     const restored = await tracker.evaluate(EpochNumber(1), checkpoints(1));
     expect(restored.submit).toBe(true);
     expect(restored.details?.profit).toBe(PROFIT_BEFORE_PROVING);
@@ -299,14 +303,7 @@ describe('EpochProfitTracker', () => {
     // One share of the vault is worth 1.05 USD, as an sUSDS share is worth more than the USDS it converts to.
     const prices = new Map([[vaultToken.toString(), { usdPerToken: usd(1n, 5n), decimals: 18 }]]);
 
-    const tracker = makeTracker(
-      0n,
-      EPOCH_GAS_MODEL,
-      NO_CLAIM_GAS_MODEL,
-      [stable, vault],
-      NO_CAPTURE_GAS,
-      oracleWith(prices),
-    );
+    const tracker = makeTracker(0n, EPOCH_GAS_MODEL, NO_CLAIM_GAS_MODEL, [stable, vault], oracleWith(prices));
     const decision = await tracker.evaluate(EpochNumber(1), checkpoints(1));
 
     // 100.00 of the stable token and 100 shares worth 105.00.
@@ -326,17 +323,6 @@ describe('EpochProfitTracker', () => {
     // has no claims, so it sends no transaction.
     expect(decision.details?.totalGas).toBe(EPOCH_GAS + 35_000n);
     expect(decision.details?.claimCount).toBe(3);
-  });
-
-  it('charges a first-prover capture for each portal, with claims or not', async () => {
-    const first = makePortal();
-    discover.mockImplementation(() => Promise.resolve([claimFor(first)]));
-
-    const tracker = makeTracker(0n, EPOCH_GAS_MODEL, NO_CLAIM_GAS_MODEL, [first, makePortal(), makePortal()], 50_000n);
-    const decision = await tracker.evaluate(EpochNumber(1), checkpoints(1));
-
-    // The proof records a capture on each of the three portals.
-    expect(decision.details?.totalGas).toBe(EPOCH_GAS + 3n * 50_000n);
   });
 
   it('submits when the rewards of all portals together pay for the proof, but no portal alone does', async () => {
@@ -421,7 +407,6 @@ describe('EpochProfitTracker', () => {
         EPOCH_GAS_MODEL,
         CLAIM_GAS_MODEL,
         [portal],
-        NO_CAPTURE_GAS,
         oracleWith(),
         CLAIM_MAX_FEE_PER_GAS_WEI - 1n,
       );
@@ -437,7 +422,6 @@ describe('EpochProfitTracker', () => {
         EPOCH_GAS_MODEL,
         CLAIM_GAS_MODEL,
         [portal],
-        NO_CAPTURE_GAS,
         oracleWith(),
         CLAIM_MAX_FEE_PER_GAS_WEI,
       );

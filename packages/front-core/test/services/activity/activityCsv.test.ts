@@ -4,7 +4,7 @@
  * it, and then fails here until this file pins what it reports.
  */
 import { describe, expect, it } from "vitest"
-import { parseUnits } from "viem"
+import { parseUnits, type Address } from "viem"
 import type { WithdrawalRecord } from "../../../src/core/services/bridge/types"
 import type {
   SIPADepositRecord,
@@ -35,7 +35,8 @@ const TOKEN = {
   amount: 12.5,
   price: 1,
 }
-const EMPTY: ActivityCsvSources = { transactions: [], items: [], requests: [] }
+const DAI = { symbol: "DAI", decimals: 18 }
+const EMPTY: ActivityCsvSources = { walletToken: DAI, transactions: [], items: [], requests: [] }
 
 function tx(action: string, extra: Record<string, unknown> = {}): Transaction {
   return {
@@ -59,14 +60,14 @@ function withdrawal(extra: Partial<WithdrawalRecord> = {}): ActivityItem {
       amount: "10",
       rawAmount: parseUnits("10", 18).toString(),
       relayerTip: parseUnits("0.5", 18).toString(),
-      fpcFundingCut: parseUnits("0.25", 18).toString(),
       tokenSymbol: "DAI",
+      tokenDecimals: 18,
       phase: "done",
       startTime: T0,
       endTime: T0 + 1000,
       l2TxHash: "0xl2",
       l1TxHash: "0xl1",
-      receivedAmount: parseUnits("9.25", 18).toString(),
+      receivedAmount: parseUnits("9.5", 18).toString(),
       ...extra,
     } as WithdrawalRecord,
   }
@@ -163,6 +164,7 @@ const WITHDRAWAL_KINDS: Record<string, [Partial<WithdrawalRecord>, ActivityCsvRo
   "paylink": [{ source: "paylink" }, "Payment link paid to Ethereum"],
   "registration": [{ intent: "registration", source: "paylink" }, "Name registration"],
   "migration": [{ intent: "migration" }, "Upgrade out"],
+  "backup": [{ intent: "backup" }, "Backup passkey added"],
   "savings-in": [
     { skyMove: { direction: "in" } as WithdrawalRecord["skyMove"] },
     "Savings deposit",
@@ -191,11 +193,11 @@ const DEPOSIT_KINDS: Record<
   string,
   [Partial<ActivityCsvSources>, Partial<SIPADepositRecord>, ActivityCsvRow["type"]]
 > = {
-  deposit: [{}, {}, "Deposit"],
-  registration: [{}, { intent: "registration" }, "Name registration"],
-  metadata: [{}, { intent: "metadata" }, "Upgrade in"],
-  request: [{ requests: [{ sipaAddress: SIPA } as never] }, {}, "Payment request paid"],
-  migration: [
+  "deposit": [{}, {}, "Deposit"],
+  "registration": [{}, { intent: "registration" }, "Name registration"],
+  "user-op": [{}, { intent: "user-op" }, "Backup passkey added"],
+  "request": [{ requests: [{ sipaAddress: SIPA } as never] }, {}, "Payment request paid"],
+  "migration": [
     {
       items: [
         withdrawal({ intent: "migration", recipient: SIPA as `0x${string}`, phase: "l2_mined" }),
@@ -218,10 +220,8 @@ const upgradeBatch = (state: string): ActivityItem => ({
   batch: {
     run: "run",
     id: "remaining-0",
-    first: false,
     recipient: SIPA,
     amount: (10n * 10n ** 18n).toString(),
-    exitFee: (10n ** 17n).toString(),
     state: state as "sent",
     tx: "0xcarrier",
     startTime: 1,
@@ -302,8 +302,8 @@ describe("withdrawals", () => {
 
   it("sends what arrived, with the rest of the gross burned as the fee", () => {
     expect(only({ items: [withdrawal()] })).toMatchObject({
-      sent: { amount: "9.25", currency: "DAI" },
-      fee: { amount: "0.75", currency: "DAI" },
+      sent: { amount: "9.5", currency: "DAI" },
+      fee: { amount: "0.5", currency: "DAI" },
       aztecTxHash: "0xl2",
       ethereumTxHash: "0xl1",
     })
@@ -315,18 +315,15 @@ describe("upgrade batches", () => {
     expect(!!only({ items: [upgradeBatch(state)] })).toBe(exported)
   })
 
-  it("leaves the old version as a migration, the tip its fee, and arrives as one", () => {
+  it("leaves the old version as a migration with no fee, and arrives as one", () => {
     const rows = buildActivityCsvRows({
-      transactions: [],
-      requests: [],
+      ...EMPTY,
       items: [upgradeBatch("received"), deposit({ sipaAddress: SIPA })],
     })
     expect(rows.map((r) => r.type).sort()).toEqual(["Upgrade in", "Upgrade out"])
-    expect(rows.find((r) => r.type === "Upgrade out")).toMatchObject({
-      sent: { amount: "9.9", currency: "DAI" },
-      fee: { amount: "0.1", currency: "DAI" },
-      aztecTxHash: "0xcarrier",
-    })
+    const out = rows.find((r) => r.type === "Upgrade out")
+    expect(out).toMatchObject({ sent: { amount: "10", currency: "DAI" }, aztecTxHash: "0xcarrier" })
+    expect(out?.fee).toBeUndefined()
   })
 })
 
@@ -401,6 +398,49 @@ describe("deposits", () => {
   })
 })
 
+describe("deposits across rows", () => {
+  const SUSDS = "0x5875eee11cf8398102fdad704c9e96607675467a" as Address
+  const USDC = { tokenSymbol: "USDC", tokenDecimals: 6 }
+  const twoTokens = deposit({
+    inboxIndex: "8",
+    claimedInboxIndexes: ["7", "8"],
+    tokenAddress: SUSDS,
+    tokenSymbol: "sUSDS",
+    sweeps: [
+      sweep("7", undefined, "19", { tokenSymbol: "DAI", tokenDecimals: 18 }),
+      {
+        inboxIndex: "8",
+        sweepTxHash: "0xsweep8" as SIPASweep["sweepTxHash"],
+        netAmount: "4500000",
+        grossAmount: "5000000",
+        fundingTokenSymbol: "USDC",
+        fundingTokenDecimals: 6,
+        ...USDC,
+      },
+    ],
+  })
+
+  it("reports each sweep in the token and decimals of the row it credited", () => {
+    const rows = buildActivityCsvRows({ ...EMPTY, items: [twoTokens] })
+    expect(rows.map((r) => [r.received, r.fee])).toEqual([
+      [{ amount: "19", currency: "DAI" }, undefined],
+      [
+        { amount: "5", currency: "USDC" },
+        { amount: "0.5", currency: "USDC" },
+      ],
+    ])
+  })
+
+  it("reports a token split out of its address's record once, among the record's sweeps", () => {
+    const split: ActivityItem = {
+      kind: "bridge.sipaDeposit",
+      record: (twoTokens as { record: SIPADepositRecord }).record,
+      credit: "0x6b175474e89094c44da98b954eedeac495271d0f",
+    }
+    expect(buildActivityCsvRows({ ...EMPTY, items: [twoTokens, split] })).toHaveLength(2)
+  })
+})
+
 describe("registrations", () => {
   it("a registration deposit receives what was funded; what it did not credit is the fee", () => {
     const row = only({
@@ -421,8 +461,8 @@ describe("registrations", () => {
   it("a registration paid from the balance reports the gross burned and what arrived", () => {
     expect(only({ items: [withdrawal({ intent: "registration" })] })).toMatchObject({
       type: "Name registration",
-      sent: { amount: "9.25", currency: "DAI" },
-      fee: { amount: "0.75", currency: "DAI" },
+      sent: { amount: "9.5", currency: "DAI" },
+      fee: { amount: "0.5", currency: "DAI" },
     })
   })
 })
@@ -512,6 +552,7 @@ describe("savings", () => {
     recipientProvenance: "saved-recipient",
     amount: "10",
     tokenSymbol: "DAI",
+    tokenDecimals: 18,
     phase: "done",
     startTime: T0,
     l2TxHash: "0xburn",
@@ -546,7 +587,7 @@ describe("savings", () => {
   }
 
   it("a move in receives what the vault took, dated when its deposit landed", () => {
-    expect(buildSavingsCsvRows({ moves: [move()], burns })).toEqual([
+    expect(buildSavingsCsvRows({ walletToken: DAI, moves: [move()], burns })).toEqual([
       {
         timestampMs: T0 + 1000,
         type: "Savings deposit",
@@ -559,14 +600,18 @@ describe("savings", () => {
 
   it("a move in with no vault figures receives the quoted net, else the burn's gross", () => {
     const quoted = move({ vault: undefined, net: parseUnits("9.8", 18).toString() })
-    expect(buildSavingsCsvRows({ moves: [quoted], burns })[0]?.received?.amount).toBe("9.8")
+    expect(
+      buildSavingsCsvRows({ walletToken: DAI, moves: [quoted], burns })[0]?.received?.amount,
+    ).toBe("9.8")
     const unread = move({ vault: undefined })
-    expect(buildSavingsCsvRows({ moves: [unread], burns })[0]?.received?.amount).toBe("10")
+    expect(
+      buildSavingsCsvRows({ walletToken: DAI, moves: [unread], burns })[0]?.received?.amount,
+    ).toBe("10")
   })
 
   it("a move out sends what landed on Main, with the rest of what the vault paid as the fee, dated at its burn", () => {
     const out = move({ direction: "out", amount: parseUnits("9.5", 18).toString() })
-    expect(buildSavingsCsvRows({ moves: [out], burns })).toEqual([
+    expect(buildSavingsCsvRows({ walletToken: DAI, moves: [out], burns })).toEqual([
       {
         timestampMs: T0 + 500,
         type: "Savings withdrawal",
@@ -577,26 +622,101 @@ describe("savings", () => {
       },
     ])
     const unread = move({ direction: "out", vault: undefined })
-    const row = buildSavingsCsvRows({ moves: [unread], burns })[0]
+    const row = buildSavingsCsvRows({ walletToken: DAI, moves: [unread], burns })[0]
     expect(row?.sent).toEqual({ amount: "9.5", currency: "DAI" })
     expect(row?.fee).toBeUndefined()
   })
 
   it("a move whose deposit is not yet claimed has no row", () => {
     const pending = move({ deposit: { inboxIndex: "3", amount: "1", claimed: false } })
-    expect(buildSavingsCsvRows({ moves: [pending, move({ deposit: undefined })], burns })).toEqual(
-      [],
-    )
+    expect(
+      buildSavingsCsvRows({
+        walletToken: DAI,
+        moves: [pending, move({ deposit: undefined })],
+        burns,
+      }),
+    ).toEqual([])
   })
 
   it("has its own file", () => {
-    const lines = savingsCsv({ moves: [move()], burns })
+    const lines = savingsCsv({ walletToken: DAI, moves: [move()], burns })
       .trimEnd()
       .split("\r\n")
     expect(lines[1]).toBe("2026-01-02 03:04:06 UTC,,,9.9,DAI,,,,,,Savings deposit,0xrun")
     expect(activityCsvFileName(new Date(T0), "savings")).toBe(
       "zkmoney-savings-activity-2026-01-02.csv",
     )
+  })
+})
+
+describe("a 6-decimal token", () => {
+  const USDC = { symbol: "USDC", decimals: 6 }
+
+  it("exports a withdrawal in the burned token's own decimals and symbol", () => {
+    const row = only({
+      items: [
+        withdrawal({
+          tokenSymbol: "USDC",
+          tokenDecimals: 6,
+          amount: "10",
+          rawAmount: parseUnits("10", 6).toString(),
+          relayerTip: parseUnits("0.5", 6).toString(),
+          receivedAmount: parseUnits("9.5", 6).toString(),
+        }),
+      ],
+    })
+    expect(row).toMatchObject({
+      sent: { amount: "9.5", currency: "USDC" },
+      fee: { amount: "0.5", currency: "USDC" },
+    })
+  })
+
+  it("exports transfers and deposits in the wallet token's decimals and symbol", () => {
+    const rows = buildActivityCsvRows({
+      ...EMPTY,
+      walletToken: USDC,
+      transactions: [
+        tx("send", { token: { ...TOKEN, symbol: "", decimals: 6 }, amountAtomic: "2500000" }),
+      ],
+      items: [
+        deposit({
+          tokenSymbol: "",
+          netAmount: parseUnits("19", 6).toString(),
+          sweeps: [
+            sweep("7", undefined, "19", {
+              netAmount: parseUnits("19", 6).toString(),
+              grossAmount: parseUnits("20", 18).toString(),
+              fundingTokenSymbol: "USDC",
+              fundingTokenDecimals: 18,
+            }),
+          ],
+        }),
+      ],
+    })
+    expect(rows.find((r) => r.type === "Payment sent")?.sent).toEqual({
+      amount: "2.5",
+      currency: "USDC",
+    })
+    expect(rows.find((r) => r.type === "Deposit")).toMatchObject({
+      received: { amount: "20", currency: "USDC" },
+      fee: { amount: "1", currency: "USDC" },
+    })
+  })
+
+  it("exports Savings moves in the wallet token's decimals and symbol", () => {
+    const move: SavingsMoveRecord = {
+      direction: "out",
+      withdrawalLocalId: "burn-6",
+      escrow: "0x00000000000000000000000000000000000000ee",
+      nonce: "0x01",
+      recipientCommitment: "0x02",
+      amount: parseUnits("9.5", 6).toString(),
+      startTime: T0,
+      deposit: { inboxIndex: "3", amount: parseUnits("9.5", 6).toString(), claimed: true },
+    }
+    expect(
+      buildSavingsCsvRows({ walletToken: USDC, moves: [move], burns: new Map() }),
+    ).toMatchObject([{ sent: { amount: "9.5", currency: "USDC" } }])
   })
 })
 

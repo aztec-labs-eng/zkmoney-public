@@ -1,7 +1,7 @@
-import { Fr } from '@aztec/aztec.js/fields';
-import { poseidon2HashWithSeparator } from '@aztec/foundation/crypto/poseidon';
-import type { Tuple } from '@aztec/foundation/serialize';
-import { MembershipWitness, SiblingPath } from '@aztec/foundation/trees';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import { poseidon2HashWithSeparator } from '@aztec-labs/foundation/crypto/poseidon';
+import type { Tuple } from '@aztec-labs/foundation/serialize';
+import { MembershipWitness, SiblingPath } from '@aztec-labs/foundation/trees';
 
 /** A test Merkle tree that holds its leaves from index 0 and pads every missing node with the zero subtree hash. */
 export class SparseTree {

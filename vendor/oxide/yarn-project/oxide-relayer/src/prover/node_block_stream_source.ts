@@ -1,7 +1,7 @@
-import { BlockNumber, CheckpointNumber } from '@aztec/foundation/branded-types';
-import { type BlockHash, GENESIS_BLOCK_HEADER_HASH, L2Block, type L2BlockStream } from '@aztec/stdlib/block';
-import { Checkpoint } from '@aztec/stdlib/checkpoint';
-import type { AztecNode } from '@aztec/stdlib/interfaces/client';
+import { BlockNumber, CheckpointNumber } from '@aztec-labs/foundation/branded-types';
+import { type BlockHash, GENESIS_BLOCK_HEADER_HASH, L2Block, type L2BlockStream } from '@aztec-labs/stdlib/block';
+import { Checkpoint } from '@aztec-labs/stdlib/checkpoint';
+import type { AztecNode } from '@aztec-labs/stdlib/interfaces/client';
 
 type L2BlockStreamSource = ConstructorParameters<typeof L2BlockStream>[0];
 

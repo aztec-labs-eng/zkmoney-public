@@ -10,6 +10,7 @@ import {
   depositPhaseCopy,
   formatDateLabel,
   formatTimeLabel,
+  isAccountMoveSipa,
   isNativeEth,
   isZeroAddress,
   normalizeTag,
@@ -42,6 +43,7 @@ import {
 } from "@obsidion/front-core"
 import {
   creatorLinkAction,
+  isOtherRollupLink,
   type CreatorLinkAction,
 } from "../../features/paylink/creatorLinkActions"
 import { tokenAmount, usdFigure } from "../format"
@@ -64,10 +66,7 @@ export interface ActivityRowView {
   timestampMs: number
   /** Signed fiat, e.g. "+$25.00" / "-$25.00". */
   amount: string
-  /**
-   * "Pending" / "Failed" / "Not received", or a settled creator paylink row's link status
-   * (`paylinkRowView`).
-   */
+  /** "Pending" / "Failed", or a settled creator paylink row's link status (`paylinkRowView`). */
   statusLabel?: StatusLabel
   /**
    * The transaction's own state. Carried so the detail modal can re-derive the badge off a
@@ -116,7 +115,8 @@ export function depositAttribution(record: SIPADepositRecord): {
 } {
   return {
     funder: record.fundingFromAddress ?? record.walletAddress,
-    fundingTxHash: record.fundingTxHash,
+    // A direct migration deposit has no funding transfer: its portal deposit is the one L1 tx.
+    fundingTxHash: record.fundingTxHash ?? (record.direct ? record.sweepTxHash : undefined),
   }
 }
 
@@ -143,8 +143,10 @@ export function neverCreditsL2(phase: SIPADepositPhase): boolean {
 export function depositGrossFigure(
   record: SIPADepositRecord,
   precision: "full" | "row" = "full",
+  /** The row token's, which the record's amounts are in. */
+  decimals?: number,
 ): string {
-  const { grossDisplay } = depositAmounts(record)
+  const { grossDisplay } = depositAmounts(record, decimals)
   if (!isNativeEth(record.tokenAddress)) return usdFigure(grossDisplay)
   return `${precision === "row" ? tokenAmount(grossDisplay) : grossDisplay} ETH`
 }
@@ -155,9 +157,14 @@ export function depositGrossFigure(
  * sum that sits at (or left) the deposit address, unsigned. `exitable` records show that gross for
  * want of a net.
  */
-export function depositRowAmount(record: SIPADepositRecord, exitable: boolean): string {
-  const amounts = depositAmounts(record)
-  const gross = depositGrossFigure(record, "row")
+export function depositRowAmount(
+  record: SIPADepositRecord,
+  exitable: boolean,
+  /** The row token's, which the record's amounts are in. */
+  decimals?: number,
+): string {
+  const amounts = depositAmounts(record, decimals)
+  const gross = depositGrossFigure(record, "row", decimals)
   if (neverCreditsL2(record.phase)) return gross
   // An exact net needs a stored fee or a stored net; crediting a record with neither hands the user the fee.
   if ((amounts.feeKnown || record.netAmount != null) && amounts.netAtomic > 0n)
@@ -170,11 +177,8 @@ export function depositRowAmount(record: SIPADepositRecord, exitable: boolean): 
  * The badge under a deposit row's amount, from front-core's `DEPOSIT_PHASE_COPY` so the row, the
  * detail sheet and the bell read the same word. A claimed deposit carries no badge.
  */
-export function depositRowStatusLabel(
-  record: SIPADepositRecord,
-  portalFrozen = false,
-): StatusLabel | undefined {
-  return depositPhaseCopy(record, { portalFrozen }).pill as StatusLabel | undefined
+export function depositRowStatusLabel(record: SIPADepositRecord): StatusLabel | undefined {
+  return depositPhaseCopy(record).pill as StatusLabel | undefined
 }
 
 /** An upgrade's row status (`upgradeRunStatus`), which the row draws a badge for. */
@@ -196,8 +200,8 @@ export type SipaDepositIntentRow =
   | { intent: "migration"; record: SIPADepositRecord }
 
 /**
- * `migration`: a migration's burn funds this SIPA, so the row is that migration's arrival. An
- * upgrade's first refund pays its update-metadata SIPA, which is an arrival on its own.
+ * `migration`: a migration's burn funds this SIPA, so the row is that migration's arrival. A SIPA
+ * the account pays itself is an arrival on its own.
  */
 export function sipaDepositIntentRow(
   record: SIPADepositRecord,
@@ -205,23 +209,21 @@ export function sipaDepositIntentRow(
   migration = false,
 ): SipaDepositIntentRow {
   if (registrationName) return { intent: "registration", name: registrationName, record }
-  return migration || record.intent === "metadata"
+  return migration || isAccountMoveSipa(record)
     ? { intent: "migration", record }
     : { intent: "deposit", record }
 }
 
 /**
- * The badge under a row's amount: "Pending" / "Failed" ("Not received" for a receive) while the
- * transaction is unsettled, else the given link status's label. The feed's paylink rows read theirs
- * from `paylinkRowView`.
+ * The badge under a row's amount: "Pending" / "Failed" while the transaction is unsettled, else the
+ * given link status's label. The feed's paylink rows read theirs from `paylinkRowView`.
  */
 export function activityStatusLabel(
   status: TransactionStatus,
   paylinkStatus: PaylinkStatusKind | undefined,
-  incoming = false,
 ): StatusLabel | undefined {
   if (status === "pending") return "Pending"
-  if (status === "failed") return incoming ? "Not received" : "Failed"
+  if (status === "failed") return "Failed"
   return paylinkStatus && PAYLINK_STATUS_LABEL[paylinkStatus]
 }
 
@@ -259,7 +261,11 @@ function formatFiat(amount: number, price: number, sign: "+" | "-"): string {
   return `${sign}$${Math.abs(amount * price).toFixed(2)}`
 }
 
-function sendLabel(to: string | undefined, contact: ContactRow | undefined, toTag?: string): string {
+function sendLabel(
+  to: string | undefined,
+  contact: ContactRow | undefined,
+  toTag?: string,
+): string {
   if (contact) return contactDisplayName(contact)
   if (toTag) return `@${toTag}`
   if (!to) return "Unknown"
@@ -333,6 +339,7 @@ export function buildActivityRows(
                 : null,
             refundStatus,
             refundStarting: isRefundInFlight((tx as PaylinkTransaction).payToEmailSecret ?? ""),
+            retired: isOtherRollupLink(tx as PaylinkTransaction),
             nowSec: clockSec,
           })
         : undefined
@@ -353,7 +360,8 @@ export function buildActivityRows(
         contact =
           from || senderL2 ? resolveContactForTx(from ?? "", senderL2, directory) : undefined
         counterparty = receiveLabel(from, contact)
-        counterpartyTag = from && !validateAddress(from) ? (normalizeTag(from) ?? undefined) : undefined
+        counterpartyTag =
+          from && !validateAddress(from) ? normalizeTag(from) ?? undefined : undefined
       }
 
       const outgoing = isSend || tx.action === PaylinkActionEnum.PAY
@@ -367,9 +375,7 @@ export function buildActivityRows(
         timestampMs: tx.timestamp,
         // Scanned rows carry no price; the wallet's assets are USD-pegged, so 1:1.
         amount: formatFiat(tx.token?.amount ?? 0, tx.token?.price || 1, outgoing ? "-" : "+"),
-        statusLabel: linkView
-          ? linkView.statusLabel
-          : activityStatusLabel(tx.status, undefined, tx.action === "receive"),
+        statusLabel: linkView ? linkView.statusLabel : activityStatusLabel(tx.status, undefined),
         status: tx.status,
         error: failureReason(tx),
         txHash: tx.txHash || undefined,

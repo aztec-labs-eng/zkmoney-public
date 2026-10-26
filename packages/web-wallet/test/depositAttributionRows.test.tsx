@@ -38,9 +38,8 @@ declare global {
 const FUNDER = `0x${"f0".repeat(20)}` as Address
 const WALLET = `0x${"a1".repeat(20)}`
 const FUNDING_TX = `0x${"e6".repeat(32)}` as Hash
-// Everything the deposit does not credit, and the portal's share of it.
+// Everything the deposit does not credit.
 const FEE = "750000000000000000"
-const CUT = "250000000000000000"
 
 const record = (patch: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
   ({
@@ -53,7 +52,6 @@ const record = (patch: Partial<SIPADepositRecord> = {}): SIPADepositRecord =>
     amount: "115",
     tokenSymbol: "DAI",
     fee: FEE,
-    fpcFundingCut: CUT,
     netAmount: "114250000000000000000",
     phase: "claimed",
     startTime: 1_700_000_000_000,
@@ -131,16 +129,17 @@ describe("DepositDetailModal", () => {
     )
 
     expect(valueOf("Token")).toBe("USDC")
-    expect(container.textContent).not.toContain("DAI")
+    // The sweep swapped it: the fee and the credit are in the DAI it settled in.
+    expect(valueOf("Received")).toBe("114.25 DAI")
   })
 
   it("shows dollar amounts and Completed once the deposit has credited", async () => {
     await show(record({ fundingFromAddress: FUNDER, fundingTxHash: FUNDING_TX }))
 
     expect(valueOf("Sent")).toBe("$115")
-    // The whole deduction, the portal's cut included; gross and net are its two sides.
-    expect(valueOf("Fee")).toBe("$0.75")
-    expect(valueOf("Received")).toBe("$114.25")
+    // The whole deduction; gross and net are its two sides.
+    expect(valueOf("Fee")).toBe("0.75 DAI")
+    expect(valueOf("Received")).toBe("114.25 DAI")
     expect(valueOf("Status")).toContain("Completed")
     expect(container.querySelector<HTMLAnchorElement>("a[href*='tx']")?.href).toContain(FUNDING_TX)
   })
@@ -192,8 +191,8 @@ describe("DepositDetailModal", () => {
 
     expect(headline()).toBe("$10")
     expect(valueOf("Sent")).toBe("$10.50")
-    expect(valueOf("Fee")).toBe("$0.50")
-    expect(valueOf("Received")).toBe("$10")
+    expect(valueOf("Fee")).toBe("0.50 DAI")
+    expect(valueOf("Received")).toBe("10 DAI")
   })
 
   it("leads with the gross for a deposit that will never credit L2", async () => {

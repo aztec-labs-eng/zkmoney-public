@@ -1,17 +1,16 @@
-import type { AztecAddress } from '@aztec/aztec.js/addresses';
-import type { Contract, SimulateInteractionOptions } from '@aztec/aztec.js/contracts';
-import type { Fr } from '@aztec/aztec.js/fields';
-import { ARCHIVE_HEIGHT, MAX_NOTE_HASH_READ_REQUESTS_PER_CALL } from '@aztec/constants';
-import type { EthAddress } from '@aztec/foundation/eth-address';
-import { createLogger } from '@aztec/foundation/log';
-import type { Tuple } from '@aztec/foundation/serialize';
-import type { BlockHash } from '@aztec/stdlib/block';
-import { MerkleTreeId, type NullifierMembershipWitness } from '@aztec/stdlib/trees';
+import type { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import type { Contract, SimulateInteractionOptions } from '@aztec-labs/aztec.js/contracts';
+import type { Fr } from '@aztec-labs/aztec.js/fields';
+import { ARCHIVE_HEIGHT, MAX_NOTE_HASH_READ_REQUESTS_PER_CALL } from '@aztec-labs/constants';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { createLogger } from '@aztec-labs/foundation/log';
+import type { Tuple } from '@aztec-labs/foundation/serialize';
+import type { BlockHash } from '@aztec-labs/stdlib/block';
+import { MerkleTreeId, type NullifierMembershipWitness } from '@aztec-labs/stdlib/trees';
 
 import type { OxidePortalContract } from '@oxide/l1-contracts';
 import { computeNoteNullifier } from '@oxide/oxide-lib/hash.js';
-import { computeFrozenNotesRefundAuthMessage } from '@oxide/oxide-lib/refund_auth_message.js';
-import { type RefundOwner, deriveRefundOwnerAddress } from '@oxide/oxide-lib/refund_authorization.js';
+import type { MigrationSignature, RefundOwner } from '@oxide/oxide-lib/migration_signature.js';
 import type { FrozenNotesRefundFinalizationOutput, TeeSigner } from '@oxide/oxide-lib/types.js';
 import { MAX_FROZEN_NOTES_PER_REFUND } from '@oxide/refund-proof/frozen_notes_refund/types.js';
 import { RefundInputNote, generateFrozenNotesRefundProof } from '@oxide/refund-proof/index.js';
@@ -19,7 +18,7 @@ import { RefundInputNote, generateFrozenNotesRefundProof } from '@oxide/refund-p
 import { type ArchiveRef, resolveFreezeArchive } from './archive_ref.js';
 import type { ChainDataSource } from './chain_data_source.js';
 import { PermanentError } from './errors.js';
-import { buildRefundAuthorization } from './refund_signature.js';
+import { assertRefundOwner } from './sign_migration.js';
 import {
   type NullificationEffectData,
   type SpendMetadataResolver,
@@ -101,13 +100,14 @@ export async function buildFrozenNotesRefundProof(
   args: {
     chain: ChainDataSource;
     signer: TeeSigner;
-    l2Token: AztecAddress;
     archive: ArchiveRef;
     executor: EthAddress;
     notes: NullificationEffectData[];
     owner: RefundOwner;
     userPayloadHash: Fr;
     resolveSpendMetadata: SpendMetadataResolver;
+    /** The owner's migration signature. It must cover this refund (see `signMigration`). */
+    migrationSignature: MigrationSignature;
   },
 ): Promise<{ proof: Buffer; finalization: FrozenNotesRefundFinalizationOutput; publicInputs: Fr[] }> {
   if (args.notes.length === 0) {
@@ -120,12 +120,9 @@ export async function buildFrozenNotesRefundProof(
     throw new PermanentError(`Cannot withdraw more than ${MAX_FROZEN_NOTES_PER_REFUND} notes in a single proof`);
   }
 
-  const derived = await deriveRefundOwnerAddress(args.owner);
-  if (!derived.equals(args.owner.address)) {
-    throw new PermanentError(
-      `Refund owner preimage hashes to ${derived}, expected ${args.owner.address}: the public keys, instance or authorization mode do not belong to this account`,
-    );
-  }
+  const portalDomain = await portal.getPortalDomain();
+
+  await assertRefundOwner(args.owner);
 
   const amount = args.notes.reduce((sum, n) => sum + n.amount.toBigInt(), 0n);
 
@@ -144,7 +141,8 @@ export async function buildFrozenNotesRefundProof(
   }
   const { spentNotes, anchorBlockHeader: frozenTip } = await buildTokenOperation(
     args.chain,
-    args.l2Token,
+    portalDomain.l2Token,
+    portalDomain.teeRegistry,
     args.archive.checkpointEndBlockHeader,
     { nullifiedNotes: args.notes, createdNotes: [], squashedTransientNotes: [], withdrawals: [], deposits: [] },
     spendMetadata,
@@ -153,7 +151,7 @@ export async function buildFrozenNotesRefundProof(
 
   const noteNullifiers = await Promise.all(
     args.notes.map((note, i) =>
-      computeNoteNullifier(note.provenNoteHash, args.l2Token, spendMetadata[i]!.masterNullifierHidingKey),
+      computeNoteNullifier(note.provenNoteHash, portalDomain.l2Token, spendMetadata[i]!.masterNullifierHidingKey),
     ),
   );
   const lowNullifierMembershipWitnesses = await Promise.all(
@@ -170,21 +168,13 @@ export async function buildFrozenNotesRefundProof(
     }),
   );
 
-  const frozenTipMembershipWitness = await args.chain.getBlockHashMembershipWitness(
-    args.archive.witnessReferenceBlockNumber,
+  const frozenTipMembershipWitness = await args.chain.getBlockHashMembershipWitnessAtArchive(
+    { archive: args.archive.root },
     frozenTipHash,
   );
   if (!frozenTipMembershipWitness) {
     throw new Error(`Frozen tip ${frozenTipHash} is not in archive ${frozenArchiveRoot}`);
   }
-
-  // The owner authorizes one message for the whole refund. It commits to the unique note hash of every note in input
-  // order (settled notes have `provenNoteHash` equal to their unique note hash), the destination and the tip. The TEE
-  // and the Noir circuit each recompute the same message and verify this authorization in the mode the owner's
-  // address selects.
-  const uniqueNoteHashes = args.notes.map(note => note.provenNoteHash);
-  const authMessage = await computeFrozenNotesRefundAuthMessage(uniqueNoteHashes, args.executor, args.userPayloadHash);
-  const auth = await buildRefundAuthorization(args.owner.authorizer, authMessage);
 
   const finalization = await args.signer.signFrozenNotesRefundFinalization({
     frozenArchiveRoot,
@@ -197,7 +187,7 @@ export async function buildFrozenNotesRefundProof(
     owner: args.owner.address,
     ownerPublicKeys: args.owner.publicKeys,
     ownerInstance: args.owner.instance,
-    auth,
+    migrationSignature: args.migrationSignature,
   });
 
   const proofInputNotes = await buildProofInputNotes(
@@ -210,10 +200,10 @@ export async function buildFrozenNotesRefundProof(
   logger.info(`Generating real refund Noir proof (${spentNotes.length} active notes)`);
   const { proof, publicInputs } = await generateFrozenNotesRefundProof(
     {
-      chainId: portal.getChainId(),
-      rollupVersion: await portal.getRollupVersion(),
-      l1Portal: portal.address,
-      l2Token: args.l2Token,
+      chainId: portalDomain.l1ChainId,
+      rollupVersion: portalDomain.rollupVersion,
+      l1Portal: portalDomain.l1Portal,
+      l2Token: portalDomain.l2Token,
       frozenArchiveRoot,
       amount,
       userPayloadHash: args.userPayloadHash,
@@ -226,7 +216,7 @@ export async function buildFrozenNotesRefundProof(
       ownerInstance: args.owner.instance,
       // Every note has the same owner (asserted above). They all share one master nullifier hiding key.
       ownerNhkM: spendMetadata[0]!.masterNullifierHidingKey,
-      auth,
+      migrationSignature: args.migrationSignature,
     },
     { logger },
   );

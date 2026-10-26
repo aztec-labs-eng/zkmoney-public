@@ -1,14 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
 import { ProverSubsidyAbi } from "@oxide/l1-contracts"
-import { priceFeedForChainId } from "@oxide/oxide-client/eth_usd_price_feed.js"
-import {
-  PORTAL__FIRST_PROVER_CAPTURE_GAS,
-  claimProverTipsGas,
-  submitEpochProofGas,
-} from "@oxide/oxide-client/partial_epoch_proof_profit.js"
+import { quoteProverTip } from "@oxide/oxide-client/partial_epoch_proof_profit.js"
 import type { PublicClient } from "viem"
 
 import { PROVER_TIP_STEP, quoteWithdrawalProverTip } from "../../src/oxide/proverTipQuote.js"
+import { ethUsdFeedOf } from "../../src/oxide/tipQuote.js"
 
 const SUBSIDY = `0x${"22".repeat(20)}` as const
 const NOW = 1_800_000_000n
@@ -34,30 +30,30 @@ function client({
 const quote = (c: ReturnType<typeof client>, proverSubsidy?: `0x${string}`) =>
   quoteWithdrawalProverTip(c as unknown as PublicClient, { chainId: 1n, proverSubsidy })
 
-// USD-18 of the proof's gas, its capture and one claim at 1.5x the read price, rounded up the way oxide's `weiToUSD`
-// does.
-const gasCost = (gasPrice: bigint, checkpointCount = 1n) => {
-  const gas =
-    submitEpochProofGas(checkpointCount) + PORTAL__FIRST_PROVER_CAPTURE_GAS + claimProverTipsGas(1n)
-  const wei = gas * ((gasPrice * 15_000n) / 10_000n)
-  return (wei * USD_PER_ETH + 10n ** 8n - 1n) / 10n ** 8n
-}
+// oxide's tip at 1.5x the read price.
+const upstreamTip = (gasPrice: bigint, { checkpointCount = 1n, subsidy = 0n } = {}) =>
+  quoteProverTip({
+    gasPriceWei: (gasPrice * 15_000n) / 10_000n,
+    usdPerEth: USD_PER_ETH,
+    subsidyForOneClaim: subsidy,
+    checkpointCount,
+  })
 const toCents = (value: bigint) =>
   ((value + PROVER_TIP_STEP - 1n) / PROVER_TIP_STEP) * PROVER_TIP_STEP
 
 describe("quoteWithdrawalProverTip", () => {
-  it("prices the proof's gas at a buffered gas price and rounds up to a cent", async () => {
+  it("quotes oxide's tip at a buffered gas price, rounded up to a cent", async () => {
     const c = client()
     const result = await quote(c)
 
     expect(result).toEqual({
-      proverTip: toCents(gasCost(10n * GWEI)),
+      proverTip: toCents(upstreamTip(10n * GWEI)),
       gasPriceWei: 10n * GWEI,
       usdPerEth: USD_PER_ETH,
       subsidy: 0n,
     })
     expect(result.proverTip % PROVER_TIP_STEP).toBe(0n)
-    expect(result.proverTip).toBeGreaterThanOrEqual(gasCost(10n * GWEI))
+    expect(result.proverTip).toBeGreaterThanOrEqual(upstreamTip(10n * GWEI))
   })
 
   it("quotes a later checkpoint higher: the proof's gas grows with each checkpoint it covers", async () => {
@@ -66,7 +62,7 @@ describe("quoteWithdrawalProverTip", () => {
       chainId: 1n,
       checkpointCount: 20n,
     })
-    expect(later.proverTip).toBe(toCents(gasCost(10n * GWEI, 20n)))
+    expect(later.proverTip).toBe(toCents(upstreamTip(10n * GWEI, { checkpointCount: 20n })))
     expect(later.proverTip).toBeGreaterThan(first.proverTip)
   })
 
@@ -75,7 +71,7 @@ describe("quoteWithdrawalProverTip", () => {
     await quote(c)
 
     expect(c.readContract.mock.calls[0]![0]).toMatchObject({
-      address: priceFeedForChainId(1n).toString(),
+      address: ethUsdFeedOf({ chainId: 1n }),
       functionName: "latestRoundData",
     })
   })
@@ -92,7 +88,27 @@ describe("quoteWithdrawalProverTip", () => {
       args: [1n],
     })
     expect(result.subsidy).toBe(subsidy)
-    expect(result.proverTip).toBe(toCents(gasCost(100n * GWEI) - subsidy))
+    expect(result.proverTip).toBe(toCents(upstreamTip(100n * GWEI, { subsidy })))
+  })
+
+  it("prices the tip in the portal token's units, net of its subsidy, rounded up to a hundredth", async () => {
+    // A $2, 6-dec token: a hundredth of it is 10,000 units.
+    const tokenPrice = { usdPerToken: 2n * 10n ** 18n, decimals: 6 }
+    const subsidy = 1_234_567n
+    const result = await quoteWithdrawalProverTip(
+      client({ gasPrice: 100n * GWEI, subsidy }) as unknown as PublicClient,
+      { chainId: 1n, proverSubsidy: SUBSIDY, token: { kind: "fixed", price: tokenPrice } },
+    )
+    const tip = quoteProverTip({
+      gasPriceWei: (100n * GWEI * 15_000n) / 10_000n,
+      usdPerEth: USD_PER_ETH,
+      tokenPrice,
+      subsidyForOneClaim: subsidy,
+      checkpointCount: 1n,
+    })
+
+    expect(tip % 10_000n).not.toBe(0n)
+    expect(result.proverTip).toBe(((tip + 9_999n) / 10_000n) * 10_000n)
   })
 
   it("quotes zero when the subsidy covers the proof", async () => {

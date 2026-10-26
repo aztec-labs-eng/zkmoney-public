@@ -3,7 +3,6 @@
  * tip is priced the way the swap escrow's is, by oxide's relayer quote: the relayer's exact
  * `OperationExecutor.execute`, simulated against the counterfactual escrow funded by state override.
  */
-import { EthAddress } from "@aztec/foundation/eth-address"
 import {
   SkyEscrowFactoryAbi,
   SkyRoute,
@@ -11,13 +10,10 @@ import {
   predictSkyEscrowAddressLocally,
   type SkyEscrowArgs,
 } from "@oxide/experiments/sky/sky_savings.js"
-import { WithdrawalSubsidyAbi, encodeEscrowRecoverERC20 } from "@oxide/l1-contracts"
-import { readUsdPerEth, weiToUSD } from "@oxide/oxide-client/eth_usd_price_feed.js"
+import { PlainWithdrawalSubsidyAbi, encodeEscrowRecoverERC20 } from "@oxide/l1-contracts"
 import {
-  GAS_COST_ARGS_CALLDATA_GAS,
-  WEI_PER_ETH,
+  UINT256_EXTRA_CALLDATA_GAS,
   estimateL1OperationFeeValues,
-  gasCostAtQuotePrice,
 } from "@oxide/oxide-client/l1_operation_quote.js"
 import {
   decodeFunctionResult,
@@ -29,15 +25,18 @@ import {
   type Hex,
   type PublicClient,
 } from "viem"
-import { L1_OPERATION_TIP_MARGIN_BPS } from "@obsidion/core/constants"
 import { MULTICALL3_ADDRESS } from "../services/sipaClaim.js"
-import { quoteEitherExecutor } from "./l1OperationQuote.js"
+import { quoteL1OperationTip, type RelayerTipEstimate } from "./l1OperationQuote.js"
 import type { SwapEscrowCall, SwapRecovery } from "./swapOnWithdraw.js"
+import { findBalanceOfSlot, mappingSlot } from "./swapOnWithdrawSimulator.js"
 import {
-  findBalanceOfSlot,
-  mappingSlot,
-  type RelayerTipEstimate,
-} from "./swapOnWithdrawSimulator.js"
+  PAR_TIP_TOKEN,
+  netOfSubsidy,
+  readTipPrices,
+  tipQuote,
+  withTipMargin,
+  type TipTokenPrice,
+} from "./tipQuote.js"
 
 /** The run opens neither commitment; both only need to be nonzero and field-sized. */
 const SIMULATION_COMMITMENT = `0x00${keccak256(
@@ -46,12 +45,11 @@ const SIMULATION_COMMITMENT = `0x00${keccak256(
 const SIMULATION_NONCE = keccak256(
   new TextEncoder().encode("obsidion.sky-savings.simulation-nonce"),
 )
+/** Every Sky savings tip is paid in DAI, a move out's after the redeem, so sUSDS's vault rate never prices one. */
+export const SKY_TIP_TOKEN: TipTokenPrice = PAR_TIP_TOKEN
+
 /** Gas depends on whether the tip transfer writes a nonzero balance, not on the amount, so 1 wei prices any tip. */
 const SIMULATION_TIP = 1n
-
-/** The relayer's floor with the wallet's margin, which covers gas rising before the relayer sends. */
-const withTipMargin = (minPayout: bigint) =>
-  (minPayout * L1_OPERATION_TIP_MARGIN_BPS + 9_999n) / 10_000n
 
 export interface SkyEscrowDeployment {
   skyEscrowFactory: Address
@@ -97,14 +95,15 @@ export async function quoteSkyEscrowTip(
     findBalanceOfSlot(client, deployment.dai),
     client.readContract({
       address: deployment.withdrawalSubsidy,
-      abi: WithdrawalSubsidyAbi,
+      abi: PlainWithdrawalSubsidyAbi,
       functionName: "PRICE_FEED",
     }),
   ])
-  const quote = await quoteEitherExecutor(client, {
+  const tip = await quoteL1OperationTip(client, {
     executor: deployment.operationExecutor,
     sender: args.sender,
-    ethUsdFeed,
+    eth: { feed: ethUsdFeed },
+    token: SKY_TIP_TOKEN,
     payout: SIMULATION_TIP,
     operation: {
       target: deployment.skyEscrowFactory,
@@ -123,15 +122,6 @@ export async function quoteSkyEscrowTip(
       },
     ],
   })
-  const tip: RelayerTipEstimate = {
-    relayerTip: withTipMargin(quote.minPayout),
-    minPayout: quote.minPayout,
-    gasUsed: quote.gasUsed,
-    maxFeePerGas: quote.maxFeePerGas,
-    usdPerEth: quote.usdPerEth,
-    baseFee: quote.baseFeePerGas,
-    priorityFee: quote.maxPriorityFeePerGas,
-  }
   if (args.escrowFunding <= tip.relayerTip)
     throw new SkyTipExceedsFundingError(tip, args.escrowFunding)
   return tip
@@ -166,19 +156,19 @@ export async function quoteSkyReleaseTip(
     client.getBlock({ blockTag: "latest" }),
     client.readContract({
       address: withdrawalSubsidy,
-      abi: WithdrawalSubsidyAbi,
+      abi: PlainWithdrawalSubsidyAbi,
       functionName: "PRICE_FEED",
     }),
     estimateL1OperationFeeValues(client),
   ])
   const baseFee = block.baseFeePerGas ?? 0n
-  const [usdPerEth, quoted] = await Promise.all([
-    readUsdPerEth(client, EthAddress.fromString(feed)),
+  const [prices, quoted] = await Promise.all([
+    readTipPrices(client, { eth: { feed }, token: SKY_TIP_TOKEN }),
     // The subsidy pays at the release's gas price: the base fee plus the relayer's priority fee.
     client.call({
       to: withdrawalSubsidy,
       data: encodeFunctionData({
-        abi: WithdrawalSubsidyAbi,
+        abi: PlainWithdrawalSubsidyAbi,
         functionName: "quoteSubsidy",
         args: [WITHDRAWAL_FLOW],
       }),
@@ -187,26 +177,25 @@ export async function quoteSkyReleaseTip(
   ])
   const subsidy = quoted.data
     ? decodeFunctionResult({
-        abi: WithdrawalSubsidyAbi,
+        abi: PlainWithdrawalSubsidyAbi,
         functionName: "quoteSubsidy",
         data: quoted.data,
       })
     : 0n
   const gasUsed = SKY_RELEASE_GAS[route]
-  const minPayout = gasCostAtQuotePrice(
-    gasUsed + GAS_COST_ARGS_CALLDATA_GAS,
+  // The relayer covers the two gas-cost words of the executor call, as oxide's quote does.
+  const minPayout = tipQuote(prices, {
+    gasToCover: gasUsed + 2n * UINT256_EXTRA_CALLDATA_GAS,
     block,
     feeValues,
-    weiToUSD(WEI_PER_ETH, usdPerEth),
-  )
+  })
   // The margin covers the whole release: the subsidy is capped and can drain, so it need not rise with gas.
-  const floor = withTipMargin(minPayout)
   return {
-    relayerTip: floor > subsidy ? floor - subsidy : 0n,
+    relayerTip: netOfSubsidy(withTipMargin(minPayout), subsidy),
     minPayout,
     gasUsed,
     maxFeePerGas: feeValues.maxFeePerGas,
-    usdPerEth,
+    usdPerEth: prices.usdPerEth,
     baseFee,
     priorityFee: feeValues.maxPriorityFeePerGas,
     subsidy,

@@ -1,14 +1,17 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { Logger } from '@aztec/foundation/log';
+import type { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { Logger } from '@aztec-labs/foundation/log';
 
 import { OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
+import type { RegisteredTeeSigner } from '@oxide/oxide-client/types.js';
 import { createNodeClient } from '@oxide/oxide-lib/aztec_node_client.js';
-import { TeeSigner } from '@oxide/oxide-lib/types.js';
 
 import type { PublicClient } from 'viem';
 
 import type { L1TxQueue } from '../../l1/l1_tx_queue.js';
 import type { PriceOracle } from '../../price_oracle/price_oracle.js';
+import { FinalizationRequestSource } from '../finalization_request_source.js';
+import { FinalizationRequestWatcher } from '../finalization_request_watcher.js';
 import {
   ClaimBatchSubmitterOptions,
   ProverClaimRewardCollector,
@@ -21,8 +24,10 @@ import { createClaimPortalConfig } from './portal_config.js';
 export interface CollectorPortal {
   portalAddress: EthAddress;
   proverSubsidyAddress: EthAddress;
+  /** The Broadcaster that the finalization requests of this portal come through. */
+  broadcasterAddress: AztecAddress;
   /** TEE signer used to co-sign the withdrawal finalization embedded in each claim on this portal. */
-  signer: TeeSigner;
+  signer: RegisteredTeeSigner;
 }
 
 export interface OxideProverClaimRewardCollectorConfig {
@@ -50,6 +55,7 @@ export class OxideProverClaimRewardCollector {
   private constructor(
     private readonly collector: ProverClaimRewardCollector,
     private readonly adaptors: ProverClaimAdaptor[],
+    private readonly requestWatchers: FinalizationRequestWatcher[],
   ) {}
 
   static async create(config: OxideProverClaimRewardCollectorConfig): Promise<OxideProverClaimRewardCollector> {
@@ -60,12 +66,21 @@ export class OxideProverClaimRewardCollector {
     }
     const contracts = config.portals.map(entry => new OxidePortalContract(l1Client, entry.portalAddress));
     const rollup = createRollupContract(l1Client, await contracts[0].getRollup());
+    // The claims are built only after the proof lands. The watchers read each finalization request before then, while
+    // the node still serves the initiation tx.
+    const requestSources = await Promise.all(
+      config.portals.map(
+        async (entry, i) =>
+          new FinalizationRequestSource(node, await contracts[i].getPortalDomain(), entry.broadcasterAddress),
+      ),
+    );
+    const requestWatchers = requestSources.map(requestSource => new FinalizationRequestWatcher(node, requestSource));
     const portals = await Promise.all(
       config.portals.map((entry, i) =>
         createClaimPortalConfig({
           portal: contracts[i],
           proverSubsidy: entry.proverSubsidyAddress,
-          adaptorDeps: { node, portal: contracts[i], rollup, signer: entry.signer },
+          adaptorDeps: { node, portal: contracts[i], requestSource: requestSources[i], rollup, signer: entry.signer },
         }),
       ),
     );
@@ -85,15 +100,17 @@ export class OxideProverClaimRewardCollector {
       log: config.log,
     });
 
-    return new OxideProverClaimRewardCollector(collector, adaptors);
+    return new OxideProverClaimRewardCollector(collector, adaptors, requestWatchers);
   }
 
   async start(): Promise<void> {
+    await Promise.all(this.requestWatchers.map(watcher => watcher.start()));
     await this.collector.start();
   }
 
   async stop(): Promise<void> {
     this.adaptors.forEach(adaptor => adaptor.stop());
     await this.collector.stop();
+    await Promise.all(this.requestWatchers.map(watcher => watcher.stop()));
   }
 }

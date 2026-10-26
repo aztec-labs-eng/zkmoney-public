@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const m = vi.hoisted(() => ({
   pay: vi.fn(),
+  upgraded: vi.fn(async (_tag: string) => true),
+  reportError: vi.fn(),
   fireEvent: vi.fn(),
   entry: undefined as import("@obsidion/front-core").Contact | undefined,
 }))
@@ -29,7 +31,7 @@ vi.mock("../src/lib/analytics", () => ({
   amountBucket: () => "<50",
   requestAmountBucket: () => "<50",
 }))
-vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
+vi.mock("../src/errors/errorModal", () => ({ showReportableError: m.reportError }))
 vi.mock("../src/ui/format", () => ({ parseAmount: Number, floorToCents: () => "100" }))
 vi.mock("../src/ui/PayModalChrome", () => ({ PayModalChrome: () => null }))
 vi.mock("../src/platform/xmtp/MessagingBanner", () => ({ MessagingBanner: () => null }))
@@ -40,12 +42,13 @@ vi.mock("../src/features/contacts/contactsView", () => ({ findContactEntry: () =
 vi.mock("../src/features/contacts/unsavedContact", () => ({
   lookUpUnsavedContact: async () => null,
 }))
-vi.mock("../src/features/contacts/contactPay", () => ({ runContactPay: m.pay }))
-vi.mock("../src/features/contacts/SendScreen", () => ({ SendScreen: () => null }))
-vi.mock("../src/features/actionGate", () => ({
-  useWalletFrozen: () => false,
-  useActionVerdict: () => "open",
+vi.mock("../src/features/contacts/contactPay", () => ({
+  runContactPay: m.pay,
+  recipientUpgraded: m.upgraded,
+  RecipientNotUpgradedError: class RecipientNotUpgradedError extends Error {},
 }))
+vi.mock("../src/features/contacts/SendScreen", () => ({ SendScreen: () => null }))
+vi.mock("../src/features/actionGate", () => ({ useActionVerdict: () => "open" }))
 vi.mock("../src/features/contacts/ContactDetailScreen", () => ({ ContactDetailScreen: () => null }))
 vi.mock("../src/features/contacts/PayAmountForm", () => ({ PayAmountForm: () => null }))
 vi.mock("../src/features/contacts/PayConfirmForm", () => ({
@@ -80,6 +83,7 @@ const renderPay = (request: object = { id: "request", tag: "alice", amount: 25 }
         <Routes>
           <Route path="/contacts/:idOrTag/send" element={<ContactPayScreen mode="send" />} />
           <Route path="/activity" element={<div>Activity</div>} />
+          <Route path="/contacts/:idOrTag" element={<div>Chat</div>} />
         </Routes>
       </MemoryRouter>,
     ),
@@ -88,6 +92,7 @@ const renderPay = (request: object = { id: "request", tag: "alice", amount: 25 }
 beforeEach(async () => {
   vi.clearAllMocks()
   m.pay.mockReset()
+  m.upgraded.mockResolvedValue(true)
   m.entry = undefined
   container = document.createElement("div")
   document.body.appendChild(container)
@@ -227,5 +232,37 @@ describe("saving the requester on a fulfilling send", () => {
     m.pay.mockResolvedValue({ txHash: "0xsend" })
     await click("Send")
     expect(m.pay.mock.calls[0]![0]).toMatchObject({ saveUnsavedRequester: save })
+  })
+})
+
+describe("a recipient who hasn't upgraded", () => {
+  const remount = async () => {
+    act(() => root.unmount())
+    root = createRoot(container)
+    await renderPay()
+  }
+
+  it("opens their chat before an amount is entered", async () => {
+    m.upgraded.mockResolvedValue(false)
+    await remount()
+    expect(m.upgraded).toHaveBeenCalledWith("alice")
+    expect(container.textContent).toBe("Chat")
+  })
+
+  it("shows the sheet, without an amount step, while it checks", async () => {
+    m.upgraded.mockReturnValue(new Promise<boolean>(() => {}))
+    await remount()
+    expect(container.textContent).toContain("Checking @alice…")
+    expect(container.querySelector("button")).toBeNull()
+  })
+
+  it("says so when the send-time check finds it, as a hint rather than a failure", async () => {
+    const { RecipientNotUpgradedError } = await import("../src/features/contacts/contactPay")
+    m.pay.mockRejectedValue(new RecipientNotUpgradedError("alice"))
+    await click("Send")
+    expect(container.textContent).toContain("@alice hasn't upgraded yet")
+    expect(container.querySelector("button")).toBeNull()
+    expect(m.reportError).not.toHaveBeenCalled()
+    expect(m.fireEvent).not.toHaveBeenCalledWith("action_failed", expect.anything())
   })
 })

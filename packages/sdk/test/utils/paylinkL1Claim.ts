@@ -1,26 +1,31 @@
 /**
- * Assertions around a `claim_to_l1` burn: that it published a withdrawal the enclave actually
- * signed, plus balance helpers for the escrow and the creator.
+ * Assertions around a burn to L1: that it made a withdrawal the enclave actually signed, plus
+ * balance helpers for the escrow and the creator.
  */
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import type { TxHash } from "@aztec/stdlib/tx"
-import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { EthAddress } from "@aztec-labs/foundation/eth-address"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
+import type { TxHash } from "@aztec-labs/stdlib/tx"
+import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
 import {
+  extractMetadata,
   extractRequiredNullifiers,
   extractTeeNotes,
   extractWithdrawalMessageHashes,
 } from "@oxide/oxide-lib/da_extractors.js"
-import {
-  fetchPublishedWithdrawals,
-  type PublishedWithdrawal,
-} from "@oxide/oxide-client/published_withdrawal.js"
+import { decodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal_executor.js"
 import { buildWithdrawalOperationDigest } from "@oxide/tee-enclave/digest.js"
-import { k1NoteSignatureToRS, type LocalTeeSigner } from "@oxide/tee-enclave/signer.js"
+import { k1NoteSignatureToRS } from "@oxide/tee-enclave/signer.js"
 import { verifyEcdsa } from "@oxide/tee-enclave/libsecp256k1_signer.js"
 
+import type { VerifiedWithdrawalInTx } from "@oxide/oxide-client/withdrawal_in_tx.js"
+
+import { recoverBurnWithdrawals } from "../../src/oxide/burnWithdrawals.js"
+import type { ObsidionWallet } from "../../src/obsidion/ObsidionWallet.js"
 import type { PaylinkService, PaylinkParams } from "../../src/services/PaylinkService.js"
+import { registerEscrow } from "../../src/services/paylink/paylinkVoucher.js"
 import type { TokenService } from "../../src/services/TokenService.js"
+import type { OxideTokenSandbox } from "./oxideTokenSandbox.js"
 
 export type L1ClaimTips = { proverTip: bigint }
 export const ZERO_TIPS: L1ClaimTips = { proverTip: 0n }
@@ -34,58 +39,105 @@ export async function escrowInstance(
   return instance
 }
 
-export type PublishedL1Claim = PublishedWithdrawal & {
-  /** True when the published signature verifies against the enclave key over the rebuilt operation digest. */
+/** A withdrawal of a burn tx. */
+export type L1ClaimWithdrawal = {
+  executor: EthAddress
+  recipient: EthAddress
+  amount: bigint
+  proverTip: bigint
+  relayerTip: bigint
+  messageHash: Fr
+  /** True when the withdrawal signature verifies against the enclave key over the rebuilt operation digest. */
   signedByEnclave: boolean
 }
 
+type ClaimSandbox = Pick<
+  OxideTokenSandbox,
+  "wallet" | "node" | "portalDomain" | "localTeeSigner" | "contractService"
+>
+
 /**
- * Read the withdrawal a burn tx published and check it is the one the enclave signed: rebuild the
- * operation digest from the DA logs (anchor block hash, required nullifiers, TEE notes, withdrawal
- * message hashes) and verify the log's r/s pair against the sandbox enclave public key. This is
- * the attestation the enclave re-checks at finalization, so a zeroed or wrong-digest signature
- * fails here instead of on production.
+ * `owner`'s withdrawals of a direct `withdraw` burn, recovered from the tx's recovery events.
+ * `wallet` must hold `owner`'s keys; default `sandbox.wallet`.
  */
-export async function readPublishedL1Claim(
-  node: AztecNode,
+export async function readL1Claim(
+  sandbox: ClaimSandbox,
   txHash: TxHash,
-  token: AztecAddress,
-  teeSigner: LocalTeeSigner,
-): Promise<PublishedL1Claim[]> {
+  owner: AztecAddress,
+  wallet: Pick<ObsidionWallet, "getPrivateEvents"> = sandbox.wallet,
+): Promise<L1ClaimWithdrawal[]> {
+  const { node, portalDomain: portal } = sandbox
+  const withdrawals = await recoverBurnWithdrawals({ wallet, node, portal, owner, txHash })
+  return describeWithdrawals(sandbox, txHash, withdrawals)
+}
+
+/**
+ * The withdrawals of a paylink `claim_to_l1` burn. The escrow is the `from` of the token's
+ * `withdraw`, so the token delivers the recovery events to the escrow. `wallet` must hold the
+ * escrow's keys, as the wallet that sent the claim does; default `sandbox.wallet`.
+ */
+export async function readEscrowL1Claim(
+  sandbox: ClaimSandbox,
+  txHash: TxHash,
+  params: PaylinkParams,
+  wallet: ObsidionWallet = sandbox.wallet,
+): Promise<L1ClaimWithdrawal[]> {
+  const { contractService } = sandbox
+  const { instance } = await registerEscrow({ wallet, contractService }, params)
+  return readL1Claim(sandbox, txHash, instance.address, wallet)
+}
+
+/**
+ * Check each withdrawal is the one the enclave signed: rebuild the operation digest from the DA logs
+ * (anchor block hash, required nullifiers, TEE notes, withdrawal message hashes) and verify the
+ * withdrawal signature against the sandbox enclave key. This is the attestation the enclave re-checks
+ * at finalization, so a zeroed or wrong-digest signature fails here instead of on production.
+ */
+async function describeWithdrawals(
+  sandbox: ClaimSandbox,
+  txHash: TxHash,
+  withdrawals: VerifiedWithdrawalInTx[],
+): Promise<L1ClaimWithdrawal[]> {
+  const { node, portalDomain: portal } = sandbox
+  const token = portal.l2Token
   const indexed = await node.getTxEffect(txHash)
   if (!indexed) throw new Error(`tx effect not indexed for ${txHash}`)
   const effect = indexed.data
-  const { withdrawals, anchorBlockHash } = await fetchPublishedWithdrawals(node, txHash, token)
-  const [requiredNullifiers, siloedNoteHashes, withdrawalMessageHashes] = await Promise.all([
-    extractRequiredNullifiers(effect, token),
-    extractTeeNotes(effect, token),
-    extractWithdrawalMessageHashes(effect, token),
-  ])
-  if (withdrawals.length !== withdrawalMessageHashes.length) {
-    throw new Error(
-      `published ${withdrawals.length} withdrawal(s) but ${withdrawalMessageHashes.length} message hash(es)`,
-    )
-  }
-  const pub = Buffer.concat([
-    Buffer.from([0x04]),
-    teeSigner.publicKey.x.toBuffer(),
-    teeSigner.publicKey.y.toBuffer(),
-  ])
+  const [metadata, requiredNullifiers, siloedNoteHashes, withdrawalMessageHashes] =
+    await Promise.all([
+      extractMetadata(effect, token),
+      extractRequiredNullifiers(effect, token),
+      extractTeeNotes(effect, token),
+      extractWithdrawalMessageHashes(effect, token),
+    ])
+  const { x, y } = sandbox.localTeeSigner.publicKey
+  const pub = Buffer.concat([Buffer.from([0x04]), x.toBuffer(), y.toBuffer()])
   return Promise.all(
-    withdrawals.map(async (w, i) => {
+    withdrawals.map(async ({ finalizationData: data, messageHash }) => {
       const digest = await buildWithdrawalOperationDigest({
-        anchorBlockHash,
+        anchorBlockHash: metadata.anchorBlockHash,
         tokenAddress: token,
+        l1Portal: portal.l1Portal,
+        teeRegistry: portal.teeRegistry,
         requiredNullifiers,
         siloedNoteHashes,
         withdrawalMessageHashes,
-        messageHash: withdrawalMessageHashes[i]!,
+        messageHash,
       })
-      const { r, s } = k1NoteSignatureToRS(w.signature)
+      const { r, s } = k1NoteSignatureToRS(data.withdrawalSignature)
       const nonZero = !(r.toBuffer().every((b) => b === 0) && s.toBuffer().every((b) => b === 0))
       const signedByEnclave =
         nonZero && verifyEcdsa(Buffer.concat([r.toBuffer(), s.toBuffer()]), digest.toBuffer(), pub)
-      return { ...w, signedByEnclave }
+      const { recipient, relayerTip } = decodePlainWithdrawalPayload(data.userPayload)
+      return {
+        executor: data.executor,
+        recipient,
+        amount: data.amount,
+        proverTip: data.proverTip,
+        relayerTip,
+        messageHash,
+        signedByEnclave,
+      }
     }),
   )
 }

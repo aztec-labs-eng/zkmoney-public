@@ -160,8 +160,8 @@ contract FPCFunderDAILimitsTest is FPCFunderLimitsTest {
     address usdc = 0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48;
     address threePool = 0xbEbc44782C7dB0a1A60Cb6fe97d0b483032FF1C7;
     address router = 0x66a9893cC07D91D95644AEDD05D03f95e1dBA8Af;
-    vm.etch(dai, address(new MintableToken()).code);
-    vm.etch(usdc, address(new MintableToken()).code);
+    vm.etch(dai, address(new MintableToken("Dai Stablecoin", "DAI", 18)).code);
+    vm.etch(usdc, address(new MintableToken("USD Coin", "USDC", 6)).code);
     vm.etch(threePool, address(new MockCurve3Pool()).code);
     MockCurve3Pool(threePool).setCoins(dai, usdc, address(0));
     MockCurve3Pool(threePool).setRate(usdc, 1e18);
@@ -176,7 +176,7 @@ contract FPCFunderDAILimitsTest is FPCFunderLimitsTest {
 contract FPCFunderTestnetLimitsTest is FPCFunderLimitsTest {
   function _deployFunder() internal override returns (IFPCFunder) {
     address input = address(0x3333);
-    vm.etch(input, address(new MintableToken()).code);
+    vm.etch(input, address(new MintableToken("Input Token", "IN", 18)).code);
     vm.etch(0x3A9D48AB9751398BbFa63ad67599Bb04e4BdF98b, address(new MockUniversalRouter(input, FEE_ASSET)).code);
     return new FPCFunderTestnet(IRegistry(address(registry)), ROLLUP_VERSION, BENEFICIARY, IERC20(input));
   }

@@ -1,6 +1,10 @@
 import type { LocalManager } from "./laptopCreation.js"
-import { WINDOWS_HELLO, localManagersClause } from "./passkeyProviders.js"
-import { MACOS_APPLE_PRF_FLOOR } from "./userAgentInfo.js"
+import { PROTON_PASS, WINDOWS_HELLO, localManagersClause } from "./passkeyProviders.js"
+import {
+  MACOS_APPLE_PRF_FLOOR,
+  type UserAgentInfo,
+  windowsReleaseFromHints,
+} from "./userAgentInfo.js"
 
 /**
  * Typed refusals from the passkey policy. Each carries a plain-language message the screens can
@@ -244,7 +248,7 @@ function unsupportedProviderMessage(
   options: { providerName?: string; keyOfferable?: boolean } & LocalRouteOptions,
 ): string {
   if (kind === "security-key") {
-    const lead = "Only YubiKey 5 series security keys can protect a wallet today."
+    const lead = "Only YubiKey 5 series, Trezor and Ledger security keys can protect a wallet today."
     if (options.localManagers) return `${lead} ${tryAgainLocally(options.localManagers)}`
     return `${lead} Try again with iCloud Keychain, Google Password Manager, or 1Password.`
   }
@@ -252,7 +256,7 @@ function unsupportedProviderMessage(
   if (options.localManagers) return `${lead} ${tryAgainLocally(options.localManagers)}`
   return (
     `${lead} Try again with iCloud Keychain, Google Password Manager, or 1Password` +
-    `${options.keyOfferable ? ", or a YubiKey 5 security key" : ""}.`
+    `${options.keyOfferable ? ", or a YubiKey 5, Trezor or Ledger security key" : ""}.`
   )
 }
 
@@ -266,6 +270,97 @@ export class SingleSaltProviderError extends PasskeyPolicyError {
           : "Try again with a different passkey provider."),
     )
     this.name = "SingleSaltProviderError"
+  }
+}
+
+/** Why a passkey could not become a backup passkey. */
+export const BACKUP_REFUSAL_KINDS = [
+  "provider",
+  "no-prf",
+  "key-no-prf",
+  "unverified",
+  "other-credential",
+] as const
+export type BackupRefusalKind = (typeof BACKUP_REFUSAL_KINDS)[number]
+
+/** A passkey that cannot be a backup passkey. Screens may branch on `kind` for their own copy. */
+export class BackupPasskeyRefusedError extends PasskeyPolicyError {
+  readonly providerName?: string
+
+  constructor(
+    readonly kind: BackupRefusalKind,
+    options: {
+      providerName?: string
+      userAgent?: UserAgentInfo
+      /** A manager this device admits answered from another one; it is told the route, not that it never can. */
+      overQr?: boolean
+    } = {},
+  ) {
+    super(backupRefusalMessage(kind, options.providerName, options.userAgent, options.overQr))
+    this.providerName = options.providerName
+    this.name = "BackupPasskeyRefusedError"
+  }
+}
+
+/** Windows Hello returns key material only on Windows 11 with the February 2026 update or later. */
+function windowsHelloNoPrfMessage(userAgent: UserAgentInfo | undefined): string {
+  const lead =
+    userAgent && windowsReleaseFromHints(userAgent) === "10"
+      ? "Windows Hello on Windows 10 can't make a backup passkey. Try again with a security key, " +
+        "Google Password Manager in Chrome, or 1Password."
+      : "Windows Hello on this PC didn't give the key a backup needs. It needs Windows 11 with the " +
+        "February 2026 update or later. Open Settings > Windows Update, install updates, restart, " +
+        "and try again. Or use a security key, Google Password Manager in Chrome, or 1Password."
+  return (
+    `${lead} If Windows kept a zk.money passkey from this attempt, remove it in Settings > ` +
+    "Accounts > Passkeys."
+  )
+}
+
+function backupRefusalMessage(
+  kind: BackupRefusalKind,
+  providerName: string | undefined,
+  userAgent: UserAgentInfo | undefined,
+  overQr: boolean | undefined,
+): string {
+  switch (kind) {
+    case "provider":
+      if (providerName === PROTON_PASS && userAgent?.osFamily === "ios") {
+        return (
+          "Proton Pass's iPhone app can't make a backup passkey: it doesn't return the key a " +
+          "backup needs. Try again with iCloud Keychain or 1Password. If Proton Pass kept a " +
+          "zk.money passkey from this attempt, delete it in the app."
+        )
+      }
+      if (overQr) {
+        return (
+          `${providerName ?? "This passkey manager"} can't hold a backup passkey from a phone ` +
+          "over QR. Try again with iCloud Keychain, Google Password Manager, or 1Password on " +
+          "your phone."
+        )
+      }
+      return (
+        `${providerName ?? "This passkey manager"} can't hold a backup passkey yet. Try again ` +
+        "with iCloud Keychain, Google Password Manager, 1Password, or a security key."
+      )
+    case "no-prf":
+      if (providerName === WINDOWS_HELLO) return windowsHelloNoPrfMessage(userAgent)
+      return (
+        `${providerName ?? "This passkey manager"} can't make a backup key on this device. Try ` +
+        "again with a different passkey manager, or a security key."
+      )
+    case "key-no-prf":
+      return (
+        "Your security key answered, but this device couldn't get the key material a backup " +
+        "needs. Try another security key, or this device's passkey manager."
+      )
+    case "unverified":
+      return (
+        "The passkey was saved without checking it was you, so it can't be a backup. Try again " +
+        "and unlock with your face, fingerprint, or PIN when asked."
+      )
+    case "other-credential":
+      return "A different passkey answered than the one just made. Try again and pick the new one."
   }
 }
 

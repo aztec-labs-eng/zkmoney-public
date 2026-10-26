@@ -8,6 +8,16 @@ import {
   extensionAnswersPasskeys,
 } from "../ceremony/passkeyCeremony.js"
 import { bytesToBase64Url } from "../ceremony/bytes.js"
+import type { BackupAddChoice } from "./backupAddOptions.js"
+import {
+  BACKUP_CANDIDATES,
+  BACKUP_CREATION_HINTS,
+  type BackupCandidates,
+  type BackupPasskeyFacts,
+  backupCreationFacts,
+  backupPrfFrom,
+  backupProviderAllowed,
+} from "./backupAdmission.js"
 import { prfSalts } from "./derivation.js"
 import type { DevicePosture } from "./devicePosture.js"
 import type { UserAgentInfo } from "./userAgentInfo.js"
@@ -15,6 +25,7 @@ import { type Evidence, evidenceOf, isComplete, prfOutputFor } from "./evidence.
 import type { LocalManager } from "./laptopCreation.js"
 import { mislabelledAssertion, mislabelledCreation } from "./passkeyCapabilities.js"
 import {
+  BackupPasskeyRefusedError,
   IncompleteCreationError,
   LaptopPasskeyRefusedError,
   NoPrfError,
@@ -34,6 +45,8 @@ import {
 import { creationProvenanceFor } from "./provenance.js"
 import { bitwardenLineFor } from "./refusalCopy.js"
 import {
+  LAPTOP_CREATION_HINTS,
+  LAPTOP_LOCAL_HINTS,
   checkAssertionRoute,
   checkCreationRoute,
   creationHintsFor,
@@ -41,13 +54,14 @@ import {
   isSecurityKey,
   offerableTransports,
   requestedAttachment,
+  residentKeyFor,
   signInHintsFor,
   slotForAttachment,
 } from "./slotRule.js"
 
 /**
- * The two ceremony sequences both web fronts run, written once. Every raw result reaches the
- * consumer's `observe` before any check, so a refused ceremony is still recorded; the checks then
+ * The ceremony sequences the web fronts run, written once. Every raw result reaches the consumer's
+ * `observe` before any check, so a refused ceremony is still recorded. The first passkey's checks
  * run in one order: authenticator class, Safari's label correction, route, provider, the local
  * route's own provider rule, slot, the chained assertion when the evidence is incomplete (held to
  * the credential just made and to the same route), and the gates. The class is read first because
@@ -176,6 +190,7 @@ export async function runPasskeyCreation(
       userName: options.userName,
       authenticatorAttachment: requested,
       hints,
+      residentKey: residentKeyFor(posture, hints),
       provenance: creationProvenanceFor({
         posture,
         userAgent: options.userAgent,
@@ -340,11 +355,182 @@ function readPrfOrRefuseKey(
   }
 }
 
+export type BackupPasskeyCreationOptions = {
+  posture: DevicePosture
+  rpId: string
+  rpName: string
+  userName: string
+  /** The browser's claims: its OS decides the candidates, and the handle records them. */
+  userAgent?: UserAgentInfo
+  /** Where the settings picker said the backup will live; absent sends a phone's request. */
+  choice?: BackupAddChoice
+  /** Provider ids admitted beyond the measured set; a test seam, and empty in production. */
+  extraProviders?: readonly string[]
+  /** A test seam; production reads `BACKUP_CANDIDATES`. */
+  candidates?: BackupCandidates
+  /** The challenge the chained assertion signs; asked for only when creation returned no PRF. */
+  challengeForChained: () => Promise<Uint8Array> | Uint8Array
+  observe?: CeremonyObserver
+  /** Ends the creation wherever it is, its follow-up prompt included. */
+  signal?: AbortSignal
+}
+
+export type BackupPasskeyCreation = {
+  created: PasskeyCreateResult
+  /** The assertion that read the PRF when the creation returned none. */
+  chained?: PasskeyAssertResult
+  /** The slot the envelope must record; a later read evaluates the same salt. */
+  slot: PrfSlot
+  prfOutput: Uint8Array
+  securityKey: boolean
+  facts: BackupPasskeyFacts
+}
+
+type BackupRequest = {
+  hints: readonly PasskeyHint[]
+  /** Only Proton Pass's pick reaches the wrapper the page's lock kept aside. */
+  extensionAllowed?: true
+  /** This device's own manager, as the handle and the deadline read it. */
+  local: boolean
+}
+
+/**
+ * The request a pick asks for. "This computer" names a security key so 1Password's extension stands
+ * aside, as a phone's request does; 1Password and Proton Pass name this device alone so the one
+ * picked answers. No pick is a phone's request.
+ */
+function backupRequestFor(choice: BackupAddChoice | undefined): BackupRequest {
+  switch (choice) {
+    case "1password":
+      return { hints: LAPTOP_LOCAL_HINTS, local: true }
+    case "proton":
+      return { hints: LAPTOP_LOCAL_HINTS, extensionAllowed: true, local: true }
+    case "phone":
+    case "phone-or-key":
+      return { hints: LAPTOP_CREATION_HINTS, local: false }
+    case "key":
+      return { hints: ["security-key"], local: false }
+    default:
+      return { hints: BACKUP_CREATION_HINTS, local: true }
+  }
+}
+
+/**
+ * Create a backup passkey and return its PRF output, or refuse it with the credential forgotten.
+ * The request follows the pick, and so does the follow-up read when creation returned no PRF: the
+ * manager that made the passkey is the one asked to read it. The PRF and the user-verified flag
+ * are read from the same response: `hmac-secret` gives an unverified read a different secret.
+ */
+export async function runBackupPasskeyCreation(
+  ceremony: PasskeyCeremony,
+  options: BackupPasskeyCreationOptions,
+): Promise<BackupPasskeyCreation> {
+  const { posture, rpId } = options
+  const ending = options.signal ? { signal: options.signal } : {}
+  const salts = await prfSalts()
+  const request = backupRequestFor(options.choice)
+  const timeoutMs = creationTimeoutMs(posture, request.local)
+  let written: string | undefined
+  // No attachment: asking for this device would hide security keys where hints are ignored.
+  const created = await ceremony
+    .create({
+      rpId,
+      rpName: options.rpName,
+      userName: options.userName,
+      hints: request.hints,
+      residentKey: residentKeyFor(posture, request.hints),
+      ...(request.extensionAllowed ? { extensionAllowed: true } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      provenance: creationProvenanceFor({
+        posture,
+        userAgent: options.userAgent,
+        requested: requestedAttachment(posture, request.local),
+        laptopHints: request.hints,
+      }),
+      onWritten: (id) => {
+        written = id
+      },
+      ...ending,
+      ...salts,
+    })
+    .catch((error: unknown) => {
+      // Saved, then unreadable: no account can use it.
+      if (written) forgetCredential(rpId, written)
+      throw error
+    })
+  try {
+    await options.observe?.({ phase: "created", result: created })
+    const securityKey = isSecurityKey(created)
+    const admitted = backupProviderAllowed(
+      {
+        aaguid: created.aaguid,
+        securityKey,
+        attachment: created.authenticatorAttachment,
+        osFamily: options.userAgent?.osFamily ?? "unknown",
+      },
+      { extraProviders: options.extraProviders, candidates: options.candidates },
+    )
+    const refusal = { providerName: providerNameFor(created.aaguid), userAgent: options.userAgent }
+    if (!admitted) {
+      const candidate = Object.hasOwn(
+        options.candidates ?? BACKUP_CANDIDATES,
+        providerSlugFor(created.aaguid),
+      )
+      throw new BackupPasskeyRefusedError("provider", {
+        ...refusal,
+        overQr: candidate && created.authenticatorAttachment === "cross-platform",
+      })
+    }
+
+    let read = backupPrfFrom(created)
+    let userVerified = created.userVerified
+    let chained: PasskeyAssertResult | undefined
+    if (!read) {
+      const challenge = await options.challengeForChained()
+      const again = securityKey
+        ? {
+            hints: ["security-key"] as const,
+            ...(created.transports?.length ? { transports: created.transports } : {}),
+          }
+        : { hints: posture === "laptop" ? request.hints : undefined }
+      chained = await ceremony.assert({
+        rpId,
+        challenge,
+        credentialIds: [created.credentialId],
+        ...again,
+        ...ending,
+        ...salts,
+      })
+      await options.observe?.({ phase: "chained", result: chained })
+      if (chained.credentialId !== created.credentialId) {
+        throw new BackupPasskeyRefusedError("other-credential")
+      }
+      read = backupPrfFrom(chained)
+      if (!read) throw new BackupPasskeyRefusedError(securityKey ? "key-no-prf" : "no-prf", refusal)
+      userVerified = chained.userVerified
+    }
+    if (userVerified !== true) throw new BackupPasskeyRefusedError("unverified")
+
+    options.signal?.throwIfAborted()
+    return {
+      created,
+      chained,
+      slot: read.slot,
+      prfOutput: read.prfOutput,
+      securityKey,
+      facts: backupCreationFacts(created),
+    }
+  } catch (err) {
+    forgetCredential(rpId, created.credentialId)
+    throw markPasskeyWritten(err)
+  }
+}
+
 /**
  * Tell the authenticator this credential is not one of ours, which it is expected to answer by
  * deleting it. A failed creation returns nothing, so no account can name the credential it wrote.
- * Deletion cannot be undone and the browser asks the user nothing, so the one caller passes the id
- * of the creation in hand and nothing else may. Best effort in both directions: browsers without
+ * Deletion cannot be undone and the browser asks the user nothing, so the creation drivers pass the
+ * id of the creation in hand and nothing else may. Best effort in both directions: browsers without
  * the call do nothing, and whether a key acts on it is unverified.
  */
 function forgetCredential(rpId: string, credentialId: string): void {

@@ -17,10 +17,10 @@
  * future regression would surface.
  */
 import { describe, it, expect, vi } from "vitest"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { resolveFeePaymentMethod } from "../../src/services/helpers/feeResolution.js"
 import type { ObsidionWallet } from "../../src/obsidion/ObsidionWallet.js"
-import type { FeePaymentMethod } from "@aztec/aztec.js/fee"
+import type { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
 
 const explicitPm = { __tag: "explicit" } as unknown as FeePaymentMethod
 const ctxPm = { __tag: "ctx" } as unknown as FeePaymentMethod
@@ -78,7 +78,11 @@ describe("resolveFeePaymentMethod — 3-step chain", () => {
     // so a missing `fee` falls through to step 3.
     const wallet = makeWallet(walletPm)
     const result = await resolveFeePaymentMethod(
-      { sendOptions: { /* from-like bag with no fee */ } as { fee?: { paymentMethod?: FeePaymentMethod } } },
+      {
+        sendOptions: {
+          /* from-like bag with no fee */
+        } as { fee?: { paymentMethod?: FeePaymentMethod } },
+      },
       undefined,
       wallet,
       sender,
@@ -92,12 +96,7 @@ describe("resolveFeePaymentMethod — 3-step chain", () => {
     // fee; sendOptions without a fee should pick up the context value, not the
     // wallet default.
     const wallet = makeWallet(walletPm)
-    const result = await resolveFeePaymentMethod(
-      { sendOptions: {} },
-      ctxPm,
-      wallet,
-      sender,
-    )
+    const result = await resolveFeePaymentMethod({ sendOptions: {} }, ctxPm, wallet, sender)
     expect(result).toBe(ctxPm)
     expect(wallet.getDefaultSendOptions).not.toHaveBeenCalled()
   })

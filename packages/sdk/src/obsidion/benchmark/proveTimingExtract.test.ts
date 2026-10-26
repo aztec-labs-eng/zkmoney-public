@@ -6,7 +6,7 @@
  * the privacy guarantee (output is exactly the six numeric fields — no oracles).
  */
 import { describe, it, expect } from "vitest"
-import type { ProvingTimings } from "@aztec/stdlib/tx"
+import type { ProvingTimings } from "@aztec-labs/stdlib/tx"
 import { extractProveTimings, formatProveTxPerfLine } from "./proveTimingExtract.js"
 
 function timings(over: Partial<ProvingTimings> = {}): ProvingTimings {

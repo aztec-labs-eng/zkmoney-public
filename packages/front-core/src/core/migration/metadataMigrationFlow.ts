@@ -1,8 +1,10 @@
 import {
   ApprovalNeededError,
   MigrationHaltedError,
+  MigrationSubsidyNotReadyError,
   StalePlanError,
   type MigrationHalt,
+  type MigrationSendGate,
 } from "@obsidion/sdk"
 import { provingProgress } from "@obsidion/proving-progress"
 
@@ -10,11 +12,15 @@ import { provingProgress } from "@obsidion/proving-progress"
 export type MetadataMigrationPhase =
   | "preparing"
   | "broadcasting"
-  | "funding"
   | "awaitingMessages"
   | "subscribing"
   | "recovering"
   | "arriving"
+  /**
+   * The run cannot send now and observes again until it can: it waits for the registration of
+   * another run, or for the migration subsidy (`waitReason`). It never stops for the user.
+   */
+  | "waiting"
   | "done"
   | "needsAttention"
   | "needsApproval"
@@ -46,8 +52,10 @@ export interface MetadataMigrationRecord {
   approvals?: { approved: number; total: number }
   /** What the run was quoted at its start, kept for a resumed run's sheet. */
   summary?: MetadataMigrationSummary
-  /** The plan's address was swept: it takes nothing more. */
-  swept?: boolean
+  /** While the run is `waiting`: why, in the user's terms. Absent while it waits for registration. */
+  waitReason?: string
+  /** A funds send of this run started, so funds may have left the source. */
+  fundsSent?: boolean
 }
 
 /** A run's network fees, in the token's base units, and the approvals it asks for. */
@@ -61,12 +69,10 @@ export interface MetadataMigrationObservation {
   subscriptionStatus?: MigrationTxState
   bootstrapSpent: boolean
   metadataSettled: boolean
-  /** Includes the metadata state, SIPA sweep and actual L1-to-L2 message availability. */
+  /** Includes the metadata state and actual L1-to-L2 message availability. */
   messagesReady: boolean
   /** A synced recurring-rail subscription with executable allowance. */
   recurringSponsorship: boolean
-  /** The plan's address was swept. */
-  swept?: boolean
   /** Every planned later batch has been sent: what is left needs no tab. */
   sent: boolean
   /** Destination deposit receipt verified, including all selected source batches. */
@@ -74,9 +80,14 @@ export interface MetadataMigrationObservation {
 }
 
 export interface MetadataMigrationSteps {
+  /**
+   * The run moves only funds, and another run registers the account. Until the destination has
+   * recurring sponsorship and current metadata, the run waits; it never stops for the user.
+   */
+  readonly waitsForRegistration?: boolean
   binding(): Promise<string>
   /**
-   * Derive metadata and prepare the first sufficient refund batch and every signature. No tx.
+   * Sign the record update, or plan and prove every batch of a funds-only run. No tx.
    * Resumes `draft`; `saveDraft` must resolve durably before the approval that follows it.
    */
   prepare(
@@ -105,20 +116,19 @@ export interface MetadataMigrationSteps {
     onTxHash: (txHash: string) => Promise<void>,
     operationId?: string,
   ): Promise<void>
-  /** Live source: withdraw to the prepared SIPA. Frozen/external: observe funding only. */
-  fund(plan: string, signal?: AbortSignal): Promise<void>
   subscribe(
     plan: string,
     onTxHash: (txHash: string) => Promise<void>,
     operationId?: string,
   ): Promise<void>
+  /** Send the source's batches, only after recurring sponsorship is established. It sends each transaction inside `gate`. */
+  recoverRemaining(plan: string, signal?: AbortSignal, gate?: MigrationSendGate): Promise<void>
   /**
-   * Only ordinary DepositSIPAs, and only after recurring sponsorship is established. `published` is
-   * false when the destination record was already current, so no bootstrap carried a first deposit.
+   * Bring every sent batch up to date from chain evidence, and send again each batch whose refund
+   * is late. It never signs. `signal` stops it before a send. It sends each transaction inside
+   * `gate`.
    */
-  recoverRemaining(plan: string, published: boolean, signal?: AbortSignal): Promise<void>
-  /** Bring every sent batch up to date from chain evidence, never signing or sending. */
-  reconcileRemaining?(plan: string): Promise<void>
+  reconcileRemaining?(plan: string, signal?: AbortSignal, gate?: MigrationSendGate): Promise<void>
   /** Whether the balance holds everything the run imported: the run is done only then. */
   confirmBalance?(): Promise<boolean>
 }
@@ -145,6 +155,14 @@ function refusedPrompt(error: unknown): boolean {
   return name === "NotAllowedError" || name === "AbortError"
 }
 
+/** The migration subsidy does not pay for a refund now; it can clear by itself. Matched by name too. */
+function subsidyNotReady(error: unknown): boolean {
+  return (
+    error instanceof MigrationSubsidyNotReadyError ||
+    (error as Error | undefined)?.name === "MigrationSubsidyNotReadyError"
+  )
+}
+
 function needsApproval(error: unknown): boolean {
   return (
     error instanceof ApprovalNeededError ||
@@ -162,9 +180,9 @@ function needsApproval(error: unknown): boolean {
  * that pass has nothing left to approve or prove. `observeOnly` reconciles what was sent and saves
  * what it sees, but never prepares, signs or sends. A `promptless` pass carries a published plan on:
  * it sends, but never prepares, signs a consent or broadcasts a bootstrap, and stops for the user
- * where one of those is next. `exclusive` runs each step that sends one transaction, the bootstrap
- * and the subscription, as the operation it names to the step; a promptless pass sends nothing else.
- * A start saves its `summary` with the record.
+ * where one of those is next. `exclusive` runs each step that sends one transaction, as the
+ * operation it names to the step: the bootstrap, the subscription, and each send of the remaining
+ * funds and of their re-sends. A start saves its `summary` with the record.
  */
 export async function advanceMetadataMigration(
   initial: MetadataMigrationRecord,
@@ -176,16 +194,25 @@ export async function advanceMetadataMigration(
     observeOnly = false,
     promptless = false,
     onPrepared,
+    prepareOnly = false,
+    approvalsOnly = false,
     summary,
     exclusive = (step) => step(),
+    beforeApproval,
   }: {
     start?: boolean
     signal?: AbortSignal
     observeOnly?: boolean
     promptless?: boolean
     onPrepared?: () => void
+    /** Persist approvals and return before observing or sending. */
+    prepareOnly?: boolean
+    /** The pass saves approvals and proves nothing, so it is not yet prepared. */
+    approvalsOnly?: boolean
     summary?: MetadataMigrationSummary
-    exclusive?: <T>(step: (operationId?: string) => Promise<T>) => Promise<T>
+    exclusive?: MigrationSendGate
+    /** Awaited while another approval is next, so the user can start each prompt. */
+    beforeApproval?: (approved: number, total: number) => Promise<void>
   } = {},
 ): Promise<MetadataMigrationRecord> {
   let record = { ...initial }
@@ -203,7 +230,12 @@ export async function advanceMetadataMigration(
   const saved = (operationId: string | undefined, txHash: string) => {
     if (operationId) provingProgress.emitTxHashSaved(operationId, txHash)
   }
-  const progress = (approved: number, total: number) => save({ approvals: { approved, total } })
+  const progress = async (approved: number, total: number) => {
+    await save({ approvals: { approved, total } })
+    if (approved < total) await beforeApproval?.(approved, total)
+  }
+  // A replacement for a stale plan is under way: a failed attempt keeps the plan stale.
+  let replacing = false
   try {
     if ((await steps.binding()) !== record.binding) {
       throw new MigrationHaltedError(
@@ -228,12 +260,16 @@ export async function advanceMetadataMigration(
     } else if (start && !observeOnly) {
       await steps.ready(record.plan, signal, !unpublished, progress)
       signal?.throwIfAborted()
+      // A prepare-only pass returns before observing, so it clears a stop the user has now resolved.
+      if (record.phase === "needsApproval" || (record.phase === "needsAttention" && !record.halt)) {
+        await save({ phase: "broadcasting", error: undefined, refused: undefined })
+      }
     }
-    if (start && !observeOnly) onPrepared?.()
+    if (start && !observeOnly && !approvalsOnly) onPrepared?.()
+    if (prepareOnly) return record
     const plan = record.plan!
     const observed = await steps.observe(record)
     await save({
-      ...(observed.swept ? { swept: true } : {}),
       bootstrapStatus: observed.bootstrapStatus,
       subscriptionStatus: observed.subscriptionStatus,
       allowance: observed.recurringSponsorship
@@ -245,16 +281,37 @@ export async function advanceMetadataMigration(
         : "unspent",
     })
 
+    // A dropped bootstrap whose allowance is unspent is sent again from the same plan, which still
+    // observes the dropped one should it land after all.
+    const resend =
+      !!record.bootstrapTx &&
+      observed.bootstrapStatus === "dropped" &&
+      (!observed.bootstrapSpent || observed.recurringSponsorship)
+
     const complete = observed.complete && observed.recurringSponsorship && observed.metadataSettled
     if (complete && (await steps.confirmBalance?.()) !== false) {
       await save({ phase: "done", error: undefined })
     } else if (observed.recurringSponsorship && observed.metadataSettled) {
-      await save({ phase: observed.sent ? "arriving" : "recovering", error: undefined })
+      const phase = observed.sent ? "arriving" : "recovering"
+      // A run that waits for the subsidy keeps its reason until a pass gets past it.
+      const held = record.phase === "waiting" && !!record.waitReason
+      if (!held) await save({ phase, error: undefined })
       signal?.throwIfAborted()
-      if (observeOnly) await steps.reconcileRemaining?.(plan)
-      else await steps.recoverRemaining(plan, !!record.bootstrapTx, signal)
+      // Each funds send waits its turn through `send`, one transaction at a time.
+      // Saved before the send: a send whose result is unknown may still move funds.
+      const sendFunds: MigrationSendGate = (step) =>
+        send(async (operationId) => {
+          if (!record.fundsSent) await save({ fundsSent: true })
+          return step(operationId)
+        })
+      if (observeOnly) await steps.reconcileRemaining?.(plan, signal, sendFunds)
+      else await steps.recoverRemaining(plan, signal, sendFunds)
+      if (held) await save({ phase, error: undefined, waitReason: undefined })
     } else if (observeOnly) {
       return record
+    } else if (steps.waitsForRegistration) {
+      // It sends nothing until the registration run sets up the destination; a later pass observes again.
+      await save({ phase: "waiting", error: undefined, waitReason: undefined })
     } else if (observed.messagesReady) {
       if (record.subscriptionTx && observed.subscriptionStatus !== "dropped") {
         if (observed.subscriptionStatus === "reverted") {
@@ -279,29 +336,15 @@ export async function advanceMetadataMigration(
           operationId,
         ),
       )
-    } else if (record.bootstrapTx) {
+    } else if (record.bootstrapTx && !resend) {
       if (observed.bootstrapStatus === "reverted") {
         throw new MigrationHaltedError(
           "reverted",
           "The upgrade transaction was included but its public execution reverted. The initial sponsored allowance may be spent; a free retry is unavailable",
         )
       }
-      if (
-        observed.bootstrapStatus === "dropped" &&
-        (!observed.bootstrapSpent || observed.recurringSponsorship)
-      ) {
-        // A definitive drop plus the unspent identity nullifier permits a new preparation.
-        await save({
-          bootstrapTx: undefined,
-          bootstrapStatus: undefined,
-          plan: undefined,
-          phase: "preparing",
-        })
-      } else if (observed.bootstrapStatus === "included") {
-        await save({ phase: "funding", error: undefined })
-        signal?.throwIfAborted()
-        await steps.fund(plan, signal)
-        await save({ phase: "awaitingMessages" })
+      if (observed.bootstrapStatus === "included") {
+        await save({ phase: "awaitingMessages", error: undefined })
       } else {
         await save({ phase: "broadcasting", error: undefined })
       }
@@ -312,12 +355,34 @@ export async function advanceMetadataMigration(
         )
       }
       if (promptless) throw new ApprovalNeededError()
+      if (resend && record.stale) {
+        if (!start) throw new ApprovalNeededError()
+        // The stale plan and its dropped hash stay until a replacement is saved: a late landing is
+        // still observed through them, and a replacement its spent allowance refuses changes nothing.
+        await save({ phase: "preparing", error: undefined })
+        replacing = true
+        const replacement = await steps.prepare(
+          record.draft,
+          (draft) => save({ draft }),
+          signal,
+          progress,
+        )
+        signal?.throwIfAborted()
+        await save({
+          plan: replacement,
+          draft: undefined,
+          bootstrapTx: undefined,
+          bootstrapStatus: undefined,
+          stale: undefined,
+        })
+        replacing = false
+      }
       await save({ phase: "broadcasting", error: undefined })
       signal?.throwIfAborted()
       // Called before submission: a cancel here means nothing is sent.
       await send((operationId) =>
         steps.broadcast(
-          plan,
+          record.plan!,
           async (txHash) => {
             signal?.throwIfAborted()
             await save({
@@ -337,10 +402,14 @@ export async function advanceMetadataMigration(
       await save({ phase: "needsApproval", error: (error as Error).message })
       return record
     }
+    if (subsidyNotReady(error)) {
+      await save({ phase: "waiting", error: undefined, waitReason: (error as Error).message })
+      return record
+    }
     await save({
       phase: "needsAttention",
       error: error instanceof Error ? error.message : String(error),
-      stale: isStalePlan(error) || undefined,
+      stale: isStalePlan(error) || replacing || undefined,
       halt: haltOf(error),
       refused: refusedPrompt(error) || undefined,
     })

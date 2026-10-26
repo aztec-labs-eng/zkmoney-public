@@ -1,5 +1,5 @@
-import { Buffer32 } from '@aztec/foundation/buffer';
-import { keccak256 } from '@aztec/foundation/crypto/keccak';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
+import { keccak256 } from '@aztec-labs/foundation/crypto/keccak';
 
 import { parseCoseSign1, parseNitroPayload } from './nitro_attestation/parsers.js';
 
@@ -27,7 +27,7 @@ export interface CertStagingEntries {
    *  — its `parentCertHash` is `keccak256(last cabundle entry)`, so the last intermediate must
    *  be in the cert manager first or the call will revert with `parent cert unverified`. */
   client: CertStagingEntry;
-  /** `keccak256(client.cert)` — pass to `portal.verifyTeeAttestationSig` to bind the staged COSE
+  /** `keccak256(client.cert)` — pass to `teeRegistry.verifyTeeAttestationSig` to bind the staged COSE
    *  signature to this specific leaf. Same value `verifyTeeClientCert` returns on-chain. */
   leafCertHash: Buffer32;
 }
@@ -48,9 +48,9 @@ export interface CertStagingEntries {
  * ```ts
  * const { ca, client } = getCertStagingEntries(attestation);
  * for (const { cert, parentCertHash } of ca) {
- *   await portal.verifyTeeCACert(cert, parentCertHash, { waitForReceipt: true });
+ *   await teeRegistry.verifyTeeCACert(cert, parentCertHash, { waitForReceipt: true });
  * }
- * await portal.verifyTeeClientCert(client.cert, client.parentCertHash, { waitForReceipt: true });
+ * await teeRegistry.verifyTeeClientCert(client.cert, client.parentCertHash, { waitForReceipt: true });
  * ```
  */
 export function getCertStagingEntries(attestation: Buffer): CertStagingEntries {

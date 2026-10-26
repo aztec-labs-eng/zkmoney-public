@@ -8,10 +8,6 @@ const DEFAULT = { source: "default", isDefault: true }
 const CUSTOM = { source: "settings", isDefault: false }
 const state = vi.hoisted(() => ({
   phone: true,
-  frozen: false,
-  exitFunds: undefined as
-    | { main: { refundable: bigint; links: bigint; waiting: bigint } }
-    | undefined,
   fresh: false as boolean | undefined,
   navigate: vi.fn(),
   claimFragment: null as string | null,
@@ -25,7 +21,12 @@ const state = vi.hoisted(() => ({
   arriving: { main: 0n, savings: 0n },
   walletBalance: 0n,
   oldHoldings: { total: 0n, pending: false },
-  lock: { state: "pending", checked: true } as { state: string; main?: bigint; checked: boolean },
+  lock: { state: "pending", checked: true } as {
+    state: string
+    main?: bigint
+    savings?: bigint
+    checked: boolean
+  },
   /** Actions that must wait for the upgrade, and every action a press asked for. */
   upgrade: new Set<string>(),
   asked: [] as string[],
@@ -52,7 +53,6 @@ vi.mock("../src/features/actionGate", () => ({
     if (!state.upgrade.has(action)) run()
   },
   useActionVerdict: (action: string) => (state.upgrade.has(action) ? "upgrade" : "open"),
-  useWalletFrozen: () => state.frozen,
 }))
 vi.mock("@obsidion/front-core", () => ({
   useBalance: () => ({ walletAsset: { balanceAtomic: state.walletBalance }, balanceKnown: true }),
@@ -108,19 +108,10 @@ vi.mock("@obsidion/web-ds", () => ({
   PrimaryGradientButton: ({ title, onClick }: { title: string; onClick: () => void }) => (
     <button onClick={onClick}>{title}</button>
   ),
-  HomeQuickActionsRow: ({
-    actions,
-  }: {
-    actions: { title: string; disabled?: boolean; onClick: () => void }[]
-  }) => (
+  HomeQuickActionsRow: ({ actions }: { actions: { title: string; onClick: () => void }[] }) => (
     <div>
       {actions.map((a) => (
-        <button
-          key={a.title}
-          className="zkm-quick-action"
-          disabled={a.disabled}
-          onClick={a.onClick}
-        >
+        <button key={a.title} onClick={a.onClick}>
           {a.title}
         </button>
       ))}
@@ -210,7 +201,6 @@ vi.mock("../src/features/withdraw/withdrawGateway", () => ({
 vi.mock("../src/features/onboarding/registrationTerms", () => ({
   PAYLINK_TICKET_REFUSED_MESSAGE: "this payment's ticket did not waive the tag price",
   useDepositSkim: () => undefined,
-  useSweepDeductions: () => undefined,
   commitRegistrationProverTip: () => {},
   useRegistrationTerms: () => null,
   committedProverTip: () => 0n,
@@ -243,11 +233,6 @@ vi.mock("../src/errors/errorModal", () => ({
   showReportableError: vi.fn(),
 }))
 vi.mock("../src/lib/analytics", () => ({ fireEvent: vi.fn(), failureCode: () => "x" }))
-vi.mock("../src/features/withdraw/frozenFunds", () => ({
-  useFrozenFunds: () => ({ funds: state.exitFunds, failed: false, rescan: vi.fn() }),
-  useLastFrozenFunds: () => state.exitFunds,
-  fundsLeft: (f: { refundable: bigint; waiting: bigint }) => f.refundable + f.waiting,
-}))
 vi.mock("../src/ui/prefs", () => ({ useHideBalances: () => [false, vi.fn()] }))
 vi.mock("../src/ui/hooks", async (original) => ({
   ...(await original<typeof import("../src/ui/hooks")>()),
@@ -271,6 +256,12 @@ vi.mock("../src/ui/screens/useActivityEntries", () => ({
       savingsLedger: state.savingsLedger,
       arriving: state.arriving,
       upgradesLoaded: true,
+      oldVersionLeft: {
+        savings: 0n,
+        deposited: { main: false, savings: false },
+        links: 0n,
+        linkCount: 0,
+      },
       hydrated: true,
     }
   },
@@ -286,8 +277,6 @@ beforeEach(() => {
   root = createRoot(host)
   vi.clearAllMocks()
   state.claimFragment = null
-  state.frozen = false
-  state.exitFunds = undefined
   state.inviteCode = "k7q2m9x"
   state.fresh = false
   state.endpoints = { node: DEFAULT, l1Rpc: DEFAULT, enclave: DEFAULT }
@@ -749,19 +738,6 @@ describe("Home's actions wait for the upgrade", () => {
   })
 })
 
-describe("frozen Home", () => {
-  it.each([true, false])("leaves only Withdraw open, phone=%s", async (phone) => {
-    state.frozen = true
-    await renderHome(phone)
-    const tile = (title: string) =>
-      [...host.querySelectorAll<HTMLButtonElement>(".zkm-quick-action")].find((b) =>
-        b.textContent?.includes(title),
-      )!
-    for (const title of ["Deposit", "Receive", "Send"]) expect(tile(title).disabled).toBe(true)
-    expect(tile("Withdraw").disabled).toBe(false)
-  })
-})
-
 describe("Home quick actions", () => {
   const FRESH = "Withdraw to a fresh address"
   const PAYLINK = "Create payment link"
@@ -920,6 +896,42 @@ describe("Home over an upgrade", () => {
     expect(host.textContent).not.toContain("Deposit funds")
   })
 
+  it("shows old Savings in Savings before the upgrade", async () => {
+    state.savings = {
+      available: true,
+      hydrated: true,
+      position: { shares: 0n, value: 0n, sharePrice: WAD, readAt: 1 },
+      moves: [],
+    }
+    state.oldHoldings = { total: 99n * WAD, pending: false }
+    state.arriving = { main: 59n * WAD, savings: 40n * WAD }
+
+    await renderHome(false, "/savings")
+
+    expect(host.querySelector('[data-testid="savings-balance"]')?.textContent).toBe("$40.00")
+  })
+
+  it("holds Savings during the upgrade without adding arrivals twice", async () => {
+    state.lock = { state: "held", main: 59n * WAD, savings: 40n * WAD, checked: true }
+    state.savings = {
+      available: true,
+      hydrated: true,
+      position: { shares: 30n * WAD, value: 30n * WAD, sharePrice: WAD, readAt: 1 },
+      moves: [],
+    }
+    state.arriving = { main: 0n, savings: 10n * WAD }
+
+    await renderHome(false, "/savings")
+
+    expect(host.querySelector('[data-testid="savings-balance"]')?.textContent).toBe("$40.00")
+    state.savings = {
+      ...state.savings,
+      position: { shares: 40n * WAD, value: 40n * WAD, sharePrice: WAD, readAt: 2 },
+    }
+    await renderHome(false, "/savings")
+    expect(host.querySelector('[data-testid="savings-balance"]')?.textContent).toBe("$40.00")
+  })
+
   it("shows no figure for an upgrade an older build started", async () => {
     state.lock = { state: "held", checked: true }
     state.walletBalance = 40n * WAD
@@ -959,12 +971,5 @@ describe("Home's Main figure", () => {
     state.arriving = { main: 0n, savings: 0n }
     await renderHome(false)
     expect(balance()).toBe("$30.68")
-  })
-
-  it("shows what the frozen portal still holds, not the refunded notes", async () => {
-    state.walletBalance = 11_352n * CENT
-    state.exitFunds = { main: { refundable: 2_949n * CENT, links: 0n, waiting: 1_000n * CENT } }
-    await renderHome(false)
-    expect(balance()).toBe("$39.49")
   })
 })

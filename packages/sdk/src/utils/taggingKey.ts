@@ -1,7 +1,7 @@
-import { sha512ToGrumpkinScalar } from "@aztec/foundation/crypto/sha512"
-import { GrumpkinScalar } from "@aztec/foundation/curves/grumpkin"
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { DomainSeparator } from "@aztec/constants"
+import { sha512ToGrumpkinScalar } from "@aztec-labs/foundation/crypto/sha512"
+import { GrumpkinScalar } from "@aztec-labs/foundation/curves/grumpkin"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { DomainSeparator } from "@aztec-labs/constants"
 
 /**
  * Derive the tagging secret key from the account's master secret.

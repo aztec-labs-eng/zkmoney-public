@@ -19,6 +19,36 @@ function fetchDoc(doc: unknown): typeof fetch {
     })
 }
 
+function fetchDocs(docs: Record<string, unknown>): typeof fetch {
+  return async (input) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url
+    const doc = docs[url]
+    return doc === undefined
+      ? new Response("not found", { status: 404 })
+      : new Response(JSON.stringify(doc), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })
+  }
+}
+
+function singleVersionProfile(
+  source: any,
+  profileId: string,
+  versionId: string,
+  nodeUrl: string,
+): any {
+  const version = structuredClone(source.versions[source.current])
+  version.nodeUrl = nodeUrl
+  return {
+    ...structuredClone(source),
+    profileId,
+    current: versionId,
+    versions: { [versionId]: version },
+  }
+}
+
 const refuseFetch: typeof fetch = async () => {
   throw new Error("fetch must not be called")
 }
@@ -139,6 +169,147 @@ describe("resolveWalletProfile", () => {
   })
 })
 
+describe("previous-generation profiles", () => {
+  const V5_URL = "https://config.example/profiles/v5/0.0.2.json"
+  const V6_VERSION_URL = "https://config.example/profiles/v6/0.1.0.json"
+  const V6_CURRENT_URL = "https://config.example/profiles/v6/current.json"
+
+  it("walks previous-generation URLs", async () => {
+    const v5 = singleVersionProfile(stagingDoc(), "staging-v5", "0.0.2", "https://v5-node.example")
+    v5.versions["0.0.2"].artifactManifestSha256 = "a".repeat(64)
+    const v6 = singleVersionProfile(v5, "staging-v6", "0.1.0", "https://v6-node.example")
+    v6.shared.previousGenerationProfile = V5_URL
+    const current = singleVersionProfile(v6, "staging-v7", "0.1.0", "https://v7-node.example")
+    current.shared.previousGenerationProfile = V6_VERSION_URL
+
+    const boot = await resolveWalletProfile({
+      profileUrl: V6_CURRENT_URL,
+      expectedProfileId: "staging-v7",
+      network: "testnet",
+      fetchImpl: fetchDocs({
+        [V6_CURRENT_URL]: current,
+        [V6_VERSION_URL]: v6,
+        [V5_URL]: v5,
+      }),
+    })
+
+    expect(boot.sourceRollups.map(({ nodeUrl }) => nodeUrl)).toEqual([
+      "https://v6-node.example",
+      "https://v5-node.example",
+    ])
+    expect(boot.sourceRollups[0]?.contracts.contracts.claimFpc?.address).toBe(
+      v6.versions[v6.current].contracts.claimFpc.address,
+    )
+    // The generation's bundle reads retired classes, a payment link's among them, from this manifest.
+    expect(boot.sourceRollups[1]?.artifacts).toEqual({
+      profileUrl: V5_URL,
+      profileId: "staging-v5",
+      versionId: "0.0.2",
+      expectedSha256: "a".repeat(64),
+    })
+  })
+
+  it("preserves every portal pin when historical generations share a node", async () => {
+    const olderUrl = "https://config.example/profiles/v5/0.1.0.json"
+    const newerUrl = "https://config.example/profiles/v6/0.2.0.json"
+    const olderPortal = `0x${"11".repeat(20)}`
+    const newerPortal = `0x${"22".repeat(20)}`
+    const sourceNode = "https://v6-node.example"
+    const setPortal = (profile: any, portal: string) => {
+      profile.versions[profile.current].oxide.portal = portal
+      return profile
+    }
+
+    const older = setPortal(
+      singleVersionProfile(stagingDoc(), "staging-v5", "0.1.0", sourceNode),
+      olderPortal,
+    )
+    const newer = setPortal(
+      singleVersionProfile(stagingDoc(), "staging-v6", "0.2.0", sourceNode),
+      newerPortal,
+    )
+    newer.shared.previousGenerationProfile = olderUrl
+    const current = singleVersionProfile(
+      stagingDoc(),
+      "staging-v7",
+      "0.1.0",
+      "https://v7-node.example",
+    )
+    current.shared.previousGenerationProfile = newerUrl
+
+    const boot = await resolveWalletProfile({
+      profileUrl: V6_CURRENT_URL,
+      expectedProfileId: "staging-v7",
+      network: "testnet",
+      fetchImpl: fetchDocs({
+        [V6_CURRENT_URL]: current,
+        [newerUrl]: newer,
+        [olderUrl]: older,
+      }),
+    })
+
+    expect(boot.sourceRollups).toHaveLength(2)
+    expect(boot.sourceRollups.map((source) => source.nodeUrl)).toEqual([sourceNode, sourceNode])
+    expect(boot.sourceRollups.flatMap((source) => source.pins.map((pin) => pin.portal))).toEqual([
+      newerPortal,
+      olderPortal,
+    ])
+  })
+
+  it.each([
+    ["is missing", undefined, "NOT_FOUND"],
+    ["is invalid", { nope: true }, "INVALID_PROFILE"],
+  ])("boots without a historical profile that %s", async (_case, historical, code) => {
+    const v5 = singleVersionProfile(stagingDoc(), "staging-v5", "0.0.2", "https://v5-node.example")
+    const v6 = singleVersionProfile(v5, "staging-v6", "0.1.0", "https://v6-node.example")
+    v6.shared.previousGenerationProfile = V5_URL
+    const docs = {
+      [V6_CURRENT_URL]: v6,
+      ...(historical === undefined ? {} : { [V5_URL]: historical }),
+    }
+
+    const boot = await resolveWalletProfile({
+      profileUrl: V6_CURRENT_URL,
+      expectedProfileId: "staging-v6",
+      network: "testnet",
+      fetchImpl: fetchDocs(docs),
+    })
+
+    expect(boot.versionId).toBe("0.1.0")
+    expect(boot.sourceRollups).toEqual([])
+    expect(boot.sourceRollupIssues).toMatchObject([{ code }])
+  })
+
+  it("boots when a historical profile is unreachable", async () => {
+    const v5 = singleVersionProfile(stagingDoc(), "staging-v5", "0.0.2", "https://v5-node.example")
+    const v6 = singleVersionProfile(v5, "staging-v6", "0.1.0", "https://v6-node.example")
+    v6.shared.previousGenerationProfile = V5_URL
+    const liveFetch = fetchDocs({ [V6_CURRENT_URL]: v6 })
+    const fetchImpl: typeof fetch = async (request, init) => {
+      const url =
+        typeof request === "string"
+          ? request
+          : request instanceof URL
+          ? request.toString()
+          : request.url
+      if (url === V5_URL) throw new TypeError("connection refused")
+      return liveFetch(request, init)
+    }
+
+    const boot = await resolveWalletProfile({
+      profileUrl: V6_CURRENT_URL,
+      expectedProfileId: "staging-v6",
+      network: "testnet",
+      fetchImpl,
+    })
+
+    expect(boot.versionId).toBe("0.1.0")
+    expect(boot.sourceRollupIssues).toMatchObject([
+      { code: "UNREACHABLE", message: expect.stringContaining("connection refused") },
+    ])
+  })
+})
+
 /**
  * The snapshot a build bakes in answers exactly one failure — the server never answered — and
  * runs every check a served document runs.
@@ -165,7 +336,9 @@ describe("a baked snapshot", () => {
   })
 
   it("boots the wallet when the fetch throws, naming the live failure", async () => {
-    const boot = await resolveWalletProfile(input({ fetchImpl: unreachable, bakedProfile: bakedDoc() }))
+    const boot = await resolveWalletProfile(
+      input({ fetchImpl: unreachable, bakedProfile: bakedDoc() }),
+    )
     expect(boot.versionId).toBe("0.0.1")
     expect(boot.bootedFromBakedProfile).toBe(true)
     expect(boot.liveFailure).toMatchObject({ code: "UNREACHABLE" })
@@ -174,7 +347,9 @@ describe("a baked snapshot", () => {
   })
 
   it("boots the wallet on a 5xx", async () => {
-    const boot = await resolveWalletProfile(input({ fetchImpl: answering(503), bakedProfile: bakedDoc() }))
+    const boot = await resolveWalletProfile(
+      input({ fetchImpl: answering(503), bakedProfile: bakedDoc() }),
+    )
     expect(boot.bootedFromBakedProfile).toBe(true)
     expect(boot.liveFailure?.message).toContain("503")
   })
@@ -206,27 +381,40 @@ describe("a baked snapshot", () => {
     expired.expiresAt = "2026-08-12T00:00:00.000Z"
     const now = () => new Date("2026-09-01T00:00:00Z")
     expect(
-      await rejection(resolveWalletProfile(input({ fetchImpl: fetchDoc(expired), now, bakedProfile: bakedDoc() }))),
+      await rejection(
+        resolveWalletProfile(
+          input({ fetchImpl: fetchDoc(expired), now, bakedProfile: bakedDoc() }),
+        ),
+      ),
     ).toMatchObject({ code: "EXPIRED" })
 
     expect(
       await rejection(
-        resolveWalletProfile(input({ fetchImpl: fetchDoc({ profileId: "x" }), bakedProfile: bakedDoc() })),
+        resolveWalletProfile(
+          input({ fetchImpl: fetchDoc({ profileId: "x" }), bakedProfile: bakedDoc() }),
+        ),
       ),
     ).toMatchObject({ code: "INVALID_PROFILE" })
 
     expect(
-      await rejection(resolveWalletProfile(input({ expectedProfileId: "mainnet", bakedProfile: bakedDoc() }))),
+      await rejection(
+        resolveWalletProfile(input({ expectedProfileId: "mainnet", bakedProfile: bakedDoc() })),
+      ),
     ).toMatchObject({ code: "IDENTITY_MISMATCH" })
 
     expect(
-      await rejection(resolveWalletProfile(input({ network: "mainnet", bakedProfile: bakedDoc() }))),
+      await rejection(
+        resolveWalletProfile(input({ network: "mainnet", bakedProfile: bakedDoc() })),
+      ),
     ).toBeInstanceOf(ProfileNetworkMismatchError)
   })
 
   it("changes nothing when no snapshot was baked", async () => {
     const e = await rejection(resolveWalletProfile(input({ fetchImpl: unreachable })))
-    expect(e).toMatchObject({ code: "UNREACHABLE", message: expect.stringContaining("fetch failed") })
+    expect(e).toMatchObject({
+      code: "UNREACHABLE",
+      message: expect.stringContaining("fetch failed"),
+    })
   })
 
   describe("forced", () => {
@@ -256,13 +444,19 @@ describe("a baked snapshot", () => {
       expect(
         await rejection(
           resolveWalletProfile(
-            input({ expectedProfileId: "mainnet", bakedProfile: bakedDoc(), forceBakedProfile: true }),
+            input({
+              expectedProfileId: "mainnet",
+              bakedProfile: bakedDoc(),
+              forceBakedProfile: true,
+            }),
           ),
         ),
       ).toMatchObject({ code: "IDENTITY_MISMATCH" })
       expect(
         await rejection(
-          resolveWalletProfile(input({ network: "mainnet", bakedProfile: bakedDoc(), forceBakedProfile: true })),
+          resolveWalletProfile(
+            input({ network: "mainnet", bakedProfile: bakedDoc(), forceBakedProfile: true }),
+          ),
         ),
       ).toBeInstanceOf(ProfileNetworkMismatchError)
     })
@@ -278,7 +472,11 @@ describe("a baked snapshot", () => {
     stale.expiresAt = "2026-08-12T00:00:00.000Z"
     const e = await rejection(
       resolveWalletProfile(
-        input({ fetchImpl: unreachable, now: () => new Date("2026-09-01T00:00:00Z"), bakedProfile: stale }),
+        input({
+          fetchImpl: unreachable,
+          now: () => new Date("2026-09-01T00:00:00Z"),
+          bakedProfile: stale,
+        }),
       ),
     )
     expect(e).toMatchObject({ code: "EXPIRED" })
@@ -289,7 +487,9 @@ describe("a baked snapshot", () => {
   it("rejects a snapshot for another profile", async () => {
     const foreign = bakedDoc()
     foreign.profileId = "someone-elses"
-    const e = await rejection(resolveWalletProfile(input({ fetchImpl: unreachable, bakedProfile: foreign })))
+    const e = await rejection(
+      resolveWalletProfile(input({ fetchImpl: unreachable, bakedProfile: foreign })),
+    )
     expect(e).toMatchObject({ code: "IDENTITY_MISMATCH" })
     expect((e as Error).message).toContain("the baked profile")
   })
@@ -304,7 +504,9 @@ describe("a baked snapshot", () => {
   })
 
   it("rejects a malformed snapshot", async () => {
-    const e = await rejection(resolveWalletProfile(input({ fetchImpl: unreachable, bakedProfile: { nope: 1 } })))
+    const e = await rejection(
+      resolveWalletProfile(input({ fetchImpl: unreachable, bakedProfile: { nope: 1 } })),
+    )
     expect(e).toMatchObject({ code: "INVALID_PROFILE" })
   })
 

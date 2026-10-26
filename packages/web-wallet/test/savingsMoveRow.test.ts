@@ -79,6 +79,19 @@ describe("savingsEtaCopy", () => {
 })
 
 describe("savingsMoveStatus", () => {
+  it("ends a move an old version's record left unfinished, as one that needs recovery", () => {
+    const retired = move({ retired: true })
+    expect(savingsMoveStatus(retired, burn("done"))).toBe("Needs recovery")
+    expect(isSavingsMoveSettled(retired, burn("done"))).toBe(true)
+    // A move with no old record, and an old move that finished, keep their states.
+    expect(savingsMoveStatus(move(), burn("done"))).toBe("Moving to Savings")
+    const claimed = move({
+      retired: true,
+      deposit: { inboxIndex: "1", amount: "1", claimed: true },
+    })
+    expect(savingsMoveStatus(claimed, burn("done"))).toBeUndefined()
+  })
+
   it("ends a move whose escrow's DAI was recovered, and says where it went", () => {
     const recovered = move({
       recovered: { to: "0x1234000000000000000000000000000000abcd", txHashes: ["0x01"] },

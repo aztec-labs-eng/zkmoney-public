@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 import { p256 } from "@noble/curves/p256"
-import { sha256 } from "@aztec/foundation/crypto/sha256"
+import { sha256 } from "@aztec-labs/foundation/crypto/sha256"
 import { hexToBytes } from "viem"
 
 import {

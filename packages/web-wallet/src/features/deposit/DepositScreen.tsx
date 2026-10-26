@@ -13,7 +13,7 @@ import {
   useCachedRecords,
   useContractServiceContext,
 } from "@obsidion/front-core"
-import { quotedDepositFee } from "@obsidion/core/constants"
+import type { SipaIntentName } from "@obsidion/core/oxide"
 import { GradientText, Icon, PrimaryGradientButton, Spinner } from "@obsidion/web-ds"
 import paylinkCoins from "../../assets/home/paylink-coins.webp"
 import { getConfig } from "../../config/env"
@@ -27,7 +27,7 @@ import {
   lapTimer,
 } from "../../lib/analytics"
 import { useCopy } from "../../ui/hooks"
-import { usdFigure, shortL1Addr } from "../../ui/format"
+import { shortL1Addr, tokenFigure } from "../../ui/format"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { useRegistrationEscalated, useTagPresentationPending } from "../onboarding/webRegistration"
 import { RegistrationPendingError } from "../onboarding/registrationRail"
@@ -40,15 +40,18 @@ import { ChooseNameSheet } from "../onboarding/ChooseNameSheet"
 import { confirmRegistrationTag, useRegistrationTagConfirmed } from "../onboarding/openRegistration"
 import { buildErc20TransferUriWithoutAmount } from "../requests/eip681"
 import { DepositFromWalletModal, type SentDeposit } from "./DepositFromWalletModal"
-import { DepositCoinModal } from "./DepositCoinModal"
+import { DepositCoinModal, DepositTokensStatus } from "./DepositCoinModal"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { isDemoMode } from "../../dev/demoFlag"
 import { DepositDetailModal } from "../../ui/screens/DepositDetailModal"
 import {
-  depositTokensFor,
+  depositCreditNote,
   loadDepositDisplayFacts,
+  settlementOf,
+  useDepositTokensRead,
   type DepositDisplayFacts,
   type DepositTokenOption,
+  type DepositTokens,
 } from "./loadDepositFacts"
 import { sentDepositRecord } from "./sentDepositRecord"
 import { AddressLimitsDetail } from "./AddressLimits"
@@ -77,7 +80,7 @@ import {
 } from "./DepositAddressSheet"
 import { CheckAgainPill } from "./WaitingBlock"
 import { getSipaDepositGateway, type DepositStage } from "./sipaGateway"
-import type { DepositTarget, ShownAddress } from "./depositTarget"
+import type { ShownAddress } from "./depositTarget"
 import { AddressesPublishingError, addressesPublishing } from "./addressesPublishing"
 import { getBroadcastLedger } from "../broadcasts/broadcasts"
 import { getActiveStorageId } from "../../platform/storage/activeStorage"
@@ -99,9 +102,6 @@ const COPIED_MS = 2_000
 
 /** The smallest deposit the relayer sweeps, as the limits drawer states it. */
 const MINIMUM_DEPOSIT = "$1"
-
-/** The coin list's order; any other token the network offers follows. */
-const COIN_ORDER = ["USDC", "USDT", "DAI"]
 
 /** The coin row's subtitle. */
 const COIN_NAMES: Record<string, string> = { USDT: "Tether" }
@@ -137,27 +137,47 @@ export const QUOTE_PENDING = "Checking…"
 /** What to do when the fee read failed and the funding controls are held. */
 export const FEE_UNAVAILABLE_NOTE = "Use Retry to load the fee and continue."
 
-function coinOrder(tokens: DepositTokenOption[]): DepositTokenOption[] {
-  const rank = (t: DepositTokenOption) => {
-    const i = COIN_ORDER.indexOf(t.symbol)
-    return i === -1 ? COIN_ORDER.length : i
-  }
-  return [...tokens].sort((a, b) => rank(a) - rank(b))
-}
-
 /**
  * Deposit: pick a coin, then a sheet hands out a single-use SIPA address for THIS wallet's
  * `<tag>.<ensDomain>` to copy or scan, or funds it from a connected wallet. Anything sent there is
  * discovered and credited automatically by the SIPA sync loop mounted in WalletGate; the screen
  * watches the address itself so the sheet can say when funds are spotted. With `onClose` it is a
- * modal over Home instead of a page: the coin pick, then the same address sheet. A `target` (an
- * owed registration's, or one the caller passes) takes the place of a fresh deposit address.
+ * modal over Home instead of a page: the coin pick, then the same address sheet. An owed
+ * registration's address takes the place of a fresh deposit address.
  */
-export function DepositScreen({
+export function DepositScreen(props: { onClose?: () => void } = {}) {
+  const owed = useOwedRegistration() !== null
+  // A registration settles on the fee token's row.
+  const intent = owed ? "registration" : "deposit"
+  const { tokens, failed, retry } = useDepositTokensRead(intent)
+  if (tokens?.offered.length) return <DepositScreenBody {...props} tokens={tokens} intent={intent} />
+  const title = owed ? "Deposit to activate your account" : "Deposit funds"
+  // A table that offers Main no token has nothing to deposit, as when it cannot be read.
+  const status = <DepositTokensStatus failed={failed || !!tokens} onRetry={retry} />
+  if (props.onClose) {
+    return <DepositCoinModal title={title} status={status} onClose={props.onClose} />
+  }
+  return (
+    <div className="ww-panel ww-deposit">
+      <div className="ww-deposit__stealth ww-deposit__stealth--top">
+        <GradientText size={24} weight={700}>
+          {title}
+        </GradientText>
+        {status}
+      </div>
+    </div>
+  )
+}
+
+function DepositScreenBody({
   onClose,
-  target: explicitTarget,
-  title,
-}: { onClose?: () => void; target?: DepositTarget; title?: string } = {}) {
+  tokens,
+  intent,
+}: {
+  onClose?: () => void
+  tokens: DepositTokens
+  intent: SipaIntentName
+}) {
   const navigate = useNavigate()
   const handle = loadWalletIdentity()?.handle
   // The gate is effectful, not cosmetic: while the registration is unconfirmed, deriving and
@@ -189,8 +209,7 @@ export function DepositScreen({
   const chainName = l1ChainId === 1 ? "Ethereum Mainnet" : l1Chain.name
 
   const [deposit, setDeposit] = useState<ShownAddress>()
-  const registrationTarget = useRegistrationDepositTarget(registration, handle, registrationAsk)
-  const target = explicitTarget ?? registrationTarget
+  const target = useRegistrationDepositTarget(registration, handle, registrationAsk)
   // Read by callbacks the funding poll holds, so a new ask does not restart the poll.
   const targetRef = useRef(target)
   targetRef.current = target
@@ -217,8 +236,6 @@ export function DepositScreen({
   const [aboutLimits, setAboutLimits] = useState<LimitsTopic>()
   // A funding click made while disconnected, waiting on the wallet the picker is asking for.
   const [fundOnConnect, setFundOnConnect] = useState(false)
-  // A funding click waiting on the target's address.
-  const [fundWhenShown, setFundWhenShown] = useState(false)
   // A desktop send may have been approved without a known hash: that address may still be funded, so
   // new funding waits until funds reach it or the user starts again.
   const unresolvedScope = loadWalletIdentity()?.address ?? "unknown"
@@ -263,21 +280,21 @@ export function DepositScreen({
     setHold({ status: "none" })
     setDiscovered(record)
   }, [unresolved, records, network, unresolvedScope])
-  const tokens = depositTokensFor(network)
-  // The first entry is the token the portal settles in.
-  const settlement = tokens[0]
-  const coins = coinOrder(tokens)
-  const [token, setToken] = useState<DepositTokenOption>(settlement)
+  const coins = tokens.offered
+  // The default pick, when Main offers it: a pinned product row is never offered.
+  const [token, setToken] = useState<DepositTokenOption>(
+    () => coins.find((t) => t.address === tokens.settlement.address) ?? coins[0]!,
+  )
+  const settlement = settlementOf(tokens, token)
   const [disclaimer, setDisclaimer] = useState(() => !isDepositPrivacyDisclaimerHidden())
   const [facts, setFacts] = useState<DepositDisplayFacts>()
   const [factsFailed, setFactsFailed] = useState(false)
   const [factsAttempt, setFactsAttempt] = useState(0)
   const fee = facts?.fee
-  const manifestToken = facts?.token
   // A target's sweep takes its own fee, so a deposit sent to it is shown at that fee.
   const sentFacts =
     facts && target?.fee !== undefined
-      ? { ...facts, sweepFeeAtomic: target.fee, fpcFundingCutAtomic: 0n }
+      ? { ...facts, sweepFeeAtomic: target.fee }
       : facts
   const sentRecord = sent ? sentDepositRecord(sent, stored, l1ChainId, sentFacts) : undefined
   const { copied, copy } = useCopy()
@@ -297,12 +314,13 @@ export function DepositScreen({
     fireOnboardingEvent("registration_deposit_opened")
   }, [owed])
 
-  // Both halves of the quote are per-deployment immutables, so the read is redone only on Retry
-  // and when the deployment behind it changes.
+  // The quote is the picked token's row for the screen's intent, read again on Retry and when the row, the intent or
+  // the deployment changes.
   useEffect(() => {
     let stale = false
+    setFacts(undefined)
     setFactsFailed(false)
-    void loadDepositDisplayFacts()
+    void loadDepositDisplayFacts(token, intent)
       .then((next) => {
         if (!stale) setFacts(next)
       })
@@ -315,7 +333,7 @@ export function DepositScreen({
     return () => {
       stale = true
     }
-  }, [factsAttempt, l1RpcUrl, l1ChainId, manifestUrl])
+  }, [factsAttempt, l1RpcUrl, l1ChainId, manifestUrl, token.settlesIn, intent])
 
   // Dev demo: the fixture address stands in for a derived one. `import.meta.env.DEV` is a
   // build-time literal, so a production build drops this body and the dynamic import with it.
@@ -451,18 +469,8 @@ export function DepositScreen({
     if (fee == null || (claiming && !target)) return
     // The sheet moves the wallet's money, so it opens only for an address whose broadcast landed.
     if (shown) return void setFundOpen(true)
-    if (target) {
-      setFundWhenShown(true)
-      return target.create?.()
-    }
     if (!generating) void resolveAddress().then((ok) => ok && setFundOpen(true))
   }, [fee, shown, generating, resolveAddress, claiming, target])
-  // A target's address appears on its own, after `create`.
-  useEffect(() => {
-    if (!fundWhenShown || !shown) return
-    setFundWhenShown(false)
-    setFundOpen(true)
-  }, [fundWhenShown, shown])
 
   // `l1.connect` only opens the wallet picker; the account lands renders later, so the click that
   // asked to fund would otherwise stop at "Wallet connected" and need a second one. A picker that
@@ -487,22 +495,21 @@ export function DepositScreen({
       : undefined
     : fee
   const ready = !!shown && !generating && fee != null
-  const qrToken = token.address ?? manifestToken
-  // Tokens other than the manifest token are swapped into it before the portal credits them.
-  const swap = !!token.address
+  const qrToken = token.address
+  // A swapped token is converted into its row's token before the portal credits it.
+  const swap = token.swapped
   const route: AddressRoute = {
     kind: "deposit",
     decimals: token.decimals,
     swap,
-    feeAtomic: target
-      ? target.fee
-      : facts && quotedDepositFee(facts.sweepFeeAtomic, facts.fpcFundingCutAtomic),
+    feeAtomic: target ? target.fee : facts?.sweepFeeAtomic,
+    txAmountCap: facts?.txAmountCap,
   }
-  const valuation = manifestToken && depositValuation(token, manifestToken, l1ChainId)
+  const valuation = depositValuation(token, tokens)
   const maxSend = maximumSendAtomic(route, valuation)
   // The address on this screen is derived from the active deployment, so its bucket is the active one.
-  const capacity = useTargetCapacity({ kind: "active" })
-  const arrivalMinutes = useDepositArrivalMinutes(obsidionWallet?.node, config)
+  const capacity = useTargetCapacity({ kind: "active", token: token.settlesIn })
+  const arrivalMinutes = useDepositArrivalMinutes(obsidionWallet?.node)
   const capacityEligibility = targetEligibility(capacity, { status: "unknown" })
   const capacityView = fundingCapacityView({
     eligibility: capacityEligibility,
@@ -579,7 +586,11 @@ export function DepositScreen({
       <LimitsRow
         label="Fee"
         value={
-          depositFee != null ? usdFigure(depositFee) : quoteFailed ? "Unavailable" : QUOTE_PENDING
+          depositFee != null
+            ? tokenFigure(depositFee, settlement.symbol)
+            : quoteFailed
+              ? "Unavailable"
+              : QUOTE_PENDING
         }
         testId="deposit-fee"
         info={<InfoButton label="About the deposit fee" onClick={() => setAboutLimits("limit")} />}
@@ -605,13 +616,12 @@ export function DepositScreen({
           {FEE_UNAVAILABLE_NOTE}
         </p>
       )}
-      {swap && (
-        <p className="ww-deposit-sheet__fine" data-testid="deposit-swap-note">
-          Your balance is stored in {settlement.symbol}. Sending another token will automatically
-          convert it to {settlement.symbol} at the current market price, so your balance might
-          differ.
-        </p>
-      )}
+      <p
+        className="ww-deposit-sheet__fine"
+        data-testid={swap ? "deposit-swap-note" : "deposit-credit-note"}
+      >
+        {depositCreditNote(token, settlement)}
+      </p>
     </>
   )
   const limitsDetails = {
@@ -721,10 +731,9 @@ export function DepositScreen({
   }, [sheetOpen, shown])
 
   // A sheet with nothing to show and nothing coming closes: the derivation failed or never started.
-  const creating = generating || !!target?.creating
   useEffect(() => {
-    if (sheetOpen && !shown && !creating && !capped) setSheetOpen(false)
-  }, [sheetOpen, shown, creating])
+    if (sheetOpen && !shown && !generating && !capped) setSheetOpen(false)
+  }, [sheetOpen, shown, generating])
 
   const waitTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   useEffect(() => () => clearTimeout(waitTimer.current), [])
@@ -756,8 +765,7 @@ export function DepositScreen({
     }
     setToken(next)
     if (shown) return
-    if (target) target.create?.()
-    else void resolveAddress()
+    void resolveAddress()
   }
   /** The held address was spent or may be: the next sheet derives a fresh one. */
   const dropAddress = () => {
@@ -800,8 +808,9 @@ export function DepositScreen({
       : undefined
   const arriving =
     !swap && funded != null && depositFee != null
-      ? usdFigureGrouped(
+      ? tokenFigure(
           String(Math.max(0, Number(formatUnits(funded, token.decimals)) - Number(depositFee))),
+          token.symbol,
         )
       : undefined
   const tagLabel = handle ? `@${handle}` : "your @tag"
@@ -933,7 +942,7 @@ export function DepositScreen({
           address={shown?.address}
           paymentUri={paymentUri}
           publishing={!!shown?.publishing}
-          creatingNote={capped ? new AddressesPublishingError().message : target?.creatingNote}
+          creatingNote={capped ? new AddressesPublishingError().message : undefined}
           canCopy={ready}
           copied={copied}
           onCopy={copyAddress}
@@ -982,7 +991,7 @@ export function DepositScreen({
           fee={depositFee}
           target={target?.kind}
           minimum={targetMinimum}
-          valuation={manifestToken && depositValuation(token, manifestToken, l1ChainId)}
+          valuation={valuation}
           onClose={() => setFundOpen(false)}
           onSent={(next) => {
             setFundOpen(false)
@@ -1055,7 +1064,7 @@ export function DepositScreen({
         {registration && <OweRegistrationBroadcast record={registration} />}
         {!sheetOpen && !fundOpen && !sentRecord && !discovered && (
           <DepositCoinModal
-            title={title ?? (owed ? "Deposit to activate your account" : "Deposit funds")}
+            title={owed ? "Deposit to activate your account" : "Deposit funds"}
             coins={coins}
             coinName={coinName}
             token={token}
@@ -1066,7 +1075,7 @@ export function DepositScreen({
                   label="Fee"
                   value={
                     depositFee != null
-                      ? usdFigure(depositFee)
+                      ? tokenFigure(depositFee, settlement.symbol)
                       : quoteFailed
                       ? "Unavailable"
                       : QUOTE_PENDING

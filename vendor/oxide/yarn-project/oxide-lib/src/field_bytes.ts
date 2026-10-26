@@ -1,4 +1,4 @@
-import { Fr } from '@aztec/aztec.js/fields';
+import { Fr } from '@aztec-labs/aztec.js/fields';
 
 /** Bytes packed per field; 31 keeps every chunk below the BN254 modulus. */
 export const BYTES_PER_FIELD = 31;
@@ -37,4 +37,20 @@ export function unpackFieldsToBytes(bytesLen: number, fields: Fr[]): Buffer {
     fields[i].toBuffer().copy(bytes, i * BYTES_PER_FIELD, 1);
   }
   return bytes.subarray(0, bytesLen);
+}
+
+/**
+ * Strict inverse of {@link packBytesToFields} for data that must round-trip exactly. Every field must have a zero high
+ * byte. Returns all packed bytes, including the zero padding, so the caller checks where the payload ends.
+ */
+export function unpackFieldsToBytesStrict(fields: Fr[]): Buffer {
+  const packed = Buffer.alloc(fields.length * BYTES_PER_FIELD);
+  fields.forEach((field, i) => {
+    const word = field.toBuffer();
+    if (word[0] !== 0) {
+      throw new Error(`Packed field ${i} has a non-zero high byte.`);
+    }
+    word.copy(packed, i * BYTES_PER_FIELD, 1);
+  });
+  return packed;
 }

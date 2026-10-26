@@ -20,7 +20,7 @@ import {
   type TokenService,
 } from "@obsidion/sdk"
 import { formatUnits, type Hex } from "viem"
-import { DEFAULT_DECIMALS, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import { getConfig } from "../../config/env"
 import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
@@ -90,6 +90,7 @@ async function migrateFlow(
       recoveryProtocol: params.current.sipaRecoveryProtocol ?? "legacy-eoa",
       portal: requireTupleField(params.current, "portal") as Hex,
       sipaFactory: requireTupleField(params.current, "sipaFactory") as Hex,
+      forwardingTable: requireTupleField(params.current, "forwardingTable") as Hex,
       rollupVersion: requireTupleField(params.current, "rollupVersion"),
     },
     publicClient,
@@ -99,12 +100,13 @@ async function migrateFlow(
     params.account.makeSpendMetadataResolver(),
     params.account.makeDepositSpendMetadataResolver(),
   ])
-  const [tokenSymbol, deployment, fee] = await Promise.all([
-    params.toTokenService.fetchTokenInformation().then((t) => t.symbol),
+  const [token, deployment, fee] = await Promise.all([
+    // The record is of the burned token: the retired deployment's.
+    fromTokenService.fetchTokenInformation(),
     // The historic portal: the tracker polls its spent bit, not the live one's.
     currentDeployment(params.historic),
     // Only prices the rows; a failed read leaves them without a fee rather than a wrong one.
-    loadMigrationFee(params.historic, params.current).catch(() => undefined),
+    loadMigrationFee(params.current, params.historic).catch(() => undefined),
   ])
 
   // Before any record exists: a refused or failed publish ends the move with nothing burned.
@@ -125,11 +127,12 @@ async function migrateFlow(
       recipient: resolved.sipaAddress,
       recipientProvenance: "saved-recipient",
       recipientAlias: MIGRATION_RECIPIENT_ALIAS,
-      amount: formatUnits(amount, DEFAULT_DECIMALS),
+      amount: formatUnits(amount, token.decimals),
       rawAmount: amount.toString(),
       relayerTip: WITHDRAW_RELAYER_TIP.toString(),
       ...fee,
-      tokenSymbol,
+      tokenSymbol: token.symbol,
+      tokenDecimals: token.decimals,
       phase: "submitting",
       startTime: Date.now(),
       deployment,

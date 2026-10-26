@@ -17,9 +17,20 @@ const LABEL: Record<SavingsAccount, Record<SavingsMoveRecord["direction"], strin
   savings: { in: "From Main Account", out: "To Main Account" },
 }
 
-/** Whether the move has its outcome: claimed, recovered from its escrow, or a burn that failed. */
+/** A move an old version's record shows unfinished when that version closed. It can't finish here. */
+export const isStrandedSavingsMove = (move: SavingsMoveRecord, burn?: WithdrawalRecord) =>
+  !!move.retired && burn?.phase !== "failed" && !move.recovered && !move.deposit?.claimed
+
+/** The account a move's deposit lands in. */
+export const savingsMoveDestination = (move: SavingsMoveRecord): SavingsAccount =>
+  move.direction === "in" ? "savings" : "main"
+
+/** Whether the move has its outcome: claimed, recovered, a burn that failed, or stranded on an old version. */
 export const isSavingsMoveSettled = (move: SavingsMoveRecord, burn?: WithdrawalRecord) =>
-  !!move.deposit?.claimed || !!move.recovered || burn?.phase === "failed"
+  !!move.deposit?.claimed ||
+  !!move.recovered ||
+  burn?.phase === "failed" ||
+  isStrandedSavingsMove(move, burn)
 
 /**
  * One state from submit until the destination claims the deposit, like a deposit's row; nothing
@@ -32,6 +43,7 @@ export function savingsMoveStatus(
   if (burn?.phase === "failed") return "Failed"
   if (move.recovered) return "Recovered"
   if (move.deposit?.claimed) return undefined
+  if (isStrandedSavingsMove(move, burn)) return "Needs recovery"
   return savingsMoveLabel(move.direction)
 }
 

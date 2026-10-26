@@ -1,5 +1,5 @@
 /** `ObsidionWallet.getDefaultSendOptions` fails closed with a typed error. */
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { describe, expect, it } from "vitest"
 
 import { ObsidionWallet } from "../../src/obsidion/ObsidionWallet.js"

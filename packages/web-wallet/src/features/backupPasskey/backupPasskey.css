@@ -1,0 +1,101 @@
+.ww-passkeys {
+  max-height: 76dvh;
+}
+.ww-passkeys__head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.ww-passkeys__trailing {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ww-shell .ww-passkeys__name {
+  min-width: 0;
+  width: 100%;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  font: 500 16px/1.3 var(--font-body);
+  outline: none;
+}
+.ww-shell .ww-passkeys__name::placeholder {
+  color: var(--text-secondary);
+}
+.ww-shell .ww-passkeys__name:focus-visible {
+  outline: 2px solid var(--purple-400);
+}
+.ww-shell .ww-passkeys__add {
+  color: var(--text-primary);
+  text-align: left;
+}
+.ww-passkeys__add .zkm-settings-row__label {
+  font-size: 16px;
+}
+.ww-shell .ww-passkeys__add:disabled {
+  cursor: default;
+}
+.ww-passkeys__add:disabled .zkm-settings-row__label {
+  color: rgba(255, 255, 255, 0.4);
+}
+.ww-passkeys__links {
+  display: flex;
+  gap: 16px;
+  font-size: 13px;
+}
+/* Over the backup picker; the section's own gap spaces it. */
+.ww-passkeys__picker-label {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.ww-backup__steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ww-backup__step .zkm-step-row__text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 7px;
+}
+.ww-backup__step--todo .zkm-step-row__bullet,
+.ww-backup__step--todo .zkm-step-row__text,
+.ww-backup__step--done .zkm-step-row__text {
+  color: var(--text-secondary);
+}
+.ww-backup__step--done .zkm-step-row__bullet {
+  background: rgba(86, 231, 157, 0.12);
+}
+.ww-backup__step--current .ww-backup__step-label {
+  font-weight: 600;
+}
+.ww-backup__detail {
+  color: var(--text-secondary);
+}
+.ww-backup__fund {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.ww-backup__actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.ww-backup__error:empty {
+  display: none;
+}
+.ww-backup__fine {
+  text-align: center;
+}

@@ -1,3 +1,10 @@
+import {
+  APPLE_ICLOUD_AAGUID,
+  GPM_AAGUID,
+  ONEPASSWORD_AAGUID,
+  YUBIKEY_5_NFC_AAGUID,
+  ZERO_AAGUID,
+} from "@obsidion/core/constants"
 import { describe, expect, it } from "vitest"
 import { PhoneRequiredError } from "../src/policy/passkeyErrors.js"
 import {
@@ -10,6 +17,7 @@ import {
   isPhysicalOnly,
   isSecurityKey,
   requestedAttachment,
+  residentKeyFor,
   signInHintsFor,
   slotForAttachment,
 } from "../src/policy/slotRule.js"
@@ -59,6 +67,64 @@ describe("telling a security key from a phone", () => {
     ).toBe(false)
     expect(isSecurityKey({ authenticatorAttachment: "platform", transports: ["usb"] })).toBe(false)
     expect(isSecurityKey({ transports: ["usb"] })).toBe(false)
+  })
+
+  it("takes another device listing no transports when the attested id is all zeros", () => {
+    expect(
+      isSecurityKey({
+        authenticatorAttachment: "cross-platform",
+        transports: [],
+        attestedAaguid: ZERO_AAGUID,
+      }),
+    ).toBe(true)
+  })
+
+  it("keeps an empty list a phone when any id was reported, or none was attested", () => {
+    const WINDOWS_HELLO = "08987058-cadc-4b81-b6e1-30de50dcbe96"
+    const OTHER = "0f0f0f0f-0f0f-0f0f-0f0f-0f0f0f0f0f0f"
+    for (const attestedAaguid of [
+      APPLE_ICLOUD_AAGUID,
+      GPM_AAGUID,
+      ONEPASSWORD_AAGUID,
+      WINDOWS_HELLO,
+      OTHER,
+      YUBIKEY_5_NFC_AAGUID,
+      undefined,
+    ]) {
+      expect(
+        isSecurityKey({
+          authenticatorAttachment: "cross-platform",
+          transports: [],
+          attestedAaguid,
+        }),
+      ).toBe(false)
+    }
+  })
+
+  it("lets a zero id override neither the list nor the attachment", () => {
+    for (const transports of [
+      ["hybrid"],
+      ["usb", "hybrid"],
+      ["internal"],
+      ["something-new"],
+      undefined,
+    ]) {
+      expect(
+        isSecurityKey({
+          authenticatorAttachment: "cross-platform",
+          transports,
+          attestedAaguid: ZERO_AAGUID,
+        }),
+      ).toBe(false)
+    }
+    expect(
+      isSecurityKey({
+        authenticatorAttachment: "platform",
+        transports: [],
+        attestedAaguid: ZERO_AAGUID,
+      }),
+    ).toBe(false)
+    expect(isSecurityKey({ transports: [], attestedAaguid: ZERO_AAGUID })).toBe(false)
   })
 
   it("a recorded list is physical only when every entry is a physical transport", () => {
@@ -338,6 +404,20 @@ describe("hints", () => {
     ])
     expect(signInHintsFor("laptop", ["hybrid"])).toEqual(["hybrid", "security-key"])
     expect(signInHintsFor("laptop", ["security-key"])).toEqual(["security-key"])
+  })
+
+  it("a laptop creation that names a security key may leave the passkey unstored", () => {
+    // Every laptop route but 1Password's names a key, so each admits a Ledger.
+    expect(residentKeyFor("laptop", creationHintsFor("laptop"))).toBe("preferred")
+    expect(residentKeyFor("laptop", creationHintsFor("laptop", ["security-key"]))).toBe("preferred")
+    expect(residentKeyFor("laptop", creationHintsFor("laptop", undefined, true))).toBe("preferred")
+    expect(residentKeyFor("laptop", ["client-device", "security-key"])).toBe("preferred")
+    // A manager's route, the hint-free build, and a phone (whose hints name a key too) require one.
+    expect(residentKeyFor("laptop", creationHintsFor("laptop", ["client-device"], true))).toBe(
+      "required",
+    )
+    expect(residentKeyFor("laptop", creationHintsFor("laptop", null))).toBe("required")
+    expect(residentKeyFor("phone", creationHintsFor("phone"))).toBe("required")
   })
 
   it("a laptop sign-in names both routes it accepts, since a local answer is refused anyway", () => {

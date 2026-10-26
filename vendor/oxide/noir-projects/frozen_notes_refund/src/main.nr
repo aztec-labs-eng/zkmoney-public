@@ -6,19 +6,15 @@ use aztec::protocol::{
     abis::{block_header::BlockHeader, nullifier_leaf_preimage::NullifierLeafPreimage},
     address::{AztecAddress, EthAddress},
     constants::{ARCHIVE_HEIGHT, DOM_SEP__NHK_M, NOTE_HASH_TREE_HEIGHT, NULLIFIER_TREE_HEIGHT},
-    hash::{
-        compute_app_siloed_secret_key, compute_siloed_note_hash, compute_siloed_nullifier, compute_unique_note_hash,
-        poseidon2_hash_with_separator,
-    },
+    hash::{compute_app_siloed_secret_key, compute_siloed_note_hash, compute_siloed_nullifier, compute_unique_note_hash},
     merkle_tree::{check_membership, check_non_membership_with_hasher, MembershipWitness, nullifier_merkle_hash},
     public_keys::{hash_public_key, PublicKeys},
     scalar::Scalar,
-    traits::ToField,
 };
 use oxide_lib::account_address::AccountInstancePreimage;
-use oxide_lib::constants::{BALANCES_STORAGE_SLOT, DOM_SEP__FROZEN_NOTES_AUTH, MAX_FROZEN_NOTES_PER_REFUND};
+use oxide_lib::constants::{BALANCES_STORAGE_SLOT, MAX_FROZEN_NOTES_PER_REFUND};
 use oxide_token_lib::note::{compute_inner_note_hash, compute_inner_nullifier};
-use refund_lib::{assert_is_frozen_tip, assert_refund_authorized, RefundAuthorization};
+use refund_lib::{assert_is_frozen_tip, assert_valid_migration_signature, MigrationSignature};
 
 pub struct InputNote {
     pub amount: u128,
@@ -27,18 +23,6 @@ pub struct InputNote {
     pub note_membership_witness: MembershipWitness<NOTE_HASH_TREE_HEIGHT>,
     pub low_nullifier_preimage: NullifierLeafPreimage,
     pub low_nullifier_membership_witness: MembershipWitness<NULLIFIER_TREE_HEIGHT>,
-}
-
-// Mirrored by `computeFrozenNotesRefundAuthMessage` in `yarn-project/oxide-lib`.
-pub fn compute_frozen_notes_refund_auth_message(
-    unique_note_hashes: [Field; MAX_FROZEN_NOTES_PER_REFUND],
-    executor: EthAddress,
-    user_payload_hash: Field,
-) -> Field {
-    poseidon2_hash_with_separator(
-        [executor.to_field(), user_payload_hash].concat(unique_note_hashes),
-        DOM_SEP__FROZEN_NOTES_AUTH,
-    )
 }
 
 fn main(
@@ -66,8 +50,7 @@ fn main(
     owner_public_keys: PublicKeys,
     owner_instance: AccountInstancePreimage,
     owner_nhk_m: Scalar,
-    // The owner's authorization of the refund auth message.
-    auth: RefundAuthorization,
+    migration_signature: MigrationSignature,
 ) -> pub [Field; MAX_FROZEN_NOTES_PER_REFUND] {
     assert(executor != EthAddress::zero(), "executor must be non-zero");
 
@@ -78,7 +61,7 @@ fn main(
 
     // 2. BINDING THE NULLIFIER HIDING KEY TO THE OWNER.
     //
-    // The rest of the owner's address preimage is opened in step 4, once the auth message is known.
+    // The rest of the owner's address preimage is opened in step 4.
 
     // Constrain that the provided nhk_m belongs to the owner, then silo it to the token once for every note.
     assert_eq(
@@ -91,7 +74,6 @@ fn main(
     // 3. CONSTRAINING EACH NOTE
 
     let mut siloed_nullifiers = [0; MAX_FROZEN_NOTES_PER_REFUND];
-    let mut authorized_note_hashes = [0; MAX_FROZEN_NOTES_PER_REFUND];
     let mut sum: u128 = 0;
 
     for i in 0..MAX_FROZEN_NOTES_PER_REFUND {
@@ -128,15 +110,10 @@ fn main(
             assert(nullifier_not_in_tree, "nullifier already exists in nullifier tree");
         }
 
-        // Active notes contribute their nullifier and their note hash; padding emits 0 (matching the L1 padding
-        // layout). `sum` adds `n.amount` unconditionally because padding notes have amount 0 by definition.
+        // Active notes contribute their nullifier; padding emits 0 (matching the L1 padding layout). `sum` adds
+        // `n.amount` unconditionally because padding notes have amount 0 by definition.
         siloed_nullifiers[i] = if is_not_padding_note {
             siloed_nullifier
-        } else {
-            0
-        };
-        authorized_note_hashes[i] = if is_not_padding_note {
-            unique_note_hash
         } else {
             0
         };
@@ -145,10 +122,180 @@ fn main(
 
     assert_eq(sum, amount, "amount does not match sum of notes");
 
-    // 4. VERIFYING THE OWNER'S AUTHORIZATION
+    // 4. VERIFYING THE OWNER'S MIGRATION SIGNATURE
 
-    let auth_message = compute_frozen_notes_refund_auth_message(authorized_note_hashes, executor, user_payload_hash);
-    assert_refund_authorized(owner, owner_public_keys, owner_instance, auth_message, auth);
+    assert_valid_migration_signature(
+        owner,
+        owner_public_keys,
+        owner_instance,
+        executor,
+        user_payload_hash,
+        migration_signature,
+    );
 
     siloed_nullifiers
+}
+
+mod tests {
+    use super::{InputNote, main};
+    use aztec::protocol::{
+        abis::{nullifier_leaf_preimage::NullifierLeafPreimage, state_reference::StateReference},
+        address::{AztecAddress, EthAddress},
+        constants::{NOTE_HASH_TREE_HEIGHT, NULLIFIER_TREE_HEIGHT},
+        hash::{compute_siloed_note_hash, compute_unique_note_hash},
+        merkle_tree::{MembershipWitness, nullifier_merkle_hash, test_utils::SingleSubtreeMerkleTree},
+        public_keys::{hash_public_key, IvpkM, PublicKeys},
+        traits::{Empty, FromField, Hash},
+    };
+    use oxide_lib::constants::{BALANCES_STORAGE_SLOT, MAX_FROZEN_NOTES_PER_REFUND};
+    use oxide_token_lib::note::compute_inner_note_hash;
+    use refund_lib::test_fixtures::{frozen_tip_with, unread_instance, unread_migration_signature};
+    use std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar, fixed_base_scalar_mul};
+
+    global CHAIN_ID: Field = 1;
+    global ROLLUP_VERSION: Field = 1;
+
+    fn l1_portal() -> EthAddress {
+        EthAddress::from_field(0xa)
+    }
+
+    fn l2_token() -> AztecAddress {
+        AztecAddress::from_field(1)
+    }
+
+    fn owner() -> AztecAddress {
+        AztecAddress::from_field(2)
+    }
+
+    fn nhk_m() -> EmbeddedCurveScalar {
+        EmbeddedCurveScalar::new(5, 0)
+    }
+
+    // The keys commit to `nhk_m`; the checks these tests target run before anything else in them is read.
+    fn owner_public_keys() -> PublicKeys {
+        PublicKeys {
+            npk_m_hash: hash_public_key(fixed_base_scalar_mul(nhk_m())),
+            ivpk_m: IvpkM { inner: EmbeddedCurvePoint::generator() },
+            ovpk_m_hash: 0,
+            tpk_m_hash: 0,
+            mspk_m_hash: 0,
+            fbpk_m_hash: 0,
+        }
+    }
+
+    /// The amount, randomness and nonce of note `i`. Every note has a non-zero amount, so no slot is padding.
+    fn note_data(i: u32) -> (u128, Field, Field) {
+        (100 + i as u128, 0xabc000 + i as Field, 0x515000 + i as Field)
+    }
+
+    fn unique_note_hash(i: u32) -> Field {
+        let (amount, randomness, nonce) = note_data(i);
+        compute_unique_note_hash(
+            nonce,
+            compute_siloed_note_hash(
+                l2_token(),
+                compute_inner_note_hash(amount, owner(), BALANCES_STORAGE_SLOT, randomness),
+            ),
+        )
+    }
+
+    /// The note hash tree of the frozen tip, with note `i` at index `i`. The subtree has a power-of-two number of
+    /// leaves, so empty leaves follow the notes.
+    fn note_hash_tree(
+        note_hashes: [Field; MAX_FROZEN_NOTES_PER_REFUND],
+    ) -> SingleSubtreeMerkleTree<32, 5, NOTE_HASH_TREE_HEIGHT> {
+        let mut leaves = [0; 32];
+        for i in 0..MAX_FROZEN_NOTES_PER_REFUND {
+            leaves[i] = note_hashes[i];
+        }
+        SingleSubtreeMerkleTree::new(leaves)
+    }
+
+    /// One low leaf, below every nullifier and with no next leaf, so it is the low leaf of every note's nullifier.
+    fn nullifier_leaves() -> [NullifierLeafPreimage; 4] {
+        [
+            NullifierLeafPreimage { nullifier: 1, next_nullifier: 0, next_index: 0 },
+            NullifierLeafPreimage::empty(),
+            NullifierLeafPreimage::empty(),
+            NullifierLeafPreimage::empty(),
+        ]
+    }
+
+    fn nullifier_tree() -> SingleSubtreeMerkleTree<4, 2, NULLIFIER_TREE_HEIGHT> {
+        SingleSubtreeMerkleTree::new_with_hasher(
+            nullifier_leaves().map(|leaf| leaf.hash()),
+            nullifier_merkle_hash,
+        )
+    }
+
+    /// Runs the circuit on a full batch of real notes against a frozen tip whose note hash tree holds
+    /// `frozen_note_hashes`.
+    fn refund_full_batch(frozen_note_hashes: [Field; MAX_FROZEN_NOTES_PER_REFUND]) {
+        let tree = note_hash_tree(frozen_note_hashes);
+        let mut state = StateReference::empty();
+        state.partial.note_hash_tree.root = tree.get_root();
+        state.partial.nullifier_tree.root = nullifier_tree().get_root();
+        let frozen = frozen_tip_with(state);
+
+        let low_leaf_witness = MembershipWitness { leaf_index: 0, sibling_path: nullifier_tree().get_sibling_path(0) };
+        let mut notes: [InputNote; MAX_FROZEN_NOTES_PER_REFUND] = std::mem::zeroed();
+        let mut amount: u128 = 0;
+        for i in 0..MAX_FROZEN_NOTES_PER_REFUND {
+            let (note_amount, randomness, nonce) = note_data(i);
+            notes[i] = InputNote {
+                amount: note_amount,
+                randomness,
+                note_nonce: nonce,
+                note_membership_witness: MembershipWitness {
+                    leaf_index: i as Field,
+                    sibling_path: tree.get_sibling_path(i as Field),
+                },
+                low_nullifier_preimage: nullifier_leaves()[0],
+                low_nullifier_membership_witness: low_leaf_witness,
+            };
+            amount += note_amount;
+        }
+
+        let _ = main(
+            CHAIN_ID,
+            ROLLUP_VERSION,
+            l1_portal(),
+            l2_token(),
+            frozen.archive_root,
+            amount,
+            EthAddress::from_field(0xbeef),
+            1,
+            frozen.header,
+            frozen.archive_path,
+            notes,
+            owner(),
+            owner_public_keys(),
+            unread_instance(),
+            nhk_m(),
+            unread_migration_signature(),
+        );
+    }
+
+    fn all_note_hashes() -> [Field; MAX_FROZEN_NOTES_PER_REFUND] {
+        let mut note_hashes = [0; MAX_FROZEN_NOTES_PER_REFUND];
+        for i in 0..MAX_FROZEN_NOTES_PER_REFUND {
+            note_hashes[i] = unique_note_hash(i);
+        }
+        note_hashes
+    }
+
+    // Every note of a full batch passes every check of the frozen state, so only the unread migration signature
+    // refuses it.
+    #[test(should_fail_with = "migration signature does not match owner address")]
+    fn accepts_the_frozen_state_of_a_full_batch_of_notes() {
+        refund_full_batch(all_note_hashes());
+    }
+
+    // The circuit checks the last slot of a full batch like every other slot.
+    #[test(should_fail_with = "note not present in note hash tree")]
+    fn rejects_a_full_batch_whose_last_note_the_frozen_tree_does_not_hold() {
+        let mut note_hashes = all_note_hashes();
+        note_hashes[MAX_FROZEN_NOTES_PER_REFUND - 1] += 1;
+        refund_full_batch(note_hashes);
+    }
 }

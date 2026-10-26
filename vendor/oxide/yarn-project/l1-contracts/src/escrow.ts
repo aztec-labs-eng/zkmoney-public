@@ -27,8 +27,14 @@ export function assertRecoveryCommitment(recoveryCommitment: Hex): void {
   }
 }
 
-/** The escrow address for `encodedArgs`, computed without RPC. */
+/** The largest `encodedArgs` that an escrow clone can hold: its init code stores the size plus 0x2d in two bytes. */
+export const MAX_ESCROW_ARGS_SIZE = 0xffff - 0x2d;
+
+/** The escrow address for `encodedArgs`, computed without RPC. Throws if `encodedArgs` is above `MAX_ESCROW_ARGS_SIZE`. */
 export function predictEscrowAddressLocally(factory: Address, encodedArgs: Hex): Address {
+  if (size(encodedArgs) > MAX_ESCROW_ARGS_SIZE) {
+    throw new Error(`escrow args of ${size(encodedArgs)} bytes are above the maximum of ${MAX_ESCROW_ARGS_SIZE}`);
+  }
   // the implementation is the factory's first self-deploy (nonce 1)
   const implementation = getContractAddress({ from: factory, nonce: 1n });
   const initCode = concatHex([

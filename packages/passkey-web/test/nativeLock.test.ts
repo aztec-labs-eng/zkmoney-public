@@ -8,15 +8,23 @@
 import { createContext, runInContext } from "node:vm"
 import { afterEach, describe, expect, it } from "vitest"
 import {
+  KEPT_PASSKEY_API_KEY,
+  KEPT_WRAPPER_MARKERS,
   NATIVE_LOCK_KEY,
   NATIVE_PRINT_PATTERN,
+  keptPasskeyApiFor,
   lockNativePasskeyApi,
   nativeLockFor,
   nativeLockScript,
   printsNative,
 } from "../src/ceremony/nativeLock.js"
 import { PASSKEY_NATIVE_LOCKS } from "../src/policy/passkeyTelemetryVocabulary.js"
-import { BITWARDEN_CREATE, wrapperFrom } from "./support/extensionWrappers.js"
+import {
+  BITWARDEN_CREATE,
+  PROTON_PASS_CREATE,
+  PROTON_PASS_GET,
+  wrapperFrom,
+} from "./support/extensionWrappers.js"
 
 const STATICS = [
   "isUserVerifyingPlatformAuthenticatorAvailable",
@@ -36,6 +44,7 @@ type Realm = {
   native: (name: string) => (...args: unknown[]) => unknown
   run: () => Record<string, string>
   record: () => unknown
+  kept: () => Record<string, unknown> | undefined
   descriptor: (container: object, name: string) => PropertyDescriptor | undefined
 }
 
@@ -79,6 +88,7 @@ function realm(setup?: (r: Realm) => void, options: { webauthn?: boolean } = {})
     native: boot.native,
     run: () => runInContext(nativeLockScript(), context),
     record: () => context[NATIVE_LOCK_KEY],
+    kept: () => context[KEPT_PASSKEY_API_KEY],
     descriptor: (container, name) => Object.getOwnPropertyDescriptor(container, name),
   }
   setup?.(r)
@@ -93,8 +103,25 @@ const locked = (r: Realm, container: object, name: string) => {
   expect(typeof desc!.value).toBe("function")
 }
 
+/** The kept slot as the lock publishes it: frozen, prototype-free, holding exactly `entries`. */
+const keptExactly = (r: Realm, entries: Record<string, unknown>) => {
+  const slot = Object.getOwnPropertyDescriptor(r.context, KEPT_PASSKEY_API_KEY)
+  expect(slot).toBeDefined()
+  expect(slot!.writable).toBe(false)
+  expect(slot!.configurable).toBe(false)
+  expect(slot!.enumerable).toBe(false)
+  const kept = r.kept()!
+  expect(Object.isFrozen(kept)).toBe(true)
+  expect(Object.getPrototypeOf(kept)).toBeNull()
+  expect(Object.keys(kept)).toEqual(Object.keys(entries))
+  for (const [name, value] of Object.entries(entries)) expect(kept[name]).toBe(value)
+}
+
 /** A wrapper as an extension's page script assigns it: a plain function from the page's realm. */
 const wrapper = () => runInContext("(function create(e) { return e })", realm().context)
+
+const protonCreate = () => wrapperFrom(PROTON_PASS_CREATE)
+const protonGet = () => wrapperFrom(PROTON_PASS_GET)
 
 describe("the native print", () => {
   it("accepts the browser's print for the given name, whatever the whitespace, and nothing else", () => {
@@ -121,6 +148,26 @@ describe("the lock script", () => {
       expect(r.descriptor(r.credentials, name)!.enumerable).toBe(true)
     }
     for (const name of STATICS) locked(r, r.pkc, name)
+  })
+
+  it("publishes an empty kept slot on a page with nothing to keep, which no later script can fill", () => {
+    const r = realm()
+    r.run()
+    keptExactly(r, {})
+    const late = () => "mine"
+    runInContext(
+      `(function (w) {
+        globalThis[${JSON.stringify(KEPT_PASSKEY_API_KEY)}] = { get: w }
+        try { globalThis[${JSON.stringify(KEPT_PASSKEY_API_KEY)}].get = w } catch (e) {}
+      })`,
+      r.context,
+    )(late)
+    keptExactly(r, {})
+    expect(() => Object.defineProperty(r.kept()!, "get", { value: late })).toThrow(TypeError)
+    expect(() =>
+      Object.defineProperty(r.context, KEPT_PASSKEY_API_KEY, { value: { get: late } }),
+    ).toThrow(TypeError)
+    expect(r.kept()!["get"]).toBeUndefined()
   })
 
   it("keeps a frozen value against assignment, deletion and a later prototype patch", () => {
@@ -279,6 +326,7 @@ describe("the lock script", () => {
       r.run()
       expect(r.record()).toEqual({ ...ALL_APPLIED, create: "restored" })
       expect(r.descriptor(r.credentials, "create")!.value).toBe(r.proto.create)
+      keptExactly(r, {})
     })
 
     it("leaves a non-configurable override alone, recorded as lost_race", () => {
@@ -290,6 +338,121 @@ describe("the lock script", () => {
       expect(r.record()).toEqual({ ...ALL_APPLIED, create: "lost_race" })
       expect(r.credentials.create).toBe(w)
       locked(r, r.credentials, "get")
+    })
+
+    describe("carrying Proton Pass's marker", () => {
+      it("is restored like any other and kept aside, create and get each under its own name", () => {
+        const create = protonCreate()
+        const get = protonGet()
+        const r = realm((r) => {
+          r.credentials.create = create
+          r.credentials.get = get
+        })
+        r.run()
+        expect(r.record()).toEqual({ ...ALL_APPLIED, create: "restored", get: "restored" })
+        for (const name of ["create", "get"]) {
+          locked(r, r.credentials, name)
+          expect(r.descriptor(r.credentials, name)!.value).toBe(r.proto[name])
+        }
+        keptExactly(r, { create, get })
+      })
+
+      it("keeps only the call that was overridden", () => {
+        const create = protonCreate()
+        const r = realm((r) => {
+          r.credentials.create = create
+        })
+        r.run()
+        expect(r.record()).toEqual({ ...ALL_APPLIED, create: "restored" })
+        keptExactly(r, { create })
+      })
+
+      it("checks the marker per name: a get carrying only the create marker is not kept", () => {
+        const r = realm((r) => {
+          r.credentials.get = protonCreate()
+        })
+        r.run()
+        expect(r.record()).toEqual({ ...ALL_APPLIED, get: "restored" })
+        keptExactly(r, {})
+      })
+
+      it("keeps nothing from another vendor's wrapper", () => {
+        const r = realm((r) => {
+          r.credentials.create = wrapperFrom(BITWARDEN_CREATE)
+          r.credentials.get = wrapper()
+        })
+        r.run()
+        expect(r.record()).toEqual({ ...ALL_APPLIED, create: "restored", get: "restored" })
+        keptExactly(r, {})
+      })
+
+      it("keeps nothing it could not restore: a non-configurable override", () => {
+        const create = protonCreate()
+        const r = realm((r) => {
+          Object.defineProperty(r.credentials, "create", { value: create, writable: true })
+        })
+        r.run()
+        expect(r.record()).toEqual({ ...ALL_APPLIED, create: "lost_race" })
+        expect(r.credentials.create).toBe(create)
+        keptExactly(r, {})
+      })
+
+      it("keeps nothing when the container refuses the restore", () => {
+        const create = protonCreate()
+        const proto = { create: Object.create, get: Reflect.get }
+        const credentials = Object.create(proto)
+        credentials.create = create
+        const refusing = new Proxy(credentials, {
+          defineProperty() {
+            throw new TypeError("refused")
+          },
+        })
+        const scope: Record<string, unknown> = {
+          navigator: { credentials: refusing },
+          PublicKeyCredential: {},
+        }
+        const record = lockNativePasskeyApi(
+          scope,
+          NATIVE_PRINT_PATTERN,
+          NATIVE_LOCK_KEY,
+          KEPT_PASSKEY_API_KEY,
+          KEPT_WRAPPER_MARKERS,
+        )
+        expect(record).toEqual({ create: "lost_race", get: "lost_race" })
+        expect(credentials.create).toBe(create)
+        expect(Object.keys(scope[KEPT_PASSKEY_API_KEY] as object)).toEqual([])
+      })
+    })
+
+    it("restores a configurable own value that is not a function, keeping nothing and throwing nothing", () => {
+      const r = realm((r) => {
+        r.credentials.create = null
+      })
+      expect(() => r.run()).not.toThrow()
+      expect(r.record()).toEqual({ ...ALL_APPLIED, create: "restored" })
+      expect(r.descriptor(r.credentials, "create")!.value).toBe(r.proto.create)
+      keptExactly(r, {})
+    })
+
+    it("restores an override whose source cannot be read, keeping nothing", () => {
+      const r = realm((r) => {
+        const fn = protonCreate() as (...args: unknown[]) => unknown
+        r.credentials.create = fn
+        runInContext(
+          `(function (fn) {
+            var original = Function.prototype.toString
+            Function.prototype.toString = function () {
+              if (this === fn) throw new Error("blocked")
+              return original.call(this)
+            }
+          })`,
+          r.context,
+        )(fn)
+      })
+      r.run()
+      expect(r.record()).toEqual({ ...ALL_APPLIED, create: "restored" })
+      expect(r.descriptor(r.credentials, "create")!.value).toBe(r.proto.create)
+      keptExactly(r, {})
     })
 
     it("leaves the override alone when the prototype's method is no longer the browser's", () => {
@@ -435,13 +598,34 @@ describe("the lock script", () => {
     expect(frozen.record()).toBe("held")
   })
 
+  it("publishes each slot on its own: a held record still gets the kept slot, and the reverse", () => {
+    const create = protonCreate()
+    const recordHeld = realm((r) => {
+      r.credentials.create = create
+      Object.defineProperty(r.context, NATIVE_LOCK_KEY, { value: "held", writable: false })
+    })
+    expect(() => recordHeld.run()).not.toThrow()
+    expect(recordHeld.record()).toBe("held")
+    keptExactly(recordHeld, { create })
+
+    const keptHeld = realm((r) => {
+      r.credentials.create = create
+      Object.defineProperty(r.context, KEPT_PASSKEY_API_KEY, { value: "held", writable: false })
+    })
+    expect(() => keptHeld.run()).not.toThrow()
+    expect(keptHeld.record()).toEqual({ ...ALL_APPLIED, create: "restored" })
+    expect(keptHeld.kept()).toBe("held")
+  })
+
   it("ships as one self-contained classic script", () => {
     const text = nativeLockScript()
     expect(text).toMatch(/^\(function lockNativePasskeyApi\(/)
-    expect(text).toMatch(/\)\(globalThis, "[^"]+", "__zkMoneyNativeLock"\)$/)
+    expect(text).toMatch(
+      /\)\(globalThis, "[^"]+", "__zkMoneyNativeLock", "__zkMoneyKeptPasskeyApi", \{"create":"PASSKEY_CREATE","get":"PASSKEY_GET"\}\)$/,
+    )
     expect(text).not.toMatch(/\b(import|require|export)\b/)
     expect(text).not.toMatch(
-      /nativeLockFor|printsNative|NATIVE_PRINT_PATTERN|NATIVE_LOCK_KEY|PASSKEY_NATIVE_LOCKS/,
+      /nativeLockFor|keptPasskeyApiFor|printsNative|NATIVE_PRINT_PATTERN|NATIVE_LOCK_KEY|KEPT_PASSKEY_API_KEY|KEPT_WRAPPER_MARKERS|PASSKEY_NATIVE_LOCKS/,
     )
     expect(text).not.toMatch(/<\/script|<!--/i)
     expect(text).toContain(JSON.stringify(NATIVE_PRINT_PATTERN))
@@ -452,11 +636,70 @@ describe("the lock script", () => {
   it("gives the direct call the same answers as the script for create and get", () => {
     const proto = { create: Object.create, get: Reflect.get }
     const credentials = Object.create(proto)
+    const get = protonGet()
+    credentials.get = get
     const scope: Record<string, unknown> = { navigator: { credentials }, PublicKeyCredential: {} }
-    const record = lockNativePasskeyApi(scope, NATIVE_PRINT_PATTERN, NATIVE_LOCK_KEY)
-    expect(record).toEqual({ create: "applied", get: "applied" })
+    const record = lockNativePasskeyApi(
+      scope,
+      NATIVE_PRINT_PATTERN,
+      NATIVE_LOCK_KEY,
+      KEPT_PASSKEY_API_KEY,
+      KEPT_WRAPPER_MARKERS,
+    )
+    expect(record).toEqual({ create: "applied", get: "restored" })
     expect(scope[NATIVE_LOCK_KEY]).toBe(record)
     expect(Object.getOwnPropertyDescriptor(credentials, "create")!.writable).toBe(false)
+    expect(Object.getOwnPropertyDescriptor(credentials, "get")!.value).toBe(proto.get)
+    expect((scope[KEPT_PASSKEY_API_KEY] as Record<string, unknown>)["get"]).toBe(get)
+  })
+})
+
+describe("keptPasskeyApiFor", () => {
+  const scope = globalThis as Record<string, unknown>
+  const fn = () => Promise.resolve(null)
+  afterEach(() => {
+    delete scope[KEPT_PASSKEY_API_KEY]
+    delete (Object.prototype as Record<string, unknown>)[KEPT_PASSKEY_API_KEY]
+  })
+
+  it("reads an own function for the call from an own slot, and nothing otherwise", () => {
+    expect(keptPasskeyApiFor("get")).toBeUndefined()
+    scope[KEPT_PASSKEY_API_KEY] = Object.assign(Object.create(null), { get: fn })
+    expect(keptPasskeyApiFor("get")).toBe(fn)
+    expect(keptPasskeyApiFor("create")).toBeUndefined()
+    scope[KEPT_PASSKEY_API_KEY] = Object.create(null)
+    expect(keptPasskeyApiFor("get")).toBeUndefined()
+  })
+
+  it("takes no entry from a slot's prototype, no accessor, and no non-function", () => {
+    scope[KEPT_PASSKEY_API_KEY] = Object.create({ get: fn })
+    expect(keptPasskeyApiFor("get")).toBeUndefined()
+    scope[KEPT_PASSKEY_API_KEY] = Object.defineProperty(Object.create(null), "get", {
+      get: () => fn,
+    })
+    expect(keptPasskeyApiFor("get")).toBeUndefined()
+    scope[KEPT_PASSKEY_API_KEY] = Object.assign(Object.create(null), { get: "get" })
+    expect(keptPasskeyApiFor("get")).toBeUndefined()
+  })
+
+  it("takes no slot that is not the global's own, and no slot that is not an object", () => {
+    Object.defineProperty(Object.prototype, KEPT_PASSKEY_API_KEY, {
+      value: Object.assign(Object.create(null), { get: fn }),
+      configurable: true,
+    })
+    expect(keptPasskeyApiFor("get")).toBeUndefined()
+    delete (Object.prototype as Record<string, unknown>)[KEPT_PASSKEY_API_KEY]
+    scope[KEPT_PASSKEY_API_KEY] = fn
+    expect(keptPasskeyApiFor("get")).toBeUndefined()
+    scope[KEPT_PASSKEY_API_KEY] = null
+    expect(keptPasskeyApiFor("get")).toBeUndefined()
+    Object.defineProperty(scope, KEPT_PASSKEY_API_KEY, {
+      get() {
+        throw new Error("blocked")
+      },
+      configurable: true,
+    })
+    expect(keptPasskeyApiFor("get")).toBeUndefined()
   })
 })
 

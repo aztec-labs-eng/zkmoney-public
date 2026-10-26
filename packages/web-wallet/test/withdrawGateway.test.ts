@@ -14,10 +14,10 @@ import {
   withdrawalAmounts,
 } from "@obsidion/front-core"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
+import { LIMIT, LIMIT_USD } from "./support/publicLimit"
 
 const L2_TX = `0x${"0a".repeat(32)}` as Hex
-// What the stubbed portal reads back as FPC_FUNDING_CUT — every route records it.
-const CUT = 250_000_000_000_000_000n
+const TX_AMOUNT_CAP = 5166n * 10n ** 18n
 // The tip a swap commits to is whatever the confirm step's simulation said; the gateway takes it as given.
 const RELAYER_TIP = 3n * 10n ** 18n
 const SWAP_COMMIT = { relayerTip: RELAYER_TIP, amountOut: 96_000_000n, decimals: 6 }
@@ -32,29 +32,46 @@ const SWAP_TUPLE = {
   // Leading byte below the BN254 modulus — AztecAddress rejects anything at or above the field.
   l2Broadcaster: `0x${"1b".repeat(32)}`,
 }
-// What the stubbed portal answers the sdk's pre-burn relayer-tip check with.
-const PORTAL_STATE = { fpcFundingCut: CUT, frozen: false }
 
+// The executor's withdrawal fee is priced in its own suites; here it costs nothing.
+const executorAt = vi.fn(async (..._args: unknown[]) => ({ fee: 0n }))
+vi.mock("../src/features/withdraw/withdrawalFee", () => ({
+  withdrawalExecutorFee: async () => 0n,
+  activeWithdrawalFee: async () => 0n,
+  activeWithdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutorAt: (...args: unknown[]) => executorAt(...args),
+  useActiveWithdrawalFee: () => 0n,
+}))
 vi.mock("../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/env")>()),
   getConfig: () => ({ l1ChainId: 11155111 }),
   l1Transport: () => ({}),
 }))
-// The portal alone resolves no withdrawal wiring, so the chain watcher is skipped, and it is what
-// every route's FPC-cut read needs. Swap tests override the tuple per-test via mockTuple.
+// The portal alone resolves no withdrawal wiring, so the chain watcher is skipped. Swap tests
+// override the tuple per-test via mockTuple.
 const PORTAL_ONLY = { portal: `0x${"70".repeat(20)}` }
+const WIRED_TUPLE = {
+  ...PORTAL_ONLY,
+  token: SWAP_TUPLE.token,
+  l2Token: `0x${"2a".repeat(32)}`,
+  plainWithdrawalExecutor: `0x${"e8".repeat(20)}`,
+}
 const mockTuple = vi.fn<() => Record<string, string>>(() => ({ ...PORTAL_ONLY }))
 // Only the seams that would dial the network are stubbed; `requireTupleField` stays REAL, so the
 // thin-manifest tests below assert the message and the rejection rule production actually has.
-// Every route reads the portal's FPC funding cut and whether it is frozen; a swap also asks the
-// account factory for the wallet's account.
+// A swap asks the account factory for the wallet's account.
 const readContract = vi.fn(async ({ functionName }: { functionName: string }) =>
-  functionName === "$frozen" ? false : functionName === "predictAccountAddress" ? ACCOUNT : CUT,
+  functionName === "predictAccountAddress" ? ACCOUNT : undefined,
 )
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
   getOxideTuple: async () => mockTuple(),
   l1PublicClient: () => ({ readContract }),
+}))
+vi.mock("../src/features/token/oxideToken", () => ({
+  currentTxAmountCap: async () => TX_AMOUNT_CAP,
+  portalDomainOfToken: async () => ({}),
 }))
 vi.mock("../src/features/onboarding/claimSponsorship", () => ({
   claimSponsorContext: async () => ({ fpcAddress: {}, policy: {} }),
@@ -71,12 +88,21 @@ vi.mock("../src/platform/auth/useAuthenticator", () => ({
 
 // planSwapOnWithdraw stays real, which is what makes the escrow assertions below meaningful. The
 // rescan's event source reads PXE; the test hands it the events directly.
-const scannedEvents = vi.fn<() => ScannedWithdrawEvent[]>(() => [])
+const scannedEvents = vi.fn<
+  (source: { readExecutor(address: Address): Promise<unknown> }) => Promise<ScannedWithdrawEvent[]>
+>(async () => [])
+// Wired deployments arm the chain watcher; its polling is not under test here.
+vi.mock("@obsidion/front-core", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/front-core")>()),
+  WithdrawalTrackingService: {
+    get: () => ({ resumeAll: async () => {}, watch: async () => {} }),
+  },
+}))
 vi.mock("@obsidion/sdk", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/sdk")>()),
-  createWithdrawEventSource: vi.fn(() => ({
+  createWithdrawEventSource: vi.fn((source) => ({
     headBlock: async () => 100,
-    listWithdrawals: async () => scannedEvents(),
+    listWithdrawals: () => scannedEvents(source),
     blockTimestampMs: async () => 1_234_000,
   })),
 }))
@@ -93,7 +119,8 @@ const deps = () =>
     contractService: {},
     screener: { screen: async () => ({ compliant: true }) },
     tokenService: {
-      fetchTokenInformation: async () => ({ symbol: "DAI" }),
+      fetchTokenInformation: async () => ({ symbol: "DAI", decimals: 18 }),
+      getTokenContract: vi.fn(async () => ({} as never)),
       exitToL1PrivateSponsored: vi.fn(async () => ({
         txHash: L2_TX,
         blockNumber: 42,
@@ -111,16 +138,14 @@ describe("submitSponsoredWithdrawal", () => {
     mockTuple.mockReturnValue({ ...PORTAL_ONLY })
   })
 
-  it("records both halves of the fee beside the amount the burn removed", async () => {
+  it("records the relayer tip beside the amount the burn removed", async () => {
     const record = await submitSponsoredWithdrawal(deps(), RECIPIENT, "120", vi.fn())
 
     expect(record.phase).toBe("l2_mined")
     expect(record.rawAmount).toBe(parseUnits("120", 18).toString())
     expect(record.relayerTip).toBe(WITHDRAW_RELAYER_TIP.toString())
-    expect(record.fpcFundingCut).toBe(CUT.toString())
     const stored = getWithdrawalStore().get(record.localId)
     expect(stored?.relayerTip).toBe(WITHDRAW_RELAYER_TIP.toString())
-    expect(stored?.fpcFundingCut).toBe(CUT.toString())
   })
 
   it("stamps the recipient alias onto the record", async () => {
@@ -188,16 +213,13 @@ describe("submitSponsoredWithdrawal", () => {
 
   it("keeps a mined burn at l2_mined when the watcher boot rejects after markMined", async () => {
     // The boot is memoized per module; a fresh import guarantees the withdrawal path is the one
-    // that boots it. The first two tuple reads price the fee and stamp the deployment pre-record;
-    // the third is the boot.
+    // that boots it. The first tuple read prices the burn and stamps its deployment pre-record;
+    // the second is the boot.
     vi.resetModules()
     const fresh = await import("../src/features/withdraw/withdrawGateway")
-    mockTuple
-      .mockReturnValueOnce({ ...PORTAL_ONLY })
-      .mockReturnValueOnce({ ...PORTAL_ONLY })
-      .mockImplementation(() => {
-        throw new Error("manifest 503")
-      })
+    mockTuple.mockReturnValueOnce({ ...PORTAL_ONLY }).mockImplementation(() => {
+      throw new Error("manifest 503")
+    })
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {})
 
     try {
@@ -246,7 +268,7 @@ describe("submitSponsoredWithdrawal", () => {
       d.tokenService.exitToL1PrivateSponsored as ReturnType<typeof vi.fn>
     ).mock.calls[0]! as [{ toString(): string }, unknown, unknown, { withdrawal: unknown }]
     expect(burnRecipient.toString().toLowerCase()).toBe(RECIPIENT)
-    expect(exitOpts.withdrawal).toEqual({ tuple: PORTAL_ONLY, portal: PORTAL_STATE })
+    expect(exitOpts.withdrawal).toEqual({ tuple: PORTAL_ONLY, l1: expect.anything() })
   })
 
   it("burns and records the prover tip it is given, and none by default", async () => {
@@ -266,7 +288,7 @@ describe("submitSponsoredWithdrawal", () => {
     expect((exit.mock.calls[0]![3] as { proverTip?: bigint }).proverTip).toBe(tip)
     expect(record.proverTip).toBe(tip.toString())
     expect(withdrawalAmounts(record).netAtomic).toBe(
-      parseUnits("120", 18) - tip - CUT - WITHDRAW_RELAYER_TIP,
+      parseUnits("120", 18) - tip - WITHDRAW_RELAYER_TIP,
     )
 
     const plain = deps()
@@ -277,17 +299,19 @@ describe("submitSponsoredWithdrawal", () => {
   })
 
   // A stale sheet or a direct caller reaches the gateway with whatever amount it holds.
-  it("burns exactly $2,500 and refuses one atomic unit more before screening, recording or burning", async () => {
+  it(`burns exactly ${LIMIT_USD} and refuses one atomic unit more before screening, recording or burning`, async () => {
     const exact = deps()
-    await submitSponsoredWithdrawal(exact, RECIPIENT, "2500", vi.fn())
+    await submitSponsoredWithdrawal(exact, RECIPIENT, String(LIMIT), vi.fn())
     const exit = exact.tokenService.exitToL1PrivateSponsored as ReturnType<typeof vi.fn>
-    expect(exit.mock.calls[0]![1]).toBe(parseUnits("2500", 18).toString())
+    expect(exit.mock.calls[0]![1]).toBe(parseUnits(String(LIMIT), 18).toString())
     await getWithdrawalStore().clearAll()
 
     const over = deps()
     const screen = vi.spyOn(over.screener, "screen")
-    const run = submitSponsoredWithdrawal(over, RECIPIENT, "2500.000000000000000001", vi.fn())
-    await expect(run).rejects.toThrow("This withdrawal is over the $2,500 limit, fees included.")
+    const run = submitSponsoredWithdrawal(over, RECIPIENT, `${LIMIT}.000000000000000001`, vi.fn())
+    await expect(run).rejects.toThrow(
+      `This withdrawal is over the ${LIMIT_USD} limit, fees included.`,
+    )
     expect(screen).not.toHaveBeenCalled()
     expect(over.tokenService.exitToL1PrivateSponsored).not.toHaveBeenCalled()
     expect(getWithdrawalStore().list()).toHaveLength(0)
@@ -345,11 +369,11 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
     expect(record.swapEscrowFactory).toBe(SWAP_TUPLE.swapEscrowFactoryV2)
     expect(record.swapEscrowLayout).toBe("v2")
 
-    // The sdk pairs the escrow's swap with the release, and writes the escrow args into the meta
-    // a rescan rebuilds this record from.
+    // The sdk pairs the escrow's swap with the release.
     expect((exitCall[3] as { withdrawal?: unknown }).withdrawal).toEqual({
       tuple: SWAP_TUPLE,
-      portal: PORTAL_STATE,
+      // The sdk reads the executor's fee, and asks the factory to confirm the escrow before the burn.
+      l1: expect.objectContaining({ readContract: expect.any(Function) }),
       swap: expect.objectContaining({
         escrow: record.swapEscrow,
         escrowArgs: {
@@ -361,8 +385,6 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
           relayerTip: RELAYER_TIP,
           nonce: record.swapNonce,
         },
-        // The sdk asks the factory to confirm the escrow through this client before the burn.
-        l1: expect.objectContaining({ readContract: expect.any(Function) }),
         recovery: {
           account: ACCOUNT,
           salt: deriveSwapEscrowRecoverySalt(MASTER_SECRET, record.swapNonce!),
@@ -390,7 +412,7 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
     expect(record.proverTip).toBe(tip.toString())
 
     // A tip that leaves the escrow nothing to swap fails the plan before anything is stored.
-    const eaten = parseUnits("120", 18) - WITHDRAW_RELAYER_TIP - CUT - RELAYER_TIP
+    const eaten = parseUnits("120", 18) - WITHDRAW_RELAYER_TIP - RELAYER_TIP
     await getWithdrawalStore().clearAll()
     const rejected = deps()
     await expect(
@@ -414,76 +436,130 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
       "webwallet.identity",
       JSON.stringify({ address: `0x${"1a".repeat(32)}`, claimedAt: 0 }),
     )
+    // The rescan reads the account's burns only where the withdrawal rails resolve.
+    mockTuple.mockReturnValue(WIRED_TUPLE)
     const d = deps()
-    const known = await submitSponsoredWithdrawal(
-      d,
-      RECIPIENT,
-      "120",
-      vi.fn(),
-      undefined,
-      "USDC",
-      SWAP_COMMIT,
-    )
-    scannedEvents.mockReturnValue([
+    const known = await submitSponsoredWithdrawal(d, RECIPIENT, "120", vi.fn())
+    const ESCROW = getAddress(`0x${"e5".repeat(20)}`)
+    const RETIRED_EXECUTOR = getAddress(`0x${"e9".repeat(20)}`)
+    scannedEvents.mockResolvedValue([
       {
         txHash: known.l2TxHash!,
         blockNumber: 42,
-        l1Recipient: known.swapEscrow!,
+        executor: getAddress(WIRED_TUPLE.plainWithdrawalExecutor),
+        withdrawalFee: 0n,
+        l1Recipient: RECIPIENT,
         amount: parseUnits("120", 18),
+        proverTip: 0n,
+        relayerTip: WITHDRAW_RELAYER_TIP,
       },
       {
         txHash: `0x${"0b".repeat(32)}`,
         blockNumber: 50,
-        l1Recipient: known.swapEscrow!,
+        // An executor the bridge no longer lists: the burn's own is what the record keeps.
+        executor: RETIRED_EXECUTOR,
+        withdrawalFee: 7n,
+        l1Recipient: ESCROW,
         amount: parseUnits("60", 18),
-        swap: {
-          output: "USDC",
-          recipient: RECIPIENT,
-          factory: getAddress(SWAP_TUPLE.swapEscrowFactoryV2),
-          recoveryCommitment: known.swapRecoveryCommitment!,
-          relayerTip: RELAYER_TIP,
-          nonce: known.swapNonce!,
-          daiForGas: 0n,
-          minEthForGas: 0n,
-          layout: "v2",
-        },
+        proverTip: 0n,
+        relayerTip: WITHDRAW_RELAYER_TIP,
       },
     ])
 
     const rebuilt = await rescanWithdrawals(d.wallet, [{ tokenService: d.tokenService }])
 
     expect(rebuilt).toHaveLength(1)
+    // The events name the address the burn pays, so a rebuilt escrow burn shows the escrow.
     expect(rebuilt[0]).toMatchObject({
       l2TxHash: `0x${"0b".repeat(32)}`,
       phase: "l2_mined",
       amount: "60",
-      recipient: RECIPIENT,
-      swapEscrow: known.swapEscrow,
-      swapNonce: known.swapNonce,
-      swapRecoveryCommitment: known.swapRecoveryCommitment,
+      recipient: ESCROW,
+      relayerTip: WITHDRAW_RELAYER_TIP.toString(),
       startTime: 1_234_000,
+      deployment: {
+        portal: WIRED_TUPLE.portal,
+        l2Token: WIRED_TUPLE.l2Token,
+        executor: RETIRED_EXECUTOR,
+      },
+      withdrawalFee: "7",
       rebuilt: true,
     })
+    // A new record names the executor the bridge lists.
+    expect(known.deployment?.executor).toBe(WIRED_TUPLE.plainWithdrawalExecutor)
     expect(getWithdrawalStore().list()).toHaveLength(2)
     // Memoized per page load and token: a second call is the same pass, and a token a later call
     // adds is scanned then.
     const scans = scannedEvents.mock.calls.length
-    scannedEvents.mockReturnValue([])
+    scannedEvents.mockResolvedValue([])
     const savings = {
       fetchTokenInformation: async () => ({
         ...(await d.tokenService.fetchTokenInformation()),
         symbol: "sUSDS",
       }),
+      getTokenContract: vi.fn(async () => ({} as never)),
     }
     const again = await rescanWithdrawals(d.wallet, [
       { tokenService: d.tokenService },
-      { tokenService: savings, tuple: { ...SWAP_TUPLE, l2Token: `0x${"5a".repeat(32)}` } as never },
+      {
+        tokenService: savings,
+        tuple: { ...WIRED_TUPLE, l2Token: `0x${"5a".repeat(32)}` } as never,
+      },
     ])
     expect(again).toEqual(rebuilt)
     expect(scannedEvents.mock.calls.length).toBe(scans + 1)
   })
 
-  it("persists the FPC cut and the confirm-time simulation for the detail sheet", async () => {
+  it("scans a token again when its pass could not read a burn's executor", async () => {
+    walletStorage.setItem(
+      "webwallet.identity",
+      JSON.stringify({ address: `0x${"1a".repeat(32)}`, claimedAt: 0 }),
+    )
+    mockTuple.mockReturnValue(WIRED_TUPLE)
+    const d = deps()
+    const token = {
+      tokenService: d.tokenService,
+      tuple: { ...WIRED_TUPLE, l2Token: `0x${"5b".repeat(32)}` } as never,
+    }
+    scannedEvents.mockImplementation(async (source) => {
+      await source.readExecutor(getAddress(WIRED_TUPLE.plainWithdrawalExecutor)).catch(() => {})
+      return []
+    })
+    executorAt.mockRejectedValueOnce(new Error("L1 read timed out"))
+    const scans = scannedEvents.mock.calls.length
+
+    await rescanWithdrawals(d.wallet, [token])
+    await rescanWithdrawals(d.wallet, [token])
+    await rescanWithdrawals(d.wallet, [token])
+
+    // The read that failed drops the pass; the next one reads its executor and is kept.
+    expect(scannedEvents.mock.calls.length).toBe(scans + 2)
+    scannedEvents.mockImplementation(async () => [])
+  })
+
+  it("fails a pass run without every executor, so the next call scans the token again", async () => {
+    walletStorage.setItem(
+      "webwallet.identity",
+      JSON.stringify({ address: `0x${"1a".repeat(32)}`, claimedAt: 0 }),
+    )
+    const d = deps()
+    scannedEvents.mockResolvedValue([])
+    const token = {
+      tokenService: d.tokenService,
+      tuple: { ...WIRED_TUPLE, l2Token: `0x${"6b".repeat(32)}` } as never,
+    }
+    const scans = scannedEvents.mock.calls.length
+
+    await expect(rescanWithdrawals(d.wallet, [{ ...token, partial: true }])).rejects.toThrow(
+      "without every executor",
+    )
+    await rescanWithdrawals(d.wallet, [token])
+    await rescanWithdrawals(d.wallet, [token])
+
+    expect(scannedEvents.mock.calls.length).toBe(scans + 2)
+  })
+
+  it("persists the confirm-time simulation for the detail sheet", async () => {
     const record = await submitSponsoredWithdrawal(
       deps(),
       RECIPIENT,
@@ -495,7 +571,6 @@ describe("submitSponsoredWithdrawal — swap-on-withdraw", () => {
     )
 
     const stored = getWithdrawalStore().get(record.localId)
-    expect(stored?.fpcFundingCut).toBe(CUT.toString()) // the stubbed portal read
     expect(stored?.swapRelayerTip).toBe(RELAYER_TIP.toString())
     expect(stored?.swapEstimatedOut).toBe(parseUnits("0.5", 18).toString())
     expect(stored?.swapOutputDecimals).toBe(18)

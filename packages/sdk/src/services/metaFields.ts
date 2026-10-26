@@ -4,8 +4,8 @@
  * below the modulus.
  */
 
-import { Fr } from "@aztec/aztec.js/fields"
-import type { FieldLike } from "@aztec/aztec.js/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { FieldLike } from "@aztec-labs/aztec.js/abi"
 
 export const BYTES_PER_FIELD = 31
 

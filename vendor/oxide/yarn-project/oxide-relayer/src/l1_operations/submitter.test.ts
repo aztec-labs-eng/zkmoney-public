@@ -1,9 +1,12 @@
-import { AztecAddress, EthAddress } from '@aztec/aztec.js/addresses';
-import { TimeoutError } from '@aztec/foundation/error';
-import { type DateProvider, TestDateProvider } from '@aztec/foundation/timer';
+import { AztecAddress, EthAddress } from '@aztec-labs/aztec.js/addresses';
+import { TimeoutError } from '@aztec-labs/foundation/error';
+import { type DateProvider, TestDateProvider } from '@aztec-labs/foundation/timer';
 
-import { OperationExecutorAbi } from '@oxide/l1-contracts';
+import { OperationExecutorAbi, buildSipaSweepOperation } from '@oxide/l1-contracts';
 import {
+  LEGACY_OPERATION_EXECUTOR_ABI,
+  MAX_TRANSACTION_GAS,
+  type OperationExecutorVersion,
   SIMULATED_SENDER_BALANCE,
   UINT256_EXTRA_CALLDATA_GAS,
   WEI_PER_ETH,
@@ -29,11 +32,13 @@ import {
 
 import type { L1OperationsSubmissionConfig } from '../cli/config.js';
 import type { SentL1Tx } from '../l1/l1_tx_queue.js';
-import type { ChainlinkPriceOracle } from '../price_oracle/chainlink_price_oracle.js';
+import { fixedPriceOracle } from '../price_oracle/fixed_price_oracle.js';
+import type { PriceOracle } from '../price_oracle/price_oracle.js';
 import type { RelayerTelemetry } from '../relayer_telemetry.js';
 import { openSqliteStateStore } from '../state/sqlite_store.js';
 import { TEST_RELAYER_DEPLOYMENT } from '../state/test_fixtures.js';
 import type { PendingL1Operation, StateStore } from '../state/types.js';
+import type { L1OperationOwnership } from './l1_operation_router.js';
 import { L1OperationScreener } from './l1_operation_screener.js';
 import { L1OperationSubmitter, type L1OperationSubmitterDeps } from './submitter.js';
 import type { WithdrawalCompletion } from './withdrawal_completion.js';
@@ -50,10 +55,12 @@ const PAYOUT_TOKEN = EthAddress.random();
 const CALLDATA = Buffer.from('deadbeef', 'hex');
 const OPERATION_ID = `0x${'ab'.repeat(32)}` as Hex;
 const PAYOUT = 500_000n;
-/** Gas a successful simulation uses unless the quote sets it; equal to the default gas estimate. */
+/** Gas a successful simulation uses unless the quote sets it. */
 const SIMULATED_GAS_USED = 100_000n;
 /** The sent gas to cover for the default simulation: the gas used, plus the calldata gas of two nonzero arguments. */
 const GAS_TO_COVER = SIMULATED_GAS_USED + 2n * UINT256_EXTRA_CALLDATA_GAS;
+/** The gas limit for the default simulation, before the calldata gas of two nonzero arguments: 3/2 of the gas used. */
+const SIMULATED_GAS_LIMIT = (SIMULATED_GAS_USED * 3n) / 2n;
 const RECIPIENT = EthAddress.random();
 const MAX_PENDING_AGE_MS = 48 * 60 * 60_000;
 const REVERT = () => Promise.resolve({ status: 'failure' as const, error: new Error('execution reverted') });
@@ -89,26 +96,39 @@ interface FakeSenderOpts {
   feeValues?: FeeValuesEIP1559;
   /** The block numbers that successive `getBlock` reads return; 10 when omitted. */
   blockNumbers?: bigint[];
+  /** The gas limit of each block that `getBlock` returns; 30M when omitted. */
+  blockGasLimit?: bigint;
   maxFeePerGasCap?: bigint;
   /** Terminal outcome each send's `settled` monitor reports; a mined success when omitted. */
   outcome?: 'success' | 'reverted' | 'timeout';
+  /** Each send is simulated, as with submission disabled. */
+  simulated?: boolean;
+  /** Each send's `settled` monitor reports its outcome only when `settle` is called. */
+  held?: boolean;
 }
 
 function fakeSender(opts: FakeSenderOpts = {}) {
   let nextId = 0;
   const feeValues = opts.feeValues ?? { maxFeePerGas: 1n, maxPriorityFeePerGas: 1n };
+  const held: Array<() => void> = [];
 
   const sendTransaction = jest.fn((_request: TransactionRequestEIP1559): Promise<SentL1Tx> => {
     const id = nextId++;
     const txHash = `0x${(id + 1).toString(16).padStart(64, '0')}` as Hex;
     const outcome = opts.outcome ?? 'success';
-    const settled =
+    const result =
       outcome === 'timeout'
         ? Promise.reject(new TimeoutError(`L1 transaction with nonce ${id} expired without a receipt`))
-        : Promise.resolve({ status: outcome } as unknown as TransactionReceipt);
-    // Pre-handled branch, like the real L1 tx queue provides.
+        : Promise.resolve({
+            status: outcome,
+            gasUsed: 50_000n,
+            effectiveGasPrice: 3n,
+          } as unknown as TransactionReceipt);
+    const settled = opts.held ? new Promise<TransactionReceipt>(resolve => held.push(() => resolve(result))) : result;
+    // Pre-handled branches, like the real L1 tx queue provides.
+    result.catch(() => undefined);
     settled.catch(() => undefined);
-    return Promise.resolve({ txHash, nonce: id, settled });
+    return Promise.resolve({ txHash, nonce: id, settled, simulated: opts.simulated });
   });
 
   const blockNumbers = [...(opts.blockNumbers ?? [])];
@@ -116,7 +136,7 @@ function fakeSender(opts: FakeSenderOpts = {}) {
     getBlock: jest.fn(() =>
       Promise.resolve({
         number: blockNumbers.shift() ?? 10n,
-        gasLimit: 30_000_000n,
+        gasLimit: opts.blockGasLimit ?? 30_000_000n,
         baseFeePerGas: feeValues.maxFeePerGas - feeValues.maxPriorityFeePerGas,
       }),
     ),
@@ -128,12 +148,24 @@ function fakeSender(opts: FakeSenderOpts = {}) {
     maxFeePerGasCap: opts.maxFeePerGasCap,
   };
 
-  return { client, l1TxQueue, sendTransaction };
+  /** Reports the outcome of every held send. */
+  const settle = () => held.splice(0).forEach(release => release());
+  return { client, l1TxQueue, sendTransaction, settle };
 }
 
-const identityOracle = {
-  weiToUSD: (wei: bigint) => Promise.resolve(wei),
-} as unknown as ChainlinkPriceOracle;
+const identityOracle = fixedPriceOracle();
+
+type SimulatedExecute = { blocks: Array<{ calls: Array<{ args: readonly unknown[]; gas: bigint }> }> };
+
+/** The `execute` call of each simulation that `simulate` received, in order. */
+function simulatedCalls(simulate: { mock: { calls: unknown[][] } }) {
+  return simulate.mock.calls.map(([request]) => (request as SimulatedExecute).blocks[0].calls[0]);
+}
+
+/** The `minPayout` of each simulated `execute` call, in order. */
+function simulatedMinPayouts(simulate: { mock: { calls: unknown[][] } }): bigint[] {
+  return simulatedCalls(simulate).map(call => call.args[3] as bigint);
+}
 
 /** The sent `execute` arguments past the operation: the minimum payout, the gas to cover and the price. */
 function sentPayoutArgs(data: Hex) {
@@ -153,30 +185,38 @@ function buildSubmitter(
     config?: Partial<L1OperationsSubmissionConfig>;
     feeValues?: FeeValuesEIP1559;
     blockNumbers?: bigint[];
-    priceOracle?: ChainlinkPriceOracle;
+    blockGasLimit?: bigint;
+    priceOracle?: PriceOracle;
     maxFeePerGasCap?: bigint;
     outcome?: FakeSenderOpts['outcome'];
+    simulated?: boolean;
+    held?: boolean;
     allowUnprofitable?: boolean;
     dateProvider?: DateProvider;
     /** The `balanceOf` read of a `Balance` condition; a nonzero balance when omitted. */
     balance?: () => Promise<bigint>;
     telemetry?: RelayerTelemetry;
     withdrawalCompletion?: WithdrawalCompletion;
+    executorVersion?: OperationExecutorVersion;
+    /** Which saved operations another worker owns and holds; none when omitted. */
+    givesWayTo?: L1OperationOwnership['givesWayTo'];
   } = {},
 ) {
   const l1 = fakeSender({
     feeValues: overrides.feeValues,
     blockNumbers: overrides.blockNumbers,
+    blockGasLimit: overrides.blockGasLimit,
     maxFeePerGasCap: overrides.maxFeePerGasCap,
     outcome: overrides.outcome,
+    simulated: overrides.simulated,
+    held: overrides.held,
   });
   const quote = overrides.quote ?? (() => Promise.resolve({ status: 'success' as const, result: PAYOUT }));
   const simulateBlocks = jest.fn(async (args: unknown) => [
     { calls: [{ gasUsed: SIMULATED_GAS_USED, ...(await quote(args)) }] },
   ]);
-  const estimateGas = jest.fn((_request: unknown) => Promise.resolve(100_000n));
   const readContract = jest.fn((_request: unknown) => (overrides.balance ?? (() => Promise.resolve(1n)))());
-  Object.assign(l1.client, { simulateBlocks, estimateGas, readContract });
+  Object.assign(l1.client, { simulateBlocks, readContract });
   const listed = overrides.listed ?? [];
   const screener = new L1OperationScreener(
     { isListed: address => listed.some(entry => entry.equals(address)) },
@@ -184,6 +224,7 @@ function buildSubmitter(
   );
   const submitter = new L1OperationSubmitter({
     executor: EXECUTOR,
+    executorVersion: overrides.executorVersion ?? 'gas-to-cover',
     client: l1.client,
     l1TxQueue: l1.l1TxQueue,
     store,
@@ -195,11 +236,12 @@ function buildSubmitter(
       ...overrides.config,
     },
     withdrawalCompletion: overrides.withdrawalCompletion ?? NO_WITHDRAWALS,
+    ownership: { owns: () => true, givesWayTo: overrides.givesWayTo ?? (() => Promise.resolve(undefined)) },
     allowUnprofitable: overrides.allowUnprofitable,
     dateProvider: overrides.dateProvider,
     telemetry: overrides.telemetry,
   });
-  return { submitter, ...l1, simulateBlocks, estimateGas, readContract };
+  return { submitter, ...l1, simulateBlocks, readContract };
 }
 
 describe('L1OperationSubmitter', () => {
@@ -215,11 +257,7 @@ describe('L1OperationSubmitter', () => {
           gasUsed: minPayout === 0n ? 10_000n : 600_000n,
         });
       });
-      const { submitter, estimateGas, sendTransaction } = buildSubmitter(store, { quote });
-      estimateGas.mockImplementation(request => {
-        const { args } = decodeFunctionData({ abi: OperationExecutorAbi, data: (request as { data: Hex }).data });
-        return Promise.resolve(args[3] === 0n ? 10_000n : 600_000n);
-      });
+      const { submitter, sendTransaction } = buildSubmitter(store, { quote });
 
       const summary = await submitter.runOnce();
 
@@ -235,22 +273,159 @@ describe('L1OperationSubmitter', () => {
   it('prices the gas cost on the simulated gas used, not on the gas limit', async () => {
     await withStore(async store => {
       const feeValues = { maxFeePerGas: 4n, maxPriorityFeePerGas: 1n };
-      // Break-even on the gas used after refunds, below the break-even on the 130k gas limit.
+      // Break-even on the gas used after refunds, below the break-even on the gas limit of 3/2 of it.
       const payout = GAS_TO_COVER * feeValues.maxFeePerGas;
-      const { submitter, estimateGas, sendTransaction } = buildSubmitter(store, {
+      const { submitter, sendTransaction } = buildSubmitter(store, {
         feeValues,
         quote: () => Promise.resolve({ status: 'success' as const, result: payout }),
       });
-      estimateGas.mockResolvedValue(130_000n);
 
       await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, deferred: 0 });
       const [request] = sendTransaction.mock.calls[0];
-      // The tx still carries the estimated gas limit.
-      expect(request.gas).toBe(130_000n + 2n * UINT256_EXTRA_CALLDATA_GAS);
+      // The tx still carries the gas limit.
+      expect(request.gas).toBe(SIMULATED_GAS_LIMIT + 2n * UINT256_EXTRA_CALLDATA_GAS);
       expect(sentPayoutArgs(request.data as Hex)).toEqual({
         minPayout: 0n,
         gasToCover: GAS_TO_COVER,
         tokenWeiPerEth: WEI_PER_ETH,
+      });
+    });
+  });
+
+  it('keeps each simulation and the gas limit within the transaction gas cap when the block gas limit is above it', async () => {
+    await withStore(async store => {
+      // Above the cap, an RPC node can price the call's gas differently, and a subsidy that pays for gas at
+      // `tx.gasprice` then pays less than in the sent transaction. 3/2 of this gas is above the cap.
+      const gasUsed = 14_000_000n;
+      const { submitter, simulateBlocks, sendTransaction } = buildSubmitter(store, {
+        blockGasLimit: 200_000_000n,
+        quote: () => Promise.resolve({ status: 'success' as const, result: 10n ** 18n, gasUsed }),
+      });
+
+      await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, deferred: 0 });
+      expect(simulatedCalls(simulateBlocks).map(call => call.gas)).toEqual([15_000_000n, 15_000_000n, 15_000_000n]);
+      expect(sendTransaction.mock.calls[0][0].gas).toBeLessThanOrEqual(MAX_TRANSACTION_GAS);
+    });
+  });
+
+  describe('when the target requires more gas left than it uses', () => {
+    /** A target that reverts unless the call has `required` gas, as an ERC-4337 EntryPoint requires the user operation's gas limits. */
+    const requiringGas =
+      (required: bigint, result: bigint) =>
+      (request: unknown): Promise<SimulatedCall> =>
+        (request as SimulatedExecute).blocks[0].calls[0].gas < required
+          ? REVERT()
+          : Promise.resolve({ status: 'success' as const, result });
+
+    it('doubles the gas limit until a simulation passes, and sends that gas limit', async () => {
+      await withStore(async store => {
+        const { submitter, simulateBlocks, sendTransaction } = buildSubmitter(store, {
+          quote: requiringGas(1_000_000n, 10n ** 6n),
+        });
+
+        await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, deferred: 0 });
+        expect(simulatedCalls(simulateBlocks).map(call => call.gas)).toEqual([
+          15_000_000n,
+          15_000_000n,
+          SIMULATED_GAS_LIMIT,
+          2n * SIMULATED_GAS_LIMIT,
+          4n * SIMULATED_GAS_LIMIT,
+          8n * SIMULATED_GAS_LIMIT,
+        ]);
+        expect(simulatedMinPayouts(simulateBlocks).slice(1)).toEqual(Array(5).fill(10n ** 6n));
+        const [request] = sendTransaction.mock.calls[0];
+        const gasLimit = 8n * SIMULATED_GAS_LIMIT + 2n * UINT256_EXTRA_CALLDATA_GAS;
+        expect(request.gas).toBe(gasLimit);
+        // The target can use all of the gas limit, so the gas to cover is 2/3 of it, not the 100k gas used.
+        expect(sentPayoutArgs(request.data as Hex)).toEqual({
+          minPayout: 0n,
+          gasToCover: (2n * gasLimit + 2n) / 3n,
+          tokenWeiPerEth: WEI_PER_ETH,
+        });
+      });
+    });
+
+    it('defers without an attempt when the simulation fails at the gas cap', async () => {
+      await withStore(async store => {
+        // The payout quote and the gas simulation pass. Each simulation at a gas limit fails, also at the cap.
+        let calls = 0;
+        const quote = (_request: unknown): Promise<SimulatedCall> =>
+          ++calls <= 2 ? Promise.resolve({ status: 'success' as const, result: 10n ** 6n }) : REVERT();
+        const { submitter, simulateBlocks, sendTransaction } = buildSubmitter(store, { quote });
+
+        await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 0, deferred: 1 });
+        expect(sendTransaction).not.toHaveBeenCalled();
+        expect(simulatedCalls(simulateBlocks).at(-1)?.gas).toBe(15_000_000n);
+        await expect(store.getPendingL1Operation(OPERATION_ID)).resolves.toMatchObject({
+          status: 'pending',
+          attempts: 0,
+        });
+      });
+    });
+
+    it('defers a payout that covers the gas used but not 2/3 of the gas limit', async () => {
+      await withStore(async store => {
+        // PAYOUT covers the 100k gas used, but not 2/3 of the 1.2M gas limit.
+        const { submitter, sendTransaction } = buildSubmitter(store, { quote: requiringGas(1_000_000n, PAYOUT) });
+
+        await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 0, deferred: 1 });
+        expect(sendTransaction).not.toHaveBeenCalled();
+        await expect(store.getPendingL1Operation(OPERATION_ID)).resolves.toMatchObject({ lastReason: 'unprofitable' });
+      });
+    });
+  });
+
+  describe('with a legacy executor', () => {
+    // The relayer's fee ceiling: twice the base fee of 3 plus the tip of 1. The quote price is 4.
+    const feeValues = { maxFeePerGas: 4n, maxPriorityFeePerGas: 1n };
+    const MAX_FEE_PER_GAS = 7n;
+
+    it('sends the four-argument execute with the gas at the fee ceiling as its minimum payout', async () => {
+      await withStore(async store => {
+        const payout = GAS_TO_COVER * MAX_FEE_PER_GAS;
+        const quote = jest.fn((_request: unknown) => Promise.resolve({ status: 'success' as const, result: payout }));
+        const { submitter, sendTransaction } = buildSubmitter(store, {
+          executorVersion: 'legacy',
+          feeValues,
+          quote,
+        });
+
+        await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, deferred: 0 });
+
+        // The three simulations call the legacy `execute`, and the two gas simulations require the quoted payout.
+        expect(quote).toHaveBeenCalledTimes(3);
+        for (const [request] of quote.mock.calls) {
+          const call = (request as { blocks: Array<{ calls: Array<{ abi: unknown; args: readonly unknown[] }> }> })
+            .blocks[0].calls[0];
+          expect(call.abi).toBe(LEGACY_OPERATION_EXECUTOR_ABI);
+          expect(call.args).toHaveLength(4);
+        }
+        expect(simulatedMinPayouts(quote)).toEqual([0n, payout, payout]);
+
+        const sent = decodeFunctionData({
+          abi: LEGACY_OPERATION_EXECUTOR_ABI,
+          data: sendTransaction.mock.calls[0][0].data as Hex,
+        });
+        const [target, calldata, payoutToken, minPayout] = sent.args;
+        expect([target.toLowerCase(), calldata, payoutToken.toLowerCase(), minPayout]).toEqual([
+          TARGET.toString().toLowerCase(),
+          `0x${CALLDATA.toString('hex')}`,
+          PAYOUT_TOKEN.toString().toLowerCase(),
+          payout,
+        ]);
+      });
+    });
+
+    it('defers a payout that covers the gas at the quote price but not at the fee ceiling', async () => {
+      await withStore(async store => {
+        const { submitter, sendTransaction } = buildSubmitter(store, {
+          executorVersion: 'legacy',
+          feeValues,
+          quote: () => Promise.resolve({ status: 'success' as const, result: GAS_TO_COVER * MAX_FEE_PER_GAS - 1n }),
+        });
+
+        await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 0, deferred: 1 });
+        expect(sendTransaction).not.toHaveBeenCalled();
       });
     });
   });
@@ -276,35 +451,29 @@ describe('L1OperationSubmitter', () => {
     });
   });
 
-  it('prices a subsidy-only payout before using it as the estimation minPayout', async () => {
+  it('prices a subsidy-only payout before using it as the minPayout of the gas simulations', async () => {
     await withStore(async store => {
       const feeValues = { maxFeePerGas: 2n, maxPriorityFeePerGas: 1n };
       // The default 100% headroom doubles the base fee of 1, plus the tip of 1.
       const feeCeiling = 3n;
       const quote = jest.fn((request: unknown) => {
         const args = request as { blocks: Array<{ calls: Array<FeeValuesEIP1559> }> };
-        // A zero-tip refund earns only the gas-price-dependent withdrawal subsidy. An unpriced quote returns zero.
+        // A zero-tip refund earns only a subsidy that depends on the gas price. An unpriced quote returns zero.
         const payout = args.blocks[0].calls[0].maxFeePerGas === feeCeiling ? PAYOUT : 0n;
         return Promise.resolve({ status: 'success' as const, result: payout });
       });
-      const { submitter, estimateGas, sendTransaction } = buildSubmitter(store, { feeValues, quote });
-      estimateGas.mockImplementation(request => {
-        const { args } = decodeFunctionData({ abi: OperationExecutorAbi, data: (request as { data: Hex }).data });
-        // A zero minPayout permits the target to skip the inner call; the subsidy quote must make it nonzero.
-        return Promise.resolve(args[3] === 0n ? 10_000n : 100_000n);
-      });
+      const { submitter, sendTransaction } = buildSubmitter(store, { feeValues, quote });
 
       await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, confirmed: 1, deferred: 0 });
-      // The payout quote and the gas simulation.
-      expect(quote).toHaveBeenCalledTimes(2);
+      // The payout quote, the gas simulation, and the simulation at the gas limit.
+      expect(quote).toHaveBeenCalledTimes(3);
       expect(sendTransaction).toHaveBeenCalledTimes(1);
-      const estimateRequest = estimateGas.mock.calls[0][0] as { data: Hex };
-      const estimated = decodeFunctionData({ abi: OperationExecutorAbi, data: estimateRequest.data as Hex });
-      expect(estimated.args[3]).toBe(PAYOUT);
+      // A zero minPayout permits the target to skip the inner call; the subsidy quote must make it nonzero.
+      expect(simulatedMinPayouts(quote)).toEqual([0n, PAYOUT, PAYOUT]);
     });
   });
 
-  it('does not inflate the estimation minPayout when the fee ceiling exceeds the effective price', async () => {
+  it('does not inflate the minPayout of the gas simulations when the fee ceiling exceeds the effective price', async () => {
     await withStore(async store => {
       // The latest base fee is 3 and the tip is 1. A 100% headroom puts the ceiling at 3 x 2 + 1 = 7, above the
       // effective 4.
@@ -325,24 +494,22 @@ describe('L1OperationSubmitter', () => {
         const baseFee = block.blockOverrides?.baseFeePerGas ?? 0n;
         const effective = baseFee + call.maxPriorityFeePerGas;
         const price = call.gasPrice ?? (call.maxFeePerGas < effective ? call.maxFeePerGas : effective);
-        return Promise.resolve({ status: 'success' as const, result: tip + subsidyPerGasPrice * price });
+        const result = tip + subsidyPerGasPrice * price;
+        if (((call as unknown as { args: readonly unknown[] }).args[3] as bigint) > result) {
+          return Promise.resolve({
+            status: 'failure' as const,
+            error: new Error('quoted payout exceeds the effective-price payout'),
+          });
+        }
+        return Promise.resolve({ status: 'success' as const, result });
       });
-      const { submitter, estimateGas, sendTransaction } = buildSubmitter(store, {
+      const { submitter, sendTransaction } = buildSubmitter(store, {
         feeValues,
         quote,
       });
-      estimateGas.mockImplementation(request => {
-        const { args } = decodeFunctionData({ abi: OperationExecutorAbi, data: (request as { data: Hex }).data });
-        if (args[3] > payout) {
-          return Promise.reject(new Error('quoted payout exceeds the effective-price payout'));
-        }
-        return Promise.resolve(args[3] === 0n ? 10_000n : 100_000n);
-      });
 
       await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, confirmed: 1, deferred: 0 });
-      const estimateRequest = estimateGas.mock.calls[0][0] as { data: Hex };
-      const estimated = decodeFunctionData({ abi: OperationExecutorAbi, data: estimateRequest.data as Hex });
-      expect(estimated.args[3]).toBe(payout);
+      expect(simulatedMinPayouts(quote)).toEqual([0n, payout, payout]);
       const sent = sendTransaction.mock.calls[0];
       expect(sent[0]).toMatchObject({ maxFeePerGas: 7n, maxPriorityFeePerGas: 1n });
       // The sent gas to cover is an amount of gas, which the executor prices at the gas price the tx pays, not at the
@@ -357,7 +524,7 @@ describe('L1OperationSubmitter', () => {
 
   it('submits a gas cost that breaks even at the quote price', async () => {
     await withStore(async store => {
-      const { submitter, sendTransaction, simulateBlocks, estimateGas } = buildSubmitter(store);
+      const { submitter, sendTransaction, simulateBlocks } = buildSubmitter(store);
       const summary = await submitter.runOnce();
       // The operation is submitted, awaited to a receipt, and confirmed within the same poll.
       expect(summary).toMatchObject({ submitted: 1, confirmed: 1, dropped: 0, blocked: 0 });
@@ -382,11 +549,12 @@ describe('L1OperationSubmitter', () => {
         traceTransfers: true,
         validation: true,
       });
-      const estimated = decodeFunctionData({
-        abi: OperationExecutorAbi,
-        data: (estimateGas.mock.calls[0][0] as { data: Hex }).data,
-      });
-      expect(estimated.args[3]).toBe(PAYOUT);
+      // The gas simulation and the simulation at the gas limit require the quoted payout.
+      expect(simulatedCalls(simulateBlocks).map(call => [call.args[3], call.gas])).toEqual([
+        [0n, 15_000_000n],
+        [PAYOUT, 15_000_000n],
+        [PAYOUT, SIMULATED_GAS_LIMIT],
+      ]);
       const request = sendTransaction.mock.calls[0][0];
       expect(request.to).toBe(EXECUTOR.toString());
       const decoded = decodeFunctionData({ abi: OperationExecutorAbi, data: request.data as Hex });
@@ -403,6 +571,34 @@ describe('L1OperationSubmitter', () => {
     });
   });
 
+  it('gives way to another worker that owns and holds the saved operation, without simulating or sending', async () => {
+    await withStore(async store => {
+      const telemetry = { l1OperationOutcome: jest.fn() } as unknown as RelayerTelemetry;
+      const givesWayTo = jest.fn((_operation: unknown) => Promise.resolve<string | undefined>('dep-v6'));
+      const { submitter, simulateBlocks, sendTransaction } = buildSubmitter(store, { givesWayTo, telemetry });
+
+      const summary = await submitter.runOnce();
+
+      expect(givesWayTo).toHaveBeenCalledWith(expect.objectContaining({ operationId: OPERATION_ID }));
+      expect(summary).toMatchObject({ submitted: 0, dropped: 0 });
+      expect(simulateBlocks).not.toHaveBeenCalled();
+      expect(sendTransaction).not.toHaveBeenCalled();
+      await expect(store.getPendingL1Operation(OPERATION_ID)).resolves.toMatchObject({ status: 'dropped' });
+      // The owner submits it, so giving way is not a failure outcome.
+      expect((telemetry as unknown as { l1OperationOutcome: jest.Mock }).l1OperationOutcome).not.toHaveBeenCalled();
+    });
+  });
+
+  it('keeps and submits the saved operation when the ownership lookup fails', async () => {
+    await withStore(async store => {
+      const givesWayTo = () => Promise.reject(new Error('store closed'));
+      const { submitter } = buildSubmitter(store, { givesWayTo });
+
+      await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, confirmed: 1 });
+      await expect(store.getPendingL1Operation(OPERATION_ID)).resolves.toMatchObject({ status: 'executed' });
+    });
+  });
+
   it('marks the operation executed once its tx mines successfully', async () => {
     await withStore(async store => {
       const { submitter } = buildSubmitter(store);
@@ -412,6 +608,39 @@ describe('L1OperationSubmitter', () => {
       expect(summary).toMatchObject({ submitted: 1, confirmed: 1 });
       await expect(store.getPendingL1Operation(OPERATION_ID)).resolves.toMatchObject({ status: 'executed' });
       await expect(store.listPendingL1Operations()).resolves.toHaveLength(0);
+    });
+  });
+
+  describe('telemetry of an executed operation', () => {
+    const telemetry = () => ({ l1OperationOutcome: jest.fn(), gasSpentWei: jest.fn() });
+
+    it('records submitted, confirmed and the gas spent', async () => {
+      await withStore(async store => {
+        const fake = telemetry();
+        const { submitter } = buildSubmitter(store, { telemetry: fake as unknown as RelayerTelemetry });
+
+        await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, confirmed: 1 });
+        expect(fake.l1OperationOutcome.mock.calls).toEqual([
+          ['submitted', 'other'],
+          ['confirmed', 'other'],
+        ]);
+        expect(fake.gasSpentWei).toHaveBeenCalledWith('l1_operation', 150_000n);
+      });
+    });
+
+    it('records no outcome and no gas when the tx is simulated', async () => {
+      await withStore(async store => {
+        const fake = telemetry();
+        const { submitter } = buildSubmitter(store, {
+          simulated: true,
+          telemetry: fake as unknown as RelayerTelemetry,
+        });
+
+        await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, confirmed: 1 });
+        await expect(store.getPendingL1Operation(OPERATION_ID)).resolves.toMatchObject({ status: 'executed' });
+        expect(fake.l1OperationOutcome).not.toHaveBeenCalled();
+        expect(fake.gasSpentWei).not.toHaveBeenCalled();
+      });
     });
   });
 
@@ -524,6 +753,28 @@ describe('L1OperationSubmitter', () => {
         await expect(store.getPendingL1Operation(OPERATION_ID)).resolves.toMatchObject({ status: 'pending' });
       }, BALANCE_OPERATION);
     });
+
+    it('does not simulate the operation again while its mined tx has no recorded outcome', async () => {
+      await withStore(async store => {
+        let swept = false;
+        const { submitter, simulateBlocks, settle } = buildSubmitter(store, {
+          held: true,
+          // Once the tx sweeps the recipient, the operation reverts and the recipient holds nothing.
+          quote: () => (swept ? REVERT() : Promise.resolve({ status: 'success' as const, result: PAYOUT })),
+          balance: () => Promise.resolve(swept ? 0n : 1n),
+        });
+
+        await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, confirmed: 0 });
+        swept = true;
+        const simulations = simulateBlocks.mock.calls.length;
+        await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 0, dropped: 0, deferred: 0 });
+
+        settle();
+        await pollUntil(submitter, async () => (await store.getPendingL1Operation(OPERATION_ID))?.status !== 'pending');
+        await expect(store.getPendingL1Operation(OPERATION_ID)).resolves.toMatchObject({ status: 'executed' });
+        expect(simulateBlocks).toHaveBeenCalledTimes(simulations);
+      }, BALANCE_OPERATION);
+    });
   });
 
   describe('max pending age', () => {
@@ -589,6 +840,18 @@ describe('L1OperationSubmitter', () => {
     });
   });
 
+  it('re-sends an operation only after the tx of an earlier batch expires', async () => {
+    await withStore(async store => {
+      const { submitter, sendTransaction, settle } = buildSubmitter(store, { held: true, outcome: 'timeout' });
+
+      await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1 });
+      await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 0 });
+
+      settle();
+      await pollUntil(submitter, () => sendTransaction.mock.calls.length === 2);
+    });
+  });
+
   it('defers an operation below the minimum payout without burning an attempt', async () => {
     await withStore(async store => {
       // Break-even (100k gas x 10^13 wei) far exceeds the 500k-unit payout.
@@ -620,9 +883,9 @@ describe('L1OperationSubmitter', () => {
     });
   });
 
-  it('simulates and estimates with the fee settings the transaction carries', async () => {
+  it('simulates with the fee settings the transaction carries', async () => {
     await withStore(async store => {
-      const { submitter, simulateBlocks, estimateGas, sendTransaction } = buildSubmitter(store, {
+      const { submitter, simulateBlocks, sendTransaction } = buildSubmitter(store, {
         feeValues: { maxFeePerGas: 18n, maxPriorityFeePerGas: 2n },
         // Clears the break-even at the ceiling, which the default payout does not.
         quote: () => Promise.resolve({ status: 'success' as const, result: 2_000_000n }),
@@ -630,25 +893,32 @@ describe('L1OperationSubmitter', () => {
 
       await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1 });
 
-      const [simulation] = simulateBlocks.mock.calls[0] as [
-        { blocks: [{ calls: [FeeValuesEIP1559 & { gasPrice?: bigint }] }] },
-      ];
-      expect(simulation.blocks[0].calls[0]).toMatchObject({ maxFeePerGas: 34n, maxPriorityFeePerGas: 2n });
-      expect(simulation.blocks[0].calls[0].gasPrice).toBeUndefined();
+      const simulations = simulateBlocks.mock.calls.map(
+        ([args]) =>
+          (
+            args as {
+              blocks: [
+                {
+                  stateOverrides: Array<{ address: string; balance: bigint }>;
+                  calls: [FeeValuesEIP1559 & { from: string; gasPrice?: bigint }];
+                },
+              ];
+            }
+          ).blocks[0],
+      );
+      expect(simulations).toHaveLength(3);
+      for (const simulation of simulations) {
+        // The ceiling the transaction carries is the base fee of 16 plus the 100% headroom, plus the tip of 2.
+        expect(simulation.calls[0]).toMatchObject({
+          from: SENDER.toString(),
+          maxFeePerGas: 34n,
+          maxPriorityFeePerGas: 2n,
+        });
+        expect(simulation.calls[0].gasPrice).toBeUndefined();
+        // The balance override is what lets each priced call run without being capped by what the sender holds.
+        expect(simulation.stateOverrides).toEqual([{ address: SENDER.toString(), balance: SIMULATED_SENDER_BALANCE }]);
+      }
       expect(sendTransaction.mock.calls[0][0]).toMatchObject({ maxFeePerGas: 34n, maxPriorityFeePerGas: 2n });
-
-      const [request] = estimateGas.mock.calls[0] as [
-        {
-          account: string;
-          maxFeePerGas: bigint;
-          maxPriorityFeePerGas: bigint;
-          stateOverride: Array<{ address: string; balance: bigint }>;
-        },
-      ];
-      // The ceiling the transaction carries is the base fee of 16 plus the 100% headroom, plus the tip of 2.
-      expect(request).toMatchObject({ account: SENDER.toString(), maxFeePerGas: 34n, maxPriorityFeePerGas: 2n });
-      // The balance override is what lets each priced call run without being capped by what the sender holds.
-      expect(request.stateOverride).toEqual([{ address: SENDER.toString(), balance: SIMULATED_SENDER_BALANCE }]);
     });
   });
 
@@ -698,12 +968,35 @@ describe('L1OperationSubmitter', () => {
       await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 0, deferred: 1 });
       expect(simulateBlocks).not.toHaveBeenCalled();
       expect(sendTransaction).not.toHaveBeenCalled();
-      expect(l1OperationOutcome).toHaveBeenCalledWith('deferred', 'gas_price_above_max');
+      expect(l1OperationOutcome).toHaveBeenCalledWith('deferred', 'other', 'gas_price_above_max');
       await expect(store.getPendingL1Operation(OPERATION_ID)).resolves.toMatchObject({
         status: 'pending',
         attempts: 0,
       });
     });
+  });
+
+  it('records the operation kind with the defer reason', async () => {
+    const sweep = buildSipaSweepOperation({
+      sipa: TARGET.toString(),
+      sweepArgs: { token: PAYOUT_TOKEN.toString(), relayer: EXECUTOR.toString(), intentData: '0x', proofs: '0x' },
+      payoutToken: PAYOUT_TOKEN.toString(),
+      condition: L1OperationCondition.immediate(),
+    });
+    await withStore(
+      async store => {
+        const l1OperationOutcome = jest.fn();
+        const { submitter } = buildSubmitter(store, {
+          feeValues: { maxFeePerGas: 8n, maxPriorityFeePerGas: 2n },
+          maxFeePerGasCap: 13n,
+          telemetry: { l1OperationOutcome } as unknown as RelayerTelemetry,
+        });
+
+        await expect(submitter.runOnce()).resolves.toMatchObject({ deferred: 1 });
+        expect(l1OperationOutcome).toHaveBeenCalledWith('deferred', 'sweep', 'gas_price_above_max');
+      },
+      { ...OPERATION, ...sweep },
+    );
   });
 
   it('submits when the fee ceiling equals the max fee per gas', async () => {
@@ -741,24 +1034,21 @@ describe('L1OperationSubmitter', () => {
   it('prices the whole quote on one block', async () => {
     await withStore(async store => {
       // A later read of the latest block would see a newer one.
-      const { submitter, client, simulateBlocks, estimateGas } = buildSubmitter(store, {
+      const { submitter, client, simulateBlocks } = buildSubmitter(store, {
         blockNumbers: [10n, 11n, 12n],
       });
 
       await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1 });
       expect(client.getBlock).toHaveBeenCalledTimes(1);
       const simulatedBlocks = simulateBlocks.mock.calls.map(([args]) => (args as { blockNumber: bigint }).blockNumber);
-      expect(simulatedBlocks).toEqual([10n, 10n]);
-      expect((estimateGas.mock.calls[0][0] as { blockNumber: bigint }).blockNumber).toBe(10n);
+      expect(simulatedBlocks).toEqual([10n, 10n, 10n]);
     });
   });
 
   it('sends the oracle price with the gas to cover', async () => {
     await withStore(async store => {
       const usdPerEth = 2_741n;
-      const priceOracle = {
-        weiToUSD: (wei: bigint) => Promise.resolve(wei * usdPerEth),
-      } as unknown as ChainlinkPriceOracle;
+      const priceOracle = fixedPriceOracle(usdPerEth);
       const { submitter, sendTransaction } = buildSubmitter(store, {
         priceOracle,
         quote: () => Promise.resolve({ status: 'success' as const, result: GAS_TO_COVER * usdPerEth }),
@@ -773,12 +1063,34 @@ describe('L1OperationSubmitter', () => {
     });
   });
 
+  it('prices gas in the payout token of the operation', async () => {
+    await withStore(async store => {
+      const usdPerEth = 2_741n;
+      // The payout token is worth two USD, for example a vault share, so the gas costs half as many units.
+      const twoUsd = 2n * 10n ** 18n;
+      const priceOracle: PriceOracle = {
+        getEthPrice: () => Promise.resolve(usdPerEth * 10n ** 18n),
+        getTokenPrice: token =>
+          token.equals(PAYOUT_TOKEN)
+            ? Promise.resolve({ usdPerToken: twoUsd, decimals: 18 })
+            : Promise.reject(new Error(`unexpected token ${token.toString()}`)),
+      };
+      const { submitter, sendTransaction } = buildSubmitter(store, {
+        priceOracle,
+        quote: () => Promise.resolve({ status: 'success' as const, result: GAS_TO_COVER * usdPerEth }),
+      });
+
+      await expect(submitter.runOnce()).resolves.toMatchObject({ submitted: 1, deferred: 0 });
+      expect(sentPayoutArgs(sendTransaction.mock.calls[0][0].data as Hex)).toMatchObject({
+        tokenWeiPerEth: (usdPerEth * WEI_PER_ETH) / 2n,
+      });
+    });
+  });
+
   it('defers a payout one unit below the break-even at the oracle price', async () => {
     await withStore(async store => {
       const usdPerEth = 2_741n;
-      const priceOracle = {
-        weiToUSD: (wei: bigint) => Promise.resolve(wei * usdPerEth),
-      } as unknown as ChainlinkPriceOracle;
+      const priceOracle = fixedPriceOracle(usdPerEth);
       const { submitter, sendTransaction } = buildSubmitter(store, {
         priceOracle,
         quote: () => Promise.resolve({ status: 'success' as const, result: GAS_TO_COVER * usdPerEth - 1n }),
@@ -829,26 +1141,28 @@ describe('L1OperationSubmitter', () => {
 
   it('blocks an operation with a listed target before it is priced', async () => {
     await withStore(async store => {
-      const { submitter, sendTransaction, estimateGas } = buildSubmitter(store, { listed: [TARGET] });
+      const { submitter, sendTransaction, simulateBlocks } = buildSubmitter(store, { listed: [TARGET] });
 
       await expect(submitter.runOnce()).resolves.toMatchObject({ blocked: 1, deferred: 0, submitted: 0 });
       await expect(store.getPendingL1Operation(OPERATION_ID)).resolves.toMatchObject({ status: 'blocked' });
       await expect(store.listPendingL1Operations()).resolves.toHaveLength(0);
-      expect(estimateGas).not.toHaveBeenCalled();
+      // Only the payout quote, which screening reads: no gas simulation.
+      expect(simulateBlocks).toHaveBeenCalledTimes(1);
       expect(sendTransaction).not.toHaveBeenCalled();
     });
   });
 
   it('blocks an operation whose simulation pays a listed recipient', async () => {
     await withStore(async store => {
-      const { submitter, sendTransaction, estimateGas } = buildSubmitter(store, {
+      const { submitter, sendTransaction, simulateBlocks } = buildSubmitter(store, {
         listed: [RECIPIENT],
         quote: () => Promise.resolve({ status: 'success', result: PAYOUT, logs: [RECIPIENT_TRANSFER_LOG] }),
       });
 
       await expect(submitter.runOnce()).resolves.toMatchObject({ blocked: 1, submitted: 0 });
       await expect(store.getPendingL1Operation(OPERATION_ID)).resolves.toMatchObject({ status: 'blocked' });
-      expect(estimateGas).not.toHaveBeenCalled();
+      // Only the payout quote, which screening reads: no gas simulation.
+      expect(simulateBlocks).toHaveBeenCalledTimes(1);
       expect(sendTransaction).not.toHaveBeenCalled();
     });
   });
@@ -908,6 +1222,14 @@ describe('L1OperationSubmitter', () => {
     });
   });
 });
+
+/** Runs batches, as the relayer's poll loop does, until `done` holds. */
+async function pollUntil(submitter: L1OperationSubmitter, done: () => boolean | Promise<boolean>): Promise<void> {
+  while (!(await done())) {
+    await submitter.runOnce();
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+}
 
 async function withStore(
   fn: (store: StateStore) => Promise<void>,

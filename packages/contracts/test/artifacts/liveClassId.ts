@@ -9,7 +9,7 @@
 import { extractPinnedOxideEnvTuple } from "@obsidion/core/oxide"
 import { AZTEC_API_KEY_HEADER, AZTEC_NODE_API_KEY } from "@obsidion/core/constants"
 
-const TESTNET_NODE_URL = "https://v5.testnet.rpc.aztec-labs.com"
+const TESTNET_NODE_URL = "https://testnet-v5-archive.rpc2.aztec-labs.com"
 
 type OxideField = "l2Token" | "l2Broadcaster"
 

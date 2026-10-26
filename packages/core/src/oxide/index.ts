@@ -1,5 +1,6 @@
 // Dependency-free validation, extraction and acquisition for oxide's hosted deployment-env
-// manifest (schema v4: one self-contained `Deployment` entry per portal). Lives in the leaf
+// manifest (schema v4 and v5, read as one self-contained entry per portal, or as the pinned deployment's bridges in
+// `./deployment.ts`). Lives in the leaf
 // package so every consumer shares one canonical path with zero `@aztec/*` runtime weight:
 //   - `@obsidion/contracts` OxideEnvRegistryClient (the runtime tuple client)
 //   - front-core's compatibility export (wallet-side fetch seam)
@@ -7,13 +8,25 @@
 //
 // The pinned entry carries the ATOMIC attestation triple `enclaveUrl` ↔ `portal` ↔ `pcr0`
 // (the enclave is verified against the on-chain portal binding), so consumers never mix that
-// triple across entries. Migration sources come from explicitly supported profile history;
-// each supplies its own enclave, and the caller checks its portal's UNDERLYING.
+// triple across entries. Migration sources are selected by supported profile history; the caller
+// checks their underlying asset and uses each source's own enclave.
 
 import { MAINNET_ENS_DOMAIN, MAINNET_ENTRY_POINT, Network } from "../constants/index.js"
-import type { OxideEnvProfile, OxideEnvTuple } from "../types/index.js"
+import type {
+  OxideEnvProfile,
+  OxideEnvTuple,
+  OxideFeature,
+  OxideTokenImmutablesData,
+} from "../types/index.js"
+import {
+  bridgeByToken,
+  deploymentOfTuples,
+  type OxideBridge,
+  type OxideDeployment,
+} from "./deployment.js"
 
 export { L1RpcSimulationUnsupportedError, assertL1RpcSimulates } from "./l1RpcSimulation.js"
+export * from "./deployment.js"
 
 // L1 (EVM) addresses are 20 bytes; L2 (Aztec field) addresses are 32 bytes.
 const L1_ADDRESS = /^0x[0-9a-fA-F]{40}$/
@@ -181,16 +194,27 @@ export function assertProdOxideTuple(
   }
 }
 
-/** Manifest v4: `{ schemaVersion: "4", deployments: [Deployment…] }`, one self-contained entry per portal. */
-function requireDeployments(manifest: unknown): Record<string, unknown>[] {
+/**
+ * The manifest's entries, one per portal, in document order. Schema v4 entries are already per portal. A schema v5
+ * deployment lists its bridges, and each bridge reads as the deployment's fields plus its own.
+ */
+export function oxideManifestEntries(manifest: unknown): Record<string, unknown>[] {
+  return oxideManifestGroups(manifest).flat()
+}
+
+/**
+ * The manifest's deployments, each as its bridges' per-portal entries, in document order. A schema v4 entry is a
+ * deployment of one bridge.
+ */
+export function oxideManifestGroups(manifest: unknown): Record<string, unknown>[][] {
   if (!isRecord(manifest)) {
     throw new OxideManifestValidationError("oxide env registry: manifest is not an object")
   }
-  if (manifest.schemaVersion !== "4") {
+  if (manifest.schemaVersion !== "4" && manifest.schemaVersion !== "5") {
     throw new OxideManifestValidationError(
       `oxide env registry: unsupported schemaVersion ${JSON.stringify(
         manifest.schemaVersion,
-      )} (expected "4")`,
+      )} (expected "4" or "5")`,
     )
   }
   if (!Array.isArray(manifest.deployments)) {
@@ -204,25 +228,43 @@ function requireDeployments(manifest: unknown): Record<string, unknown>[] {
     }
     return entry
   })
-  requireUniqueDeployments(deployments)
-  return deployments
+  requireUnique(deployments, "label")
+  const groups =
+    manifest.schemaVersion === "4"
+      ? deployments.map((entry) => [entry])
+      : deployments.map(bridgeEntries)
+  requireUnique(groups.flat(), "portal")
+  return groups
 }
 
-function requireUniqueDeployments(deployments: Record<string, unknown>[]): void {
-  const seen = { portal: new Map<string, number>(), label: new Map<string, number>() }
-  deployments.forEach((entry, i) => {
-    for (const key of ["portal", "label"] as const) {
-      const value = entry[key]
-      if (typeof value !== "string") continue
-      const id = key === "portal" ? value.toLowerCase() : value
-      const first = seen[key].get(id)
-      if (first !== undefined) {
-        throw new OxideManifestValidationError(
-          `oxide env registry: deployments[${first}] and deployments[${i}] share ${key} ${value}`,
-        )
-      }
-      seen[key].set(id, i)
+function bridgeEntries(deployment: Record<string, unknown>, i: number): Record<string, unknown>[] {
+  const { bridges, ...shared } = deployment
+  if (!Array.isArray(bridges) || bridges.length === 0) {
+    throw new OxideManifestValidationError(`oxide env registry: deployments[${i}] lists no bridges`)
+  }
+  return bridges.map((bridge, j) => {
+    if (!isRecord(bridge)) {
+      throw new OxideManifestValidationError(
+        `oxide env registry: deployments[${i}].bridges[${j}] is not an object`,
+      )
     }
+    return { ...shared, ...bridge }
+  })
+}
+
+function requireUnique(entries: Record<string, unknown>[], key: "portal" | "label"): void {
+  const seen = new Map<string, number>()
+  entries.forEach((entry, i) => {
+    const value = entry[key]
+    if (typeof value !== "string") return
+    const id = key === "portal" ? value.toLowerCase() : value
+    const first = seen.get(id)
+    if (first !== undefined) {
+      throw new OxideManifestValidationError(
+        `oxide env registry: deployments[${first}] and deployments[${i}] share ${key} ${value}`,
+      )
+    }
+    seen.set(id, i)
   })
 }
 
@@ -230,25 +272,30 @@ function samePortal(entry: Record<string, unknown>, portal: string): boolean {
   return typeof entry.portal === "string" && entry.portal.toLowerCase() === portal.toLowerCase()
 }
 
-/** The v4 entry pinned by portal. Absent ⇒ throws naming the pin and every available portal. */
+/** The entry pinned by portal. Absent ⇒ throws naming the pin and every available portal. */
 export function selectDeployment(
   manifest: unknown,
   pin: { portal: string },
 ): Record<string, unknown> {
-  const deployments = requireDeployments(manifest)
+  const deployments = oxideManifestEntries(manifest)
   const hit = deployments.find((entry) => samePortal(entry, pin.portal))
-  if (!hit) {
-    const available = deployments.map((entry) => String(entry.portal)).join(", ") || "none"
-    throw new OxideManifestValidationError(
-      `oxide env registry: no deployment for pinned portal ${pin.portal} (available: ${available}) ` +
-        "— profile fix or app update may be required",
-    )
-  }
+  if (!hit) throw missingPin(deployments, pin.portal)
   return hit
 }
 
+function missingPin(
+  entries: Record<string, unknown>[],
+  portal: string,
+): OxideManifestValidationError {
+  const available = entries.map((entry) => String(entry.portal)).join(", ") || "none"
+  return new OxideManifestValidationError(
+    `oxide env registry: no deployment for pinned portal ${portal} (available: ${available}) ` +
+      "— profile fix or app update may be required",
+  )
+}
+
 /**
- * One v4 entry → OxideEnvTuple, field for field. `timestamp` is the entry's `updatedAt` and moves
+ * One per-portal entry → OxideEnvTuple, field for field. `timestamp` is the entry's `updatedAt` and moves
  * on every republish; `deployedAt` is when the deployment came into existence and does not.
  */
 export function parseDeployment(entry: Record<string, unknown>): {
@@ -264,7 +311,11 @@ export function parseDeployment(entry: Record<string, unknown>): {
     deployedAtBlock: optionalDecimal(entry.deployedAtBlock),
     portal: requirePattern(entry.portal, L1_ADDRESS, "portal"),
     token: requirePattern(entry.token, L1_ADDRESS, "token"),
+    underlying: requirePattern(entry.underlying ?? entry.token, L1_ADDRESS, "underlying"),
+    bridgeKey: optionalString(entry.key),
+    bridgeId: optionalString(entry.bridgeId),
     l2Token: requirePattern(entry.l2Token, L2_ADDRESS, "l2Token"),
+    l2TokenImmutables: parseTokenImmutables(entry.l2TokenImmutables, entry.portal),
     enclaveUrl: requireHttpUrl(entry.enclaveUrl, "enclaveUrl"),
     pcr0: optionalString(entry.pcr0) ?? "",
     rollupVersion: requirePattern(entry.rollupVersion, /^\d+$/, "rollupVersion"),
@@ -286,25 +337,120 @@ export function parseDeployment(entry: Record<string, unknown>): {
     resolverGatewayUrl: optionalString(entry.resolverGatewayUrl),
     depositSIPAImplementation: optionalString(entry.depositSIPAImplementation),
     registrationSIPAImplementation: optionalString(entry.registrationSIPAImplementation),
+    forwardingTable: optionalString(entry.forwardingTable),
+    feeToken: optionalString(entry.feeToken),
     depositSubsidy: optionalString(entry.depositSubsidy),
     withdrawalSubsidy: optionalString(entry.withdrawalSubsidy),
     proverSubsidy: optionalString(entry.proverSubsidy),
     plainWithdrawalExecutor: optionalString(entry.plainWithdrawalExecutor),
     l2Broadcaster: optionalString(entry.l2Broadcaster),
-    updateMetadataSIPAImplementation: optionalString(entry.updateMetadataSIPAImplementation),
     frozenNotesRefundVerifier: optionalString(entry.frozenNotesRefundVerifier),
-    frozenDepositRefundVerifier: optionalString(entry.frozenDepositRefundVerifier),
+    // Oxide manifests name it `frozenDeposits…` from the batched circuit on.
+    frozenDepositRefundVerifier: optionalString(
+      entry.frozenDepositsRefundVerifier ?? entry.frozenDepositRefundVerifier,
+    ),
     unprocessedDepositRefundVerifier: optionalString(entry.unprocessedDepositRefundVerifier),
     frozenNotesRefundVkSha256: optionalString(entry.frozenNotesRefundVkSha256),
-    frozenDepositRefundVkSha256: optionalString(entry.frozenDepositRefundVkSha256),
+    frozenDepositRefundVkSha256: optionalString(
+      entry.frozenDepositsRefundVkSha256 ?? entry.frozenDepositRefundVkSha256,
+    ),
     swapEscrowFactoryV2: optionalString(entry.swapEscrowFactoryV2),
     skyEscrowFactory: optionalString(entry.skyEscrowFactory),
+    features: parseFeatures(entry.features),
     operationExecutor: optionalString(entry.operationExecutor),
     fpcFunder: optionalString(entry.fpcFunder),
     fpcBeneficiary: optionalString(entry.fpcBeneficiary),
     fpcBeneficiarySalt: optionalString(entry.fpcBeneficiarySalt),
   }
   return { tuple: Object.freeze(tuple), timestampMs }
+}
+
+function parseTokenImmutables(
+  value: unknown,
+  portal: unknown,
+): Readonly<OxideTokenImmutablesData> | undefined {
+  if (value === undefined) return undefined
+  const field = "l2TokenImmutables"
+  if (!isRecord(value)) {
+    throw new OxideManifestValidationError(`oxide env registry: ${field} is not an object`)
+  }
+  const tokenPortal = requireNonZeroL1Address(value.portal, `${field}.portal`)
+  if (typeof portal !== "string" || tokenPortal.toLowerCase() !== portal.toLowerCase()) {
+    throw new OxideManifestValidationError(`oxide env registry: ${field}.portal differs from portal`)
+  }
+  const teeRegistry = requireNonZeroL1Address(value.teeRegistry, `${field}.teeRegistry`)
+  const text = (key: "name" | "symbol"): string => {
+    const text = value[key]
+    if (typeof text !== "string" || new TextEncoder().encode(text).length > 31) {
+      throw new OxideManifestValidationError(
+        `oxide env registry: ${field}.${key} must be a string of at most 31 UTF-8 bytes`,
+      )
+    }
+    return text
+  }
+  const decimals = value.decimals
+  if (typeof decimals !== "number" || !Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+    throw new OxideManifestValidationError(`oxide env registry: ${field}.decimals must fit in a u8`)
+  }
+  const maxNoteAmount = requirePattern(value.maxNoteAmount, /^(0|[1-9]\d*)$/, `${field}.maxNoteAmount`)
+  if (BigInt(maxNoteAmount) >= (1n << 128n)) {
+    throw new OxideManifestValidationError(`oxide env registry: ${field}.maxNoteAmount must fit in a u128`)
+  }
+  return Object.freeze({
+    portal: tokenPortal,
+    teeRegistry,
+    name: text("name"),
+    symbol: text("symbol"),
+    decimals,
+    maxNoteAmount,
+  })
+}
+
+const isStringRecord = (value: unknown): value is Record<string, string> =>
+  isRecord(value) && Object.values(value).every((v) => typeof v === "string")
+
+type FeatureVariable = string | number | boolean
+
+const isFeatureVariable = (value: unknown): value is FeatureVariable =>
+  typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+
+/** A feature's `variables`: absent on older manifests, so read as none. A value of another type is left out. */
+function featureVariables(value: unknown): Readonly<Record<string, FeatureVariable>> | undefined {
+  if (value === undefined) return Object.freeze({})
+  if (!isRecord(value)) return undefined
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(value).filter((e): e is [string, FeatureVariable] => isFeatureVariable(e[1])),
+    ),
+  )
+}
+
+/**
+ * The deployment's `features`, by ID. A feature serves only its own bridges, so a malformed one is left out rather
+ * than failing the deployment; its contracts and roles are checked where they are used.
+ */
+function parseFeatures(value: unknown): readonly OxideFeature[] | undefined {
+  if (!isRecord(value)) return undefined
+  return Object.freeze(
+    Object.entries(value).flatMap(([id, feature]) =>
+      isRecord(feature) &&
+      typeof feature.project === "string" &&
+      /\S/.test(feature.project) &&
+      isStringRecord(feature.bridges) &&
+      isStringRecord(feature.contracts) &&
+      featureVariables(feature.variables)
+        ? [
+            Object.freeze({
+              id,
+              project: feature.project,
+              bridges: Object.freeze({ ...feature.bridges }),
+              contracts: Object.freeze({ ...feature.contracts }),
+              variables: featureVariables(feature.variables)!,
+            }),
+          ]
+        : [],
+    ),
+  )
 }
 
 function sipaRecoveryProtocol(value: unknown): "legacy-eoa" | "account" {
@@ -322,21 +468,20 @@ function isCurrentProtocol(entry: Record<string, unknown>): boolean {
 }
 
 /**
- * Sources explicitly selected by the wallet's supported profile history, sharing its L1 chain and name registry.
- * The caller still checks each portal's UNDERLYING. Unselected deployments are not migration history.
+ * Current-protocol sources explicitly selected by supported profile history. The caller compares underlying assets.
+ * An unselected deployment is not migration history and is never parsed.
  */
 export function migrationSources(
   manifest: unknown,
   pinned: OxideEnvTuple,
   sourcePortals: ReadonlySet<string> = new Set(),
 ): OxideEnvTuple[] {
-  return requireDeployments(manifest)
+  return oxideManifestEntries(manifest)
     .filter(
       (entry) =>
         typeof entry.portal === "string" &&
         sourcePortals.has(entry.portal.toLowerCase()) &&
         !samePortal(entry, pinned.portal) &&
-        sameLineage(entry, pinned) &&
         isCurrentProtocol(entry),
     )
     .map((entry) => parseDeployment(entry).tuple)
@@ -351,15 +496,20 @@ export function migrationSources(
  * incomplete entry as if it were a complete deployment.
  */
 export function retiredRollupSources(manifest: unknown, pinned: OxideEnvTuple): OxideEnvTuple[] {
-  return requireDeployments(manifest)
+  return oxideManifestEntries(manifest)
     .filter((entry) => sameLineage(entry, pinned))
     .map((entry) => parseDeployment(entry).tuple)
-    .filter(
-      (tuple) =>
-        tuple.rollupVersion !== pinned.rollupVersion &&
-        isWellFormedNonZeroL1Address(tuple.accountFactory) &&
-        isWellFormedNonZeroL1Address(tuple.namePortal),
-    )
+    .filter((tuple) => isRetiredRollupSource(tuple, pinned))
+}
+
+/** Whether `tuple`, from this or another generation's manifest, is a retired rollup of the pinned lineage. */
+export function isRetiredRollupSource(tuple: OxideEnvTuple, pinned: OxideEnvTuple): boolean {
+  return (
+    sameLineage({ chainId: tuple.chainId, nameRegistry: tuple.registry }, pinned) &&
+    tuple.rollupVersion !== pinned.rollupVersion &&
+    isWellFormedNonZeroL1Address(tuple.accountFactory) &&
+    isWellFormedNonZeroL1Address(tuple.namePortal)
+  )
 }
 
 function sameLineage(entry: Record<string, unknown>, pinned: OxideEnvTuple): boolean {
@@ -371,15 +521,105 @@ function sameLineage(entry: Record<string, unknown>, pinned: OxideEnvTuple): boo
   )
 }
 
-/** The pinned entry as a tuple, with the mainnet gate applied when `opts` says so. */
+/** The pinned entry as a tuple. With `opts`, the mainnet gate holds its whole deployment, every bridge and the table. */
 export function extractPinnedOxideEnvTuple(
   manifest: unknown,
   profile: Pick<OxideEnvProfile, "portal">,
   opts?: ExtractOxideEnvTupleOptions,
 ): { tuple: OxideEnvTuple; timestampMs: number } {
-  const parsed = parseDeployment(selectDeployment(manifest, { portal: profile.portal }))
-  if (opts) assertProdOxideTuple(parsed.tuple, opts)
-  return parsed
+  if (!opts) return parseDeployment(selectDeployment(manifest, { portal: profile.portal }))
+  const { pinned, timestampMs } = pinnedOxideDeployment(manifest, profile, opts)
+  return { tuple: pinned.tuple, timestampMs }
+}
+
+/** The pinned deployment, its pinned bridge, and the pinned entry's `updatedAt`. */
+export interface PinnedOxideDeployment {
+  deployment: OxideDeployment
+  pinned: OxideBridge
+  timestampMs: number
+}
+
+/**
+ * The deployment that lists the pinned portal, every bridge parsed. With `opts`, each bridge passes the mainnet gate
+ * and the deployment passes {@link assertProdOxideDeployment}.
+ */
+export function pinnedOxideDeployment(
+  manifest: unknown,
+  profile: Pick<OxideEnvProfile, "portal">,
+  opts?: ExtractOxideEnvTupleOptions,
+): PinnedOxideDeployment {
+  const groups = oxideManifestGroups(manifest)
+  const group = groups.find((entries) => entries.some((entry) => samePortal(entry, profile.portal)))
+  if (!group) throw missingPin(groups.flat(), profile.portal)
+  const parsed = group.map(parseDeployment)
+  const tuples = parsed.map(({ tuple }) => tuple) as [OxideEnvTuple, ...OxideEnvTuple[]]
+  const deployment = deploymentOfTuples(tuples)
+  if (opts) {
+    for (const tuple of tuples) assertProdOxideTuple(tuple, opts)
+    assertProdOxideDeployment(deployment, opts)
+  }
+  const index = group.findIndex((entry) => samePortal(entry, profile.portal))
+  return { deployment, pinned: deployment.bridges[index]!, timestampMs: parsed[index]!.timestampMs }
+}
+
+/**
+ * The table checks a deployment needs before its rows go live on mainnet: one bridge per token, a non-zero table and
+ * fee token where published, and a bridge for the fee token. Each bridge's own fields are
+ * {@link assertProdOxideTuple}'s.
+ */
+export function assertProdOxideDeployment(
+  deployment: OxideDeployment,
+  opts: ExtractOxideEnvTupleOptions,
+): void {
+  if (!opts.requireProdSchema) return
+  const tokens = new Set<string>()
+  for (const bridge of deployment.bridges) {
+    const underlying = requireNonZeroL1Address(bridge.underlying, "underlying").toLowerCase()
+    if (tokens.has(underlying)) {
+      throw new OxideManifestValidationError(
+        `oxide env registry: deployment ${deployment.label} lists two bridges for token ${bridge.underlying}`,
+      )
+    }
+    tokens.add(underlying)
+  }
+  if (deployment.forwardingTable !== undefined) {
+    requireNonZeroL1Address(deployment.forwardingTable, "forwardingTable")
+  }
+  if (deployment.feeToken !== undefined) {
+    requireNonZeroL1Address(deployment.feeToken, "feeToken")
+    if (!bridgeByToken(deployment, deployment.feeToken)) {
+      throw new OxideManifestValidationError(
+        `oxide env registry: deployment ${deployment.label} has no bridge for its fee token ${deployment.feeToken}`,
+      )
+    }
+  }
+}
+
+/**
+ * Every deployment of the manifest, each bridge parsed, in document order. With `opts`, each must pass the mainnet
+ * gate as {@link pinnedOxideDeployment} applies it. A deployment with a malformed bridge or one failing the gate is
+ * skipped; a manifest {@link oxideManifestGroups} rejects throws, as it does for the pinned read.
+ */
+export function oxideManifestDeployments(
+  manifest: unknown,
+  opts?: ExtractOxideEnvTupleOptions,
+): OxideDeployment[] {
+  return oxideManifestGroups(manifest).flatMap((group) => {
+    try {
+      const tuples = group.map((entry) => parseDeployment(entry).tuple) as [
+        OxideEnvTuple,
+        ...OxideEnvTuple[],
+      ]
+      const deployment = deploymentOfTuples(tuples)
+      if (opts) {
+        for (const tuple of tuples) assertProdOxideTuple(tuple, opts)
+        assertProdOxideDeployment(deployment, opts)
+      }
+      return [deployment]
+    } catch {
+      return []
+    }
+  })
 }
 
 export interface LoadOxideManifestOpts {
@@ -392,6 +632,8 @@ export interface LoadOxideManifestOpts {
   expectedGitSha?: string
   /** Injectable fetch implementation; defaults to global fetch. */
   fetchImpl?: typeof fetch
+  /** `no-cache` makes a deployment read revalidate with the host, so a host `max-age` cannot delay a change. */
+  cache?: "no-cache"
 }
 
 /** Fetch and validate a pinned Oxide manifest into the tuple every direct consumer shares. */
@@ -409,6 +651,27 @@ export async function loadOxideManifestTuple(opts: LoadOxideManifestOpts): Promi
     })
   }
   return tuple
+}
+
+/** Fetch and validate a pinned Oxide manifest into the pinned deployment, with the same overlay and gate. */
+export async function loadOxideDeployment(
+  opts: LoadOxideManifestOpts,
+): Promise<PinnedOxideDeployment> {
+  const load = opts.fetchImpl ?? fetch
+  const response = await (opts.cache
+    ? load(opts.manifestUrl, { cache: opts.cache })
+    : load(opts.manifestUrl))
+  if (!response.ok) {
+    throw new Error(`oxide manifest HTTP ${response.status} (${opts.manifestUrl})`)
+  }
+  const pinned = pinnedOxideDeployment(await response.json(), opts, pinnedEntryPolicy(opts))
+  if (opts.network !== Network.MAINNET) return pinned
+  const tuples = pinned.deployment.bridges.map(({ tuple }) =>
+    Object.freeze({ ...tuple, entryPoint: MAINNET_ENTRY_POINT, ensDomain: MAINNET_ENS_DOMAIN }),
+  ) as [OxideEnvTuple, ...OxideEnvTuple[]]
+  const deployment = deploymentOfTuples(tuples)
+  const index = pinned.deployment.bridges.indexOf(pinned.pinned)
+  return { ...pinned, deployment, pinned: deployment.bridges[index]! }
 }
 
 /**

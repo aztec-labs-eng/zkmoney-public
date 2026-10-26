@@ -41,7 +41,7 @@
     {
       "action": "screenshot",
       "file": "02-qr.png",
-      "state": "Complete QR, then \"Deposit limit: $2,500 incl. fees\" under it"
+      "state": "Complete QR, then \"Deposit limit: $5,000 incl. fees\" under it"
     },
     {
       "action": "click",
@@ -106,7 +106,7 @@
     {
       "action": "screenshot",
       "file": "05-amount.png",
-      "state": "Deposit amount: \"Min $1 · Max sent: $2,500 incl. fees\", healthy capacity adds no line"
+      "state": "Deposit amount: \"Min $1 · Max sent: $5,000 incl. fees\", healthy capacity adds no line"
     },
     {
       "action": "click",
@@ -143,7 +143,7 @@
     {
       "action": "fill",
       "selector": ".ww-fund__amount input",
-      "value": "2499.9"
+      "value": "4999.9"
     },
     {
       "action": "waitFor",
@@ -183,7 +183,7 @@
     },
     {
       "action": "goto",
-      "path": "/withdraw?flowFixture=success&balanceFixture=5000&allowanceFixture=available"
+      "path": "/withdraw?flowFixture=success&balanceFixture=10000&allowanceFixture=available"
     },
     {
       "action": "waitFor",
@@ -227,12 +227,12 @@
     },
     {
       "action": "waitFor",
-      "selector": ".ww-fund__amount input[value=\"2500\"]"
+      "selector": ".ww-fund__amount input[value=\"5000\"]"
     },
     {
       "action": "screenshot",
       "file": "10-withdraw-max.png",
-      "state": "Withdrawal after MAX with a 5,000 balance: $2,500, \"Max from balance: $2,500 incl. fees\""
+      "state": "Withdrawal after MAX with a 10,000 balance: $5,000, \"Max from balance: $5,000 incl. fees\""
     },
     {
       "action": "click",

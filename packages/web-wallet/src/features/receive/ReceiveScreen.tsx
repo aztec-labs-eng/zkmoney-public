@@ -12,7 +12,8 @@ import { useBack, useLinkSharing, useWakeLock } from "../../ui/hooks"
 import { requestShareText } from "../requests/shareView"
 import { useRegistrationDepositOwed } from "../onboarding/openRegistration"
 import { REQUESTS_PATH } from "../requests/nonContactView"
-import { requestFromContact } from "../contacts/contactPay"
+import { RecipientNotUpgradedError, requestFromContact } from "../contacts/contactPay"
+import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { PrintedCard, printedCodeHost, useSaveCard } from "./PrintedCard"
 import { CODE_LOGO, ReceiveCodeCard, ReceivePaid } from "./ReceiveCodeFace"
@@ -90,6 +91,7 @@ export function ReceiveScreen() {
   const [who, setWho] = useState<"contact" | "anyone">("anyone")
   const [sending, setSending] = useState<string>()
   const [sendError, setSendError] = useState("")
+  const [sendHint, setSendHint] = useState("")
   const [shake, setShake] = useState(false)
   const amountInput = useRef<HTMLInputElement>(null)
   const amount = parseRequestAmount(form.amount)
@@ -104,6 +106,7 @@ export function ReceiveScreen() {
     if (!tokenService || !requesterTag) return
     setSending(contact)
     setSendError("")
+    setSendHint("")
     try {
       await requestFromContact(
         { tokenService },
@@ -122,7 +125,11 @@ export function ReceiveScreen() {
       await clearAmount().catch((err) => console.warn("[receive] code not cleared:", err))
       navigate(REQUESTS_PATH)
     } catch (e) {
-      setSendError(e instanceof Error ? e.message : "Couldn't send the request")
+      if (e instanceof RecipientNotUpgradedError) {
+        setSendHint(recipientNotUpgradedCopy.requestHint(contact))
+      } else {
+        setSendError(e instanceof Error ? e.message : "Couldn't send the request")
+      }
       setSending(undefined)
     }
   }
@@ -238,6 +245,7 @@ export function ReceiveScreen() {
             onRequest={(tag) => void requestContact(tag)}
           />
           {sendError && <span className="ww-receive__error">{sendError}</span>}
+          {sendHint && <span className="ww-receive__hint">{sendHint}</span>}
         </div>
       )}
       {who === "anyone" && (

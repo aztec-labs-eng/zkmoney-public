@@ -4,16 +4,19 @@
  * quotes at a buffered gas price, since the relayer decides minutes after the burn.
  */
 import { ProverSubsidyAbi } from "@oxide/l1-contracts"
-import { priceFeedForChainId, readUsdPerEth } from "@oxide/oxide-client/eth_usd_price_feed.js"
 import { quoteProverTip } from "@oxide/oxide-client/partial_epoch_proof_profit.js"
 import type { Address, PublicClient } from "viem"
 import { PROVER_TIP_GAS_PRICE_BUFFER_BPS } from "@obsidion/core/constants"
+import { readTipPrices, type TipTokenPrice } from "./tipQuote.js"
 
-/** Tips are rounded up to this step: one cent of the 18-dec token. */
-export const PROVER_TIP_STEP = 10n ** 16n
+/** Tips are rounded up to one hundredth of a whole token: a cent of a dollar token. */
+const tipStep = (decimals: number) => (decimals > 2 ? 10n ** BigInt(decimals - 2) : 1n)
+
+/** The rounding step of an 18-dec token. */
+export const PROVER_TIP_STEP = tipStep(18)
 
 export interface ProverTipQuote {
-  /** 18-dec token units, a whole number of cents. */
+  /** Portal token units, a whole number of hundredths of a token. */
   proverTip: bigint
   /** The L1 gas price read now. The tip is quoted at it times `PROVER_TIP_GAS_PRICE_BUFFER_BPS`. */
   gasPriceWei: bigint
@@ -30,11 +33,13 @@ export async function quoteWithdrawalProverTip(
     proverSubsidy?: Address
     /** Checkpoints the partial proof covers: the burn's index in its epoch. */
     checkpointCount?: bigint
+    /** The portal token, as the prover's price oracle values it. An 18-dec dollar token by default. */
+    token?: TipTokenPrice
   },
 ): Promise<ProverTipQuote> {
-  const [gasPriceWei, usdPerEth, subsidy] = await Promise.all([
+  const [gasPriceWei, prices, subsidy] = await Promise.all([
     client.getGasPrice(),
-    readUsdPerEth(client, priceFeedForChainId(args.chainId)),
+    readTipPrices(client, { eth: { chainId: args.chainId }, token: args.token }),
     args.proverSubsidy
       ? client.readContract({
           address: args.proverSubsidy,
@@ -44,16 +49,19 @@ export async function quoteWithdrawalProverTip(
         })
       : Promise.resolve(0n),
   ])
+  // Oxide's rule nets the subsidy out of the reward it values.
   const tip = quoteProverTip({
     gasPriceWei: (gasPriceWei * PROVER_TIP_GAS_PRICE_BUFFER_BPS) / 10_000n,
-    usdPerEth,
+    usdPerEth: prices.usdPerEth,
+    tokenPrice: prices.token,
     subsidyForOneClaim: subsidy,
     checkpointCount: args.checkpointCount ?? 1n,
   })
+  const step = tipStep(prices.token.decimals)
   return {
-    proverTip: ((tip + PROVER_TIP_STEP - 1n) / PROVER_TIP_STEP) * PROVER_TIP_STEP,
+    proverTip: ((tip + step - 1n) / step) * step,
     gasPriceWei,
-    usdPerEth,
-    subsidy: subsidy,
+    usdPerEth: prices.usdPerEth,
+    subsidy,
   }
 }

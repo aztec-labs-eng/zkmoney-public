@@ -15,6 +15,8 @@ import {
   type VisibilitySource,
 } from "../../src/oxide/portalCapacityStore"
 import { createSipaProcessingObserver } from "../../src/oxide/sipaProcessingObserver"
+import type { SipaRecordRoute } from "../../src/oxide/sipaRoute"
+import { SipaIntent } from "@oxide/l1-contracts"
 
 const E18 = 10n ** 18n
 const CHAIN = 11155111
@@ -22,14 +24,22 @@ const T0 = Date.UTC(2026, 8, 25, 12)
 const DAI = `0x${"da".repeat(20)}` as Address
 const ACTIVE_PORTAL = `0x${"a1".repeat(20)}` as Address
 const OLD_PORTAL = `0x${"0d".repeat(20)}` as Address
-const ACTIVE_IMPL = `0x${"a2".repeat(20)}` as Address
-const OLD_IMPL = `0x${"0e".repeat(20)}` as Address
+const ACTIVE_TABLE = `0x${"a2".repeat(20)}` as Address
+const OLD_TABLE = `0x${"0e".repeat(20)}` as Address
 const SIPA = `0x${"5a".repeat(20)}` as Address
 
+const TX_CAP = 10_000n * E18
+
 const TERMS: Record<string, SipaPortalTerms> = {
-  [ACTIVE_IMPL]: { portal: ACTIVE_PORTAL, token: DAI, depositFee: E18, fpcFundingCut: 0n },
-  [OLD_IMPL]: { portal: OLD_PORTAL, token: DAI, depositFee: E18, fpcFundingCut: 0n },
+  [ACTIVE_TABLE]: { portal: ACTIVE_PORTAL, token: DAI, depositFee: E18, txAmountCap: TX_CAP },
+  [OLD_TABLE]: { portal: OLD_PORTAL, token: DAI, depositFee: E18, txAmountCap: TX_CAP },
 }
+
+/** A deposit's row in `forwardingTable`. */
+const route = (forwardingTable: Address): SipaRecordRoute => ({
+  forwardingTable,
+  intent: SipaIntent.Deposit,
+})
 
 const visibility: VisibilitySource = { isVisible: () => true, onResume: () => () => {} }
 
@@ -43,6 +53,7 @@ function snapshot(portal: Address, availableAtomic: bigint): PortalCapacitySnaps
     blockTimestamp: BigInt(Math.floor(Date.now() / 1000)),
     rateAtomicPerSecond: E18,
     globalLimitAtomic: 50_000n * E18,
+    txAmountCapAtomic: TX_CAP,
     availableAtomic,
   }
 }
@@ -57,12 +68,15 @@ function fallback(
     recoveryAddress: "0x" + "44".repeat(20),
     origin: {
       sipaFactory: `0x${"fa".repeat(20)}` as Address,
-      implementation: OLD_IMPL,
+      implementation: `0x${"0e".repeat(20)}` as Address,
       intentHash: `0x${"55".repeat(32)}` as Hex,
       rollupVersion: "1",
       resweepable: false,
-      protocol: "legacy-eoa" as const,
-      recoveryAddress: `0x${"44".repeat(20)}` as Address,
+      protocol: "account" as const,
+      recoveryAccount: `0x${"44".repeat(20)}` as Address,
+      recoveryCommitment: `0x${"66".repeat(31)}` as Hex,
+      accountFactory: `0x${"ac".repeat(20)}` as Address,
+      forwardingTable: OLD_TABLE,
     },
     l1ChainId: CHAIN,
     amount: "101",
@@ -93,9 +107,9 @@ function setup() {
     policy: { maxHeadAgeMs: Infinity },
   })
   const termsFailures = new Set<string>()
-  const readTerms = vi.fn(async (implementation: Address) => {
-    if (termsFailures.has(implementation)) throw new Error("rpc down")
-    return TERMS[implementation]
+  const readTerms = vi.fn(async ({ forwardingTable }: SipaRecordRoute) => {
+    if (termsFailures.has(forwardingTable)) throw new Error("rpc down")
+    return TERMS[forwardingTable]!
   })
   const observer = createSipaProcessingObserver({
     deposits,
@@ -149,7 +163,7 @@ describe("createSipaProcessingObserver", () => {
 
   it("reports an unresolvable identity as unknown, and resolves it again on retry", async () => {
     const { observer, termsFailures, upsert } = setup()
-    termsFailures.add(OLD_IMPL)
+    termsFailures.add(OLD_TABLE)
     await upsert()
     observer.capacityKeyFor(SIPA)
     await vi.advanceTimersByTimeAsync(0)
@@ -166,7 +180,7 @@ describe("createSipaProcessingObserver", () => {
   it("repeats a failed lookup for a recorded deposit that is not waiting for a sweep, and notifies", async () => {
     for (const phase of ["recoverable", "pendingClaim"] as const) {
       const { observer, termsFailures, upsert, read } = setup()
-      termsFailures.add(OLD_IMPL)
+      termsFailures.add(OLD_TABLE)
       await upsert({}, phase)
       const listener = vi.fn()
       const stop = observer.subscribe(listener)
@@ -191,7 +205,7 @@ describe("createSipaProcessingObserver", () => {
 
   it("keeps an awaiting deposit's retry: a new lookup, then a new capacity read", async () => {
     const { observer, termsFailures, upsert, read } = setup()
-    termsFailures.add(OLD_IMPL)
+    termsFailures.add(OLD_TABLE)
     await upsert()
     const stop = observer.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
@@ -203,7 +217,7 @@ describe("createSipaProcessingObserver", () => {
     stop()
   })
 
-  it("has no key for a deposit on another chain, without an origin, or unknown", async () => {
+  it("has no key for a deposit on another chain, without an origin naming its table, or unknown", async () => {
     const { observer, readTerms, upsert } = setup()
     await upsert({ l1ChainId: 1 })
     expect(observer.capacityKeyFor(SIPA)).toEqual({ status: "unknown", retryable: false })
@@ -212,6 +226,14 @@ describe("createSipaProcessingObserver", () => {
       retryable: false,
     })
     await upsert({ l1ChainId: CHAIN, origin: undefined })
+    expect(observer.capacityKeyFor(SIPA)).toEqual({ status: "unknown", retryable: false })
+    const { forwardingTable: _table, recoveryAccount: _account, ...origin } = fallback().origin as {
+      forwardingTable: Address
+      recoveryAccount: Address
+    }
+    await upsert({
+      origin: { ...origin, protocol: "legacy-eoa", recoveryAddress: `0x${"44".repeat(20)}` },
+    } as Partial<SIPADepositRecord>)
     expect(observer.capacityKeyFor(SIPA)).toEqual({ status: "unknown", retryable: false })
     expect(readTerms).not.toHaveBeenCalled()
   })
@@ -246,7 +268,7 @@ describe("createSipaProcessingObserver", () => {
 
   it("reports a failed portal lookup as unavailable and retries it on request", async () => {
     const { observer, termsFailures, upsert } = setup()
-    termsFailures.add(OLD_IMPL)
+    termsFailures.add(OLD_TABLE)
     await upsert()
     const stop = observer.subscribe(() => {})
     await vi.advanceTimersByTimeAsync(0)
@@ -306,7 +328,7 @@ describe("createSipaProcessingObserver", () => {
     expect(read).not.toHaveBeenCalled()
 
     const state = await observer.refreshForSweep(SIPA, described())
-    expect(readTerms).toHaveBeenCalledWith(OLD_IMPL)
+    expect(readTerms).toHaveBeenCalledWith(route(OLD_TABLE))
     expect(read).toHaveBeenCalledWith(expect.objectContaining({ portal: OLD_PORTAL }))
     expect(state?.reason).toMatchObject({
       kind: "capacity",
@@ -323,10 +345,10 @@ describe("createSipaProcessingObserver", () => {
     const { origin, ...rest } = described()
     await observer.refreshForSweep(SIPA, {
       ...rest,
-      origin: { ...origin!, implementation: ACTIVE_IMPL },
+      origin: { ...origin!, forwardingTable: ACTIVE_TABLE },
     })
-    expect(readTerms).toHaveBeenCalledWith(OLD_IMPL)
-    expect(readTerms).not.toHaveBeenCalledWith(ACTIVE_IMPL)
+    expect(readTerms).toHaveBeenCalledWith(route(OLD_TABLE))
+    expect(readTerms).not.toHaveBeenCalledWith(route(ACTIVE_TABLE))
   })
 
   it("funds a stored placeholder from the live read, keeping its origin", async () => {
@@ -335,9 +357,9 @@ describe("createSipaProcessingObserver", () => {
     const { origin, ...rest } = described()
     const state = await observer.refreshForSweep(SIPA, {
       ...rest,
-      origin: { ...origin!, implementation: ACTIVE_IMPL },
+      origin: { ...origin!, forwardingTable: ACTIVE_TABLE },
     })
-    expect(readTerms).not.toHaveBeenCalledWith(ACTIVE_IMPL)
+    expect(readTerms).not.toHaveBeenCalledWith(route(ACTIVE_TABLE))
     expect(read).toHaveBeenCalledWith(expect.objectContaining({ portal: OLD_PORTAL }))
     expect(state?.reason).toMatchObject({ kind: "capacity", requiredAtomic: 100n * E18 })
     expect(sipaSweepAllowed(state)).toBe(false)

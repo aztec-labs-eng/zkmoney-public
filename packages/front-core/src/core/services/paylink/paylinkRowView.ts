@@ -50,6 +50,8 @@ export function paylinkRowView(
     offer?: PaylinkRecovery | null
     refundStatus?: TransactionStatus
     refundStarting?: boolean
+    /** Made on another rollup: nothing here can share or recover it. */
+    retired?: boolean
     nowSec: number
   },
 ): PaylinkRowView {
@@ -88,8 +90,8 @@ export function paylinkRowView(
       refunded && row.refundKind
         ? RECOVERED_LABEL[row.refundKind]
         : PAYLINK_STATUS_LABEL[linkStatus],
-    canShare: linkStatus === "awaitingClaim" && !!row.paylink,
-    recovery: unspent ? opts.offer ?? null : null,
+    canShare: !opts.retired && linkStatus === "awaitingClaim" && !!row.paylink,
+    recovery: unspent && !opts.retired ? opts.offer ?? null : null,
     recovering: null,
     refunded,
   }

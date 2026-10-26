@@ -81,3 +81,20 @@ export function credentialIdToMetadata(credentialId: string): Hex {
   while (b64.length % 4) b64 += "="
   return bytesToHex(Uint8Array.from(Buffer.from(b64, "base64")))
 }
+
+/**
+ * The byte inverse of `credentialIdToMetadata`: raw bytes as `0x`-hex → base64url without padding.
+ * Throws on empty, unprefixed or malformed hex. Eligibility is not judged here.
+ */
+export function metadataToCredentialId(metadata: Hex): string {
+  const raw = metadata.startsWith("0x") ? metadata.slice(2) : undefined
+  if (!raw || raw.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(raw)) {
+    throw new Error("metadataToCredentialId: not a non-empty 0x-hex byte string")
+  }
+  // Some Buffer polyfills lack the "base64url" encoding, so go through "base64" and swap.
+  return Buffer.from(raw, "hex")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "")
+}

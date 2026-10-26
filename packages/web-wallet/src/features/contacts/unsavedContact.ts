@@ -2,8 +2,11 @@ import {
   ContactStorage,
   normalizeTag,
   TagValidationError,
+  TransactionStorage,
   type Contact,
+  type Transaction,
 } from "@obsidion/front-core"
+import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { loadWalletIdentity } from "../identity/walletIdentity"
 import { addContact } from "./useInlineContactSearch"
 import { resolveTagForCommit, resolveTagViaRegistry } from "./registryResolution"
@@ -16,14 +19,37 @@ export function unsavedContact(tag: string, l2Address: string): Contact {
   return { name: tag, tag, address: l2Address, addressKind: "aztec-l2" }
 }
 
-/** The unsaved contact a route names, or null when it is not someone else's registered tag. */
+/** The L2 address the user's own transfers with this tag recorded, if any. */
+export function pastAddressOf(
+  tag: string,
+  transactions: readonly Transaction[],
+): string | undefined {
+  const sameTag = (raw?: string) => !!raw && normalizeTag(raw) === tag
+  for (const tx of transactions) {
+    if (!("token" in tx) || !tx.token) continue
+    if (tx.action === "send" && "toTag" in tx && sameTag(tx.toTag) && tx.to) return tx.to
+    if (tx.action === "receive" && "from" in tx && sameTag(tx.from) && tx.senderL2Address)
+      return tx.senderL2Address
+  }
+  return undefined
+}
+
+/**
+ * The unsaved contact a route names, or null when it is not someone else's registered tag. A tag
+ * still on an older zk.money opens at the address its past transfers used, so its history shows.
+ */
 export async function lookUpUnsavedContact(idOrTag: string): Promise<Contact | null> {
   const tag = normalizeTag(idOrTag)
   const own = loadWalletIdentity()?.handle
   if (!tag || (own && normalizeTag(own) === tag)) return null
   try {
     const resolution = await resolveTagViaRegistry(tag)
-    return resolution.status === "resolved" ? unsavedContact(tag, resolution.l2Address) : null
+    if (resolution.status === "resolved") return unsavedContact(tag, resolution.l2Address)
+    if (resolution.status === "notFound") return null
+    const transactions = await TransactionStorage.get(webStorage)
+      .getTransactions()
+      .catch(() => [])
+    return unsavedContact(tag, pastAddressOf(tag, transactions) ?? "")
   } catch (e) {
     if (e instanceof TagValidationError) return null
     throw e

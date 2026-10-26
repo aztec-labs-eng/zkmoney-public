@@ -1,4 +1,4 @@
-import { planPayout, type WithdrawalOptions } from "../plainWithdrawal.js"
+import { nestedWithdrawal, planPayout, type WithdrawalOptions } from "../plainWithdrawal.js"
 /**
  * A paylink's voucher: the escrow's own single-use subscription on the ClaimFPC voucher rail, gifted
  * by the creator in the create batch and spent by whoever holds the link. These legs take a wallet,
@@ -6,11 +6,11 @@ import { planPayout, type WithdrawalOptions } from "../plainWithdrawal.js"
  * secret, are the only identity a sponsored exit needs, so a recipient with no account, passkey or
  * registration can burn the escrow to an Ethereum address.
  */
-import { NO_FROM } from "@aztec/aztec.js/account"
-import type { EthAddress } from "@aztec/aztec.js/addresses"
-import { Contract, type ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { TeeSigner } from "@oxide/oxide-lib/types.js"
+import { NO_FROM } from "@aztec-labs/aztec.js/account"
+import type { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Contract, type ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
 import {
   ContractService,
   DEFAULT_CONTRACTS,
@@ -24,6 +24,7 @@ import {
 } from "../claimSponsor.js"
 import type { PaylinkParams } from "../PaylinkService.js"
 import { buildSponsoredTeeOperation } from "../sponsoredTeeOperation.js"
+import { TokenService } from "../TokenService.js"
 import { buildOperationCall } from "./paylinkClaimSubmit.js"
 import { registerEscrow, sharedNoteRead } from "./escrowRegistration.js"
 import { paylinkL1ClaimArgs, type PaylinkL1Proof } from "./paylinkL1Claim.js"
@@ -74,7 +75,7 @@ export async function paylinkVoucherUses(
 export interface PaylinkExitArgs extends PaylinkVoucherDeps {
   params: PaylinkParams
   tokenAddress: AztecAddress
-  signer: TeeSigner
+  signer: RegisteredTeeSigner
   l1Recipient: EthAddress
   /** Defaults to zero; the portal pays it out of `amount` on L1. */
   proverTip?: bigint
@@ -119,6 +120,7 @@ export async function exitPaylinkWithVoucher(
   await ensureContractRegisteredInPXE(args.wallet.pxe, args.wallet.node, args.tokenAddress, () =>
     Promise.resolve(tokenArtifact),
   )
+  await TokenService.ensureImmutablesStored(args.wallet, args.contractService, args.tokenAddress)
   const token = Contract.at(args.tokenAddress, tokenArtifact, args.wallet)
   const escrow = Contract.at(instance.address, artifact, args.wallet)
 
@@ -142,14 +144,7 @@ export async function exitPaylinkWithVoucher(
           kind: "outerCall",
           interaction: escrow.methods.claim_to_l1!(...claimArgs),
           additionalScopes: [instance.address],
-          withdrawals: [
-            {
-              executor: payout.plainWithdrawal.executor,
-              userPayload: payout.userPayload,
-              amount,
-              proverTip,
-            },
-          ],
+          withdrawals: [nestedWithdrawal(payout, { from: instance.address, amount, proverTip })],
         },
       ],
       buildOperationCall,

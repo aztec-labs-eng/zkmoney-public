@@ -81,6 +81,9 @@ vi.mock("../src/features/onboarding/oxideOnboarding", async () => {
     PasskeyMismatchError: class PasskeyMismatchError extends Error {
       name = "PasskeyMismatchError"
     },
+    PasskeySetUnreadError: class PasskeySetUnreadError extends Error {
+      name = "PasskeySetUnreadError"
+    },
   }
 })
 vi.mock("../src/features/onboarding/findPasskeyByTag", async (importOriginal) => ({
@@ -207,6 +210,10 @@ vi.mock("../src/features/onboarding/steps/ConfirmTagModal", () => ({
   },
 }))
 vi.mock("../src/features/onboarding/steps/InvitationStep", () => ({ InvitationStep: () => null }))
+// The backdrop behind the modals mounts the boot splash, whose fade timer outlives the file.
+vi.mock("../src/features/onboarding/steps/CreateWalletStep", () => ({
+  CreateWalletStep: () => null,
+}))
 vi.mock("@obsidion/web-ds", () => ({
   PrimaryGradientButton: ({
     title,
@@ -274,11 +281,27 @@ const leftForSignInStart = () =>
   h.navigate.mock.calls.some((call) => (call as unknown[])[0] === "/claim")
 
 const L2 = `0x${"ac".repeat(32)}`
+/** @alice read off L1: her account and its one installed key. */
+const FOUND_ALICE = {
+  kind: "resolved",
+  tag: "alice",
+  account: `0x${"11".repeat(20)}`,
+  l2Address: L2,
+  keys: [
+    {
+      pubkeyHex: "ab".repeat(64),
+      metadata: `0x${"07".repeat(16)}`,
+      parsed: { kind: "credential-id", credentialId: "cred-alice" },
+    },
+  ],
+  moreKeys: false,
+}
 /** A recovered account with no registered name. */
 const nameless = (address = L2) => ({
   entered: false,
   reason: "unclaimed",
   account: { getAddress: () => ({ toString: () => address }) },
+  held: () => true,
   bootstrap: {
     address: "0xE0A0000000000000000000000000000000000001",
     signMessage: async () => "0xsig",
@@ -479,6 +502,7 @@ describe("EnterAppScreen refusals", () => {
       handle: "alice",
       address: L2,
       account: {},
+      held: () => true,
     })
     let release!: () => void
     h.saveWalletIdentity.mockImplementationOnce(() => new Promise<void>((r) => (release = r)))
@@ -552,6 +576,7 @@ describe("EnterAppScreen refusals", () => {
       handle: "alice",
       address: L2,
       account: {},
+      held: () => true,
     })
     await act(async () => byTestId("enter-show-passkeys")!.click())
     await flush()
@@ -1043,6 +1068,7 @@ describe("EnterAppScreen reservation", () => {
       reason: "confirm",
       claim: { nameHash: hashOf("alice"), address: L2, ensDomain: "zk.money" },
       account: { getAddress: () => ({ toString: () => L2 }) },
+      held: () => true,
     })
     await click("sign-in-show-passkeys")
     expect(confirmStep()?.dataset.title).toBe("Login")
@@ -1253,6 +1279,7 @@ describe("EnterAppScreen reservation", () => {
       reason: "confirm",
       claim: { nameHash: hashOf("alice"), address: L2, ensDomain: "zk.money" },
       account: { getAddress: () => ({ toString: () => L2 }) },
+      held: () => true,
     })
     await act(async () => byTestId("sign-in-show-passkeys")!.click())
     await flush()
@@ -1278,6 +1305,7 @@ describe("EnterAppScreen reservation", () => {
       reason: "confirm",
       claim: { nameHash: hashOf("alice"), address: L2, ensDomain: "zk.money" },
       account: { getAddress: () => ({ toString: () => L2 }) },
+      held: () => true,
     })
     await render()
     expect(confirmStep()?.dataset.title).toBe("Login")
@@ -1314,6 +1342,7 @@ describe("EnterAppScreen chooser", () => {
       reason: "confirm",
       claim: {},
       account: { getAddress: () => ({ toString: () => L2 }) },
+      held: () => true,
     })
 
   it("Back, then Show passkeys asks the browser for the list even though the URL did not; a dismissal lands on the card", async () => {
@@ -1369,7 +1398,7 @@ describe("EnterAppScreen account switch", () => {
       return result
     })
   /** A recovery that names its account, the one outcome that reaches the wallet. */
-  const named = { entered: true, handle: "alice", address: L2, account: {} }
+  const named = { entered: true, handle: "alice", address: L2, account: {}, held: () => true }
 
   beforeEach(async () => {
     assign.mockClear()
@@ -1508,6 +1537,7 @@ describe("EnterAppScreen account switch", () => {
           reason: "confirm",
           claim: {},
           account: { getAddress: () => ({ toString: () => L2 }) },
+          held: () => true,
         },
         true,
       )
@@ -1630,13 +1660,7 @@ describe("EnterAppScreen in an app's built-in browser", () => {
   }
   /** The same, with @alice's passkey read off L1 so Login is the pinned sign-in. */
   const arriveFound = async (userAgent: string) => {
-    h.lookup.mockResolvedValue({
-      kind: "resolved",
-      tag: "alice",
-      candidate: { credentialId: "cred-alice", pubkeyHex: "ab" },
-      l2Address: L2,
-      moreKeys: false,
-    })
+    h.lookup.mockResolvedValue(FOUND_ALICE)
     await arrive(userAgent)
     expect(byTestId("sign-in-login")!.hasAttribute("disabled")).toBe(false)
   }
@@ -1889,7 +1913,13 @@ describe("EnterAppScreen in an app's built-in browser", () => {
 describe("EnterAppScreen passkey telemetry", () => {
   let harness: Awaited<ReturnType<typeof passkeyTelemetryHarness>>
   const OTHER_L2 = `0x${"bd".repeat(32)}`
-  const ENTERED = { entered: true, handle: "alice", address: L2, account: {} }
+  const ENTERED = {
+    entered: true,
+    handle: "alice",
+    address: L2,
+    account: {},
+    held: (): boolean => true,
+  }
   const events = () => passkeyEvents(h.fireEvent)
 
   beforeEach(async () => {
@@ -1932,13 +1962,7 @@ describe("EnterAppScreen passkey telemetry", () => {
 
   /** The screen with @alice's passkey read off L1, so Login is the pinned sign-in. */
   const toFoundPasskey = async () => {
-    h.lookup.mockResolvedValue({
-      kind: "resolved",
-      tag: "alice",
-      candidate: { credentialId: "cred-alice", pubkeyHex: "ab" },
-      l2Address: L2,
-      moreKeys: false,
-    })
+    h.lookup.mockResolvedValue(FOUND_ALICE)
     await toScreen("/enter?handle=alice")
     expect(byTestId("sign-in-login")!.hasAttribute("disabled")).toBe(false)
   }
@@ -1975,7 +1999,7 @@ describe("EnterAppScreen passkey telemetry", () => {
     ["an entered account", ENTERED, { outcome: "succeeded" }],
     [
       "a tag to confirm",
-      { entered: false, reason: "confirm", claim: {}, account: {} },
+      { entered: false, reason: "confirm", claim: {}, account: {}, held: (): boolean => true },
       { outcome: "succeeded" },
     ],
     [

@@ -140,7 +140,7 @@
   color: var(--text-primary);
 }
 
-/* One compact limit row, such as "Max sent: $2,500 incl. fees". */
+/* One compact limit row, such as "Max sent: $5,000 incl. fees". */
 .ww-limit-line {
   display: flex;
   align-items: center;

@@ -1,37 +1,53 @@
-// The L1->L2 message oxide's NamePortal emits for a registered user. Consuming one is half of what
-// admits a user to a registration-gated rail: the portal reads the NameRegistry's `nameOf`, so
-// the message exists only for an L1 account that actually holds a name, and its content names that
-// account and the name it holds.
+// The L1->L2 message oxide's NamePortal emits for a registered user. Proving one exists is half of what admits a
+// user to a registration-gated rail: the portal reads the NameRegistry's `nameOf` and checks the account comes from
+// its factory, so the message exists only for a bootstrap key whose account holds a name.
 
-use aztec::protocol::hash::sha256_to_field;
-use keccak256::keccak256;
+use aztec::{
+    context::PrivateContext,
+    hash::{compute_l1_to_l2_message_hash, compute_secret_hash},
+    oracle::get_l1_to_l2_membership_witness::get_l1_to_l2_membership_witness,
+    protocol::{
+        address::EthAddress, hash::sha256_to_field, merkle_tree::root::root_from_sibling_path,
+    },
+};
 
-global NAME_OWNERSHIP_SIGNATURE: str<40> = "name_ownership_verified(address,bytes32)";
+/// Asserts the portal's message with `content` is in the L1->L2 tree at the anchor block, without consuming it. The
+/// message states an L1 fact and moves no value, so a second use is harmless, and its nullifier would let anyone
+/// match the tx to the account, since the message secret is a public constant.
+pub fn assert_name_portal_message(
+    context: &mut PrivateContext,
+    portal: EthAddress,
+    content: Field,
+    leaf_index: Field,
+) {
+    let message_hash = compute_l1_to_l2_message_hash(
+        portal,
+        context.chain_id(),
+        context.this_address(),
+        context.version(),
+        content,
+        compute_secret_hash([0]),
+        leaf_index,
+    );
+    // Safety: the sibling path is only a hint for the root check below.
+    let (_index, sibling_path) =
+        unsafe { get_l1_to_l2_membership_witness(message_hash, Option::none()) };
+    let root = root_from_sibling_path(message_hash, leaf_index, sibling_path);
+    assert_eq(
+        root,
+        context.get_anchor_block_header().state.l1_to_l2_message_tree.root,
+        "NamePortal message not found",
+    );
+}
 
-/// Content of the message attesting that `owner` holds `name_hash`: `abi.encodeWithSignature` over
-/// the handler signature -- a 4-byte keccak selector then 32-byte big-endian arguments -- sha256
-/// compressed to a field, which is what `NamePortal.notify` sends. The TS mirror is
-/// `packages/sdk/src/services/registrationMessage.ts`, and the pinned vector below is what fails
-/// when the two drift.
-///
-/// The content names an L1 address, never an L2 one, so it admits nobody by itself: the gate
-/// derives the owner from a bootstrap key and takes that key's signature over the L2 address
-/// (main.nr `_gate_registration`).
-pub fn name_ownership_content_hash(owner: [u8; 20], name_hash: [u8; 32]) -> Field {
-    let selector: [u8; 4] = comptime {
-        let h: [u8; 32] = keccak256(NAME_OWNERSHIP_SIGNATURE.as_bytes(), 40);
-        [h[0], h[1], h[2], h[3]]
-    };
-    let mut preimage: [u8; 68] = [0; 68];
-    for i in 0..4 {
-        preimage[i] = selector[i];
-    }
-    // address right-aligned in its 32-byte word
+/// NamePortal hashes the packed bootstrap address and registered name.
+pub fn name_ownership_content_hash(bootstrap: [u8; 20], name_hash: [u8; 32]) -> Field {
+    let mut preimage: [u8; 52] = [0; 52];
     for i in 0..20 {
-        preimage[16 + i] = owner[i];
+        preimage[i] = bootstrap[i];
     }
     for i in 0..32 {
-        preimage[36 + i] = name_hash[i];
+        preimage[20 + i] = name_hash[i];
     }
     sha256_to_field(preimage)
 }
@@ -39,9 +55,8 @@ pub fn name_ownership_content_hash(owner: [u8; 20], name_hash: [u8; 32]) -> Fiel
 // -- tests -------------------------------------------------------------------
 
 /// Same fixture as packages/sdk/test/services/registrationMessage.test.ts.
-global PINNED_OWNER: [u8; 20] = [
-    0x0e, 0xad, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xbe, 0xe0,
-];
+global PINNED_OWNER: [u8; 20] =
+    [0x0e, 0xad, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xbe, 0xe0];
 global PINNED_NAME_HASH: [u8; 32] = [
     0x0d, 0xa1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
     0x1e, 0x55,
@@ -51,7 +66,7 @@ global PINNED_NAME_HASH: [u8; 32] = [
 fn content_hash_matches_the_typescript_mirror() {
     assert_eq(
         name_ownership_content_hash(PINNED_OWNER, PINNED_NAME_HASH),
-        0x0076965bb2b826b57030fd020a5c87ab48ca8086410dbb797d788534438ae5c6,
+        0x00430fd1ec5d12a2bc57833acc01e9d48e7127e07fc06e6eaebfd92b5885eb4b,
     );
 }
 

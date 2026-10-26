@@ -14,13 +14,13 @@ export const networkHasSwapStack = (network: Network) =>
 export const SWAP_ROUTE_SHOWCASE = import.meta.env.VITE_FRESH_ADDRESS_SHOWCASE === "true"
 
 /** The optional manifest fields a fresh-address quote or burn reads. */
-const REQUIRED: readonly (keyof OxideEnvTuple)[] = [
+const REQUIRED = [
   "swapEscrowFactoryV2",
   "operationExecutor",
   "accountFactory",
   "l2Broadcaster",
   "plainWithdrawalExecutor",
-]
+] as const satisfies readonly (keyof OxideEnvTuple)[]
 
 /**
  * Whether this deployment can run a fresh-address withdrawal: the gas share rides a swap escrow, so

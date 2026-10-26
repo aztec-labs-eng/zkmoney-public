@@ -24,6 +24,7 @@ export function flowFixturePlugin(walletDir) {
     ["features/onboarding/useDepositWatch.ts", "registration-deposit.ts"],
     ["features/onboarding/oxideOnboarding.ts", "registration-account.ts"],
     ["features/onboarding/nameAvailability.ts", "name-availability.ts"],
+    ["features/invite/useInvite.ts", "invite.ts"],
   ].map(([source, fixture]) => [path.join(walletDir, "src", source), path.join(fixtures, fixture)]))
   const contextConsumers = new Set([
     "features/allowance/useSponsoredAllowance.ts",

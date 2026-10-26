@@ -5,10 +5,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { formatUnits, getAddress, parseUnits, type Address, type Hex } from "viem"
 import { SwapRoute } from "@oxide/l1-contracts"
+import { LIMIT, LIMIT_USD } from "./support/publicLimit"
 
 const BURN_TX = `0x${"0b".repeat(32)}` as Hex
-// What the stubbed portal reads back as FPC_FUNDING_CUT.
-const CUT = 250_000_000_000_000_000n
+const TX_AMOUNT_CAP = 5166n * 10n ** 18n
 const RECIPIENT = getAddress(`0x${"dd".repeat(20)}`) as Address
 const ACCOUNT = getAddress(`0x${"ac".repeat(20)}`)
 const SWAP_TUPLE = {
@@ -37,18 +37,30 @@ const INPUT = {
 const GAS = parseUnits("5", 18)
 const BURN = parseUnits("120", 18) + GAS + QUOTE.floorAtomic
 
+// The executor's withdrawal fee is priced in its own suites; here it costs nothing.
+vi.mock("../src/features/withdraw/withdrawalFee", () => ({
+  withdrawalExecutorFee: async () => 0n,
+  activeWithdrawalFee: async () => 0n,
+  activeWithdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutorAt: async () => ({ fee: 0n }),
+  useActiveWithdrawalFee: () => 0n,
+}))
 vi.mock("../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/env")>()),
   getConfig: () => ({ l1ChainId: 11155111 }),
   l1Transport: () => ({}),
 }))
 const readContract = vi.fn(async ({ functionName }: { functionName: string }) =>
-  functionName === "$frozen" ? false : functionName === "predictAccountAddress" ? ACCOUNT : CUT,
+  functionName === "predictAccountAddress" ? ACCOUNT : undefined,
 )
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
   getOxideTuple: async () => ({ ...SWAP_TUPLE }),
   l1PublicClient: () => ({ readContract }),
+}))
+vi.mock("../src/features/token/oxideToken", () => ({
+  currentTxAmountCap: async () => TX_AMOUNT_CAP,
 }))
 const claimSponsorContext = vi.fn(async () => ({ fpcAddress: {}, policy: {} }))
 vi.mock("../src/features/onboarding/claimSponsorship", () => ({
@@ -92,7 +104,7 @@ const deps = ({ screen = async () => ({ compliant: true }) }: Given = {}) =>
     contractService: {},
     screener: { screen: vi.fn(screen) },
     tokenService: {
-      fetchTokenInformation: vi.fn(async () => ({ symbol: "DAI" })),
+      fetchTokenInformation: vi.fn(async () => ({ symbol: "DAI", decimals: 18 })),
       exitToL1PrivateSponsored: exitMock(),
     },
   } as unknown as Parameters<typeof submitFreshAddressWithdrawal>[0])
@@ -215,24 +227,26 @@ describe("submitFreshAddressWithdrawal", () => {
 })
 
 describe("submitFreshAddressWithdrawal — the per-withdrawal limit", () => {
-  const LIMIT = parseUnits("2500", 18)
+  const LIMIT_ATOMIC = parseUnits(String(LIMIT), 18)
   // What the recipient should receive so that the burn is `burn`, the gas share and floor on top.
   const funds = (burn: bigint) => formatUnits(burn - GAS - QUOTE.floorAtomic, 18)
 
-  it("sends a burn of exactly $2,500, gas share and fees included", async () => {
+  it(`sends a burn of exactly ${LIMIT_USD}, gas share and fees included`, async () => {
     const d = deps()
-    await submitFreshAddressWithdrawal(d, { ...INPUT, fundsDisplay: funds(LIMIT) }, vi.fn())
-    expect(exitCalls(d).map(([, amount]) => amount)).toEqual([LIMIT.toString()])
+    await submitFreshAddressWithdrawal(d, { ...INPUT, fundsDisplay: funds(LIMIT_ATOMIC) }, vi.fn())
+    expect(exitCalls(d).map(([, amount]) => amount)).toEqual([LIMIT_ATOMIC.toString()])
   })
 
   it("refuses one atomic unit more before screening, signing or recording", async () => {
     const d = deps()
     const run = submitFreshAddressWithdrawal(
       d,
-      { ...INPUT, fundsDisplay: funds(LIMIT + 1n) },
+      { ...INPUT, fundsDisplay: funds(LIMIT_ATOMIC + 1n) },
       vi.fn(),
     )
-    await expect(run).rejects.toThrow("This withdrawal is over the $2,500 limit, fees included.")
+    await expect(run).rejects.toThrow(
+      `This withdrawal is over the ${LIMIT_USD} limit, fees included.`,
+    )
     expect(d.screener.screen).not.toHaveBeenCalled()
     expect(exitCalls(d)).toHaveLength(0)
     expect(getWithdrawalStore().list()).toHaveLength(0)

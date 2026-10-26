@@ -1,25 +1,32 @@
-import { Account } from "@aztec/aztec.js/account"
-import { ChainInfo } from "@aztec/entrypoints/interfaces"
-import { GasSettings } from "@aztec/stdlib/gas"
+import { Account } from "@aztec-labs/aztec.js/account"
+import { ChainInfo } from "@aztec-labs/entrypoints/interfaces"
+import { GasSettings } from "@aztec-labs/stdlib/gas"
 import { ObsidionAccountEntrypoint, AlphaEntrypointOptions } from "./ObsidionAccountEntrypoint.js"
-import { Fq, Fr } from "@aztec/aztec.js/fields"
-import { AuthWitness } from "@aztec/stdlib/auth-witness"
-import { CompleteAddress, NodeInfo, type ContractInstanceWithAddress } from "@aztec/stdlib/contract"
-import { TxExecutionRequest } from "@aztec/stdlib/tx"
+import { Fq, Fr } from "@aztec-labs/aztec.js/fields"
+import { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
+import {
+  CompleteAddress,
+  NodeInfo,
+  type ContractInstanceWithAddress,
+} from "@aztec-labs/stdlib/contract"
+import { TxExecutionRequest } from "@aztec-labs/stdlib/tx"
 import { AlphaAuthProvider } from "../auth/AlphaAuthProvider.js"
 import { ObsidionAccountContractManager } from "./ObsidionAccountContractManager.js"
+import type { AlphaPasskeySet } from "./alphaPasskeySet.js"
 import {
   CallIntent,
   computeAuthWitMessageHash,
   IntentInnerHash,
-} from "@aztec/aztec.js/authorization"
-import { ExecutionPayload } from "@aztec/stdlib/tx"
+} from "@aztec-labs/aztec.js/authorization"
+import { ExecutionPayload } from "@aztec-labs/stdlib/tx"
 import { MAX_WITNESS_LEN } from "../../../utils/constants.js"
 
 /**
  * Alpha account implementation.
  * Non-modular: no module dispatch, no recovery, no delegation.
- * Signature verification is inline in the contract, against the key committed into the address.
+ * Signature verification is inline in the contract, against the passkey set committed into the
+ * address: any member of the set signs. The wallet keeps one instance per address and installs the
+ * provider of its newest request as the signer (`setAuthProvider`).
  */
 export class ObsidionAccount implements Account {
   private entrypoint: ObsidionAccountEntrypoint
@@ -132,6 +139,16 @@ export class ObsidionAccount implements Account {
 
   public getAuthProvider(): AlphaAuthProvider {
     return this.currentAuthProvider
+  }
+
+  /** The passkey set committed into this account's address. */
+  public async getPasskeySet(): Promise<AlphaPasskeySet> {
+    return this.manager.getPasskeySet()
+  }
+
+  /** Registers the account in the PXE once; a failed attempt is retried by the next call. */
+  public register(): Promise<void> {
+    return this.manager.register()
   }
 
   public async getContractInstance(): Promise<ContractInstanceWithAddress> {

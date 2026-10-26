@@ -125,6 +125,7 @@ import {
 import { obtainEmailClaimProof } from "../paylink/emailClaim"
 import type { PaylinkKit } from "../paylink/usePaylinkDeps"
 import { paylinkSignupQuote } from "../paylink/paylinkSignupQuote"
+import { useActiveWithdrawalFee } from "../withdraw/withdrawalFee"
 import { useRegistrationSpeed } from "../paylink/registrationProverTip"
 import { SpeedRow } from "../withdraw/speedChoice"
 import { belowTicketThresholdCopy, ticketEligibility } from "../paylink/ticketThreshold"
@@ -207,7 +208,7 @@ import {
 import { RegistrationRefundAction } from "./RegistrationRefundAction"
 import { ManualSweepAction } from "./RegistrationDepositDetailModal"
 import { useSipaProcessing } from "../deposit/sipaProcessing"
-import { depositTokensFor } from "../deposit/loadDepositFacts"
+import { useDepositTokens } from "../deposit/loadDepositFacts"
 import { heldDepositLine } from "../deposit/processingCopy"
 import { canManualRegistrationSweep } from "./registrationSweep"
 import { InvitationStep, type InviteNotice } from "./steps/InvitationStep"
@@ -231,7 +232,6 @@ import {
   claimTerms,
   floorExceedsAsk,
   quotedRegistrationKind,
-  registrationKind,
   registrationOffer,
   registrationQuote,
   reservedUntil,
@@ -243,7 +243,6 @@ import {
   termsUnpriced,
   useChainReadRetry,
   useDepositSkim,
-  useSweepDeductions,
   useRegistrationSchedule,
   useRegistrationTerms,
 } from "./registrationTerms"
@@ -446,6 +445,7 @@ export function OnboardingScreen({
   // because registration hashes a tag as typed while every resolver folds first, then dropped if it
   // still cannot be claimed, so the wizard falls back to asking for one.
   const { handle: routeParam } = useParams()
+  const registrationTokens = useDepositTokens("registration")
   const routeHandle = (routeParam === undefined ? null : normalizeTag(routeParam)) ?? undefined
   const [, refreshGrant] = useState(0)
   const { pathname, state } = useLocation()
@@ -1293,9 +1293,9 @@ export function OnboardingScreen({
       if (!fromPaylink && namelessAddress) {
         if (!obsidionWallet) throw new Error("wallet is still starting, try again in a moment")
         // The identity's own passkey is the one the session pointers name; a browser with several
-        // roots must not be pinned to the newest. A session with no passkey opens the chooser; only
-        // a tab with no session falls back to the root recorded for this account, and to the open
-        // prompt when it holds none.
+        // opening records must not be pinned to the newest. A session with no passkey opens the
+        // chooser; only a tab with no session falls back to the record that opened this account,
+        // and to the open prompt when it holds none.
         const credentialId = getActiveCredentialId()
         const hints: PasskeyHints = getActiveStorageId()
           ? credentialId
@@ -2253,43 +2253,30 @@ export function OnboardingScreen({
   const registrationsPaused = readChainSchedule && chainAmounts === null
   // Bound but refused: no claim, no L1 send, the refusal on the sheet until renewed or abandoned.
   const ticketBlocked = paylinkStashed && terms?.paylinkBlocked === true
-  const liveDeductions = useSweepDeductions(
-    config,
-    record?.depositToken,
-    readChain || paylinkStashed,
-    readAttempt,
-  )
-  const sweepDeductions = mock ? { fpcCut: mock.cut } : liveDeductions
   // Only a genuinely unread figure is pending: a deployment that priced nothing has answered.
   const chainReadPendingNow =
-    (readChainSchedule && chainAmounts === undefined) ||
-    sweepDeductions === undefined ||
-    relayerFee === undefined
+    (readChainSchedule && chainAmounts === undefined) || relayerFee === undefined
   useEffect(() => {
     chainReadPending.current = chainReadPendingNow
   }, [chainReadPendingNow])
   // The terms step has no Check pill, so the cadence is its only way back to a read that gave up.
   const chainReads = useChainReadRetry(chainReadPendingNow, retryReads)
   // The ticket signup's split: the signed schedule, else the one the service advertised before
-  // the ticket was spent, priced at the portal's live cut on both legs. Unpriced until that cut
-  // and the sweep fee are read; `covers` is the real check once the witness read the note.
+  // the ticket was spent. `covers` is the real check once the witness read the note.
   const ticketSchedule = ticketStash
     ? amounts ?? {
         fee: BigInt(ticketStash.schedule.fee),
         min: BigInt(ticketStash.schedule.minDeposit),
       }
     : undefined
-  const ticketCuts =
-    sweepDeductions === undefined
-      ? undefined
-      : { withdrawalCut: sweepDeductions.fpcCut, depositCut: sweepDeductions.fpcCut }
+  const ticketWithdrawalFee = useActiveWithdrawalFee(!mock && ticketStash !== null)
   // Before the terms exist the stash holds the tip, and the terms take it once signed.
   const ticketSpeed = useRegistrationSpeed({
     active: !mock && ticketStash !== null,
     node: obsidionWallet?.node,
     noteAmount: ticketStash?.amount !== undefined ? BigInt(ticketStash.amount) : undefined,
     schedule: ticketSchedule,
-    cuts: ticketCuts,
+    withdrawalFee: ticketWithdrawalFee,
     initialSpeed: ticketStash?.speed ?? terms?.speed,
     onCommit: (tip, speed) => {
       updateTicketSignup({ proverTip: tip.toString(), speed })
@@ -2306,14 +2293,15 @@ export function OnboardingScreen({
   const ticketProverTip = mock
     ? 0n
     : ticketSpeed.proverTip ?? (ticketBeforePasskey ? 0n : undefined)
+  const ticketFee = mock ? 0n : ticketWithdrawalFee
   const paylinkQuote =
-    ticketStash && ticketSchedule && ticketCuts && ticketProverTip !== undefined
+    ticketStash && ticketSchedule && ticketProverTip !== undefined && ticketFee !== undefined
       ? paylinkSignupQuote({
           ...(ticketStash.amount !== undefined ? { paylink: BigInt(ticketStash.amount) } : {}),
           schedule: ticketSchedule,
-          cuts: ticketCuts,
           sweepFee: relayerFee,
           proverTip: ticketProverTip,
+          withdrawalFee: ticketFee,
           ticket: !ticketStash.paid,
         })
       : undefined
@@ -2342,18 +2330,14 @@ export function OnboardingScreen({
       terms,
       depositAdmitted || refunded || depositSeenAny || record.fundedAt !== undefined,
       relayerFee,
-      sweepDeductions?.fpcCut,
     )
   // `quoteMismatch` below is what tells the user when a waived tag ends up quoted as standard.
-  const quotedKind = quotedRegistrationKind(feeWaived, amounts, sweepDeductions?.fpcCut)
-  const pendingQuote =
-    quotedKind === undefined
-      ? undefined
-      : registrationQuote(amounts, quotedKind, sweepDeductions?.fpcCut)
+  const quotedKind = quotedRegistrationKind(feeWaived, amounts)
+  const pendingQuote = registrationQuote(amounts, quotedKind)
   // Celebration is reserved for a deposit the chain would accept; a shorter one keeps the panel,
   // which prices the top-up to the asked figure. An unread floor is no verdict, so the panel holds.
   const depositReceived =
-    depositSeenAny && pendingQuote?.floor !== undefined && depositSeen >= pendingQuote.floor
+    depositSeenAny && pendingQuote.floor !== undefined && depositSeen >= pendingQuote.floor
   const nudgedRef = useRef(false)
   useEffect(() => {
     if (!depositSeenAny || !record || mock) return
@@ -2367,24 +2351,11 @@ export function OnboardingScreen({
   // returned a higher quote. Keep the original terms and phase for sweep/recovery inside the app.
   useEffect(() => {
     if (step !== "pending" || !expectedEarned || !record || wrongChain || mock) return
-    if (
-      !hasDepositAdmission(record) &&
-      !recordDepositAdmission(record, depositSeen, sweepDeductions?.fpcCut)
-    )
-      return
+    if (!hasDepositAdmission(record) && !recordDepositAdmission(record, depositSeen)) return
     if (recoveryVisit || entryRetryRef.current) return
     if (keysRef.current && !recoveredRef.current) completeSignup(record.tag)
     else enterWithRecordIdentity(record)
-  }, [
-    step,
-    expectedEarned,
-    record,
-    wrongChain,
-    mock,
-    depositSeen,
-    recoveryVisit,
-    sweepDeductions?.fpcCut,
-  ])
+  }, [step, expectedEarned, record, wrongChain, mock, depositSeen, recoveryVisit])
 
   // The step checks itself: the same tick the Check status pill runs, every AUTO_CHECK_MS while
   // nothing else is running, so a sweep or confirmation is noticed without a click.
@@ -2413,7 +2384,7 @@ export function OnboardingScreen({
   const earnedQuoteDiffers =
     expectedEarned &&
     signedQuote !== undefined &&
-    (!feeWaived || floorExceedsAsk(signedQuote, "earned_tag", sweepDeductions?.fpcCut) === true)
+    (!feeWaived || floorExceedsAsk(signedQuote, "earned_tag"))
   const quoteMismatch = earnedQuoteDiffers && !quoteExpired
   // An old-price address nothing ever reached has no deposit to watch or refund: the earned quote
   // replaces the address outright.
@@ -2586,14 +2557,11 @@ export function OnboardingScreen({
   const termsDismissible = !termsBusy && (step === "terms" || gateDismissible)
   // `termsFree` steers copy only; the kind the total is quoted at comes from the signature.
   const termsKind = quotedKind
-  const termsQuote =
-    termsKind === undefined
-      ? undefined
-      : registrationQuote(amounts, termsKind, sweepDeductions?.fpcCut)
-  const termsTotalLabel =
-    termsQuote === undefined
-      ? undefined
-      : formatDepositDue(termsQuote.total, tokenDecimalsForNetwork(config.network))
+  const termsQuote = registrationQuote(amounts, termsKind)
+  const termsTotalLabel = formatDepositDue(
+    termsQuote.total,
+    tokenDecimalsForNetwork(config.network),
+  )
   const refusalRow = modalRefusal && refusalFor(modalRefusal)
   const inAppRefusal = !!refusalRow?.openInBrowser
   /**
@@ -2740,9 +2708,8 @@ export function OnboardingScreen({
   // other payment: only a ticket signup is held for it.
   const linkShort = fromPaylink && !!ticketStash && paylinkQuote?.covers === false
   const ticketUncovered = linkShort && !ticketStash?.paid
-  // The cut and the sweep fee price the split; while either is unread the hold says so.
-  const ticketFeeUnread =
-    fromPaylink && !!ticketStash && (sweepDeductions === undefined || relayerFee === undefined)
+  // The sweep fee prices the split; while it is unread the hold says so.
+  const ticketFeeUnread = fromPaylink && !!ticketStash && relayerFee === undefined
   // A new passkey spends the ticket next, so it needs the note at or above the threshold. A bound
   // account resumes what it committed; its redeem checks the live threshold before spending.
   const ticketThreshold =
@@ -2917,9 +2884,7 @@ export function OnboardingScreen({
                     tokenDecimalsForNetwork(config.network),
                     WALLET_TOKEN_SYMBOL,
                   ) ?? "Create account with passkey"
-              : termsTotalLabel
-              ? `Deposit ${termsTotalLabel}`
-              : "Deposit to register"
+              : `Deposit ${termsTotalLabel}`
           }
           buttonStyle={ctaStyle}
           isDisabled={!passkeysSupported() || ticketHeld}
@@ -3011,16 +2976,14 @@ export function OnboardingScreen({
                 ? undefined
                 : {
                     chainLabel,
-                    total: termsQuote?.total,
-                    fee: termsQuote?.fee,
+                    total: termsQuote.total,
+                    fee: termsQuote.fee,
                     sweepFee: relayerFee,
-                    fpcCut: sweepDeductions?.fpcCut,
-                    floor: termsQuote?.floor,
+                    floor: termsQuote.floor,
                     scheduleUnavailable,
-                    kind: termsKind ?? registrationKind(termsFree),
+                    kind: termsKind,
                     tokenSymbol: mock?.tokenSymbol ?? WALLET_TOKEN_SYMBOL,
-                    network: config.network,
-                    swapAssets: swapAssetsLabel(config.network),
+                    swapAssets: swapAssetsLabel(registrationTokens),
                     tokenDecimals: tokenDecimalsForNetwork(config.network),
                   }
             }
@@ -3083,22 +3046,20 @@ export function OnboardingScreen({
                   token: record.depositToken as Address,
                   chainId: record.l1ChainId,
                   chainLabel,
-                  total: pendingQuote?.total,
-                  fee: pendingQuote?.fee,
+                  total: pendingQuote.total,
+                  fee: pendingQuote.fee,
                   sweepFee: relayerFee,
-                  fpcCut: sweepDeductions?.fpcCut,
-                  floor: pendingQuote?.floor,
+                  floor: pendingQuote.floor,
                   scheduleUnavailable,
-                  kind: quotedKind ?? registrationKind(feeWaived),
+                  kind: quotedKind,
                   tokenSymbol: mock?.tokenSymbol ?? WALLET_TOKEN_SYMBOL,
-                  network: config.network,
-                  swapAssets: swapAssetsLabel(config.network),
+                  swapAssets: swapAssetsLabel(registrationTokens),
                   tokenDecimals: tokenDecimalsForNetwork(config.network),
                   received: depositSeenAny ? depositSeen : undefined,
                   receivedToken: !depositSeenAny
                     ? undefined
                     : mock
-                    ? depositTokensFor(config.network).find((t) => t.symbol === mock.tokenSymbol)
+                    ? registrationTokens?.options.find((t) => t.symbol === mock.tokenSymbol)
                         ?.address ?? (record.depositToken as Address)
                     : watchedDeposit.token,
                   funded: custodyHeld,

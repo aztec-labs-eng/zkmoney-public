@@ -5,8 +5,11 @@ import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
-import {DepositSIPA, DEPOSIT_FEE} from "@periphery/DepositSIPA.sol";
+import {DepositSIPA} from "@periphery/DepositSIPA.sol";
 import {DepositSubsidy} from "@periphery/DepositSubsidy.sol";
+import {ForwardingTable} from "@periphery/ForwardingTable.sol";
+import {IOperationExecutor} from "@periphery/interfaces/IOperationExecutor.sol";
+import {OperationExecutor} from "@periphery/OperationExecutor.sol";
 import {SIPAFactory} from "@periphery/SIPAFactory.sol";
 import {SIPABase} from "@periphery/SIPABase.sol";
 import {DAI, USDC, THREE_POOL} from "@periphery/ThreePoolLib.sol";
@@ -18,6 +21,8 @@ import {MintableToken} from "@test/mocks/MintableToken.sol";
 import {MockCurve3Pool} from "@test/mocks/MockCurve3Pool.sol";
 import {MockV3Aggregator} from "@test/mocks/MockV3Aggregator.sol";
 import {SweepGasFixture} from "@test/periphery/SweepGasFixture.sol";
+import {ForwardingTableFixture, DEPOSIT_SWEEP_TIP} from "@test/helpers/ForwardingTableFixture.sol";
+import {RelayerTransaction} from "@test/periphery/RelayerTransaction.sol";
 
 contract DepositSubsidyMinCreditedAmountTest is SweepGasFixture {
   uint256 internal constant DEPOSIT = 100 ether;
@@ -27,7 +32,13 @@ contract DepositSubsidyMinCreditedAmountTest is SweepGasFixture {
   function setUp() public virtual override {
     super.setUp();
     MockV3Aggregator feed = new MockV3Aggregator(8, PRICED_FEED_ANSWER);
-    sm = new DepositSubsidy(OWNER, address(portal), AggregatorV3Interface(address(feed)), sipaFactory);
+    sm = new DepositSubsidy(
+      OWNER,
+      address(portal),
+      IOperationExecutor(address(operationExecutor)),
+      AggregatorV3Interface(address(feed)),
+      sipaFactory
+    );
     underlying.mint(address(sm), 1_000_000 ether);
     vm.fee(PRICED_BASEFEE);
     vm.txGasPrice(PRICED_BASEFEE);
@@ -70,7 +81,7 @@ contract DepositSubsidyMinCreditedAmountTest is SweepGasFixture {
 
   function test_GivenADeposit_ThenTheMeasuredCreditIsWhatThePortalCredits() external {
     bytes memory cd = _sweepCd(_fundedSIPA("credit"), _depositIntent("credit"));
-    assertEq(_creditedBy(cd), DEPOSIT - DEPOSIT_FEE - portal.FPC_FUNDING_CUT(), "the portal delta is the credit");
+    assertEq(_creditedBy(cd), DEPOSIT - DEPOSIT_SWEEP_TIP, "the portal delta is the credit");
   }
 
   function _assertPaidAsWithoutAMinimum(bytes memory _cd, uint256 _margin) internal {
@@ -96,7 +107,7 @@ contract DepositSubsidyMinCreditedAmountTest is SweepGasFixture {
 
     assertEq(subsidy, 0, "a credit under the minimum must not be subsidized");
     assertEq(underlying.balanceOf(address(portal)) - portalBefore, _credited, "the deposit still bridged");
-    assertEq(underlying.balanceOf(relayer) - relayerBefore, DEPOSIT_FEE, "the relayer keeps the fee");
+    assertEq(underlying.balanceOf(relayer) - relayerBefore, DEPOSIT_SWEEP_TIP, "the relayer keeps the fee");
     assertEq(underlying.balanceOf(address(sm)), budgetBefore, "the budget is untouched");
   }
 
@@ -110,14 +121,11 @@ contract DepositSubsidyMinCreditedAmountTest is SweepGasFixture {
 
   function _setMinCreditedAmount(uint256 _minCreditedAmount) internal {
     vm.prank(OWNER);
-    sm.setDepositConfig(PRICED_MIN_PROFIT, type(uint128).max, PRICED_MIN_PROFIT, uint128(_minCreditedAmount), 0);
+    sm.setDepositConfig(PRICED_MIN_PROFIT, type(uint128).max, uint128(_minCreditedAmount));
   }
 
   function _submit(bytes memory _callData) internal returns (uint256 quote) {
-    vm.prank(relayer);
-    (bool ok, bytes memory ret) = address(sm).call(_callData);
-    require(ok, "sweep reverted");
-    quote = abi.decode(ret, (uint256));
+    (quote,) = RelayerTransaction.send(relayer, sm, _callData);
   }
 
   function _depositIntent(bytes32 _salt) internal pure returns (bytes memory) {
@@ -130,7 +138,8 @@ contract DepositSubsidyMinCreditedAmountTest is SweepGasFixture {
       keccak256(_depositIntent(_salt)),
       _recoveryCommitment("recovery"),
       ROLLUP_VERSION,
-      true
+      true,
+      forwardingTable
     );
     underlying.mint(sipa, DEPOSIT);
   }
@@ -138,26 +147,36 @@ contract DepositSubsidyMinCreditedAmountTest is SweepGasFixture {
   function _fundedPrediction(bytes32 _salt) internal returns (bytes memory intent) {
     intent = _depositIntent(_salt);
     address sipa = sipaFactory.predictSIPA(
-      address(depositSIPAImplementation), keccak256(intent), _recoveryCommitment("recovery"), ROLLUP_VERSION, true
+      address(depositSIPAImplementation),
+      keccak256(intent),
+      _recoveryCommitment("recovery"),
+      ROLLUP_VERSION,
+      true,
+      forwardingTable
     );
     underlying.mint(sipa, DEPOSIT);
   }
 
   function _sweepCd(address _sipa, bytes memory _intentData) internal view returns (bytes memory) {
-    return abi.encodeCall(DepositSubsidy.sweepForSubsidy, (ISIPA(_sipa), address(underlying), relayer, _intentData, ""));
+    return abi.encodeCall(
+      DepositSubsidy.sweepForSubsidy, (ISIPA(_sipa), address(underlying), address(operationExecutor), _intentData, "")
+    );
   }
 
   function _deployCd(bytes memory _intentData) internal view returns (bytes memory) {
     return abi.encodeCall(
       DepositSubsidy.deployAndSweepForSubsidy,
-      (SIPABase.Intent.Deposit, _recoveryCommitment("recovery"), true, address(underlying), relayer, _intentData, "")
+      (
+        forwardingTable,
+        SIPABase.Intent.Deposit,
+        _recoveryCommitment("recovery"),
+        true,
+        address(underlying),
+        address(operationExecutor),
+        _intentData,
+        ""
+      )
     );
-  }
-}
-
-contract DecimalMintableToken is MintableToken {
-  function decimals() external pure returns (uint8) {
-    return 18;
   }
 }
 
@@ -186,33 +205,43 @@ contract EscrowPortal {
 contract DepositSubsidyMinCreditedAmountUsdcTest is Test {
   uint256 internal constant ROLLUP_VERSION = 7;
   uint256 internal constant AMOUNT_6DEC = 1000e6;
-  uint256 internal constant CREDITED = AMOUNT_6DEC * 1e12 - DEPOSIT_FEE;
+  uint256 internal constant CREDITED = AMOUNT_6DEC * 1e12 - DEPOSIT_SWEEP_TIP;
   bytes32 internal constant RECOVERY = bytes32(uint256(1));
 
   address internal owner = makeAddr("owner");
   address internal relayer = makeAddr("relayer");
 
   EscrowPortal internal daiPortal;
+  ForwardingTable internal table;
   SIPAFactory internal sipaFactory;
   DepositSubsidy internal sm;
 
   function setUp() public {
     vm.chainId(1);
     MockCurve3Pool threePool = StablecoinMocks.install();
-    vm.etch(address(DAI), address(new DecimalMintableToken()).code);
+    vm.etch(address(DAI), address(new MintableToken("Dai Stablecoin", "DAI", 18)).code);
     threePool.setRate(address(DAI), 1e30);
     MintableToken(address(DAI)).mint(address(THREE_POOL), 1_000_000e18);
 
     daiPortal = new EscrowPortal(DAI, ROLLUP_VERSION);
+    table = ForwardingTableFixture.deploy(owner, IOxidePortal(address(daiPortal)), makeAddr("tableBeneficiary"));
     sipaFactory = new SIPAFactory(owner);
-    DepositSIPA implementation = new DepositSIPA(IOxidePortal(address(daiPortal)), DEPOSIT_FEE);
-    vm.prank(owner);
-    sipaFactory.bless(address(implementation));
+    DepositSIPA implementation = new DepositSIPA();
+    vm.startPrank(owner);
+    sipaFactory.blessImplementation(address(implementation));
+    sipaFactory.blessTable(table);
+    vm.stopPrank();
 
     vm.fee(4e9);
     vm.txGasPrice(4e9);
     MockV3Aggregator feed = new MockV3Aggregator(8, 2500e8);
-    sm = new DepositSubsidy(owner, address(daiPortal), AggregatorV3Interface(address(feed)), sipaFactory);
+    sm = new DepositSubsidy(
+      owner,
+      address(daiPortal),
+      IOperationExecutor(address(new OperationExecutor())),
+      AggregatorV3Interface(address(feed)),
+      sipaFactory
+    );
     MintableToken(address(DAI)).mint(address(sm), 1_000_000e18);
   }
 
@@ -224,7 +253,7 @@ contract DepositSubsidyMinCreditedAmountUsdcTest is Test {
 
     assertEq(subsidy, 0, "a swapped credit under the minimum must not be subsidized");
     assertEq(DAI.balanceOf(address(daiPortal)), CREDITED, "the swapped deposit still bridged");
-    assertEq(DAI.balanceOf(relayer) - relayerBefore, DEPOSIT_FEE, "the relayer keeps the fee");
+    assertEq(DAI.balanceOf(relayer) - relayerBefore, DEPOSIT_SWEEP_TIP, "the relayer keeps the fee");
   }
 
   function test_GivenAUsdcCreditAtTheMinimum_ThenItIsPaid() external {
@@ -239,18 +268,22 @@ contract DepositSubsidyMinCreditedAmountUsdcTest is Test {
   function _deployAndSweepUsdc() internal returns (uint256) {
     bytes memory intent = abi.encode(bytes32(uint256(2)));
     address sipa = sipaFactory.predictSIPA(
-      sipaFactory.implementationFor(address(daiPortal), SIPABase.Intent.Deposit),
-      keccak256(intent),
-      RECOVERY,
-      ROLLUP_VERSION,
-      true
+      sipaFactory.implementationFor(SIPABase.Intent.Deposit), keccak256(intent), RECOVERY, ROLLUP_VERSION, true, table
     );
     MintableToken(address(USDC)).mint(sipa, AMOUNT_6DEC);
-    return sm.deployAndSweepForSubsidy(SIPABase.Intent.Deposit, RECOVERY, true, address(USDC), relayer, intent, "");
+    (uint256 subsidy,) = RelayerTransaction.send(
+      relayer,
+      sm,
+      abi.encodeCall(
+        DepositSubsidy.deployAndSweepForSubsidy,
+        (table, SIPABase.Intent.Deposit, RECOVERY, true, address(USDC), address(sm.EXECUTOR()), intent, "")
+      )
+    );
+    return subsidy;
   }
 
   function _setMinCreditedAmount(uint256 _minCreditedAmount) internal {
     vm.prank(owner);
-    sm.setDepositConfig(uint128(DEPOSIT_FEE), type(uint128).max, uint128(DEPOSIT_FEE), uint128(_minCreditedAmount), 0);
+    sm.setDepositConfig(uint128(DEPOSIT_SWEEP_TIP), type(uint128).max, uint128(_minCreditedAmount));
   }
 }

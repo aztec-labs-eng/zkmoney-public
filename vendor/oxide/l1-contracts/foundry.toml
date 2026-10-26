@@ -7,6 +7,12 @@ solc = "0.8.30"
 evm_version = "osaka"
 optimizer = true
 optimizer_runs = 1
+# Forge 1.8 changed these defaults. Keep the forge 1.4 behavior:
+# - isolate: the gas tests and the gas ceilings they check were measured without isolation.
+# - dynamic_test_linking: it replaces `new X()` in tests with artifact lookups, which fail for
+#   the contracts that the CI coverage run excludes with `--skip`.
+isolate = false
+dynamic_test_linking = false
 auto_detect_solc = false
 # Append no metadata hash, so CREATE2 addresses depend on compiled code and compiler settings, not on comments,
 # file paths or remappings. Etherscan still verifies with an exact match.
@@ -15,10 +21,13 @@ remappings = [
   "@core/=src/core/",
   "@periphery/=src/periphery/",
   "@generated/=src/generated/",
-  "@aztec/=node_modules/@aztec/l1-artifacts/l1-contracts/src/",
-  "@aztec-blob-lib/=node_modules/@aztec/l1-artifacts/l1-contracts/src/mock/libraries/",
-  "@oz/=node_modules/@aztec/l1-artifacts/l1-contracts/lib/openzeppelin-contracts/contracts/",
+  "@aztec/=node_modules/@aztec-foundation/l1-artifacts/l1-contracts/src/",
+  "@aztec-blob-lib/=node_modules/@aztec-foundation/l1-artifacts/l1-contracts/src/mock/libraries/",
+  "@zkpassport/=node_modules/@aztec-foundation/l1-artifacts/l1-contracts/lib/circuits/src/solidity/src/",
+  "@oz/=node_modules/@aztec-foundation/l1-artifacts/l1-contracts/lib/openzeppelin-contracts/contracts/",
   "@openzeppelin/contracts/=node_modules/@openzeppelin/contracts/",
+  # Aztec uses OZ 5.1. Avoid it using our OZ 5.6.1.
+  "node_modules/@aztec-foundation/l1-artifacts/l1-contracts/:@openzeppelin/contracts/=node_modules/@aztec-foundation/l1-artifacts/l1-contracts/lib/openzeppelin-contracts/contracts/",
   "@uniswap/universal-router/=node_modules/@uniswap/universal-router/",
   "@uniswap/v4-core/=node_modules/@uniswap/v4-core/",
   "@uniswap/v4-periphery/=node_modules/@uniswap/v4-periphery/",
@@ -27,11 +36,12 @@ remappings = [
   "@nitro-validator/=.deps/nitro-validator/src/",
   "@solarity/libs/=.deps/solidity-lib/contracts/libs/",
   "@test/=test/",
-  "forge-std/=node_modules/@aztec/l1-artifacts/l1-contracts/lib/forge-std/src/"
+  "forge-std/=node_modules/@aztec-foundation/l1-artifacts/l1-contracts/lib/forge-std/src/"
 ]
 
 fs_permissions = [
-  { access = "read", path = "./test/fixtures" }
+  { access = "read", path = "./test/fixtures" },
+  { access = "read", path = "../environments" }
 ]
 
 [fmt]

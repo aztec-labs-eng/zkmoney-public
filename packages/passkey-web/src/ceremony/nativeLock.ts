@@ -1,6 +1,7 @@
 /**
  * The page-start lock on the browser's own passkey functions: `nativeLockScript()` is the inline
- * script the wallet puts at the top of `<head>`, `nativeLockFor()` reads what it recorded.
+ * script the wallet puts at the top of `<head>`, `nativeLockFor()` reads what it recorded, and
+ * `keptPasskeyApiFor()` reads the extension wrapper it kept aside while restoring.
  */
 
 import {
@@ -18,7 +19,26 @@ export function printsNative(name: string, source: string): boolean {
 /** The `globalThis` slot the inline script writes its per-function record to. */
 export const NATIVE_LOCK_KEY = "__zkMoneyNativeLock"
 
+/** The `globalThis` slot holding the wrappers the lock kept aside: `{ create?, get? }`, frozen. */
+export const KEPT_PASSKEY_API_KEY = "__zkMoneyKeptPasskeyApi"
+
 export type NativeLockCall = "create" | "get"
+
+/**
+ * Proton Pass's bridge message names, which its minified Chromium wrappers still print. A
+ * restored wrapper carrying the name's marker is kept so the ceremony can route to it: Proton
+ * falls through to the browser's own function whenever it cannot answer, which no other
+ * measured extension does.
+ */
+export const KEPT_WRAPPER_MARKERS: Readonly<Record<NativeLockCall, string>> = {
+  create: "PASSKEY_CREATE",
+  get: "PASSKEY_GET",
+}
+
+/** A kept wrapper, called as the browser's own method is. */
+export type KeptPasskeyApi = (
+  options?: CredentialCreationOptions | CredentialRequestOptions,
+) => Promise<Credential | null>
 
 export type NativeLockScope = {
   navigator?: { credentials?: object }
@@ -33,15 +53,21 @@ export type NativeLockRecord = Partial<Record<string, PasskeyNativeLock>>
  * browser's own, so a wrapper assigned later cannot replace them. A wrapper already assigned over
  * the prototype's method (Bitwarden's and Proton Pass's page scripts run before any page script on
  * Chromium) is replaced by that method, frozen, when it is still the browser's own and the wrapper
- * is configurable. Stringified into the page by `nativeLockScript()`: nothing from this module, no
- * helper, nothing that needs strict mode, and the names are a literal here for that reason.
+ * is configurable. A replaced wrapper whose source carries the name's marker is kept under
+ * `keptKey`, a frozen prototype-free slot published on every page, empty or not, so no later
+ * script can plant one. Stringified into the page by `nativeLockScript()`: nothing from this
+ * module, no helper, nothing that needs strict mode, and the names are a literal here for that
+ * reason.
  */
 export function lockNativePasskeyApi(
   scope: NativeLockScope,
   pattern: string,
   key: string,
+  keptKey: string,
+  markers: Record<string, string>,
 ): NativeLockRecord {
   const record: NativeLockRecord = {}
+  const kept: Record<string, unknown> = Object.create(null)
   try {
     const credentials = scope.navigator && scope.navigator.credentials
     // The instance never owns create or get, so an own value there is a script's. The constructor
@@ -102,6 +128,19 @@ export function lockNativePasskeyApi(
                 enumerable: inherited.enumerable,
               })
               record[name] = "restored"
+              // Reading the source is best effort: a value that cannot be read is simply not kept.
+              try {
+                const marker = markers[name]
+                if (
+                  marker &&
+                  new RegExp("\\b" + marker + "\\b").test(
+                    Function.prototype.toString.call(own.value),
+                  )
+                )
+                  kept[name] = own.value
+              } catch (_error) {
+                // Not kept.
+              }
             } else {
               record[name] = "lost_race"
             }
@@ -124,6 +163,11 @@ export function lockNativePasskeyApi(
         }
       }
     }
+  } catch (_error) {
+    // The lock never breaks page load.
+  }
+  // Each slot is published on its own: one refused definition never costs the other.
+  try {
     Object.defineProperty(scope, key, {
       value: Object.freeze(record),
       writable: false,
@@ -131,7 +175,17 @@ export function lockNativePasskeyApi(
       enumerable: false,
     })
   } catch (_error) {
-    // The lock never breaks page load.
+    // Nothing to record it on.
+  }
+  try {
+    Object.defineProperty(scope, keptKey, {
+      value: Object.freeze(kept),
+      writable: false,
+      configurable: false,
+      enumerable: false,
+    })
+  } catch (_error) {
+    // Nothing kept.
   }
   return record
 }
@@ -140,7 +194,26 @@ export function lockNativePasskeyApi(
 export function nativeLockScript(): string {
   const pattern = JSON.stringify(NATIVE_PRINT_PATTERN)
   const key = JSON.stringify(NATIVE_LOCK_KEY)
-  return `(${lockNativePasskeyApi.toString()})(globalThis, ${pattern}, ${key})`
+  const keptKey = JSON.stringify(KEPT_PASSKEY_API_KEY)
+  const markers = JSON.stringify(KEPT_WRAPPER_MARKERS)
+  return `(${lockNativePasskeyApi.toString()})(globalThis, ${pattern}, ${key}, ${keptKey}, ${markers})`
+}
+
+/**
+ * The wrapper the inline script kept aside for `create` or `get`; nothing where the slot is
+ * missing, inherited, or holds anything but an own function for the call.
+ */
+export function keptPasskeyApiFor(call: NativeLockCall): KeptPasskeyApi | undefined {
+  try {
+    const slot = Object.getOwnPropertyDescriptor(globalThis, KEPT_PASSKEY_API_KEY)
+    const kept = slot && "value" in slot ? slot.value : undefined
+    if (!kept || typeof kept !== "object") return undefined
+    const entry = Object.getOwnPropertyDescriptor(kept, call)
+    const value = entry && "value" in entry ? entry.value : undefined
+    return typeof value === "function" ? (value as KeptPasskeyApi) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** What the inline script recorded for `create` or `get`; nothing where the page has no record. */

@@ -13,14 +13,15 @@ import {
 import { aboutLimitsView } from "../src/features/limits/aboutLimitsView"
 import * as copy from "../src/features/limits/limitsCopy"
 import { CAPACITY_LOW } from "../src/features/deposit/fundingCapacity"
+import { LIMIT } from "./support/publicLimit"
 
 const DAI = "0x6B175474E89094C44Da98b954EedeAC495271d0F"
 describe("productLimitFacts", () => {
   it("states the published maximum for each operation", () => {
     expect(productLimitFacts()).toEqual({
-      deposit: { maximumUsd: "2500" },
-      withdrawal: { maximumUsd: "2500" },
-      send: { maximumUsd: "2500" },
+      deposit: { maximumUsd: String(LIMIT) },
+      withdrawal: { maximumUsd: String(LIMIT) },
+      send: { maximumUsd: String(LIMIT) },
     })
   })
 })
@@ -36,7 +37,7 @@ const allowance = (overrides: Partial<ClaimFpcAllowance> = {}): ClaimFpcAllowanc
 const ready = (read: ClaimFpcAllowance): AllowanceSnapshot => ({
   status: "ready",
   scope: "account|sandbox",
-  read: { fpcAddress: "0xfpc", railId: 1, allowance: read },
+  read: { fpcAddress: "0xfpc", railId: 1, payer: "account", allowance: read },
   state: deriveAllowanceState(read),
   refreshing: false,
 })
@@ -98,6 +99,7 @@ describe("capacityFacts", () => {
     rateAtomicPerSecond: 5n,
     globalLimitAtomic: 50_000n * 10n ** 18n,
     availableAtomic: 1_234_567n * 10n ** 15n,
+    txAmountCapAtomic: 5166n * 10n ** 18n,
   } as Extract<PortalCapacityState, { status: "fresh" }>["snapshot"]
 
   it("maps a read with its values and the funding panel's figure", () => {

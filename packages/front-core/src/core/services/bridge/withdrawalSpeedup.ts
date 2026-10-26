@@ -12,17 +12,17 @@
  * ahead of it is the device's proving, not the chain's wait.
  */
 
-import { CheckpointNumber, EpochNumber } from "@aztec/foundation/branded-types"
-import { RollupAbi } from "@aztec/l1-artifacts/RollupAbi"
+import { CheckpointNumber, EpochNumber } from "@aztec-labs/foundation/branded-types"
+import { RollupAbi } from "@aztec-foundation/l1-artifacts/RollupAbi"
 import {
   getEpochAtSlot,
   getSlotAtTimestamp,
   getSlotRangeForEpoch,
   getStartTimestampForEpoch,
   type L1RollupConstants,
-} from "@aztec/stdlib/epoch-helpers"
-import { MAX_RPC_CHECKPOINTS_DATA_LEN } from "@aztec/stdlib/interfaces/api-limit"
-import type { AztecNode } from "@aztec/stdlib/interfaces/client"
+} from "@aztec-labs/stdlib/epoch-helpers"
+import { MAX_RPC_CHECKPOINTS_DATA_LEN } from "@aztec-labs/stdlib/interfaces/api-limit"
+import type { AztecNode } from "@aztec-labs/stdlib/interfaces/client"
 import type { Address, PublicClient } from "viem"
 
 import { logger } from "src/utils/logger"

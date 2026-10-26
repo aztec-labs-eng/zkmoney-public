@@ -19,7 +19,7 @@ export async function quoteFundedSandboxSwap(
   args: SwapSimulationArgs,
 ): Promise<{ amount: bigint; quote: SwapSimulation }> {
   const deductions =
-    args.deductions.withdrawalRelayerTip + args.deductions.proverTip + args.deductions.fpcFundingCut
+    args.deductions.withdrawalFee + args.deductions.withdrawalRelayerTip + args.deductions.proverTip
   let amount = args.amount
   let lastError: SwapTipExceedsInputError | undefined
 

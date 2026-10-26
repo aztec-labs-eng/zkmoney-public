@@ -16,12 +16,12 @@
     "./*": "./dest/*"
   },
   "dependencies": {
-    "@aztec/ethereum": "5.2.0",
-    "@aztec/foundation": "5.2.0",
-    "@aztec/l1-artifacts": "5.2.0",
-    "@aztec/stdlib": "5.2.0",
+    "@aztec-foundation/l1-artifacts": "6.0.0",
+    "@aztec-labs/ethereum": "6.0.0",
+    "@aztec-labs/foundation": "6.0.0",
+    "@aztec-labs/stdlib": "6.0.0",
     "@oxide/oxide-lib": "workspace:^",
-    "viem": "npm:@aztec/viem@2.38.2",
+    "viem": "2.57.1",
     "zod": "^4.0.0"
   },
   "devDependencies": {

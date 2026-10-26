@@ -1,4 +1,4 @@
-import type { Fr } from "@aztec/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { describe, expect, it, vi } from "vitest"
 import type { RecoverPasskeyResult } from "@obsidion/sdk"
 import {

@@ -90,6 +90,9 @@ export type AnalyticsEvent =
   | "passkey_by_tag_lookup_resolved"
   // ── Passkeys ── One per passkey attempt, in the closed vocabulary `@obsidion/passkey-web` owns.
   | "passkey_ceremony"
+  // One per backup passkey add attempt and per backup passkey sign-in (lib/backupPasskeyTelemetry.ts).
+  | "backup_passkey_add"
+  | "backup_passkey_sign_in"
 
 /**
  * The onboarding stream (docs/analytics/signup-funnel-events.md): sent on the signup platform
@@ -524,7 +527,14 @@ export type FailureCode =
   | "passkey_wrong_credential"
   | "registry_unanchored"
   | "passkey_key_mismatch"
+  // A backup passkey answered, but its envelope did not open.
+  | "backup_envelope_failed"
   | "unknown"
+
+/** The wallet's own refusals that are not the policy's, by their stable error names. */
+const WALLET_FAILURE_CODES: Record<string, FailureCode> = {
+  PasskeyEnvelopeError: "backup_envelope_failed",
+}
 
 /** The passkey policy's refusals, by their stable error names. */
 const POLICY_REFUSAL_CODES: Record<string, FailureCode> = {
@@ -570,6 +580,9 @@ const FAILURE_PATTERNS: [RegExp, FailureCode][] = [
 export function failureCode(error: unknown): FailureCode {
   if (error instanceof Error && POLICY_REFUSAL_CODES[error.name]) {
     return POLICY_REFUSAL_CODES[error.name]!
+  }
+  if (error instanceof Error && WALLET_FAILURE_CODES[error.name]) {
+    return WALLET_FAILURE_CODES[error.name]!
   }
   const message = error instanceof Error ? error.message : String(error)
   for (const [pattern, code] of FAILURE_PATTERNS) if (pattern.test(message)) return code

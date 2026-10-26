@@ -5,9 +5,9 @@
  * oxide token on testnet+, TestToken on sandbox — and a length mismatch is a selector mismatch.
  */
 import { describe, expect, it } from "vitest"
-import { loadContractArtifact, type ContractArtifact } from "@aztec/stdlib/abi"
-import type { NoirCompiledContract } from "@aztec/stdlib/noir"
-import { TRANSFER_META_LEN, WITHDRAW_META_LEN } from "@obsidion/core/constants"
+import { loadContractArtifact, type ContractArtifact } from "@aztec-labs/stdlib/abi"
+import type { NoirCompiledContract } from "@aztec-labs/stdlib/noir"
+import { TRANSFER_META_LEN } from "@obsidion/core/constants"
 
 async function metaParamLength(artifact: ContractArtifact, fn = "transfer"): Promise<number> {
   const found = artifact.functions.find((f) => f.name === fn)
@@ -42,15 +42,6 @@ describe("TRANSFER_META_LEN", () => {
   it.each(ARTIFACTS)("matches %s.transfer's meta array length", async (_name, load) => {
     const artifact = loadContractArtifact((await load()).default as NoirCompiledContract)
     expect(await metaParamLength(artifact)).toBe(TRANSFER_META_LEN)
-  })
-})
-
-describe("WITHDRAW_META_LEN", () => {
-  it("matches OxideToken.withdraw's meta array length", async () => {
-    const artifact = loadContractArtifact(
-      (await ARTIFACTS[0]![1]()).default as NoirCompiledContract,
-    )
-    expect(await metaParamLength(artifact, "withdraw")).toBe(WITHDRAW_META_LEN)
   })
 })
 

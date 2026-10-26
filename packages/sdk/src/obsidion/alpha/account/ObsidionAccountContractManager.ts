@@ -2,24 +2,25 @@ import {
   CompleteAddress,
   ContractInstanceWithAddress,
   getContractInstanceFromInstantiationParams,
-} from "@aztec/stdlib/contract"
+} from "@aztec-labs/stdlib/contract"
 import {
   computeAddressSecret,
   deriveKeys,
   deriveMasterIncomingViewingSecretKey,
-} from "@aztec/stdlib/keys"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { ContractArtifact } from "@aztec/stdlib/abi"
+} from "@aztec-labs/stdlib/keys"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import { ContractService, ContractName } from "@obsidion/contracts"
-import type { PXE } from "@aztec/pxe/client/lazy"
+import type { PXE } from "@aztec-labs/pxe/client/lazy"
 import type {
   DepositSpendMetadata,
   DepositSpendMetadataResolver,
   SpendMetadata,
   SpendMetadataResolver,
 } from "@oxide/oxide-client/token_operations_collector.js"
-import { alphaKeyCommitment } from "./alphaKeyCommitment.js"
+import { deriveAccountSecretKey } from "./accountSecretKey.js"
+import type { AlphaPasskeySet } from "./alphaPasskeySet.js"
 
 export const DEFAULT_ACCOUNT_SALT = new Fr(1n)
 
@@ -36,8 +37,9 @@ export interface AlphaContractManagerOptions {
  * class to serve both production (WebAuthn) and test (K256) variants.
  * Uses ContractService to register into the wallet's PXE.
  *
- * The address is a function of the master secret key and the signing key: the key's commitment
- * is the instance's `immutables_hash`, so an account is bound to one key for its whole life.
+ * The address is a function of the master secret key and the passkey set, through the account secret
+ * key derived from the master secret: the set's hash is the instance's `immutables_hash`, so an
+ * account is bound to one set of keys for its whole life.
  */
 export class ObsidionAccountContractManager {
   private contractService: ContractService = ContractService.getInstance()
@@ -45,64 +47,52 @@ export class ObsidionAccountContractManager {
   private instance: ContractInstanceWithAddress | null = null
   private completeAddress: CompleteAddress | null = null
   private readonly secretKey: Fr
-  private readonly pubkeyHex: string
+  private readonly passkeySet: AlphaPasskeySet
   private readonly artifact: ContractArtifact
   private readonly contractName: ContractName
   private readonly pxe: PXE
 
   public static async create(
-    secretKey: Fr,
-    pubkeyHex: string,
+    masterSecretKey: Fr,
+    passkeySet: AlphaPasskeySet,
     options: AlphaContractManagerOptions,
-    register: boolean = false,
   ) {
-    const manager = new ObsidionAccountContractManager(secretKey, pubkeyHex, options)
+    const manager = new ObsidionAccountContractManager(masterSecretKey, passkeySet, options)
     await manager.getContractInstance()
-
-    if (register) {
-      manager.contractRegistration = manager.registerAccount().catch((error) => {
-        console.error("Error during account registration:", error)
-      })
-    }
-
     return manager
   }
 
   /**
-   * Restore from a stored complete address. The complete address is re-derived from the secret
-   * and the key and must equal the stored one: a stored address the current derivation does not
-   * reproduce is an account this wallet cannot run, and it must not be registered or used. The
-   * derived preimage is what the manager keeps, so a stored copy with stale public keys behind a
-   * matching address never reaches encryption or spend metadata.
+   * Restore from a stored complete address. The complete address is re-derived from the master
+   * secret and the passkey set and must equal the stored one: a stored address the current derivation
+   * does not reproduce is an account this wallet cannot run, and it must not be registered or
+   * used. The derived preimage is what the manager keeps, so a stored copy with stale public keys
+   * behind a matching address never reaches encryption or spend metadata.
    */
   public static async createFromCompleteAddress(
-    secretKey: Fr,
-    pubkeyHex: string,
+    masterSecretKey: Fr,
+    passkeySet: AlphaPasskeySet,
     completeAddress: CompleteAddress,
     options: AlphaContractManagerOptions,
-    register: boolean = false,
   ) {
-    const manager = new ObsidionAccountContractManager(secretKey, pubkeyHex, options)
+    const manager = new ObsidionAccountContractManager(masterSecretKey, passkeySet, options)
     const derived = await manager.getCompleteAddress()
     if (!derived.equals(completeAddress)) {
       throw new Error(
-        `stored account ${completeAddress.address.toString()} is not the account this secret and ` +
-          `key derive (${derived.address.toString()}); this wallet needs re-onboarding`,
+        `stored account ${completeAddress.address.toString()} is not the account this master secret and ` +
+          `passkey set derive (${derived.address.toString()}); this wallet needs re-onboarding`,
       )
     }
-
-    if (register) {
-      manager.contractRegistration = manager.registerAccount().catch((error) => {
-        console.error("Error during account registration:", error)
-      })
-    }
-
     return manager
   }
 
-  private constructor(secretKey: Fr, pubkeyHex: string, options: AlphaContractManagerOptions) {
-    this.secretKey = secretKey
-    this.pubkeyHex = pubkeyHex
+  private constructor(
+    masterSecretKey: Fr,
+    passkeySet: AlphaPasskeySet,
+    options: AlphaContractManagerOptions,
+  ) {
+    this.secretKey = deriveAccountSecretKey(masterSecretKey)
+    this.passkeySet = passkeySet
     this.artifact = options.artifact
     this.contractName = options.contractName
     this.pxe = options.pxe
@@ -119,13 +109,18 @@ export class ObsidionAccountContractManager {
     return this.artifact
   }
 
+  /** The passkey set committed into the address. */
+  getPasskeySet(): AlphaPasskeySet {
+    return this.passkeySet
+  }
+
   async getContractInstance(): Promise<ContractInstanceWithAddress> {
     if (this.instance) return this.instance
 
     this.instance = await getContractInstanceFromInstantiationParams(this.artifact, {
       salt: DEFAULT_ACCOUNT_SALT,
       publicKeys: (await deriveKeys(this.secretKey)).publicKeys,
-      immutablesHash: await alphaKeyCommitment(this.pubkeyHex),
+      immutablesHash: this.passkeySet.immutablesHash,
     })
     return this.instance
   }
@@ -138,6 +133,16 @@ export class ObsidionAccountContractManager {
     return this.completeAddress
   }
 
+  /** Registers once; concurrent callers share the attempt, and a failed one is retried by the next call. */
+  public register(): Promise<void> {
+    this.contractRegistration ??= this.registerAccount().catch((error) => {
+      this.contractRegistration = null
+      throw error
+    })
+    return this.contractRegistration
+  }
+
+  /** Awaits a registration in flight, if any; never starts one. */
   public async ensureContractRegistered(): Promise<void> {
     if (this.contractRegistration) {
       await this.contractRegistration

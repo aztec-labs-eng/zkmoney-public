@@ -1,25 +1,22 @@
-import type { OxideEnvTuple } from "@obsidion/core/types"
 import {
+  assertExecutorServesPortal,
   quoteSkyEscrowTip,
   quoteSkyReleaseTip,
-  readFpcFundingCut,
+  readExecutorSubsidy,
+  readWithdrawalExecutor,
   SkyTipExceedsFundingError,
+  type WithdrawalExecutor,
+  type WithdrawalExecutorKind,
 } from "@obsidion/sdk"
-import { SkyEscrowFactoryAbi, SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
+import { SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
 import { erc4626Abi, type Address, type PublicClient } from "viem"
+import {
+  savingsSourceExecutor,
+  tupleField,
+  type SavingsDeployments,
+  type SkyFactory,
+} from "./savingsDeployment"
 import type { SavingsDirection, SavingsQuote } from "./types"
-
-/** Main is the DAI deployment; Savings the sUSDS one. Both sit in the one oxide manifest. */
-export interface SavingsDeployments {
-  main: OxideEnvTuple
-  savings: OxideEnvTuple
-}
-
-export interface SkyFactory {
-  address: Address
-  dai: Address
-  sUsds: Address
-}
 
 /** The amount cannot pay the move's fees; `fee` is what they come to, in DAI. */
 export class SavingsFeeError extends Error {
@@ -28,68 +25,52 @@ export class SavingsFeeError extends Error {
   }
 }
 
-export const tupleField = (tuple: OxideEnvTuple, field: keyof OxideEnvTuple): Address => {
-  const value = tuple[field]
-  if (typeof value !== "string" || !value) throw new Error(`oxide manifest lacks ${field}`)
-  return value as Address
-}
-
 export const savingsRoute = (direction: SavingsDirection): SkyRoute =>
   direction === "in" ? SkyRoute.Stake : SkyRoute.Unstake
 
-const sameAddress = (a: string, b: string) => a.toLowerCase() === b.toLowerCase()
-
-/** The two portals a Sky escrow factory's escrows deposit into: DAI's for a move out, sUSDS's for a move in. */
-export async function readSkyFactoryPortals(
-  client: Pick<PublicClient, "readContract">,
-  factory: Address,
-): Promise<{ daiPortal: Address; sUsdsPortal: Address }> {
-  const read = (functionName: "DAI_PORTAL" | "SUSDS_PORTAL") =>
-    client.readContract({
-      address: factory,
-      abi: SkyEscrowFactoryAbi,
-      functionName,
-    }) as Promise<Address>
-  const [daiPortal, sUsdsPortal] = await Promise.all([read("DAI_PORTAL"), read("SUSDS_PORTAL")])
-  return { daiPortal, sUsdsPortal }
-}
-
-/** The Sky escrow factory the manifest names, checked to move between these two deployments. */
-export async function resolveSkyFactory(
-  client: Pick<PublicClient, "readContract">,
-  { main, savings }: SavingsDeployments,
-): Promise<SkyFactory> {
-  const address = (main.skyEscrowFactory || savings.skyEscrowFactory) as Address | undefined
-  if (!address) throw new Error("The oxide manifest names no Sky escrow factory")
-  const read = (functionName: "DAI" | "SUSDS") =>
-    client.readContract({ address, abi: SkyEscrowFactoryAbi, functionName }) as Promise<Address>
-  const [dai, sUsds, { daiPortal, sUsdsPortal }] = await Promise.all([
-    read("DAI"),
-    read("SUSDS"),
-    readSkyFactoryPortals(client, address),
-  ])
-  if (!sameAddress(daiPortal, main.portal) || !sameAddress(sUsdsPortal, savings.portal)) {
-    throw new Error(
-      `The Sky escrow factory ${address} moves between ${daiPortal} and ${sUsdsPortal}, not this wallet's deployments`,
-    )
-  }
-  return { address, dai, sUsds }
+/** Reads of an executor's immutables. A front passes session-cached ones; every quote reads them. */
+export interface SavingsExecutorReads {
+  executor(address: Address, kind: WithdrawalExecutorKind): Promise<WithdrawalExecutor>
+  subsidy(address: Address): Promise<Address>
 }
 
 export interface SavingsQuoteDeps {
   client: PublicClient
   deployments: SavingsDeployments
   factory: SkyFactory
-  /** A portal's `FPC_FUNDING_CUT`; fronts cache it per portal. */
-  cutOf?: (portal: Address) => Promise<bigint>
+  /** Uncached reads through `client` when absent. */
+  executorReads?: SavingsExecutorReads
 }
 
-/** The burn's value and what reaches its escrow: the burn less the source portal's cut and the release tip. */
+export const directExecutorReads = (
+  client: Pick<PublicClient, "readContract">,
+): SavingsExecutorReads => ({
+  executor: (address, kind) => readWithdrawalExecutor(client, address, kind),
+  subsidy: (address) => readExecutorSubsidy(client, address),
+})
+
+/**
+ * The source's withdrawal executor, checked to serve its portal. A move in releases through Main's plain executor,
+ * which charges its fee in DAI; a move out through the Sky withdrawal executor, which charges none.
+ */
+export async function readSavingsExecutor(
+  reads: SavingsExecutorReads,
+  deployments: SavingsDeployments,
+  direction: SavingsDirection,
+): Promise<WithdrawalExecutor> {
+  const source = direction === "in" ? deployments.main : deployments.savings
+  const executor = await reads.executor(
+    savingsSourceExecutor(deployments, direction),
+    direction === "in" ? "plain" : "sky",
+  )
+  assertExecutorServesPortal(executor, tupleField(source, "portal"))
+  return executor
+}
+
+/** The burn's value, the executor's fee, the subsidy its release claims and the tip the release offers. */
 async function releaseLeg(deps: SavingsQuoteDeps, direction: SavingsDirection, amount: bigint) {
   const { client, factory } = deps
-  const { main, savings } = deps.deployments
-  const [source, destination] = direction === "in" ? [main, savings] : [savings, main]
-  const cutOf = deps.cutOf ?? ((portal: Address) => readFpcFundingCut(client, portal))
+  const reads = deps.executorReads ?? directExecutorReads(client)
   const route = savingsRoute(direction)
   const toDai = (shares: bigint) =>
     client.readContract({
@@ -98,21 +79,20 @@ async function releaseLeg(deps: SavingsQuoteDeps, direction: SavingsDirection, a
       functionName: "convertToAssets",
       args: [shares],
     })
-  const [sourceCut, arrivalCut, releaseTip] = await Promise.all([
-    cutOf(tupleField(source, "portal")),
-    cutOf(tupleField(destination, "portal")),
-    quoteSkyReleaseTip(client, tupleField(source, "withdrawalSubsidy"), route).then(
-      (release) => release.relayerTip,
-    ),
+  const subsidy = reads.subsidy(savingsSourceExecutor(deps.deployments, direction))
+  const [releaseTip, value, executor] = await Promise.all([
+    subsidy
+      .then((address) => quoteSkyReleaseTip(client, address, route))
+      .then((release) => release.relayerTip),
+    direction === "in" ? amount : toDai(amount),
+    readSavingsExecutor(reads, deps.deployments, direction),
   ])
-  const value = direction === "in" ? amount : await toDai(amount)
-  const released = direction === "in" ? amount - sourceCut : await toDai(amount - sourceCut)
-  return { source, route, sourceCut, arrivalCut, releaseTip, value, released }
+  return { route, releaseTip, value, executor, subsidy: await subsidy }
 }
 
 /**
- * Prices a move the way the escrow settles it: the source portal's cut and the release tip come off
- * the burn, the escrow's run pays its tip, and the destination portal takes its cut on the deposit.
+ * Prices a move the way the escrow settles it: the executor's fee and the release tip come off the
+ * burn and the escrow's run pays its tip.
  */
 export async function quoteSavingsMove(
   deps: SavingsQuoteDeps,
@@ -121,38 +101,36 @@ export async function quoteSavingsMove(
 ): Promise<SavingsQuote> {
   const { client, factory } = deps
   const { main } = deps.deployments
-  const { source, route, sourceCut, arrivalCut, releaseTip, value, released } = await releaseLeg(
-    deps,
-    direction,
-    amount,
-  )
-  const escrowFunding = released - releaseTip
-  const feeBefore = value - released + releaseTip
-  if (escrowFunding <= 0n) throw new SavingsFeeError(feeBefore + arrivalCut)
+  const { route, releaseTip, value, executor, subsidy } = await releaseLeg(deps, direction, amount)
+  const withdrawalFee = executor.fee
+  const released = withdrawalFee + releaseTip
+  const escrowFunding = value - released
+  if (escrowFunding <= 0n) throw new SavingsFeeError(released)
   const tip = await quoteSkyEscrowTip(
     client,
     {
       skyEscrowFactory: factory.address,
       operationExecutor: tupleField(main, "operationExecutor"),
       dai: factory.dai,
-      withdrawalSubsidy: tupleField(source, "withdrawalSubsidy"),
+      withdrawalSubsidy: subsidy,
     },
     { route, escrowFunding, sender: factory.address },
   ).catch((err: unknown) => {
     if (err instanceof SkyTipExceedsFundingError)
-      throw new SavingsFeeError(feeBefore + err.tip.relayerTip + arrivalCut)
+      throw new SavingsFeeError(released + err.tip.relayerTip)
     throw err
   })
-  const net = escrowFunding - tip.relayerTip - arrivalCut
-  if (net <= 0n) throw new SavingsFeeError(feeBefore + tip.relayerTip + arrivalCut)
+  const net = escrowFunding - tip.relayerTip
+  if (net <= 0n) throw new SavingsFeeError(released + tip.relayerTip)
   return {
     direction,
     amount,
+    unit: factory.dai,
     value,
+    withdrawalFee,
+    ...(executor.beneficiary ? { feeBeneficiary: executor.beneficiary } : {}),
     releaseTip,
-    sourceCut,
     escrowTip: tip.relayerTip,
-    arrivalCut,
     escrowFunding,
     net,
     fee: value - net,

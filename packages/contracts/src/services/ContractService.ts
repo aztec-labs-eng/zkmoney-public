@@ -1,20 +1,20 @@
 import { resolveInstanceArtifact } from "./classArtifactCatalog.js"
 //purpose of this class is to get all of the artifacts when they are needed within the app.
 
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { AztecNode } from "@aztec/aztec.js/node"
-import { ContractBase, Contract } from "@aztec/aztec.js/contracts"
-import { BaseWallet } from "@aztec/wallet-sdk/base-wallet"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { AztecNode } from "@aztec-labs/aztec.js/node"
+import { ContractBase, Contract } from "@aztec-labs/aztec.js/contracts"
+import { BaseWallet } from "@aztec-labs/wallet-sdk/base-wallet"
 import {
   CompleteAddress,
   computePartialAddress,
   getContractClassFromArtifact,
   ContractInstanceWithAddress,
   ContractInstancePreimageWithAddress,
-} from "@aztec/stdlib/contract"
-import { deriveKeys } from "@aztec/stdlib/keys"
-import { ContractArtifact } from "@aztec/stdlib/abi"
+} from "@aztec-labs/stdlib/contract"
+import { deriveKeys } from "@aztec-labs/stdlib/keys"
+import { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import { DEFAULT_CONTRACTS, Network } from "@obsidion/core/constants"
 import type {
   ContractServiceConfig,
@@ -29,7 +29,7 @@ import type {
 import { pinnedEntryPolicy, requireNonZeroL1Address } from "@obsidion/core/oxide"
 import { getHardcodedArtifact, registerContractInPXE } from "./utils.js"
 import { OxideEnvRegistryClient } from "./OxideEnvRegistryClient.js"
-import type { PXE } from "@aztec/pxe/client/lazy"
+import type { PXE } from "@aztec-labs/pxe/client/lazy"
 
 function deepFreeze<T>(value: T): T {
   if (value && typeof value === "object") Object.values(value).forEach(deepFreeze)

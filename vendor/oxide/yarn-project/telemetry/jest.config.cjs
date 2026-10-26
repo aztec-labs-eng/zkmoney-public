@@ -14,6 +14,6 @@ module.exports = {
     '^(\\.{1,2}/.*)\\.[cm]?js$': '$1',
   },
   moduleDirectories: ['node_modules', '<rootDir>/../../node_modules'],
-  setupFilesAfterEnv: ['<rootDir>/../../node_modules/@aztec/foundation/src/jest/setupAfterEnv.mjs'],
-  testEnvironment: '<rootDir>/../../node_modules/@aztec/foundation/src/jest/env.mjs',
+  setupFilesAfterEnv: ['<rootDir>/../../node_modules/@aztec-labs/foundation/src/jest/setupAfterEnv.mjs'],
+  testEnvironment: '<rootDir>/../../node_modules/@aztec-labs/foundation/src/jest/env.mjs',
 };

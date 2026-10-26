@@ -150,6 +150,7 @@ describe("providerNameFor", () => {
     expect(providerNameFor(UNMEASURED)).toBeUndefined()
     expect(providerNameFor(ZERO_AAGUID)).toBeUndefined()
     expect(providerNameFor(undefined)).toBeUndefined()
+    expect(providerNameFor("constructor")).toBeUndefined()
   })
 
   it("can name everything it admits", () => {

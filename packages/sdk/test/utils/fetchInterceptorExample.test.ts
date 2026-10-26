@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest"
-import { setupFetchInterceptor, restoreFetch } from "./customizableFetchInterceptor"
+import { setupFetchInterceptor, restoreFetch } from "./customizableFetchInterceptor.js"
 
 describe("Fetch Interceptor Example", () => {
   // Set up the fetch interceptor before all tests

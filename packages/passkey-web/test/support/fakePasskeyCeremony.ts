@@ -2,7 +2,7 @@ import { p256 } from "@noble/curves/p256"
 import { hmac } from "@noble/hashes/hmac"
 import { encodeUserHandle } from "../../src/ceremony/userHandle.js"
 import { sha256 as nobleSha256 } from "@noble/hashes/sha256"
-import { MSK_PRF_SALT } from "@obsidion/core/constants"
+import { MSK_PRF_SALT, ZERO_AAGUID } from "@obsidion/core/constants"
 import { bytesToBase64Url } from "../../src/ceremony/bytes.js"
 import type {
   PasskeyAssertRequest,
@@ -82,6 +82,8 @@ export type FakeCeremonyOptions = {
   assertHandle?: boolean
   /** `"unknown"` makes the flags unreadable on every response. */
   backupEligible?: boolean | "unknown"
+  /** When false the authenticator skipped user verification: UV is clear on every response. */
+  userVerified?: boolean
   /** When false the provider returns only `first`, as a one-salt provider would. */
   secondSlot?: boolean
   /** When false the create response carries no readable authenticator data. */
@@ -156,6 +158,11 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
     return be === "unknown" ? undefined : be
   }
 
+  /** Undefined whenever the flags are unreadable. */
+  private userVerified(): boolean | undefined {
+    return this.backupEligible() === undefined ? undefined : this.opts.userVerified ?? true
+  }
+
   /** The PRF this fake returns for `slot` on `route` (what the caller's salt for that slot yields). */
   prfFor(
     credentialId: string,
@@ -198,7 +205,8 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
       : crypto.getRandomValues(new Uint8Array(37 + extra))
     // Flags: bit 7 marks extension data present, which is what makes the trailing bytes signed
     // content rather than padding.
-    buf[32] = (be ? 0x1d : 0x05) | (extra > 0 ? 0x80 : 0)
+    const uv = this.userVerified() ? 0 : 0x04
+    buf[32] = ((be ? 0x1d : 0x05) & ~uv) | (extra > 0 ? 0x80 : 0)
     return buf
   }
 
@@ -222,13 +230,18 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
       secret: crypto.getRandomValues(new Uint8Array(32)),
       handle,
     })
+    request.onWritten?.(credentialId)
+    const authData = this.opts.createAuthData ?? true
     const result: PasskeyCreateResult = {
       credentialId,
       pubkey: p256.getPublicKey(priv, false).slice(1),
       ...(this.opts.prfAtCreate ?? true ? this.prfOutputs(credentialId, request, this.route) : {}),
       authenticatorAttachment: this.attachment(false, this.route),
-      backupEligible: this.opts.createAuthData ?? true ? this.backupEligible() : undefined,
-      ...(this.opts.aaguid ? { aaguid: this.opts.aaguid } : {}),
+      backupEligible: authData ? this.backupEligible() : undefined,
+      userVerified: authData ? this.userVerified() : undefined,
+      // As the real ceremony reports them: zeros stay attested and drop out of `aaguid`.
+      ...(this.opts.aaguid && this.opts.aaguid !== ZERO_AAGUID ? { aaguid: this.opts.aaguid } : {}),
+      ...(authData && this.opts.aaguid ? { attestedAaguid: this.opts.aaguid } : {}),
       transports: this.opts.transports,
       userHandle: handle,
     }
@@ -239,7 +252,7 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
       evidence: {
         authenticatorAttachment: result.authenticatorAttachment,
         backupEligible: result.backupEligible,
-        aaguid: result.aaguid,
+        aaguid: result.attestedAaguid ?? result.aaguid,
         transports: result.transports,
       },
     })
@@ -275,6 +288,7 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
       ...(this.opts.prfAtAssert ?? true ? this.prfOutputs(credentialId, request, route) : {}),
       authenticatorAttachment: this.attachment(true, route),
       backupEligible: this.backupEligible(),
+      userVerified: this.userVerified(),
       signatureDer: signature.toDERRawBytes(),
       authenticatorData,
       clientDataJSON,

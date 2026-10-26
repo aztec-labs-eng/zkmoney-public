@@ -1,8 +1,8 @@
-import { createAztecNodeClient } from "@aztec/aztec.js/node"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { createAztecNodeClient } from "@aztec-labs/aztec.js/node"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { describe, it } from "vitest"
-import { poseidon2Hash } from "@aztec/foundation/crypto/poseidon"
-import { Fr } from "@aztec/foundation/curves/bn254"
+import { poseidon2Hash } from "@aztec-labs/foundation/crypto/poseidon"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
 import { TESTNET_NODE_URL } from "@obsidion/core/constants"
 // pnpm test:sandbox scripts/getContractClass.test.ts
 

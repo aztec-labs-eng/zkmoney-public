@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { getAddress, type Hash, type Hex } from "viem"
 import { SkyRoute } from "@oxide/experiments/sky/sky_savings.js"
 import { planSwapOnWithdraw, type ScannedWithdrawEvent } from "@obsidion/sdk"
@@ -13,52 +13,49 @@ import { withdrawalRecipients } from "../../../src/core/services/bridge/withdraw
 import { savingsMoveOfWithdrawal } from "../../../src/oxide/savingsMoves"
 
 const RECIPIENT = getAddress(`0x${"b0".repeat(20)}`)
+const ESCROW = getAddress(`0x${"e5".repeat(20)}`)
+const TIP = 10n ** 17n
+const DIRECT_TX = `0x${"11".repeat(32)}` as Hash
+const ESCROW_TX = `0x${"22".repeat(32)}` as Hash
+const KNOWN_TX = `0x${"33".repeat(32)}` as Hash
 const FACTORY = getAddress(`0x${"fa".repeat(20)}`)
 const RECOVERY = { account: getAddress(`0x${"5a".repeat(20)}`), salt: new Fr(9n) }
 const NONCE = `0x${"77".repeat(32)}` as Hex
-const TIP = 5n * 10n ** 18n
-const DIRECT_TX = `0x${"11".repeat(32)}` as Hash
-const SWAP_TX = `0x${"22".repeat(32)}` as Hash
-const KNOWN_TX = `0x${"33".repeat(32)}` as Hash
 const DEPLOYMENT = {
   portal: `0x${"70".repeat(20)}` as Hex,
-  pool: `0x${"90".repeat(20)}` as Hex,
   l2Token: "0xl2",
 }
-
-const plan = planSwapOnWithdraw({
-  swapEscrowFactoryV2: FACTORY,
-  output: "USDC",
-  l1Recipient: RECIPIENT,
-  recovery: RECOVERY,
-  amount: 100n * 10n ** 18n,
-  withdrawalRelayerTip: 0n,
-  proverTip: 0n,
-  fpcFundingCut: 0n,
-  relayerTip: TIP,
-  nonce: NONCE,
-})
+const EXECUTOR = getAddress(`0x${"ec".repeat(20)}`)
+const SWAPPED_EXECUTOR = getAddress(`0x${"ed".repeat(20)}`)
 
 const EVENTS: ScannedWithdrawEvent[] = [
   {
-    txHash: SWAP_TX,
+    txHash: ESCROW_TX,
     blockNumber: 20,
-    l1Recipient: plan.escrow,
+    executor: EXECUTOR,
+    withdrawalFee: 0n,
+    l1Recipient: ESCROW,
     amount: 100n * 10n ** 18n,
-    swap: {
-      output: "USDC",
-      recipient: RECIPIENT,
-      factory: FACTORY,
-      recoveryCommitment: plan.escrowArgs.recoveryCommitment,
-      relayerTip: TIP,
-      nonce: NONCE,
-      daiForGas: 0n,
-      minEthForGas: 0n,
-      layout: "v2",
-    },
+    relayerTip: TIP,
   },
-  { txHash: DIRECT_TX, blockNumber: 10, l1Recipient: RECIPIENT, amount: 25n * 10n ** 17n },
-  { txHash: KNOWN_TX, blockNumber: 30, l1Recipient: RECIPIENT, amount: 10n ** 18n },
+  {
+    txHash: DIRECT_TX,
+    blockNumber: 10,
+    executor: EXECUTOR,
+    withdrawalFee: 0n,
+    l1Recipient: RECIPIENT,
+    amount: 25n * 10n ** 17n,
+    relayerTip: TIP,
+  },
+  {
+    txHash: KNOWN_TX,
+    blockNumber: 30,
+    executor: EXECUTOR,
+    withdrawalFee: 0n,
+    l1Recipient: RECIPIENT,
+    amount: 10n ** 18n,
+    relayerTip: TIP,
+  },
 ]
 
 function makeSource(
@@ -87,7 +84,7 @@ describe("rebuildWithdrawals", () => {
     const source = makeSource()
     source.blockTimestampMs.mockImplementation(() => gate)
     const endScan = globalEventEmitter.beginSyncCatchUp()
-    const rebuild = rebuildWithdrawals({ source, store, tokenSymbol: "DAI" })
+    const rebuild = rebuildWithdrawals({ source, store, tokenSymbol: "DAI", tokenDecimals: 18 })
     await vi.waitFor(() => expect(source.blockTimestampMs).toHaveBeenCalled())
     endScan()
     expect(globalEventEmitter.isSyncCatchingUp()).toBe(true) // the rescan still holds it
@@ -96,7 +93,12 @@ describe("rebuildWithdrawals", () => {
     expect(globalEventEmitter.isSyncCatchingUp()).toBe(false)
 
     // Without a catch-up in progress the rescan never starts one.
-    await rebuildWithdrawals({ source: makeSource(), store: await newStore(), tokenSymbol: "DAI" })
+    await rebuildWithdrawals({
+      source: makeSource(),
+      store: await newStore(),
+      tokenSymbol: "DAI",
+      tokenDecimals: 18,
+    })
     expect(globalEventEmitter.isSyncCatchingUp()).toBe(false)
   })
 
@@ -113,6 +115,7 @@ describe("rebuildWithdrawals", () => {
       recipientProvenance: "saved-recipient",
       amount: "1",
       tokenSymbol: "DAI",
+      tokenDecimals: 18,
       phase: "done",
       startTime: 5,
     })
@@ -122,12 +125,13 @@ describe("rebuildWithdrawals", () => {
       source,
       store,
       tokenSymbol: "DAI",
+      tokenDecimals: 18,
       deployment: DEPLOYMENT,
       now: () => 9_999,
     })
 
     expect(source.listWithdrawals).toHaveBeenCalledWith(1, 41)
-    expect(rebuilt.map((r) => r.l2TxHash)).toEqual([DIRECT_TX, SWAP_TX])
+    expect(rebuilt.map((r) => r.l2TxHash)).toEqual([DIRECT_TX, ESCROW_TX])
     expect(store.list()).toHaveLength(3)
     expect(store.get("known")?.phase).toBe("done")
 
@@ -138,22 +142,108 @@ describe("rebuildWithdrawals", () => {
       recipient: RECIPIENT,
       amount: "2.5",
       rawAmount: "2500000000000000000",
+      relayerTip: TIP.toString(),
       tokenSymbol: "DAI",
+      tokenDecimals: 18,
       startTime: 1_000,
-      deployment: DEPLOYMENT,
+      deployment: { ...DEPLOYMENT, executor: EXECUTOR },
       rebuilt: true,
       recipientProvenance: "saved-recipient",
     })
     expect(direct.swapOutput).toBeUndefined()
+    // A burn through an executor that takes no fee records none.
+    expect(direct.withdrawalFee).toBeUndefined()
     expect(withdrawalRecipients(direct).viaEscrow).toBe(false)
   })
 
-  it("rebuilds a swap record whose escrow args reproduce the burn's escrow", async () => {
+  it("stamps each rebuilt record with its own burn's executor and fee, over two executors on one portal", async () => {
     const store = await newStore()
-    await rebuildWithdrawals({ source: makeSource(), store, tokenSymbol: "DAI" })
+    const [escrow, direct] = EVENTS
+    const source = makeSource([
+      { ...direct!, executor: EXECUTOR, withdrawalFee: TIP },
+      { ...escrow!, executor: SWAPPED_EXECUTOR, withdrawalFee: 3n * TIP },
+    ])
 
-    const swap = store.getByL2TxHash(SWAP_TX)!
-    expect(swap).toMatchObject({
+    await rebuildWithdrawals({
+      source,
+      store,
+      tokenSymbol: "DAI",
+      tokenDecimals: 18,
+      deployment: DEPLOYMENT,
+    })
+
+    expect(store.getByL2TxHash(DIRECT_TX)).toMatchObject({
+      deployment: { ...DEPLOYMENT, executor: EXECUTOR },
+      withdrawalFee: TIP.toString(),
+    })
+    expect(store.getByL2TxHash(ESCROW_TX)).toMatchObject({
+      deployment: { ...DEPLOYMENT, executor: SWAPPED_EXECUTOR },
+      withdrawalFee: (3n * TIP).toString(),
+    })
+  })
+
+  it("stamps a stored record from before executor stamps with the executor its burn paid", async () => {
+    const store = await newStore()
+    await store.create({
+      localId: "known",
+      version: 1,
+      l2TxHash: KNOWN_TX,
+      recipient: RECIPIENT,
+      recipientProvenance: "saved-recipient",
+      amount: "1",
+      tokenSymbol: "DAI",
+      phase: "awaiting_proven",
+      startTime: 5,
+      deployment: DEPLOYMENT,
+    })
+    const known = EVENTS.find((event) => event.txHash === KNOWN_TX)!
+    const source = makeSource([{ ...known, executor: SWAPPED_EXECUTOR, withdrawalFee: TIP }])
+
+    expect(
+      await rebuildWithdrawals({ source, store, tokenSymbol: "DAI", tokenDecimals: 18 }),
+    ).toEqual([])
+
+    expect(store.get("known")).toMatchObject({
+      version: 2,
+      phase: "awaiting_proven",
+      deployment: { ...DEPLOYMENT, executor: SWAPPED_EXECUTOR },
+      withdrawalFee: TIP.toString(),
+    })
+  })
+
+  it("rebuilds a swap record from the escrow args of the burn's memo", async () => {
+    const store = await newStore()
+    const SWAP_TX = `0x${"44".repeat(32)}` as Hash
+    const plan = planSwapOnWithdraw({
+      swapEscrowFactoryV2: FACTORY,
+      output: "USDC",
+      l1Recipient: RECIPIENT,
+      recovery: RECOVERY,
+      amount: 100n * 10n ** 18n,
+      withdrawalFee: 0n,
+      withdrawalRelayerTip: 0n,
+      proverTip: 0n,
+      relayerTip: 5n * TIP,
+      nonce: NONCE,
+    })
+    const swap = {
+      output: "USDC" as const,
+      recipient: RECIPIENT,
+      factory: FACTORY,
+      recoveryCommitment: plan.escrowArgs.recoveryCommitment,
+      relayerTip: 5n * TIP,
+      nonce: NONCE,
+      daiForGas: 0n,
+      minEthForGas: 0n,
+    }
+    const source = makeSource([
+      { ...EVENTS[0]!, txHash: SWAP_TX, l1Recipient: plan.escrow, proverTip: 0n, swap },
+    ])
+
+    await rebuildWithdrawals({ source, store, tokenSymbol: "DAI", tokenDecimals: 18 })
+
+    const record = store.getByL2TxHash(SWAP_TX)!
+    expect(record).toMatchObject({
       phase: "l2_mined",
       recipient: RECIPIENT,
       swapOutput: "USDC",
@@ -162,17 +252,15 @@ describe("rebuildWithdrawals", () => {
       swapEscrowLayout: "v2",
       swapNonce: NONCE,
       swapRecoveryCommitment: plan.escrowArgs.recoveryCommitment,
-      swapRelayerTip: TIP.toString(),
-      startTime: 2_000,
+      swapRelayerTip: (5n * TIP).toString(),
       rebuilt: true,
     })
-    expect(swap.deployment).toBeUndefined()
-    expect(withdrawalRecipients(swap)).toEqual({
+    expect(withdrawalRecipients(record)).toEqual({
       release: plan.escrow,
       final: RECIPIENT,
       viaEscrow: true,
     })
-    expect(swapEscrowTarget(swap)).toEqual({
+    expect(swapEscrowTarget(record)).toEqual({
       factory: FACTORY,
       escrow: plan.escrow,
       layout: "v2",
@@ -180,66 +268,23 @@ describe("rebuildWithdrawals", () => {
     })
   })
 
-  it("keeps a legacy escrow's layout, so its exits use the legacy factory calls", async () => {
-    const store = await newStore()
-    const legacy = { ...EVENTS[0]!, swap: { ...EVENTS[0]!.swap!, layout: "legacy" as const } }
-    await rebuildWithdrawals({ source: makeSource([legacy]), store, tokenSymbol: "DAI" })
-
-    const swap = store.getByL2TxHash(SWAP_TX)!
-    expect(swap.swapEscrowLayout).toBe("legacy")
-    expect(swapEscrowTarget(swap)).toMatchObject({
-      layout: "legacy",
-      args: { route: 0, recipient: RECIPIENT, relayerTip: TIP, nonce: NONCE },
-    })
-    expect(swapEscrowTarget(swap)!.args).not.toHaveProperty("daiForGas")
-  })
-
-  it("regroups the legs of a fresh-address withdrawal", async () => {
-    const store = await newStore()
-    const GROUP_ID = `0x${"c1".repeat(16)}` as Hex
-    const GAS_TX = `0x${"55".repeat(32)}` as Hash
-    const source = makeSource([
-      { ...EVENTS[0]!, group: { id: GROUP_ID, leg: "funds" } },
-      {
-        txHash: GAS_TX,
-        blockNumber: 18,
-        l1Recipient: RECIPIENT,
-        amount: 10n ** 18n,
-        group: { id: GROUP_ID, leg: "gas" },
-      },
-      EVENTS[1]!,
-    ])
-
-    await rebuildWithdrawals({ source, store, tokenSymbol: "DAI" })
-
-    expect(store.getByL2TxHash(GAS_TX)).toMatchObject({ groupId: GROUP_ID, groupLeg: "gas" })
-    expect(store.getByL2TxHash(SWAP_TX)).toMatchObject({
-      groupId: GROUP_ID,
-      groupLeg: "funds",
-      swapEscrow: plan.escrow,
-    })
-    const direct = store.getByL2TxHash(DIRECT_TX)!
-    expect(direct.groupId).toBeUndefined()
-    expect(direct.groupLeg).toBeUndefined()
-  })
-
   it("rebuilds a Sky move's args, and the move from them", async () => {
     const store = await newStore()
     const SKY_TX = `0x${"55".repeat(32)}` as Hash
-    const escrow = getAddress(`0x${"e5".repeat(20)}`)
     const sky = {
       route: SkyRoute.Unstake,
       factory: FACTORY,
       recipientCommitment: `0x${"2c".repeat(32)}` as Hex,
-      recoveryCommitment: plan.escrowArgs.recoveryCommitment,
+      recoveryCommitment: `0x${"4d".repeat(32)}` as Hex,
       relayerTip: TIP,
       nonce: NONCE,
     }
     const source = makeSource([
-      { txHash: SKY_TX, blockNumber: 20, l1Recipient: escrow, amount: 6n * 10n ** 18n, sky },
+      { ...EVENTS[0]!, txHash: SKY_TX, amount: 6n * 10n ** 18n, proverTip: 0n, sky },
     ])
+    const report = vi.fn()
 
-    await rebuildWithdrawals({ source, store, tokenSymbol: "sUSDS" })
+    await rebuildWithdrawals({ source, store, tokenSymbol: "sUSDS", tokenDecimals: 18, report })
 
     const record = store.getByL2TxHash(SKY_TX)!
     expect(record.skyMove).toEqual({
@@ -253,32 +298,35 @@ describe("rebuildWithdrawals", () => {
     expect(savingsMoveOfWithdrawal(record)).toEqual({
       direction: "out",
       withdrawalLocalId: record.localId,
-      escrow,
+      escrow: ESCROW,
       factory: FACTORY,
       nonce: NONCE,
       recipientCommitment: sky.recipientCommitment,
       amount: (6n * 10n ** 18n).toString(),
     })
+    expect(report).toHaveBeenCalledWith(expect.objectContaining({ savingsMoves: 1 }))
+  })
+
+  it("rebuilds an escrow burn without escrow args as a direct record naming the escrow", async () => {
+    const store = await newStore()
+    await rebuildWithdrawals({ source: makeSource(), store, tokenSymbol: "DAI", tokenDecimals: 18 })
+
+    const record = store.getByL2TxHash(ESCROW_TX)!
+    expect(record).toMatchObject({ phase: "l2_mined", recipient: ESCROW, startTime: 2_000 })
+    expect(record.deployment).toBeUndefined()
+    expect(record.swapOutput).toBeUndefined()
+    expect(record.skyMove).toBeUndefined()
+    expect(withdrawalRecipients(record)).toEqual({
+      release: ESCROW,
+      final: ESCROW,
+      viaEscrow: false,
+    })
   })
 
   it("rebuilds no move from a plain burn", async () => {
     const store = await newStore()
-    await rebuildWithdrawals({ source: makeSource(), store, tokenSymbol: "DAI" })
+    await rebuildWithdrawals({ source: makeSource(), store, tokenSymbol: "DAI", tokenDecimals: 18 })
     expect(savingsMoveOfWithdrawal(store.getByL2TxHash(DIRECT_TX)!)).toBeUndefined()
-  })
-
-  it("skips a burn whose meta names no L1 address", async () => {
-    const store = await newStore()
-    const NO_RECIPIENT_TX = `0x${"44".repeat(32)}` as Hash
-    const source = makeSource([
-      { txHash: NO_RECIPIENT_TX, blockNumber: 15, amount: 10n ** 18n },
-      EVENTS[1]!,
-    ])
-
-    const rebuilt = await rebuildWithdrawals({ source, store, tokenSymbol: "DAI" })
-
-    expect(rebuilt.map((r) => r.l2TxHash)).toEqual([DIRECT_TX])
-    expect(store.getByL2TxHash(NO_RECIPIENT_TX)).toBeNull()
   })
 
   it("stamps the fallback time on a burn whose block cannot be read, and creates nothing twice", async () => {
@@ -289,6 +337,7 @@ describe("rebuildWithdrawals", () => {
       source,
       store,
       tokenSymbol: "DAI",
+      tokenDecimals: 18,
       now: () => 4_242,
       report,
     })
@@ -297,7 +346,13 @@ describe("rebuildWithdrawals", () => {
       expect.objectContaining({ tokenSymbol: "DAI", unknown: first.length, created: first }),
     )
 
-    const again = await rebuildWithdrawals({ source, store, tokenSymbol: "DAI", now: () => 4_242 })
+    const again = await rebuildWithdrawals({
+      source,
+      store,
+      tokenSymbol: "DAI",
+      tokenDecimals: 18,
+      now: () => 4_242,
+    })
     expect(again).toEqual([])
     expect(store.list()).toHaveLength(3)
   })

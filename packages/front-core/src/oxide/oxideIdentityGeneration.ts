@@ -90,11 +90,23 @@ function readOncePerAddress<T>(read: (address: Address) => Promise<T>) {
   }
 }
 
+/** The account's L2 address on a rollup, by rollup version; `undefined` when it has none there. */
+export type L2AddressOn = (rollupVersion: string) => Promise<string | undefined>
+
+/**
+ * `l2Address` is the account's address on this rollup. A record on a retired rollup must hold
+ * `retiredAddress` of its rollup when given: another Aztec generation derives another address.
+ */
 export async function resolveOxideIdentity(
   deps: OxideIdentityDeps,
   bootstrap: Address,
   l2Address: string,
+  retiredAddress?: L2AddressOn,
 ): Promise<OxideIdentityOutcome> {
+  const addressOn = async (rollupVersion: string) =>
+    rollupVersion === deps.rollupVersion || !retiredAddress
+      ? l2Address
+      : retiredAddress(rollupVersion)
   const admissibleRollupVersions = deps.admissibleRollupVersions ?? new Set([deps.rollupVersion])
   const metadataRegistry = readOnce(() => deps.reader.readAccountMetadataRegistry(deps.registry))
   const registryBehind = readOncePerAddress((portal: Address) =>
@@ -135,8 +147,9 @@ export async function resolveOxideIdentity(
     if (isZeroHash(nameHash)) continue
     named.set(key, account)
     const record = await deps.reader.readUserRecord(await metadataRegistry(), account)
-    if (!record || !sameAddress(record.l2Address, l2Address)) continue
-    if (!admissibleRollupVersions.has(record.rollupVersion.toString())) continue
+    if (!record || !admissibleRollupVersions.has(record.rollupVersion.toString())) continue
+    const expected = await addressOn(record.rollupVersion.toString())
+    if (!expected || !sameAddress(record.l2Address, expected)) continue
     const onCurrentRollup = generation.rollupVersion === deps.rollupVersion
     verifiedByAccount.set(key, { account, nameHash, generations: onCurrentRollup ? [generation] : [] })
   }

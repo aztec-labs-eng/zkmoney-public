@@ -32,7 +32,7 @@ pub fn assert_verify_jwt<let HeaderAndPayloadMaxLen: u32>(
     pubkey_redc_limbs: [u128; LIMBS_LEN],
     signature: [u128; LIMBS_LEN],
 ) {
-    let hash = dep::sha256::sha256_var(
+    let hash = sha256::sha256_var(
         header_and_payload.storage(),
         header_and_payload.len() as u64,
     );
@@ -69,7 +69,7 @@ pub fn poseidon2_hash_packed<let N: u32>(data: [u8; N], data_len: u32) -> Field 
         }
         fields[i] = field_val;
     }
-    dep::poseidon::poseidon2::Poseidon2::hash(fields, FIELDS_NEEDED)
+    poseidon::poseidon2::Poseidon2::hash(fields, FIELDS_NEEDED)
 }
 
 fn pow_256(exp: u32) -> Field {
@@ -98,7 +98,7 @@ pub fn derive_JWK(
         public_key_limbs_and_e_field[i] = public_key_limbs_and_e[i] as Field;
     }
 
-    let hash = dep::poseidon::poseidon2::Poseidon2::hash(
+    let hash = poseidon::poseidon2::Poseidon2::hash(
         public_key_limbs_and_e_field,
         (PUBLIC_KEY_LIMBS_LEN + E_LEN),
     );

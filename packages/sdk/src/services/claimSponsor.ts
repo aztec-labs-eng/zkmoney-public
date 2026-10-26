@@ -4,13 +4,13 @@
  * context shape, FPC registration, the ByClass witness for whitelist matching, and the
  * `authorize_intents` account call that authorizes delegated token spends inside the batch.
  */
-import { computeSaltedInitializationHash } from "@aztec/stdlib/contract"
-import type { ContractInstancePreimageWithAddress } from "@aztec/stdlib/contract"
-import { Contract, type ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractArtifact, FunctionCall } from "@aztec/stdlib/abi"
-import type { AuthWitness } from "@aztec/stdlib/auth-witness"
+import { computeSaltedInitializationHash } from "@aztec-labs/stdlib/contract"
+import type { ContractInstancePreimageWithAddress } from "@aztec-labs/stdlib/contract"
+import { Contract, type ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractArtifact, FunctionCall } from "@aztec-labs/stdlib/abi"
+import type { AuthWitness } from "@aztec-labs/stdlib/auth-witness"
 import {
   ContractService,
   DEFAULT_CONTRACTS,
@@ -18,7 +18,7 @@ import {
 } from "@obsidion/contracts"
 
 import type { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
-import type { ChainInfo } from "@aztec/entrypoints/interfaces"
+import type { ChainInfo } from "@aztec-labs/entrypoints/interfaces"
 import {
   computeIntentsOnlyAuthWitHash,
   padIntentHashes,
@@ -57,6 +57,11 @@ export interface ClaimSponsorContext {
   gate: ClaimFpcGateKind
   policy: ClaimFpcPolicy
   subscribe?: ClaimSubscribeContext
+  /**
+   * The account whose subscription note the batch spends when it is not the acting account: the
+   * FPC's `user`, read as a scope beside the acting account. Absent means the acting account pays.
+   */
+  payer?: AztecAddress
 }
 
 const railsCache = new WeakMap<object, Promise<ClaimFpcRailPolicy[]>>()

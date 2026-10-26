@@ -16,46 +16,34 @@ vi.mock("@oxide/l1-contracts/oxide_portal.js", () => ({
   OxidePortalContract: vi.fn(),
 }))
 
-vi.mock("../../src/services/teeSignerApproval.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../src/services/teeSignerApproval.js")>()),
-  assertTeeSignerApproved: vi.fn(),
-}))
-
 import { FleetSigner } from "@oxide/oxide-client/fleet_signer.js"
 import { OxidePortalContract } from "@oxide/l1-contracts/oxide_portal.js"
 import { loadTeeSigner } from "../../src/services/teeOperation.js"
-import {
-  assertTeeSignerApproved,
-  onTeeSignerRefused,
-  TeeSignerNotApprovedError,
-} from "../../src/services/teeSignerApproval.js"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { EthAddress } from "@aztec/foundation/eth-address"
 import { ServiceBase } from "../../src/services/ServiceBase.js"
-import type { TeeSigner } from "@oxide/oxide-lib/types.js"
+import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
 
 const FAKE_PORTAL_ADDRESS = "0x10c20f5ec11aa51de97edd0cfb01bfcb11e8fbf3" as const
 const FAKE_VIEM_CLIENT = { chain: { id: 11155111 } } as any
 
-function makeFakeSigner(overrides: Partial<TeeSigner> = {}): TeeSigner {
+function makeFakeSigner(overrides: Partial<RegisteredTeeSigner> = {}): RegisteredTeeSigner {
   return {
     publicKey: { x: 0n, y: 0n } as any,
     ethAddress: { toString: () => "0xabcd" } as any,
     encryptionPublicKey: {} as any,
+    teeRegistry: { toString: () => "0x1234" } as any,
     signTokenOperation: vi.fn(),
     signWithdrawalFinalization: vi.fn(),
     signFrozenNotesRefundFinalization: vi.fn(),
-    signFrozenDepositRefundFinalization: vi.fn(),
+    signFrozenDepositsRefundFinalization: vi.fn(),
     signUnprocessedDepositRefundFinalization: vi.fn(),
     ...overrides,
-  } as TeeSigner
+  } as RegisteredTeeSigner
 }
 
 describe("loadTeeSigner (SDK helper)", () => {
   beforeEach(() => {
     vi.mocked(FleetSigner.connect).mockReset()
     vi.mocked(OxidePortalContract).mockReset()
-    vi.mocked(assertTeeSignerApproved).mockReset()
   })
 
   afterEach(() => {
@@ -119,89 +107,6 @@ describe("loadTeeSigner (SDK helper)", () => {
       ).rejects.toThrow("PCR0 not approved")
     })
 
-    it("does not touch the node when no l2Approval is requested", async () => {
-      vi.mocked(OxidePortalContract).mockImplementationOnce(() => ({} as any))
-      vi.mocked(FleetSigner.connect).mockResolvedValueOnce(makeFakeSigner() as any)
-
-      await loadTeeSigner("http://enclave/rpc", FAKE_PORTAL_ADDRESS, FAKE_VIEM_CLIENT)
-
-      expect(assertTeeSignerApproved).not.toHaveBeenCalled()
-    })
-
-    it("with l2Approval, checks the pinned key against the token at the latest block", async () => {
-      vi.mocked(OxidePortalContract).mockImplementationOnce(() => ({} as any))
-      const fakeSigner = makeFakeSigner()
-      vi.mocked(FleetSigner.connect).mockResolvedValueOnce(fakeSigner as any)
-      const latestHash = { __tag: "latest-hash" }
-      const node = {
-        getBlockData: vi.fn(async () => ({ header: { hash: async () => latestHash } })),
-        getPublicDataWitness: vi.fn(),
-      }
-      const tokenAddress = AztecAddress.fromStringUnsafe("0x" + "11".repeat(31) + "01")
-
-      const result = await loadTeeSigner(
-        "http://enclave/rpc",
-        FAKE_PORTAL_ADDRESS,
-        FAKE_VIEM_CLIENT,
-        {
-          l2Approval: { node: node as any, tokenAddress },
-        },
-      )
-
-      expect(result).toBe(fakeSigner)
-      expect(node.getBlockData).toHaveBeenCalledWith("latest")
-      expect(assertTeeSignerApproved).toHaveBeenCalledWith({
-        node,
-        tokenAddress,
-        publicKey: fakeSigner.publicKey,
-        blockHash: latestHash,
-      })
-      // The approval options never leak into the fleet connect.
-      expect(FleetSigner.connect).toHaveBeenCalledWith("http://enclave/rpc", expect.any(Object), {})
-    })
-
-    it("with l2Approval, rejects with the typed refusal and returns no signer", async () => {
-      vi.mocked(OxidePortalContract).mockImplementationOnce(() => ({} as any))
-      vi.mocked(FleetSigner.connect).mockResolvedValueOnce(makeFakeSigner() as any)
-      const tokenAddress = AztecAddress.fromStringUnsafe("0x" + "11".repeat(31) + "01")
-      const refusal = new TeeSignerNotApprovedError(tokenAddress, EthAddress.random(), "0x01")
-      vi.mocked(assertTeeSignerApproved).mockRejectedValueOnce(refusal)
-      const node = {
-        getBlockData: vi.fn(async () => ({ header: { hash: async () => ({}) } })),
-        getPublicDataWitness: vi.fn(),
-      }
-
-      const refused = vi.fn()
-      const off = onTeeSignerRefused(refused)
-      try {
-        await expect(
-          loadTeeSigner("http://enclave/rpc", FAKE_PORTAL_ADDRESS, FAKE_VIEM_CLIENT, {
-            l2Approval: { node: node as any, tokenAddress },
-          }),
-        ).rejects.toBe(refusal)
-      } finally {
-        off()
-      }
-      // A connect-time refusal is the caller's rejection; only a sign-time one has an owner to tell.
-      expect(refused).not.toHaveBeenCalled()
-    })
-
-    it("with l2Approval, fails closed when the node has no latest block", async () => {
-      vi.mocked(OxidePortalContract).mockImplementationOnce(() => ({} as any))
-      vi.mocked(FleetSigner.connect).mockResolvedValueOnce(makeFakeSigner() as any)
-      const node = { getBlockData: vi.fn(async () => undefined), getPublicDataWitness: vi.fn() }
-
-      await expect(
-        loadTeeSigner("http://enclave/rpc", FAKE_PORTAL_ADDRESS, FAKE_VIEM_CLIENT, {
-          l2Approval: {
-            node: node as any,
-            tokenAddress: AztecAddress.fromStringUnsafe("0x" + "11".repeat(31) + "01"),
-          },
-        }),
-      ).rejects.toThrow(/no latest block/)
-      expect(assertTeeSignerApproved).not.toHaveBeenCalled()
-    })
-
     it("propagates timeout / abort errors", async () => {
       vi.mocked(OxidePortalContract).mockImplementationOnce(() => ({} as any))
       vi.mocked(FleetSigner.connect).mockRejectedValueOnce(
@@ -226,7 +131,7 @@ describe("ServiceBase.setTeeSigner clear path", () => {
       super({} as any)
     }
     /** Expose the protected getTeeSigner for the assertion. */
-    public probe(): TeeSigner {
+    public probe(): RegisteredTeeSigner {
       return (this as any).getTeeSigner()
     }
   }

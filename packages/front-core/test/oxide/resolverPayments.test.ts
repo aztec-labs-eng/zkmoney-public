@@ -2,8 +2,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { keccak256, type Address, type Hex } from "viem"
 import { secp256k1 } from "@noble/curves/secp256k1"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { encodeDepositIntentData } from "@oxide/l1-contracts"
 import { computeSIPAAddress } from "@oxide/oxide-lib/sipa_address.js"
 import { deriveRecoveryCommitment } from "@oxide/oxide-lib/sipa_recovery.js"
@@ -57,6 +57,8 @@ const DAI = "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b"
 const SUSDS = "0x5a1e0c2f3b4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f"
 const DAI_PORTAL = "0xda10000000000000000000000000000000000001"
 const SUSDS_PORTAL = "0x5005000000000000000000000000000000000002"
+const DAI_TABLE = "0xda20000000000000000000000000000000000003"
+const SUSDS_TABLE = "0x5006000000000000000000000000000000000004"
 const DAI_FACTORY = "0x239474855dff1eb58dca3ee877d599e3c6bd0bd2"
 const SUSDS_FACTORY = "0x4a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b"
 const DAI_IMPLEMENTATION = "0x39dd57b9f2b16e5c9e9e35e18b73c8a2a5d1f7c4"
@@ -90,6 +92,7 @@ const deployment = (asset: "DAI" | "sUSDS"): ResolverDeployment =>
     ? {
         portal: DAI_PORTAL as Address,
         sipaFactory: DAI_FACTORY as Address,
+        forwardingTable: DAI_TABLE as Address,
         implementation: DAI_IMPLEMENTATION as Address,
         rollupVersion: ROLLUP_VERSION,
         resolverPublicKey: RESOLVER_PUBLIC,
@@ -100,6 +103,7 @@ const deployment = (asset: "DAI" | "sUSDS"): ResolverDeployment =>
     : {
         portal: SUSDS_PORTAL as Address,
         sipaFactory: SUSDS_FACTORY as Address,
+        forwardingTable: SUSDS_TABLE as Address,
         implementation: SUSDS_IMPLEMENTATION as Address,
         rollupVersion: ROLLUP_VERSION,
         resolverPublicKey: RESOLVER_PUBLIC,
@@ -121,6 +125,7 @@ async function resolverHandsOut(d: ResolverDeployment, day: number, nonce: numbe
     implementation: EthAddress.fromString(d.implementation),
     intentHash: Buffer.from(intentHash.slice(2), "hex"),
     recoveryCommitment: deriveRecoveryCommitment(salt, EthAddress.fromString(d.recoveryAccount)),
+    forwardingTable: EthAddress.fromString(d.forwardingTable),
     rollupVersion: d.rollupVersion,
     resweepable: true,
   })
@@ -421,6 +426,7 @@ describe("ResolverPaymentWatcher", () => {
     const tuple = {
       portal: DAI_PORTAL,
       sipaFactory: DAI_FACTORY,
+      forwardingTable: DAI_TABLE,
       accountFactory: ACCOUNT_FACTORY,
       l2Token: "0x0f1c7a8b2b8a1f6de4b6a2c1c7e8d9f0a1b2c3d4e5f60718293a4b5c6d7e8f90",
       rollupVersion: ROLLUP_VERSION.toString(),
@@ -436,13 +442,21 @@ describe("ResolverPaymentWatcher", () => {
         } as never,
         node: {} as never,
         wallet: {} as never,
-        tokenService: { claimSweptDeposit: vi.fn() },
+        tokenServiceFor: async () => ({ claimSweptDeposit: vi.fn() }),
         store: target,
         tuple,
         recipient: RECIPIENT,
         stealthPublicKey: STEALTH_PUBLIC,
         recoveryAccount: RECOVERY_ACCOUNT,
-        token: DAI_TOKEN,
+        rows: [
+          {
+            portal: DAI_PORTAL as Address,
+            l2Token: tuple.l2Token,
+            token: DAI_TOKEN,
+            swapped: [],
+            intents: ["deposit", "registration", "metadata"],
+          },
+        ],
         l1ChainId: 11155111,
       })
 
@@ -510,15 +524,21 @@ describe("readResolverDeployments", () => {
   const daiTuple = {
     portal: DAI_PORTAL,
     sipaFactory: DAI_FACTORY,
+    forwardingTable: DAI_TABLE,
     accountFactory: ACCOUNT_FACTORY,
     accountMetadataRegistry: REGISTRY,
   } as unknown as OxideEnvTuple
-  const susdsTuple = { ...daiTuple, portal: SUSDS_PORTAL, sipaFactory: SUSDS_FACTORY }
+  const susdsTuple = {
+    ...daiTuple,
+    portal: SUSDS_PORTAL,
+    sipaFactory: SUSDS_FACTORY,
+    forwardingTable: SUSDS_TABLE,
+  }
   const sources: ResolverDeploymentSource[] = [
     { tuple: daiTuple, tokens: [DAI_TOKEN] },
     { tuple: susdsTuple, tokens: [SUSDS_TOKEN] },
   ]
-  const resolution = (portal: string, publicKey = STEALTH_PUBLIC) => ({
+  const resolution = (forwardingTable: string, publicKey = STEALTH_PUBLIC) => ({
     l2Address: RECIPIENT.toString(),
     rollupVersion: ROLLUP_VERSION,
     publicKey,
@@ -526,7 +546,7 @@ describe("readResolverDeployments", () => {
       owner: "0x0e00000000000000000000000000000000000003",
       l2Address: "0x01",
       url: "https://resolver.test/{sender}/{data}.json",
-      oxidePortal: portal,
+      forwardingTable,
       resolverPublicKey: RESOLVER_PUBLIC,
     },
   })
@@ -539,21 +559,21 @@ describe("readResolverDeployments", () => {
       stealthPublicKey: STEALTH_PUBLIC,
     })
 
-  it("serves only the portal the account's operator names, with that deployment's tokens", async () => {
-    mocks.readAccountResolution.mockResolvedValue(resolution(DAI_PORTAL))
+  it("serves only the forwarding table the account's operator names, with that deployment's tokens", async () => {
+    mocks.readAccountResolution.mockResolvedValue(resolution(DAI_TABLE))
 
     expect(await read(sources)).toEqual([deployment("DAI")])
     // One registry, read once.
     expect(mocks.readAccountResolution).toHaveBeenCalledOnce()
   })
 
-  it("serves a second asset whose own registry names an operator on its portal", async () => {
+  it("serves a second asset whose own registry names an operator on its forwarding table", async () => {
     const own = {
       ...susdsTuple,
       accountMetadataRegistry: "0x7777777777777777777777777777777777777777",
     }
     mocks.readAccountResolution.mockImplementation(async (_c: unknown, registry: string) =>
-      resolution(registry === REGISTRY ? DAI_PORTAL : SUSDS_PORTAL),
+      resolution(registry === REGISTRY ? DAI_TABLE : SUSDS_TABLE),
     )
 
     expect(await read([sources[0]!, { tuple: own, tokens: [SUSDS_TOKEN] }])).toEqual([
@@ -565,7 +585,7 @@ describe("readResolverDeployments", () => {
   it("skips an account with no record, or one recorded under another key", async () => {
     mocks.readAccountResolution.mockResolvedValueOnce(null)
     expect(await read(sources)).toEqual([])
-    mocks.readAccountResolution.mockResolvedValueOnce(resolution(DAI_PORTAL, RESOLVER_PUBLIC))
+    mocks.readAccountResolution.mockResolvedValueOnce(resolution(DAI_TABLE, RESOLVER_PUBLIC))
     expect(await read(sources)).toEqual([])
   })
 })

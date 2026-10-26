@@ -5,8 +5,8 @@
  * this test rather than silently producing an FPC nobody can pay through.
  */
 import { describe, expect, it } from "vitest"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { GasSettings } from "@aztec/stdlib/gas"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { GasSettings } from "@aztec-labs/stdlib/gas"
 import {
   computeFpcPasswordHash,
   FPC_PASSWORD_MAX_LENGTH,
@@ -29,9 +29,9 @@ describe("computeFpcPasswordHash", () => {
   })
 
   it("rejects a password past the declared width rather than truncating", async () => {
-    await expect(
-      computeFpcPasswordHash("b".repeat(FPC_PASSWORD_MAX_LENGTH + 1)),
-    ).rejects.toThrow(/at most 31 characters/)
+    await expect(computeFpcPasswordHash("b".repeat(FPC_PASSWORD_MAX_LENGTH + 1))).rejects.toThrow(
+      /at most 31 characters/,
+    )
   })
 
   it("rejects multi-byte characters that would overflow the declared width", async () => {

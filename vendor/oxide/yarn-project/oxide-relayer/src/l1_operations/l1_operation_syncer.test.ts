@@ -1,17 +1,11 @@
-import { AztecAddress, EthAddress } from '@aztec/aztec.js/addresses';
-import { Fr } from '@aztec/aztec.js/fields';
-import type { AztecNode } from '@aztec/aztec.js/node';
-import { BlockHash } from '@aztec/stdlib/block';
-import type { Tx } from '@aztec/stdlib/tx';
-import { TxHash } from '@aztec/stdlib/tx';
+import { AztecAddress, EthAddress } from '@aztec-labs/aztec.js/addresses';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import type { AztecNode } from '@aztec-labs/aztec.js/node';
+import { BlockHash } from '@aztec-labs/stdlib/block';
+import type { Tx } from '@aztec-labs/stdlib/tx';
+import { TxHash } from '@aztec-labs/stdlib/tx';
 
-import {
-  SipaIntent,
-  buildSipaDeployAndSweepOperation,
-  buildSipaSweepOperation,
-  decodeSipaSweepOperation,
-  decodeSubsidizedDeployAndSweep,
-} from '@oxide/l1-contracts';
+import { SipaIntent, buildSipaDeployAndSweepOperation, buildSipaSweepOperation } from '@oxide/l1-contracts';
 import {
   L1OperationCondition,
   L1OperationConditionKind,
@@ -30,8 +24,17 @@ import { openSqliteStateStore } from '../state/sqlite_store.js';
 import { TEST_RELAYER_DEPLOYMENT } from '../state/test_fixtures.js';
 import { LogCursorSources, type StateStore } from '../state/types.js';
 import { BalanceWatcher, OutboxWatcher } from './l1_operation_condition.js';
+import type { L1OperationOwnership } from './l1_operation_router.js';
 import { L1OperationSyncer, type L1OperationSyncerDeps } from './l1_operation_syncer.js';
+import type { PayoutTokenFilter } from './payout_token_registry.js';
 import type { OutboxStatus, WithdrawalCompletion } from './withdrawal_completion.js';
+
+/** A worker that is alone on its Broadcaster, so it handles every operation. */
+const OWNS_ALL: L1OperationOwnership = { owns: () => true, givesWayTo: () => Promise.resolve(undefined) };
+/** A payout-token filter that accepts exactly `tokens`. */
+function acceptsOnly(...tokens: EthAddress[]): PayoutTokenFilter {
+  return { accepts: token => tokens.some(accepted => accepted.equals(token)) };
+}
 
 const BROADCASTER = AztecAddress.fromBigIntUnsafe(7n);
 const TARGET = EthAddress.random();
@@ -134,6 +137,7 @@ function buildSyncer(
     balance?: bigint;
     watchedTokens?: EthAddress[];
     outboxStatus?: OutboxStatus;
+    ownership?: L1OperationOwnership;
     telemetry?: L1OperationSyncerDeps['telemetry'];
     logger?: L1OperationSyncerDeps['logger'];
   } = {},
@@ -142,7 +146,8 @@ function buildSyncer(
     node,
     store,
     broadcaster: BROADCASTER,
-    payoutTokens: [PAYOUT_TOKEN],
+    ownership: opts.ownership ?? OWNS_ALL,
+    payoutTokens: acceptsOnly(PAYOUT_TOKEN),
     watchedTokens: opts.watchedTokens ?? [WATCHED_TOKEN],
     telemetry: opts.telemetry,
     logger: opts.logger,
@@ -153,7 +158,7 @@ function buildSyncer(
       logWindow: 1_000n,
       maxAgeMs: 48 * 60 * 60_000,
     }),
-    outboxWatcher: new OutboxWatcher({ completion: fakeCompletion(opts.outboxStatus ?? 'waiting'), store }),
+    outboxWatcher: new OutboxWatcher({ completion: fakeCompletion(opts.outboxStatus ?? { status: 'waiting' }), store }),
   });
 }
 
@@ -247,13 +252,30 @@ describe('L1OperationSyncer', () => {
     },
   );
 
+  it('never stores an operation that another worker on the broadcaster handles, and counts no skip', async () => {
+    await withStore(async store => {
+      const skipped = jest.fn();
+      const telemetry = { l1OperationSkippedFor: skipped } as unknown as L1OperationSyncerDeps['telemetry'];
+      const ownership: L1OperationOwnership = { owns: () => false, givesWayTo: () => Promise.resolve(undefined) };
+      await expect(buildSyncer(store, fakeNode(10, 4), { ownership, telemetry }).runOnce()).resolves.toMatchObject({
+        discovered: 0,
+      });
+
+      await expect(store.listPendingL1Operations()).resolves.toHaveLength(0);
+      expect(skipped).not.toHaveBeenCalled();
+      // The broadcast is still consumed: the cursor moves past it.
+      await expect(store.getL2Cursor(CURSOR_KEY)).resolves.toMatchObject({ blockNumber: 4n });
+    });
+  });
+
   it('stores an operation that pays out in any accepted token', async () => {
     await withStore(async store => {
       const syncer = new L1OperationSyncer({
         node: fakeNode(10, 4),
         store,
         broadcaster: BROADCASTER,
-        payoutTokens: [EthAddress.random(), PAYOUT_TOKEN],
+        ownership: OWNS_ALL,
+        payoutTokens: acceptsOnly(EthAddress.random(), PAYOUT_TOKEN),
         watchedTokens: [WATCHED_TOKEN],
       });
       await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 1 });
@@ -267,7 +289,8 @@ describe('L1OperationSyncer', () => {
         node,
         store,
         broadcaster: BROADCASTER,
-        payoutTokens: [PAYOUT_TOKEN],
+        ownership: OWNS_ALL,
+        payoutTokens: acceptsOnly(PAYOUT_TOKEN),
         watchedTokens: [WATCHED_TOKEN],
       });
       await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 1, markedPending: 0 });
@@ -281,7 +304,7 @@ describe('L1OperationSyncer', () => {
     await withStore(async store => {
       const condition: L1OperationCondition = L1OperationCondition.messageInOutbox();
       const node = fakeNode(10, 4, { condition });
-      await expect(buildSyncer(store, node, { outboxStatus: 'waiting' }).runOnce()).resolves.toMatchObject({
+      await expect(buildSyncer(store, node, { outboxStatus: { status: 'waiting' } }).runOnce()).resolves.toMatchObject({
         discovered: 1,
         markedPending: 0,
       });
@@ -289,7 +312,7 @@ describe('L1OperationSyncer', () => {
       await expect(store.listWaitingL1Operations(L1OperationConditionKind.MessageInOutbox)).resolves.toHaveLength(1);
 
       // The same broadcast, now with a witness on the Outbox.
-      await expect(buildSyncer(store, node, { outboxStatus: 'ready' }).runOnce()).resolves.toMatchObject({
+      await expect(buildSyncer(store, node, { outboxStatus: { status: 'ready' } }).runOnce()).resolves.toMatchObject({
         markedPending: 1,
       });
       await expect(store.listPendingL1Operations()).resolves.toHaveLength(1);
@@ -312,7 +335,7 @@ describe('L1OperationSyncer', () => {
       );
       await store.close();
       store = await openSqliteStateStore(file, TEST_RELAYER_DEPLOYMENT);
-      await expect(buildSyncer(store, node, { outboxStatus: 'ready' }).runOnce()).resolves.toMatchObject({
+      await expect(buildSyncer(store, node, { outboxStatus: { status: 'ready' } }).runOnce()).resolves.toMatchObject({
         discovered: 0,
         markedPending: 2,
       });
@@ -338,7 +361,7 @@ describe('L1OperationSyncer', () => {
         info.mock.calls.filter(call => (call[1] as { event?: string })?.event === 'l1_operation_discovered'),
       ).toHaveLength(0);
       await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 1 });
-      expect(outcome).toHaveBeenCalledWith('waiting');
+      expect(outcome).toHaveBeenCalledWith('waiting', 'withdrawal_finalization');
     });
   });
 
@@ -359,7 +382,7 @@ describe('L1OperationSyncer', () => {
         createdAt: new Date(),
       });
       const node = fakeNode(10, 4, { condition: L1OperationCondition.messageInOutbox() });
-      await expect(buildSyncer(store, node, { outboxStatus: 'ready' }).runOnce()).resolves.toMatchObject({
+      await expect(buildSyncer(store, node, { outboxStatus: { status: 'ready' } }).runOnce()).resolves.toMatchObject({
         discovered: 0,
         markedPending: 1,
       });
@@ -378,6 +401,56 @@ describe('L1OperationSyncer', () => {
       await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 0 });
       expect((node.getTxByHash as jest.Mock).mock.calls).toHaveLength(1);
       await expect(store.listPendingL1Operations()).resolves.toHaveLength(1);
+    });
+  });
+
+  it.each([
+    ['payout_token', { payoutToken: EthAddress.random() }],
+    ['unwatched_balance_token', { condition: L1OperationCondition.balance(UNWATCHED_TOKEN, SIPA) }],
+  ] as const)('counts a %s skip once across re-scans of the unproven window', async (reason, opts) => {
+    await withStore(async store => {
+      const skipped = jest.fn();
+      const telemetry = { l1OperationSkippedFor: skipped } as unknown as L1OperationSyncerDeps['telemetry'];
+      const syncer = buildSyncer(store, fakeNode(10, 4, opts), { telemetry });
+      await syncer.runOnce();
+      await syncer.runOnce();
+      expect(skipped.mock.calls).toEqual([[reason, 'other']]);
+    });
+  });
+
+  it('counts a skip again after the proven cursor passes its block', async () => {
+    await withStore(async store => {
+      const skipped = jest.fn();
+      const telemetry = { l1OperationSkippedFor: skipped } as unknown as L1OperationSyncerDeps['telemetry'];
+      const payoutToken = EthAddress.random();
+      const node = fakeNode(10, 4, { payoutToken });
+      const syncer = buildSyncer(store, node, { telemetry });
+      await syncer.runOnce();
+      Object.assign(node, fakeNode(10, 6, { payoutToken }));
+      await syncer.runOnce();
+      Object.assign(node, fakeNode(10, 6, { payoutToken, broadcastBlock: 8 }));
+      await syncer.runOnce();
+      expect(skipped.mock.calls).toEqual([
+        ['payout_token', 'other'],
+        ['payout_token', 'other'],
+      ]);
+    });
+  });
+
+  it('counts a skip once when its broadcast is re-included in a later block', async () => {
+    await withStore(async store => {
+      const skipped = jest.fn();
+      const telemetry = { l1OperationSkippedFor: skipped } as unknown as L1OperationSyncerDeps['telemetry'];
+      const payoutToken = EthAddress.random();
+      const node = fakeNode(10, 4, { payoutToken });
+      const syncer = buildSyncer(store, node, { telemetry });
+      await syncer.runOnce();
+      Object.assign(node, fakeNode(10, 4, { payoutToken, broadcastBlock: 8 }));
+      await syncer.runOnce();
+      Object.assign(node, fakeNode(10, 6, { payoutToken, broadcastBlock: 8 }));
+      await syncer.runOnce();
+      await syncer.runOnce();
+      expect(skipped.mock.calls).toEqual([['payout_token', 'other']]);
     });
   });
 
@@ -424,91 +497,58 @@ describe('L1OperationSyncer', () => {
     });
   });
 
-  // TODO: Drop this ugly thing with
-  // https://linear.app/aztec-labs/issue/OX-1877/for-v6-handle-multi-token-balance-condition-l1-operations-properly
-  describe('Balance SIPA sweep', () => {
-    const TOKENS = [EthAddress.random(), EthAddress.random(), EthAddress.random()];
-    const DEPOSIT_SUBSIDY = EthAddress.random().toString() as Address;
-    const sweep = (token: EthAddress) => ({
-      sipa: SIPA.toString() as Address,
-      sweepArgs: {
-        token: token.toString() as Address,
-        relayer: TARGET.toString() as Address,
-        intentData: '0x1234' as Hex,
-        proofs: '0x' as Hex,
-      },
-      payoutToken: PAYOUT_TOKEN.toString() as Address,
-      condition: L1OperationCondition.balance(token, SIPA),
-    });
-    const deploy = (token: EthAddress) => ({
-      ...sweep(token),
-      sipaFactory: EthAddress.random().toString() as Address,
-      intent: SipaIntent.Deposit,
-      deployArgs: {
-        implementation: EthAddress.random().toString() as Address,
-        intentHash: keccak256('0x1234'),
-        recoveryCommitment: `0x${'77'.repeat(32)}` as Hex,
-        rollupVersion: 1n,
-        resweepable: true,
-      },
-    });
+  it.each([
+    ['sweep', (token: EthAddress) => buildSipaSweepOperation(sipaSweep(token))],
+    [
+      'deployAndSweepForSubsidy',
+      (token: EthAddress) =>
+        buildSipaDeployAndSweepOperation({ ...sipaDeploy(token), depositSubsidy: TARGET.toString() as Address }),
+    ],
+  ])('stores a Balance %s once, for the token it sweeps, when the relayer watches more tokens', async (_, build) => {
+    await withStore(async store => {
+      const tokens = [EthAddress.random(), EthAddress.random(), EthAddress.random()];
+      const operation = build(tokens[1]);
+      const node = fakeNode(10, 4, { operations: [operation] });
+      const syncer = buildSyncer(store, node, { watchedTokens: tokens });
+      await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 1 });
 
-    /** Checks that the waiting operations are one sweep for each of `TOKENS`, which sweeps the token it waits on. */
-    async function expectOneSweepForEachToken(store: StateStore) {
-      const copies = await store.listWaitingL1Operations(L1OperationConditionKind.Balance);
-      const tokens = copies.map(copy => copy.condition.token.toString());
-      expect(tokens.sort()).toEqual(TOKENS.map(token => token.toString()).sort());
-      for (const copy of copies) {
-        const swept = decodeSipaSweepOperation(copy) ?? decodeSubsidizedDeployAndSweep(copy);
-        expect(swept?.token.toLowerCase()).toBe(copy.condition.token.toString());
-      }
-    }
-
-    it.each([
-      ['sweep', buildSipaSweepOperation(sweep(TOKENS[1]))],
-      ['sweepForSubsidy', buildSipaSweepOperation({ ...sweep(TOKENS[1]), depositSubsidy: DEPOSIT_SUBSIDY })],
-      [
-        'deployAndSweepForSubsidy',
-        buildSipaDeployAndSweepOperation({ ...deploy(TOKENS[1]), depositSubsidy: DEPOSIT_SUBSIDY }),
-      ],
-      ['deploy-and-sweep batch', buildSipaDeployAndSweepOperation(deploy(TOKENS[1]))],
-    ])('stores a %s and a copy of it for each other watched token', async (_shape, operation) => {
-      await withStore(async store => {
-        const node = fakeNode(10, 4, { operations: [operation] });
-        const syncer = buildSyncer(store, node, { watchedTokens: TOKENS });
-        await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 3 });
-
-        await expectOneSweepForEachToken(store);
-        // The broadcast operation keeps its ID, so a client can follow its status.
-        const broadcast = await store.getPendingL1Operation(computeL1OperationId(operation));
-        expect(broadcast?.calldata.equals(operation.calldata)).toBe(true);
-      });
-    });
-
-    it('stores each copy once when a tx has one sweep for each watched token', async () => {
-      await withStore(async store => {
-        const operations = TOKENS.map(token => buildSipaSweepOperation(sweep(token)));
-        const node = fakeNode(10, 4, { operations });
-        const syncer = buildSyncer(store, node, { watchedTokens: TOKENS });
-        await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 3 });
-
-        await expectOneSweepForEachToken(store);
-      });
-    });
-
-    it('stores a Balance operation that is not a SIPA sweep only for its own token', async () => {
-      await withStore(async store => {
-        const condition = L1OperationCondition.balance(TOKENS[1], SIPA);
-        const node = fakeNode(10, 4, { condition });
-        const syncer = buildSyncer(store, node, { watchedTokens: TOKENS });
-        await expect(syncer.runOnce()).resolves.toMatchObject({ discovered: 1 });
-
-        const [waiting] = await store.listWaitingL1Operations(L1OperationConditionKind.Balance);
-        expect(waiting.condition).toEqual(condition);
-      });
+      const [waiting] = await store.listWaitingL1Operations(L1OperationConditionKind.Balance);
+      expect(waiting.operationId).toBe(computeL1OperationId(operation));
+      expect(waiting.calldata.equals(operation.calldata)).toBe(true);
     });
   });
 });
+
+/** A SIPA sweep of `token` that waits for the SIPA to hold it. */
+function sipaSweep(token: EthAddress) {
+  return {
+    sipa: SIPA.toString() as Address,
+    sweepArgs: {
+      token: token.toString() as Address,
+      relayer: TARGET.toString() as Address,
+      intentData: '0x1234' as Hex,
+      proofs: '0x' as Hex,
+    },
+    payoutToken: PAYOUT_TOKEN.toString() as Address,
+    condition: L1OperationCondition.balance(token, SIPA),
+  };
+}
+
+function sipaDeploy(token: EthAddress) {
+  return {
+    ...sipaSweep(token),
+    sipaFactory: EthAddress.random().toString() as Address,
+    intent: SipaIntent.Deposit,
+    deployArgs: {
+      implementation: EthAddress.random().toString() as Address,
+      intentHash: keccak256('0x1234'),
+      recoveryCommitment: `0x${'77'.repeat(32)}` as Hex,
+      rollupVersion: 1n,
+      resweepable: true,
+      forwardingTable: EthAddress.random().toString() as Address,
+    },
+  };
+}
 
 /** The stored row, at any status, for the operation that `fakeNode` broadcasts with `condition` and `payoutToken`. */
 function storedOperation(store: StateStore, condition: L1OperationCondition, payoutToken: EthAddress) {

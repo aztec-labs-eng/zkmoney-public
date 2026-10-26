@@ -1,8 +1,8 @@
-import { BlockNumber, CheckpointNumber, EpochNumber } from '@aztec/foundation/branded-types';
-import { Fr } from '@aztec/foundation/curves/bn254';
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { AztecAddress } from '@aztec/stdlib/aztec-address';
-import { TxEffect, TxHash } from '@aztec/stdlib/tx';
+import { BlockNumber, CheckpointNumber, EpochNumber } from '@aztec-labs/foundation/branded-types';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
+import { TxEffect, TxHash } from '@aztec-labs/stdlib/tx';
 
 /// EIP-7825 L1 tx cap.
 export const L1_TRANSACTION_GAS_CAP = 2n ** 24n;
@@ -28,7 +28,7 @@ export function portalId(portal: EthAddress): string {
 
 export interface PortalContext {
   l1Portal: EthAddress;
-  l2Portal: AztecAddress;
+  l2Token: AztecAddress;
   token: EthAddress;
 }
 

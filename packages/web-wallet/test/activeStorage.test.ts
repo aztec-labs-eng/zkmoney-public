@@ -1,5 +1,5 @@
 /** The cached master key's shape on disk and the id encoding. */
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { beforeEach, describe, expect, it } from "vitest"
 import {
   clearActiveStorage,

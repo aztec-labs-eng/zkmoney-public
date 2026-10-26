@@ -9,9 +9,15 @@ import type { WebWalletConfig } from "../src/config/env"
 
 const h = vi.hoisted(() => ({
   redeem: vi.fn(),
-  fundingCut: vi.fn(async () => 0n),
 }))
 
+// The executor's withdrawal fee: 0.1 DAI.
+vi.mock("../src/features/withdraw/withdrawalFee", () => ({
+  activeWithdrawalFee: async () => 10n ** 17n,
+  activeWithdrawalExecutor: async () => ({ fee: 10n ** 17n }),
+  withdrawalExecutor: async () => ({ fee: 10n ** 17n }),
+  withdrawalExecutorAt: async () => ({ fee: 10n ** 17n }),
+}))
 vi.mock("../src/features/onboarding/goldenTicket", () => ({
   redeemGoldenTicketForLink: h.redeem,
 }))
@@ -19,13 +25,6 @@ vi.mock("../src/config/oxideTuple", () => ({
   getOxideTuple: async () => ({ portal: "0x00000000000000000000000000000000000000f0" }),
   l1PublicClient: () => ({}),
   requireTupleField: (tuple: Record<string, string>, key: string) => tuple[key],
-}))
-vi.mock("@obsidion/sdk", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@obsidion/sdk")>()),
-  readFpcFundingCut: h.fundingCut,
-}))
-vi.mock("../src/features/fees/fpcFundingCut", () => ({
-  currentFpcFundingCut: () => h.fundingCut(),
 }))
 
 const { redeemLinkedGoldenTicket } = await import("../src/features/onboarding/oxideOnboarding")
@@ -112,18 +111,17 @@ describe("redeemLinkedGoldenTicket", () => {
     expect(onProving).toHaveBeenCalledTimes(1)
   })
 
-  it("prices the burn from the advertised schedule at the live cut before the ticket is spent, and keeps the amount", async () => {
+  it("prices the burn from the advertised schedule before the ticket is spent, and keeps the amount", async () => {
     ticket()
-    h.fundingCut.mockResolvedValue(DAI / 10n)
     h.redeem.mockImplementationOnce(
       async (args: {
         covers: (amount: bigint, advertised?: { fee: bigint; min: bigint }) => Promise<boolean>
       }) => {
         const advertised = { fee: DAI / 2n, min: 0n }
-        // Burn at a 0.1 cut on each leg: 0.5 fee + 0.1 return cut + 0.01 remainder, then 0.1
-        // withdrawal cut + 0.1 relayer = 0.81 DAI. No prover tip: gas never fails a link here.
-        expect(await args.covers((81n * DAI) / 100n, advertised)).toBe(false)
-        expect(await args.covers((81n * DAI) / 100n + 1n, advertised)).toBe(true)
+        // 0.5 fee + 0.01 remainder + 0.1 executor fee + 0.1 relayer = 0.71 DAI. No prover tip: gas
+        // never fails a link here.
+        expect(await args.covers((71n * DAI) / 100n, advertised)).toBe(false)
+        expect(await args.covers((71n * DAI) / 100n + 1n, advertised)).toBe(true)
         // An unadvertised schedule prices nothing, so nothing is spent on it.
         expect(await args.covers(20n * DAI, undefined)).toBe(false)
         return { status: "created", amount: 20n * DAI }

@@ -5,7 +5,7 @@
  */
 
 import type { ObsidionWallet } from "@obsidion/sdk"
-import { TxHash } from "@aztec/stdlib/tx"
+import { TxHash } from "@aztec-labs/stdlib/tx"
 import type { IStorageAdapter } from "./storages/adapter"
 import {
   AppNotificationStore,

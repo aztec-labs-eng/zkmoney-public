@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { Address, Hex } from "viem"
-import type { PendingRegistrationRecord, SIPADepositRecord, SipaRecoveryDeps } from "@obsidion/front-core"
+import type {
+  PendingRegistrationRecord,
+  SIPADepositRecord,
+  SipaRecoveryDeps,
+} from "@obsidion/front-core"
 
 const h = vi.hoisted(() => ({
   pending: null as PendingRegistrationRecord | null,
@@ -24,23 +28,36 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
   runSipaRecovery: h.run,
   SIPADepositStore: { get: () => ({ upsert: vi.fn() }) },
 }))
-vi.mock("../src/config/env", () => ({ getConfig: () => ({ l1ChainId: 31337, network: "sandbox" }) }))
+vi.mock("../src/config/env", () => ({
+  getConfig: () => ({ l1ChainId: 31337, network: "sandbox" }),
+}))
 vi.mock("../src/config/oxideTuple", () => ({
   l1PublicClient: () => ({ readContract: h.readContract }),
   getOxideTuple: async () => h.tuple,
   requireTupleField: (tuple: Record<string, string>, key: string) => tuple[key],
-  oxideEnvFor: async () => ({ tuple: h.tuple, env: {}, publicClient: { readContract: h.readContract } }),
+  oxideEnvFor: async () => ({
+    tuple: h.tuple,
+    env: {},
+    publicClient: { readContract: h.readContract },
+  }),
 }))
 vi.mock("../src/features/onboarding/webRegistration", () => ({
   registrationRecordForSipa: () => h.pending,
   getPendingStore: () => ({ get: () => null, upsert: vi.fn() }),
 }))
 vi.mock("../src/platform/auth/useAuthenticator", () => ({
-  getAuthService: () => ({ getSecretKey: async () => secret, getAuthProvider: async () => undefined }),
+  getAuthService: () => ({
+    getSecretKey: async () => secret,
+    sessionKeys: async () => ({ secretKey: secret, authProvider: {} }),
+  }),
 }))
 vi.mock("../src/platform/desktopBridge", () => ({ isDesktopL1SubmitActive: () => true }))
 vi.mock("../src/features/deposit/l1Wallet", () => ({}))
 vi.mock("../src/features/deposit/sipaSweep", () => ({ readSipaDeployed: h.readDeployed }))
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, singleToken } = await import("./support/depositTokens")
+  return mockLoadDepositFacts(importOriginal, () => singleToken(h.tuple.token as Address))
+})
 
 const { recoverDeposit } = await import("../src/features/deposit/sipaRecovery")
 const sipa = `0x${"33".repeat(20)}` as Address

@@ -1,14 +1,13 @@
-import { RollupContract } from '@aztec/ethereum/contracts/rollup';
-import { AztecNode } from '@aztec/stdlib/interfaces/client';
+import { RollupContract } from '@aztec-labs/ethereum/contracts/rollup';
+import { AztecNode } from '@aztec-labs/stdlib/interfaces/client';
 
 import { FrozenEvent, OxidePortalContract } from '@oxide/l1-contracts/oxide_portal.js';
 import { buildProverClaim } from '@oxide/oxide-client/atlatl/prover_claim.js';
-import { computeSiloedWithdrawalTag, extractWithdrawalMessages } from '@oxide/oxide-client/published_withdrawal.js';
-import { getWithdrawContentHash } from '@oxide/oxide-lib/content_hash.js';
-import { TeeSigner } from '@oxide/oxide-lib/types.js';
+import type { RegisteredTeeSigner } from '@oxide/oxide-client/types.js';
 
 import type { WatchContractEventReturnType } from 'viem';
 
+import { FinalizationRequestSource } from '../finalization_request_source.js';
 import {
   BuildProverClaimResult,
   ObservedTx,
@@ -25,21 +24,31 @@ type ProverClaimFreeze = Pick<FrozenEvent, 'checkpointNumber' | 'epochNumber' | 
 export interface ProverClaimAdaptorDeps {
   node: AztecNode;
   portal: OxidePortalContract;
+  /** Where the finalization requests of the claims come from. Keep a `FinalizationRequestWatcher` feeding it. */
+  requestSource: FinalizationRequestSource;
   rollup: RollupContract;
-  signer: TeeSigner;
+  signer: RegisteredTeeSigner;
 }
 
-/** Discovery-only adaptor for the early-submit policy: finds prover-claimable messages; no signer needed. */
+/**
+ * Discovery-only adaptor for the early-submit policy: finds prover-claimable messages; no signer needed. A withdrawal
+ * is discoverable only through the finalization request its initiation tx broadcast: its recovery data is encrypted to
+ * the owner.
+ */
 export class ProverClaimDiscoveryAdaptor implements ProverClaimDiscoveryPortalAdaptor {
   private unwatch?: WatchContractEventReturnType;
 
   protected constructor(
+    protected readonly requestSource: FinalizationRequestSource,
     /** Freeze boundary the adaptor gates against. Undefined until the portal freezes. */
     protected freeze: ProverClaimFreeze | undefined,
   ) {}
 
-  static async create({ portal }: Pick<ProverClaimAdaptorDeps, 'portal'>): Promise<ProverClaimDiscoveryAdaptor> {
-    const adaptor = new ProverClaimDiscoveryAdaptor(undefined);
+  static async create({
+    portal,
+    requestSource,
+  }: Pick<ProverClaimAdaptorDeps, 'portal' | 'requestSource'>): Promise<ProverClaimDiscoveryAdaptor> {
+    const adaptor = new ProverClaimDiscoveryAdaptor(requestSource, undefined);
     await adaptor.watchFreeze(portal);
     return adaptor;
   }
@@ -66,21 +75,16 @@ export class ProverClaimDiscoveryAdaptor implements ProverClaimDiscoveryPortalAd
     this.unwatch = undefined;
   }
 
-  async buildProverClaims(tx: ObservedTx, portal: PortalContext): Promise<ProverClaimResult[]> {
+  async buildProverClaims(tx: ObservedTx): Promise<ProverClaimResult[]> {
     if (this.isCutOffByFreeze(tx)) {
       return [];
     }
-    const siloedTag = await computeSiloedWithdrawalTag(portal.l2Portal);
-    return extractWithdrawalMessages(tx.txEffect, siloedTag).map((withdrawal, withdrawalIndex) => ({
-      content: getWithdrawContentHash(
-        withdrawal.executor,
-        withdrawal.userPayloadHash,
-        withdrawal.amount,
-        withdrawal.proverTip,
-        withdrawal.randomness,
-      ),
-      proverTip: withdrawal.proverTip,
-      withdrawalIndex,
+    const requests = await this.requestSource.requestsFor(tx.txEffect.txHash, tx.txEffect);
+    return requests.map(request => ({
+      content: request.contentHash,
+      proverTip: request.finalizationData.proverTip,
+      withdrawalIndex: request.withdrawalIndex,
+      messageIndexInTx: request.messageIndexInTx,
     }));
   }
 
@@ -98,7 +102,7 @@ export class ProverClaimDiscoveryAdaptor implements ProverClaimDiscoveryPortalAd
 /** Discovery + claim assembly for the claim collector. Requires the TEE signer and chain handles. */
 export class ProverClaimAdaptor extends ProverClaimDiscoveryAdaptor implements ProverClaimPortalAdaptor {
   private constructor(private readonly deps: ProverClaimAdaptorDeps) {
-    super(undefined);
+    super(deps.requestSource, undefined);
   }
 
   static async create(deps: ProverClaimAdaptorDeps): Promise<ProverClaimAdaptor> {
@@ -115,7 +119,7 @@ export class ProverClaimAdaptor extends ProverClaimDiscoveryAdaptor implements P
   ): Promise<BuildProverClaimResult> {
     // Re-check the freeze boundary against the current snapshot: a freeze can land between discovery and assembly.
     if (this.isCutOffByFreeze(tx)) {
-      return { status: 'error', reason: `Burn in epoch ${tx.epochNumber} is cut off by the freeze` };
+      return { status: 'error', reason: `Initiation in epoch ${tx.epochNumber} is cut off by the freeze` };
     }
 
     // A freeze-epoch claim must verify against the pre-freeze root, so cap its proof length at the freeze
@@ -126,10 +130,17 @@ export class ProverClaimAdaptor extends ProverClaimDiscoveryAdaptor implements P
       proofLength > this.freeze.freezeCheckpointCount
         ? this.freeze.freezeCheckpointCount
         : proofLength;
+    const request = await this.requestSource.request(tx.txHash, withdrawalIndex);
+    if (!request) {
+      return {
+        status: 'error',
+        reason: `No finalization request for withdrawal ${withdrawalIndex} of tx ${tx.txHash}`,
+      };
+    }
     const archiveRoot = await this.deps.rollup.archiveAt(tx.checkpointNumber);
     const proverClaim = await buildProverClaim(
-      { ...this.deps, chain: this.deps.node, l2Token: portal.l2Portal },
-      { txHash: tx.txHash, archiveRoot, withdrawalIndex, proofLength: effectiveProofLength },
+      { ...this.deps, chain: this.deps.node, l2Token: portal.l2Token },
+      { withdrawal: request, archiveRoot, proofLength: effectiveProofLength },
     );
     return { status: 'success', proverClaim };
   }

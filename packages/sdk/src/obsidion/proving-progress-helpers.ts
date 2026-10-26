@@ -1,7 +1,7 @@
-import type { Logger } from "@aztec/foundation/log"
-import type { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { TxExecutionRequest, TxProvingResult } from "@aztec/stdlib/tx"
-import type { PXE } from "@aztec/pxe/client/lazy"
+import type { Logger } from "@aztec-labs/foundation/log"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { TxExecutionRequest, TxProvingResult } from "@aztec-labs/stdlib/tx"
+import type { PXE } from "@aztec-labs/pxe/client/lazy"
 import { ProvingStage, provingProgress } from "@obsidion/proving-progress"
 
 /**

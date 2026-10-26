@@ -1,46 +1,36 @@
 /**
  * What moving funds to a new version costs, and what the new balance receives. The exit pays the
- * relayer tip and the old portal's funding cut on release; the arrival pays the new deployment's
- * deposit fee and funding cut as the relayer sweeps it in. A deposit subsidy may credit part of it
- * back, so the net is an estimate.
+ * source executor's fee and the relayer tip on release; the arrival pays the new deployment's
+ * deposit fee as the relayer sweeps it in. A deposit subsidy may credit part of it back, so the net is an estimate.
  */
-import { formatUnits, type Address } from "viem"
-import { DEFAULT_DECIMALS, quotedDepositFee, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { formatUnits } from "viem"
+import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import type { OxideEnvTuple } from "@obsidion/core/types"
-import {
-  depositSipaImplementation,
-  implementationDepositFee,
-  withdrawalAmounts,
-  type WithdrawalRecord,
-} from "@obsidion/front-core"
+import { deploymentSipaRoute, withdrawalAmounts, type WithdrawalRecord } from "@obsidion/front-core"
+import { readDepositFee } from "@obsidion/sdk"
 import { getConfig } from "../../config/env"
-import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
-import { fpcFundingCut } from "../fees/fpcFundingCut"
+import { withdrawalExecutorFee } from "../withdraw/withdrawalFee"
+import { l1PublicClient } from "../../config/oxideTuple"
 
 /** The fee fields a migration's withdrawal record carries, base units as strings. */
 export type MigrationFeeFields = Required<
-  Pick<WithdrawalRecord, "relayerTip" | "fpcFundingCut" | "arrivalFee">
+  Pick<WithdrawalRecord, "relayerTip" | "arrivalFee" | "withdrawalFee">
 >
 
-/** Read off both deployments: the old portal's cut, and the new one's deposit fee and cut. */
+/** Read off both deployments: the source executor's fee and the new deployment's deposit fee. */
 export async function loadMigrationFee(
-  historic: OxideEnvTuple,
   current: OxideEnvTuple,
+  source: OxideEnvTuple,
 ): Promise<MigrationFeeFields> {
   const publicClient = l1PublicClient(getConfig())
-  const [exitCut, depositFee, arrivalCut] = await Promise.all([
-    fpcFundingCut(publicClient, requireTupleField(historic, "portal") as Address),
-    depositSipaImplementation(
-      publicClient,
-      requireTupleField(current, "sipaFactory") as Address,
-      requireTupleField(current, "portal") as Address,
-    ).then((implementation) => implementationDepositFee(publicClient, implementation)),
-    fpcFundingCut(publicClient, requireTupleField(current, "portal") as Address),
+  const [arrivalFee, withdrawalFee] = await Promise.all([
+    readDepositFee(publicClient, deploymentSipaRoute(current)),
+    withdrawalExecutorFee(source),
   ])
   return {
     relayerTip: WITHDRAW_RELAYER_TIP.toString(),
-    fpcFundingCut: exitCut.toString(),
-    arrivalFee: quotedDepositFee(depositFee, arrivalCut).toString(),
+    withdrawalFee: withdrawalFee.toString(),
+    arrivalFee: arrivalFee.toString(),
   }
 }
 
@@ -55,7 +45,7 @@ export interface MigrationAmounts {
 
 /** Undefined while any fee is unknown: no figure beats a wrong one. */
 export function migrationAmounts(
-  record: Pick<WithdrawalRecord, "amount" | "rawAmount" | "proverTip"> &
+  record: Pick<WithdrawalRecord, "amount" | "rawAmount" | "proverTip" | "tokenDecimals"> &
     Partial<MigrationFeeFields>,
 ): MigrationAmounts | undefined {
   if (record.arrivalFee == null) return undefined
@@ -65,8 +55,8 @@ export function migrationAmounts(
   const netAtomic = exit.netAtomic > arrivalFee ? exit.netAtomic - arrivalFee : 0n
   return {
     exitFeeDisplay: exit.feeDisplay,
-    arrivalFeeDisplay: formatUnits(arrivalFee, DEFAULT_DECIMALS),
+    arrivalFeeDisplay: formatUnits(arrivalFee, record.tokenDecimals),
     netAtomic,
-    netDisplay: formatUnits(netAtomic, DEFAULT_DECIMALS),
+    netDisplay: formatUnits(netAtomic, record.tokenDecimals),
   }
 }

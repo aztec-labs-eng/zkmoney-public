@@ -19,7 +19,7 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
+import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
 
 import { DEFAULT_CONTRACTS } from "@obsidion/core/constants"
 import { getHardcodedArtifact } from "../../src/services/utils.js"
@@ -28,7 +28,7 @@ import { liveInstanceClassId } from "./liveClassId.js"
 // Accepted risk: the unconditional test below proves only that the built artifact derives this id.
 // Nothing in CI compares it against a live deployment, so an artifact that does not match the
 // deployed class reaches a release unless somebody runs the second test by hand.
-const EXPECTED_CLASS_ID = "0x1979a8fdbb3e928c486554559baa63a9c81a143a9a7741f1bc9195f549198013"
+const EXPECTED_CLASS_ID = "0x27df40f914de0e4368b39b4d02821d42573dfe703502c3e7a44f5254345f3949"
 
 const verifyOnChain = process.env.VERIFY_ONCHAIN_CLASS_ID === "1"
 

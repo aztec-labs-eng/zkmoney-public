@@ -32,7 +32,7 @@
 import { encode as cborEncode, decode as cborDecode } from "cbor-x"
 import { Buffer } from "buffer"
 import { bytesToHex, getAddress, hexToBytes } from "viem"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { normalizeTag } from "../../utils/normalizeTag"
 
 /* -------------------------------------------------------------------------- */

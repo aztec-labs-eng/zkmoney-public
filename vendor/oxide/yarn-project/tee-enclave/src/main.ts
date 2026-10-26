@@ -6,10 +6,6 @@
 // process: proxy (HTTP :8080) → TCP loopback → socat (oxide-tee-vsock-bridge.service) → VSOCK
 // → this process inside the Nitro enclave. Node lacks native AF_VSOCK support, so socat handles
 // the VSOCK leg in prod.
-//
-// The portal context (l1Portal, chainId, l2Portal, rollupVersion) is read from env at boot.
-// In production these env vars are baked into the EIF via Dockerfile ARGs so they end up inside
-// PCR0; the protocol-wide constant secret is hardcoded in `@oxide/oxide-lib/types.ts`.
 import { NsmAttestationProvider } from './nsm_attestation_provider.js';
 import { startEnclave } from './start.js';
 

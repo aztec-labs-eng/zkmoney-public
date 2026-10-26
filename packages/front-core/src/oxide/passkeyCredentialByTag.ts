@@ -1,9 +1,10 @@
 /**
- * The passkey a tag's account installed, read back from L1 so a browser that cannot enumerate the
- * passkey can ask for it by credential id. Registration writes each installed r1 key with the
- * credential id's raw bytes as `metadata` (`credentialIdToMetadata`); this is the inverse, plus the
- * rule for which entries count as candidates. Nothing here is trusted: the caller pins the
- * credential and the anchors still decide which account the passkey opens.
+ * The passkeys a tag's account installed, read back from L1 so a browser that cannot enumerate the
+ * passkey can ask for it by credential id, and so a sign-in derives the address with the account's
+ * full key set. Registration writes the sign-up key with the credential id's raw bytes as
+ * `metadata` (`credentialIdToMetadata`); a backup key carries oxide's prefixed layout
+ * (`passkeyEnvelope.ts`). Nothing here is trusted: the caller pins the credential and the anchors
+ * still decide which account the passkey opens.
  */
 
 import type { Address, Hex } from "viem"
@@ -14,20 +15,18 @@ import {
   type RegistryTagResolution,
 } from "../core/services/RegistryTagResolver"
 import type { BoundedAuthKeys } from "./oxideRegistration"
+import { metadataToCredentialId } from "./oxideWebAuthn"
+import { matchKind, parseKeyMetadata, type ParsedKeyMetadata } from "./passkeyEnvelope"
 
-/** A credential id shorter than this is not one any admitted authenticator mints. */
-const MIN_CREDENTIAL_ID_BYTES = 16
-/** WebAuthn's ceiling on a credential id. */
-const MAX_CREDENTIAL_ID_BYTES = 1023
 /** Output cap, and the bound the caller's key read should honour. */
 export const MAX_PASSKEY_CANDIDATES = 8
 
-/** What the pinned assertion needs: the id to ask for and the key the answer must carry. */
-export interface PasskeyCredentialCandidate {
-  /** base64url, no padding — the form WebAuthn and the identity map use. */
-  credentialId: string
-  /** Raw 64-byte `x‖y` as lowercase hex without `0x`, the form the auth service compares. */
+/** One installed key with its metadata as read and as classified. */
+export interface InstalledPasskey {
+  /** Raw 64-byte `x‖y` as lowercase hex without `0x`. */
   pubkeyHex: string
+  metadata: Hex
+  parsed: ParsedKeyMetadata
 }
 
 export type PasskeyCredentialsByTag =
@@ -35,8 +34,8 @@ export type PasskeyCredentialsByTag =
       kind: "resolved"
       account: Address
       l2Address: string
-      /** In on-chain order, at most {@link MAX_PASSKEY_CANDIDATES}. */
-      candidates: PasskeyCredentialCandidate[]
+      /** Every 64-byte key read, in on-chain order, at most {@link MAX_PASSKEY_CANDIDATES}. */
+      keys: InstalledPasskey[]
       /** Whether the read covered every installed key: false when the account has more than were read. */
       complete: boolean
       /** The account's total installed key count, eligible or not. */
@@ -48,7 +47,7 @@ export type PasskeyCredentialsByTag =
   | { kind: "staleRollup" }
   /** The account holds no auth key. */
   | { kind: "noKeyInstalled"; account: Address }
-  /** Keys exist, none read carries an eligible credential id; `complete` says whether more went unread. */
+  /** Keys exist, none read is a 64-byte key with a known metadata kind; `complete` says whether more went unread. */
   | { kind: "unreadable"; account: Address; complete: boolean }
 
 export interface PasskeyCredentialsByTagDeps {
@@ -57,49 +56,49 @@ export interface PasskeyCredentialsByTagDeps {
   readAuthKeys: (account: Address) => Promise<BoundedAuthKeys>
 }
 
-/**
- * The byte inverse of `credentialIdToMetadata`: raw bytes as `0x`-hex → base64url without padding.
- * Throws on empty, unprefixed or malformed hex. Eligibility is not judged here.
- */
-export function metadataToCredentialId(metadata: Hex): string {
-  const raw = metadata.startsWith("0x") ? metadata.slice(2) : undefined
-  if (!raw || raw.length % 2 !== 0 || !/^[0-9a-fA-F]+$/.test(raw)) {
-    throw new Error("metadataToCredentialId: not a non-empty 0x-hex byte string")
-  }
-  // Some Buffer polyfills lack the "base64url" encoding, so go through "base64" and swap.
-  return Buffer.from(raw, "hex")
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "")
-}
-
 /** The entry's key as raw 64-byte `x‖y` lowercase hex without `0x`, or undefined when it is not 64 bytes. */
 export function authKeyPubkeyHex(entry: AuthKeyEntry): string | undefined {
   const pubkeyHex = `${entry.key.qx.slice(2)}${entry.key.qy.slice(2)}`.toLowerCase()
   return pubkeyHex.length === 128 ? pubkeyHex : undefined
 }
 
-/** The entry as a candidate, or undefined when its metadata is not an eligible credential id. */
-export function authKeyToCandidate(entry: AuthKeyEntry): PasskeyCredentialCandidate | undefined {
-  // Bounds first: an oversized entry is never decoded.
-  const bytes = (entry.metadata.length - 2) / 2
-  if (bytes < MIN_CREDENTIAL_ID_BYTES || bytes > MAX_CREDENTIAL_ID_BYTES) return undefined
-  let credentialId: string
-  try {
-    credentialId = metadataToCredentialId(entry.metadata)
-  } catch {
-    return undefined
+/**
+ * The entry the assertion's credential answers for, and how it names it: `raw` when the metadata
+ * is the id's own bytes (a root key), `hash` when oxide's prefix carries its hash (a backup key).
+ * Every entry is tried for a raw match before any for a hash match.
+ */
+export function answeringKey(
+  keys: readonly InstalledPasskey[],
+  credentialId: string,
+): { key: InstalledPasskey; by: "raw" | "hash" } | undefined {
+  for (const by of ["raw", "hash"] as const) {
+    const key = keys.find((k) => matchKind(k.metadata, credentialId) === by)
+    if (key) return { key, by }
   }
-  const pubkeyHex = authKeyPubkeyHex(entry)
-  if (!pubkeyHex) return undefined
-  return { credentialId, pubkeyHex }
+  return undefined
 }
 
 /**
- * Tag → the account's passkey candidates. A `TagValidationError` is `notFound`; transport failures
- * from either read propagate. Scans the returned keys in order, skipping ineligible entries, until
- * it holds {@link MAX_PASSKEY_CANDIDATES} or the array ends.
+ * The credential ids a sign-in prompt is held to, one per key: a root key's raw id, a backup key's
+ * appended id. A prefixed-looking entry with no appended id is a root whose raw id begins with
+ * `0x01`, named by its whole metadata: every backup the wallet installs carries its id. `unknown`
+ * entries cannot answer and are skipped.
+ */
+export function candidateCredentialIds(keys: readonly InstalledPasskey[]): string[] {
+  const ids: string[] = []
+  for (const key of keys) {
+    const { parsed } = key
+    if (parsed.kind === "unknown") continue
+    if (parsed.kind === "credential-id") ids.push(parsed.credentialId)
+    else ids.push(parsed.credentialId ?? metadataToCredentialId(key.metadata))
+  }
+  return ids
+}
+
+/**
+ * Tag → the account's installed keys. A `TagValidationError` is `notFound`; transport failures
+ * from either read propagate. Lists the first {@link MAX_PASSKEY_CANDIDATES} entries that carry a
+ * 64-byte key; `unreadable` when none of them has a metadata kind a sign-in can answer for.
  */
 export async function readPasskeyCredentialsByTag(
   tag: string,
@@ -118,22 +117,25 @@ export async function readPasskeyCredentialsByTag(
   const account = resolution.account as Address
   const { entries, authKeyCount } = await deps.readAuthKeys(account)
   if (authKeyCount === 0) return { kind: "noKeyInstalled", account }
-  // The read covered every key only when the account holds no more than were returned.
-  const complete = authKeyCount <= entries.length
+  // The read covered every key only when the account holds no more than are listed below.
+  const complete = authKeyCount <= Math.min(entries.length, MAX_PASSKEY_CANDIDATES)
 
-  const candidates: PasskeyCredentialCandidate[] = []
-  for (const entry of entries) {
-    if (candidates.length >= MAX_PASSKEY_CANDIDATES) break
-    const candidate = authKeyToCandidate(entry)
-    if (candidate) candidates.push(candidate)
+  const keys: InstalledPasskey[] = []
+  for (const entry of entries.slice(0, MAX_PASSKEY_CANDIDATES)) {
+    const pubkeyHex = authKeyPubkeyHex(entry)
+    if (pubkeyHex)
+      keys.push({ pubkeyHex, metadata: entry.metadata, parsed: parseKeyMetadata(entry.metadata) })
   }
-  if (candidates.length === 0) return { kind: "unreadable", account, complete }
+  if (!keys.some((k) => k.parsed.kind !== "unknown")) {
+    return { kind: "unreadable", account, complete }
+  }
   return {
     kind: "resolved",
     account,
     l2Address: resolution.l2Address,
-    candidates,
-    complete,
+    keys,
+    // A key that is not 64 bytes cannot be a set member, so the set read is not whole.
+    complete: complete && keys.length === Math.min(entries.length, MAX_PASSKEY_CANDIDATES),
     authKeyCount,
   }
 }

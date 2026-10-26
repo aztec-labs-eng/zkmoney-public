@@ -1,5 +1,5 @@
-import { EthAddress, type AztecAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
+import { EthAddress, type AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { WithdrawalOptions } from "@obsidion/sdk"
 import { buildSkyEscrowWithdrawal } from "@oxide/experiments/sky/withdraw_escrow.js"
 import { computeRecipientCommitment } from "@oxide/oxide-lib/recipient_commitment.js"
@@ -7,11 +7,12 @@ import type { Address, Hex } from "viem"
 import { deriveSkyEscrowSalts, type FieldLike } from "../../../oxide/oxideAccountKeys"
 import type { WithdrawalRecord } from "../bridge/types"
 import {
-  savingsRoute,
+  savingsSourceExecutor,
   tupleField,
   type SavingsDeployments,
   type SkyFactory,
-} from "./savingsMoveQuote"
+} from "./savingsDeployment"
+import { savingsRoute } from "./savingsMoveQuote"
 import type { SavingsQuote } from "./types"
 
 /** The Broadcaster bindings the escrow builder takes; the sdk registers one for an address. */
@@ -48,6 +49,7 @@ export async function buildSavingsMove(
 ): Promise<SavingsMoveBuild> {
   const { main, savings } = deps.deployments
   const source = quote.direction === "in" ? main : savings
+  const executor = savingsSourceExecutor(deps.deployments, quote.direction)
   const nonce = Fr.random().toString() as Hex
   const salts = deriveSkyEscrowSalts(deps.masterSecret, nonce)
   const recipientCommitment = (
@@ -58,12 +60,11 @@ export async function buildSavingsMove(
     skyEscrowFactory: EthAddress.fromString(deps.factory.address),
     dai: EthAddress.fromString(deps.factory.dai),
     from: deps.recipient,
-    // On the Sky deployment this is the Sky withdrawal executor, which redeems the shares to DAI.
-    withdrawalExecutor: EthAddress.fromString(tupleField(source, "plainWithdrawalExecutor")),
+    withdrawalExecutor: { address: EthAddress.fromString(executor), fee: quote.withdrawalFee },
     amount: quote.amount,
     withdrawalRelayerTip: quote.releaseTip,
     proverTip: 0n,
-    fpcFundingCut: quote.sourceCut,
+    portal: EthAddress.fromString(tupleField(source, "portal")),
     route: savingsRoute(quote.direction),
     recipientCommitment,
     recoveryAccount: EthAddress.fromString(deps.recoveryAccount),
@@ -83,6 +84,8 @@ export async function buildSavingsMove(
       // Main's relayer runs every Sky escrow, either way: it watches the DAI each escrow waits for.
       broadcaster: tupleField(main, "l2Broadcaster"),
       sky: { ...built.escrowArgs, factory: deps.factory.address },
+      executor,
+      withdrawalFee: quote.withdrawalFee,
     },
     skyMove: {
       direction: quote.direction,

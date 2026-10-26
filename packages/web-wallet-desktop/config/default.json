@@ -11,7 +11,6 @@
   "contentSecurityPolicy": null,
   "proxies": {
     "/svc/account": "http://localhost:5060",
-    "/svc/enclave": "http://localhost:5071",
-    "/svc/enclave-sky": "http://localhost:5072"
+    "/svc/enclave": "http://localhost:5071"
   }
 }

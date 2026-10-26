@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import type { CandidateProbe, ResolvedMsk } from "@obsidion/front-core"
 import type { Hex } from "viem"
@@ -46,7 +46,7 @@ const {
   resolveRecoveredMsk,
 } = await import("@obsidion/front-core")
 const { recoverAddress } = await import("viem")
-const { sha256 } = await import("@aztec/foundation/crypto/sha256")
+const { sha256 } = await import("@aztec-labs/foundation/crypto/sha256")
 
 const GENERATIONS = {} as never
 

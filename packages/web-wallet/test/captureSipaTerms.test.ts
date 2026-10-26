@@ -7,8 +7,15 @@ const { captureSipaPortalTerms, ORIGIN_PORTAL } = await import(
   "../scripts/ui-capture/fixtures/processing-origin"
 )
 
-const IMPLEMENTATION = "0x1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e" as const
-const panel = () => readSipaPortalTerms(undefined as never, IMPLEMENTATION)
+const { DEMO_L1_TOKEN, DEMO_OXIDE_TUPLE } = await import("../src/dev/demoFixtures")
+
+/** The demo deployment's deposit row. */
+const ROUTE = {
+  forwardingTable: DEMO_OXIDE_TUPLE.forwardingTable as `0x${string}`,
+  token: DEMO_L1_TOKEN,
+  intent: 1,
+}
+const panel = () => readSipaPortalTerms(undefined as never, ROUTE)
 
 beforeEach(() => {
   sessionStorage.clear()

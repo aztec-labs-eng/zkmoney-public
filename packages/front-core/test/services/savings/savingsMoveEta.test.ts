@@ -6,15 +6,15 @@ import {
 } from "../../../src/core/services/savings/savingsMoveEta"
 
 const NOW = 1_700_000_000_000
-/** A 36 s slot grid with a two-checkpoint Inbox lag, and a release ten minutes after the landing. */
+/** A 36 s slot grid, and a release ten minutes after the landing. */
 const timing: SavingsMoveTiming = {
-  grid: { l1GenesisTime: 0, slotDuration: 36, inboxLag: 2 },
+  grid: { l1GenesisTime: 0, slotDuration: 36 },
   releaseSeconds: () => 600,
 }
-// The deposit arrival chain from a release at `at`: pickup 120 s, the lag's slots, the sync tick, the claim and one slot.
+// The deposit arrival chain from a release at `at`: pickup 120 s, the next slot, the sync tick, the claim and one slot.
 const arrival = (at: number) => {
   const sweepAt = at + 120
-  const availableAt = (Math.floor(sweepAt / 36) + 3) * 36
+  const availableAt = (Math.floor(sweepAt / 36) + 1) * 36
   return availableAt + 12 + 60 + 36 - at
 }
 const move = (extra = {}) => ({ startTime: NOW - 20 * 60_000, ...extra })

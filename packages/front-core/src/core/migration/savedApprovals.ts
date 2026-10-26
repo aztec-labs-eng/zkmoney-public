@@ -1,4 +1,4 @@
-import { ApprovalNeededError } from "@obsidion/sdk"
+import { ApprovalNeededError, ApprovalSavedError } from "@obsidion/sdk"
 import { bytesToHex, hexToBytes, keccak256, stringToHex, type Hex } from "viem"
 import type { IStorageAdapter } from "../storages/adapter"
 
@@ -48,6 +48,20 @@ export const webAuthnAssertionCodec: ApprovalCodec<{
 export class ApprovalGate {
   signal?: AbortSignal
   prompts = true
+  /** Set by the controller: this advance only saves approvals. */
+  approvalsOnly = false
+  /** A signer stops its build with {@link ApprovalSavedError} once it has the approval. */
+  stopAfterApproval = false
+
+  /** Runs `step` stopping each build once its approval is saved, before its proof. */
+  async approvalPass<T>(step: () => Promise<T>): Promise<T> {
+    this.stopAfterApproval = true
+    try {
+      return await step()
+    } finally {
+      this.stopAfterApproval = false
+    }
+  }
 
   /** Checked immediately before a prompt opens. */
   check() {
@@ -73,10 +87,20 @@ export function savedChallengeSigner<C extends Hex | Uint8Array, T>(
       typeof challenge === "string" ? challenge : new Uint8Array(challenge),
     )}`
     const saved = await storage.getItem(key)
-    if (saved) return codec.decode(saved)
+    if (saved) {
+      if (gate?.stopAfterApproval) throw new ApprovalSavedError()
+      return codec.decode(saved)
+    }
     gate?.check()
     const signed = await sign(challenge, { signal: gate?.signal })
     await storage.setItem(key, codec.encode(signed))
+    if (gate?.stopAfterApproval) throw new ApprovalSavedError()
     return signed
   }
 }
+
+/** Where a run keeps its approvals: the signing passkey's own, so a run resumed under another passkey asks that key. */
+export const approvalsPrefix = (key: string, signer?: { qx: string; qy: string }): string =>
+  signer
+    ? `${key}/approvals/${signer.qx.toLowerCase()}:${signer.qy.toLowerCase()}`
+    : `${key}/approvals`

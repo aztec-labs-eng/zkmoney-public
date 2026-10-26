@@ -3,8 +3,8 @@ import {
   ProvingStage,
   type ProvingProgressEvent,
 } from "@obsidion/proving-progress"
-import { TxHash, TxStatus } from "@aztec/stdlib/tx"
-import type { AztecNode } from "@aztec/stdlib/interfaces/client"
+import { TxHash, TxStatus } from "@aztec-labs/stdlib/tx"
+import type { AztecNode } from "@aztec-labs/stdlib/interfaces/client"
 import type { Hex } from "viem"
 import { isRevertedInclusion, type ReorgTxReceiptLike } from "../chain/receiptTypes"
 

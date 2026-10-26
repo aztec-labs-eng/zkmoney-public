@@ -6,11 +6,11 @@
  * sign, so no valid witness or request is needed — reaching the sentinel is the
  * assertion.
  */
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { ExecutionPayload } from "@aztec/stdlib/tx"
-import { GasFees } from "@aztec/stdlib/gas"
-import { AccountFeePaymentMethodOptions } from "@aztec/entrypoints/account"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { ExecutionPayload } from "@aztec-labs/stdlib/tx"
+import { GasFees } from "@aztec-labs/stdlib/gas"
+import { AccountFeePaymentMethodOptions } from "@aztec-labs/entrypoints/account"
 import { describe, expect, it, vi } from "vitest"
 import { stubGasSettingsFallback } from "../utils/obsidionWalletStubs.js"
 import { ObsidionAccountEntrypoint } from "../../src/obsidion/alpha/account/ObsidionAccountEntrypoint.js"

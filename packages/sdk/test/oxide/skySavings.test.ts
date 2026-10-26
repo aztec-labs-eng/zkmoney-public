@@ -15,14 +15,18 @@ import {
   encodeSkyEscrowDeploy,
   predictSkyEscrowAddressLocally,
 } from "@oxide/experiments/sky/sky_savings.js"
-import { WithdrawalSubsidyAbi, encodeEscrowRecoverERC20 } from "@oxide/l1-contracts"
-import { Fr } from "@aztec/foundation/curves/bn254"
+import { PlainWithdrawalSubsidyAbi, encodeEscrowRecoverERC20 } from "@oxide/l1-contracts"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
 import { multicall3Abi } from "viem"
 import { L1_OPERATION_TIP_MARGIN_BPS } from "@obsidion/core/constants"
 import { MULTICALL3_ADDRESS } from "../../src/services/sipaClaim.js"
-import { ETH_USD_FEED_DECIMALS, weiToUSD } from "@oxide/oxide-client/eth_usd_price_feed.js"
 import {
-  GAS_COST_ARGS_CALLDATA_GAS,
+  ETH_USD_FEED_DECIMALS,
+  ETH_USD_MAX_PRICE_AGE_SECONDS,
+  weiToUSD,
+} from "@oxide/oxide-client/eth_usd_price_feed.js"
+import {
+  UINT256_EXTRA_CALLDATA_GAS,
   WEI_PER_ETH,
   estimateL1OperationFeeValues,
   gasCostAtQuotePrice,
@@ -36,6 +40,12 @@ import {
   quoteSkyReleaseTip,
 } from "../../src/oxide/skySavings.js"
 import { mappingSlot } from "../../src/oxide/swapOnWithdrawSimulator.js"
+import { netOfSubsidy } from "../../src/oxide/tipQuote.js"
+
+vi.mock("../../src/oxide/tipQuote.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/oxide/tipQuote.js")>()
+  return { ...actual, netOfSubsidy: vi.fn(actual.netOfSubsidy) }
+})
 
 const FACTORY = "0x00000000000000000000000000000000000fac70" as Address
 const EXECUTOR = "0x0000000000000000000000000000000000e0e0e0" as Address
@@ -63,7 +73,7 @@ const deployment = {
 /** The relayer's floor for `gas` at the fakes' fees, with the wallet's margin. */
 const floorFor = (gas: bigint) => {
   const minPayout = gasCostAtQuotePrice(
-    gas + GAS_COST_ARGS_CALLDATA_GAS,
+    gas + 2n * UINT256_EXTRA_CALLDATA_GAS,
     { number: 7n, baseFeePerGas: BASE_FEE },
     FEES,
     weiToUSD(WEI_PER_ETH, ETH_USD),
@@ -71,7 +81,7 @@ const floorFor = (gas: bigint) => {
   return { minPayout, tip: (minPayout * L1_OPERATION_TIP_MARGIN_BPS + 9_999n) / 10_000n }
 }
 
-function fakeClient() {
+function fakeClient({ feedUpdatedAt = NOW } = {}) {
   return {
     readContract: vi.fn(
       async ({
@@ -87,7 +97,7 @@ function fakeClient() {
           case "PRICE_FEED":
             return FEED
           case "latestRoundData":
-            return [0n, ETH_USD, 0n, NOW, 0n]
+            return [0n, ETH_USD, 0n, feedUpdatedAt, 0n]
           case "balanceOf": {
             const wanted = mappingSlot(args![0] as Address, DAI_BALANCE_SLOT)
             const hit = stateOverride?.[0]?.stateDiff?.find((entry) => entry.slot === wanted)
@@ -174,14 +184,19 @@ describe("quoteSkyEscrowTip", () => {
   it("refuses a move whose escrow could not pay the tip", async () => {
     await expect(quote(fakeClient(), 1n)).rejects.toBeInstanceOf(SkyTipExceedsFundingError)
   })
+
+  it("refuses a stale ETH/USD answer", async () => {
+    const client = fakeClient({ feedUpdatedAt: NOW - ETH_USD_MAX_PRICE_AGE_SECONDS - 1n })
+    await expect(quote(client, 50n * 10n ** 18n)).rejects.toThrow(/stale/)
+  })
 })
 
 describe("quoteSkyReleaseTip", () => {
-  const subsidized = (subsidy: bigint) => ({
-    ...fakeClient(),
+  const subsidized = (subsidy: bigint, feedUpdatedAt = NOW) => ({
+    ...fakeClient({ feedUpdatedAt }),
     call: vi.fn(async (_request: unknown) => ({
       data: encodeFunctionResult({
-        abi: WithdrawalSubsidyAbi,
+        abi: PlainWithdrawalSubsidyAbi,
         functionName: "quoteSubsidy",
         result: subsidy,
       }),
@@ -201,7 +216,7 @@ describe("quoteSkyReleaseTip", () => {
     expect(client.call).toHaveBeenCalledWith({
       to: SUBSIDY,
       data: encodeFunctionData({
-        abi: WithdrawalSubsidyAbi,
+        abi: PlainWithdrawalSubsidyAbi,
         functionName: "quoteSubsidy",
         args: [0],
       }),
@@ -220,6 +235,19 @@ describe("quoteSkyReleaseTip", () => {
   it("offers nothing once the subsidy covers the release", async () => {
     const tip = await releaseTip(subsidized(floor(SkyRoute.Stake)), SkyRoute.Stake)
     expect(tip.relayerTip).toBe(0n)
+  })
+
+  it("nets the DAI subsidy from the DAI floor through the shared helper", async () => {
+    vi.mocked(netOfSubsidy).mockClear()
+    const tip = await releaseTip(subsidized(10n ** 15n), SkyRoute.Unstake)
+    expect(netOfSubsidy).toHaveBeenCalledTimes(1)
+    expect(netOfSubsidy).toHaveBeenCalledWith(floor(SkyRoute.Unstake), 10n ** 15n)
+    expect(vi.mocked(netOfSubsidy).mock.results[0]!.value).toBe(tip.relayerTip)
+  })
+
+  it("refuses a stale ETH/USD answer", async () => {
+    const stale = subsidized(0n, NOW - ETH_USD_MAX_PRICE_AGE_SECONDS - 1n)
+    await expect(releaseTip(stale, SkyRoute.Unstake)).rejects.toThrow(/stale/)
   })
 })
 

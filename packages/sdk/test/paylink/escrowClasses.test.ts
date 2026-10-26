@@ -6,14 +6,14 @@
 import { describe, expect, it, vi } from "vitest"
 import { readFileSync } from "fs"
 import { resolve } from "path"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { loadContractArtifact } from "@aztec/stdlib/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { loadContractArtifact } from "@aztec-labs/stdlib/abi"
 import {
   getContractClassFromArtifact,
   getContractInstanceFromInstantiationParams,
-} from "@aztec/stdlib/contract"
-import type { NoirCompiledContract } from "@aztec/stdlib/noir"
+} from "@aztec-labs/stdlib/contract"
+import type { NoirCompiledContract } from "@aztec-labs/stdlib/noir"
 import { DEFAULT_CONTRACTS } from "@obsidion/contracts"
 import { PaylinkService } from "../../src/services/PaylinkService.js"
 import { linkEscrow } from "../../src/services/paylink/paylinkEscrow.js"

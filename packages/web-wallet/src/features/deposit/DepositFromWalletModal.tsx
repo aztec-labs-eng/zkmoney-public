@@ -1,13 +1,13 @@
 import { Modal } from "../../ui/Modal"
 import { useEffect, useState } from "react"
-import { formatUnits, parseUnits, type Hex } from "viem"
+import { formatUnits, parseUnits, type Address, type Hex } from "viem"
 import { Network } from "@obsidion/sdk"
 import { depositLimits, floorToTypeable, type UsdValuation } from "@obsidion/front-core"
 import { GradientText, Icon, PrimaryGradientButton, TopNavIconButton } from "@obsidion/web-ds"
 import { getConfig } from "../../config/env"
 import { showReportableError } from "../../errors/errorModal"
 import { amountBucket, failureCode, fireEvent, lapTimer } from "../../lib/analytics"
-import { amountError, decimalInput, parseAmount, shortL1Addr } from "../../ui/format"
+import { amountError, decimalInput, parseAmount, shortL1Addr, tokenFigure } from "../../ui/format"
 import { ScreeningNotice, useScreenedAddress } from "../../ui/screening"
 import {
   DesktopBridgeUpdateRequiredError,
@@ -23,7 +23,12 @@ import {
   type L1TokenBalance,
 } from "./l1DepositTokenBalance"
 import { isWalletRejection, type useL1Wallet } from "./l1Wallet"
-import { depositTokensFor, type DepositTokenOption } from "./loadDepositFacts"
+import {
+  depositCreditNote,
+  settlementOf,
+  useDepositTokens,
+  type DepositTokenOption,
+} from "./loadDepositFacts"
 import { getSipaDepositGateway, type DepositAddress, type DepositStage } from "./sipaGateway"
 import type { DepositTarget } from "./depositTarget"
 import ethIcon from "../../assets/deposit/ethereum.webp"
@@ -47,6 +52,7 @@ import {
   type LimitProblem,
 } from "../limits/publicLimit"
 import { LimitsInfoButton, WalletAboutLimitsSheet } from "../limits/AboutLimitsSheet"
+import { useRowTxAmountCap } from "../token/useTxAmountCap"
 
 const STAGE_LABEL: Partial<Record<DepositStage, string>> = {
   "connecting": "Connecting your wallet",
@@ -78,9 +84,11 @@ export function chargedAmount(amount: string, fee: string, decimals: number): st
 export interface SentDeposit {
   address: DepositAddress["address"]
   txHash: Hex
-  /** Charged amount, display units. */
+  /** Charged amount, display units of the sent token. */
   amount: string
   tokenSymbol: string
+  tokenAddress: Address
+  tokenDecimals: number
   walletName?: string
   walletAddress?: Hex
 }
@@ -141,6 +149,9 @@ export function DepositFromWalletModal({
   /** What the payee receives, display units: prefilled and fixed. */
   fixedAmount?: string
 }) {
+  // The picked token's row: its cap, its capacity bucket and the token it credits.
+  const txAmountCap = useRowTxAmountCap(token.settlesIn)
+  const depositTokens = useDepositTokens()
   const config = getConfig()
   const isSandbox = config.network === Network.SANDBOX
   const [amount, setAmount] = useState(fixedAmount ?? "")
@@ -185,7 +196,8 @@ export function DepositFromWalletModal({
           feeAtomic: parseUnits(fee, token.decimals),
           decimals: token.decimals,
           valuation,
-          settlementCreditAtomic: token.address ? undefined : parseUnits(amount, token.decimals),
+          settlementCreditAtomic: token.swapped ? undefined : parseUnits(amount, token.decimals),
+          txAmountCap,
         })
       : undefined
   const problem: LimitProblem | undefined = !valuation
@@ -201,7 +213,7 @@ export function DepositFromWalletModal({
       : undefined
   const valid = Number.isFinite(parsed) && parsed >= minimum && !!limits && !problem
   const charged = valid ? formatUnits(limits.sendAtomic, token.decimals) : undefined
-  // ponytail: sandbox always mints (TestERC20 faucet); the deployer account must be the one connected.
+  // ponytail: sandbox always mints from the token's open faucet, so any connected account can deposit.
   const ceiling = shortfall ?? balance
   const overspent =
     !isSandbox && !bridgeMode && !!charged && !!ceiling && amountExceedsBalance(charged, ceiling)
@@ -216,7 +228,8 @@ export function DepositFromWalletModal({
       feeAtomic,
       decimals: token.decimals,
       valuation,
-      settlementCreditAtomic: token.address ? undefined : 0n,
+      settlementCreditAtomic: token.swapped ? undefined : 0n,
+      txAmountCap,
     }).maxReceiveAtomic
     const atomic = cap !== undefined && cap < spendable ? cap : spendable
     return atomic > 0n ? formatUnits(atomic, token.decimals) : undefined
@@ -224,10 +237,13 @@ export function DepositFromWalletModal({
   const gatesPass = !!charged && !overspent && (bridgeMode || (cleared && !l1.wrongChain))
 
   // Shared capacity meters the portal credit, which equals the entered amount only on the settlement-token route.
-  const exactCredit = !token.address
-  // Capacity is metered in the settlement token: the picked one on the exact route.
-  const capacitySymbol = exactCredit ? token.symbol : depositTokensFor(config.network)[0].symbol
+  const exactCredit = !token.swapped
+  // Capacity is metered in the row's token: the picked one on the exact route.
+  const settlement = depositTokens ? settlementOf(depositTokens, token) : token
+  const capacitySymbol = exactCredit ? token.symbol : settlement.symbol
+  const capacitySource = { kind: "active", token: token.settlesIn } as const
   const capacity = useFundingCapacity({
+    rowToken: token.settlesIn,
     amountAtomic:
       Number.isFinite(parsed) && !amountError(amount)
         ? parseUnits(amount, token.decimals)
@@ -270,7 +286,7 @@ export function DepositFromWalletModal({
         from: l1.account ?? undefined,
         walletName: l1.walletName ?? undefined,
         tokenSymbol: token.symbol,
-        token: token.address ? { address: token.address, decimals: token.decimals } : undefined,
+        token: { address: token.address, decimals: token.decimals, settlesIn: token.settlesIn },
         mint: isSandbox && !bridgeMode,
         record: !payee,
         onStage: setStage,
@@ -295,6 +311,8 @@ export function DepositFromWalletModal({
             txHash,
             amount: charged!,
             tokenSymbol: token.symbol,
+            tokenAddress: token.address,
+            tokenDecimals: token.decimals,
             walletName: l1.walletName ?? undefined,
             walletAddress: l1.account ?? undefined,
           })
@@ -369,22 +387,20 @@ export function DepositFromWalletModal({
     <>
       <div className="ww-deposit__fact">
         <span>You send</span>
-        <b>{charged ? usdFigureGrouped(charged) : "$--"}</b>
+        <b>{charged ? tokenFigure(charged, token.symbol) : "--"}</b>
       </div>
       <div className="ww-deposit__fact">
         <span>Fee</span>
-        <b>{fee != null ? usdFigureGrouped(fee) : "—"}</b>
+        <b data-testid="fund-fee">{fee != null ? tokenFigure(fee, capacitySymbol) : "—"}</b>
       </div>
       <hr className="ww-divider" />
       <div className="ww-deposit__fact">
         <span>{receiveLabel}</span>
-        <b>{valid ? usdFigureGrouped(amount) : "$--"}</b>
+        <b>{valid ? `${token.swapped ? "~" : ""}${tokenFigure(amount, capacitySymbol)}` : "--"}</b>
       </div>
-      {token.address && (
-        <p className="ww-limits__note">
-          {token.symbol} is swapped to DAI at the market rate, so the DAI you receive can differ.
-        </p>
-      )}
+      <p className="ww-limits__note" data-testid="fund-credit-note">
+        {depositCreditNote(token, settlement)}
+      </p>
     </>
   )
   const button =
@@ -502,7 +518,7 @@ export function DepositFromWalletModal({
                   <LimitsInfoButton
                     topic="limit"
                     label="About the deposit limit"
-                    capacity={{ kind: "active" }}
+                    capacity={capacitySource}
                     settlementSymbol={capacitySymbol}
                   />
                 }
@@ -595,7 +611,7 @@ export function DepositFromWalletModal({
       {aboutLimits && (
         <WalletAboutLimitsSheet
           topic="capacity"
-          capacity={{ kind: "active" }}
+          capacity={capacitySource}
           settlementSymbol={capacitySymbol}
           onClose={() => setAboutLimits(false)}
         />

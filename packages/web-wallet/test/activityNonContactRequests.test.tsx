@@ -12,7 +12,6 @@ const directory = vi.hoisted(() => ({ hydrated: true, failed: false }))
 /** Whether a send must wait for the upgrade, and every action a press asked for. */
 const gate = vi.hoisted(() => ({ upgrade: false, asked: [] as string[] }))
 vi.mock("../src/features/actionGate", () => ({
-  useWalletFrozen: () => false,
   useActionGuard: () => (action: string, run: () => void) => {
     gate.asked.push(action)
     if (!gate.upgrade) run()
@@ -48,7 +47,12 @@ const request = (id: string, contactTag: string): PaymentRequest => ({
 
 vi.mock("../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/env")>()),
-  getConfig: () => ({ l1ChainId: 11155111, network: "testnet", nodeUrl: "http://node.invalid" }),
+  getConfig: () => ({
+    l1ChainId: 11155111,
+    network: "testnet",
+    nodeUrl: "http://node.invalid",
+    oxideProfile: { portal: "0xcurrent" },
+  }),
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),

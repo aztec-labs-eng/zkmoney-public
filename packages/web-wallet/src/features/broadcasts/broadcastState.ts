@@ -1,4 +1,4 @@
-import { TxHash } from "@aztec/stdlib/tx"
+import { TxHash } from "@aztec-labs/stdlib/tx"
 import { isFailedSubmission, type BroadcastTxState } from "@obsidion/front-core"
 import type { ObsidionWallet } from "@obsidion/sdk"
 

@@ -10,6 +10,7 @@ import {
   IconCircle,
   RowChevron,
   SettingsRow,
+  StatusBadge,
   type IconName,
 } from "@obsidion/web-ds"
 import { useConfigValue } from "@obsidion/front-core"
@@ -18,6 +19,9 @@ import { loadWalletIdentity } from "../../features/identity/walletIdentity"
 import { appVersion } from "../../lib/analytics"
 import { BugReportModal, FeedbackModal } from "../FeedbackModals"
 import { ContractAddressesModal } from "../ContractAddressesModal"
+import { PasskeysModal } from "../PasskeysModal"
+import { useBackupRotation } from "../../features/backupPasskey/backupRotationStore"
+import { openMigrationDialog } from "../../features/migration/migrationDialog"
 import { allowanceRowValue } from "../../features/allowance/allowanceView"
 import { useSponsoredAllowance } from "../../features/allowance/useSponsoredAllowance"
 import { WalletAboutLimitsSheet } from "../../features/limits/AboutLimitsSheet"
@@ -80,9 +84,11 @@ export function SettingsScreen() {
     | "recover"
     | "config"
     | "name"
+    | "passkeys"
   >()
   const tagChangeable = useRegistrationTagChangeable()
   const allowance = useSponsoredAllowance()
+  const backupRotation = useBackupRotation()
   useEffect(() => {
     // Uses change with every sponsored batch, so each visit reads again.
     allowance.refresh()
@@ -159,6 +165,19 @@ export function SettingsScreen() {
                 ) : (
                   <Icon name="lock" size={16} color="var(--text-secondary)" />
                 )}
+              </>
+            }
+          />
+          <SettingsRow
+            icon="key"
+            label="Passkeys"
+            onClick={() => setModal("passkeys")}
+            trailing={
+              <>
+                {backupRotation && typeof backupRotation === "object" && (
+                  <StatusBadge label="Pending" badgeStyle="pending" />
+                )}
+                <RowChevron />
               </>
             }
           />
@@ -280,6 +299,21 @@ export function SettingsScreen() {
       {modal === "feedback" && <FeedbackModal onClose={() => setModal(undefined)} />}
       {modal === "bug" && <BugReportModal onClose={() => setModal(undefined)} />}
       {modal === "contracts" && <ContractAddressesModal onClose={() => setModal(undefined)} />}
+      {modal === "passkeys" && (
+        <PasskeysModal
+          onClose={() => setModal(undefined)}
+          onAction={(action) => {
+            if (action === "sponsorship") setModal("allowance")
+            else if (action === "activity") {
+              setModal(undefined)
+              navigate("/activity")
+            } else {
+              setModal(undefined)
+              openMigrationDialog()
+            }
+          }}
+        />
+      )}
       {modal === "allowance" && (
         <WalletAboutLimitsSheet
           topic="sponsorship"

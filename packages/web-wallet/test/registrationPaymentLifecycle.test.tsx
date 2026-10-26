@@ -73,10 +73,16 @@ vi.mock("../src/config/env", () => ({
 vi.mock("../src/config/oxideTuple", () => ({
   l1PublicClient: () => ({ waitForTransactionReceipt: h.receipt }),
 }))
+vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
+  const { mockLoadDepositFacts, singleToken } = await import("./support/depositTokens")
+  const tokens = singleToken("0x00000000000000000000000000000000000000dd")
+  return mockLoadDepositFacts(importOriginal, () => tokens)
+})
 import { DepositAddressRow, DepositPayBlock } from "../src/features/onboarding/steps/DepositAddress"
 import { clearWalletPrompt } from "../src/features/deposit/walletPrompt"
 import { createPortalCapacityStore, type RequiredCredit } from "@obsidion/front-core"
 import { CAPACITY_UNAVAILABLE } from "../src/features/limits/limitsCopy"
+import { LIMIT_USD } from "./support/publicLimit"
 
 const DAI = 10n ** 18n
 const BUCKET = {
@@ -99,6 +105,7 @@ function fundingStore() {
         rateAtomicPerSecond: DAI,
         globalLimitAtomic: 50_000n * DAI,
         availableAtomic: bucket.availableAtomic,
+        txAmountCapAtomic: 10_000n * DAI,
       }
     },
     policy: { maxHeadAgeMs: Infinity },
@@ -352,7 +359,7 @@ it("keeps an over-limit address on screen but does not offer it to copy", () => 
   expect(copy.disabled).toBe(true)
   expect(copy.textContent).toContain(shortL1Addr(target.address))
   const notice = el.querySelector("[data-testid='registration-over-limit']")?.textContent
-  expect(notice).toContain("over the $2,500 limit")
+  expect(notice).toContain(`over the ${LIMIT_USD} limit`)
 })
 it("reads the address's bucket again right before the wallet prompt", async () => {
   await pay()

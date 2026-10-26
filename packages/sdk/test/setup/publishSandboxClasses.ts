@@ -1,5 +1,5 @@
-import { publishContractClass } from "@aztec/aztec.js/deployment"
-import { getContractClassFromArtifact } from "@aztec/stdlib/contract"
+import { publishContractClass } from "@aztec-labs/aztec.js/deployment"
+import { getContractClassFromArtifact } from "@aztec-labs/stdlib/contract"
 import {
   DEFAULT_CONTRACTS,
   getHardcodedArtifact,

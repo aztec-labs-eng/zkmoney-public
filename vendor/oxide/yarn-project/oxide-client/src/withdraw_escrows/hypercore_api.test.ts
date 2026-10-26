@@ -1,4 +1,4 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 

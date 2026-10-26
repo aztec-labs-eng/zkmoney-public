@@ -17,7 +17,12 @@ import type {
 
 vi.mock("../src/config/env", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/env")>()),
-  getConfig: () => ({ l1ChainId: 11155111, network: "testnet", nodeUrl: "http://node.invalid" }),
+  getConfig: () => ({
+    l1ChainId: 11155111,
+    network: "testnet",
+    nodeUrl: "http://node.invalid",
+    oxideProfile: { portal: "0xcurrent" },
+  }),
 }))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
@@ -81,6 +86,7 @@ function leg(
     recipientAlias: "Ghost",
     amount: which === "gas" ? "5.35" : "100.5",
     tokenSymbol: "DAI",
+    tokenDecimals: 18,
     swapOutput: which === "gas" ? "ETH" : "USDC",
     phase,
     startTime: which === "gas" ? 1_000 : 2_000,
@@ -102,7 +108,7 @@ const escrowed: Partial<WithdrawalRecord> = {
   swapRelayerTip: (10n ** 16n).toString(),
 }
 /** A recorded quote: a leg that swapped says what arrives, a failed one does not. */
-const quoted = { relayerTip: "0", fpcFundingCut: "0", swapEstimatedOut: "5", swapOutputDecimals: 1 }
+const quoted = { relayerTip: "0", swapEstimatedOut: "5", swapOutputDecimals: 1 }
 /** A leg that failed before its burn was sent. */
 const unsent = { l2TxHash: undefined }
 

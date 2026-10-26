@@ -4,8 +4,8 @@
  * not cheap (a tag secret clears the PXE's contract-sync cache), and a PXE refuses two registrations
  * of one contract at once. One shared promise per wallet and link covers both.
  */
-import type { ContractArtifact } from "@aztec/stdlib/abi"
-import type { ContractInstanceWithAddress } from "@aztec/stdlib/contract"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
+import type { ContractInstanceWithAddress } from "@aztec-labs/stdlib/contract"
 import type { ContractService } from "@obsidion/contracts"
 import type { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
 import { linkChainInfo } from "../claimSponsor.js"

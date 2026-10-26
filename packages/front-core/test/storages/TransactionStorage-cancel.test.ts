@@ -15,20 +15,20 @@ import type {
   ContractCallTransaction,
 } from "../../src/types"
 import { InMemoryStorageAdapter } from "../__test-helpers__/InMemoryStorageAdapter"
-import { createAztecNodeClient } from "@aztec/aztec.js/node"
+import { createAztecNodeClient } from "@aztec-labs/aztec.js/node"
 
 // We import the module so we can spy on `createAztecNodeClient` if it ever
 // gets called — a guard for the lazy-poll-removal regression test.
-vi.mock("@aztec/aztec.js/node", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@aztec/aztec.js/node")>()
+vi.mock("@aztec-labs/aztec.js/node", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@aztec-labs/aztec.js/node")>()
   return {
     ...actual,
     createAztecNodeClient: vi.fn(),
   }
 })
 
-vi.mock("@aztec/stdlib/tx", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@aztec/stdlib/tx")>()
+vi.mock("@aztec-labs/stdlib/tx", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@aztec-labs/stdlib/tx")>()
   return {
     ...actual,
     TxHash: {

@@ -1,3 +1,4 @@
+import { forgetRetiredSession } from "../../platform/auth/retiredSession"
 import { peekAuthService } from "../../platform/auth/useAuthenticator"
 import {
   clearActiveStorage,
@@ -15,16 +16,17 @@ export type SignOutOptions = {
 }
 
 /**
- * The destructive half of signing out, with no navigation. The in-memory key goes at once, with a
- * fence that keeps any cache from restoring it until the next commit. Then, under the session lock a
- * sign-in's commit also takes, the session tuple leaves every other rollup's database and any copy
- * an older build left in `localStorage`, and this rollup's identity, cached key and pointers go as
- * one transaction. It resolves once everything is saved, so callers that navigate await it. The passkey
- * and the on-chain claim survive. The onboarding wizard keeps the pointers, because its pending
- * registration record lives under them.
+ * The destructive half of signing out, with no navigation. The in-memory key and the retired
+ * session go at once, with a fence that keeps any cache from restoring the key until the next
+ * commit. Then, under the session lock a sign-in's commit also takes, the session tuple leaves every
+ * other rollup's database and any copy an older build left in `localStorage`, and this rollup's
+ * identity, cached key and pointers go as one transaction. It resolves once everything is saved, so
+ * callers that navigate await it. The passkey and the on-chain claim survive. The onboarding wizard
+ * keeps the pointers, because its pending registration record lives under them.
  */
 export async function signOut(options: SignOutOptions = {}): Promise<void> {
   peekAuthService()?.lockOut()
+  forgetRetiredSession()
   await withSessionLock(async () => {
     if (!options.localOnly) await clearSessionEverywhere()
     await walletStorage.batch(() => {

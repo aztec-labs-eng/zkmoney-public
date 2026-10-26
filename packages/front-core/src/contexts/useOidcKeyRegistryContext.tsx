@@ -1,6 +1,6 @@
 import { createContext, ReactNode, useContext, useEffect, useState } from "react"
 import { assert } from "ts-essentials"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { ContractService, DEFAULT_CONTRACTS, OidcKeyRegistryService } from "@obsidion/sdk"
 import { useAccountContext } from "./useAccountContext"
 import { useAztecContext } from "./useAztecContext"

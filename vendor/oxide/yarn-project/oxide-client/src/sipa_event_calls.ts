@@ -1,11 +1,11 @@
 // The SIPA event calls that need no generated bindings. The token handle is a structural slice of the contract
 // interface and the caller supplies the event metadata, so clients that do not build `@oxide/noir-contracts.js` can
 // call them with their own bindings.
-import type { AztecAddress } from '@aztec/aztec.js/addresses';
-import type { ContractFunctionInteraction } from '@aztec/aztec.js/contracts';
-import { Fr } from '@aztec/aztec.js/fields';
-import type { PrivateEventFilter, Wallet } from '@aztec/aztec.js/wallet';
-import type { EventMetadataDefinition } from '@aztec/stdlib/abi';
+import type { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import type { ContractFunctionInteraction } from '@aztec-labs/aztec.js/contracts';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import type { PrivateEventFilter, Wallet } from '@aztec-labs/aztec.js/wallet';
+import type { EventMetadataDefinition } from '@aztec-labs/stdlib/abi';
 
 import { type Hex, toHex } from 'viem';
 

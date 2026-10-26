@@ -20,6 +20,7 @@ import {
   hasUserRecord,
   readResolverOperator,
 } from "@oxide/l1-contracts"
+import { readResolverOperatorHistory } from "@oxide/l1-contracts/resolver_operator_history.js"
 import { chunkedContractEvents } from "./l1Logs.js"
 import { Network } from "@obsidion/core/constants"
 import type { SipaK1Point } from "./sipaStealth.js"
@@ -31,8 +32,8 @@ export interface SipaResolverOperatorRecord {
   l2Address: Hex
   /** The operator's CCIP gateway URL template. */
   url: string
-  /** The TEE portal the operator's SIPAs deposit into, baked into their deposit implementation. */
-  oxidePortal: Address
+  /** The ForwardingTable the operator's SIPAs commit to. */
+  forwardingTable: Address
   /** The operator's stealth-derivation key — the ECDH counterparty a self-resolving
    * recipient derives against, not the recipient's own key. */
   resolverPublicKey: SipaK1Point
@@ -76,10 +77,10 @@ export async function fetchSipaResolverOperators(
       const {
         l2Address,
         url,
-        oxidePortal,
+        oxidePortal: forwardingTable,
         publicKey: resolverPublicKey,
       } = await readResolverOperator(publicClient, accountMetadataRegistry, owner)
-      return { owner, l2Address, url, oxidePortal, resolverPublicKey }
+      return { owner, l2Address, url, forwardingTable, resolverPublicKey }
     }),
   )
   return records.filter((record) => record.url.length > 0)
@@ -119,7 +120,7 @@ export async function readAccountResolution(
       owner: user.resolverOperator,
       l2Address: entry.l2Address,
       url: entry.url,
-      oxidePortal: entry.oxidePortal,
+      forwardingTable: entry.oxidePortal,
       resolverPublicKey: entry.publicKey,
     },
   }
@@ -161,10 +162,10 @@ export function resolverSelectionPolicy(network: Network): {
 }
 
 /**
- * Pick the operator whose record matches the manifest's portal (+ gateway URL
+ * Pick the operator whose record matches the manifest's forwarding table (+ gateway URL
  * when the manifest carries one) — i.e. the operator publishing for the
  * CURRENT deployment. Operator records survive deployment rolls, so a
- * multi-record array can contain stale entries pointing at retired portals;
+ * multi-record array can contain stale entries pointing at retired tables;
  * selecting one of those would register a sender that never broadcasts for
  * deposits on the live portal. `setResolverOperator` is permissionless, so a
  * squatter can also register manifest-matching values — callers that know
@@ -177,7 +178,7 @@ export function resolverSelectionPolicy(network: Network): {
 export function selectManifestResolverOperator(
   records: SipaResolverOperatorRecord[],
   manifest: {
-    portal: string
+    forwardingTable: string
     resolverGatewayUrl?: string
     preferredOwner?: string
     failOnAmbiguousMatch?: boolean
@@ -185,12 +186,12 @@ export function selectManifestResolverOperator(
 ): SipaResolverOperatorRecord {
   const candidates = records.filter(
     (record) =>
-      record.oxidePortal.toLowerCase() === manifest.portal.toLowerCase() &&
+      record.forwardingTable.toLowerCase() === manifest.forwardingTable.toLowerCase() &&
       (!manifest.resolverGatewayUrl || record.url === manifest.resolverGatewayUrl),
   )
   if (candidates.length === 0) {
     throw new Error(
-      `no resolver-operator record matches the manifest portal ${manifest.portal} ` +
+      `no resolver-operator record matches the manifest forwarding table ${manifest.forwardingTable} ` +
         `(${records.length} registered operator(s))`,
     )
   }
@@ -202,10 +203,90 @@ export function selectManifestResolverOperator(
   if (preferred) return preferred
   if (manifest.failOnAmbiguousMatch && candidates.length > 1) {
     throw new Error(
-      `${candidates.length} resolver-operator records match the manifest portal ${manifest.portal} ` +
+      `${candidates.length} resolver-operator records match the manifest forwarding table ` +
+        `${manifest.forwardingTable} ` +
         `and no preferred owner disambiguates them — refusing to first-match ` +
         `(anti-squatter fail-closed).`,
     )
   }
   return candidates[0]!
+}
+
+type OperatorHistory = Awaited<ReturnType<typeof readResolverOperatorHistory>>
+
+/** Blocks re-read below the cursor, so a reorged log is replaced. */
+const HISTORY_REORG_OVERLAP_BLOCKS = 128n
+
+/** The operator history read so far, by chain, registry and start block: its logs and the block they run to. */
+const operatorHistories = new Map<string, Promise<{ logs: OperatorHistory; through: bigint }>>()
+
+export function resetResolverOperatorHistoryForTests(): void {
+  operatorHistories.clear()
+}
+
+/**
+ * The registry's operator history over `range`. Each session reads a registry's history once and then only the blocks
+ * past what it read, so every scan of one deployment shares one read.
+ */
+function operatorHistory(
+  publicClient: PublicClient,
+  registry: Address,
+  range: { fromBlock: bigint; toBlock: bigint },
+): Promise<OperatorHistory> {
+  const key = `${publicClient.chain?.id ?? "?"}:${registry.toLowerCase()}:${range.fromBlock}`
+  const known = operatorHistories.get(key)
+  const read = (async () => {
+    const cached = await known?.catch(() => undefined)
+    if (cached && cached.through >= range.toBlock) return cached
+    const overlap = cached ? cached.through + 1n - HISTORY_REORG_OVERLAP_BLOCKS : range.fromBlock
+    const fromBlock = overlap > range.fromBlock ? overlap : range.fromBlock
+    const fresh = await readResolverOperatorHistory(publicClient, registry, {
+      fromBlock,
+      toBlock: range.toBlock,
+    })
+    const kept = cached?.logs.filter((log) => log.blockNumber < fromBlock) ?? []
+    return { logs: [...kept, ...fresh], through: range.toBlock }
+  })()
+  operatorHistories.set(key, read)
+  // A failed read keeps what was read before it.
+  read.catch(() => {
+    if (operatorHistories.get(key) !== read) return
+    if (known) operatorHistories.set(key, known)
+    else operatorHistories.delete(key)
+  })
+  return read.then(({ logs }) => logs.filter((log) => log.blockNumber <= range.toBlock))
+}
+
+/** Historical senders for one deployment, including rotations by its selected operator. */
+export async function fetchHistoricalSipaResolverOperators(
+  publicClient: PublicClient,
+  accountMetadataRegistry: Address,
+  range: { fromBlock: bigint; toBlock: bigint },
+  manifest: Parameters<typeof selectManifestResolverOperator>[1],
+): Promise<SipaResolverOperatorRecord[]> {
+  const history = await operatorHistory(publicClient, accountMetadataRegistry, range)
+  const records = history
+    .map(({ owner, entry }) => ({
+      owner,
+      l2Address: entry.l2Address,
+      url: entry.url,
+      forwardingTable: entry.oxidePortal,
+      resolverPublicKey: entry.publicKey,
+    }))
+    .filter(
+      (record) =>
+        record.forwardingTable.toLowerCase() === manifest.forwardingTable.toLowerCase() &&
+        (!manifest.resolverGatewayUrl || record.url === manifest.resolverGatewayUrl),
+    )
+  const latest = [
+    ...new Map(records.map((record) => [record.owner.toLowerCase(), record])).values(),
+  ]
+  const selected = selectManifestResolverOperator(latest, manifest)
+  return [
+    ...new Map(
+      records
+        .filter((record) => record.owner.toLowerCase() === selected.owner.toLowerCase())
+        .map((record) => [record.l2Address.toLowerCase(), record]),
+    ).values(),
+  ]
 }

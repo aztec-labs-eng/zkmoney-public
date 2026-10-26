@@ -19,6 +19,7 @@ import {
   depositRowAmount,
   isPendingActivityRow,
   linkFragmentOf,
+  sipaDepositIntentRow,
   txNoteFor,
   DETECTING_AMOUNT,
 } from "../src/ui/screens/activityView"
@@ -79,6 +80,26 @@ const receive = (from: string, over: Record<string, unknown> = {}): Transaction 
     ...over,
   } as Transaction)
 
+describe("sipaDepositIntentRow", () => {
+  const record = (intent?: SIPADepositRecord["intent"]): SIPADepositRecord =>
+    ({
+      sipaAddress: `0x${"5a".repeat(20)}`,
+      phase: "claimed",
+      amount: "1",
+      intent,
+    } as SIPADepositRecord)
+
+  it("files a SIPA the account pays itself as a migration arrival, and a plain one as a deposit", () => {
+    expect(sipaDepositIntentRow(record(), undefined).intent).toBe("deposit")
+    expect(sipaDepositIntentRow(record(), undefined, true).intent).toBe("migration")
+    expect(sipaDepositIntentRow(record("user-op"), undefined).intent).toBe("migration")
+    expect(sipaDepositIntentRow(record("user-op"), "alice")).toMatchObject({
+      intent: "registration",
+      name: "alice",
+    })
+  })
+})
+
 describe("buildActivityRows — counterparty enrichment", () => {
   it("shows the saved contact name and attaches the contact for a send to a saved address", () => {
     const [row] = buildActivityRows([send(L2_ADDR)], directory([alice]))
@@ -107,7 +128,13 @@ describe("buildActivityRows — counterparty enrichment", () => {
   })
 
   it("names an unrenamed contact by its @tag, as request rows do", () => {
-    const bob: ContactRow = { id: "bob", name: "bob", tag: "bob", address: OTHER_L2, addressKind: "aztec-l2" }
+    const bob: ContactRow = {
+      id: "bob",
+      name: "bob",
+      tag: "bob",
+      address: OTHER_L2,
+      addressKind: "aztec-l2",
+    }
     const [row] = buildActivityRows([send(OTHER_L2)], directory([bob]))
     expect(row.counterparty).toBe("@bob")
   })
@@ -123,7 +150,6 @@ describe("buildActivityRows — unsaved fallbacks", () => {
     const [row] = buildActivityRows([send(OTHER_L2, { toTag: "pleaswork" })], directory([]))
     expect(row.counterparty).toBe("@pleaswork")
   })
-
 
   it("truncates an unsaved send address and passes an unsaved tag through raw", () => {
     const dir = directory([])
@@ -479,17 +505,11 @@ describe("depositRowAmount", () => {
   // Neither phase can ever reach the L2 balance, so neither carries the "+" that colours a credit.
   it.each(["recoverable", "recovered"] as const)("shows the unsigned gross for %s", (phase) => {
     // Over the fee: a net exists, and showing it would read as money arriving.
-    expect(
-      depositRowAmount(deposit({ phase, amount: "4200", fee: ONE, fpcFundingCut: "0" }), true),
-    ).toBe("$4200")
+    expect(depositRowAmount(deposit({ phase, amount: "4200", fee: ONE }), true)).toBe("$4200")
     // Under the fee: gross is all there ever was.
-    expect(
-      depositRowAmount(deposit({ phase, amount: "0.4", fee: ONE, fpcFundingCut: "0" }), true),
-    ).toBe("$0.40")
+    expect(depositRowAmount(deposit({ phase, amount: "0.4", fee: ONE }), true)).toBe("$0.40")
     // No exit to offer (no note secret) still shows the sum sitting at the address.
-    expect(
-      depositRowAmount(deposit({ phase, amount: "0.2", fee: ONE, fpcFundingCut: "0" }), false),
-    ).toBe("$0.20")
+    expect(depositRowAmount(deposit({ phase, amount: "0.2", fee: ONE }), false)).toBe("$0.20")
   })
 
   it("shows ETH sent to a deposit address in ETH, not dollars", () => {
@@ -526,9 +546,13 @@ describe("depositRowAmount", () => {
       phase: "claimed",
       netAmount: "249000000000000000000",
       fee: ONE,
-      fpcFundingCut: "0",
     })
     expect(depositRowAmount(record, false)).toBe("+$249")
+  })
+
+  it("credits a six-decimal row's net in that row's units", () => {
+    const record = deposit({ phase: "claimed", amount: "100", netAmount: "99900000" })
+    expect(depositRowAmount(record, false, 6)).toBe("+$99.90")
   })
 
   it("credits a record that carries its own net without a fee", () => {
@@ -551,7 +575,6 @@ describe("depositRowAmount", () => {
       phase: "sweeping",
       amount: "0.2",
       fee: "350000000000000000",
-      fpcFundingCut: "0",
     })
     expect(depositRowAmount(record, false)).toBe("$0.20")
   })
@@ -566,12 +589,9 @@ describe("depositRowAmount", () => {
     expect(depositRowAmount(deposit({ phase: "pendingClaim", amount: "0" }), false)).toBe(
       DETECTING_AMOUNT,
     )
-    expect(
-      depositRowAmount(
-        deposit({ phase: "sweeping", amount: "0.4", fee: ONE, fpcFundingCut: "0" }),
-        true,
-      ),
-    ).toBe("$0.40")
+    expect(depositRowAmount(deposit({ phase: "sweeping", amount: "0.4", fee: ONE }), true)).toBe(
+      "$0.40",
+    )
   })
 })
 
@@ -669,7 +689,7 @@ describe("buildActivityRows — what a creator link row offers across its lifecy
       timestamp: 3000,
       status,
       txHash: REFUND_HASH,
-    }) as Transaction
+    } as Transaction)
   const withRefund = (status: Transaction["status"]) =>
     buildActivityRows(
       [payRow({ ...cancellable, refundTxHash: REFUND_HASH }), refund(status)],

@@ -2,7 +2,7 @@ import type { IStorageAdapter } from "../../storages/adapter"
 import { RecordStorage } from "../bridge/RecordStorage"
 import type { SavingsMoveRecord } from "./types"
 
-const KEY_SAVINGS_MOVES = "@obsidion/savings/moves"
+export const KEY_SAVINGS_MOVES = "@obsidion/savings/moves"
 
 /** The moves this front made, keyed by their burn's withdrawal record. Strict: a move must be durable before it is acted on. */
 export class SavingsMoveStorage extends RecordStorage<SavingsMoveRecord> {

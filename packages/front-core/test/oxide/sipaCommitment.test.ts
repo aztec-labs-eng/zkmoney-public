@@ -5,8 +5,8 @@
  * `computeStealthRecipientHash`. Unmocked, they must agree.
  */
 import { describe, expect, it } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress, EthAddress } from "@aztec/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress, EthAddress } from "@aztec-labs/aztec.js/addresses"
 import { SipaSelfResolver } from "@obsidion/sdk"
 import { selfSipaResolverKeys } from "../../src/oxide/oxideAccountKeys"
 import { computeStealthRecipientHash } from "../../src/core/services/deposits/sipa/stealth"

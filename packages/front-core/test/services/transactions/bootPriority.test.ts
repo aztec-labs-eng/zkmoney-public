@@ -40,7 +40,7 @@ describe("BootPriority", () => {
   it("settles the balance only once notes and deposits have both settled", async () => {
     const boot = new BootPriority({ catchUp: catchUpSource() })
     let released = false
-    void boot.whenReady("migrationProbe").then(() => (released = true))
+    void boot.whenReady("paylinkRescan").then(() => (released = true))
 
     boot.depositsReplayed()
     await vi.advanceTimersByTimeAsync(0)
@@ -56,7 +56,7 @@ describe("BootPriority", () => {
     let notes = false
     let balance = false
     void boot.whenReady("deposits").then(() => (notes = true))
-    void boot.whenReady("migrationProbe").then(() => (balance = true))
+    void boot.whenReady("paylinkRescan").then(() => (balance = true))
     boot.notesSynced()
     await vi.advanceTimersByTimeAsync(0)
     expect(notes).toBe(true)
@@ -100,7 +100,7 @@ describe("BootPriority", () => {
   it("settles deposits on its own backstop after notes", async () => {
     const boot = new BootPriority({ depositsWaitMs: 1_000, catchUp: catchUpSource() })
     let balance = false
-    void boot.whenReady("migrationProbe").then(() => (balance = true))
+    void boot.whenReady("paylinkRescan").then(() => (balance = true))
     boot.notesSynced()
     await vi.advanceTimersByTimeAsync(999)
     expect(balance).toBe(false)
@@ -159,7 +159,7 @@ describe("BootPriority", () => {
     let restored = false
     let balance = false
     void boot.whenReady("savingsMoves").then(() => (restored = true))
-    void boot.whenReady("migrationProbe").then(() => (balance = true))
+    void boot.whenReady("paylinkRescan").then(() => (balance = true))
 
     boot.notesSynced()
     await vi.advanceTimersByTimeAsync(0)
@@ -182,7 +182,7 @@ describe("BootPriority", () => {
     const boot = new BootPriority({ depositsWaitMs: 1_000, catchUp })
     catchUp.set(true)
     let balance = false
-    void boot.whenReady("migrationProbe").then(() => (balance = true))
+    void boot.whenReady("paylinkRescan").then(() => (balance = true))
     boot.notesSynced()
     await vi.advanceTimersByTimeAsync(1_000)
     expect(balance).toBe(true)
@@ -251,7 +251,7 @@ describe("BootPriority", () => {
   it("bounds each stage's wait separately, without settling the balance", async () => {
     const boot = new BootPriority({ waitMs: 1_000, catchUp: catchUpSource() })
     let released = false
-    void boot.whenReady("migrationProbe").then(() => (released = true))
+    void boot.whenReady("paylinkRescan").then(() => (released = true))
     await vi.advanceTimersByTimeAsync(900)
     boot.notesSynced()
     await vi.advanceTimersByTimeAsync(999)

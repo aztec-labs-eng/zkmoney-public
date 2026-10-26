@@ -1,12 +1,13 @@
-import { poseidon2Hash } from "@aztec/foundation/crypto/poseidon"
-import { Fr } from "@aztec/foundation/curves/bn254"
-import type { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { poseidon2Hash } from "@aztec-labs/foundation/crypto/poseidon"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
   countArgumentsSize,
   decodeFromAbi,
+  getFunctionReturnType,
   type AbiDecoded,
   type ContractArtifact,
-} from "@aztec/stdlib/abi"
+} from "@aztec-labs/stdlib/abi"
 
 /** The node read this needs; utility simulations read the same public storage. */
 export interface PublicStorageReader {
@@ -33,10 +34,11 @@ export async function readPublicImmutable(
   if (!slot) throw new Error(`${artifact.name} has no storage named ${storageName}`)
   const reader = artifact.functions.find((fn) => fn.name === readerName)
   if (!reader) throw new Error(`${artifact.name} has no function named ${readerName}`)
-  const returnTypes = reader.returnTypes
+  const returnType = getFunctionReturnType(reader)
+  if (!returnType) throw new Error(`${artifact.name}.${readerName} returns nothing`)
   const size = countArgumentsSize({
     ...reader,
-    parameters: returnTypes.map((type, i) => ({ name: `r${i}`, type, visibility: "public" })),
+    parameters: [{ name: "r", type: returnType, visibility: "public" }],
   })
   const fields = await Promise.all(
     Array.from({ length: size + 1 }, (_, i) =>
@@ -48,5 +50,5 @@ export async function readPublicImmutable(
   if (hash.isZero()) throw new Error(`${artifact.name}.${storageName} at ${contract} is not set`)
   if (!(await poseidon2Hash(packed)).equals(hash))
     throw new Error(`${artifact.name}.${storageName} at ${contract} does not match its hash`)
-  return decodeFromAbi(returnTypes, packed)
+  return decodeFromAbi(returnType, packed)
 }

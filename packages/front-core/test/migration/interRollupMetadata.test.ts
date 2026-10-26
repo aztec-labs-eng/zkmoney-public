@@ -1,10 +1,9 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { AztecAddress, EthAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { TxExecutionResult, TxStatus } from "@aztec/stdlib/tx"
-import { privateKeyToAccount } from "viem/accounts"
-import { zeroHash, type Address, type Hex } from "viem"
+import { AztecAddress, EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { TxExecutionResult, TxStatus } from "@aztec-labs/stdlib/tx"
+import { keccak256, toHex, zeroHash, type Address, type Hex } from "viem"
 import {
   decodeMetadataUpdateIntentData,
   decodeUserRecordMetadata,
@@ -31,7 +30,7 @@ import { L1OperationCondition } from "@oxide/oxide-lib/l1_operation_calldata.js"
 const chain = vi.hoisted(() => ({
   recurring: false,
   attestation: false,
-  /** The SIPAs whose every sweep the deposit rail has claimed. */
+  /** The SIPAs, and direct deposits' commitments, whose every deposit the rail has claimed. */
   received: new Set<string>(),
   subscribe: vi.fn(async (args) => ({ calls: args.innerCalls, gate: args.gate })),
   sponsor: vi.fn(async (args) => ({ calls: args.innerCalls })),
@@ -48,10 +47,9 @@ vi.mock("../../../sdk/src/services/claimSponsor.js", () => ({
   hasClaimFpcSubscription: async () => chain.recurring,
 }))
 vi.mock("../../../sdk/src/services/registrationMessage.js", () => ({
-  REGISTRATION_MESSAGE_SECRET: 1,
   registrationInbox: () => ({}),
   findRegistrationMessage: async () =>
-    chain.attestation ? { status: "consumable", leafIndex: 3n } : undefined,
+    chain.attestation ? { status: "ready", leafIndex: 3n } : undefined,
 }))
 const addr = (n: number) => `0x${n.toString(16).padStart(40, "0")}` as Address
 const field = (n: number) => `0x${n.toString(16).padStart(64, "0")}` as Hex
@@ -59,7 +57,9 @@ const token = addr(50),
   metadataSipa = addr(60),
   depositSipa = addr(61),
   sourcePortal = addr(70),
-  depositSubsidy = addr(71)
+  depositSubsidy = addr(71),
+  executor = addr(74),
+  migrationSubsidy = addr(75)
 
 function fixture() {
   const destination = {
@@ -69,6 +69,7 @@ function fixture() {
     metadataRegistry: addr(2),
     controller: addr(3),
     factory: addr(4),
+    forwardingTable: addr(73),
     portal: addr(5),
     implementation: addr(6),
     namePortal: addr(7),
@@ -85,39 +86,43 @@ function fixture() {
     publicKey: resolver.userPublicKey,
     resolverOperator: addr(13),
   }
+  const passkey = { qx: field(20), qy: field(21) }
   const state = {
     hash: zeroHash as Hex,
     registry: destination.metadataRegistry,
     bootstrapSpent: false,
-    included: false,
+    nonce: 0n,
   }
   const readContract = vi.fn(
-    async ({
-      address,
-      functionName,
-      args,
-    }: {
-      address: Address
-      functionName: string
-      args?: any[]
-    }) => {
+    async ({ functionName, args }: { functionName: string; args?: any[] }) => {
       switch (functionName) {
         case "accountMetadataRegistry":
           return state.registry
         case "registrationController":
           return destination.controller
+        case "NAME_REGISTRY":
+          return destination.nameRegistry
+        case "getAuthKeys":
+          return [{ key: passkey, metadata: "0x" }]
+        case "getNonce":
+          return state.nonce
+        case "getUserOpHash":
+          return keccak256(toHex(`${args![0].callData}/${args![0].nonce}`))
         case "implementationFor":
-          return args?.[1] === 3 ? destination.implementation : addr(8)
+          return args?.[0] === 3 ? destination.implementation : addr(8)
         case "nameOf":
           return field(9)
+        case "bootstrapOwner":
+          return addr(10)
         case "metadataStateHash":
           return state.hash
         case "predictSIPA":
           return args?.[0] === destination.implementation ? metadataSipa : depositSipa
-        case "depositFee":
-          return address === destination.implementation ? 5n : 2n
-        case "FPC_FUNDING_CUT":
-          return 0n
+        // The table routes every intent to the destination portal; a metadata update tips more.
+        case "rowFor":
+          return [destination.portal, addr(0), 0n, args?.[1] === 3 ? 5n : 2n]
+        case "TX_AMOUNT_CAP":
+          return 10n ** 30n
         // The deposit subsidy deploys and sweeps the SIPA it derives from these.
         case "PORTAL":
           return destination.portal
@@ -137,6 +142,7 @@ function fixture() {
     getBlockNumber: async () => 1n,
     readContract,
     getCode: async () => "0x",
+    getLogs: vi.fn(async () => []),
     call: vi.fn(async () => ({})),
   }
   const sends: any[] = []
@@ -150,10 +156,11 @@ function fixture() {
         },
       })),
       findLeavesIndexes: async () => [state.bootstrapSpent ? { index: 1n } : undefined],
-      getTxReceipt: async () =>
-        state.included
-          ? { status: TxStatus.PROVEN, executionResult: TxExecutionResult.SUCCESS }
-          : { status: TxStatus.DROPPED },
+      // A send resolves once its transaction is included.
+      getTxReceipt: async () => ({
+        status: TxStatus.PROVEN,
+        executionResult: TxExecutionResult.SUCCESS,
+      }),
     },
     sendTx: vi.fn(async (payload, options) => {
       await options.onTxHash(field(80 + sends.length))
@@ -176,7 +183,18 @@ function fixture() {
     { id: "first", amount: String(30n * TIP), kind: "note" },
     { id: "last", amount: String(20n * TIP), kind: "note" },
   ]
+  const route = {
+    executor,
+    subsidy: migrationSubsidy,
+    payoutToken: token,
+    sourcePortal,
+    destinationPortal: destination.portal,
+  }
   const runtime: FrozenMigrationRuntime = {
+    // A frozen source moves only through its destination's migration executor.
+    migration: route,
+    minimumMigratedAmount: vi.fn(async () => 0n),
+    assertMigrationReady: vi.fn(async () => {}),
     identity: JSON.stringify({
       rollup: addr(92),
       rollupVersion: 50001,
@@ -192,7 +210,7 @@ function fixture() {
     build: vi.fn(async ({ ids }, _recipient, _tip) => ({
       amount: BigInt(candidates.find((c) => c.id === ids[0])!.amount),
       operation: {
-        target: EthAddress.fromString(sourcePortal),
+        target: EthAddress.fromString(migrationSubsidy),
         payoutToken: EthAddress.fromString(token),
         calldata: Buffer.from(field(ids[0] === "first" ? 100 : 101).slice(2), "hex"),
         condition: L1OperationCondition.immediate(),
@@ -202,9 +220,7 @@ function fixture() {
   }
   const batches = new Map<string, MigrationFundingBatch>()
   const tokenService = { ensureSweptDeposit: vi.fn(async () => {}) }
-  const received = async (sipa: string) => chain.received.has(sipa)
   // This chain claims a sweep as it lands.
-  const swept = received
   const registered = { user, fpcAddress, railId: 2, policy: {}, fpcArtifact: {} }
   const makeSource = () =>
     new FrozenMetadataMigrationSource({
@@ -219,8 +235,9 @@ function fixture() {
       tokenService,
       broadcaster: calls,
       registered,
-      received,
-      swept,
+      // The rail claimed a received batch's whole amount, or nothing.
+      directDepositClaimed: async (commitment: Hex) =>
+        chain.received.has(commitment) ? 10n ** 30n : 0n,
       batches: {
         get: async (id: string) => structuredClone(batches.get(id)),
         set: async (id: string, batch: MigrationFundingBatch) => {
@@ -228,7 +245,14 @@ function fixture() {
         },
       },
     } as unknown as ConstructorParameters<typeof FrozenMetadataMigrationSource>[0])
-  const signConsent = vi.fn((hash: Hex) => privateKeyToAccount(field(123)).sign({ hash }))
+  const signRecordUpdate = vi.fn(async () => ({
+    r: field(1),
+    s: field(2),
+    challengeIndex: 23n,
+    typeIndex: 1n,
+    authenticatorData: field(3),
+    clientDataJSON: "{}",
+  }))
   const options = {
     client,
     wallet,
@@ -241,11 +265,10 @@ function fixture() {
     tokenService,
     bootstrap: { ...registered, railId: 1 },
     registered,
-    received,
-    swept,
     nameClaim: async () => ({ kind: "nameClaim" }),
-    bindingWitness: async () => ({}),
-    signConsent,
+    registrationKeyProof: () => ({} as never),
+    recordPasskey: passkey,
+    signRecordUpdate,
   }
   let raw: string | null = null
   const storage = {
@@ -254,10 +277,18 @@ function fixture() {
       raw = value
     },
   }
-  const make = () => {
-    const source = makeSource()
+  // The registration run: its source is this version, which holds nothing to move.
+  const externalSource = {
+    identity: "external",
+    state: async () => "empty" as const,
+    recoverRemaining: async () => {},
+    remainingComplete: async () => true,
+  }
+  const make = (o: { external?: boolean; recoveryOnly?: boolean } = { recoveryOnly: true }) => {
+    const source = o.external ? externalSource : makeSource()
     const service = new MetadataMigrationService({
       ...options,
+      ...(o.recoveryOnly ? { recoveryOnly: true } : {}),
       source,
     } as unknown as MetadataMigrationServiceOptions)
     return {
@@ -277,7 +308,7 @@ function fixture() {
     candidates,
     sends,
     tokenService,
-    signConsent,
+    signRecordUpdate,
     readContract,
     wallet,
   }
@@ -290,163 +321,73 @@ beforeEach(() => {
 })
 
 describe("inter-rollup wallet behavior against a synthetic future destination", () => {
-  it("restarts through frozen refunds, new metadata, subscription and an ordinary remaining deposit", async () => {
+  it("plans a frozen source as funds only, even when the run is not marked so", async () => {
     const f = fixture()
-    let { controller } = f
-    // What the quote says moves is what the run refunds below: both notes.
+    const plan = JSON.parse(await f.make({}).service.prepare())
+    expect(plan).toMatchObject({ recoveryOnly: true, sourceState: "frozen" })
+    expect(plan.sourceBatch).toBeUndefined()
+    expect(f.signRecordUpdate).not.toHaveBeenCalled()
+  })
+
+  it("proves every batch up front and sends each straight into the destination portal", async () => {
+    const f = fixture()
+    f.state.hash = userRecordStateHash(f.options.record)
+    chain.recurring = true
     const quoted = await f.service.quote()
     expect(quoted).toMatchObject({ movable: 50n * TIP, stranded: 0n, waiting: 0n, batches: 2 })
-    await controller.advance(true)
-    expect(controller.getSnapshot()?.error).toBeUndefined()
-    expect(f.sends).toHaveLength(1)
-    const intent = decodeMetadataUpdateIntentData(
-      JSON.parse(controller.getSnapshot()!.plan!).intentData,
-    )
-    expect(intent).toMatchObject({
-      owner: addr(11),
-      metadataRegistry: addr(2),
-      rollupVersion: 60001n,
-      namePortal: addr(7),
-      namePortalRecipient: field(14),
-      expectedStateHash: zeroHash,
-    })
-    expect(decodeUserRecordMetadata(intent.metadata)).toEqual(f.options.record)
-    // The bootstrap takes the smallest covering batch, so later batches stay affordable.
-    expect(f.runtime.build).toHaveBeenCalledWith({ kind: "note", ids: ["last"] }, metadataSipa, TIP)
-    // The source refund, the metadata SIPA's event, and its deploy-and-sweep through the subsidy.
-    expect(f.sends[0].calls.map((call: any) => call.name)).toEqual([
-      expect.stringContaining("broadcast_l1_operation"),
-      "notify_sipa_recipient",
-      expect.stringContaining("broadcast_l1_operation"),
-    ])
-    expect(f.sends[0].gate.kind).toBe("nameClaim")
-    expect(f.sends[0].calls[0].args[0].toString()).toBe(sourcePortal)
-    expect(f.sends[0].calls[1].args[2]).toBe(false)
-    expect(f.sends[0].calls[2].args[0].toString()).toBe(depositSubsidy)
-    controller = f.make().controller
-    await controller.load()
-    await controller.advance()
-    expect(f.sends).toHaveLength(1)
-    expect(f.signConsent).toHaveBeenCalledTimes(1)
-    f.state.included = f.state.bootstrapSpent = true
-    await controller.advance()
-    expect(controller.getSnapshot()?.phase).toBe("awaitingMessages")
-    expect(chain.sponsor).not.toHaveBeenCalled()
-    // The published refund is still on the source until it executes, and counts once.
-    expect((await f.service.quote({ firstBatchSettled: true })).movable).toBe(50n * TIP)
-    f.spent.add("last")
-    expect((await f.service.quote({ firstBatchSettled: true })).movable).toBe(30n * TIP)
-    f.state.hash = userRecordStateHash(f.options.record)
-    chain.received.add(metadataSipa)
-    await controller.advance()
-    expect(f.sends).toHaveLength(1) // Deposit alone cannot activate registration.
-    chain.attestation = true
-    await controller.advance()
+    await f.controller.advance(true)
+    expect(f.controller.getSnapshot()?.error).toBeUndefined()
+    expect(f.controller.getSnapshot()?.bootstrapTx).toBeUndefined()
+    expect(f.runtime.build).toHaveBeenCalledTimes(2)
+    // No record update: a funds-only run updates no registration.
+    expect(f.signRecordUpdate).not.toHaveBeenCalled()
     expect(f.sends).toHaveLength(2)
-    expect(f.sends[1].gate.kind).toBe("registration")
-    controller = f.make().controller
-    await controller.load()
-    await controller.advance()
-    expect(f.sends).toHaveLength(2)
-    chain.recurring = true
-    await controller.advance()
-    expect(controller.getSnapshot()?.phase).toBe("recovering")
-    expect(f.sends).toHaveLength(3)
-    expect(f.runtime.build).toHaveBeenCalledWith({ kind: "note", ids: ["first"] }, depositSipa, TIP)
-    expect(f.sends[2].calls.map((call: any) => call.name)).toEqual([
-      expect.stringContaining("broadcast_l1_operation"),
-      "notify_sipa_recipient",
-      expect.stringContaining("broadcast_l1_operation"),
-    ])
-    expect(chain.sponsor).toHaveBeenCalledTimes(1)
-    expect(f.sends[2].calls[0].args[0].toString()).toBe(sourcePortal)
-    expect(f.sends[2].calls[1].args[2]).toBe(true)
-    expect(f.sends[2].calls[2].args[0].toString()).toBe(depositSubsidy)
-    expect(f.signConsent).toHaveBeenCalledTimes(1)
-    f.spent.add("first")
-    controller = f.make().controller
-    await controller.load()
-    await controller.advance()
-    // Every planned batch is sent; source spentness is not a receipt.
-    expect(controller.getSnapshot()?.phase).toBe("arriving")
-    expect(f.sends).toHaveLength(3)
-    chain.received.add(depositSipa)
-    await controller.advance()
-    await controller.advance()
-    expect(controller.getSnapshot()).toMatchObject({ phase: "done", allowance: "registered" })
-    // The rail claims; the migration only reads.
-    expect(f.tokenService.ensureSweptDeposit).not.toHaveBeenCalled()
-    expect(f.batches.get("remaining-0")?.received).toBe(true)
-    expect(f.readContract.mock.calls.some(([call]) => call.functionName === "userRecords")).toBe(
-      false,
-    )
-    // The proof runtime has no transaction submission API; all three sends use the destination.
-    expect(f.wallet.sendTx).toHaveBeenCalledTimes(3)
+    for (const [i, send] of f.sends.entries()) {
+      // Each refund's L1 operation calls the subsidy, with no tip, and its deposit is announced.
+      const operation = send.calls.find((call: any) =>
+        String(call.name).includes("broadcast_l1_operation"),
+      )
+      expect(operation.args[0].toString()).toBe(migrationSubsidy)
+      expect(send.calls.map((call: any) => call.name)).toContain("notify_sipa_recipient")
+      const batch = f.batches.get(`remaining-${i}`)!
+      expect(batch.direct).toMatchObject({ executor, subsidy: migrationSubsidy })
+      expect(batch.exitFee).toBe("0")
+    }
+    expect(vi.mocked(f.runtime.build).mock.calls.every(([, , tip]) => tip === 0n)).toBe(true)
     const refunded = new Set(vi.mocked(f.runtime.build).mock.calls.flatMap(([batch]) => batch.ids))
     const amount = (id: string) => BigInt(f.candidates.find((c) => c.id === id)!.amount)
     expect([...refunded].reduce((sum, id) => sum + amount(id), 0n)).toBe(quoted.movable)
   })
-  it("proves every batch up front and sends them in one pass when the record is already current", async () => {
-    const f = fixture()
-    f.state.hash = userRecordStateHash(f.options.record)
-    chain.recurring = true
-    await f.controller.advance(true)
-    expect(f.controller.getSnapshot()?.error).toBeUndefined()
-    expect(f.controller.getSnapshot()?.phase).toBe("recovering")
-    expect(f.runtime.build).toHaveBeenCalledTimes(2)
-    expect(f.sends).toHaveLength(2)
-    expect(f.signConsent).toHaveBeenCalledTimes(1)
-  })
 
-  it("holds an unmigrated account to the metadata fee and a settled one to the ordinary fee", async () => {
-    // Metadata fee 5, ordinary fee 2, read on chain: no local migration record exists.
+  it("rejects a destination node mismatch before the record update or source proving", async () => {
     const f = fixture()
-    f.candidates.splice(0, 2, { id: "deposit", amount: String(TIP + 4n), kind: "frozen-deposit" })
-    expect(await f.service.movable()).toBe(false)
-    f.state.hash = userRecordStateHash(f.options.record)
-    chain.recurring = true
-    expect(await f.service.movable()).toBe(true)
-    chain.recurring = false
-    f.candidates[0]!.amount = String(TIP + 6n)
-    expect(await f.service.movable()).toBe(true)
-  })
-
-  it("quotes a remainder between the two fees as movable once the first refund has settled", async () => {
-    // Metadata fee 5, ordinary fee 2: recurring sponsorship is not active yet.
-    const f = fixture()
-    f.candidates.splice(0, 2, { id: "rest", amount: String(TIP + 4n), kind: "note" })
-    expect(await f.service.quote()).toMatchObject({ movable: 0n, stranded: TIP + 4n, waiting: 0n })
-    expect((await f.service.quote({ firstBatchSettled: true })).movable).toBe(TIP + 4n)
-  })
-
-  it("rejects a destination node mismatch before consent or source proving", async () => {
-    const f = fixture()
+    const { service } = f.make({ external: true })
     f.wallet.node.getNodeInfo.mockResolvedValue({ rollupVersion: 50001 } as never)
-    await expect(f.service.prepare()).rejects.toThrow("different destination rollup")
-    expect(f.signConsent).not.toHaveBeenCalled()
+    await expect(service.prepare()).rejects.toThrow("different destination rollup")
+    expect(f.signRecordUpdate).not.toHaveBeenCalled()
     expect(f.runtime.build).not.toHaveBeenCalled()
   })
-  it("rejects a changed registry before publishing a prepared batch", async () => {
+  it("rejects a changed registry before publishing a prepared record update", async () => {
     const f = fixture()
-    const plan = await f.service.prepare()
+    const { service } = f.make({ external: true })
+    const plan = await service.prepare()
     f.state.registry = addr(200)
-    await expect(f.service.broadcast(plan, vi.fn())).rejects.toThrow(
-      "registry or controller changed",
-    )
+    await expect(service.broadcast(plan, vi.fn())).rejects.toThrow("registry or controller changed")
     expect(f.sends).toHaveLength(0)
   })
   it("does not use a new registry to renew the spent bootstrap allowance", async () => {
     const f = fixture()
     f.state.bootstrapSpent = true
-    await f.controller.advance(true)
-    expect(f.controller.getSnapshot()?.error).toContain("allowance is already spent")
+    const { controller } = f.make({ external: true })
+    await controller.advance(true)
+    expect(controller.getSnapshot()?.error).toContain("allowance is already spent")
     expect(f.sends).toHaveLength(0)
   })
   it("rejects a saved plan when the destination metadata coordinates change", async () => {
     const f = fixture()
-    const plan = await f.service.prepare()
+    const plan = await f.make({ external: true }).service.prepare()
     f.options.record.resolverOperator = addr(200)
-    await expect(f.make().service.broadcast(plan, vi.fn())).rejects.toThrow(
+    await expect(f.make({ external: true }).service.broadcast(plan, vi.fn())).rejects.toThrow(
       "account or deployment changed",
     )
     expect(f.sends).toHaveLength(0)

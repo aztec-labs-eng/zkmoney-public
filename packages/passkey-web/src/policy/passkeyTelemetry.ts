@@ -110,7 +110,9 @@ export function passkeyRouteFor(
   const transports = evidence?.transports
   const hybrid = transports?.includes("hybrid") === true
   if (kind === "create") {
-    if (isSecurityKey({ authenticatorAttachment, transports })) return "security_key"
+    if (isSecurityKey({ authenticatorAttachment, transports, attestedAaguid: evidence?.aaguid })) {
+      return "security_key"
+    }
     if (authenticatorAttachment === "platform") return "same_device"
     return authenticatorAttachment === "cross-platform" && hybrid ? "phone_qr" : "unknown"
   }

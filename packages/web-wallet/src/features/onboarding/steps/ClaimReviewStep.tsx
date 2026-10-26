@@ -34,7 +34,7 @@ export function ClaimReviewStep({
   onClose,
   speed,
 }: {
-  /** Absent while the portal cut that prices the split is unread: no claim until it lands. */
+  /** Absent while the figures that price the split are unread: no claim until they land. */
   quote?: PaylinkSignupQuote
   /** The payment, base units, as stored: the head names it while the split is unpriced. */
   amount?: bigint

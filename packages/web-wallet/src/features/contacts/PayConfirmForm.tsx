@@ -11,6 +11,7 @@ export function PayConfirmForm({
   ready,
   busy,
   overspent,
+  limitError,
   isSend,
   payee,
   onConfirm,
@@ -22,6 +23,7 @@ export function PayConfirmForm({
   /** Another tx flow is running; the wallet is single-flight. */
   busy: boolean
   overspent: boolean
+  limitError?: string
   isSend: boolean
   /** Paying a request or a pay page: the amount leads, and the rows say who, what fee, how private. */
   payee?: { tag: string; savesContact: boolean }
@@ -61,13 +63,17 @@ export function PayConfirmForm({
         </div>
       )}
       {/* Reachable when the balance lands after Continue — the CTA is dead without this. */}
-      {overspent && <span className="ww-pay__error">Balance not enough</span>}
+      {overspent ? (
+        <span className="ww-pay__error">Balance not enough</span>
+      ) : (
+        limitError && <span className="ww-pay__error">{limitError}</span>
+      )}
       <SponsoredActionNotice reason={unsponsored} />
       {/* A request is not signed with the passkey. */}
       {isSend && <LocalPasskeyHint />}
       <PrimaryGradientButton
         title={busy ? busyLabel : ready ? cta : "Connecting…"}
-        isDisabled={!ready || overspent || busy || !!unsponsored}
+        isDisabled={!ready || overspent || !!limitError || busy || !!unsponsored}
         onClick={onConfirm}
       />
     </div>

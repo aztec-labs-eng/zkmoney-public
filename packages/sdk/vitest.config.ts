@@ -21,7 +21,7 @@ export default defineConfig({
       "**/*.relayer.test.ts",
       "test/testnet/**",
       // Quarantined: each fails for a reason unrelated to any environment. Fix or retire, then remove.
-      "scripts/advanceBlocks.test.ts", // imports the root of @aztec/aztec.js, which has no root export
+      "scripts/advanceBlocks.test.ts", // imports the root of @aztec-labs/aztec.js, which has no root export
       "scripts/getFirstBlock.test.ts", // same
       "scripts/getNodeInfo.test.ts", // same
       "scripts/computeBridgeAddress.test.ts", // reads an artifact file that no longer exists
@@ -35,7 +35,7 @@ export default defineConfig({
     pool: "forks",
     poolOptions: { forks: { singleFork: true } },
     fileParallelism: false,
-    server: { deps: { inline: [/@aztec\/accounts/] } },
+    server: { deps: { inline: [/@aztec-labs\/accounts/] } },
     onConsoleLog() {
       return process.env.HIDE_CONSOLE_LOGS !== "true"
     },

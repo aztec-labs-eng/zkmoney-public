@@ -1,5 +1,5 @@
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Gas } from "@aztec/stdlib/gas"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Gas } from "@aztec-labs/stdlib/gas"
 
 /**
  * Short-circuits the kernelless pre-simulation that `ObsidionWallet.sendTx`

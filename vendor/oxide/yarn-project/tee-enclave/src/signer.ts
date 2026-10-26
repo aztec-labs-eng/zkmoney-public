@@ -1,54 +1,57 @@
-import { Fr, GrumpkinScalar } from '@aztec/aztec.js/fields';
-import { ARCHIVE_HEIGHT, L1_TO_L2_MSG_TREE_HEIGHT, MAX_L2_TO_L1_MSGS_PER_TX } from '@aztec/constants';
-import { Buffer32 } from '@aztec/foundation/buffer';
-import { sha256 } from '@aztec/foundation/crypto/sha256';
-import type { EthAddress } from '@aztec/foundation/eth-address';
-import { MembershipWitness } from '@aztec/foundation/trees';
-import type { AztecAddress } from '@aztec/stdlib/aztec-address';
-import { BlockHash } from '@aztec/stdlib/block';
-import type { CompleteAddress } from '@aztec/stdlib/contract';
-import { computeL2ToL1MessageHash, computeNoteHashNonce, computeUniqueNoteHash } from '@aztec/stdlib/hash';
-import { type PublicKeys, computeAddress, derivePublicKeyFromSecretKey, hashPublicKey } from '@aztec/stdlib/keys';
-import type { NullifierMembershipWitness, PublicDataWitness } from '@aztec/stdlib/trees';
-import type { BlockHeader, TxEffect } from '@aztec/stdlib/tx';
+import { Fr, GrumpkinScalar } from '@aztec-labs/aztec.js/fields';
+import { ARCHIVE_HEIGHT, L1_TO_L2_MSG_TREE_HEIGHT, MAX_L2_TO_L1_MSGS_PER_TX } from '@aztec-labs/constants';
+import { Buffer32 } from '@aztec-labs/foundation/buffer';
+import { sha256 } from '@aztec-labs/foundation/crypto/sha256';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { MembershipWitness } from '@aztec-labs/foundation/trees';
+import type { AztecAddress } from '@aztec-labs/stdlib/aztec-address';
+import { BlockHash } from '@aztec-labs/stdlib/block';
+import type { CompleteAddress } from '@aztec-labs/stdlib/contract';
+import { computeL2ToL1MessageHash, computeNoteHashNonce, computeUniqueNoteHash } from '@aztec-labs/stdlib/hash';
+import { type PublicKeys, computeAddress, derivePublicKeyFromSecretKey, hashPublicKey } from '@aztec-labs/stdlib/keys';
+import type { NullifierMembershipWitness } from '@aztec-labs/stdlib/trees';
+import type { BlockHeader } from '@aztec-labs/stdlib/tx';
 
-import type { AccountInstancePreimage } from '@oxide/oxide-lib/account_address.js';
-import { type Constrained, derive, publicInput } from '@oxide/oxide-lib/constrained.js';
-import { getWithdrawContentHash } from '@oxide/oxide-lib/content_hash.js';
+import { type Constrained, derive, publicInput } from '@oxide/oxide-lib-tee/constrained.js';
+import { getWithdrawContentHash } from '@oxide/oxide-lib-tee/content_hash.js';
 import {
   extractMetadata,
   extractRequiredNullifiers,
   extractTeeNotes,
   extractWithdrawalMessageHashes,
-} from '@oxide/oxide-lib/da_extractors.js';
+} from '@oxide/oxide-lib-tee/da_extractors.js';
 import {
   computeDepositMessageHash,
   computeSiloedDepositMessageNullifier,
-} from '@oxide/oxide-lib/deposit_message_hashing.js';
-import { computeNoteNullifier, computeSignerApprovalLeafSlot, computeSiloedNoteHash } from '@oxide/oxide-lib/hash.js';
+} from '@oxide/oxide-lib-tee/deposit_message_hashing.js';
+import {
+  computeNoteNullifier,
+  computeSignerRegistrationMessageHash,
+  computeSiloedNoteHash,
+} from '@oxide/oxide-lib-tee/hash.js';
 import {
   assertIsFrozenTip,
   verifyArchiveMembership,
   verifyL1ToL2MessageMembership,
   verifyNullifierNonMembership,
-  verifyPublicDataMembership,
-} from '@oxide/oxide-lib/membership.js';
-import { MAX_FROZEN_NOTES_PER_REFUND, TX_AMOUNT_CAP } from '@oxide/oxide-lib/oxide_constants.gen.js';
+} from '@oxide/oxide-lib-tee/membership.js';
+import { assertValidMigrationSignature } from '@oxide/oxide-lib-tee/migration_signature.js';
 import {
-  computeFrozenDepositRefundAuthMessage,
-  computeFrozenNotesRefundAuthMessage,
-  computeUnprocessedDepositRefundAuthMessage,
-} from '@oxide/oxide-lib/refund_auth_message.js';
-import { type RefundAuthorization, verifyRefundAuthorization } from '@oxide/oxide-lib/refund_authorization.js';
+  MAX_FROZEN_DEPOSITS_PER_REFUND,
+  MAX_FROZEN_NOTES_PER_REFUND,
+} from '@oxide/oxide-lib-tee/oxide_constants.gen.js';
+import type { TeeTxEffect } from '@oxide/oxide-lib-tee/tx_effect_hint.js';
 import {
-  FrozenDepositRefundFinalizationInput,
-  FrozenDepositRefundFinalizationOutput,
+  type EnclaveIdentity,
+  FrozenDepositsRefundFinalizationInput,
+  FrozenDepositsRefundFinalizationOutput,
   FrozenNotesRefundFinalizationInput,
   FrozenNotesRefundFinalizationOutput,
   type K1NoteSignature,
   type OutboxWithdrawal,
   P256PublicKey,
-  PortalContext,
+  PortalDomain,
+  PortalLink,
   type SecpPublicKey,
   SignTokenOperationOutput,
   type SpendValidationData,
@@ -61,10 +64,10 @@ import {
   WithdrawalFinalizationInput,
   WithdrawalFinalizationOutput,
   splitSecpCoord,
-} from '@oxide/oxide-lib/types.js';
+} from '@oxide/oxide-lib-tee/types.js';
 
 import {
-  buildFrozenDepositRefundFinalDigest,
+  buildFrozenDepositsRefundFinalDigest,
   buildFrozenNotesRefundFinalDigest,
   buildNoteOperationDigest,
   buildUnprocessedDepositRefundFinalDigest,
@@ -89,7 +92,7 @@ export function k1SignatureToK1NoteSignature(signature: { r: Buffer32; s: Buffer
 }
 
 /** Inverse of `k1SignatureToK1NoteSignature`: reassemble the `(r, s)` 32-byte halves from the
- *  field-pair shape (e.g. when reading a published withdrawal signature back from a private log). */
+ *  field-pair shape (e.g. when reading a withdrawal signature back from recovery data). */
 export function k1NoteSignatureToRS(sig: K1NoteSignature): { r: Buffer32; s: Buffer32 } {
   return { r: joinHalves(sig.rHi, sig.rLo), s: joinHalves(sig.sHi, sig.sLo) };
 }
@@ -110,13 +113,12 @@ function verifyK1NoteSignature(signature: K1NoteSignature, digest: Fr, publicKey
   return verifyEcdsa(rs, digest.toBuffer(), pub);
 }
 
-export class LocalTeeSigner implements TeeSigner {
+export class LocalTeeSigner implements TeeSigner, EnclaveIdentity {
   public readonly publicKey: SecpPublicKey;
   private readonly ecdsaSigner: SignerWithBudget;
-
   constructor(
     private readonly privateKey: Buffer32,
-    private readonly portalContext: PortalContext,
+    private readonly portalLink: PortalLink,
     private readonly budget: SignatureBudget,
   ) {
     this.ecdsaSigner = new SignerWithBudget(new Secp256k1Signer(privateKey), budget);
@@ -136,20 +138,20 @@ export class LocalTeeSigner implements TeeSigner {
   }
 
   get tokenAddress(): AztecAddress {
-    return this.portalContext.l2Portal;
+    return this.portalLink.l2Token;
   }
 
-  static random(portalContext: PortalContext): LocalTeeSigner {
-    return new LocalTeeSigner(Buffer32.random(), portalContext, SignatureBudget.create());
+  get teeRegistry(): EthAddress {
+    return this.portalLink.teeRegistry;
   }
 
-  /**
-   * Returns a new `LocalTeeSigner` with the same key material but a different `PortalContext`.
-   * Used when a TEE is shared across multiple portals so the same secp256k1 identity (eth address
-   * + pubkey) can be registered on each portal.
-   */
-  withPortalContext(portalContext: PortalContext): LocalTeeSigner {
-    return new LocalTeeSigner(this.privateKey, portalContext, this.budget);
+  static random(link: { l1Portal: EthAddress; l2Token: AztecAddress; teeRegistry: EthAddress }): LocalTeeSigner {
+    return new LocalTeeSigner(Buffer32.random(), PortalLink.from(link), SignatureBudget.create());
+  }
+
+  /** Returns a new `LocalTeeSigner` with the same key material bound to a different portal link. */
+  withPortalLink(link: { l1Portal: EthAddress; l2Token: AztecAddress; teeRegistry: EthAddress }): LocalTeeSigner {
+    return new LocalTeeSigner(this.privateKey, PortalLink.from(link), this.budget);
   }
 
   private async validateOwnerPreimage(owner: AztecAddress, ownerAddressPreimage: CompleteAddress): Promise<void> {
@@ -171,24 +173,6 @@ export class LocalTeeSigner implements TeeSigner {
       throw new Error(
         `Master nullifier hiding key does not hash to the npk_m_hash committed to by ${committedNpkHash}`,
       );
-    }
-  }
-
-  /**
-   * Checks that the owner of `account` authorized `authMessage`: `publicKeys` and `instance` must hash to `account`
-   * under the immutables hash of the authorization mode, and that mode's authorization must verify. Mirrors
-   * `refund_lib::assert_refund_authorized`, which covers both the passkey mode and the fallback-key mode.
-   */
-  private async validateRefundAuthorization(
-    account: AztecAddress,
-    publicKeys: PublicKeys,
-    instance: AccountInstancePreimage,
-    authMessage: Fr,
-    auth: RefundAuthorization,
-    what: string,
-  ): Promise<void> {
-    if (!(await verifyRefundAuthorization(publicKeys, instance, account, authMessage, auth))) {
-      throw new Error(`${what} authorization does not verify for account ${account}`);
     }
   }
 
@@ -215,33 +199,27 @@ export class LocalTeeSigner implements TeeSigner {
   }
 
   /**
-   * Verifies the TEE signer that produced `metadata.pubKey{X,Y}` is registered in the token's `approved_signers` map.
+   * Verifies the TEE signer that produced `metadata.pubKey{X,Y}` is registered on the link's `TeeRegistry`: its
+   * registration message is in the L1->L2 tree of `header`.
    */
-  private async validateSignerApproval(
+  private async validateSignerRegistration(
     metadata: TEEMetadata,
-    witness: PublicDataWitness,
-    publicDataTreeRoot: Constrained<Fr>,
+    witness: MembershipWitness<typeof L1_TO_L2_MSG_TREE_HEIGHT>,
+    header: Constrained<BlockHeader>,
   ): Promise<void> {
-    const expectedLeafSlot = await computeSignerApprovalLeafSlot(this.tokenAddress, metadata.publicKey());
-
-    const { leaf } = witness.leafPreimage;
-    if (!leaf.slot.equals(expectedLeafSlot)) {
-      throw new Error(
-        `Signer approval witness slot mismatch: expected ${expectedLeafSlot}, got ${leaf.slot}` +
-          ` (signer pubkey x=${metadata.pubKeyXHi}|${metadata.pubKeyXLo}, y=${metadata.pubKeyYHi}|${metadata.pubKeyYLo})`,
-      );
-    }
-    if (!leaf.value.equals(new Fr(1n))) {
-      throw new Error(
-        `Signer pubkey x=${metadata.pubKeyXHi}|${metadata.pubKeyXLo}, y=${metadata.pubKeyYHi}|${metadata.pubKeyYLo}` +
-          ` is not approved (approved_signers value=${leaf.value})`,
-      );
-    }
-
-    await verifyPublicDataMembership(witness, publicDataTreeRoot);
+    const messageHash = computeSignerRegistrationMessageHash(
+      resolvePortalDomain(this.portalLink, header),
+      metadata.publicKey(),
+      metadata.registrationLeafIndex,
+    );
+    await verifyL1ToL2MessageMembership(
+      messageHash,
+      witness,
+      derive(header, h => h.state.l1ToL2MessageTree.root),
+    );
   }
 
-  private async validateSiloedVsUniqueNoteHash(siloedNoteHash: Fr, creationEffects: TxEffect): Promise<Fr> {
+  private async validateSiloedVsUniqueNoteHash(siloedNoteHash: Fr, creationEffects: TeeTxEffect): Promise<Fr> {
     const firstNullifier = creationEffects.nullifiers[0];
     let foundUniqueNoteHash = undefined;
     for (let i = 0; i < creationEffects.noteHashes.length; i++) {
@@ -262,7 +240,7 @@ export class LocalTeeSigner implements TeeSigner {
     return foundUniqueNoteHash;
   }
 
-  private validateRequiredNullifiers(requiredNullifiers: Fr[], creationEffects: TxEffect): void {
+  private validateRequiredNullifiers(requiredNullifiers: Fr[], creationEffects: TeeTxEffect): void {
     for (const requiredNullifier of requiredNullifiers) {
       if (!creationEffects.nullifiers.some(effectedNullifier => effectedNullifier.equals(requiredNullifier))) {
         throw new Error(`Required nullifier ${requiredNullifier} not found in creation effects`);
@@ -279,7 +257,10 @@ export class LocalTeeSigner implements TeeSigner {
   /**
    * Validates that withdrawal messages are included in the tx effect of the tx corresponding to the current operation.
    */
-  private validateWithdrawalMessageHashesInL2ToL1Msgs(withdrawalMessageHashes: Fr[], creationEffects: TxEffect): void {
+  private validateWithdrawalMessageHashesInL2ToL1Msgs(
+    withdrawalMessageHashes: Fr[],
+    creationEffects: TeeTxEffect,
+  ): void {
     for (const withdrawalMessageHash of withdrawalMessageHashes) {
       if (!creationEffects.l2ToL1Msgs.some(msg => msg.equals(withdrawalMessageHash))) {
         throw new Error(
@@ -299,11 +280,11 @@ export class LocalTeeSigner implements TeeSigner {
   private async validateDeposits(
     deposits: SpentDeposit[],
     anchorBlockHeader: Constrained<BlockHeader>,
+    portalDomain: PortalDomain,
   ): Promise<{ depositMessageNullifiers: Fr[]; amountDeposited: bigint }> {
     if (deposits.length === 0) {
       return { depositMessageNullifiers: [], amountDeposited: 0n };
     }
-    const portal = this.portalContext;
     const l1ToL2Root = derive(anchorBlockHeader, h => h.state.l1ToL2MessageTree.root);
 
     const depositMessageNullifiers: Fr[] = [];
@@ -317,7 +298,7 @@ export class LocalTeeSigner implements TeeSigner {
         amount: deposit.amount,
         messageLeafIndex: new Fr(deposit.messageLeafIndex),
       };
-      const messageHash = await computeDepositMessageHash(portal, preimage);
+      const messageHash = await computeDepositMessageHash(portalDomain, preimage);
 
       const witness = new MembershipWitness(L1_TO_L2_MSG_TREE_HEIGHT, deposit.messageLeafIndex, deposit.siblingPath);
       await verifyL1ToL2MessageMembership(messageHash, witness, l1ToL2Root);
@@ -331,7 +312,7 @@ export class LocalTeeSigner implements TeeSigner {
       );
 
       const nullifier = await computeSiloedDepositMessageNullifier(
-        portal.l2Portal,
+        portalDomain.l2Token,
         messageHash,
         deposit.masterNullifierHidingKey,
       );
@@ -342,8 +323,11 @@ export class LocalTeeSigner implements TeeSigner {
     return { depositMessageNullifiers, amountDeposited };
   }
 
-  /** Compute each withdrawal's L2->L1 message hash and enforce the per-withdrawal cap. */
-  private validateWithdrawals(withdrawals: OutboxWithdrawal[]): {
+  /** Compute each withdrawal's L2->L1 message hash and validate its executor and prover tip. */
+  private validateWithdrawals(
+    withdrawals: OutboxWithdrawal[],
+    portalDomain: PortalDomain,
+  ): {
     withdrawalMessageHashes: Fr[];
     amountWithdrawn: bigint;
   } {
@@ -353,7 +337,6 @@ export class LocalTeeSigner implements TeeSigner {
     if (withdrawals.length > MAX_L2_TO_L1_MSGS_PER_TX) {
       throw new Error(`Too many withdrawals: got ${withdrawals.length}, max ${MAX_L2_TO_L1_MSGS_PER_TX}`);
     }
-    const portal = this.portalContext;
 
     const withdrawalMessageHashes: Fr[] = [];
     let amountWithdrawn = 0n;
@@ -364,13 +347,10 @@ export class LocalTeeSigner implements TeeSigner {
       if (withdrawal.proverTip > withdrawal.amount) {
         throw new Error('Withdrawal prover tip exceeds amount');
       }
-      if (withdrawal.amount > TX_AMOUNT_CAP) {
-        throw new Error(`Individual withdrawal amount ${withdrawal.amount} exceeds cap ${TX_AMOUNT_CAP}`);
-      }
       withdrawalMessageHashes.push(
         computeL2ToL1MessageHash({
-          l2Sender: portal.l2Portal,
-          l1Recipient: portal.l1Portal,
+          l2Sender: portalDomain.l2Token,
+          l1Recipient: portalDomain.l1Portal,
           content: getWithdrawContentHash(
             withdrawal.executor,
             withdrawal.userPayloadHash,
@@ -378,8 +358,8 @@ export class LocalTeeSigner implements TeeSigner {
             withdrawal.proverTip,
             withdrawal.randomness,
           ),
-          rollupVersion: new Fr(portal.rollupVersion),
-          chainId: new Fr(portal.l1ChainId),
+          rollupVersion: new Fr(portalDomain.rollupVersion),
+          chainId: new Fr(portalDomain.l1ChainId),
         }),
       );
       amountWithdrawn += withdrawal.amount;
@@ -392,12 +372,10 @@ export class LocalTeeSigner implements TeeSigner {
     anchorBlockHeader: Constrained<BlockHeader>,
   ): Promise<{
     requiredNullifiers: Fr[];
-    uniqueNoteHashes: Fr[];
     amountSpent: bigint;
   }> {
     const localNullifierSet = new Set<bigint>();
     const requiredNullifiers: Fr[] = [];
-    const uniqueNoteHashes: Fr[] = [];
     let amountSpent = 0n;
 
     for (const spend of spentNotes) {
@@ -409,9 +387,9 @@ export class LocalTeeSigner implements TeeSigner {
         spend.ownerAddressPreimage.publicKeys,
       );
 
-      const siloedNoteHash = await computeSiloedNoteHash({ ...spend.note, l2Portal: this.tokenAddress });
+      const siloedNoteHash = await computeSiloedNoteHash({ ...spend.note, l2Token: this.tokenAddress });
 
-      // Authenticate the note's creation tx and decode its effects from the committed block blob fields.
+      // Authenticate the note's creation tx and decode its effects from the fields its block's tx effects tree commits to.
       const creationEffects = await verifyAndDecodeTxEffectsAtAnchor(spend.hints, anchorBlockHeader);
 
       const uniqueNoteHash = await this.validateSiloedVsUniqueNoteHash(siloedNoteHash, creationEffects);
@@ -431,11 +409,7 @@ export class LocalTeeSigner implements TeeSigner {
       this.validateWithdrawalMessageHashesInL2ToL1Msgs(creationWithdrawalMessageHashes, creationEffects);
 
       const creationMetadata = await extractMetadata(creationEffects, this.tokenAddress);
-      await this.validateSignerApproval(
-        creationMetadata,
-        spend.signerApprovalWitness,
-        derive(anchorBlockHeader, h => h.state.partial.publicDataTree.root),
-      );
+      await this.validateSignerRegistration(creationMetadata, spend.signerRegistrationWitness, anchorBlockHeader);
       await this.validateSpendAnchorBlockHash(
         creationMetadata.anchorBlockHash,
         anchorBlockHeader,
@@ -445,6 +419,8 @@ export class LocalTeeSigner implements TeeSigner {
       const digest = await buildNoteOperationDigest({
         anchorBlockHash: creationMetadata.anchorBlockHash,
         tokenAddress: this.tokenAddress,
+        l1Portal: this.portalLink.l1Portal,
+        teeRegistry: this.portalLink.teeRegistry,
         siloedNoteHash,
         requiredNullifiers: creationRequiredNullifiers,
         siloedNoteHashes: creationTeeNotes,
@@ -464,11 +440,10 @@ export class LocalTeeSigner implements TeeSigner {
       localNullifierSet.add(nullifier.toBigInt());
 
       requiredNullifiers.push(nullifier);
-      uniqueNoteHashes.push(uniqueNoteHash);
       amountSpent += spend.note.amount;
     }
 
-    return { requiredNullifiers, uniqueNoteHashes, amountSpent };
+    return { requiredNullifiers, amountSpent };
   }
 
   /**
@@ -507,6 +482,7 @@ export class LocalTeeSigner implements TeeSigner {
       "anchor block header is the operation's root of trust",
     );
     const anchorBlockHash = await anchorBlockHeader.hash();
+    const portalDomain = resolvePortalDomain(this.portalLink, anchorBlockHeader);
 
     const { requiredNullifiers: spendNullifiers, amountSpent } = await this.validateSpends(
       operation.spentNotes,
@@ -515,20 +491,14 @@ export class LocalTeeSigner implements TeeSigner {
     const { depositMessageNullifiers, amountDeposited } = await this.validateDeposits(
       operation.deposits,
       anchorBlockHeader,
+      portalDomain,
     );
-    const { withdrawalMessageHashes, amountWithdrawn } = this.validateWithdrawals(operation.withdrawals);
+    const { withdrawalMessageHashes, amountWithdrawn } = this.validateWithdrawals(operation.withdrawals, portalDomain);
 
     // Deposit-message nullifiers fold into `requiredNullifiers`, which every TEE signature commits to.
     const requiredNullifiers = [...spendNullifiers, ...depositMessageNullifiers];
 
-    const amountCreated = operation.createdNotes.reduce((acc, createdNote) => {
-      const amount = createdNote.amount;
-      // Assert that each note amount doesn't cross per tx limits.
-      if (amount > TX_AMOUNT_CAP) {
-        throw new Error(`Created note amount ${amount} exceeds cap ${TX_AMOUNT_CAP}`);
-      }
-      return acc + amount;
-    }, 0n);
+    const amountCreated = operation.createdNotes.reduce((acc, createdNote) => acc + createdNote.amount, 0n);
     // Unified balance invariant: sum(spent) + sum(deposits) == sum(created) + sum(withdrawals).
     if (amountSpent + amountDeposited !== amountCreated + amountWithdrawn) {
       throw new Error(
@@ -538,7 +508,7 @@ export class LocalTeeSigner implements TeeSigner {
 
     const siloedNoteHashes = await Promise.all(
       operation.createdNotes.map(async createdNote => {
-        return await computeSiloedNoteHash({ ...createdNote, l2Portal: this.tokenAddress });
+        return await computeSiloedNoteHash({ ...createdNote, l2Token: this.tokenAddress });
       }),
     );
 
@@ -590,6 +560,8 @@ export class LocalTeeSigner implements TeeSigner {
     const digestInput = {
       anchorBlockHash,
       tokenAddress: this.tokenAddress,
+      l1Portal: this.portalLink.l1Portal,
+      teeRegistry: this.portalLink.teeRegistry,
       requiredNullifiers,
       siloedNoteHashes,
       withdrawalMessageHashes,
@@ -654,11 +626,7 @@ export class LocalTeeSigner implements TeeSigner {
 
     const creationMetadata = await extractMetadata(creationEffects, this.tokenAddress);
 
-    await this.validateSignerApproval(
-      creationMetadata,
-      input.signerApprovalWitness,
-      derive(txBlockHeader, h => h.state.partial.publicDataTree.root),
-    );
+    await this.validateSignerRegistration(creationMetadata, input.signerRegistrationWitness, txBlockHeader);
 
     await verifyArchiveMembership(
       creationMetadata.anchorBlockHash,
@@ -670,13 +638,15 @@ export class LocalTeeSigner implements TeeSigner {
     const digest = await buildWithdrawalOperationDigest({
       anchorBlockHash: creationMetadata.anchorBlockHash,
       tokenAddress: this.tokenAddress,
+      l1Portal: this.portalLink.l1Portal,
+      teeRegistry: this.portalLink.teeRegistry,
       requiredNullifiers: creationRequiredNullifiers,
       siloedNoteHashes: creationTeeNotes,
       withdrawalMessageHashes: creationWithdrawalMessageHashes,
       messageHash,
     });
     const publicKey = creationMetadata.publicKey();
-    if (!verifyK1NoteSignature(input.signature, digest, publicKey)) {
+    if (!verifyK1NoteSignature(input.withdrawalSignature, digest, publicKey)) {
       throw new Error(`Signature verification failed for withdrawal ${messageHash}`);
     }
 
@@ -686,6 +656,7 @@ export class LocalTeeSigner implements TeeSigner {
     );
 
     const finalDigest = buildWithdrawalFinalDigest({
+      teeRegistry: this.portalLink.teeRegistry,
       archiveRoot: input.archiveRoot,
       withdrawalId,
       messageHash,
@@ -717,7 +688,7 @@ export class LocalTeeSigner implements TeeSigner {
       }
     }
 
-    const { requiredNullifiers, uniqueNoteHashes, amountSpent } = await this.validateSpends(input.notes, frozenTip);
+    const { requiredNullifiers, amountSpent } = await this.validateSpends(input.notes, frozenTip);
     if (requiredNullifiers.length === 0) {
       throw new Error('Frozen-notes refund operation must spend at least one note');
     }
@@ -733,25 +704,20 @@ export class LocalTeeSigner implements TeeSigner {
       input.lowNullifierMembershipWitnesses,
     );
 
-    // Verify the owner's authorization over all notes (in nullifier order). This also binds the owner's public keys
-    // and instance preimage to its address, under the immutables hash of the authorization mode.
-    const authMessage = await computeFrozenNotesRefundAuthMessage(
-      uniqueNoteHashes,
-      input.executor,
-      input.userPayloadHash,
-    );
-    await this.validateRefundAuthorization(
+    // Verify the owner's migration signature. This also binds the owner's public keys and instance preimage to its
+    // address, under the immutables hash of the signing mode.
+    await assertValidMigrationSignature(
       input.owner,
       input.ownerPublicKeys,
       input.ownerInstance,
-      authMessage,
-      input.auth,
-      'Frozen-notes refund',
+      input.executor,
+      input.userPayloadHash,
+      input.migrationSignature,
     );
 
     const nullifiers = requiredNullifiers.map(nullifier => nullifier);
     const { publicInputs, finalDigest } = buildFrozenNotesRefundFinalDigest({
-      portal: this.portalContext,
+      portalDomain: resolvePortalDomain(this.portalLink, frozenTip),
       frozenArchiveRoot: input.frozenArchiveRoot,
       amount: amountSpent,
       executor: input.executor,
@@ -763,69 +729,94 @@ export class LocalTeeSigner implements TeeSigner {
     return { nullifiers, publicInputs, finalDigest, signature };
   }
 
-  /** Validates a frozen deposit and signs a refund. */
-  public async signFrozenDepositRefundFinalization(
-    input: FrozenDepositRefundFinalizationInput,
-  ): Promise<FrozenDepositRefundFinalizationOutput> {
+  /** Validates the frozen deposits of one recipient and signs one refund of their sum. */
+  public async signFrozenDepositsRefundFinalization(
+    input: FrozenDepositsRefundFinalizationInput,
+  ): Promise<FrozenDepositsRefundFinalizationOutput> {
     if (input.executor.isZero()) {
       throw new Error('Refund executor is the zero address');
     }
-    const portal = this.portalContext;
-    const preimage = {
-      sharedSecretSalt: input.sharedSecretSalt,
-      recipient: input.l2Recipient,
-      amount: input.amount,
-      messageLeafIndex: new Fr(input.messageMembershipWitness.leafIndex),
-    };
-
-    // 1. Recompute the deposit message hash.
-    const messageHash = await computeDepositMessageHash(portal, preimage);
-
-    // 2. Constrain the frozen tip and verify the message is in it.
+    // 1. Constrain the frozen tip.
     // The following root is verified on L1 upon refund's finalization
     const frozenArchiveRoot = publicInput(input.frozenArchiveRoot, "frozen archive root is the refund's root of trust");
     const frozenTip = await assertIsFrozenTip(frozenArchiveRoot, input.frozenTip, input.frozenTipMembershipWitness);
-    await verifyL1ToL2MessageMembership(
-      messageHash,
-      input.messageMembershipWitness,
-      derive(frozenTip, h => h.state.l1ToL2MessageTree.root),
-    );
+    const portalDomain = resolvePortalDomain(this.portalLink, frozenTip);
 
-    // 3. Compute the siloed deposit-message nullifier and verify it is unspent at the frozen tip.
+    if (input.deposits.length === 0) {
+      throw new Error('Frozen-deposit refund must refund at least one deposit');
+    }
+    if (input.deposits.length > MAX_FROZEN_DEPOSITS_PER_REFUND) {
+      throw new Error(
+        `Frozen-deposit refund refunds ${input.deposits.length} deposits, max ${MAX_FROZEN_DEPOSITS_PER_REFUND}`,
+      );
+    }
     await this.validateMasterNullifierHidingKey(input.l2RecipientNhkM, input.l2RecipientPublicKeys);
-    const siloedNullifier = await computeSiloedDepositMessageNullifier(
-      portal.l2Portal,
-      messageHash,
-      input.l2RecipientNhkM,
-    );
-    await this.validateNullifiersUnspentAtFrozenTip([siloedNullifier], frozenTip, [
-      input.lowNullifierMembershipWitness,
-    ]);
 
-    // 4. Verify the l2 recipient authorized this refund: the public keys and instance preimage must hash to
-    //    `l2Recipient` under the immutables hash of the authorization mode, and that mode's authorization must verify.
-    const authMessage = await computeFrozenDepositRefundAuthMessage(messageHash, input.executor, input.userPayloadHash);
-    await this.validateRefundAuthorization(
+    const localNullifierSet = new Set<bigint>();
+    const nullifiers: Fr[] = [];
+    let amount = 0n;
+    for (const deposit of input.deposits) {
+      // The circuit skips the checks of a zero-amount deposit as padding, so such a deposit cannot be refunded.
+      if (deposit.amount === 0n) {
+        throw new Error('Frozen-deposit refund includes a deposit with a zero amount');
+      }
+
+      // 2. Recompute the deposit message hash and verify the message is in the tip.
+      const messageHash = await computeDepositMessageHash(portalDomain, {
+        sharedSecretSalt: deposit.sharedSecretSalt,
+        recipient: input.l2Recipient,
+        amount: deposit.amount,
+        messageLeafIndex: new Fr(deposit.messageMembershipWitness.leafIndex),
+      });
+      await verifyL1ToL2MessageMembership(
+        messageHash,
+        deposit.messageMembershipWitness,
+        derive(frozenTip, h => h.state.l1ToL2MessageTree.root),
+      );
+
+      // 3. Compute the siloed deposit-message nullifier. Guard against refunding the same deposit twice.
+      const siloedNullifier = await computeSiloedDepositMessageNullifier(
+        portalDomain.l2Token,
+        messageHash,
+        input.l2RecipientNhkM,
+      );
+      if (localNullifierSet.has(siloedNullifier.toBigInt())) {
+        throw new Error(`Frozen-deposit refund includes the deposit with nullifier ${siloedNullifier} twice`);
+      }
+      localNullifierSet.add(siloedNullifier.toBigInt());
+      nullifiers.push(siloedNullifier);
+      amount += deposit.amount;
+    }
+
+    // Verify that no deposit nullifier is spent at the frozen tip.
+    await this.validateNullifiersUnspentAtFrozenTip(
+      nullifiers,
+      frozenTip,
+      input.deposits.map(deposit => deposit.lowNullifierMembershipWitness),
+    );
+
+    // 4. Verify the l2 recipient's migration signature.
+    await assertValidMigrationSignature(
       input.l2Recipient,
       input.l2RecipientPublicKeys,
       input.l2RecipientInstance,
-      authMessage,
-      input.auth,
-      'Frozen-deposit refund',
+      input.executor,
+      input.userPayloadHash,
+      input.migrationSignature,
     );
 
-    // 5. Build public inputs in the layout `OxidePortal.refundFrozenDeposit` rebuilds, digest, sign.
-    const { publicInputs, finalDigest } = buildFrozenDepositRefundFinalDigest({
-      portal,
+    // 5. Build public inputs in the layout `OxidePortal.refundFrozenDeposits` rebuilds, digest, sign.
+    const { publicInputs, finalDigest } = buildFrozenDepositsRefundFinalDigest({
+      portalDomain,
       frozenArchiveRoot: input.frozenArchiveRoot,
-      amount: input.amount,
+      amount,
       executor: input.executor,
       userPayloadHash: input.userPayloadHash,
-      siloedNullifier,
+      nullifiers,
     });
     const signature = this.ecdsaSigner.sign(finalDigest);
 
-    return { siloedNullifier, publicInputs, finalDigest, signature };
+    return { nullifiers, amount, publicInputs, finalDigest, signature };
   }
 
   /**
@@ -841,14 +832,13 @@ export class LocalTeeSigner implements TeeSigner {
     if (input.executor.isZero()) {
       throw new Error('Refund executor is the zero address');
     }
-    const portal = this.portalContext;
-
     // 1. CONSTRAINING MESSAGE WAS NOT PROCESSED
 
     // 1.1 Constrain `frozen_tip` to be the rightmost leaf of the frozen archive.
     // The following root is verified on L1 upon refund's finalization
     const frozenArchiveRoot = publicInput(input.frozenArchiveRoot, "frozen archive root is the refund's root of trust");
     const frozenTip = await assertIsFrozenTip(frozenArchiveRoot, input.frozenTip, input.frozenTipMembershipWitness);
+    const portalDomain = resolvePortalDomain(this.portalLink, frozenTip);
 
     // 1.2 Prove the rollup has never absorbed the message and hence that the message is unprocessed.
     //
@@ -864,30 +854,23 @@ export class LocalTeeSigner implements TeeSigner {
 
     // 2. VERIFYING L2_RECIPIENT AUTHORIZATION
 
-    // 2.1 Recompute the deposit's L1->L2 message hash using the bound portal context (never the caller's claim of
-    // `l1_portal` — that's the implicit l1_portal binding we rely on).
-    const messageHash = await computeDepositMessageHash(portal, {
+    // 2.1 Recompute the deposit's L1->L2 message hash from the addresses and the tip's chain claims. The
+    // hash commits to the full context, so a false context yields a digest the real portal never accepts.
+    const messageHash = await computeDepositMessageHash(portalDomain, {
       sharedSecretSalt: input.sharedSecretSalt,
       recipient: input.l2Recipient,
       amount: input.amount,
       messageLeafIndex: input.messageLeafIndex,
     });
 
-    // 2.2 Verify the L2 recipient authorized this refund. The address commits to the passkey through its
-    // `immutables_hash`, or - when that hash is zero - to the master fallback key through its public keys, so only
-    // the holder of the key the address pins can authorize.
-    const authMessage = await computeUnprocessedDepositRefundAuthMessage(
-      messageHash,
-      input.executor,
-      input.userPayloadHash,
-    );
-    await this.validateRefundAuthorization(
+    // 2.2 Verify the L2 recipient's migration signature.
+    await assertValidMigrationSignature(
       input.l2Recipient,
       input.l2RecipientPublicKeys,
       input.l2RecipientInstance,
-      authMessage,
-      input.auth,
-      'Unprocessed-deposit refund',
+      input.executor,
+      input.userPayloadHash,
+      input.migrationSignature,
     );
 
     // 3. CONSTRUCT TEE SIGNATURE
@@ -897,14 +880,14 @@ export class LocalTeeSigner implements TeeSigner {
     // paths cannot double-spend the same deposit.
     await this.validateMasterNullifierHidingKey(input.l2RecipientNhkM, input.l2RecipientPublicKeys);
     const siloedNullifier = await computeSiloedDepositMessageNullifier(
-      portal.l2Portal,
+      portalDomain.l2Token,
       messageHash,
       input.l2RecipientNhkM,
     );
 
     // 3.2 Build public inputs in the layout `OxidePortal.refundUnprocessedDeposit` rebuilds, digest, sign.
     const { publicInputs, finalDigest } = buildUnprocessedDepositRefundFinalDigest({
-      portal,
+      portalDomain,
       frozenArchiveRoot: input.frozenArchiveRoot,
       amount: input.amount,
       executor: input.executor,
@@ -918,4 +901,13 @@ export class LocalTeeSigner implements TeeSigner {
 
     return { messageHash, siloedNullifier, publicInputs, finalDigest, signature };
   }
+}
+
+function resolvePortalDomain(link: PortalLink, header: Constrained<BlockHeader>): PortalDomain {
+  const globals = derive(header, h => h.globalVariables);
+  return {
+    ...link,
+    l1ChainId: globals.chainId.toBigInt(),
+    rollupVersion: globals.version.toBigInt(),
+  };
 }

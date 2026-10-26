@@ -2,8 +2,8 @@
  * A retired deployment's SIPAs and their swept deposits, found from chain data alone: the source
  * rollup's `SIPA` events and the L1 `Sweep` and `Deposit` logs. A new device finds them too.
  */
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import type { OxideEnvTuple } from "@obsidion/core/types"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import type { OxideEnvTuple, SourceSipaScan as SourceSipaScanParams } from "@obsidion/core/types"
 import {
   deploymentScanRange,
   deriveBootstrapKey,
@@ -13,28 +13,86 @@ import {
   setupSipaDiscovery,
 } from "@obsidion/front-core"
 import {
+  fetchHistoricalSipaResolverOperators,
+  resolverSelectionPolicy,
   fetchSipaEvents,
   predictAccountAddress,
-  type ObsidionAccount,
-  type ObsidionWallet,
 } from "@obsidion/sdk"
 import type { Address, PublicClient } from "viem"
 import { getWebBroadcasterArtifact } from "../../config/classArtifacts"
 import { getConfig } from "../../config/env"
+import type { SourceChain } from "./historicTokenContext"
 
 export interface SourceSipaScan {
-  /** The wallet and account on the deployment's rollup. */
-  chain: { wallet: ObsidionWallet; account: ObsidionAccount }
+  /** Where the deployment's rollup is read. */
+  chain: SourceChain
   tuple: OxideEnvTuple
-  /** The live deployment, whose resolver record a same-rollup roll re-points. */
-  current: OxideEnvTuple
   publicClient: PublicClient
   masterSecret: Parameters<typeof deriveStealthKey>[0]
   /** One L1 head bounds every scan of one pass. */
   scanHead: bigint
 }
 
+/** The owner's L1 account, which an account-protocol deployment's SIPAs commit to. */
+async function sipaRecoveryAccount(o: Omit<SourceSipaScan, "chain">) {
+  const { tuple, publicClient } = o
+  return tuple.sipaRecoveryProtocol === "account" && tuple.accountFactory
+    ? await predictAccountAddress(
+        publicClient,
+        tuple.accountFactory as Address,
+        deriveBootstrapKey(o.masterSecret).address,
+      )
+    : undefined
+}
+
+/** What another generation's session needs to find the deployment's SIPAs, in plain data. */
+export async function sourceSipaScanParams(
+  o: Omit<SourceSipaScan, "chain">,
+): Promise<SourceSipaScanParams> {
+  const { tuple, publicClient } = o
+  if (!tuple.accountMetadataRegistry)
+    throw new Error("The source deployment has no resolver registry")
+  const stealthPublicKey = deriveStealthKey(o.masterSecret).publicKey
+  const senders = (
+    await fetchHistoricalSipaResolverOperators(
+      publicClient,
+      tuple.accountMetadataRegistry as Address,
+      await deploymentScanRange(publicClient, tuple, o.scanHead),
+      {
+        forwardingTable: tuple.forwardingTable ?? tuple.portal,
+        resolverGatewayUrl: tuple.resolverGatewayUrl,
+        ...resolverSelectionPolicy(getConfig().network),
+      },
+    )
+  ).map((record) => record.l2Address)
+  return {
+    tuple,
+    resolverL2Addresses: senders,
+    stealthPublicKey: { x: stealthPublicKey.x.toString(), y: stealthPublicKey.y.toString() },
+    recoveryAccount: await sipaRecoveryAccount(o),
+  }
+}
+
 export async function sourceSipaSources(o: SourceSipaScan) {
+  const { chain, tuple } = o
+  // A deployment without SIPAs, such as Sky savings, has no resolver record to look up.
+  if (!tuple.depositSIPAImplementation && !tuple.registrationSIPAImplementation) return []
+  if (chain.kind === "generation") {
+    const sources = await chain.session.sipaSources(await sourceSipaScanParams(o))
+    return sources.map((source) => ({ ...source, origin: "sipa-event" as const }))
+  }
+  const { recipient, events } = await pxeSipaEvents({ ...o, chain })
+  return deriveRefundableSipaSources({
+    events,
+    recipientL2Address: recipient,
+    stealthPublicKey: deriveStealthKey(o.masterSecret).publicKey,
+    tuple,
+    recoveryAccount: await sipaRecoveryAccount(o),
+  })
+}
+
+/** The `SIPA` events on a rollup this release's PXE reads. */
+async function pxeSipaEvents(o: SourceSipaScan & { chain: Extract<SourceChain, { kind: "pxe" }> }) {
   const { chain, tuple, publicClient } = o
   // Registers the senders the deployment's `SIPA` events are tagged with: the resolver, and the
   // deployment's ClaimFPC for the broadcasts it sponsored.
@@ -45,7 +103,7 @@ export async function sourceSipaSources(o: SourceSipaScan) {
     publicClient,
     tuple,
     network: getConfig().network,
-    resolverFallbackTuple: o.current,
+    historical: true,
     sponsorFpc: tuple.fpcBeneficiary
       ? AztecAddress.fromStringUnsafe(tuple.fpcBeneficiary)
       : undefined,
@@ -57,25 +115,14 @@ export async function sourceSipaSources(o: SourceSipaScan) {
     AztecAddress.fromStringUnsafe(tuple.l2Token),
     recipient as never,
   )
-  return deriveRefundableSipaSources({
+  return {
+    recipient: recipient.toString(),
     events: events.map((event) => ({
       messageSecret: event.sharedSecretSalt.toString(),
       resweepable: event.resweepable,
       intentHash: event.intentHash,
     })),
-    recipientL2Address: recipient.toString(),
-    stealthPublicKey: deriveStealthKey(o.masterSecret).publicKey,
-    tuple,
-    // An account-protocol deployment commits its SIPAs to the owner's L1 account.
-    recoveryAccount:
-      tuple.sipaRecoveryProtocol === "account" && tuple.accountFactory
-        ? await predictAccountAddress(
-            publicClient,
-            tuple.accountFactory as Address,
-            deriveBootstrapKey(o.masterSecret).address,
-          )
-        : undefined,
-  })
+  }
 }
 
 /** Every swept deposit of the deployment's SIPAs, plus those still holding L1 funds. Any gap throws. */

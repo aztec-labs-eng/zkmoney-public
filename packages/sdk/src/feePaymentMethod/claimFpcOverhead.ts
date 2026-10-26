@@ -6,7 +6,7 @@ import {
   PRIVATE_TX_L2_GAS_OVERHEAD,
   PUBLIC_DATA_WRITE_LENGTH,
   TX_DA_GAS_OVERHEAD,
-} from "@aztec/constants"
+} from "@aztec-labs/constants"
 import type { ClaimFpcMeasuredTx } from "./claimFpcGasTable.js"
 
 /**

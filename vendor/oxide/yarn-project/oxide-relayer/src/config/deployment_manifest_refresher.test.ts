@@ -1,5 +1,5 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
-import { createLogger } from '@aztec/foundation/log';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import { createLogger } from '@aztec-labs/foundation/log';
 
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 
@@ -21,7 +21,6 @@ function entry(id: number, overrides: Record<string, unknown> = {}) {
     token: '0x' + '06'.repeat(20),
     l2Broadcaster: '0x' + '22'.repeat(32),
     enclaveUrl: 'https://enclave.example/rpc',
-    withdrawalSubsidy: '0x' + '01'.repeat(20),
     proverSubsidy: '0x' + '04'.repeat(20),
     plainWithdrawalExecutor: '0x' + '05'.repeat(20),
     operationExecutor: '0x' + '02'.repeat(20),
@@ -36,6 +35,17 @@ function unreadable(id: number): Record<string, unknown> {
   return { label, portal, withdrawalProtocol, rollupVersion };
 }
 
+/** A schema v5 document with one single-bridge deployment for each entry. */
+function releases(entries: Record<string, unknown>[]): string {
+  const deployments = entries.map(({ label, rollupVersion, withdrawalProtocol, ...bridge }) => ({
+    label,
+    rollupVersion,
+    withdrawalProtocol,
+    bridges: [bridge],
+  }));
+  return JSON.stringify({ schemaVersion: '5', deployments });
+}
+
 type Policy = Pick<ResolveDeploymentEnvManifestOptions, 'excludePortals' | 'acceptedPayoutTokens'>;
 
 function setup(...initialEntries: Record<string, unknown>[]) {
@@ -44,11 +54,9 @@ function setup(...initialEntries: Record<string, unknown>[]) {
 
 async function setupWithPolicy(policy: Policy, ...initialEntries: Record<string, unknown>[]) {
   let entries = initialEntries.length ? initialEntries : [entry(2), entry(1)];
-  const fetchImpl = jest.fn<typeof fetch>(() =>
-    Promise.resolve(new Response(JSON.stringify({ schemaVersion: '4', deployments: entries }))),
-  );
+  const fetchImpl = jest.fn<typeof fetch>(() => Promise.resolve(new Response(releases(entries))));
   const initial = await resolveDeploymentEnvManifest({
-    deploymentEnvManifestUrl: 'https://manifest.example/prod.v4.json',
+    deploymentEnvManifestUrl: 'https://manifest.example/v1/prod/releases.json',
     portal: EthAddress.fromString(entry(2).portal),
     ...policy,
     fetch: fetchImpl,
@@ -58,7 +66,7 @@ async function setupWithPolicy(policy: Policy, ...initialEntries: Record<string,
   const warn = jest.spyOn(logger, 'warn').mockImplementation(() => {});
   const info = jest.spyOn(logger, 'info').mockImplementation(() => {});
   const refresher = new DeploymentManifestRefresher({
-    deploymentEnvManifestUrl: 'https://manifest.example/prod.v4.json',
+    deploymentEnvManifestUrl: 'https://manifest.example/v1/prod/releases.json',
     initial,
     ...policy,
     discover,
@@ -256,7 +264,7 @@ describe('DeploymentManifestRefresher', () => {
     );
     refresher.start();
     const stopping = refresher.stop();
-    complete(new Response(JSON.stringify({ schemaVersion: '4', deployments: [entry(2), entry(3)] })));
+    complete(new Response(releases([entry(2), entry(3)])));
     await stopping;
     expect(discover).not.toHaveBeenCalled();
   });

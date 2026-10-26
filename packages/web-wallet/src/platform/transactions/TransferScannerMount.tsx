@@ -3,13 +3,14 @@
  * sync: the `WalletSyncCoordinator` that ingests incoming transfers and writes the balances on each
  * synced tick (Main's, and Savings' shares once Savings' deployment resolves), and the one-shot
  * rescan that rebuilds Main's withdrawal records this browser never had from the account's own
- * `Withdraw` events (`WebSavingsProvider` rebuilds Savings' with its moves). Independent of XMTP.
+ * recovery events (`WebSavingsProvider` rebuilds Savings' with its moves), and the one-shot import
+ * of the activity this browser kept for the account on retired rollups. Independent of XMTP.
  * Exactly one tab scans transfers at a time: the visible tab holds the `transfer-scan` Web Lock
  * while scanning, so two tabs can never interleave TransactionStorage's read-modify-write or
  * advance the shared cursor past each other's rows (browsers without Web Locks fall back to
  * scanning per-tab). Pauses while the tab is hidden; re-acquires on visibility return.
  *
- * The withdrawal rescan waits for its boot stage (see `bootPriority`).
+ * The withdrawal rescan and the historic import each wait for their boot stage (see `bootPriority`).
  *
  * Also owns the request-fulfillment reconciler: receive rows are inserted here, and the reconciler
  * listens to that in-process insert event (plus a store sweep for the receive-before-request
@@ -40,6 +41,8 @@ import {
 import { getConfig } from "../../config/env"
 import { resolveTagForCommit } from "../../features/contacts/registryResolution"
 import { loadWalletIdentity } from "../../features/identity/walletIdentity"
+import { importHistoricActivityOnce } from "../../features/migration/historicActivityImport"
+import { upgradeFirst } from "../../features/migration/upgradeFirst"
 import { savingsRescanToken } from "../../features/savings/savingsGateway"
 import { rescanWithdrawals } from "../../features/withdraw/withdrawGateway"
 import { webStorage } from "../storage/WebStorageAdapter"
@@ -56,10 +59,19 @@ export function TransferScannerMount(): null {
   const { obsidionAccount } = useAccountContext()
   const { contractService } = useContractServiceContext()
 
+  // Built for the account the page runs on: its balance is read and cached under its address.
   useEffect(() => {
     const identity = loadWalletIdentity()
     const networkId = getActiveNetworkId()
-    if (!tokenService || !obsidionWallet || !identity || !networkId || !currentNetwork) return
+    if (
+      !tokenService ||
+      !obsidionWallet ||
+      !obsidionAccount ||
+      !identity ||
+      !networkId ||
+      !currentNetwork
+    )
+      return
 
     const transactionStore = TransactionStorage.get(webStorage)
     const stopReconciler = startRequestFulfillmentReconciler(
@@ -83,6 +95,16 @@ export function TransferScannerMount(): null {
       lookup.catch(() => savingsLookup === lookup && (savingsLookup = undefined))
       return (savingsLookup = lookup)
     }
+
+    void bootPriority
+      .whenReady("historicActivity")
+      .then(() => (disposed ? undefined : importHistoricActivityOnce()))
+      .catch((err: unknown) =>
+        console.warn(
+          "[TransferScannerMount] historic activity import failed (retried next boot)",
+          err,
+        ),
+      )
 
     void bootPriority
       .whenReady("withdrawalRescan")
@@ -109,29 +131,38 @@ export function TransferScannerMount(): null {
           if (!disposed)
             trackRetry = setTimeout(() => trackSavings(account), SAVINGS_LOOKUP_RETRY_MS)
         })
-    if (obsidionAccount) trackSavings(obsidionAccount)
+    trackSavings(obsidionAccount)
 
     const build = async (): Promise<void> => {
       if (disposed || built || building) return
       building = true
       try {
+        await upgradeFirst.v6MayStart()
+        if (disposed) return
         const token = await tokenService.fetchTokenInformation()
         if (disposed) return
         const coordinator = new WalletSyncCoordinator({
           source: createWalletSyncSource({
             readBalances: async () => {
-              const balances: WalletBalances = {
-                [token.address]: await tokenService.readBalanceAssumingSynced(),
+              const balances: WalletBalances = {}
+              const readAt: Record<string, number> = {}
+              const stamp = (address: string, balance: bigint) => {
+                balances[address] = balance
+                readAt[address] = Date.now()
               }
+              stamp(token.address, await tokenService.readBalanceAssumingSynced(obsidionAccount))
               // Another token's failed read leaves Main's balance standing; the next tick retries it.
               for (const [address, service] of alsoRead) {
                 try {
-                  balances[address] = await service.readBalanceAssumingSynced()
+                  stamp(address, await service.readBalanceAssumingSynced())
                 } catch (err) {
                   console.warn(`[TransferScannerMount] balance of ${address} unread`, err)
                 }
               }
-              return balances
+              return { balances, readAt }
+            },
+            prepareToken: async () => {
+              await tokenService.getTokenContract()
             },
             wallet: obsidionWallet,
             tokenAddress: token.address,
@@ -148,7 +179,7 @@ export function TransferScannerMount(): null {
             store: BalanceStorage.get(webStorage),
             scope: balanceScope(
               currentNetwork.type,
-              tokenService.account.getCompleteAddress().toString(),
+              obsidionAccount.getCompleteAddress().toString(),
             ),
             tokenAddress: token.address,
           },
@@ -225,7 +256,7 @@ export function TransferScannerMount(): null {
       built?.release()
       stopReconciler()
     }
-  }, [tokenService, obsidionWallet, currentNetwork, contractService])
+  }, [tokenService, obsidionWallet, obsidionAccount, currentNetwork, contractService])
 
   return null
 }

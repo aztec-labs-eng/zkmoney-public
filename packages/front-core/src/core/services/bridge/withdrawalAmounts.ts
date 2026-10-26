@@ -1,5 +1,4 @@
 import { formatUnits, parseUnits } from "viem"
-import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import type { WithdrawalRecord } from "./types"
 
 /**
@@ -7,11 +6,10 @@ import type { WithdrawalRecord } from "./types"
  *
  * Gross is what the burn removed from the L2 balance and what the row shows; net is what reaches
  * the recipient on L1. The fee is everything the recipient does not receive: the prover tip where
- * the burn offered one, the portal's funding cut, which it caps at what the prover tip leaves, and
- * the relayer tip the plain withdrawal executor pays out of the rest.
+ * the burn offered one, the executor's fee, and the relayer tip the executor pays out of the rest.
  *
  * Encoding is per-field: `amount` is a human-decimal string, `rawAmount`, `relayerTip`,
- * `proverTip` and `fpcFundingCut` are raw base-unit strings.
+ * `withdrawalFee` and `proverTip` are raw base-unit strings, all in units of `tokenDecimals`.
  */
 export interface WithdrawalAmounts {
   grossAtomic: bigint
@@ -19,12 +17,12 @@ export interface WithdrawalAmounts {
   tipAtomic: bigint
   /** Prover tip, 0 where the burn offered none. */
   proverTipAtomic: bigint
-  /** The portal's funding cut as recorded, before the cap the portal applies. */
-  cutAtomic: bigint
-  /** Both tips plus the capped cut — the whole deduction. */
+  /** The executor's fee, 0 where the record carries none. */
+  withdrawalFeeAtomic: bigint
+  /** The tips and the fee — the whole deduction. */
   feeAtomic: bigint
   netAtomic: bigint
-  /** False on records written without a tip or a cut — hide the breakdown. */
+  /** False on records written without a relayer tip — hide the breakdown. */
   feeKnown: boolean
   grossDisplay: string
   feeDisplay: string
@@ -33,23 +31,23 @@ export interface WithdrawalAmounts {
 
 type WithdrawalAmountFields = Pick<
   WithdrawalRecord,
-  "amount" | "rawAmount" | "relayerTip" | "proverTip" | "fpcFundingCut"
+  "amount" | "rawAmount" | "relayerTip" | "proverTip" | "withdrawalFee" | "tokenDecimals"
 >
 
 export function withdrawalAmounts(record: WithdrawalAmountFields): WithdrawalAmounts {
-  const feeKnown = record.relayerTip != null && record.fpcFundingCut != null
+  const feeKnown = record.relayerTip != null
   const tipAtomic = feeKnown ? BigInt(record.relayerTip as string) : 0n
   const proverTipAtomic = feeKnown && record.proverTip != null ? BigInt(record.proverTip) : 0n
-  const cutAtomic = feeKnown ? BigInt(record.fpcFundingCut as string) : 0n
+  const withdrawalFeeAtomic =
+    feeKnown && record.withdrawalFee != null ? BigInt(record.withdrawalFee) : 0n
 
   const grossAtomic =
-    record.rawAmount != null ? BigInt(record.rawAmount) : parseAmount(record.amount)
+    record.rawAmount != null
+      ? BigInt(record.rawAmount)
+      : parseAmount(record.amount, record.tokenDecimals)
 
-  // The portal takes the prover tip, then its cut from what is left; the executor pays the relayer
-  // tip out of the rest.
-  const afterProverTip = grossAtomic - proverTipAtomic
-  const room = afterProverTip > 0n ? afterProverTip : 0n
-  const feeAtomic = proverTipAtomic + (cutAtomic < room ? cutAtomic : room) + tipAtomic
+  // The portal takes the prover tip; the executor takes its fee and pays the relayer tip out of the rest.
+  const feeAtomic = proverTipAtomic + withdrawalFeeAtomic + tipAtomic
   const diff = grossAtomic - feeAtomic
   const netAtomic = diff > 0n ? diff : 0n
 
@@ -57,19 +55,19 @@ export function withdrawalAmounts(record: WithdrawalAmountFields): WithdrawalAmo
     grossAtomic,
     tipAtomic,
     proverTipAtomic,
-    cutAtomic,
+    withdrawalFeeAtomic,
     feeAtomic,
     netAtomic,
     feeKnown,
-    grossDisplay: formatUnits(grossAtomic, DEFAULT_DECIMALS),
-    feeDisplay: formatUnits(feeAtomic, DEFAULT_DECIMALS),
-    netDisplay: formatUnits(netAtomic, DEFAULT_DECIMALS),
+    grossDisplay: formatUnits(grossAtomic, record.tokenDecimals),
+    feeDisplay: formatUnits(feeAtomic, record.tokenDecimals),
+    netDisplay: formatUnits(netAtomic, record.tokenDecimals),
   }
 }
 
 /** Swap-on-withdraw view of a record: the DAI deductions ahead of the swap, the escrow's swap
  *  input, and the submit-time output estimate where recorded. The direct deductions come through
- *  {@link withdrawalAmounts}, so the portal's cut stays capped at what the prover tip leaves. */
+ *  {@link withdrawalAmounts}. */
 export interface SwapWithdrawalAmounts {
   grossAtomic: bigint
   /** All DAI deductions ahead of the swap. */
@@ -112,7 +110,7 @@ export function swapWithdrawalAmounts(
 
   const feeAtomic =
     directFeeAtomic + (record.swapRelayerTip != null ? BigInt(record.swapRelayerTip) : 0n)
-  const feeKnown = record.relayerTip != null && record.fpcFundingCut != null
+  const feeKnown = record.relayerTip != null
   const gasAtomic = record.swapDaiForGas != null ? BigInt(record.swapDaiForGas) : 0n
   const diff = grossAtomic - feeAtomic - gasAtomic
   const swapInputAtomic = diff > 0n ? diff : 0n
@@ -120,7 +118,7 @@ export function swapWithdrawalAmounts(
     gasAtomic > 0n
       ? {
           daiAtomic: gasAtomic,
-          daiDisplay: formatUnits(gasAtomic, DEFAULT_DECIMALS),
+          daiDisplay: formatUnits(gasAtomic, record.tokenDecimals),
           ...(record.swapEstimatedGasOut != null
             ? { ethOutDisplay: formatUnits(BigInt(record.swapEstimatedGasOut), 18) }
             : {}),
@@ -140,7 +138,7 @@ export function swapWithdrawalAmounts(
       outAtomic,
       outDecimals: record.swapOutputDecimals,
       outDisplay,
-      rate: Number(outDisplay) / Number(formatUnits(swapInputAtomic, DEFAULT_DECIMALS)),
+      rate: Number(outDisplay) / Number(formatUnits(swapInputAtomic, record.tokenDecimals)),
     }
   }
 
@@ -150,17 +148,17 @@ export function swapWithdrawalAmounts(
     feeKnown,
     swapInputAtomic,
     ...(gas ? { gas } : {}),
-    grossDisplay: formatUnits(grossAtomic, DEFAULT_DECIMALS),
-    feeDisplay: formatUnits(feeAtomic, DEFAULT_DECIMALS),
+    grossDisplay: formatUnits(grossAtomic, record.tokenDecimals),
+    feeDisplay: formatUnits(feeAtomic, record.tokenDecimals),
     estimate,
   }
 }
 
 // A corrupt/legacy `amount` must not crash the detail sheet — mirror the degrade-to-zero posture
 // of the deposit amounts helper.
-function parseAmount(amount: string): bigint {
+function parseAmount(amount: string, decimals: number): bigint {
   try {
-    return parseUnits(amount, DEFAULT_DECIMALS)
+    return parseUnits(amount, decimals)
   } catch {
     return 0n
   }

@@ -14,15 +14,26 @@
 
 import type { SIPADepositRecord, SIPADepositStore } from "../deposits/SIPADepositStore"
 import { isStuckSweep, STUCK_SWEEP_MS } from "../deposits/sipaStuck"
+import { sipaCredits } from "../deposits/sipaCredits"
+import type { Address } from "viem"
 import type { SipaProcessingState } from "../deposits/sipaProcessing"
 import type { WithdrawalRecord } from "./types"
 import type { WithdrawalStorage } from "./WithdrawalStorage"
 import type { UpgradeActivity, UpgradeBatchItem } from "../../migration/upgradeActivity"
+import { chainUpgradeBatches } from "../../migration/chainUpgradeBatches"
 import { logger } from "src/utils/logger"
 
 export type BridgeActivityItem =
-  /** `processing` is set while the deposit waits for a sweep and a processing source is attached. */
-  | { kind: "bridge.sipaDeposit"; record: SIPADepositRecord; processing?: SipaProcessingState }
+  /**
+   * `processing` is set while the deposit waits for a sweep and a processing source is attached.
+   * `credit` is set on a deposit split out of its address's record: another token it credited.
+   */
+  | {
+      kind: "bridge.sipaDeposit"
+      record: SIPADepositRecord
+      processing?: SipaProcessingState
+      credit?: Address
+    }
   | { kind: "bridge.withdrawal"; record: WithdrawalRecord }
 
 export type TransferActivityItem = {
@@ -98,20 +109,28 @@ export class ActivityFeed {
       ...this.sipaDeposits
         .list()
         .filter((record) => !hidden.includes(record))
-        .map<ActivityItem>((record) => {
-          const processing = this.processing?.stateFor(record.sipaAddress)
-          return processing
-            ? { kind: "bridge.sipaDeposit", record, processing }
-            : { kind: "bridge.sipaDeposit", record }
-        }),
+        .flatMap<ActivityItem>((stored) =>
+          sipaCredits(stored).map(({ record, token }) => {
+            if (token) return { kind: "bridge.sipaDeposit", record, credit: token }
+            const processing = this.processing?.stateFor(record.sipaAddress)
+            return processing
+              ? { kind: "bridge.sipaDeposit", record, processing }
+              : { kind: "bridge.sipaDeposit", record }
+          }),
+        ),
       ...withdrawals.map<ActivityItem>((record) => ({ kind: "bridge.withdrawal", record })),
-      ...(this.upgrades?.items() ?? []).map<ActivityItem>((batch) => ({
-        kind: "upgrade.batch",
-        batch,
-      })),
+      ...[...(this.upgrades?.items() ?? []), ...this.chainUpgrades()].map<ActivityItem>(
+        (batch) => ({ kind: "upgrade.batch", batch }),
+      ),
     ]
     items.sort((a, b) => itemStartTime(b) - itemStartTime(a))
     return items
+  }
+
+  /** Deposits no run of this device covers, once its runs are read, so none is listed twice. */
+  private chainUpgrades(): UpgradeBatchItem[] {
+    if (this.upgrades && !this.upgrades.loaded()) return []
+    return chainUpgradeBatches(this.sipaDeposits.list(), this.upgrades?.recipients() ?? new Set())
   }
 
   /**
@@ -177,11 +196,6 @@ export class ActivityFeed {
     if (!this.unsubUpgrades && this.upgrades) {
       this.unsubUpgrades = this.upgrades.onChanged(() => this.emit())
     }
-  }
-
-  /** Re-emits for a change no store write marks. */
-  refresh(): void {
-    this.emit()
   }
 
   private emit(): void {

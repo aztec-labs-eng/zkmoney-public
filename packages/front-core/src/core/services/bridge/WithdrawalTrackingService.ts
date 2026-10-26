@@ -36,21 +36,21 @@
  * patch here carries the record's `reorgEpoch`, so a demote racing a tick
  * fences the tick's stale write.
  *
- * Layering: `node.getTxReceipt` and `fetchWithdrawalsWithIds` are node RPC (fine
+ * Layering: `node.getTxReceipt` and `fetchWithdrawalIds` are node RPC (fine
  * in front-core); the L1 CONTRACT read comes only through the injected
  * `WithdrawalFinalizationReader` (sdk layer), so front-core originates no contract
  * call. RPC reads fail loud (logged) and retry next tick; the authoritative
  * `isSpent` path never silently stalls.
  */
 
-import { TxHash, TxStatus } from "@aztec/stdlib/tx"
-import type { AztecNode } from "@aztec/stdlib/interfaces/client"
+import { TxHash, TxStatus } from "@aztec-labs/stdlib/tx"
+import type { AztecNode } from "@aztec-labs/stdlib/interfaces/client"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 
 import {
-  fetchWithdrawalsWithIds,
+  fetchWithdrawalIds,
   type SwapEscrowReader,
   type WithdrawalFinalizationReader,
-  type WithdrawalPortalContext,
 } from "@obsidion/sdk"
 
 import type { Hex } from "viem"
@@ -190,16 +190,25 @@ export function isWithdrawalDelayed(
 }
 
 /**
+ * Whether the burn is a link escrow's rather than the account's. It carries no recovery data, so
+ * only a relayer releases it. A golden-ticket registration burn is the account's own.
+ */
+export function isEscrowBurn(record: Pick<WithdrawalRecord, "source" | "intent">): boolean {
+  return record.source === "paylink" && record.intent !== "registration"
+}
+
+/**
  * Whether `record` may be finalized by the user themselves. The portal's `withdraw` is
- * permissionless whatever the prover tip, so anyone can release a proven burn from its published
- * log — but only once the L2 side is done (`finalizing_l1`) and only once the wait has been delayed
- * for a while, since a relayer that lands first will make the call revert.
+ * permissionless whatever the prover tip, so the owner can release a proven burn from its recovery
+ * events — but only once the L2 side is done (`finalizing_l1`) and only once the wait has been
+ * delayed for a while, since a relayer that lands first will make the call revert.
  */
 export function canSelfFinalizeWithdrawal(
   record: WithdrawalRecord,
   now: number = Date.now(),
 ): boolean {
   return (
+    !isEscrowBurn(record) &&
     record.phase === "finalizing_l1" &&
     isWithdrawalDelayed(record, now) &&
     // `l2TxHash` exists means the burn is done on the L2 side.
@@ -235,9 +244,8 @@ export function canRecoverSwap(record: WithdrawalRecord): boolean {
 }
 
 /**
- * Structural view of the Aztec node the tracker needs. Widened to `AztecNode`
- * because `fetchWithdrawalsWithIds` requires the full node; the tracker itself
- * only calls `getTxReceipt` (+ hands the node to the derivation reader).
+ * Structural view of the Aztec node the tracker needs: receipts, and the burn's tx effect for the
+ * `withdrawalId` derivation.
  */
 export type WithdrawalTrackerNode = AztecNode
 
@@ -246,11 +254,10 @@ export interface WithdrawalTrackingServiceOptions {
   node: WithdrawalTrackerNode
   finalizationReader: WithdrawalFinalizationReader
   /**
-   * Portal identity for deriving `withdrawalId`. Mapped from the env tuple at
-   * boot (`l1Portal=tuple.portal`, `l2Portal=tuple.l2Token`, `rollupVersion`,
-   * `l1ChainId`) — a wrong mapping yields a wrong id and `isSpent` never flips.
+   * The boot deployment: its L1 portal, and its L2 token, whose burn DA attests the withdrawal
+   * message hashes `withdrawalId` derives from.
    */
-  portalContext: WithdrawalPortalContext
+  deployment: WithdrawalDeployment
   /**
    * Reader for a record stamped with a `deployment` other than the boot-time one (the live
    * deployment rolled under an in-flight withdrawal). Without it every record reads the boot-time
@@ -291,7 +298,7 @@ export class WithdrawalTrackingService {
   private store: WithdrawalStorage
   private node: WithdrawalTrackerNode
   private finalizationReader: WithdrawalFinalizationReader
-  private portalContext: WithdrawalPortalContext
+  private deployment: WithdrawalDeployment
   private readerForDeployment?: (deployment: WithdrawalDeployment) => WithdrawalFinalizationReader
   private swapEscrowReader?: SwapEscrowReader
   private l1BlockAt?: (ms: number) => Promise<bigint | undefined>
@@ -311,7 +318,7 @@ export class WithdrawalTrackingService {
     this.store = options.store
     this.node = options.node
     this.finalizationReader = options.finalizationReader
-    this.portalContext = options.portalContext
+    this.deployment = options.deployment
     this.readerForDeployment = options.readerForDeployment
     this.swapEscrowReader = options.swapEscrowReader
     this.l1BlockAt = options.l1BlockAt
@@ -352,14 +359,14 @@ export class WithdrawalTrackingService {
     if (!WithdrawalTrackingService.instance) {
       if (!options) {
         throw new Error(
-          "First call to WithdrawalTrackingService.get() requires { store, node, finalizationReader, portalContext }",
+          "First call to WithdrawalTrackingService.get() requires { store, node, finalizationReader, deployment }",
         )
       }
       const invalid: string[] = []
       if (!options.store) invalid.push("store")
       if (!options.node) invalid.push("node")
       if (!options.finalizationReader) invalid.push("finalizationReader")
-      if (!options.portalContext) invalid.push("portalContext")
+      if (!options.deployment) invalid.push("deployment")
       if (invalid.length > 0) {
         throw new Error(
           `First call to WithdrawalTrackingService.get() received invalid options (missing: ${invalid.join(
@@ -505,18 +512,18 @@ export class WithdrawalTrackingService {
     )
   }
 
-  /** Reader + portal context for the deployment `record` burned on; boot-time pair when unstamped. */
+  /** Reader + L2 token for the deployment `record` burned on; boot-time pair when unstamped. */
   private bindingsFor(record: WithdrawalRecord): {
     reader: WithdrawalFinalizationReader
-    portalContext: WithdrawalPortalContext
+    l2Token: string
   } {
     const deployment = record.deployment
     if (
       !deployment ||
       !this.readerForDeployment ||
-      deployment.portal.toLowerCase() === this.portalContext.l1Portal.toLowerCase()
+      deployment.portal.toLowerCase() === this.deployment.portal.toLowerCase()
     ) {
-      return { reader: this.finalizationReader, portalContext: this.portalContext }
+      return { reader: this.finalizationReader, l2Token: this.deployment.l2Token }
     }
     const key = deployment.portal.toLowerCase()
     let reader = this.deploymentReaders.get(key)
@@ -524,14 +531,7 @@ export class WithdrawalTrackingService {
       reader = this.readerForDeployment(deployment)
       this.deploymentReaders.set(key, reader)
     }
-    return {
-      reader,
-      portalContext: {
-        ...this.portalContext,
-        l1Portal: deployment.portal,
-        l2Portal: deployment.l2Token,
-      },
-    }
+    return { reader, l2Token: deployment.l2Token }
   }
 
   /**
@@ -545,7 +545,7 @@ export class WithdrawalTrackingService {
     let record = mutableRecord
     const l2TxHash = record.l2TxHash!
     const txHash = TxHash.fromString(l2TxHash)
-    const { reader, portalContext } = this.bindingsFor(record)
+    const { reader, l2Token } = this.bindingsFor(record)
 
     if (record.phase === "submitting") {
       // Mining publishes the hash before sendTx; don't race the live submission.
@@ -567,21 +567,18 @@ export class WithdrawalTrackingService {
     if (!record.withdrawalId) {
       let derivedId: Hex | undefined
       try {
-        const { withdrawals } = await fetchWithdrawalsWithIds(this.node, txHash, portalContext)
-        const withdrawal = withdrawals[0]
+        const [withdrawal] = await fetchWithdrawalIds(
+          this.node,
+          txHash,
+          AztecAddress.fromStringUnsafe(l2Token),
+        )
         derivedId = withdrawal?.withdrawalId.toString() as Hex | undefined
         // The sender may have lost its receipt after broadcast. Only an indexed burn and
         // its receipt can advance that durable submitting record to mined.
         if (withdrawal && record.phase === "submitting") {
           const receipt = await this.node.getTxReceipt(txHash)
           if (receipt.blockNumber === undefined) return
-          record = await this.store.markMined(
-            record.localId,
-            l2TxHash,
-            receipt.blockNumber,
-            withdrawal.amount.toString(),
-            withdrawal.relayerTip.toString(),
-          )
+          record = await this.store.markMined(record.localId, l2TxHash, receipt.blockNumber)
         }
       } catch (err) {
         // Burn effect not yet indexed (or transient RPC) — retryable. Surface

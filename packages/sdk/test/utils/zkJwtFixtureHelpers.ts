@@ -7,13 +7,13 @@
 
 import { readFileSync } from "fs"
 import { resolve } from "path"
-import { BaseAccount } from "@aztec/aztec.js/account"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { ContractArtifact } from "@aztec/stdlib/abi"
+import { BaseAccount } from "@aztec-labs/aztec.js/account"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import { poseidon2Hash } from "@zkpassport/poseidon2"
 import { ContractService } from "../../src/index.js"
-import type { ObsidionWalletTest } from "../../src/obsidion/ObsidionWalletTest"
+import type { ObsidionWalletTest } from "../../src/obsidion/ObsidionWalletTest.js"
 import type { OidcKeyRegistryServer } from "../../src/services/OidcKeyRegistryServer.js"
 
 const FIXTURE_PATH = resolve(__dirname, "../fixtures/zkjwt/fixture.json")
@@ -94,9 +94,7 @@ export async function registerFixtureRegistryEntries(params: {
     fixture,
   } = params
 
-  await registryServer.setIssuerJwks(fixture.public_inputs[6]!, [
-    BigInt(fixture.public_inputs[5]!),
-  ])
+  await registryServer.setIssuerJwks(fixture.public_inputs[6]!, [BigInt(fixture.public_inputs[5]!)])
 
   const registry = await contractService.getContractWithArtifactAndAddress(
     oidcKeyRegistryAddress,

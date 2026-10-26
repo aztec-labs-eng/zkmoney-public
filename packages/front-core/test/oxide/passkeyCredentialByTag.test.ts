@@ -2,11 +2,16 @@ import { describe, expect, it, vi } from "vitest"
 import type { Address, Hex } from "viem"
 import type { AuthKeyEntry } from "@oxide/l1-contracts"
 
+import { passkeyMetadata } from "@oxide/oxide-client/passkey_rotation.js"
+
 import { credentialIdToMetadata } from "../../src/oxide/oxideWebAuthn"
+import { metadataToCredentialId } from "../../src/oxide/oxideWebAuthn"
+import { credentialIdHash, parseKeyMetadata } from "../../src/oxide/passkeyEnvelope"
 import {
-  authKeyToCandidate,
-  metadataToCredentialId,
+  answeringKey,
+  candidateCredentialIds,
   readPasskeyCredentialsByTag,
+  type InstalledPasskey,
 } from "../../src/oxide/passkeyCredentialByTag"
 import {
   TagValidationError,
@@ -88,42 +93,43 @@ describe("metadataToCredentialId", () => {
   })
 })
 
-describe("authKeyToCandidate", () => {
-  it("yields the credential id and the key as 128 lowercase hex chars without 0x", () => {
+describe("parseKeyMetadata on a raw credential id", () => {
+  it("reads a 16..1023-byte id back; empty, too-short and too-long metadata is unknown", () => {
     const id = toBase64Url(bytesOf(16))
-    const candidate = authKeyToCandidate(key(credentialIdToMetadata(id)))
-    expect(candidate).toEqual({
+    expect(parseKeyMetadata(credentialIdToMetadata(id))).toEqual({
+      kind: "credential-id",
       credentialId: id,
-      pubkeyHex: `${"ab".repeat(32)}${"cd".repeat(32)}`,
     })
-    expect(candidate!.pubkeyHex).toHaveLength(128)
-  })
-
-  it("drops empty, too-short and too-long ids", () => {
-    expect(authKeyToCandidate(key("0x"))).toBeUndefined()
-    expect(
-      authKeyToCandidate(key(credentialIdToMetadata(toBase64Url(bytesOf(11))))),
-    ).toBeUndefined()
-    expect(
-      authKeyToCandidate(key(credentialIdToMetadata(toBase64Url(bytesOf(1024))))),
-    ).toBeUndefined()
-    expect(
-      authKeyToCandidate(key(credentialIdToMetadata(toBase64Url(bytesOf(1023))))),
-    ).toBeDefined()
+    expect(parseKeyMetadata("0x")).toEqual({ kind: "unknown" })
+    expect(parseKeyMetadata(credentialIdToMetadata(toBase64Url(bytesOf(11))))).toEqual({
+      kind: "unknown",
+    })
+    expect(parseKeyMetadata(credentialIdToMetadata(toBase64Url(bytesOf(1024))))).toEqual({
+      kind: "unknown",
+    })
+    expect(parseKeyMetadata(credentialIdToMetadata(toBase64Url(bytesOf(1023)))).kind).toBe(
+      "credential-id",
+    )
   })
 })
 
 describe("readPasskeyCredentialsByTag", () => {
   const eligible = (seed: number) => key(credentialIdToMetadata(toBase64Url(bytesOf(16, seed))))
 
-  it("one eligible key → resolved with the candidate, account and L2 address", async () => {
+  it("one eligible key → resolved with the key, account and L2 address", async () => {
     const deps = reader({ keys: [eligible(1)] })
     const out = await readPasskeyCredentialsByTag("Alice", deps)
     expect(out).toEqual({
       kind: "resolved",
       account: ACCOUNT,
       l2Address: L2,
-      candidates: [{ credentialId: toBase64Url(bytesOf(16, 1)), pubkeyHex: expect.any(String) }],
+      keys: [
+        {
+          pubkeyHex: `${"ab".repeat(32)}${"cd".repeat(32)}`,
+          metadata: credentialIdToMetadata(toBase64Url(bytesOf(16, 1))),
+          parsed: { kind: "credential-id", credentialId: toBase64Url(bytesOf(16, 1)) },
+        },
+      ],
       complete: true,
       authKeyCount: 1,
     })
@@ -131,28 +137,27 @@ describe("readPasskeyCredentialsByTag", () => {
     expect(deps.readAuthKeys).toHaveBeenCalledWith(ACCOUNT)
   })
 
-  it("two keys → two candidates in on-chain order", async () => {
+  it("two keys → two keys in on-chain order", async () => {
     const out = await readPasskeyCredentialsByTag(
       "alice",
       reader({ keys: [eligible(1), eligible(2)] }),
     )
     expect(out.kind).toBe("resolved")
     if (out.kind !== "resolved") return
-    expect(out.candidates.map((c) => c.credentialId)).toEqual([
+    expect(out.keys.map((k) => metadataToCredentialId(k.metadata))).toEqual([
       toBase64Url(bytesOf(16, 1)),
       toBase64Url(bytesOf(16, 2)),
     ])
   })
 
-  it("drops ineligible entries and keeps the eligible one", async () => {
+  it("lists an entry with unknown metadata beside the eligible one", async () => {
     const out = await readPasskeyCredentialsByTag(
       "alice",
       reader({ keys: [key("0x"), eligible(1)] }),
     )
     expect(out.kind).toBe("resolved")
     if (out.kind !== "resolved") return
-    expect(out.candidates).toHaveLength(1)
-    // The dropped entry is still one of the account's keys.
+    expect(out.keys.map((k) => k.parsed.kind)).toEqual(["unknown", "credential-id"])
     expect(out.authKeyCount).toBe(2)
   })
 
@@ -177,19 +182,17 @@ describe("readPasskeyCredentialsByTag", () => {
     if (resolvedOut.kind === "resolved") expect(resolvedOut.complete).toBe(false)
   })
 
-  it("caps at eight candidates but scans past ineligible entries to find them", async () => {
+  it("caps at eight keys; an entry past the cap is not read, and the set is not whole", async () => {
     const nine = Array.from({ length: 9 }, (_, i) => eligible(i + 1))
     const capped = await readPasskeyCredentialsByTag("alice", reader({ keys: nine }))
     expect(capped.kind).toBe("resolved")
     if (capped.kind === "resolved") {
-      expect(capped.candidates.map((c) => c.credentialId)).toEqual(
-        nine.slice(0, 8).map((k) => metadataToCredentialId(k.metadata)),
-      )
+      expect(capped.keys.map((k) => k.metadata)).toEqual(nine.slice(0, 8).map((k) => k.metadata))
+      expect(capped.complete).toBe(false)
     }
     const late = [...Array.from({ length: 8 }, () => key("0x")), eligible(1)]
     const found = await readPasskeyCredentialsByTag("alice", reader({ keys: late }))
-    expect(found.kind).toBe("resolved")
-    if (found.kind === "resolved") expect(found.candidates).toHaveLength(1)
+    expect(found).toEqual({ kind: "unreadable", account: ACCOUNT, complete: false })
   })
 
   it("no keys → noKeyInstalled", async () => {
@@ -218,5 +221,167 @@ describe("readPasskeyCredentialsByTag", () => {
     await expect(
       readPasskeyCredentialsByTag("alice", reader({ keys: new Error("RPC down") })),
     ).rejects.toThrow(/RPC down/)
+  })
+
+  describe("every key with its kind", () => {
+    const ROOT_ID = toBase64Url(bytesOf(16, 1))
+    const BACKUP_ID = toBase64Url(bytesOf(20, 2))
+    /** A well-formed envelope header (version 1, slot `first`) over an opaque body. */
+    const ENVELOPE = `0x0100${"ee".repeat(60)}` as Hex
+    const BQX = `0x${"5a".repeat(32)}` as Hex
+    const root = key(credentialIdToMetadata(ROOT_ID))
+    /** An envelope entry with no appended id: the prefix and the envelope alone. */
+    const backup = key(passkeyMetadata(credentialIdToMetadata(BACKUP_ID), ENVELOPE), { qx: BQX })
+    /** A backup entry as the wallet writes it: the raw id behind the envelope. */
+    const backupNamed = key(
+      passkeyMetadata(
+        credentialIdToMetadata(BACKUP_ID),
+        `${ENVELOPE}${credentialIdToMetadata(BACKUP_ID).slice(2)}` as Hex,
+      ),
+      { qx: BQX },
+    )
+    const installed = (entry: AuthKeyEntry): InstalledPasskey => ({
+      pubkeyHex: "11".repeat(64),
+      metadata: entry.metadata,
+      parsed: parseKeyMetadata(entry.metadata),
+    })
+
+    it("lists a raw-id key and an envelope key in on-chain order, with their kinds", async () => {
+      const out = await readPasskeyCredentialsByTag("alice", reader({ keys: [root, backup] }))
+      expect(out.kind).toBe("resolved")
+      if (out.kind !== "resolved") return
+      expect(out.complete).toBe(true)
+      expect(out.keys).toEqual([
+        {
+          pubkeyHex: `${"ab".repeat(32)}${"cd".repeat(32)}`,
+          metadata: root.metadata,
+          parsed: { kind: "credential-id", credentialId: ROOT_ID },
+        },
+        {
+          pubkeyHex: `${"5a".repeat(32)}${"cd".repeat(32)}`,
+          metadata: backup.metadata,
+          parsed: {
+            kind: "envelope-prefixed",
+            credentialIdHash: credentialIdHash(BACKUP_ID),
+            envelope: expect.any(Uint8Array),
+          },
+        },
+      ])
+    })
+
+    it("a backup entry carrying its id lists the id with the envelope", async () => {
+      const out = await readPasskeyCredentialsByTag("alice", reader({ keys: [root, backupNamed] }))
+      if (out.kind !== "resolved") throw new Error(out.kind)
+      expect(out.keys[1]!.parsed).toEqual({
+        kind: "envelope-prefixed",
+        credentialIdHash: credentialIdHash(BACKUP_ID),
+        envelope: expect.any(Uint8Array),
+        credentialId: BACKUP_ID,
+      })
+      expect(answeringKey(out.keys, BACKUP_ID)).toEqual({ key: out.keys[1], by: "hash" })
+    })
+
+    describe("candidateCredentialIds", () => {
+      const raw40 = bytesOf(40, 5)
+      raw40[0] = 0x01
+      const raw40Id = toBase64Url(raw40)
+      const root40 = key(credentialIdToMetadata(raw40Id))
+
+      it("names a root's raw id and a backup's appended id", () => {
+        expect(candidateCredentialIds([installed(root), installed(backupNamed)])).toEqual([
+          ROOT_ID,
+          BACKUP_ID,
+        ])
+      })
+
+      it("names an envelope entry with no appended id by its whole metadata, as a root", () => {
+        const whole = metadataToCredentialId(backup.metadata)
+        expect(candidateCredentialIds([installed(root), installed(backup)])).toEqual([
+          ROOT_ID,
+          whole,
+        ])
+        expect(candidateCredentialIds([installed(backup)])).toEqual([whole])
+      })
+
+      it("names a root whose raw id begins with 0x01 by its whole metadata, alone and beside a backup", () => {
+        expect(candidateCredentialIds([installed(root40)])).toEqual([raw40Id])
+        expect(candidateCredentialIds([installed(root40), installed(backupNamed)])).toEqual([
+          raw40Id,
+          BACKUP_ID,
+        ])
+        expect(answeringKey([installed(root40), installed(backupNamed)], raw40Id)).toEqual({
+          key: installed(root40),
+          by: "raw",
+        })
+      })
+
+      it("skips an unknown entry, which nothing can answer for", () => {
+        const tiny = key(`0x${"07".repeat(8)}`)
+        expect(candidateCredentialIds([installed(root), installed(tiny)])).toEqual([ROOT_ID])
+      })
+    })
+
+    it("a 94-byte prefixed entry is envelope-prefixed; an 8-byte one is unknown and still listed", async () => {
+      const short = key(passkeyMetadata(credentialIdToMetadata(BACKUP_ID), `0x${"ee".repeat(61)}`))
+      const tiny = key(`0x${"07".repeat(8)}`)
+      const out = await readPasskeyCredentialsByTag("alice", reader({ keys: [root, short, tiny] }))
+      expect(out.kind).toBe("resolved")
+      if (out.kind !== "resolved") return
+      expect(out.keys.map((k) => k.parsed.kind)).toEqual([
+        "credential-id",
+        "envelope-prefixed",
+        "unknown",
+      ])
+      expect(out.keys[2]!.pubkeyHex).toHaveLength(128)
+      expect(out.complete).toBe(true)
+    })
+
+    it("a key that is not 64 bytes is left out and marks the set read incomplete", async () => {
+      const out = await readPasskeyCredentialsByTag(
+        "alice",
+        reader({ keys: [root, key(root.metadata, { qy: "0xcd" as Hex })] }),
+      )
+      expect(out.kind).toBe("resolved")
+      if (out.kind !== "resolved") return
+      expect(out.keys).toHaveLength(1)
+      expect(out.complete).toBe(false)
+    })
+
+    it("answeringKey: the raw id names the root, the hashed id the envelope entry", async () => {
+      const out = await readPasskeyCredentialsByTag("alice", reader({ keys: [root, backup] }))
+      if (out.kind !== "resolved") throw new Error(out.kind)
+      expect(answeringKey(out.keys, ROOT_ID)).toEqual({ key: out.keys[0], by: "raw" })
+      expect(answeringKey(out.keys, BACKUP_ID)).toEqual({ key: out.keys[1], by: "hash" })
+      expect(answeringKey(out.keys, toBase64Url(bytesOf(16, 9)))).toBeUndefined()
+    })
+
+    it("answeringKey: a raw id that looks prefixed answers raw, before any hash match", () => {
+      const raw40 = bytesOf(40, 5)
+      raw40[0] = 0x01
+      const raw40Id = toBase64Url(raw40)
+      const looksPrefixed: InstalledPasskey = {
+        pubkeyHex: "11".repeat(64),
+        metadata: credentialIdToMetadata(raw40Id),
+        parsed: {
+          kind: "envelope-prefixed",
+          credentialIdHash: `0x${"00".repeat(32)}`,
+          envelope: new Uint8Array(7),
+        },
+      }
+      const hashed: InstalledPasskey = {
+        pubkeyHex: "22".repeat(64),
+        metadata: passkeyMetadata(credentialIdToMetadata(raw40Id), ENVELOPE),
+        parsed: {
+          kind: "envelope-prefixed",
+          credentialIdHash: credentialIdHash(raw40Id),
+          envelope: new Uint8Array(62),
+        },
+      }
+      expect(answeringKey([hashed, looksPrefixed], raw40Id)).toEqual({
+        key: looksPrefixed,
+        by: "raw",
+      })
+      expect(answeringKey([hashed], raw40Id)).toEqual({ key: hashed, by: "hash" })
+    })
   })
 })

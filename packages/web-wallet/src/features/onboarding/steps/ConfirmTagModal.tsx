@@ -13,12 +13,15 @@ export type ByTagNotice =
   | { kind: "staleRollup"; tag: string }
   | { kind: "noKeyInstalled"; tag: string }
   | { kind: "unreadable"; tag: string }
+  | { kind: "inconclusive"; tag: string }
   | { kind: "lookupFailed"; tag: string }
 
 export function noticeText(notice: ByTagNotice): string {
   switch (notice.kind) {
     case "listed":
-      return `@${notice.tag} is already on this browser — choose it in the list above.`
+      return `@${notice.tag} is already on this browser — choose it in the list above, or`
+    case "inconclusive":
+      return `@${notice.tag}'s account has more passkeys than this version can read. Sign in on the device you registered on.`
     case "notFound":
       return `No registered account for @${notice.tag} yet. If you just signed up, continue with Show passkeys; otherwise check the spelling.`
     case "reserved":
@@ -41,6 +44,8 @@ export type SignInStart = {
   value: string
   onTagChange: (tag: string) => void
   onTagBlur: () => void
+  /** A remembered tag's way in with a passkey its row does not hold: the tag is read like any other. */
+  onDifferentPasskey: () => void
   /** The typed text is the tag the resolve found: Login (and Enter) fire only then. */
   submitReady: boolean
   resolving: boolean
@@ -166,13 +171,20 @@ export function ConfirmTagModal({
                     type="button"
                     className="zkm-btn-reset zkm-pressable ww-account-row"
                     data-testid="sign-in-account"
-                    aria-label={`Sign in as @${candidate.usertag}`}
+                    aria-label={`Sign in as @${candidate.usertag}${
+                      candidate.backup ? " with the backup passkey" : ""
+                    }`}
                     disabled={!prepared || busy}
                     onClick={() => start.onCandidate(candidate)}
                   >
                     <span className="ww-account-row__tag">
                       @{candidate.usertag}
                       <span className="ww-account-row__domain">.zk.money</span>
+                      {candidate.backup && (
+                        <span className="ww-account-row__note" data-testid="sign-in-account-backup">
+                          Backup passkey
+                        </span>
+                      )}
                     </span>
                     <span className="ww-account-row__go" aria-hidden="true">
                       ›
@@ -211,8 +223,27 @@ export function ConfirmTagModal({
         )}
         {start?.resolving && <p className="ww-invite__checking">Finding your passkey…</p>}
         {start?.notice && (
-          <p className="ww-invite-modal-error" role="alert" data-testid={`by-tag-${start.notice.kind}`}>
+          <p
+            className="ww-invite-modal-error"
+            role="alert"
+            data-testid={`by-tag-${start.notice.kind}`}
+          >
             {noticeText(start.notice)}
+            {start.notice.kind === "listed" && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  className="zkm-btn-reset ww-invite__link"
+                  data-testid="by-tag-different-passkey"
+                  disabled={busy}
+                  onClick={start.onDifferentPasskey}
+                >
+                  use a different passkey
+                </button>
+                .
+              </>
+            )}
             {start.notice.kind === "lookupFailed" && (
               <>
                 {" "}

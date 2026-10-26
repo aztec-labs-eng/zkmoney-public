@@ -3,8 +3,8 @@
  * contracts of one class, must share the work instead of each paying it.
  */
 import { describe, expect, it, vi } from "vitest"
-import type { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
+import type { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
 import { ensureContractRegisteredInPXE } from "../../src/services/utils.js"
 
 const ARTIFACT = { name: "Shared" } as unknown as ContractArtifact

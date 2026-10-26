@@ -1,6 +1,6 @@
 /**
- * The portal's shared deposit capacity (`Caps.sol`), read through its public getters. Every value comes from one L1
- * block, so capacity, ceiling and refill rate always describe the same chain state.
+ * The portal's deposit capacity and per-transaction cap (`Caps.sol`), read through its public getters. Every value
+ * comes from one L1 block, so capacity, ceiling, refill rate and cap always describe the same chain state.
  */
 import {
   BaseError,
@@ -10,7 +10,6 @@ import {
   type PublicClient,
 } from "viem"
 import { OxidePortalAbi } from "@oxide/l1-contracts/artifacts.js"
-import { TX_AMOUNT_CAP } from "@oxide/oxide-lib/oxide_constants.gen.js"
 
 export interface PortalCapacitySnapshot {
   /** The chain the RPC reported, not the one the caller expected. */
@@ -28,6 +27,8 @@ export interface PortalCapacitySnapshot {
   globalLimitAtomic: bigint
   /** `getCurrentAvailable()` at `blockNumber`. */
   availableAtomic: bigint
+  /** `TX_AMOUNT_CAP()`: the most one operation may move, in settlement-token base units. */
+  txAmountCapAtomic: bigint
 }
 
 export type PortalCapacityUnsupportedReason =
@@ -72,7 +73,9 @@ export async function readPortalCapacity(
     )
   }
   const blockNumber = block.number
-  const portalRead = <F extends "UNDERLYING" | "RATE" | "GLOBAL_LIMIT" | "getCurrentAvailable">(
+  const portalRead = <
+    F extends "UNDERLYING" | "RATE" | "GLOBAL_LIMIT" | "getCurrentAvailable" | "TX_AMOUNT_CAP",
+  >(
     functionName: F,
   ) =>
     client
@@ -83,11 +86,12 @@ export async function readPortalCapacity(
           `portal ${target.portal} returned no data for ${functionName}() at block ${blockNumber}`,
         ),
       )
-  const [underlying, rate, globalLimit, available, decimals] = await Promise.all([
+  const [underlying, rate, globalLimit, available, txAmountCap, decimals] = await Promise.all([
     portalRead("UNDERLYING"),
     portalRead("RATE"),
     portalRead("GLOBAL_LIMIT"),
     portalRead("getCurrentAvailable"),
+    portalRead("TX_AMOUNT_CAP"),
     client
       .readContract({ address: target.token, abi: erc20Abi, functionName: "decimals", blockNumber })
       .catch(
@@ -113,20 +117,6 @@ export async function readPortalCapacity(
     rateAtomicPerSecond: rate,
     globalLimitAtomic: globalLimit,
     availableAtomic: available,
+    txAmountCapAtomic: txAmountCap,
   }
 }
-
-/**
- * The per-operation cap. `TX_AMOUNT_CAP` is a compile-time constant with no public getter, so the wallet knows only
- * the value its vendored Oxide source was generated with. It is not a read of the deployed portal.
- */
-export interface OperationCapFact {
-  status: "unverified"
-  /** Settlement-token base units. */
-  sourceAtomic: bigint
-}
-
-export const SOURCE_OPERATION_CAP: OperationCapFact = Object.freeze({
-  status: "unverified",
-  sourceAtomic: TX_AMOUNT_CAP,
-})

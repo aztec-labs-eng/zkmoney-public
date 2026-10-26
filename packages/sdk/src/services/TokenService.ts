@@ -1,17 +1,18 @@
 import { planWithdrawal, type WithdrawalOptions } from "./plainWithdrawal.js"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { EthAddress } from "@aztec/aztec.js/addresses"
-import { BlockNumber, Fr } from "@aztec/aztec.js/fields"
-import { Account, NO_FROM } from "@aztec/aztec.js/account"
-import { AuthWitness, computeAuthWitMessageHash } from "@aztec/aztec.js/authorization"
-import { decodeFromAbi, type FieldLike } from "@aztec/aztec.js/abi"
-import { type Contract, type ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import { Capsule, TxHash, type TxReceipt } from "@aztec/stdlib/tx"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { BlockNumber, Fr } from "@aztec-labs/aztec.js/fields"
+import { Account, NO_FROM } from "@aztec-labs/aztec.js/account"
+import { AuthWitness, computeAuthWitMessageHash } from "@aztec-labs/aztec.js/authorization"
+import { decodeFromAbi, type FieldLike } from "@aztec-labs/aztec.js/abi"
+import { type Contract, type ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import { Capsule, TxHash, type TxReceipt } from "@aztec-labs/stdlib/tx"
 import { formatUnits, parseUnits } from "viem"
 import { MethodOptions, ServiceContractBase } from "./ServiceBase.js"
 import { isAlreadyClaimedDepositError } from "./depositReceipt.js"
 import { buildTeeOperation, requireSpendMetadataResolver } from "./teeOperation.js"
 import { buildSponsoredTeeOperation } from "./sponsoredTeeOperation.js"
+import { sponsoredAccounts } from "./sponsoredAccounts.js"
 import {
   type ClaimSponsorContext,
   authorizeSponsoredBatch,
@@ -20,27 +21,29 @@ import {
 } from "./claimSponsor.js"
 import { ObsidionAccount } from "../obsidion/alpha/account/ObsidionAccount.js"
 import {
+  type ContractService,
   DEFAULT_CONTRACTS,
   OxideTokenContract,
   OxideTupleUnresolvedError,
   ensureContractRegisteredInPXE,
   type Transfer as TransferEvent,
 } from "@obsidion/contracts"
-import {
-  emptyTransferMeta,
-  tokenDecimalsForNetwork,
-  WALLET_TOKEN_SYMBOL,
-  WITHDRAW_RELAYER_TIP,
-} from "@obsidion/core/constants"
-import { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
+import { emptyTransferMeta, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
+import { ObsidionWallet, type TxHashCallback } from "../obsidion/ObsidionWallet.js"
 import { buildTransferMetaForSend, decodeTransferMeta } from "./transferMeta.js"
 import type {
   DepositSpendMetadataResolver,
   Operation,
   SpendMetadataResolver,
 } from "../oxide/index.js"
-import type { TeeSigner } from "@oxide/oxide-lib/types.js"
+import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
+import {
+  publishAndLockOxideTokenWithArtifact,
+  registerOxideTokenWithArtifact,
+} from "@oxide/oxide-client/token_registration.js"
+import type { OxideTokenImmutables } from "@oxide/oxide-lib/token_immutables.js"
 import { buildTokenOperationCall } from "./tokenOperationCall.js"
+import type { OxideTokenImmutablesSource } from "../oxide/tokenRegistration.js"
 
 /** What fixes a sponsored exit's intent: who burns, how much, and where the withdrawal goes. */
 export interface SponsoredExitPlanOptions {
@@ -90,29 +93,33 @@ export type VerifyTransferClaimsResult =
   | { ok: false; reason: "mismatch" | "not-yet-available" | "threw"; cause?: unknown }
 
 /**
- * Static display identity for the consolidated token. `OxideToken` exposes
- * on-chain `name`/`symbol`/`decimals` views, but the wallet takes name/symbol
- * from here and decimals (18 on every network) from `tokenDecimalsForNetwork` in
- * `fetchTokenInformation`, rather than reading the on-chain views.
- */
-const TOKEN_DISPLAY_METADATA: Pick<Token, "name" | "symbol"> = {
-  name: WALLET_TOKEN_SYMBOL,
-  symbol: WALLET_TOKEN_SYMBOL,
-}
-
-/**
  * TokenService — user-facing wrapper around the vendored OxideTokenContract
  * for private balance + transfer operations. The contract owns balances + acts
  * as the L1 bridge endpoint.
  */
 export class TokenService extends ServiceContractBase {
+  private static immutablesSource?: OxideTokenImmutablesSource
+  private static immutablesStored = new WeakMap<ObsidionWallet, Map<string, Promise<void>>>()
+
+  /**
+   * Where every token service reads its token's immutables, which the token's private functions read from the PXE.
+   * Unset, a token is called without storing them.
+   */
+  public static setImmutablesSource(source: OxideTokenImmutablesSource | undefined): void {
+    TokenService.immutablesSource = source
+  }
+
   private tokenInfo?: Token
   private bridgeContract?: OxideTokenContract
   private relayerUrl?: string
   private relayerHeaders?: Record<string, string>
   private relayerSenderAddress?: AztecAddress
 
-  private constructor(wallet: ObsidionWallet, public account: Account, teeSigner?: TeeSigner) {
+  private constructor(
+    wallet: ObsidionWallet,
+    public account: Account,
+    teeSigner?: RegisteredTeeSigner,
+  ) {
     // Single-asset by construction: the contract binding is always the
     // consolidated oxideToken — callers don't (and can't) pick a token.
     super(DEFAULT_CONTRACTS.oxideToken, wallet, undefined, undefined, undefined, teeSigner)
@@ -122,7 +129,7 @@ export class TokenService extends ServiceContractBase {
     wallet: ObsidionWallet,
     account: Account,
     contractAddress?: AztecAddress,
-    teeSigner?: TeeSigner,
+    teeSigner?: RegisteredTeeSigner,
     relayerUrl?: string,
     relayerHeaders?: Record<string, string>,
   ): Promise<TokenService> {
@@ -244,24 +251,55 @@ export class TokenService extends ServiceContractBase {
     return this.contractAddress
   }
 
+  /** The token contract, with its immutables stored: every token function, `sync_state` included, reads them. */
   private async requireBridgeContract(): Promise<OxideTokenContract> {
     if (!this.bridgeContract) {
       const address = this.requireTokenAddress()
       const contract = await this.getContract(address)
       this.bridgeContract = contract as OxideTokenContract
     }
+    await TokenService.ensureImmutablesStored(
+      this.wallet,
+      this.contractService,
+      this.bridgeContract.address,
+    )
     return this.bridgeContract
   }
 
   /**
-   * Public async accessor for the underlying bridge contract. Delegates to
-   * the private {@link requireBridgeContract} which hydrates from
-   * `contractAddress` if the cached `Contract` instance hasn't been wired yet
-   * — `TokenService.create` only sets `contractAddress`, so a sync accessor
-   * would return undefined for fresh services. Cross-instance callers
-   * (`PaylinkService` in U6, `TokenService.sendToken` / `exitToL1Private` in
-   * U4) `await` this before passing the result to `buildTeeOperation`.
+   * Stores `token`'s immutables in `wallet`'s PXE, once per wallet and token. For token calls made outside a token
+   * service. A failed store is not sticky.
    */
+  public static async ensureImmutablesStored(
+    wallet: ObsidionWallet,
+    contractService: ContractService,
+    token: AztecAddress,
+  ): Promise<void> {
+    const source = TokenService.immutablesSource
+    if (!source) return
+    const byToken = TokenService.immutablesStored.get(wallet) ?? new Map<string, Promise<void>>()
+    TokenService.immutablesStored.set(wallet, byToken)
+    const key = token.toString()
+    let stored = byToken.get(key)
+    if (!stored) {
+      const pending = (async () => {
+        const artifact = await contractService.getArtifactForContract(
+          DEFAULT_CONTRACTS.oxideToken,
+          token,
+          wallet,
+        )
+        await registerOxideTokenWithArtifact(wallet, artifact, await source(token), token)
+      })()
+      byToken.set(key, pending)
+      pending.catch(() => {
+        if (byToken.get(key) === pending) byToken.delete(key)
+      })
+      stored = pending
+    }
+    await stored
+  }
+
+  /** The token contract, with its immutables stored so its private functions can run. */
   public async getTokenContract(): Promise<Contract> {
     return (await this.requireBridgeContract()) as unknown as Contract
   }
@@ -349,32 +387,17 @@ export class TokenService extends ServiceContractBase {
     const contract = await this.requireBridgeContract()
     const call = await contract.methods.balance_of(from).getFunctionCall()
     const { result } = await this.wallet.executeUtilityAssumingSynced(call, { scopes: [from] })
-    return BigInt(decodeFromAbi(call.returnTypes, result) as bigint)
+    return BigInt(decodeFromAbi(call.returnType, result) as bigint)
   }
 
-  /**
-   * Token metadata. `OxideToken` exposes name/symbol/decimals on-chain, but the
-   * wallet sources name/symbol from `TOKEN_DISPLAY_METADATA`, decimals (18 on
-   * every network) from `tokenDecimalsForNetwork`, and the address from
-   * `requireTokenAddress()`.
-   */
+  /** The token's address, and its name, symbol and decimals from its immutables. */
   public async fetchTokenInformation(): Promise<Token> {
-    if (!this.wallet || !this.account) {
-      throw new Error("PXE or Aztec Node or Obsidion Account not initialized")
-    }
-
-    if (this.tokenInfo) {
-      return this.tokenInfo
-    }
-
+    if (this.tokenInfo) return this.tokenInfo
     const address = this.requireTokenAddress()
-
-    this.tokenInfo = {
-      address: address.toString(),
-      ...TOKEN_DISPLAY_METADATA,
-      decimals: tokenDecimalsForNetwork(this.contractService.getNetwork()),
-    }
-
+    const source = TokenService.immutablesSource
+    if (!source) throw new Error(`No immutables source to read the metadata of token ${address}`)
+    const { name, symbol, decimals } = await source(address)
+    this.tokenInfo = { address: address.toString(), name, symbol, decimals }
     return this.tokenInfo
   }
 
@@ -770,6 +793,7 @@ export class TokenService extends ServiceContractBase {
       recipientTag?: string
       /** Free-text memo, ≤ `TRANSFER_MEMO_MAX_BYTES` UTF-8 bytes. */
       memo?: string
+      onTxHash?: TxHashCallback
     }>,
   ): Promise<{
     txHash: string
@@ -786,6 +810,7 @@ export class TokenService extends ServiceContractBase {
       throw new Error("sendTokenSponsored requires an ObsidionAccount user")
     }
     const user = userAccount.getAddress()
+    const paying = sponsoredAccounts(sponsor, user)
     const rawAmount = options?.useRawAmount ? BigInt(amount) : await this.parseAmount(amount)
 
     this.emitInit()
@@ -835,7 +860,7 @@ export class TokenService extends ServiceContractBase {
         fpcArtifact,
         railId: sponsor.railId,
         policy: sponsor.policy,
-        user,
+        ...paying.args,
         tokenContract,
         signer: this.getTeeSigner(),
         operations: [transferOp],
@@ -852,12 +877,13 @@ export class TokenService extends ServiceContractBase {
     const sent = await this.wallet.sendTx(op.payload, {
       from: NO_FROM,
       sendMessagesAs: user,
-      additionalScopes: [user, ...op.sendOpts.additionalScopes],
+      additionalScopes: [...paying.scopes, ...op.sendOpts.additionalScopes],
       finalize: op.sendOpts.finalize,
       fee: op.sendOpts.fee,
       operationId: options?.operationId,
       kind: options?.kind ?? "send",
       confirmGate: options?.confirmGate,
+      onTxHash: options?.onTxHash,
     })
     const receipt = (
       sent as { receipt?: { txHash?: { toString(): string }; blockNumber?: number } }
@@ -879,12 +905,11 @@ export class TokenService extends ServiceContractBase {
    * {@link exitToL1Private} for fronts with no fee service (web). The burn is authorized BY the
    * user via a delegated authwit (`withdraw` is `#[authorize_once]`; msg_sender is the FPC), so
    * an `authorize_intents` account call rides the batch:
-   * `[authorize_intents, withdraw, broadcast, publish_da]`, where the broadcast releases the burn
-   * on L1 (paired with the swap on a swap-on-withdraw). The calls match the FPC's policy (the
-   * shipped `ByAny` entry matches any non-FPC private call).
+   * `[authorize_intents, withdraw, escrow run?, finalization request, publish_da]`. The calls match
+   * the FPC's policy (the shipped `ByAny` entry matches any non-FPC private call).
    *
-   * The published withdrawal log and downstream finalization (oxide relayer, the client's
-   * `WithdrawalTrackingService` watcher) are identical to the self-paid path.
+   * Recovery and finalization (oxide relayer, the client's `WithdrawalTrackingService` watcher)
+   * are identical to the self-paid path.
    */
   public async exitToL1PrivateSponsored(
     l1Recipient: EthAddress,
@@ -898,8 +923,7 @@ export class TokenService extends ServiceContractBase {
       withdrawal: WithdrawalOptions
       /** See {@link exitToL1Private}. */
       proverTip?: bigint
-      /** Awaited with the proven tx's hash before the node takes it; a rejection sends nothing. */
-      onTxHash?: (txHash: string) => Promise<void>
+      onTxHash?: TxHashCallback
     }>,
   ): Promise<{
     txHash: string
@@ -918,6 +942,7 @@ export class TokenService extends ServiceContractBase {
       planned,
       intentHash,
     } = await this.planSponsoredExit(l1Recipient, amount, sponsor, options, Fr.random())
+    const paying = sponsoredAccounts(sponsor, user)
 
     this.emitInit()
     const humanReadableAmount = await this.formatAmount(rawAmount)
@@ -952,7 +977,7 @@ export class TokenService extends ServiceContractBase {
         fpcArtifact,
         railId: sponsor.railId,
         policy: sponsor.policy,
-        user,
+        ...paying.args,
         tokenContract,
         signer: this.getTeeSigner(),
         operations: [withdrawOp],
@@ -971,7 +996,7 @@ export class TokenService extends ServiceContractBase {
     const sent = await this.wallet.sendTx(op.payload, {
       from: NO_FROM,
       sendMessagesAs: user,
-      additionalScopes: [user, ...op.sendOpts.additionalScopes],
+      additionalScopes: [...paying.scopes, ...op.sendOpts.additionalScopes],
       finalize: op.sendOpts.finalize,
       fee: op.sendOpts.fee,
       operationId: options?.operationId,
@@ -1053,102 +1078,29 @@ export class TokenService extends ServiceContractBase {
   // ============================================================
 
   /**
-   * Deploy a fresh bridge instance under the oxideToken
-   * `ContractName`. Token + bridge are consolidated; the resulting contract
-   * IS the token from the SDK's point of view. `name`/`symbol`/`decimals` are
-   * passed to the constructor and stored on-chain (`OxideToken` holds them as
-   * public immutables + views).
+   * Publish the counterfactual token `immutables` commit to and store its immutables in this PXE.
+   * The token address is fixed by the immutables, so publishing a token that exists fails.
    */
-  public async deployToken(
-    portal: EthAddress,
-    name: string,
-    symbol: string,
-    decimals: number,
-    options?: MethodOptions<{
-      deployerAccount?: Account
-    }>,
+  public async publishToken(
+    immutables: OxideTokenImmutables,
+    options?: { deployerAccount?: Account },
   ): Promise<OxideTokenContract> {
     await this.ensureContractsRegistered()
-
-    const deployerAccount = options?.deployerAccount ?? this.account
-    const bridgeArtifact = await this.contractService.getArtifactForContract(this.contractName)
-    const sendOptions = await this.getSendOptions(deployerAccount.getAddress(), options)
-
-    if (options?.profile) {
-      const deployMethod = OxideTokenContract.deploy(
-        this.wallet,
-        bridgeArtifact,
-        portal,
-        name,
-        symbol,
-        decimals,
-      )
-      await this.profileInteraction(deployMethod, { from: deployerAccount.getAddress() })
-    }
-
-    const deploy = await OxideTokenContract.deploy(
+    const deployer = (options?.deployerAccount ?? this.account).getAddress()
+    const artifact = await this.contractService.getArtifactForContract(this.contractName)
+    const token = await publishAndLockOxideTokenWithArtifact(
       this.wallet,
-      bridgeArtifact,
-      portal,
-      name,
-      symbol,
-      decimals,
-      { salt: Fr.random(), universalDeploy: true },
-    ).send(sendOptions)
+      artifact,
+      immutables,
+      deployer,
+    )
 
-    this.bridgeContract = deploy.contract as OxideTokenContract
-    this.contractAddress = this.bridgeContract.address
-
-    await this.contractService.setContractAddress(this.contractName, this.bridgeContract.address)
-
+    this.bridgeContract = OxideTokenContract.at(token.address, artifact, this.wallet)
+    this.contractAddress = token.address
+    const { name, symbol, decimals } = immutables
+    this.tokenInfo = { address: token.address.toString(), name, symbol, decimals }
+    await this.contractService.setContractAddress(this.contractName, token.address)
     return this.bridgeContract
-  }
-
-  /**
-   * Deploy a fresh bridge instance. The consolidated bridge takes only the L1
-   * portal address; chain id is read from `context.chain_id()` at call time
-   * (matches oxide). Returned bridge owns balance storage directly.
-   *
-   * Registry-key concern: the inherited `ServiceBase.deployContract` writes
-   * the deployed address under `this.contractName`, which is always the
-   * consolidated `oxideToken` — token and bridge are the same contract,
-   * so the historical token-cache-corruption hazard no longer exists.
-   */
-  public async deployBridge(
-    portal: EthAddress,
-    name: string,
-    symbol: string,
-    decimals: number,
-    options?: MethodOptions<{
-      deployerAccount?: Account
-    }>,
-  ): Promise<OxideTokenContract> {
-    await this.ensureContractsRegistered()
-
-    const deployerAccount = options?.deployerAccount ?? this.account
-    const sendOptions = await this.getSendOptions(deployerAccount.getAddress(), options)
-
-    if (options?.profile) {
-      const bridgeArtifact = await this.contractService.getArtifactForContract(
-        DEFAULT_CONTRACTS.oxideToken,
-      )
-      const deployMethod = OxideTokenContract.deploy(
-        this.wallet,
-        bridgeArtifact,
-        portal,
-        name,
-        symbol,
-        decimals,
-      )
-      await this.profileInteraction(deployMethod, { from: deployerAccount.getAddress() })
-    }
-
-    const bridge = await this.deployContract([portal, name, symbol, decimals], sendOptions, {
-      salt: Fr.random(),
-      universalDeploy: true,
-    })
-
-    return bridge as OxideTokenContract
   }
 
   // ============================================================

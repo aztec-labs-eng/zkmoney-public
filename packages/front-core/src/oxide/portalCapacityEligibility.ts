@@ -5,7 +5,7 @@
  * A capacity read reserves nothing. `fits` means the amount fits the observed capacity, not that a later deposit
  * will be processed without waiting.
  */
-import type { OperationCapFact, PortalCapacitySnapshot } from "@obsidion/sdk"
+import type { PortalCapacitySnapshot } from "@obsidion/sdk"
 import {
   DEFAULT_PORTAL_CAPACITY_POLICY,
   type CapacityUnsupportedReason,
@@ -50,8 +50,8 @@ export type CapacityEligibility =
       reason: CapacityUnsupportedReason | "amount-token-mismatch" | "amount-decimals-mismatch"
       detail: string
     }
-  /** Above the per-operation cap. Refill cannot help. */
-  | { kind: "exceeds-operation-cap"; requiredAtomic: bigint; operationCap: OperationCapFact }
+  /** Above the portal's per-operation cap. Refill cannot help. */
+  | { kind: "exceeds-operation-cap"; requiredAtomic: bigint; txAmountCap: bigint }
   /** Capacity is known; no amount to compare. */
   | ({ kind: "amount-unknown"; low: boolean; zero: boolean } & Observed)
   /** Above the bucket ceiling. Even a full bucket cannot take it. */
@@ -67,7 +67,8 @@ export type CapacityEligibility =
 export interface CapacityEligibilityInput {
   state: PortalCapacityState
   required: RequiredCredit
-  operationCap: OperationCapFact
+  /** The portal's `TX_AMOUNT_CAP()`. Defaults to the capacity read's own. */
+  txAmountCap?: bigint
   /** Epoch ms. */
   now: number
   /** Defaults to the store policy default. Pass the store's `policy.staleAfterMs` when it differs. */
@@ -75,9 +76,10 @@ export interface CapacityEligibilityInput {
 }
 
 export function evaluateCapacityEligibility(input: CapacityEligibilityInput): CapacityEligibility {
-  const { state, required, operationCap } = input
+  const { state, required } = input
   const staleAfterMs = input.staleAfterMs ?? DEFAULT_PORTAL_CAPACITY_POLICY.staleAfterMs
   const snapshot = "snapshot" in state ? state.snapshot : undefined
+  const txAmountCap = input.txAmountCap ?? snapshot?.txAmountCapAtomic
 
   if (required.status === "known") {
     if (required.token.toLowerCase() !== state.key.token.toLowerCase()) {
@@ -94,8 +96,8 @@ export function evaluateCapacityEligibility(input: CapacityEligibilityInput): Ca
         detail: `amount has ${required.decimals} decimals; the token has ${snapshot.decimals}`,
       }
     }
-    if (required.atomic > operationCap.sourceAtomic) {
-      return { kind: "exceeds-operation-cap", requiredAtomic: required.atomic, operationCap }
+    if (txAmountCap !== undefined && required.atomic > txAmountCap) {
+      return { kind: "exceeds-operation-cap", requiredAtomic: required.atomic, txAmountCap }
     }
   }
 
@@ -127,7 +129,7 @@ export function evaluateCapacityEligibility(input: CapacityEligibilityInput): Ca
   const { availableAtomic, globalLimitAtomic, rateAtomicPerSecond } = state.snapshot
   const low =
     availableAtomic <
-    (operationCap.sourceAtomic < globalLimitAtomic ? operationCap.sourceAtomic : globalLimitAtomic)
+    (txAmountCap !== undefined && txAmountCap < globalLimitAtomic ? txAmountCap : globalLimitAtomic)
 
   if (required.status === "unknown" || required.atomic <= 0n) {
     return { kind: "amount-unknown", low, zero: availableAtomic === 0n, ...observed }

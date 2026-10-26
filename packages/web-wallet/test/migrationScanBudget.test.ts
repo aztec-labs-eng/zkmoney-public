@@ -203,10 +203,16 @@ vi.mock("../src/config/env", () => ({
     },
     network: "sandbox",
     l1ChainId: 11155111,
+    assets: [],
   }),
 }))
 vi.mock("../src/config/oxideTuple", () => ({
   l1PublicClient: () => (h.active.current as CountingClient).client,
+  l1MulticallClient: () => (h.active.current as CountingClient).client,
+  getOtherManifestSources: async () => [],
+}))
+vi.mock("../src/features/savings/savingsGateway", () => ({
+  getSavingsTuple: async () => undefined,
 }))
 vi.mock("../src/platform/auth/useAuthenticator", () => ({
   getAuthService: () => ({ getSecretKey: async () => "0x01" }),
@@ -233,6 +239,7 @@ const tuple = (n: number): OxideEnvTuple =>
     enclaveUrl: "http://tee.example.test/rpc",
     pcr0: "",
     rollupVersion: "7",
+    depositSIPAImplementation: "0x" + "dd".repeat(20),
   } as OxideEnvTuple)
 
 const current = tuple(9)
@@ -279,7 +286,7 @@ async function boot(
   h.balance.current = balance
   const l1 = countingClient({ sweeps: [], ...chain })
   h.active.current = l1
-  h.detect.mockResolvedValue({ current, historic })
+  h.detect.mockResolvedValue({ current, historic, destinations: new Map() })
   h.sources.mockImplementation(async () => {
     if (chain.rejectSources) throw new Error("exceed maximum block range: 50000")
     return sourcesOf(sources)

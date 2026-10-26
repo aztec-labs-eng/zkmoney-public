@@ -1,11 +1,10 @@
 import { weiToUSD } from './eth_usd_price_feed.js';
 
 /**
- * Gas of one epoch proof submission to the rollup: a part every proof pays and a part for each checkpoint it covers.
- * The fixed part is the Honk verification, the committee attestations and the blob point evaluation. Each checkpoint
- * adds its header in calldata, the check of that header against its stored hash, its public inputs and its turn in
- * the reward loop. The first-prover captures that the submitter records are not in the model: see
- * {@link PORTAL__FIRST_PROVER_CAPTURE_GAS}.
+ * Gas of one epoch proof submission through the FirstProverProofSubmitter: a part every proof pays and a part for
+ * each checkpoint it covers. The fixed part is the Honk verification, the committee attestations, the blob point
+ * evaluation and the submitter's proven-tip check. Each checkpoint adds its header in calldata, the check of that
+ * header against its stored hash, its public inputs and its turn in the reward loop.
  */
 export interface SubmitEpochProofGasModel {
   baseGas: bigint;
@@ -13,25 +12,21 @@ export interface SubmitEpochProofGasModel {
 }
 
 /**
- * The base is fitted to the receipts of the Aztec v5 rollups' `L2ProofVerified` transactions, with 33 of 48 committee
- * signatures in each and without the submitter's capture: mainnet, 52 first proofs of 24 to 32 checkpoints, 1.43M +
- * 22.1k per checkpoint; Sepolia testnet, 52 of 8 to 32, 1.47M + 18.4k. The per-checkpoint gas is the rollup
- * benchmark's with the mock verifier (661k at 1 checkpoint, 980k at 8, 1.29M at 16, 1.80M at 32), where every
- * sequencer's reward slot is written cold; mainnet sequencers mostly hold a balance, so the chain's slope is 15k
- * lower. A proof that extends an epoch already partly proven costs less, so it is left out.
+ * The base is fitted to the receipts of the Aztec v5 rollups' `L2ProofVerified` transactions, with the submitter's
+ * capture (about 58k) added where a proof paid none and 33 of 48 committee signatures in each: mainnet, 52 first
+ * proofs of 24 to 32 checkpoints, 1.49M + 22.1k per checkpoint; Sepolia testnet, 52 of 8 to 32, 1.53M + 18.4k. The
+ * per-checkpoint gas is the rollup benchmark's with the mock verifier (661k at 1 checkpoint, 980k at 8, 1.29M at 16,
+ * 1.80M at 32), where every sequencer's reward slot is written cold; mainnet sequencers mostly hold a balance, so
+ * the chain's slope is 15k lower. A proof that extends an epoch already partly proven costs less, so it is left out.
+ * The FirstProverProofSubmitter's proven-tip check costs about 21k, so the base is about 37k above the cost of a
+ * proof through it.
  */
 export const ROLLUP__SUBMIT_EPOCH_PROOF_GAS_MODEL: SubmitEpochProofGasModel = {
-  baseGas: 1_442_000n,
+  baseGas: 1_500_000n,
   gasPerCheckpoint: 37_000n,
 };
 
-/**
- * Gas of one first-prover capture that a proof submitter records on a portal. A FirstProverProofSubmitter records
- * one capture. A multi-portal submitter records one capture on each portal that it lists.
- */
-export const PORTAL__FIRST_PROVER_CAPTURE_GAS = 58_000n;
-
-/** Gas of a proof that covers `checkpointCount` checkpoints, without the first-prover captures. */
+/** Gas of a proof that covers `checkpointCount` checkpoints. */
 export function submitEpochProofGas(
   checkpointCount: bigint,
   model: SubmitEpochProofGasModel = ROLLUP__SUBMIT_EPOCH_PROOF_GAS_MODEL,
@@ -121,7 +116,10 @@ export interface ProverTipQuoteInput extends Partial<PartialEpochProofTerms> {
   usdPerEth: bigint;
   /** The prover subsidy's quote for one claim, in units of the portal token. */
   subsidyForOneClaim: bigint;
-  /** Checkpoints the proof covers, the burn's included: its one-based index in the epoch. Sets gas and proving cost. */
+  /**
+   * Checkpoints the proof covers, the initiation's checkpoint included: its one-based index in the epoch. Sets gas and
+   * proving cost.
+   */
   checkpointCount: bigint;
   /** Default to {@link ROLLUP__SUBMIT_EPOCH_PROOF_GAS_MODEL}. */
   submitEpochProofGasModel?: SubmitEpochProofGasModel;
@@ -132,8 +130,6 @@ export interface ProverTipQuoteInput extends Partial<PartialEpochProofTerms> {
    * is not worth one USD, for example a vault share such as sUSDS, which the relayer values at the vault rate.
    */
   tokenPrice?: PortalTokenPrice;
-  /** Gas of the one first-prover capture on the portal. Default to {@link PORTAL__FIRST_PROVER_CAPTURE_GAS}. */
-  firstProverCaptureGas?: bigint;
 }
 
 /**
@@ -150,7 +146,6 @@ export function quoteProverTip(input: ProverTipQuoteInput): bigint {
   const provingCostPerCheckpoint = input.provingCostPerCheckpoint ?? EARLY_SUBMIT_POLICY__PROVING_COST_PER_CHECKPOINT;
   const gas =
     submitEpochProofGas(input.checkpointCount, input.submitEpochProofGasModel) +
-    (input.firstProverCaptureGas ?? PORTAL__FIRST_PROVER_CAPTURE_GAS) +
     claimProverTipsGas(1n, input.claimProverTipsGasModel);
   if (marginBps >= BPS_DENOMINATOR) {
     throw new Error(`no prover tip meets a min epoch profit margin of ${marginBps} bps`);

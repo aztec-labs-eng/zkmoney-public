@@ -1,7 +1,11 @@
-import { DA_GAS_PER_FIELD, L2_GAS_PER_PRIVATE_LOG, PRIVATE_LOG_SIZE_IN_FIELDS } from "@aztec/constants"
-import { Gas } from "@aztec/stdlib/gas"
-import type { ExecutionPayload } from "@aztec/stdlib/tx"
-import type { TxSimulationResultWithAppOffset } from "@aztec/aztec.js/wallet"
+import {
+  DA_GAS_PER_FIELD,
+  L2_GAS_PER_PRIVATE_LOG,
+  PRIVATE_LOG_SIZE_IN_FIELDS,
+} from "@aztec-labs/constants"
+import { Gas } from "@aztec-labs/stdlib/gas"
+import type { ExecutionPayload } from "@aztec-labs/stdlib/tx"
+import type { TxSimulationResultWithAppOffset } from "@aztec-labs/aztec.js/wallet"
 
 /**
  * Staged execution: the generic wallet-side primitive that lets a payload be
@@ -130,7 +134,7 @@ export class InvalidEffectDeltasError extends Error {
  * {@link FinalizedPayload.gasDelta}.
  *
  * Mirrors the private-log terms of the kernel-side `meterGasUsed`
- * (`@aztec/pxe` `contract_function_simulator.js`), which both the kernelless
+ * (`@aztec-labs/pxe` `contract_function_simulator.js`), which both the kernelless
  * simulation mirror and the real private-kernel-tail circuit implement:
  *
  *   - DA gas:  every private log contributes `emittedLength + 1` fields
@@ -190,11 +194,7 @@ export function priceDeclaredEffectDeltas(deltas: DeclaredEffectDeltas | undefin
  */
 export class ProvenGasExceedsLimitsError extends Error {
   override readonly name = "ProvenGasExceedsLimitsError"
-  constructor(
-    public readonly gasUsed: Gas,
-    public readonly gasLimits: Gas,
-    detail: string,
-  ) {
+  constructor(public readonly gasUsed: Gas, public readonly gasLimits: Gas, detail: string) {
     super(
       `Proven tx gas exceeds the limits set at estimation time ` +
         `(used da=${gasUsed.daGas} l2=${gasUsed.l2Gas}, ` +

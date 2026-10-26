@@ -31,6 +31,8 @@ const { tokenStoreRef, activeAddressRef, mockObsidionAccount, mockObsidionWallet
     mockObsidionWallet: { pxe: { registerSender: vi.fn() }, _id: "wallet" } as unknown,
   }),
 )
+// How long a TokenStorage write takes, in ms.
+const addTokenDelayRef = vi.hoisted(() => ({ current: 0 }))
 
 const tokenServiceStub = {
   account: {
@@ -41,7 +43,14 @@ const tokenServiceStub = {
   setTeeSigner: vi.fn(),
   tokenAddress: { toString: () => ACTIVE_ADDR },
   getBalance: vi.fn(async () => BALANCE),
+  fetchTokenInformation: vi.fn(async () => ({
+    address: ACTIVE_ADDR,
+    name: "Dai",
+    symbol: "DAI",
+    decimals: 18,
+  })),
 }
+const tokenStubFetch = tokenServiceStub.fetchTokenInformation
 
 vi.mock("@obsidion/sdk", async () => {
   const actual = await vi.importActual<typeof import("@obsidion/sdk")>("@obsidion/sdk")
@@ -73,6 +82,8 @@ vi.mock("src/core", async () => {
       get: () => ({
         getTokens: vi.fn(async () => tokenStoreRef.current),
         addToken: vi.fn(async (t: any) => {
+          if (addTokenDelayRef.current)
+            await new Promise((resolve) => setTimeout(resolve, addTokenDelayRef.current))
           tokenStoreRef.current = tokenStoreRef.current.filter((x: any) => x.address !== t.address)
           tokenStoreRef.current.push(t)
         }),
@@ -118,10 +129,10 @@ vi.mock("src/utils", async () => {
 
 import { useAsset } from "../../src/hooks/useAsset"
 
-function renderUseAsset() {
+function renderUseAsset(options?: Parameters<typeof useAsset>[0]) {
   const result: { current: ReturnType<typeof useAsset> | null } = { current: null }
   const Wrapper = () => {
-    result.current = useAsset()
+    result.current = useAsset(options)
     return null
   }
   const utils = render(React.createElement(Wrapper))
@@ -137,6 +148,7 @@ describe("useAsset persisted token-row refresh", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     tokenStoreRef.current = []
+    addTokenDelayRef.current = 0
     activeAddressRef.current = { toString: () => ACTIVE_ADDR }
   })
 
@@ -175,6 +187,43 @@ describe("useAsset persisted token-row refresh", () => {
     const untouched = tokenStoreRef.current.find((t) => t.address === OLD_ADDR)
     expect(untouched?.decimals).toBe(6)
     expect(untouched?.symbol).toBe("USDC")
+    unmount()
+  })
+
+  it("retries a failed metadata read and repairs the row once it lands", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      tokenStubFetch.mockRejectedValueOnce(new Error("L1 unreachable"))
+      tokenStoreRef.current = [legacyUsdcRow(ACTIVE_ADDR, 6)]
+      const { result, unmount } = renderUseAsset()
+
+      await waitFor(() => expect(tokenStubFetch).toHaveBeenCalledTimes(1))
+      expect(tokenStoreRef.current.find((t) => t.address === ACTIVE_ADDR)?.decimals).toBe(6)
+      expect(result.current.liveAssetsLoaded).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(4000)
+      await waitFor(() =>
+        expect(tokenStoreRef.current.find((t) => t.address === ACTIVE_ADDR)?.decimals).toBe(18),
+      )
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("checks the row init writes against the token, however slow the write", async () => {
+    tokenStubFetch.mockResolvedValueOnce({
+      address: ACTIVE_ADDR,
+      name: "Dai",
+      symbol: "DAI",
+      decimals: 6,
+    })
+    addTokenDelayRef.current = 50
+    const { unmount } = renderUseAsset({ initialTokensToLoad: ["DAI"] })
+
+    await waitFor(() =>
+      expect(tokenStoreRef.current.find((t) => t.address === ACTIVE_ADDR)?.decimals).toBe(6),
+    )
     unmount()
   })
 

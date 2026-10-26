@@ -184,6 +184,12 @@ export const DIFFERENT_PASSKEY = "DifferentPasskeyError"
 /** The tag's account holds more keys than could be read, so membership cannot be settled. */
 export const INCONCLUSIVE = "InconclusiveError"
 
+/** A backup passkey answered, but its envelope did not open: wrong key material, layout, or no user verification. */
+export const BACKUP_ENVELOPE = "PasskeyEnvelopeError"
+
+/** The passkey's account holds more keys than the sign-in could read; the tag-first sign-in reads them all. */
+export const SET_UNREAD = "PasskeySetUnreadError"
+
 /** The wallet's own refusals beside the shared rows: raised by onboarding, keyed by name like the rest. */
 const WALLET_ROWS: Record<string, RefusalRow> = {
   ...IN_APP_BROWSER_ROWS,
@@ -200,6 +206,17 @@ const WALLET_ROWS: Record<string, RefusalRow> = {
   // Retry reopens the browser's prompt, where the right passkey or another device is picked.
   [DIFFERENT_PASSKEY]: { title: "This passkey opens a different account", retry: true },
   [INCONCLUSIVE]: { title: "Couldn't confirm this passkey", retry: true },
+  [BACKUP_ENVELOPE]: {
+    title: "Couldn't open the wallet with this passkey",
+    retry: true,
+    message: "This passkey can't open the wallet on this device. Use another one.",
+  },
+  [SET_UNREAD]: {
+    title: "Sign in with your @tag",
+    retry: false,
+    message:
+      "This passkey's account has more passkeys than this sign-in could read. Type your @tag to sign in with it.",
+  },
   [GRANTED_REGISTRATION]: {
     title: "You're through the queue",
     retry: false,

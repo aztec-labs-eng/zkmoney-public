@@ -12,19 +12,37 @@ import { encodeAbiParameters, toFunctionSelector, type Address, type Hex } from 
 /** The demo's L1 EOA — connected wallet, transaction sender, recovery destination and tip target. */
 export const DEMO_L1_ACCOUNT = "0x7c4a1b9d2ef3a5b60c81de4f72a93b5c6d0e8f14" as Hex
 
-/** What `balanceOf` reports for a deposit address: clears the fee and the cut below by enough that
- *  both exits' balance guards pass. */
+/** What `balanceOf` reports for a deposit address: clears the fee below by enough that both exits'
+ *  balance guards pass. */
 export const DEMO_SIPA_BALANCE = 2_500_000_000_000_000_000n
 
-/** The implementation's `depositFee()` — the relayer's sweep fee, at the deployed figure. */
+/** The forwarding-table deposit row's sweep tip — the relayer's sweep fee, at the deployed figure. */
 export const DEMO_DEPOSIT_FEE = 250_000_000_000_000_000n
 
-/** The portal's `FPC_FUNDING_CUT()`, at the live deployments' figure. Skimmed
- *  beside the sweep fee, so a deposit has to clear both to be sweepable. */
-export const DEMO_FPC_FUNDING_CUT = 100_000_000_000_000_000n
+/** The plain withdrawal executor's `FEE()`, at the deployed figure. */
+export const DEMO_WITHDRAWAL_FEE = 100_000_000_000_000_000n
 
-/** What `SIPAFactory.{deposit,registration}ImplementationFor` answers; only its shape matters here. */
+/** Who the plain withdrawal executor pays its fee to. */
+export const DEMO_WITHDRAWAL_FEE_BENEFICIARY =
+  "0xfee0000000000000000000000000000000000fee" as Address
+
+/** The portal every forwarding-table row names, and the one the withdrawal executor serves. */
+export const DEMO_PORTAL = "0xde1100000000000000000000000000000000da01" as Address
+
+/** The portal's `TX_AMOUNT_CAP()`: the most one sweep may deposit. */
+export const DEMO_TX_AMOUNT_CAP = 5166n * 10n ** 18n
+
+/** What `SIPAFactory.implementationFor` answers for every intent; only its shape matters here. */
 const DEMO_SIPA_IMPLEMENTATION = 0x5117a0000000000000000000000000000000119en
+
+/**
+ * The deposit token: the portal's underlying. The mainnet DAI address, so the demo's one row takes the mainnet swap
+ * inputs the demo shows.
+ */
+export const DEMO_L1_TOKEN = "0x6B175474E89094C44Da98b954EedeAC495271d0F" as Address
+
+/** The TEE registry the portal states; a placeholder nothing dials. */
+const DEMO_TEE_REGISTRY = "0x7ee0000000000000000000000000000000007ee0" as Address
 
 /**
  * The rollup identity `OxidePortal` states in the demo. The version is the figure
@@ -48,10 +66,17 @@ const GAS_PRICE = 1_500_000_000n
 const BLOCK_TIME_MS = 2_000
 
 const SELECTOR = {
-  depositFee: toFunctionSelector("depositFee()"),
-  fpcFundingCut: toFunctionSelector("FPC_FUNDING_CUT()"),
-  implementationFor: toFunctionSelector("implementationFor(address,uint8)"),
-  predictSIPA: toFunctionSelector("predictSIPA(address,bytes32,address,uint256,bool)"),
+  rowFor: toFunctionSelector("rowFor(address,uint8)"),
+  withdrawalFee: toFunctionSelector("FEE()"),
+  feeBeneficiary: toFunctionSelector("BENEFICIARY()"),
+  executorPortal: toFunctionSelector("PORTAL()"),
+  txAmountCap: toFunctionSelector("TX_AMOUNT_CAP()"),
+  underlying: toFunctionSelector("UNDERLYING()"),
+  teeRegistry: toFunctionSelector("TEE_REGISTRY()"),
+  name: toFunctionSelector("name()"),
+  implementationFor: toFunctionSelector("implementationFor(uint8)"),
+  predictSIPA: toFunctionSelector("predictSIPA(address,bytes32,bytes32,uint256,bool,address)"),
+  predictLegacySIPA: toFunctionSelector("predictSIPA(address,bytes32,address,uint256,bool)"),
   isWithdrawalSpent: toFunctionSelector("$isWithdrawalSpent(bytes32)"),
   decimals: toFunctionSelector("decimals()"),
   symbol: toFunctionSelector("symbol()"),
@@ -120,8 +145,31 @@ function contractRead(data?: Hex, to?: string): Hex {
       return encodeAbiParameters([{ type: "string" }], [token.symbol])
     if (selector === SELECTOR.balanceOf) return word(token.balance)
   }
-  if (selector === SELECTOR.depositFee) return word(DEMO_DEPOSIT_FEE)
-  if (selector === SELECTOR.fpcFundingCut) return word(DEMO_FPC_FUNDING_CUT)
+  // Every token and intent routes to the one portal, at the deposit tip and no beneficiary fee.
+  if (selector === SELECTOR.rowFor) {
+    return encodeAbiParameters(
+      [{ type: "address" }, { type: "address" }, { type: "uint128" }, { type: "uint128" }],
+      [DEMO_PORTAL, `0x${"00".repeat(20)}`, 0n, DEMO_DEPOSIT_FEE],
+    )
+  }
+  if (selector === SELECTOR.withdrawalFee) return word(DEMO_WITHDRAWAL_FEE)
+  if (selector === SELECTOR.feeBeneficiary) {
+    return encodeAbiParameters([{ type: "address" }], [DEMO_WITHDRAWAL_FEE_BENEFICIARY])
+  }
+  if (selector === SELECTOR.executorPortal) {
+    return encodeAbiParameters([{ type: "address" }], [DEMO_PORTAL])
+  }
+  if (selector === SELECTOR.txAmountCap) return word(DEMO_TX_AMOUNT_CAP)
+  // The token immutables read the portal's underlying and TEE registry, and the underlying's name.
+  if (selector === SELECTOR.underlying) {
+    return encodeAbiParameters([{ type: "address" }], [DEMO_L1_TOKEN])
+  }
+  if (selector === SELECTOR.teeRegistry) {
+    return encodeAbiParameters([{ type: "address" }], [DEMO_TEE_REGISTRY])
+  }
+  if (selector === SELECTOR.name) {
+    return encodeAbiParameters([{ type: "string" }], [DEMO_TOKEN_SYMBOL])
+  }
   // The demo serves one implementation for every intent, so the intent argument is not read.
   if (selector === SELECTOR.implementationFor) return word(DEMO_SIPA_IMPLEMENTATION)
   if (selector === SELECTOR.decimals) return word(BigInt(DEMO_TOKEN_DECIMALS))
@@ -139,7 +187,7 @@ function contractRead(data?: Hex, to?: string): Hex {
   if (selector === SELECTOR.inbox) {
     return encodeAbiParameters([{ type: "address" }], [DEMO_INBOX_ADDRESS])
   }
-  if (selector === SELECTOR.predictSIPA) {
+  if (selector === SELECTOR.predictSIPA || selector === SELECTOR.predictLegacySIPA) {
     // `intentHash` is the second argument: skip the selector and the `implementation` word.
     const sipa = predictions.get(commitmentKey(data!.slice(74, 138)))
     return word(BigInt(sipa ?? `0x${"00".repeat(20)}`))
@@ -302,6 +350,8 @@ interface JsonRpcRequest {
  */
 export function installL1RpcStub(rpcUrl: string, handle: RpcHandler): void {
   const passthrough = globalThis.fetch.bind(globalThis)
+  // `new URL` adds the trailing slash a bare origin lacks, as the app's client does.
+  const target = new URL(rpcUrl).href
 
   const answer = async (request: JsonRpcRequest) => ({
     jsonrpc: "2.0",
@@ -312,7 +362,7 @@ export function installL1RpcStub(rpcUrl: string, handle: RpcHandler): void {
   globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url =
       typeof input === "string" ? input : input instanceof URL ? input.href : (input as Request).url
-    if (url !== rpcUrl) return passthrough(input, init)
+    if (new URL(url, location.href).href !== target) return passthrough(input, init)
     const body = JSON.parse(String(init?.body ?? "{}")) as JsonRpcRequest | JsonRpcRequest[]
     // `l1Transport` batches, so a same-tick pair of reads arrives as one array.
     const payload = Array.isArray(body) ? await Promise.all(body.map(answer)) : await answer(body)

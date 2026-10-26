@@ -27,7 +27,7 @@ import {
   type PublicClient,
 } from "viem"
 import { foundry } from "viem/chains"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { computeSIPAAddress } from "../../../../src/core/services/deposits/sipa"
 import {
   encodeRegistrationData,
@@ -97,55 +97,61 @@ function abiEncodedArgs(intentHash: Buffer, resweepable: boolean): Hex {
   ])
 }
 
-describe.runIf(!!process.env.SIPA_ANVIL_RPC_URL)("SIPA parity against the deployed Registry", () => {
-  const rpc = process.env.SIPA_ANVIL_RPC_URL as string
-  const publicClient = createPublicClient({ chain: foundry, transport: http(rpc) }) as PublicClient
+describe.runIf(!!process.env.SIPA_ANVIL_RPC_URL)(
+  "SIPA parity against the deployed Registry",
+  () => {
+    const rpc = process.env.SIPA_ANVIL_RPC_URL as string
+    const publicClient = createPublicClient({
+      chain: foundry,
+      transport: http(rpc),
+    }) as PublicClient
 
-  const offline = (impl: Address, intentHash: Buffer, resweepable: boolean) =>
-    computeSIPAAddress({
-      registry: EthAddress.fromString(REGISTRY),
-      implementation: EthAddress.fromString(impl),
-      intentHash,
-      ...BASE,
-      resweepable,
+    const offline = (impl: Address, intentHash: Buffer, resweepable: boolean) =>
+      computeSIPAAddress({
+        registry: EthAddress.fromString(REGISTRY),
+        implementation: EthAddress.fromString(impl),
+        intentHash,
+        ...BASE,
+        resweepable,
+      })
+
+    const viemAddress = (impl: Address, intentHash: Buffer, resweepable: boolean) =>
+      getContractAddress({
+        opcode: "CREATE2",
+        from: REGISTRY as `0x${string}`,
+        salt: `0x${"00".repeat(32)}`,
+        bytecode: cloneInitCode(impl, abiEncodedArgs(intentHash, resweepable)),
+      }).toLowerCase()
+
+    const readImpl = () =>
+      publicClient.readContract({
+        address: REGISTRY,
+        abi: REGISTRY_ABI,
+        functionName: "sipaImplementation",
+      }) as Promise<Address>
+
+    it("uses the expected deployed SIPA implementation", async () => {
+      expect((await readImpl()).toLowerCase()).toBe(EXPECTED_IMPL)
     })
 
-  const viemAddress = (impl: Address, intentHash: Buffer, resweepable: boolean) =>
-    getContractAddress({
-      opcode: "CREATE2",
-      from: REGISTRY as `0x${string}`,
-      salt: `0x${"00".repeat(32)}`,
-      bytecode: cloneInitCode(impl, abiEncodedArgs(intentHash, resweepable)),
-    }).toLowerCase()
+    it("offline == viem CREATE2 for a deposit intent", async () => {
+      const impl = await readImpl()
+      const intentHash = Buffer.from(
+        "2d2b85117fb7b9c18c24f74d964a952070dc83713469c0493c8ac1bcbed0e171",
+        "hex",
+      )
+      expect(offline(impl, intentHash, true).toString()).toBe(viemAddress(impl, intentHash, true))
+    })
 
-  const readImpl = () =>
-    publicClient.readContract({
-      address: REGISTRY,
-      abi: REGISTRY_ABI,
-      functionName: "sipaImplementation",
-    }) as Promise<Address>
-
-  it("uses the expected deployed SIPA implementation", async () => {
-    expect((await readImpl()).toLowerCase()).toBe(EXPECTED_IMPL)
-  })
-
-  it("offline == viem CREATE2 for a deposit intent", async () => {
-    const impl = await readImpl()
-    const intentHash = Buffer.from(
-      "2d2b85117fb7b9c18c24f74d964a952070dc83713469c0493c8ac1bcbed0e171",
-      "hex",
-    )
-    expect(offline(impl, intentHash, true).toString()).toBe(viemAddress(impl, intentHash, true))
-  })
-
-  it("offline == viem CREATE2 for a registration intent (intentHash = keccak256(record))", async () => {
-    const impl = await readImpl()
-    const commitment = registrationCommitment(RECORD)
-    // Sanity: the commitment is keccak256 of the encoded record.
-    expect(commitment).toHaveLength(66)
-    expect(encodeRegistrationData(RECORD)).toHaveLength(2 + 576)
-    const intentHash = Buffer.from(commitment.slice(2), "hex")
-    // A registration SIPA is one-shot (resweepable = false).
-    expect(offline(impl, intentHash, false).toString()).toBe(viemAddress(impl, intentHash, false))
-  }, 30_000)
-})
+    it("offline == viem CREATE2 for a registration intent (intentHash = keccak256(record))", async () => {
+      const impl = await readImpl()
+      const commitment = registrationCommitment(RECORD)
+      // Sanity: the commitment is keccak256 of the encoded record.
+      expect(commitment).toHaveLength(66)
+      expect(encodeRegistrationData(RECORD)).toHaveLength(2 + 576)
+      const intentHash = Buffer.from(commitment.slice(2), "hex")
+      // A registration SIPA is one-shot (resweepable = false).
+      expect(offline(impl, intentHash, false).toString()).toBe(viemAddress(impl, intentHash, false))
+    }, 30_000)
+  },
+)

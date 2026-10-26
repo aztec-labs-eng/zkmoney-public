@@ -2,20 +2,17 @@ import {
   BatchCall,
   ContractFunctionInteraction,
   SendInteractionOptions,
-} from "@aztec/aztec.js/contracts"
-import { TxReceipt } from "@aztec/aztec.js/tx"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import type { Capsule } from "@aztec/stdlib/tx"
+} from "@aztec-labs/aztec.js/contracts"
+import { TxReceipt } from "@aztec-labs/aztec.js/tx"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { Capsule } from "@aztec-labs/stdlib/tx"
 
 import { ObsidionWallet } from "../../obsidion/ObsidionWallet.js"
 import { type MethodOptions } from "../ServiceBase.js"
 import { type BuildTeeOperationSendOpts, buildTeeOperation } from "../teeOperation.js"
 import type { Operation } from "../../oxide/index.js"
-import type {
-  PlainWithdrawalContext,
-  PlainWithdrawalOperation,
-} from "../../oxide/plainWithdrawal.js"
+import type { PlainWithdrawalContext, WithdrawOperation } from "../../oxide/plainWithdrawal.js"
 import type { ClaimSubmitContext } from "./types.js"
 import { makePaylinkSpendMetadataResolver } from "./paylinkSpendMetadata.js"
 import { resolveFeePaymentMethod } from "../helpers/feeResolution.js"
@@ -104,7 +101,7 @@ export async function preparePaylinkClaimSubmit(args: {
   submitContext: ClaimSubmitContext
   teeUnsignedInteractions?: ContractFunctionInteraction[]
   /** The withdrawal the escrow call makes (`claim_to_l1`) and the deployment it settles on. */
-  withdrawal?: { declared: PlainWithdrawalOperation; plainWithdrawal: PlainWithdrawalContext }
+  withdrawal?: { declared: WithdrawOperation; plainWithdrawal: PlainWithdrawalContext }
   options?: MethodOptions
 }): Promise<PreparedPaylinkClaimSubmit> {
   const { wallet, node, interaction, batchSender, submitContext, options } = args

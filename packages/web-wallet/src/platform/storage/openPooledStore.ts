@@ -1,5 +1,5 @@
-import type { Logger } from "@aztec/foundation/log"
-import { AztecSQLiteOPFSStore, SqlitePoolBusyError } from "@aztec/kv-store/sqlite-opfs"
+import type { Logger } from "@aztec-labs/foundation/log"
+import { AztecSQLiteOPFSStore, SqlitePoolBusyError } from "@aztec-labs/kv-store/sqlite-opfs"
 
 const WEBKIT_HELD_FILE_MESSAGE = "The object is in an invalid state."
 

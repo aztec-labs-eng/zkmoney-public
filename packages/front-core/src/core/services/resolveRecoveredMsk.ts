@@ -1,4 +1,4 @@
-import type { Fr } from "@aztec/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { PrfSlot } from "@obsidion/core/types"
 import type { RecoverPasskeyResult } from "@obsidion/sdk"
 import { selectRecoveredMsk } from "./selectRecoveredMsk"

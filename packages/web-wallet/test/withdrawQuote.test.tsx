@@ -6,9 +6,10 @@
 import React, { act } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { formatUnits, parseGwei, parseUnits, type Address } from "viem"
+import { formatUnits, getAddress, parseGwei, parseUnits, type Address } from "viem"
 import { Network, WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 import {
+  ExecutorFeeNote,
   SWAP_QUOTE_REFRESH_MS,
   settledFloor,
   SwapFeeNote,
@@ -25,26 +26,26 @@ import {
 import type { WithdrawalReceiveAsset } from "../src/features/withdraw/withdrawAssets"
 
 const TIP = 3n * 10n ** 18n
-const CUT = 250_000_000_000_000_000n
+/** The source executor's withdrawal fee. */
+const FEE = 10n ** 17n
+const BENEFICIARY = getAddress(`0x${"fe".repeat(20)}`)
+const readFee = async () => FEE
+/** What every route takes before its own tips: the executor's fee and the release's relayer tip. */
+const RELEASE = FEE + WITHDRAW_RELAYER_TIP
 const SWAP_GAS = { baseFee: parseGwei("2.4"), priorityFee: parseGwei("1") }
 const fee = (swapRelayerTip = TIP) => ({
+  withdrawalFee: FEE,
   withdrawalRelayerTip: WITHDRAW_RELAYER_TIP,
-  fpcFundingCut: CUT,
   swapRelayerTip,
   swapGas: SWAP_GAS,
   proverTip: 0n,
-  floorAtomic: WITHDRAW_RELAYER_TIP + CUT + swapRelayerTip,
+  floorAtomic: RELEASE + swapRelayerTip,
 })
 const usdc = (amountOut: bigint): SwapQuote => ({
   fee: fee(),
   estimate: { amountOut, decimals: 6 },
 })
 const RECIPIENT = `0x${"dd".repeat(20)}` as Address
-// Stable across renders, like the module-level default the hook uses in the app.
-const readPortalCut = async () => CUT
-const readPortalCutFails = async (): Promise<bigint> => {
-  throw new Error("RPC unavailable")
-}
 
 function Harness({
   receiveAsset,
@@ -52,7 +53,8 @@ function Harness({
   network = Network.MAINNET,
   sourceKey,
   simulate,
-  readCut = readPortalCut,
+  readExecutorFee = readFee,
+  beneficiary,
   proverTip,
   onState,
 }: {
@@ -61,11 +63,16 @@ function Harness({
   network?: Network
   sourceKey?: string
   simulate: SimulateSwap
-  readCut?: () => Promise<bigint>
+  readExecutorFee?: () => Promise<bigint>
+  beneficiary?: Address
   proverTip?: bigint
   /** Every render's status, so a one-frame flash the DOM no longer holds is still catchable. */
   onState?: (state: WithdrawalQuoteState) => void
 }) {
+  const readExecutor = React.useCallback(
+    async () => ({ fee: await readExecutorFee(), beneficiary }),
+    [readExecutorFee, beneficiary],
+  )
   const state = useSwapSimulation({
     receiveAsset,
     amountAtomic,
@@ -73,7 +80,7 @@ function Harness({
     network,
     sourceKey,
     simulate,
-    readCut,
+    readExecutor,
     proverTip,
     debounceMs: 300,
   })
@@ -82,6 +89,7 @@ function Harness({
     <>
       <WithdrawalEstimate receiveAsset={receiveAsset} state={state} />
       <SwapFeeNote state={state} />
+      <ExecutorFeeNote state={state} />
       <SwapGasWarning state={state} amountAtomic={amountAtomic} />
       <output data-testid="floor">{swapFloorAtomic(state).toString()}</output>
     </>
@@ -155,27 +163,44 @@ describe("useSwapSimulation", () => {
     expect(container.textContent).toContain("1.99912 USDC")
     expect(container.textContent).toContain("current pool state")
     expect(container.textContent).toContain("Includes $3 for L1 gas at 3.4 gwei.")
-    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT + TIP)
+    expect(floor()).toBe(RELEASE + TIP)
   })
 
-  it("prices the direct DAI route off the portal's cut, with no simulation", async () => {
+  it("prices the direct DAI route off the executor's fee and its fixed tips, with no simulation", async () => {
     const simulate = vi.fn()
     await render({ receiveAsset: "DAI", simulate })
     // The route is priced before an amount exists: the fee does not depend on one.
     expect(state()).toBe("ready")
-    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT)
+    expect(floor()).toBe(RELEASE)
 
     await render({ receiveAsset: "DAI", amountAtomic: parseUnits("2", 18), simulate })
     expect(state()).toBe("ready")
     expect(container.textContent).toContain("2 DAI")
-    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT)
+    expect(floor()).toBe(RELEASE)
     expect(simulate).not.toHaveBeenCalled()
+  })
+
+  it("says what the executor's fee is and who receives it", async () => {
+    await render({ receiveAsset: "DAI", simulate: vi.fn(), beneficiary: BENEFICIARY })
+    expect(container.textContent).toContain("Includes a $0.10 protocol fee paid to 0xfefeF…efEfe.")
+    expect(container.querySelector(`[title="${BENEFICIARY}"]`)).not.toBeNull()
+
+    await render({ receiveAsset: "DAI", simulate: vi.fn(), readExecutorFee: async () => 0n })
+    await tick(0)
+    expect(container.textContent).not.toContain("protocol fee")
+  })
+
+  it("closes the direct route while the executor's fee cannot be read", async () => {
+    const failing = vi.fn(async () => Promise.reject(new Error("rpc down")))
+    await render({ receiveAsset: "DAI", simulate: vi.fn(), readExecutorFee: failing })
+    expect(state()).toBe("unavailable")
+    expect(floor()).toBe(0n)
   })
 
   it("adds a prover tip to the direct route's floor", async () => {
     await render({ receiveAsset: "DAI", simulate: vi.fn(), proverTip: 2n })
     await tick(0)
-    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT + 2n)
+    expect(floor()).toBe(RELEASE + 2n)
   })
 
   it("simulates a swap net of the prover tip, and re-simulates when it changes", async () => {
@@ -190,35 +215,15 @@ describe("useSwapSimulation", () => {
     expect(simulate.mock.lastCall?.[0].proverTip).toBe(5n)
   })
 
-  it("closes the direct route when the portal's cut cannot be read", async () => {
+  it("answers the direct route outright, and never loads", async () => {
     const seen: WithdrawalQuoteState[] = []
-    await render({
-      receiveAsset: "DAI",
-      amountAtomic: parseUnits("2", 18),
-      simulate: vi.fn(),
-      readCut: readPortalCutFails,
-      onState: (s) => seen.push(s),
-    })
-    expect(state()).toBe("unavailable")
-    expect(floor()).toBe(0n)
-    // The amount still lands whole; it is the fee the screen cannot state.
-    expect(seen.at(-1)?.estimate?.amountOut).toBe(parseUnits("2", 18))
-  })
-
-  it("answers the direct route's estimate before the cut lands, and never loads", async () => {
-    const cut = deferred<bigint>()
-    const readCut = () => cut.promise
-    const seen: WithdrawalQuoteState[] = []
-    const props = { receiveAsset: "DAI" as const, simulate: vi.fn(), readCut }
+    const props = { receiveAsset: "DAI" as const, simulate: vi.fn() }
     await render({ ...props, amountAtomic: parseUnits("2", 18), onState: (s) => seen.push(s) })
 
-    // The typed amount is what lands, so only the fee is outstanding.
+    // The typed amount is what lands, and the fee is the executor's fee and the fixed tips.
     expect(state()).toBe("ready")
     expect(container.textContent).toContain("2 DAI")
-    expect(floor()).toBe(0n)
-
-    await act(async () => cut.resolve(CUT))
-    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT)
+    expect(floor()).toBe(RELEASE)
 
     // A new amount re-keys the hook, and the direct route answers the new one outright.
     seen.length = 0
@@ -316,7 +321,7 @@ describe("useSwapSimulation", () => {
     expect(state()).toBe("ready")
     expect(container.textContent).toContain("0.9 USDC")
     expect(container.textContent).toContain("Includes $4 for L1 gas")
-    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT + TIP + 10n ** 18n)
+    expect(floor()).toBe(RELEASE + TIP + 10n ** 18n)
   })
 
   it("carries the fee through a reload, so the floor never flickers away while the amount changes", async () => {
@@ -327,7 +332,7 @@ describe("useSwapSimulation", () => {
 
     await render({ receiveAsset: "USDC", amountAtomic: parseUnits("6", 18), simulate })
     expect(state()).toBe("loading")
-    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT + TIP)
+    expect(floor()).toBe(RELEASE + TIP)
     expect(container.textContent).toContain("Includes $3 for L1 gas")
   })
 
@@ -335,32 +340,26 @@ describe("useSwapSimulation", () => {
     const simulate = vi.fn(async () => usdc(1_000_000n))
     await render({ receiveAsset: "USDC", amountAtomic: parseUnits("5", 18), simulate })
     await tick(300)
-    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT + TIP)
+    expect(floor()).toBe(RELEASE + TIP)
 
-    const cut = deferred<bigint>()
     const seen: WithdrawalQuoteState[] = []
     await render({
       receiveAsset: "DAI",
       amountAtomic: parseUnits("5", 18),
       simulate,
-      readCut: () => cut.promise,
       onState: (s) => seen.push(s),
     })
-    // The amount is answered outright, but no fee is stated until the portal's cut is read.
     expect(state()).toBe("ready")
     expect(container.textContent).toContain("5 DAI")
-    expect(floor()).toBe(0n)
-    expect(seen.some((s) => s.fee !== undefined)).toBe(false)
-
-    await act(async () => cut.resolve(CUT))
-    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT)
+    expect(floor()).toBe(RELEASE)
+    expect(seen.some((s) => s.fee?.swapRelayerTip)).toBe(false)
   })
 
   it("prices a swap route afresh after the direct route, with no fee carried over", async () => {
     const pending = deferred<SwapQuote>()
     const simulate = vi.fn(() => pending.promise)
     await render({ receiveAsset: "DAI", amountAtomic: parseUnits("5", 18), simulate })
-    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT)
+    expect(floor()).toBe(RELEASE)
 
     const seen: WithdrawalQuoteState[] = []
     await render({
@@ -377,7 +376,7 @@ describe("useSwapSimulation", () => {
     await tick(300)
     await act(async () => pending.resolve(usdc(4_990_000n)))
     expect(state()).toBe("ready")
-    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT + TIP)
+    expect(floor()).toBe(RELEASE + TIP)
   })
 
   it("shows the fee without an estimate for an amount the tip leaves nothing of", async () => {
@@ -386,7 +385,7 @@ describe("useSwapSimulation", () => {
     await tick(300)
     expect(state()).toBe("ready")
     expect(container.querySelector(".ww-withdraw__estimate b")?.textContent).toBe("—")
-    expect(floor()).toBe(WITHDRAW_RELAYER_TIP + CUT + TIP)
+    expect(floor()).toBe(RELEASE + TIP)
   })
 
   it("warns when the tip would eat more than a fifth of the amount", async () => {
@@ -408,7 +407,7 @@ describe("swap fee helpers", () => {
     expect(withdrawalFeeDisplay({ status: "idle" })).toBeUndefined()
     expect(withdrawalFeeDisplay({ status: "loading" })).toBeUndefined()
     expect(withdrawalFeeDisplay({ status: "unavailable" })).toBeUndefined()
-    expect(withdrawalFeeDisplay(priced)).toBe(formatUnits(WITHDRAW_RELAYER_TIP + CUT + TIP, 18))
+    expect(withdrawalFeeDisplay(priced)).toBe(formatUnits(RELEASE + TIP, 18))
   })
 
   it("flags a tip above 20% of the amount, and only with both figures known", () => {

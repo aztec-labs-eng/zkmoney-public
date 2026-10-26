@@ -9,6 +9,7 @@ const CHAIN = 11155111
 const PORTAL = "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01"
 const OTHER_PORTAL = "0x1111111111111111111111111111111111111111"
 const TOKEN = "0x2222222222222222222222222222222222222222"
+const ROW_TOKEN = "0x3333333333333333333333333333333333333333"
 
 const config = vi.hoisted(() => ({
   network: "testnet" as string,
@@ -55,13 +56,33 @@ const client = vi.hoisted(() => ({
   },
 }))
 vi.mock("../src/config/env", () => ({ getConfig: () => config }))
-const tuple = vi.hoisted(() => ({ fail: false, chainId: "11155111" as string | undefined }))
+const tuple = vi.hoisted(() => ({
+  fail: false,
+  chainId: "11155111" as string | undefined,
+  underlying: undefined as string | undefined,
+}))
 vi.mock("../src/config/oxideTuple", () => ({
   l1PublicClient: () => client,
   getOxideTuple: async () => {
     if (tuple.fail) throw new Error("manifest fetch failed")
-    return { chainId: tuple.chainId, portal: PORTAL, token: TOKEN }
+    return { chainId: tuple.chainId, portal: PORTAL, token: TOKEN, underlying: tuple.underlying }
   },
+  getOxideDeployment: async () => ({
+    deployment: {
+      bridges: [
+        {
+          underlying: TOKEN,
+          portal: PORTAL,
+          tuple: { chainId: tuple.chainId, portal: PORTAL, token: TOKEN },
+        },
+        {
+          underlying: ROW_TOKEN,
+          portal: OTHER_PORTAL,
+          tuple: { chainId: tuple.chainId, portal: OTHER_PORTAL, token: ROW_TOKEN },
+        },
+      ],
+    },
+  }),
 }))
 
 const load = () => import("../src/features/deposit/capacityStore")
@@ -78,6 +99,7 @@ beforeEach(() => {
   config.network = "testnet"
   tuple.fail = false
   tuple.chainId = String(CHAIN)
+  tuple.underlying = undefined
 })
 
 describe("capacityStore", () => {
@@ -126,6 +148,22 @@ describe("capacityStore", () => {
       portal: PORTAL.toLowerCase(),
       token: TOKEN,
     })
+  })
+
+  it("keys the pinned bridge by its row token where the user's token differs", async () => {
+    const { activeCapacityKey } = await load()
+    tuple.underlying = ROW_TOKEN
+    await expect(activeCapacityKey()).resolves.toMatchObject({ token: ROW_TOKEN })
+  })
+
+  it("keys new funding of a row by that row's portal and token", async () => {
+    const { activeCapacityKey } = await load()
+    await expect(activeCapacityKey(ROW_TOKEN)).resolves.toEqual({
+      chainId: CHAIN,
+      portal: OTHER_PORTAL.toLowerCase(),
+      token: ROW_TOKEN,
+    })
+    await expect(activeCapacityKey(`0x${"44".repeat(20)}`)).rejects.toThrow(/no bridge/)
   })
 
   it("rejects the active key when the manifest cannot be loaded or has no chain, and recovers on the next call", async () => {

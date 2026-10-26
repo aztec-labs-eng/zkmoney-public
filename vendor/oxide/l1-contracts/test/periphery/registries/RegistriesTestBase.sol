@@ -3,9 +3,10 @@ pragma solidity >=0.8.27;
 import {Test} from "forge-std/Test.sol";
 
 import {NameRegistry} from "@periphery/NameRegistry.sol";
-import {DepositSIPA, DEPOSIT_FEE} from "@periphery/DepositSIPA.sol";
-import {RegistrationSIPA, REGISTRATION_SWEEP_FEE} from "@periphery/RegistrationSIPA.sol";
+import {DepositSIPA} from "@periphery/DepositSIPA.sol";
+import {RegistrationSIPA} from "@periphery/RegistrationSIPA.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
+import {ForwardingTable} from "@periphery/ForwardingTable.sol";
 import {INameRegistry} from "@periphery/interfaces/INameRegistry.sol";
 import {AccountMetadataRegistry} from "@periphery/AccountMetadataRegistry.sol";
 import {DomainAuth} from "@periphery/interfaces/INameRegistry.sol";
@@ -15,6 +16,7 @@ import {OxideConstants} from "@generated/OxideConstants.gen.sol";
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 import {MockVerifier} from "./mocks/MockVerifier.sol";
 import {MockPortal} from "@test/mocks/MockPortal.sol";
+import {ForwardingTableFixture} from "@test/helpers/ForwardingTableFixture.sol";
 
 abstract contract RegistriesTestBase is Test {
   bytes32 internal constant NAME_CLAIM_TYPEHASH =
@@ -53,6 +55,7 @@ abstract contract RegistriesTestBase is Test {
   Resolver internal resolver;
   MockVerifier internal verifier;
   MockPortal internal mockPortal;
+  ForwardingTable internal forwardingTable;
   IERC20 internal mockUnderlying;
 
   address internal registryOwner;
@@ -86,17 +89,18 @@ abstract contract RegistriesTestBase is Test {
     sipaFactory = new SIPAFactory(registryOwner);
     metadataRegistry = new AccountMetadataRegistry(nameRegistry);
     resolver = new Resolver(nameRegistry, sipaFactory, verifier);
-    depositSIPAImplementation = new DepositSIPA(IOxidePortal(address(mockPortal)), DEPOSIT_FEE);
-    registrationSIPAImplementation = new RegistrationSIPA(
-      IOxidePortal(address(mockPortal)), INameRegistry(address(nameRegistry)), REGISTRATION_SWEEP_FEE
-    );
+    forwardingTable =
+      ForwardingTableFixture.deploy(registryOwner, IOxidePortal(address(mockPortal)), makeAddr("tableBeneficiary"));
+    depositSIPAImplementation = new DepositSIPA();
+    registrationSIPAImplementation = new RegistrationSIPA(INameRegistry(address(nameRegistry)));
 
     vm.startPrank(registryOwner);
     nameRegistry.updateAccountMetadataRegistry(address(metadataRegistry));
     nameRegistry.updateResolver(address(resolver));
     nameRegistry.updateRegistrationController(registrationControllerAddr);
-    sipaFactory.bless(address(depositSIPAImplementation));
-    sipaFactory.bless(address(registrationSIPAImplementation));
+    sipaFactory.blessImplementation(address(depositSIPAImplementation));
+    sipaFactory.blessImplementation(address(registrationSIPAImplementation));
+    sipaFactory.blessTable(forwardingTable);
     vm.stopPrank();
   }
 
@@ -182,7 +186,7 @@ abstract contract RegistriesTestBase is Test {
       AccountMetadataRegistry.K1Point(RESOLVER_OPERATOR_PUBLIC_KEY_X, RESOLVER_OPERATOR_PUBLIC_KEY_Y);
     resolverOperator.l2Address = RESOLVER_OPERATOR_L2_ADDRESS;
     resolverOperator.url = RESOLVER_OPERATOR_URL;
-    resolverOperator.oxidePortal = address(mockPortal);
+    resolverOperator.oxidePortal = address(forwardingTable);
   }
 
   function _registerDefaultResolverOperator() internal {

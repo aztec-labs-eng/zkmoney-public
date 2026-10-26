@@ -1,15 +1,15 @@
-import { ContractArtifact } from "@aztec/aztec.js/abi"
-import { Fr } from "@aztec/aztec.js/fields"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import type { BlockNumber } from "@aztec/foundation/branded-types"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { ContractArtifact } from "@aztec-labs/aztec.js/abi"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { BlockNumber } from "@aztec-labs/foundation/branded-types"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
   getContractInstanceFromInstantiationParams,
   type ContractInstanceWithAddress,
-} from "@aztec/stdlib/contract"
-import { computeSiloedPrivateInitializationNullifier } from "@aztec/stdlib/hash"
-import { MerkleTreeId } from "@aztec/stdlib/trees"
-import { TxHash } from "@aztec/stdlib/tx"
+} from "@aztec-labs/stdlib/contract"
+import { computeSiloedPrivateInitializationNullifier } from "@aztec-labs/stdlib/hash"
+import { MerkleTreeId } from "@aztec-labs/stdlib/trees"
+import { TxHash } from "@aztec-labs/stdlib/tx"
 import type { ContractName } from "@obsidion/contracts"
 import { escrowInstancesForClasses } from "./paylinkEscrow.js"
 import {

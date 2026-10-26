@@ -134,17 +134,17 @@ describe("classifyPortalCapError", () => {
   })
 
   it("leaves other portal and SIPA reverts unclassified", () => {
-    const fundingCut = encodeErrorResult({
+    const unknownDeposit = encodeErrorResult({
       abi: OxidePortalAbi,
-      errorName: "OxidePortal__AmountNotAboveFpcFundingCut",
+      errorName: "OxidePortal__UnknownDepositMessage",
     })
-    const belowFee = encodeErrorResult({
+    const belowCharges = encodeErrorResult({
       abi: ErrorsAbi,
-      errorName: "SIPA__SweepBelowDepositFee",
+      errorName: "SIPA__SweepBelowCharges",
       args: [1n, 2n],
     })
-    expect(classifyPortalCapError(fundingCut)).toBeUndefined()
-    expect(classifyPortalCapError(belowFee)).toBeUndefined()
+    expect(classifyPortalCapError(unknownDeposit)).toBeUndefined()
+    expect(classifyPortalCapError(belowCharges)).toBeUndefined()
   })
 
   it("leaves the Multicall3 revert of an undeployed SIPA's deploy-and-sweep unclassified", async () => {

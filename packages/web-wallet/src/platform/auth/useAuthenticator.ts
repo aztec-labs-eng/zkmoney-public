@@ -108,8 +108,8 @@ export const useAuthenticator: UseAuthenticator = () => {
   const { obsidionWallet } = useAztecContext()
   const service = getAuthService()
   if (obsidionWallet) {
-    service.setAddressDeriver(async (msk, pubkeyHex) =>
-      (await obsidionWallet.deriveAccountAddress(msk, pubkeyHex)).toString(),
+    service.setAddressDeriver(async (msk, passkeys) =>
+      (await obsidionWallet.deriveAccountAddress(msk, passkeys)).toString(),
     )
     service.setAccountReader(readStoredAccount)
   }

@@ -14,7 +14,7 @@ import {
   legacyRegistrationSalt,
 } from "@obsidion/front-core"
 import { readSipaBalancesMany, readSipaDeployedMany } from "@obsidion/sdk"
-import type { Fr } from "@aztec/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { WebWalletConfig } from "../../config/env"
 import { l1MulticallClient, oxideEnvFor } from "../../config/oxideTuple"
 import { getAuthService } from "../../platform/auth/useAuthenticator"
@@ -109,7 +109,9 @@ async function discover(
 ): Promise<number> {
   await bootPriority.whenReady("registrationDiscovery")
   const { env, publicClient } = await oxideEnvFor(config)
-  const tokens = sipaFundingTokens(config.network, env.feeToken as Address).map((t) => t.address)
+  const tokens = (await sipaFundingTokens(config, env.feeToken as Address, "registration")).map(
+    (t) => t.address,
+  )
   // The seeder leaves an address already tracked as it is, so every candidate is checked.
   const seeded = await seedRederivedRegistrations(config, secret, handle, l2Address, {
     keep: async (found) => {

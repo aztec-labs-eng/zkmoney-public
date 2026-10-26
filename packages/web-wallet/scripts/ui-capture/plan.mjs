@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { urlAtOrigin, viewportFrom } from "./capture-support.mjs"
 import { cameraStep } from "./camera.mjs"
 
@@ -6,11 +7,19 @@ export const FIXTURE_TIME = "2026-09-01T12:00:00.000Z"
 
 export function selectedViewports(preset, viewport) {
   if (preset && viewport) throw new Error("Choose --preset or --viewport, not both")
-  if (viewport) return [viewportFrom(viewport)]
+  if (viewport) return String(viewport).split(",").map(viewportFrom)
   if (preset === "all") return PHONE_PRESETS.map(viewportFrom)
   const selected = preset ?? PHONE_PRESETS[0]
   if (!PHONE_PRESETS.includes(selected)) throw new Error(`Unknown phone preset: ${selected}`)
   return [viewportFrom(selected)]
+}
+
+/** The screenshot name for a direct route: `/withdraw?cap=w-review` -> `withdraw-cap-w-review`. */
+export function routeFile(target) {
+  const name = target.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "root"
+  // A `/request#...` route carries its whole packet, longer than a file name may be.
+  if (name.length <= 80) return name
+  return `${name.slice(0, 71)}-${createHash("sha256").update(target).digest("hex").slice(0, 8)}`
 }
 
 export function locatorFor(page, step) {

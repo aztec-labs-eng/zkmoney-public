@@ -188,7 +188,7 @@ describe("EndpointsModal", () => {
     await save()
     expect(h.write).toHaveBeenCalledTimes(1)
     expect(h.write).toHaveBeenCalledWith(
-      { node: "https://node.example", l1Rpc: "", enclave: "", nodeApiKey: "" },
+      { node: "https://node.example", sourceNode: "", l1Rpc: "", enclave: "", nodeApiKey: "" },
       {},
     )
     expect(reload).toHaveBeenCalledTimes(1)
@@ -268,7 +268,7 @@ describe("EndpointsModal", () => {
     expect(h.write).toHaveBeenCalledTimes(1)
     // The record the editor opened with rides along, so a save another tab outran is refused.
     expect(h.write).toHaveBeenCalledWith(
-      { node: "", l1Rpc: "", enclave: "https://enclave.example", nodeApiKey: "" },
+      { node: "", sourceNode: "", l1Rpc: "", enclave: "https://enclave.example", nodeApiKey: "" },
       { node: "https://node.example", enclave: "https://enclave.example" },
     )
     expect(reload).toHaveBeenCalledTimes(1)
@@ -341,7 +341,7 @@ describe("EndpointsModal", () => {
       fill("nodeApiKey", "k-1")
       await save()
       expect(h.write).toHaveBeenCalledWith(
-        { node: "https://node.example", l1Rpc: "", enclave: "", nodeApiKey: "k-1" },
+        { node: "https://node.example", sourceNode: "", l1Rpc: "", enclave: "", nodeApiKey: "k-1" },
         {},
       )
       expect(reload).toHaveBeenCalledTimes(1)
@@ -355,7 +355,7 @@ describe("EndpointsModal", () => {
       fill("nodeApiKey", "new")
       await save()
       expect(h.write).toHaveBeenCalledWith(
-        { node: "https://node.example", l1Rpc: "", enclave: "", nodeApiKey: "new" },
+        { node: "https://node.example", sourceNode: "", l1Rpc: "", enclave: "", nodeApiKey: "new" },
         { node: "https://node.example", nodeApiKey: "old" },
       )
     })
@@ -390,7 +390,7 @@ describe("EndpointsModal", () => {
       expect(withheld()).not.toBeNull()
       await save()
       expect(h.write).toHaveBeenCalledWith(
-        { node: "https://b.example", l1Rpc: "", enclave: "", nodeApiKey: "" },
+        { node: "https://b.example", sourceNode: "", l1Rpc: "", enclave: "", nodeApiKey: "" },
         { node: "https://a.example", nodeApiKey: "k-a" },
       )
     })
@@ -406,7 +406,7 @@ describe("EndpointsModal", () => {
       fill("nodeApiKey", "k-b")
       await save()
       expect(h.write).toHaveBeenCalledWith(
-        { node: "https://b.example", l1Rpc: "", enclave: "", nodeApiKey: "k-b" },
+        { node: "https://b.example", sourceNode: "", l1Rpc: "", enclave: "", nodeApiKey: "k-b" },
         { node: "https://a.example", nodeApiKey: "k-a" },
       )
     })
@@ -421,7 +421,7 @@ describe("EndpointsModal", () => {
       expect(fieldError("nodeApiKey")).toBeUndefined()
       await save()
       expect(h.write).toHaveBeenCalledWith(
-        { node: "", l1Rpc: "", enclave: "", nodeApiKey: "" },
+        { node: "", sourceNode: "", l1Rpc: "", enclave: "", nodeApiKey: "" },
         { node: "https://node.example", nodeApiKey: "k" },
       )
     })

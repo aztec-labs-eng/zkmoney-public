@@ -279,7 +279,7 @@ function SettingsForm({ state, network }: { state: DesktopSettingsState; network
 
   // Clears the fields only; nothing is stored until Save & relaunch.
   const reset = () => {
-    editor.edit({ node: "", nodeApiKey: "", l1Rpc: "", enclave: "" })
+    editor.edit({ node: "", nodeApiKey: "", sourceNode: "", l1Rpc: "", enclave: "" })
     setUrl("")
     setShipped(false)
     setResetAsked(true)

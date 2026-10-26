@@ -1,6 +1,6 @@
-import { keccak256 } from '@aztec/foundation/crypto/keccak';
-import { Fr } from '@aztec/foundation/curves/bn254';
-import type { EthAddress } from '@aztec/foundation/eth-address';
+import { keccak256 } from '@aztec-labs/foundation/crypto/keccak';
+import { Fr } from '@aztec-labs/foundation/curves/bn254';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 export function deriveRecoveryCommitment(sharedSecretSalt: Fr, account: EthAddress): Fr {
   const encoded = Buffer.concat([sharedSecretSalt.toBuffer(), account.toBuffer32()]);

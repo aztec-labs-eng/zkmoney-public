@@ -4,7 +4,7 @@ import {
   provingProgress,
   type ProvingProgressEvent,
 } from "@obsidion/proving-progress"
-import type { PXE } from "@aztec/pxe/client/lazy"
+import type { PXE } from "@aztec-labs/pxe/client/lazy"
 import {
   proveTxWithProgress,
   readPerfLogFlag,

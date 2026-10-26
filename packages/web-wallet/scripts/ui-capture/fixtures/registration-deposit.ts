@@ -1,7 +1,7 @@
-import { getConfig } from "../../../src/config/env"
-import { depositTokensFor } from "../../../src/features/deposit/loadDepositFacts"
 import * as actual from "../../../src/features/onboarding/useDepositWatch"
 import { fixtureState } from "./control"
+
+export * from "../../../src/features/onboarding/useDepositWatch"
 export const useDepositWatch: typeof actual.useDepositWatch = (address) => {
   const active = fixtureState()
   const observed = actual.useDepositWatch(active ? null : address)
@@ -10,7 +10,7 @@ export const useDepositWatch: typeof actual.useDepositWatch = (address) => {
     ? {
         ...observed,
         balance: 2n * 10n ** 18n,
-        token: depositTokensFor(getConfig().network)[0].address,
+        token: observed.record?.tokenAddress as `0x${string}` | undefined,
       }
     : { ...observed, balance: 0n, token: undefined }
 }

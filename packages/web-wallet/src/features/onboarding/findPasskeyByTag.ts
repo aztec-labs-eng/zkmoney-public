@@ -1,15 +1,17 @@
 /**
- * "Find my passkey by tag": the tag's installed credential read from L1, as one candidate for a
- * pinned sign-in, and the reading of a pinned sign-in that no anchor named. Nothing here decides
- * who enters; `enterWithPasskey`'s anchors do.
+ * "Find my passkey by tag": the tag's installed keys read from L1, for a sign-in pinned to its
+ * account, and the reading of a pinned sign-in that no anchor named. Nothing here decides who
+ * enters; `enterWithPasskey`'s anchors do.
  */
 import {
   MAX_PASSKEY_CANDIDATES,
+  answeringKey,
   createOxideL1Reader,
   readPasskeyCredentialsByTag,
-  type PasskeyCredentialCandidate,
+  type InstalledPasskey,
   type PasskeyCredentialsByTag,
 } from "@obsidion/front-core"
+import type { Address } from "viem"
 import { getConfig } from "../../config/env"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { resolveSignInTagForCommit } from "../contacts/registryResolution"
@@ -19,15 +21,27 @@ export type PasskeyByTagLookup =
   | {
       kind: "resolved"
       tag: string
-      /** The first eligible key in on-chain order; `moreKeys` says the account holds others, eligible or not. */
-      candidate: PasskeyCredentialCandidate
+      account: Address
       l2Address: string
+      /** Every key read, in on-chain order. */
+      keys: InstalledPasskey[]
+      /** The account holds keys beyond the first, readable or not. */
       moreKeys: boolean
     }
+  /** The account holds more keys than this read covers, so no sign-in can derive its address. */
+  | { kind: "inconclusive"; tag: string; account: Address }
   | Exclude<PasskeyCredentialsByTag, { kind: "resolved" }>
 
+const readByTag = (tag: string, resolveTag: typeof resolveSignInTagForCommit) => {
+  const l1 = createOxideL1Reader(l1PublicClient(getConfig()))
+  return readPasskeyCredentialsByTag(tag, {
+    resolveTag,
+    readAuthKeys: (account) => l1.readAuthKeysCounted(account, MAX_PASSKEY_CANDIDATES),
+  })
+}
+
 /**
- * The tag's passkey from L1. `resolveTag` defaults to the commit-time resolver (a fresh manifest);
+ * The tag's keys from L1. `resolveTag` defaults to the commit-time resolver (a fresh manifest);
  * a type-ahead caller passes `resolveSignInTag`, which reads over the cached tuple. A read that
  * cannot reach the chain throws.
  */
@@ -35,17 +49,15 @@ export async function lookupPasskeyByTag(
   tag: string,
   options?: { resolveTag?: typeof resolveSignInTagForCommit },
 ): Promise<PasskeyByTagLookup> {
-  const l1 = createOxideL1Reader(l1PublicClient(getConfig()))
-  const read = await readPasskeyCredentialsByTag(tag, {
-    resolveTag: options?.resolveTag ?? resolveSignInTagForCommit,
-    readAuthKeys: (account) => l1.readAuthKeysCounted(account, MAX_PASSKEY_CANDIDATES),
-  })
+  const read = await readByTag(tag, options?.resolveTag ?? resolveSignInTagForCommit)
   if (read.kind !== "resolved") return read
+  if (!read.complete) return { kind: "inconclusive", tag, account: read.account }
   return {
     kind: "resolved",
     tag,
-    candidate: read.candidates[0]!,
+    account: read.account,
     l2Address: read.l2Address,
+    keys: read.keys,
     moreKeys: read.authKeyCount > 1,
   }
 }
@@ -82,22 +94,18 @@ export type MissDiagnosis =
 /**
  * Given the tag the user typed and the evidence of the attempt that missed, say whether this
  * passkey belongs to the tag's account — with one L1 read and no second ceremony. The entry that
- * counts matches the answer's credential id AND its public key; a matched entry that reproduces the
- * account is a lagged registry probe, one that does not is not-reproduced-here. It never asserts the
- * strong "this computer returned the wrong key" — only the record-anchored path can.
+ * counts answers for the credential id (by its raw id or by the hash oxide's prefix carries) AND
+ * carries its public key; a matched entry that reproduces the account is a lagged registry probe,
+ * one that does not is not-reproduced-here. It never asserts the strong "this computer returned
+ * the wrong key" — only the record-anchored path can.
  */
 export async function diagnoseMiss(evidence: MissEvidence, tag: string): Promise<MissDiagnosis> {
-  const l1 = createOxideL1Reader(l1PublicClient(getConfig()))
-  const read = await readPasskeyCredentialsByTag(tag, {
-    resolveTag: resolveSignInTagForCommit,
-    readAuthKeys: (account) => l1.readAuthKeysCounted(account, MAX_PASSKEY_CANDIDATES),
-  })
+  const read = await readByTag(tag, resolveSignInTagForCommit)
   if (read.kind === "unreadable") return read.complete ? "unreadable" : "INCONCLUSIVE"
   if (read.kind !== "resolved") return read.kind
   const wantedKey = evidence.pubkey.toLowerCase().replace(/^0x/, "")
-  const match = read.candidates.find(
-    (c) => c.credentialId === evidence.credentialId && c.pubkeyHex === wantedKey,
-  )
+  const answer = answeringKey(read.keys, evidence.credentialId)
+  const match = answer && answer.key.pubkeyHex === wantedKey
   if (!match) return read.complete ? "DIFFERENT_PASSKEY" : "INCONCLUSIVE"
   const account = read.l2Address.toLowerCase()
   const reproduces = evidence.addresses.some((a) => a.toLowerCase() === account)

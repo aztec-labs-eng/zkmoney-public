@@ -1,8 +1,8 @@
 // Translates the TS-side `FrozenNotesRefundProofInput` into the structured `InputMap` shape that
-// `@aztec/noir-noir_js`'s `Noir.execute` expects for the frozen_notes_refund circuit. Field
+// `@aztec-foundation/noir-noir_js`'s `Noir.execute` expects for the frozen_notes_refund circuit. Field
 // names (snake_case) and nesting must match the noir struct layout in
 // `noir-projects/frozen_notes_refund/src/main.nr`.
-import { Fr } from '@aztec/aztec.js/fields';
+import { Fr } from '@aztec-labs/aztec.js/fields';
 
 import {
   fieldStr,
@@ -10,8 +10,8 @@ import {
   mapBlockHeader,
   mapGrumpkinScalar,
   mapMembershipWitness,
+  mapMigrationSignature,
   mapPublicKeys,
-  mapRefundAuthorization,
 } from '../noir_input_mappers.js';
 import type { FrozenNotesRefundProofInput, RefundInputNote } from './types.js';
 
@@ -34,7 +34,7 @@ export function buildNoirInput(input: FrozenNotesRefundProofInput): Record<strin
     owner_public_keys: mapPublicKeys(input.ownerPublicKeys),
     owner_instance: mapAccountInstancePreimage(input.ownerInstance),
     owner_nhk_m: mapGrumpkinScalar(input.ownerNhkM),
-    auth: mapRefundAuthorization(input.auth),
+    migration_signature: mapMigrationSignature(input.migrationSignature),
   };
 }
 

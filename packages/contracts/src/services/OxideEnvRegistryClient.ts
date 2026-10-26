@@ -52,6 +52,10 @@ export interface OxideResolutionState {
 function tuplesEqual(a: OxideEnvTuple, b: OxideEnvTuple): boolean {
   const keys = new Set([...Object.keys(a), ...Object.keys(b)]) as Set<keyof OxideEnvTuple>
   for (const key of keys) {
+    if (key === "l2TokenImmutables") {
+      if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) return false
+      continue
+    }
     if (a[key] !== b[key]) return false
   }
   return true

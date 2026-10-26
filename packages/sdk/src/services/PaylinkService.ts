@@ -1,10 +1,15 @@
-import { planPayout, planWithdrawal, type WithdrawalOptions } from "./plainWithdrawal.js"
-import type { PlainWithdrawalOperation } from "../oxide/plainWithdrawal.js"
+import {
+  nestedWithdrawal,
+  planPayout,
+  planWithdrawal,
+  type WithdrawalOptions,
+} from "./plainWithdrawal.js"
+import type { WithdrawOperation } from "../oxide/plainWithdrawal.js"
 // This is an MVP for a service that will be used for all the repeatable
 // boilerplate code for all the different paylink types
 
-import { Account, NO_FROM } from "@aztec/aztec.js/account"
-import { computeAuthWitMessageHash } from "@aztec/aztec.js/authorization"
+import { Account, NO_FROM } from "@aztec-labs/aztec.js/account"
+import { computeAuthWitMessageHash } from "@aztec-labs/aztec.js/authorization"
 import { ObsidionWallet } from "../obsidion/ObsidionWallet.js"
 import { ObsidionAccount } from "../obsidion/alpha/account/ObsidionAccount.js"
 import {
@@ -12,6 +17,7 @@ import {
   type SponsoredTeeOperationArgs,
 } from "./sponsoredTeeOperation.js"
 import { MAX_SPONSORED_CALLS } from "../feePaymentMethod/sponsoredCall.js"
+import { sponsoredAccounts } from "./sponsoredAccounts.js"
 import { claimFpcPolicySponsorsAnyCall } from "../feePaymentMethod/claimSponsoredCall.js"
 import {
   type ClaimSponsorContext,
@@ -31,8 +37,8 @@ import { getUserPayloadHash } from "@oxide/oxide-lib/content_hash.js"
 import { MethodOptions, ServiceBase } from "./ServiceBase.js"
 import { prepareDepositSubmit } from "./paylink/paylinkDepositSubmit.js"
 import { TokenService } from "./TokenService.js"
-import { ContractArtifact, FieldLike } from "@aztec/aztec.js/abi"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { ContractArtifact, FieldLike } from "@aztec-labs/aztec.js/abi"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
   ContractService,
   DEFAULT_CONTRACTS,
@@ -51,18 +57,22 @@ import type { ScannedTransferEvent } from "./transferEventSource.js"
 import {
   ContractInstanceWithAddress,
   getContractInstanceFromInstantiationParams,
-} from "@aztec/stdlib/contract"
-import { Fr } from "@aztec/aztec.js/fields"
-import { type PublicKey } from "@aztec/stdlib/keys"
-import type { EthAddress } from "@aztec/aztec.js/addresses"
-import { TxReceipt } from "@aztec/aztec.js/tx"
-import { Contract, ContractBase, type ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import { TxEffect, TxHash } from "@aztec/stdlib/tx"
+} from "@aztec-labs/stdlib/contract"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { type PublicKey } from "@aztec-labs/stdlib/keys"
+import type { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { TxReceipt } from "@aztec-labs/aztec.js/tx"
+import {
+  Contract,
+  ContractBase,
+  type ContractFunctionInteraction,
+} from "@aztec-labs/aztec.js/contracts"
+import { TxEffect, TxHash } from "@aztec-labs/stdlib/tx"
 import assert from "assert"
 import { poseidon2Hash } from "@zkpassport/poseidon2"
-import { computeSiloedPrivateInitializationNullifier, siloNullifier } from "@aztec/stdlib/hash"
+import { computeSiloedPrivateInitializationNullifier, siloNullifier } from "@aztec-labs/stdlib/hash"
 import { epochDay } from "../utils/helper.js"
-import { MerkleTreeId } from "@aztec/stdlib/trees"
+import { MerkleTreeId } from "@aztec-labs/stdlib/trees"
 import { PaylinkProcessorFactory } from "./paylink/PaylinkProcessorFactory.js"
 import type { DepositArg } from "./paylink/processors/BasePaylinkProcessor.js"
 import {
@@ -79,11 +89,11 @@ import {
   encodePaylinkInline,
   decodePaylinkInline,
 } from "./paylink/paylinkInlineCodec.js"
-import { FeePaymentMethod } from "@aztec/aztec.js/fee"
+import { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
 import { PaylinkDirectClaimService, PaylinkEmailClaimService } from "./index.js"
 import type { SpendMetadataResolver } from "@oxide/oxide-client/token_operations_collector.js"
 import type { DepositSpendMetadataResolver } from "../oxide/index.js"
-import type { TeeSigner } from "@oxide/oxide-lib/types.js"
+import type { RegisteredTeeSigner } from "@oxide/oxide-client/types.js"
 import {
   computeEscrowTagSecret,
   registerPaylinkContractWithKeys,
@@ -291,7 +301,7 @@ export class PaylinkService extends ServiceBase {
     tokenService: TokenService,
     contractService: ContractService,
     registryAddress?: AztecAddress,
-    teeSigner?: TeeSigner,
+    teeSigner?: RegisteredTeeSigner,
   ) {
     super(wallet, teeSigner)
     this.sender = sender
@@ -603,12 +613,11 @@ export class PaylinkService extends ServiceBase {
       options,
       teeUnsignedInteractions: payout.broadcasts,
       withdrawal: {
-        declared: {
-          executor: payout.plainWithdrawal.executor,
-          userPayload: payout.userPayload,
+        declared: nestedWithdrawal(payout, {
+          from: escrow.address,
           amount,
           proverTip: args.proverTip,
-        },
+        }),
         plainWithdrawal: payout.plainWithdrawal,
       },
     })
@@ -1107,9 +1116,9 @@ export class PaylinkService extends ServiceBase {
   ): Promise<ResolvedPaylink> {
     const { contract, instance, depositTxHash } = await this.reconstructPaylinkContract(params)
     const note = await this.readEscrowNote(contract, account)
-    const deposit = await this.registerToken(note.tokenAddress)
-      .then(() => this.readDepositMetaOf(instance, depositTxHash, note.tokenAddress))
-      .catch(() => undefined)
+    const deposit = await this.readDepositMetaOf(instance, depositTxHash, note.tokenAddress).catch(
+      () => undefined,
+    )
     return {
       note,
       txHash: depositTxHash?.toString(),
@@ -1133,7 +1142,10 @@ export class PaylinkService extends ServiceBase {
     return this.readDepositMetaOf(instance, depositTxHash)
   }
 
-  /** The PXE decrypts a token's Transfer events only once it holds that token contract. */
+  /**
+   * The PXE decrypts a token's Transfer events only once it holds that token contract and its
+   * immutables, which the token's `sync_state` reads.
+   */
   private async registerToken(token: AztecAddress): Promise<void> {
     const artifact = await this.contractService.getArtifactForContract(
       DEFAULT_CONTRACTS.oxideToken,
@@ -1142,6 +1154,7 @@ export class PaylinkService extends ServiceBase {
     await ensureContractRegisteredInPXE(this.wallet.pxe, this.wallet.node, token, () =>
       Promise.resolve(artifact),
     )
+    await TokenService.ensureImmutablesStored(this.wallet, this.contractService, token)
   }
 
   private async readDepositMetaOf(
@@ -1149,6 +1162,7 @@ export class PaylinkService extends ServiceBase {
     txHash: TxHash | undefined,
     token: AztecAddress = this.tokenService.tokenAddress,
   ): Promise<DepositMeta | undefined> {
+    await this.registerToken(token)
     const events = await this.wallet.getPrivateEvents<TransferEvent>(
       OxideTokenContract.events.Transfer,
       {
@@ -1334,6 +1348,7 @@ export class PaylinkService extends ServiceBase {
       [intentHash],
       { chainId, version },
     )
+    const paying = sponsoredAccounts(sponsor, user)
     const op = await buildSponsoredTeeOperation(
       {
         wallet: this.wallet,
@@ -1346,7 +1361,7 @@ export class PaylinkService extends ServiceBase {
         fpcArtifact,
         railId: sponsor.railId,
         policy: sponsor.policy,
-        user,
+        ...paying.args,
         tokenContract: token,
         signer: this.getTeeSigner(),
         operations: [
@@ -1366,10 +1381,11 @@ export class PaylinkService extends ServiceBase {
         ...(args.voucher
           ? {
               teeUnsignedInteractions: [
+                // The gift spends a use of the payer's subscription.
                 giftVoucherInteraction(
                   this.wallet,
                   sponsor,
-                  user,
+                  paying.args.user,
                   instance.address,
                   args.voucher.railId,
                 ),
@@ -1387,7 +1403,7 @@ export class PaylinkService extends ServiceBase {
     const sent = await this.wallet.sendTx(op.payload, {
       from: NO_FROM,
       sendMessagesAs: user,
-      additionalScopes: [user, ...op.sendOpts.additionalScopes],
+      additionalScopes: [...paying.scopes, ...op.sendOpts.additionalScopes],
       finalize: op.sendOpts.finalize,
       fee: op.sendOpts.fee,
       operationId: options?.operationId,
@@ -1538,12 +1554,11 @@ export class PaylinkService extends ServiceBase {
       teeUnsignedInteractions: payout.broadcasts,
       plainWithdrawal: payout.plainWithdrawal,
       withdrawals: [
-        {
-          executor: payout.plainWithdrawal.executor,
-          userPayload: payout.userPayload,
+        nestedWithdrawal(payout, {
+          from: prepared.escrow.address,
           amount,
           proverTip: args.proverTip,
-        },
+        }),
       ],
       // The escrow note sizes any swap escrow the caller planned; a burn of anything else would
       // strand it in an escrow that never executes.
@@ -1578,8 +1593,9 @@ export class PaylinkService extends ServiceBase {
       },
       withdraw.withdrawal,
     )
-    // The claim, the release broadcast, the extra calls and `publish_da`.
-    const calls = 2 + payout.broadcasts.length + broadcasts.length
+    // The claim, the payout's and the extra broadcasts, the finalization request the TEE batch
+    // appends, and `publish_da`.
+    const calls = 3 + payout.broadcasts.length + broadcasts.length
     if (calls > MAX_SPONSORED_CALLS) {
       throw new ClaimBatchFullError(
         `the claim batch would need ${calls} calls; the FPC dispatches at most ${MAX_SPONSORED_CALLS}`,
@@ -1610,12 +1626,11 @@ export class PaylinkService extends ServiceBase {
         teeUnsignedInteractions: [...payout.broadcasts, ...broadcasts],
         plainWithdrawal: payout.plainWithdrawal,
         withdrawals: [
-          {
-            executor: payout.plainWithdrawal.executor,
-            userPayload: payout.userPayload,
+          nestedWithdrawal(payout, {
+            from: escrow.address,
             amount: withdraw.amount,
             proverTip: withdraw.proverTip,
-          },
+          }),
         ],
         expectedWithdrawalAmount: withdraw.amount,
       },
@@ -1655,7 +1670,7 @@ export class PaylinkService extends ServiceBase {
       SponsoredTeeOperationArgs,
       "teeUnsignedInteractions" | "expectedWithdrawalAmount" | "plainWithdrawal"
     > & {
-      withdrawals?: PlainWithdrawalOperation[]
+      withdrawals?: WithdrawOperation[]
       /** The escrow pays and its call needs no authwit, so the account authorizes nothing. */
       accountFree?: boolean
     },
@@ -1704,8 +1719,9 @@ export class PaylinkService extends ServiceBase {
           intentHashes,
           { chainId, version },
         )
+    const paying = sponsoredAccounts(sponsor, user)
     // The voucher is the escrow's note, so the escrow pays; the account still authorizes its calls.
-    const payer = options?.voucher ? instance.address : user
+    const payer = options?.voucher ? instance.address : paying.args.user
     const op = await buildSponsoredTeeOperation(
       {
         wallet: this.wallet,
@@ -1753,7 +1769,10 @@ export class PaylinkService extends ServiceBase {
     const sent = await this.wallet.sendTx(op.payload, {
       from: NO_FROM,
       sendMessagesAs: user,
-      additionalScopes: [user, ...op.sendOpts.additionalScopes],
+      additionalScopes: [
+        ...(options?.voucher ? [user] : paying.scopes),
+        ...op.sendOpts.additionalScopes,
+      ],
       finalize: op.sendOpts.finalize,
       fee: op.sendOpts.fee,
       operationId: options?.operationId,
@@ -1807,6 +1826,7 @@ export class PaylinkService extends ServiceBase {
       [refundIntentHash],
       { chainId, version },
     )
+    const paying = sponsoredAccounts(sponsor, user)
     const op = await buildSponsoredTeeOperation(
       {
         wallet: this.wallet,
@@ -1819,7 +1839,7 @@ export class PaylinkService extends ServiceBase {
         fpcArtifact,
         railId: sponsor.railId,
         policy: sponsor.policy,
-        user,
+        ...paying.args,
         tokenContract: token,
         signer: this.getTeeSigner(),
         operations: [
@@ -1840,7 +1860,7 @@ export class PaylinkService extends ServiceBase {
     const sent = await this.wallet.sendTx(op.payload, {
       from: NO_FROM,
       sendMessagesAs: user,
-      additionalScopes: [user, ...op.sendOpts.additionalScopes],
+      additionalScopes: [...paying.scopes, ...op.sendOpts.additionalScopes],
       finalize: op.sendOpts.finalize,
       fee: op.sendOpts.fee,
       operationId: options?.operationId,

@@ -1,6 +1,6 @@
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
-import { ContractService, Network, setPerfLogFlag } from "@obsidion/sdk"
-import type { AztecNode } from "@aztec/aztec.js/node"
+import { Network, setPerfLogFlag, TokenService } from "@obsidion/sdk"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { lazy, Suspense, useEffect, useState, useSyncExternalStore, type ReactNode } from "react"
 import {
   AccountProvider,
@@ -32,6 +32,7 @@ import {
 import { ScanNavigationProvider } from "./features/scan/ScanNavigation"
 import { getConfig, type WebBootConfig } from "./config/env"
 import { proveTxPerfLogsEnabled } from "./config/features"
+import { fleetUrl } from "./config/oxideTuple"
 import { isDemoMode } from "./dev/demoFlag"
 import { ErrorModalHost } from "./errors/ErrorModalHost"
 import { bindAnalyticsConsent } from "./lib/analytics"
@@ -69,13 +70,15 @@ import { ContactPayScreen } from "./features/contacts/ContactPayScreen"
 import { ConnectReceiveScreen } from "./features/contacts/ConnectReceiveScreen"
 import { hasConnectStash, stashInboundConnect } from "./features/contacts/connectReceive"
 import { WithdrawScreen } from "./features/withdraw/WithdrawScreen"
-import { FrozenExitScreen } from "./features/withdraw/FrozenExitScreen"
 import { WithdrawEtherfiScreen } from "./features/withdraw/WithdrawEtherfiScreen"
 import { WithdrawMethodScreen } from "./features/withdraw/WithdrawMethodScreen"
 import { WithdrawFreshScreen } from "./features/withdraw/WithdrawFreshScreen"
+import { OldVersionWithdrawScreen } from "./features/withdraw/OldVersionWithdrawScreen"
 import { useAuthenticator } from "./platform/auth/useAuthenticator"
+import { retiredSession } from "./platform/auth/retiredSession"
 import { XmtpMount } from "./platform/xmtp/XmtpMount"
 import { MigrationDetectionMount } from "./features/migration/MigrationDetectionMount"
+import { CutoverLogoutMount } from "./features/cutover/account"
 import { NotificationsMount } from "./features/notifications/NotificationsMount"
 import { PaylinkClaimMount } from "./features/notifications/PaylinkClaimMount"
 import { TransferScannerMount } from "./platform/transactions/TransferScannerMount"
@@ -121,6 +124,8 @@ import { SettingsScreen } from "./ui/screens/SettingsScreen"
 import { LeaveGuardMount } from "./features/operations/LeaveGuardMount"
 import { OperationsMount } from "./features/operations/OperationsMount"
 import { BroadcastsMount } from "./features/broadcasts/BroadcastsMount"
+import { setActiveTabSince } from "./platform/activeTabSince"
+import { connectFleetSigner, oxideTokenImmutablesOf } from "./features/token/oxideToken"
 
 /** What the active tab hands the app once it may run the wallet. */
 export interface ActiveTabBoot {
@@ -140,6 +145,7 @@ export interface ActiveTabBoot {
 function createAppServices(node: AztecNode) {
   const config = getConfig()
   const storageAdapter = webStorage
+  TokenService.setImmutablesSource(oxideTokenImmutablesOf)
   // Construct the ContactStorage singleton first so it carries the cross-tab write lock and the
   // storage-event invalidation seam; ObsidionCoreProvider's later get() reuses this instance.
   ContactStorage.get(storageAdapter, contactsWriteLock)
@@ -162,8 +168,7 @@ function createAppServices(node: AztecNode) {
     screener: config.predicate
       ? new PredicateScreeningService(config.predicate)
       : passThroughScreener,
-    // TEE co-signer for oxide-token operations. Portal comes from the oxide
-    // tuple; an empty `config.enclaveUrl` dials the manifest's own enclaveUrl.
+    // The Main token's co-signer, following the manifest tuple; it shares every token's fleet signers.
     assetOptions: {
       // Without this seed TokenStorage stays empty and
       // every loadAssets short-circuits to an empty asset list — no balance.
@@ -171,18 +176,8 @@ function createAppServices(node: AztecNode) {
       teeSignerSource: createOxideTeeSignerSource({
         l1RpcUrl: config.l1RpcUrl,
         l1Chain: config.l1Chain,
-        transformEnclaveUrl: (url) => (config.enclaveUrl ? `${config.enclaveUrl}/rpc` : url),
-        // The pinned enclave must be approved on the active token before it is handed to the
-        // services. Same node the PXE boots against; the token resolves once the contract
-        // service is up, so the connect skips until then.
-        getNode: () => node,
-        getTokenAddress: async () => {
-          try {
-            return await ContractService.getInstance().getContractAddress("oxideToken")
-          } catch {
-            return undefined // getInstance throws before the provider constructs the singleton
-          }
-        },
+        transformEnclaveUrl: (url) => fleetUrl(config, { enclaveUrl: url }),
+        connect: connectFleetSigner,
       }),
     },
     node,
@@ -289,7 +284,8 @@ function AssetGate({
  * Wallet routes require an entered identity (a name is NOT required — nameless accounts are
  * prompted to register from Home). It is a storage read, so this sits above BootHold: a visitor
  * without one is routed without waiting on the PXE. A tag drawn for this tab's signup lets the
- * visitor in to Home, which hosts the signup until the passkey exists.
+ * visitor in to Home, which hosts the signup until the passkey exists. A visitor a retired
+ * rollup's session names goes to /enter, which signs it in from that session's key.
  */
 export function WalletEntryGate() {
   const draft = useSyncExternalStore(subscribeDrawnOffer, drawnOfferTag)
@@ -297,7 +293,7 @@ export function WalletEntryGate() {
   if (!loadOnboardedIdentity() && !draft)
     return (
       <>
-        <Navigate to="/claim" replace />
+        <Navigate to={retiredSession() ? "/enter" : "/claim"} replace />
         {/* The redirect is no first screen: the boot screen holds until /claim's own wait. */}
         {!ready && <BootSplash />}
       </>
@@ -328,7 +324,6 @@ function WalletGate() {
       {/* Unlocked only: the lock/visibility-scoped XMTP client + stage-2 inbox. Demo mode has no
           network identity to register, so it renders the seeded stores as-is. */}
       {!isDemoMode() && <XmtpMount />}
-      <NotificationsMount />
       {!isDemoMode() && <SponsoredRailReadinessMount />}
       {!isDemoMode() && <PaylinkClaimMount />}
       {/* Chain-native incoming-transfer ingest — independent of XMTP and the leader lock. */}
@@ -336,11 +331,12 @@ function WalletGate() {
       {/* The SIPA sync loop runs on every wallet route, so an open deposit sheet advances anywhere. */}
       <SipaDepositsMount />
       <WebSavingsProvider>
+        <NotificationsMount />
         <Outlet />
+        {/* Last so the upgrade dialog stacks above route-level sheets. */}
+        <MigrationDetectionMount />
+        <CutoverLogoutMount />
       </WebSavingsProvider>
-      {/* Where the account's upgrade stands, and its dialog on request. Last so the dialog stacks
-          above any route-level sheet (same z-index, later in DOM). */}
-      <MigrationDetectionMount />
     </UnlockGate>
   )
 }
@@ -367,10 +363,9 @@ export function ActionGate({ action }: { action: WalletAction }) {
       return <BootSplash inShell />
     case "upgrade":
       return <UpgradeFirst action={action} to="/" />
-    case "exit":
-      return <FrozenExitScreen />
+    case "refund":
+      return <OldVersionWithdrawScreen />
     case "home":
-    case "frozen":
       return <Navigate to="/" replace />
     default:
       return <NameRequiredScreen pending={verdict === "registering"} />
@@ -395,8 +390,6 @@ export function ContactRoute() {
   const pay = useOutlet()
   if (pay && verdict === "upgrade")
     return <UpgradeFirst action="send" to={location.pathname.replace(/\/send\/?$/, "")} />
-  if (pay && verdict === "frozen")
-    return <Navigate to={location.pathname.replace(/\/send\/?$/, "")} replace />
   if (pay && (verdict === "registering" || verdict === "name")) {
     return <NameRequiredScreen pending={verdict === "registering"} />
   }
@@ -420,6 +413,7 @@ function AppRouter({ children }: { children: ReactNode }) {
 }
 
 export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: ActiveTabBoot }) {
+  setActiveTabSince(activeTab.activeSince)
   const [services] = useState(() => createAppServices(activeTab.node))
   // Stash an inbound /connect packet before any gate redirect can drop the fragment.
   useState(stashInboundConnect)
@@ -559,17 +553,19 @@ export function App({ boot, activeTab }: { boot: WebBootConfig; activeTab: Activ
                                           {/* A picker: each way out is gated on its own. */}
                                           <Route path="send" element={<SendScreen />} />
                                           <Route path="contacts" element={<ContactsScreen />} />
-                                          <Route
-                                            path={REQUESTS_PATH}
-                                            element={<RequestsScreen />}
-                                          />
+                                          <Route element={<ActionGate action="requests" />}>
+                                            <Route
+                                              path={REQUESTS_PATH}
+                                              element={<RequestsScreen />}
+                                            />
+                                            <Route
+                                              path={NON_CONTACT_REQUESTS_PATH}
+                                              element={<NonContactRequestsScreen />}
+                                            />
+                                          </Route>
                                           <Route
                                             path="connect"
                                             element={<ConnectReceiveScreen />}
-                                          />
-                                          <Route
-                                            path={NON_CONTACT_REQUESTS_PATH}
-                                            element={<NonContactRequestsScreen />}
                                           />
                                           <Route
                                             path="contacts/:idOrTag"

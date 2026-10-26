@@ -1,42 +1,49 @@
-import type { AztecAddress, EthAddress } from '@aztec/aztec.js/addresses';
-import type { AuthWitness } from '@aztec/aztec.js/authorization';
+import type { AztecAddress, EthAddress } from '@aztec-labs/aztec.js/addresses';
 import {
   BatchCall,
   type Contract,
   type ContractFunctionInteraction,
   type WaitOpts,
   toSimulateOptions,
-} from '@aztec/aztec.js/contracts';
-import type { FeePaymentMethod } from '@aztec/aztec.js/fee';
-import { Fr } from '@aztec/aztec.js/fields';
-import type { Wallet } from '@aztec/aztec.js/wallet';
-import type { ContractArtifact } from '@aztec/stdlib/abi';
-import { Capsule, type SimulationStats, type TxReceipt } from '@aztec/stdlib/tx';
+} from '@aztec-labs/aztec.js/contracts';
+import type { FeePaymentMethod } from '@aztec-labs/aztec.js/fee';
+import { Fr } from '@aztec-labs/aztec.js/fields';
+import type { Wallet } from '@aztec-labs/aztec.js/wallet';
+import type { ContractArtifact } from '@aztec-labs/stdlib/abi';
+import type { SimulationStats, TxReceipt } from '@aztec-labs/stdlib/tx';
 
 import { getUserPayloadHash } from '@oxide/oxide-lib/content_hash.js';
-import { assertPlainWithdrawalTip, decodePlainWithdrawalPayload } from '@oxide/oxide-lib/plain_withdrawal.js';
-import type { SignTokenOperationOutput, SpentDeposit, TeeSigner, TokenOperation } from '@oxide/oxide-lib/types.js';
-import { TEEMetadata } from '@oxide/oxide-lib/types.js';
+import { type BroadcastL1Operation, computeL1OperationId } from '@oxide/oxide-lib/l1_operation_calldata.js';
+import type { TokenOperation } from '@oxide/oxide-lib/types.js';
+import type { WithdrawalFinalizationData } from '@oxide/oxide-lib/withdrawal_finalization_data.js';
 
 import {
-  buildNoteSignatureCapsule,
-  buildPlainExecutorUserPayloadCapsules,
+  buildNoteSignatureCapsules,
+  buildPublishDaCapsules,
+  buildRecoveryChunkCapsules,
   buildSeedCapsule,
   buildStrictModeCapsule,
-  buildTeeMetadataCapsule,
-  buildTeeNotesCapsule,
-  buildTeeRequiredNullifiersCapsule,
-  buildTeeWithdrawalMessageHashesCapsule,
-  buildWithdrawalSignatureCapsule,
 } from './capsules.js';
 import type { ChainDataSource } from './chain_data_source.js';
-import { getDepositMessageSiblingPath } from './deposit_refund_eligibility.js';
+import {
+  assertRecoveryChunksFitInTx,
+  buildRecoveryData,
+  buildSignedFinalizationData,
+  buildSimulationFinalizationData,
+} from './submitted_withdrawal.js';
 import {
   type DepositSpendMetadataResolver,
   type SpendMetadataResolver,
-  buildTokenOperation,
   collectAccountingEffects,
+  hydrateTokenOperation,
 } from './token_operations_collector.js';
+import type { RegisteredSignTokenOperationOutput, RegisteredTeeSigner } from './types.js';
+import {
+  type FinalizationRequestBroadcastParams,
+  buildFinalizationRequestCall,
+  buildFinalizationRequestOperation,
+} from './withdrawal_finalization_request.js';
+import type { WithdrawalInTx } from './withdrawal_in_tx.js';
 
 /**
  * Wallet + node context shared across submissions.
@@ -51,31 +58,39 @@ export interface L2SubmitContext {
   paymentMethod?: FeePaymentMethod;
 }
 
+export interface TransferOperation {
+  kind: 'transfer';
+  from: AztecAddress;
+  to: AztecAddress;
+  amount: bigint;
+  meta?: Fr[];
+  authwitNonce?: Fr;
+}
+
+/** A withdrawal through `executor`. Executor helpers, such as `buildPlainWithdrawal`, build the payload. */
+export interface WithdrawOperation {
+  kind: 'withdraw';
+  from: AztecAddress;
+  executor: EthAddress;
+  userPayload: Buffer;
+  amount: bigint;
+  proverTip: bigint;
+  /**
+   * With these params, the initiation tx broadcasts the finalization request, so that any relayer can finalize the
+   * withdrawal. Without them, only the owner can finalize, from the recovery data.
+   */
+  finalizationRequestBroadcastParams?: FinalizationRequestBroadcastParams;
+  /** The memo of the withdrawal's recovery data (see `WithdrawalRecoveryData`). Empty if omitted. */
+  recoveryMemo?: Buffer;
+  authwitNonce?: Fr;
+}
+
 /**
- * One contract call within a submission's operation list. Each variant maps to exactly one
- * `OxideTokenContract` method; the portal assertions (deposits, withdrawals) the TEE balance
- * invariant checks are inferred from the variants present.
+ * One operation within a submission's operation list. Each variant spends `from`'s notes in one `OxideTokenContract`
+ * call; the portal assertions (deposits, withdrawals) the TEE balance invariant checks are inferred from the variants
+ * present.
  */
-export type Operation =
-  | {
-      kind: 'transfer';
-      from: AztecAddress;
-      to: AztecAddress;
-      amount: bigint;
-      meta?: Fr[];
-      authwitNonce?: Fr;
-    }
-  | {
-      kind: 'withdraw';
-      from: AztecAddress;
-      executor: EthAddress;
-      userPayload: Buffer;
-      amount: bigint;
-      proverTip: bigint;
-      /** `withdraw`'s passthrough blob, delivered back to `from` as the `Withdraw` event. Zero-filled when absent. */
-      meta?: Fr[];
-      authwitNonce?: Fr;
-    };
+export type Operation = TransferOperation | WithdrawOperation;
 
 /**
  * Pipeline phases of {@link submit}, in order. `prove-and-send` re-executes the private calls inside the wallet
@@ -83,74 +98,93 @@ export type Operation =
  */
 export type SubmitPhase = 'simulate' | 'hydrate' | 'prove-and-send';
 
+/** A withdrawal of a {@link submit} tx, with the finalization request that the tx broadcast for it. */
+export interface SubmitResultWithdrawal extends WithdrawalInTx {
+  /** Position of the withdrawal among the withdrawals of its tx. */
+  withdrawalIndex: number;
+  /** The broadcast L1 operation and its id. Undefined when the withdrawal does not broadcast its request. */
+  finalizationRequest?: { operation: BroadcastL1Operation; operationId: `0x${string}` };
+}
+
 export interface SubmitResult {
   receipt: TxReceipt;
   /** Fully hydrated and signed operation for this token (notes, withdrawals, deposits, etc.). */
   tokenOperation: TokenOperation;
   /** TEE signatures, indexed in operation order. */
-  signOutput: SignTokenOperationOutput;
+  signOutput: RegisteredSignTokenOperationOutput;
+  /** The withdrawals of this submission, in withdrawal index order. */
+  withdrawals: SubmitResultWithdrawal[];
   /** PXE timings + node-call stats for the simulation pass; populated when `collectStats` is set. */
   simulationStats?: SimulationStats;
 }
 
 export function getTransferMetaLen(artifact: ContractArtifact): number {
-  return getMetaLen(artifact, 'transfer');
-}
-
-export function getWithdrawMetaLen(artifact: ContractArtifact): number {
-  return getMetaLen(artifact, 'withdraw');
-}
-
-function getMetaLen(artifact: ContractArtifact, fn: string): number {
-  const meta = artifact.functions.find(f => f.name === fn)?.parameters.find(p => p.name === 'meta');
+  const meta = artifact.functions.find(f => f.name === 'transfer')?.parameters.find(p => p.name === 'meta');
   if (meta?.type.kind !== 'array') {
-    throw new Error(`${fn}(meta) array parameter not found in contract artifact`);
+    throw new Error('transfer(meta) array parameter not found in contract artifact');
   }
   return meta.type.length;
 }
 
-function buildOperationCall(
-  contract: Contract,
-  op: Operation,
-  authwitNonce: Fr,
-  capsules: Capsule[],
-  authWitnesses: AuthWitness[] = [],
-): ContractFunctionInteraction {
-  switch (op.kind) {
-    case 'transfer':
-      return contract.methods
-        .transfer(
-          op.from,
-          op.to,
-          op.amount,
-          op.meta ?? Array(getTransferMetaLen(contract.artifact)).fill(Fr.ZERO),
-          authwitNonce,
-        )
-        .with({ capsules, authWitnesses });
-    case 'withdraw':
-      return contract.methods
-        .withdraw(
-          op.from,
-          op.executor,
-          getUserPayloadHash(op.userPayload),
-          op.amount,
-          op.proverTip,
-          op.meta ?? Array(getWithdrawMetaLen(contract.artifact)).fill(Fr.ZERO),
-          authwitNonce,
-        )
-        .with({ capsules, authWitnesses });
-  }
+function buildTransferCall(contract: Contract, op: TransferOperation, authwitNonce: Fr): ContractFunctionInteraction {
+  const meta = op.meta ?? Array(getTransferMetaLen(contract.artifact)).fill(Fr.ZERO);
+  return contract.methods.transfer(op.from, op.to, op.amount, meta, authwitNonce);
+}
+
+function buildWithdrawCall(contract: Contract, op: WithdrawOperation, authwitNonce: Fr): ContractFunctionInteraction {
+  return contract.methods.withdraw(
+    op.from,
+    op.executor,
+    getUserPayloadHash(op.userPayload),
+    op.amount,
+    op.proverTip,
+    authwitNonce,
+  );
+}
+
+/**
+ * The token calls of the operations, in operation order. A delegated call carries the owner's authwit. No call argument
+ * depends on the TEE, because the recovery data comes in capsules. So the calls and their authwits are made once,
+ * before the simulation, and both passes use them.
+ */
+async function buildOperationCalls(args: {
+  wallet: Wallet;
+  contract: Contract;
+  from: AztecAddress;
+  operations: Operation[];
+}): Promise<ContractFunctionInteraction[]> {
+  const { wallet, contract, from, operations } = args;
+  return await Promise.all(
+    operations.map(async op => {
+      const delegated = !op.from.equals(from);
+      const authwitNonce = delegated ? (op.authwitNonce ?? Fr.random()) : Fr.zero();
+      const call =
+        op.kind === 'transfer'
+          ? buildTransferCall(contract, op, authwitNonce)
+          : buildWithdrawCall(contract, op, authwitNonce);
+      if (!delegated) {
+        return call;
+      }
+      const authWitness = await wallet.createAuthWit(op.from, { caller: from, call: await call.getFunctionCall() });
+      return call.with({ authWitnesses: [authWitness] });
+    }),
+  );
 }
 
 /**
  * Build, simulate, sign, and submit a batched operation against one token as a single tx.
+ *
+ * Every withdrawal emits its recovery data to its owner, and can broadcast its finalization request. Both carry the
+ * finalization data, which is final only after the TEE signs. The simulation pass uses finalization data with zero
+ * randomness and a zero signature, which has the final size, for the request and for the recovery chunk capsules. So
+ * both passes run the same calls and emit the same number of recovery chunks.
  */
 export async function submit(
   ctx: L2SubmitContext,
   from: AztecAddress,
   args: {
     contract: Contract;
-    signer: TeeSigner;
+    signer: RegisteredTeeSigner;
     operations: Operation[];
     resolveSpendMetadata?: SpendMetadataResolver;
     resolveDepositSpendMetadata?: DepositSpendMetadataResolver;
@@ -166,9 +200,6 @@ export async function submit(
     collectStats?: boolean;
     /** Mining-wait options for the final send (timeout, poll interval). */
     wait?: WaitOpts;
-    plainWithdrawalExecutor?: EthAddress;
-    fpcFundingCut?: bigint;
-    portalFrozen?: boolean;
   },
 ): Promise<SubmitResult> {
   const {
@@ -181,175 +212,88 @@ export async function submit(
     onPhase,
     collectStats,
     wait,
-    plainWithdrawalExecutor,
-    fpcFundingCut,
-    portalFrozen = false,
   } = args;
   if (operations.length === 0) {
     throw new Error('submit called with no operations');
   }
-  const withdrawOps = operations.filter(isWithdrawOperation);
-  assertPlainWithdrawals(withdrawOps, { plainWithdrawalExecutor, fpcFundingCut, portalFrozen });
   const { wallet, chain } = ctx;
 
-  // Per-op authwit nonces are fixed up front: the witness signs the exact call args, so the sim and real
-  // passes must share them.
-  const authwitNonces = operations.map(op => (op.from.equals(from) ? Fr.zero() : (op.authwitNonce ?? Fr.random())));
+  // The token emits withdrawals in operation order, so withdrawal index `k` is the position in `withdrawOps`.
+  const withdrawOps = operations.filter(isWithdrawOperation);
+  assertRecoveryChunksFitInTx(withdrawOps);
+
+  const operationCalls = await buildOperationCalls({ wallet, contract, from, operations });
   // Delegated owners' private state (account keys, notes) must be accessible while their account contracts
   // validate the authwits and their notes are spent.
   const additionalScopes = [
     ...new Map(operations.filter(op => !op.from.equals(from)).map(op => [op.from.toString(), op.from])).values(),
   ];
-  // One witness per delegated op
-  const authWitnesses: AuthWitness[][] = await Promise.all(
-    operations.map(async (op, i) => {
-      if (op.from.equals(from)) {
-        return [];
-      }
-      const call = await buildOperationCall(contract, op, authwitNonces[i], []).getFunctionCall();
-      return [await wallet.createAuthWit(op.from, { caller: from, call })];
-    }),
-  );
 
+  /** The calls of one pass. `finalizationData[k]` belongs to withdrawal `k`. Each pass gives the batch its capsules. */
+  const buildBatchCalls = (finalizationData: WithdrawalFinalizationData[]) => [
+    ...operationCalls,
+    ...teeUnsignedInteractions,
+    ...withdrawOps.flatMap((op, k) =>
+      op.finalizationRequestBroadcastParams
+        ? [buildFinalizationRequestCall(op.finalizationRequestBroadcastParams, finalizationData[k])]
+        : [],
+    ),
+  ];
+
+  // Both passes use the same seed, so the token draws the same randomness in both.
   const seedCapsule = buildSeedCapsule(contract.address);
 
-  // 1. Build + run simulation.
+  // 1. Simulate.
   onPhase?.('simulate');
-  const simBatchCalls: ContractFunctionInteraction[] = [];
-  operations.forEach((op, i) => {
-    simBatchCalls.push(buildOperationCall(contract, op, authwitNonces[i], [seedCapsule], authWitnesses[i]));
+  const simFinalizationData = withdrawOps.map(buildSimulationFinalizationData);
+  const simPayload = await new BatchCall(wallet, buildBatchCalls(simFinalizationData)).request({
+    capsules: [
+      seedCapsule,
+      ...(await buildRecoveryChunkCapsules(contract.address, buildRecoveryData(withdrawOps, simFinalizationData))),
+    ],
   });
-  simBatchCalls.push(...teeUnsignedInteractions);
-
-  const simPayload = await new BatchCall(wallet, simBatchCalls).request();
   const simResult = await wallet.simulateTx(
     simPayload,
     toSimulateOptions({ from, additionalScopes, includeMetadata: collectStats }),
   );
   const anchorBlockHeader = simResult.publicInputs.constants.anchorBlockHeader;
-  const anchorBlockHash = await anchorBlockHeader.hash();
 
-  // 2. Effects collection (filters offchain effects by contract address).
+  // 2. Hydrate the token's effects into the operation that the TEE signs.
   onPhase?.('hydrate');
   const collected = collectAccountingEffects(contract.address, simResult.offchainEffects);
-
-  const deposits: SpentDeposit[] = [];
-  if (collected.deposits.length > 0 && !resolveDepositSpendMetadata) {
-    throw new Error(
-      `submit: produced ${collected.deposits.length} deposit spend(s) but no resolveDepositSpendMetadata was supplied`,
-    );
-  }
-  for (const spent of collected.deposits) {
-    const siblingPath = await getDepositMessageSiblingPath(chain, anchorBlockHash, {
-      messageKey: spent.messageHash,
-      messageLeafIndex: spent.inboxIndex,
-    });
-    if (!siblingPath) {
-      throw new Error(`No L1->L2 membership witness for deposit message ${spent.messageHash}`);
-    }
-    const metadata = await resolveDepositSpendMetadata!(spent.recipient);
-    deposits.push({
-      recipient: spent.recipient,
-      recipientAddressPreimage: metadata.ownerAddressPreimage,
-      masterNullifierHidingKey: metadata.masterNullifierHidingKey,
-      amount: spent.amount,
-      sharedSecretSalt: spent.sharedSecretSalt,
-      messageLeafIndex: spent.inboxIndex,
-      siblingPath: siblingPath.toTuple(),
-    });
-  }
-
-  // Spend metadata for nullified notes.
-  let spendMetadata: Awaited<ReturnType<SpendMetadataResolver>>[] = [];
-  if (collected.nullifiedNotes.length > 0) {
-    if (!resolveSpendMetadata) {
-      throw new Error(
-        `submit: produced ${collected.nullifiedNotes.length} nullified note(s) but no resolveSpendMetadata was supplied`,
-      );
-    }
-    spendMetadata = await Promise.all(collected.nullifiedNotes.map(resolveSpendMetadata));
-  }
-
-  // 3. TokenOperation + TEE sign.
-  const tokenOperation = await buildTokenOperation(
-    chain,
-    contract.address,
+  const tokenOperation = await hydrateTokenOperation(chain, {
+    tokenAddress: contract.address,
+    teeRegistry: signer.teeRegistry,
     anchorBlockHeader,
     collected,
-    spendMetadata,
-    { deposits },
-  );
+    resolveSpendMetadata,
+    resolveDepositSpendMetadata,
+  });
+
+  // 3. Sign.
   const signOutput = await signer.signTokenOperation(tokenOperation);
-  const { signatures, requiredNullifiers, teeNotes, withdrawalMessageHashes } = signOutput;
 
-  // 4. Build + run the real send.
-  // Real signature capsules cover post-squash insertions; dummies cover transient pairs.
-  const sigCapsules = await Promise.all(
-    tokenOperation.createdNotes.map((note, j) =>
-      buildNoteSignatureCapsule(contract.address, note.randomness, signatures[j]),
-    ),
-  );
-  const dummyCapsules = await Promise.all(
-    collected.squashedTransientNotes.map(note =>
-      buildNoteSignatureCapsule(contract.address, note.randomness, {
-        sLo: Fr.zero(),
-        sHi: Fr.zero(),
-        rLo: Fr.zero(),
-        rHi: Fr.zero(),
-      }),
-    ),
-  );
+  // 4. Fill in the signed randomness and signatures.
+  const signedFinalizationData = buildSignedFinalizationData(withdrawOps, tokenOperation, signOutput);
 
-  // `publish_withdrawal` (called from `withdraw`) reads the withdrawal signature from a capsule keyed
-  // by the withdraw content hash and emits it in the published withdrawal log, so a third party
-  // can finalize on L1 from just the burn tx hash. Source `randomness` from the collected
-  // withdrawal effects (in contract-walk order) so the slot the client picks here is the slot
-  // the contract's submit-pass `next_randomness` sequence lands on.
-  const withdrawalSigCapsules = await Promise.all(
-    tokenOperation.withdrawals.map((withdrawal, k) =>
-      buildWithdrawalSignatureCapsule(contract.address, withdrawal, signOutput.withdrawalSignatures[k]),
-    ),
-  );
-  // TEMPORARY: see the plain-executor user payload block in `capsules.ts`.
-  const plainExecutorUserPayloadCapsules = await buildPlainExecutorUserPayloadCapsules(
-    contract.address,
-    tokenOperation.withdrawals,
-    withdrawOps.map(op => op.userPayload),
-    plainWithdrawalExecutor,
-  );
-
-  const realCallCapsules = [
+  // 5. Prove and send.
+  const capsules = [
     seedCapsule,
     buildStrictModeCapsule(contract.address),
-    ...sigCapsules,
-    ...dummyCapsules,
-    ...withdrawalSigCapsules,
-    ...plainExecutorUserPayloadCapsules,
+    ...(await buildNoteSignatureCapsules(contract.address, collected, signOutput.signatures)),
+    ...(await buildRecoveryChunkCapsules(contract.address, buildRecoveryData(withdrawOps, signedFinalizationData))),
   ];
-
-  const realBatchCalls: ContractFunctionInteraction[] = [];
-  operations.forEach((op, i) => {
-    realBatchCalls.push(buildOperationCall(contract, op, authwitNonces[i], realCallCapsules, authWitnesses[i]));
-  });
-  realBatchCalls.push(...teeUnsignedInteractions);
-  realBatchCalls.push(
-    contract.methods.publish_da().with({
-      capsules: [
-        buildTeeNotesCapsule(contract.address, teeNotes),
-        buildTeeRequiredNullifiersCapsule(contract.address, requiredNullifiers),
-        buildTeeMetadataCapsule(
-          contract.address,
-          TEEMetadata.fromPublicKey(signer.publicKey, await tokenOperation.anchorBlockHeader.hash()),
-        ),
-        buildTeeWithdrawalMessageHashesCapsule(contract.address, withdrawalMessageHashes),
-      ],
-    }),
-  );
-
+  const realBatchCalls = [
+    ...buildBatchCalls(signedFinalizationData),
+    contract.methods
+      .publish_da()
+      .with({ capsules: buildPublishDaCapsules(contract.address, signOutput, await anchorBlockHeader.hash()) }),
+  ];
   onPhase?.('prove-and-send');
   const { receipt } = await new BatchCall(wallet, realBatchCalls).send({
     from,
     additionalScopes,
+    capsules,
     fee: ctx.paymentMethod && { paymentMethod: ctx.paymentMethod },
     wait,
   });
@@ -358,42 +302,20 @@ export async function submit(
     receipt,
     tokenOperation,
     signOutput,
+    withdrawals: signedFinalizationData.map((finalizationData, k) => {
+      const params = withdrawOps[k].finalizationRequestBroadcastParams;
+      const operation = params && buildFinalizationRequestOperation(params, finalizationData);
+      return {
+        txHash: receipt.txHash,
+        withdrawalIndex: k,
+        finalizationData,
+        finalizationRequest: operation && { operation, operationId: computeL1OperationId(operation, receipt.txHash) },
+      };
+    }),
     simulationStats: simResult.stats,
   };
 }
 
-/** The fields of a withdraw operation that the plain-withdrawal checks use. */
-export type PlainWithdrawalOperation = Pick<
-  Extract<Operation, { kind: 'withdraw' }>,
-  'executor' | 'userPayload' | 'amount' | 'proverTip'
->;
-
-/**
- * Reject a plain withdrawal whose relayer tip is more than the executor gets. The executor call reverts on L1 for
- * such a withdrawal, and nobody can release the burn. Withdrawals through other executors are not checked.
- */
-export function assertPlainWithdrawals(
-  withdrawals: PlainWithdrawalOperation[],
-  args: { plainWithdrawalExecutor?: EthAddress; fpcFundingCut?: bigint; portalFrozen?: boolean },
-): void {
-  const { plainWithdrawalExecutor, fpcFundingCut, portalFrozen = false } = args;
-  for (const withdrawal of withdrawals) {
-    if (!plainWithdrawalExecutor || !withdrawal.executor.equals(plainWithdrawalExecutor)) {
-      continue;
-    }
-    if (fpcFundingCut === undefined) {
-      throw new Error('Plain withdrawals require the current Portal funding cut.');
-    }
-    assertPlainWithdrawalTip(
-      withdrawal.amount,
-      withdrawal.proverTip,
-      decodePlainWithdrawalPayload(withdrawal.userPayload).relayerTip,
-      fpcFundingCut,
-      portalFrozen,
-    );
-  }
-}
-
-function isWithdrawOperation(op: Operation): op is Extract<Operation, { kind: 'withdraw' }> {
+function isWithdrawOperation(op: Operation): op is WithdrawOperation {
   return op.kind === 'withdraw';
 }

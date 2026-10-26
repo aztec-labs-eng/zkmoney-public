@@ -8,7 +8,7 @@
  * phase, intent or feed item kind fails the build until someone decides how it is reported.
  */
 import { formatUnits } from "viem"
-import { DEFAULT_DECIMALS, PaylinkActionEnum, WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
+import { PaylinkActionEnum } from "@obsidion/core/constants"
 import type { SIPADepositPhase, WithdrawalPhase } from "@obsidion/core/types"
 import type { Transaction, TransactionStatus } from "../../../types/transactions"
 import { requestLinkedSipaAddresses } from "../../paymentRequest/sipaRequestFulfillment"
@@ -47,6 +47,7 @@ export type ActivityCsvType =
   | "Deposit"
   | "Withdrawal"
   | "Name registration"
+  | "Backup passkey added"
   | "Upgrade out"
   | "Upgrade in"
   | "Savings deposit"
@@ -76,13 +77,21 @@ export interface ActivityCsvRow {
   ethereumTxHash?: string
 }
 
+/** The Main account's token: what transfers, deposits, Savings moves and upgrades are reported in. */
+export interface ActivityCsvToken {
+  symbol: string
+  decimals: number
+}
+
 export interface ActivityCsvSources {
+  walletToken: ActivityCsvToken
   transactions: readonly Transaction[]
   items: readonly ActivityItem[]
   requests: readonly PaymentRequest[]
 }
 
 export interface SavingsCsvSources {
+  walletToken: ActivityCsvToken
   moves: readonly SavingsMoveRecord[]
   /** The moves' burns by local id. */
   burns: ReadonlyMap<string, WithdrawalRecord>
@@ -130,23 +139,23 @@ const UPGRADE_SETTLED: Record<UpgradeBatchItem["state"], boolean> = {
   received: true,
 }
 
-type TxRow = (tx: Transaction) => ActivityCsvRow
+type TxRow = (tx: Transaction, token: ActivityCsvToken) => ActivityCsvRow
 
 /** null: the action moves no funds, or its movement is reported by another row. */
 const TRANSACTION_ACTION: Record<Transaction["action"], TxRow | null> = {
-  send: (tx) => ({
+  send: (tx, token) => ({
     ...txBase(tx),
     type: "Payment sent",
-    sent: txMoney(tx),
+    sent: txMoney(tx, token),
     counterparty: aztecCounterparty(
       "toTag" in tx ? tx.toTag : undefined,
       "to" in tx ? tx.to : undefined,
     ),
   }),
-  receive: (tx) => ({
+  receive: (tx, token) => ({
     ...txBase(tx),
     type: "Payment received",
-    received: txMoney(tx),
+    received: txMoney(tx, token),
     counterparty: aztecCounterparty(
       "from" in tx ? tx.from : undefined,
       "senderL2Address" in tx ? tx.senderL2Address : undefined,
@@ -154,21 +163,21 @@ const TRANSACTION_ACTION: Record<Transaction["action"], TxRow | null> = {
   }),
   // Test-network funds with no value.
   faucet: null,
-  [PaylinkActionEnum.PAY]: (tx) => ({
+  [PaylinkActionEnum.PAY]: (tx, token) => ({
     ...txBase(tx),
     type: "Payment link created",
-    sent: txMoney(tx),
+    sent: txMoney(tx, token),
     counterparty: "to" in tx && tx.to?.includes("@") ? { name: tx.to } : undefined,
   }),
-  [PaylinkActionEnum.CLAIM]: (tx) => ({
+  [PaylinkActionEnum.CLAIM]: (tx, token) => ({
     ...txBase(tx),
     type: "Payment link claimed",
-    received: txMoney(tx),
+    received: txMoney(tx, token),
   }),
-  [PaylinkActionEnum.CLAIM_BACK]: (tx) => ({
+  [PaylinkActionEnum.CLAIM_BACK]: (tx, token) => ({
     ...txBase(tx),
     type: "Payment link refunded",
-    received: txMoney(tx),
+    received: txMoney(tx, token),
   }),
   // Status words, not movements: the funds move on the CLAIM and CLAIM_BACK rows.
   [PaylinkActionEnum.REFUNDED]: null,
@@ -189,6 +198,7 @@ const WITHDRAWAL_TYPE: Record<WithdrawalKind, ActivityCsvType> = {
   "paylink": "Payment link paid to Ethereum",
   "registration": "Name registration",
   "migration": "Upgrade out",
+  "backup": "Backup passkey added",
   "savings-in": "Savings deposit",
   "savings-out": "Savings withdrawal",
 }
@@ -202,16 +212,17 @@ function withdrawalKind(record: WithdrawalRecord): WithdrawalKind {
 type DepositKind = NonNullable<SIPADepositRecord["intent"]> | "migration" | "request" | "deposit"
 
 const DEPOSIT_TYPE: Record<DepositKind, ActivityCsvType> = {
-  deposit: "Deposit",
-  request: "Payment request paid",
-  registration: "Name registration",
-  migration: "Upgrade in",
-  metadata: "Upgrade in",
+  "deposit": "Deposit",
+  "request": "Payment request paid",
+  "registration": "Name registration",
+  "migration": "Upgrade in",
+  "user-op": "Backup passkey added",
 }
 
 type ItemRows = (item: ActivityItem, ctx: ItemContext) => ActivityCsvRow[]
 
 interface ItemContext {
+  walletToken: ActivityCsvToken
   migrationArrivals: ReadonlySet<string>
   requestAddresses: ReadonlySet<string>
 }
@@ -222,11 +233,12 @@ const ITEM_KIND: Record<ActivityItem["kind"], ItemRows | null> = {
     item.kind === "bridge.withdrawal" && WITHDRAWAL_SETTLED[item.record.phase]
       ? [withdrawalRow(item.record)]
       : [],
+  // A token split out of its address's record is reported among that record's sweeps.
   "bridge.sipaDeposit": (item, ctx) =>
-    item.kind === "bridge.sipaDeposit" ? depositRows(item.record, ctx) : [],
-  "upgrade.batch": (item) =>
+    item.kind === "bridge.sipaDeposit" && !item.credit ? depositRows(item.record, ctx) : [],
+  "upgrade.batch": (item, ctx) =>
     item.kind === "upgrade.batch" && UPGRADE_SETTLED[item.batch.state]
-      ? [upgradeRow(item.batch)]
+      ? [upgradeRow(item.batch, ctx.walletToken)]
       : [],
   "p2p": null,
   "paylink": null,
@@ -250,6 +262,7 @@ export function buildActivityCsvRows(sources: ActivityCsvSources): ActivityCsvRo
     i.kind === "bridge.withdrawal" ? [i.record] : [],
   )
   const ctx: ItemContext = {
+    walletToken: sources.walletToken,
     migrationArrivals: new Set([
       ...withdrawals.filter((r) => r.intent === "migration").map((r) => r.recipient.toLowerCase()),
       ...sources.items.flatMap((i) =>
@@ -260,7 +273,7 @@ export function buildActivityCsvRows(sources: ActivityCsvSources): ActivityCsvRo
   }
   const txRows = sources.transactions.flatMap((tx) => {
     const row = TRANSACTION_ACTION[tx.action]
-    return row && TRANSACTION_SETTLED[tx.status] ? [row(tx)] : []
+    return row && TRANSACTION_SETTLED[tx.status] ? [row(tx, sources.walletToken)] : []
   })
   const itemRows = sources.items.flatMap((item) => ITEM_KIND[item.kind]?.(item, ctx) ?? [])
   return [...txRows, ...itemRows].sort((a, b) => a.timestampMs - b.timestampMs)
@@ -272,7 +285,11 @@ export function buildActivityCsvRows(sources: ActivityCsvSources): ActivityCsvRo
  * or the burn's gross when nothing was read. Out: what landed on Main, with the rest of what the
  * vault paid as the fee.
  */
-export function buildSavingsCsvRows({ moves, burns }: SavingsCsvSources): ActivityCsvRow[] {
+export function buildSavingsCsvRows({
+  walletToken: { symbol, decimals },
+  moves,
+  burns,
+}: SavingsCsvSources): ActivityCsvRow[] {
   return moves
     .flatMap((move): ActivityCsvRow[] => {
       if (!move.deposit?.claimed) return []
@@ -289,7 +306,7 @@ export function buildSavingsCsvRows({ moves, burns }: SavingsCsvSources): Activi
           {
             timestampMs: move.deposit.at ?? move.endTime ?? move.startTime,
             type: "Savings deposit",
-            received: money(took, DEFAULT_DECIMALS, WALLET_TOKEN_SYMBOL),
+            received: money(took, decimals, symbol),
             ...hashes,
           },
         ]
@@ -298,11 +315,8 @@ export function buildSavingsCsvRows({ moves, burns }: SavingsCsvSources): Activi
         {
           timestampMs: burn?.minedAt ?? move.startTime,
           type: "Savings withdrawal",
-          sent: money(landed, DEFAULT_DECIMALS, WALLET_TOKEN_SYMBOL),
-          fee:
-            paid === undefined
-              ? undefined
-              : money(paid - landed, DEFAULT_DECIMALS, WALLET_TOKEN_SYMBOL),
+          sent: money(landed, decimals, symbol),
+          fee: paid === undefined ? undefined : money(paid - landed, decimals, symbol),
           ...hashes,
         },
       ]
@@ -367,14 +381,14 @@ function txBase(tx: Transaction): Pick<ActivityCsvRow, "timestampMs" | "aztecTxH
   }
 }
 
-function txMoney(tx: Transaction): Money | undefined {
+function txMoney(tx: Transaction, walletToken: ActivityCsvToken): Money | undefined {
   if (!("token" in tx) || !tx.token) return undefined
   const atomic = "amountAtomic" in tx ? tx.amountAtomic : undefined
   return {
     amount: atomic
       ? formatUnits(BigInt(atomic), tx.token.decimals)
       : tx.token.amount.toLocaleString("en-US", { useGrouping: false, maximumFractionDigits: 18 }),
-    currency: tx.token.symbol || WALLET_TOKEN_SYMBOL,
+    currency: tx.token.symbol || walletToken.symbol,
   }
 }
 
@@ -388,6 +402,10 @@ function aztecCounterparty(nameOrAddress?: string, address?: string): Counterpar
   return { name, address: resolved, network: "Aztec" }
 }
 
+function rescale(amount: bigint, from: number, to: number): bigint {
+  return to >= from ? amount * 10n ** BigInt(to - from) : amount / 10n ** BigInt(from - to)
+}
+
 /** Undefined for a non-positive amount: a fee the chain shows as none is left blank, not 0. */
 function money(atomic: bigint, decimals: number, currency: string): Money | undefined {
   return atomic > 0n ? { amount: formatUnits(atomic, decimals), currency } : undefined
@@ -395,7 +413,7 @@ function money(atomic: bigint, decimals: number, currency: string): Money | unde
 
 function withdrawalRow(record: WithdrawalRecord): ActivityCsvRow {
   const gross = withdrawalAmounts(record).grossAtomic
-  const currency = record.tokenSymbol || WALLET_TOKEN_SYMBOL
+  const { tokenSymbol: currency, tokenDecimals: decimals } = record
   const paidTo = (record.phase === "recovered" && record.recoveryTarget) || record.recipient
   // Only a direct withdrawal arrives in the burned token, so only its difference is a fee.
   const received =
@@ -403,23 +421,20 @@ function withdrawalRow(record: WithdrawalRecord): ActivityCsvRow {
   return {
     timestampMs: record.endTime ?? record.startTime,
     type: WITHDRAWAL_TYPE[withdrawalKind(record)],
-    sent: money(received ?? gross, DEFAULT_DECIMALS, currency),
-    fee: received === undefined ? undefined : money(gross - received, DEFAULT_DECIMALS, currency),
+    sent: money(received ?? gross, decimals, currency),
+    fee: received === undefined ? undefined : money(gross - received, decimals, currency),
     counterparty: { name: record.recipientAlias, address: paidTo, network: "Ethereum" },
     aztecTxHash: record.l2TxHash,
     ethereumTxHash: record.swapExecuteTxHash ?? record.recoveryTxHash ?? record.l1TxHash,
   }
 }
 
-/** What a batch's refund took off the old version: the tip is its fee. */
-function upgradeRow(batch: UpgradeBatchItem): ActivityCsvRow {
-  const gross = BigInt(batch.amount)
-  const fee = BigInt(batch.exitFee)
+/** What a batch's refund took off the old version. The migration executor takes no fee. */
+function upgradeRow(batch: UpgradeBatchItem, token: ActivityCsvToken): ActivityCsvRow {
   return {
     timestampMs: batch.startTime,
     type: "Upgrade out",
-    sent: money(gross - fee, DEFAULT_DECIMALS, WALLET_TOKEN_SYMBOL),
-    fee: money(fee, DEFAULT_DECIMALS, WALLET_TOKEN_SYMBOL),
+    sent: money(BigInt(batch.amount), token.decimals, token.symbol),
     counterparty: { address: batch.recipient, network: "Ethereum" },
     aztecTxHash: batch.tx,
   }
@@ -450,26 +465,28 @@ function depositRows(record: SIPADepositRecord, ctx: ItemContext): ActivityCsvRo
           ? "request"
           : "deposit")
     ]
-  const currency = record.tokenSymbol || WALLET_TOKEN_SYMBOL
   const counterparty: Counterparty | undefined = record.fundingFromAddress
     ? { address: record.fundingFromAddress, network: "Ethereum" }
     : undefined
   return settledSweeps(record).map((sweep, i) => {
+    // A sweep is credited in its row's token; one recorded before rows carries the record's.
+    const currency = sweep.tokenSymbol || record.tokenSymbol || ctx.walletToken.symbol
+    const decimals = sweep.tokenDecimals ?? record.tokenDecimals ?? ctx.walletToken.decimals
     const sentCurrency = sweep.fundingTokenSymbol ?? currency
-    const sentDecimals = sweep.fundingTokenDecimals ?? DEFAULT_DECIMALS
+    const sentDecimals = sweep.fundingTokenDecimals ?? decimals
     const sent = sweep.grossAmount != null ? BigInt(sweep.grossAmount) : undefined
     const net = sweep.netAmount != null ? BigInt(sweep.netAmount) : undefined
     // A sweep swapped into another token has no fee in one currency: it reports the net alone.
     const gross =
       sent !== undefined && net !== undefined && sentCurrency === currency
-        ? sent * 10n ** BigInt(DEFAULT_DECIMALS - sentDecimals)
+        ? rescale(sent, sentDecimals, decimals)
         : undefined
     return {
       // Dated at the sweep, when the funds it settled left the address and were credited.
       timestampMs: sweep.settledAt ?? record.startTime,
       type,
-      received: money(gross ?? net ?? 0n, DEFAULT_DECIMALS, currency),
-      fee: gross === undefined ? undefined : money(gross - net!, DEFAULT_DECIMALS, currency),
+      received: money(gross ?? net ?? 0n, decimals, currency),
+      fee: gross === undefined ? undefined : money(gross - net!, decimals, currency),
       counterparty,
       aztecTxHash: sweep.inboxIndex === record.inboxIndex ? record.claimTxHash : undefined,
       // The funding transfer is the user's own transaction, and it belongs to the first sweep.

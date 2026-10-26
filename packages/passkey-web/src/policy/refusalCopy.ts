@@ -178,7 +178,7 @@ export const PHONE_STEPS_COPY = {
       "iCloud Keychain",
       "Google Password Manager",
       "1Password",
-      "YubiKey 5 security key",
+      "YubiKey 5, Trezor or Ledger security key",
     ],
     refused: "Other password managers aren't supported yet.",
   },
@@ -215,8 +215,8 @@ export const PHONE_STEPS_COPY = {
     note:
       "Your security key keeps the only copy of your passkey. A second key can't be added as a " +
       "backup, and there is no account recovery: lose the key, lose the wallet.",
-    /** The allowlist admits the Yubico family, but one model is verified end to end. */
-    models: "YubiKey 5 series keys are supported today",
+    /** The key families the wallet admits; not every model of each is measured. */
+    models: "YubiKey 5 series, Trezor and Ledger keys are supported today",
     /** Back to the phone variant; offered only where a phone route exists. */
     back: USE_PHONE,
     routes: [{ hint: "security-key", label: "Use security key" }] as readonly StepsRoute[],
@@ -378,7 +378,7 @@ export const SIGN_UP_SHEET_COPY = {
   },
   key: {
     label: "Security key",
-    description: "A YubiKey 5 you plug in or tap",
+    description: "A YubiKey 5, Trezor or Ledger you plug in or tap",
     /** Where no phone can be reached but this computer can still save the passkey. */
     noPhone: "This computer can't reach a phone.",
   },
@@ -394,6 +394,29 @@ export const SIGN_UP_SHEET_COPY = {
   keyWarning: {
     label: PHONE_STEPS_COPY.noPhone.detailsLabel,
     note: PHONE_STEPS_COPY.noPhone.note,
+    models: PHONE_STEPS_COPY.noPhone.models,
+  },
+} as const
+
+/** The settings sheet's backup picker; `backupAddOptionsFor` picks among these and the sign-up's. */
+export const BACKUP_ADD_SHEET_COPY = {
+  pickerLabel: "Where should your backup passkey live?",
+  /** The destination, not the script: on some browsers the extension hands the request back. */
+  onePassword: { description: "Saved in 1Password" },
+  proton: { label: "Proton Pass", description: "Saved in Proton Pass" },
+  computer: { description: "Saved by your browser's own passkey prompt" },
+  phone: {
+    /** The managers admitted over QR; any other on the phone is refused by name. */
+    managers:
+      "On your phone, save it in iCloud Keychain, Google Password Manager or 1Password. Other " +
+      "passkey managers can't hold a backup over QR.",
+  },
+  /** A key keeps the only copy of the backup; the wallet's other passkey still opens it. */
+  keyWarning: {
+    label: PHONE_STEPS_COPY.noPhone.detailsLabel,
+    note:
+      "Your security key keeps the only copy of this backup passkey. Lose the key and the backup " +
+      "is gone; your other passkey still opens the wallet.",
     models: PHONE_STEPS_COPY.noPhone.models,
   },
 } as const

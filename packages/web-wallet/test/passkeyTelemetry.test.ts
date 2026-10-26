@@ -160,7 +160,9 @@ describe("sending", () => {
 describe("the wallet's own errors", () => {
   it("reads each by its name, and rethrows it unchanged", async () => {
     const { passkeyTelemetry } = await load()
-    const { StoredAddressMismatchError } = await import("@obsidion/front-core")
+    const { PasskeyEnvelopeError, StoredAddressMismatchError } = await import(
+      "@obsidion/front-core"
+    )
     const { PasskeyMismatchError } = await import("../src/features/onboarding/oxideOnboarding")
     const { HintedKeyMismatchError } = await import("../src/platform/auth/WebAlphaAuthService")
     const { SignerKeyMismatchError } = await import("../src/platform/auth/webauthnSigning")
@@ -173,6 +175,7 @@ describe("the wallet's own errors", () => {
       [new HintedKeyMismatchError(), "refused", "passkey_mismatch"],
       [new StoredAddressMismatchError(), "refused", "passkey_mismatch"],
       [new SignerKeyMismatchError(), "failed", "signer_mismatch"],
+      [new PasskeyEnvelopeError("decrypt"), "failed", "backup_envelope"],
       [new NoPasskeySessionError(), "failed", "session_lost"],
       [new SessionChangedError(), "failed", "session_lost"],
       [new GateCancelledError(), "cancelled", "in_app_cancel"],

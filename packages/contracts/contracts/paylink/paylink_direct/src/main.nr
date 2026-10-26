@@ -112,8 +112,8 @@ pub contract PaylinkDirect {
     /// Bearer claim to L1: the link is the credential and the payout is not an L2 identity, so
     /// there is nothing to authorize. The burn goes to `executor`, which runs the user payload that
     /// `user_payload_hash` commits to. Consumes the same nullifier as `claim` and the refund.
-    /// Publishes the payout in the withdrawal log, so an L1 claim is visible to anyone holding the
-    /// link.
+    /// Emits no recovery data: the batch's public finalization request releases the burn, so an L1
+    /// claim is visible to anyone holding the link.
     #[external("private")]
     fn claim_to_l1(executor: EthAddress, user_payload_hash: Field, prover_tip: u128) {
         assert_is_initialized_private(self.context);

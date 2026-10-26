@@ -5,14 +5,13 @@
  * placeholder record, stamped from the manifest token before anything was sent there, so the merge
  * keeps the charged figures over a placeholder's and takes every other field the store holds.
  */
-import { quotedDepositFee } from "@obsidion/core/constants"
 import type { SIPADepositRecord } from "@obsidion/front-core"
 import type { SentDeposit } from "./DepositFromWalletModal"
 import type { DepositDisplayFacts } from "./loadDepositFacts"
 
 /**
  * Display-only stand-in for the record event discovery has not created yet. It carries the quoted
- * total and the portal's share of it, so `depositAmounts` reproduces what the user was charged.
+ * fee in its row token's base units, the units a record's amounts are in, so it reproduces the charge.
  */
 export function pendingDepositRecord(
   sent: SentDeposit,
@@ -23,9 +22,10 @@ export function pendingDepositRecord(
     sipaAddress: sent.address,
     phase: "funding",
     amount: sent.amount,
-    fee: quotedDepositFee(facts.sweepFeeAtomic, facts.fpcFundingCutAtomic).toString(),
-    fpcFundingCut: facts.fpcFundingCutAtomic.toString(),
+    fee: facts.sweepFeeAtomic.toString(),
     tokenSymbol: sent.tokenSymbol,
+    tokenAddress: sent.tokenAddress,
+    tokenDecimals: sent.tokenDecimals,
     l1ChainId,
     startTime: Date.now(),
     fundingTxHash: sent.txHash,

@@ -34,24 +34,20 @@ describe("Home's upgrade banner", () => {
     )
     const button = container.querySelector<HTMLButtonElement>('[data-testid="upgrade-banner"]')
     const text = button?.textContent ?? null
+    const cta = button?.querySelector(".ww-banner__cta")?.textContent ?? null
     const before = requests
     if (button) await act(async () => button.click())
     const opened = requests === before + 1
     await act(async () => root.unmount())
-    return { text, opened }
+    return { text, cta, opened }
   }
 
-  it("offers the upgrade in Figma's words, and opens its dialog", async () => {
+  it("says the wallet waits on the upgrade, with a button that opens its dialog", async () => {
     const shown = await banner({ state: "offered", registration: true })
-    expect(shown.text).toContain("Faster zk.money available")
-    expect(shown.text).toContain("A better wallet with quicker transactions. Tap to upgrade.")
-    expect(shown.opened).toBe(true)
-  })
-
-  it("asks to keep the tag when a deposit must fund the upgrade", async () => {
-    const shown = await banner({ state: "offered", registration: true, external: true })
-    expect(shown.text).toContain("Upgrade to keep your tag")
-    expect(shown.text).toContain("A better wallet with quicker transactions. Tap to upgrade.")
+    expect(shown.text).toContain("Upgrade to keep using zk.money")
+    expect(shown.text).toContain("A better wallet with quicker transactions.")
+    expect(shown.text).not.toContain("Tap to upgrade")
+    expect(shown.cta).toBe("Upgrade now")
     expect(shown.opened).toBe(true)
   })
 
@@ -59,9 +55,9 @@ describe("Home's upgrade banner", () => {
     expect((await banner({ state: "finishing", registration: true })).text).toBe(
       "Finish your upgrade",
     )
-    expect((await banner({ state: "running", phase: "arriving", registration: false })).text).toBe(
-      "Your funds are on their way",
-    )
+    expect(
+      (await banner({ state: "running", phase: "awaitingMessages", registration: true })).text,
+    ).toBe("Processing your upgrade")
     expect(
       (await banner({ state: "stopped", phase: "needsApproval", registration: true })).text,
     ).toBe("Your upgrade needs your approval")

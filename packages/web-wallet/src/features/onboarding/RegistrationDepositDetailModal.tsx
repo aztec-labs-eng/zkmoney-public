@@ -52,12 +52,12 @@ import { reusePasskeyAccount } from "./oxideOnboarding"
 import { failureCode, fireEvent } from "../../lib/analytics"
 import { passkeyTelemetry } from "../../lib/passkeyTelemetry"
 import { canManualRegistrationSweep, manualRegistrationSweep } from "./registrationSweep"
-import { reservedUntil, type RegistrationTerms, type SweepDeductions } from "./registrationTerms"
+import { reservedUntil, type RegistrationTerms } from "./registrationTerms"
 import { registrationNeedsRefund, useRegistrationRefunded } from "./registrationQuoteRecovery"
 import { DepositProcessingNotice } from "../deposit/DepositProcessingNotice"
 import { SELF_SWEEP_PRIVACY } from "../deposit/DepositExitModal"
 import { useSipaProcessing } from "../deposit/sipaProcessing"
-import { depositTokensFor } from "../deposit/loadDepositFacts"
+import { useDepositTokens } from "../deposit/loadDepositFacts"
 import { useOweRegistrationBroadcast } from "../broadcasts/useOweRegistrationBroadcast"
 import { BroadcastStatusRow } from "../broadcasts/BroadcastStatusRow"
 import { registrationAddressPublished } from "./webRegistration"
@@ -108,11 +108,9 @@ export function RegistrationDepositDetailModal({
   terms,
   funding,
   sweepFee,
-  deductions,
   amount,
   deposited,
   feeLabel,
-  cutLabel,
   pay,
   onClose,
 }: {
@@ -121,10 +119,9 @@ export function RegistrationDepositDetailModal({
   /** Undefined while the funding read is out; null when nothing reached the address. The gross row
    *  waits for a value. */
   funding?: RegistrationFunding | null
-  /** The relayer's cut on a sweep, and the portal's. Undefined until they are known; the refund
-   *  verdict waits on them rather than guessing. */
+  /** The relayer's cut on a sweep. Undefined until it is known; the refund verdict waits on it
+   *  rather than guessing. */
   sweepFee?: bigint
-  deductions?: SweepDeductions
   /** Headline figure, as the feed row shows it: the credit the sweep produces. */
   amount: string
   /** What the sender actually put at the address (gross), when known. */
@@ -132,8 +129,6 @@ export function RegistrationDepositDetailModal({
   /** The fee the deposit covers; an earned tag's says the tag price was waived. Absent until the
    *  schedule that prices it is known. */
   feeLabel?: string
-  /** Portal cut that funds sponsored gas. */
-  cutLabel?: string
   /** Set while the address still needs funds: renders the pay QR + address inline. */
   pay?: {
     token: Address
@@ -148,16 +143,11 @@ export function RegistrationDepositDetailModal({
   }
   onClose: () => void
 }) {
+  const feeSymbol = useDepositTokens("registration")?.settlement.symbol ?? WALLET_TOKEN_SYMBOL
   const depositAdmitted = useDepositAdmission(record)
   const refunded = useRegistrationRefunded(record)
   const stage = useRegistrationStage(record)
-  const needsRefund = registrationNeedsRefund(
-    record,
-    terms,
-    depositAdmitted || refunded,
-    sweepFee,
-    deductions?.fpcCut,
-  )
+  const needsRefund = registrationNeedsRefund(record, terms, depositAdmitted || refunded, sweepFee)
   const status = needsRefund
     ? { label: "Refund needed for earned price", badge: "pending" as const }
     : registrationDepositStatus(record.tag, stage)
@@ -212,14 +202,12 @@ export function RegistrationDepositDetailModal({
         <DepositProcessingNotice
           sipaAddress={record.sipaAddress}
           state={processing}
-          symbol={depositTokensFor(getConfig().network)[0]?.symbol ?? WALLET_TOKEN_SYMBOL}
+          symbol={feeSymbol}
           help={(detail) => (
             <PendingLimitsLink
               sipaAddress={record.sipaAddress}
               capacityKey={capacityKey}
-              settlementSymbol={
-                depositTokensFor(getConfig().network)[0]?.symbol ?? WALLET_TOKEN_SYMBOL
-              }
+              settlementSymbol={feeSymbol}
               detail={detail}
             />
           )}
@@ -245,12 +233,6 @@ export function RegistrationDepositDetailModal({
         <ConfirmationSheetDetailRow
           label="Registration fee"
           value={<span data-testid="registration-detail-fee">{feeLabel}</span>}
-        />
-      )}
-      {cutLabel && (
-        <ConfirmationSheetDetailRow
-          label="Gas sponsorship"
-          value={<span data-testid="registration-detail-cut">{cutLabel}</span>}
         />
       )}
       {holdEnds !== undefined && (
@@ -331,6 +313,7 @@ function PayAtAddress({
 }) {
   const { network } = getConfig()
   const decimals = tokenDecimalsForNetwork(network)
+  const feeSymbol = useDepositTokens("registration")?.settlement.symbol ?? pay.tokenSymbol
   const overLimit = registrationOverLimit({
     token: pay.token,
     chainId: pay.chainId,
@@ -362,6 +345,7 @@ function PayAtAddress({
           topic={aboutLimits}
           details={{ capacity: <p className="ww-about-limits__note">{ADDRESS_RECHECK_NOTE}</p> }}
           capacity={sourceFromTarget(capacity)}
+          settlementSymbol={feeSymbol}
           onClose={() => setAboutLimits(undefined)}
         />
       )}
@@ -405,6 +389,7 @@ export function ManualSweepAction({
   /** Whether to say why the sweep is held; false where the surface already states the reason. */
   showReason?: boolean
 }) {
+  const feeSymbol = useDepositTokens("registration")?.settlement.symbol ?? WALLET_TOKEN_SYMBOL
   const { obsidionWallet } = useAztecContext()
   const screener = useScreener()
   const { gate, state: gateState, cancel: cancelGate } = useCeremonyGate()
@@ -525,14 +510,12 @@ export function ManualSweepAction({
         <DepositProcessingNotice
           sipaAddress={record.sipaAddress}
           state={processing}
-          symbol={depositTokensFor(getConfig().network)[0]?.symbol ?? WALLET_TOKEN_SYMBOL}
+          symbol={feeSymbol}
           help={(detail) => (
             <PendingLimitsLink
               sipaAddress={record.sipaAddress}
               capacityKey={capacityKey}
-              settlementSymbol={
-                depositTokensFor(getConfig().network)[0]?.symbol ?? WALLET_TOKEN_SYMBOL
-              }
+              settlementSymbol={feeSymbol}
               detail={detail}
             />
           )}

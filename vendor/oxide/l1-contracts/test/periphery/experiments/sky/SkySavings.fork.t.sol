@@ -33,7 +33,6 @@ contract SkySavingsForkTest is MainnetForkFixture, SkyHelpers {
   IERC20 internal constant USDS = IERC20(0xdC035D45d973E3EC169d2276DDab16f1e407384F);
   ISUsds internal constant SUSDS = ISUsds(0xa3931d71877C0E7a3148CB7Eb4463524FEc27fbD);
 
-  uint256 internal constant DAI_PORTAL_CUT = 0.5 ether;
   uint256 internal constant RELEASE_TIP = 1e18;
   uint256 internal constant ESCROW_TIP = 2e18;
 
@@ -61,13 +60,12 @@ contract SkySavingsForkTest is MainnetForkFixture, SkyHelpers {
     vm.createSelectFork(rpc, FORK_BLOCK);
     super.setUp();
 
-    daiPortal = _newPortal(address(DAI), DAI_PORTAL_CUT);
-    _initializeAndRegister(daiPortal, L2_PORTAL);
-    sUsdsPortal = _newPortal(address(SUSDS), 0);
-    _initializeAndRegister(sUsdsPortal, SUSDS_L2_PORTAL);
+    _registerSigner();
+    daiPortal = _newPortal(address(DAI), L2_TOKEN);
+    sUsdsPortal = _newPortal(address(SUSDS), SUSDS_L2_TOKEN);
 
-    daiExecutor = new PlainWithdrawalExecutor(address(daiPortal));
-    skyExecutor = new SkyWithdrawalExecutor(sUsdsPortal, _route());
+    daiExecutor = new PlainWithdrawalExecutor(address(daiPortal), 0, address(0), OWNER, ethUsdFeed);
+    skyExecutor = new SkyWithdrawalExecutor(sUsdsPortal, _route(), OWNER, ethUsdFeed);
     escrowFactory = new SkyEscrowFactory(_route(), daiPortal, sUsdsPortal, skyExecutor);
   }
 
@@ -87,11 +85,7 @@ contract SkySavingsForkTest is MainnetForkFixture, SkyHelpers {
     uint256 shares = _acquireShares(address(sUsdsPortal), 1000e18);
     uint256 assets = SUSDS.previewRedeem(shares);
     IOxidePortal.WithdrawArgs memory args = _withdrawArgs(
-      sUsdsPortal,
-      address(skyExecutor),
-      shares,
-      abi.encode(PAYOUT_RECIPIENT, RELEASE_TIP),
-      abi.encode(RELAYER, address(0))
+      sUsdsPortal, address(skyExecutor), shares, abi.encode(PAYOUT_RECIPIENT, RELEASE_TIP), abi.encodePacked(RELAYER)
     );
 
     vm.prank(RELAYER);
@@ -113,14 +107,14 @@ contract SkySavingsForkTest is MainnetForkFixture, SkyHelpers {
     deal(address(DAI), address(daiPortal), amount);
 
     IOxidePortal.WithdrawArgs memory release = _withdrawArgs(
-      daiPortal, address(daiExecutor), amount, abi.encode(escrow, RELEASE_TIP), abi.encode(RELAYER, address(0))
+      daiPortal, address(daiExecutor), amount, abi.encode(escrow, RELEASE_TIP), abi.encodePacked(RELAYER)
     );
     vm.prank(RELAYER);
     uint256 before = gasleft();
     daiPortal.withdraw(release);
     console2.log("fork: stake release, a plain DAI withdraw, gas:", before - gasleft());
 
-    uint256 escrowed = amount - DAI_PORTAL_CUT - RELEASE_TIP;
+    uint256 escrowed = amount - RELEASE_TIP;
     uint256 expectedShares = SUSDS.previewDeposit(escrowed - ESCROW_TIP);
     vm.expectEmit(true, true, false, true, address(SUSDS));
     emit ISUsds.Referral(2014, escrow, escrowed - ESCROW_TIP, expectedShares);
@@ -144,7 +138,7 @@ contract SkySavingsForkTest is MainnetForkFixture, SkyHelpers {
     uint256 assets = SUSDS.previewRedeem(shares);
 
     IOxidePortal.WithdrawArgs memory release = _withdrawArgs(
-      sUsdsPortal, address(skyExecutor), shares, abi.encode(escrow, RELEASE_TIP), abi.encode(RELAYER, address(0))
+      sUsdsPortal, address(skyExecutor), shares, abi.encode(escrow, RELEASE_TIP), abi.encodePacked(RELAYER)
     );
     vm.prank(RELAYER);
     uint256 before = gasleft();
@@ -157,9 +151,8 @@ contract SkySavingsForkTest is MainnetForkFixture, SkyHelpers {
     escrowFactory.deployAndExecute(args);
     console2.log("fork: unstake run, deploy and DAI portal deposit, gas:", before - gasleft());
 
-    assertEq(DAI.balanceOf(address(daiPortal)), assets - RELEASE_TIP - ESCROW_TIP - DAI_PORTAL_CUT);
+    assertEq(DAI.balanceOf(address(daiPortal)), assets - RELEASE_TIP - ESCROW_TIP);
     assertEq(DAI.balanceOf(RELAYER), RELEASE_TIP + ESCROW_TIP);
-    assertEq(DAI.balanceOf(FPC_FUNDER), DAI_PORTAL_CUT);
   }
 
   function test_GivenSharesInAnUnstakeEscrow_WhenRun_ThenTheRealVaultRedeemsThem() external {
@@ -175,7 +168,7 @@ contract SkySavingsForkTest is MainnetForkFixture, SkyHelpers {
     console2.log("fork: unstake run that redeems shares first, gas:", before - gasleft());
 
     assertEq(SUSDS.balanceOf(escrow), 0);
-    assertEq(DAI.balanceOf(address(daiPortal)), assets - ESCROW_TIP - DAI_PORTAL_CUT);
+    assertEq(DAI.balanceOf(address(daiPortal)), assets - ESCROW_TIP);
   }
 
   function _requireFork() internal {

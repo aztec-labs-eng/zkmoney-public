@@ -12,12 +12,8 @@ contract GasBurningSIPA {
     BURN = _burn;
   }
 
-  function portal() external view returns (address) {
-    return PORTAL;
-  }
-
-  function depositFee() external view returns (uint256) {
-    return FEE;
+  function route(address) external view returns (address, uint256, uint256) {
+    return (PORTAL, FEE, 0);
   }
 
   function sweep(address, address, bytes calldata, bytes calldata) external view {

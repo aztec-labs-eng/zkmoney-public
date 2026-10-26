@@ -5,14 +5,14 @@
  * declares, not just its length.
  */
 import { describe, expect, it } from "vitest"
-import { loadContractArtifact, type ContractArtifact } from "@aztec/stdlib/abi"
-import type { NoirCompiledContract } from "@aztec/stdlib/noir"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Fr } from "@aztec/aztec.js/fields"
-import { EthAddress } from "@aztec/aztec.js/addresses"
-import type { Contract } from "@aztec/aztec.js/contracts"
+import { loadContractArtifact, type ContractArtifact } from "@aztec-labs/stdlib/abi"
+import type { NoirCompiledContract } from "@aztec-labs/stdlib/noir"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import type { Contract } from "@aztec-labs/aztec.js/contracts"
 import { getUserPayloadHash } from "@oxide/oxide-lib/content_hash.js"
-import { encodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal.js"
+import { encodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal_executor.js"
 
 import { buildTokenOperationCall } from "../src/services/tokenOperationCall.js"
 import type { Operation } from "../src/oxide/index.js"
@@ -91,7 +91,6 @@ describe("buildTokenOperationCall", () => {
       user_payload_hash: getUserPayloadHash(userPayload),
       amount: 300n,
       prover_tip: 5n,
-      meta: Array(metaLength(artifact, "withdraw")).fill(Fr.ZERO),
       authwit_nonce: authwitNonce,
     })
   })
@@ -115,26 +114,21 @@ describe("buildTokenOperationCall", () => {
     })
   })
 
-  it("keeps a caller-supplied meta", async () => {
+  it("keeps a caller-supplied transfer meta", async () => {
     const artifact = await oxideTokenArtifact()
     const { contract, calls } = recordingContract(artifact)
-    const meta = Array(metaLength(artifact, "withdraw")).fill(9)
+    const meta = Array(metaLength(artifact, "transfer")).fill(9)
     const op: Operation = {
-      kind: "withdraw",
+      kind: "transfer",
       from: AztecAddress.fromNumberUnsafe(11),
-      executor: EthAddress.fromNumber(22),
-      userPayload: encodePlainWithdrawalPayload({
-        recipient: EthAddress.fromNumber(33),
-        relayerTip: 0n,
-      }),
+      to: AztecAddress.fromNumberUnsafe(22),
       amount: 300n,
-      proverTip: 0n,
       meta,
     }
 
     buildTokenOperationCall(contract, op, [])
 
-    const names = parameters(artifact, "withdraw").map((p) => p.name)
+    const names = parameters(artifact, "transfer").map((p) => p.name)
     expect(calls[0]!.args[names.indexOf("meta")]).toBe(meta)
   })
 })

@@ -5,16 +5,16 @@
 import { describe, expect, it, vi } from "vitest"
 import { readFileSync } from "fs"
 import { resolve } from "path"
-import { Fr, Point } from "@aztec/aztec.js/fields"
-import { TxHash } from "@aztec/stdlib/tx"
-import { loadContractArtifact } from "@aztec/stdlib/abi"
+import { Fr, Point } from "@aztec-labs/aztec.js/fields"
+import { TxHash } from "@aztec-labs/stdlib/tx"
+import { loadContractArtifact } from "@aztec-labs/stdlib/abi"
 import {
   CompleteAddress,
   getContractClassFromArtifact,
   getContractInstanceFromInstantiationParams,
-} from "@aztec/stdlib/contract"
-import type { NoirCompiledContract } from "@aztec/stdlib/noir"
-import { deriveRefundOwnerAddress } from "@oxide/oxide-lib/refund_authorization.js"
+} from "@aztec-labs/stdlib/contract"
+import type { NoirCompiledContract } from "@aztec-labs/stdlib/noir"
+import { deriveRefundOwnerAddress } from "@oxide/oxide-lib/migration_signature.js"
 import { DEFAULT_CONTRACTS } from "@obsidion/contracts"
 import { PaylinkService, type CreatedPaylinkParams } from "../../src/services/PaylinkService.js"
 import {
@@ -60,7 +60,7 @@ describe("paylinkRefundOwner", () => {
     )
     const escrow = await escrowOf(keys)
     const owner = await paylinkRefundOwner(escrow, keys, keys.fallbackSecret!)
-    expect(owner!.authorizer.kind).toBe("fallbackKey")
+    expect(owner!.signer.kind).toBe("fallbackKey")
     expect((await deriveRefundOwnerAddress(owner!)).equals(escrow.address)).toBe(true)
     expect(await paylinkRefundOwner(escrow, keys, Fr.random())).toBeUndefined()
   })

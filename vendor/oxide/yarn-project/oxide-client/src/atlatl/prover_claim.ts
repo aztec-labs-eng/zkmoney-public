@@ -1,69 +1,53 @@
-import type { Fr } from '@aztec/aztec.js/fields';
-import type { TxHash } from '@aztec/stdlib/tx';
+import type { Fr } from '@aztec-labs/aztec.js/fields';
 
 import type { ProverClaim } from '@oxide/l1-contracts/oxide_portal.js';
-import { computeWithdrawMessageHash } from '@oxide/oxide-lib/hash.js';
+import { toOutboxWithdrawal } from '@oxide/oxide-lib/withdrawal_finalization_data.js';
 
 import type { Hex } from 'viem';
 
 import { resolveArchive } from '../archive_ref.js';
 import type { L1SubmitContext } from '../types.js';
-import { computeProverClaimWitness, fromPublished, signWithdrawFinalization } from '../utils/withdrawal.js';
+import { computeProverClaimWitness, resolveWithdrawal, signWithdrawalFinalization } from '../utils/withdrawal.js';
+import type { WithdrawalInTx } from '../withdrawal_in_tx.js';
 
-/** Build a Portal `claimProverTips` request for a single withdrawal published in `txHash`'s burn tx.
- *  `withdrawalIndex` selects which `publish_withdrawal` log entry to claim. `archiveRoot` anchors the
- *  TEE finalization signature — any proven checkpoint whose archive covers the burn. `proofLength` is
- *  the shortest proof that proves the checkpoint containing the burn tx. */
+/** Build a Portal `claimProverTips` request for one withdrawal (for example a finalization request), verified against
+ *  its initiation tx. `archiveRoot` anchors the TEE finalization signature — any proven checkpoint whose archive covers
+ *  the initiation. `proofLength` is the shortest proof that proves the checkpoint of the initiation tx. */
 export async function buildProverClaim(
   ctx: L1SubmitContext,
   args: {
-    txHash: TxHash;
+    withdrawal: WithdrawalInTx;
     archiveRoot: Fr;
-    withdrawalIndex: number;
     proofLength: bigint;
   },
 ): Promise<ProverClaim> {
-  const inputs = await fromPublished(ctx.chain, args.txHash, args.withdrawalIndex, ctx.l2Token);
+  const resolved = await resolveWithdrawal(ctx, args.withdrawal);
   const archive = await resolveArchive(ctx.chain, args.archiveRoot);
-  const messageHash = computeWithdrawMessageHash(
-    {
-      l2Portal: ctx.l2Token,
-      l1Portal: ctx.portal.address,
-      rollupVersion: await ctx.portal.getRollupVersion(),
-      l1ChainId: ctx.portal.getChainId(),
-    },
-    inputs,
-  );
-  const finalization = await signWithdrawFinalization(ctx, {
-    txHash: inputs.txHash,
-    anchorBlockHash: inputs.anchorBlockHash,
-    withdrawalSignature: inputs.withdrawalSignature,
+  const finalization = await signWithdrawalFinalization(ctx, {
+    txHash: resolved.txHash,
+    anchorBlockHash: resolved.anchorBlockHash,
+    withdrawalSignature: resolved.finalizationData.withdrawalSignature,
     archive,
-    messageHash,
+    messageHash: resolved.messageHash,
   });
 
   const witness = await computeProverClaimWitness({
     chain: ctx.chain,
-    txHash: inputs.txHash,
-    messageHash,
+    txHash: resolved.txHash,
+    messageHash: resolved.messageHash,
     claimProofLength: args.proofLength,
+    messageIndexInTx: resolved.messageIndexInTx,
   });
 
-  const path = witness.path.map(p => p.toString() as Hex);
+  const content = toOutboxWithdrawal(resolved.finalizationData);
   return {
     claimArgs: {
-      content: {
-        executor: inputs.executor,
-        userPayloadHash: inputs.userPayloadHash,
-        amount: inputs.amount,
-        proverTip: inputs.proverTip,
-        randomness: inputs.randomness.toBigInt(),
-      },
+      content: { ...content, randomness: content.randomness.toBigInt() },
       checkpointNumber: archive.checkpointNumber,
       withdrawalId: finalization.withdrawalId,
       teeSignature: finalization.signature,
     },
-    path,
+    path: witness.path.map(p => p.toString() as Hex),
     proofLength: args.proofLength,
     checkpointNumber: witness.checkpointNumber,
     epochNumber: witness.epochNumber,

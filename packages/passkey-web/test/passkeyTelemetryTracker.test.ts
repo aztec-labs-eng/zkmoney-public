@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { APPLE_ICLOUD_AAGUID, GPM_AAGUID } from "@obsidion/core/constants"
+import { APPLE_ICLOUD_AAGUID, GPM_AAGUID, ZERO_AAGUID } from "@obsidion/core/constants"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { bytesToHex, hexToBytes } from "../src/ceremony/bytes.js"
 import { NATIVE_LOCK_KEY } from "../src/ceremony/nativeLock.js"
@@ -1958,7 +1958,7 @@ describe("over the browser ceremony", () => {
     teardownWaitMs: 5,
     focusWaitMs: 10,
     pendingRetryDelaysMs: [1, 1, 1, 1],
-    createTimeoutMs: 50,
+    requestTimeoutMs: 50,
   }
   const get = vi.fn()
   const create = vi.fn()
@@ -2143,6 +2143,37 @@ describe("the drivers over a wrapped ceremony", () => {
         route: "same_device",
         prompts: "1",
         attempt: "2",
+      }),
+    ])
+  })
+
+  it("reports a key the browser lists no transports for on the security-key route", async () => {
+    const h = harness()
+    const fake = new FakePasskeyCeremony({
+      onRequest: h.telemetry.requestHook,
+      route: "cross-device",
+      manager: "security-key",
+      backupEligible: false,
+      aaguid: ZERO_AAGUID,
+      transports: [],
+    })
+    const created = await h.telemetry.track({ ceremony: "create" }, () =>
+      runPasskeyCreation(h.telemetry.wrap(fake), {
+        posture: "laptop",
+        rpId: "localhost",
+        rpName: "zk.money",
+        userName: "@alice",
+        challengeForChained: () => new Uint8Array(32).fill(9),
+      }),
+    )
+    expect(created.securityKey).toBe(true)
+    expect(h.sent).toEqual([
+      expect.objectContaining({
+        ceremony: "create",
+        outcome: "succeeded",
+        provider: "not_reported",
+        credential_created: "yes",
+        route: "security_key",
       }),
     ])
   })

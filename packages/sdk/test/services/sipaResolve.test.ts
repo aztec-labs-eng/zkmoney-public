@@ -7,10 +7,21 @@
  */
 
 import { describe, expect, it } from "vitest"
-import { createPublicClient, http, type Address, type PublicClient } from "viem"
+import {
+  BaseError,
+  createPublicClient,
+  HttpRequestError,
+  http,
+  type Address,
+  type PublicClient,
+} from "viem"
 import { extractPinnedOxideEnvTuple } from "@obsidion/core/oxide"
 import { readDepositSIPAImplementation } from "../../src/services/sipaIntents.js"
-import { predictSIPA, resolveSipaAddress } from "../../src/services/sipaResolve.js"
+import {
+  predictSIPA,
+  resolveSipaAddress,
+  SipaNameUndepositableError,
+} from "../../src/services/sipaResolve.js"
 
 const LIVE_MANIFEST_URL =
   process.env.OXIDE_MANIFEST_URL ?? "https://d1162cdsa8f9md.cloudfront.net/dev.v4.json"
@@ -24,6 +35,17 @@ const ALICE_PACKET = "0x05616c6963650c6f7869646573746167696e670365746800"
 const ADDR_SELECTOR = "0x3b3b57de"
 
 const abiEncodedAddress = (address: string) => `0x${"0".repeat(24)}${address.slice(2)}` as const
+
+/** A read failing as viem's CCIP-read does when the gateway answers `status`. */
+function gatewayRefusal(status: number) {
+  return new BaseError("Offchain lookup failed", {
+    cause: new HttpRequestError({ url: "https://gateway.test/{sender}/{data}", status }),
+  })
+}
+
+function refusingClient(err: Error) {
+  return { readContract: async () => Promise.reject(err) } as unknown as PublicClient
+}
 
 function stubClient(resolveResult: string) {
   const calls: { address: string; functionName: string; args: unknown[] }[] = []
@@ -44,10 +66,10 @@ describe("resolveSipaAddress", () => {
     expect(resolved.toLowerCase()).toBe(SIPA.toLowerCase())
 
     expect(calls).toHaveLength(1)
-    expect(calls[0].address).toBe(REGISTRY)
+    expect(calls[0]!.address).toBe(REGISTRY)
     // name travels DNS-packet-encoded; the payload is the ENS addr(node) call
-    expect(calls[0].args[0]).toBe(ALICE_PACKET)
-    expect(String(calls[0].args[1]).startsWith(ADDR_SELECTOR)).toBe(true)
+    expect(calls[0]!.args[0]).toBe(ALICE_PACKET)
+    expect(String(calls[0]!.args[1]).startsWith(ADDR_SELECTOR)).toBe(true)
   })
 
   it("throws on a zero-address result instead of handing it to the send path", async () => {
@@ -55,6 +77,22 @@ describe("resolveSipaAddress", () => {
     await expect(resolveSipaAddress(client, REGISTRY, "ghost.oxidestaging.eth")).rejects.toThrow(
       /zero address/,
     )
+  })
+
+  it("names a gateway 409 as an undepositable name", async () => {
+    const refusal = gatewayRefusal(409)
+    const err = await resolveSipaAddress(refusingClient(refusal), REGISTRY, "bob.oxidestaging.eth")
+      .then(() => undefined)
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(SipaNameUndepositableError)
+    expect((err as Error).cause).toBe(refusal)
+  })
+
+  it("passes any other gateway failure through unchanged", async () => {
+    const refusal = gatewayRefusal(503)
+    await expect(
+      resolveSipaAddress(refusingClient(refusal), REGISTRY, "bob.oxidestaging.eth"),
+    ).rejects.toBe(refusal)
   })
 })
 
@@ -69,19 +107,17 @@ describe.runIf(process.env.LIVE_OXIDE === "1")("live SIPAFactory predictSIPA", (
       transport: http(process.env.SEPOLIA_RPC_URL ?? "https://ethereum-sepolia-rpc.publicnode.com"),
     }) as PublicClient
 
-    const implementation = await readDepositSIPAImplementation(
-      client,
-      tuple.sipaFactory as Address,
-      tuple.portal as Address,
-    )
+    if (!tuple.forwardingTable) throw new Error("live manifest lacks the forwarding table")
+    const implementation = await readDepositSIPAImplementation(client, tuple.sipaFactory as Address)
     const predicted = await predictSIPA(
       client,
       tuple.sipaFactory as Address,
       implementation,
       `0x${"11".repeat(32)}`,
-      `0x${"22".repeat(20)}`,
+      `0x${"22".repeat(32)}`,
       BigInt(tuple.rollupVersion),
       false,
+      tuple.forwardingTable as Address,
     )
     expect(predicted).toMatch(/^0x[0-9a-fA-F]{40}$/)
     expect(predicted.toLowerCase()).not.toBe(`0x${"0".repeat(40)}`)

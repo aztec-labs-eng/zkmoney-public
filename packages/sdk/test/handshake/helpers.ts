@@ -1,12 +1,12 @@
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Fr } from "@aztec/aztec.js/fields"
-import { publishContractClass, publishInstance } from "@aztec/aztec.js/deployment"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import { BlockNumber } from "@aztec/foundation/branded-types"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { publishContractClass, publishInstance } from "@aztec-labs/aztec.js/deployment"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import { BlockNumber } from "@aztec-labs/foundation/branded-types"
 import {
   HandshakeRegistryArtifact,
   getStandardHandshakeRegistry,
-} from "@aztec/standard-contracts/handshake-registry"
+} from "@aztec-labs/standard-contracts/handshake-registry"
 import {
   ContractService,
   EcdsaK256AlphaAuthProvider,

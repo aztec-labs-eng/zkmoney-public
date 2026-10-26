@@ -309,6 +309,12 @@ describe("failureCode", () => {
     expect(failureCode(err)).toBe("passkey_no_key_material")
   })
 
+  it("maps a backup passkey whose envelope did not open by the error's name", () => {
+    const err = new Error("passkey envelope: decrypt")
+    err.name = "PasskeyEnvelopeError"
+    expect(failureCode(err)).toBe("backup_envelope_failed")
+  })
+
   it("gives a creation the browser mislabelled and left incomplete its own code", () => {
     // Its own bucket, so the Safari cohort is not folded into the provider refusals.
     const err = new Error("This browser didn't return everything the wallet needs from your phone.")

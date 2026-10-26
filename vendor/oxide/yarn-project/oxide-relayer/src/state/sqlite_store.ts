@@ -1,5 +1,5 @@
-import { AztecAddress } from '@aztec/aztec.js/addresses';
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { AztecAddress } from '@aztec-labs/aztec.js/addresses';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import { L1OperationCondition, L1OperationConditionKind } from '@oxide/oxide-lib/l1_operation_calldata.js';
 
@@ -347,18 +347,19 @@ export class SqliteStateStore implements StateStore {
     );
   }
 
-  async dropWaitingL1Operations(kind: L1OperationConditionKind, createdBefore: Date): Promise<number> {
-    const result = await this.db.run(
+  async dropWaitingL1Operations(kind: L1OperationConditionKind, createdBefore: Date): Promise<PendingL1Operation[]> {
+    const rows = await this.db.all<Row[]>(
       `
         UPDATE pending_l1_operations
         SET status = 'dropped', updated_at = ?
         WHERE status = 'waiting' AND condition_kind = ? AND created_at < ?
+        RETURNING *
       `,
       iso(new Date()),
       kind,
       iso(createdBefore),
     );
-    return result.changes ?? 0;
+    return rows.map(pendingL1OperationFromRow);
   }
 
   async markL1OperationPending(operationId: Hex): Promise<boolean> {

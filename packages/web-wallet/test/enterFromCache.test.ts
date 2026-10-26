@@ -3,17 +3,17 @@
  * `/enter` over the session's own key: no ceremony, the record anchors, and the Registry decides
  * between a named account and a nameless one.
  */
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { RecoverPasskeyResult } from "@obsidion/sdk"
 import { predictAccountAddressLocally } from "@oxide/l1-contracts"
 import { getContractAddress, type Address } from "viem"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 const h = vi.hoisted(() => ({
-  adoptKnownPasskey: vi.fn(),
+  adoptAccountPasskey: vi.fn(),
   beginRecovery: vi.fn(),
   recoverFromCache: vi.fn(),
-  commitSecret: vi.fn(async () => true),
+  commitSecret: vi.fn(async (): Promise<number | false> => 1),
   recordRecoveryMetadata: vi.fn(),
   rootCredentialId: vi.fn(),
   addWebauthnAccount: vi.fn(),
@@ -25,10 +25,13 @@ const h = vi.hoisted(() => ({
 vi.mock("../src/platform/auth/useAuthenticator", () => ({
   getAuthService: () => ({
     rpId: "localhost",
-    adoptKnownPasskey: h.adoptKnownPasskey,
+    adoptAccountPasskey: h.adoptAccountPasskey,
     beginRecovery: h.beginRecovery,
     recoverFromCache: h.recoverFromCache,
     commitSecret: h.commitSecret,
+    sessionHeld: () => true,
+    sessionAddress: async () => undefined,
+    markRecordsStale: () => {},
     recordRecoveryMetadata: h.recordRecoveryMetadata,
     rootCredentialId: h.rootCredentialId,
     answeredLocally: () => false,
@@ -102,10 +105,10 @@ const account = {
   getAddress: () => ({ toString: () => ADDR }),
   getCompleteAddress: () => ({ toString: () => `${ADDR}:complete` }),
 }
-/** The address exists only under the held key's master key AND signing key. */
-const deriveAccountAddress = vi.fn(async (candidate: Fr, pubkeyHex: string) => ({
+/** The address exists only under the held key's master key AND a set holding its signing key. */
+const deriveAccountAddress = vi.fn(async (candidate: Fr, passkeys: readonly string[]) => ({
   toString: () =>
-    candidate.toString() === msk.toString() && pubkeyHex === PUBKEY ? ADDR : "0xother",
+    candidate.toString() === msk.toString() && passkeys.includes(PUBKEY) ? ADDR : "0xother",
 }))
 const wallet = { deriveAccountAddress, createObsidionAccount: async () => account } as never
 const config = { rpId: "localhost" } as never
@@ -146,7 +149,7 @@ describe("enterWithPasskey from the session's key", () => {
     })
     expect(result).toMatchObject({ entered: false, reason: "unclaimed", account })
     expect(gate).not.toHaveBeenCalled()
-    expect(h.adoptKnownPasskey).not.toHaveBeenCalled()
+    expect(h.adoptAccountPasskey).not.toHaveBeenCalled()
     expect(h.beginRecovery).not.toHaveBeenCalled()
     expect(h.commitSecret).toHaveBeenCalledWith(
       expect.objectContaining({ secretKey: msk, authProvider: held.authProvider }),
@@ -154,7 +157,34 @@ describe("enterWithPasskey from the session's key", () => {
     )
     expect(h.addWebauthnAccount).toHaveBeenCalledTimes(1)
     // The record's address is checked under the record's own signing key.
-    expect(deriveAccountAddress).toHaveBeenCalledWith(msk, PUBKEY)
+    expect(deriveAccountAddress).toHaveBeenCalledWith(msk, [PUBKEY])
+    expect(h.recordRecoveryMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({
+        l2Address: ADDR,
+        pubkey: PUBKEY,
+        passkeySet: [PUBKEY],
+        isMskRoot: true,
+      }),
+      expect.any(Function),
+    )
+  })
+
+  it("a held backup key enters under its set and is recorded as a backup with its envelope", async () => {
+    const passkeys = ["cd".repeat(64), PUBKEY]
+    const backup = { account: `0x${"11".repeat(20)}`, envelope: `01${"00".repeat(61)}` }
+    h.recoverFromCache.mockResolvedValue({ ...held, passkeys, backup })
+    h.readNameOf.mockResolvedValue(`0x${"0".repeat(64)}`)
+    const result = await enterWithPasskey(wallet, config, undefined, {
+      contractService: {} as never,
+      gate,
+      tiers: [],
+    })
+    expect(result).toMatchObject({ entered: false, reason: "unclaimed", account })
+    expect(deriveAccountAddress).toHaveBeenCalledWith(msk, passkeys)
+    expect(h.recordRecoveryMetadata).toHaveBeenCalledWith(
+      expect.objectContaining({ l2Address: ADDR, passkeySet: passkeys, isMskRoot: false, backup }),
+      expect.any(Function),
+    )
   })
 
   it("a ceremony's reuse runs under the caller's cancel past the prompt: closed, nothing is written", async () => {
@@ -167,9 +197,9 @@ describe("enterWithPasskey from the session's key", () => {
       op.abort()
       return { toString: () => ADDR }
     })
-    await expect(
-      reusePasskeyAccount(wallet, ADDR, undefined, gate, op.signal),
-    ).rejects.toSatisfy(isGateCancelled)
+    await expect(reusePasskeyAccount(wallet, ADDR, undefined, gate, op.signal)).rejects.toSatisfy(
+      isGateCancelled,
+    )
     expect(gate).toHaveBeenCalledTimes(1)
     expect(h.recordRecoveryMetadata).not.toHaveBeenCalled()
     expect(h.commitSecret).not.toHaveBeenCalled()
@@ -201,7 +231,7 @@ describe("enterWithPasskey from the session's key", () => {
         tiers: [],
       }),
     ).rejects.toThrow(/does not match/)
-    expect(deriveAccountAddress).toHaveBeenCalledWith(msk, "cd".repeat(64))
+    expect(deriveAccountAddress).toHaveBeenCalledWith(msk, ["cd".repeat(64)])
     expect(h.commitSecret).not.toHaveBeenCalled()
     expect(h.addWebauthnAccount).not.toHaveBeenCalled()
   })
@@ -237,7 +267,11 @@ describe("enterWithPasskey from the session's key", () => {
     h.recoverFromCache.mockResolvedValue(undefined)
     h.beginRecovery.mockResolvedValue(held)
     h.readNameOf.mockResolvedValue(`0x${"0".repeat(64)}`)
-    await enterWithPasskey(wallet, config, undefined, { contractService: {} as never, gate, tiers: [] })
+    await enterWithPasskey(wallet, config, undefined, {
+      contractService: {} as never,
+      gate,
+      tiers: [],
+    })
     expect(h.beginRecovery).toHaveBeenCalledWith(expect.objectContaining({ discover: true }))
   })
 
@@ -247,7 +281,11 @@ describe("enterWithPasskey from the session's key", () => {
     h.rootCredentialId.mockResolvedValue("root-a")
     h.beginRecovery.mockResolvedValue(held)
     h.readNameOf.mockResolvedValue(`0x${"0".repeat(64)}`)
-    await enterWithPasskey(wallet, config, undefined, { contractService: {} as never, gate, tiers: [] })
+    await enterWithPasskey(wallet, config, undefined, {
+      contractService: {} as never,
+      gate,
+      tiers: [],
+    })
     // The record is never pinned from the screen: the browser's own chooser lists whatever holds
     // the passkey, and the anchors decide.
     expect(h.beginRecovery).toHaveBeenCalledWith(expect.objectContaining({ discover: true }))
@@ -261,7 +299,11 @@ describe("enterWithPasskey from the session's key", () => {
     h.recoverFromCache.mockResolvedValue(undefined)
     h.beginRecovery.mockResolvedValue(held)
     h.readNameOf.mockResolvedValue(`0x${"0".repeat(64)}`)
-    await enterWithPasskey(wallet, config, undefined, { contractService: {} as never, gate, tiers: [] })
+    await enterWithPasskey(wallet, config, undefined, {
+      contractService: {} as never,
+      gate,
+      tiers: [],
+    })
     expect(h.beginRecovery).toHaveBeenCalledWith(
       expect.objectContaining({ credentialId: undefined }),
     )
@@ -292,21 +334,24 @@ describe("enterWithPasskey as the arrival probe", () => {
   it.each([
     ["laptop", LAPTOP],
     ["phone", PHONE],
-  ])("with no held key on a %s it reports ceremony-required before any gate or prompt", async (_p, ua) => {
-    vi.stubGlobal("navigator", { userAgent: ua })
-    h.recoverFromCache.mockResolvedValue(undefined)
-    const result = await enterWithPasskey(wallet, config, undefined, {
-      contractService: {} as never,
-      gate,
-      tiers: [],
-      cacheOnly: true,
-    })
-    expect(result).toEqual({ entered: false, reason: "ceremony-required" })
-    expect(gate).not.toHaveBeenCalled()
-    expect(h.beginRecovery).not.toHaveBeenCalled()
-    expect(h.adoptKnownPasskey).not.toHaveBeenCalled()
-    expect(h.commitSecret).not.toHaveBeenCalled()
-  })
+  ])(
+    "with no held key on a %s it reports ceremony-required before any gate or prompt",
+    async (_p, ua) => {
+      vi.stubGlobal("navigator", { userAgent: ua })
+      h.recoverFromCache.mockResolvedValue(undefined)
+      const result = await enterWithPasskey(wallet, config, undefined, {
+        contractService: {} as never,
+        gate,
+        tiers: [],
+        cacheOnly: true,
+      })
+      expect(result).toEqual({ entered: false, reason: "ceremony-required" })
+      expect(gate).not.toHaveBeenCalled()
+      expect(h.beginRecovery).not.toHaveBeenCalled()
+      expect(h.adoptAccountPasskey).not.toHaveBeenCalled()
+      expect(h.commitSecret).not.toHaveBeenCalled()
+    },
+  )
 
   it("the key source is resolved once: a source that answers first and not again still never reaches the gate", async () => {
     vi.stubGlobal("navigator", { userAgent: LAPTOP })
@@ -327,7 +372,12 @@ describe("enterWithPasskey as the arrival probe", () => {
   it("restoreCache:false asks the cache for the key in memory only; a miss runs the ceremony", async () => {
     vi.stubGlobal("navigator", { userAgent: LAPTOP })
     h.readNameOf.mockResolvedValue(nameless)
-    await enterWithPasskey(wallet, config, undefined, { contractService: {} as never, gate, tiers: [], restoreCache: false })
+    await enterWithPasskey(wallet, config, undefined, {
+      contractService: {} as never,
+      gate,
+      tiers: [],
+      restoreCache: false,
+    })
     expect(h.recoverFromCache).toHaveBeenCalledWith({ restore: false })
     expect(gate).not.toHaveBeenCalled()
 
@@ -335,7 +385,12 @@ describe("enterWithPasskey as the arrival probe", () => {
     h.recoverFromCache.mockResolvedValue(undefined)
     h.beginRecovery.mockResolvedValue(held)
     h.readNameOf.mockResolvedValue(nameless)
-    await enterWithPasskey(wallet, config, undefined, { contractService: {} as never, gate, tiers: [], restoreCache: false })
+    await enterWithPasskey(wallet, config, undefined, {
+      contractService: {} as never,
+      gate,
+      tiers: [],
+      restoreCache: false,
+    })
     expect(h.recoverFromCache).toHaveBeenCalledWith({ restore: false })
     expect(gate).toHaveBeenCalledTimes(1)
     expect(h.beginRecovery).toHaveBeenCalledTimes(1)
@@ -344,14 +399,24 @@ describe("enterWithPasskey as the arrival probe", () => {
   it("a failure before the commit is untagged; one after it carries the commit", async () => {
     h.readNameOf.mockRejectedValueOnce(new Error("rpc down"))
     await expect(
-      enterWithPasskey(wallet, config, undefined, { contractService: {} as never, gate, tiers: [], cacheOnly: true }),
+      enterWithPasskey(wallet, config, undefined, {
+        contractService: {} as never,
+        gate,
+        tiers: [],
+        cacheOnly: true,
+      }),
     ).rejects.not.toHaveProperty("committed")
     expect(h.commitSecret).not.toHaveBeenCalled()
 
     h.readNameOf.mockResolvedValue(nameless)
     h.addWebauthnAccount.mockRejectedValueOnce(new Error("disk full"))
     await expect(
-      enterWithPasskey(wallet, config, undefined, { contractService: {} as never, gate, tiers: [], cacheOnly: true }),
+      enterWithPasskey(wallet, config, undefined, {
+        contractService: {} as never,
+        gate,
+        tiers: [],
+        cacheOnly: true,
+      }),
     ).rejects.toMatchObject({ message: "disk full", committed: true })
     expect(h.commitSecret).toHaveBeenCalledTimes(1)
   })

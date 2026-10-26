@@ -1,22 +1,27 @@
 /**
  * The sponsored TEE batch's call layout and its MAX_SPONSORED_CALLS accounting, pinned at the
  * seam where the FPC payload is assembled: [account auth?, ...ops, ...teeUnsignedInteractions,
- * publish_da] — the TEE-unsigned riders (oxide `submit`'s seam of the same name, carrying the
- * withdrawal's L1-operation broadcast) sit between the ops and `publish_da` and count against the
- * 5-call budget. Only the sim shape is exercised; the finalized shape reuses the same assembler.
+ * ...finalization requests, publish_da] — the TEE-unsigned riders (oxide `submit`'s seam of the
+ * same name, carrying an escrow's L1-operation broadcast) and each withdrawal's finalization
+ * request sit between the ops and `publish_da` and count against the 5-call budget. Only the sim shape is exercised; the finalized shape reuses the same assembler.
  * The last suite builds the real payload: which batches may carry intents without a signature.
  */
 import { describe, expect, it, vi } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
-import { EthAddress } from "@aztec/foundation/eth-address"
-import { FunctionCall, FunctionSelector, FunctionType } from "@aztec/stdlib/abi"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
+import { FunctionCall, FunctionSelector, FunctionType } from "@aztec-labs/stdlib/abi"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import { DEFAULT_CONTRACTS, getHardcodedArtifact } from "@obsidion/contracts"
-import { encodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal.js"
+import { encodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal_executor.js"
 
 const { sponsorSpy, feeSpy } = vi.hoisted(() => ({
   sponsorSpy: vi.fn(async (_opts: unknown) => ({ shape: "payload" })),
   feeSpy: vi.fn((_policy: unknown, _calls: unknown) => ({ shape: "fee" })),
+}))
+vi.mock("@oxide/oxide-client/withdrawal_finalization_request.js", () => ({
+  buildFinalizationRequestCall: () => ({
+    request: async () => ({ calls: [{ name: "broadcast_finalization_request" }] }),
+  }),
 }))
 vi.mock("../../src/feePaymentMethod/index.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../src/feePaymentMethod/index.js")>()),
@@ -37,13 +42,14 @@ const interaction = (name: string) => ({ request: async () => ({ calls: [{ name 
 const addr = (n: number) => AztecAddress.fromNumberUnsafe(n)
 const EXECUTOR = EthAddress.fromNumber(0xe0)
 
-const withdrawOp = (relayerTip = 10n) => ({
+const withdrawOp = (relayerTip = 10n, proverTip = 0n) => ({
   kind: "withdraw",
   from: addr(2),
   executor: EXECUTOR,
   userPayload: encodePlainWithdrawalPayload({ recipient: EthAddress.fromNumber(0xa1), relayerTip }),
   amount: 1_000n,
-  proverTip: 0n,
+  proverTip,
+  finalizationRequestBroadcastParams: { __fake: "finalizationRequest" },
 })
 
 const args = (over: Record<string, unknown> = {}) =>
@@ -59,7 +65,7 @@ const args = (over: Record<string, unknown> = {}) =>
     buildOperationCall: () => interaction("withdraw"),
     operationClassWitnesses: [undefined],
     accountCall: { call: { name: "authorize_intents" }, classWitness: { leaf: 0 } },
-    plainWithdrawal: { executor: EXECUTOR, fpcFundingCut: 0n, frozen: false },
+    plainWithdrawal: { executor: EXECUTOR, fee: 0n },
     ...over,
   } as never)
 
@@ -79,30 +85,29 @@ describe("buildSponsoredTeeOperation batch layout", () => {
       innerCalls: { name: string }[]
       classWitnesses: unknown[]
     }
-    // Sim shape (publish_da joins at finalize): auth, op, unsigned — in oxide submit's order.
+    // Sim shape (publish_da joins at finalize): auth, op, unsigned, finalization request — in
+    // oxide submit's order.
     expect(assembled.innerCalls.map((c) => c.name)).toEqual([
       "authorize_intents",
       "withdraw",
       "broadcast_l1_operation_2k",
+      "broadcast_finalization_request",
     ])
     // Riders match by address or ByAny — no class witness.
-    expect(assembled.classWitnesses).toEqual([{ leaf: 0 }, undefined, undefined])
+    expect(assembled.classWitnesses).toEqual([{ leaf: 0 }, undefined, undefined, undefined])
     // The declared fee prices the rider and the publish_da the finalized batch appends.
     expect(feeSpy.mock.calls[0]![1]).toEqual([...assembled.innerCalls, { name: "publish_da" }])
   })
 
   it("counts riders against MAX_SPONSORED_CALLS", async () => {
-    // auth + op + 2 riders + publish_da fills the budget exactly.
+    // auth + op + rider + finalization request + publish_da fills the budget exactly.
     await expect(
-      buildSponsoredTeeOperation(
-        ctx,
-        args({ teeUnsignedInteractions: [interaction("a"), interaction("b")] }),
-      ),
+      buildSponsoredTeeOperation(ctx, args({ teeUnsignedInteractions: [interaction("a")] })),
     ).resolves.toBeDefined()
     await expect(
       buildSponsoredTeeOperation(
         ctx,
-        args({ teeUnsignedInteractions: [interaction("a"), interaction("b"), interaction("c")] }),
+        args({ teeUnsignedInteractions: [interaction("a"), interaction("b")] }),
       ),
     ).rejects.toThrow(/6 calls.*at most 5/)
   })
@@ -117,16 +122,35 @@ describe("buildSponsoredTeeOperation plain withdrawals", () => {
     expect(sponsorSpy).not.toHaveBeenCalled()
   })
 
-  it("refuses a relayer tip the executor's share after the funding cut cannot pay", async () => {
-    // 1_000 minus a 995 cut leaves the executor 5, below the 10 tip.
-    const cut = { executor: EXECUTOR, fpcFundingCut: 995n, frozen: false }
-    await expect(buildSponsoredTeeOperation(ctx, args({ plainWithdrawal: cut }))).rejects.toThrow(
-      /relayer tip 10 exceeds executor amount 5/,
-    )
-    // A frozen portal takes no cut.
+  it("refuses a relayer tip the executor's share after the prover tip cannot pay", async () => {
+    // 1_000 minus a 995 prover tip leaves the executor 5, below the 10 relayer tip.
     await expect(
-      buildSponsoredTeeOperation(ctx, args({ plainWithdrawal: { ...cut, frozen: true } })),
+      buildSponsoredTeeOperation(ctx, args({ operations: [withdrawOp(10n, 995n)] })),
+    ).rejects.toThrow(/relayer tip 10 exceeds the amount after the fee 5/)
+  })
+
+  it("refuses a relayer tip the executor's fee leaves it unable to pay", async () => {
+    // 1_000 minus a 985 prover tip leaves the executor 15; its 6 fee leaves 9, below the 10 tip.
+    const plainWithdrawal = { executor: EXECUTOR, fee: 6n }
+    await expect(
+      buildSponsoredTeeOperation(
+        ctx,
+        args({ operations: [withdrawOp(10n, 985n)], plainWithdrawal }),
+      ),
+    ).rejects.toThrow(/relayer tip 10 exceeds the amount after the fee 9/)
+    await expect(
+      buildSponsoredTeeOperation(
+        ctx,
+        args({ operations: [withdrawOp(9n, 985n)], plainWithdrawal }),
+      ),
     ).resolves.toBeDefined()
+  })
+
+  it("refuses a withdrawal that does not broadcast its finalization request", async () => {
+    const silent = { ...withdrawOp(), finalizationRequestBroadcastParams: undefined }
+    await expect(buildSponsoredTeeOperation(ctx, args({ operations: [silent] }))).rejects.toThrow(
+      /must broadcast its finalization request/,
+    )
   })
 
   it("checks the withdrawals an outer call declares", async () => {
@@ -143,7 +167,7 @@ describe("buildSponsoredTeeOperation plain withdrawals", () => {
     ).rejects.toThrow(/needs the deployment's plain withdrawal executor/)
     await expect(
       buildSponsoredTeeOperation(ctx, args({ operations: [outerCall] })),
-    ).rejects.toThrow(/relayer tip 2000 exceeds executor amount 1000/)
+    ).rejects.toThrow(/relayer tip 2000 exceeds the amount after the fee 1000/)
   })
 
   it("leaves a withdrawal through another executor unchecked", async () => {
@@ -164,7 +188,6 @@ describe("sponsored payload intents", () => {
       isStatic: false,
       hideMsgSender: false,
       args: [],
-      returnTypes: [],
     })
   const intentHashes = [new Fr(7), new Fr(8)]
   const opts = async (

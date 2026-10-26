@@ -1,8 +1,9 @@
 /**
  * The chain read behind the sponsored-transaction allowance, in its own module so UI fixtures can
- * replace it. It reads the instance and rail that `claimSponsorContext` picks for this account's
- * sponsored batches, which may be a retired generation the account is still subscribed on. While the
- * account's registration is pending no instance is picked yet, so the current one answers.
+ * replace it. It reads the instance, rail and payer that `claimSponsorContext` picks for this
+ * account's sponsored batches: the instance may be a retired generation the account is still
+ * subscribed on, and the payer another account of this wallet's whose note the batches spend. While
+ * the account's registration is pending no instance is picked yet, so the current one answers.
  */
 import { readClaimFpcAllowance, type ClaimSponsorContext } from "@obsidion/sdk"
 import type { AllowanceRead } from "@obsidion/front-core"
@@ -22,12 +23,18 @@ export async function readSponsoredAllowance(deps: ClaimSponsorDeps): Promise<Al
     if (!(error instanceof RegistrationPendingError)) throw error
     sponsor = (await claimSponsorRail(deps, RAIL_REGISTERED)).sponsor
   }
+  const payer = sponsor.payer ?? deps.account.getAddress()
   const allowance = await readClaimFpcAllowance(
     deps.wallet,
     sponsor.fpcAddress,
     sponsor.fpcArtifact,
-    deps.account.getAddress(),
+    payer,
     sponsor.railId,
   )
-  return { fpcAddress: sponsor.fpcAddress.toString(), railId: sponsor.railId, allowance }
+  return {
+    fpcAddress: sponsor.fpcAddress.toString(),
+    railId: sponsor.railId,
+    payer: payer.toString(),
+    allowance,
+  }
 }

@@ -3,6 +3,7 @@ import type { Address, Hash } from "viem"
 import { InMemoryStorageAdapter } from "../../__test-helpers__/InMemoryStorageAdapter"
 import { resetSingleton } from "../../__test-helpers__/resetSingleton"
 import {
+  SIPA_DEPOSIT_RECORD_VERSION,
   SIPADepositStore,
   isUnfundedSipaDeposit,
   type SIPADepositPhase,
@@ -263,6 +264,178 @@ describe("SIPADepositStore concurrent writers", () => {
   })
 })
 
+describe("SIPADepositStore version 2 migration", () => {
+  const NETWORK = "0x1111111111111111111111111111111111111111"
+  const PINNED = {
+    portal: "0x7992cd55908b19b60bc46926deb9b1f1dfb6e0a9" as Address,
+    l2Token: "0x0f1c7a8b2b8a1f6de4b6a2c1c7e8d9f0a1b2c3d4e5f60718293a4b5c6d7e8f90",
+    token: {
+      address: "0x163a94b604dfcee8fac53ea6d24db032e8f5cd6b" as Address,
+      symbol: "DAI",
+      decimals: 18,
+    },
+  }
+  const v1 = (over: Partial<SIPADepositRecord>): SIPADepositRecord => ({
+    sipaAddress: SIPA_ADDR,
+    ...makeFallback(),
+    networkId: NETWORK,
+    phase: "claimed",
+    ...over,
+  })
+  async function storeWith(records: SIPADepositRecord[]): Promise<SIPADepositStore> {
+    resetSingleton(SIPADepositStore as unknown as { instance: SIPADepositStore | null })
+    const storage = new InMemoryStorageAdapter()
+    await storage.setItem(
+      "@obsidion/sipa-deposits/records",
+      JSON.stringify(Object.fromEntries(records.map((r) => [r.sipaAddress.toLowerCase(), r]))),
+    )
+    return SIPADepositStore.get(storage)
+  }
+
+  it("stamps a version 1 record's sweeps with the one bridge they were claimed through", async () => {
+    const store = await storeWith([
+      v1({
+        netAmount: "990000000000000000",
+        inboxIndex: "7",
+        sweepTxHash: "0xsweep7" as Hash,
+        tokenAddress: PINNED.token.address,
+        sweeps: [
+          { inboxIndex: "7", sweepTxHash: "0xsweep7" as Hash, netAmount: "990000000000000000" },
+        ],
+      }),
+    ])
+
+    const migrated = await store.migrateSweepRows(NETWORK, PINNED)
+
+    expect(migrated).toHaveLength(1)
+    expect(store.get(SIPA_ADDR)).toMatchObject({
+      version: SIPA_DEPOSIT_RECORD_VERSION,
+      tokenAddress: PINNED.token.address,
+      tokenSymbol: "DAI",
+      sweeps: [
+        {
+          inboxIndex: "7",
+          portal: PINNED.portal,
+          l2Token: PINNED.l2Token,
+          tokenAddress: PINNED.token.address,
+          tokenSymbol: "DAI",
+          tokenDecimals: 18,
+          netAmount: "990000000000000000",
+        },
+      ],
+    })
+    // A second run finds nothing left to migrate.
+    expect(await store.migrateSweepRows(NETWORK, PINNED)).toEqual([])
+  })
+
+  it("gives the latest sweep the record's fee, and no older sweep a guessed one", async () => {
+    const store = await storeWith([
+      v1({
+        netAmount: "990000000000000000",
+        fee: "10000000000000000",
+        inboxIndex: "7",
+        sweepTxHash: "0xsweep7" as Hash,
+        tokenAddress: PINNED.token.address,
+        sweeps: [
+          { inboxIndex: "3", sweepTxHash: "0xsweep3" as Hash, netAmount: "500000000000000000" },
+          { inboxIndex: "7", sweepTxHash: "0xsweep7" as Hash, netAmount: "990000000000000000" },
+        ],
+      }),
+    ])
+
+    await store.migrateSweepRows(NETWORK, PINNED)
+
+    const [older, latest] = store.get(SIPA_ADDR)!.sweeps!
+    expect(older!.fee).toBeUndefined()
+    expect(latest!.fee).toBe("10000000000000000")
+  })
+
+  it("keeps an unswept record's funding token and stamps only its version", async () => {
+    const USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48" as Address
+    const store = await storeWith([
+      v1({
+        phase: "sweeping",
+        amount: "5",
+        tokenAddress: USDC,
+        tokenSymbol: "USDC",
+        tokenDecimals: 6,
+      }),
+    ])
+
+    await store.migrateSweepRows(NETWORK, PINNED)
+
+    const record = store.get(SIPA_ADDR)!
+    expect(record).toMatchObject({
+      version: SIPA_DEPOSIT_RECORD_VERSION,
+      tokenAddress: USDC,
+      tokenSymbol: "USDC",
+      tokenDecimals: 6,
+    })
+    expect(record.sweeps).toBeUndefined()
+  })
+
+  it("keeps a sweep's own row and leaves another network's records at version 1", async () => {
+    const OTHER = "0xbeefbeefbeefbeefbeefbeefbeefbeefbeefbeef" as Address
+    const own = {
+      inboxIndex: "8",
+      sweepTxHash: "0xsweep8" as Hash,
+      netAmount: "1",
+      portal: OTHER,
+      l2Token: "0x01",
+      tokenAddress: OTHER,
+      tokenSymbol: "sUSDS",
+      tokenDecimals: 18,
+    }
+    const store = await storeWith([
+      v1({ sweeps: [own], netAmount: "1", inboxIndex: "8" }),
+      v1({ sipaAddress: OTHER, networkId: "0x2222222222222222222222222222222222222222" }),
+    ])
+
+    await store.migrateSweepRows(NETWORK, PINNED)
+
+    expect(store.get(SIPA_ADDR)!.sweeps).toEqual([own])
+    expect(store.get(OTHER)!.version).toBeUndefined()
+  })
+
+  it("keeps the token of a record whose latest sweep already names its row", async () => {
+    const SUSDS = "0x5875eee11cf8398102fdad704c9e96607675467a" as Address
+    const store = await storeWith([
+      v1({
+        netAmount: "4990000000000000000",
+        inboxIndex: "8",
+        tokenAddress: SUSDS,
+        tokenSymbol: "sUSDS",
+        tokenDecimals: 18,
+        sweeps: [
+          { inboxIndex: "7", sweepTxHash: "0xsweep7" as Hash, netAmount: "1" },
+          {
+            inboxIndex: "8",
+            sweepTxHash: "0xsweep8" as Hash,
+            netAmount: "4990000000000000000",
+            portal: SUSDS,
+            l2Token: "0x02",
+            tokenAddress: SUSDS,
+            tokenSymbol: "sUSDS",
+            tokenDecimals: 18,
+          },
+        ],
+      }),
+    ])
+
+    await store.migrateSweepRows(NETWORK, PINNED)
+
+    const record = store.get(SIPA_ADDR)!
+    expect(record).toMatchObject({ tokenAddress: SUSDS, tokenSymbol: "sUSDS" })
+    expect(record.sweeps!.map((s) => s.tokenSymbol)).toEqual(["DAI", "sUSDS"])
+  })
+
+  it("writes new records at the current version", async () => {
+    const store = freshStore()
+    await store.upsert(SIPA_ADDR, { phase: "broadcast" }, makeFallback())
+    expect(store.get(SIPA_ADDR)?.version).toBe(SIPA_DEPOSIT_RECORD_VERSION)
+  })
+})
+
 describe("isUnfundedSipaDeposit", () => {
   const record = (patch: Partial<SIPADepositRecord>): SIPADepositRecord =>
     ({
@@ -286,5 +459,56 @@ describe("isUnfundedSipaDeposit", () => {
     // hide real money sitting on L1.
     expect(isUnfundedSipaDeposit(record({ sweepTxHash: "0xfeed" as `0x${string}` }))).toBe(false)
     expect(isUnfundedSipaDeposit(record({ inboxIndex: "7" }))).toBe(false)
+  })
+})
+
+describe("SIPADepositStore observation cursors", () => {
+  const PORTAL = "0x7992CD55908B19b60bc46926dEb9B1f1DFb6E0A9" as Address
+  const OTHER = "0x9999999999999999999999999999999999999999999999999999999999999999"
+  const LEGACY_KEY = `@obsidion/sipa-deposits/observed-through/${PORTAL.toLowerCase()}`
+  let adapter: InMemoryStorageAdapter
+  let store: SIPADepositStore
+
+  beforeEach(() => {
+    resetSingleton(SIPADepositStore as unknown as { instance: SIPADepositStore | null })
+    adapter = new InMemoryStorageAdapter()
+    store = SIPADepositStore.get(adapter)
+  })
+
+  it("keeps one cursor per portal and recipient, whatever their case", async () => {
+    await store.setObservedThrough(PORTAL, RECIPIENT, 500n)
+
+    expect(
+      await store.observedThrough(PORTAL.toLowerCase() as Address, RECIPIENT.toUpperCase()),
+    ).toBe(500n)
+    expect(await store.observedThrough(PORTAL, OTHER)).toBeUndefined()
+  })
+
+  it("hands the portal-only cursor to the recipient it is adopted for, once", async () => {
+    await adapter.setItem(LEGACY_KEY, "500")
+
+    await store.adoptObservedThrough(PORTAL, RECIPIENT)
+
+    expect(await store.observedThrough(PORTAL, RECIPIENT)).toBe(500n)
+    expect(await adapter.getItem(LEGACY_KEY)).toBeNull()
+    await store.adoptObservedThrough(PORTAL, OTHER)
+    expect(await store.observedThrough(PORTAL, OTHER)).toBeUndefined()
+  })
+
+  it("drops the portal-only cursor without touching one the recipient already has", async () => {
+    await adapter.setItem(LEGACY_KEY, "500")
+    await store.setObservedThrough(PORTAL, RECIPIENT, 900n)
+
+    await store.adoptObservedThrough(PORTAL, RECIPIENT)
+
+    expect(await store.observedThrough(PORTAL, RECIPIENT)).toBe(900n)
+    expect(await adapter.getItem(LEGACY_KEY)).toBeNull()
+  })
+
+  it("writes nothing when there is no portal-only cursor to adopt", async () => {
+    await store.adoptObservedThrough(PORTAL, RECIPIENT)
+
+    expect(await store.observedThrough(PORTAL, RECIPIENT)).toBeUndefined()
+    expect(await adapter.getItem(LEGACY_KEY)).toBeNull()
   })
 })

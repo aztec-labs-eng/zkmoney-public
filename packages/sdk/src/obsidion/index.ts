@@ -2,6 +2,15 @@
 export { ObsidionAccount } from "./alpha/account/ObsidionAccount.js"
 export { ObsidionAccountContractManager } from "./alpha/account/ObsidionAccountContractManager.js"
 export { ObsidionAccountEntrypoint } from "./alpha/account/ObsidionAccountEntrypoint.js"
+export { deriveAccountSecretKey } from "./alpha/account/accountSecretKey.js"
+export {
+  MAX_ACCOUNT_PASSKEYS,
+  alphaPasskeySet,
+  normalizePubkeyHex,
+  passkeySetHas,
+  pubkeyHexOf,
+  type AlphaPasskeySet,
+} from "./alpha/account/alphaPasskeySet.js"
 export * from "./alpha/auth/index.js"
 export * from "./ObsidionWallet.js"
 export * from "./ObsidionAlphaTestWallet.js"
@@ -50,10 +59,10 @@ export {
   type PendingTxRecord,
   type PendingTxStoreListener,
 } from "./pending/index.js"
-// ObsidionWalletTest is NOT barrel-exported: it imports @aztec/pxe/server (Node.js-only)
+// ObsidionWalletTest is NOT barrel-exported: it imports @aztec-labs/pxe/server (Node.js-only)
 // which pulls lmdb/native binaries into browser bundles. Import it directly where needed:
 //   import { ObsidionWalletTest } from "@obsidion/sdk/obsidion/ObsidionWalletTest.js"
 
-// ObsidionWalletBackend is NOT barrel-exported for the same reason (imports @aztec/pxe/server).
+// ObsidionWalletBackend is NOT barrel-exported for the same reason (imports @aztec-labs/pxe/server).
 // Backend services should import directly:
 //   import { ObsidionWalletBackend } from "@obsidion/sdk/obsidion/ObsidionWalletBackend.js"

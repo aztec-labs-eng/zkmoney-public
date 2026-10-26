@@ -1,13 +1,15 @@
-import type { AztecAddress, EthAddress } from '@aztec/aztec.js/addresses';
-import { type EventCursor, getPublicEvents } from '@aztec/aztec.js/events';
-import type { AztecNode } from '@aztec/aztec.js/node';
-import { BlockNumber } from '@aztec/foundation/branded-types';
-import { type Logger, createLogger } from '@aztec/foundation/log';
-import type { FunctionSelector } from '@aztec/stdlib/abi';
-import type { TxHash } from '@aztec/stdlib/tx';
+import type { AztecAddress, EthAddress } from '@aztec-labs/aztec.js/addresses';
+import { type EventCursor, getPublicEvents } from '@aztec-labs/aztec.js/events';
+import type { AztecNode } from '@aztec-labs/aztec.js/node';
+import { BlockNumber } from '@aztec-labs/foundation/branded-types';
+import { type Logger, createLogger } from '@aztec-labs/foundation/log';
+import type { FunctionSelector } from '@aztec-labs/stdlib/abi';
+import type { TxHash } from '@aztec-labs/stdlib/tx';
 
+import { classifyL1Operation } from '@oxide/l1-contracts';
 import { BroadcasterContract } from '@oxide/noir-contracts.js/Broadcaster';
 import {
+  type BroadcastL1Operation,
   L1OperationConditionKind,
   computeL1OperationId,
   extractL1Operations,
@@ -15,7 +17,7 @@ import {
 } from '@oxide/oxide-lib/l1_operation_calldata.js';
 import { addressKey } from '@oxide/watcher-lib/address-key';
 
-import type { RelayerTelemetry } from '../relayer_telemetry.js';
+import type { RelayerSkipReason, RelayerTelemetry } from '../relayer_telemetry.js';
 import {
   type L1OperationStatus,
   type L2LogCursor,
@@ -24,7 +26,8 @@ import {
   type StateStore,
 } from '../state/types.js';
 import type { BalanceWatcher, OutboxWatcher } from './l1_operation_condition.js';
-import { copyForEachWatchedToken } from './multi_token_l1_operation_balance_condition_hack.js';
+import type { L1OperationOwnership } from './l1_operation_router.js';
+import type { PayoutTokenFilter } from './payout_token_registry.js';
 
 /** Per-poll counts: operations first seen on L2, and waiting operations whose condition fired. */
 export interface L1OperationSyncSummary {
@@ -36,7 +39,8 @@ export interface L1OperationSyncerDeps {
   node: AztecNode;
   store: StateStore;
   broadcaster: AztecAddress;
-  payoutTokens: EthAddress[];
+  ownership: L1OperationOwnership;
+  payoutTokens: PayoutTokenFilter;
   watchedTokens: EthAddress[];
   /** Marks waiting `Balance` operations pending. Undefined leaves them waiting forever. */
   balanceWatcher?: BalanceWatcher;
@@ -55,6 +59,8 @@ export interface L1OperationSyncerDeps {
 export class L1OperationSyncer {
   private readonly log: Logger;
   private selector?: FunctionSelector;
+  /** Skipped operation IDs by L2 block, so a skip in the re-scanned unproven window counts once. */
+  private readonly skipped = new Map<string, bigint>();
 
   constructor(private readonly deps: L1OperationSyncerDeps) {
     this.log = deps.logger ?? createLogger('oxide-relayer:l1-operation-syncer');
@@ -147,31 +153,42 @@ export class L1OperationSyncer {
       return 0;
     }
 
-    // A tx with one sweep for each token gets the same copies once for each sweep, so key them by ID to drop duplicates.
-    const copies = new Map(
-      operations
-        .flatMap(operation => copyForEachWatchedToken(operation, this.deps.watchedTokens))
-        .map(operation => [computeL1OperationId(operation, txHash), operation] as const),
-    );
+    // Two equal operations in one tx have one ID, so key them by ID to drop duplicates.
+    const byId = new Map(operations.map(operation => [computeL1OperationId(operation, txHash), operation] as const));
     const pending: PendingL1Operation[] = [];
-    for (const [operationId, operation] of copies) {
-      if (!this.deps.payoutTokens.some(token => token.equals(operation.payoutToken))) {
-        this.log.debug('Skipping L1 operation that pays out in a token this relayer does not accept', {
+    for (const [operationId, operation] of byId) {
+      if (!this.deps.ownership.owns(operation)) {
+        this.log.debug('Leaving L1 operation to another worker on this broadcaster', {
           operationId,
+          target: operation.target.toString().toLowerCase(),
           payoutToken: operation.payoutToken.toString().toLowerCase(),
           l2TxHash,
         });
+        continue;
+      }
+      if (!this.deps.payoutTokens.accepts(operation.payoutToken)) {
+        if (this.recordSkip(operation, operationId, l2BlockNumber, 'payout_token')) {
+          this.log.info('Skipping L1 operation that pays out in a token this relayer does not accept', {
+            event: 'l1_operation_skipped',
+            operationId,
+            payoutToken: operation.payoutToken.toString().toLowerCase(),
+            l2TxHash,
+          });
+        }
         continue;
       }
       if (
         operation.condition.kind === L1OperationConditionKind.Balance &&
         !this.watchesToken(operation.condition.token)
       ) {
-        this.log.debug('Skipping L1 operation that waits on a token this relayer does not watch', {
-          operationId,
-          token: operation.condition.token.toString().toLowerCase(),
-          l2TxHash,
-        });
+        if (this.recordSkip(operation, operationId, l2BlockNumber, 'unwatched_balance_token')) {
+          this.log.info('Skipping L1 operation that waits on a token this relayer does not watch', {
+            event: 'l1_operation_skipped',
+            operationId,
+            token: operation.condition.token.toString().toLowerCase(),
+            l2TxHash,
+          });
+        }
         continue;
       }
       const status: L1OperationStatus =
@@ -205,10 +222,25 @@ export class L1OperationSyncer {
         l2BlockNumber: l2BlockNumber.toString(),
       });
       if (status === 'waiting') {
-        this.deps.telemetry?.l1OperationOutcome('waiting');
+        this.deps.telemetry?.l1OperationOutcome('waiting', classifyL1Operation(operation));
       }
     }
     return pending.length;
+  }
+
+  /** Returns true on the first skip. Keeps the latest block, so a re-included tx stays until the cursor passes it. */
+  private recordSkip(
+    operation: BroadcastL1Operation,
+    operationId: string,
+    l2BlockNumber: bigint,
+    reason: RelayerSkipReason,
+  ): boolean {
+    const first = !this.skipped.has(operationId);
+    this.skipped.set(operationId, l2BlockNumber);
+    if (first) {
+      this.deps.telemetry?.l1OperationSkippedFor(reason, classifyL1Operation(operation));
+    }
+    return first;
   }
 
   private watchesToken(token: EthAddress): boolean {
@@ -230,5 +262,10 @@ export class L1OperationSyncer {
 
   private async advanceCursor(blockNumber: bigint): Promise<void> {
     await this.deps.store.upsertL2Cursor({ ...this.cursorKey(), blockNumber, lastPolledAt: new Date() });
+    for (const [operationId, l2BlockNumber] of this.skipped) {
+      if (l2BlockNumber <= blockNumber) {
+        this.skipped.delete(operationId);
+      }
+    }
   }
 }

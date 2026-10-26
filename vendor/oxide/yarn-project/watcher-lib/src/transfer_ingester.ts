@@ -1,6 +1,6 @@
-import { EthAddress } from '@aztec/foundation/eth-address';
-import type { Logger } from '@aztec/foundation/log';
-import { createLogger } from '@aztec/foundation/log';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
+import type { Logger } from '@aztec-labs/foundation/log';
+import { createLogger } from '@aztec-labs/foundation/log';
 
 import type { Hex, PublicClient } from 'viem';
 import { parseAbiItem } from 'viem';

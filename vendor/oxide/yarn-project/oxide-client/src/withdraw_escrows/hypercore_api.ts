@@ -1,4 +1,4 @@
-import type { EthAddress } from '@aztec/foundation/eth-address';
+import type { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 /** Hyperliquid's API on mainnet. */
 export const HYPERLIQUID_API_URL = 'https://api.hyperliquid.xyz';

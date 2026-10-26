@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest"
-import { Fr } from "@aztec/foundation/curves/bn254"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import type { OffchainEffect } from "@aztec/stdlib/tx"
+import { Fr } from "@aztec-labs/foundation/curves/bn254"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import type { OffchainEffect } from "@aztec-labs/stdlib/tx"
 
 import { ACCOUNTING_EFFECT_IDENTIFIER } from "@oxide/oxide-lib/oxide_constants.gen.js"
 import { collectAccountingEffects } from "@oxide/oxide-client/token_operations_collector.js"

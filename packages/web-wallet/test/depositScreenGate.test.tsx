@@ -9,6 +9,7 @@ import {
 } from "@obsidion/front-core"
 import { formatUnits, type Hex } from "viem"
 import type { DepositAddress } from "../src/features/deposit/sipaGateway"
+import { MAINNET_USDC, tokenOption } from "./support/depositTokens"
 
 const ACCOUNT = "0x00000000000000000000000000000000000000aa"
 const L2_ADDRESS = `0x${"cd".repeat(32)}` as Hex
@@ -21,7 +22,7 @@ const resolveDefault = async (...args: unknown[]): Promise<DepositAddress> => {
   return { address: "0xdeadbeef", name: "alice.oxide.eth" }
 }
 const depositAddress = vi.fn<(...args: unknown[]) => Promise<DepositAddress>>(resolveDefault)
-const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb"
+const MANIFEST_TOKEN = "0x00000000000000000000000000000000000000bb" as Hex
 const CREATING = "Creating your address..."
 
 // Stable identities so `resolveAddress` keeps one identity across renders.
@@ -33,7 +34,9 @@ const navigate = vi.hoisted(() => vi.fn())
 const held = vi.hoisted(() => vi.fn(async (): Promise<bigint> => 0n))
 const fireEvent = vi.hoisted(() => vi.fn())
 /** Coins offered past the network's own. */
-const extraCoins = vi.hoisted(() => [] as { symbol: string; decimals: number; icon: string }[])
+const extraCoins = vi.hoisted(
+  () => [] as import("../src/features/deposit/loadDepositFacts").DepositTokenOption[],
+)
 // Plenty of shared capacity, read from a fake bucket instead of the network.
 const capacity = vi.hoisted(() => ({ availableAtomic: 40_000n * 10n ** 18n }))
 vi.mock("../src/features/deposit/capacityStore", async () =>
@@ -58,27 +61,42 @@ vi.mock("@obsidion/front-core", async (importOriginal) => ({
 const gateway = { depositAddress, observe: vi.fn() }
 vi.mock("../src/features/deposit/sipaGateway", () => ({ getSipaDepositGateway: () => gateway }))
 vi.mock("../src/features/deposit/loadDepositFacts", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/features/deposit/loadDepositFacts")>()
-  return {
-    ...actual,
-    depositTokensFor: (network: Parameters<typeof actual.depositTokensFor>[0]) => [
-      ...actual.depositTokensFor(network),
-      ...extraCoins,
-    ],
-    loadDepositDisplayFacts: async () => ({
+  const { mockLoadDepositFacts, singleToken } = await import("./support/depositTokens")
+  const own = singleToken(MANIFEST_TOKEN, "TEST")
+  return mockLoadDepositFacts(
+    importOriginal,
+    () => ({
+      ...own,
+      options: [...own.options, ...extraCoins],
+      offered: [...own.offered, ...extraCoins],
+    }),
+    async () => ({
       fee: "0.25",
       token: MANIFEST_TOKEN,
-      sweepFeeAtomic: 150_000_000_000_000_000n,
-      fpcFundingCutAtomic: 100_000_000_000_000_000n,
+      sweepFeeAtomic: 250_000_000_000_000_000n,
+      txAmountCap: 5166n * 10n ** 18n,
     }),
+  )
+})
+vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
+// A test's own target stands in for the registration's, so the screen's handling of a target is
+// tested apart from how a registration makes one.
+const targeted = vi.hoisted(() => ({
+  target: undefined as import("../src/features/deposit/depositTarget").DepositTarget | undefined,
+}))
+vi.mock("../src/features/onboarding/registrationDepositTarget", async (importOriginal) => {
+  const real = await importOriginal<
+    typeof import("../src/features/onboarding/registrationDepositTarget")
+  >()
+  return {
+    useRegistrationDepositTarget: (
+      ...args: Parameters<typeof real.useRegistrationDepositTarget>
+    ) => {
+      const made = real.useRegistrationDepositTarget(...args)
+      return targeted.target ?? made
+    },
   }
 })
-// The portal's funding cut is a chain read; jsdom has no L1, and the floor needs it.
-vi.mock("../src/features/onboarding/registrationTerms", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../src/features/onboarding/registrationTerms")>()),
-  useSweepDeductions: () => ({ fpcCut: 100_000_000_000_000_000n }),
-}))
-vi.mock("../src/errors/errorModal", () => ({ showReportableError: vi.fn() }))
 // No WagmiProvider in the test tree; the gate under test never touches the L1 wallet. `connect`
 // raises the picker the way RainbowKit's does, in the same render as the click.
 const l1 = vi.hoisted(() => ({
@@ -472,7 +490,8 @@ describe("DepositScreen — claiming gate", () => {
   })
 
   it("in the modal, takes what the address holds off the minimum only for the coin it holds", async () => {
-    extraCoins.push({ symbol: "USDC", decimals: 6, icon: "" })
+    // The modal opens on the fee token; USDC is swapped into it.
+    extraCoins.push(tokenOption("USDC", MAINNET_USDC, 6, MANIFEST_TOKEN))
     try {
       await seedPendingClaim({ l1ChainId: getConfig().l1ChainId })
       await saveRegistrationTerms({
@@ -726,22 +745,21 @@ describe("DepositScreen — claiming gate", () => {
 })
 
 /**
- * A target the caller passes, such as an upgrade's, takes the place of a fresh deposit address: it
- * names the fee and the least to send, makes the address itself, and hears when funds land.
+ * A registration's target takes the place of a fresh deposit address: it names the fee and the least
+ * to send, and hears when funds land.
  */
-describe("DepositScreen — an explicit target", () => {
+describe("DepositScreen — a target", () => {
   beforeAll(seedBootConfig)
 
   let container: HTMLDivElement
   let root: Root
-  const create = vi.fn()
   const onFunded = vi.fn()
   const fee = 5n * 10n ** 17n
   const target = (
     over: Partial<import("../src/features/deposit/depositTarget").DepositTarget> = {},
   ): import("../src/features/deposit/depositTarget").DepositTarget => ({
-    kind: "upgrade",
-    create,
+    kind: "registration",
+    address: { address: "0xfeedbeef", name: "alice" },
     fee,
     floor: fee + 1n,
     ask: 10n ** 18n,
@@ -749,15 +767,17 @@ describe("DepositScreen — an explicit target", () => {
     onShown: () => {},
     ...over,
   })
-  const screen = (shown: ReturnType<typeof target>) => (
-    <MemoryRouter initialEntries={["/"]}>
-      <ScreeningProvider screener={passThroughScreener}>
-        <DepositScreen onClose={() => {}} target={shown} title="Deposit to upgrade" />
-      </ScreeningProvider>
-    </MemoryRouter>
-  )
-  const render = (shown: ReturnType<typeof target>) => act(async () => root.render(screen(shown)))
-  const text = () => document.body.textContent ?? ""
+  const render = (shown: ReturnType<typeof target>) =>
+    act(async () => {
+      targeted.target = shown
+      root.render(
+        <MemoryRouter initialEntries={["/"]}>
+          <ScreeningProvider screener={passThroughScreener}>
+            <DepositScreen onClose={() => {}} />
+          </ScreeningProvider>
+        </MemoryRouter>,
+      )
+    })
   const row = (id: string) => document.querySelector(`[data-testid='${id}']`)?.textContent ?? ""
   const press = (title: string) =>
     act(async () =>
@@ -777,50 +797,24 @@ describe("DepositScreen — an explicit target", () => {
 
   afterEach(async () => {
     await act(async () => root.unmount())
+    targeted.target = undefined
     container.remove()
   })
 
-  it("prices the deposit from the target, derives nothing, and has the target make the address", async () => {
-    // As an upgrade's run does, the target reads as creating from the press that starts it.
-    create.mockImplementation(() => root.render(screen(target({ creating: true }))))
+  it("prices the deposit from the target and shows its address, deriving none", async () => {
     await render(target())
-    expect(text()).toContain("Deposit to upgrade")
-    expect(row("deposit-fee")).toContain("$0.50")
+    expect(row("deposit-fee")).toContain("0.50 TEST")
     expect(row("deposit-minimum")).toContain("$1")
     await press("Continue")
-    expect(create).toHaveBeenCalledOnce()
-    expect(text()).toContain(CREATING)
-    await render(target({ address: { address: "0xfeedbeef", name: "alice", publishing: true } }))
     expect(document.body.innerHTML).toContain("0xfeedbeef")
     expect(depositAddress).not.toHaveBeenCalled()
   })
 
-  it("shows the target's line while its address is made", async () => {
-    const note = "Just a moment, we're making your address private."
-    create.mockImplementation(() =>
-      root.render(screen(target({ creating: true, creatingNote: note }))),
-    )
-    await render(target({ creatingNote: note }))
-    await press("Continue")
-    expect(text()).toContain(CREATING)
-    expect(text()).toContain(note)
-  })
-
-  it("keeps the usual line for a target that names none", async () => {
-    create.mockImplementation(() =>
-      root.render(screen(target({ kind: "registration", creating: true }))),
-    )
-    await render(target({ kind: "registration" }))
-    await press("Continue")
-    expect(text()).toContain(CREATING)
-    expect(text()).toContain("You'll copy it into your exchange or wallet next.")
-  })
-
   it("rounds the floor up in a coin with fewer decimals, so a fee-only balance still waits", async () => {
-    extraCoins.push({ symbol: "USDC", decimals: 6, icon: "" })
+    extraCoins.push(tokenOption("USDC", MAINNET_USDC, 6, MANIFEST_TOKEN))
     vi.useFakeTimers()
     try {
-      await render(target({ address: { address: "0xfeedbeef", name: "alice" } }))
+      await render(target())
       await act(async () =>
         document.querySelector<HTMLButtonElement>("[data-testid='deposit-coin-select']")!.click(),
       )
@@ -839,18 +833,18 @@ describe("DepositScreen — an explicit target", () => {
   })
 
   it("quotes the target's fee in the address sheet's limits too", async () => {
-    await render(target({ address: { address: "0xfeedbeef", name: "alice" } }))
+    await render(target())
     await press("Continue")
     await act(async () =>
       document.querySelector<HTMLButtonElement>(".ww-deposit-sheet__limits-head")!.click(),
     )
-    expect(row("deposit-fee")).toContain("$0.50")
+    expect(row("deposit-fee")).toContain("0.50 TEST")
   })
 
   it("spots funds only at the target's floor, and tells the target", async () => {
     vi.useFakeTimers()
     try {
-      await render(target({ address: { address: "0xfeedbeef", name: "alice" } }))
+      await render(target())
       await press("Continue")
       held.mockResolvedValue(fee)
       await act(async () => void (await vi.advanceTimersByTimeAsync(10_000)))
@@ -861,6 +855,7 @@ describe("DepositScreen — an explicit target", () => {
       expect(fireEvent).toHaveBeenCalledWith("deposit_funded", {
         funding: "external",
         amount_bucket: expect.anything(),
+        registration: true,
       })
     } finally {
       held.mockResolvedValue(0n)

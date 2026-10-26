@@ -399,7 +399,7 @@ describe("BootGate", () => {
   it("offers the reset page, without a retry, when the PXE store is damaged", async () => {
     stubLocks(new FakeLocks())
     vi.spyOn(console, "error").mockImplementation(() => {})
-    const { SqliteCorruptionError } = await import("@aztec/kv-store/sqlite-opfs")
+    const { SqliteCorruptionError } = await import("@aztec-labs/kv-store/sqlite-opfs")
     h.createPxeStore.mockRejectedValue(
       new SqliteCorruptionError("database disk image is malformed"),
     )

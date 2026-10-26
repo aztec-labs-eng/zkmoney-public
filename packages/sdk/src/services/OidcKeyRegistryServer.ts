@@ -1,8 +1,8 @@
 // Server-side admin operations for the OidcKeyRegistry contract.
 // Only the backend should instantiate this — handles deployment, JWK/AUD management.
 
-import type { Account } from "@aztec/aztec.js/account"
-import { BatchCall, type SendInteractionOptions } from "@aztec/aztec.js/contracts"
+import type { Account } from "@aztec-labs/aztec.js/account"
+import { BatchCall, type SendInteractionOptions } from "@aztec-labs/aztec.js/contracts"
 import type { ContractService, OidcKeyRegistryContract } from "@obsidion/contracts"
 import { DEFAULT_CONTRACTS } from "@obsidion/core/constants"
 import { PublicKeyRegistry, SUPPORTED_OIDC_ISSUERS } from "../email/PublicKeyRegistry.js"
@@ -65,9 +65,7 @@ export class OidcKeyRegistryServer extends ServiceContractBase {
       const hIss = this.issuerToHash(issuerOrHash)
       const paddedJwkIds = this.padJwkIds(jwkIds)
 
-      await registry.methods
-        .set_issuer_jwks(hIss, paddedJwkIds, jwkIds.length)
-        .send(sendOptions)
+      await registry.methods.set_issuer_jwks(hIss, paddedJwkIds, jwkIds.length).send(sendOptions)
 
       console.log(`Issuer JWK set updated`, {
         hIss: `0x${hIss.toString(16)}`,
@@ -124,9 +122,7 @@ export class OidcKeyRegistryServer extends ServiceContractBase {
 
     const sendOptions = await this.getSendOptions(this.getDeployer(), { sendOptions: options })
     // send() waits for mining; the wait override covers testnet inclusion times.
-    await registry.methods
-      .add_aud(BigInt(audHash))
-      .send({ ...sendOptions, wait: { timeout: 180 } })
+    await registry.methods.add_aud(BigInt(audHash)).send({ ...sendOptions, wait: { timeout: 180 } })
 
     const { result: nowAllowed } = await registry.methods
       .is_aud_allowed(BigInt(audHash))

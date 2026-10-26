@@ -1,6 +1,6 @@
 /**
  * Browser stub for `@crate-crypto/node-eth-kzg` (a native Node addon reached
- * via `@aztec/blob-lib`'s KZG context). Blob commitment computation is a
+ * via `@aztec-labs/blob-lib`'s KZG context). Blob commitment computation is a
  * server/sequencer concern — no wallet flow evaluates KZG in the browser. The
  * constants are the protocol-fixed EIP-4844 values behind blob-lib's lazy
  * `getBytesPerBlob`/`getBytesPerCommitment`; the context class fails loudly

@@ -1,11 +1,10 @@
 import { describe, expect, it, vi } from "vitest"
-import { EthAddress } from "@aztec/aztec.js/addresses"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { TxHash } from "@aztec/stdlib/tx"
-import { assertPlainWithdrawals } from "@oxide/oxide-client/l2_operations.js"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { TxHash } from "@aztec-labs/stdlib/tx"
 import { getUserPayloadHash } from "@oxide/oxide-lib/content_hash.js"
-import { encodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal.js"
+import { encodePlainWithdrawalPayload } from "@oxide/oxide-lib/plain_withdrawal_executor.js"
 import { WITHDRAW_RELAYER_TIP } from "@obsidion/core/constants"
 
 const AMOUNT = 10n ** 18n
@@ -32,10 +31,10 @@ const {
   claimToL1: vi.fn(() => ({ __fake: "claimToL1" })),
   planPayout: vi.fn(),
 }))
-vi.mock("@aztec/stdlib/contract", () => ({
+vi.mock("@aztec-labs/stdlib/contract", () => ({
   getContractInstanceFromInstantiationParams: async () => instance,
 }))
-vi.mock("@aztec/aztec.js/contracts", () => ({
+vi.mock("@aztec-labs/aztec.js/contracts", () => ({
   Contract: {
     at: () => ({
       address: instance.address,
@@ -66,7 +65,11 @@ vi.mock("../claimSponsor.js", () => ({
   linkChainInfo: async () => ({ chainId: 31337, rollupVersion: 1 }),
 }))
 vi.mock("../sponsoredTeeOperation.js", () => ({ buildSponsoredTeeOperation }))
-vi.mock("../plainWithdrawal.js", () => ({ planPayout }))
+vi.mock("../plainWithdrawal.js", async (importOriginal) => ({
+  nestedWithdrawal: (await importOriginal<typeof import("../plainWithdrawal.js")>())
+    .nestedWithdrawal,
+  planPayout,
+}))
 vi.mock("./paylinkClaimSubmit.js", () => ({ buildOperationCall: vi.fn() }))
 vi.mock("./paylinkKeys.js", () => ({
   derivePaylinkKeys: async () => ({ publicKeys: {}, secretKey: {} }),
@@ -79,22 +82,21 @@ vi.mock("./paylinkSpendMetadata.js", () => ({
 }))
 
 const { exitPaylinkWithVoucher } = await import("./paylinkVoucher.js")
+const { assertWalletWithdrawals } = await import("../../oxide/plainWithdrawal.js")
 
 const RECIPIENT = EthAddress.fromString("0x2222222222222222222222222222222222222222")
 const EXECUTOR = EthAddress.fromString("0x3333333333333333333333333333333333333333")
-const PLAIN_WITHDRAWAL = { executor: EXECUTOR, fpcFundingCut: 0n, frozen: false }
+const PLAIN_WITHDRAWAL = { executor: EXECUTOR, fee: 0n }
+const FINALIZATION_REQUEST = { __fake: "finalizationRequest" }
 const RELEASE = { __fake: "releaseBroadcast" }
-const WITHDRAWAL = {
-  tuple: { l2Token: AztecAddress.ZERO.toString() },
-  portal: { fpcFundingCut: 0n, frozen: false },
-}
+const WITHDRAWAL = { tuple: { l2Token: AztecAddress.ZERO.toString() } }
 planPayout.mockImplementation(async (_wallet, _service, _token, burn) => ({
   plainWithdrawal: PLAIN_WITHDRAWAL,
   userPayload: encodePlainWithdrawalPayload({
     recipient: burn.recipient,
     relayerTip: WITHDRAW_RELAYER_TIP,
   }),
-  meta: [],
+  finalizationRequest: FINALIZATION_REQUEST,
   broadcasts: [RELEASE],
 }))
 
@@ -167,7 +169,15 @@ describe("voucher exit", () => {
     expect(args.operations[0]).toMatchObject({
       kind: "outerCall",
       interaction: { __fake: "claimToL1" },
-      withdrawals: [{ executor: EXECUTOR, userPayload, amount: AMOUNT, proverTip: 3n }],
+      withdrawals: [
+        {
+          executor: EXECUTOR,
+          userPayload,
+          amount: AMOUNT,
+          proverTip: 3n,
+          finalizationRequestBroadcastParams: FINALIZATION_REQUEST,
+        },
+      ],
     })
     expect(args.plainWithdrawal).toBe(PLAIN_WITHDRAWAL)
     expect(args.teeUnsignedInteractions).toEqual([RELEASE])
@@ -186,11 +196,7 @@ describe("voucher exit", () => {
     const check = (proverTip: bigint) =>
       exit(proverTip).then(() => {
         const args = lastTeeArgs()
-        assertPlainWithdrawals(args.operations[0].withdrawals, {
-          plainWithdrawalExecutor: args.plainWithdrawal.executor,
-          fpcFundingCut: args.plainWithdrawal.fpcFundingCut,
-          portalFrozen: args.plainWithdrawal.frozen,
-        })
+        assertWalletWithdrawals(args.operations[0].withdrawals, args.plainWithdrawal)
       })
     await expect(check(AMOUNT - WITHDRAW_RELAYER_TIP)).resolves.toBeUndefined()
     await expect(check(AMOUNT - WITHDRAW_RELAYER_TIP + 1n)).rejects.toThrow(/relayer tip/)

@@ -1,4 +1,4 @@
-import type { Fr } from "@aztec/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import { describe, expect, it } from "vitest"
 import { signOut } from "../src/features/identity/signOut"
 import { WebAlphaAuthService } from "../src/platform/auth/WebAlphaAuthService"
@@ -40,8 +40,10 @@ async function setup() {
     transports: created.transports,
   })
   const input = { secretKey: created.secretKey, authProvider: created.authProvider }
-  const derive = async (msk: Fr, pubkeyHex: string) =>
-    msk.toString() === created.secretKey.toString() && pubkeyHex === created.pubkey
+  const derive = async (msk: Fr, passkeys: readonly string[]) =>
+    msk.toString() === created.secretKey.toString() &&
+    passkeys.length === 1 &&
+    passkeys[0] === created.pubkey
       ? ADDR
       : "0xother"
   const restorable = () => {
@@ -216,7 +218,7 @@ describe("session commit against the wallet database", () => {
     firstLive = false
     held.open()
     expect(await first).toBe(false)
-    expect(await second).toBe(true)
+    expect(await second).toBeTypeOf("number")
     expect(readCommittedSession().storageId).not.toBeNull()
     expect(readCommittedSession().cache).not.toBeNull()
   })

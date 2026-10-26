@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
-import { EthAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
 import {
   DEFAULT_CONTRACTS,
   PROOF_FIELD_COUNT,
@@ -34,12 +34,12 @@ vi.mock("@obsidion/contracts", async (importActual) => ({
     at: vi.fn(() => ({ methods: { broadcast_l1_operation_2k: vi.fn(() => ({})) } })),
   },
 }))
-vi.mock("@aztec/stdlib/contract", async (importActual) => ({
-  ...(await importActual<typeof import("@aztec/stdlib/contract")>()),
+vi.mock("@aztec-labs/stdlib/contract", async (importActual) => ({
+  ...(await importActual<typeof import("@aztec-labs/stdlib/contract")>()),
   getContractInstanceFromInstantiationParams: async () => instance,
 }))
-vi.mock("@aztec/aztec.js/contracts", async (importActual) => {
-  const actual = await importActual<typeof import("@aztec/aztec.js/contracts")>()
+vi.mock("@aztec-labs/aztec.js/contracts", async (importActual) => {
+  const actual = await importActual<typeof import("@aztec-labs/aztec.js/contracts")>()
   return {
     ...actual,
     Contract: {
@@ -94,6 +94,8 @@ import type { WithdrawalOptions } from "../../../src/services/plainWithdrawal.js
 
 const recipient = EthAddress.fromString("0x2222222222222222222222222222222222222222")
 const withdrawal: WithdrawalOptions = {
+  // An executor that takes no fee.
+  l1: { readContract: async () => 0n } as never,
   tuple: {
     portal: `0x${"11".repeat(20)}`,
     token: `0x${"22".repeat(20)}`,
@@ -101,7 +103,6 @@ const withdrawal: WithdrawalOptions = {
     plainWithdrawalExecutor: `0x${"33".repeat(20)}`,
     l2Broadcaster: AztecAddress.fromBigIntUnsafe(66n).toString(),
   },
-  portal: { fpcFundingCut: 0n, frozen: false },
 }
 const proof = {
   vkey: Array(VKEY_FIELD_COUNT).fill("0x01"),

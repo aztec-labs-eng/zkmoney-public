@@ -29,21 +29,28 @@ export interface RecordStorageOptions<TRecord> {
   sortBy?: (record: TRecord) => number
   /** Label used in console warnings. Defaults to "RecordStorage". */
   label?: string
-  /** Optional: rewrite each record as it comes off storage — e.g. drop keys the schema no longer has. */
-  normalize?: (record: TRecord) => TRecord
+  /**
+   * Optional: rewrite each record as it comes off storage, given its key — e.g. drop keys the schema
+   * no longer has. A throw drops the record; a store that retries its loads rejects the load.
+   */
+  normalize?: (record: TRecord, key: string) => TRecord
   /**
    * When true, a failed storage write rejects the mutation instead of warn-and-swallow.
    * For stores whose callers must know a record durably exists before acting on it.
    */
   strict?: boolean
   /**
-   * When true, a storage read that throws does not count as loaded: the next `load()` retries and
-   * merges what it reads under records written meanwhile. For stores behind a key that can be locked,
-   * where an empty load followed by a write would replace the saved records. A successful write over
-   * a blob that still cannot be read counts as loaded, so an unreadable blob is replaced once.
+   * When true, a storage read that throws, saved text that does not parse, or a record `normalize`
+   * rejects does not count as loaded: the next `load()` retries and merges what it reads under
+   * records written meanwhile. For stores behind a key that can be locked, where an empty load
+   * followed by a write would replace the saved records. A successful write over a blob that still
+   * cannot be read counts as loaded, so an unreadable blob is replaced once.
    */
   retryLoadOnReadError?: boolean
 }
+
+/** An error by name only: a message may quote a record. */
+const describe = (err: unknown) => (err instanceof Error ? err.name : typeof err)
 
 type UpdatedListener<TRecord> = (record: TRecord) => void
 type ListChangedListener<TRecord> = (records: TRecord[]) => void
@@ -55,7 +62,7 @@ export class RecordStorage<TRecord> {
   private sortBy?: (record: TRecord) => number
   private label: string
   private strict: boolean
-  private normalize?: (record: TRecord) => TRecord
+  private normalize?: (record: TRecord, key: string) => TRecord
   private retryLoadOnReadError: boolean
 
   private records = new Map<string, TRecord>()
@@ -102,7 +109,7 @@ export class RecordStorage<TRecord> {
       try {
         raw = await this.storage.getItem(this.storageKey)
       } catch (err) {
-        logger.warn(`[${this.label}] Failed to read from storage:`, err)
+        logger.warn(`[${this.label}] Failed to read from storage: ${describe(err)}`)
         if (this.retryLoadOnReadError) {
           this.loadPromise = null
           return
@@ -110,22 +117,42 @@ export class RecordStorage<TRecord> {
         raw = null
       }
       try {
-        if (raw) {
-          const parsed = JSON.parse(raw) as Record<string, TRecord>
-          for (const [k, record] of Object.entries(parsed)) {
-            // A record written while the store could not load is newer than the persisted copy.
-            if (this.records.has(k)) continue
-            const next = this.normalize ? this.normalize(record) : record
+        // Empty text is a damaged blob, not an absent one.
+        if (raw !== null) {
+          const parsed: unknown = JSON.parse(raw)
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+            throw new Error("not a record map")
+          // Every saved row is checked before any reaches memory: a rejected load leaves nothing
+          // behind for the retry to mistake for a newer write.
+          const loaded = new Map<string, TRecord>()
+          for (const [k, record] of Object.entries(parsed as Record<string, TRecord>)) {
+            let next: TRecord
+            try {
+              next = this.normalize ? this.normalize(record, k) : record
+            } catch (err) {
+              if (this.retryLoadOnReadError) throw err
+              logger.warn(`[${this.label}] Dropped record ${k}: ${describe(err)}`)
+              rewritten = true
+              continue
+            }
             if (JSON.stringify(next) !== JSON.stringify(record)) rewritten = true
-            this.records.set(k, next)
+            loaded.set(k, next)
+          }
+          for (const [k, next] of loaded) {
+            // A record written while the store could not load is newer than the persisted copy.
+            if (!this.records.has(k)) this.records.set(k, next)
           }
         }
-      } catch (err) {
-        logger.warn(`[${this.label}] Failed to load from storage:`, err)
-      } finally {
-        this.loaded = true
-        this.committed = new Map(this.records)
+      } catch {
+        // The error is not logged: a parse error quotes the saved text.
+        logger.warn(`[${this.label}] Saved records do not parse`)
+        if (this.retryLoadOnReadError) {
+          this.loadPromise = null
+          return
+        }
       }
+      this.loaded = true
+      this.committed = new Map(this.records)
       // `normalize` rewrites memory only. Without this write-back the stale at-rest copy — the keys
       // a normalizer exists to drop — survives until some unrelated mutation happens to rewrite it.
       // Best-effort: a store that cannot persist here still serves the normalized records.
@@ -138,6 +165,11 @@ export class RecordStorage<TRecord> {
     // `store.list()` before load completed can pick up the real state
     // without waiting for the next write.
     this.emitListChanged()
+  }
+
+  /** Whether a read of storage has landed; false while a store that retries its loads cannot read. */
+  isLoaded(): boolean {
+    return this.loaded
   }
 
   /** Replaces the in-memory records with what storage holds now, e.g. after another tab wrote. */
@@ -173,7 +205,7 @@ export class RecordStorage<TRecord> {
       // The write replaced a blob that could not be read, so there is nothing left to load.
       if (!this.loaded && this.retryLoadOnReadError) this.loaded = true
     } catch (err) {
-      logger.warn(`[${this.label}] Failed to persist:`, err)
+      logger.warn(`[${this.label}] Failed to persist: ${describe(err)}`)
       if (strict) throw err
     }
   }
@@ -279,11 +311,29 @@ export class RecordStorage<TRecord> {
   }
 
   async removeByKey(key: string): Promise<void> {
+    await this.removeByKeyIf(key, () => true)
+  }
+
+  /**
+   * Drops the record at `key` only while the stored record still passes `when`, checked with no
+   * await before the delete. Resolves to whether a record was removed.
+   */
+  async removeByKeyIf(key: string, when: (current: TRecord) => boolean): Promise<boolean> {
     await this.load()
-    if (this.records.delete(key)) {
+    const current = this.records.get(key)
+    if (current === undefined || !when(current)) return false
+    this.records.delete(key)
+    try {
       await this.persist()
-      this.emitListChanged()
+    } catch (err) {
+      // A rejected strict removal leaves no trace: the key returns to what storage holds, unless a
+      // newer write took it meanwhile.
+      const committed = this.committed.get(key)
+      if (committed !== undefined && !this.records.has(key)) this.records.set(key, committed)
+      throw err
     }
+    this.emitListChanged()
+    return true
   }
 
   async clearAll(): Promise<void> {

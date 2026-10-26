@@ -4,7 +4,7 @@
  * longer re-derives.
  */
 import { describe, expect, it } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { getAddress, type Hex } from "viem"
 import { buildDepositIntent, deriveSelfSipaSecret, selfSipaNonce } from "@obsidion/sdk"
 import type { SIPADepositRecord } from "@obsidion/front-core"

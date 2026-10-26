@@ -4,7 +4,6 @@
  * counts the send and the protocol ceiling counts the credit. Shared deposit capacity is a separate
  * check.
  */
-import { TX_AMOUNT_CAP } from "@obsidion/sdk"
 import type { CapacityEligibility } from "../../../oxide/portalCapacityEligibility"
 import {
   checkProtocolCeiling,
@@ -16,9 +15,13 @@ import {
   type UsdValuation,
 } from "./amountLimits"
 
-/** Amounts are in base units of the token the payer sends. */
-export type AddressRoute =
-  /** A deposit address: the sender picks the amount. A swapped token's credit is set by the swap. */
+/**
+ * Amounts are in base units of the token the payer sends. `txAmountCap` is the portal's
+ * `TX_AMOUNT_CAP()`, in settlement-token units; undefined until it is read.
+ */
+export type AddressRoute = {
+  txAmountCap?: bigint
+} /** A deposit address: the sender picks the amount. A swapped token's credit is set by the swap. */ & (
   | { kind: "deposit"; decimals: number; swap: boolean; feeAtomic?: bigint }
   /** A request with a fixed amount: the payer sends it plus the deposit fee. */
   | { kind: "fixed-request"; decimals: number; requestedAtomic: bigint; feeAtomic: bigint }
@@ -26,15 +29,15 @@ export type AddressRoute =
   | { kind: "open-request"; decimals: number; feeAtomic: bigint }
   /**
    * A registration deposit: the sweep takes the schedule fee (which includes the relayer's fee)
-   * and the portal takes its funding cut before crediting the rest.
+   * before crediting the rest.
    */
   | {
       kind: "registration"
       decimals: number
       askAtomic?: bigint
       scheduleFeeAtomic?: bigint
-      fpcCutAtomic?: bigint
     }
+)
 
 export interface AmountBasis {
   /** The fixed amount to send; undefined when the sender picks it. */
@@ -58,11 +61,7 @@ export function addressAmountBasis(route: AddressRoute): AmountBasis {
     case "open-request":
       return { deductionAtomic: route.feeAtomic }
     case "registration": {
-      const { askAtomic, scheduleFeeAtomic, fpcCutAtomic } = route
-      const deductionAtomic =
-        scheduleFeeAtomic === undefined || fpcCutAtomic === undefined
-          ? undefined
-          : scheduleFeeAtomic + fpcCutAtomic
+      const { askAtomic, scheduleFeeAtomic: deductionAtomic } = route
       const creditAtomic =
         askAtomic === undefined || deductionAtomic === undefined
           ? undefined
@@ -83,10 +82,12 @@ export function maximumSendAtomic(
   if (limit === undefined) return undefined
   // A swapped token is not in settlement-token units, so only the published limit applies to it.
   if (route.kind === "deposit" && route.swap) return limit
+  const { txAmountCap } = route
+  if (txAmountCap === undefined) return undefined
   const { deductionAtomic } = addressAmountBasis(route)
   // The protocol ceiling counts the credit, so it allows the send to exceed it by the deductions.
-  if (deductionAtomic === undefined) return limit <= TX_AMOUNT_CAP ? limit : undefined
-  const ceiling = floorToTypeable(TX_AMOUNT_CAP + deductionAtomic, route.decimals)
+  if (deductionAtomic === undefined) return limit <= txAmountCap ? limit : undefined
+  const ceiling = floorToTypeable(txAmountCap + deductionAtomic, route.decimals)
   return ceiling < limit ? ceiling : limit
 }
 
@@ -120,7 +121,7 @@ export function fixedAmountLimits(
   const { sendAtomic, creditAtomic } = addressAmountBasis(route)
   if (sendAtomic === undefined) return undefined
   const publicLimit = checkPublicLimit(sendAtomic, route.decimals, valuation)
-  const protocolCeiling = checkProtocolCeiling(creditAtomic)
+  const protocolCeiling = checkProtocolCeiling(creditAtomic, route.txAmountCap)
   const over =
     publicLimit === "over" ? "public" : protocolCeiling === "over" ? "protocol" : undefined
   return { publicLimit, protocolCeiling, ...(over ? { over } : {}) }

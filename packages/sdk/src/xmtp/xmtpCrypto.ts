@@ -10,7 +10,7 @@
  */
 
 import { secp256k1 } from "@noble/curves/secp256k1"
-import { sha256 } from "@aztec/foundation/crypto/sha256"
+import { sha256 } from "@aztec-labs/foundation/crypto/sha256"
 import { keccak_256 } from "@noble/hashes/sha3"
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils"
 import { bytesToBigInt, getAddress, type Address, type Hex } from "viem"
@@ -105,9 +105,7 @@ export function deriveEvmAddress(privateKey: Uint8Array): Address {
  */
 export function signEip191(privateKey: Uint8Array, message: string): Hex {
   const msgBytes = new TextEncoder().encode(message)
-  const prefixBytes = new TextEncoder().encode(
-    `\x19Ethereum Signed Message:\n${msgBytes.length}`,
-  )
+  const prefixBytes = new TextEncoder().encode(`\x19Ethereum Signed Message:\n${msgBytes.length}`)
   const toHash = new Uint8Array(prefixBytes.length + msgBytes.length)
   toHash.set(prefixBytes, 0)
   toHash.set(msgBytes, prefixBytes.length)

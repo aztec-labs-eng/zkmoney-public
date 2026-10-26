@@ -15,10 +15,10 @@
 //
 // Every effect serializes as `[ACCOUNTING_EFFECT_IDENTIFIER, typ, ...payload]`. The identifier namespaces the effects
 // on the shared `emit_offchain_effect` channel; the collector keeps effects that carry it and skips everything else.
-use crate::{asserted_note::{AssertedNote, note_creation_tx_hash_slot}, k1_verify::Signature};
+use crate::{asserted_note::AssertedNote, k1_verify::Signature};
 use aztec::{
-    note::{ConfirmedNote, note_metadata::NoteMetadata},
-    oracle::{capsules, offchain_effect::emit_offchain_effect},
+    note::{ConfirmedNote, note_interface::NoteHash, note_metadata::NoteMetadata},
+    oracle::{notes::get_settled_note_origin, offchain_effect::emit_offchain_effect},
     protocol::{address::{AztecAddress, EthAddress}, traits::{Deserialize, Serialize}},
 };
 
@@ -59,15 +59,17 @@ impl NullificationEffect {
 }
 
 pub unconstrained fn emit_nullification_effect(contract_address: AztecAddress, note: ConfirmedNote<AssertedNote>) {
-    // The capsule was written during recipient sync keyed by the note's unique note hash
-    // (see oxide_token_contract/src/delivery.nr). For a settled note, `proven_note_hash`
-    // *is* the unique note hash, so we can read it back here directly.
-    let creation_tx_hash: Field = capsules::load::<Field>(
-        contract_address,
-        note_creation_tx_hash_slot(note.proven_note_hash),
-        AztecAddress::zero(),
-    )
-        .unwrap_or(0);
+    // A pending note is created by the transaction that spends it, so it has no creation tx to report. The collector
+    // reads a zero `creation_tx_hash` as a pending note.
+    let creation_tx_hash = if note.metadata.is_settled() {
+        let note_hash = note.note.compute_note_hash(note.owner, note.storage_slot, note.randomness);
+        let note_nonce = note.metadata.to_settled().note_nonce();
+        get_settled_note_origin(note_hash, contract_address, note_nonce)
+            .expect(f"settled note with hash {note_hash} and nonce {note_nonce} has no origin in the PXE note store")
+            .tx_hash
+    } else {
+        0
+    };
     emit_offchain_effect(NullificationEffect::new(note, creation_tx_hash));
 }
 

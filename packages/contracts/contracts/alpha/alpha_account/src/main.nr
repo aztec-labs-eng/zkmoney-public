@@ -23,7 +23,9 @@ pub contract ObsidionAccountAlpha {
         compute_signed_message_hash, INTENT_HASHES_LEN, push_tx_nonce_nullifier, set_as_fee_payer,
     };
 
-    use alpha_lib::keys::compute_key_commitment;
+    use alpha_lib::keys::{
+        compute_passkey_hash, compute_passkey_set_immutables_hash, passkey_set_contains,
+    };
     use alpha_lib::notes::BoolNote;
     use alpha_lib::payloads::AppPayload;
 
@@ -105,9 +107,9 @@ pub contract ObsidionAccountAlpha {
     ////////////////////// Validation methods //////////////////////
     ////////////////////////////////////////////////////////////////
 
-    /// The passkey is committed into the address: the instance's `immutables_hash` is the
-    /// commitment of the one key that may sign, so the witness key is checked against it before
-    /// the signature is verified. The challenge is the authwit outer hash: `inner_hash` bound to
+    /// The passkey set is committed into the address: the instance's `immutables_hash` is the
+    /// hash of the set, so the witness carries the set and its key must be a member before the
+    /// signature is verified. The challenge is the authwit outer hash: `inner_hash` bound to
     /// this account, chain id and rollup version.
     #[contract_library_method]
     fn validate(context: &mut PrivateContext, inner_hash: Field) -> bool {
@@ -116,8 +118,15 @@ pub contract ObsidionAccountAlpha {
 
         let instance = get_contract_instance(context.this_address());
         assert(
-            compute_key_commitment(witness.pub_key_x, witness.pub_key_y) == instance.immutables_hash,
-            "key does not match the account's committed key",
+            compute_passkey_set_immutables_hash(witness.passkey_set) == instance.immutables_hash,
+            "passkey set does not match the account's committed set",
+        );
+        assert(
+            passkey_set_contains(
+                witness.passkey_set,
+                compute_passkey_hash(witness.pub_key_x, witness.pub_key_y),
+            ),
+            "key is not in the account's passkey set",
         );
 
         verify_webauthn_p256(

@@ -3,6 +3,7 @@ import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import {
   claimCheckCopy,
   claimRefusalMessage,
+  REORGED_ERROR,
   savingsMoveLabel,
   shortHex,
   type SavingsDirection,
@@ -20,7 +21,13 @@ import { DepositFact } from "../../ui/screens/DepositFact"
 import { DepositHashFact } from "../../ui/screens/DepositHashFact"
 import { DepositStatusValue } from "../../ui/screens/DepositStatusValue"
 import { TabLine } from "../operations/TabLine"
-import { recoveredTo, savingsMoveFigure, savingsMoveStatus } from "./SavingsMoveRow"
+import { useWithdrawableSources } from "../migration/oldVersionWithdraw"
+import {
+  recoveredTo,
+  savingsMoveDestination,
+  savingsMoveFigure,
+  savingsMoveStatus,
+} from "./SavingsMoveRow"
 import { savingsEtaCopy } from "./savingsMoveTiming"
 
 /** The sheet's status: the row's one state, or the done state once the deposit is claimed. */
@@ -31,6 +38,7 @@ function moveStatus(
   const status = savingsMoveStatus(move, burn)
   if (status === "Failed") return { label: "Failed", badge: "failed" }
   if (status === "Recovered") return { label: "Recovered", badge: "cancelled" }
+  if (status === "Needs recovery") return { label: "Didn't finish", badge: "failed" }
   if (status === undefined) return { label: "Credited", badge: "awaitingClaim" }
   return { label: savingsMoveLabel(move.direction), badge: "pending" }
 }
@@ -39,33 +47,26 @@ function moveStatus(
 const TAB_TAKEOVER = /not the active zk\.money tab/i
 
 /**
- * Why a failed burn failed, for the sheet: a drop by the network (the tracker or the reorg monitor
- * read the burn as dropped), a burn that never got sent (no L2 hash: the move didn't start, the
- * funds never left `direction`'s source), or a local error, with the error's first line and when
- * it was recorded.
+ * Why a failed burn failed, for the sheet's status: a reorg that took it back or a burn that never
+ * got sent (no L2 hash: the move didn't start), both leaving the funds in `direction`'s source, else
+ * the error's first line, or a plain drop by the network when it recorded none.
  */
-function burnFailureNote(burn: WithdrawalRecord, direction: SavingsDirection): string | undefined {
+function burnFailureReason(
+  burn: WithdrawalRecord,
+  direction: SavingsDirection,
+): string | undefined {
   if (burn.phase !== "failed") return undefined
-  const dropped =
-    burn.droppedBurn === true ||
-    burn.burnDroppedAt !== undefined ||
-    /dropped/i.test(burn.error ?? "")
-  const at = burn.endTime ?? burn.burnDroppedAt ?? burn.phaseEnteredAt ?? burn.startTime
-  if (dropped) {
-    const reason = burn.error
-      ? shortHex(claimRefusalMessage(burn.error))
-      : "the network dropped the transaction"
-    return `Dropped by the network ${rowTimestamp(at)}: ${reason}`
-  }
-  if (!burn.l2TxHash) {
-    const source = direction === "in" ? "Main Account" : "Savings"
+  const kept = `Your funds are still in ${direction === "in" ? "Main Account" : "Savings"}.`
+  if (burn.droppedBurn) return `${REORGED_ERROR} ${kept}`
+  const dropped = burn.burnDroppedAt !== undefined || /dropped/i.test(burn.error ?? "")
+  if (!dropped && !burn.l2TxHash) {
     const why = TAB_TAKEOVER.test(burn.error ?? "")
       ? "Another zk.money tab took over before this move was sent, so nothing moved."
       : "This move didn't start, so nothing moved."
-    return `Failed ${rowTimestamp(at)}: ${why} Your funds are still in ${source}.`
+    return `${why} ${kept}`
   }
-  const reason = burn.error ? shortHex(claimRefusalMessage(burn.error)) : "no reason recorded"
-  return `Failed ${rowTimestamp(at)}: ${reason}`
+  if (burn.error) return shortHex(claimRefusalMessage(burn.error))
+  return dropped ? "Dropped by the network." : undefined
 }
 
 /** A move between Main and Savings: its legs, figures and status, with its burn and escrow as links. */
@@ -76,6 +77,7 @@ export function SavingsMoveDetailModal({
   eta,
   onCheckAgain,
   exit,
+  onWithdraw,
   onClose,
 }: {
   move: SavingsMoveRecord
@@ -88,6 +90,8 @@ export function SavingsMoveDetailModal({
   onCheckAgain?: () => void
   /** The withdrawal sheet's exit for a burn the relayer has not released: finalize it by hand. */
   exit?: { title: string; onStart: () => void }
+  /** Opens Withdraw, for a move an old version closed before it finished. */
+  onWithdraw?: () => void
   onClose: () => void
 }) {
   const config = getConfig()
@@ -112,6 +116,12 @@ export function SavingsMoveDetailModal({
   const escrowUrl = l1AddressUrl(move.escrow)
   // Once the burn is out, what remains is the settle pass: its last check and a way to run it now.
   const crediting = status.badge === "pending" && burn?.phase === "done"
+  const stranded = savingsMoveStatus(move, burn) === "Needs recovery"
+  // Withdraw refunds a deposit on an old portal this version reads, not an escrow that never ran.
+  const destinationWithdrawable = useWithdrawableSources().some(
+    (source) => source.savings === (savingsMoveDestination(move) === "savings"),
+  )
+  const withdrawable = !!onWithdraw && !!move.deposit && destinationWithdrawable
   return (
     <Modal
       variant="create"
@@ -133,7 +143,14 @@ export function SavingsMoveDetailModal({
 
       <div className="ww-sheet__facts">
         <DepositFact label="Status">
-          <DepositStatusValue {...status} />
+          <DepositStatusValue
+            {...status}
+            reason={
+              burn && status.badge === "failed"
+                ? burnFailureReason(burn, move.direction)
+                : undefined
+            }
+          />
         </DepositFact>
         {eta && status.badge === "pending" && (
           <DepositFact label="Time">
@@ -194,15 +211,19 @@ export function SavingsMoveDetailModal({
         )}
       </div>
       {move.recovered && <p className="ww-sheet__note">{recoveredTo(move)}.</p>}
+      {stranded && (
+        <p className="ww-sheet__note ww-sheet__note--check">
+          The old version closed before this move finished, so it can&apos;t finish here. The funds
+          stay on the old version.{" "}
+          {withdrawable
+            ? "Withdraw sends them to an Ethereum address."
+            : "This version can't return them yet."}
+        </p>
+      )}
 
       {crediting && move.lastCheck && (
         <p className="ww-sheet__note ww-sheet__note--check">
           Last check {rowTimestamp(move.lastCheck.at)}: {claimCheckCopy(move.lastCheck.message)}
-        </p>
-      )}
-      {burn && status.badge === "failed" && (
-        <p className="ww-sheet__note ww-sheet__note--check">
-          {burnFailureNote(burn, move.direction)}
         </p>
       )}
       <TabLine operationId={burn?.operationId} />
@@ -210,6 +231,7 @@ export function SavingsMoveDetailModal({
         <PrimaryGradientButton title="Check again" onClick={onCheckAgain} />
       )}
       {exit && <PrimaryGradientButton title={exit.title} onClick={exit.onStart} />}
+      {stranded && withdrawable && <PrimaryGradientButton title="Withdraw" onClick={onWithdraw} />}
     </Modal>
   )
 }

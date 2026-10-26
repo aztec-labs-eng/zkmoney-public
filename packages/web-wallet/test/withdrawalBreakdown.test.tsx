@@ -48,8 +48,6 @@ declare global {
 }
 
 const TIP = WITHDRAW_RELAYER_TIP.toString()
-// The portal's cut: the other half of every withdrawal's fee.
-const CUT = parseUnits("0.25", 18).toString()
 
 const record = (patch: Partial<WithdrawalRecord> = {}): WithdrawalRecord => ({
   localId: "wdraw_1",
@@ -58,8 +56,8 @@ const record = (patch: Partial<WithdrawalRecord> = {}): WithdrawalRecord => ({
   amount: "120",
   rawAmount: parseUnits("120", 18).toString(),
   relayerTip: TIP,
-  fpcFundingCut: CUT,
   tokenSymbol: "DAI",
+  tokenDecimals: 18,
   phase: "done",
   startTime: 1_700_000_000_000,
   endTime: 1_700_000_600_000,
@@ -102,12 +100,31 @@ describe("WithdrawalDetailModal amount breakdown", () => {
     expect(rows()).toEqual(
       expect.arrayContaining([
         ["Sent", "$120"],
-        ["Fee", "-$0.35"],
-        ["Recipient receives", "119.65 DAI"],
+        ["Fee", "-$0.10"],
+        ["Recipient receives", "119.9 DAI"],
       ]),
     )
     expect(labels().indexOf("Fee")).toBeLessThan(labels().indexOf("Recipient receives"))
     expect(labels().indexOf("Recipient receives")).toBe(labels().length - 1)
+  })
+
+  it("renders a 6-decimal token's amounts in its own decimals and symbol", async () => {
+    await show(
+      record({
+        amount: "120",
+        rawAmount: parseUnits("120", 6).toString(),
+        relayerTip: parseUnits("0.1", 6).toString(),
+        tokenSymbol: "USDC",
+        tokenDecimals: 6,
+      }),
+    )
+    expect(rows()).toEqual(
+      expect.arrayContaining([
+        ["Sent", "$120"],
+        ["Fee", "-$0.10"],
+        ["Recipient receives", "119.9 USDC"],
+      ]),
+    )
   })
 
   // A migration's recipient is the new balance, which also pays the arrival's fee on the way in.
@@ -122,9 +139,9 @@ describe("WithdrawalDetailModal amount breakdown", () => {
     expect(rows()).toEqual(
       expect.arrayContaining([
         ["Sent", "$120"],
-        ["Old version fee", "-$0.35"],
+        ["Old version fee", "-$0.10"],
         ["New version fee", "-$0.30"],
-        ["You'll receive", "~$119.35"],
+        ["You'll receive", "~$119.60"],
       ]),
     )
     expect(labels()).not.toContain("Recipient receives")
@@ -149,8 +166,8 @@ describe("WithdrawalDetailModal amount breakdown", () => {
 
     expect(rows()).toEqual(
       expect.arrayContaining([
-        ["Fee", "-$0.35"],
-        ["Recipient receives", "119.65 DAI"],
+        ["Fee", "-$0.10"],
+        ["Recipient receives", "119.9 DAI"],
       ]),
     )
   })
@@ -170,20 +187,18 @@ describe("WithdrawalDetailModal amount breakdown", () => {
   })
 
   it("shows no breakdown when the fee takes the whole amount", async () => {
-    await show(record({ amount: "0.35", rawAmount: (BigInt(TIP) + BigInt(CUT)).toString() }))
+    await show(record({ amount: "0.1", rawAmount: TIP }))
 
     expect(labels()).not.toContain("Recipient receives")
   })
 
-  // 100.35 gross − (0.1 tip + 0.1 FPC cut + 0.15 relayer tip) = 100 swapped at the quoted
-  // 0.5 ETH → rate 0.005.
+  // 100.25 gross − (0.1 tip + 0.15 relayer tip) = 100 swapped at the quoted 0.5 ETH → rate 0.005.
   const swapPatch: Partial<WithdrawalRecord> = {
-    amount: "100.35",
-    rawAmount: parseUnits("100.35", 18).toString(),
+    amount: "100.25",
+    rawAmount: parseUnits("100.25", 18).toString(),
     swapOutput: "ETH",
     swapEscrow: `0x${"ee".repeat(20)}`,
     swapRelayerTip: parseUnits("0.15", 18).toString(),
-    fpcFundingCut: parseUnits("0.1", 18).toString(),
     swapEstimatedOut: parseUnits("0.5", 18).toString(),
     swapOutputDecimals: 18,
   }
@@ -196,8 +211,8 @@ describe("WithdrawalDetailModal amount breakdown", () => {
         ["Token", "ETH"],
         ["Sent", "0.5"],
         ["Exchange rate", "$1 = 0.005"],
-        ["Fee", "-$0.35"],
-        ["Sent", "$100.35 = 0.50175 ETH"],
+        ["Fee", "-$0.25"],
+        ["Sent", "$100.25 = 0.50125 ETH"],
       ]),
     )
     expect(labels()).not.toContain("Recipient receives")
@@ -210,8 +225,8 @@ describe("WithdrawalDetailModal amount breakdown", () => {
     expect(rows()).toEqual(
       expect.arrayContaining([
         ["Token", "ETH"],
-        ["Sent", "$100.35"],
-        ["Fee", "-$0.35"],
+        ["Sent", "$100.25"],
+        ["Fee", "-$0.25"],
       ]),
     )
     expect(labels()).not.toContain("Exchange rate")
@@ -220,7 +235,7 @@ describe("WithdrawalDetailModal amount breakdown", () => {
   })
 
   it("leads swap, migration, and direct withdrawal heroes with dollars", () => {
-    expect(withdrawalHeroAmount(record(swapPatch))).toBe("-$100.35")
+    expect(withdrawalHeroAmount(record(swapPatch))).toBe("-$100.25")
     expect(withdrawalHeroAmount(record({ intent: "migration" }))).toBe("-$120")
     expect(withdrawalHeroAmount(record())).toBe("-$120")
   })

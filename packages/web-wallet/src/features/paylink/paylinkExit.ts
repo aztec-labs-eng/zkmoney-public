@@ -11,7 +11,7 @@
  * The burn lands in the shared withdrawal store, so oxide's relayer finalizes it and the tracker
  * walks it to `done` like any other. Its provenance says nobody here owns the destination.
  */
-import { EthAddress } from "@aztec/aztec.js/addresses"
+import { EthAddress } from "@aztec-labs/aztec.js/addresses"
 import { formatUnits, type Address } from "viem"
 import {
   decodePaylinkInline,
@@ -20,13 +20,12 @@ import {
   paylinkVoucherUses,
   type ContractService,
   type ObsidionWallet,
-  type TeeSigner,
+  type RegisteredTeeSigner,
   type PaylinkL1Proof,
 } from "@obsidion/sdk"
 import {
   DEFAULT_CONTRACTS,
   tokenDecimalsForNetwork,
-  WALLET_TOKEN_SYMBOL,
   WITHDRAW_RELAYER_TIP,
 } from "@obsidion/core/constants"
 import {
@@ -35,13 +34,13 @@ import {
   type AddressScreener,
   type WithdrawalRecord,
 } from "@obsidion/front-core"
+import { withdrawalExecutorFee } from "../withdraw/withdrawalFee"
 import { getConfig } from "../../config/env"
 import { webStorage } from "../../platform/storage/WebStorageAdapter"
 import { runOperation, type OperationHandle } from "../operations/operations"
 import { withTimeout } from "../../lib/withTimeout"
 import { claimSponsorRail } from "../onboarding/claimSponsorship"
 import { RAIL_VOUCHER } from "../onboarding/rails"
-import { fpcFundingCut } from "../fees/fpcFundingCut"
 import { l1PublicClient } from "../../config/oxideTuple"
 import { owePaylinkClaim, reportPaylinkClaims } from "./paylinkClaimReport"
 import { assertPaylinkSwapSource, paylinkTuple, readPaylinkSource } from "./paylinkSource"
@@ -53,7 +52,6 @@ import {
   currentDeployment,
   getWithdrawalStore,
   planSwapLeg,
-  publishedBurn,
   runBurn,
   swapRecordFields,
   withdrawalOptions,
@@ -61,12 +59,13 @@ import {
   type SwapLeg,
   type WithdrawStage,
 } from "../withdraw/withdrawGateway"
+import { oxideTokenImmutablesOf, txAmountCap } from "../token/oxideToken"
 
 /** Wallet + contracts + the enclave signer: everything a bearer exit needs, and no account. */
 export interface PaylinkExitDeps {
   wallet: ObsidionWallet
   contractService: ContractService
-  teeSigner: TeeSigner
+  teeSigner: RegisteredTeeSigner
   /** Active network's rollup address, a `paylinkPh` input; without it the claim is not reported. */
   rollupAddress?: string
 }
@@ -119,9 +118,9 @@ export function linkWithdrawalIdentity(fragment: string) {
   return { id: linkIdentity(fragment) }
 }
 
-/** What the recipient is left with after the withdrawal fee: the relayer tip and the portal's cut. */
-export function cashOutNet(amountAtomic: bigint, fpcFundingCut: bigint): bigint {
-  const net = amountAtomic - WITHDRAW_RELAYER_TIP - fpcFundingCut
+/** What the recipient is left with after the executor's fee and the relayer tip. */
+export function cashOutNet(amountAtomic: bigint, withdrawalFee: bigint): bigint {
+  const net = amountAtomic - withdrawalFee - WITHDRAW_RELAYER_TIP
   return net > 0n ? net : 0n
 }
 
@@ -204,21 +203,29 @@ async function cashOutLinkFlow(
   const { params, note, tuple, ...voucher } = await voucherDeps(deps, fragment)
   const { amount } = note
   const decimals = tokenDecimalsForNetwork(network)
-  assertWithinWithdrawalLimit(amount, "link", decimals)
-  const cut = await fpcFundingCut(l1PublicClient(getConfig()), tuple.portal as Address)
-  if (amount <= WITHDRAW_RELAYER_TIP + cut) {
+  assertWithinWithdrawalLimit(
+    amount,
+    await txAmountCap(l1PublicClient(getConfig()), tuple.portal as Address),
+    "link",
+    decimals,
+  )
+  const withdrawalFee = await withdrawalExecutorFee(tuple)
+  if (amount <= withdrawalFee + WITHDRAW_RELAYER_TIP) {
     throw new Error("This link holds too little to cover the withdrawal fee")
   }
   const tokenAddress = note.tokenAddress
-  const signer = await historicTeeSigner(tuple)
+  const [signer, token] = await Promise.all([
+    historicTeeSigner(tuple),
+    oxideTokenImmutablesOf(tuple.l2Token),
+  ])
   // The escrow is sized off the note; the burn refuses to sign if the note holds anything else.
   // A bearer has no passkey secret; its destination wallet owns escrow recovery.
   const swap =
     planned ?? (await planCashOutSwap(deps, fragment, amount, recipient, receiveAsset, quote))
   assertPaylinkSwapSource(swap, tuple)
-  const withdrawal = await withdrawalOptions(tuple, swap)
+  const withdrawal = withdrawalOptions(tuple, swap)
 
-  const net = formatUnits(cashOutNet(amount, cut), decimals)
+  const net = formatUnits(cashOutNet(amount, withdrawalFee), decimals)
   op.describe(`$${net} to Ethereum`)
   const paylinkId = paylinkIdentity(params)
   if (deps.rollupAddress) {
@@ -241,11 +248,12 @@ async function cashOutLinkFlow(
       recipientProvenance: "saved-recipient",
       source: "paylink",
       paylinkId,
-      amount: net,
+      amount: formatUnits(cashOutNet(amount, withdrawalFee), token.decimals),
       rawAmount: amount.toString(),
       relayerTip: WITHDRAW_RELAYER_TIP.toString(),
-      fpcFundingCut: cut.toString(),
-      tokenSymbol: WALLET_TOKEN_SYMBOL,
+      ...(withdrawalFee ? { withdrawalFee: withdrawalFee.toString() } : {}),
+      tokenSymbol: token.symbol,
+      tokenDecimals: token.decimals,
       phase: "submitting",
       startTime: Date.now(),
       deployment: await currentDeployment(tuple),
@@ -267,13 +275,10 @@ async function cashOutLinkFlow(
       })
     },
     // The burn's own figures, not the link packet's: the escrow note is what was spent.
-    minedFigures: async (exit) => {
-      const published = await publishedBurn(deps.wallet.node, exit.txHash, tuple)
-      return {
-        amount: (published?.amount ?? exit.amount).toString(),
-        relayerTip: (published?.relayerTip ?? WITHDRAW_RELAYER_TIP).toString(),
-      }
-    },
+    minedFigures: async (exit) => ({
+      amount: exit.amount.toString(),
+      relayerTip: WITHDRAW_RELAYER_TIP.toString(),
+    }),
   })
   if (result) onStage?.("submitting")
   // A burn left to the chain reports once the tracker marks its record mined.

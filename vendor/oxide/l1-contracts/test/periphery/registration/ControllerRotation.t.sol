@@ -3,12 +3,11 @@ pragma solidity >=0.8.27;
 
 import {RegistrationTestBase} from "./RegistrationTestBase.sol";
 import {RegistrationController} from "@periphery/RegistrationController.sol";
-import {RegistrationSIPA, REGISTRATION_SWEEP_FEE} from "@periphery/RegistrationSIPA.sol";
+import {RegistrationSIPA} from "@periphery/RegistrationSIPA.sol";
 import {SIPAFactory} from "@periphery/SIPAFactory.sol";
 import {SIPABase} from "@periphery/SIPABase.sol";
 import {INameRegistry, DomainAuth} from "@periphery/interfaces/INameRegistry.sol";
 import {R1Install} from "@periphery/interfaces/IRegistrationController.sol";
-import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {Errors} from "@periphery/Errors.sol";
 
 contract ControllerRotationTest is RegistrationTestBase {
@@ -18,11 +17,11 @@ contract ControllerRotationTest is RegistrationTestBase {
 
   function _rotate() internal returns (RegistrationController next) {
     sipaFactory = new SIPAFactory(OWNER);
-    registrationSIPAImplementation =
-      new RegistrationSIPA(IOxidePortal(address(portal)), INameRegistry(address(nameRegistry)), REGISTRATION_SWEEP_FEE);
+    registrationSIPAImplementation = new RegistrationSIPA(INameRegistry(address(nameRegistry)));
     next = _deployController(NEXT_MIN, NEXT_FEE, nextBeneficiary);
     vm.startPrank(OWNER);
-    sipaFactory.bless(address(registrationSIPAImplementation));
+    sipaFactory.blessImplementation(address(registrationSIPAImplementation));
+    sipaFactory.blessTable(forwardingTable);
     nameRegistry.updateRegistrationController(address(next));
     vm.stopPrank();
   }

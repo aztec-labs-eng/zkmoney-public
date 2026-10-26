@@ -2,7 +2,8 @@
  * Wallet-side pricing of a golden-ticket registration: what the link's note must burn so the
  * registration SIPA sweeps, what the recipient keeps at once, and what the sweep returns later.
  * The figures come from `goldenTicketQuote` in core; this layer adds the tips and the note. The
- * prover tip is the caller's: zero, or the one the review committed to.
+ * prover tip is the caller's: zero, or the one the review committed to. The withdrawal fee is the
+ * source executor's `FEE()`.
  */
 import {
   GOLDEN_TICKET_BRIDGE_REMAINDER,
@@ -12,24 +13,14 @@ import {
 } from "@obsidion/core/constants"
 import type { RegistrationSchedule } from "@obsidion/core/types"
 
-/**
- * The portal's cut on each leg of the round trip, read live. Both are the portal's
- * `FPC_FUNDING_CUT` today; they are priced apart so each leg is funded on its own.
- */
-export interface GoldenTicketCuts {
-  withdrawalCut: bigint
-  depositCut: bigint
-}
-
-/** The burn for one signed schedule at the live cuts, with the relayer tip and remainder. */
+/** The burn for one signed schedule, with the executor's fee, the relayer tip and remainder. */
 export function goldenTicketBurn(
   schedule: RegistrationSchedule,
-  cuts: GoldenTicketCuts,
   proverTip: bigint,
+  withdrawalFee: bigint,
 ): GoldenTicketQuote {
   return goldenTicketQuote(schedule, {
-    withdrawalCut: cuts.withdrawalCut,
-    depositCut: cuts.depositCut,
+    withdrawalFee,
     relayerTip: WITHDRAW_RELAYER_TIP,
     proverTip,
     bridgeRemainder: GOLDEN_TICKET_BRIDGE_REMAINDER,
@@ -46,14 +37,14 @@ export interface GoldenTicketCoverage extends GoldenTicketQuote {
   covers: boolean
 }
 
-/** Whether, and how, one note funds a ticket registration on this schedule at these cuts. */
+/** Whether, and how, one note funds a ticket registration on this schedule. */
 export function goldenTicketCoverage(
   noteAmount: bigint,
   schedule: RegistrationSchedule,
-  cuts: GoldenTicketCuts,
   proverTip: bigint,
+  withdrawalFee: bigint,
 ): GoldenTicketCoverage {
-  const quote = goldenTicketBurn(schedule, cuts, proverTip)
+  const quote = goldenTicketBurn(schedule, proverTip, withdrawalFee)
   const immediate = noteAmount - quote.burn
   return {
     ...quote,

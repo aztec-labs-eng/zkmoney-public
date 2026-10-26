@@ -9,7 +9,7 @@ contract RegistryWithTrailingDepositFeeStore {
     AccountMetadataRegistry.K1Point publicKey;
     bytes32 l2Address;
     string url;
-    address oxidePortal;
+    address forwardingTable;
     address depositFeeStore;
   }
 
@@ -49,7 +49,7 @@ contract PreservedMetadataRegistryTest is RegistriesTestBase {
         publicKey: AccountMetadataRegistry.K1Point(RESOLVER_OPERATOR_PUBLIC_KEY_X, RESOLVER_OPERATOR_PUBLIC_KEY_Y),
         l2Address: RESOLVER_OPERATOR_L2_ADDRESS,
         url: RESOLVER_OPERATOR_URL,
-        oxidePortal: address(mockPortal),
+        forwardingTable: address(forwardingTable),
         depositFeeStore: makeAddr("depositFeeStore")
       })
     );

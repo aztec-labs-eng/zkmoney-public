@@ -4,7 +4,7 @@ import { parseAmount } from "../../ui/format"
  * XMTP announce, and the decline transition. Deps are injected so vitest covers it without a
  * client. Delivery never blocks or invalidates the local row — the store is authoritative.
  */
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { WALLET_TOKEN_SYMBOL } from "@obsidion/core/constants"
 import { parseUnits } from "viem"
 import type { PaymentRequest, RequestBroadcaster, RequestStorage } from "@obsidion/front-core"

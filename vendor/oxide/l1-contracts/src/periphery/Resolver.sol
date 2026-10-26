@@ -6,7 +6,7 @@ import {IVerifier} from "@aztec/core/interfaces/IVerifier.sol";
 import {SupportsInterface} from "./SupportsInterface.sol";
 import {AccountMetadataRegistry} from "./AccountMetadataRegistry.sol";
 import {INameRegistry} from "./interfaces/INameRegistry.sol";
-import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
+import {IForwardingTable} from "./interfaces/IForwardingTable.sol";
 import {SIPAFactory} from "./SIPAFactory.sol";
 import {SIPABase} from "./SIPABase.sol";
 import {RecoveryCommitmentLib} from "./RecoveryCommitmentLib.sol";
@@ -63,7 +63,7 @@ contract Resolver is IExtendedResolver, SupportsInterface {
     user = registry.getUserRecord(userAddress);
     resolverOperator = registry.getResolverOperator(user.resolverOperator);
 
-    uint256 resolverOperatorVersion = IOxidePortal(resolverOperator.oxidePortal).ROLLUP_VERSION();
+    uint256 resolverOperatorVersion = IForwardingTable(resolverOperator.oxidePortal).ROLLUP_VERSION();
     if (resolverOperatorVersion != user.rollupVersion) {
       revert Errors.Resolver__RollupVersionMismatch(resolverOperatorVersion, user.rollupVersion);
     }
@@ -130,7 +130,8 @@ contract Resolver is IExtendedResolver, SupportsInterface {
       revert Errors.Resolver__ResolverOperatorRecordMismatch();
     }
 
-    address sipa = _predictSIPA(resolution, userAddress, user.rollupVersion, resolverOperator.oxidePortal);
+    address sipa =
+      _predictSIPA(resolution, userAddress, user.rollupVersion, IForwardingTable(resolverOperator.oxidePortal));
 
     if (sipa != expectedSIPA) revert Errors.Resolver__SIPAMismatch(expectedSIPA, sipa);
 
@@ -142,17 +143,21 @@ contract Resolver is IExtendedResolver, SupportsInterface {
     ResolutionPublicInputs memory resolution,
     address userAddress,
     uint256 rollupVersion,
-    address portal
+    IForwardingTable table
   ) internal view returns (address) {
-    address implementation = SIPA_FACTORY.implementationFor(portal, SIPABase.Intent.Deposit);
-    if (implementation == address(0)) revert Errors.Resolver__NoImplementationForPortal(portal);
+    if (!SIPA_FACTORY.approvedTable(address(table))) {
+      revert Errors.Resolver__TableNotApproved(address(table));
+    }
+    address implementation = SIPA_FACTORY.implementationFor(SIPABase.Intent.Deposit);
+    if (implementation == address(0)) revert Errors.Resolver__NoDepositImplementation();
 
     return SIPA_FACTORY.predictSIPA(
       implementation,
       keccak256(abi.encode(resolution.recipientCommitment)),
       RecoveryCommitmentLib.deriveRecoveryCommitment(resolution.sharedSecretSalt, userAddress),
       rollupVersion,
-      true
+      true,
+      table
     );
   }
 

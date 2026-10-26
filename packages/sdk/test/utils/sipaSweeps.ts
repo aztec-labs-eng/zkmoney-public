@@ -4,7 +4,7 @@
  * through `sipaChain.ts`.
  */
 import { decodeEventLog, type Address, type Hex, type PublicClient } from "viem"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { OxidePortalEventsAbi, SIPAAbi } from "@oxide/l1-contracts"
 import { chunkedContractEvents } from "../../src/services/l1Logs.js"
 

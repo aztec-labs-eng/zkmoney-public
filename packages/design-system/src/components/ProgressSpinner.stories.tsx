@@ -18,3 +18,8 @@ export const SyncingDeposits: Story = {
     </div>
   ),
 }
+
+/** The cutover's upgrade ring: the brand gradient over a faint track. */
+export const UpgradeRing: Story = {
+  args: { progress: 0.38, size: 130, gradient: true, color: "rgba(255,255,255,0.6)" },
+}

@@ -1,7 +1,7 @@
 /**
  * How long a spotted deposit takes to credit the private balance. The relayer sweeps it on L1, the
- * Inbox files the portal's message `inboxLag` checkpoints ahead, one checkpoint per slot, and the
- * wallet's sync tick proves and sends the claim, which mines in the next checkpoint.
+ * next slot's block takes in the portal's message, and the wallet's sync tick proves and sends the
+ * claim, which mines in the next checkpoint.
  */
 
 /** The relayer's pickup plus one L1 block, from a balance seen to the sweep landed. */
@@ -15,7 +15,6 @@ export function depositArrivalSeconds(input: {
   nowSeconds: number
   l1GenesisTime: number
   slotDuration: number
-  inboxLag: number
   sweepSeconds?: number
   syncTickSeconds?: number
   claimProofSeconds?: number
@@ -24,14 +23,13 @@ export function depositArrivalSeconds(input: {
     nowSeconds,
     l1GenesisTime,
     slotDuration,
-    inboxLag,
     sweepSeconds = SWEEP_PICKUP_SECONDS,
     syncTickSeconds = SYNC_TICK_SECONDS,
     claimProofSeconds = CLAIM_PROOF_SECONDS,
   } = input
   const sweepAt = nowSeconds + sweepSeconds
   const slotAtSweep = Math.floor((sweepAt - l1GenesisTime) / slotDuration)
-  const availableAt = l1GenesisTime + (slotAtSweep + inboxLag + 1) * slotDuration
+  const availableAt = l1GenesisTime + (slotAtSweep + 1) * slotDuration
   const creditedAt = availableAt + syncTickSeconds + claimProofSeconds + slotDuration
   return Math.max(0, creditedAt - nowSeconds)
 }

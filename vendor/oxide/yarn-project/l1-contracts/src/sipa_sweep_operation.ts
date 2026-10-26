@@ -1,5 +1,5 @@
-import { MULTI_CALL_3_ADDRESS } from '@aztec/ethereum/contracts';
-import { EthAddress } from '@aztec/foundation/eth-address';
+import { MULTI_CALL_3_ADDRESS } from '@aztec-labs/ethereum/contracts';
+import { EthAddress } from '@aztec-labs/foundation/eth-address';
 
 import type { BroadcastL1Operation, L1OperationCondition } from '@oxide/oxide-lib/l1_operation_calldata.js';
 
@@ -46,8 +46,9 @@ export interface BuildSipaSweepOperationParams {
   /** `relayer` MUST be the operation executor: it is the address the sweep pays, and the executor forwards the payout. */
   sweepArgs: SweepArgs;
   /**
-   * The deposit subsidy that drives the sweep through `sweepForSubsidy`, so the sweep is measured and paid the
-   * subsidy on top of the fee. Without one the SIPA is swept directly and the operation earns the fee alone.
+   * The deposit subsidy that drives the sweep through `sweepForSubsidy`. When a code-free EOA sends the operation
+   * through the bound executor, the subsidy pays on top of the fee. Without one the SIPA is swept directly and the
+   * operation earns the fee alone.
    */
   depositSubsidy?: Address;
   /** The token the sweep pays the fee and the subsidy in; see `depositPayoutTokenFor`. */
@@ -94,6 +95,7 @@ export function buildSipaDeployAndSweepOperation(params: BuildSipaDeployAndSweep
   if (params.depositSubsidy && !('recoveryAddress' in params.deployArgs)) {
     const callData = encodeDeployAndSweepForSubsidy(
       {
+        forwardingTable: params.deployArgs.forwardingTable,
         intent: params.intent,
         recoveryCommitment: params.deployArgs.recoveryCommitment,
         resweepable: params.deployArgs.resweepable,
@@ -161,6 +163,7 @@ export function decodeSipaSweepOperation(operation: BroadcastL1Operation): SipaS
 /** A `deployAndSweepForSubsidy` operation. The call carries no SIPA address, so a reader derives it on chain. */
 export interface SubsidizedDeployAndSweep {
   depositSubsidy: Address;
+  forwardingTable: Address;
   token: Address;
   intent: SipaIntent;
   intentHash: Hex;
@@ -173,9 +176,10 @@ export function decodeSubsidizedDeployAndSweep(operation: BroadcastL1Operation):
   try {
     const decoded = decodeFunctionData({ abi: DepositSubsidyAbi, data: `0x${operation.calldata.toString('hex')}` });
     if (decoded.functionName === 'deployAndSweepForSubsidy') {
-      const [intent, recoveryCommitment, resweepable, token, , intentData] = decoded.args;
+      const [forwardingTable, intent, recoveryCommitment, resweepable, token, , intentData] = decoded.args;
       return {
         depositSubsidy: getAddress(operation.target.toString()),
+        forwardingTable: getAddress(forwardingTable),
         token: getAddress(token),
         intent: intent as SipaIntent,
         intentHash: keccak256(intentData),
@@ -193,7 +197,8 @@ function decodeDeployCall(factory: Address, data: Hex): SipaDeployCall | undefin
   try {
     const decoded = decodeFunctionData({ abi: SIPAFactoryAbi, data });
     if (decoded.functionName === 'deploySIPA') {
-      const [implementation, intentHash, recoveryCommitment, rollupVersion, resweepable] = decoded.args;
+      const [implementation, intentHash, recoveryCommitment, rollupVersion, resweepable, forwardingTable] =
+        decoded.args;
       return {
         factory,
         args: {
@@ -202,6 +207,7 @@ function decodeDeployCall(factory: Address, data: Hex): SipaDeployCall | undefin
           recoveryCommitment,
           rollupVersion,
           resweepable,
+          forwardingTable: getAddress(forwardingTable),
         },
       };
     }

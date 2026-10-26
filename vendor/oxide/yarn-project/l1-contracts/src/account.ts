@@ -211,6 +211,11 @@ export function encodeAddAuthKey(key: R1PublicKeyArg, metadata: Hex): Hex {
   return encodeFunctionData({ abi: OxideAccountAbi, functionName: 'addAuthKey', args: [key, metadata] });
 }
 
+/// Encodes `removeAuthKey(index, expectedKey)` calldata
+export function encodeRemoveAuthKey(index: bigint, expectedKey: R1PublicKeyArg): Hex {
+  return encodeFunctionData({ abi: OxideAccountAbi, functionName: 'removeAuthKey', args: [index, expectedKey] });
+}
+
 /// Encodes `setData(key, value)` calldata
 export function encodeSetData(key: Hex, value: Hex): Hex {
   return encodeFunctionData({ abi: OxideAccountAbi, functionName: 'setData', args: [key, value] });

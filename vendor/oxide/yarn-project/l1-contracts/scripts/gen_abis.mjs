@@ -35,7 +35,9 @@ const TARGETS = {
   // Every custom error of the periphery contracts, so a client can decode a revert by name.
   Errors: { root: FOUNDRY_OUT, rel: 'Errors.sol/Errors.json' },
   DepositSubsidy: { root: FOUNDRY_OUT, rel: 'DepositSubsidy.sol/DepositSubsidy.json' },
-  WithdrawalSubsidy: { root: FOUNDRY_OUT, rel: 'WithdrawalSubsidy.sol/WithdrawalSubsidy.json' },
+  PlainWithdrawalSubsidy: { root: FOUNDRY_OUT, rel: 'PlainWithdrawalSubsidy.sol/PlainWithdrawalSubsidy.json' },
+  MigrationExecutor: { root: FOUNDRY_OUT, rel: 'MigrationExecutor.sol/MigrationExecutor.json' },
+  MigrationSubsidy: { root: FOUNDRY_OUT, rel: 'MigrationSubsidy.sol/MigrationSubsidy.json' },
   ProverSubsidy: { root: FOUNDRY_OUT, rel: 'ProverSubsidy.sol/ProverSubsidy.json' },
   MockCertManager: { root: FOUNDRY_OUT, rel: 'MockCertManager.sol/MockCertManager.json' },
   MockNitroValidator: { root: FOUNDRY_OUT, rel: 'MockNitroValidator.sol/MockNitroValidator.json' },
@@ -46,25 +48,13 @@ const TARGETS = {
   // (one per refund circuit). Foundry indexes artifacts under `out/<file>.sol/<contract>.json`,
   // so the three HonkVerifiers don't collide despite sharing the contract name.
   FrozenNotesRefundVerifier: { root: FOUNDRY_OUT, rel: 'FrozenNotesRefundVerifier.sol/HonkVerifier.json' },
-  FrozenDepositRefundVerifier: {
+  FrozenDepositsRefundVerifier: {
     root: FOUNDRY_OUT,
-    rel: 'FrozenDepositRefundVerifier.sol/HonkVerifier.json',
+    rel: 'FrozenDepositsRefundVerifier.sol/HonkVerifier.json',
   },
   UnprocessedDepositRefundVerifier: {
     root: FOUNDRY_OUT,
     rel: 'UnprocessedDepositRefundVerifier.sol/HonkVerifier.json',
-  },
-  // Each verifier declares `accumulateRelationEvaluations` as `external pure` on a `RelationsLib`
-  // co-located in the same .sol file. The Solidity compiler emits the library as a separately
-  // deployable contract and leaves a `__$<hash>$__` placeholder in the verifier bytecode that must
-  // be replaced with the library's deployment address before sending the verifier deploy tx.
-  // The libraries (one per refund verifier) are compiled from textually identical sources but live
-  // in different files, so foundry indexes them under distinct paths and the placeholder hashes differ.
-  FrozenNotesRelationsLib: { root: FOUNDRY_OUT, rel: 'FrozenNotesRefundVerifier.sol/RelationsLib.json' },
-  FrozenDepositRelationsLib: { root: FOUNDRY_OUT, rel: 'FrozenDepositRefundVerifier.sol/RelationsLib.json' },
-  UnprocessedDepositRelationsLib: {
-    root: FOUNDRY_OUT,
-    rel: 'UnprocessedDepositRefundVerifier.sol/RelationsLib.json',
   },
   // Oxide-forked cert manager + nitro validator under `src/core/lib/` — swap solarity's affine
   // P-384 verify for the Jacobian implementation (~4.5× cheaper under EIP-7883), expose
@@ -72,6 +62,8 @@ const TARGETS = {
   // staging entry points on the validator. AWS root constants are byte-for-byte preserved.
   CertManager: { root: FOUNDRY_OUT, rel: 'CertManager.sol/CertManager.json' },
   NitroValidator: { root: FOUNDRY_OUT, rel: 'NitroValidator.sol/NitroValidator.json' },
+  TeeRegistry: { root: FOUNDRY_OUT, rel: 'TeeRegistry.sol/TeeRegistry.json' },
+  PortalFactory: { root: FOUNDRY_OUT, rel: 'PortalFactory.sol/PortalFactory.json' },
   // Periphery: name registry + stealth-deposit resolver. bb emits the resolver verifier as a
   // `HonkVerifier` contract (linked against its own `ZKTranscriptLib`); MockPortal comes from
   // the registry test fixtures.
@@ -89,18 +81,27 @@ const TARGETS = {
   // blessed on the permanent factory, so the deploy needs bytecode, not just ABI.
   DepositSIPA: { root: FOUNDRY_OUT, rel: 'DepositSIPA.sol/DepositSIPA.json' },
   RegistrationSIPA: { root: FOUNDRY_OUT, rel: 'RegistrationSIPA.sol/RegistrationSIPA.json' },
-  UpdateMetadataSIPA: { root: FOUNDRY_OUT, rel: 'UpdateMetadataSIPA.sol/UpdateMetadataSIPA.json' },
+  UserOpSIPA: { root: FOUNDRY_OUT, rel: 'UserOpSIPA.sol/UserOpSIPA.json' },
   AccountMetadataController: {
     root: FOUNDRY_OUT,
     rel: 'IAccountMetadataController.sol/IAccountMetadataController.json',
   },
   SIPAFactory: { root: FOUNDRY_OUT, rel: 'SIPAFactory.sol/SIPAFactory.json' },
+  ForwardingTable: { root: FOUNDRY_OUT, rel: 'ForwardingTable.sol/ForwardingTable.json' },
   SIPAResolver: { root: FOUNDRY_OUT, rel: 'Resolver.sol/Resolver.json' },
   OperationExecutor: { root: FOUNDRY_OUT, rel: 'OperationExecutor.sol/OperationExecutor.json' },
   // Test-only operation target — pays a fixed reward to its caller; e2e drives the executor with it.
   MockOperation: { root: FOUNDRY_OUT, rel: 'MockOperation.sol/MockOperation.json' },
   // Test-only operation target — runs its paid work in a try/catch; e2e checks the relayer's gas estimate with it.
   MockCatchingOperation: { root: FOUNDRY_OUT, rel: 'MockCatchingOperation.sol/MockCatchingOperation.json' },
+  // Test-only rollup stand-in — e2e adds it to the Aztec registry so the real rollup stops being canonical.
+  MockRollup: { root: FOUNDRY_OUT, rel: 'MockRollup.sol/MockRollup.json' },
+  // Test-only operation target — pays more on its first call in a block, as a subsidy pays for the sUSDS drip; the
+  // relayer's anvil quote test runs it.
+  MockOncePerBlockOperation: {
+    root: FOUNDRY_OUT,
+    rel: 'MockOncePerBlockOperation.sol/MockOncePerBlockOperation.json',
+  },
   MockPortal: { root: FOUNDRY_OUT, rel: 'MockPortal.sol/MockPortal.json' },
   FPCFunderTestnet: { root: FOUNDRY_OUT, rel: 'FPCFunderTestnet.sol/FPCFunderTestnet.json' },
   FPCFunderDAI: { root: FOUNDRY_OUT, rel: 'FPCFunderDAI.sol/FPCFunderDAI.json' },
@@ -131,7 +132,6 @@ const TARGETS = {
   SkyEscrowFactory: { root: FOUNDRY_OUT, rel: 'SkyEscrowFactory.sol/SkyEscrowFactory.json' },
   MockDaiUsds: { root: FOUNDRY_OUT, rel: 'MockDaiUsds.sol/MockDaiUsds.json' },
   MockSUsds: { root: FOUNDRY_OUT, rel: 'MockSUsds.sol/MockSUsds.json' },
-  MultiPortalProofSubmitter: { root: FOUNDRY_OUT, rel: 'MultiPortalProofSubmitter.sol/MultiPortalProofSubmitter.json' },
   // ERC-4337 account that is a user's stable identity, plus the CREATE2 factory that deploys it.
   OxideAccount: { root: FOUNDRY_OUT, rel: 'OxideAccount.sol/OxideAccount.json' },
   OxideAccountFactory: { root: FOUNDRY_OUT, rel: 'OxideAccountFactory.sol/OxideAccountFactory.json' },
@@ -151,6 +151,8 @@ const TARGETS = {
   MockVerifier: { root: FOUNDRY_OUT, rel: 'MockVerifier.sol/MockVerifier.json' },
   // Chainlink feed stub — the subsidy contracts require a feed with code, so tests deploy this.
   MockV3Aggregator: { root: FOUNDRY_OUT, rel: 'MockV3Aggregator.sol/MockV3Aggregator.json' },
+  // Mintable ERC20 with set decimals, for example a 6-decimal stand-in for USDC or USDT.
+  MintableToken: { root: FOUNDRY_OUT, rel: 'MintableToken.sol/MintableToken.json' },
 };
 
 mkdirSync(OUT_DIR, { recursive: true });

@@ -9,8 +9,8 @@ import {
   type ProvingProgressEvent,
   type TxHashSavedEvent,
 } from "@obsidion/proving-progress"
-import { TxHash } from "@aztec/stdlib/tx"
-import type { AztecNode } from "@aztec/stdlib/interfaces/client"
+import { TxHash } from "@aztec-labs/stdlib/tx"
+import type { AztecNode } from "@aztec-labs/stdlib/interfaces/client"
 import type { IStorageAdapter } from "../../storages/adapter"
 import { RecordStorage } from "../bridge/RecordStorage"
 import { logger } from "src/utils/logger"

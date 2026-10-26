@@ -1,4 +1,5 @@
-import { EthAddress } from '@aztec/stdlib/block';
+import { EthAddress } from '@aztec-labs/stdlib/block';
+import type { BlockHeader } from '@aztec-labs/stdlib/tx';
 
 import type { AttestationData } from '@oxide/oxide-lib/attestation/attestation_data.js';
 import { ethAddressFromSecpPublicKey } from '@oxide/oxide-lib/attestation/user_data.js';
@@ -7,19 +8,18 @@ import {
   type RpcParams,
   type RpcResult,
   decodeResponseEnvelope,
-  encodeEncryptedRequest,
-  encodeRequest,
   parseInnerResult,
+  sealEncryptedRequest,
 } from '@oxide/oxide-lib/codec.js';
-import { P256PublicKey, type SealedRequest, sealRequest } from '@oxide/oxide-lib/encryption.js';
+import { P256PublicKey } from '@oxide/oxide-lib/encryption.js';
 import type {
-  FrozenDepositRefundFinalizationInput,
-  FrozenDepositRefundFinalizationOutput,
+  EnclaveIdentity,
+  FrozenDepositsRefundFinalizationInput,
+  FrozenDepositsRefundFinalizationOutput,
   FrozenNotesRefundFinalizationInput,
   FrozenNotesRefundFinalizationOutput,
+  PortalDomain,
   SecpPublicKey,
-  SignTokenOperationOutput,
-  TeeSigner,
   TokenOperation,
   UnprocessedDepositRefundFinalizationInput,
   UnprocessedDepositRefundFinalizationOutput,
@@ -28,7 +28,8 @@ import type {
 } from '@oxide/oxide-lib/types.js';
 
 import { type Timeouts, postFrame } from './enclave_transport.js';
-import { EnclaveRejected, EnclaveUnavailable } from './errors.js';
+import { EnclaveRejected, EnclaveUnavailable, PermanentError } from './errors.js';
+import type { RegisteredSignTokenOperationOutput, RegisteredTeeSigner } from './types.js';
 
 /**
  * A request sealed to one enclave. `send` may be called repeatedly: the enclave is deterministic and
@@ -37,6 +38,7 @@ import { EnclaveRejected, EnclaveUnavailable } from './errors.js';
  * re-encrypting a hundred-plus megabytes.
  */
 export interface SealedCall<M extends RpcMethod> {
+  readonly enclave: PinnedEnclave;
   send(): Promise<RpcResult<M>>;
 }
 
@@ -47,16 +49,25 @@ export interface SealedCall<M extends RpcMethod> {
  * change under a caller — hold this when you need one that stays put. A pinned enclave that dies stays
  * dead and its calls fail; recovering by moving to another enclave is `FleetSigner`'s job.
  *
- * Nothing here verifies anything. Build these through `FleetSigner.connect`, which checks the
- * attestation against the portal's registration binding first; the constructor is public only for
- * flows that have already done that check themselves.
+ * Nothing here verifies the enclave. Build these through `FleetSigner.connect`, which checks the
+ * attestation against the portal's `TeeRegistry` first; the constructor is public only for
+ * flows that have already done that check themselves. The one local check is a fail-fast on request
+ * headers that name another chain than the portal's.
  */
-export class PinnedEnclave implements TeeSigner {
+export class PinnedEnclave implements RegisteredTeeSigner, EnclaveIdentity {
+  // TODO(benesjan): make yarn-project/oxide-client/src/fleet_signer.ts::verifyAndPin a static function
+  // on this class and make this constructor private and de-claudify the class docs.
   constructor(
     readonly url: string,
     readonly attestation: AttestationData,
     private readonly timeouts: Timeouts,
+    readonly portalDomain: PortalDomain,
+    readonly registrationLeafIndex: bigint,
   ) {}
+
+  get teeRegistry(): EthAddress {
+    return this.portalDomain.teeRegistry;
+  }
 
   get publicKey(): SecpPublicKey {
     return { x: this.attestation.userData.publicKeyX, y: this.attestation.userData.publicKeyY };
@@ -73,8 +84,9 @@ export class PinnedEnclave implements TeeSigner {
     });
   }
 
-  signTokenOperation(operation: TokenOperation): Promise<SignTokenOperationOutput> {
-    return this.call('signTokenOperation', operation);
+  async signTokenOperation(operation: TokenOperation): Promise<RegisteredSignTokenOperationOutput> {
+    const output = await this.call('signTokenOperation', operation);
+    return { ...output, publicKey: this.publicKey, registrationLeafIndex: this.registrationLeafIndex };
   }
 
   signWithdrawalFinalization(input: WithdrawalFinalizationInput): Promise<WithdrawalFinalizationOutput> {
@@ -87,10 +99,10 @@ export class PinnedEnclave implements TeeSigner {
     return this.call('signFrozenNotesRefundFinalization', input);
   }
 
-  signFrozenDepositRefundFinalization(
-    input: FrozenDepositRefundFinalizationInput,
-  ): Promise<FrozenDepositRefundFinalizationOutput> {
-    return this.call('signFrozenDepositRefundFinalization', input);
+  signFrozenDepositsRefundFinalization(
+    input: FrozenDepositsRefundFinalizationInput,
+  ): Promise<FrozenDepositsRefundFinalizationOutput> {
+    return this.call('signFrozenDepositsRefundFinalization', input);
   }
 
   signUnprocessedDepositRefundFinalization(
@@ -105,13 +117,20 @@ export class PinnedEnclave implements TeeSigner {
    * to a different enclave requires preparing again.
    */
   async prepare<M extends RpcMethod>(method: M, params: RpcParams<M>): Promise<SealedCall<M>> {
-    const sealed = await sealRequest(this.encryptionPublicKey, Buffer.from(encodeRequest(method, params), 'utf8'));
-    const body = encodeEncryptedRequest(sealed.wirePayload);
+    this.assertHeaderChain(params);
+    const { body, openResponse } = await sealEncryptedRequest(
+      this.encryptionPublicKey,
+      method,
+      params,
+      this.portalDomain,
+      { discloseDomain: false },
+    );
     const address = this.ethAddress.toString();
     return {
+      enclave: this,
       send: async () => {
         const replyJson = await postFrame(this.url, body, this.timeouts.operationMs, address);
-        return await this.unseal(method, sealed, replyJson);
+        return await this.unseal(method, openResponse, replyJson);
       },
     };
   }
@@ -120,11 +139,34 @@ export class PinnedEnclave implements TeeSigner {
     return await (await this.prepare(method, params)).send();
   }
 
+  /** Fail fast on a header that names another chain. */
+  private assertHeaderChain(params: unknown): void {
+    const { anchorBlockHeader, frozenTip } = (params ?? {}) as {
+      anchorBlockHeader?: BlockHeader;
+      frozenTip?: BlockHeader;
+    };
+    const header = anchorBlockHeader ?? frozenTip;
+    if (!header) {
+      return;
+    }
+    const globals = header.globalVariables;
+    if (globals.chainId.toBigInt() !== this.portalDomain.l1ChainId) {
+      throw new PermanentError(
+        `request header names chain id ${globals.chainId.toBigInt()}, but portal ${this.portalDomain.l1Portal} is on ${this.portalDomain.l1ChainId}`,
+      );
+    }
+    if (globals.version.toBigInt() !== this.portalDomain.rollupVersion) {
+      throw new PermanentError(
+        `request header names rollup version ${globals.version.toBigInt()}, but portal ${this.portalDomain.l1Portal} is on ${this.portalDomain.rollupVersion}`,
+      );
+    }
+  }
+
   /** Unwrap the host-visible outer envelope, then the HPKE-sealed inner one. Only an authenticated
    *  inner refusal is the enclave's verdict; anything outer is host-controlled transport. */
   private async unseal<M extends RpcMethod>(
     method: M,
-    sealed: SealedRequest,
+    openResponse: (responseCiphertext: Buffer) => Promise<Buffer>,
     replyJson: string,
   ): Promise<RpcResult<M>> {
     const outer = await decodeResponseEnvelope(replyJson);
@@ -136,7 +178,7 @@ export class PinnedEnclave implements TeeSigner {
           : `enclave proxy returned unauthenticated plaintext response for ${method}`,
       );
     }
-    const inner = await decodeResponseEnvelope((await sealed.openResponse(outer.ciphertext)).toString('utf8'));
+    const inner = await decodeResponseEnvelope((await openResponse(outer.ciphertext)).toString('utf8'));
     if (inner.kind === 'error') {
       throw new EnclaveRejected(`enclave refused ${method}: ${inner.error}`);
     }

@@ -1,8 +1,8 @@
 import type { ReactNode } from "react"
 import { formatUnits } from "viem"
-import type { Network, RegistrationKind } from "@obsidion/core/types"
+import type { RegistrationKind } from "@obsidion/core/types"
 import { ConfirmationSheetDetailRow } from "@obsidion/web-ds"
-import { depositTokensFor } from "../../deposit/loadDepositFacts"
+import type { DepositTokens } from "../../deposit/loadDepositFacts"
 import { usdBalance } from "../../../ui/format"
 import { LimitLine } from "../../limits/publicLimit"
 
@@ -39,25 +39,21 @@ export function formatDepositSeen(amount: bigint, decimals: number): string {
 }
 
 /**
- * What a registration may be funded with, from the same picker the deposit screen offers: the
- * token the portal settles in, plus the stablecoins the sweep swaps into that token.
- * Network-dependent — only mainnet has the swap — and a safety line rather than a price, since
- * anything else sent to the address strands there.
+ * What a registration may be funded with: the fee token, then the tokens the sweep swaps into it. A safety
+ * line rather than a price, since anything else sent to the address strands there. Empty until the table is read.
  */
-export function fundingAssetsLabel(network: Network): string {
-  const assets = depositTokensFor(network).map((token) => token.symbol)
-  if (assets.length < 2) return assets[0] ?? ""
-  return `${assets.slice(0, -1).join(", ")} or ${assets[assets.length - 1]}`
+export function fundingAssetsLabel(tokens: DepositTokens | undefined): string {
+  return listLabel(tokens?.offered.map((token) => token.symbol) ?? []) ?? ""
 }
 
-/** The tokens a registration may be funded with that are swapped into the settlement token first. */
-export function swapAssetsLabel(network: Network): string | undefined {
-  const swapped = depositTokensFor(network)
-    .slice(1)
-    .map((token) => token.symbol)
-  if (swapped.length === 0) return undefined
-  if (swapped.length === 1) return swapped[0]
-  return `${swapped.slice(0, -1).join(", ")} or ${swapped[swapped.length - 1]}`
+/** The tokens a registration may be funded with that are swapped into the fee token first. */
+export function swapAssetsLabel(tokens: DepositTokens | undefined): string | undefined {
+  return listLabel(tokens?.offered.filter((t) => t.swapped).map((token) => token.symbol) ?? [])
+}
+
+function listLabel(symbols: string[]): string | undefined {
+  if (symbols.length < 2) return symbols[0]
+  return `${symbols.slice(0, -1).join(", ")} or ${symbols[symbols.length - 1]}`
 }
 
 /** Stands in for a figure whose inputs are still being read. */
@@ -71,8 +67,6 @@ export interface DepositTerms {
   fee?: bigint
   /** The relayer's sweep fee, paid out of the schedule fee. Unknown until the deployment is read. */
   sweepFee?: bigint
-  /** Portal funding deduction, unknown until the deployed contract is read. */
-  fpcCut?: bigint
   tokenSymbol: string
   tokenDecimals: number
   /** The schedule this registration is quoted on. */
@@ -85,12 +79,11 @@ export interface DepositTerms {
 }
 
 /** What the total covers; each part is unknown until its inputs are read. */
-export function depositTermsSplit({ total, fee, sweepFee, fpcCut }: DepositTerms): {
+export function depositTermsSplit({ total, fee, sweepFee }: DepositTerms): {
   price?: bigint
   funding?: bigint
   opening?: bigint
 } {
-  const spent = fee === undefined || fpcCut === undefined ? undefined : fee + fpcCut
   return {
     // The tag price is what the fee carries above the sweep.
     price:
@@ -99,10 +92,9 @@ export function depositTermsSplit({ total, fee, sweepFee, fpcCut }: DepositTerms
         : fee > sweepFee
         ? fee - sweepFee
         : 0n,
-    // The relayer's sweep fee funds the network like the portal's cut, on every schedule: one figure.
-    funding: sweepFee === undefined || fpcCut === undefined ? undefined : sweepFee + fpcCut,
-    opening:
-      spent === undefined || total === undefined ? undefined : total > spent ? total - spent : 0n,
+    // The relayer's sweep fee funds the network on every schedule.
+    funding: sweepFee,
+    opening: fee === undefined || total === undefined ? undefined : total > fee ? total - fee : 0n,
   }
 }
 

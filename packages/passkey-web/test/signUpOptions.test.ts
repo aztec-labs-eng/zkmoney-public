@@ -511,7 +511,7 @@ describe("signUpOptionsFor", () => {
       "Google Password Manager",
       "1Password",
     ])
-    expect(supported(linuxChrome, "key")).toEqual(["YubiKey 5 security key"])
+    expect(supported(linuxChrome, "key")).toEqual(["YubiKey 5, Trezor or Ledger security key"])
     expect(supported(sheet(UA.macChrome, { extension: "1password" }), "computer")).toEqual([
       "iCloud Keychain",
       "Google Password Manager",
@@ -526,7 +526,7 @@ describe("signUpOptionsFor", () => {
       "iCloud Keychain",
       "Google Password Manager",
       "1Password",
-      "YubiKey 5 security key",
+      "YubiKey 5, Trezor or Ledger security key",
     ])
   })
 

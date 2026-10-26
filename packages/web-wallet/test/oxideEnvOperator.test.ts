@@ -15,9 +15,12 @@ const TUPLE = {
 }
 const OPERATOR = "0x00000000000000000000000000000000000000e6"
 const h = vi.hoisted(() => ({ fetchOperator: vi.fn() }))
+vi.mock("@obsidion/core/oxide", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@obsidion/core/oxide")>()),
+  loadOxideDeployment: async () => ({ pinned: { tuple: TUPLE } }),
+}))
 vi.mock("@obsidion/front-core", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@obsidion/front-core")>()),
-  loadOxideManifestTuple: async () => TUPLE,
   fetchSignupResolverRecord: h.fetchOperator,
 }))
 

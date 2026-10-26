@@ -1,11 +1,11 @@
 // Prove-side phase extractor (docs/plans/2026-06-03-001, U2). Pure.
 //
-// Maps upstream `@aztec/pxe` `ProvingTimings` (returned on `TxProvingResult.stats`)
+// Maps upstream `@aztec-labs/pxe` `ProvingTimings` (returned on `TxProvingResult.stats`)
 // to the benchmark's prove-side phase scalars. Splits `perFunction[]` by
 // `functionName` prefix into UserWitgen vs KernelWitgen. Reads ONLY numeric
 // timing fields — never `oracles` / `nodeRPCCalls` (privacy).
 
-import type { ProvingTimings } from "@aztec/stdlib/tx"
+import type { ProvingTimings } from "@aztec-labs/stdlib/tx"
 
 /**
  * `performance.now()` guarded so a benchmark clock failure can never throw into

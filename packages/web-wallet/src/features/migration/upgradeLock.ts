@@ -1,7 +1,7 @@
 /**
  * The account's upgrade lock. From an upgrade's start until the account is fully upgraded here,
- * Home shows Main at what the upgrade will land and nothing from the new version, so a balance is
- * never counted on both. Released, the account is current on this version. Both are keyed to the
+ * Home shows each account at what the upgrade will land, so arrivals never count twice.
+ * Released, the account is current on this version. Both are keyed to the
  * deployment the profile pins.
  */
 import { useSyncExternalStore } from "react"
@@ -14,7 +14,7 @@ import { webStorage } from "../../platform/storage/WebStorageAdapter"
 
 export type UpgradeLock =
   | { state: "pending" }
-  | { state: "held"; main?: bigint }
+  | { state: "held"; main?: bigint; savings?: bigint }
   | { state: "released" }
 
 const lockKey = (account: string) => `webwallet.upgradeLock/${account.toLowerCase()}`
@@ -33,21 +33,34 @@ export function upgradeLock(account: string): UpgradeLock {
   const pending = releasing.get(account.toLowerCase())
   if (pending) return pending.lock
   const raw = walletStorage.getItem(lockKey(account))
-  const lock = raw ? (JSON.parse(raw) as { portal: string; main?: string }) : undefined
+  const lock = raw
+    ? (JSON.parse(raw) as { portal: string; main?: string; savings?: string })
+    : undefined
   if (lock?.portal === pinned())
-    return { state: "held", main: lock.main === undefined ? undefined : BigInt(lock.main) }
+    return {
+      state: "held",
+      main: lock.main === undefined ? undefined : BigInt(lock.main),
+      ...(lock.savings === undefined ? {} : { savings: BigInt(lock.savings) }),
+    }
   if (walletStorage.getItem(versionKey(account)) === pinned()) return { state: "released" }
   return { state: "pending" }
 }
 
 /** Takes the lock before an upgrade sends anything; a lock already held keeps its figure. */
-export function acquireUpgradeLock(account: string, main?: bigint): Promise<void> {
+export function acquireUpgradeLock(
+  account: string,
+  main?: bigint,
+  savings?: bigint,
+): Promise<void> {
   const id = account.toLowerCase()
   const pending = acquiring.get(id)
   if (pending) return pending
   if (upgradeLock(account).state === "held") return Promise.resolve()
   const saved = walletStorage
-    .commitItem(lockKey(account), JSON.stringify({ portal: pinned(), main: main?.toString() }))
+    .commitItem(
+      lockKey(account),
+      JSON.stringify({ portal: pinned(), main: main?.toString(), savings: savings?.toString() }),
+    )
     .finally(() => {
       acquiring.delete(id)
       changed()

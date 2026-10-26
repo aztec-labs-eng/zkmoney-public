@@ -17,6 +17,15 @@ const balance = {
 let assetsLoaded = true
 let pendingDeposits = false
 
+// The executor's withdrawal fee is priced in its own suites; here it costs nothing.
+vi.mock("../src/features/withdraw/withdrawalFee", () => ({
+  withdrawalExecutorFee: async () => 0n,
+  activeWithdrawalFee: async () => 0n,
+  activeWithdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutor: async () => ({ fee: 0n }),
+  withdrawalExecutorAt: async () => ({ fee: 0n }),
+  useActiveWithdrawalFee: () => 0n,
+}))
 vi.mock("react-router-dom", async (importOriginal) => ({
   ...(await importOriginal<typeof import("react-router-dom")>()),
   useNavigate: () => vi.fn(),
@@ -45,6 +54,8 @@ vi.mock("../src/features/withdraw/useWithdrawals", () => ({
 }))
 vi.mock("../src/features/contacts/contactPay", () => ({
   runContactPay: vi.fn(),
+  recipientUpgraded: async () => true,
+  RecipientNotUpgradedError: class RecipientNotUpgradedError extends Error {},
 }))
 vi.mock("../src/features/contacts/SendScreen", () => ({ SendScreen: () => null }))
 vi.mock("../src/features/actionGate", async (importOriginal) => ({
@@ -55,11 +66,11 @@ vi.mock("../src/features/identity/walletIdentity", () => ({
   loadOnboardedIdentity: () => ({ handle: "me" }),
   loadWalletIdentity: () => ({ handle: "me", address: "0xme", claimedAt: 1 }),
 }))
-// The direct route prices its fee off the portal's FPC cut.
+// An offline manifest and L1 client, whose portal cap is above every amount here.
 vi.mock("../src/config/oxideTuple", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/config/oxideTuple")>()),
   getOxideTuple: async () => ({ portal: `0x${"70".repeat(20)}` }),
-  l1PublicClient: () => ({ readContract: async () => 0n }),
+  l1PublicClient: () => ({ readContract: async () => 10n ** 30n }),
 }))
 vi.mock("../src/config/env", () => ({
   getConfig: () => ({ l1ChainId: 11155111, l1RpcUrl: "http://localhost:8545", network: "sandbox" }),
@@ -176,7 +187,7 @@ describe.each([
         await new Promise((r) => setTimeout(r, 350))
       })
     },
-    // The fee rides on top of the typed amount: the 0.1 relayer tip, with the portal's cut at 0.
+    // The fee rides on top of the typed amount: the 0.1 relayer tip.
     upTo: "9.9",
   },
   {

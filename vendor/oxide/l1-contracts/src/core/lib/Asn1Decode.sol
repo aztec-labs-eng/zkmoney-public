@@ -177,14 +177,11 @@ library Asn1Decode {
     }
   }
 
-  function timestampFromDateTime(
-    uint256 year,
-    uint256 month,
-    uint256 day,
-    uint256 hour,
-    uint256 minute,
-    uint256 second
-  ) private pure returns (uint256) {
+  function timestampFromDateTime(uint256 year, uint256 month, uint256 day, uint256 hour, uint256 minute, uint256 second)
+    private
+    pure
+    returns (uint256)
+  {
     require(year >= 1970);
     require(1 <= month && month <= 12);
     require(1 <= day && day <= 31);
@@ -196,9 +193,8 @@ library Asn1Decode {
     int256 _month = int256(month);
     int256 _day = int256(day);
 
-    int256 _days =
-      _day - 32_075 + 1461 * (_year + 4800 + (_month - 14) / 12) / 4 + 367 * (_month - 2 - (_month - 14) / 12 * 12) / 12
-      - 3 * ((_year + 4900 + (_month - 14) / 12) / 100) / 4 - 2_440_588;
+    int256 _days = _day - 32_075 + 1461 * (_year + 4800 + (_month - 14) / 12) / 4 + 367
+      * (_month - 2 - (_month - 14) / 12 * 12) / 12 - 3 * ((_year + 4900 + (_month - 14) / 12) / 100) / 4 - 2_440_588;
 
     return ((uint256(_days) * 24 + hour) * 60 + minute) * 60 + second;
   }

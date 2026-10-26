@@ -1,7 +1,7 @@
-import { Fr } from "@aztec/aztec.js/fields"
-import { type Contract, type ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import type { Capsule } from "@aztec/stdlib/tx"
-import { getTransferMetaLen, getWithdrawMetaLen } from "@oxide/oxide-client/l2_operations.js"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { type Contract, type ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import type { Capsule } from "@aztec-labs/stdlib/tx"
+import { getTransferMetaLen } from "@oxide/oxide-client/l2_operations.js"
 import { getUserPayloadHash } from "@oxide/oxide-lib/content_hash.js"
 
 import type { Operation } from "../oxide/index.js"
@@ -12,7 +12,7 @@ import type { Operation } from "../oxide/index.js"
  * batches inject their own builder via `paylinkOuterCallBuilder`.
  *
  * Each argument list is positional and hardcoded here; `packages/sdk/test/tokenOperationCall.test.ts`
- * holds it to the artifact's parameter list. An omitted `meta` is zero-filled to the length the
+ * holds it to the artifact's parameter list. An omitted transfer `meta` is zero-filled to the length the
  * bound artifact declares.
  *
  * **Sync constraint:** `buildOperationCall` is a synchronous callback. Do NOT introduce `await` —
@@ -39,7 +39,6 @@ export function buildTokenOperationCall(
         getUserPayloadHash(op.userPayload),
         op.amount,
         op.proverTip,
-        op.meta ?? Array(getWithdrawMetaLen(tokenContract.artifact)).fill(Fr.ZERO),
         op.authwitNonce ?? 0,
       ).with({ capsules })
     case "outerCall":

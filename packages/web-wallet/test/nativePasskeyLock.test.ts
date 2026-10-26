@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { createContext, runInContext } from "node:vm"
-import { NATIVE_LOCK_KEY, nativeLockScript } from "@obsidion/passkey-web"
+import { KEPT_PASSKEY_API_KEY, NATIVE_LOCK_KEY, nativeLockScript } from "@obsidion/passkey-web"
 import { build, createServer, type Rollup } from "vite"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { nativePasskeyLock } from "../nativePasskeyLock"
@@ -82,7 +82,9 @@ function inlineScript(html: string): string {
 }
 
 /** A page-like realm with the browser's own shapes: methods on the prototype, probes as statics. */
-function pageRealm(options: { webauthn?: boolean; sealed?: boolean; overridden?: boolean } = {}) {
+function pageRealm(
+  options: { webauthn?: boolean; sealed?: boolean; overridden?: boolean; kept?: boolean } = {},
+) {
   const context = createContext({})
   const scope = runInContext(
     `(function () {
@@ -108,6 +110,10 @@ function pageRealm(options: { webauthn?: boolean; sealed?: boolean; overridden?:
   if (options.sealed) Object.preventExtensions(scope.credentials)
   if (options.overridden) {
     runInContext("navigator.credentials.create = function create(e) { return e }", context)
+  }
+  // Proton Pass's get, by the one thing the lock reads from it: its bridge message name.
+  if (options.kept) {
+    runInContext('navigator.credentials.get = (e) => ({ type: "PASSKEY_GET", e })', context)
   }
   return { context, credentials: scope.credentials as object, pkc: scope.pkc as object }
 }
@@ -202,6 +208,22 @@ describe("nativePasskeyLock", () => {
     const restored = Object.getOwnPropertyDescriptor(overridden.credentials, "create")!
     expect(restored.writable).toBe(false)
     expect(restored.value).toBe(Object.getPrototypeOf(overridden.credentials).create)
+    expect(Object.keys(overridden.context[KEPT_PASSKEY_API_KEY])).toEqual([])
+
+    const kept = pageRealm({ kept: true })
+    const wrapper = (kept.credentials as { get: unknown }).get
+    runInContext(script, kept.context)
+    expect(kept.context[NATIVE_LOCK_KEY]).toMatchObject({ create: "applied", get: "restored" })
+    expect(Object.getOwnPropertyDescriptor(kept.credentials, "get")!.value).toBe(
+      Object.getPrototypeOf(kept.credentials).get,
+    )
+    const slot = Object.getOwnPropertyDescriptor(kept.context, KEPT_PASSKEY_API_KEY)!
+    expect(slot.writable).toBe(false)
+    expect(slot.configurable).toBe(false)
+    expect(Object.isFrozen(slot.value)).toBe(true)
+    expect(Object.getPrototypeOf(slot.value)).toBeNull()
+    expect(slot.value.get).toBe(wrapper)
+    expect(slot.value.create).toBeUndefined()
   }, 60_000)
 
   it("is served the same way by the dev server", async () => {

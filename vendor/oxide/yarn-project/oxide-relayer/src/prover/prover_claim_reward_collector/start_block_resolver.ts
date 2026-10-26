@@ -1,7 +1,7 @@
-import { RollupContract } from '@aztec/ethereum/contracts/rollup';
-import { maxBigint } from '@aztec/foundation/bigint';
-import { CheckpointNumber, SlotNumber } from '@aztec/foundation/branded-types';
-import { Logger, createLogger } from '@aztec/foundation/log';
+import { RollupContract } from '@aztec-labs/ethereum/contracts/rollup';
+import { maxBigint } from '@aztec-labs/foundation/bigint';
+import { CheckpointNumber, SlotNumber } from '@aztec-labs/foundation/branded-types';
+import { Logger, createLogger } from '@aztec-labs/foundation/log';
 
 import type { PublicClient } from 'viem';
 
@@ -19,7 +19,7 @@ export interface ResolveStartBlockOptions {
 
 /**
  * The L1 block the FirstProverTracker should scan from: a block at or below the floor, the earliest L1 timestamp
- * at which a FirstProverRecorded event can still matter. L1 timestamps strictly increase, so no block below the
+ * at which an L2ProofVerified event can still matter. L1 timestamps strictly increase, so no block below the
  * returned one holds a relevant capture.
  *
  * The collector keeps no progress across restarts: a claim outlives at most one checkpoint-log window, so every
@@ -53,7 +53,7 @@ export async function resolveStartBlock(opts: ResolveStartBlockOptions): Promise
 }
 
 /**
- * The earliest L1 timestamp at which a FirstProverRecorded event can still matter, read exactly from the rollup.
+ * The earliest L1 timestamp at which an L2ProofVerified event can still matter, read exactly from the rollup.
  *
  * The rollup keeps checkpoint `n`'s log readable while `n <= pending && pending < n + roundaboutSize` (the STFLib
  * gate), and every claim reads one. So the oldest checkpoint a claim can still be built on is

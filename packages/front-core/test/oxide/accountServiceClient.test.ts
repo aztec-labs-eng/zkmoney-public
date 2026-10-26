@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import type { Hex } from "viem"
 
-import { sha256 } from "@aztec/foundation/crypto/sha256"
+import { sha256 } from "@aztec-labs/foundation/crypto/sha256"
 
 import {
   AccountServiceClient,

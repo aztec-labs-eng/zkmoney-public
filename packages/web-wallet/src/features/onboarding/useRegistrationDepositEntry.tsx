@@ -27,7 +27,6 @@ import {
   signedWithoutSchedule,
   useChainReadRetry,
   useDepositSkim,
-  useSweepDeductions,
   useRegistrationSchedule,
   useRegistrationTerms,
 } from "./registrationTerms"
@@ -174,11 +173,9 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
     recordRegistrationDeposit(record.account, record.tag, live)
   }, [record, live])
   const funding = useFundingTransfer(record, readAttempt)
-  const deductions = useSweepDeductions(config, record?.depositToken, undefined, readAttempt)
   useChainReadRetry(
     record !== null &&
       ((unsignedFallback && chainAmounts === undefined) ||
-        deductions === undefined ||
         funding === undefined ||
         sweepFee === undefined),
     retryReads,
@@ -206,18 +203,11 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
   const scheduleUnavailable =
     schedule === undefined && !(unsignedFallback && chainAmounts === undefined)
   const feeOwed = committedFee ?? schedule?.fee
-  // Both figures wait on the kind: the floor decides whether the deposit is taken, the asked total
-  // is what a row still waiting for one quotes.
-  const kind = quotedRegistrationKind(terms?.feeWaived, schedule, deductions?.fpcCut)
-  const quote =
-    kind === undefined ? undefined : registrationQuote(schedule, kind, deductions?.fpcCut)
-  const floor = quote?.floor
-  const { credit, short } = registrationDepositCredit({
-    gross,
-    floor,
-    feeOwed,
-    fpcCut: deductions?.fpcCut,
-  })
+  // The floor decides whether the deposit is taken; the asked total is what a row still waiting for
+  // one quotes.
+  const kind = quotedRegistrationKind(terms?.feeWaived, schedule)
+  const quote = registrationQuote(schedule, kind)
+  const { credit, short } = registrationDepositCredit({ gross, floor: quote.floor, feeOwed })
   // A short deposit credits nothing, so the row names what was deposited, unsigned, the way the
   // rail's own rows name a deposit no sweep will move. An unpriceable one names it the same way.
   const amountLabel = returned
@@ -239,11 +229,8 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
   // Only a deposit the machine has not credited yet still needs the pay QR + address; once funded
   // the modal's facts take over.
   const pay =
-    quote !== undefined &&
     // A deployment that prices no registration a sweep could take has nothing to ask for.
-    !(unsignedFallback && chainAmounts === null) &&
-    depositOwed(stage) &&
-    !depositAdmitted
+    !(unsignedFallback && chainAmounts === null) && depositOwed(stage) && !depositAdmitted
       ? {
           token: record.depositToken as Address,
           chainId: record.l1ChainId,
@@ -252,13 +239,12 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
           kind,
           heldToken: live > 0n ? watch.token : undefined,
           terms:
-            live > 0n || kind === undefined
+            live > 0n
               ? undefined
               : {
                   total: quote.total,
                   fee: feeOwed,
                   sweepFee,
-                  fpcCut: deductions?.fpcCut,
                   tokenSymbol: WALLET_TOKEN_SYMBOL,
                   tokenDecimals: decimals,
                   kind,
@@ -288,7 +274,6 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
         terms={terms}
         funding={funding}
         sweepFee={sweepFee}
-        deductions={deductions}
         amount={amountLabel || "Deposit"}
         deposited={
           funding
@@ -298,12 +283,6 @@ export function useRegistrationDepositEntry(): RegistrationDepositEntry | null {
             : undefined
         }
         feeLabel={feeLabel}
-        cutLabel={
-          // The cut is taken off a credited deposit; a short one is never charged it.
-          credit !== undefined && deductions !== undefined && deductions.fpcCut > 0n
-            ? formatTokenAmount(deductions.fpcCut, decimals, WALLET_TOKEN_SYMBOL)
-            : undefined
-        }
         pay={pay}
         onClose={() => setOpen(false)}
       />

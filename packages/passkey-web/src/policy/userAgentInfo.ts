@@ -46,6 +46,8 @@ export const UNKNOWN = "unknown"
 
 const dotted = (raw: string | undefined) => (raw ? raw.replace(/_/g, ".") : UNKNOWN)
 
+const HINTED_PLATFORMS = ["Android", "macOS", "Windows", "Chrome OS", "Linux"]
+
 function osFrom(
   snapshot: UserAgentSnapshot,
 ): Pick<
@@ -61,25 +63,30 @@ function osFrom(
       : { osVersionReported: fromUserAgent }),
     ...(hinted ? { platformFromHints: true as const } : {}),
   })
+  // The string's claim counts only while the hints name no other platform: an overridden string
+  // must not borrow the hinted platform's version.
+  const named = hinted !== undefined && HINTED_PLATFORMS.includes(hinted)
+  const says = (platform: string, pattern: RegExp) =>
+    hinted === platform || (!named && pattern.test(ua))
   const ios = ua.match(/(?:iPhone|iPad|iPod).*?OS (\d+(?:[_.]\d+)*)/)
   if (ios) return { osFamily: "ios", osVersionReported: dotted(ios[1]) }
-  if (hinted === "Android" || /Android/.test(ua)) {
+  if (says("Android", /Android/)) {
     const m = ua.match(/Android (\d+(?:\.\d+)*)/)
     return { osFamily: "android", ...version(dotted(m?.[1])) }
   }
-  if (hinted === "macOS" || /Macintosh/.test(ua)) {
+  if (says("macOS", /Macintosh/)) {
     const m = ua.match(/Mac OS X (\d+(?:[_.]\d+)*)/)
     return { osFamily: "macos", ...version(dotted(m?.[1])) }
   }
-  if (hinted === "Windows" || /Windows NT/.test(ua)) {
+  if (says("Windows", /Windows NT/)) {
     const m = ua.match(/Windows NT (\d+(?:\.\d+)*)/)
     return { osFamily: "windows", ...version(dotted(m?.[1])) }
   }
-  if (hinted === "Chrome OS" || /CrOS/.test(ua)) {
+  if (says("Chrome OS", /CrOS/)) {
     const m = ua.match(/CrOS \S+ (\d+(?:\.\d+)*)/)
     return { osFamily: "chromeos", ...version(dotted(m?.[1])) }
   }
-  if (hinted === "Linux" || /Linux|X11/.test(ua)) {
+  if (says("Linux", /Linux|X11/)) {
     return { osFamily: "linux", ...version(UNKNOWN) }
   }
   return { osFamily: "unknown", osVersionReported: UNKNOWN }
@@ -255,4 +262,16 @@ export function iosBelowFloor(
   info: Pick<UserAgentInfo, "osFamily" | "osVersionReported">,
 ): boolean {
   return info.osFamily === "ios" && versionBelow(info.osVersionReported, IOS_PASSKEY_FLOOR)
+}
+
+/**
+ * Windows 10 or 11 by Client Hints, whose Windows `platformVersion` is 13 or more on Windows 11.
+ * Undefined without hints: every user-agent string says "Windows NT 10.0" on both.
+ */
+export function windowsReleaseFromHints(
+  info: Pick<UserAgentInfo, "osFamily" | "osVersionReported" | "osVersionFromHints">,
+): "10" | "11" | undefined {
+  if (info.osFamily !== "windows" || !info.osVersionFromHints) return undefined
+  if (atLeast(info.osVersionReported, "13")) return "11"
+  return atLeast(info.osVersionReported, "1") ? "10" : undefined
 }

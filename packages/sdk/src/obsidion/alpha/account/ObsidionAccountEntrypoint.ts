@@ -1,22 +1,28 @@
-import { EncodedAppEntrypointCalls } from "@aztec/entrypoints/encoding"
+import { EncodedAppEntrypointCalls } from "@aztec-labs/entrypoints/encoding"
 import {
   Capsule,
   ExecutionPayload,
   HashedValues,
   TxContext,
   TxExecutionRequest,
-} from "@aztec/stdlib/tx"
-import { ChainInfo, EntrypointInterface } from "@aztec/entrypoints/interfaces"
+} from "@aztec-labs/stdlib/tx"
+import { ChainInfo, EntrypointInterface } from "@aztec-labs/entrypoints/interfaces"
 import { CAPSULE_SLOT } from "../../../utils/constants.js"
-import { DefaultAccountEntrypointOptions } from "@aztec/entrypoints/account"
-import { GasSettings } from "@aztec/stdlib/gas"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Fr } from "@aztec/aztec.js/fields"
-import { encodeArguments, FunctionAbi, FunctionCall, FunctionSelector } from "@aztec/stdlib/abi"
+import { DefaultAccountEntrypointOptions } from "@aztec-labs/entrypoints/account"
+import { GasSettings } from "@aztec-labs/stdlib/gas"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import {
+  encodeArguments,
+  FunctionAbi,
+  FunctionCall,
+  FunctionSelector,
+  getFunctionReturnType,
+} from "@aztec-labs/stdlib/abi"
 import { AlphaAuthProvider } from "../auth/AlphaAuthProvider.js"
-import { poseidon2HashWithSeparator } from "@aztec/foundation/crypto/poseidon"
-import { DomainSeparator } from "@aztec/constants"
-import { computeOuterAuthWitHash } from "@aztec/stdlib/auth-witness"
+import { poseidon2HashWithSeparator } from "@aztec-labs/foundation/crypto/poseidon"
+import { DomainSeparator } from "@aztec-labs/constants"
+import { computeOuterAuthWitHash } from "@aztec-labs/stdlib/auth-witness"
 
 const INTENT_HASHES_LEN = 4
 
@@ -149,7 +155,7 @@ export class ObsidionAccountEntrypoint implements EntrypointInterface {
       hideMsgSender: false,
       isStatic: callData.abi.isStatic,
       args: callData.encodedArgs,
-      returnTypes: callData.abi.returnTypes,
+      returnType: getFunctionReturnType(callData.abi),
     })
 
     return new ExecutionPayload(
@@ -194,11 +200,10 @@ export class ObsidionAccountEntrypoint implements EntrypointInterface {
         [appEncodedCallsHash, ...intentHashes],
         DomainSeparator.SIGNATURE_PAYLOAD,
       )
-      intentCapsule = new Capsule(
-        this.address,
-        new Fr(CAPSULE_SLOT),
-        [appEncodedCallsHash, ...intentHashes],
-      )
+      intentCapsule = new Capsule(this.address, new Fr(CAPSULE_SLOT), [
+        appEncodedCallsHash,
+        ...intentHashes,
+      ])
     } else {
       abi = this.getEntrypointAbi(entrypointType)
       args = this.buildArgs(encodedCalls, feePaymentMethodOptions)
@@ -230,10 +235,7 @@ export class ObsidionAccountEntrypoint implements EntrypointInterface {
    * unrelated contracts (e.g. a sponsor FPC) or by the same contract at a
    * different slot must pass through untouched.
    */
-  private withEntrypointIntentCapsule(
-    capsules: Capsule[],
-    intentCapsule?: Capsule,
-  ): Capsule[] {
+  private withEntrypointIntentCapsule(capsules: Capsule[], intentCapsule?: Capsule): Capsule[] {
     if (!intentCapsule) {
       return [...capsules]
     }

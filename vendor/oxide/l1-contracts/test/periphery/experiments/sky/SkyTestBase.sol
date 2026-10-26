@@ -13,8 +13,7 @@ import {OxideConstants} from "@generated/OxideConstants.gen.sol";
 import {OxidePortal} from "@core/OxidePortal.sol";
 import {IOxidePortal} from "@core/interfaces/IOxidePortal.sol";
 import {IExecutor} from "@core/interfaces/IExecutor.sol";
-import {IWithdrawalSubsidy} from "@periphery/interfaces/IWithdrawalSubsidy.sol";
-import {WithdrawalSubsidy} from "@periphery/WithdrawalSubsidy.sol";
+import {PlainWithdrawalSubsidy} from "@periphery/PlainWithdrawalSubsidy.sol";
 import {SkyWithdrawalExecutor} from "@periphery/experiments/sky/SkyWithdrawalExecutor.sol";
 import {SkyEscrowFactory} from "@periphery/experiments/sky/SkyEscrowFactory.sol";
 import {SkyRoute} from "@periphery/experiments/sky/SkyTypes.sol";
@@ -25,46 +24,27 @@ import {MockDaiUsds} from "@test/periphery/experiments/sky/mocks/MockDaiUsds.sol
 import {MockSUsds} from "@test/periphery/experiments/sky/mocks/MockSUsds.sol";
 
 abstract contract SkyHelpers is OxidePortalBase {
-  bytes32 internal constant SUSDS_L2_PORTAL = bytes32(uint256(0x5005D5));
+  bytes32 internal constant SUSDS_L2_TOKEN = bytes32(uint256(0x5005D5));
 
   uint256 internal withdrawalCount;
 
-  function _newPortal(address _underlying, uint256 _cut) internal returns (OxidePortal) {
-    return new OxidePortal(
-      OWNER,
-      OxidePortal.FpcFunding({funder: FPC_FUNDER, cut: _cut}),
-      certManager,
-      nitroValidator,
+  function _newPortal(address _underlying, bytes32 _l2Token) internal returns (OxidePortal portal_) {
+    pendingL2Token = _l2Token;
+    portal_ = new OxidePortal(
+      teeRegistry,
       IERC20(_underlying),
       IRegistry(address(registry)),
       ROLLUP_VERSION,
       OxidePortal.RefundVerifiers({
         frozenNotes: IVerifier(address(frozenNotesRefundVerifier)),
-        frozenDeposit: IVerifier(address(frozenDepositRefundVerifier)),
+        frozenDeposits: IVerifier(address(frozenDepositsRefundVerifier)),
         unprocessedDeposit: IVerifier(address(unprocessedDepositRefundVerifier))
       }),
+      TX_AMOUNT_CAP,
       RATE,
       GLOBAL_LIMIT
     );
-  }
-
-  function _initializeAndRegister(OxidePortal _portal, bytes32 _l2Portal) internal {
-    vm.startPrank(OWNER);
-    _portal.initialize(_l2Portal);
-    _portal.approveTeePcr0(keccak256(TEST_TEE_PCR0));
-    vm.stopPrank();
-
-    bytes32 userData =
-      _registrationUserData(TEST_TEE_PUBLIC_KEY_X, TEST_TEE_PUBLIC_KEY_Y, TEST_ENC_PUB_KEY_X, TEST_ENC_PUB_KEY_Y);
-    nitroValidator.setRegistrationPtrs(uint64(block.timestamp * 1000), 0, 48);
-    _portal.registerTee(
-      bytes.concat(TEST_TEE_PCR0, abi.encodePacked(userData)),
-      hex"1234",
-      TEST_TEE_PUBLIC_KEY_X,
-      TEST_TEE_PUBLIC_KEY_Y,
-      TEST_ENC_PUB_KEY_X,
-      TEST_ENC_PUB_KEY_Y
-    );
+    pendingL2Token = L2_TOKEN;
   }
 
   function _withdrawArgs(
@@ -83,7 +63,7 @@ abstract contract SkyHelpers is OxidePortalBase {
       randomness: uint256(withdrawalId)
     });
     DataStructures.L2ToL1Msg memory message = DataStructures.L2ToL1Msg({
-      sender: DataStructures.L2Actor({actor: _portal.$l2Portal(), version: ROLLUP_VERSION}),
+      sender: DataStructures.L2Actor({actor: _portal.L2_TOKEN(), version: ROLLUP_VERSION}),
       recipient: DataStructures.L1Actor({actor: address(_portal), chainId: block.chainid}),
       content: Hash.sha256ToField(
         abi.encodeWithSignature(
@@ -122,7 +102,7 @@ abstract contract SkyHelpers is OxidePortalBase {
     publicInputs[0] = bytes32(block.chainid);
     publicInputs[1] = bytes32(_portal.ROLLUP_VERSION());
     publicInputs[2] = bytes32(uint256(uint160(address(_portal))));
-    publicInputs[3] = _portal.$l2Portal();
+    publicInputs[3] = _portal.L2_TOKEN();
     publicInputs[4] = _portal.$freezeArchive();
     publicInputs[5] = bytes32(_amount);
     publicInputs[6] = bytes32(uint256(uint160(_executor)));
@@ -132,7 +112,7 @@ abstract contract SkyHelpers is OxidePortalBase {
     args = IOxidePortal.RefundFrozenNotesArgs({
       executor: _executor,
       userPayload: _userPayload,
-      relayerPayload: abi.encode(address(0), address(0)),
+      relayerPayload: abi.encodePacked(address(0)),
       amount: _amount,
       nullifiers: nullifiers,
       proof: hex"c0ffee",
@@ -142,8 +122,6 @@ abstract contract SkyHelpers is OxidePortalBase {
 }
 
 abstract contract SkyTestBase is SkyHelpers {
-  uint256 internal constant DAI_PORTAL_CUT = 0.5 ether;
-
   address internal constant RECIPIENT = address(0xBEEF);
   address internal constant RELAYER = address(0xCAFE);
 
@@ -154,11 +132,10 @@ abstract contract SkyTestBase is SkyHelpers {
 
   OxidePortal internal sUsdsPortal;
   SkyWithdrawalExecutor internal skyExecutor;
-  WithdrawalSubsidy internal skySubsidy;
+  PlainWithdrawalSubsidy internal skySubsidy;
   SkyEscrowFactory internal escrowFactory;
 
   function setUp() public virtual override {
-    fpcFundingCut = DAI_PORTAL_CUT;
     super.setUp();
 
     dai = underlying;
@@ -169,13 +146,12 @@ abstract contract SkyTestBase is SkyHelpers {
     usds.addMinter(address(converter));
     usds.addMinter(address(sUsds));
 
-    _initializeAndRegister(portal, L2_PORTAL);
+    _registerSigner();
 
-    sUsdsPortal = _newPortal(address(sUsds), 0);
-    _initializeAndRegister(sUsdsPortal, SUSDS_L2_PORTAL);
+    sUsdsPortal = _newPortal(address(sUsds), SUSDS_L2_TOKEN);
 
-    skyExecutor = new SkyWithdrawalExecutor(sUsdsPortal, _skyRoute());
-    skySubsidy = new WithdrawalSubsidy(OWNER, address(portal), address(skyExecutor), ethUsdFeed);
+    skyExecutor = new SkyWithdrawalExecutor(sUsdsPortal, _skyRoute(), OWNER, ethUsdFeed);
+    skySubsidy = skyExecutor.SUBSIDY();
     escrowFactory = new SkyEscrowFactory(_skyRoute(), portal, sUsdsPortal, skyExecutor);
   }
 
@@ -216,30 +192,13 @@ abstract contract SkyTestBase is SkyHelpers {
     vm.startPrank(OWNER);
     for (uint256 flow = 0; flow < 4; flow++) {
       skySubsidy.setFlowPricing(
-        IExecutor.Flow(flow), WithdrawalSubsidy.FlowPricing({startPriceWei: 0, maxSubsidy: _maxSubsidy})
+        IExecutor.Flow(flow), PlainWithdrawalSubsidy.FlowPricing({startPriceWei: 0, maxSubsidy: _maxSubsidy})
       );
     }
     vm.stopPrank();
     dai.mint(address(skySubsidy), 100 * _maxSubsidy);
     vm.fee(10 gwei);
     vm.txGasPrice(10 gwei);
-  }
-}
-
-contract RecordingWithdrawalSubsidy is IWithdrawalSubsidy {
-  IExecutor.Flow public lastFlow;
-  address public lastTipRecipient;
-  uint256 public calls;
-
-  function paySubsidy(IExecutor.Flow _flow, address _tipRecipient)
-    external
-    override(IWithdrawalSubsidy)
-    returns (uint256)
-  {
-    lastFlow = _flow;
-    lastTipRecipient = _tipRecipient;
-    calls++;
-    return 0;
   }
 }
 

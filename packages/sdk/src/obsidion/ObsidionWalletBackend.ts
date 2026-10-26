@@ -3,16 +3,16 @@ import {
   SchnorrAccountContractArtifact,
   SchnorrInitializerlessAccountContract,
   SchnorrInitializerlessAccountContractArtifact,
-} from "@aztec/accounts/schnorr"
-import { AccountManager, ContractInitializationStatus } from "@aztec/aztec.js/wallet"
-import { NO_FROM } from "@aztec/aztec.js/account"
-import { Account, BaseAccount, type Salt } from "@aztec/aztec.js/account"
-import { Fr, Fq } from "@aztec/aztec.js/fields"
+} from "@aztec-labs/accounts/schnorr"
+import { AccountManager, ContractInitializationStatus } from "@aztec-labs/aztec.js/wallet"
+import { NO_FROM } from "@aztec-labs/aztec.js/account"
+import { Account, BaseAccount, type Salt } from "@aztec-labs/aztec.js/account"
+import { Fr, Fq } from "@aztec-labs/aztec.js/fields"
 import {
   deriveMasterIncomingViewingSecretKey,
   deriveMasterMessageSigningSecretKey,
-} from "@aztec/stdlib/keys"
-import type { AztecNode } from "@aztec/aztec.js/node"
+} from "@aztec-labs/stdlib/keys"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { ObsidionWallet, type ObsidionWalletOptions } from "./ObsidionWallet.js"
 import type { AlphaAuthProvider } from "./alpha/auth/AlphaAuthProvider.js"
 import { TESTNET_TIMEOUT } from "../utils/constants.js"
@@ -23,11 +23,11 @@ import {
   type PXE,
   type PXEConfig,
   type PXECreationOptions,
-} from "@aztec/pxe/server"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import type { SendInteractionOptions, WaitOpts } from "@aztec/aztec.js/contracts"
-import type { FeePaymentMethod } from "@aztec/aztec.js/fee"
+} from "@aztec-labs/pxe/server"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import type { SendInteractionOptions, WaitOpts } from "@aztec-labs/aztec.js/contracts"
+import type { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
 
 /**
  * ObsidionWalletBackend - Backend-only wallet extension for administrative operations.
@@ -176,7 +176,9 @@ export class ObsidionWalletBackend extends ObsidionWallet {
       : SchnorrAccountContractArtifact
     const accountSalt = salt ?? Fr.random()
 
-    const accountManager = await AccountManager.create(this, secret, contract, { salt: accountSalt })
+    const accountManager = await AccountManager.create(this, secret, contract, {
+      salt: accountSalt,
+    })
     const instance = accountManager.getInstance()
 
     // Register the contract with the PXE
@@ -200,7 +202,9 @@ export class ObsidionWalletBackend extends ObsidionWallet {
     if (initializerless) {
       const constructorAbi = artifact.functions.find((f) => f.name === "constructor")
       if (!constructorAbi) {
-        throw new Error("SchnorrInitializerlessAccount artifact is missing its `constructor` utility")
+        throw new Error(
+          "SchnorrInitializerlessAccount artifact is missing its `constructor` utility",
+        )
       }
       const { x, y } = await contract.getSigningPublicKey()
       const seedCapsule = new ContractFunctionInteraction(this, instance.address, constructorAbi, [

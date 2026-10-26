@@ -4,31 +4,26 @@ import {IRollup} from "@aztec/core/interfaces/IRollup.sol";
 import {IVerifier} from "@aztec/core/interfaces/IVerifier.sol";
 import {IInbox} from "@aztec/core/interfaces/messagebridge/IInbox.sol";
 import {IOutbox, MAX_CHECKPOINTS_PER_EPOCH} from "@aztec/core/interfaces/messagebridge/IOutbox.sol";
-import {Constants} from "@aztec/core/libraries/ConstantsGen.sol";
 import {Hash} from "@aztec/core/libraries/crypto/Hash.sol";
-import {MerkleLib} from "@aztec/core/libraries/crypto/MerkleLib.sol";
 import {DataStructures} from "@aztec/core/libraries/DataStructures.sol";
 import {IHaveVersion, IRegistry} from "@aztec/governance/interfaces/IRegistry.sol";
 import {Epoch} from "@aztec/shared/libraries/TimeMath.sol";
-import {Ownable} from "@oz/access/Ownable.sol";
 import {ReentrancyGuardTransient} from "@oz/utils/ReentrancyGuardTransient.sol";
 import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@oz/token/ERC20/utils/SafeERC20.sol";
 import {ECDSA} from "@oz/utils/cryptography/ECDSA.sol";
 import {Caps} from "./Caps.sol";
 import {IOxidePortal} from "./interfaces/IOxidePortal.sol";
-import {ICertManager} from "@nitro-validator/ICertManager.sol";
+import {IPortalFactory} from "./interfaces/IPortalFactory.sol";
 import {ProverClaimLib} from "./lib/ProverClaimLib.sol";
 import {IProverSubsidy} from "@core/interfaces/IProverSubsidy.sol";
 import {IExecutor} from "@core/interfaces/IExecutor.sol";
-import {INitroValidator, TEERegistrationLib} from "./lib/TEERegistrationLib.sol";
+import {ITeeRegistry} from "@core/interfaces/ITeeRegistry.sol";
 import {OxideConstants} from "@generated/OxideConstants.gen.sol";
 import {Errors} from "@core/lib/Errors.sol";
 
-contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
+contract OxidePortal is Caps, ReentrancyGuardTransient, IOxidePortal {
   using SafeERC20 for IERC20;
-
-  uint256 public constant TEE_ATTESTATION_MAX_AGE = 1 hours;
 
   IERC20 public immutable UNDERLYING;
 
@@ -38,33 +33,23 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
   IRegistry public immutable REGISTRY;
 
   IVerifier public immutable FROZEN_NOTES_REFUND_VERIFIER;
-  IVerifier public immutable FROZEN_DEPOSIT_REFUND_VERIFIER;
+  IVerifier public immutable FROZEN_DEPOSITS_REFUND_VERIFIER;
   IVerifier public immutable UNPROCESSED_DEPOSIT_REFUND_VERIFIER;
 
-  ICertManager public immutable TEE_CERT_MANAGER;
-  INitroValidator public immutable TEE_NITRO_VALIDATOR;
+  ITeeRegistry public immutable TEE_REGISTRY;
   uint256 public immutable ROLLUP_VERSION;
 
-  address public immutable FPC_FUNDER;
-
-  uint256 public immutable FPC_FUNDING_CUT;
-
-  mapping(address tee => TEERegistrationLib.TEEBinding binding) public $teeBindings;
-
-  mapping(bytes32 pcr0Hash => bool approved) public $approvedTeePcr0;
-
-  bytes32 public $l2Portal;
-
-  bool public $initialized;
+  bytes32 public immutable L2_TOKEN;
 
   mapping(bytes32 withdrawalId => bool spent) public $isWithdrawalSpent;
 
   mapping(bytes32 withdrawalId => bool spent) public $isWithdrawalProverClaimSpent;
 
   mapping(uint256 epoch => mapping(uint256 leafId => bool claimed)) public $claimed;
-  mapping(uint256 checkpointNumber => address prover) public $firstProver;
 
   mapping(bytes32 nullifier => bool spent) public $isRefundNullifierSpent;
+
+  mapping(bytes32 messageHash => uint256 indexPlusOne) public $depositMessageIndex;
 
   bool public override $frozen;
   uint256 public $freezeCheckpointNumber;
@@ -72,8 +57,6 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
   bytes32 public $freezeArchive;
 
   uint256 public $freezeCheckpointCount;
-
-  event Initialized(bytes32 l2Portal);
 
   event Frozen(
     uint256 indexed checkpointNumber, uint256 indexed epochNumber, bytes32 archive, uint256 freezeCheckpointCount
@@ -86,35 +69,24 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
   );
 
   event TipReleased(address indexed to, uint256 amount);
-  event FirstProverRecorded(uint256 indexed checkpointNumber, address indexed prover);
 
   struct RefundVerifiers {
     IVerifier frozenNotes;
-    IVerifier frozenDeposit;
+    IVerifier frozenDeposits;
     IVerifier unprocessedDeposit;
   }
 
-  struct FpcFunding {
-    address funder;
-    uint256 cut;
-  }
-
   constructor(
-    address _owner,
-    FpcFunding memory _fpcFunding,
-    ICertManager _certManager,
-    INitroValidator _nitroValidator,
+    ITeeRegistry _teeRegistry,
     IERC20 _underlying,
     IRegistry _registry,
     uint256 _rollupVersion,
     RefundVerifiers memory _verifiers,
+    uint128 _txAmountCap,
     uint256 _rate,
     uint256 _globalLimit
-  ) Caps(_rate, _globalLimit) Ownable(_owner) {
-    FPC_FUNDER = _fpcFunding.funder;
-    FPC_FUNDING_CUT = _fpcFunding.cut;
-    TEE_CERT_MANAGER = _certManager;
-    TEE_NITRO_VALIDATOR = _nitroValidator;
+  ) Caps(_txAmountCap, _rate, _globalLimit) {
+    TEE_REGISTRY = _teeRegistry;
     UNDERLYING = _underlying;
     REGISTRY = _registry;
     ROLLUP_VERSION = _rollupVersion;
@@ -123,83 +95,9 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     INBOX = rollup.getInbox();
     OUTBOX = rollup.getOutbox();
     FROZEN_NOTES_REFUND_VERIFIER = _verifiers.frozenNotes;
-    FROZEN_DEPOSIT_REFUND_VERIFIER = _verifiers.frozenDeposit;
+    FROZEN_DEPOSITS_REFUND_VERIFIER = _verifiers.frozenDeposits;
     UNPROCESSED_DEPOSIT_REFUND_VERIFIER = _verifiers.unprocessedDeposit;
-  }
-
-  function approveTeePcr0(bytes32 _pcr0Hash) external override(IOxidePortal) onlyOwner {
-    TEERegistrationLib.approvePcr0($approvedTeePcr0, _pcr0Hash);
-  }
-
-  function verifyTeeCACert(bytes calldata _cert, bytes32 _parentCertHash)
-    external
-    override(IOxidePortal)
-    returns (bytes32 certHash)
-  {
-    return TEERegistrationLib.verifyCACert(TEE_CERT_MANAGER, _cert, _parentCertHash);
-  }
-
-  function verifyTeeClientCert(bytes calldata _cert, bytes32 _parentCertHash)
-    external
-    override(IOxidePortal)
-    returns (bytes32 certHash)
-  {
-    return TEERegistrationLib.verifyClientCert(TEE_CERT_MANAGER, _cert, _parentCertHash);
-  }
-
-  function verifyTeeAttestationHash(bytes calldata _attestationTbs)
-    external
-    override(IOxidePortal)
-    returns (bytes32 attestationTbsKeccak)
-  {
-    return TEERegistrationLib.verifyAttestationHash(TEE_NITRO_VALIDATOR, _attestationTbs);
-  }
-
-  function verifyTeeAttestationSig(bytes32 _attestationTbsKeccak, bytes calldata _signature, bytes32 _leafCertHash)
-    external
-    override(IOxidePortal)
-  {
-    TEERegistrationLib.verifyAttestationSig(TEE_NITRO_VALIDATOR, _attestationTbsKeccak, _signature, _leafCertHash);
-  }
-
-  function registerTee(
-    bytes calldata _attestationTbs,
-    bytes calldata _signature,
-    bytes32 _teePubKeyX,
-    bytes32 _teePubKeyY,
-    bytes32 _encPubKeyX,
-    bytes32 _encPubKeyY
-  ) external override(IOxidePortal) returns (bytes32 key, uint256 index) {
-    require($initialized, Errors.OxidePortal__Uninitialized());
-    TEERegistrationLib.TEEKeys memory keys = TEERegistrationLib.TEEKeys({
-      pubKeyX: _teePubKeyX, pubKeyY: _teePubKeyY, encPubKeyX: _encPubKeyX, encPubKeyY: _encPubKeyY
-    });
-    (, key, index) = TEERegistrationLib.registerTee(
-      _attestationTbs, _signature, $approvedTeePcr0, $teeBindings, _portalContext(), keys
-    );
-  }
-
-  function _portalContext() internal view returns (TEERegistrationLib.RegistrationContext memory) {
-    return TEERegistrationLib.RegistrationContext({
-      validator: TEE_NITRO_VALIDATOR,
-      inbox: INBOX,
-      l2Recipient: $l2Portal,
-      rollupVersion: ROLLUP_VERSION,
-      constantSecretHash: OxideConstants.PORTAL_CONSTANT_SECRET_HASH,
-      maxAttestationAge: TEE_ATTESTATION_MAX_AGE
-    });
-  }
-
-  function initialize(bytes32 _l2Portal) external override(IOxidePortal) onlyOwner {
-    require(!$initialized, Errors.OxidePortal__AlreadyInitialized());
-    require(_l2Portal != bytes32(0), Errors.OxidePortal__ZeroL2Portal());
-    $l2Portal = _l2Portal;
-    $initialized = true;
-    emit Initialized(_l2Portal);
-  }
-
-  function L2_PORTAL() external view returns (bytes32) {
-    return $l2Portal;
+    L2_TOKEN = IPortalFactory(msg.sender).pendingL2Token();
   }
 
   function deposit(bytes32 _recipientCommitment, uint256 _amount)
@@ -207,30 +105,26 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     override(IOxidePortal)
     returns (bytes32 key, uint256 index, uint256 creditedAmount)
   {
-    require($initialized, Errors.OxidePortal__Uninitialized());
     require(!$frozen, Errors.OxidePortal__FrozenPortal());
     require(_recipientCommitment != bytes32(0), Errors.OxidePortal__ZeroRecipientCommitment());
-    require(_amount > FPC_FUNDING_CUT, Errors.OxidePortal__AmountNotAboveFpcFundingCut());
+    require(_amount > 0, Errors.OxidePortal__ZeroAmount());
     require(_amount <= type(uint128).max, Errors.OxidePortal__AmountTooLarge());
-    creditedAmount = _amount - FPC_FUNDING_CUT;
+    creditedAmount = _amount;
     _markUsage(creditedAmount);
 
     bytes32 contentHash = Hash.sha256ToField(abi.encodeWithSignature("deposit(uint256)", creditedAmount));
 
     UNDERLYING.safeTransferFrom(msg.sender, address(this), _amount);
-    if (FPC_FUNDING_CUT > 0) {
-      UNDERLYING.safeTransfer(FPC_FUNDER, FPC_FUNDING_CUT);
-    }
 
     (key, index) = INBOX.sendL2Message(
-      DataStructures.L2Actor({actor: $l2Portal, version: ROLLUP_VERSION}), contentHash, _recipientCommitment
+      DataStructures.L2Actor({actor: L2_TOKEN, version: ROLLUP_VERSION}), contentHash, _recipientCommitment
     );
+    $depositMessageIndex[key] = index + 1;
 
     emit Deposit(_recipientCommitment, creditedAmount, key, index);
   }
 
   function withdraw(IOxidePortal.WithdrawArgs calldata _args) external override(IOxidePortal) nonReentrant {
-    require($initialized, Errors.OxidePortal__Uninitialized());
     require(_args.content.executor.code.length > 0, Errors.OxidePortal__InvalidWithdrawalExecutor());
     // solhint-disable-next-line oxide/no-comments
     // Assert that the userPayload provided via calldata corresponds to the one committed in the withdrawal message.
@@ -255,24 +149,12 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
 
     OUTBOX.consume(message, Epoch.wrap(_args.epochNumber), _args.numCheckpointsInEpoch, _args.leafIndex, _args.path);
 
-    uint256 netAfterProverTip = _args.content.amount - _args.content.proverTip;
-    uint256 fpcCut = _fpcFundingCutOn(netAfterProverTip);
-    uint256 executionAmount = netAfterProverTip - fpcCut;
-    if (fpcCut > 0) {
-      UNDERLYING.safeTransfer(FPC_FUNDER, fpcCut);
-    }
+    uint256 executionAmount = _args.content.amount - _args.content.proverTip;
     UNDERLYING.safeTransfer(_args.content.executor, executionAmount);
     IExecutor(_args.content.executor)
       .execute(IExecutor.Flow.Withdrawal, executionAmount, _args.userPayload, _args.relayerPayload);
 
     emit WithdrawalOrRefund(IExecutor.Flow.Withdrawal, _args.withdrawalId, _args.content.executor, executionAmount);
-  }
-
-  function _fpcFundingCutOn(uint256 _netAfterTips) internal view returns (uint256) {
-    if ($frozen) {
-      return 0;
-    }
-    return FPC_FUNDING_CUT < _netAfterTips ? FPC_FUNDING_CUT : _netAfterTips;
   }
 
   function _enforceFreezeGate(uint256 _anchorCheckpoint, uint256 _epochNumber, uint256 _numCheckpointsInEpoch)
@@ -289,13 +171,10 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
   }
 
   function freeze() external override(IOxidePortal) nonReentrant {
-    require($initialized, Errors.OxidePortal__Uninitialized());
     require(!$frozen, Errors.OxidePortal__AlreadyFrozen());
 
-    if (msg.sender != owner()) {
-      IHaveVersion canonicalRollup = REGISTRY.getCanonicalRollup();
-      require(address(canonicalRollup) != address(ROLLUP), Errors.OxidePortal__RollupStillCanonical());
-    }
+    IHaveVersion canonicalRollup = REGISTRY.getCanonicalRollup();
+    require(address(canonicalRollup) != address(ROLLUP), Errors.OxidePortal__RollupStillCanonical());
 
     uint256 checkpointNumber = ROLLUP.getProvenCheckpointNumber();
     bytes32 archiveRoot = ROLLUP.archiveAt(checkpointNumber);
@@ -326,7 +205,6 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     override(IOxidePortal)
     nonReentrant
   {
-    require($initialized, Errors.OxidePortal__Uninitialized());
     require($frozen, Errors.OxidePortal__NotFrozen());
     require(_args.executor.code.length > 0, Errors.OxidePortal__InvalidWithdrawalExecutor());
     require(_args.nullifiers.length > 0, Errors.OxidePortal__EmptyFrozenNotesRefundNullifiers());
@@ -340,7 +218,7 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     publicInputs[0] = bytes32(block.chainid);
     publicInputs[1] = bytes32(ROLLUP_VERSION);
     publicInputs[2] = bytes32(uint256(uint160(address(this))));
-    publicInputs[3] = $l2Portal;
+    publicInputs[3] = L2_TOKEN;
     publicInputs[4] = $freezeArchive;
     publicInputs[5] = bytes32(_args.amount);
     publicInputs[6] = bytes32(uint256(uint160(_args.executor)));
@@ -358,9 +236,10 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
       $isRefundNullifierSpent[nullifier] = true;
     }
 
-    bytes32 finalDigest = sha256(abi.encodePacked(OxideConstants.TEE_SIG_DOMAIN_FROZEN_NOTES_REFUND, publicInputs));
+    bytes32 finalDigest =
+      sha256(abi.encodePacked(OxideConstants.TEE_SIG_DOMAIN_FROZEN_NOTES_REFUND, address(TEE_REGISTRY), publicInputs));
     address signer = ECDSA.recover(finalDigest, _args.teeSignature);
-    _assertTeeActive(signer);
+    _assertTeeRegistered(signer);
 
     require(
       FROZEN_NOTES_REFUND_VERIFIER.verify(_args.proof, publicInputs),
@@ -374,23 +253,21 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     emit WithdrawalOrRefund(IExecutor.Flow.FrozenNotesRefund, _args.nullifiers[0], _args.executor, _args.amount);
   }
 
-  function refundFrozenDeposit(IOxidePortal.RefundFrozenDepositArgs calldata _args)
+  function refundFrozenDeposits(IOxidePortal.RefundFrozenDepositsArgs calldata _args)
     external
     override(IOxidePortal)
     nonReentrant
   {
-    require($initialized, Errors.OxidePortal__Uninitialized());
     require($frozen, Errors.OxidePortal__NotFrozen());
     require(_args.executor.code.length > 0, Errors.OxidePortal__InvalidWithdrawalExecutor());
-    require(_args.siloedNullifier != bytes32(0), Errors.OxidePortal__ZeroRefundNullifier());
+    require(_args.nullifiers.length > 0, Errors.OxidePortal__EmptyFrozenDepositsRefundNullifiers());
     require(
-      !$isRefundNullifierSpent[_args.siloedNullifier],
-      Errors.OxidePortal__RefundNullifierAlreadySpent(_args.siloedNullifier)
+      _args.nullifiers.length <= OxideConstants.MAX_FROZEN_DEPOSITS_PER_REFUND,
+      Errors.OxidePortal__TooManyFrozenDepositsRefundNullifiers(_args.nullifiers.length)
     );
-    $isRefundNullifierSpent[_args.siloedNullifier] = true;
     _enforceTxCap(_args.amount);
 
-    bytes32[] memory publicInputs = new bytes32[](OxideConstants.FROZEN_DEPOSIT_REFUND_PUBLIC_INPUT_COUNT);
+    bytes32[] memory publicInputs = new bytes32[](OxideConstants.FROZEN_DEPOSITS_REFUND_PUBLIC_INPUT_COUNT);
     publicInputs[0] = bytes32(block.chainid);
     publicInputs[1] = bytes32(ROLLUP_VERSION);
     publicInputs[2] = bytes32(uint256(uint160(address(this))));
@@ -402,22 +279,29 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     // part of the public inputs of the refund circuit instead.
     // solhint-enable oxide/no-comments
     publicInputs[6] = Hash.sha256ToField(_args.userPayload);
-    publicInputs[7] = _args.siloedNullifier;
 
-    bytes32 finalDigest = sha256(abi.encodePacked(OxideConstants.TEE_SIG_DOMAIN_FROZEN_DEPOSIT_REFUND, publicInputs));
+    for (uint256 i = 0; i < _args.nullifiers.length; i++) {
+      bytes32 nullifier = _args.nullifiers[i];
+      require(nullifier != bytes32(0), Errors.OxidePortal__ZeroRefundNullifier());
+      publicInputs[i + 7] = nullifier;
+      require(!$isRefundNullifierSpent[nullifier], Errors.OxidePortal__RefundNullifierAlreadySpent(nullifier));
+      $isRefundNullifierSpent[nullifier] = true;
+    }
+
+    bytes32 finalDigest = sha256(abi.encodePacked(OxideConstants.TEE_SIG_DOMAIN_FROZEN_DEPOSITS_REFUND, publicInputs));
     address signer = ECDSA.recover(finalDigest, _args.teeSignature);
-    _assertTeeActive(signer);
+    _assertTeeRegistered(signer);
 
     require(
-      FROZEN_DEPOSIT_REFUND_VERIFIER.verify(_args.proof, publicInputs),
-      Errors.OxidePortal__InvalidFrozenDepositRefundProof()
+      FROZEN_DEPOSITS_REFUND_VERIFIER.verify(_args.proof, publicInputs),
+      Errors.OxidePortal__InvalidFrozenDepositsRefundProof()
     );
 
     UNDERLYING.safeTransfer(_args.executor, _args.amount);
     IExecutor(_args.executor)
-      .execute(IExecutor.Flow.FrozenDepositRefund, _args.amount, _args.userPayload, _args.relayerPayload);
+      .execute(IExecutor.Flow.FrozenDepositsRefund, _args.amount, _args.userPayload, _args.relayerPayload);
 
-    emit WithdrawalOrRefund(IExecutor.Flow.FrozenDepositRefund, _args.siloedNullifier, _args.executor, _args.amount);
+    emit WithdrawalOrRefund(IExecutor.Flow.FrozenDepositsRefund, _args.nullifiers[0], _args.executor, _args.amount);
   }
 
   function refundUnprocessedDeposit(IOxidePortal.RefundUnprocessedDepositArgs calldata _args)
@@ -425,7 +309,6 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     override(IOxidePortal)
     nonReentrant
   {
-    require($initialized, Errors.OxidePortal__Uninitialized());
     require($frozen, Errors.OxidePortal__NotFrozen());
     require(_args.executor.code.length > 0, Errors.OxidePortal__InvalidWithdrawalExecutor());
     require(_args.siloedNullifier != bytes32(0), Errors.OxidePortal__ZeroRefundNullifier());
@@ -435,7 +318,10 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     );
     _enforceTxCap(_args.amount);
 
-    _verifyInboxMembership(_args.messageHash, _args.messageLeafIndex, _args.inboxSiblingPath);
+    require(
+      $depositMessageIndex[_args.messageHash] == _args.messageLeafIndex + 1,
+      Errors.OxidePortal__UnknownDepositMessage(_args.messageHash)
+    );
 
     bytes32[] memory publicInputs = new bytes32[](OxideConstants.UNPROCESSED_DEPOSIT_REFUND_PUBLIC_INPUT_COUNT);
     publicInputs[0] = bytes32(block.chainid);
@@ -470,18 +356,6 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     );
   }
 
-  function _verifyInboxMembership(
-    bytes32 _messageHash,
-    uint256 _messageLeafIndex,
-    bytes32[] calldata _inboxSiblingPath
-  ) internal view {
-    uint256 subtreeSize = 1 << Constants.L1_TO_L2_MSG_SUBTREE_HEIGHT;
-    uint256 checkpointNumber = (_messageLeafIndex / subtreeSize) + Constants.INITIAL_CHECKPOINT_NUMBER;
-    MerkleLib.verifyMembership(
-      _inboxSiblingPath, _messageHash, _messageLeafIndex % subtreeSize, INBOX.getRoot(checkpointNumber)
-    );
-  }
-
   function _validateUnprocessedDepositRefundTeeSignature(bytes32[] memory _publicInputs, bytes calldata _teeSignature)
     internal
     view
@@ -489,7 +363,7 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     bytes32 finalDigest =
       sha256(abi.encodePacked(OxideConstants.TEE_SIG_DOMAIN_UNPROCESSED_DEPOSIT_REFUND, _publicInputs));
     address signer = ECDSA.recover(finalDigest, _teeSignature);
-    _assertTeeActive(signer);
+    _assertTeeRegistered(signer);
   }
 
   function claimProverTips(IProverSubsidy _proverSubsidy, IOxidePortal.ProverTipClaim[] calldata _claims)
@@ -504,7 +378,7 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
       IOxidePortal.ProverClaimArgs calldata claimArgs = _claims[i].args;
       ProverClaimLib.ProverClaim calldata proof = _claims[i].proof;
       bytes32 messageContent = _consumeWithdrawProverClaim(claimArgs, proof);
-      ProverClaimLib.verify(msg.sender, proof, messageContent, chainEnv, $claimed, $firstProver);
+      ProverClaimLib.verify(msg.sender, proof, messageContent, chainEnv, $claimed);
       totalTip += claimArgs.content.proverTip;
     }
     if (totalTip > 0) {
@@ -538,62 +412,18 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     messageContent = _withdrawalContentHash(_args.content);
   }
 
-  function prepareFirstProver(uint256 _checkpointNumber, address _prover) external {
-    require(_prover != address(0), Errors.OxidePortal__InvalidProver());
-    uint256 proven = ROLLUP.getProvenCheckpointNumber();
-    require(proven < _checkpointNumber, Errors.OxidePortal__CheckpointAlreadyProven(_checkpointNumber, proven));
-    bytes32 slot = _computeFirstProverSlot(_checkpointNumber, _prover);
-    assembly {
-      tstore(slot, 1)
-    }
-  }
-
-  function recordFirstProver(uint256 _checkpointNumber, uint256 _proofLength, address _prover) external {
-    bytes32 slot = _computeFirstProverSlot(_checkpointNumber, _prover);
-    uint256 prepared;
-    assembly {
-      prepared := tload(slot)
-    }
-    require(prepared == 1, Errors.OxidePortal__FirstProverNotPrepared(_checkpointNumber, _prover));
-    uint256 proven = ROLLUP.getProvenCheckpointNumber();
-    require(proven == _checkpointNumber, Errors.OxidePortal__CheckpointNotJustProven(_checkpointNumber, proven));
-    address existing = $firstProver[_checkpointNumber];
-    require(existing == address(0), Errors.OxidePortal__FirstProverAlreadyRecorded(_checkpointNumber, existing));
-    require(
-      _proofLength > 0 && _proofLength <= _checkpointNumber,
-      Errors.OxidePortal__InvalidProofLengthForCheckpoint(_checkpointNumber, _proofLength)
-    );
-    uint256 epochNumber = Epoch.unwrap(ROLLUP.getEpochForCheckpoint(_checkpointNumber));
-    uint256 firstCheckpointInEpoch = _checkpointNumber - _proofLength + 1;
-    ProverClaimLib.assertFirstCheckpointInEpoch(ROLLUP, _checkpointNumber, epochNumber, firstCheckpointInEpoch);
-    require(
-      ROLLUP.getHasSubmitted(Epoch.wrap(epochNumber), _proofLength, _prover),
-      Errors.OxidePortal__ProverDidNotSubmit(_prover, epochNumber, _proofLength)
-    );
-    $firstProver[_checkpointNumber] = _prover;
-    emit FirstProverRecorded(_checkpointNumber, _prover);
-  }
-
   function _chainEnv() internal view returns (ProverClaimLib.ChainEnv memory) {
     return ProverClaimLib.ChainEnv({
-      rollup: ROLLUP, outbox: OUTBOX, rollupVersion: ROLLUP_VERSION, l2Portal: $l2Portal, portal: address(this)
+      rollup: ROLLUP, outbox: OUTBOX, rollupVersion: ROLLUP_VERSION, l2Token: L2_TOKEN, portal: address(this)
     });
   }
 
-  function _computeFirstProverSlot(uint256 _checkpointNumber, address _prover) internal pure returns (bytes32) {
-    return keccak256(abi.encode("OxidePortal.firstProverSlot", _checkpointNumber, _prover));
+  function _enforceTxCap(uint256 _amount) internal view {
+    require(_amount <= TX_AMOUNT_CAP, Errors.Caps__TxLimitSurpassed());
   }
 
-  function _enforceTxCap(uint256 _amount) internal pure {
-    require(_amount <= OxideConstants.TX_AMOUNT_CAP, Errors.Caps__TxLimitSurpassed());
-  }
-
-  function isTeeActive(address _tee) external view override(IOxidePortal) returns (bool) {
-    return $teeBindings[_tee].pcr0Hash != bytes32(0);
-  }
-
-  function _assertTeeActive(address _tee) internal view {
-    require($teeBindings[_tee].pcr0Hash != bytes32(0), Errors.OxidePortal__UnregisteredTEE());
+  function _assertTeeRegistered(address _tee) internal view {
+    require(TEE_REGISTRY.isTeeRegistered(_tee), Errors.OxidePortal__UnregisteredTEE());
   }
 
   function _buildWithdrawalMessage(WithdrawContent memory _content)
@@ -602,7 +432,7 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     returns (DataStructures.L2ToL1Msg memory)
   {
     return DataStructures.L2ToL1Msg({
-      sender: DataStructures.L2Actor({actor: $l2Portal, version: ROLLUP_VERSION}),
+      sender: DataStructures.L2Actor({actor: L2_TOKEN, version: ROLLUP_VERSION}),
       recipient: DataStructures.L1Actor({actor: address(this), chainId: block.chainid}),
       content: _withdrawalContentHash(_content)
     });
@@ -628,9 +458,15 @@ contract OxidePortal is Caps, Ownable, ReentrancyGuardTransient, IOxidePortal {
     bytes calldata _teeSignature
   ) internal view {
     bytes32 finalDigest = sha256(
-      abi.encodePacked(OxideConstants.TEE_SIG_DOMAIN_WITHDRAWAL_FINALIZED, _archiveRoot, _withdrawalId, _messageHash)
+      abi.encodePacked(
+        OxideConstants.TEE_SIG_DOMAIN_WITHDRAWAL_FINALIZED,
+        address(TEE_REGISTRY),
+        _archiveRoot,
+        _withdrawalId,
+        _messageHash
+      )
     );
     address signer = ECDSA.recover(finalDigest, _teeSignature);
-    _assertTeeActive(signer);
+    _assertTeeRegistered(signer);
   }
 }

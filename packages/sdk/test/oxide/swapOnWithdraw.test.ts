@@ -4,8 +4,8 @@
  * the factory can never deploy to.
  */
 import { describe, expect, it } from "vitest"
-import { Fr } from "@aztec/aztec.js/fields"
-import { EthAddress } from "@aztec/foundation/eth-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { EthAddress } from "@aztec-labs/foundation/eth-address"
 import { decodeFunctionData, multicall3Abi, type Address } from "viem"
 import {
   predictSwapEscrowAddressLocally,
@@ -46,9 +46,9 @@ const plan = (overrides: Partial<Parameters<typeof planSwapOnWithdraw>[0]> = {})
     l1Recipient: RECIPIENT,
     recovery: RECOVERY,
     amount: 100n * 10n ** 18n,
+    withdrawalFee: 2n * 10n ** 17n,
     withdrawalRelayerTip: 10n ** 17n,
     proverTip: 0n,
-    fpcFundingCut: 0n,
     relayerTip: 0n,
     nonce: NONCE,
     ...overrides,
@@ -67,8 +67,8 @@ describe("planSwapOnWithdraw", () => {
     const withGas = plan({ output: "DAI", daiForGas })
     expect(withGas.escrowArgs).toMatchObject({ route: SwapRoute.DAI, daiForGas, minEthForGas: 0n })
     expect(withGas.escrow).not.toBe(plan({ output: "DAI" }).escrow)
-    // input = 100 - 0.1 - tip; the route must keep more than the gas share.
-    const tip = 100n * 10n ** 18n - 10n ** 17n - daiForGas
+    // input = 100 - 0.2 - 0.1 - tip; the route must keep more than the gas share.
+    const tip = 100n * 10n ** 18n - 3n * 10n ** 17n - daiForGas
     expect(() => plan({ daiForGas, relayerTip: tip })).toThrow(/nothing left/)
     expect(() => plan({ daiForGas, relayerTip: tip - 1n })).not.toThrow()
   })
@@ -117,17 +117,9 @@ describe("planSwapOnWithdraw", () => {
   })
 
   it("rejects deductions that leave nothing to swap", () => {
-    // input = 100 - 0.1 - cut - tip; the factory executes only above zero, so the boundary is <= 0.
-    expect(() => plan({ relayerTip: 100n * 10n ** 18n - 10n ** 17n })).toThrow(/nothing left/)
-    expect(() => plan({ relayerTip: 100n * 10n ** 18n - 10n ** 17n - 1n })).not.toThrow()
-  })
-
-  it("counts the portal's FPC funding cut against the swap input", () => {
-    // The portal skims the cut to FPC_FUNDER before releasing, so the escrow never sees it: the
-    // same tip that clears with a zero cut must fail once the cut consumes the remainder.
-    const tip = 100n * 10n ** 18n - 10n ** 17n - 1n
-    expect(() => plan({ relayerTip: tip })).not.toThrow()
-    expect(() => plan({ relayerTip: tip, fpcFundingCut: 1n })).toThrow(/nothing left/)
+    // input = 100 - 0.2 - 0.1 - tip; the factory executes only above zero, so the boundary is <= 0.
+    expect(() => plan({ relayerTip: 100n * 10n ** 18n - 3n * 10n ** 17n })).toThrow(/nothing left/)
+    expect(() => plan({ relayerTip: 100n * 10n ** 18n - 3n * 10n ** 17n - 1n })).not.toThrow()
   })
 })
 

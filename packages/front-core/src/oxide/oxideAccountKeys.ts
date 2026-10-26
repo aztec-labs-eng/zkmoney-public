@@ -22,7 +22,7 @@ import {
 } from "viem"
 import { privateKeyToAccount } from "viem/accounts"
 import { secp256k1 } from "@noble/curves/secp256k1"
-import { Fr } from "@aztec/aztec.js/fields"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import { OXIDE_L1_BOOTSTRAP_KEY_LABEL, OXIDE_SELF_SIPA_KEY_LABEL } from "@obsidion/core/constants"
 import type { SipaSelfResolverKeys } from "@obsidion/sdk"
 
@@ -62,9 +62,12 @@ function deriveScalar(masterSecret: FieldLike, label: string, order: bigint): bi
 
 /** The secp256k1 bootstrap EOA that owns the L1 account before the R1 handover and signs the upgrade digest. */
 export function deriveBootstrapKey(masterSecret: FieldLike): PrivateKeyAccount {
-  return privateKeyToAccount(
-    bytes32(deriveScalar(masterSecret, OXIDE_L1_BOOTSTRAP_KEY_LABEL, secp256k1.CURVE.n)),
-  )
+  return privateKeyToAccount(bytes32(deriveBootstrapScalar(masterSecret)))
+}
+
+/** The bootstrap private key as a scalar, for proofs that show it is held without revealing it. */
+export function deriveBootstrapScalar(masterSecret: FieldLike): bigint {
+  return deriveScalar(masterSecret, OXIDE_L1_BOOTSTRAP_KEY_LABEL, secp256k1.CURVE.n)
 }
 
 /**

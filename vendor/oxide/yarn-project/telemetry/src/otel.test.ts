@@ -1,4 +1,4 @@
-import { createLogger } from '@aztec/foundation/log';
+import { createLogger } from '@aztec-labs/foundation/log';
 
 import { describe, expect, it } from '@jest/globals';
 import { Resource } from '@opentelemetry/resources';
@@ -11,9 +11,10 @@ import {
   type ResourceMetrics,
 } from '@opentelemetry/sdk-metrics';
 
-import { HTTP_RESPONSE_STATUS_CODE, HTTP_ROUTE, TEE_ROUTER_OUTCOME } from './attributes.js';
+import { HTTP_RESPONSE_STATUS_CODE, HTTP_ROUTE, L1_OBSERVER_TOKEN_SYMBOL, TEE_ROUTER_OUTCOME } from './attributes.js';
 import { resolveTelemetryConfig } from './config.js';
 import {
+  L1_OBSERVER_PORTAL_ESCROW_BALANCE,
   METRIC_DEFINITIONS,
   TEE_ROUTER_REQUEST_COUNT,
   TEE_ROUTER_REQUEST_DURATION,
@@ -94,6 +95,22 @@ describe('OpenTelemetry metrics client', () => {
     await client.flush();
     const exported = exporter.getMetrics().at(-1)!;
     expect(findMetric(exported, TEE_ROUTER_REQUEST_COUNT.name)).toBeUndefined();
+    await client.stop();
+  });
+
+  it('exports one data point for each token symbol', async () => {
+    const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+    const reader = new PeriodicExportingMetricReader({ exporter, exportIntervalMillis: 60_000 });
+    const client = createOpenTelemetryClient(
+      resolveTelemetryConfig({ serviceName: 'oxide-test', metricsEndpoint: 'http://collector:4318/v1/metrics' }, {}),
+      { reader, resource: new Resource({ 'service.name': 'oxide-test' }) },
+    );
+    const gauge = client.getMeter('oxide-test').createGauge(L1_OBSERVER_PORTAL_ESCROW_BALANCE);
+    gauge.record(1, { [L1_OBSERVER_TOKEN_SYMBOL.name]: 'TST' });
+    gauge.record(2, { [L1_OBSERVER_TOKEN_SYMBOL.name]: 'sUSDS' });
+    await client.flush();
+    const metric = findMetric(exporter.getMetrics().at(-1)!, L1_OBSERVER_PORTAL_ESCROW_BALANCE.name);
+    expect(metric?.dataPoints.map(point => point.attributes[L1_OBSERVER_TOKEN_SYMBOL.name])).toEqual(['TST', 'sUSDS']);
     await client.stop();
   });
 

@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
   navigate: vi.fn(),
   save: vi.fn(),
   addOffer: false,
+  notUpgraded: false,
   cancel: vi.fn(),
   location: {
     pathname: "/",
@@ -46,7 +47,11 @@ vi.mock("@obsidion/web-ds", () => ({
 }))
 vi.mock("../src/features/contacts/useInlineContactSearch", () => ({
   useInlineContactSearch: () => ({
-    panel: state.addOffer ? { kind: "add-offer", tag: "grace" } : { kind: "none" },
+    panel: state.notUpgraded
+      ? { kind: "not-upgraded", tag: "grace" }
+      : state.addOffer
+      ? { kind: "add-offer", tag: "grace" }
+      : { kind: "none" },
     save: state.save,
     cancel: state.cancel,
   }),
@@ -73,6 +78,7 @@ describe.each([false, true])("TagSearchBar phone=%s", (phone) => {
     vi.clearAllMocks()
     state.phone = phone
     state.addOffer = false
+    state.notUpgraded = false
     state.location = { pathname: "/", search: "", hash: "", key: "initial", state: null }
     state.save.mockResolvedValue({ tag: "grace" })
     host = document.createElement("div")
@@ -109,6 +115,14 @@ describe.each([false, true])("TagSearchBar phone=%s", (phone) => {
       await act(async () => results()!.querySelector("button")!.click())
       expect(state.navigate).toHaveBeenCalledWith("/contacts/grace")
       expect(state.save).not.toHaveBeenCalled()
+    })
+    it("opens the chat of a tag that hasn't upgraded, so its history shows", async () => {
+      state.notUpgraded = true
+      fill("grace")
+      const row = results()!.querySelector("button")!
+      expect(row.textContent).toContain("@grace hasn't upgraded yet")
+      await act(async () => row.click())
+      expect(state.navigate).toHaveBeenCalledWith("/contacts/grace")
     })
     it("ends the results with See all contacts, only while results show", () => {
       act(() => input().focus())

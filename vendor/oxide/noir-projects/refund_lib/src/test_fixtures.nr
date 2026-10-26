@@ -1,6 +1,6 @@
 //! Fixtures for the tests of the refund circuits.
 
-use crate::RefundAuthorization;
+use crate::MigrationSignature;
 use aztec::protocol::{
     abis::{block_header::BlockHeader, state_reference::StateReference},
     address::AztecAddress,
@@ -10,7 +10,7 @@ use aztec::protocol::{
     traits::{Empty, FromField, Hash},
 };
 use oxide_lib::account_address::{AccountInstancePreimage, PasskeyPublicKey};
-use oxide_lib::constants::WEBAUTHN_MAX_CLIENT_DATA_JSON_LEN;
+use oxide_lib::constants::{MAX_ACCOUNT_PASSKEYS, WEBAUTHN_MAX_CLIENT_DATA_JSON_LEN};
 use oxide_lib::webauthn::WebAuthnAuth;
 use std::embedded_curve_ops::{EmbeddedCurvePoint, EmbeddedCurveScalar};
 
@@ -61,11 +61,12 @@ fn block_seven_with(state: StateReference, later_block: Field) -> FrozenTip {
     }
 }
 
-/// A zero authorization, for a test whose target check runs before the circuit reads the authorization.
-pub fn unread_authorization() -> RefundAuthorization {
-    RefundAuthorization {
+/// A zero migration signature, for a test whose target check runs before the circuit reads the signature.
+pub fn unread_migration_signature() -> MigrationSignature {
+    MigrationSignature {
         use_passkey: true,
         passkey: PasskeyPublicKey { x: [0; 32], y: [0; 32] },
+        passkey_set: [0; MAX_ACCOUNT_PASSKEYS],
         webauthn: WebAuthnAuth {
             authenticator_data: [0; 37],
             client_data_json: [0; WEBAUTHN_MAX_CLIENT_DATA_JSON_LEN],

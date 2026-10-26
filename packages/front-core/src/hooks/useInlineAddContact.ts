@@ -23,7 +23,8 @@ interface UseInlineAddContactArgs {
   ownTag?: string
 }
 
-export type InlineResolveStatus = "resolving" | "found" | "not_found"
+/** `not_upgraded`: the tag is registered on a rollup this network has cut over from. */
+export type InlineResolveStatus = "resolving" | "found" | "not_found" | "not_upgraded"
 
 export interface InlineResolveResult {
   tag: string
@@ -45,7 +46,8 @@ export interface InlineAddedContact {
  *   • `resolveTag(tag)` — fired as the user types (debounced by the caller,
  *     only when the query has no exact local-contact match). Sets
  *     `lastResolved` so the noMatchesState panel can render "Looking up…",
- *     "Add @<tag>", or "No user found for @<tag>". Stale responses are
+ *     "Add @<tag>", "No user found for @<tag>", or that @<tag> has not
+ *     upgraded yet. Stale responses are
  *     ignored — only the most recent `resolveTag` call can win.
  *
  *   • `saveResolvedTag(tag)` — fired on the Add-CTA tap. Uses the cached
@@ -87,10 +89,11 @@ export function useInlineAddContact({
       try {
         const result = await resolveTagViaRegistry(tag)
         if (currentResolveTagRef.current !== tag) return // stale
+        if (result.status === "staleRollup") {
+          setLastResolved({ tag, status: "not_upgraded" })
+          return
+        }
         if (result.status !== "resolved") {
-          // notFound + staleRollup both collapse to "not_found" — the inline
-          // panel has no distinct stale-rollup surface (that copy lives on the
-          // full add-contact sheet).
           setLastResolved({ tag, status: "not_found" })
           return
         }

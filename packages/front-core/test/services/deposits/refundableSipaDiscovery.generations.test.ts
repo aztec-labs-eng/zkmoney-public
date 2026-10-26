@@ -7,8 +7,8 @@
  * the same addresses, which is what taking one generation's implementation for the other would do.
  */
 import { describe, expect, it } from "vitest"
-import { AztecAddress } from "@aztec/aztec.js/addresses"
-import { Fr } from "@aztec/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import type { OxideEnvTuple } from "@obsidion/core/types"
 import { deriveRefundableSipaSources } from "../../../src/core/services/deposits/refundableSipaDiscovery"
 import { deriveStealthKey } from "../../../src/oxide/oxideAccountKeys"

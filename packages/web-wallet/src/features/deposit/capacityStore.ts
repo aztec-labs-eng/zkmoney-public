@@ -3,7 +3,7 @@
  * funding, addresses, pending deposits) takes its store from here, so each bucket has one poll and one observation.
  * The UI capture server replaces this module to drive capacity states without a chain.
  */
-import type { AztecNode } from "@aztec/aztec.js/node"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
 import { createNode, Network, readPortalCapacity } from "@obsidion/sdk"
 import {
   browserVisibility,
@@ -16,7 +16,8 @@ import {
   type PortalCapacityStore,
 } from "@obsidion/front-core"
 import { getConfig } from "../../config/env"
-import { getOxideTuple, l1PublicClient } from "../../config/oxideTuple"
+import { bridgeByToken, bridgeUnderlying } from "@obsidion/core/oxide"
+import { getOxideDeployment, getOxideTuple, l1PublicClient } from "../../config/oxideTuple"
 
 let registry: PortalCapacityRegistry | undefined
 /** Before boot (request landing, registration terms): a client built like the app's, with its API key. */
@@ -51,7 +52,17 @@ export function depositCapacityStore(key: PortalCapacityKey): PortalCapacityStor
   return capacityRegistry().store(key)
 }
 
-/** The bucket new deposits fund: the active deployment's portal and settlement token. */
-export async function activeCapacityKey(): Promise<PortalCapacityKey> {
-  return portalCapacityKey(await getOxideTuple(getConfig()))
+/**
+ * The bucket new deposits fund: the portal of `rowToken`'s row, or the pinned bridge's when no row is named. A row
+ * the pinned deployment has no bridge for throws.
+ */
+export async function activeCapacityKey(rowToken?: string): Promise<PortalCapacityKey> {
+  const config = getConfig()
+  if (!rowToken) {
+    const tuple = await getOxideTuple(config)
+    return portalCapacityKey({ ...tuple, token: bridgeUnderlying(tuple) })
+  }
+  const bridge = bridgeByToken((await getOxideDeployment(config)).deployment, rowToken)
+  if (!bridge) throw new Error(`The pinned deployment has no bridge for ${rowToken}`)
+  return portalCapacityKey({ ...bridge.tuple, token: bridge.underlying })
 }

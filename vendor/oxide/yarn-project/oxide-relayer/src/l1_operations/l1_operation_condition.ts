@@ -1,7 +1,7 @@
-import { EthAddress } from '@aztec/aztec.js/addresses';
-import { type Logger, createLogger } from '@aztec/foundation/log';
+import { EthAddress } from '@aztec-labs/aztec.js/addresses';
+import { type Logger, createLogger } from '@aztec-labs/foundation/log';
 
-import { TestERC20Abi } from '@oxide/l1-contracts';
+import { TestERC20Abi, classifyL1Operation } from '@oxide/l1-contracts';
 import { L1OperationConditionKind } from '@oxide/oxide-lib/l1_operation_calldata.js';
 import { addressKey } from '@oxide/watcher-lib/address-key';
 import type { CursorStore } from '@oxide/watcher-lib/cursor';
@@ -10,7 +10,13 @@ import { type TransferEvent, TransferIngester } from '@oxide/watcher-lib/ingeste
 import type { PublicClient } from 'viem';
 
 import type { RelayerTelemetry } from '../relayer_telemetry.js';
-import { type L1LogCursor, LogCursorSources, type StateStore, type WaitingBalanceOperation } from '../state/types.js';
+import {
+  type L1LogCursor,
+  LogCursorSources,
+  type PendingL1Operation,
+  type StateStore,
+  type WaitingBalanceOperation,
+} from '../state/types.js';
 import type { WithdrawalCompletion } from './withdrawal_completion.js';
 
 export interface BalanceWatcherDeps {
@@ -76,16 +82,16 @@ export class BalanceWatcher {
   async #dropExpired(): Promise<void> {
     const createdBefore = new Date(Date.now() - this.deps.maxAgeMs);
     const dropped = await this.deps.store.dropWaitingL1Operations(L1OperationConditionKind.Balance, createdBefore);
-    if (dropped === 0) {
+    if (dropped.length === 0) {
       return;
     }
-    for (let i = 0; i < dropped; i++) {
-      this.deps.telemetry?.l1OperationOutcome('dropped');
+    for (const operation of dropped) {
+      this.deps.telemetry?.l1OperationOutcome('dropped', classifyL1Operation(operation));
     }
     this.log.warn('Waiting Balance operations dropped after exceeding the max age', {
       event: 'l1_operation_dropped',
       cause: 'waiting_max_age',
-      count: dropped,
+      count: dropped.length,
       createdBefore: createdBefore.toISOString(),
     });
   }
@@ -219,12 +225,12 @@ export class OutboxWatcher {
     const waiting = await this.deps.store.listWaitingL1Operations(L1OperationConditionKind.MessageInOutbox);
     let markedPending = 0;
     for (const operation of waiting) {
-      const status = await this.deps.completion.outboxStatus(operation.l2TxHash);
-      if (status === 'unrecoverable') {
-        await this.#drop(operation.operationId, operation.l2TxHash);
+      const outbox = await this.deps.completion.outboxStatus(operation);
+      if (outbox.status === 'unrecoverable') {
+        await this.#drop(operation, outbox.reason);
         continue;
       }
-      if (status === 'waiting' || !(await this.deps.store.markL1OperationPending(operation.operationId))) {
+      if (outbox.status === 'waiting' || !(await this.deps.store.markL1OperationPending(operation.operationId))) {
         continue;
       }
       markedPending++;
@@ -238,14 +244,16 @@ export class OutboxWatcher {
     return markedPending;
   }
 
-  async #drop(operationId: `0x${string}`, l2TxHash: string): Promise<void> {
+  async #drop(operation: PendingL1Operation, reason: string): Promise<void> {
+    const { operationId, l2TxHash } = operation;
     if (!(await this.deps.store.setL1OperationStatus(operationId, 'dropped'))) {
       return;
     }
-    this.deps.telemetry?.l1OperationOutcome('dropped');
-    this.log.warn('Broadcast tx carries no completable withdrawal; dropping the L1 operation', {
+    this.deps.telemetry?.l1OperationOutcome('dropped', classifyL1Operation(operation));
+    this.log.warn('Broadcast carries no completable finalization request; dropping the L1 operation', {
       event: 'l1_operation_dropped',
       cause: 'withdrawal_unrecoverable',
+      reason,
       operationId,
       l2TxHash,
     });

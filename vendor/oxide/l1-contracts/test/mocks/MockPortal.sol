@@ -6,8 +6,10 @@ import {IERC20} from "@oz/token/ERC20/IERC20.sol";
 contract MockPortal {
   IERC20 public immutable UNDERLYING;
 
+  bool public $frozen;
+
   uint256 internal version;
-  bytes32 internal l2Portal;
+  bytes32 internal l2Token;
 
   constructor(IERC20 _underlying, uint256 _version) {
     UNDERLYING = _underlying;
@@ -18,15 +20,27 @@ contract MockPortal {
     version = _version;
   }
 
-  function setL2Portal(bytes32 _l2Portal) external {
-    l2Portal = _l2Portal;
+  function setL2Token(bytes32 _l2Token) external {
+    l2Token = _l2Token;
   }
 
-  function L2_PORTAL() external view returns (bytes32) {
-    return l2Portal;
+  function L2_TOKEN() external view returns (bytes32) {
+    return l2Token;
   }
 
   function ROLLUP_VERSION() external view returns (uint256) {
     return version;
+  }
+
+  function ROLLUP() external view returns (address) {
+    return address(this);
+  }
+
+  function REGISTRY() external view returns (address) {
+    return address(this);
+  }
+
+  function getCanonicalRollup() external view returns (address) {
+    return address(this);
   }
 }

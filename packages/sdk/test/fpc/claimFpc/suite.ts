@@ -3,14 +3,14 @@
  * sandbox, so each gets its own PXE, token, user and, optionally, a four-rail test FPC. Files
  * never share on-chain state: a file that needs a subscription makes it itself.
  */
-import { computeAuthWitMessageHash } from "@aztec/aztec.js/authorization"
-import { BaseAccount } from "@aztec/aztec.js/account"
-import { SponsoredFeePaymentMethod } from "@aztec/aztec.js/fee"
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Fr } from "@aztec/aztec.js/fields"
-import { Contract } from "@aztec/aztec.js/contracts"
-import type { ContractArtifact } from "@aztec/stdlib/abi"
-import type { PXE } from "@aztec/pxe/server"
+import { computeAuthWitMessageHash } from "@aztec-labs/aztec.js/authorization"
+import { BaseAccount } from "@aztec-labs/aztec.js/account"
+import { SponsoredFeePaymentMethod } from "@aztec-labs/aztec.js/fee"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
+import { Contract } from "@aztec-labs/aztec.js/contracts"
+import type { ContractArtifact } from "@aztec-labs/stdlib/abi"
+import type { PXE } from "@aztec-labs/pxe/server"
 import { keccak256, toBytes, type Hex } from "viem"
 import {
   TestTokenContract,
@@ -54,7 +54,7 @@ export const BOOTSTRAP_PK =
 export const NAME_HASH = toBytes(keccak256(toBytes("grego")))
 /** The four-rail FPC's second rail: same gate, one use, never refilling. */
 export const SINGLE_SHOT_RAIL = "single-shot"
-/** The four-rail FPC's registration-gated rails; two of them, so one message cannot open both. */
+/** The four-rail FPC's registration-gated rails; two of them, so one message is shown to open both. */
 export const MESSAGE_RAIL = "message-gated"
 export const MESSAGE_RAIL_ALT = "message-gated-alt"
 
@@ -192,7 +192,7 @@ export async function buildSponsoredTransfer(
 
 export async function buildAuthorizeIntentsCall(intentHash: Fr) {
   return (
-    await s.accountContract.methods.authorize_intents(padIntentHashes([intentHash])).request()
+    await s.accountContract.methods.authorize_intents!(padIntentHashes([intentHash])).request()
   ).calls[0]!
 }
 

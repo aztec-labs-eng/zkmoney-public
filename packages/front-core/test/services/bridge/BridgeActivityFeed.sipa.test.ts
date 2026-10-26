@@ -162,3 +162,131 @@ describe("ActivityFeed (SIPA-only union)", () => {
     })
   })
 })
+
+describe("ActivityFeed across rows", () => {
+  beforeEach(resetAll)
+
+  const DAI = "0x6b175474e89094c44da98b954eedeac495271d0f" as Address
+  const SUSDS = "0x5875eee11cf8398102fdad704c9e96607675467a" as Address
+  const SIPA = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as Address
+  const sweep = (
+    inboxIndex: string,
+    token: Address,
+    symbol: string,
+    netAmount: string,
+    fee: string,
+  ) => ({
+    inboxIndex,
+    sweepTxHash: `0x${inboxIndex.repeat(64)}` as `0x${string}`,
+    netAmount,
+    fee,
+    settledAt: 1_000 + Number(inboxIndex),
+    tokenAddress: token,
+    tokenSymbol: symbol,
+    tokenDecimals: 18,
+  })
+
+  it("lists funds sent to one address in two tokens as two credited deposits", async () => {
+    const sipaDeposits = makeStore()
+    await sipaDeposits.upsert(
+      SIPA,
+      {
+        phase: "claimed",
+        tokenAddress: SUSDS,
+        tokenSymbol: "sUSDS",
+        tokenDecimals: 18,
+        amount: "4.99",
+        netAmount: "4990000000000000000",
+        inboxIndex: "8",
+        claimedInboxIndexes: ["7", "8"],
+        sweeps: [
+          sweep("7", DAI, "DAI", "990000000000000000", "0"),
+          sweep("8", SUSDS, "sUSDS", "4990000000000000000", "10000000000000000"),
+        ],
+      },
+      sipaFallback(300),
+    )
+
+    const deposits = ActivityFeed.get(sipaDeposits)
+      .list()
+      .flatMap((item) => (item.kind === "bridge.sipaDeposit" ? [item] : []))
+
+    expect(deposits).toHaveLength(2)
+    expect(deposits[0]).toMatchObject({
+      record: { tokenSymbol: "sUSDS", amount: "4.99", phase: "claimed" },
+    })
+    expect(deposits[0]!.credit).toBeUndefined()
+    expect(deposits[1]).toMatchObject({
+      credit: DAI,
+      record: {
+        sipaAddress: SIPA,
+        phase: "claimed",
+        tokenSymbol: "DAI",
+        amount: "0.99",
+        netAmount: "990000000000000000",
+        fee: "0",
+        inboxIndex: "7",
+        claimedInboxIndexes: ["7"],
+      },
+    })
+  })
+
+  it("keeps an address swept twice in one token as one deposit", async () => {
+    const sipaDeposits = makeStore()
+    await sipaDeposits.upsert(
+      SIPA,
+      {
+        phase: "claimed",
+        tokenAddress: DAI,
+        tokenSymbol: "DAI",
+        sweeps: [sweep("7", DAI, "DAI", "1", "0"), sweep("9", DAI, "DAI", "2", "0")],
+      },
+      sipaFallback(300),
+    )
+    expect(ActivityFeed.get(sipaDeposits).list()).toHaveLength(1)
+  })
+
+  describe("with direct migration deposits", () => {
+    const KEY = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" as Address
+    const SIPA = "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" as Address
+
+    async function directFeed() {
+      const sipaDeposits = makeStore()
+      await sipaDeposits.upsert(
+        KEY,
+        { phase: "claimed", direct: { recipientCommitment: `0x${"ab".repeat(32)}` } },
+        sipaFallback(300),
+      )
+      await sipaDeposits.upsert(SIPA, { phase: "claimed" }, sipaFallback(200))
+      return ActivityFeed.get(sipaDeposits)
+    }
+
+    const upgrades = (loaded: boolean, recipients: string[] = []) =>
+      ({
+        items: () => [],
+        recipients: () => new Set(recipients),
+        loaded: () => loaded,
+        onChanged: () => () => {},
+      } as never)
+
+    const batches = (feed: ActivityFeed) =>
+      feed.list().flatMap((item) => (item.kind === "upgrade.batch" ? [item.batch] : []))
+
+    it("lists a direct deposit as an upgrade batch, and a SIPA deposit as itself", async () => {
+      const feed = await directFeed()
+      expect(batches(feed).map((b) => [b.run, b.recipient, b.inferred])).toEqual([
+        [expect.stringMatching(/^chain-upgrade\//), KEY, true],
+      ])
+    })
+
+    it("waits for this device's runs, and leaves them the deposits they pay", async () => {
+      const feed = await directFeed()
+      feed.setUpgradeSource(upgrades(false))
+      expect(batches(feed)).toEqual([])
+      feed.setUpgradeSource(upgrades(true, [KEY.toLowerCase()]))
+      expect(batches(feed)).toEqual([])
+      feed.setUpgradeSource(upgrades(true))
+      expect(batches(feed)).toHaveLength(1)
+    })
+  })
+})

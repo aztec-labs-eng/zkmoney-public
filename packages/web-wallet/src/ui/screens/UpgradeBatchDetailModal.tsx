@@ -1,7 +1,7 @@
 /**
- * One refund batch of an upgrade: what left the old version and where it went. It refunds funds
- * the old version froze, so nothing here comes off the balance, and its arrival is the deposit
- * the activity pairs with it.
+ * One refund batch of an upgrade: what left the old version. It refunds funds the old version
+ * froze, so nothing here comes off the balance. The migration executor deposits it straight into
+ * the new version's portal, with no tip and no deposit address, and that deposit is its arrival.
  */
 import { DEFAULT_DECIMALS } from "@obsidion/core/constants"
 import { upgradeBatchStatus, type UpgradeBatchItem } from "@obsidion/front-core"
@@ -10,7 +10,7 @@ import { formatUnits } from "viem"
 import { getConfig } from "../../config/env"
 import { l2TxUrl } from "../../lib/explorer"
 import { Modal } from "../Modal"
-import { l1AddressUrl, whenLabel } from "../detailRows"
+import { whenLabel } from "../detailRows"
 import { usdFigure } from "../format"
 import { DepositFact } from "./DepositFact"
 import { DepositHashFact } from "./DepositHashFact"
@@ -23,9 +23,11 @@ export function batchStatus(batch: UpgradeBatchItem): { label: string; badge: St
 
 export function UpgradeBatchDetailModal({
   batch,
+  onBack,
   onClose,
 }: {
   batch: UpgradeBatchItem
+  onBack?: () => void
   onClose: () => void
 }) {
   const config = getConfig()
@@ -35,6 +37,7 @@ export function UpgradeBatchDetailModal({
       variant="create"
       label="Upgrade transfer details"
       className="ww-sheet ww-sheet--detail"
+      onBack={onBack}
       onClose={onClose}
     >
       <span className="ww-deposit__connect-icon ww-sheet__icon">
@@ -50,14 +53,6 @@ export function UpgradeBatchDetailModal({
         <DepositFact label="Status">
           <DepositStatusValue {...batchStatus(batch)} />
         </DepositFact>
-        <DepositFact label="Relayer tip">
-          <b>{figure(batch.exitFee)}</b>
-        </DepositFact>
-        <DepositHashFact
-          label="Paid to"
-          hash={batch.recipient}
-          url={l1AddressUrl(batch.recipient)}
-        />
         {batch.tx && (
           <DepositHashFact
             label="Sent in"

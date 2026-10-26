@@ -17,5 +17,6 @@ export function predictSipaCandidate(
         candidate.args.recoveryCommitment,
         candidate.args.rollupVersion,
         candidate.args.resweepable,
+        candidate.args.forwardingTable,
       )
 }

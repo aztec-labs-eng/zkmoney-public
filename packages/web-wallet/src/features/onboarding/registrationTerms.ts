@@ -3,9 +3,9 @@ import { parseAbi, zeroAddress, type Address, type PublicClient } from "viem"
 import { Network } from "@obsidion/core/constants"
 import { walletStorage } from "../../platform/storage/walletStorage"
 import type { WebWalletConfig } from "../../config/env"
-import { implementationDepositFee, registrationSipaImplementation } from "@obsidion/front-core"
+import { OxideSipaIntent, readDepositFee } from "@obsidion/sdk"
+import { deploymentSipaRoute } from "@obsidion/front-core"
 import { getOxideTuple, l1PublicClient, requireTupleField } from "../../config/oxideTuple"
-import { fpcFundingCut } from "../fees/fpcFundingCut"
 import type { NameClaimResponse, RegistrationSchedule } from "@obsidion/core/types"
 
 export {
@@ -510,7 +510,7 @@ export function useChainReadRetry(pending: boolean, retry: () => void): ChainRea
  * this deployment cannot take a registration by deposit at all, because it answers zero or because
  * its fee sits under `sweepFee` and no balance at the address would fund the sweep; else the
  * amounts. A zero-priced deployment is null without `sweepFee`; any other schedule stays undefined
- * until that cut lands. `refreshKey` is the caller's way back to a read that gave up: bump it and
+ * until that fee lands. `refreshKey` is the caller's way back to a read that gave up: bump it and
  * the read runs again.
  */
 export function useRegistrationSchedule(
@@ -539,16 +539,10 @@ export function useRegistrationSchedule(
   return schedule.fee < sweepFee ? null : schedule
 }
 
-/** Sweep costs besides the registration fee. */
-export interface SweepDeductions {
-  /** `OxidePortal.FPC_FUNDING_CUT` taken off every credited deposit. */
-  fpcCut: bigint
-}
-
 /** What a registration deposit is worth, once the figures that price it are known. */
 export interface RegistrationDepositCredit {
-  /** What the sweep leaves after the registration fee and the portal's cut. Set only for a deposit
-   *  the chain would accept. */
+  /** What the sweep leaves after the registration fee. Set only for a deposit the chain would
+   *  accept. */
   credit?: bigint
   /** True for a deposit under the floor: nothing is credited and the gross is all there is. False
    *  covers both a credited deposit and one nothing has priced yet, which `credit` tells apart. */
@@ -564,14 +558,11 @@ export function registrationDepositCredit(input: {
   gross?: bigint
   floor: bigint | undefined
   feeOwed: bigint | undefined
-  fpcCut: bigint | undefined
 }): RegistrationDepositCredit {
-  const { gross, floor, feeOwed, fpcCut } = input
-  if (gross === undefined || floor === undefined || feeOwed === undefined || fpcCut === undefined)
-    return { short: false }
+  const { gross, floor, feeOwed } = input
+  if (gross === undefined || floor === undefined || feeOwed === undefined) return { short: false }
   if (gross < floor) return { short: true }
-  const spent = feeOwed + fpcCut
-  return { credit: gross > spent ? gross - spent : 0n, short: false }
+  return { credit: gross > feeOwed ? gross - feeOwed : 0n, short: false }
 }
 
 /**
@@ -593,12 +584,7 @@ export function useDepositSkim(
     const publicClient = l1PublicClient(config)
     readWithRetry(async () => {
       const tuple = await getOxideTuple(config)
-      const implementation = await registrationSipaImplementation(
-        publicClient,
-        requireTupleField(tuple, "sipaFactory") as Address,
-        requireTupleField(tuple, "portal") as Address,
-      )
-      return implementationDepositFee(publicClient, implementation)
+      return readDepositFee(publicClient, deploymentSipaRoute(tuple, OxideSipaIntent.Registration))
     })
       .then((fee) => {
         if (live) setSkim(fee)
@@ -609,38 +595,6 @@ export function useDepositSkim(
     }
   }, [enabled, refreshKey, skim, config.network, config.l1RpcUrl])
   return skim
-}
-
-/**
- * The portal's funding cut for this deployment, the deduction every registration floor is priced
- * against. Undefined until the read lands. The same cut yields the same object, so an effect that
- * depends on it does not re-run on a re-read. `refreshKey` re-runs a read that gave up.
- */
-export function useSweepDeductions(
-  config: WebWalletConfig,
-  token: string | undefined,
-  enabled = Boolean(token),
-  refreshKey = 0,
-): SweepDeductions | undefined {
-  const [deductions, setDeductions] = useState<SweepDeductions>()
-  useEffect(() => {
-    // An immutable already read is not read again on a retry bump.
-    if (!enabled || deductions !== undefined) return
-    let live = true
-    const publicClient = l1PublicClient(config)
-    readWithRetry(async () => {
-      const tuple = await getOxideTuple(config)
-      return fpcFundingCut(publicClient, requireTupleField(tuple, "portal") as Address)
-    })
-      .then((fpcCut) => {
-        if (live) setDeductions((prev) => (prev?.fpcCut === fpcCut ? prev : { fpcCut }))
-      })
-      .catch((err) => console.warn("portal funding cut read failed", err))
-    return () => {
-      live = false
-    }
-  }, [enabled, token, refreshKey, deductions, config.network, config.l1RpcUrl])
-  return deductions
 }
 
 /** "3 days", "5 hours", "40 minutes" left until `deadlineMs`, or "" once it has passed. */

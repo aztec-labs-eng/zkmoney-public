@@ -2,16 +2,16 @@
 // variant for cross-contract flows (paylink deposit / claim / refund) that ride the same TEE
 // choreography as a direct token call. `L2SubmitContext` takes a whole `AztecNode` where upstream
 // takes the narrower `ChainDataSource`, and carries the wallet's benchmark correlation fields.
-import type { AztecAddress } from "@aztec/aztec.js/addresses"
-import type { AuthWitness } from "@aztec/aztec.js/authorization"
-import type { ContractFunctionInteraction } from "@aztec/aztec.js/contracts"
-import type { FeePaymentMethod } from "@aztec/aztec.js/fee"
-import type { AztecNode } from "@aztec/aztec.js/node"
-import type { Wallet } from "@aztec/aztec.js/wallet"
+import type { AztecAddress } from "@aztec-labs/aztec.js/addresses"
+import type { AuthWitness } from "@aztec-labs/aztec.js/authorization"
+import type { ContractFunctionInteraction } from "@aztec-labs/aztec.js/contracts"
+import type { FeePaymentMethod } from "@aztec-labs/aztec.js/fee"
+import type { AztecNode } from "@aztec-labs/aztec.js/node"
+import type { Wallet } from "@aztec-labs/aztec.js/wallet"
 
 import type {
   Operation as TokenOperationCall,
-  PlainWithdrawalOperation,
+  WithdrawOperation,
 } from "@oxide/oxide-client/l2_operations.js"
 import type { BenchmarkFlow } from "@obsidion/core/types"
 
@@ -74,7 +74,7 @@ export type Operation =
        *  key-validation oracle can't find the contract-owned keys and `simulateTx` rejects with
        *  `Key validation request denied: no scoped account has a key with hash ...`. */
       additionalScopes?: AztecAddress[]
-      /** The withdrawals the nested token call makes (paylink `claim_to_l1`). The batch checks their
-       *  relayer tips and publishes their user payloads. */
-      withdrawals?: PlainWithdrawalOperation[]
+      /** The withdrawals the nested token call makes (paylink `claim_to_l1`), in call order. The batch
+       *  checks their relayer tips and broadcasts their finalization requests. */
+      withdrawals?: WithdrawOperation[]
     }

@@ -2,7 +2,7 @@ import { Modal } from "../../ui/Modal"
 import { useCallback, useEffect, useRef, useState } from "react"
 import { formatUnits, getAddress, isAddress, parseUnits, type Address } from "viem"
 import { DEFAULT_CONTRACTS, DEFAULT_DECIMALS } from "@obsidion/core/constants"
-import type { Fr } from "@aztec/aztec.js/fields"
+import type { Fr } from "@aztec-labs/aztec.js/fields"
 import type { AddressScreener, WithdrawalSpeedupNode } from "@obsidion/front-core"
 import type { PaylinkL1Proof } from "@obsidion/sdk"
 import { isPasskeyCancelled } from "@obsidion/passkey-web"
@@ -34,9 +34,9 @@ import {
   withdrawalFeeDisplay,
   type WithdrawalQuoteState,
 } from "../withdraw/withdrawQuote"
+import { withdrawalExecutor } from "../withdraw/withdrawalFee"
 import { paylinkTuple } from "./paylinkSource"
-import { fpcFundingCut } from "../fees/fpcFundingCut"
-import { l1PublicClient, requireTupleField } from "../../config/oxideTuple"
+import { requireTupleField } from "../../config/oxideTuple"
 import { claimWindowRevertCopy } from "./claimWindow"
 import type { PaymentLink } from "./types"
 import { closedLinkMessage } from "./claimWindow"
@@ -47,6 +47,7 @@ import { LocalPasskeyHint } from "../../ui/LocalPasskeyHint"
 import { Warning } from "../../ui/Warning"
 import { LimitReason } from "../limits/publicLimit"
 import { withdrawalLimitProblem, withdrawalLimitRefusal } from "../limits/withdrawalLimit"
+import { useTxAmountCap } from "../token/useTxAmountCap"
 
 /** What the caller needs to run `claimLinkToL1` once the user confirms. */
 export interface ClaimToL1Choice {
@@ -111,6 +112,7 @@ export function ClaimToL1Modal({
   /** Prices the faster option; without it the review offers no speed choice. */
   node?: WithdrawalSpeedupNode
 }) {
+  const txAmountCap = useTxAmountCap()
   const busy = useUserFlowActive()
   const busyLabel = useBusyLabel()
   const config = getConfig()
@@ -220,7 +222,8 @@ export function ClaimToL1Modal({
   // No amount until the escrow note is read; the burn cannot be priced before then.
   const amountAtomic = link.amount ? parseUnits(link.amount, DEFAULT_DECIMALS) : undefined
   // The burn spends the whole escrow, so that is the withdrawal the limit counts.
-  const limitProblem = amountAtomic !== undefined ? withdrawalLimitProblem(amountAtomic) : undefined
+  const limitProblem =
+    amountAtomic !== undefined ? withdrawalLimitProblem(amountAtomic, txAmountCap) : undefined
   const overLimit = limitProblem !== undefined
   const receiveOption = withdrawalReceiveAsset(receiveAsset)
   const readSource = useCallback(async () => {
@@ -231,10 +234,10 @@ export function ClaimToL1Modal({
     async (args) => simulateSwapForTuple(args, await readSource()),
     [readSource],
   )
-  const readSourceCut = useCallback(async () => {
-    const tuple = await readSource()
-    return fpcFundingCut(l1PublicClient(getConfig()), tuple.portal as Address)
-  }, [readSource])
+  const readSourceExecutor = useCallback(
+    async () => withdrawalExecutor(await readSource()),
+    [readSource],
+  )
   // The proof binds a tipped leg's escrow, so the leg keeps its tip and offer until the user
   // picks Standard, whatever later quotes say.
   const speedChoice = useSpeedChoice({
@@ -251,7 +254,7 @@ export function ClaimToL1Modal({
     network: config.network,
     sourceKey: link.tokenAddress ?? "unresolved-paylink",
     simulate: simulateSourceSwap,
-    readCut: readSourceCut,
+    readExecutor: readSourceExecutor,
     proverTip: speedChoice.pricedTip,
   })
   // A planned leg fixes the escrow the proof binds to, so the sheet keeps showing the quote that

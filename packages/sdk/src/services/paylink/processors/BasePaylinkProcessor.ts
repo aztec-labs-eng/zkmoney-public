@@ -1,5 +1,5 @@
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { FieldLike } from "@aztec/aztec.js/abi"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { FieldLike } from "@aztec-labs/aztec.js/abi"
 import { ContractName } from "@obsidion/contracts"
 import { CommitmentInput, ClaimInput, PaylinkWindow } from "../types.js"
 

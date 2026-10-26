@@ -53,6 +53,11 @@ export class SnapshotNotificationProducer<TItem> implements NotificationProducer
     await this.processChain
   }
 
+  async refresh(): Promise<void> {
+    this.enqueue(this.feed.list())
+    await this.flush()
+  }
+
   private enqueue(items: TItem[]): void {
     this.processChain = this.processChain.catch(() => undefined).then(() => this.process(items))
   }

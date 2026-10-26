@@ -5,6 +5,7 @@ import {TestERC20} from "@aztec/mock/TestERC20.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import {EscrowBase} from "@periphery/EscrowBase.sol";
+import {RecoveryAuthLib} from "@periphery/RecoveryAuthLib.sol";
 import {OxideAccount} from "@periphery/OxideAccount.sol";
 import {RecoveryCommitmentLib} from "@periphery/RecoveryCommitmentLib.sol";
 import {AccountSignatures} from "@test/helpers/AccountSignatures.sol";
@@ -69,7 +70,7 @@ contract EscrowBaseTest is EscrowRecoveryTestBase {
       keccak256(abi.encode(escrow, block.chainid, target, address(token), RECOVERY_NONCE, deadline))
     );
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     TestEscrow(escrow)
       .recoverERC20(RECOVERY_SALT, address(account), signature, target, address(token), RECOVERY_NONCE, deadline);
   }
@@ -78,7 +79,7 @@ contract EscrowBaseTest is EscrowRecoveryTestBase {
     address escrow = _deployedEscrow(AMOUNT);
     bytes memory signature = _signRecoverERC20(escrow, target, address(token), RECOVERY_NONCE, deadline);
 
-    vm.expectRevert(EscrowBase.EscrowBase__RecoveryCommitmentMismatch.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__RecoveryCommitmentMismatch.selector);
     TestEscrow(escrow)
       .recoverERC20(
         keccak256("wrong-salt"), address(account), signature, target, address(token), RECOVERY_NONCE, deadline
@@ -93,7 +94,7 @@ contract EscrowBaseTest is EscrowRecoveryTestBase {
     bytes memory signature =
       AccountSignatures.k1(otherBootstrapKey, AccountSignatures.personalSignDigest(address(other), digest));
 
-    vm.expectRevert(EscrowBase.EscrowBase__RecoveryCommitmentMismatch.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__RecoveryCommitmentMismatch.selector);
     TestEscrow(escrow)
       .recoverERC20(RECOVERY_SALT, address(other), signature, target, address(token), RECOVERY_NONCE, deadline);
   }
@@ -106,7 +107,7 @@ contract EscrowBaseTest is EscrowRecoveryTestBase {
       keccak256(abi.encode(escrow, block.chainid, target, address(token), RECOVERY_NONCE, deadline))
     );
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     TestEscrow(escrow)
       .recoverERC20(RECOVERY_SALT, address(account), signature, target, address(token), RECOVERY_NONCE, deadline);
   }
@@ -115,7 +116,7 @@ contract EscrowBaseTest is EscrowRecoveryTestBase {
     address escrow = _deployedEscrow(AMOUNT);
     bytes memory signature = _signRecoverERC20(escrow, target, address(token), RECOVERY_NONCE, deadline);
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     TestEscrow(escrow)
       .recoverERC20(
         RECOVERY_SALT, address(account), signature, makeAddr("thief"), address(token), RECOVERY_NONCE, deadline
@@ -137,7 +138,7 @@ contract EscrowBaseTest is EscrowRecoveryTestBase {
     bytes memory signature = _signRecoverERC20(escrow, target, address(token), RECOVERY_NONCE, deadline);
 
     vm.warp(deadline + 1);
-    vm.expectRevert(abi.encodeWithSelector(EscrowBase.EscrowBase__RecoveryExpired.selector, deadline));
+    vm.expectRevert(abi.encodeWithSelector(RecoveryAuthLib.RecoveryAuthLib__RecoveryExpired.selector, deadline));
     TestEscrow(escrow)
       .recoverERC20(RECOVERY_SALT, address(account), signature, target, address(token), RECOVERY_NONCE, deadline);
   }
@@ -146,7 +147,7 @@ contract EscrowBaseTest is EscrowRecoveryTestBase {
     address escrow = _deployedEscrow(AMOUNT);
     bytes memory signature = _signRecoverERC20(escrow, target, address(token), RECOVERY_NONCE, deadline);
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     TestEscrow(escrow)
       .recoverERC20(RECOVERY_SALT, address(account), signature, target, address(token), RECOVERY_NONCE, deadline + 1);
   }
@@ -180,7 +181,7 @@ contract EscrowBaseTest is EscrowRecoveryTestBase {
     bytes memory signature = _signRecoverETH(escrow, target, RECOVERY_NONCE, deadline);
 
     vm.warp(deadline + 1);
-    vm.expectRevert(abi.encodeWithSelector(EscrowBase.EscrowBase__RecoveryExpired.selector, deadline));
+    vm.expectRevert(abi.encodeWithSelector(RecoveryAuthLib.RecoveryAuthLib__RecoveryExpired.selector, deadline));
     TestEscrow(escrow).recoverETH(RECOVERY_SALT, address(account), signature, target, RECOVERY_NONCE, deadline);
   }
 
@@ -189,7 +190,7 @@ contract EscrowBaseTest is EscrowRecoveryTestBase {
     vm.deal(escrow, 1 ether);
     bytes memory signature = _signRecoverERC20(escrow, target, address(token), RECOVERY_NONCE, deadline);
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     TestEscrow(escrow).recoverETH(RECOVERY_SALT, address(account), signature, target, RECOVERY_NONCE, deadline);
   }
 
@@ -267,7 +268,7 @@ contract EscrowBaseTest is EscrowRecoveryTestBase {
     address escrow = _deployedEoaEscrow(eoa, AMOUNT);
     bytes32 digest = keccak256(abi.encode(escrow, block.chainid, target, address(token), RECOVERY_NONCE, deadline));
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     TestEscrow(escrow)
       .recoverERC20(RECOVERY_SALT, eoa, _signEoa(eoaKey, digest), target, address(token), RECOVERY_NONCE, deadline);
   }
@@ -278,7 +279,7 @@ contract EscrowBaseTest is EscrowRecoveryTestBase {
     address escrow = _deployedEoaEscrow(eoa, AMOUNT);
     bytes32 digest = keccak256(abi.encode(escrow, block.chainid, target, address(token), RECOVERY_NONCE, deadline));
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     TestEscrow(escrow)
       .recoverERC20(
         RECOVERY_SALT,
@@ -295,7 +296,7 @@ contract EscrowBaseTest is EscrowRecoveryTestBase {
     (address eoa,) = makeAddrAndKey("eoa-recovery");
     address escrow = _deployedEoaEscrow(eoa, AMOUNT);
 
-    vm.expectRevert(EscrowBase.EscrowBase__InvalidSignature.selector);
+    vm.expectRevert(RecoveryAuthLib.RecoveryAuthLib__InvalidSignature.selector);
     TestEscrow(escrow).recoverERC20(RECOVERY_SALT, eoa, hex"1234", target, address(token), RECOVERY_NONCE, deadline);
   }
 

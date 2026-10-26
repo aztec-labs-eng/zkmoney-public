@@ -23,9 +23,10 @@ declare global {
 const dai = (n: number) => BigInt(Math.round(n * 100)) * 10n ** 16n
 const NODE = {} as WithdrawalSpeedupNode
 const TICKET = { fee: dai(0.5), min: 0n }
-const CUTS = { withdrawalCut: dai(0.1), depositCut: dai(0.1) }
-/** The burn at these cuts with no tip. */
-const BURN = dai(0.81)
+/** The source executor's withdrawal fee. */
+const FEE = dai(0.1)
+/** The burn with no tip. */
+const BURN = dai(0.71)
 const TIP = dai(0.4)
 const loaded = (worstSpeedupSeconds: number, proverTip = TIP) => ({
   estimate: {
@@ -53,7 +54,7 @@ describe("useRegistrationSpeed", () => {
       node: NODE,
       noteAmount: dai(4),
       schedule: TICKET,
-      cuts: CUTS,
+      withdrawalFee: FEE,
       onCommit,
       ...props,
     })
@@ -166,8 +167,8 @@ describe("useRegistrationSpeed", () => {
     expect(seen.choice.speed).toBe("faster")
   })
 
-  it("decides nothing while the cuts are unread", async () => {
-    await render({ load: async () => loaded(600), cuts: undefined })
+  it("decides nothing while the schedule is unread", async () => {
+    await render({ load: async () => loaded(600), schedule: undefined })
     expect(seen.proverTip).toBeUndefined()
     expect(onCommit).not.toHaveBeenCalled()
   })

@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "codegen": "scripts/codegen.sh",
-    "build-contracts": "scripts/build_contracts.sh",
+    "build-contracts": "VERSION=v6.0.0 scripts/build_contracts.sh",
     "build:core": "pnpm --filter '@obsidion/core...' --filter '!@oxide/*' -r --if-present run build",
     "build:contracts": "pnpm --filter '@obsidion/contracts...' --filter '!@oxide/*' -r --if-present run build",
     "build:config-client": "pnpm --filter '@obsidion/config-client...' --filter '!@oxide/*' -r --if-present run build",
@@ -26,7 +26,7 @@
     ],
     "peerDependencyRules": {
       "allowedVersions": {
-        "viem": "npm:@aztec/viem@2.9.16"
+        "viem": "2.57.1"
       }
     },
     "overrides": {
@@ -38,7 +38,8 @@
     }
   },
   "devDependencies": {
-    "typescript": "5.7.3"
+    "typescript": "5.7.3",
+    "@aztec-labs/builder": "6.0.0"
   },
   "license": "MIT"
 }

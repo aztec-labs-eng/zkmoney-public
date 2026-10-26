@@ -5,8 +5,8 @@
  * transfer from the chain (`Transfer.meta` carries tag / memo / request id). Request is an XMTP
  * announce, persisted to RequestStorage only on confirmed delivery.
  */
-import { AztecAddress } from "@aztec/stdlib/aztec-address"
-import { Fr } from "@aztec/aztec.js/fields"
+import { AztecAddress } from "@aztec-labs/stdlib/aztec-address"
+import { Fr } from "@aztec-labs/aztec.js/fields"
 import {
   ContractService,
   nextOperationId,
@@ -39,7 +39,8 @@ import {
 import { maybeRefuelFpc } from "../fees/fpcRefuel"
 import { claimSponsorContext, noteSubscribed } from "../onboarding/claimSponsorship"
 import { RAIL_REGISTERED } from "../onboarding/rails"
-import { resolveTagForCommit } from "./registryResolution"
+import { recipientNotUpgradedCopy } from "../migration/upgradeCopy"
+import { resolveTagForCommit, resolveTagViaRegistry } from "./registryResolution"
 import { markRequestPaidById } from "./requestActions"
 
 export type PayStage = "resolving" | "proving" | "submitting"
@@ -59,15 +60,30 @@ function networkId(): string {
   return getActiveNetworkId()!
 }
 
+/** The recipient's tag is still on a retired rollup, so funds sent now would not reach them. */
+export class RecipientNotUpgradedError extends Error {
+  constructor(readonly tag: string) {
+    super(recipientNotUpgradedCopy.title(tag))
+    this.name = "RecipientNotUpgradedError"
+  }
+}
+
+/**
+ * Whether `tag` has upgraded, read from the cached manifest before the user enters an amount. A
+ * failed read answers true: the commit-time resolution is the guard.
+ */
+export async function recipientUpgraded(tag: string): Promise<boolean> {
+  try {
+    return (await resolveTagViaRegistry(tag)).status !== "staleRollup"
+  } catch {
+    return true
+  }
+}
+
 async function resolveContact(tag: string) {
   const resolved = await resolveTagForCommit(tag)
-  if (resolved.status !== "resolved") {
-    throw new Error(
-      resolved.status === "staleRollup"
-        ? `@${tag} hasn't upgraded to the current network yet`
-        : `@${tag} is no longer registered`,
-    )
-  }
+  if (resolved.status === "staleRollup") throw new RecipientNotUpgradedError(tag)
+  if (resolved.status !== "resolved") throw new Error(`@${tag} is no longer registered`)
   return resolved
 }
 

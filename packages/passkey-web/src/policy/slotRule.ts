@@ -1,5 +1,10 @@
+import { ZERO_AAGUID } from "@obsidion/core/constants"
 import type { PrfSlot } from "@obsidion/core/types"
-import type { PasskeyAttachment, PasskeyHint } from "../ceremony/passkeyCeremony.js"
+import type {
+  PasskeyAttachment,
+  PasskeyHint,
+  PasskeyResidentKey,
+} from "../ceremony/passkeyCeremony.js"
 import type { DevicePosture } from "./devicePosture.js"
 import type { LocalManager } from "./laptopCreation.js"
 import {
@@ -24,19 +29,24 @@ export const isPhysicalOnly = (transports: readonly string[] | undefined): boole
 
 /**
  * A security key: another device's authenticator that the browser says is reached only over a
- * physical transport. Everything else is treated as a phone — a list naming a transport this code
- * does not know, an empty list, no list at all, or a local answer — so a key the browser described
- * poorly meets the backup gate and is refused rather than quietly exempted.
+ * physical transport, or one it lists no transports for while attesting an all-zero provider id.
+ * The second shape is what Chrome reports for a Trezor under "none" attestation — a compatibility
+ * heuristic bounded by the browsers measured, not a guarantee the spec gives. Everything else is
+ * treated as a phone — a list naming a transport this code does not know, no list at all, an empty
+ * list beside a reported id, or a local answer — so a key the browser described poorly meets the
+ * backup gate and is refused rather than quietly exempted.
  */
 export function isSecurityKey(response: {
   authenticatorAttachment?: PasskeyAttachment
   // Required key, possibly-undefined value: only a creation response carries transports, and an
   // assertion passed here would silently answer "not a key" on a route that holds one.
   transports: readonly string[] | undefined
+  /** The id as attested, zeros included; `aaguid` drops zeros and cannot tell them from absent. */
+  attestedAaguid?: string
 }): boolean {
-  return (
-    response.authenticatorAttachment === "cross-platform" && isPhysicalOnly(response.transports)
-  )
+  if (response.authenticatorAttachment !== "cross-platform") return false
+  if (isPhysicalOnly(response.transports)) return true
+  return response.transports?.length === 0 && response.attestedAaguid === ZERO_AAGUID
 }
 
 /**
@@ -197,7 +207,7 @@ const namingSecurityKey = (hints: readonly PasskeyHint[]): readonly PasskeyHint[
 const PHONE_CREATION_HINTS: readonly PasskeyHint[] = ["client-device", "security-key"]
 
 /** A laptop creation whose consumer names no route: the phone over QR first, then a key. */
-const LAPTOP_CREATION_HINTS: readonly PasskeyHint[] = ["hybrid", "security-key"]
+export const LAPTOP_CREATION_HINTS: readonly PasskeyHint[] = ["hybrid", "security-key"]
 
 /**
  * Steering to this computer that names no security key, so a password manager's extension may
@@ -227,6 +237,20 @@ export function creationHintsFor(
   if (laptopHints === null) return undefined
   if (local) return laptopHints?.length ? laptopHints : LAPTOP_LOCAL_CREATION_HINTS
   return laptopHints?.length ? namingSecurityKey(laptopHints) : LAPTOP_CREATION_HINTS
+}
+
+/**
+ * Whether a creation may leave the passkey unstored. A laptop creation that names a security key
+ * asks `"preferred"`: a Ledger stores no passkey and refuses a creation that demands one, while a
+ * YubiKey, a Trezor, a phone and a password manager store theirs whatever is asked. A phone's
+ * hints name a key too, but a Ledger is admitted from a laptop only, and a laptop route that names
+ * no key is a manager's: both keep `"required"`.
+ */
+export function residentKeyFor(
+  posture: DevicePosture,
+  hints: readonly PasskeyHint[] | undefined,
+): PasskeyResidentKey {
+  return posture === "laptop" && hints?.includes("security-key") ? "preferred" : "required"
 }
 
 /** The two routes a laptop sign-in accepts when the device's own copy is not admitted. */

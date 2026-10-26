@@ -7,6 +7,7 @@ import {
   openWalletStore,
   readFromOtherDatabases,
   removeFromOtherDatabases,
+  removeMatchingFromOtherDatabases,
   walletStorage,
   walletStoreIsPersistent,
 } from "../src/platform/storage/walletStorage"
@@ -387,6 +388,25 @@ describe("readFromOtherDatabases", () => {
     const [a, b] = await Promise.all([readFromOtherDatabases("k"), readFromOtherDatabases("k")])
     expect(a).toEqual(["one"])
     expect(b).toEqual(["one"])
+  })
+})
+
+describe("removeMatchingFromOtherDatabases", () => {
+  it("removes the matching keys of every other rollup, skipping a database held elsewhere", async () => {
+    dbs.db("111").state.set("a.pool", "1").set("a.slot", "1")
+    dbs.db("222").state.set("a.pool", "2")
+    await reopen()
+    walletStorage.setItem("a.pool", "active")
+    const held = await dbs.open("222", true)
+    try {
+      await removeMatchingFromOtherDatabases((key) => key.endsWith(".pool"))
+    } finally {
+      await held.close()
+    }
+    expect([...dbs.db("111").state.keys()]).toEqual(["a.slot"])
+    expect(dbs.db("222").state.get("a.pool")).toBe("2")
+    expect(walletStorage.getItem("a.pool")).toBe("active")
+    expect(dbs.db("111").held).toBe(false)
   })
 })
 

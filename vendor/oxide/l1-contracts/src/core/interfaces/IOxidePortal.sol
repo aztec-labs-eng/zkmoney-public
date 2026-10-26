@@ -38,12 +38,12 @@ interface IOxidePortal {
     bytes teeSignature;
   }
 
-  struct RefundFrozenDepositArgs {
+  struct RefundFrozenDepositsArgs {
     address executor;
     bytes userPayload;
     bytes relayerPayload;
     uint256 amount;
-    bytes32 siloedNullifier;
+    bytes32[] nullifiers;
     bytes proof;
     bytes teeSignature;
   }
@@ -56,7 +56,6 @@ interface IOxidePortal {
     bytes32 siloedNullifier;
     bytes32 messageHash;
     uint256 messageLeafIndex;
-    bytes32[] inboxSiblingPath;
     bytes proof;
     bytes teeSignature;
   }
@@ -78,35 +77,13 @@ interface IOxidePortal {
     external
     returns (bytes32 key, uint256 index, uint256 creditedAmount);
 
-  function approveTeePcr0(bytes32 _pcr0Hash) external;
-
-  function verifyTeeCACert(bytes calldata _cert, bytes32 _parentCertHash) external returns (bytes32 certHash);
-
-  function verifyTeeClientCert(bytes calldata _cert, bytes32 _parentCertHash) external returns (bytes32 certHash);
-
-  function verifyTeeAttestationHash(bytes calldata _attestationTbs) external returns (bytes32 attestationTbsKeccak);
-
-  function verifyTeeAttestationSig(bytes32 _attestationTbsKeccak, bytes calldata _signature, bytes32 _leafCertHash)
-    external;
-
-  function registerTee(
-    bytes calldata _attestationTbs,
-    bytes calldata _signature,
-    bytes32 _teePubKeyX,
-    bytes32 _teePubKeyY,
-    bytes32 _encPubKeyX,
-    bytes32 _encPubKeyY
-  ) external returns (bytes32 key, uint256 index);
-
-  function initialize(bytes32 _l2Portal) external;
-
   function UNDERLYING() external view returns (IERC20);
 
   function ROLLUP_VERSION() external view returns (uint256);
 
   function ROLLUP() external view returns (IRollup);
 
-  function L2_PORTAL() external view returns (bytes32);
+  function L2_TOKEN() external view returns (bytes32);
 
   function $frozen() external view returns (bool);
 
@@ -116,17 +93,11 @@ interface IOxidePortal {
 
   function refundFrozenNotes(RefundFrozenNotesArgs calldata _args) external;
 
-  function refundFrozenDeposit(RefundFrozenDepositArgs calldata _args) external;
+  function refundFrozenDeposits(RefundFrozenDepositsArgs calldata _args) external;
 
   function refundUnprocessedDeposit(RefundUnprocessedDepositArgs calldata _args) external;
 
   function claimProverTips(IProverSubsidy _proverSubsidy, ProverTipClaim[] calldata _claims)
     external
     returns (uint256 totalSubsidy);
-
-  function prepareFirstProver(uint256 _checkpointNumber, address _prover) external;
-
-  function recordFirstProver(uint256 _checkpointNumber, uint256 _proofLength, address _prover) external;
-
-  function isTeeActive(address _tee) external view returns (bool);
 }
