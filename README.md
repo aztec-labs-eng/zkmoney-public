@@ -17,7 +17,7 @@ Source of the zk.money web wallet and the zk.money Desktop app. This tree builds
 
 | Tool | Version |
 | --- | --- |
-| Node.js | 20.10 or later |
+| Node.js | 24.15 or later (the Aztec 6.0.0 installer needs it) |
 | pnpm | 9.14.4 (`corepack enable`) |
 | Yarn | 4 (`corepack` supplies it for `vendor/oxide/l1-contracts`) |
 | Foundry (`forge`) | 1.4 or later |

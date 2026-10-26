@@ -54,9 +54,10 @@ jobs:
           [ "$NODE_URL_SET" = true ] || { echo "::error::secret WEB_WALLET_NODE_URL is unset"; exit 1; }
           [ "$L1_RPC_SET" = true ] || { echo "::error::secret WEB_WALLET_L1_RPC_URL is unset"; exit 1; }
 
+      # The Aztec 6.0.0 installer needs Node.js 24.15.0 or later.
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: "24"
 
       - run: corepack enable
 
